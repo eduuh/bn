@@ -578,11 +578,13 @@ mod tests {
         let cf: ConfigFile = toml::from_str(
             r#"
 [pipeline.models.plan]
-model = "claude-opus-4.8"
+model = "claude-fable-5"
 effort = "max"
+harness = "claude"
 
 [repo.arena.pipeline.models.execute]
 model = "claude-sonnet-4.6"
+agent = "copilot"
 "#,
         )
         .unwrap();
@@ -590,8 +592,9 @@ model = "claude-sonnet-4.6"
         assert_eq!(
             global.models[&crate::pipeline::stage::Stage::Plan],
             PipelineModelConfig {
-                model: Some("claude-opus-4.8".into()),
+                model: Some("claude-fable-5".into()),
                 effort: Some("max".into()),
+                harness: Some("claude".into()),
             }
         );
         let repos = cf.repos().unwrap();
@@ -599,6 +602,8 @@ model = "claude-sonnet-4.6"
             [&crate::pipeline::stage::Stage::Execute];
         assert_eq!(execute.model.as_deref(), Some("claude-sonnet-4.6"));
         assert_eq!(execute.effort, None);
+        // `agent` is an accepted alias for `harness`.
+        assert_eq!(execute.harness.as_deref(), Some("copilot"));
     }
 
     #[test]
@@ -611,6 +616,7 @@ model = "claude-sonnet-4.6"
             PipelineModel {
                 model: "gpt-5.4".into(),
                 effort: "high".into(),
+                harness: None,
             }
         );
         assert_eq!(
@@ -618,6 +624,7 @@ model = "claude-sonnet-4.6"
             PipelineModel {
                 model: "claude-opus-4.8".into(),
                 effort: "max".into(),
+                harness: None,
             }
         );
         assert_eq!(
@@ -625,6 +632,7 @@ model = "claude-sonnet-4.6"
             PipelineModel {
                 model: "claude-opus-4.8".into(),
                 effort: "max".into(),
+                harness: None,
             }
         );
         assert_eq!(
@@ -632,6 +640,7 @@ model = "claude-sonnet-4.6"
             PipelineModel {
                 model: "gpt-5.4-mini".into(),
                 effort: "medium".into(),
+                harness: None,
             }
         );
 
@@ -640,6 +649,7 @@ model = "claude-sonnet-4.6"
             PipelineModelConfig {
                 model: Some("gpt-5.6-sol".into()),
                 effort: Some("high".into()),
+                harness: None,
             },
         );
         c.repos.insert(
@@ -651,6 +661,7 @@ model = "claude-sonnet-4.6"
                         PipelineModelConfig {
                             model: None,
                             effort: Some("max".into()),
+                            harness: None,
                         },
                     )]),
                 }),
@@ -662,8 +673,82 @@ model = "claude-sonnet-4.6"
             PipelineModel {
                 model: "gpt-5.6-sol".into(),
                 effort: "max".into(),
+                harness: None,
             }
         );
+    }
+
+    #[test]
+    fn pipeline_model_layers_harness() {
+        use crate::pipeline::stage::Stage;
+
+        let mut c = cfg(vec![]);
+        // Global stage harness applies...
+        c.pipeline.models.insert(
+            Stage::Execute,
+            PipelineModelConfig {
+                model: Some("claude-opus-4.8".into()),
+                effort: Some("max".into()),
+                harness: Some("copilot".into()),
+            },
+        );
+        assert_eq!(
+            c.pipeline_model("bn", Stage::Execute).harness.as_deref(),
+            Some("copilot")
+        );
+        // ...and a repo override wins over the global harness.
+        c.repos.insert(
+            "Arena".into(),
+            RepoConfig {
+                pipeline: Some(PipelineConfig {
+                    models: HashMap::from([(
+                        Stage::Execute,
+                        PipelineModelConfig {
+                            model: None,
+                            effort: None,
+                            harness: Some("claude".into()),
+                        },
+                    )]),
+                }),
+                ..Default::default()
+            },
+        );
+        let resolved = c.pipeline_model("owner/arena", Stage::Execute);
+        assert_eq!(resolved.harness.as_deref(), Some("claude"));
+        // Model/effort still inherit from the global entry the repo left unset.
+        assert_eq!(resolved.model, "claude-opus-4.8");
+        assert_eq!(resolved.effort, "max");
+    }
+
+    #[test]
+    fn pipeline_model_blank_harness_is_ignored() {
+        use crate::pipeline::stage::Stage;
+
+        let mut c = cfg(vec![]);
+        c.pipeline.models.insert(
+            Stage::Plan,
+            PipelineModelConfig {
+                model: None,
+                effort: None,
+                harness: Some("   ".into()),
+            },
+        );
+        assert_eq!(c.pipeline_model("bn", Stage::Plan).harness, None);
+    }
+
+    #[test]
+    fn pipeline_model_defaults_harness_none() {
+        use crate::pipeline::stage::Stage;
+
+        let c = cfg(vec![]);
+        for stage in [
+            Stage::Investigate,
+            Stage::Plan,
+            Stage::Execute,
+            Stage::Critique,
+        ] {
+            assert_eq!(c.pipeline_model("bn", stage).harness, None, "{stage:?}");
+        }
     }
 
     #[test]

@@ -324,20 +324,26 @@ impl Registry {
         tmux_session: Option<&str>,
         pid: Option<i64>,
     ) -> Result<()> {
-        let current = self.require_state(attempt_id)?;
-        if current != AttemptState::Queued {
+        // Atomic guard: the promotion only fires while the row is still `QUEUED`, so two racing
+        // callers can never both win — the `AND state = 'QUEUED'` predicate and the row write
+        // happen under one SQLite statement. A separate read-then-write (as this once was) could
+        // let both readers see `QUEUED` and both promote, spawning a second worktree/PR.
+        let changed = self.conn.execute(
+            "UPDATE attempts
+             SET state = 'RUNNING', tmux_session = ?2, pid = ?3, updated_ts = ?4
+             WHERE attempt_id = ?1 AND state = 'QUEUED'",
+            rusqlite::params![attempt_id, tmux_session, pid, now_iso()],
+        )?;
+        if changed == 0 {
+            // The row was absent or no longer `QUEUED`. Re-read to return the precise error the
+            // callers already distinguish (`NotFound` vs `IllegalTransition`).
+            let current = self.require_state(attempt_id)?;
             return Err(RegistryError::IllegalTransition {
                 attempt_id: attempt_id.to_string(),
                 from: current,
                 to: AttemptState::Running,
             });
         }
-        self.conn.execute(
-            "UPDATE attempts
-             SET state = 'RUNNING', tmux_session = ?2, pid = ?3, updated_ts = ?4
-             WHERE attempt_id = ?1",
-            rusqlite::params![attempt_id, tmux_session, pid, now_iso()],
-        )?;
         Ok(())
     }
 
@@ -355,20 +361,22 @@ impl Registry {
         } else {
             AttemptState::Failed
         };
-        let current = self.require_state(attempt_id)?;
-        if current != AttemptState::Running {
+        // Atomic guard (see `mark_running`): only a still-`RUNNING` row transitions to a terminal
+        // state, in one statement, so a lost ack can't race a reconcile into a double finish.
+        let changed = self.conn.execute(
+            "UPDATE attempts
+             SET state = ?2, exit_code = ?3, result = ?4, updated_ts = ?5
+             WHERE attempt_id = ?1 AND state = 'RUNNING'",
+            rusqlite::params![attempt_id, to.as_str(), exit_code, result, now_iso()],
+        )?;
+        if changed == 0 {
+            let current = self.require_state(attempt_id)?;
             return Err(RegistryError::IllegalTransition {
                 attempt_id: attempt_id.to_string(),
                 from: current,
                 to,
             });
         }
-        self.conn.execute(
-            "UPDATE attempts
-             SET state = ?2, exit_code = ?3, result = ?4, updated_ts = ?5
-             WHERE attempt_id = ?1",
-            rusqlite::params![attempt_id, to.as_str(), exit_code, result, now_iso()],
-        )?;
         Ok(())
     }
 
@@ -686,6 +694,59 @@ mod tests {
             reg.mark_running("ghost", None, None).unwrap_err(),
             RegistryError::NotFound(_)
         ));
+    }
+
+    #[test]
+    fn concurrent_mark_running_promotes_exactly_once() {
+        // The exactly-once guarantee under a real race: many workers open their own connection to
+        // one file-backed registry and all try to promote the same QUEUED attempt at once. The
+        // atomic `WHERE state = 'QUEUED'` UPDATE must let exactly one win; the read-then-write this
+        // replaced could let two both observe QUEUED and both spawn a worktree/PR.
+        use std::sync::{Arc, Barrier};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("reg.sqlite");
+        Registry::open(&path)
+            .unwrap()
+            .enqueue(&new_attempt("a1", "r1"))
+            .unwrap();
+
+        // Spawn every racer before joining any — the barrier only releases once all RACERS have
+        // reached it, so all threads must be live first.
+        const RACERS: usize = 16;
+        let barrier = Arc::new(Barrier::new(RACERS));
+        let mut handles = Vec::with_capacity(RACERS);
+        for i in 0..RACERS {
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                let reg = Registry::open(&path).unwrap();
+                barrier.wait(); // release all racers together to maximise contention
+                reg.mark_running("a1", Some(&format!("agent-{i}")), Some(i as i64))
+            }));
+        }
+        let mut results = Vec::with_capacity(RACERS);
+        for h in handles {
+            results.push(h.join().unwrap());
+        }
+
+        assert_eq!(
+            results.iter().filter(|r| r.is_ok()).count(),
+            1,
+            "exactly one racer may promote QUEUED -> RUNNING"
+        );
+        for r in &results {
+            if let Err(e) = r {
+                assert!(
+                    matches!(e, RegistryError::IllegalTransition { .. }),
+                    "a loser must see an illegal transition, not {e:?}"
+                );
+            }
+        }
+        assert_eq!(
+            Registry::open(&path).unwrap().get("a1").unwrap().unwrap().state,
+            AttemptState::Running
+        );
     }
 
     #[test]

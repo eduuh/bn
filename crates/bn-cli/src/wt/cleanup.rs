@@ -84,7 +84,7 @@ pub(crate) fn cleanup_all(cfg: &Config, bare_dir: &Path, force: bool) -> bool {
             let Some(branch) = git_out(&["-C", &wt, "branch", "--show-current"]) else {
                 continue;
             };
-            if branch == "main" || branch == "master" {
+            if bn_core::agent::is_reserved_branch(&branch) {
                 continue;
             }
             let state = pr_state(&remote, &branch);
@@ -165,7 +165,7 @@ pub(crate) fn cmd_reap(cfg: &Config, all: bool, execute: bool) -> bool {
 pub(crate) fn reap_reason(cfg: &Config, wt_path: &Path) -> Option<(String, bool)> {
     let wt = wt_path.to_string_lossy();
     let branch = git_out(&["-C", &wt, "branch", "--show-current"])?;
-    if branch == "main" || branch == "master" {
+    if bn_core::agent::is_reserved_branch(&branch) {
         return None;
     }
     // A shipped ship: PR merged (reuse the existing check). force=false so cleanup still refuses a
@@ -290,7 +290,7 @@ fn cleanup_one_with_policy(
     } else {
         raw_branch
     };
-    if branch == "main" || branch == "master" {
+    if bn_core::agent::is_reserved_branch(&branch) {
         eprintln!("{RED}Refusing to clean up '{branch}' worktree{NC}");
         return Err(());
     }

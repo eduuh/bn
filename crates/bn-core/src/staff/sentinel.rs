@@ -989,7 +989,7 @@ pub fn collect_worktrees(
             let header = lines.next().unwrap_or("");
             let gone = header.contains("[gone]");
             let dirty = lines.any(|l| !l.trim().is_empty());
-            let is_main = w.branch == "main" || w.branch == "master";
+            let is_main = crate::agent::is_reserved_branch(&w.branch);
             let cleanup_refused = dirty && !is_main;
             if !gone && !cleanup_refused {
                 return None;

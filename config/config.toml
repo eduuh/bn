@@ -21,20 +21,27 @@ sla_merge_hours = 24
 # harness = "copilot"           # copilot | claude; default current harness, then copilot
 
 # Pipeline models are left to the harness default (latest). Uncomment to pin a stage.
+# `harness` (claude | copilot) picks the agent for a dispatch LAUNCHED at that stage — it's the
+# stage-aware default when `--agent` isn't pinned (an explicit `--agent` still wins). A single
+# dispatched run uses one harness for its whole pipeline, so this only differs across separate
+# dispatches (a `--skill plan` pass vs an execute pass), not mid-run. Only investigate/plan/execute
+# (and critique via `bn critic`) are reachable launch stages.
 # [pipeline.models.investigate]
 # model = "gpt-5.4"
 # effort = "high"               # effort tier
 # [pipeline.models.plan]
-# model = "gpt-5.4"
-# effort = "high"
+# model = "claude-fable-5"
+# effort = "max"
+# harness = "claude"            # fable runs only under the claude harness
 # [pipeline.models.execute]
-# model = "gpt-5.4-mini"
-# effort = "medium"
+# model = "claude-opus-4.8"
+# effort = "max"
+# harness = "copilot"           # executors run copilot + opus
 # [pipeline.models.critique]
 # model = "gpt-5.4"
 # effort = "high"
 # [repo.my-repo.pipeline.models.execute]
-# model = "claude-sonnet-4.6"   # inherits omitted fields
+# model = "claude-sonnet-4.6"   # inherits omitted fields (harness too)
 
 [attention]
 max_age_hours = 24              # widened over weekends

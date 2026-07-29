@@ -87,9 +87,10 @@ pub(crate) enum CmdIntake {
         #[arg(long)]
         no_tmux: bool,
         /// Launch an AI agent in the worktree's window, seeded with the note and asked to propose a
-        /// plan first. `--agent` alone uses copilot; `--agent claude` (aka claudecode) uses Claude
-        /// Code. Opens (or reuses) the repo's tmux session, so it works from outside tmux too.
-        #[arg(long, num_args = 0..=1, default_missing_value = "copilot")]
+        /// plan first. `--agent` alone lets the launch stage's configured harness decide (falling
+        /// back to copilot); `--agent claude` (aka claudecode) or `--agent copilot` pins the harness.
+        /// Opens (or reuses) the repo's tmux session, so it works from outside tmux too.
+        #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
         agent: Option<String>,
         /// Scout task: investigate / reproduce / audit and write findings to the branch note — the
         /// agent changes no code (vs the default "ship" task, which delivers a change). Promote a

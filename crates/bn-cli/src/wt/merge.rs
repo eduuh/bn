@@ -58,7 +58,7 @@ pub(crate) fn cmd_merge(
         eprintln!("{RED}Could not determine current branch{NC}");
         return false;
     };
-    if branch == "main" || branch == "master" {
+    if bn_core::agent::is_reserved_branch(&branch) {
         eprintln!("{RED}Refusing to merge '{branch}'{NC}");
         return false;
     }
@@ -660,7 +660,7 @@ pub(crate) fn cmd_gate(cfg: &Config, job: Option<String>, as_json: bool, skip_ui
         eprintln!("{RED}bn gate: could not determine current branch{NC}");
         return false;
     };
-    if branch == "main" || branch == "master" {
+    if bn_core::agent::is_reserved_branch(&branch) {
         eprintln!("{RED}bn gate: refusing to gate '{branch}' — gate a feature branch{NC}");
         return false;
     }

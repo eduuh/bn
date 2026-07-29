@@ -139,12 +139,17 @@ pub struct RepoPlacementPolicy {
     pub excludes: Vec<String>,
 }
 
-/// One `[pipeline.models.<stage>]` entry. Either field may be omitted so repo-specific entries can
-/// override only the model or only the effort while inheriting the other global/default value.
+/// One `[pipeline.models.<stage>]` entry. Any field may be omitted so repo-specific entries can
+/// override only the model, effort, or harness while inheriting the other global/default values.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct PipelineModelConfig {
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// Agent harness (`claude` | `copilot`) for a dispatch launched at this stage. `None` inherits
+    /// the global/`--agent` default. The value is stored raw here; it's normalized/validated at the
+    /// dispatch call site (this resolver is a hot, non-`Result` path).
+    #[serde(alias = "agent")]
+    pub harness: Option<String>,
 }
 
 /// `[pipeline]` model policy, also accepted below `[repo.<name>.pipeline]` for repo overrides.
@@ -159,6 +164,10 @@ pub struct PipelineConfig {
 pub struct PipelineModel {
     pub model: String,
     pub effort: String,
+    /// The stage's harness override (`claude` | `copilot`), or `None` when the stage sets no
+    /// harness (the dispatch then uses the `--agent`/global default). Raw string — validated at the
+    /// dispatch call site.
+    pub harness: Option<String>,
 }
 
 /// Default cockpit grounding-loop redraw cadence (seconds). Raised from the original 15s to cut
@@ -948,6 +957,7 @@ impl Config {
         let mut resolved = PipelineModel {
             model: default_model.to_string(),
             effort: default_effort.to_string(),
+            harness: None,
         };
         Self::apply_pipeline_model(&mut resolved, self.pipeline.models.get(&stage));
 
@@ -994,6 +1004,14 @@ impl Config {
             .filter(|value| !value.is_empty())
         {
             resolved.effort = effort.to_string();
+        }
+        if let Some(harness) = override_
+            .harness
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            resolved.harness = Some(harness.to_string());
         }
     }
 

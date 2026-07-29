@@ -1263,6 +1263,20 @@ fn dispatch_pipeline_stage(scout: bool, skill: Option<&str>) -> bn_core::pipelin
     }
 }
 
+/// The harness a dispatch actually launches. Precedence: an explicit `--agent` pin wins; else the
+/// launch stage's configured harness; else copilot. The machine capability gate
+/// ([`bn_core::harness::resolve_dispatch_harness`]) then degrades an unavailable harness (e.g.
+/// Claude org-disabled) to copilot, carrying the reason so the caller can surface the downgrade.
+/// Pure given `cfg` — the precedence is the load-bearing new logic, kept unit-testable. Shared with
+/// `bn critic`, which applies the same precedence for its Critique launch stage.
+pub(crate) fn effective_launch_harness(
+    cfg: &Config,
+    pinned: Option<&str>,
+    stage_harness: Option<&str>,
+) -> bn_core::harness::DispatchHarness {
+    bn_core::harness::resolve_dispatch_harness(cfg, pinned.or(stage_harness))
+}
+
 /// Orchestrate `bn dispatch`: resolve the target repo (an explicit `--repo` name from anywhere, else
 /// the cwd's), resolve the item, create a worktree off `base` for it, seed that branch's note (goal
 /// = the item, plus a source link), run the post-create hook, mark the source todo done, and open a
@@ -1381,33 +1395,26 @@ pub(crate) fn run_dispatch(
     // process trees + prune dead windows first. Safe + quiet: never touches a working / WIP /
     // orchestrator agent, skips the per-branch PR network calls.
     crate::reap::sweep(cfg);
-    // Validate --agent up front so a typo fails before we create a worktree.
-    let agent_kind = agent.map(|a| {
-        normalize_agent(a).unwrap_or_else(|| {
-            fail_json(
-                json,
-                "dispatch",
-                "bad-agent",
-                &format!("bn dispatch: unknown --agent '{a}' (use: copilot | claude)"),
-            )
-        })
-    });
-    // Spawn-side capability gate (#claude-spawn): a machine where the requested harness is
-    // unavailable (e.g. Claude org-disabled via `[harness].disabled`) transparently falls back to
-    // copilot — launching a doomed claude just wedges the lane at boot. Surface the downgrade
-    // (never silent) so an operator sees why the wave ran copilot.
-    let agent_kind = agent_kind.map(|requested| {
-        let resolved = bn_core::harness::resolve_dispatch_harness(cfg, Some(requested));
-        if let Some((from, reason)) = &resolved.fallback_from {
-            if !json {
-                eprintln!(
-                    "bn dispatch: {from} unavailable ({reason}); falling back to {}",
-                    resolved.harness
-                );
-            }
-        }
-        resolved.harness
-    });
+    // `--agent` present (bare or valued) launches an agent; omitted opens just a worktree/shell
+    // window. A bare `--agent` arrives as the "auto" sentinel — launch, but let the launch stage's
+    // configured harness decide. An explicit `--agent claude|copilot` PINS the harness (a user pin
+    // wins over stage config). Validate the pin up front so a typo fails before we create a
+    // worktree; the final harness (pin > stage default > copilot, then the capability gate) is
+    // resolved below once repo + launch stage are known.
+    let launch_agent = agent.is_some();
+    let pinned_harness: Option<&'static str> = agent
+        .map(str::trim)
+        .filter(|a| !a.eq_ignore_ascii_case("auto"))
+        .map(|a| {
+            normalize_agent(a).unwrap_or_else(|| {
+                fail_json(
+                    json,
+                    "dispatch",
+                    "bad-agent",
+                    &format!("bn dispatch: unknown --agent '{a}' (use: copilot | claude)"),
+                )
+            })
+        });
 
     // Resolve the target repo + its bare path: an explicit `--repo <name>` (from anywhere, cwd
     // ignored), else the cwd's repo. `resolve_bare_by_name` maps a GitHub name onto the local bare
@@ -1470,6 +1477,45 @@ pub(crate) fn run_dispatch(
 
     let (title, url, source_todo) = resolve_dispatch_item(cfg, ctx, raw);
     let task_name = bn_core::agent::derive_task_name(name, &title);
+
+    // Resolve the launch stage's model + harness. The stage (Investigate/Plan/Execute from the
+    // scout/skill flags) selects `[pipeline.models.<stage>]`, whose `harness` is the stage-aware
+    // default when the user didn't pin one with `--agent`. Precedence: pin > stage harness >
+    // copilot, then the machine capability gate degrades an unavailable harness to copilot
+    // (surfaced, never silent). A single dispatched run uses this one harness+model for its whole
+    // pipeline, so the override only distinguishes separate dispatches by their launch stage.
+    let stage = dispatch_pipeline_stage(scout, skill);
+    let model = cfg.pipeline_model(&repo, stage);
+    let agent_kind: Option<&'static str> = launch_agent.then(|| {
+        let stage_harness: Option<&'static str> = model
+            .harness
+            .as_deref()
+            .map(str::trim)
+            .filter(|h| !h.is_empty())
+            .map(|h| {
+                normalize_agent(h).unwrap_or_else(|| {
+                    fail_json(
+                        json,
+                        "dispatch",
+                        "bad-stage-harness",
+                        &format!(
+                            "bn dispatch: unknown harness '{h}' in [pipeline.models.{}] (use: copilot | claude)",
+                            stage.as_str()
+                        ),
+                    )
+                })
+            });
+        let resolved = effective_launch_harness(cfg, pinned_harness, stage_harness);
+        if let Some((from, reason)) = &resolved.fallback_from {
+            if !json {
+                eprintln!(
+                    "bn dispatch: {from} unavailable ({reason}); falling back to {}",
+                    resolved.harness
+                );
+            }
+        }
+        resolved.harness
+    });
 
     // Security: --yolo launches the agent with permission gating OFF. A free-text goal is the
     // user's own words — the same trust as an interactive launch, which already yolos — so that's
@@ -1889,8 +1935,8 @@ pub(crate) fn run_dispatch(
             } else {
                 Vec::new()
             };
-            let stage = dispatch_pipeline_stage(scout, skill);
-            let model = cfg.pipeline_model(&repo, stage);
+            // `stage`/`model` were resolved up front (with the harness); reuse them here. The
+            // suffix builder ignores `model.harness` — it only emits `--model`/`--effort`.
             cmd.push_str(&agent_model_suffix(kind, &model, &suppressed));
             suppressed_mcps = suppressed;
             // #456: pin this worktree to its own GH_CONFIG_DIR so the agent's `gh auth switch`
@@ -3224,6 +3270,7 @@ mod remote_tests {
         let model = bn_core::resolver::PipelineModel {
             model: "gpt-5.4".into(),
             effort: "high".into(),
+            harness: None,
         };
         assert_eq!(
             agent_model_suffix("copilot", &model, &["atlas".into(), "forge".into()]),
@@ -3233,6 +3280,48 @@ mod remote_tests {
             agent_model_suffix("claude", &model, &[]),
             " -- --model 'gpt-5.4' --effort 'high'"
         );
+    }
+
+    // Effective-harness precedence: explicit `--agent` pin > launch-stage harness > copilot, then
+    // the machine capability gate degrades an unavailable harness to copilot.
+    fn harness_test_cfg(disabled: &[&str]) -> bn_core::resolver::Config {
+        let mut cfg = bn_core::test_support::config(std::path::Path::new("/tmp/bn-harness-dispatch"));
+        cfg.disabled_harnesses = disabled.iter().map(|s| s.to_string()).collect();
+        cfg
+    }
+
+    #[test]
+    fn explicit_agent_beats_stage_harness() {
+        let cfg = harness_test_cfg(&[]);
+        assert_eq!(
+            effective_launch_harness(&cfg, Some("copilot"), Some("claude")).harness,
+            "copilot"
+        );
+    }
+
+    #[test]
+    fn stage_harness_fills_in_when_unpinned() {
+        let cfg = harness_test_cfg(&[]);
+        assert_eq!(
+            effective_launch_harness(&cfg, None, Some("claude")).harness,
+            "claude"
+        );
+    }
+
+    #[test]
+    fn no_pin_no_stage_defaults_copilot() {
+        let cfg = harness_test_cfg(&[]);
+        assert_eq!(effective_launch_harness(&cfg, None, None).harness, "copilot");
+    }
+
+    #[test]
+    fn stage_harness_gated_when_disabled() {
+        // A stage default of claude on a claude-disabled machine degrades to copilot (the
+        // capability gate wins over the stage default), and the downgrade is surfaced.
+        let cfg = harness_test_cfg(&["claude"]);
+        let resolved = effective_launch_harness(&cfg, None, Some("claude"));
+        assert_eq!(resolved.harness, "copilot");
+        assert!(resolved.fallback_from.is_some());
     }
 
     #[test]

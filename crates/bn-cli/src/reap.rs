@@ -438,7 +438,7 @@ fn discover(worktree_dir: &Path) -> Vec<Candidate> {
         let Some((repo, branch)) = fleet_gc::worktree_repo_branch(worktree_dir, &cwd) else {
             continue; // not rooted in a managed worktree — leave it entirely alone.
         };
-        if branch == "main" || branch == "master" {
+        if bn_core::agent::is_reserved_branch(&branch) {
             continue; // never reap the repo's main worktree / its agent
         }
 

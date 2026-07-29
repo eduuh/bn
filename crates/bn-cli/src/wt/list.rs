@@ -64,7 +64,7 @@ pub(crate) fn cmd_status(cfg: &Config, all: bool, pr: bool) -> bool {
             let Some(branch) = git_out(&["-C", &wt, "branch", "--show-current"]) else {
                 continue;
             };
-            if branch == "main" || branch == "master" {
+            if bn_core::agent::is_reserved_branch(&branch) {
                 continue;
             }
             let changes = dirty_count(&wt);

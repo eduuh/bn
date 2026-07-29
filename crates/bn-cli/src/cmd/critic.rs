@@ -71,14 +71,52 @@ pub(crate) fn run_critic_dispatch(
             &format!("bn critic: no bare repo at {}", bare.display()),
         );
     }
-    let agent_kind = normalize_agent(agent.unwrap_or("copilot")).unwrap_or_else(|| {
-        fail_json(
-            json,
-            "critic",
-            "bad-agent",
-            "bn critic: unknown --agent (use: copilot | claude)",
-        )
-    });
+    // Harness precedence mirrors `bn dispatch`: an explicit `--agent` pin wins; else the Critique
+    // stage's configured harness (`[pipeline.models.critique].harness`); else copilot — then the
+    // machine capability gate degrades an unavailable harness to copilot (surfaced, never silent).
+    let model = cfg.pipeline_model(&repo, bn_core::pipeline::stage::Stage::Critique);
+    let agent_kind = {
+        let pinned = agent
+            .map(str::trim)
+            .filter(|a| !a.eq_ignore_ascii_case("auto"))
+            .map(|a| {
+                normalize_agent(a).unwrap_or_else(|| {
+                    fail_json(
+                        json,
+                        "critic",
+                        "bad-agent",
+                        "bn critic: unknown --agent (use: copilot | claude)",
+                    )
+                })
+            });
+        let stage_harness = model
+            .harness
+            .as_deref()
+            .map(str::trim)
+            .filter(|h| !h.is_empty())
+            .map(|h| {
+                normalize_agent(h).unwrap_or_else(|| {
+                    fail_json(
+                        json,
+                        "critic",
+                        "bad-stage-harness",
+                        &format!(
+                            "bn critic: unknown harness '{h}' in [pipeline.models.critique] (use: copilot | claude)"
+                        ),
+                    )
+                })
+            });
+        let resolved = crate::cmd::dispatch::effective_launch_harness(cfg, pinned, stage_harness);
+        if let Some((from, reason)) = &resolved.fallback_from {
+            if !json {
+                eprintln!(
+                    "bn critic: {from} unavailable ({reason}); falling back to {}",
+                    resolved.harness
+                );
+            }
+        }
+        resolved.harness
+    };
 
     // The execution lane under test — its note holds the done-when criteria (never the plan).
     let exec_sanitized = branch.replace('/', "-");
@@ -186,7 +224,7 @@ pub(crate) fn run_critic_dispatch(
         } else {
             Vec::new()
         };
-        let model = cfg.pipeline_model(&repo, bn_core::pipeline::stage::Stage::Critique);
+        // `model` (Critique stage) was resolved up front alongside the harness — reuse it.
         cmd.push_str(&agent_model_suffix(agent_kind, &model, &suppressed));
         agent_launched = wt::open_worktree_window_cmd(
             &repo,
