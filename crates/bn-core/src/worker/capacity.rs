@@ -81,15 +81,16 @@ pub fn parse_df_avail_mb(s: &str) -> Option<u64> {
         .map(|kb| kb / 1024)
 }
 
-/// Sample this node's live capacity. Reuses the [`crate::machine`] `/proc` parsers for
-/// mem/swap/load (so the fiddly parsing stays in one place) and shells out to `df` for the disk
-/// figure on the given `worktree_root`. Best-effort: every unreadable signal reads as `None`.
+/// Sample this node's live capacity. Delegates mem/swap/load to the single cross-platform
+/// [`machine`] readers (so Linux and macOS share one platform matrix — the admission gate no
+/// longer reads blind on a Mac) and shells out to `df` for the disk figure on the given
+/// `worktree_root`. Best-effort: every unreadable signal reads as `None`.
 pub fn sample(worktree_root: &std::path::Path) -> Capacity {
     let nproc = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
-    let mem = read_meminfo();
-    let loadavg1 = read_loadavg1();
+    let mem = machine::read_meminfo();
+    let loadavg1 = machine::read_loadavg1();
     let disk_avail_mb = read_disk_avail_mb(worktree_root);
     Capacity {
         mem_total_mb: mem.total_mb,
@@ -100,29 +101,6 @@ pub fn sample(worktree_root: &std::path::Path) -> Capacity {
         nproc,
         disk_avail_mb,
     }
-}
-
-#[cfg(target_os = "linux")]
-fn read_meminfo() -> machine::MemInfo {
-    std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .map(|s| machine::parse_meminfo(&s))
-        .unwrap_or_default()
-}
-
-#[cfg(not(target_os = "linux"))]
-fn read_meminfo() -> machine::MemInfo {
-    machine::MemInfo::default()
-}
-
-#[cfg(target_os = "linux")]
-fn read_loadavg1() -> Option<f64> {
-    machine::parse_proc_loadavg(&std::fs::read_to_string("/proc/loadavg").ok()?).map(|(l1, ..)| l1)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn read_loadavg1() -> Option<f64> {
-    None
 }
 
 /// Free MB on the volume backing `path` via `df -Pk`. Portable across Linux/macOS/BSD; fail-open

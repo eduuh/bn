@@ -51,6 +51,45 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_body_appends_never_lose_an_update() {
+        // Regression for the unlocked read-modify-write: many writers append to the same note at
+        // once. Every bullet must survive — an unlocked read/mutate/save would let one writer's
+        // save clobber another's (the note is atomic, so no torn file, just a silent lost update).
+        use std::sync::{Arc, Barrier};
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let x = ctx();
+        // Seed the note so every writer takes the read-modify-write path, not the create path.
+        append_body(&cfg(&root), &x, "progress", "seed", "2026-06-19").unwrap();
+
+        const WRITERS: usize = 12;
+        let barrier = Arc::new(Barrier::new(WRITERS));
+        let mut handles = Vec::with_capacity(WRITERS);
+        for i in 0..WRITERS {
+            let root = root.clone();
+            let x = x.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                let c = cfg(&root);
+                barrier.wait(); // release all writers together to force real contention
+                append_body(&c, &x, "progress", &format!("finding-{i}"), "2026-06-19").unwrap();
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let note = store::read(&cfg(&root).note_file(&x)).unwrap();
+        for i in 0..WRITERS {
+            assert!(
+                note.body.contains(&format!("finding-{i}")),
+                "lost update: finding-{i} missing — a concurrent read-modify-write clobbered it"
+            );
+        }
+    }
+
+    #[test]
     fn done_when_criteria_are_checkable_and_kept_out_of_todos() {
         let dir = tempfile::tempdir().unwrap();
         let c = cfg(dir.path());

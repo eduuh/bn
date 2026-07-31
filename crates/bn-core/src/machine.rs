@@ -339,22 +339,31 @@ fn read_loadavg() -> Option<(f64, f64, f64)> {
         .flatten()
 }
 
-#[cfg(target_os = "linux")]
 fn read_ram() -> Ram {
-    let info = std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .map(|s| parse_meminfo(&s))
-        .unwrap_or_default();
+    let m = read_meminfo();
     ram_from(
-        info.total_mb.unwrap_or(0),
-        info.available_mb.unwrap_or(0),
-        info.swap_total_mb.unwrap_or(0),
-        info.swap_free_mb.unwrap_or(0),
+        m.total_mb.unwrap_or(0),
+        m.available_mb.unwrap_or(0),
+        m.swap_total_mb.unwrap_or(0),
+        m.swap_free_mb.unwrap_or(0),
     )
 }
 
+/// Read memory + swap as an `Option`-preserving [`MemInfo`], cross-platform: `/proc/meminfo` on
+/// Linux, `sysctl`/`vm_stat` on macOS/BSD. Every unreadable signal stays `None` (never a
+/// fabricated `0`), so callers can distinguish "unknown" from "genuinely empty". The single
+/// mem/swap reader for the whole crate — `machine::sample` and `worker::capacity` both use it.
+#[cfg(target_os = "linux")]
+pub fn read_meminfo() -> MemInfo {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .map(|s| parse_meminfo(&s))
+        .unwrap_or_default()
+}
+
+/// See the Linux variant above.
 #[cfg(not(target_os = "linux"))]
-fn read_ram() -> Ram {
+pub fn read_meminfo() -> MemInfo {
     let sysctl_u64 = |key: &str| -> Option<u64> {
         let out = std::process::Command::new("sysctl")
             .args(["-n", key])
@@ -365,34 +374,91 @@ fn read_ram() -> Ram {
             .then(|| String::from_utf8_lossy(&out.stdout).trim().parse().ok())
             .flatten()
     };
-    let total_mb = sysctl_u64("hw.memsize")
-        .map(|b| b / 1024 / 1024)
-        .unwrap_or(0);
-    let free_mb = std::process::Command::new("vm_stat")
+    let total_mb = sysctl_u64("hw.memsize").map(|b| b / 1024 / 1024);
+    let available_mb = std::process::Command::new("vm_stat")
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .and_then(|o| parse_vm_stat_free_mb(&String::from_utf8_lossy(&o.stdout)))
-        .unwrap_or(0);
-    let (swap_total_mb, swap_used_mb) = std::process::Command::new("sysctl")
+        .and_then(|o| parse_vm_stat_free_mb(&String::from_utf8_lossy(&o.stdout)));
+    // vm.swapusage reports total + used; convert used → the free figure callers expect.
+    let (swap_total_mb, swap_free_mb) = std::process::Command::new("sysctl")
         .args(["-n", "vm.swapusage"])
         .output()
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| parse_vm_swapusage(&String::from_utf8_lossy(&o.stdout)))
-        .unwrap_or((0, 0));
-    // vm.swapusage reports used directly; convert to the free figure `ram_from` expects.
-    ram_from(
+        .map(|(total, used)| (Some(total), Some(total.saturating_sub(used))))
+        .unwrap_or((None, None));
+    MemInfo {
         total_mb,
-        free_mb,
+        available_mb,
         swap_total_mb,
-        swap_total_mb.saturating_sub(swap_used_mb),
-    )
+        swap_free_mb,
+    }
+}
+
+/// The 1-minute load average, cross-platform (`/proc/loadavg` on Linux, `sysctl vm.loadavg` on
+/// macOS). `None` when the signal can't be read. Shared by `worker::capacity`.
+pub fn read_loadavg1() -> Option<f64> {
+    read_loadavg().map(|(l1, ..)| l1)
+}
+
+/// Swap-in-use percent (0–100) from a [`MemInfo`]: `(total - free) / total * 100`. `None` when
+/// either figure is unknown or no swap is configured (`total == 0`) — the caller's guard then
+/// never binds (the #668 orchestrate swap gate). Pure so it is testable without a host.
+pub fn swap_used_pct(mem: &MemInfo) -> Option<f64> {
+    let total = mem.swap_total_mb?;
+    let free = mem.swap_free_mb?;
+    if total == 0 {
+        return None;
+    }
+    Some(total.saturating_sub(free) as f64 / total as f64 * 100.0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn swap_used_pct_computes_and_fails_open() {
+        // #668: swap% = (total - free) / total * 100.
+        let mem = MemInfo {
+            total_mb: Some(16000),
+            available_mb: Some(8000),
+            swap_total_mb: Some(1000),
+            swap_free_mb: Some(380),
+        };
+        assert_eq!(swap_used_pct(&mem), Some(62.0));
+        // No swap configured → None (guard never binds).
+        assert_eq!(
+            swap_used_pct(&MemInfo {
+                swap_total_mb: Some(0),
+                swap_free_mb: Some(0),
+                ..mem
+            }),
+            None
+        );
+        // Unknown swap figure → None (fails open).
+        assert_eq!(
+            swap_used_pct(&MemInfo {
+                swap_free_mb: None,
+                ..mem
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn read_meminfo_sees_this_host_ram() {
+        // Guards the #954 regression: the shared cross-platform reader must return real RAM, not
+        // the all-`None` blind state that made `worker::capacity` (and thus the macOS admission
+        // gate) report Ready unconditionally. Every supported host reports physical total.
+        let m = read_meminfo();
+        assert!(
+            m.total_mb.unwrap_or(0) > 0,
+            "read_meminfo should see physical RAM on this host: {m:?}"
+        );
+    }
 
     #[test]
     fn parses_proc_loadavg() {

@@ -164,6 +164,8 @@ pub fn grab(
     // Append a link per grab under the heading, reusing the note machinery so the section is
     // created/extended exactly like `bn notes` — and survives bn's round-trip verbatim.
     let note_md = cfg.note_file(ctx);
+    // Lock the read-modify-write (see set_goal) so a parallel writer can't lose this update.
+    let _lock = store::NoteLock::acquire(&note_md);
     let mut note = if note_md.exists() {
         store::read(&note_md).map_err(|e| GrabError::Io(e.to_string()))?
     } else {

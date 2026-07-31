@@ -5374,9 +5374,19 @@ fn observe_resources(
     st: &OrchestrateState,
     now: i64,
 ) -> bn_core::scheduler::Observed {
-    let loadavg = cfg.orchestrate_max_loadavg.and_then(|_| loadavg_1min());
-    let free_ram_mb = cfg.orchestrate_min_free_ram_mb.and_then(|_| free_ram_mb());
-    let swap_pct = cfg.orchestrate_max_swap_pct.and_then(|_| swap_pct());
+    // Read host metrics from the single cross-platform `bn_core::machine` reader — the same source
+    // the health dashboard uses, so the admission gate and dashboard can't disagree (and the gate
+    // is no longer blind on macOS). One `read_meminfo` covers both the RAM and swap guards.
+    let loadavg = cfg
+        .orchestrate_max_loadavg
+        .and_then(|_| bn_core::machine::read_loadavg1());
+    let mem = (cfg.orchestrate_min_free_ram_mb.is_some() || cfg.orchestrate_max_swap_pct.is_some())
+        .then(bn_core::machine::read_meminfo)
+        .unwrap_or_default();
+    let free_ram_mb = cfg.orchestrate_min_free_ram_mb.and(mem.available_mb);
+    let swap_pct = cfg
+        .orchestrate_max_swap_pct
+        .and_then(|_| bn_core::machine::swap_used_pct(&mem));
     let tokens_this_hour = if cfg.orchestrate_tokens_per_hour.is_some() {
         let hour =
             bn_core::cost::rollup(cfg, &bn_core::cost::CostFilter::secs(3600, &st.repo, now));
@@ -5422,108 +5432,6 @@ fn observe_resources(
         cost_today_coding_usd,
         cost_today_research_usd,
     }
-}
-
-/// The current 1-minute load average, or `None` if unreadable (#377). Unix-only via
-/// `getloadavg(3)`; other platforms return `None` (the load guard then never binds).
-#[cfg(unix)]
-#[allow(
-    unsafe_code,
-    reason = "getloadavg has no standard-library wrapper and writes into a fixed local buffer"
-)]
-fn loadavg_1min() -> Option<f64> {
-    let mut avg = [0f64; 3];
-    // SAFETY: `getloadavg` writes up to `nelem` f64s into the buffer and dereferences no pointers
-    // we pass beyond it; `avg` has room for 3 and we ask for 3. It returns the count written (or -1).
-    let n = unsafe { libc::getloadavg(avg.as_mut_ptr(), 3) };
-    (n >= 1).then_some(avg[0])
-}
-
-#[cfg(not(unix))]
-fn loadavg_1min() -> Option<f64> {
-    None
-}
-
-/// Best-effort free/available RAM in MB (#377): Linux `MemAvailable` from `/proc/meminfo`, else the
-/// reclaimable page classes from macOS/BSD `vm_stat`. `None` when neither is readable — the RAM
-/// guard then fails open rather than blocking dispatch on an unknown.
-fn free_ram_mb() -> Option<u64> {
-    if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
-        if let Some(mb) = parse_meminfo_available_mb(&meminfo) {
-            return Some(mb);
-        }
-    }
-    let out = std::process::Command::new("vm_stat").output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    parse_vm_stat_free_mb(&String::from_utf8_lossy(&out.stdout))
-}
-
-/// Parse the `MemAvailable:` kB value out of `/proc/meminfo` → MB (#377). Pure so the parse is
-/// unit-testable without a Linux host.
-fn parse_meminfo_available_mb(s: &str) -> Option<u64> {
-    s.lines()
-        .find_map(|l| l.strip_prefix("MemAvailable:"))
-        .and_then(|rest| rest.split_whitespace().next())
-        .and_then(|kb| kb.parse::<u64>().ok())
-        .map(|kb| kb / 1024)
-}
-
-/// Best-effort swap-in-use percent (#668): Linux `SwapTotal`/`SwapFree` from `/proc/meminfo`.
-/// `None` when unreadable — the swap guard then fails open. Portable target is Linux/WSL first
-/// (macOS has no `/proc/meminfo`, so it reads `None` and the guard simply never binds there).
-fn swap_pct() -> Option<f64> {
-    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
-    parse_meminfo_swap_pct(&meminfo)
-}
-
-/// Parse swap usage percent (0.0–100.0) from `/proc/meminfo`'s `SwapTotal`/`SwapFree` kB lines
-/// (#668): `used = total - free`, `pct = used / total * 100`. `None` when either line is missing
-/// or `SwapTotal` is 0 (no swap configured) — the guard then never binds. Pure + unit-testable.
-fn parse_meminfo_swap_pct(s: &str) -> Option<f64> {
-    let kb = |label: &str| -> Option<u64> {
-        s.lines()
-            .find_map(|l| l.strip_prefix(label))
-            .and_then(|rest| rest.split_whitespace().next())
-            .and_then(|v| v.parse::<u64>().ok())
-    };
-    let total = kb("SwapTotal:")?;
-    let free = kb("SwapFree:")?;
-    if total == 0 {
-        return None;
-    }
-    let used = total.saturating_sub(free);
-    Some(used as f64 / total as f64 * 100.0)
-}
-
-/// Parse free RAM (MB) out of `vm_stat` output (#377, macOS/BSD): sum the free + inactive +
-/// speculative + purgeable page classes × the page size from the header line. Pure so the (fiddly)
-/// format parse is unit-testable without a Mac. `None` if no page count could be read.
-fn parse_vm_stat_free_mb(s: &str) -> Option<u64> {
-    let page_size = s
-        .lines()
-        .next()
-        .and_then(|l| l.split("page size of").nth(1))
-        .and_then(|r| r.split_whitespace().next())
-        .and_then(|n| n.parse::<u64>().ok())
-        .unwrap_or(4096);
-    let pages_of = |label: &str| -> Option<u64> {
-        s.lines()
-            .find_map(|l| l.trim().strip_prefix(label))
-            .map(|r| r.trim().trim_end_matches('.').trim())
-            .and_then(|n| n.parse::<u64>().ok())
-    };
-    let free = [
-        "Pages free:",
-        "Pages inactive:",
-        "Pages speculative:",
-        "Pages purgeable:",
-    ]
-    .iter()
-    .filter_map(|l| pages_of(l))
-    .sum::<u64>();
-    (free > 0).then(|| free * page_size / 1024 / 1024)
 }
 
 // ===========================================================================
@@ -8788,41 +8696,8 @@ mod backlog_daemon_tests {
         assert_eq!(parse_boottime_sec("no digits here"), None);
     }
 
-    #[test]
-    fn parse_meminfo_available_reads_mb() {
-        // #377: Linux `/proc/meminfo` MemAvailable is kB → MB.
-        let mem = "MemTotal:       16384000 kB\nMemFree:         512000 kB\nMemAvailable:    8192000 kB\n";
-        assert_eq!(parse_meminfo_available_mb(mem), Some(8000));
-        assert_eq!(parse_meminfo_available_mb("MemTotal: 100 kB\n"), None);
-    }
 
-    #[test]
-    fn parse_meminfo_swap_pct_computes_used_percent() {
-        // #668: swap% = (SwapTotal - SwapFree) / SwapTotal * 100.
-        let mem = "SwapTotal:      1000000 kB\nSwapFree:        380000 kB\n";
-        assert_eq!(parse_meminfo_swap_pct(mem), Some(62.0));
-        // No swap configured → None (guard never binds).
-        assert_eq!(
-            parse_meminfo_swap_pct("SwapTotal:      0 kB\nSwapFree:        0 kB\n"),
-            None
-        );
-        // Missing a line → None (fails open).
-        assert_eq!(parse_meminfo_swap_pct("SwapTotal:      1000 kB\n"), None);
-    }
 
-    #[test]
-    fn parse_vm_stat_free_sums_reclaimable_pages() {
-        // #377: macOS `vm_stat` — page size in the header, reclaimable classes summed.
-        let vmstat = "Mach Virtual Memory Statistics: (page size of 4096 bytes)\n\
-            Pages free:                          256000.\n\
-            Pages active:                        900000.\n\
-            Pages inactive:                      256000.\n\
-            Pages speculative:                    12000.\n\
-            Pages purgeable:                       4000.\n";
-        // (256000 + 256000 + 12000 + 4000) pages × 4096 / 1MiB = 528000×4096/1048576 = 2062 MB.
-        assert_eq!(parse_vm_stat_free_mb(vmstat), Some(2062));
-        assert_eq!(parse_vm_stat_free_mb("garbage with no pages"), None);
-    }
 
     #[test]
     fn refill_carries_substrate_from_the_backlog_entry() {

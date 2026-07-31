@@ -35,6 +35,8 @@ pub fn set_status(cfg: &Config, ctx: &Resolved, status: &str) -> Result<(), CmdE
     if !note_md.exists() {
         return Err(CmdError::NoNote);
     }
+    // Lock the read-modify-write (see set_goal) so a parallel writer can't lose this update.
+    let _lock = store::NoteLock::acquire(&note_md);
     let mut note = store::read(&note_md)?;
     note.front.status = status.to_string();
     store::save(&note, &note_md)?;
@@ -70,6 +72,8 @@ pub fn close(
     if !note_md.exists() {
         return Err(CmdError::NoNote);
     }
+    // Lock the read-modify-write (see set_goal) so a parallel writer can't lose this update.
+    let _lock = store::NoteLock::acquire(&note_md);
     let mut note = store::read(&note_md)?;
 
     // Idempotent re-close: closing an already-closed note (e.g. `bn close` then the cleanup it
@@ -182,6 +186,8 @@ pub fn set_pr(cfg: &Config, ctx: &Resolved, pr: &str, today: &str) -> Result<PrO
         return Err(CmdError::EmptyText);
     }
     let note_md = cfg.note_file(ctx);
+    // Lock the read-modify-write (see set_goal) so a parallel writer can't lose this update.
+    let _lock = store::NoteLock::acquire(&note_md);
     let mut note = if note_md.exists() {
         store::read(&note_md)?
     } else {
@@ -220,6 +226,8 @@ pub fn set_work_item(
         return Err(CmdError::EmptyText);
     }
     let note_md = cfg.note_file(ctx);
+    // Lock the read-modify-write (see set_goal) so a parallel writer can't lose this update.
+    let _lock = store::NoteLock::acquire(&note_md);
     let mut note = if note_md.exists() {
         store::read(&note_md)?
     } else {

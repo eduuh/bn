@@ -74,6 +74,46 @@ pub fn label_job(label: &str) -> Option<&str> {
 }
 
 /// systemd weekday name → launchd `Weekday` integer (0 = Sunday … 6 = Saturday).
+/// Expand one systemd OnCalendar numeric field (an hour or minute term) into its concrete values.
+/// Handles the forms the manifests use: `N`, comma lists `A,B,C`, ranges `A..B`, stepped ranges
+/// `A..B/S`, and stepped starts `A/S` (from `A` to `max`). Rejects malformed specs, a zero step,
+/// an inverted range, or any value above `max`.
+fn expand_calendar_field(spec: &str, max: u8) -> Result<Vec<u8>, String> {
+    let bad = || format!("unsupported calendar field '{spec}'");
+    if spec.contains(',') {
+        let mut out = Vec::new();
+        for term in spec.split(',') {
+            out.extend(expand_calendar_field(term, max)?);
+        }
+        return Ok(out);
+    }
+    // Optional `/S` step over either a range `A..B` or a bare start `A`.
+    let (base, step) = match spec.split_once('/') {
+        Some((b, s)) => {
+            let s: u8 = s.parse().map_err(|_| bad())?;
+            if s == 0 {
+                return Err(bad());
+            }
+            (b, Some(s))
+        }
+        None => (spec, None),
+    };
+    let (start, end) = if let Some((a, b)) = base.split_once("..") {
+        (
+            a.parse::<u8>().map_err(|_| bad())?,
+            b.parse::<u8>().map_err(|_| bad())?,
+        )
+    } else {
+        let v = base.parse::<u8>().map_err(|_| bad())?;
+        // A bare `A/S` steps from `A` up to `max`; a bare `A` is just itself.
+        (v, if step.is_some() { max } else { v })
+    };
+    if start > end || end > max {
+        return Err(bad());
+    }
+    Ok((start..=end).step_by(step.unwrap_or(1) as usize).collect())
+}
+
 fn weekday_num(name: &str) -> Option<u8> {
     match name {
         "Sun" => Some(0),
@@ -177,20 +217,11 @@ pub fn launchd_schedule(on_calendar: &str) -> Result<LaunchdSchedule, String> {
         return Err(unsupported());
     };
     let minute: u8 = m.parse().map_err(|_| unsupported())?;
-    // Hour: plain `HH`, or hour-stepped `H/S` (e.g. `0/6` → 0,6,12,18).
-    let hours: Vec<u8> = if let Some((start, step)) = h.split_once('/') {
-        let (start, step): (u8, u8) = (
-            start.parse().map_err(|_| unsupported())?,
-            step.parse().map_err(|_| unsupported())?,
-        );
-        if step == 0 {
-            return Err(unsupported());
-        }
-        (start..24).step_by(step as usize).collect()
-    } else {
-        vec![h.parse().map_err(|_| unsupported())?]
-    };
-    if minute > 59 || hours.iter().any(|h| *h > 23) {
+    // Hour: any OnCalendar numeric form the manifests use — plain `HH`, stepped `H/S`
+    // (`0/6` → 0,6,12,18), range `A..B`, stepped range `A..B/S` (`08..18/2` → 8,10,…,18), or a
+    // comma list `H1,H2,…` (`08,11,14,17`). Minute after `*-*-*` is always plain.
+    let hours = expand_calendar_field(h, 23).map_err(|_| unsupported())?;
+    if minute > 59 {
         return Err(unsupported());
     }
 
@@ -384,6 +415,29 @@ mod tests {
             [Some(1), Some(2), Some(3), Some(4), Some(5)]
         );
         assert!(wk.iter().all(|e| e.hour == Some(17) && e.minute == 0));
+        // Comma-list of hours × weekday range (the `attention-sweep` form): one firing per
+        // weekday × listed hour. Regressed launchd translation before #421 follow-up.
+        let Ok(Calendar(sweep)) = launchd_schedule("Mon..Fri *-*-* 08,11,14,17:00:00") else {
+            panic!("comma-list hours must translate for launchd")
+        };
+        assert_eq!(sweep.len(), 20); // 5 weekdays × 4 hours
+        assert!(sweep
+            .iter()
+            .all(|e| e.minute == 0 && matches!(e.hour, Some(8 | 11 | 14 | 17))));
+        assert_eq!(
+            sweep.iter().filter(|e| e.weekday == Some(1)).count(),
+            4 // Monday fires at all four hours
+        );
+        // Stepped hour range × weekday range (the `webapp-quickwins` form `08..18/2`): 8,10,…,18.
+        let Ok(Calendar(step)) = launchd_schedule("Mon..Fri *-*-* 08..18/2:00:00") else {
+            panic!("stepped hour range must translate for launchd")
+        };
+        let mon_hours: Vec<u8> = step
+            .iter()
+            .filter(|e| e.weekday == Some(1))
+            .filter_map(|e| e.hour)
+            .collect();
+        assert_eq!(mon_hours, [8, 10, 12, 14, 16, 18]);
     }
 
     #[test]
