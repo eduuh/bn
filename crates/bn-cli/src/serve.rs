@@ -185,20 +185,127 @@ fn status(port: Option<u16>, json: bool) {
     }
 }
 
-/// `bn serve stop` — unload the managed service on whichever platform installed it (best-effort on
-/// both, since only one applies), so a crashed/looping daemon can be cleanly taken down.
+/// How long to wait between liveness polls while a signalled listener shuts down.
+const STOP_POLL: Duration = Duration::from_millis(250);
+/// Total polls before giving up (~5s), with the escalation to `SIGKILL` at the halfway mark.
+const STOP_POLLS: u32 = 20;
+
+/// What `bn serve stop` actually achieved. Unregistering a service and stopping a server are
+/// different things, and the old command reported the first as if it were the second.
+#[derive(Debug, PartialEq, Eq)]
+enum StopOutcome {
+    /// No service installed and nothing on the port.
+    Nothing,
+    /// A managed service was unregistered; no stray listener was left behind.
+    Unregistered,
+    /// Listeners on the port were signalled and are gone.
+    Terminated(Vec<i32>),
+    /// Something still holds the port after unregistering *and* signalling it.
+    Stuck(Vec<i32>),
+}
+
+/// Decide what actually happened, so the report can be honest about it. Pure: `reaped` is what was
+/// listening before we signalled, `still` what is listening after.
+fn stop_outcome(was_installed: bool, reaped: &[i32], still: &[i32]) -> StopOutcome {
+    if !still.is_empty() {
+        return StopOutcome::Stuck(still.to_vec());
+    }
+    if !reaped.is_empty() {
+        return StopOutcome::Terminated(reaped.to_vec());
+    }
+    if was_installed {
+        StopOutcome::Unregistered
+    } else {
+        StopOutcome::Nothing
+    }
+}
+
+/// Signal every listener on `port` and wait for the port to actually free up: `SIGTERM` first so
+/// bn-web can close its listener cleanly, escalating to `SIGKILL` only if it is still there.
+/// Returns the PIDs that were holding the port when we started.
+fn reap_listeners(port: u16) -> Vec<i32> {
+    let pids = crate::cmd::killport::listening_pids(port);
+    if pids.is_empty() {
+        return Vec::new();
+    }
+    for pid in &pids {
+        let _ = crate::cmd::killport::send_signal(*pid, crate::cmd::killport::signal_term());
+    }
+    for poll in 0..STOP_POLLS {
+        std::thread::sleep(STOP_POLL);
+        if !port_listening(port) {
+            break;
+        }
+        // Halfway through the budget, stop being polite.
+        if poll == STOP_POLLS / 2 {
+            for pid in crate::cmd::killport::listening_pids(port) {
+                let _ = crate::cmd::killport::send_signal(pid, crate::cmd::killport::signal_kill());
+            }
+        }
+    }
+    pids
+}
+
+/// `bn serve stop` — take the dashboard *down*: unload the managed service on whichever platform
+/// installed it (best-effort on both, since only one applies) **and** terminate whatever is still
+/// listening on the port.
+///
+/// Unregistering alone is not stopping. A bn-web reparented to init (PPID 1 — an orphan left by an
+/// earlier plist/unit generation) is no longer tracked by launchd/systemd, so the unload never
+/// signals it. It keeps the port, and a subsequently registered service crash-loops on
+/// `cannot bind 127.0.0.1:7770: Address already in use` — which from the outside is
+/// indistinguishable from nothing happening, while this command printed "stopped and unregistered".
 fn stop(json: bool) {
+    let port = resolved_port(None);
     let was_installed = crate::launchd::web_installed() || crate::systemd::web_installed();
     crate::launchd::web_uninstall();
     crate::systemd::web_uninstall();
 
+    let reaped = reap_listeners(port);
+    let still = crate::cmd::killport::listening_pids(port);
+    let outcome = stop_outcome(was_installed, &reaped, &still);
+
     if json {
-        let data = serde_json::json!({ "stopped": true, "was_installed": was_installed });
+        let data = serde_json::json!({
+            // `stopped` now means what it says: nothing is serving this port any more.
+            "stopped": !matches!(outcome, StopOutcome::Stuck(_)),
+            "was_installed": was_installed,
+            "port": port,
+            "terminated": reaped,
+            "still_listening": still,
+        });
         println!("{}", Envelope::success("serve", data).to_json());
-    } else if was_installed {
-        println!("bn serve: managed dashboard service stopped and unregistered.");
-    } else {
-        println!("bn serve: no managed service was installed (nothing to stop).");
+        return;
+    }
+
+    match outcome {
+        StopOutcome::Nothing => {
+            println!("bn serve: no managed service was installed (nothing to stop).");
+        }
+        StopOutcome::Unregistered => {
+            println!("bn serve: managed dashboard service stopped and unregistered.");
+        }
+        StopOutcome::Terminated(pids) => {
+            let list = pids
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            if was_installed {
+                println!("bn serve: managed dashboard service stopped and unregistered.");
+            }
+            println!("  terminated the server still holding port {port} (pid {list}).");
+        }
+        StopOutcome::Stuck(pids) => {
+            let list = pids
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("bn serve: port {port} is STILL held after unregistering (pid {list}).");
+            println!("  bn-web will fail to bind until that process exits — inspect it with:");
+            println!("    bn killport {port}");
+        }
     }
 }
 
@@ -254,5 +361,48 @@ fn setsid_detached() {
     }
     unsafe {
         setsid();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The bug this file exists to fix: `bn serve stop` unregistered the service and reported
+    // "stopped and unregistered" while an orphaned bn-web kept the port. `Stuck` is the state that
+    // used to be indistinguishable from success.
+    #[test]
+    fn a_listener_surviving_the_unload_is_reported_stuck_not_stopped() {
+        assert_eq!(
+            stop_outcome(true, &[96147], &[96147]),
+            StopOutcome::Stuck(vec![96147]),
+        );
+    }
+
+    #[test]
+    fn stuck_wins_even_when_no_service_was_registered() {
+        // The orphan case exactly: nothing installed any more, yet the port is still held.
+        assert_eq!(
+            stop_outcome(false, &[], &[4242]),
+            StopOutcome::Stuck(vec![4242]),
+        );
+    }
+
+    #[test]
+    fn a_listener_that_died_on_signal_is_reported_terminated() {
+        assert_eq!(
+            stop_outcome(true, &[123, 456], &[]),
+            StopOutcome::Terminated(vec![123, 456]),
+        );
+    }
+
+    #[test]
+    fn unregistering_with_nothing_on_the_port_is_still_a_clean_stop() {
+        assert_eq!(stop_outcome(true, &[], &[]), StopOutcome::Unregistered);
+    }
+
+    #[test]
+    fn nothing_installed_and_nothing_listening_is_a_no_op() {
+        assert_eq!(stop_outcome(false, &[], &[]), StopOutcome::Nothing);
     }
 }

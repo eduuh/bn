@@ -1,8 +1,13 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
+  # Verification is a *pull request* concern. This used to also run on every push to main,
+  # re-running the whole suite against the exact commit its PR had just proved green.
+  #
+  # Shipping from main is a separate chain and stays that way: release-plz.yml bumps the
+  # version on push to main and pushes a tag, which triggers release.yml (cargo-dist) to
+  # build the artifacts and upload them to a GitHub Release. That is also the only place a
+  # --release binary is actually wanted.
   pull_request:
   # Manual trigger, so the advisory macOS lane can be exercised on any ref
   # without opening a PR first.
@@ -24,7 +29,10 @@ jobs:
   # aborted the job before Test, silently disabling test gating).
   fmt:
     name: fmt (advisory)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["self-hosted","Linux","X64","fedora"]') }}
+    # Every lane floats across the pool (`CI_RUNNER` → the shared `bn-ci` label): the three
+    # Fedora boxes and the mac are interchangeable for all of CI, so a job runs wherever a slot
+    # frees up first rather than queueing for a Linux one while the mac sits idle.
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["self-hosted","bn-ci"]') }}
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -37,7 +45,7 @@ jobs:
       # rust-toolchain.toml pins the version + components; `rustup show` installs it.
       - name: Install Rust toolchain
         run: |
-          # All Fedora self-hosted runners share $HOME (/home/me). A shared
+          # The Fedora self-hosted runners share $HOME (/home/me). A shared
           # CARGO_HOME/RUSTUP_HOME lets concurrent jobs on different runners
           # reinstall rustup and the pinned toolchain into the same tree at
           # once, deleting rustc out from under a sibling build ("could not
@@ -61,30 +69,20 @@ jobs:
           fi
           rustup show
 
-      - name: Clean stale workspace target (self-hosted hygiene)
-        # Self-hosted runners reuse _work/<repo> across jobs and runs, and
-        # rust-cache prunes target/ in its post step. A later job can then
-        # inherit a half-cleaned target whose stale *.d dep-info points at
-        # deleted artifacts ("could not parse/generate dep info ... No such
-        # file or directory"). Wipe it so rust-cache restores a coherent
-        # snapshot into a clean directory.
-        run: rm -rf "$GITHUB_WORKSPACE/target"
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # Isolate cache per self-hosted runner: rust-cache bakes absolute
-          # target/*.d paths into the cache, and each runner has a distinct
-          # _work dir, so a shared cache corrupts dep info across runners
-          # ("could not parse/generate dep info ... No such file or directory").
-          prefix-key: "v0-rust-${{ runner.name }}"
-
       - name: Format
         run: cargo fmt --all --check
 
   # The real merge gate. No `needs: fmt`, so it always runs regardless of formatting.
   test:
     name: clippy · test
-    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["self-hosted","Linux","X64","fedora"]') }}
+    # Deliberately NOT pooled. The workspace has 11 `cfg(target_os)` sites (wt_pool, machine,
+    # killport, systemd, reap, worker, cockpit) and a run of platform-specific breakage to match
+    # — #969 was a dead-code build error visible only under the Linux gate, #961 the macOS
+    # admission gate, #949 systemd's user bus, #959 launchd hour fields. If this lane floated,
+    # a green check would no longer say *which* platform it was green on and that whole class of
+    # bug becomes a coin flip per run. macOS coverage belongs in the explicit `mac` lane below,
+    # where its result is attributable.
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["self-hosted","bn-ci"]') }}
     steps:
       - uses: actions/checkout@v4
         env:
@@ -96,7 +94,7 @@ jobs:
       # rust-toolchain.toml pins the version + components; `rustup show` installs it.
       - name: Install Rust toolchain
         run: |
-          # All Fedora self-hosted runners share $HOME (/home/me). A shared
+          # The Fedora self-hosted runners share $HOME (/home/me). A shared
           # CARGO_HOME/RUSTUP_HOME lets concurrent jobs on different runners
           # reinstall rustup and the pinned toolchain into the same tree at
           # once, deleting rustc out from under a sibling build ("could not
@@ -120,23 +118,6 @@ jobs:
           fi
           rustup show
 
-      - name: Clean stale workspace target (self-hosted hygiene)
-        # Self-hosted runners reuse _work/<repo> across jobs and runs, and
-        # rust-cache prunes target/ in its post step. A later job can then
-        # inherit a half-cleaned target whose stale *.d dep-info points at
-        # deleted artifacts ("could not parse/generate dep info ... No such
-        # file or directory"). Wipe it so rust-cache restores a coherent
-        # snapshot into a clean directory.
-        run: rm -rf "$GITHUB_WORKSPACE/target"
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # Isolate cache per self-hosted runner: rust-cache bakes absolute
-          # target/*.d paths into the cache, and each runner has a distinct
-          # _work dir, so a shared cache corrupts dep info across runners
-          # ("could not parse/generate dep info ... No such file or directory").
-          prefix-key: "v0-rust-${{ runner.name }}"
-
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -146,7 +127,11 @@ jobs:
   # Separate lane so a flaky shell harness never blocks the fast rust gate above.
   integration:
     name: shell harnesses
-    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["self-hosted","Linux","X64","fedora"]') }}
+    # Pinned too, for a different reason: `Verify harness dependencies` asserts a specific
+    # toolchain (the zsh oracle, nvim) that is only known-good on the Fedora image. Pooling this
+    # is the obvious next step once those deps are verified on darwin — it is the slowest lane
+    # (~10 min), so it is where a fourth box would buy the most.
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["self-hosted","bn-ci"]') }}
     steps:
       - uses: actions/checkout@v4
         env:
@@ -159,14 +144,14 @@ jobs:
         run: |
           for command in jq nvim yq zsh; do
             command -v "$command" >/dev/null || {
-              echo "::error::$command is required on the Fedora runner"
+              echo "::error::$command is required on every CI runner (Fedora and darwin alike)"
               exit 1
             }
           done
 
       - name: Install Rust toolchain
         run: |
-          # All Fedora self-hosted runners share $HOME (/home/me). A shared
+          # The Fedora self-hosted runners share $HOME (/home/me). A shared
           # CARGO_HOME/RUSTUP_HOME lets concurrent jobs on different runners
           # reinstall rustup and the pinned toolchain into the same tree at
           # once, deleting rustc out from under a sibling build ("could not
@@ -190,29 +175,13 @@ jobs:
           fi
           rustup show
 
-      - name: Clean stale workspace target (self-hosted hygiene)
-        # Self-hosted runners reuse _work/<repo> across jobs and runs, and
-        # rust-cache prunes target/ in its post step. A later job can then
-        # inherit a half-cleaned target whose stale *.d dep-info points at
-        # deleted artifacts ("could not parse/generate dep info ... No such
-        # file or directory"). Wipe it so rust-cache restores a coherent
-        # snapshot into a clean directory.
-        run: rm -rf "$GITHUB_WORKSPACE/target"
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # Isolate cache per self-hosted runner: rust-cache bakes absolute
-          # target/*.d paths into the cache, and each runner has a distinct
-          # _work dir, so a shared cache corrupts dep info across runners
-          # ("could not parse/generate dep info ... No such file or directory").
-          prefix-key: "v0-rust-${{ runner.name }}"
-
-      # Harnesses run both the debug and release binaries; build once up front.
+      # parity.sh reads target/debug/bn and nothing else, so build just that crate: the
+      # workspace build also compiles bn-web (axum/tower) and bn-mcp, which no harness here
+      # touches. The release build that used to follow was pure waste — 365s of the lane's
+      # 454s producing a binary neither parity.sh nor the nvim specs ever open. Release
+      # binaries are the release chain's job (release-plz tags main -> cargo-dist uploads).
       - name: Build bn
-        run: cargo build --workspace
-
-      - name: Build bn (release)
-        run: cargo build --workspace --release
+        run: cargo build -p bn-cli
 
       # parity.sh hardcodes REPO=$HOME/projects/bn and writes notes under $HOME.
       # Give it an isolated HOME with the checkout symlinked into place so it never
@@ -238,7 +207,11 @@ jobs:
   # boots the server; a stub `bn` stands in for tmux/git/gh), asserting every orchestration flow.
   web-e2e:
     name: web · vitest + playwright
-    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["self-hosted","Linux","X64","fedora"]') }}
+    # Also floats: nothing under `crates/bn-web/ui` is platform-gated, and the whole chain here
+    # (npm ci → vitest → vite build → cargo build -p bn-web → playwright chromium → e2e against
+    # the seeded server) was run end-to-end on the darwin box before this landed. At ~5 min it is
+    # the second-slowest lane, so letting it take the idle mac is where pooling actually pays.
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["self-hosted","bn-ci"]') }}
     defaults:
       run:
         working-directory: crates/bn-web/ui
@@ -258,7 +231,7 @@ jobs:
 
       - name: Install Rust toolchain
         run: |
-          # All Fedora self-hosted runners share $HOME (/home/me). A shared
+          # The Fedora self-hosted runners share $HOME (/home/me). A shared
           # CARGO_HOME/RUSTUP_HOME lets concurrent jobs on different runners
           # reinstall rustup and the pinned toolchain into the same tree at
           # once, deleting rustc out from under a sibling build ("could not
@@ -282,23 +255,6 @@ jobs:
           fi
           rustup show
 
-      - name: Clean stale workspace target (self-hosted hygiene)
-        # Self-hosted runners reuse _work/<repo> across jobs and runs, and
-        # rust-cache prunes target/ in its post step. A later job can then
-        # inherit a half-cleaned target whose stale *.d dep-info points at
-        # deleted artifacts ("could not parse/generate dep info ... No such
-        # file or directory"). Wipe it so rust-cache restores a coherent
-        # snapshot into a clean directory.
-        run: rm -rf "$GITHUB_WORKSPACE/target"
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # Isolate cache per self-hosted runner: rust-cache bakes absolute
-          # target/*.d paths into the cache, and each runner has a distinct
-          # _work dir, so a shared cache corrupts dep info across runners
-          # ("could not parse/generate dep info ... No such file or directory").
-          prefix-key: "v0-rust-${{ runner.name }}"
-
       - name: Install UI deps
         run: npm ci
 
@@ -318,66 +274,3 @@ jobs:
 
       - name: E2E (Playwright, headless)
         run: npm run e2e
-
-  # Advisory macOS lane: the same rust gate as `test`, pinned to the Apple-silicon
-  # self-hosted runner instead of the `CI_RUNNER` (Fedora) pool. It exists to prove
-  # the workspace builds and tests clean on darwin/aarch64 before macOS is trusted
-  # as a real merge gate, so `continue-on-error` keeps a mac-only failure — a
-  # platform gap, a missing brew dep, the box being asleep — from failing the run.
-  # Labels are hardcoded on purpose: pointing this at `vars.CI_RUNNER` would just
-  # send it back to the Linux pool it's meant to cross-check.
-  mac:
-    name: mac · clippy · test (advisory)
-    runs-on: ["self-hosted", "macOS", "ARM64"]
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-        env:
-          HOME: ${{ runner.temp }}/checkout-home-${{ github.job }}
-          GIT_CONFIG_GLOBAL: ${{ runner.temp }}/gitconfig-${{ github.job }}
-        with:
-          set-safe-directory: false
-
-      # rust-toolchain.toml pins the version + components; `rustup show` installs it.
-      - name: Install Rust toolchain
-        run: |
-          # Per-runner CARGO_HOME/RUSTUP_HOME, matching the Fedora lanes: the mac
-          # doesn't share $HOME with the Linux boxes, but keeping the toolchain
-          # state keyed by $RUNNER_NAME means a second mac runner on this host
-          # can never race this one into a half-installed toolchain.
-          state="$HOME/ci-rust/$RUNNER_NAME"
-          mkdir -p "$state/cargo/bin" "$state/rustup"
-          echo "CARGO_HOME=$state/cargo" >> "$GITHUB_ENV"
-          echo "RUSTUP_HOME=$state/rustup" >> "$GITHUB_ENV"
-          export CARGO_HOME="$state/cargo" RUSTUP_HOME="$state/rustup"
-          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
-          export PATH="$CARGO_HOME/bin:$PATH"
-          if ! command -v rustup >/dev/null 2>&1; then
-            for proxy in "$CARGO_HOME/bin"/*; do
-              if [ -L "$proxy" ] && [ ! -e "$proxy" ]; then
-                rm -f "$proxy"
-              fi
-            done
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
-              sh -s -- -y --default-toolchain none --no-modify-path
-          fi
-          rustup show
-
-      - name: Clean stale workspace target (self-hosted hygiene)
-        # Same reuse hazard as the Fedora lanes: _work/<repo> persists across runs
-        # and rust-cache prunes target/ in its post step, so a later job can
-        # inherit stale *.d dep-info pointing at deleted artifacts.
-        run: rm -rf "$GITHUB_WORKSPACE/target"
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # Isolate cache per self-hosted runner: rust-cache bakes absolute
-          # target/*.d paths into the cache, and each runner has a distinct
-          # _work dir, so a shared cache corrupts dep info across runners.
-          prefix-key: "v0-rust-${{ runner.name }}"
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Test
-        run: cargo test --workspace

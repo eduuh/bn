@@ -516,11 +516,68 @@ register_mcp() {
 }
 register_mcp
 
+# PIDs listening on a TCP port, via whichever tool the host actually has. lsof is present on
+# macOS by default and common on Linux; ss covers modern Linux without lsof; fuser is the last
+# resort. Prints nothing (success) when the port is free or nothing can inspect it.
+port_listeners() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true
+  elif command -v ss >/dev/null 2>&1; then
+    ss -lptnH "sport = :$port" 2>/dev/null | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | sort -u
+  elif command -v fuser >/dev/null 2>&1; then
+    fuser -n tcp "$port" 2>/dev/null | tr -s ' ' '\n' | grep -E '^[0-9]+$' || true
+  fi
+}
+
+# Restart the dashboard so the freshly installed binary is the one actually serving.
+#
+# bn-web bakes its UI in at compile time (build.rs embeds crates/bn-web/ui/dist), so a *running*
+# server keeps serving the UI it was built with. Replacing $bindir/bn-web on disk changes nothing
+# until the process is replaced too — "I reinstalled and the dashboard looks identical" is this,
+# every time.
+#
+# Stopping is not sufficient on its own. `bn serve stop` unregisters the managed service, but a
+# process reparented to init (PPID 1 — an orphan left by an earlier plist/unit generation) is no
+# longer tracked by launchd/systemd and survives the unload. It then keeps the port, and every
+# respawn dies with "cannot bind 127.0.0.1:7770: Address already in use" in a crash loop that,
+# from the outside, is indistinguishable from nothing having happened.
+restart_bn_web() {
+  local port pids i
+  # Ask bn where it serves (config `[web].port`), rather than assuming the default.
+  port="$("$bindir/bn" serve status --json 2>/dev/null | sed -n 's/.*"port":\([0-9]*\).*/\1/p')"
+  [ -n "$port" ] || port=7770
+
+  "$bindir/bn" serve stop >/dev/null 2>&1 || true
+
+  # Reap whatever still holds the port, tracked or orphaned. TERM first so bn-web can close its
+  # listener cleanly; escalate to KILL only if it is still there after a few seconds.
+  for i in 1 2 3 4 5; do
+    pids="$(port_listeners "$port")"
+    [ -n "$pids" ] || break
+    if [ "$i" -ge 4 ]; then
+      # shellcheck disable=SC2086  # word-splitting is intended: pids is a PID list
+      kill -9 $pids 2>/dev/null || true
+    else
+      # shellcheck disable=SC2086
+      kill $pids 2>/dev/null || true
+    fi
+    sleep 1
+  done
+
+  if [ -n "$(port_listeners "$port")" ]; then
+    echo "warning: port $port is still held by another process — bn-web will fail to bind." >&2
+    echo "         Inspect it with: lsof -iTCP:$port -sTCP:LISTEN" >&2
+  fi
+
+  "$bindir/bn" serve --daemon || true
+}
+
 # Auto-start `bn serve` (bn-web) for the dashboard, orchestrator, and the tmux `bnweb:<port>`
 # badge. MCP no longer depends on it — each client spawns its own `bn mcp serve` stdio launcher —
 # so this is best-effort and can be skipped with BN_SETUP_NO_SERVE=1.
 if [ "${BN_SETUP_NO_SERVE:-0}" != "1" ]; then
-  "$bindir/bn" serve --daemon || true
+  restart_bn_web
 else
   echo "Skipped bn serve auto-start (BN_SETUP_NO_SERVE=1)."
 fi

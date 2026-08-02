@@ -744,7 +744,12 @@ mod tests {
             }
         }
         assert_eq!(
-            Registry::open(&path).unwrap().get("a1").unwrap().unwrap().state,
+            Registry::open(&path)
+                .unwrap()
+                .get("a1")
+                .unwrap()
+                .unwrap()
+                .state,
             AttemptState::Running
         );
     }

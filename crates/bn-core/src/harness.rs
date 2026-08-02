@@ -338,7 +338,10 @@ mod tests {
         let cfg = cfg_with_default("claude");
         let r = resolve_dispatch_harness(&cfg, None);
         assert_eq!(r.harness, "claude");
-        assert_eq!(r.fallback_from, None, "the configured default is not a downgrade");
+        assert_eq!(
+            r.fallback_from, None,
+            "the configured default is not a downgrade"
+        );
     }
 
     #[test]

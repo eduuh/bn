@@ -85,6 +85,12 @@ export function Console() {
 
   // j / k walk the *filtered* queue; Escape clears. Skipped while typing so the filter box and the
   // steer composer keep their keys.
+  //
+  // `selectedId` is intentionally read from `window.location.search` rather than from the closure:
+  // React Router v6 wraps navigation updates in `startTransition`, so the React re-render (and the
+  // effect re-registration with the updated `selectedId`) is deferred as a non-urgent transition.
+  // The URL itself is updated synchronously by `history.replaceState`, so reading from
+  // `window.location` is always current even when the closure value lags.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null;
@@ -99,7 +105,8 @@ export function Console() {
       if (e.key === "j" || e.key === "k") {
         if (items.length === 0) return;
         e.preventDefault();
-        const at = items.findIndex((i) => i.id === selectedId);
+        const currentSel = new URLSearchParams(window.location.search).get("sel") ?? undefined;
+        const at = items.findIndex((i) => i.id === currentSel);
         const step = e.key === "j" ? 1 : -1;
         const next = at === -1 ? (step === 1 ? 0 : items.length - 1) : at + step;
         const clamped = Math.max(0, Math.min(items.length - 1, next));
@@ -110,7 +117,7 @@ export function Console() {
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [items, selectedId]);
+  }, [items]);
 
   const loading = orch.isLoading && fleet.isLoading && actions.isLoading;
 
