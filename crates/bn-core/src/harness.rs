@@ -116,18 +116,32 @@ pub struct DispatchHarness {
     pub fallback_from: Option<(&'static str, String)>,
 }
 
+/// The harness a launcher uses when nothing is explicitly requested: the configured default
+/// ([`Config::default_harness`] — `[harness].default` / `$BN_HARNESS`) when it's known and usable on
+/// this machine, else the guaranteed `copilot` fallback. A configured-but-unavailable default (e.g.
+/// `claude` on an org-disabled box) also yields `copilot`. This is the single source of truth every
+/// launcher consults instead of hardcoding `"copilot"`. Pure.
+pub fn preferred_harness(cfg: &Config) -> &'static str {
+    cfg.default_harness
+        .as_deref()
+        .and_then(normalize)
+        .filter(|h| unavailable_reason(cfg, h).is_none())
+        .unwrap_or("copilot")
+}
+
 /// Resolve the harness a `bn dispatch`/worker spawn should actually launch. Unlike
 /// [`resolve_relaunch`] (which rejects an unusable harness), a dispatch must always launch
 /// *something*, so an unusable or unknown request transparently falls back to the guaranteed
 /// `copilot` — carrying the reason so the caller can surface the downgrade. This is the spawn-side
 /// capability gate: a machine where Claude is org-disabled (`[harness].disabled = ["claude"]` /
 /// `$BN_DISABLED_HARNESSES`) dispatches copilot instead of launching a claude that dies at boot.
-/// Pure.
+/// With no request it uses the configured [`preferred_harness`] (default `copilot`). Pure.
 pub fn resolve_dispatch_harness(cfg: &Config, requested: Option<&str>) -> DispatchHarness {
     let Some(raw) = requested.map(str::trim).filter(|s| !s.is_empty()) else {
-        // No `--agent`: dispatch's own default is copilot; nothing was downgraded.
+        // No `--agent`: use the machine's configured default harness (copilot when unset). The
+        // preferred harness is already availability-gated, so this never launches a dead harness.
         return DispatchHarness {
-            harness: "copilot",
+            harness: preferred_harness(cfg),
             fallback_from: None,
         };
     };
@@ -160,6 +174,12 @@ mod tests {
     fn cfg_with_disabled(disabled: &[&str]) -> Config {
         let mut cfg = crate::test_support::config(Path::new("/tmp/bn-harness-test"));
         cfg.disabled_harnesses = disabled.iter().map(|s| s.to_string()).collect();
+        cfg
+    }
+
+    fn cfg_with_default(default: &str) -> Config {
+        let mut cfg = crate::test_support::config(Path::new("/tmp/bn-harness-test"));
+        cfg.default_harness = Some(default.to_string());
         cfg
     }
 
@@ -281,6 +301,44 @@ mod tests {
             assert_eq!(r.harness, "copilot");
             assert_eq!(r.fallback_from, None, "no request is not a downgrade");
         }
+    }
+
+    #[test]
+    fn preferred_harness_is_copilot_when_unset() {
+        let cfg = crate::test_support::config(Path::new("/tmp/bn-harness-test"));
+        assert_eq!(preferred_harness(&cfg), "copilot");
+    }
+
+    #[test]
+    fn preferred_harness_honors_configured_default_by_alias() {
+        // A configured, available claude (any accepted spelling) becomes the launcher default.
+        for v in ["claude", "claudecode", "cc", " Claude "] {
+            assert_eq!(preferred_harness(&cfg_with_default(v)), "claude", "{v}");
+        }
+        assert_eq!(preferred_harness(&cfg_with_default("copilot")), "copilot");
+    }
+
+    #[test]
+    fn preferred_harness_falls_back_when_configured_default_unavailable() {
+        // `[harness].default = claude` on an org-disabled box degrades to copilot rather than
+        // launching a claude that dies at boot.
+        let mut cfg = cfg_with_default("claude");
+        cfg.disabled_harnesses = vec!["claude".to_string()];
+        assert_eq!(preferred_harness(&cfg), "copilot");
+    }
+
+    #[test]
+    fn preferred_harness_ignores_unknown_configured_default() {
+        assert_eq!(preferred_harness(&cfg_with_default("gpt4")), "copilot");
+    }
+
+    #[test]
+    fn dispatch_harness_no_request_uses_configured_default() {
+        // With `[harness].default = claude` and no explicit `--agent`, dispatch launches claude.
+        let cfg = cfg_with_default("claude");
+        let r = resolve_dispatch_harness(&cfg, None);
+        assert_eq!(r.harness, "claude");
+        assert_eq!(r.fallback_from, None, "the configured default is not a downgrade");
     }
 
     #[test]

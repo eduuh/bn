@@ -1500,9 +1500,10 @@ pub(crate) enum ControlCmd {
         /// Readable task name used by the session registry and tmux window.
         #[arg(long)]
         name: Option<String>,
-        /// Harness to launch: copilot (default) or claude.
-        #[arg(long, default_value = "copilot")]
-        harness: String,
+        /// Harness to launch: copilot or claude. Omit to use the configured default
+        /// (`[harness].default` / `$BN_HARNESS`, else copilot).
+        #[arg(long)]
+        harness: Option<String>,
         /// Initial request to enqueue for this controller.
         #[arg(value_name = "REQUEST")]
         request: Vec<String>,

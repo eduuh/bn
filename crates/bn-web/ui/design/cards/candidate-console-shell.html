@@ -1,0 +1,151 @@
+<!-- @dsCard group="Candidates" name="Console shell" width="1280" height="760" -->
+<!-- @tokens clay -->
+<div class="space-y-4">
+  <header class="space-y-1.5">
+    <h1 class="font-display text-xl font-semibold tracking-tight">Console shell — candidate</h1>
+    <p class="text-sm text-muted-foreground">
+      Queue · Focus · Act, in one full-bleed surface that never navigates. Selecting a row resolves it
+      in place, so the loop is triage → decide → act without a page change. The claim being tested:
+      the reading column and the six-group sidebar are what make the current app feel like nineteen
+      places instead of one.
+    </p>
+  </header>
+
+  <div class="grid overflow-hidden rounded-lg border border-border bg-background shadow-card" style="height:600px;grid-template-columns:19rem minmax(0,1fr) 20rem">
+    <!-- Queue -->
+    <div class="flex min-h-0 flex-col border-r border-border bg-card">
+      <div class="flex items-center gap-2 border-b border-border px-3 py-2.5">
+        <span class="font-display text-lg leading-none tracking-tight">Queue</span>
+        <span class="inline-flex items-center rounded-full border border-transparent bg-urgent-muted px-2 py-0.5 text-xs font-medium text-urgent">3</span>
+        <span class="flex-1"></span>
+        <span class="font-mono text-xs text-muted-foreground">19</span>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto">
+        <div class="px-3 py-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">Blocked · 3</div>
+        <div class="flex items-stretch gap-2.5 border-l-2 border-primary bg-accent/50 px-2.5 py-2">
+          <span class="w-0.5 shrink-0 rounded-full bg-urgent"></span>
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-sm leading-tight">Plan review — console shell</p>
+            <p class="truncate text-xs leading-tight text-muted-foreground">bn-web · <span class="text-urgent">decide</span> · 4m</p>
+          </div>
+        </div>
+        <div class="flex items-stretch gap-2.5 border-l-2 border-transparent px-2.5 py-2">
+          <span class="w-0.5 shrink-0 rounded-full bg-urgent"></span>
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-sm leading-tight">nightly-sync exited 1</p>
+            <p class="truncate text-xs leading-tight text-muted-foreground">bn-core · <span class="text-urgent">decide</span> · 22m</p>
+          </div>
+        </div>
+        <div class="flex items-stretch gap-2.5 border-l-2 border-transparent px-2.5 py-2">
+          <span class="w-0.5 shrink-0 rounded-full bg-warn"></span>
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-sm leading-tight">PR #948 open 3 days</p>
+            <p class="truncate text-xs leading-tight text-muted-foreground">bn · <span class="text-warn">land</span> · 3d</p>
+          </div>
+        </div>
+        <div class="px-3 py-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">Running · 4</div>
+        <div class="flex items-stretch gap-2.5 border-l-2 border-transparent px-2.5 py-2">
+          <span class="w-0.5 shrink-0 rounded-full bg-ok"></span>
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-sm leading-tight">dispatching queued work</p>
+            <p class="truncate text-xs leading-tight text-muted-foreground">bn · <span class="text-ok">watch</span> · 31s</p>
+          </div>
+        </div>
+        <div class="flex items-stretch gap-2.5 border-l-2 border-transparent px-2.5 py-2">
+          <span class="w-0.5 shrink-0 rounded-full bg-ok"></span>
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-sm leading-tight">bumping dependencies</p>
+            <p class="truncate text-xs leading-tight text-muted-foreground">bn-core · <span class="text-ok">watch</span> · 2m</p>
+          </div>
+        </div>
+        <div class="flex items-stretch gap-2.5 border-l-2 border-transparent px-2.5 py-2">
+          <span class="w-0.5 shrink-0 rounded-full bg-ok"></span>
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-sm leading-tight">writing the migration</p>
+            <p class="truncate text-xs leading-tight text-muted-foreground">bn-web · <span class="text-ok">watch</span> · 6m</p>
+          </div>
+        </div>
+        <div class="px-3 py-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">Backlog · 12</div>
+        <div class="flex items-stretch gap-2.5 border-l-2 border-transparent px-2.5 py-2">
+          <span class="w-0.5 shrink-0 rounded-full bg-border"></span>
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-sm leading-tight">Retire the legacy stylesheet</p>
+            <p class="truncate text-xs leading-tight text-muted-foreground">bn-web · <span class="text-muted-foreground">dispatch</span></p>
+          </div>
+        </div>
+        <div class="flex items-stretch gap-2.5 border-l-2 border-transparent px-2.5 py-2">
+          <span class="w-0.5 shrink-0 rounded-full bg-border"></span>
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-sm leading-tight">Bundle the display face</p>
+            <p class="truncate text-xs leading-tight text-muted-foreground">bn-web · <span class="text-muted-foreground">dispatch</span></p>
+          </div>
+        </div>
+      </div>
+      <div class="border-t border-border p-2">
+        <button class="inline-flex h-9 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-card hover:bg-primary/90">Start</button>
+      </div>
+    </div>
+
+    <!-- Focus -->
+    <div class="flex min-h-0 flex-col">
+      <div class="border-b border-border px-4 py-2.5">
+        <div class="flex items-center gap-2">
+          <span class="font-display text-lg leading-none tracking-tight">Plan review — console shell</span>
+          <span class="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium leading-none border-urgent/30 bg-urgent-muted text-urgent">blocked</span>
+        </div>
+        <p class="mt-1 truncate font-mono text-xs text-muted-foreground">bn-web · feat/console-shell · 18.2k tok</p>
+      </div>
+      <div class="flex gap-1 border-b border-border px-4">
+        <button class="border-b-2 border-primary px-2 py-2 text-sm font-medium text-foreground">Plan</button>
+        <button class="border-b-2 border-transparent px-2 py-2 text-sm font-medium text-muted-foreground">Output</button>
+        <button class="border-b-2 border-transparent px-2 py-2 text-sm font-medium text-muted-foreground">Diff</button>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto p-4">
+        <div class="space-y-3 text-sm leading-relaxed text-foreground/90">
+          <h2 class="mt-0 text-base font-semibold text-foreground">Console shell</h2>
+          <p>Replace the ranked action list with a three-column layout that resolves a selection without navigating. Selection lives in <code class="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]">?sel=</code> so it survives a reload.</p>
+          <ul class="list-disc pl-5">
+            <li class="my-0.5">Queue · Focus · Act, with the act column folding under focus below <code class="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]">xl</code>.</li>
+            <li class="my-0.5">Rows resolve a verb per item — a plan review offers "decide", not "start another agent".</li>
+            <li class="my-0.5">Row height drops to ~52px so nineteen items fit where six did.</li>
+          </ul>
+          <pre class="overflow-auto rounded-md border border-border bg-muted/60 p-3 text-xs"><code class="bg-transparent p-0">npm run typecheck &amp;&amp; npm run test
+npm run build &amp;&amp; cargo build -p bn-web</code></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Act -->
+    <div class="flex min-h-0 flex-col border-l border-border bg-card">
+      <div class="border-b border-border px-3 py-2.5">
+        <span class="font-display text-lg leading-none tracking-tight">Act</span>
+      </div>
+      <div class="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+        <p class="text-xs text-muted-foreground">
+          Only the decisions this item admits. A plan review cannot be "started" — the verb resolves
+          to decide, and nothing else is offered.
+        </p>
+        <button class="inline-flex h-9 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-card hover:bg-primary/90">Approve</button>
+        <button class="inline-flex h-9 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-input bg-transparent px-4 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground">Request changes</button>
+        <button class="inline-flex h-9 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md px-4 py-2 text-sm font-medium hover:bg-accent hover:text-accent-foreground">Reject</button>
+        <div class="h-px bg-border"></div>
+        <label class="text-sm font-medium leading-none">Note</label>
+        <textarea class="flex min-h-[60px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-card placeholder:text-muted-foreground" rows="3" placeholder="Optional — sent with your decision"></textarea>
+        <div class="h-px bg-border"></div>
+        <div class="space-y-1.5">
+          <p class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Also</p>
+          <button class="inline-flex h-8 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-input bg-transparent px-3 text-xs font-medium hover:bg-accent">Open in tmux</button>
+          <button class="inline-flex h-8 w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-input bg-transparent px-3 text-xs font-medium hover:bg-accent">View PR #951</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p class="text-xs text-muted-foreground">
+    <span class="font-mono">j</span>/<span class="font-mono">k</span> move the selection,
+    <span class="font-mono">Escape</span> clears it. Below <span class="font-mono">xl</span> the Act
+    column folds beneath Focus; below <span class="font-mono">lg</span> it becomes a single column —
+    which is the case that needs the most scrutiny, since the phone is the stated primary surface and
+    a three-column design has nowhere to go there.
+  </p>
+</div>

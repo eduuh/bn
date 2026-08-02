@@ -1,0 +1,90 @@
+<!-- @dsCard group="Primitives" name="Empty, loading & error" width="880" height="640" -->
+<!-- @tokens baseline -->
+<div class="mx-auto max-w-3xl space-y-8">
+  <header class="space-y-1.5">
+    <h1 class="font-display text-xl font-semibold tracking-tight">Empty, loading &amp; error</h1>
+    <p class="text-sm text-muted-foreground">
+      The states with no component behind them. Every route re-inlines its own version of these,
+      which is exactly why they drift — collecting them here is the first step to a primitive.
+    </p>
+  </header>
+
+  <section class="space-y-3">
+    <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Empty</h2>
+    <div class="grid grid-cols-2 gap-3">
+      <div class="flex flex-col items-center justify-center gap-2 rounded-lg border border-border bg-card px-4 py-10 text-center shadow-card">
+        <p class="text-sm font-medium">Nothing needs you</p>
+        <p class="text-xs text-muted-foreground">Every agent is running or done.</p>
+      </div>
+      <div class="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border bg-card px-4 py-10 text-center shadow-card">
+        <p class="text-sm font-medium">No agents yet</p>
+        <p class="text-xs text-muted-foreground">Start one and it will appear here.</p>
+        <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md font-medium transition-colors bg-primary text-primary-foreground shadow-card hover:bg-primary/90 h-8 rounded-md px-3 text-xs">Start agent</button>
+      </div>
+    </div>
+    <p class="text-xs text-muted-foreground">
+      A solid border means "this is genuinely finished"; a dashed one means "this is a slot waiting
+      to be filled". The distinction is worth keeping — or worth deleting deliberately.
+    </p>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Loading</h2>
+    <div class="space-y-2">
+      <div class="rounded-lg border border-border bg-card p-3 shadow-card">
+        <div class="flex items-center gap-2">
+          <div class="h-4 w-24 animate-pulse rounded-md bg-muted"></div>
+          <div class="h-4 w-16 animate-pulse rounded-full bg-muted"></div>
+        </div>
+        <div class="mt-2 h-3 w-40 animate-pulse rounded-md bg-muted"></div>
+        <div class="mt-2 h-3 w-56 animate-pulse rounded-md bg-muted"></div>
+      </div>
+      <div class="rounded-lg border border-border bg-card p-3 shadow-card">
+        <div class="flex items-center gap-2">
+          <div class="h-4 w-20 animate-pulse rounded-md bg-muted"></div>
+        </div>
+        <div class="mt-2 h-3 w-48 animate-pulse rounded-md bg-muted"></div>
+      </div>
+    </div>
+    <p class="text-xs text-muted-foreground">
+      Skeletons mirror the row they replace, so the layout does not jump when data lands.
+    </p>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Connection &amp; error</h2>
+    <div class="space-y-2">
+      <div class="flex items-center gap-2 rounded-lg border border-warn/30 bg-warn-muted px-3 py-2 text-sm text-warn">
+        <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4M12 17h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/></svg>
+        reconnecting…
+      </div>
+      <div class="flex items-center gap-2 rounded-lg border border-urgent/30 bg-urgent-muted px-3 py-2 text-sm text-urgent">
+        <svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg>
+        server is down
+      </div>
+      <div class="rounded-lg border border-border bg-card p-4 shadow-card">
+        <p class="text-sm font-medium text-urgent">Couldn't load the fleet</p>
+        <p class="mt-1 text-xs text-muted-foreground">503 · the bn daemon is not responding</p>
+        <button class="mt-3 inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md font-medium transition-colors border border-input bg-transparent hover:bg-accent hover:text-accent-foreground h-8 rounded-md px-3 text-xs">Retry</button>
+      </div>
+    </div>
+    <p class="text-xs text-muted-foreground">
+      Connection honesty is a stated principle: the banner escalates lost → down only after
+      <code class="font-mono">/api/health</code> confirms it, so it never cries wolf on a blip.
+    </p>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Toast</h2>
+    <div class="flex flex-col items-end gap-2 rounded-lg border border-border bg-background p-4">
+      <div class="flex items-center gap-2 rounded-lg border border-border bg-popover px-3 py-2 text-sm shadow-pop">
+        <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-ok"></span>
+        Agent dispatched to bn-web
+      </div>
+      <div class="flex items-center gap-2 rounded-lg border border-border bg-popover px-3 py-2 text-sm shadow-pop">
+        <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-urgent"></span>
+        Kill failed — session already gone
+      </div>
+    </div>
+  </section>
+</div>

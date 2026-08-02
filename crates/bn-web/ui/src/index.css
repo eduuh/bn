@@ -8,33 +8,33 @@
 :root {
   color-scheme: dark;
 
-  /* Surfaces & ink */
-  --bg: #0a0d12;
-  --surface-1: #12161d;
-  --surface-2: #171c24;
-  --surface-3: #1e242e;
-  --surface-hover: #232b36;
-  --border: #262d38;
-  --border-strong: #38414f;
-  --text: #e7edf4;
-  --text-2: #aab4c0;
-  --text-3: #79838f;
+  /* Surfaces & ink — warm neutral ramp, matching the Claude-design tokens in `tailwind.css`. */
+  --bg: #1c1b19;
+  --surface-1: #242320;
+  --surface-2: #2a2926;
+  --surface-3: #32302c;
+  --surface-hover: #3a3833;
+  --border: #3d3a35;
+  --border-strong: #524e47;
+  --text: #f0ede6;
+  --text-2: #b3ada1;
+  --text-3: #857f74;
 
-  /* Brand & status */
-  --accent: #4c8dff;
-  --accent-strong: #2f6fe0;
-  --accent-weak: rgba(76, 141, 255, 0.16);
-  --green: #3fb950;
-  --green-weak: rgba(63, 185, 80, 0.16);
-  --amber: #d6a015;
-  --amber-weak: rgba(214, 160, 21, 0.16);
-  --red: #f85149;
-  --red-weak: rgba(248, 81, 73, 0.16);
-  --purple: #a371f7;
-  --orange: #db6d28;
-  --cyan: #56d4dd;
-  --grey: #6e7681;
-  --grey-weak: rgba(139, 148, 158, 0.16);
+  /* Brand & status — Claude clay, with a desaturated signal scale. */
+  --accent: #d97757;
+  --accent-strong: #c2603f;
+  --accent-weak: rgba(217, 119, 87, 0.18);
+  --green: #58a06f;
+  --green-weak: rgba(88, 160, 111, 0.16);
+  --amber: #d08a3c;
+  --amber-weak: rgba(208, 138, 60, 0.16);
+  --red: #d15f52;
+  --red-weak: rgba(209, 95, 82, 0.16);
+  --purple: #a58ac4;
+  --orange: #d97757;
+  --cyan: #6fa8ac;
+  --grey: #857f74;
+  --grey-weak: rgba(133, 127, 116, 0.18);
 
   /* Spacing scale */
   --s1: 4px;

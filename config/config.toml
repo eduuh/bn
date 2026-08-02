@@ -6,6 +6,13 @@
 # worktree_dir = "/home/you/projects/worktree"  # absolute path; default ~/projects/worktree
 # hostname = "my-laptop"                         # default auto-detected
 
+[harness]
+# default = "claude"             # copilot | claude; preferred harness every launcher uses when
+#                                # nothing is requested (bn control start, dispatch, staff, …).
+#                                # Also settable via $BN_HARNESS. Unset/unavailable → copilot.
+# disabled = ["claude"]          # harnesses turned off on this box (e.g. Claude org-disabled).
+#                                # Copilot is the guaranteed fallback and can't be disabled.
+
 [personal]
 # notes_root = "/home/you/projects/branch-notes"  # absolute path; default ~/projects/branch-notes
 

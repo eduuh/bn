@@ -8,7 +8,7 @@ test("the command center is the index: unified actions + one-click Start agent",
   page,
 }, testInfo) => {
   await primeToken(page);
-  await page.goto("/"); // `/` is now the action-centric command center (#522)
+  await page.goto("/inbox"); // the classic action list now lives at /inbox; `/` is the console
 
   // Header + the action-first framing.
   await expect(page.getByRole("heading", { name: "Command center", exact: true })).toBeVisible();
@@ -32,7 +32,7 @@ test("Start agent opens a composer pre-filled with an editable suggested prompt"
   page,
 }) => {
   await primeToken(page);
-  await page.goto("/");
+  await page.goto("/inbox");
 
   // Open the composer from the first actionable row.
   await page.getByRole("button", { name: /Start agent/ }).first().click();
@@ -56,12 +56,13 @@ test("Start agent opens a composer pre-filled with an editable suggested prompt"
 test("the mobile drawer opens the grouped sidebar nav", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "drawer is the mobile-only nav");
   await primeToken(page);
-  await page.goto("/");
+  await page.goto("/inbox");
 
   // The sidebar is off-canvas until the hamburger opens the drawer.
   await page.getByRole("button", { name: "open navigation" }).click();
   await expect(page.getByRole("complementary", { name: "primary navigation" })).toBeVisible();
-  await expect(page.getByText("items need you")).toBeVisible();
+  const nav = page.getByRole("complementary", { name: "primary navigation" });
+  await expect(nav.getByRole("link", { name: /Console/ })).toBeVisible();
   // Grouped surfaces are present.
   await expect(page.getByRole("link", { name: "Cost" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Cron" })).toBeVisible();

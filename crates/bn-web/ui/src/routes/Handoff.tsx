@@ -1,15 +1,12 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { AlertTriangle, Loader2 } from "lucide-react";
-import type { Components } from "react-markdown";
 import { handoffQuery, notesQuery, queryKeys } from "../api/client";
 import type { HandoffView as HandoffData, SummaryEntry } from "../api/types";
 import { saveHandoff } from "../api/writes";
 import { pushToast } from "../lib/toast";
 import { ToastStack } from "../components/ToastStack";
-import { MARKDOWN_PROSE } from "../components/SessionNote";
+import { Markdown } from "../components/Markdown";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -19,15 +16,6 @@ import { Skeleton } from "../components/ui/skeleton";
 import { cn } from "../lib/utils";
 
 const keyOf = (b: SummaryEntry): string => `${b.repo}/${b.branch}`;
-
-/** Links in the rendered handoff markdown open safely in a new tab. */
-const MD_COMPONENTS: Components = {
-  a: ({ href, children }) => (
-    <a href={href} target="_blank" rel="noreferrer noopener">
-      {children}
-    </a>
-  ),
-};
 
 /** Split a textarea into a trimmed, non-empty list — one item per line (mirrors `HandoffInput`). */
 function lines(text: string): string[] {
@@ -221,11 +209,10 @@ function HandoffPane({ entry }: { entry: SummaryEntry }) {
 
       {handoff.data && (
         <>
-          <div className={cn("rounded-lg border border-border bg-muted/30 p-4", MARKDOWN_PROSE)}>
-            <Markdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
-              {handoff.data.markdown}
-            </Markdown>
-          </div>
+          <Markdown
+            text={handoff.data.markdown}
+            className="rounded-lg border border-border bg-muted/30 p-4"
+          />
 
           <form
             className="space-y-4"

@@ -253,7 +253,7 @@ fn start_controller(
     cfg: &Config,
     id: Option<String>,
     name: Option<String>,
-    harness: String,
+    harness: Option<String>,
     request: Vec<String>,
     json: bool,
 ) {
@@ -261,9 +261,20 @@ fn start_controller(
     if !valid_controller_id(&id) {
         fail("bn control start: --id must contain only letters, digits, '-' or '_'");
     }
-    if !matches!(harness.as_str(), "copilot" | "claude") {
-        fail("bn control start: --harness must be copilot or claude");
-    }
+    // Explicit --harness is validated + availability-gated; omit it to inherit the machine's
+    // configured default (`[harness].default` / `$BN_HARNESS`, else copilot).
+    let harness = match harness.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(requested) => match bn_core::harness::normalize(requested) {
+            Some(canonical) if bn_core::harness::is_available(cfg, canonical) => {
+                canonical.to_string()
+            }
+            Some(canonical) => fail(&format!(
+                "bn control start: harness '{canonical}' is unavailable on this machine"
+            )),
+            None => fail("bn control start: --harness must be copilot or claude"),
+        },
+        None => bn_core::harness::preferred_harness(cfg).to_string(),
+    };
 
     let registry_path = controller::registry_path();
     let now = bn_core::util::now_epoch_secs();

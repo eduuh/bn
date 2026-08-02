@@ -206,9 +206,23 @@ fn task_name_flags_parse_for_dispatch_and_control() {
             Some(Command::Misc(CmdMisc::Control {
                 action: ControlCmd::Start {
                     name: Some(ref name),
+                    harness: None,
                     ..
                 },
             })) if name == "Coordinate releases"
+        ));
+        // Explicit --harness is preserved for the availability-gated resolver; omitting it (above)
+        // yields None so start inherits the configured default rather than a hardcoded copilot.
+        let explicit =
+            Cli::try_parse_from(["bn", "control", "start", "--harness", "claude"]).unwrap();
+        assert!(matches!(
+            explicit.command,
+            Some(Command::Misc(CmdMisc::Control {
+                action: ControlCmd::Start {
+                    harness: Some(ref h),
+                    ..
+                },
+            })) if h == "claude"
         ));
     });
 }

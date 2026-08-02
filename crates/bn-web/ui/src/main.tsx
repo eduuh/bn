@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom";
 import { App } from "./App";
+import { Console } from "./routes/Console";
 import { CommandCenter } from "./routes/CommandCenter";
 import { Today } from "./routes/Today";
 import { Fleet } from "./routes/Fleet";
@@ -37,11 +38,14 @@ const router = createBrowserRouter([
     path: "/",
     element: <App />,
     children: [
-      { index: true, element: <CommandCenter /> },
+      { index: true, element: <Console /> },
+      // The classic action list keeps its home for the surfaces the console doesn't own yet
+      // (the automation hub + the completed history).
+      { path: "inbox", element: <CommandCenter /> },
       { path: "today", element: <Today /> },
       { path: "fleet", element: <Fleet /> },
       { path: "start", element: <Start /> },
-      { path: "reviews", element: <Navigate to="/?tab=reviews" replace /> },
+      { path: "reviews", element: <Navigate to="/inbox?tab=reviews" replace /> },
       { path: "cost", element: <CostView /> },
       { path: "insights", element: <Insights /> },
       { path: "agents/:id", element: <AgentDetail /> },

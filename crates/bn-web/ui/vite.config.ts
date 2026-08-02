@@ -11,6 +11,10 @@ export default defineConfig({
     proxy: {
       "/api": "http://localhost:7770",
       "/events": "http://localhost:7770",
+      // The live agent terminal streams over `GET /ws/agents/:target/terminal`, which is not an
+      // `/api` path — without an explicit websocket proxy the terminal sits on "connecting…"
+      // forever in `npm run dev` and can only be exercised against the built binary.
+      "/ws": { target: "ws://localhost:7770", ws: true },
     },
   },
   resolve: {

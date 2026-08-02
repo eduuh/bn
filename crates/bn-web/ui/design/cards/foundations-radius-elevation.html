@@ -1,0 +1,64 @@
+<!-- @dsCard group="Foundations" name="Radius & elevation" width="880" height="520" -->
+<!-- @tokens baseline -->
+<div class="mx-auto max-w-3xl space-y-8">
+  <header class="space-y-1.5">
+    <h1 class="font-display text-xl font-semibold tracking-tight">Radius &amp; elevation</h1>
+    <p class="text-sm text-muted-foreground">
+      One radius token drives three steps; two shadows separate "sits on the page" from "floats above
+      it". A dark surface gets most of its depth from the border, not the shadow — which is why there
+      are only two.
+    </p>
+  </header>
+
+  <section class="space-y-3">
+    <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Radius</h2>
+    <div class="grid grid-cols-3 gap-3">
+      <div class="space-y-2">
+        <div class="flex h-16 items-center justify-center rounded-sm border border-border bg-card">
+          <code class="font-mono text-xs text-muted-foreground">rounded-sm</code>
+        </div>
+        <p class="text-xs text-muted-foreground">calc(--radius - 4px)</p>
+      </div>
+      <div class="space-y-2">
+        <div class="flex h-16 items-center justify-center rounded-md border border-border bg-card">
+          <code class="font-mono text-xs text-muted-foreground">rounded-md</code>
+        </div>
+        <p class="text-xs text-muted-foreground">calc(--radius - 2px) — buttons, inputs, tags</p>
+      </div>
+      <div class="space-y-2">
+        <div class="flex h-16 items-center justify-center rounded-lg border border-border bg-card">
+          <code class="font-mono text-xs text-muted-foreground">rounded-lg</code>
+        </div>
+        <p class="text-xs text-muted-foreground">--radius — every card surface</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-3 pt-1">
+      <span class="inline-flex items-center rounded-full border border-transparent bg-muted px-2.5 py-0.5 text-xs font-medium leading-none text-muted-foreground">rounded-full</span>
+      <p class="text-xs text-muted-foreground">chips and pills only — the one shape that ignores the token</p>
+    </div>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Elevation</h2>
+    <div class="grid grid-cols-3 gap-3">
+      <div class="space-y-2">
+        <div class="flex h-24 items-center justify-center rounded-lg border border-border bg-card">
+          <code class="font-mono text-xs text-muted-foreground">none</code>
+        </div>
+        <p class="text-xs text-muted-foreground">Flush — nested panels, rows inside a card.</p>
+      </div>
+      <div class="space-y-2">
+        <div class="flex h-24 items-center justify-center rounded-lg border border-border bg-card shadow-card">
+          <code class="font-mono text-xs text-muted-foreground">shadow-card</code>
+        </div>
+        <p class="text-xs text-muted-foreground">Every card. Barely visible by design — the border does the work.</p>
+      </div>
+      <div class="space-y-2">
+        <div class="flex h-24 items-center justify-center rounded-lg border border-border bg-popover shadow-pop">
+          <code class="font-mono text-xs text-muted-foreground">shadow-pop</code>
+        </div>
+        <p class="text-xs text-muted-foreground">Dialogs, sheets, the ⌘K palette — anything that traps focus.</p>
+      </div>
+    </div>
+  </section>
+</div>

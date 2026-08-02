@@ -1,0 +1,110 @@
+<!-- @dsCard group="Components" name="Stat tiles & cost table" width="880" height="620" -->
+<!-- @tokens baseline -->
+<div class="mx-auto max-w-3xl space-y-8">
+  <header class="space-y-1.5">
+    <h1 class="font-display text-xl font-semibold tracking-tight">Stat tiles &amp; cost table</h1>
+    <p class="text-sm text-muted-foreground">
+      Where the numbers live. Both lean on <code class="font-mono text-xs">tabular-nums</code> and
+      the mono face — figures that shift width as they tick are unreadable on a live dashboard.
+    </p>
+  </header>
+
+  <section class="space-y-3">
+    <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Tiles</h2>
+    <div class="flex gap-3">
+      <div class="flex flex-1 flex-col gap-1 rounded-lg border border-border bg-card p-4 shadow-card">
+        <div class="font-mono text-2xl font-semibold leading-none tabular-nums text-foreground">7</div>
+        <div class="text-xs uppercase tracking-wide text-muted-foreground">agents</div>
+      </div>
+      <div class="flex flex-1 flex-col gap-1 rounded-lg border border-border bg-card p-4 shadow-card">
+        <div class="font-mono text-2xl font-semibold leading-none tabular-nums text-ok">12</div>
+        <div class="text-xs uppercase tracking-wide text-muted-foreground">merged</div>
+      </div>
+      <div class="flex flex-1 flex-col gap-1 rounded-lg border border-border bg-card p-4 shadow-card">
+        <div class="font-mono text-2xl font-semibold leading-none tabular-nums text-warn">3</div>
+        <div class="text-xs uppercase tracking-wide text-muted-foreground">need you</div>
+      </div>
+      <div class="flex flex-1 flex-col gap-1 rounded-lg border border-border bg-card p-4 shadow-card">
+        <div class="font-mono text-2xl font-semibold leading-none tabular-nums text-foreground">$41.20</div>
+        <div class="text-xs uppercase tracking-wide text-muted-foreground">today</div>
+      </div>
+    </div>
+    <p class="text-xs text-muted-foreground">
+      Tone tints the value only — never the tile. Four tinted tiles in a row would make a calm day
+      look like an incident.
+    </p>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Cost table</h2>
+    <div class="rounded-lg border border-border bg-card p-4 shadow-card">
+      <div class="overflow-x-auto">
+        <table class="w-full min-w-[32rem] border-collapse text-sm">
+          <thead>
+            <tr class="border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
+              <th class="py-2 pr-3 text-left font-medium">Repo</th>
+              <th class="py-2 pl-3 text-right font-medium">Sess</th>
+              <th class="py-2 pl-3 text-right font-medium">Input</th>
+              <th class="py-2 pl-3 text-right font-medium">Output</th>
+              <th class="py-2 pl-3 text-right font-medium">$</th>
+            </tr>
+          </thead>
+          <tbody class="font-mono tabular-nums">
+            <tr class="border-b border-border/60">
+              <td class="py-2 pr-3 text-left">bn-web</td>
+              <td class="py-2 pl-3 text-right">14</td>
+              <td class="py-2 pl-3 text-right text-muted-foreground">1.2M <span class="text-muted-foreground/60">(0.9M)</span></td>
+              <td class="py-2 pl-3 text-right">84.1k</td>
+              <td class="py-2 pl-3 text-right">$18.44</td>
+            </tr>
+            <tr class="border-b border-border/60">
+              <td class="py-2 pr-3 text-left">bn-core</td>
+              <td class="py-2 pl-3 text-right">9</td>
+              <td class="py-2 pl-3 text-right text-muted-foreground">840k <span class="text-muted-foreground/60">(612k)</span></td>
+              <td class="py-2 pl-3 text-right">51.7k</td>
+              <td class="py-2 pl-3 text-right">$12.90</td>
+            </tr>
+            <tr class="border-b border-border/60">
+              <td class="py-2 pr-3 text-left">bn</td>
+              <td class="py-2 pl-3 text-right">6</td>
+              <td class="py-2 pl-3 text-right text-muted-foreground">503k <span class="text-muted-foreground/60">(410k)</span></td>
+              <td class="py-2 pl-3 text-right">32.2k</td>
+              <td class="py-2 pl-3 text-right">$9.86</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Machine health</h2>
+    <div class="space-y-3 rounded-lg border border-border bg-card p-4 shadow-card">
+      <div class="flex items-center justify-between gap-2">
+        <span class="flex items-center gap-1.5 text-sm font-semibold">Host</span>
+        <span class="inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium leading-none border-ok/30 bg-ok-muted text-ok">7 agents</span>
+      </div>
+      <div class="space-y-1">
+        <div class="flex items-baseline justify-between text-xs">
+          <span class="text-muted-foreground">CPU</span>
+          <span class="font-mono tabular-nums text-foreground">38%</span>
+        </div>
+        <div class="h-1.5 overflow-hidden rounded-full bg-muted"><div class="h-full rounded-full bg-ok" style="width:38%"></div></div>
+      </div>
+      <div class="space-y-1">
+        <div class="flex items-baseline justify-between text-xs">
+          <span class="text-muted-foreground">RAM</span>
+          <span class="font-mono tabular-nums text-foreground">81%</span>
+        </div>
+        <div class="h-1.5 overflow-hidden rounded-full bg-muted"><div class="h-full rounded-full bg-warn" style="width:81%"></div></div>
+      </div>
+      <div class="space-y-1">
+        <div class="flex items-baseline justify-between text-xs">
+          <span class="text-muted-foreground">Swap</span>
+          <span class="font-mono tabular-nums text-foreground">4%</span>
+        </div>
+        <div class="h-1.5 overflow-hidden rounded-full bg-muted"><div class="h-full rounded-full bg-ok" style="width:4%"></div></div>
+      </div>
+    </div>
+  </section>
+</div>

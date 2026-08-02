@@ -384,13 +384,16 @@ struct ReviewSection {
     diff_gate_reviews: Option<usize>,
 }
 
-/// `[harness]` (#501): per-machine harness availability. `disabled` lists harnesses turned off on
-/// this box — currently only `claude`, when the account is org-disabled ("organization has disabled
-/// Claude subscription access"). Copilot is the guaranteed fallback and can't be disabled. Backs the
-/// dashboard's harness switcher, which renders a disabled harness greyed-out with a reason.
+/// `[harness]` (#501): per-machine harness availability + preference. `disabled` lists harnesses
+/// turned off on this box — currently only `claude`, when the account is org-disabled ("organization
+/// has disabled Claude subscription access"). Copilot is the guaranteed fallback and can't be
+/// disabled. `default` names the preferred harness every launcher uses when nothing is requested
+/// (`copilot` | `claude`); unset/unavailable falls back to copilot. Backs the dashboard's harness
+/// switcher, which renders a disabled harness greyed-out with a reason.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 struct HarnessSection {
     disabled: Option<Vec<String>>,
+    default: Option<String>,
 }
 
 /// `[attention]`: the `bn next` attention list. `max_age_hours` is the recency cutoff —
@@ -597,6 +600,15 @@ impl ConfigFile {
             .and_then(|w| w.harness.as_ref())
             .and_then(|h| h.disabled.clone())
             .or_else(|| self.harness.as_ref().and_then(|h| h.disabled.clone()))
+    }
+
+    pub(super) fn default_harness(&self) -> Option<String> {
+        self.win()
+            .and_then(|w| w.harness.as_ref())
+            .and_then(|h| h.default.clone())
+            .or_else(|| self.harness.as_ref().and_then(|h| h.default.clone()))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
     }
 
     pub(super) fn attention_max_age_hours(&self) -> Option<f64> {

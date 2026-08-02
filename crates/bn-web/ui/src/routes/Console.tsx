@@ -1,0 +1,203 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { ChevronLeft } from "lucide-react";
+import { actionsQuery, fleetQuery, orchestrateQuery } from "../api/client";
+import { fleetEntries } from "../lib/fleet";
+import { buildQueue, filterQueue, queueCounts } from "../lib/console";
+import { useNow } from "../hooks/useNow";
+import { useMediaQuery } from "../hooks/useMediaQuery";
+import { QueuePane } from "../components/console/QueuePane";
+import { FocusPane } from "../components/console/FocusPane";
+import { ActPane } from "../components/console/ActPane";
+import { StartButton } from "../components/console/StartButton";
+import { ToastStack } from "../components/ToastStack";
+import { cn } from "../lib/utils";
+
+/**
+ * `/` — the **console**. One screen for the whole supervision loop.
+ *
+ * The dashboard used to spread a single job across seventeen routes: you triaged on the command
+ * center, watched on the fleet, read the plan on the agent page, and decided in a modal — losing
+ * your place at every step. But the operator's loop is one cycle (signal → dispatch → agent asks →
+ * you decide → land), and the web's only real job is to shorten *your* turn in it.
+ *
+ * So: three columns that never navigate.
+ *
+ * - **Queue** — every open loop, ranked and grouped by what you'd *do* about it, dense enough that
+ *   the whole list is on screen at once.
+ * - **Focus** — the selected item fully resolved: the live terminal, the branch note, or the plan
+ *   rendered as real markdown.
+ * - **Act** — only the decisions that item actually admits.
+ *
+ * Selection lives in `?sel=`, so a view is linkable and survives a reload. `j`/`k` walk the queue
+ * and `Escape` clears the selection; typing in any field is left alone.
+ */
+export function Console() {
+  const now = useNow();
+  const orch = useQuery(orchestrateQuery());
+  const fleet = useQuery(fleetQuery());
+  const actions = useQuery(actionsQuery());
+
+  const [params, setParams] = useSearchParams();
+  const selectedId = params.get("sel") ?? undefined;
+  const [query, setQuery] = useState("");
+  // `lg` is where the queue and the focus pane can coexist; below it the console is list-or-detail.
+  const wide = useMediaQuery("(min-width: 1024px)");
+
+  const all = useMemo(
+    () => buildQueue(fleetEntries(orch.data, fleet.data), actions.data?.actions ?? []),
+    [orch.data, fleet.data, actions.data],
+  );
+  const items = useMemo(() => filterQueue(all, query), [all, query]);
+  const counts = queueCounts(all);
+
+  const selected = all.find((i) => i.id === selectedId);
+
+  const select = (id?: string) => {
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (id) next.set("sel", id);
+        else next.delete("sel");
+        return next;
+      },
+      { replace: true },
+    );
+  };
+
+  // Land on the top of the queue rather than an empty pane. The list is already ranked so that the
+  // first row is the most-blocked thing, which means the answer to "what do I do next?" is on
+  // screen before you touch anything. Runs once — after that, selection is yours (Escape clears it
+  // and it stays cleared).
+  // Waits for all three feeds to settle first: actions resolve well before the fleet does, so
+  // selecting on the first non-empty queue would reliably land on a backlog row while the genuinely
+  // blocked agent was still loading — exactly the item you didn't need to see.
+  // Only on a wide screen, where the focus pane sits *beside* the queue. On a phone, selecting
+  // replaces the queue, so auto-selecting would drop you into a detail view you never asked for.
+  const autoSelected = useRef(false);
+  const ready = !orch.isLoading && !fleet.isLoading && !actions.isLoading;
+  useEffect(() => {
+    if (autoSelected.current || !wide || !ready || selectedId || all.length === 0) return;
+    autoSelected.current = true;
+    select(all[0].id);
+  }, [wide, ready, all, selectedId]);
+
+  // j / k walk the *filtered* queue; Escape clears. Skipped while typing so the filter box and the
+  // steer composer keep their keys.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      const typing =
+        el &&
+        (el.tagName === "INPUT" ||
+          el.tagName === "TEXTAREA" ||
+          el.isContentEditable ||
+          el.getAttribute("role") === "textbox");
+      if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+
+      if (e.key === "j" || e.key === "k") {
+        if (items.length === 0) return;
+        e.preventDefault();
+        const at = items.findIndex((i) => i.id === selectedId);
+        const step = e.key === "j" ? 1 : -1;
+        const next = at === -1 ? (step === 1 ? 0 : items.length - 1) : at + step;
+        const clamped = Math.max(0, Math.min(items.length - 1, next));
+        select(items[clamped].id);
+      } else if (e.key === "Escape") {
+        select(undefined);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [items, selectedId]);
+
+  const loading = orch.isLoading && fleet.isLoading && actions.isLoading;
+
+  return (
+    <div className="flex h-[100dvh] min-h-0 flex-col md:h-full">
+      {/* Three columns on a desktop second screen; the act column folds under the focus pane on
+          narrower windows, and the queue becomes a full-width list on a phone. */}
+      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[19rem_minmax(0,1fr)] xl:grid-cols-[19rem_minmax(0,1fr)_20rem]">
+        <aside
+          aria-label="work queue"
+          className={cn(
+            "min-h-0 flex-col border-border bg-card lg:flex lg:border-r",
+            // Below lg the queue and the focus pane swap rather than stack — a stacked pair gives
+            // each about a third of a phone screen, which is unusable for both.
+            selected ? "hidden" : "flex",
+          )}
+        >
+          <div className="flex-none space-y-2.5 px-3 pb-2 pt-3">
+            <div>
+              <h1 className="font-display text-lg leading-none tracking-tight text-foreground">
+                Console
+              </h1>
+              <p className="mt-1 text-[0.68rem] text-muted-foreground">
+                {counts.blocked > 0 ? (
+                  <span className="text-warn">{counts.blocked} blocked on you</span>
+                ) : (
+                  <span>nothing blocked</span>
+                )}
+                <span className="text-muted-foreground/50"> · </span>
+                {counts.running} running
+                <span className="text-muted-foreground/50"> · </span>
+                {counts.backlog} queued
+              </p>
+            </div>
+            {/* Always here, on every selection — starting work is never a matter of navigating. */}
+            <StartButton repo={selected?.agent?.repo ?? selected?.action?.repo ?? ""} />
+          </div>
+          {loading ? (
+            <p className="px-3 py-4 text-xs text-muted-foreground">Loading the queue…</p>
+          ) : (
+            <QueuePane
+              items={items}
+              selectedId={selectedId}
+              query={query}
+              now={now}
+              onSelect={select}
+              onQuery={setQuery}
+            />
+          )}
+        </aside>
+
+        <section
+          aria-label="focus"
+          className={cn(
+            "min-h-0 flex-col overflow-hidden lg:flex",
+            selected ? "flex" : "hidden lg:flex",
+          )}
+        >
+          {/* The way back to the queue on a phone; on a wide screen the queue never left. */}
+          {selected && (
+            <button
+              type="button"
+              onClick={() => select(undefined)}
+              className="flex flex-none items-center gap-1.5 border-b border-border px-4 py-2 text-left text-[0.72rem] font-medium text-muted-foreground hover:text-foreground lg:hidden"
+            >
+              <ChevronLeft className="h-4 w-4" /> Queue
+            </button>
+          )}
+          <FocusPane item={selected} blocked={counts.blocked} now={now} />
+        </section>
+
+        <aside
+          aria-label="actions"
+          className="hidden min-h-0 overflow-y-auto border-l border-border bg-card xl:block"
+        >
+          <ActPane item={selected} />
+        </aside>
+      </div>
+
+      {/* Below xl the act column has nowhere to sit, so the controls follow the focus pane. */}
+      {selected && (
+        <div className="border-t border-border bg-card xl:hidden">
+          <ActPane item={selected} />
+        </div>
+      )}
+
+      <ToastStack />
+    </div>
+  );
+}

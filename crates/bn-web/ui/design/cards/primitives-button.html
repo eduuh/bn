@@ -1,0 +1,56 @@
+<!-- @dsCard group="Primitives" name="Button" width="880" height="560" -->
+<!-- @tokens baseline -->
+<div class="mx-auto max-w-3xl space-y-8">
+  <header class="space-y-1.5">
+    <h1 class="font-display text-xl font-semibold tracking-tight">Button</h1>
+    <p class="text-sm text-muted-foreground">
+      Six variants, four sizes — every class string lifted verbatim from
+      <code class="font-mono text-xs">components/ui/button.tsx</code>.
+    </p>
+  </header>
+
+  <section class="space-y-3">
+    <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Variants</h2>
+    <div class="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card p-4 shadow-card">
+      <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors h-9 px-4 py-2 bg-primary text-primary-foreground shadow-card hover:bg-primary/90">Start agent</button>
+      <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors h-9 px-4 py-2 bg-secondary text-secondary-foreground hover:bg-secondary/80">Queue</button>
+      <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors h-9 px-4 py-2 border border-input bg-transparent hover:bg-accent hover:text-accent-foreground">Request changes</button>
+      <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors h-9 px-4 py-2 bg-destructive text-destructive-foreground shadow-card hover:bg-destructive/90">Kill</button>
+      <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors h-9 px-4 py-2 hover:bg-accent hover:text-accent-foreground">Dismiss</button>
+      <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors h-9 px-4 py-2 text-primary underline-offset-4">View PR</button>
+    </div>
+    <p class="text-xs text-muted-foreground">
+      default · secondary · outline · destructive · ghost · link
+    </p>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Sizes</h2>
+    <div class="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card p-4 shadow-card">
+      <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md font-medium transition-colors bg-primary text-primary-foreground shadow-card hover:bg-primary/90 h-8 rounded-md px-3 text-xs">sm · 32px</button>
+      <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors bg-primary text-primary-foreground shadow-card hover:bg-primary/90 h-9 px-4 py-2">default · 36px</button>
+      <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors bg-primary text-primary-foreground shadow-card hover:bg-primary/90 h-11 rounded-md px-6">lg · 44px</button>
+      <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors bg-primary text-primary-foreground shadow-card hover:bg-primary/90 h-9 w-9" aria-label="More">
+        <svg class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>
+      </button>
+    </div>
+    <p class="text-xs text-muted-foreground">
+      Only <code class="font-mono">lg</code> clears the 44px tap floor. On the phone surface that
+      makes <code class="font-mono">default</code> a desktop-only size — worth deciding deliberately.
+    </p>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">States</h2>
+    <div class="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card p-4 shadow-card">
+      <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium h-9 px-4 py-2 bg-primary text-primary-foreground shadow-card">rest</button>
+      <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium h-9 px-4 py-2 bg-primary/90 text-primary-foreground shadow-card">hover</button>
+      <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium h-9 px-4 py-2 bg-primary text-primary-foreground shadow-card outline-none ring-2 ring-ring ring-offset-2 ring-offset-background">focus</button>
+      <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium h-9 px-4 py-2 bg-primary text-primary-foreground shadow-card pointer-events-none opacity-50">disabled</button>
+      <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium h-9 px-4 py-2 bg-primary text-primary-foreground shadow-card">
+        <svg class="size-4 shrink-0 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56" stroke-linecap="round"/></svg>
+        dispatching
+      </button>
+    </div>
+  </section>
+</div>

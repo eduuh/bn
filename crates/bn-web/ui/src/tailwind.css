@@ -2,56 +2,63 @@
 @tailwind components;
 @tailwind utilities;
 
-/* bn-web design system (#554) — Tailwind + shadcn tokens.
+/* bn-web design system — Tailwind + shadcn tokens, in Claude's design language.
+ *
+ * The palette is **warm neutral, not blue-grey**: surfaces run down a low-saturation ~45° hue ramp
+ * (warm charcoal / "ink on paper at night") and the single brand accent is Claude clay `#D97757`.
+ * Colour is spent sparingly — almost the entire surface is neutral, and a saturated hue means
+ * something needs you. The signal scale is desaturated to sit beside the clay without fighting it
+ * (the old neon green/blue read as alert even when everything was fine).
  *
  * Dark-first: the app has no light mode, so the dark palette lives directly in `:root` (a `.dark`
  * mirror is kept so shadcn primitives that assume a `.dark` scope still resolve). Every value is a
- * `H S% L%` triple consumed as `hsl(var(--token))`, so the whole surface — including the semantic
- * urgent/warn/ok/info signal scale the dashboard keys off — is themed in one place. Values mirror
- * the legacy `index.css` palette so the migrated screens sit seamlessly beside the un-migrated
- * ones. */
+ * `H S% L%` triple consumed as `hsl(var(--token))`, so the whole surface is themed in one place. */
 :root {
-  --background: 217.5 28.6% 5.5%;
-  --foreground: 212.3 37.1% 93.1%;
+  --background: 45 6% 10.5%;
+  --foreground: 44 22% 93%;
 
-  --card: 218.2 23.4% 9.2%;
-  --card-foreground: 212.3 37.1% 93.1%;
+  --card: 45 5.5% 13.5%;
+  --card-foreground: 44 22% 93%;
 
-  --popover: 216.9 22% 11.6%;
-  --popover-foreground: 212.3 37.1% 93.1%;
+  --popover: 45 5.5% 15.5%;
+  --popover-foreground: 44 22% 93%;
 
-  --primary: 218.2 100% 64.9%;
-  --primary-foreground: 210 40% 98%;
+  /* Claude clay — the one brand hue. #D97757 */
+  --primary: 15 63% 60%;
+  --primary-foreground: 30 40% 98%;
 
-  --secondary: 217.5 21.1% 14.9%;
-  --secondary-foreground: 212.3 37.1% 93.1%;
+  --secondary: 45 5% 19.5%;
+  --secondary-foreground: 44 22% 93%;
 
-  --muted: 216.9 22% 11.6%;
-  --muted-foreground: 212.7 14.9% 71%;
+  --muted: 45 5% 17%;
+  --muted-foreground: 44 8% 66%;
 
-  --accent: 214.7 21.3% 17.5%;
-  --accent-foreground: 212.3 37.1% 93.1%;
+  --accent: 42 6% 22%;
+  --accent-foreground: 44 22% 93%;
 
-  --destructive: 2.7 92.6% 62.9%;
-  --destructive-foreground: 210 40% 98%;
+  --destructive: 6 62% 56%;
+  --destructive-foreground: 30 40% 98%;
 
-  --border: 216.7 19.1% 18.4%;
-  --input: 216.5 17% 26.5%;
-  --ring: 218.2 100% 64.9%;
+  --border: 42 5% 23%;
+  --input: 42 5% 30%;
+  --ring: 15 63% 60%;
 
-  /* Semantic signal scale — the four dashboard tones. */
-  --urgent: 2.7 92.6% 62.9%;
-  --urgent-foreground: 210 40% 98%;
-  --warn: 43.2 82.1% 46.1%;
-  --warn-foreground: 40 90% 8%;
-  --ok: 128.4 49.2% 48.6%;
-  --ok-foreground: 130 60% 8%;
-  --info: 218.2 100% 64.9%;
-  --info-foreground: 210 40% 98%;
+  /* Semantic signal scale — desaturated so they read as *information*, not as alarm. */
+  --urgent: 6 62% 58%;
+  --urgent-foreground: 30 40% 98%;
+  --warn: 33 68% 54%;
+  --warn-foreground: 36 60% 8%;
+  --ok: 145 32% 47%;
+  --ok-foreground: 145 50% 8%;
+  --info: 205 30% 60%;
+  --info-foreground: 205 50% 8%;
 
-  --radius: 0.7rem;
+  --radius: 0.65rem;
 
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-sans: "Styrene B", "Styrene A", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
+  /* Display face for page/section titles — the serif is what makes the surface read as Claude. */
+  --font-display: "Copernicus", "Tiempos Text", ui-serif, Georgia, "Times New Roman", serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, "Cascadia Code", monospace;
 }
 

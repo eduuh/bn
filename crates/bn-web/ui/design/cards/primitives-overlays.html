@@ -1,0 +1,77 @@
+<!-- @dsCard group="Primitives" name="Overlays" width="880" height="720" -->
+<!-- @tokens baseline -->
+<div class="mx-auto max-w-3xl space-y-8">
+  <header class="space-y-1.5">
+    <h1 class="font-display text-xl font-semibold tracking-tight">Overlays</h1>
+    <p class="text-sm text-muted-foreground">
+      Dialog, tooltip and the ⌘K palette, shown open rather than as triggers. All three float on
+      <code class="font-mono text-xs">shadow-pop</code>; the dialog and palette sit on
+      <code class="font-mono text-xs">bg-popover</code>, one step above card.
+    </p>
+  </header>
+
+  <section class="space-y-3">
+    <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Dialog — the start composer</h2>
+    <div class="relative overflow-hidden rounded-lg border border-border bg-background p-6">
+      <div class="absolute inset-0 bg-background/80 backdrop-blur-sm"></div>
+      <div class="relative mx-auto grid w-full max-w-lg gap-4 rounded-lg border border-border bg-card p-5 shadow-pop">
+        <div class="flex flex-col gap-1.5">
+          <div class="text-lg font-semibold leading-tight tracking-tight">Start an agent</div>
+          <div class="text-sm text-muted-foreground">bn-web · feat/console-shell</div>
+        </div>
+        <textarea class="flex min-h-[60px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-card placeholder:text-muted-foreground" rows="3">Review the plan and land it if the diff is clean.</textarea>
+        <div class="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors h-9 px-4 py-2 border border-input bg-transparent hover:bg-accent hover:text-accent-foreground">Queue</button>
+          <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors h-9 px-4 py-2 bg-primary text-primary-foreground shadow-card hover:bg-primary/90">Urgent</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Command palette — ⌘K</h2>
+    <div class="mx-auto max-w-lg overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-pop">
+      <div class="flex items-center gap-2 border-b border-border px-3">
+        <svg class="h-5 w-5 shrink-0 text-muted-foreground" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input class="flex h-12 w-full rounded-md bg-transparent py-3 text-sm outline-none placeholder:text-muted-foreground" placeholder="Search agents, repos, notes…" value="console" />
+      </div>
+      <div class="max-h-[300px] overflow-y-auto p-1">
+        <div class="px-2 py-1.5 text-xs font-medium text-muted-foreground">Agents</div>
+        <div class="flex cursor-default items-center gap-2 rounded-md bg-accent px-2 py-3 text-sm text-accent-foreground">
+          <svg class="h-5 w-5 shrink-0 text-muted-foreground" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="m8 9 3 3-3 3"/></svg>
+          <span class="truncate">bn-web · feat/console-shell</span>
+          <span class="ml-auto shrink-0 font-mono text-xs text-muted-foreground">running</span>
+        </div>
+        <div class="flex cursor-default items-center gap-2 rounded-md px-2 py-3 text-sm">
+          <svg class="h-5 w-5 shrink-0 text-muted-foreground" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>
+          <span class="truncate">Console shell — branch note</span>
+        </div>
+        <div class="px-2 py-1.5 text-xs font-medium text-muted-foreground">Repos</div>
+        <div class="flex cursor-default items-center gap-2 rounded-md px-2 py-3 text-sm">
+          <svg class="h-5 w-5 shrink-0 text-muted-foreground" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 7V5a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
+          <span class="truncate">bn-web</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Tooltip &amp; separator</h2>
+    <div class="flex items-center gap-6 rounded-lg border border-border bg-card p-4 shadow-card">
+      <div class="relative">
+        <button class="inline-flex h-9 w-9 items-center justify-center rounded-md hover:bg-accent hover:text-accent-foreground" aria-label="Land">
+          <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </button>
+        <div class="absolute left-1/2 top-full z-50 mt-2 -translate-x-1/2 overflow-hidden whitespace-nowrap rounded-md border border-border bg-popover px-3 py-1.5 text-xs text-popover-foreground shadow-pop">
+          Merge every landed worktree
+        </div>
+      </div>
+      <div class="h-9 w-px shrink-0 bg-border"></div>
+      <div class="flex-1 space-y-2">
+        <div class="h-4 w-32 animate-pulse rounded-md bg-muted"></div>
+        <div class="h-4 w-48 animate-pulse rounded-md bg-muted"></div>
+        <p class="text-xs text-muted-foreground">Skeleton — the loading placeholder for any text run.</p>
+      </div>
+    </div>
+  </section>
+</div>

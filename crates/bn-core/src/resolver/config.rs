@@ -314,6 +314,12 @@ pub struct Config {
     /// `claudecode` / `cc` / `gh`, normalized at use). `None` ⇒ `copilot`, the prior hardcoded
     /// default. The daemon still auto-switches a lane to the other harness on a usage-limit stall.
     pub orchestrate_agent: Option<String>,
+    /// `[harness].default` (or `$BN_HARNESS`): the preferred harness every launcher uses when no
+    /// `--agent`/`--harness` is requested — `claude` | `copilot` (aliases normalized at use). `None`
+    /// ⇒ `copilot`, the guaranteed fallback. A configured harness that's org-disabled on this
+    /// machine ([`Config::disabled_harnesses`]) also falls back to copilot. Backs
+    /// [`crate::harness::preferred_harness`].
+    pub default_harness: Option<String>,
     /// `[orchestrate].stuck_idle_secs` / `$BN_ORCH_STUCK_IDLE_SECS`.
     pub orchestrate_stuck_idle_secs: i64,
     /// `[orchestrate]` keep-warm defaults. Disabled unless config or `supervise --keep-warm`
@@ -407,6 +413,7 @@ impl Default for Config {
             review_diff_gate: false,
             review_diff_gate_reviews: crate::review_gate::DEFAULT_REQUIRED_REVIEWS,
             orchestrate_agent: None,
+            default_harness: None,
             orchestrate_stuck_idle_secs: crate::agent::DEFAULT_STUCK_LANE_IDLE_SECS,
             orchestrate_keep_warm: false,
             orchestrate_low_water: crate::orchestrate::DEFAULT_KEEP_WARM_LOW_WATER,
@@ -762,6 +769,13 @@ impl Config {
             .or_else(|| file.and_then(|f| f.orchestrate_agent()))
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
+        // `[harness].default`: env override wins, then config.toml; trimmed, empty → None so a blank
+        // value falls back to the `copilot` default. Normalized + availability-gated at use by
+        // `crate::harness::preferred_harness`.
+        let default_harness = non_empty_env("BN_HARNESS")
+            .or_else(|| file.and_then(|f| f.default_harness()))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         let orchestrate_stuck_idle_secs = non_empty_env("BN_ORCH_STUCK_IDLE_SECS")
             .and_then(|v| v.trim().parse::<i64>().ok())
             .or_else(|| file.and_then(|f| f.orchestrate_stuck_idle_secs()))
@@ -856,6 +870,7 @@ impl Config {
             review_diff_gate,
             review_diff_gate_reviews,
             orchestrate_agent,
+            default_harness,
             orchestrate_stuck_idle_secs,
             orchestrate_keep_warm,
             orchestrate_low_water,

@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Preflight is disabled in the app config (deliberately — the legacy `src/index.css` screens would
+ * be clobbered by Tailwind's reset). `src/tailwind.css` compensates by re-adding just the border
+ * reset shadcn depends on, and the previews must do the same: the `border` utility sets width but
+ * not style, so without this every shadcn border silently disappears and the cards would flatter
+ * the design by hiding chrome the real app draws. */
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-width: 0;
+    border-style: solid;
+    border-color: hsl(var(--border));
+  }
+}

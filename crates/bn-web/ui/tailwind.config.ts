@@ -82,11 +82,12 @@ const config: Config = {
       },
       fontFamily: {
         sans: "var(--font-sans)",
+        display: "var(--font-display)",
         mono: "var(--font-mono)",
       },
       boxShadow: {
-        card: "0 1px 2px rgba(0,0,0,0.4)",
-        pop: "0 12px 40px rgba(0,0,0,0.55)",
+        card: "0 1px 2px rgba(0,0,0,0.28)",
+        pop: "0 16px 48px rgba(0,0,0,0.5)",
       },
       keyframes: {
         "accordion-down": {

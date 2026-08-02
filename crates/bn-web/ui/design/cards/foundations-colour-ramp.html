@@ -1,0 +1,74 @@
+<!-- @dsCard group="Foundations" name="Colour ramp" width="880" height="640" -->
+<!-- @tokens baseline -->
+<div class="mx-auto max-w-3xl space-y-8">
+  <header class="space-y-1.5">
+    <h1 class="font-display text-xl font-semibold tracking-tight">Colour ramp</h1>
+    <p class="text-sm text-muted-foreground">
+      Every surface in the app is one of these eight steps. They are shown stacked, in depth order,
+      because the question that matters is whether adjacent steps separate — not whether any one of
+      them is a nice colour.
+    </p>
+  </header>
+
+  <section class="space-y-3">
+    <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Surfaces</h2>
+    <div class="overflow-hidden rounded-lg border border-border">
+      <div class="flex items-center justify-between bg-background px-4 py-3">
+        <span class="text-sm">background</span>
+        <code class="font-mono text-xs text-muted-foreground">--background</code>
+      </div>
+      <div class="flex items-center justify-between bg-card px-4 py-3">
+        <span class="text-sm">card</span>
+        <code class="font-mono text-xs text-muted-foreground">--card</code>
+      </div>
+      <div class="flex items-center justify-between bg-popover px-4 py-3">
+        <span class="text-sm">popover</span>
+        <code class="font-mono text-xs text-muted-foreground">--popover</code>
+      </div>
+      <div class="flex items-center justify-between bg-muted px-4 py-3">
+        <span class="text-sm">muted</span>
+        <code class="font-mono text-xs text-muted-foreground">--muted</code>
+      </div>
+      <div class="flex items-center justify-between bg-secondary px-4 py-3">
+        <span class="text-sm">secondary</span>
+        <code class="font-mono text-xs text-muted-foreground">--secondary</code>
+      </div>
+      <div class="flex items-center justify-between bg-accent px-4 py-3">
+        <span class="text-sm">accent <span class="text-muted-foreground">— hover state, not a brand colour</span></span>
+        <code class="font-mono text-xs text-muted-foreground">--accent</code>
+      </div>
+    </div>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Text on card</h2>
+    <div class="space-y-2 rounded-lg border border-border bg-card p-4 shadow-card">
+      <p class="text-sm text-foreground">foreground — primary reading text</p>
+      <p class="text-sm text-foreground/90">foreground/90 — the fleet card's state line</p>
+      <p class="text-sm text-muted-foreground">muted-foreground — labels, timestamps, metadata</p>
+      <p class="text-sm text-muted-foreground/70">muted-foreground/70 — the quietest step the app uses</p>
+    </div>
+  </section>
+
+  <section class="space-y-3">
+    <h2 class="text-xs font-medium uppercase tracking-wider text-muted-foreground">Brand &amp; edges</h2>
+    <div class="grid grid-cols-2 gap-3">
+      <div class="space-y-2 rounded-lg border border-border bg-card p-4 shadow-card">
+        <div class="h-10 rounded-md bg-primary"></div>
+        <p class="text-xs text-muted-foreground">
+          <code class="font-mono">--primary</code> — the single brand hue. Buttons, links, focus rings.
+        </p>
+      </div>
+      <div class="space-y-2 rounded-lg border border-border bg-card p-4 shadow-card">
+        <div class="flex h-10 gap-2">
+          <div class="flex-1 rounded-md border border-border bg-background"></div>
+          <div class="flex-1 rounded-md border border-input bg-background"></div>
+        </div>
+        <p class="text-xs text-muted-foreground">
+          <code class="font-mono">--border</code> (chrome) vs <code class="font-mono">--input</code>
+          (interactive edges — deliberately lighter)
+        </p>
+      </div>
+    </div>
+  </section>
+</div>

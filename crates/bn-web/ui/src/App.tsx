@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Search } from "lucide-react";
+import { Plus, Search } from "lucide-react";
 import { useBnStream } from "./hooks/useBnStream";
 import {
   actionsQuery,
@@ -103,69 +103,66 @@ export function App() {
   const failingCron = (cron.data?.jobs ?? []).filter((j) => j.ok === false).length;
   const openGoals = goals.data?.daily.open ?? 0;
 
+  // The console owns triage · watch · steer · review · dispatch, so the nav below it is only the
+  // *other* places — reference surfaces you visit deliberately, not the daily loop. Keeping them
+  // demoted is the point: the sidebar used to present six co-equal groups, which made "where do I
+  // go?" a question you had to answer before doing anything.
   const groups: NavGroup[] = [
     {
-      title: "Command",
-      items: [
-        { to: "/", label: "Command center", end: true, badge: urgentActions, tone: "red" },
-        { to: "/fleet", label: "Fleet", badge: needAttention, tone: "amber" },
-        { to: "/start", label: "Start", tone: "accent" },
-      ],
-    },
-    {
-      title: "Act",
-      items: [
-        { to: "/attention", label: "Attention", badge: openAttn, tone: "red" },
-        { to: "/research", label: "Research" },
-      ],
-    },
-    {
-      title: "Today",
+      title: "Work",
       items: [
         { to: "/today", label: "Today" },
         { to: "/goals", label: "Goals", badge: openGoals, tone: "amber" },
+        { to: "/repos", label: "Repos" },
+        { to: "/fleet", label: "Fleet", badge: needAttention, tone: "amber" },
       ],
     },
     {
-      title: "Insights",
+      title: "Insight",
       items: [
         { to: "/insights", label: "Insights" },
         { to: "/cost", label: "Cost" },
-        { to: "/repos", label: "Repos" },
       ],
     },
     {
       title: "Knowledge",
       items: [
         { to: "/notes", label: "Notes" },
-        { to: "/handoff", label: "Handoff" },
         { to: "/skills", label: "Skills" },
+        { to: "/handoff", label: "Handoff" },
+        { to: "/research", label: "Research" },
       ],
     },
     {
       title: "System",
       items: [
         { to: "/cron", label: "Cron", badge: failingCron, tone: "red" },
+        { to: "/attention", label: "Attention", badge: openAttn, tone: "red" },
+        { to: "/inbox", label: "Automation" },
       ],
     },
   ];
 
   // The minimal mobile bottom bar — the 4 highest-frequency jobs, badges preserved.
   const bottomTabs = [
-    { to: "/", end: true, label: "Command", Icon: CommandIcon, badge: urgentActions },
+    { to: "/", end: true, label: "Console", Icon: CommandIcon, badge: urgentActions },
     { to: "/fleet", end: false, label: "Fleet", Icon: FleetIcon, badge: needAttention },
     { to: "/start", end: false, label: "Start", Icon: StartIcon, badge: 0 },
     { to: "/attention", end: false, label: "Attention", Icon: AttentionIcon, badge: openAttn },
   ];
+
+  // The console is a full-bleed three-column app; every other route keeps the centred reading
+  // column the legacy screens were written for.
+  const bare = location.pathname === "/";
 
   return (
     <div className="min-h-[100dvh] md:flex">
       <aside
         aria-label="primary navigation"
         className={cn(
-          "fixed inset-y-0 left-0 z-50 flex w-[268px] max-w-[84vw] flex-col gap-4 overflow-y-auto border-r border-border bg-card px-3 pb-5 pt-[calc(env(safe-area-inset-top)+1rem)] transition-[transform,visibility] duration-200 ease-out",
+          "fixed inset-y-0 left-0 z-50 flex w-[212px] max-w-[84vw] flex-col gap-3.5 overflow-y-auto border-r border-border bg-card px-2.5 pb-5 pt-[calc(env(safe-area-inset-top)+1rem)] transition-[transform,visibility] duration-200 ease-out",
           drawerOpen ? "visible translate-x-0 shadow-pop" : "invisible -translate-x-full",
-          "md:visible md:sticky md:top-0 md:h-[100dvh] md:max-w-[268px] md:flex-none md:translate-x-0 md:shadow-none",
+          "md:visible md:sticky md:top-0 md:h-[100dvh] md:max-w-[212px] md:flex-none md:translate-x-0 md:shadow-none",
         )}
       >
         <div className="flex items-center justify-between px-2">
@@ -188,23 +185,44 @@ export function App() {
           </span>
         </button>
 
+        {/* The console is the home surface and carries its own live counts in its header, so the
+            sidebar's job is just to get you back to it. */}
         <NavLink
           to="/"
           end
-          className="flex min-h-[44px] items-center gap-3 rounded-lg bg-primary/15 px-3 text-foreground no-underline hover:bg-accent"
+          className={({ isActive }) =>
+            cn(
+              "flex min-h-[38px] items-center justify-between rounded-md px-3 text-sm font-semibold no-underline",
+              isActive
+                ? "bg-primary/15 text-primary"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground",
+            )
+          }
         >
-          <span className="text-3xl font-extrabold leading-none tabular-nums text-primary">
-            {actionable}
-          </span>
-          <span className="text-sm leading-tight text-muted-foreground">
-            {actionable === 1 ? "item needs you" : "items need you"}
-            {urgentActions > 0 && (
-              <em className="font-bold not-italic text-urgent"> · {urgentActions} urgent</em>
-            )}
-          </span>
+          <span>Console</span>
+          {actionable > 0 && (
+            <span className="text-xs tabular-nums text-muted-foreground/70">{actionable}</span>
+          )}
         </NavLink>
 
-        <nav className="flex flex-col gap-4">
+        {/* Start is pinned beside the console rather than filed under a group: beginning work is a
+            top-level verb, and it should be reachable from whatever screen you happen to be on. */}
+        <NavLink
+          to="/start"
+          className={({ isActive }) =>
+            cn(
+              "flex min-h-[38px] items-center gap-2 rounded-md border border-border px-3 text-sm font-semibold no-underline",
+              isActive
+                ? "border-primary/40 bg-primary/15 text-primary"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground",
+            )
+          }
+        >
+          <Plus className="h-4 w-4" />
+          <span>Start</span>
+        </NavLink>
+
+        <nav className="flex flex-col gap-3.5">
           {groups.map((g) => (
             <div key={g.title} className="flex flex-col gap-0.5">
               <div className="mb-1 px-2 text-xs font-bold uppercase tracking-wider text-muted-foreground/70">
@@ -238,7 +256,12 @@ export function App() {
         />
       )}
 
-      <div className="min-h-[100dvh] md:min-w-0 md:flex-1">
+      <div
+        className={cn(
+          "md:min-w-0 md:flex-1",
+          bare ? "min-h-[100dvh] md:h-[100dvh] md:overflow-hidden" : "min-h-[100dvh]",
+        )}
+      >
         <header className="sticky top-0 z-20 flex h-[calc(52px+env(safe-area-inset-top))] items-center gap-3 border-b border-border bg-popover/90 px-4 pt-[env(safe-area-inset-top)] backdrop-blur-md backdrop-saturate-150 md:hidden">
           <button
             type="button"
@@ -266,7 +289,13 @@ export function App() {
 
         <ConnectionBanner status={status} />
 
-        <main className="mx-auto max-w-[760px] p-4 pb-[calc(58px+env(safe-area-inset-bottom)+1.5rem)] md:max-w-[1100px] md:p-6 md:pb-8">
+        <main
+          className={cn(
+            bare
+              ? "h-full pb-[calc(58px+env(safe-area-inset-bottom))] md:pb-0"
+              : "mx-auto max-w-[760px] p-4 pb-[calc(58px+env(safe-area-inset-bottom)+1.5rem)] md:max-w-[1100px] md:p-6 md:pb-8",
+          )}
+        >
           <Outlet />
         </main>
 

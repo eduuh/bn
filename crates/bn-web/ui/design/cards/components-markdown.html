@@ -1,0 +1,73 @@
+<!-- @dsCard group="Components" name="Markdown prose" width="880" height="760" -->
+<!-- @tokens baseline -->
+<div class="mx-auto max-w-3xl space-y-6">
+  <header class="space-y-1.5">
+    <h1 class="font-display text-xl font-semibold tracking-tight">Markdown prose</h1>
+    <p class="text-sm text-muted-foreground">
+      Branch notes, handoff packets and agent plans all render through one class block —
+      <code class="font-mono text-xs">MARKDOWN_PROSE</code>, a hand-rolled stand-in for the typography
+      plugin, which cannot be used while preflight is off. Agent output is mostly commands and diffs,
+      so <code class="font-mono text-xs">pre</code> and <code class="font-mono text-xs">code</code>
+      carry more weight here than in ordinary prose.
+    </p>
+  </header>
+
+  <div class="rounded-lg border border-border bg-card p-4 shadow-card">
+    <div class="space-y-3 text-sm leading-relaxed text-foreground/90">
+      <h1 class="mt-2 text-lg font-semibold tracking-tight text-foreground">Console shell</h1>
+      <p>
+        Replaces the ranked action list with a three-column layout that resolves a selection without
+        navigating. Selection lives in <code class="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]">?sel=</code>
+        so it survives a reload and can be linked.
+      </p>
+
+      <h2 class="mt-4 text-base font-semibold text-foreground">What changed</h2>
+      <ul class="list-disc pl-5">
+        <li class="my-0.5">Queue · Focus · Act, with the act column folding under the focus pane below <code class="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]">xl</code>.</li>
+        <li class="my-0.5">Rows resolve a <em>verb</em> per item — a plan review offers "decide", not "start another agent".</li>
+        <li class="my-0.5">Row height drops to ~52px so nineteen items fit where six did.</li>
+      </ul>
+
+      <h3 class="mt-3 text-sm font-semibold text-foreground">Verify</h3>
+      <pre class="overflow-auto rounded-md border border-border bg-muted/60 p-3 text-xs"><code class="bg-transparent p-0">npm run typecheck &amp;&amp; npm run test
+npm run build &amp;&amp; cargo build -p bn-web
+curl -s localhost:7770 | head</code></pre>
+
+      <blockquote class="border-l-2 border-border pl-3 text-muted-foreground">
+        The old UI offered "Start agent" on every row, including plan reviews — where the correct
+        action is to decide, not to spawn a second agent.
+      </blockquote>
+
+      <h3 class="mt-3 text-sm font-semibold text-foreground">Coverage</h3>
+      <table class="w-full text-xs">
+        <thead>
+          <tr>
+            <th class="border-b border-border py-1 text-left font-medium">Module</th>
+            <th class="border-b border-border py-1 text-left font-medium">Tests</th>
+            <th class="border-b border-border py-1 text-left font-medium">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td class="border-b border-border/60 py-1">lib/console.ts</td><td class="border-b border-border/60 py-1">12</td><td class="border-b border-border/60 py-1">passing</td></tr>
+          <tr><td class="border-b border-border/60 py-1">QueuePane.tsx</td><td class="border-b border-border/60 py-1">4</td><td class="border-b border-border/60 py-1">passing</td></tr>
+        </tbody>
+      </table>
+
+      <p>
+        Related: <a href="#" class="font-medium text-primary underline underline-offset-2">#948</a>,
+        <a href="#" class="font-medium text-primary underline underline-offset-2">#951</a>.
+      </p>
+
+      <ol class="list-decimal pl-5">
+        <li class="my-0.5">Land the shell behind the existing route.</li>
+        <li class="my-0.5">Re-baseline the Playwright screenshots.</li>
+      </ol>
+    </div>
+  </div>
+
+  <p class="text-xs text-muted-foreground">
+    Every element the renderer can emit is exercised above — headings h1–h3, paragraphs, both list
+    kinds, inline and fenced code, blockquote, table, links. Anything missing from this card is
+    unstyled in the app and nobody has noticed yet.
+  </p>
+</div>
