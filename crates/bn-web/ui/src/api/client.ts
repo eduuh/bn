@@ -8,6 +8,7 @@ import { keepPreviousData } from "@tanstack/react-query";
 import type {
   FleetView,
   MachineView,
+  NodesView,
   OrchestrateView,
   RecoveryView,
   CostView,
@@ -56,6 +57,8 @@ export const queryKeys = {
   fleet: ["fleet"] as const,
   /** Machine-health snapshot (#525). */
   machine: ["machine"] as const,
+  /** The fleet's machines as a list (#966 nodes view) — local today, remote-ready. */
+  nodes: ["nodes"] as const,
   orchestrate: ["orchestrate"] as const,
   recovery: ["recovery"] as const,
   /** Cost is parameterized by window; the breakdown dimension is picked client-side (the view
@@ -134,6 +137,16 @@ export function machineQuery() {
   return {
     queryKey: queryKeys.machine,
     queryFn: () => fetchEnvelope<MachineView>("/api/machine"),
+    refetchInterval: 10_000,
+  };
+}
+
+/** The fleet's machines (nodes view) — same cadence as machine health, and for the same reason:
+ * an unreachable node should surface promptly. */
+export function nodesQuery() {
+  return {
+    queryKey: queryKeys.nodes,
+    queryFn: () => fetchEnvelope<NodesView>("/api/nodes"),
     refetchInterval: 10_000,
   };
 }

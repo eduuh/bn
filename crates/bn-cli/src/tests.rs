@@ -2004,10 +2004,14 @@ fn post_create_hook_receives_dispatch_environment_and_failure_is_non_fatal() {
         .lines()
         .map(str::to_string)
         .collect();
+    // The hook's `$PWD` is whatever the shell derives from its actual cwd, so it comes back
+    // symlink-resolved: on macOS the tempdir lives under `/var/folders/...`, which the kernel
+    // reports as `/private/var/folders/...`. Only the exported BN_* vars are compared verbatim.
+    let cwd = std::fs::canonicalize(&wt).unwrap();
     assert_eq!(
         lines,
         [
-            wt.display().to_string(),
+            cwd.display().to_string(),
             wt.display().to_string(),
             "dispatch-hook".to_string(),
             "bn".to_string(),

@@ -78,16 +78,40 @@ pub fn resolve_hint(cfg: &Config, dir: &Path) -> Option<Resolved> {
     Some(normalize(repo, branch))
 }
 
+/// The `<repo>` segment of `dir` relative to the configured worktree dir, or `None` when `dir`
+/// isn't under it (the caller then falls back to the git toplevel's basename). `Some("")` when
+/// `dir` *is* the worktree dir, preserving the "no segment → empty repo" answer callers already
+/// treat as unresolved.
+///
+/// The literal prefix test comes first, then a symlink-resolved retry: a process cwd comes back
+/// from the kernel fully resolved, so on macOS standing in `<worktree_dir>/acme/main` under a
+/// `/var/folders/...` root reports as `/private/var/folders/...` and never matches the configured
+/// `/var/...` root. Same shape on Linux whenever `worktree_dir` is reached through a symlink (a
+/// symlinked `$HOME`, `/home` → `/mnt/home`). Missing the match isn't inert — it silently derives
+/// the repo from the toplevel basename, so `bn link` in `<wt>/acme/main` filed its note under
+/// repo `main`. Resolution is best-effort: unresolvable paths (a config pointing at a directory
+/// that doesn't exist yet) keep the literal answer.
+fn repo_segment(cfg: &Config, dir: &Path) -> Option<String> {
+    let first = |rel: &Path| {
+        rel.components()
+            .next()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    if let Ok(rel) = dir.strip_prefix(&cfg.worktree_dir) {
+        return Some(first(rel));
+    }
+    let root = std::fs::canonicalize(&cfg.worktree_dir).ok()?;
+    let here = std::fs::canonicalize(dir).ok()?;
+    here.strip_prefix(&root).ok().map(first)
+}
+
 /// [`repo_from_dir`] minus the `git rev-parse --show-toplevel` subprocess: the caller already
 /// walked to the toplevel, so only the pure path logic remains (worktree-dir segment first,
 /// then toplevel basename with the in-place `.bare`-sibling override).
 fn repo_from_dir_hint(cfg: &Config, dir: &Path, toplevel: &Path) -> String {
-    if let Ok(rel) = dir.strip_prefix(&cfg.worktree_dir) {
-        return rel
-            .components()
-            .next()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .unwrap_or_default();
+    if let Some(repo) = repo_segment(cfg, dir) {
+        return repo;
     }
     let mut repo = toplevel
         .file_name()
@@ -147,12 +171,8 @@ pub(super) fn repo_from_common_dir(common: &Path) -> Option<String> {
 /// otherwise it's the git toplevel's basename, with the in-place `.bare`-sibling override.
 fn repo_from_dir(cfg: &Config, dir: &Path) -> String {
     // Case A: under the worktree dir → repo is the directory segment.
-    if let Ok(rel) = dir.strip_prefix(&cfg.worktree_dir) {
-        return rel
-            .components()
-            .next()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .unwrap_or_default();
+    if let Some(repo) = repo_segment(cfg, dir) {
+        return repo;
     }
     // Case B: repo = basename(git toplevel), with .bare-sibling override.
     let toplevel = git_toplevel(dir);

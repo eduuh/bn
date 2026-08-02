@@ -618,8 +618,17 @@ pub fn reset(cfg: &Config, force: bool) -> bool {
             "--force",
             wt,
         ]);
+        // Fall back to an unlink only for something that really is a worktree under the managed
+        // root. `git worktree remove` refusing the path is exactly the case where a blind
+        // `remove_dir_all` does the most damage — a misclassified bare repo (or anything else
+        // outside `worktree_dir`) would be deleted with its history, unrecoverably, on a command
+        // whose contract is "worktrees go, repos stay".
         if !removed {
-            let _ = std::fs::remove_dir_all(&wt_path);
+            if under(&wt_path, &worktree_dir) {
+                let _ = std::fs::remove_dir_all(&wt_path);
+            } else {
+                println!("  {YELLOW}Skipped: not under {}{NC}", worktree_dir.display());
+            }
         }
 
         // Close the branch note (status + completion + achievement), if one exists. Derived from
@@ -647,6 +656,21 @@ pub fn reset(cfg: &Config, force: bool) -> bool {
 }
 
 /// Last path component of a worktree path — its sanitized branch / note folder name.
+/// Whether `path` sits inside `root`, comparing symlink-resolved forms so a configured root that
+/// reaches the real directory through a symlink (macOS `/var` → `/private/var`, a symlinked
+/// `$HOME`) still recognizes its own worktrees. Falls back to the literal comparison when either
+/// side can't be resolved. Guards destructive fallbacks, so an unresolvable path answers `false`
+/// unless it matches literally — refusing to delete beats deleting the wrong tree.
+pub(crate) fn under(path: &Path, root: &Path) -> bool {
+    if path.starts_with(root) {
+        return true;
+    }
+    match (std::fs::canonicalize(path), std::fs::canonicalize(root)) {
+        (Ok(p), Ok(r)) => p.starts_with(r),
+        _ => false,
+    }
+}
+
 pub(crate) fn wt_branch_name(wt: &str) -> String {
     Path::new(wt)
         .file_name()

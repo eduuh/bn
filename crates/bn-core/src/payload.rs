@@ -256,6 +256,11 @@ pub fn daily_done_data(d: &daily::DoneOutcome) -> Value {
     }
 }
 
+/// `daily drop` → the goal removed from today (no completion recorded).
+pub fn daily_drop_data(d: &daily::DropOutcome) -> Value {
+    json!({ "item": { "id": d.id, "text": d.text, "link": d.link } })
+}
+
 /// `daily defer` → the goal moved off today and its new scheduled date.
 pub fn daily_defer_data(d: &daily::DeferOutcome) -> Value {
     json!({ "item": { "id": d.id, "text": d.text, "scheduled": d.scheduled } })
@@ -416,12 +421,22 @@ pub fn rollover_data(r: &daily::RolloverOutcome) -> Value {
         .iter()
         .map(|s| json!({ "id": s.id, "text": s.text, "scheduled": s.scheduled }))
         .collect();
+    let retired: Vec<Value> =
+        r.retired
+            .goals
+            .iter()
+            .map(|i| json!({ "id": i.id, "text": i.text, "link": i.link, "from": "today" }))
+            .chain(r.retired.scheduled.iter().map(
+                |s| json!({ "id": s.id, "text": s.text, "link": s.link, "from": "scheduled" }),
+            ))
+            .collect();
     json!({
         "created_today": r.created_today,
         "carried": carried,
         "due": due,
         "inbox_routed": r.inbox_routed,
         "inbox_left": r.inbox_left,
+        "retired": retired,
         "rendered": rollover_text(r),
     })
 }
@@ -433,7 +448,8 @@ pub fn rollover_text(r: &daily::RolloverOutcome) -> String {
     } else {
         format!("{} already rolled\n", r.today.front.date)
     };
-    if r.carried.is_empty() && r.due.is_empty() && r.inbox_routed.is_empty() {
+    if r.carried.is_empty() && r.due.is_empty() && r.inbox_routed.is_empty() && r.retired.is_empty()
+    {
         out.push_str("  (nothing to carry)\n");
     }
     for i in &r.carried {
@@ -444,6 +460,15 @@ pub fn rollover_text(r: &daily::RolloverOutcome) -> String {
     }
     for q in &r.inbox_routed {
         out.push_str(&format!("  ⚡ {} → {}\n", q.text, q.dest));
+    }
+    for i in &r.retired.goals {
+        out.push_str(&format!("  ✗ {} (PR merged/closed)\n", i.text));
+    }
+    for s in &r.retired.scheduled {
+        out.push_str(&format!(
+            "  ✗ {} (PR merged/closed — was scheduled {})\n",
+            s.text, s.scheduled
+        ));
     }
     if r.inbox_left > 0 {
         let s = if r.inbox_left == 1 { "" } else { "s" };

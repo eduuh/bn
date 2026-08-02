@@ -8,7 +8,8 @@ import { useNow } from "../hooks/useNow";
 import { useToasts } from "../hooks/useToasts";
 import { useBacklogActions } from "../hooks/useBacklogActions";
 import { FleetEntryCard } from "../components/FleetEntryCard";
-import { MachineHealth } from "../components/MachineHealth";
+import { NodeStrip } from "../components/NodeStrip";
+import { PageHead } from "../components/PageHead";
 import { LanesPanel } from "../components/backlog/LanesPanel";
 import { QueuePanel } from "../components/backlog/QueuePanel";
 import { RecoveryFeed } from "../components/RecoveryFeed";
@@ -92,22 +93,23 @@ export function Fleet() {
     actions.pending.scale || actions.pending.stop || actions.pending.reorder || actions.pending.remove;
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 pb-8">
-      <header className="flex items-center justify-between gap-3">
-        <div className="space-y-1">
-          <h2 className="text-2xl font-semibold tracking-tight">Fleet</h2>
-          <p className="text-sm text-muted-foreground">
-            {loading ? "loading…" : `${entries.length} running · live`}
-          </p>
-        </div>
-        <Button asChild size="sm">
-          <Link to="/start">
-            <Plus className="h-4 w-4" /> Start
-          </Link>
-        </Button>
-      </header>
+    <div className="space-y-6 pb-8">
+      <PageHead
+        title="Fleet"
+        sub={loading ? "loading…" : `${entries.length} running · live`}
+        right={
+          <Button asChild size="sm">
+            <Link to="/start">
+              <Plus className="h-4 w-4" /> Start
+            </Link>
+          </Button>
+        }
+      />
 
-      <MachineHealth />
+      {/* The machines, not their gauges — CPU and RAM now ride in the topbar on every screen, so
+          repeating the full machine card here would spend the top of the fleet on numbers you can
+          already see. */}
+      <NodeStrip />
 
       {loading && (
         <div className="space-y-3">

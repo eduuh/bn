@@ -132,6 +132,15 @@ pub struct DoneOutcome {
     pub actual: Option<String>,
 }
 
+/// Result of `drop_goal`: the removed goal's id, text, and link — enough for the caller to say
+/// what left the list (and for the operator to re-add it if the drop was a mistake).
+#[derive(Debug)]
+pub struct DropOutcome {
+    pub id: String,
+    pub text: String,
+    pub link: Option<String>,
+}
+
 /// A note to connect to a goal (#564): a linked branch note (`repo` + `branch`) and/or attached
 /// free-text / uploaded content (`text`), optionally titled. [`connect_note`] normalizes each
 /// field (trim + drop-if-empty) and rejects an input that carries neither a complete link nor text.
@@ -361,7 +370,30 @@ pub struct RolloverOutcome {
     pub inbox_routed: Vec<crate::inbox::RoutedOutcome>,
     /// Captures still in the inbox afterwards — they need interactive triage (`bn q drain`).
     pub inbox_left: usize,
+    /// Goals retired because the PR they hang off has merged or closed (#966) — they can't be
+    /// acted on any more, so they leave the list instead of carrying forever.
+    pub retired: PruneOutcome,
     pub today: Daily,
+}
+
+/// What a [`prune_dead_pr_goals`] sweep retired: open goals dropped off today's list and
+/// follow-ups dropped from the scheduled queue, both because their PR is merged/closed.
+#[derive(Debug, Default)]
+pub struct PruneOutcome {
+    pub goals: Vec<Item>,
+    pub scheduled: Vec<ScheduledItem>,
+}
+
+impl PruneOutcome {
+    /// Nothing was retired — the common case, and what the caller prints "nothing stale" for.
+    pub fn is_empty(&self) -> bool {
+        self.goals.is_empty() && self.scheduled.is_empty()
+    }
+
+    /// Total items retired across both lists.
+    pub fn len(&self) -> usize {
+        self.goals.len() + self.scheduled.len()
+    }
 }
 
 /// Force today's roll-forward: ensure today exists (carry prior open goals + drain due
@@ -388,7 +420,7 @@ pub fn rollover(cfg: &Config, today: &str) -> Result<RolloverOutcome, StoreError
         .into_iter()
         .filter(|s| s.scheduled.as_str() <= today)
         .collect();
-    let today_daily = ensure_today(cfg, today)?;
+    ensure_today(cfg, today)?;
     // Drain the capture inbox's unambiguous items (hinted at a still-active branch note) so
     // the inbox empties even on days bn is never opened interactively. Only Store errors can
     // surface here — the drain adds non-empty text to the literal "todo" section — but the
@@ -397,14 +429,78 @@ pub fn rollover(cfg: &Config, today: &str) -> Result<RolloverOutcome, StoreError
         CmdError::Store(s) => s,
         other => StoreError::Parse(other.message()),
     })?;
+    // Retire goals whose PR has merged or closed *after* the carry: a stale "ping reviewers on
+    // #923" that was carried a moment ago is exactly what this sweep exists to catch, and it has
+    // to run on today's whole list (not just the carried slice) because any `bn` command could
+    // have created the day before the morning job got here.
+    let retired = prune_dead_pr_goals(cfg, today, &dead_prs(cfg))?;
+    // Re-read: the prune rewrote today's file and renumbered nothing, but the returned day must
+    // reflect the pruned list rather than the pre-sweep one.
+    let today_daily = ensure_today(cfg, today)?;
     Ok(RolloverOutcome {
         created_today: !existed,
         carried,
         due,
         inbox_routed: inbox.routed,
         inbox_left: inbox.left,
+        retired,
         today: today_daily,
     })
+}
+
+/// The PRs your local record says have left the open set — read from the metrics log every
+/// machine syncs, so this stays offline (`pr-observe` does the fetching). See
+/// [`crate::pr_observe::terminal_prs`].
+pub fn dead_prs(cfg: &Config) -> HashSet<(String, i64)> {
+    crate::pr_observe::terminal_prs(&crate::events::read_events_across(
+        &cfg.metrics_logs_all_machines(),
+    ))
+}
+
+/// Retire goals hanging off a PR in `dead` — merged or closed, so the goal ("ping reviewers on
+/// wira360#923") can never be acted on again and would otherwise carry forward forever (#966).
+///
+/// Only **open** goals are swept: a completed goal is history and stays on the day it was done.
+/// Scheduled follow-ups are swept the same way, so a queued ping for a since-merged PR never
+/// lands. Goals with no link, or a link that isn't a PR URL, are always left alone — the sweep
+/// acts on positive evidence only. Writes only when something was actually retired.
+pub fn prune_dead_pr_goals(
+    cfg: &Config,
+    today: &str,
+    dead: &HashSet<(String, i64)>,
+) -> Result<PruneOutcome, StoreError> {
+    let mut out = PruneOutcome::default();
+    if dead.is_empty() {
+        return Ok(out);
+    }
+    let is_dead =
+        |link: Option<&String>| link.is_some_and(|l| crate::pr_observe::link_is_terminal(dead, l));
+
+    let path = cfg.daily_file(today);
+    if path.exists() {
+        let mut daily = read(&path)?;
+        let (retired, kept): (Vec<Item>, Vec<Item>) = daily
+            .front
+            .goals
+            .drain(..)
+            .partition(|g| g.done == Some(false) && is_dead(g.link.as_ref()));
+        if !retired.is_empty() {
+            daily.front.goals = kept;
+            write(&daily, &path)?;
+            out.goals = retired;
+        }
+    }
+
+    let queue = read_queue(cfg);
+    if !queue.is_empty() {
+        let (retired, kept): (Vec<ScheduledItem>, Vec<ScheduledItem>) =
+            queue.into_iter().partition(|s| is_dead(s.link.as_ref()));
+        if !retired.is_empty() {
+            write_queue(cfg, &kept)?;
+            out.scheduled = retired;
+        }
+    }
+    Ok(out)
 }
 
 /// The most recent prior day file in `dir` (a `YYYY-MM-DD.md` stem strictly before
@@ -674,6 +770,23 @@ pub fn done(
         text,
         pct: partial,
         actual,
+    })
+}
+
+/// Remove a goal from today's list outright, by explicit id (`g3`) or a case-insensitive
+/// substring — the escape hatch for a goal that should never have been raised (a stale agent
+/// ping, a duplicate). Distinct from [`done`] on purpose: a dropped goal was not accomplished,
+/// so it must not land in the completed fold that standup, `bn brag`, and the metrics read.
+/// Matches goals in any state (a wrongly-closed goal can be dropped too) via [`goal_index`].
+pub fn drop_goal(cfg: &Config, today: &str, query: &str) -> Result<DropOutcome, CmdError> {
+    let mut daily = ensure_today(cfg, today)?;
+    let idx = goal_index(&daily, query)?;
+    let goal = daily.front.goals.remove(idx);
+    write(&daily, &cfg.daily_file(today))?;
+    Ok(DropOutcome {
+        id: goal.id,
+        text: goal.text,
+        link: goal.link,
     })
 }
 
@@ -1763,6 +1876,140 @@ mod tests {
         assert!(!r2.created_today);
         assert!(r2.carried.is_empty());
         assert!(r2.due.is_empty());
+    }
+
+    /// Record a `pr_merged`/`pr_closed` metrics event, the way the `pr-observe` job does.
+    fn log_pr_terminal(c: &Config, kind: &str, repo: &str, number: i64) {
+        let mut fields = serde_json::Map::new();
+        fields.insert("repo".into(), serde_json::json!(repo));
+        fields.insert("number".into(), serde_json::json!(number));
+        crate::events::append_metric_at(&c.metrics_log_path(), kind, 1_000, fields).unwrap();
+    }
+
+    fn pr_url(repo: &str, number: i64) -> String {
+        format!("https://github.com/{repo}/pull/{number}")
+    }
+
+    #[test]
+    fn prune_retires_goals_whose_pr_is_merged_or_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = cfg(dir.path());
+        let day = "2026-06-23";
+        add(
+            &c,
+            day,
+            "ping reviewers on wira360#923",
+            Some(pr_url("eduuh/wira360", 923)),
+            None,
+        )
+        .unwrap();
+        add(
+            &c,
+            day,
+            "review bn#245",
+            Some(pr_url("eduuh/bn", 245)),
+            None,
+        )
+        .unwrap();
+        add(&c, day, "land bn#300", Some(pr_url("eduuh/bn", 300)), None).unwrap();
+        add(&c, day, "write the ADR", None, None).unwrap();
+        // A follow-up queued against the same dead PR must never land either.
+        add(
+            &c,
+            day,
+            "ping again",
+            Some(pr_url("eduuh/wira360", 923)),
+            Some("2026-06-30"),
+        )
+        .unwrap();
+        // A completed goal on the dead PR is history — it stays.
+        done(&c, day, "land bn#300", None).unwrap();
+        log_pr_terminal(&c, "pr_closed", "eduuh/wira360", 923);
+        log_pr_terminal(&c, "pr_merged", "eduuh/bn", 300);
+
+        let out = prune_dead_pr_goals(&c, day, &dead_prs(&c)).unwrap();
+        assert_eq!(out.goals.len(), 1);
+        assert_eq!(out.goals[0].text, "ping reviewers on wira360#923");
+        assert_eq!(out.scheduled.len(), 1);
+        let left: Vec<String> = read(&c.daily_file(day))
+            .unwrap()
+            .front
+            .goals
+            .into_iter()
+            .map(|g| g.text)
+            .collect();
+        // The still-open PR, the unlinked goal, and the already-completed one survive.
+        assert_eq!(left, ["review bn#245", "land bn#300", "write the ADR"]);
+        // Idempotent: a second sweep finds nothing left to retire.
+        assert!(prune_dead_pr_goals(&c, day, &dead_prs(&c))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn rollover_retires_carried_goals_for_dead_prs() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = cfg(dir.path());
+        add(
+            &c,
+            "2026-06-22",
+            "ping reviewers on wira360#923",
+            Some(pr_url("eduuh/wira360", 923)),
+            None,
+        )
+        .unwrap();
+        add(&c, "2026-06-22", "still open work", None, None).unwrap();
+        log_pr_terminal(&c, "pr_closed", "eduuh/wira360", 923);
+
+        let r = rollover(&c, "2026-06-23").unwrap();
+        // It carried (the day file is built before the sweep), then the sweep retired it.
+        assert_eq!(r.carried.len(), 2);
+        assert_eq!(r.retired.goals.len(), 1);
+        assert_eq!(r.retired.len(), 1);
+        let texts: Vec<&str> = r
+            .today
+            .front
+            .goals
+            .iter()
+            .map(|g| g.text.as_str())
+            .collect();
+        assert_eq!(texts, ["still open work"]);
+    }
+
+    #[test]
+    fn drop_removes_a_goal_without_completing_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = cfg(dir.path());
+        let day = "2026-06-23";
+        add(&c, day, "stale agent ping", None, None).unwrap();
+        add(&c, day, "real work", None, None).unwrap();
+
+        let d = drop_goal(&c, day, "stale").unwrap();
+        assert_eq!(d.id, "g1");
+        let daily = read(&c.daily_file(day)).unwrap();
+        assert_eq!(daily.front.goals.len(), 1);
+        assert_eq!(daily.front.goals[0].text, "real work");
+        // Nothing was recorded as completed — a drop is not an accomplishment.
+        assert_eq!(daily.completed().count(), 0);
+        // Gone means gone.
+        assert!(matches!(
+            drop_goal(&c, day, "stale"),
+            Err(CmdError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn drop_refuses_an_ambiguous_substring() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = cfg(dir.path());
+        let day = "2026-06-23";
+        add(&c, day, "ping reviewers on #1", None, None).unwrap();
+        add(&c, day, "ping reviewers on #2", None, None).unwrap();
+        assert!(matches!(
+            drop_goal(&c, day, "ping reviewers"),
+            Err(CmdError::Ambiguous(_, _))
+        ));
+        assert_eq!(read(&c.daily_file(day)).unwrap().front.goals.len(), 2);
     }
 
     #[test]

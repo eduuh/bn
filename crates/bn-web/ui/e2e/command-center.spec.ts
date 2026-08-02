@@ -53,17 +53,22 @@ test("Start agent opens a composer pre-filled with an editable suggested prompt"
   await expect(dialog).toBeHidden();
 });
 
-test("the mobile drawer opens the grouped sidebar nav", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "mobile", "drawer is the mobile-only nav");
+test("the phone tab-bar carries every destination, with no drawer to open", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "the tab-bar shape is the phone layout");
   await primeToken(page);
   await page.goto("/inbox");
 
-  // The sidebar is off-canvas until the hamburger opens the drawer.
-  await page.getByRole("button", { name: "open navigation" }).click();
-  await expect(page.getByRole("complementary", { name: "primary navigation" })).toBeVisible();
-  const nav = page.getByRole("complementary", { name: "primary navigation" });
+  // The clay redesign removed the hamburger drawer outright: the rail *is* the bottom tab bar on a
+  // phone, so every destination is reachable without opening anything first.
+  await expect(page.getByRole("button", { name: "open navigation" })).toHaveCount(0);
+
+  const nav = page.getByRole("navigation", { name: "primary" });
+  await expect(nav).toBeVisible();
   await expect(nav.getByRole("link", { name: /Console/ })).toBeVisible();
-  // Grouped surfaces are present.
-  await expect(page.getByRole("link", { name: "Cost" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Cron" })).toBeVisible();
+  // Destinations from every group, including the ones that used to sit behind the drawer.
+  await expect(nav.getByRole("link", { name: "Cost" })).toBeVisible();
+  await expect(nav.getByRole("link", { name: "Cron" })).toBeVisible();
+  await expect(nav.getByRole("link", { name: "Handoff" })).toBeVisible();
 });

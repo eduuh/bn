@@ -1084,6 +1084,41 @@ pub struct RouteSummary {
     pub note: usize,
     pub research: usize,
     pub dojo: usize,
+    /// Goal items the daily sink refused: a duplicate of one already on today's list, or a goal
+    /// hanging off a merged/closed PR (#966). Counted rather than silently dropped so a card that
+    /// keeps re-raising the same ping is visible in the run report.
+    pub skipped: usize,
+}
+
+/// Whether a card's goal item should be turned away by the daily sink, and why. The staff agents
+/// re-derive their cards from scratch every run, so without this an unactioned "ping reviewers on
+/// wira360#923" is re-added every morning and every evening, and keeps being re-added after the PR
+/// is closed — three copies of a dead goal carried forever.
+///
+/// `existing` is today's goal list; `dead` the merged/closed PRs ([`crate::daily::dead_prs`]).
+/// Pure so the policy is testable without a store.
+pub fn goal_skip_reason(
+    title: &str,
+    link: Option<&str>,
+    existing: &[crate::model::Item],
+    dead: &std::collections::HashSet<(String, i64)>,
+) -> Option<&'static str> {
+    if link.is_some_and(|l| crate::pr_observe::link_is_terminal(dead, l)) {
+        return Some("PR already merged/closed");
+    }
+    let norm = |s: &str| {
+        s.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    };
+    let title_norm = norm(title);
+    // A PR link is the strong identity (two agents word the same ping differently); the
+    // normalized text catches unlinked repeats.
+    let dup = existing
+        .iter()
+        .any(|g| (link.is_some() && g.link.as_deref() == link) || norm(&g.text) == title_norm);
+    dup.then_some("already on today's list")
 }
 
 /// Route a validated card's items through the existing channels — attention (keyed, so re-routes
@@ -1095,6 +1130,13 @@ pub struct RouteSummary {
 pub fn route_card(cfg: &Config, card: &BriefingCard, today: &str) -> Result<RouteSummary, String> {
     let source = job_name(&card.agent);
     let mut sum = RouteSummary::default();
+    // One read of the merged/closed PR set for the whole card (it's a scan of the metrics logs),
+    // and only when a goal item is actually present.
+    let dead_prs = if card.items.iter().any(|it| it.kind == "goal") {
+        crate::daily::dead_prs(cfg)
+    } else {
+        Default::default()
+    };
     for (i, item) in card.items.iter().enumerate() {
         let link = (!item.link.is_empty()).then_some(item.link.as_str());
         let note_ctx = || Resolved {
@@ -1133,6 +1175,16 @@ pub fn route_card(cfg: &Config, card: &BriefingCard, today: &str) -> Result<Rout
                 sum.attn += 1;
             }
             "goal" => {
+                // Read today's list fresh for every goal item so a duplicate *within* one card is
+                // caught too (the AM card has raised the same PR ping twice in a single run).
+                let existing = crate::daily::ensure_today(cfg, today)
+                    .map(|d| d.front.goals)
+                    .unwrap_or_default();
+                if let Some(why) = goal_skip_reason(&item.title, link, &existing, &dead_prs) {
+                    eprintln!("staff route: skipped goal \"{}\" — {why}", item.title);
+                    sum.skipped += 1;
+                    continue;
+                }
                 crate::daily::add(cfg, today, &item.title, link.map(str::to_string), None)
                     .map_err(fail_cmd)?;
                 sum.daily += 1;
@@ -1763,6 +1815,98 @@ pub fn last_runs() -> std::collections::HashMap<String, LastRun> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod goal_sink_tests {
+    use super::*;
+    use crate::model::Item;
+    use std::collections::HashSet;
+
+    fn goal(text: &str, link: Option<&str>) -> Item {
+        Item {
+            id: "g1".into(),
+            text: text.into(),
+            created: "2026-07-30".into(),
+            done: Some(false),
+            done_at: None,
+            link: link.map(str::to_string),
+            pct: None,
+            est: None,
+            actual: None,
+            q: None,
+            notes: Vec::new(),
+        }
+    }
+
+    fn dead(pairs: &[(&str, i64)]) -> HashSet<(String, i64)> {
+        pairs.iter().map(|(r, n)| (r.to_string(), *n)).collect()
+    }
+
+    const PR: &str = "https://github.com/eduuh/wira360/pull/923";
+
+    #[test]
+    fn a_fresh_goal_is_admitted() {
+        assert_eq!(
+            goal_skip_reason("Ping reviewers on wira360#923", Some(PR), &[], &dead(&[])),
+            None
+        );
+    }
+
+    #[test]
+    fn a_goal_on_a_merged_or_closed_pr_is_refused() {
+        let why = goal_skip_reason(
+            "Ping reviewers on wira360#923",
+            Some(PR),
+            &[],
+            &dead(&[("eduuh/wira360", 923)]),
+        );
+        assert_eq!(why, Some("PR already merged/closed"));
+    }
+
+    #[test]
+    fn the_same_pr_worded_differently_is_still_a_duplicate() {
+        // The AM card said "Ping reviewers on PR #923"; the PM card says it longhand. Same link,
+        // so the second one must not land — this is what put three copies on the list.
+        let existing = [goal("Ping reviewers on PR #923", Some(PR))];
+        assert_eq!(
+            goal_skip_reason(
+                "Ping reviewers on wira360#923 to unblock stalled PR",
+                Some(PR),
+                &existing,
+                &dead(&[])
+            ),
+            Some("already on today's list")
+        );
+    }
+
+    #[test]
+    fn unlinked_repeats_are_caught_by_normalized_text() {
+        let existing = [goal("Review the design doc", None)];
+        assert_eq!(
+            goal_skip_reason("  review   the DESIGN doc ", None, &existing, &dead(&[])),
+            Some("already on today's list")
+        );
+        // A genuinely different goal still lands.
+        assert_eq!(
+            goal_skip_reason("Review the migration plan", None, &existing, &dead(&[])),
+            None
+        );
+    }
+
+    #[test]
+    fn a_different_pr_is_not_a_duplicate() {
+        let existing = [goal("Ping reviewers on PR #923", Some(PR))];
+        assert_eq!(
+            goal_skip_reason(
+                "Ping reviewers on PR #168",
+                Some("https://github.com/eduuh/mt5-data-api/pull/168"),
+                &existing,
+                &dead(&[("eduuh/wira360", 923)])
+            ),
+            None
+        );
+    }
 }
 
 #[cfg(test)]

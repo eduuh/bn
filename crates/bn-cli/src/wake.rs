@@ -23,16 +23,25 @@ impl WakeWatcher {
             .parent()
             .ok_or_else(|| notify::Error::generic("wake signal has no parent directory"))?;
         std::fs::create_dir_all(state_dir).map_err(notify::Error::io)?;
+        // Compare against resolved paths: macOS reports FSEvents paths canonicalized (`/var/...`
+        // arrives as `/private/var/...`), so a watch rooted at a symlinked ancestor would emit
+        // events that `matches` rejects and the wait would time out despite a live signal.
+        let state_dir = resolve(state_dir);
+        let signal_path = match signal_path.file_name() {
+            Some(name) => state_dir.join(name),
+            None => signal_path,
+        };
         let (sender, receiver) = mpsc::channel();
         let mut watcher = notify::recommended_watcher(move |event| {
             let _ = sender.send(event);
         })?;
-        watcher.watch(state_dir, notify::RecursiveMode::NonRecursive)?;
+        watcher.watch(&state_dir, notify::RecursiveMode::NonRecursive)?;
         let mut watched_roots = Vec::new();
         for root in recursive_roots {
             if root.is_dir() {
-                watcher.watch(root, notify::RecursiveMode::Recursive)?;
-                watched_roots.push(root.clone());
+                let root = resolve(root);
+                watcher.watch(&root, notify::RecursiveMode::Recursive)?;
+                watched_roots.push(root);
             }
         }
         Ok(Self {
@@ -96,6 +105,13 @@ impl WakeWatcher {
                         .any(|root| path.starts_with(root))
             })
     }
+}
+
+/// The symlink-resolved form of `path`, falling back to the path as given when it can't be
+/// resolved (missing, or permission-denied on an ancestor) — best-effort, since the only cost of
+/// falling back is the pre-existing literal comparison.
+fn resolve(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn same_parent(path: &Path, signal_path: &Path) -> bool {

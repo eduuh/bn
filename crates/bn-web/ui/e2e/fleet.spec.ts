@@ -23,17 +23,11 @@ test("fleet renders live agents, needs-you, and the bottom tab-bar", async ({ pa
   // A plain working agent shows in the Working section.
   await expect(page.getByText("dispatch/web-redesign-500")).toBeVisible();
 
-  // Primary nav: bottom tab-bar on phones, the grouped sidebar on desktop (#522). "Start" lives in
-  // both navs by design, so scope the assertion to the nav that's active for this viewport.
-  if (testInfo.project.name === "mobile") {
-    const nav = page.getByRole("navigation", { name: "primary" });
-    await expect(nav).toBeVisible();
-    await expect(nav.getByRole("link", { name: "Start" })).toBeVisible();
-  } else {
-    const nav = page.getByRole("complementary", { name: "primary navigation" });
-    await expect(nav).toBeVisible();
-    await expect(nav.getByRole("link", { name: "Start", exact: true })).toBeVisible();
-  }
+  // One primary nav in both layouts now — the rail re-flows into the phone tab bar rather than a
+  // second, separate nav existing for small screens (clay redesign, #966).
+  const nav = page.getByRole("navigation", { name: "primary" });
+  await expect(nav).toBeVisible();
+  await expect(nav.getByRole("link", { name: /Start/ }).first()).toBeVisible();
 
   await shot(page, testInfo, "fleet");
 });

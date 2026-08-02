@@ -701,6 +701,12 @@ pub(crate) fn job_fleet_reap(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
 
 /// `jobs/attention-sync.sh` — recompute + rewrite the attention cache (`bn next --refresh`).
 pub(crate) fn job_attention_sync(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
+    // Retire items whose PR has merged or closed before refreshing, so a dead PR's "ping
+    // reviewers" nag doesn't survive in the cache the panel reads (#966).
+    let retired = bn_core::attention::retire_dead_pr_items(&bn_core::daily::dead_prs(cfg), &today());
+    for item in &retired {
+        println!("attention-sync: retired {} — {}", item.id, item.title);
+    }
     // refresh=true, no_momentum=true: the cache write is always punch-free (momentum is a
     // read-time re-rank), so the sync job never bakes the current punch into the snapshot.
     emit_next(cfg, 5, false, false, true, false, true, false, false);
@@ -1347,6 +1353,12 @@ pub(crate) struct MyPrRow {
     url: String,
 }
 
+/// How many PRs one `pr-observe` search sweep pulls. Sized well above a busy month (the old 100
+/// silently truncated: a PR that closed weeks ago got pushed out by newer ones and never got its
+/// `pr_closed` event, which left the goals hanging off it looking live forever). Only the search
+/// grows — the expensive per-PR `gh pr view` stays gated by [`bn_core::pr_observe::needs_enrichment`].
+pub(crate) const PR_OBSERVE_SEARCH_LIMIT: usize = 500;
+
 /// Your own PRs updated since `since` (`YYYY-MM-DD`), any state, via `gh search prs`.
 pub(crate) fn gh_my_prs(since: &str) -> Vec<MyPrRow> {
     #[derive(serde::Deserialize)]
@@ -1365,7 +1377,8 @@ pub(crate) fn gh_my_prs(since: &str) -> Vec<MyPrRow> {
         name_with_owner: String,
     }
     let updated = format!(">={since}");
-    bn_core::runner::gh_json::<Vec<SearchPr>>(
+    let limit = PR_OBSERVE_SEARCH_LIMIT.to_string();
+    let rows = bn_core::runner::gh_json::<Vec<SearchPr>>(
         &bn_core::runner::RealRunner,
         &[
             "search",
@@ -1374,13 +1387,20 @@ pub(crate) fn gh_my_prs(since: &str) -> Vec<MyPrRow> {
             "--updated",
             &updated,
             "--limit",
-            "100",
+            &limit,
             "--json",
             "repository,number,createdAt,state,url",
         ],
     )
-    .unwrap_or_default()
-    .into_iter()
+    .unwrap_or_default();
+    // Say so rather than truncating silently — at the cap the oldest PRs in the window are missing
+    // their lifecycle events, and everything downstream reads that as "still open".
+    if rows.len() >= PR_OBSERVE_SEARCH_LIMIT {
+        eprintln!(
+            "pr-observe: hit the {PR_OBSERVE_SEARCH_LIMIT}-PR search cap — PRs updated just after {since} may be missing"
+        );
+    }
+    rows.into_iter()
     .map(|pr| MyPrRow {
         repo: pr.repository.name_with_owner,
         number: pr.number,

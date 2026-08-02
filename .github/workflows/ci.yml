@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual trigger, so the advisory macOS lane can be exercised on any ref
+  # without opening a PR first.
+  workflow_dispatch:
 
 # Cancel superseded runs on the same ref.
 concurrency:
@@ -315,3 +318,66 @@ jobs:
 
       - name: E2E (Playwright, headless)
         run: npm run e2e
+
+  # Advisory macOS lane: the same rust gate as `test`, pinned to the Apple-silicon
+  # self-hosted runner instead of the `CI_RUNNER` (Fedora) pool. It exists to prove
+  # the workspace builds and tests clean on darwin/aarch64 before macOS is trusted
+  # as a real merge gate, so `continue-on-error` keeps a mac-only failure — a
+  # platform gap, a missing brew dep, the box being asleep — from failing the run.
+  # Labels are hardcoded on purpose: pointing this at `vars.CI_RUNNER` would just
+  # send it back to the Linux pool it's meant to cross-check.
+  mac:
+    name: mac · clippy · test (advisory)
+    runs-on: ["self-hosted", "macOS", "ARM64"]
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        env:
+          HOME: ${{ runner.temp }}/checkout-home-${{ github.job }}
+          GIT_CONFIG_GLOBAL: ${{ runner.temp }}/gitconfig-${{ github.job }}
+        with:
+          set-safe-directory: false
+
+      # rust-toolchain.toml pins the version + components; `rustup show` installs it.
+      - name: Install Rust toolchain
+        run: |
+          # Per-runner CARGO_HOME/RUSTUP_HOME, matching the Fedora lanes: the mac
+          # doesn't share $HOME with the Linux boxes, but keeping the toolchain
+          # state keyed by $RUNNER_NAME means a second mac runner on this host
+          # can never race this one into a half-installed toolchain.
+          state="$HOME/ci-rust/$RUNNER_NAME"
+          mkdir -p "$state/cargo/bin" "$state/rustup"
+          echo "CARGO_HOME=$state/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$state/rustup" >> "$GITHUB_ENV"
+          export CARGO_HOME="$state/cargo" RUSTUP_HOME="$state/rustup"
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          export PATH="$CARGO_HOME/bin:$PATH"
+          if ! command -v rustup >/dev/null 2>&1; then
+            for proxy in "$CARGO_HOME/bin"/*; do
+              if [ -L "$proxy" ] && [ ! -e "$proxy" ]; then
+                rm -f "$proxy"
+              fi
+            done
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+              sh -s -- -y --default-toolchain none --no-modify-path
+          fi
+          rustup show
+
+      - name: Clean stale workspace target (self-hosted hygiene)
+        # Same reuse hazard as the Fedora lanes: _work/<repo> persists across runs
+        # and rust-cache prunes target/ in its post step, so a later job can
+        # inherit stale *.d dep-info pointing at deleted artifacts.
+        run: rm -rf "$GITHUB_WORKSPACE/target"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Isolate cache per self-hosted runner: rust-cache bakes absolute
+          # target/*.d paths into the cache, and each runner has a distinct
+          # _work dir, so a shared cache corrupts dep info across runners.
+          prefix-key: "v0-rust-${{ runner.name }}"
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace

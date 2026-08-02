@@ -13,6 +13,7 @@ import { Card } from "../ui/card";
 import { Textarea } from "../ui/textarea";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
+import { cn } from "../../lib/utils";
 
 /** Pull a string field out of an action's loosely-typed `payload`. */
 function payloadStr(item: WorkItem, key: string): string {
@@ -187,6 +188,23 @@ function AttnPanel({ id }: { id: string }) {
 }
 
 /**
+ * How the panels sit, by how much room the pane was given. Below `wide` the pane is a horizontal
+ * strip under the focus pane rather than a column beside it, so its panels run side by side and
+ * wrap; at `wide` and above it is the third column again and they stack.
+ *
+ * This is one element re-flowing, not two rendered conditionally: the console used to hide the act
+ * column below `xl` and render a *second* `ActPane` underneath, which meant every panel with local
+ * state (the dispatch composer's half-typed prompt, the steer box) existed twice and silently lost
+ * whatever you had typed the moment the window crossed the breakpoint.
+ */
+const ACT_LAYOUT = cn(
+  "space-y-3 p-3",
+  "lg:flex lg:flex-wrap lg:items-start lg:gap-3 lg:space-y-0",
+  "lg:[&>*]:min-w-0 lg:[&>*]:flex-1 lg:[&>*]:basis-[260px]",
+  "wide:block wide:space-y-3 wide:[&>*]:basis-auto",
+);
+
+/**
  * The console's right column: **only the decisions available for the selected item**. This is the
  * flow fix that matters most — the old list offered the same "Start agent" button on every row,
  * including plan reviews, where launching a second agent is precisely the wrong move. Here a
@@ -206,7 +224,7 @@ export function ActPane({ item }: { item?: WorkItem }) {
   if (item.agent) {
     const a = item.agent;
     return (
-      <div className="space-y-3 p-3">
+      <div className={ACT_LAYOUT}>
         <PlanReviewPanel repo={a.repo} branch={a.branch} />
         <SteerPanel target={a.target} />
         <LandButton repo={a.repo} />
@@ -218,7 +236,7 @@ export function ActPane({ item }: { item?: WorkItem }) {
   const attnId = payloadStr(item, "attn_id");
 
   return (
-    <div className="space-y-3 p-3">
+    <div className={ACT_LAYOUT}>
       {/* A pending plan review is a decision, not a dispatch. */}
       {action.type === "plan-review" && action.repo && action.branch && (
         <PlanReviewPanel repo={action.repo} branch={action.branch} />

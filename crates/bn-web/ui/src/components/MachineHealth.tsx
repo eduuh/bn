@@ -7,7 +7,7 @@ import { Card } from "./ui/card";
 import { cn } from "../lib/utils";
 
 /** Tailwind tones per saturation level — the dashboard's ok/warn/urgent signal scale. */
-const LEVEL_TONE: Record<MachineLevel, { text: string; bar: string; badge: string }> = {
+export const LEVEL_TONE: Record<MachineLevel, { text: string; bar: string; badge: string }> = {
   ok: { text: "text-ok", bar: "bg-ok", badge: "border-ok/30 bg-ok-muted text-ok" },
   warn: { text: "text-warn", bar: "bg-warn", badge: "border-warn/30 bg-warn-muted text-warn" },
   critical: {
@@ -17,20 +17,20 @@ const LEVEL_TONE: Record<MachineLevel, { text: string; bar: string; badge: strin
   },
 };
 
-const LEVEL_LABEL: Record<MachineLevel, string> = {
+export const LEVEL_LABEL: Record<MachineLevel, string> = {
   ok: "healthy",
   warn: "warming",
   critical: "saturated",
 };
 
 /** Round MB to a compact GB string (`12.4 GB`). */
-function gb(mb: number): string {
+export function gb(mb: number): string {
   return `${(mb / 1024).toFixed(1)} GB`;
 }
 
 /** A labelled 0..1 gauge bar. `frac` null (unknown signal) renders a muted "—". `tone` colours the
  * fill once the value crosses into warn/critical; below that it stays neutral. */
-function Gauge({
+export function Gauge({
   label,
   frac,
   detail,
@@ -60,10 +60,27 @@ function Gauge({
   );
 }
 
+/** The gauge stripped to a bare 52×4px track — the topbar form, where a metric is one glance wide
+ * and its label rides beside it rather than above. Same tone contract as `Gauge`, so a warming host
+ * reads identically in the topbar and on the machine card. */
+export function Meter({ frac, tone }: { frac: number | null; tone: MachineLevel }) {
+  const pct = frac == null ? null : Math.min(100, Math.max(0, frac * 100));
+  return (
+    <span className="block h-1 w-[52px] overflow-hidden rounded-full bg-muted">
+      {pct != null && (
+        <span
+          className={cn("block h-full rounded-full transition-all", LEVEL_TONE[tone].bar)}
+          style={{ width: `${pct}%` }}
+        />
+      )}
+    </span>
+  );
+}
+
 /** The tone a single metric fraction earns on its own, so its gauge fill matches its severity even
  * when the overall card level is driven by a different signal. Thresholds mirror
  * `bn_core::machine` (load/core .7/1.0, RAM .85/.95, swap .10/.50). */
-function gaugeTone(frac: number | null, warn: number, crit: number): MachineLevel {
+export function gaugeTone(frac: number | null, warn: number, crit: number): MachineLevel {
   if (frac == null) return "ok";
   if (frac >= crit) return "critical";
   if (frac >= warn) return "warn";

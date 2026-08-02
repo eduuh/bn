@@ -19,6 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../components/ui/select";
+import { PageHead } from "../components/PageHead";
 
 type Harness = "claude" | "copilot";
 
@@ -76,13 +77,8 @@ export function Research() {
   const reposListId = "research-repo-options";
 
   return (
-    <div className="mx-auto max-w-3xl space-y-5 pb-8">
-      <header className="space-y-1">
-        <h2 className="text-2xl font-semibold tracking-tight">Research</h2>
-        <p className="text-sm text-muted-foreground">
-          Send a read-only scout to investigate — no PR, just findings.
-        </p>
-      </header>
+    <div className="space-y-5 pb-8">
+      <PageHead title="Research" sub="read-only scout — no PR, just findings" />
 
       <Card className="space-y-4 p-4">
         <div className="space-y-1.5">

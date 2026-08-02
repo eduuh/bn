@@ -92,6 +92,29 @@ export interface MachineView {
   agents: { active: number };
 }
 
+// --- Nodes (GET /api/nodes .data) ---
+
+/** Reachability of one fleet machine. The local node is always `online`; remote nodes go
+ * `unreachable` when their heartbeat lapses. */
+export type NodeStatus = "online" | "unreachable";
+
+/** One fleet machine: the `/api/machine` snapshot plus identity and reachability. */
+export interface NodeView extends MachineView {
+  host: string;
+  /** `std::env::consts::OS` on the node — "macos", "linux", "windows", … */
+  platform: string;
+  /** `std::env::consts::ARCH` on the node — "aarch64", "x86_64", … */
+  arch: string;
+  status: NodeStatus;
+  /** True for the node running this server. */
+  local: boolean;
+}
+
+/** `GET /api/nodes` .data — a list from day one, so remote nodes join without a contract change. */
+export interface NodesView {
+  nodes: NodeView[];
+}
+
 /** One harness option for the per-agent switcher (#501) — `bn_core::harness::HarnessOption`.
  * `available:false` renders it disabled with `reason` as a tooltip (never a silent drop). */
 export interface HarnessOption {

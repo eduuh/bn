@@ -11,6 +11,7 @@ import { CostLive } from "../components/CostLive";
 import { Card } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
+import { PageHead } from "../components/PageHead";
 
 const WINDOWS = [7, 30, 90];
 const METRICS: { key: CostMetric; label: string }[] = [
@@ -60,26 +61,27 @@ export function CostView() {
   const categoryChartDegenerate = cats.length <= 1;
 
   return (
-    <div className="mx-auto max-w-3xl space-y-5 pb-8">
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <div className="space-y-1">
-          <h2 className="text-2xl font-semibold tracking-tight">Cost &amp; Usage</h2>
-          <p className="text-sm text-muted-foreground">
-            <span className="font-medium text-ok">AIC</span> = metered Copilot bill ·{" "}
-            <span className="font-medium text-info">$</span> = cache-aware API-equiv benchmark (not a
-            bill)
-          </p>
-        </div>
-        <Tabs value={String(windowDays)} onValueChange={(v) => setWindowDays(Number(v))}>
-          <TabsList aria-label="window">
-            {WINDOWS.map((w) => (
-              <TabsTrigger key={w} value={String(w)}>
-                {w}d
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-      </header>
+    <div className="space-y-5 pb-8">
+      <PageHead
+        title="Cost & Usage"
+        sub={
+          <>
+            <span className="font-semibold text-ok">AIC</span> = metered Copilot bill ·{" "}
+            <span className="font-semibold text-info">$</span> = cache-aware API-equiv (not a bill)
+          </>
+        }
+        right={
+          <Tabs value={String(windowDays)} onValueChange={(v) => setWindowDays(Number(v))}>
+            <TabsList aria-label="window">
+              {WINDOWS.map((w) => (
+                <TabsTrigger key={w} value={String(w)}>
+                  {w}d
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+        }
+      />
 
       {cost.isLoading && <LoadingSkeleton />}
 

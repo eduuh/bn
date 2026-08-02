@@ -14,6 +14,7 @@ import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
 import { cn } from "../lib/utils";
+import { PageHead } from "../components/PageHead";
 
 /** The health tone of a job's last run: green when it last exited 0, red when it failed, grey when
  * it has never run (declared/scripted but not yet observed). */
@@ -214,17 +215,17 @@ export function Cron() {
   const attention = jobs.filter(cronNeedsAttention).length;
 
   return (
-    <div className="mx-auto max-w-3xl space-y-5 pb-8">
-      <header className="space-y-1">
-        <h2 className="text-2xl font-semibold tracking-tight">Cron</h2>
-        <p className="text-sm text-muted-foreground">
-          {cron.isLoading
+    <div className="space-y-5 pb-8">
+      <PageHead
+        title="Cron"
+        sub={
+          cron.isLoading
             ? "loading…"
             : `${jobs.length} job${jobs.length === 1 ? "" : "s"}${
                 attention > 0 ? ` · ${attention} need attention` : ""
-              }`}
-        </p>
-      </header>
+              }`
+        }
+      />
 
       {cron.isLoading && <LoadingSkeleton />}
 

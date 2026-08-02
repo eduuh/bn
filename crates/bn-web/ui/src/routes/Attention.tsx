@@ -10,6 +10,7 @@ import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
 import { cn } from "../lib/utils";
+import { PageHead } from "../components/PageHead";
 
 /** Map a severity to a chip variant + the card's left accent bar colour. */
 const SEVERITY: Record<string, { variant: BadgeProps["variant"]; bar: string }> = {
@@ -164,13 +165,8 @@ export function Attention() {
   });
 
   return (
-    <div className="mx-auto max-w-3xl space-y-5 pb-8">
-      <header className="space-y-1">
-        <h2 className="text-2xl font-semibold tracking-tight">Attention</h2>
-        <p className="text-sm text-muted-foreground">
-          {attn.isLoading ? "loading…" : `${items.length} open`}
-        </p>
-      </header>
+    <div className="space-y-5 pb-8">
+      <PageHead title="Attention" sub={attn.isLoading ? "loading…" : `${items.length} open`} />
 
       {attn.isLoading && <LoadingSkeleton />}
 

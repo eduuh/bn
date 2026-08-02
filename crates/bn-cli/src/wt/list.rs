@@ -131,6 +131,13 @@ pub(crate) fn list_worktree_paths(bare_dir: &Path, bare: Option<&Path>) -> Vec<S
         Some(b) => vec![b.to_path_buf()],
         None => bare_repos(bare_dir),
     };
+    // git prints symlink-resolved paths in `worktree list`, so the exclusion below must compare
+    // against a resolved `bare_dir` too. Unresolved, the bare repo's OWN entry survives the
+    // filter and reads as a removable worktree — and `reset --force` then rm -rf's the bare repo
+    // when `git worktree remove` refuses it. Bites wherever the configured root reaches the real
+    // directory through a symlink: every macOS `/var/...` path (`/private/var/...` to the
+    // kernel), or a symlinked `$HOME` on Linux.
+    let bare_dir = &std::fs::canonicalize(bare_dir).unwrap_or_else(|_| bare_dir.to_path_buf());
     let mut out = Vec::new();
     for b in bares {
         let listing = git_out(&[

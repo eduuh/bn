@@ -49,7 +49,7 @@ export function AgentDetail() {
   const agent = detail.data?.agent;
 
   return (
-    <div className="mx-auto max-w-5xl space-y-5 pb-8">
+    <div className="space-y-5 pb-8">
       <Button asChild variant="ghost" size="sm" className="-ml-2 text-muted-foreground">
         <Link to="/fleet">
           <ArrowLeft className="h-4 w-4" /> Fleet

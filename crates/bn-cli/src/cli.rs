@@ -1992,6 +1992,13 @@ pub(crate) enum DailyCmd {
         #[arg(long, value_parser = clap::value_parser!(u8).range(1..=100))]
         pct: Option<u8>,
     },
+    /// Remove a goal from today outright: bn daily drop <id|substring...>. For a goal that should
+    /// never have been raised (a stale agent ping, a duplicate) — unlike `done` it records no
+    /// completion, so it stays out of standup, brag, and the metrics.
+    Drop {
+        #[arg(required = true)]
+        query: Vec<String>,
+    },
     /// Move an open goal to a future day: bn daily defer <id|substring...> --on <date> | --in <days>.
     Defer {
         #[arg(required = true)]

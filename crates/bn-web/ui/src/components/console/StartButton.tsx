@@ -38,11 +38,15 @@ export function StartButton({ repo = "" }: { repo?: string }) {
   const [open, setOpen] = useState(false);
   return (
     <>
+      {/* Secondary, deliberately: the rail's clay "Start an agent" is the primary way in, and two
+          filled brand buttons stacked in the same corner would make neither read as the one to
+          press. This one earns its place by pre-filling the selected repo, not by shouting. */}
       <Button
         size="sm"
+        variant="outline"
         className="h-8 w-full"
         onClick={() => setOpen(true)}
-        title="start an agent on anything"
+        title="start an agent on anything — pre-filled with the selected repo"
       >
         <Plus className="h-4 w-4" /> Start
       </Button>

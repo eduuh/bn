@@ -7,6 +7,7 @@ import { Console } from "./routes/Console";
 import { CommandCenter } from "./routes/CommandCenter";
 import { Today } from "./routes/Today";
 import { Fleet } from "./routes/Fleet";
+import { Nodes } from "./routes/Nodes";
 import { Start } from "./routes/Start";
 import { CostView } from "./routes/CostView";
 import { Insights } from "./routes/Insights";
@@ -44,6 +45,7 @@ const router = createBrowserRouter([
       { path: "inbox", element: <CommandCenter /> },
       { path: "today", element: <Today /> },
       { path: "fleet", element: <Fleet /> },
+      { path: "nodes", element: <Nodes /> },
       { path: "start", element: <Start /> },
       { path: "reviews", element: <Navigate to="/inbox?tab=reviews" replace /> },
       { path: "cost", element: <CostView /> },

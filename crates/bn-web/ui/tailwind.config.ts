@@ -19,6 +19,12 @@ const config: Config = {
       padding: "1rem",
     },
     extend: {
+      screens: {
+        // The console's third column. Tailwind's `xl` (1280px) is too late — the prototype folds
+        // Act under Focus at 1180px, which is where 19.5 + 18.5rem of fixed columns stop leaving
+        // the focus pane a readable measure.
+        wide: "1181px",
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",

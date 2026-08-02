@@ -14,6 +14,7 @@ import { StatTile } from "../components/StatTile";
 import { Card } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
+import { PageHead } from "../components/PageHead";
 
 const WINDOWS = [7, 30, 90];
 
@@ -173,24 +174,22 @@ export function Insights() {
   const brag = useQuery(bragQuery());
 
   return (
-    <div className="mx-auto max-w-3xl space-y-5 pb-8">
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <div className="space-y-1">
-          <h2 className="text-2xl font-semibold tracking-tight">Insights &amp; Metrics</h2>
-          <p className="text-sm text-muted-foreground">
-            Velocity, throughput, and the weekly digests bn already collects.
-          </p>
-        </div>
-        <Tabs value={String(windowDays)} onValueChange={(v) => setWindowDays(Number(v))}>
-          <TabsList aria-label="metrics window">
-            {WINDOWS.map((d) => (
-              <TabsTrigger key={d} value={String(d)}>
-                {d}d
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-      </header>
+    <div className="space-y-5 pb-8">
+      <PageHead
+        title="Insights & Metrics"
+        sub="velocity · throughput · weekly digests"
+        right={
+          <Tabs value={String(windowDays)} onValueChange={(v) => setWindowDays(Number(v))}>
+            <TabsList aria-label="metrics window">
+              {WINDOWS.map((d) => (
+                <TabsTrigger key={d} value={String(d)}>
+                  {d}d
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+        }
+      />
 
       <Tabs defaultValue="metrics">
         <TabsList aria-label="insights view">

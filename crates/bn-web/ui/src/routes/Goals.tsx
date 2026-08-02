@@ -41,6 +41,7 @@ import { Textarea } from "../components/ui/textarea";
 import { ToastStack } from "../components/ToastStack";
 import { pushToast } from "../lib/toast";
 import { cn } from "../lib/utils";
+import { PageHead } from "../components/PageHead";
 
 /** The deep-link to the Notes view for a connected branch note (the note-jump, per #561). */
 function noteHref(repo: string, branch: string): string {
@@ -372,11 +373,8 @@ export function Goals() {
   const quarter = goals.data?.quarter;
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 pb-8">
-      <header className="space-y-1">
-        <h2 className="text-2xl font-semibold tracking-tight">Goals</h2>
-        <p className="text-sm text-muted-foreground">Today &amp; this quarter — aimed vs achieved.</p>
-      </header>
+    <div className="space-y-6 pb-8">
+      <PageHead title="Goals" sub="today & this quarter — aimed vs achieved" />
 
       {goals.isLoading && (
         <div className="space-y-3" aria-hidden="true">

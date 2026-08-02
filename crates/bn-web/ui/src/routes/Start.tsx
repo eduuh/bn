@@ -28,6 +28,7 @@ import {
   SelectValue,
 } from "../components/ui/select";
 import { cn } from "../lib/utils";
+import { PageHead } from "../components/PageHead";
 
 type Mode = "dispatch" | "queue" | "daemon";
 type Kind = "ship" | "scout";
@@ -228,12 +229,7 @@ export function Start() {
 
   return (
     <div className="mx-auto max-w-2xl space-y-5 pb-8">
-      <header className="space-y-1">
-        <h2 className="text-2xl font-semibold tracking-tight">Start an agent</h2>
-        <p className="text-sm text-muted-foreground">
-          Dispatch a new agent, queue work, or start a daemon run.
-        </p>
-      </header>
+      <PageHead title="Start an agent" sub="dispatch · queue · daemon run" />
 
       <Card className="space-y-4 p-4">
         <div

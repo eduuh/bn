@@ -115,35 +115,46 @@ export function Console() {
   const loading = orch.isLoading && fleet.isLoading && actions.isLoading;
 
   return (
-    <div className="flex h-[100dvh] min-h-0 flex-col md:h-full">
-      {/* Three columns on a desktop second screen; the act column folds under the focus pane on
-          narrower windows, and the queue becomes a full-width list on a phone. */}
-      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[19rem_minmax(0,1fr)] xl:grid-cols-[19rem_minmax(0,1fr)_20rem]">
+    <div className="flex h-full min-h-0 flex-col">
+      {/* Three columns on a desktop second screen. Below 1181px the act pane folds *under* the
+          focus pane as a horizontal strip (same element, re-flowed — see `ActPane`) rather than
+          disappearing, and on a phone the queue becomes a full-width list. */}
+      <div
+        className={cn(
+          "grid min-h-0 flex-1 grid-cols-1",
+          "lg:grid-cols-[19.5rem_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)_auto]",
+          "wide:grid-cols-[19.5rem_minmax(0,1fr)_18.5rem] wide:grid-rows-1",
+        )}
+      >
         <aside
           aria-label="work queue"
           className={cn(
             "min-h-0 flex-col border-border bg-card lg:flex lg:border-r",
+            "lg:col-start-1 lg:row-start-1 lg:row-span-2 wide:row-span-1",
             // Below lg the queue and the focus pane swap rather than stack — a stacked pair gives
             // each about a third of a phone screen, which is unusable for both.
             selected ? "hidden" : "flex",
           )}
         >
-          <div className="flex-none space-y-2.5 px-3 pb-2 pt-3">
-            <div>
-              <h1 className="font-display text-lg leading-none tracking-tight text-foreground">
-                Console
+          <div className="flex-none space-y-2.5 px-3.5 pb-2 pt-3.5">
+            {/* The prototype's `.queue-head`: the title and the state of the queue on one baseline,
+                counts pushed to the right edge where they read as a status line rather than a
+                subtitle. */}
+            <div className="flex items-baseline gap-2">
+              <h1 className="font-display text-lg font-semibold tracking-tight text-foreground">
+                Queue
               </h1>
-              <p className="mt-1 text-[0.68rem] text-muted-foreground">
+              <span className="ml-auto font-mono text-[11px] tabular-nums text-muted-foreground/70">
                 {counts.blocked > 0 ? (
-                  <span className="text-warn">{counts.blocked} blocked on you</span>
+                  <span className="font-semibold text-urgent">{counts.blocked} blocked</span>
                 ) : (
-                  <span>nothing blocked</span>
+                  <span className="text-ok">clear</span>
                 )}
                 <span className="text-muted-foreground/50"> · </span>
                 {counts.running} running
                 <span className="text-muted-foreground/50"> · </span>
                 {counts.backlog} queued
-              </p>
+              </span>
             </div>
             {/* Always here, on every selection — starting work is never a matter of navigating. */}
             <StartButton repo={selected?.agent?.repo ?? selected?.action?.repo ?? ""} />
@@ -166,6 +177,7 @@ export function Console() {
           aria-label="focus"
           className={cn(
             "min-h-0 flex-col overflow-hidden lg:flex",
+            "lg:col-start-2 lg:row-start-1",
             selected ? "flex" : "hidden lg:flex",
           )}
         >
@@ -182,20 +194,20 @@ export function Console() {
           <FocusPane item={selected} blocked={counts.blocked} now={now} />
         </section>
 
+        {/* One instance, three placements: hidden on a phone until something is selected, a
+            horizontal strip under Focus at tablet width, the third column at `wide`. */}
         <aside
           aria-label="actions"
-          className="hidden min-h-0 overflow-y-auto border-l border-border bg-card xl:block"
+          className={cn(
+            "min-h-0 overflow-y-auto border-border bg-card",
+            "lg:col-start-2 lg:row-start-2 lg:block lg:max-h-[38dvh] lg:border-t",
+            "wide:col-start-3 wide:row-start-1 wide:max-h-none wide:border-l wide:border-t-0",
+            selected ? "block border-t" : "hidden lg:block",
+          )}
         >
           <ActPane item={selected} />
         </aside>
       </div>
-
-      {/* Below xl the act column has nowhere to sit, so the controls follow the focus pane. */}
-      {selected && (
-        <div className="border-t border-border bg-card xl:hidden">
-          <ActPane item={selected} />
-        </div>
-      )}
 
       <ToastStack />
     </div>

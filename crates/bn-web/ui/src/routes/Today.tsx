@@ -32,6 +32,7 @@ import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
 import { cn } from "../lib/utils";
+import { PageHead } from "../components/PageHead";
 
 /** Quarter-goal health → Badge variant (mirrors the CLI's status palette); unknown → muted. */
 const STATUS_VARIANT: Record<string, BadgeProps["variant"]> = {
@@ -449,11 +450,8 @@ export function Today() {
     doneGoals.length === 0 && mergedPrs.length === 0 && commits.length === 0;
 
   return (
-    <div className="mx-auto max-w-3xl space-y-5 pb-8">
-      <header className="space-y-1">
-        <h2 className="text-2xl font-semibold tracking-tight">Today</h2>
-        <p className="text-sm text-muted-foreground">{todayDate ?? "—"} · aimed vs achieved</p>
-      </header>
+    <div className="space-y-5 pb-8">
+      <PageHead title="Today" sub={`${todayDate ?? "—"} · aimed vs achieved`} />
 
       {loading && (
         <div className="space-y-5" aria-hidden="true">

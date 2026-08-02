@@ -150,6 +150,21 @@ export function QueuePane({
           </section>
         ))}
       </div>
+
+      {/* The keyboard contract, stated where you'd look for it. Dropped on a phone, where there is
+          no keyboard to walk the list with. */}
+      <div className="hidden flex-none border-t border-border px-3.5 py-2.5 text-[11px] text-muted-foreground/70 lg:block">
+        <Key>j</Key>/<Key>k</Key> move · <Key>↵</Key> focus · <Key>esc</Key> clear
+      </div>
     </div>
+  );
+}
+
+/** A keycap, matching the topbar's ⌘K chip. */
+function Key({ children }: { children: React.ReactNode }) {
+  return (
+    <kbd className="rounded border border-border bg-muted px-1.5 py-px font-mono text-[10.5px] text-muted-foreground">
+      {children}
+    </kbd>
   );
 }

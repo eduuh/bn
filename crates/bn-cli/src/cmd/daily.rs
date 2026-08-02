@@ -145,6 +145,21 @@ pub(crate) fn emit_daily(
                 Err(e) => emit_err("daily_add", &e, as_json),
             }
         }
+        Some(DailyCmd::Drop { query }) => {
+            match daily::drop_goal(cfg, &today(), &query.join(" ")) {
+                Ok(d) => {
+                    if as_json {
+                        println!(
+                            "{}",
+                            Envelope::success("daily_drop", payload::daily_drop_data(&d)).to_json()
+                        );
+                    } else {
+                        println!("Dropped [{}]: {}", d.id, d.text);
+                    }
+                }
+                Err(e) => emit_err("daily_drop", &e, as_json),
+            }
+        }
         Some(DailyCmd::Defer { query, on, in_days }) => {
             let today = today();
             let date = match resolve_on(&today, on, in_days) {

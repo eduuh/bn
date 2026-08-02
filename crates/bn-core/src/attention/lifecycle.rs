@@ -93,6 +93,31 @@ pub fn remove(id: &str) -> std::io::Result<bool> {
     Ok(true)
 }
 
+/// Dismiss every open item hanging off a PR in `dead` — merged or closed, so "ping reviewers on
+/// wira360#923" is moot and would otherwise sit in the queue forever (#966). A [`remove`], not an
+/// [`ack`]: the item was cancelled by the world, you didn't action it, and the metrics should say
+/// so. Items with no link, or a link that isn't a PR URL, are untouched. Returns the dismissed
+/// items so the caller can report what left the queue.
+pub fn retire_dead_pr_items(
+    dead: &std::collections::HashSet<(String, i64)>,
+    today: &str,
+) -> Vec<AttnItem> {
+    if dead.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for item in open_items(today) {
+        let is_dead = item
+            .link
+            .as_deref()
+            .is_some_and(|l| crate::pr_observe::link_is_terminal(dead, l));
+        if is_dead && remove(&item.id).unwrap_or(false) {
+            out.push(item);
+        }
+    }
+    out
+}
+
 /// Mark item `id` as promoted to a branch todo — folds it out of the open set (it's now tracked
 /// as planned work) and records the created `todo` id for the trail. Distinct from [`ack`] so
 /// metrics can tell planned work from a plain resolution. Returns `false` (without writing) if
@@ -203,6 +228,52 @@ mod tests {
     use super::*;
     use crate::attention::*;
     use crate::test_support::with_state_dir;
+
+    #[test]
+    fn dead_pr_items_are_retired_as_cancelled_not_resolved() {
+        with_state_dir(|| {
+            let today = "2026-06-23";
+            let dead_pr = "https://github.com/eduuh/wira360/pull/923";
+            let stale = add(
+                "staff-standup",
+                "Unblock stalled PR: wira360#923 — ping reviewers",
+                "info",
+                Some("wira360"),
+                None,
+                Some(dead_pr),
+                None,
+                today,
+            )
+            .unwrap();
+            let live = add(
+                "staff-standup",
+                "Unblock stalled PR: mt5-data-api#168 — ping reviewers",
+                "info",
+                Some("mt5-data-api"),
+                None,
+                Some("https://github.com/eduuh/mt5-data-api/pull/168"),
+                None,
+                today,
+            )
+            .unwrap();
+            let unlinked = add_simple("review the design doc", "warn", None);
+
+            let dead: std::collections::HashSet<(String, i64)> =
+                [("eduuh/wira360".to_string(), 923)].into_iter().collect();
+            let retired = retire_dead_pr_items(&dead, today);
+            assert_eq!(retired.len(), 1);
+            assert_eq!(retired[0].id, stale.id);
+
+            // Still open, severity-ranked (the `warn` first): the live PR and the unlinked item.
+            let left: Vec<String> = open_items(today).into_iter().map(|i| i.id).collect();
+            assert_eq!(left, [unlinked.id, live.id]);
+            // Cancelled by the world, not resolved by you — the metrics must be able to tell.
+            assert!(events::read_all().iter().any(|e| e.kind == "attn_remove"));
+            assert!(!events::read_all().iter().any(|e| e.kind == "attn_ack"));
+            // Idempotent: a second sweep finds nothing still open on that PR.
+            assert!(retire_dead_pr_items(&dead, today).is_empty());
+        });
+    }
 
     #[test]
     fn mark_dispatched_folds_out_and_records_backlog_trail() {

@@ -1491,6 +1491,11 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&ship).unwrap(), original);
 
         std::fs::write(ship.parent().unwrap().join("notes.md"), "keep").unwrap();
+        // Uninstall derives its paths from `git rev-parse --show-toplevel`, which reports the
+        // repo root symlink-resolved — on macOS this tempdir is `/var/folders/...` to us and
+        // `/private/var/folders/...` to git. Capture the resolved path while the file still
+        // exists and compare against that.
+        let expected = std::fs::canonicalize(&ship).unwrap();
         let removed = uninstall_native_skills(
             repo.path(),
             home.path(),
@@ -1498,7 +1503,7 @@ mod tests {
             &[NativeHarness::Copilot],
         )
         .unwrap();
-        assert_eq!(removed, vec![ship.clone()]);
+        assert_eq!(removed, vec![expected]);
         assert!(!ship.exists());
         assert!(ship.parent().unwrap().join("notes.md").exists());
         assert!(owned_dir.join("SKILL.md").exists());

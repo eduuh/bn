@@ -30,6 +30,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/bearings", get(api::bearings))
         .route("/api/fleet", get(api::fleet))
         .route("/api/machine", get(api::machine))
+        .route("/api/nodes", get(api::nodes))
         .route("/api/agents/catalog", get(api::agents_catalog))
         .route("/api/today/crons", get(api::today_crons))
         .route("/api/today/agents", get(api::today_agents))
@@ -467,6 +468,36 @@ mod tests {
             .await
             .unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[test]
+    fn nodes_read_lists_the_local_host_with_identity_and_vitals() {
+        // Nodes-view contract (#966): `/api/nodes` is the machines-as-a-*list* read. Today it
+        // reports exactly one entry — the local host — carrying identity (host from the resolved
+        // config, platform/arch from the build), `status: "online"`, `local: true`, and the same
+        // vitals shape `/api/machine` serves, so remote nodes can join without a UI contract
+        // change.
+        bn_core::test_support::with_state_dir(|| {
+            let _host = bn_core::test_support::EnvGuard::set("BN_HOSTNAME", "testhost");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let resp = respond(test_state(), get("/api/nodes", None)).await;
+                assert_eq!(resp.status(), StatusCode::OK);
+                let body = body_json(resp).await;
+                assert_eq!(body["ok"], true);
+                assert_eq!(body["command"], "nodes");
+                let nodes = body["data"]["nodes"].as_array().expect("nodes array");
+                assert_eq!(nodes.len(), 1);
+                let n = &nodes[0];
+                assert_eq!(n["host"], "testhost");
+                assert_eq!(n["status"], "online");
+                assert_eq!(n["local"], true);
+                assert_eq!(n["platform"], std::env::consts::OS);
+                assert_eq!(n["arch"], std::env::consts::ARCH);
+                assert!(n["cpu"]["cores"].as_u64().unwrap() > 0);
+                assert!(n["saturation"]["level"].is_string());
+            });
+        });
     }
 
     #[test]

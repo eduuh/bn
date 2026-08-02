@@ -97,6 +97,27 @@ pub async fn machine(State(state): State<AppState>) -> Json<Envelope> {
     Json(Envelope::success("machine", data))
 }
 
+/// `GET /api/nodes` — the fleet's machines as a *list*. Today that is exactly one entry — the
+/// local host — but the shape is a list from day one so registered remote nodes can join without
+/// a UI contract change: each entry is the `/api/machine` snapshot plus identity (`host`,
+/// `platform`, `arch`), a reachability `status`, and a `local` marker for the node running this
+/// server. Remote entries will carry `status: "unreachable"` when their heartbeat lapses.
+pub async fn nodes(State(state): State<AppState>) -> Json<Envelope> {
+    let snapshot = bn_core::machine::sample();
+    let fleet = bn_core::agent::supervise(
+        &state.cfg,
+        bn_core::agent::DEFAULT_IDLE_MINS,
+        bn_core::agent::DEFAULT_STUCK_MINS,
+    );
+    let mut node = bn_core::payload::machine_health_data(&snapshot, fleet.agents.len());
+    node["host"] = json!(state.cfg.hostname);
+    node["platform"] = json!(std::env::consts::OS);
+    node["arch"] = json!(std::env::consts::ARCH);
+    node["status"] = json!("online");
+    node["local"] = json!(true);
+    Json(Envelope::success("nodes", json!({ "nodes": [node] })))
+}
+
 /// `GET /api/agents/{session_id}` — one live agent's detail: the fleet entry plus its most-recent
 /// recorded session, last request text, the rendered branch `note` (typed frontmatter + prose
 /// body + goal), and the machine's harness availability (#501, for the detail switcher) so the

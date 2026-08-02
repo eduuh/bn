@@ -12,6 +12,7 @@ import { Card } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
 import { Textarea } from "../components/ui/textarea";
 import { cn } from "../lib/utils";
+import { PageHead } from "../components/PageHead";
 
 /** The editor pane for the selected skill: loads its raw markdown, edits it in a textarea, and
  * saves it back via `PUT /api/skills/:name`. Only the *effective* file is edited (what bn-mcp
@@ -153,13 +154,11 @@ export function Skills() {
   );
 
   return (
-    <div className="mx-auto max-w-4xl space-y-5 pb-8">
-      <header className="space-y-1">
-        <h2 className="text-2xl font-semibold tracking-tight">Skills</h2>
-        <p className="text-sm text-muted-foreground">
-          {skills.isLoading ? "loading…" : `${all.length} across all tiers · view & edit`}
-        </p>
-      </header>
+    <div className="space-y-5 pb-8">
+      <PageHead
+        title="Skills"
+        sub={skills.isLoading ? "loading…" : `${all.length} across all tiers · view & edit`}
+      />
 
       {skills.isLoading && (
         <div className="space-y-2" aria-hidden="true">

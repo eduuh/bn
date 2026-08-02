@@ -12,6 +12,7 @@ import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
 import { cn } from "../lib/utils";
+import { PageHead } from "../components/PageHead";
 
 /** A small metadata tag on a card's meta row. */
 function Tag({
@@ -143,13 +144,13 @@ export function Repos() {
   const list = repos.data?.repos ?? [];
 
   return (
-    <div className="mx-auto max-w-3xl space-y-5 pb-8">
-      <header className="space-y-1">
-        <h2 className="text-2xl font-semibold tracking-tight">Repos</h2>
-        <p className="text-sm text-muted-foreground">
-          {repos.isLoading ? "loading…" : `${list.length} repo${list.length === 1 ? "" : "s"} · live`}
-        </p>
-      </header>
+    <div className="space-y-5 pb-8">
+      <PageHead
+        title="Repos"
+        sub={
+          repos.isLoading ? "loading…" : `${list.length} repo${list.length === 1 ? "" : "s"} · live`
+        }
+      />
 
       {repos.isLoading && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2" aria-hidden="true">

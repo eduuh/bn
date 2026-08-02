@@ -49,6 +49,7 @@ import { Card } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { cn } from "../lib/utils";
+import { PageHead } from "../components/PageHead";
 
 /** Map a severity to a chip variant + the row's left accent bar colour. */
 const SEVERITY: Record<string, { variant: BadgeProps["variant"]; bar: string }> = {
@@ -657,13 +658,8 @@ export function CommandCenter() {
   const hiddenTodoCount = todos.length - visibleTodos.length;
 
   return (
-    <div className="mx-auto max-w-3xl space-y-5 pb-8">
-      <header className="space-y-1">
-        <h2 className="text-2xl font-semibold tracking-tight">Command center</h2>
-        <p className="text-sm text-muted-foreground">
-          Everything that needs you — one click to an agent.
-        </p>
-      </header>
+    <div className="space-y-5 pb-8">
+      <PageHead title="Command center" sub="everything that needs you — one click to an agent" />
 
       <Tabs
         value={tab}

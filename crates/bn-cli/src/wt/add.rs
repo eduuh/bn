@@ -271,7 +271,20 @@ pub(crate) fn create_worktree(bare_s: &str, branch: &str, wt_s: &str, pull: bool
 }
 
 /// Fast-forward a freshly-created worktree before reporting it ready.
+///
+/// A branch with no upstream — every `-b <new>` branch, and any local-only branch cut from a local
+/// `main` — makes a bare `git pull --ff-only` die with "no tracking information". There is nothing
+/// to fast-forward in that case, so skip the pull instead of failing the whole `wt add` and telling
+/// the user the (perfectly usable) worktree "is not ready".
 pub(crate) fn ff_pull(wt_s: &str) -> bool {
+    if !crate::git::git_ok(&["-C", wt_s, "rev-parse", "--git-dir"]) {
+        eprintln!("{RED}Not a git worktree: {wt_s}{NC}");
+        return false;
+    }
+    if !crate::git::git_ok(&["-C", wt_s, "rev-parse", "--verify", "--quiet", "@{u}"]) {
+        println!("{YELLOW}No upstream yet; skipping pull{NC}");
+        return true;
+    }
     println!("{BLUE}Pulling latest...{NC}");
     if crate::git::git_ok(&["-C", wt_s, "pull", "--ff-only"]) {
         true
@@ -373,5 +386,27 @@ mod tests {
     fn ff_pull_reports_failure() {
         let dir = tempfile::tempdir().unwrap();
         assert!(!ff_pull(&dir.path().to_string_lossy()));
+    }
+
+    /// A fresh branch has no `@{u}`; that is "nothing to pull", not "worktree is not ready".
+    #[test]
+    fn ff_pull_skips_when_no_upstream() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().to_string_lossy().to_string();
+        assert!(crate::git::git_ok(&["-C", &p, "init", "-q", "."]));
+        assert!(crate::git::git_ok(&[
+            "-C",
+            &p,
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ]));
+        assert!(ff_pull(&p));
     }
 }

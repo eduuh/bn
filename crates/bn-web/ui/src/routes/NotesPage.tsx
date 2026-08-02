@@ -11,6 +11,7 @@ import { Card } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { cn } from "../lib/utils";
+import { PageHead } from "../components/PageHead";
 
 const keyOf = (b: SummaryEntry): string => `${b.repo}/${b.branch}`;
 
@@ -21,13 +22,8 @@ const keyOf = (b: SummaryEntry): string => `${b.repo}/${b.branch}`;
  */
 export function NotesPage() {
   return (
-    <div className="mx-auto max-w-5xl space-y-5 pb-8">
-      <header className="space-y-1">
-        <h2 className="text-2xl font-semibold tracking-tight">Notes &amp; Learnings</h2>
-        <p className="text-sm text-muted-foreground">
-          Browse branch notes and review captured learnings.
-        </p>
-      </header>
+    <div className="space-y-5 pb-8">
+      <PageHead title="Notes & Learnings" sub="branch notes · captured learnings" />
 
       <Tabs defaultValue="notes">
         <TabsList>

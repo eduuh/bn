@@ -10,10 +10,12 @@ test("the console is the index: one queue, grouped by what you'd do about it", a
   await primeToken(page);
   await page.goto("/");
 
-  await expect(page.getByRole("heading", { name: "Console", exact: true })).toBeVisible();
+  // The left column heads as "Queue" — "Console" is the rail entry that got you here, and having
+  // the screen repeat its own nav label spent the one display-serif line on no information.
+  const queue = page.getByRole("complementary", { name: "work queue" });
+  await expect(queue.getByRole("heading", { name: "Queue", exact: true })).toBeVisible();
 
   // The three lanes are always present — an empty lane reassures rather than disappearing.
-  const queue = page.getByRole("complementary", { name: "work queue" });
   await expect(queue.getByRole("heading", { name: "Blocked on you" })).toBeVisible();
   await expect(queue.getByRole("heading", { name: "Running" })).toBeVisible();
   await expect(queue.getByRole("heading", { name: "Backlog" })).toBeVisible();
@@ -116,4 +118,26 @@ test("the filter narrows the queue in place", async ({ page }) => {
   const after = await queue.locator("button[aria-current]").count();
   expect(after).toBeLessThan(before);
   await expect(queue.getByText(/No matches in this lane/).first()).toBeVisible();
+});
+
+test("at tablet width Act folds under Focus — one pane, not a hidden column plus a duplicate", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "the fold is a window-width behaviour");
+  await primeToken(page);
+  // Between `lg` and `wide`: the third column no longer fits, so Act becomes a horizontal strip.
+  await page.setViewportSize({ width: 1100, height: 900 });
+  await page.goto("/");
+
+  // Exactly one — the console used to render a second ActPane below the fold, which meant a
+  // half-typed steer message existed twice and was lost on crossing the breakpoint.
+  const act = page.getByRole("complementary", { name: "actions" });
+  await expect(act).toHaveCount(1);
+  await expect(act).toBeVisible();
+
+  // It sits under the focus pane, flush with its left edge — not beside it.
+  const focus = await page.getByRole("region", { name: "focus" }).boundingBox();
+  const box = await act.boundingBox();
+  expect(box!.y).toBeGreaterThan(focus!.y);
+  expect(Math.abs(box!.x - focus!.x)).toBeLessThan(4);
 });

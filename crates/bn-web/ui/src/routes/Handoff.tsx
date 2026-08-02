@@ -14,6 +14,7 @@ import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
 import { Skeleton } from "../components/ui/skeleton";
 import { cn } from "../lib/utils";
+import { PageHead } from "../components/PageHead";
 
 const keyOf = (b: SummaryEntry): string => `${b.repo}/${b.branch}`;
 
@@ -88,13 +89,8 @@ export function Handoff() {
   const selected = branches.find((b) => keyOf(b) === sel) ?? branches[0];
 
   return (
-    <div className="mx-auto max-w-5xl space-y-5 pb-8">
-      <header className="space-y-1">
-        <h2 className="text-2xl font-semibold tracking-tight">Handoff</h2>
-        <p className="text-sm text-muted-foreground">
-          Per-branch resume packet — pick a branch to read or update its handoff.
-        </p>
-      </header>
+    <div className="space-y-5 pb-8">
+      <PageHead title="Handoff" sub="per-branch resume packet" />
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,16rem)_minmax(0,1fr)]">
         <aside className="space-y-2">
