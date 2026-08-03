@@ -1,11 +1,8 @@
 ---
 name: demo
-class: info
 on_calendar: "*-*-* 06:30:00"
 run: "bn run demo"
-window: ":demo"
 network: false
-reuse: true
 gather: "bn staff gather demo"
 sinks: ["attn"]
 description: "Echo-grade demo staff agent proving gather→dispatch→validate→route."

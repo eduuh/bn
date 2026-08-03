@@ -271,13 +271,6 @@ pub(super) fn route(cfg: &Config, action: CmdReview, json: bool) {
                         std::process::exit(1);
                     }
                 }
-                Some(OrchestrateCmd::Cockpit(sub)) => match sub {
-                    CockpitCmd::Up { repo, attach } => {
-                        cockpit_up(cfg, repo.as_deref(), attach, json)
-                    }
-                    CockpitCmd::Status => cockpit_status(json),
-                    CockpitCmd::Ground { repo } => cockpit_ground(cfg, repo.as_deref(), json),
-                },
             }
         }
         CmdReview::ReviewPr { action } => {

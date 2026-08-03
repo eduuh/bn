@@ -1,11 +1,8 @@
 ---
 name: goals-align
-class: info
 on_calendar: "Mon *-*-* 08:00:00"
 run: "bn run goals-align"
-window: ":goals-align"
 network: false
-reuse: true
 gather: "bn staff gather goals-align"
 sinks: ["attn", "note"]
 description: "Weekly alignment review between Command Center activity and daily/quarter goals."

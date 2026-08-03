@@ -76,12 +76,81 @@ pub(crate) fn native_job(job: &str) -> Option<NativeJob> {
         "tools-reconcile" => Some(job_tools_reconcile),
         "keep-warm" => Some(crate::cmd::orchestrate::job_keep_warm),
         "pool-warm" => Some(crate::wt_pool::job_pool_warm),
-        "cockpit-ensure" => Some(crate::cmd::cockpit::job_cockpit_ensure),
         "cron-health" => Some(crate::cmd::attn_agent::job_cron_health),
         "attention-agent" => Some(crate::cmd::attn_agent::job_attention_agent),
         "info-gather" => Some(crate::cmd::cron::job_info_gather),
+        "tick-5m" => Some(job_tick_5m),
+        "tick-10m" => Some(job_tick_10m),
+        "tick-15m" => Some(job_tick_15m),
         _ => None,
     }
+}
+
+/// The `*:0/5` cadence cluster, in run order.
+pub(crate) const TICK_5M: &[&str] = &[
+    "tools-reconcile",
+    "notify",
+    "routine-tick",
+    "attention-sync",
+];
+
+/// The `*:0/10` cadence cluster, in run order.
+pub(crate) const TICK_10M: &[&str] = &[
+    "auto-review-trigger",
+    "attention-auto-trigger",
+    "agent-supervise",
+];
+
+/// The `*:0/15` cadence cluster, in run order.
+pub(crate) const TICK_15M: &[&str] = &["auto-review-poll", "cron-health", "info-gather"];
+
+/// Run one cadence tick: every job in `children`, in order, through the normal `bn run` path.
+///
+/// These clusters used to be one systemd timer (and one `bn` process) per job, all firing on the
+/// same schedule. Folding them behind a single timer costs no observability: each child still goes
+/// through [`run_native_job`]/`run_job`, so it records its **own** `cron_run` event — `bn cron` and
+/// `bn doctor` show the same per-job rows and per-job failure counts as before. It also preserves
+/// each child's host gate, since `run_job` applies `job_allowed_here` per child.
+///
+/// A failing child never blocks its siblings, and the tick itself returns 0 even when one fails:
+/// the child already recorded its own failure, so failing the parent too would double-report the
+/// same problem and mask which job actually broke.
+fn run_tick(cfg: &Config, ctx: Option<&Resolved>, tick: &str, children: &[&str]) -> i32 {
+    let mut failed: Vec<&str> = Vec::new();
+    for job in children {
+        if crate::cmd::cron::run_job(cfg, ctx, job) != 0 {
+            failed.push(job);
+        }
+    }
+    if failed.is_empty() {
+        native_job_line(&format!("{tick}: {} job(s) ok", children.len()), false);
+    } else {
+        native_job_line(
+            &format!(
+                "{tick}: {}/{} ok — failed: {}",
+                children.len() - failed.len(),
+                children.len(),
+                failed.join(", ")
+            ),
+            true,
+        );
+    }
+    0
+}
+
+/// `tick-5m` — the five-minute housekeeping cluster (see [`run_tick`]).
+pub(crate) fn job_tick_5m(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
+    run_tick(cfg, ctx, "tick-5m", TICK_5M)
+}
+
+/// `tick-10m` — the ten-minute cluster (see [`run_tick`]).
+pub(crate) fn job_tick_10m(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
+    run_tick(cfg, ctx, "tick-10m", TICK_10M)
+}
+
+/// `tick-15m` — the fifteen-minute cluster (see [`run_tick`]).
+pub(crate) fn job_tick_15m(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
+    run_tick(cfg, ctx, "tick-15m", TICK_15M)
 }
 
 /// What the committer should do for one notes repo, given its git state. Pure so it's testable
@@ -466,7 +535,7 @@ fn resolve_bn_main_worktree() -> String {
 
 /// `self-update` — keep the installed `bn` in lock-step with `bn/main` by re-running the repo's own
 /// `install.sh` whenever main advances. install.sh is the single source of truth for how bn is
-/// built and wired (binaries, the bn-bash fallback, the `~/.config/bn` anchors, cron registration,
+/// built and wired (binaries, the `~/.config/bn` anchors, cron registration,
 /// MCP registration), so we delegate to it rather than reimplementing a cargo build here — that
 /// would drift on a new cron/MCP/anchor a fresh main needs. Cheap to run often: it fast-forwards
 /// main and only re-installs when HEAD actually moved past the last build (tracked in a stamp
@@ -496,12 +565,18 @@ pub(crate) fn job_self_update(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     let main_wt = resolve_bn_main_worktree();
 
     if !Path::new(&main_wt).is_dir() {
-        eprintln!("self-update: bn main worktree not found ({main_wt})");
+        native_job_line(
+            &format!("self-update: bn main worktree not found ({main_wt})"),
+            true,
+        );
         return 1;
     }
 
     if !cargo_on_path() {
-        println!("self-update: cargo absent — leaving the prebuilt binary in place");
+        native_job_line(
+            "self-update: cargo absent — leaving the prebuilt binary in place",
+            false,
+        );
         return 0;
     }
 
@@ -516,7 +591,10 @@ pub(crate) fn job_self_update(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     ) {
         Some(h) if !h.is_empty() => h,
         _ => {
-            eprintln!("self-update: cannot resolve HEAD in {main_wt}");
+            native_job_line(
+                &format!("self-update: cannot resolve HEAD in {main_wt}"),
+                true,
+            );
             return 1;
         }
     };
@@ -532,18 +610,34 @@ pub(crate) fn job_self_update(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     // Single source of truth: install.sh rebuilds from source and re-wires everything. It is not a
     // git/gh/tmux binary, so spawning it directly is fine (the subprocess guard only covers those).
     let installer = Path::new(&main_wt).join("install.sh");
+    // Capture rather than inherit: a cron has no terminal, so inherited output goes nowhere and a
+    // failed build leaves `bn cron`/`bn doctor` showing a bare "FAIL" with no cause. Capturing lets
+    // the compiler error ride into the run's `output_tail`, which is the only durable record of why
+    // an unattended update stopped keeping `bn` in lock-step with main.
     match std::process::Command::new(&installer)
         .arg("--core")
         .current_dir(&main_wt)
-        .status()
+        .output()
     {
-        Ok(s) if s.success() => {}
-        Ok(s) => {
-            eprintln!("self-update: install.sh --core failed ({s})");
-            return s.code().unwrap_or(1);
+        Ok(out) if out.status.success() => {}
+        Ok(out) => {
+            let mut combined = String::from_utf8_lossy(&out.stderr).into_owned();
+            combined.push_str(&String::from_utf8_lossy(&out.stdout));
+            native_job_line(
+                &format!("self-update: install.sh --core failed ({})", out.status),
+                true,
+            );
+            // The last few lines carry the actual compiler/installer error.
+            for line in tail_lines(&combined, 12).lines() {
+                native_job_line(&format!("  {line}"), true);
+            }
+            return out.status.code().unwrap_or(1);
         }
         Err(e) => {
-            eprintln!("self-update: cannot run {}: {e}", installer.display());
+            native_job_line(
+                &format!("self-update: cannot run {}: {e}", installer.display()),
+                true,
+            );
             return 1;
         }
     }
@@ -552,7 +646,7 @@ pub(crate) fn job_self_update(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
         let _ = std::fs::create_dir_all(dir);
     }
     let _ = std::fs::write(&stamp, format!("{head}\n"));
-    println!("self-update: ran install.sh --core @ {head}");
+    native_job_line(&format!("self-update: ran install.sh --core @ {head}"), false);
     0
 }
 
@@ -1604,7 +1698,10 @@ pub(crate) fn job_ensure_tmux(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
 
 #[cfg(test)]
 mod native_job_tests {
-    use super::{job_tools_reconcile, native_job, native_job_line, run_native_job};
+    use super::{
+        job_tools_reconcile, native_job, native_job_line, run_native_job, TICK_10M, TICK_15M,
+        TICK_5M,
+    };
     use std::path::PathBuf;
 
     #[test]
@@ -1653,7 +1750,6 @@ mod native_job_tests {
             "tools-reconcile",
             "keep-warm",
             "pool-warm",
-            "cockpit-ensure",
         ] {
             assert!(native_job(j).is_some(), "{j} should be native");
         }
@@ -1662,6 +1758,43 @@ mod native_job_tests {
         assert!(native_job("m365-sweep").is_none());
         assert!(native_job("meetings").is_none());
         assert!(native_job("definitely-not-a-job").is_none());
+    }
+
+    #[test]
+    fn cadence_ticks_are_native_and_every_child_is_runnable() {
+        // Each tick is itself a native job…
+        for t in ["tick-5m", "tick-10m", "tick-15m"] {
+            assert!(native_job(t).is_some(), "{t} should be native");
+        }
+        // …and every job it fans out to must actually resolve, or the tick would silently stop
+        // running it — the one failure mode a merged timer could hide (`run_job` on an unknown
+        // name just prints "no job script"). A rename that misses this list fails loudly here.
+        for job in [TICK_5M, TICK_10M, TICK_15M].concat() {
+            assert!(
+                native_job(job).is_some(),
+                "tick child '{job}' no longer resolves to a native job"
+            );
+        }
+    }
+
+    #[test]
+    fn cadence_tick_children_are_not_separately_scheduled() {
+        // The whole point of the merge: a child must NOT also own its own `[[cron]]` timer, or it
+        // would run twice per tick. Guards the shipped manifest against a re-added entry.
+        let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/crons.toml");
+        let text = std::fs::read_to_string(manifest).expect("shipped crons.toml exists");
+        for job in [TICK_5M, TICK_10M, TICK_15M].concat() {
+            assert!(
+                !text.contains(&format!("job = \"{job}\"")),
+                "'{job}' runs under a cadence tick but still declares its own [[cron]] entry"
+            );
+        }
+        for t in ["tick-5m", "tick-10m", "tick-15m"] {
+            assert!(
+                text.contains(&format!("job = \"{t}\"")),
+                "{t} must be declared in the shipped manifest"
+            );
+        }
     }
 
     #[test]

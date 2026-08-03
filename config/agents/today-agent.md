@@ -1,11 +1,8 @@
 ---
 name: today-agent
-class: info
 on_calendar: "Mon..Fri *-*-* 08:30:00"
 run: "bn run today-agent"
-window: ":today-agent"
 network: false
-reuse: true
 description: "bn — Today's agent (#577): synthesize the cron findings store (#576) into reviewable suggested tasks (proposals + source finding + rationale), surfaced on Today; idempotent (opt-in; [today].enabled)"
 ---
 # today-agent

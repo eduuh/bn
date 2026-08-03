@@ -157,6 +157,17 @@ pub const KINDS: &[&str] = &[
     "note-append",
 ];
 
+/// Kinds that need a route: their sink writes into a *branch* surface, so `repo` + `branch` name
+/// the branch whose note the item lands on and an item without both is unroutable. The single
+/// source of truth for that rule — [`validate_card`] enforces it and [`build_prompt`] advertises
+/// it, so the contract the model is given can't drift from the one it's judged against (#985).
+pub const ROUTED_KINDS: &[&str] = &["todo", "research", "note-append"];
+
+/// Whether `kind` requires a non-empty `repo` + `branch`. See [`ROUTED_KINDS`].
+pub fn kind_needs_route(kind: &str) -> bool {
+    ROUTED_KINDS.contains(&kind)
+}
+
 /// The fixed kind → sink table. `None` for an unknown kind (a validate-time hard error).
 pub fn kind_sink(kind: &str) -> Option<&'static str> {
     match kind {
@@ -537,9 +548,7 @@ pub fn validate_card(
             ));
         }
         sanitize_card_item(item, allowed_domains).map_err(|e| format!("item {i}: {e}"))?;
-        if matches!(item.kind.as_str(), "todo" | "research" | "note-append")
-            && (item.repo.is_empty() || item.branch.is_empty())
-        {
+        if kind_needs_route(&item.kind) && (item.repo.is_empty() || item.branch.is_empty()) {
             return Err(format!(
                 "item {i}: kind '{}' requires repo and branch",
                 item.kind
@@ -1268,11 +1277,31 @@ pub fn build_prompt(
     packet: &str,
     today: &str,
 ) -> String {
-    let kinds = kinds_for_sinks(allowed_sinks).join("|");
+    let advertised = kinds_for_sinks(allowed_sinks);
+    let kinds = advertised.join("|");
+    // The skeleton shows `repo`/`branch` as empty strings, which reads as "optional" — and a model
+    // that leaves them empty on a routed kind loses the *whole* card to [`validate_card`], headline
+    // and body included. Spell the requirement out, but only when a routed kind is actually on
+    // offer, so a `[attn, daily]` chief isn't handed a rule about fields it can never need.
+    let routed: Vec<&str> = advertised
+        .iter()
+        .copied()
+        .filter(|k| kind_needs_route(k))
+        .collect();
+    let route_rule = if routed.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " Items of kind [{}] MUST also carry a non-empty `repo` and `branch` naming the branch \
+             they land on — one that omits either is rejected and the entire card is discarded, so \
+             emit such an item only when the packet tells you both.",
+            routed.join("|")
+        )
+    };
     format!(
         "{skill_body}\n\n{PACKET_FRAME_HEADER}\n{packet}\n{PACKET_FRAME_FOOTER}\n\n\
          Output EXACTLY one JSON briefing card and nothing else. Every item's `kind` MUST be one of \
-         [{kinds}] — any other kind is rejected and the entire card is discarded:\n\
+         [{kinds}] — any other kind is rejected and the entire card is discarded.{route_rule}\n\
          {{ \"agent\": \"{agent}\", \"date\": \"{today}\", \"headline\": \"...\", \
          \"body_md\": \"...\", \"items\": [ {{ \"kind\": \"{kinds}\", \
          \"severity\": \"info|warn|urgent\", \"title\": \"...\", \"link\": \"\", \"repo\": \"\", \
@@ -1525,8 +1554,27 @@ pub struct LastRun {
 pub enum Dispatched {
     /// The harness produced output to validate as a briefing card.
     Output(String),
-    /// The harness run yielded no card; the status separates auth / rate-limited / fail.
-    Failed(RunStatus),
+    /// The harness run yielded no card; the status separates auth / rate-limited / fail, and the
+    /// detail says *why* — see [`failure_detail`]. Empty when the caller had nothing to capture.
+    Failed(RunStatus, String),
+}
+
+/// The tail of a failed harness run, for the recorded run error.
+///
+/// A bare `dispatch failed (fail)` is undiagnosable: the health board shows it days later with the
+/// harness's own explanation — the thing that says whether this was a missing binary, a network
+/// blip, or a real bug — already discarded. Keep the last few non-empty lines, which is where CLIs
+/// put the error, sanitized and capped like any other untrusted card text.
+pub fn failure_detail(output: &str) -> String {
+    let mut tail: Vec<&str> = output
+        .lines()
+        .rev()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .take(3)
+        .collect();
+    tail.reverse();
+    sanitize_line(&tail.join(" · "))
 }
 
 /// The measured cost of one dispatch, folded onto its `staff_run` event so the health board and
@@ -1720,12 +1768,14 @@ pub fn run_pipeline(
     cost.wall_ms = started.elapsed().as_millis() as u64;
     let output = match dispatched {
         Dispatched::Output(o) => o,
-        Dispatched::Failed(status) => {
-            return fail(
-                status,
-                format!("dispatch failed ({})", status.as_str()),
-                &cost,
-            );
+        Dispatched::Failed(status, detail) => {
+            let status_str = status.as_str();
+            let error = if detail.is_empty() {
+                format!("dispatch failed ({status_str})")
+            } else {
+                format!("dispatch failed ({status_str}): {detail}")
+            };
+            return fail(status, error, &cost);
         }
     };
     // A dispatch that produced output spent tokens whether or not it validated — estimate from
@@ -1913,6 +1963,8 @@ mod goal_sink_tests {
 mod prompt_kind_scoping_tests {
     use super::*;
 
+    const TODAY: &str = "2026-07-24";
+
     fn sinks(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
     }
@@ -1951,5 +2003,87 @@ mod prompt_kind_scoping_tests {
         // The chief must never be invited to write a todo (its note sink is off-allowlist).
         assert!(!p.contains("todo"));
         assert!(!p.contains("research"));
+        // Nor handed a rule about repo/branch, which none of its kinds can need.
+        assert!(!p.contains("non-empty `repo`"));
+    }
+
+    #[test]
+    fn build_prompt_states_the_repo_branch_rule_for_routed_kinds() {
+        // The Mentor's note sink admits note-append, whose repo+branch the validator demands. The
+        // skeleton alone shows them as `""`, which reads as optional — a card that took that at
+        // face value is exactly how a whole Mentor run was lost, so the prompt must say it.
+        let p = build_prompt(
+            "skill",
+            "staff-mentor",
+            &sinks(&["note", "dojo"]),
+            "{}",
+            TODAY,
+        );
+        assert!(p.contains("Items of kind [todo|note-append] MUST also carry a non-empty `repo`"));
+        // The rule names only the routed kinds — dojo-card routes to the deck, not a branch.
+        assert!(!p.contains("dojo-card] MUST"));
+    }
+
+    #[test]
+    fn routed_kinds_agree_with_the_validator() {
+        // The prompt promises what validate_card enforces; a kind added to one and not the other
+        // is the drift this pair of assertions exists to catch.
+        for kind in KINDS {
+            let item = CardItem {
+                kind: (*kind).to_string(),
+                severity: "info".into(),
+                title: "t".into(),
+                link: String::new(),
+                repo: String::new(),
+                branch: String::new(),
+            };
+            let card = BriefingCard {
+                agent: "a".into(),
+                date: TODAY.into(),
+                headline: "h".into(),
+                body_md: String::new(),
+                items: vec![item],
+            };
+            let json = serde_json::to_string(&card).unwrap();
+            let all_sinks: Vec<String> = SINKS.iter().map(|s| s.to_string()).collect();
+            let rejected = validate_card(&json, "a", &all_sinks, &[], TODAY)
+                .is_err_and(|e| e.contains("requires repo and branch"));
+            assert_eq!(
+                rejected,
+                kind_needs_route(kind),
+                "kind '{kind}': validator and ROUTED_KINDS disagree"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod failure_detail_tests {
+    use super::*;
+
+    #[test]
+    fn keeps_the_last_lines_where_a_cli_puts_its_error() {
+        // Only the tail is kept: the banner scrolls off, the error and its exit line survive.
+        let out = "bn staff\nloading skill\nresolving harness\n\n  Error: connect ECONNREFUSED 127.0.0.1:443\nexit status 1\n";
+        assert_eq!(
+            failure_detail(out),
+            "resolving harness · Error: connect ECONNREFUSED 127.0.0.1:443 · exit status 1"
+        );
+    }
+
+    #[test]
+    fn empty_output_yields_no_detail() {
+        // Nothing captured (a harness that never launched) must not produce a stray separator —
+        // run_pipeline keys off the empty string to fall back to the bare status.
+        assert_eq!(failure_detail(""), "");
+        assert_eq!(failure_detail("\n  \n"), "");
+    }
+
+    #[test]
+    fn sanitizes_and_caps_untrusted_harness_text() {
+        let out = format!("\x1b[31m{}\x1b[0m", "x".repeat(MAX_TITLE_CHARS + 50));
+        let detail = failure_detail(&out);
+        assert!(!detail.contains('\x1b'));
+        assert!(detail.chars().count() <= MAX_TITLE_CHARS);
     }
 }

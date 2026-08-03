@@ -25,6 +25,16 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        // The framework never changes between dashboard builds while app code changes every
+        // release, so keeping React/router/query in their own chunk means a rebuild only
+        // invalidates the app chunk in the browser (and in the service worker's cache).
+        manualChunks: {
+          vendor: ["react", "react-dom", "react-router-dom", "@tanstack/react-query"],
+        },
+      },
+    },
   },
   test: {
     // Unit tests only (`src/**/*.test.ts`). The Playwright E2E specs under `e2e/` are driven by

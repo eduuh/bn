@@ -44,7 +44,6 @@ pub(super) struct ConfigFile {
     managed_repos: Option<ManagedReposSection>,
     tools: Option<ToolsSection>,
     web: Option<WebSection>,
-    cockpit: Option<CockpitSection>,
     log: Option<LogSection>,
     scout: Option<ScoutSection>,
     dispatch: Option<DispatchSection>,
@@ -102,16 +101,6 @@ struct WebSection {
     tmux_mcp_autostart: Option<bool>,
     /// Show the bnweb:<port> health segment in the tmux status bar. Default true.
     tmux_mcp_badge: Option<bool>,
-}
-
-/// `[cockpit]`: the `bn orchestrate cockpit` grounding view. `ground_secs` is the redraw cadence
-/// (seconds) of the self-refreshing grounding loop — absent falls back to the
-/// [`DEFAULT_COCKPIT_GROUND_SECS`](super::DEFAULT_COCKPIT_GROUND_SECS) default resolved in
-/// [`super::Config`].
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-struct CockpitSection {
-    /// Grounding-loop redraw cadence (seconds). Default 30; clamped `>= 1` at resolve.
-    ground_secs: Option<u64>,
 }
 
 /// `[log]`: the opt-in verbose/debug **action log** (structured JSONL of every high-value action
@@ -336,18 +325,6 @@ struct EyeSection {
 struct JobsSection {
     /// `[jobs.only_on]`: job name → machines it may run on. Unlisted jobs run everywhere.
     only_on: Option<HashMap<String, Vec<String>>>,
-    /// `[jobs].tmux_window`: when true, `bn run` runs each job in a tmux window named after the
-    /// job (visible cron) instead of headlessly. Default false.
-    tmux_window: Option<bool>,
-    /// `[jobs].cron_global_layout`: how global visible-crons are laid out in the `cron` session —
-    /// `"window"` (default, one window per job) or `"pane"` (one shared `cron` window, a pane per
-    /// job, like repo crons). Default `"window"`.
-    cron_global_layout: Option<String>,
-    /// `[jobs].session`: the tmux session that hosts global crons *and* the fleet/cockpit agents
-    /// (controller, attention lanes, dispatch orchestrator, scheduled `agents/*.md`). One knob to
-    /// re-home the whole automation fleet. Default `"cron"`; `$BN_CRON_SESSION` overrides it. A
-    /// per-agent `window: <session>:<window>` frontmatter still wins for that one agent.
-    session: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -531,33 +508,6 @@ impl ConfigFile {
             .and_then(|j| j.only_on.clone())
             .or_else(|| self.jobs.as_ref().and_then(|j| j.only_on.clone()))
             .unwrap_or_default()
-    }
-
-    pub(super) fn jobs_tmux_window(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.jobs.as_ref())
-            .and_then(|j| j.tmux_window)
-            .or_else(|| self.jobs.as_ref().and_then(|j| j.tmux_window))
-    }
-
-    pub(super) fn cron_global_layout(&self) -> Option<String> {
-        self.win()
-            .and_then(|w| w.jobs.as_ref())
-            .and_then(|j| j.cron_global_layout.clone())
-            .or_else(|| {
-                self.jobs
-                    .as_ref()
-                    .and_then(|j| j.cron_global_layout.clone())
-            })
-    }
-
-    pub(super) fn jobs_session(&self) -> Option<String> {
-        self.win()
-            .and_then(|w| w.jobs.as_ref())
-            .and_then(|j| j.session.clone())
-            .or_else(|| self.jobs.as_ref().and_then(|j| j.session.clone()))
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
     }
 
     pub(super) fn work_only(&self) -> Option<bool> {
@@ -1099,13 +1049,6 @@ impl ConfigFile {
             .or_else(|| self.web.as_ref().and_then(|s| s.fleet_poll_secs))
     }
 
-    pub(super) fn cockpit_ground_secs(&self) -> Option<u64> {
-        self.win()
-            .and_then(|w| w.cockpit.as_ref())
-            .and_then(|s| s.ground_secs)
-            .or_else(|| self.cockpit.as_ref().and_then(|s| s.ground_secs))
-    }
-
     pub(super) fn web_tmux_mcp_autostart(&self) -> Option<bool> {
         self.win()
             .and_then(|w| w.web.as_ref())
@@ -1197,44 +1140,5 @@ mod tests {
         assert_eq!(cf.log_level(), None);
         assert_eq!(cf.log_dir(), None);
         assert_eq!(cf.log_retain_days(), None);
-    }
-
-    #[test]
-    fn parses_cockpit_section_accessor() {
-        let toml = r#"
-            [cockpit]
-            ground_secs = 45
-        "#;
-        let cf: ConfigFile = toml::from_str(toml).expect("valid [cockpit] toml");
-        assert_eq!(cf.cockpit_ground_secs(), Some(45));
-    }
-
-    #[test]
-    fn absent_cockpit_section_yields_none() {
-        let cf: ConfigFile = toml::from_str("").expect("empty toml");
-        assert_eq!(cf.cockpit_ground_secs(), None);
-    }
-
-    #[test]
-    fn jobs_session_accessor_trims_and_filters_empty() {
-        let cf: ConfigFile =
-            toml::from_str("[jobs]\nsession = \"fleet\"\n").expect("valid [jobs] toml");
-        assert_eq!(cf.jobs_session().as_deref(), Some("fleet"));
-
-        // Whitespace is trimmed.
-        let cf: ConfigFile =
-            toml::from_str("[jobs]\nsession = \"  cron  \"\n").expect("valid [jobs] toml");
-        assert_eq!(cf.jobs_session().as_deref(), Some("cron"));
-
-        // Blank string is treated as unset.
-        let cf: ConfigFile =
-            toml::from_str("[jobs]\nsession = \"   \"\n").expect("valid [jobs] toml");
-        assert_eq!(cf.jobs_session(), None);
-
-        // Absent [jobs] / absent key → None.
-        let cf: ConfigFile = toml::from_str("[jobs]\ntmux_window = true\n").expect("valid toml");
-        assert_eq!(cf.jobs_session(), None);
-        let cf: ConfigFile = toml::from_str("").expect("empty toml");
-        assert_eq!(cf.jobs_session(), None);
     }
 }

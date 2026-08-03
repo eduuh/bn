@@ -8,7 +8,7 @@
 //!
 //! **Auth.** Like the rest of bn-web, `/mcp` is not token-gated: the web token was removed (#523),
 //! so loopback / a trusted LAN / an authenticated dev tunnel is the boundary. `/mcp` inherits that
-//! exact posture — no new auth system, and no weaker than the dashboard's REST + terminal routes.
+//! exact posture — no new auth system, and no weaker than the dashboard's REST routes.
 //!
 //! **Transport mode.** Stateless with a direct JSON response (`stateful_mode = false`,
 //! `json_response = true`): every POST is self-contained and returns one `application/json` body

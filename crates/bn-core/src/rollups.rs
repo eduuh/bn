@@ -333,10 +333,16 @@ pub fn status(cfg: &Config, ctx: &Resolved) -> Option<StatusEntry> {
 
 /// A note is shown in cross-branch views when it is active (status != "closed") and
 /// local (machine empty or == this host). Ports `_is_active_local` (bn:1062).
+///
+/// The host match is **case-insensitive**: hostnames are case-insensitive by convention, and the
+/// same machine genuinely reports both casings depending on who asked — macOS answers `Mac.lan`
+/// from the Bonjour/SystemConfiguration name and `mac.lan` from `hostname`. A case-sensitive `==`
+/// silently dropped every note stamped with the other casing, so whole repos vanished from
+/// `bn status` and the dashboard's repo list while their notes sat right there on disk.
 fn is_active_local(cfg: &Config, note: &Note) -> bool {
     let active = note.front.status != "closed";
     let machine = &note.front.machine;
-    let local = machine.is_empty() || *machine == cfg.hostname;
+    let local = machine.is_empty() || machine.eq_ignore_ascii_case(&cfg.hostname);
     active && local
 }
 
@@ -511,6 +517,41 @@ mod tests {
         add(cfg, &ctx, "todo", "to be done", None, "2026-06-19").unwrap();
         add(cfg, &ctx, "blocker", "the blocker", None, "2026-06-19").unwrap();
         crate::commands::done(cfg, &ctx, "to be done", "2026-06-20", None).unwrap();
+    }
+
+    /// A note stamped with a differently-cased spelling of this host is still local. macOS hands
+    /// out both `Mac.lan` and `mac.lan` for the same machine, and the case-sensitive `==` this
+    /// replaced dropped every note carrying the other casing — whole repos disappeared from
+    /// `bn status` and the dashboard repo list with their notes still on disk.
+    #[test]
+    fn host_match_is_case_insensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = crate::test_support::config_with_hostname(dir.path(), "mac.lan");
+        let rb = crate::resolver::RepoBranch {
+            repo: "nvim",
+            branch: "main",
+        };
+
+        let mut note = Note::new(rb, "2026-06-19", "Mac.lan");
+        assert!(
+            is_active_local(&c, &note),
+            "differently-cased host must still count as local"
+        );
+
+        note.front.machine = "mac.lan".into();
+        assert!(is_active_local(&c, &note), "exact host still matches");
+
+        note.front.machine = String::new();
+        assert!(is_active_local(&c, &note), "unstamped note is local");
+
+        // Case-insensitivity must not smear across genuinely different hosts.
+        note.front.machine = "other-box".into();
+        assert!(!is_active_local(&c, &note), "a foreign host stays foreign");
+
+        // …and it does not resurrect closed notes.
+        note.front.machine = "Mac.lan".into();
+        note.front.status = "closed".into();
+        assert!(!is_active_local(&c, &note), "closed notes stay hidden");
     }
 
     #[test]

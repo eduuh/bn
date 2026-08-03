@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef } from "react";
 import uPlot from "uplot";
+// uPlot's stylesheet rides with whichever chunk pulls in uPlot itself (the cost route), instead of
+// sitting in the entry CSS for the fifteen routes that draw no charts.
+import "uplot/dist/uPlot.min.css";
 import type { DayCategory } from "../api/types";
 import { fmtTokens } from "../lib/format";
 import { buildStackModel, categoryColor, stackForDraw, type CostMetric } from "../lib/cost";

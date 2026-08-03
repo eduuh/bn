@@ -1,11 +1,8 @@
 ---
 name: standup
-class: info
 on_calendar: "Mon..Fri *-*-* 08:30:00"
 run: "bn run standup"
-window: ":standup"
 network: false
-reuse: true
 gather: "bn staff gather standup"
 sinks: ["attn", "note"]
 description: "Morning standup card from yesterday completed work and today focus."

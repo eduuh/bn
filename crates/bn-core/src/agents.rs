@@ -1,11 +1,11 @@
 //! Self-describing info agents (`agents/<name>.md`).
 //!
 //! One `info-gather` cron replaces the fleet of per-info timers: every 15 minutes it loads these
-//! markdown agents, runs the ones that are **due** (their `on_calendar` fired since their last
-//! successful run), and dispatches each into its own tmux window — reusing the window in place.
+//! markdown agents and runs the ones that are **due** (their `on_calendar` fired since their last
+//! successful run). Agents run headlessly, like every other cron — no tmux window is involved.
 //! An agent can also declare `trigger: startup` so `bn startup` fires it once when the tmux server
 //! boots. The gather itself still runs via `bn run <agent.name>`, so the `.md` is metadata +
-//! placement + description, never a reimplementation of the existing native/staff/script job.
+//! schedule + description, never a reimplementation of the existing native/staff/script job.
 //!
 //! Parsing routes through [`crate::store::split_frontmatter`] (the crate's single frontmatter
 //! parser) and the "due" check composes [`crate::staff_schedule::previous_occurrence`] over the
@@ -13,7 +13,6 @@
 //! mirrors [`crate::skills::discover`] / [`crate::resolver::agent_dirs`]: branch → repo → global,
 //! first tier wins by name.
 
-use crate::crons::CronClass;
 use crate::events::CronRunDetail;
 use crate::resolver::{self, Config, JobScope, Resolved};
 use serde::Deserialize;
@@ -47,14 +46,6 @@ impl TriggerSpec {
             TriggerSpec::Many(v) => v,
         }
     }
-}
-
-fn default_true() -> bool {
-    true
-}
-
-fn default_info_class() -> CronClass {
-    CronClass::Info
 }
 
 /// A roster / MCP name must stay filename-safe so frontmatter cannot escape config dirs.
@@ -130,18 +121,12 @@ fn validate_agent_frontmatter(
 #[derive(Debug, Deserialize)]
 struct AgentFrontmatter {
     name: Option<String>,
-    #[serde(default = "default_info_class")]
-    class: CronClass,
     #[serde(default)]
     on_calendar: Option<String>,
     #[serde(default)]
     run: Option<String>,
     #[serde(default)]
-    window: Option<String>,
-    #[serde(default)]
     network: bool,
-    #[serde(default = "default_true")]
-    reuse: bool,
     #[serde(default)]
     trigger: Option<TriggerSpec>,
     #[serde(default)]
@@ -184,24 +169,16 @@ struct AgentFrontmatter {
 /// A resolved agent definition: its metadata, the tier it was discovered in, and its body text.
 #[derive(Debug, Clone)]
 pub struct AgentDef {
-    /// The `bn run <name>` job this agent gathers with — also the default window name.
+    /// The `bn run <name>` job this agent gathers with.
     pub name: String,
-    /// Visibility class of the dispatched window (`info` = prints its result, the default).
-    pub class: CronClass,
     /// systemd `OnCalendar` schedule; present for a cron agent, absent for a startup-only one.
     pub on_calendar: Option<String>,
-    /// The shell command this agent runs in its window when due. Declared in frontmatter as
-    /// `run:`; defaults to `bn run <name>` so a file that names an existing job still runs. This
-    /// is the whole contract — drop a `.md` with a `run:` command and it is dispatched on schedule.
+    /// The shell command this agent runs, headlessly, when due. Declared in frontmatter as `run:`;
+    /// defaults to `bn run <name>` so a file that names an existing job still runs. This is the
+    /// whole contract — drop a `.md` with a `run:` command and it is run on schedule.
     pub run: String,
-    /// tmux placement: `session:window`, `:window` (the resolved cron/fleet session + this window),
-    /// `session` (window defaults to `name`), or absent (the cron session, window = `name`).
-    /// Resolved by [`placement`].
-    pub window: Option<String>,
     /// The gather hits the network (informational; the schedule generator carries the real gate).
     pub network: bool,
-    /// Reuse an existing target window in place (`respawn-window -k`) instead of a fresh window.
-    pub reuse: bool,
     /// Explicit triggers declared in frontmatter (only `startup` adds behaviour — see [`Trigger`]).
     pub triggers: Vec<Trigger>,
     /// One-line description of what this agent gathers.
@@ -300,53 +277,6 @@ pub fn due(on_calendar: &str, last_run: Option<&CronRunDetail>, now: i64) -> boo
     }
 }
 
-/// Resolved tmux placement: which session and window an agent's gather window lives in.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Placement {
-    pub session: String,
-    pub window: String,
-}
-
-/// Resolve an agent's `window` field into a concrete `session:window`:
-/// * `Some("session:window")` → that exact session + window;
-/// * `Some(":window")` → the `fallback_session` (the resolved cron/fleet session) + that window —
-///   the form agents use to name their window while still following the `[jobs].session` knob;
-/// * `Some("session")` → that session, window defaults to `name`;
-/// * `None` / empty → the `fallback_session` (today's cron session), window = `name`.
-///
-/// Pure so placement precedence is unit-testable without tmux.
-pub fn placement(window: Option<&str>, name: &str, fallback_session: &str) -> Placement {
-    let field = window.map(str::trim).filter(|s| !s.is_empty());
-    match field {
-        None => Placement {
-            session: fallback_session.to_string(),
-            window: name.to_string(),
-        },
-        Some(w) => match w.split_once(':') {
-            Some((sess, win)) => {
-                let sess = sess.trim();
-                let win = win.trim();
-                Placement {
-                    session: if sess.is_empty() {
-                        fallback_session.to_string()
-                    } else {
-                        sess.to_string()
-                    },
-                    window: if win.is_empty() {
-                        name.to_string()
-                    } else {
-                        win.to_string()
-                    },
-                }
-            }
-            None => Placement {
-                session: w.to_string(),
-                window: name.to_string(),
-            },
-        },
-    }
-}
-
 /// Parse one `agents/<name>.md`. `Ok(None)` when there is no frontmatter fence; errors are
 /// configuration hard-failures (invalid YAML, unsafe names, unknown sinks). `name` falls back to
 /// the file stem, mirroring [`crate::skills::parse_skill`].
@@ -374,12 +304,9 @@ pub fn parse_agent(
         .unwrap_or_else(|| format!("bn run {name}"));
     Ok(Some(AgentDef {
         name,
-        class: front.class,
         on_calendar: front.on_calendar,
         run,
-        window: front.window,
         network: front.network,
-        reuse: front.reuse,
         triggers,
         description: front.description,
         gather: front.gather,
@@ -457,16 +384,13 @@ mod tests {
 
     #[test]
     fn parse_reads_frontmatter_and_body() {
-        let text = "---\nname: pr-queue\nclass: info\non_calendar: \"*:0/15\"\nwindow: planning:pr-queue\nnetwork: true\n---\nFetch the PR queue.\n";
+        let text = "---\nname: pr-queue\non_calendar: \"*:0/15\"\nnetwork: true\n---\nFetch the PR queue.\n";
         let a = parse_agent(text, "stem", JobScope::Global, PathBuf::from("/x.md"))
             .unwrap()
             .unwrap();
         assert_eq!(a.name, "pr-queue");
-        assert_eq!(a.class, CronClass::Info);
         assert_eq!(a.on_calendar.as_deref(), Some("*:0/15"));
-        assert_eq!(a.window.as_deref(), Some("planning:pr-queue"));
         assert!(a.network);
-        assert!(a.reuse); // default true
         assert!(a.is_cron());
         assert!(!a.is_startup());
         assert_eq!(a.body, "Fetch the PR queue.\n");
@@ -479,8 +403,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(a.name, "meetings");
-        assert_eq!(a.class, CronClass::Info); // agents default to info, not housekeeping
-        assert!(a.reuse);
         assert!(!a.network);
         assert!(a.triggers.is_empty());
     }
@@ -619,55 +541,6 @@ mod tests {
     }
 
     #[test]
-    fn placement_variants() {
-        assert_eq!(
-            placement(Some("planning:pr-queue"), "pr-queue", "cron"),
-            Placement {
-                session: "planning".into(),
-                window: "pr-queue".into()
-            }
-        );
-        assert_eq!(
-            placement(Some("planning"), "meetings", "cron"),
-            Placement {
-                session: "planning".into(),
-                window: "meetings".into()
-            }
-        );
-        assert_eq!(
-            placement(None, "sentinel", "cron"),
-            Placement {
-                session: "cron".into(),
-                window: "sentinel".into()
-            }
-        );
-        // A trailing colon falls back to the agent name for the window.
-        assert_eq!(
-            placement(Some("planning:"), "today-agent", "cron"),
-            Placement {
-                session: "planning".into(),
-                window: "today-agent".into()
-            }
-        );
-        // A leading colon (empty session) inherits the fallback session but keeps the window name —
-        // the form agents use to follow the `[jobs].session` knob while naming their window.
-        assert_eq!(
-            placement(Some(":pr-queue"), "pr-queue", "cron"),
-            Placement {
-                session: "cron".into(),
-                window: "pr-queue".into()
-            }
-        );
-        assert_eq!(
-            placement(Some(":agent-attention-list"), "attention-agent", "fleet"),
-            Placement {
-                session: "fleet".into(),
-                window: "agent-attention-list".into()
-            }
-        );
-    }
-
-    #[test]
     fn shipped_agents_parse_and_have_enumerable_schedules() {
         // The ten info agents' schedules moved out of the launchd/systemd generator (guarded by
         // `cron_gen`'s `every_shipped_cron_translates_for_launchd`) and into this in-process
@@ -707,37 +580,5 @@ mod tests {
             scheduled >= 10,
             "expected the ten shipped info agents to declare schedules, saw {scheduled}"
         );
-    }
-
-    #[test]
-    fn every_shipped_agent_follows_the_fallback_session() {
-        // The fleet's contract: with no per-agent session override, every shipped `agents/*.md`
-        // lands in the resolved cron/fleet session (the `[jobs].session` knob), never a hardcoded
-        // one. A `.md` that pins `window: some-session:win` (a real session before the colon) would
-        // escape the knob and scatter the fleet — fail loudly here so `:win` (session-inheriting)
-        // stays the norm.
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/agents");
-        for entry in std::fs::read_dir(dir)
-            .expect("shipped config/agents/ dir exists")
-            .flatten()
-        {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("md") {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).expect("read shipped agent");
-            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("agent");
-            let Some(a) = parse_agent(&text, stem, JobScope::Global, path.clone())
-                .unwrap_or_else(|e| panic!("shipped agent {} must parse: {e}", path.display()))
-            else {
-                continue;
-            };
-            let place = placement(a.window.as_deref(), &a.name, "cron-sentinel");
-            assert_eq!(
-                place.session, "cron-sentinel",
-                "shipped agent '{}' (window: {:?}) must follow the fallback session, not pin its own",
-                a.name, a.window,
-            );
-        }
     }
 }

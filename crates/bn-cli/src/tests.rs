@@ -3,7 +3,7 @@
 //! so `use super::*;` still resolves every re-exported handler unchanged.
 
 use super::*;
-use resolver::{JobScope, Resolved};
+use resolver::Resolved;
 
 fn ctx(repo: &str, branch: &str) -> Resolved {
     Resolved {
@@ -1546,103 +1546,10 @@ fn claim_startup_fires_once_per_server_pid() {
 }
 
 #[test]
-fn cron_session_repo_scoped_uses_repo_name() {
-    // Serialize on bn-core's shared env lock so bn-cli's env-touching tests can't race each
-    // other; the guard restores BN_CRON_SESSION on drop (issue #358).
-    let _g = bn_core::test_support::env_lock();
-    let _cron = bn_core::test_support::EnvGuard::remove("BN_CRON_SESSION");
-    let c = ctx("bn", "feat-x");
-    assert_eq!(cron_session(Some(&c), JobScope::Repo), "bn");
-    assert_eq!(cron_session(Some(&c), JobScope::Branch), "bn");
-}
-
-#[test]
-fn cron_session_global_uses_dedicated_cron_session() {
-    let _g = bn_core::test_support::env_lock();
-    let _cron = bn_core::test_support::EnvGuard::remove("BN_CRON_SESSION");
-    // Global crons land in the dedicated `cron` session, independent of the keepalive/planning
-    // session (`BN_TMUX_SESSION`) — so a firing cron never clutters where you work.
-    let tmux = bn_core::test_support::EnvGuard::remove("BN_TMUX_SESSION");
-    assert_eq!(cron_session(None, JobScope::Global), "cron");
-    tmux.set_value("planning");
-    assert_eq!(cron_session(None, JobScope::Global), "cron");
-}
-
-#[test]
-fn cron_session_pinned_overrides_scope() {
-    let _g = bn_core::test_support::env_lock();
-    // A global job whose work belongs to one repo pins its window there.
-    let _cron = bn_core::test_support::EnvGuard::set("BN_CRON_SESSION", "BigMono");
-    assert_eq!(cron_session(None, JobScope::Global), "BigMono");
-    let c = ctx("bn", "feat-x");
-    assert_eq!(
-        cron_session(Some(&c), JobScope::Repo),
-        "BigMono",
-        "pin wins over repo scope too"
-    );
-}
-
-#[test]
 fn shq_single_quotes_and_escapes() {
     assert_eq!(shq("pr-queue"), "'pr-queue'");
     // embedded single quote → close, escaped quote, reopen
     assert_eq!(shq("a'b"), "'a'\\''b'");
-}
-
-#[test]
-fn cron_window_dispatch_only_wraps_headless_outer_runs() {
-    assert!(should_dispatch_cron_window(true, false, false));
-    assert!(!should_dispatch_cron_window(false, false, false));
-    assert!(!should_dispatch_cron_window(true, true, false));
-    assert!(!should_dispatch_cron_window(true, false, true));
-}
-
-#[test]
-fn cron_inner_command_carries_repo_context_only_for_scoped_jobs() {
-    use bn_core::crons::CronClass;
-    let c = ctx("bn", "feat-x");
-    assert_eq!(
-        cron_inner_command(
-            "/tmp/bn",
-            "notify",
-            Some(&c),
-            JobScope::Repo,
-            CronClass::Housekeeping
-        ),
-        "'/tmp/bn' run 'notify' --repo 'bn' --branch 'feat-x'; exec \"${SHELL:-sh}\""
-    );
-    assert_eq!(
-        cron_inner_command(
-            "/tmp/bn",
-            "notify",
-            Some(&c),
-            JobScope::Global,
-            CronClass::Housekeeping
-        ),
-        "'/tmp/bn' run 'notify'; exec \"${SHELL:-sh}\""
-    );
-}
-
-#[test]
-fn cron_inner_command_info_class_tees_output_and_auto_hides_when_empty() {
-    use bn_core::crons::CronClass;
-    let cmd = cron_inner_command(
-        "/tmp/bn",
-        "meetings",
-        None,
-        JobScope::Global,
-        CronClass::Info,
-    );
-    // Runs the job, tees to a temp file, then keeps the window open only when it printed output.
-    assert!(cmd.contains("'/tmp/bn' run 'meetings' 2>&1 | tee"));
-    assert!(
-        cmd.contains("grep -q '[^[:space:]]'"),
-        "keeps the window only when the run produced non-whitespace output: {cmd}"
-    );
-    assert!(
-        cmd.contains("exec \"${SHELL:-sh}\""),
-        "holds the window open on a non-empty gather: {cmd}"
-    );
 }
 
 #[test]

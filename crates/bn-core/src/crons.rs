@@ -10,16 +10,17 @@ use crate::resolver::{config_dir, job_dirs, list_jobs, Config, JobRef, JobScope,
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-/// What a cron *is for* — drives visibility. `Info` crons gather information a person reads, so
-/// they run in a visible tmux window that prints their result (and auto-closes when a run gathered
-/// nothing). `Housekeeping` crons (the default) do background estate work — they stay headless.
-/// This is the explicit knob the user classifies each cron with; there is no inference.
+/// What a cron *is for* — a descriptive label, not a behaviour switch. `Info` crons gather
+/// information a person reads; `Housekeeping` crons (the default) do background estate work. Every
+/// cron runs headlessly either way; the class only tags the `bn cron` dashboard row so you can see
+/// at a glance which crons surface information. This is the explicit knob the user classifies each
+/// cron with; there is no inference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CronClass {
-    /// Gathers information a person reads → visible window that prints the result.
+    /// Gathers information a person reads.
     Info,
-    /// Background estate work → headless (the default).
+    /// Background estate work (the default).
     #[default]
     Housekeeping,
 }
@@ -32,11 +33,6 @@ impl CronClass {
             CronClass::Housekeeping => "housekeeping",
         }
     }
-
-    /// Whether this class should run in a visible tmux window that prints its result.
-    pub fn is_visible(self) -> bool {
-        matches!(self, CronClass::Info)
-    }
 }
 
 /// One declared cron entry — a `[[cron]]` table in a `crons.toml`.
@@ -44,8 +40,8 @@ impl CronClass {
 pub struct CronEntry {
     /// Job script name — resolves to `<job>.sh` via [`crate::resolver::job_script`].
     pub job: String,
-    /// What the cron is for — `info` (visible, prints its result) or `housekeeping` (headless,
-    /// the default). See [`CronClass`].
+    /// What the cron is for — `info` (gathers something a person reads) or `housekeeping` (silent
+    /// estate work, the default). A dashboard label only. See [`CronClass`].
     #[serde(default)]
     pub class: CronClass,
     /// Canonical schedule = systemd `OnCalendar` spec (e.g. `*:0/15`). Mapped to cron / launchd
@@ -169,7 +165,7 @@ pub fn catch_up_jobs(cfg: &Config, ctx: Option<&Resolved>) -> Vec<String> {
 
 /// The declared [`CronClass`] for `job`, folded across the job tiers ([`discover`]). Jobs no
 /// `[[cron]]` entry declares default to [`CronClass::Housekeeping`] — an undeclared/ad-hoc `bn run`
-/// stays headless, only an explicitly-classified `info` cron opens a visible window.
+/// carries no special meaning beyond the dashboard label.
 pub fn job_class(cfg: &Config, ctx: Option<&Resolved>, job: &str) -> CronClass {
     discover(cfg, ctx)
         .into_iter()
@@ -202,8 +198,8 @@ pub struct CronView {
     pub job: String,
     /// Tier label (`branch`/`repo`/`global`), from the declared cron else the script else the run.
     pub scope: String,
-    /// The cron's class (`info`/`housekeeping`) when declared; drives whether it runs in a visible
-    /// window. `None` for script-only or run-only jobs that no `[[cron]]` entry declares.
+    /// The cron's class (`info`/`housekeeping`) when declared; a descriptive dashboard label.
+    /// `None` for script-only or run-only jobs that no `[[cron]]` entry declares.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class: Option<String>,
     /// Whether a `[[cron]]` entry declares this job (it's in the registry, not just run-observed).
@@ -343,9 +339,7 @@ class = "info"
         .unwrap();
         let entries = parse_manifest(&p).unwrap();
         assert_eq!(entries[0].class, CronClass::Housekeeping, "class defaults");
-        assert!(!entries[0].class.is_visible());
         assert_eq!(entries[1].class, CronClass::Info, "class = info parses");
-        assert!(entries[1].class.is_visible());
     }
 
     #[test]

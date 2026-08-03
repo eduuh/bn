@@ -157,6 +157,32 @@ pub struct NewSkillArg {
     pub required: bool,
 }
 
+/// The shipped (global-shared) skill directory for `base_dir`.
+///
+/// `BN_MCP_SKILLS_DIR` wins when exported. Otherwise prefer `base_dir/config/prompts` — the
+/// committed tier as seen from a bn checkout — but fall back to the stable `config_dir()/repo`
+/// install anchor when that isn't a directory. The fallback is what makes this correct for
+/// **daemons**: `bn serve` runs under launchd/systemd with cwd `/`, so a `base_dir` of `.`
+/// resolved to `/config/prompts` and every shipped skill silently vanished from `/api/skills`.
+/// Same anchor [`global_skill_dirs`] already uses, so the HTTP server and the dashboard agree.
+fn shared_skills_dir(base_dir: &Path) -> PathBuf {
+    if let Some(dir) = std::env::var_os("BN_MCP_SKILLS_DIR") {
+        return PathBuf::from(dir);
+    }
+    let local = base_dir.join("config").join("prompts");
+    if local.is_dir() {
+        return local;
+    }
+    let anchored = resolver::config_dir()
+        .join("repo")
+        .join("config")
+        .join("prompts");
+    if anchored.is_dir() {
+        return anchored;
+    }
+    local
+}
+
 /// Skill source directories in precedence order (low → high), each tagged with its scope.
 /// The single source of truth for the tier layout: bn-mcp loads MCP prompts from the paths,
 /// while [`discover`] / [`create_skill`] also use the scopes. Per-repo tiers appear only when
@@ -164,12 +190,7 @@ pub struct NewSkillArg {
 pub fn skill_dirs(cfg: &Config, base_dir: &Path) -> Vec<(SkillScope, PathBuf)> {
     let mut dirs = Vec::new();
 
-    dirs.push((
-        SkillScope::GlobalShared,
-        std::env::var_os("BN_MCP_SKILLS_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| base_dir.join("config").join("prompts")),
-    ));
+    dirs.push((SkillScope::GlobalShared, shared_skills_dir(base_dir)));
     dirs.push((
         SkillScope::GlobalPersonal,
         std::env::var_os("BN_MCP_PERSONAL_SKILLS_DIR")

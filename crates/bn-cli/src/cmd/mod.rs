@@ -11,7 +11,6 @@ pub(crate) mod attn_agent;
 pub(crate) mod bearings;
 pub(crate) mod build;
 pub(crate) mod chief;
-pub(crate) mod cockpit;
 pub(crate) mod control;
 pub(crate) mod core_cmds;
 pub(crate) mod cost;

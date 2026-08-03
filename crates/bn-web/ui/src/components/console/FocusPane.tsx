@@ -6,7 +6,7 @@ import { pendingReviewFor } from "../../lib/review";
 import { fmtTokens, timeAgo } from "../../lib/format";
 import { jumpCommand } from "../../lib/board";
 import type { WorkItem } from "../../lib/console";
-import { AgentTerminal } from "../AgentTerminal";
+import { AgentActivity } from "../AgentActivity";
 import { SessionNote } from "../SessionNote";
 import { Markdown } from "../Markdown";
 import { CopyButton } from "../CopyButton";
@@ -78,8 +78,8 @@ function FocusHeader({
   );
 }
 
-/** A live agent in focus: its terminal, its branch note, and the plan it's paused on — all without
- * leaving the queue. */
+/** A live agent in focus: its session activity, its branch note, and the plan it's paused on — all
+ * without leaving the queue. */
 function AgentFocus({ item, now }: { item: WorkItem; now: number }) {
   const agent = item.agent!;
   const [tab, setTab] = useState("live");
@@ -116,11 +116,13 @@ function AgentFocus({ item, now }: { item: WorkItem; now: number }) {
       <Tabs tabs={tabs} value={tab} onChange={setTab} />
 
       <div className="min-h-0 flex-1 overflow-y-auto p-5">
+        {/* Keyed by session, not tmux target: the transcript is per-session and outlives the
+            window, so an agent that has already closed its pane still reads back here. */}
         {tab === "live" &&
-          (agent.sessionId || agent.target ? (
-            <AgentTerminal target={agent.target} />
+          (agent.sessionId ? (
+            <AgentActivity sessionId={agent.sessionId} />
           ) : (
-            <p className="text-sm text-muted-foreground">No live pane for this entry.</p>
+            <p className="text-sm text-muted-foreground">No session recorded for this entry.</p>
           ))}
 
         {tab === "plan" && review && (
@@ -215,7 +217,7 @@ export function FocusPane({
   now: number;
 }) {
   if (!item) return <EmptyFocus blocked={blocked} />;
-  // Remount per selection so tab state and the terminal socket reset cleanly between agents.
+  // Remount per selection so tab state and the activity poll reset cleanly between agents.
   if (item.agent) return <AgentFocus key={item.id} item={item} now={now} />;
   return <ActionFocus key={item.id} item={item} />;
 }

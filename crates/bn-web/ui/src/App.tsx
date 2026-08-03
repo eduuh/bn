@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 
 import { useBnStream } from "./hooks/useBnStream";
 import { ConnectionBanner } from "./components/ConnectionBanner";
 import { CommandPalette } from "./components/CommandPalette";
+import { RouteBoundary } from "./components/RouteBoundary";
 import { TopBar } from "./components/shell/TopBar";
 import { Rail } from "./components/shell/Rail";
 import { cn } from "./lib/utils";
@@ -52,13 +53,20 @@ export function App() {
         <div className="flex min-h-0 flex-1 flex-col md:min-w-0">
           <ConnectionBanner status={status} />
           <main className={cn("min-h-0 flex-1", bare ? "flex flex-col" : "overflow-y-auto")}>
-            {bare ? (
-              <Outlet />
-            ) : (
-              <div className="mx-auto max-w-[1060px] px-3 py-3.5 md:px-6 md:py-5">
-                <Outlet />
-              </div>
-            )}
+            {/* Every route but the index is a lazy chunk (see `main.tsx`). Off a LAN the chunk is
+                there in a frame or two, so the fallback is deliberately quiet — a blank measure
+                rather than a spinner that would flash on every navigation. */}
+            <RouteBoundary key={location.pathname}>
+              <Suspense fallback={null}>
+                {bare ? (
+                  <Outlet />
+                ) : (
+                  <div className="mx-auto max-w-[1060px] px-3 py-3.5 md:px-6 md:py-5">
+                    <Outlet />
+                  </div>
+                )}
+              </Suspense>
+            </RouteBoundary>
           </main>
         </div>
       </div>

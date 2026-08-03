@@ -53,19 +53,19 @@ shape into `bn attn ingest` instead of building a quoted command line:
 `--replace` makes the batch the source's current truth: keyed items no longer emitted by the job
 are resolved automatically, while repeated keys are skipped instead of duplicated.
 
-In visible-cron mode (`[jobs].tmux_window`), cron output lands in tmux **off your planning/keepalive
-session**, so a firing cron never clutters where you work:
+Crons are **headless**. `bn run <job>` executes the job in its own process and records the outcome;
+no tmux session, window, or pane is ever created. A firing cron cannot steal your focus, clutter a
+session, or leave a window parked behind it, because it never touches tmux at all.
 
-- **Global jobs** open one window per job in a dedicated `cron` session. Set
-  `[jobs].cron_global_layout = "pane"` (or `$BN_CRON_GLOBAL_LAYOUT=pane`) to instead share a single
-  `cron` window, a pane per job — the same layout repo crons use.
-- **Repo-scoped jobs** share a single `cron` window in the repo's own session — one pane per job,
-  matched by an `@bn_job` tag, re-tiled as jobs come and go (a job's next run replaces its own pane).
+Read a run's result from the event log rather than from a terminal:
 
-A global job whose work belongs to one repo can **pin** its window to that repo's session by
-exporting `BN_CRON_SESSION=<session>` (e.g. the `ado-reviews` service sets `BN_CRON_SESSION=BigMono`, so
-its window lands among your BigMono windows). The session is created if it isn't open, and the
-window/pane is opened in the background — a firing cron never steals your focus.
+- `bn cron` — every scheduled job with its last-run health (ok/FAIL, duration, run + failure counts).
+- `bn cron running` — a compact badge of what's executing right now (this is what the tmux status
+  bar segment calls).
+- `bn run <job>` by hand — the job's output goes straight to your stdout.
+
+The `class` field on a `[[cron]]` entry (`info` / `housekeeping`) is a descriptive dashboard label
+only; it no longer changes how or where a job runs.
 
 Because feed jobs almost always query private things (your PRs, your calendar, teammates), the
 scripts live in a private notes `jobs/` dir, never here — see **Resolution** below. Two examples
@@ -146,6 +146,31 @@ machine-agnostic and syncs across your machines like the notes; use `[jobs.only_
 per-machine differences.
 
 ## Scheduling
+
+### Cadence ticks
+
+Ten sub-hourly jobs used to own ten timers across three shared schedules. They now run behind
+three **tick** crons — one timer each — that fan out to their cluster in order:
+
+| Tick | Schedule | Runs |
+|---|---|---|
+| `tick-5m` | `*:0/5` | `tools-reconcile`, `notify`, `routine-tick`, `attention-sync` |
+| `tick-10m` | `*:0/10` | `auto-review-trigger`, `attention-auto-trigger`, `agent-supervise` |
+| `tick-15m` | `*:0/15` | `auto-review-poll`, `cron-health`, `info-gather` |
+
+Each child still runs through the normal `bn run` path, so it records its **own** `cron_run`
+event — `bn cron` and `bn doctor` show the same per-job rows and per-job failure counts as
+before, and each child keeps its own `[jobs.only_on]` host gate. A failing child never blocks its
+siblings, and the tick itself stays green: the child already reported its own failure, so failing
+the tick too would only obscure which job actually broke.
+
+Children have no `[[cron]]` entry of their own (that would schedule them twice) but remain
+runnable by hand — `bn run notify` works exactly as before. A tick's `persistent` / `network`
+flags are the OR of its children's.
+
+Run a whole cluster on demand with `bn run tick-5m`.
+
+### Keeping WSL awake
 
 On WSL, systemd `--user` timers only fire while WSL is up, and WSL shuts down when idle. So bn
 schedules with a two-part setup: **one** Windows task keeps WSL alive, and **systemd runs every

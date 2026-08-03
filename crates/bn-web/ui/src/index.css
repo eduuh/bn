@@ -74,8 +74,12 @@
   --safe-t: env(safe-area-inset-top, 0px);
   --content-max: 760px;
 
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, "Cascadia Code", monospace;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  /* Roboto, bundled via @fontsource-variable (see `main.tsx`); the system stack stays behind it so
+     a cold load renders in something sane before the woff2 lands. */
+  --mono: "Roboto Mono Variable", ui-monospace, SFMono-Regular, "SF Mono", Menlo, "Cascadia Code",
+    monospace;
+  --sans: "Roboto Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
 }
 
 /* --- Base ------------------------------------------------------------- */

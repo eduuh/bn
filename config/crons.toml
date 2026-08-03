@@ -18,28 +18,38 @@ description = "bn — wake reactor: toast on NEW needs-you events (agents waitin
 #   bn run fleet-reap — GC orphaned agent process trees + dead tmux windows
 # Do NOT re-add these as [[cron]] entries.
 
+# --- cadence ticks --------------------------------------------------------------
+# Ten jobs used to own ten timers across three shared schedules. Each tick is now ONE timer that
+# runs its cluster in order via the normal `bn run` path, so every child still records its own
+# `cron_run` event: `bn cron` and `bn doctor` show the same per-job rows, per-job health, and
+# per-job host gating as before. A failing child never blocks its siblings, and the tick stays
+# green so the child's own row is the single place a failure is reported.
+#
+# `persistent` / `network` on a tick are the OR of its children: the tick catches up if any child
+# wants catch-up, and waits for network-online if any child touches the network.
+
 [[cron]]
-job = "auto-review-poll"
+job = "tick-5m"
+on_calendar = "*:0/5"
+persistent = true
+randomized_delay = "30s"
+description = "bn — 5-minute tick: tools-reconcile (restart downed managed tools), notify (OS toasts for urgent attention), routine-tick (personal schedule coach), attention-sync (refresh the prefix-J attention cache)"
+
+[[cron]]
+job = "tick-10m"
+on_calendar = "*:0/10"
+persistent = true
+randomized_delay = "2m"
+network = true
+description = "bn — 10-minute tick: auto-review-trigger (prepare the next queued PR when idle), attention-auto-trigger (autonomous pickup of eligible auto items), agent-supervise (stuck detection across the live fleet)"
+
+[[cron]]
+job = "tick-15m"
 on_calendar = "*:0/15"
 persistent = true
-randomized_delay = "2m"
+randomized_delay = "1m"
 network = true
-description = "bn — auto-review lifecycle: re-fetch active PRs, reclaim completed/abandoned, flag re-review"
-
-[[cron]]
-job = "auto-review-trigger"
-on_calendar = "*:0/10"
-persistent = true
-randomized_delay = "2m"
-network = true
-description = "bn — auto-review trigger: when idle, prepare the next queued PR + raise a ready-to-review item (no unattended agent)"
-
-[[cron]]
-job = "attention-auto-trigger"
-on_calendar = "*:0/10"
-persistent = false
-randomized_delay = "2m"
-description = "bn — autonomous pickup: when idle, start eligible auto attention items with their agents (self-authored only; up to BN_ATTN_AUTO_MAX concurrent, default 1)"
+description = "bn — 15-minute tick: auto-review-poll (re-fetch active PRs, reclaim completed), cron-health (failing-cron watchdog), info-gather (run every DUE self-describing agent)"
 
 [[cron]]
 job = "refresh-all"
@@ -58,13 +68,6 @@ network = true
 description = "bn — rebuild + reinstall the CLI when bn/main advances (never run a stale binary)"
 
 [[cron]]
-job = "tools-reconcile"
-on_calendar = "*:0/5"
-persistent = false
-randomized_delay = "1m"
-description = "bn — reconcile managed tools: (re)start any opted-in docker-backed service that's down"
-
-[[cron]]
 job = "commit-notes"
 on_calendar = "*-*-* 07:00:00"
 persistent = true
@@ -78,27 +81,6 @@ on_calendar = "*-*-* 05:00:00"
 persistent = true
 randomized_delay = "5m"
 description = "bn — roll today's daily goals forward"
-
-[[cron]]
-job = "notify"
-on_calendar = "*:0/5"
-persistent = true
-randomized_delay = "30s"
-description = "bn — push OS toasts for urgent attention items (notify)"
-
-[[cron]]
-job = "routine-tick"
-on_calendar = "*:0/5"
-persistent = true
-randomized_delay = "30s"
-description = "bn — routine-aware personal schedule coach: shared at-least-once tick (deduped by stable block id + resolved instant + event kind, bounded by catchup_horizon_minutes; fails closed on an invalid live config). `routine-notify` is a compatibility alias for the same job. Prefer `bn routine service install` for deadline-driven coverage; this timer is the fallback (opt-in; [routine].enabled)."
-
-[[cron]]
-job = "attention-sync"
-on_calendar = "*:0/5"
-persistent = false
-randomized_delay = "30s"
-description = "bn — refresh the prefix-J attention cache (bn next --cached)"
 
 [[cron]]
 job = "metrics-snapshot"
@@ -135,13 +117,6 @@ persistent = true
 randomized_delay = "2m"
 network = true
 description = "bn — fold my PRs' GitHub lifecycle into the metrics log as pr_opened/pr_merged/pr_closed/pr_review (pr-observe)"
-
-[[cron]]
-job = "agent-supervise"
-on_calendar = "*:0/10"
-persistent = false
-randomized_delay = "1m"
-description = "bn — supervise the live agent fleet (stuck detection, agent-supervise)"
 
 [[cron]]
 job = "keep-warm"
@@ -228,30 +203,8 @@ randomized_delay = "30m"
 description = "bn — staff store retention (#275): compact fully-elapsed quarters of feed cards into a per-quarter headline index and roll up staff_run ledger rows older than a year into monthly aggregates; chronicles + retro transcripts exempt (idempotent, safe to miss)"
 
 [[cron]]
-job = "cockpit-ensure"
-on_calendar = "*:3/10"
-persistent = false
-randomized_delay = "1m"
-description = "bn — orchestrator cockpit (#647): when any lane is live, ensure the planning-session grounding cockpit exists (read-only backlog/todos/attention view; idle no-op when no fleet). Never links, unlinks, moves, or kills any window."
-
-[[cron]]
-job = "cron-health"
-on_calendar = "*:0/15"
-persistent = false
-randomized_delay = "1m"
-description = "bn — failing-cron watchdog: raise an urgent attention item for any cron in a chronic-failure state (auto-acked on recovery)"
-
-[[cron]]
-job = "info-gather"
-on_calendar = "*:0/15"
-persistent = true
-randomized_delay = "1m"
-network = true
-description = "bn — info-gather: dispatch every DUE self-describing agent (agents/<name>.md) into its own tmux window"
-
-[[cron]]
 job = "attention-sweep"
-class = "info"                # visible cron: prints its result in a tmux window
+class = "info"                # dashboard label: this cron gathers something you read
 on_calendar = "Mon..Fri *-*-* 08,11,14,17:00:00"   # 4x/workday (EAT); the consolidated gatherer
 catch_up = true                                     # + first bn event of the day → a fresh sweep on late start
 persistent = true
@@ -261,7 +214,7 @@ description = "bn — attention sweep: ONE headless agent folds email, Teams, me
 
 [[cron]]
 job = "webapp-quickwins"
-class = "info"                # visible cron: prints its result in a tmux window
+class = "info"                # dashboard label: this cron gathers something you read
 on_calendar = "Mon..Fri *-*-* 08..18/2:00:00"   # every 2h across the workday (EAT)
 persistent = true
 randomized_delay = "3m"

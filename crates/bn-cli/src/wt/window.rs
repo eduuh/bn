@@ -283,31 +283,17 @@ pub(crate) fn open_worktree_window(repo: &str, branch: &str, wt_path: &Path, for
     open_worktree_window_cmd(repo, branch, wt_path, force_new, None, false, None);
 }
 
-/// The *default* tmux session that hosts the orchestrator/cockpit + fleet agents (controller,
-/// attention lanes, dispatch orchestrator, scheduled `agents/*.md`), distinct from the per-repo
-/// *ship* agent sessions. This is the fallback used when `[jobs].session` / `$BN_CRON_SESSION` is
-/// unset, and the value tests pin. Prefer [`orchestrator_session()`] at runtime — it honors the
-/// config knob and is what `agent_live` (the `bn jump` picker) surfaces and `reap` treats as
-/// sacrosanct.
+/// The tmux session that hosts the orchestrator + fleet agents (controller, attention lanes,
+/// dispatch orchestrator), distinct from the per-repo *ship* agent sessions. It holds **agents**,
+/// never crons — crons run headlessly and never touch tmux at all. This is what `agent_live` (the
+/// `bn jump` picker) surfaces and `reap` treats as sacrosanct.
 pub(crate) const ORCHESTRATOR_SESSION: &str = "cron";
 
-/// The resolved tmux session that hosts global crons + the fleet/cockpit agents. Reads
-/// `[jobs].session` (env `$BN_CRON_SESSION` wins), defaulting to [`ORCHESTRATOR_SESSION`]. Cached
-/// process-wide so every launch path and every protection/surfacing path (`reap`, `agent_live`,
-/// `cockpit`, `sessions`) resolve the *same* name and can never drift. A per-agent `window:`
-/// frontmatter still overrides placement for that one agent.
+/// The tmux session that hosts the fleet agents — [`ORCHESTRATOR_SESSION`]. A function rather than
+/// a bare const so every launch path and every protection/surfacing path (`reap`, `agent_live`,
+/// `sessions`) resolves through one place and can never drift.
 pub(crate) fn orchestrator_session() -> &'static str {
-    static CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    CACHE
-        .get_or_init(|| {
-            let resolved = Config::load().cockpit_session;
-            if resolved.trim().is_empty() {
-                ORCHESTRATOR_SESSION.to_string()
-            } else {
-                resolved
-            }
-        })
-        .as_str()
+    ORCHESTRATOR_SESSION
 }
 
 /// Like [`open_worktree_window`], but the window runs `cmd` (an agent launch) instead of a shell,

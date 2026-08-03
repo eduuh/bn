@@ -16,7 +16,6 @@ mod mcp;
 mod repos;
 mod routes;
 mod state;
-mod terminal;
 mod watch;
 
 use bn_core::resolver::Config;

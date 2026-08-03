@@ -5,20 +5,48 @@ import { primeToken, shot } from "./helpers";
 const SESSION = "sess-x";
 const TARGET = "bn:dispatch-web-redesign-500";
 
-/** Mock the live-terminal WebSocket (`GET /ws/agents/:target/terminal`, #491): stream one pane
- * frame to the page so the xterm view renders deterministically — no real tmux/agent behind the
- * server. Registered before `goto`, since the component opens the socket on mount. */
-async function mockTerminal(page: Page, lines: string[]): Promise<void> {
-  await page.routeWebSocket(/\/ws\/agents\/.*\/terminal/, (ws) => {
-    ws.send(JSON.stringify({ type: "frame", lines }));
-  });
+/** One row of the mocked activity feed. */
+type Entry = {
+  kind: "user" | "agent" | "tools";
+  ts?: number;
+  text?: string;
+  summary?: string;
+  tools?: { name: string; target: string }[];
+};
+
+/** Mock `GET /api/agents/:id/activity` — the session timeline the detail page reads. Serving it
+ * deterministically means the test needs no real harness transcript on the runner. */
+async function mockActivity(page: Page, entries: Entry[], total?: number): Promise<void> {
+  const filled = entries.map((e) => ({
+    ts: Math.floor(Date.now() / 1000) - 60,
+    text: "",
+    summary: "",
+    tools: [],
+    ...e,
+  }));
+  await page.route(`**/api/agents/${SESSION}/activity*`, (route) =>
+    route.fulfill({
+      json: {
+        ok: true,
+        command: "agent_activity",
+        data: {
+          session_id: SESSION,
+          harness: "claude",
+          entries: filled,
+          total: total ?? filled.length,
+          count: filled.length,
+        },
+        error: null,
+      },
+    }),
+  );
 }
 
-// The agent-detail page reads `/api/agents/:id` (fleet detail) and streams the live pane over a
-// WebSocket (`…/terminal`, #491) — both need a live session, so we inject deterministic fakes (the
-// issue explicitly allows an injectable fake fleet backend). Every *write* below (send / relaunch /
-// kill / land) still hits the REAL server + stub `bn`, so we prove the UI issues the right
-// authorized command.
+// The agent-detail page reads `/api/agents/:id` (fleet detail) and `/api/agents/:id/activity` (the
+// session timeline) — both need a live session, so we inject deterministic fakes (the issue
+// explicitly allows an injectable fake fleet backend). Every *write* below (send / relaunch / kill
+// / land) still hits the REAL server + stub `bn`, so we prove the UI issues the right authorized
+// command.
 test.beforeEach(async ({ page }) => {
   seed();
   await page.route(`**/api/agents/${SESSION}`, (route) =>
@@ -89,16 +117,18 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
-test("agent detail: pane + steer/relaunch/kill/land issue real authorized writes", async ({ page }, testInfo) => {
-  await mockTerminal(page, ["● building the redesign…", "✓ 42 tests pass"]);
+test("agent detail: activity + steer/relaunch/kill/land issue real authorized writes", async ({ page }, testInfo) => {
+  await mockActivity(page, [
+    { kind: "user", text: "build the mobile redesign" },
+    { kind: "agent", text: "Building the redesign — **42 tests pass**." },
+  ]);
   await primeToken(page);
   await page.goto(`/agents/${SESSION}`);
 
   await expect(page.getByText("dispatch/web-redesign-500", { exact: true })).toBeVisible();
-  // The live terminal (#491) streams over a WebSocket and renders inline — the mocked frame lands
-  // in the xterm rows (no expand needed; the old collapsed <pre> pane is gone).
-  const terminal = page.getByRole("img", { name: `Live terminal for ${TARGET}` });
-  await expect(terminal.locator(".xterm-rows")).toContainText(/42 tests pass/);
+  // The activity feed reads the session transcript and renders it as prose, so the agent's message
+  // is plain selectable text — not a fixed-width grid that wraps a 200-column pane into noise.
+  await expect(page.getByText(/42 tests pass/)).toBeVisible();
 
   await shot(page, testInfo, "agent");
 
@@ -140,7 +170,7 @@ test("agent detail: pane + steer/relaunch/kill/land issue real authorized writes
 test("agent detail: switching harness relaunches in place under the chosen harness (#501)", async ({
   page,
 }) => {
-  await mockTerminal(page, ["idle — waiting for input"]);
+  await mockActivity(page, [{ kind: "agent", text: "idle — waiting for input" }]);
   await primeToken(page);
   await page.goto(`/agents/${SESSION}`);
 
@@ -163,7 +193,7 @@ test("agent detail: switching harness relaunches in place under the chosen harne
 test("agent detail: session note renders (PR, references, scripts, sections) — #484", async ({
   page,
 }, testInfo) => {
-  await mockTerminal(page, ["idle — waiting for input"]);
+  await mockActivity(page, [{ kind: "agent", text: "idle — waiting for input" }]);
   await primeToken(page);
   await page.goto(`/agents/${SESSION}`);
 
@@ -201,39 +231,58 @@ test("agent detail: session note renders (PR, references, scripts, sections) —
   await page.screenshot({ path: `e2e/screenshots/session-${testInfo.project.name}.png`, fullPage: true });
 });
 
-test("agent detail: live terminal renders an ANSI/box-drawing frame — no raw escapes (#491/#496)", async ({
+test("agent detail: the activity feed reflows prose and collapses tool runs", async ({
   page,
 }, testInfo) => {
-  // A capture frame with real terminal control bytes: clear-screen + cursor-home, SGR colours, a
-  // spinner glyph, and box-drawing — the exact "garbled" input a raw <pre> would dump verbatim.
-  const ansiFrame = [
-    "\u001b[2J\u001b[H\u001b[36m╭─ bn ─────────────────╮\u001b[0m",
-    "\u001b[36m│\u001b[0m \u001b[32m● building the redesign…\u001b[0m",
-    "\u001b[36m│\u001b[0m \u001b[1;33m⠋\u001b[0m running \u001b[31mcargo test\u001b[0m",
-    "\u001b[36m╰──────────────────────╯\u001b[0m",
-    "\u001b[32m✓ 42 tests pass\u001b[0m",
-  ];
-  // The streamed terminal (#491) carries the ANSI payload over the WebSocket; xterm interprets it.
-  await mockTerminal(page, ansiFrame);
+  // The failure this view exists to fix: the agent's real tmux pane is ~200 columns, so mirroring
+  // it into a browser-width grid wrapped every line and doubled the TUI's box rules. Prose has no
+  // fixed width, so a long paragraph must simply reflow â and the tool traffic that dominates a
+  // long session must stay folded until asked for.
+  const longProse =
+    "Cockpit removed: `cmd/cockpit.rs`, the `bn orchestrate cockpit` subcommand tree, the " +
+    "ensure-on-run hooks, the cockpit-ensure native job, and the prefix-P tmux binding. That " +
+    "eliminates the planning:cockpit windows entirely, and the dashboard label with them.";
+  await mockActivity(
+    page,
+    [
+      { kind: "user", text: "remove the tmux cron dispatch and the cockpit" },
+      {
+        kind: "tools",
+        summary: "14 tool calls · Read ×6, Edit ×5, Bash ×3",
+        tools: [
+          { name: "Read", target: "crates/bn-cli/src/cmd/cockpit.rs" },
+          { name: "Bash", target: "Run the test suite" },
+        ],
+      },
+      { kind: "agent", text: longProse },
+    ],
+    312,
+  );
 
   await primeToken(page);
   await page.goto(`/agents/${SESSION}`);
 
-  const terminal = page.getByRole("img", { name: `Live terminal for ${TARGET}` });
-  const rows = terminal.locator(".xterm-rows");
-  // The escapes are interpreted: the visible text + box-drawing land as real glyphs…
-  await expect(rows).toContainText("building the redesign");
-  await expect(rows).toContainText("cargo test");
-  await expect(rows).toContainText("42 tests pass");
-  await expect(rows).toContainText("│");
-  await expect(rows).toContainText("╭");
+  // Prose renders as markdown and wraps to the viewport — inline code is a real <code> element.
+  await expect(page.getByText(/eliminates the planning:cockpit windows/)).toBeVisible();
+  await expect(page.locator("code", { hasText: "cmd/cockpit.rs" }).first()).toBeVisible();
 
-  // …and NOTHING raw leaks through: no ESC byte, no CSI/SGR remnants anywhere in the pane.
-  const rendered = await terminal.innerText();
-  expect(rendered).not.toMatch(/\u001b/);
-  expect(rendered).not.toContain("[2J");
-  expect(rendered).not.toContain("[36m");
-  expect(rendered).not.toContain("[0m");
+  // The page never scrolls sideways — the whole point. (The feed scrolls *vertically*; a
+  // 200-column mirror is what used to force horizontal overflow.)
+  const overflows = await page.evaluate(
+    () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+  );
+  expect(overflows).toBe(false);
 
-  await shot(page, testInfo, "agent-pane-ansi");
+  // A long session says how much of itself is on screen, rather than silently truncating.
+  await expect(page.getByText(/last 3 of 312/)).toBeVisible();
+
+  // Tool runs are folded to one line, and expand on demand.
+  const toolRun = page.getByRole("button", { name: /14 tool calls/ });
+  await expect(toolRun).toBeVisible();
+  await expect(page.getByText("crates/bn-cli/src/cmd/cockpit.rs")).toHaveCount(0);
+  await toolRun.click();
+  await expect(page.getByText("crates/bn-cli/src/cmd/cockpit.rs")).toBeVisible();
+  await expect(page.getByText("Run the test suite")).toBeVisible();
+
+  await shot(page, testInfo, "agent-activity");
 });

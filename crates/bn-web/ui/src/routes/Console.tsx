@@ -26,7 +26,7 @@ import { cn } from "../lib/utils";
  *
  * - **Queue** — every open loop, ranked and grouped by what you'd *do* about it, dense enough that
  *   the whole list is on screen at once.
- * - **Focus** — the selected item fully resolved: the live terminal, the branch note, or the plan
+ * - **Focus** — the selected item fully resolved: the session activity, the branch note, or the plan
  *   rendered as real markdown.
  * - **Act** — only the decisions that item actually admits.
  *

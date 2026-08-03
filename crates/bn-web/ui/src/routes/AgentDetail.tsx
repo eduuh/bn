@@ -4,7 +4,7 @@ import { AlertTriangle, ArrowLeft } from "lucide-react";
 import { agentDetailQuery } from "../api/client";
 import { useNow } from "../hooks/useNow";
 import { AgentHeader } from "../components/AgentHeader";
-import { AgentTerminal } from "../components/AgentTerminal";
+import { AgentActivity } from "../components/AgentActivity";
 import { SteerPanel } from "../components/SteerPanel";
 import { HarnessSwitcher } from "../components/HarnessSwitcher";
 import { PlanReviewPanel } from "../components/PlanReviewPanel";
@@ -15,7 +15,7 @@ import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
 
-/** The loading skeleton — header + terminal placeholders so the page never flashes empty. */
+/** The loading skeleton — header + feed placeholders so the page never flashes empty. */
 function LoadingSkeleton() {
   return (
     <div className="space-y-4" aria-hidden="true">
@@ -37,10 +37,14 @@ function LoadingSkeleton() {
 
 /**
  * `/agents/:id` — one agent's detail + full steering surface (design §479 lifecycle: supervise →
- * steer → land). Header (repo/branch/health/tokens/turns/jump), the live streamed terminal (#491 —
- * a WebSocket into the agent's tmux pane, with token-gated "take control" input), a plan-review
- * panel when the agent is paused for approval, the steer composer + relaunch/kill controls, and a
- * Land control to merge its ready PR. Single-column on a phone; terminal-beside-controls on desktop.
+ * steer → land). Header (repo/branch/health/tokens/turns/jump), the session activity feed with the
+ * steer composer beneath it, a plan-review panel when the agent is paused for approval, the harness
+ * switcher, and a Land control to merge its ready PR. Single-column on a phone;
+ * feed-beside-controls on desktop.
+ *
+ * The feed replaced the streamed xterm terminal (#491): mirroring a 200-column tmux pane into a
+ * half-as-wide browser grid wrapped every line into noise, and said nothing at all about an agent
+ * whose window had closed. Reading the transcript gives reflowable prose and outlives the window.
  */
 export function AgentDetail() {
   const { id = "" } = useParams();
@@ -77,7 +81,12 @@ export function AgentDetail() {
         <>
           <AgentHeader detail={detail.data} now={now} />
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
-            <AgentTerminal target={agent.target} />
+            {/* Read the session, then reply to it — the composer sits directly under the feed it
+                answers, so steering is one continuous motion instead of a hunt across the page. */}
+            <div className="space-y-3">
+              <AgentActivity sessionId={agent.session_id} />
+              <SteerPanel target={agent.target} />
+            </div>
             <div className="space-y-3">
               <PlanReviewPanel repo={agent.repo} branch={agent.branch} />
               <Card className="p-4">
@@ -87,7 +96,6 @@ export function AgentDetail() {
                   harnesses={detail.data.harnesses}
                 />
               </Card>
-              <SteerPanel target={agent.target} />
               <LandButton repo={agent.repo} />
             </div>
           </div>

@@ -271,10 +271,41 @@ export interface AgentDetailView {
   harnesses?: HarnessOption[];
 }
 
-/** GET /api/agents/:target/pane .data — the trailing tmux-pane lines for the live-pane view. */
-export interface PaneView {
+/** What one activity row represents — `bn_core::agent::EntryKind`. */
+export type EntryKind = "user" | "agent" | "tools";
+
+/** One tool invocation inside a collapsed run. */
+export interface ToolCall {
+  /** Display-cased tool name ("Read", "Bash", "Edit"). */
+  name: string;
+  /** The identifying argument — a path, command, or pattern. May be empty. */
   target: string;
-  lines: string[];
+}
+
+/** One row of the session timeline — `bn_core::agent::ActivityEntry`. */
+export interface ActivityEntry {
+  kind: EntryKind;
+  /** Epoch seconds of the underlying transcript event (0 when it carried no timestamp). */
+  ts: number;
+  /** Markdown prose for `user` / `agent` rows; empty for a tool run. */
+  text: string;
+  /** The calls behind a `tools` row; empty otherwise. */
+  tools: ToolCall[];
+  /** One-line description of a tool run ("14 tool calls · Read ×6"); empty otherwise. */
+  summary: string;
+}
+
+/** GET /api/agents/:session_id/activity .data — the session transcript as a readable timeline.
+ * Replaces the pane mirror as the agent-detail supervise surface: it reads the harness transcript
+ * off disk, so it still answers once the agent's tmux window has closed. */
+export interface ActivityView {
+  session_id: string;
+  /** "claude" | "copilot". */
+  harness: string;
+  /** The trailing entries, oldest first. */
+  entries: ActivityEntry[];
+  /** Total entries in the session, so the UI can say "showing the last 40 of 312". */
+  total: number;
   count: number;
 }
 

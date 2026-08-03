@@ -41,7 +41,7 @@ export function HarnessSwitcher({
     onSuccess: (_data, harness) => {
       pushToast(`restarting ${target} under ${harness}…`, "success");
       void qc.invalidateQueries({ queryKey: queryKeys.fleet });
-      void qc.invalidateQueries({ queryKey: queryKeys.pane(target) });
+      void qc.invalidateQueries({ queryKey: queryKeys.activityAll });
     },
     onError: (e) => {
       pushToast(`switch failed: ${(e as Error).message}`, "error");

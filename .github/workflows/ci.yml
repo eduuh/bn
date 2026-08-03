@@ -128,7 +128,7 @@ jobs:
   integration:
     name: shell harnesses
     # Pinned too, for a different reason: `Verify harness dependencies` asserts a specific
-    # toolchain (the zsh oracle, nvim) that is only known-good on the Fedora image. Pooling this
+    # toolchain (nvim) that is only known-good on the Fedora image. Pooling this
     # is the obvious next step once those deps are verified on darwin — it is the slowest lane
     # (~10 min), so it is where a fourth box would buy the most.
     runs-on: ${{ fromJSON(vars.CI_RUNNER || '["self-hosted","bn-ci"]') }}
@@ -142,7 +142,7 @@ jobs:
 
       - name: Verify harness dependencies
         run: |
-          for command in jq nvim yq zsh; do
+          for command in nvim; do
             command -v "$command" >/dev/null || {
               echo "::error::$command is required on every CI runner (Fedora and darwin alike)"
               exit 1
@@ -175,25 +175,13 @@ jobs:
           fi
           rustup show
 
-      # parity.sh reads target/debug/bn and nothing else, so build just that crate: the
+      # The nvim specs drive target/debug/bn and nothing else, so build just that crate: the
       # workspace build also compiles bn-web (axum/tower) and bn-mcp, which no harness here
       # touches. The release build that used to follow was pure waste — 365s of the lane's
-      # 454s producing a binary neither parity.sh nor the nvim specs ever open. Release
-      # binaries are the release chain's job (release-plz tags main -> cargo-dist uploads).
+      # 454s producing a binary the nvim specs never open. Release binaries are the release
+      # chain's job (release-plz tags main -> cargo-dist uploads).
       - name: Build bn
         run: cargo build -p bn-cli
-
-      # parity.sh hardcodes REPO=$HOME/projects/bn and writes notes under $HOME.
-      # Give it an isolated HOME with the checkout symlinked into place so it never
-      # touches anything real and resolves the repo correctly on the runner.
-      - name: parity.sh (vs zsh oracle)
-        run: |
-          PARITY_HOME="$(mktemp -d)"
-          mkdir -p "$PARITY_HOME/projects"
-          ln -s "$GITHUB_WORKSPACE" "$PARITY_HOME/projects/bn"
-          HOME="$PARITY_HOME" bash config/scripts/parity.sh
-
-
 
       # nvim cockpit specs: headless plenary suite over nvim/tests/. The runner
       # clones plenary on first use (network is available here); neovim is already

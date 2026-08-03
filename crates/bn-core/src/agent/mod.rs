@@ -17,6 +17,7 @@
 //! Split into focused submodules; the public types and functions are re-exported
 //! so callers keep using `agent::ingest`, `agent::supervise`, … as before.
 
+mod activity;
 mod digest;
 mod lease;
 mod parse;
@@ -25,6 +26,7 @@ mod session;
 mod supervise;
 mod switch;
 
+pub use activity::*;
 pub use digest::*;
 pub use lease::*;
 pub use registry::*;

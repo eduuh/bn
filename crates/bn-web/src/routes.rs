@@ -10,7 +10,6 @@ use crate::api;
 use crate::assets;
 use crate::mcp;
 use crate::state::AppState;
-use crate::terminal;
 use axum::{
     body::Body,
     extract::State,
@@ -36,11 +35,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/today/agents", get(api::today_agents))
         .route("/api/agents/{session_id}", get(api::agent_detail))
         .route("/api/agents/{target}/pane", get(api::agent_pane))
-        // Live agent terminal (#491) — a WebSocket streaming the pane + forwarding token-gated input.
-        // Not an `/api` path, so it self-gates ([`terminal`]) rather than via the token middleware.
         .route(
-            "/ws/agents/{target}/terminal",
-            get(terminal::agent_terminal),
+            "/api/agents/{session_id}/activity",
+            get(api::agent_activity),
         )
         .route("/api/orchestrate", get(api::orchestrate))
         .route("/api/orchestrate/recovery", get(api::orchestrate_recovery))

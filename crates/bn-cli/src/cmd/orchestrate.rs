@@ -2614,8 +2614,6 @@ pub(crate) fn orchestrate_run(
     // No daemon install here: this process IS the driver for whatever run it resolves — a legacy
     // wave migrated on this entry point is picked up and driven directly below.
     ensure_migrated(false);
-    // #647: auto-create the orchestrator grounding cockpit once at run entry (single-owner gated).
-    crate::cmd::cockpit::ensure_on_run(cfg, false);
     let path = match repo {
         Some(r) => orchestrate::state_path_for(r),
         None => {
@@ -2870,8 +2868,6 @@ pub(crate) fn orchestrate_run(
 /// one sweep (cron fallback / manual poke); otherwise it idle-polls until every repo is stopped.
 fn orchestrate_run_all(cfg: &Config, once: bool, json: bool) {
     ensure_migrated(false);
-    // #647: the `--all-repos` supervisor is the single cross-repo cockpit owner (design r14 §7).
-    crate::cmd::cockpit::ensure_on_run(cfg, true);
     // Single-controller guard: this sweep claims an owner lease per repo it drives (below), so a
     // dedicated `run --repo R` daemon defers to it (and vice-versa). Release every lease we still
     // own on exit — re-derived from live runs at drop so dynamically-seeded repos are freed too —

@@ -1,8 +1,4 @@
-import { useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { Check, Copy } from "lucide-react";
-import type { Components } from "react-markdown";
+import { lazy, Suspense } from "react";
 import { cn } from "../lib/utils";
 
 /**
@@ -31,71 +27,10 @@ export const MARKDOWN_PROSE = cn(
   "[&_input[type=checkbox]]:mr-1.5 [&_input[type=checkbox]]:accent-primary",
 );
 
-/** Extract the plain text of a react-markdown child tree, for the code-block copy button. */
-function textOf(node: React.ReactNode): string {
-  if (node == null || typeof node === "boolean") return "";
-  if (typeof node === "string" || typeof node === "number") return String(node);
-  if (Array.isArray(node)) return node.map(textOf).join("");
-  if (typeof node === "object" && "props" in node) {
-    return textOf((node as { props: { children?: React.ReactNode } }).props.children);
-  }
-  return "";
-}
-
-/** A fenced code block with a hover-revealed copy button — agent plans are mostly commands and
- * diffs, so copying one out is the single most common thing you do with them. */
-function CodeBlock({ children }: { children?: React.ReactNode }) {
-  const [copied, setCopied] = useState(false);
-  const text = textOf(children);
-
-  const copy = () => {
-    const done = () => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1200);
-    };
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(text).then(done).catch(done);
-    } else {
-      done();
-    }
-  };
-
-  return (
-    <div className="group/code relative">
-      <pre>{children}</pre>
-      <button
-        type="button"
-        onClick={copy}
-        aria-label="copy code block"
-        title="copy"
-        className={cn(
-          "absolute right-1.5 top-1.5 inline-flex h-6 items-center gap-1 rounded border border-border bg-card px-1.5 text-[0.68rem] font-medium",
-          "opacity-0 transition-opacity focus-visible:opacity-100 group-hover/code:opacity-100",
-          copied ? "text-ok" : "text-muted-foreground hover:text-foreground",
-        )}
-      >
-        {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-        {copied ? "copied" : "copy"}
-      </button>
-    </div>
-  );
-}
-
-/** Links open safely in a new tab; fenced blocks get the copy affordance. */
-const BLOCK_COMPONENTS: Components = {
-  a: ({ href, children }) => (
-    <a href={href} target="_blank" rel="noreferrer noopener">
-      {children}
-    </a>
-  ),
-  pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-};
-
-/** Same, but the block `<p>` is unwrapped so text flows inline inside a list bullet or a table cell. */
-const INLINE_COMPONENTS: Components = {
-  ...BLOCK_COMPONENTS,
-  p: ({ children }) => <>{children}</>,
-};
+// react-markdown + remark-gfm are the bundle's heaviest dependency and nothing above the fold needs
+// them synchronously, so the renderer is a lazy chunk. Until it lands, the raw source is shown —
+// markdown degrades to legible plain text, so the fallback is the content rather than a spinner.
+const MarkdownBody = lazy(() => import("./MarkdownBody"));
 
 /**
  * The dashboard's markdown renderer. GFM (tables, task lists, strikethrough, autolinks) is on;
@@ -119,12 +54,9 @@ export function Markdown({
   className?: string;
 }) {
   const body = (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      components={inline ? INLINE_COMPONENTS : BLOCK_COMPONENTS}
-    >
-      {text}
-    </ReactMarkdown>
+    <Suspense fallback={<span className="whitespace-pre-wrap">{text}</span>}>
+      <MarkdownBody text={text} inline={inline} />
+    </Suspense>
   );
   if (inline || bare) return className ? <span className={className}>{body}</span> : body;
   return <div className={cn(MARKDOWN_PROSE, className)}>{body}</div>;

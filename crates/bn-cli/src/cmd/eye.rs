@@ -71,12 +71,9 @@ fn eye_agent(mode: &str) -> staff::ResolvedAgent {
     };
     staff::ResolvedAgent {
         name: name.into(),
-        class: bn_core::crons::CronClass::Info,
         on_calendar: Some(schedule.into()),
         run: format!("bn run {name}"),
-        window: Some(format!("planning:{name}")),
         network: false,
-        reuse: true,
         triggers: Vec::new(),
         description: Some("Keratoconus protective-behaviour coach".into()),
         gather: Some(format!("bn eye gather {mode}")),
@@ -113,12 +110,15 @@ fn run_eye_staff(cfg: &Config, mode: &str, date: &str, json: bool) -> i32 {
         packet,
         |prompt| {
             let Some(cmd) = staff_dispatch_command("copilot", prompt, None, None) else {
-                return staff::Dispatched::Failed(staff::RunStatus::Fail);
+                return staff::Dispatched::Failed(
+                    staff::RunStatus::Fail,
+                    "unknown harness 'copilot'".into(),
+                );
             };
             let (success, stdout, combined) = dispatch_capture(cmd, None);
             match staff::classify_run(success, &combined) {
                 staff::RunStatus::Ok => staff::Dispatched::Output(stdout),
-                status => staff::Dispatched::Failed(status),
+                status => staff::Dispatched::Failed(status, staff::failure_detail(&combined)),
             }
         },
         date,

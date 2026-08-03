@@ -56,7 +56,7 @@ bindir="${BN_BIN_DIR:-$default_bindir}"
 mkdir -p "$bindir" "$cfgdir"
 
 # In the ~/.bn layout, keep ~/.config/bn working as a compat alias for the real config dir:
-# every hardcoded $HOME/.config/bn/... reference (tmux.conf, shell scripts, the bash bn) then
+# every hardcoded $HOME/.config/bn/... reference (tmux.conf, shell scripts) then
 # resolves through the symlink. Only link when ~/.config/bn is absent or already a symlink —
 # never clobber a real legacy dir (that needs an explicit migration).
 if [ "$layout" = "home" ] && [ "$cfgdir" != "$legacy_cfg" ]; then
@@ -83,9 +83,8 @@ case "$bindir" in
 esac
 
 # --- core: the Rust engine ------------------------------------------------------
-# Rust bn is the primary implementation. The bash bn is the delegated fallback: any
-# command the Rust bn doesn't implement natively (blog, learn, …) passes through to it,
-# so we never reimplement peripheral helpers for parity.
+# Rust bn is the only implementation: the zsh bn it grew out of is gone, so every command
+# lives in the binary and an unknown one is a clap error rather than a pass-through.
 #
 # Binary acquisition builds from source by default, so an install always reflects this
 # checkout's code (main HEAD) rather than the last cut release, which lags behind. Only when
@@ -119,8 +118,14 @@ atomic_install() {
 
 # Download the prebuilt bn + bn-web for this platform from the latest GitHub release, placing real
 # binaries at ~/.bin/{bn,bn-web}. Returns non-zero (→ build fallback) on any missing tool, unknown
-# platform, or absent asset. (bn-mcp is no longer a binary: MCP is served by `bn serve`/bn-web over
-# HTTP, #640.)
+# platform, or absent asset.
+#
+# NOTE: bn-mcp is still a binary. #640 added an HTTP MCP transport inside bn-web, but it did not
+# retire the stdio launcher: `register_mcp` below points Claude Code / Copilot at `bn mcp serve`,
+# which execs the sibling `bn-mcp`. This path does not fetch it, so a prebuilt install leaves that
+# launcher dead. Harmless while no release publishes assets (the caller falls back to
+# build_from_source, which does install bn-mcp) — but publishing bn-cli/bn-web assets without a
+# bn-mcp asset would silently break MCP for every prebuilt install.
 download_release() {
   local target tmp app archive url bin src
   command -v tar >/dev/null 2>&1 || return 1
@@ -197,11 +202,16 @@ build_from_source() {
   # the "UI not built" placeholder; build_web_ui is node-optional (no npm → placeholder, server
   # still runs). CI builds the UI the same way before the release binary.
   build_web_ui
-  ( cd "$repo" && cargo build --release -p bn-cli -p bn-web )
+  # bn-mcp is built and installed alongside: `register_mcp` points every MCP client at the stdio
+  # launcher `bn mcp serve`, which execs the sibling `bn-mcp`. Omitting it left that launcher
+  # dead ("could not exec bn-mcp") and silently cost Claude Code / Copilot every bn tool and
+  # session-safe skill prompt — a failure only visible inside the client, never from `bn` itself.
+  ( cd "$repo" && cargo build --release -p bn-cli -p bn-web -p bn-mcp )
   # Copy, don't symlink: a symlink into target/release breaks on `cargo clean`,
   # silently bricking the live `bn`. Re-run install.sh after rebuilding to refresh.
   atomic_install "$repo/target/release/bn" "$bindir/bn"
   atomic_install "$repo/target/release/bn-web" "$bindir/bn-web"
+  atomic_install "$repo/target/release/bn-mcp" "$bindir/bn-mcp"
   echo "Installed $bindir/bn (copy of $repo/target/release/bn; re-run after rebuilds)"
 }
 
@@ -215,8 +225,9 @@ else
   download_release || build_from_source
 fi
 
-# The bash bn stays the delegated fallback for unported commands (blog, learn, …).
-ln -sf "$repo/bn" "$bindir/bn-bash"
+# Sweep the retired bash fallback: older installs symlinked $bindir/bn-bash at the repo's zsh
+# `bn`, which no longer exists. Left alone it is a dangling symlink on every upgraded box.
+rm -f "$bindir/bn-bash"
 
 # Stable binary anchor: the tmux status bar (and tmux-lib) call bn by absolute path
 # because the tmux server's PATH lacks $bindir. ~/.config/bn/bn is bindir-independent,

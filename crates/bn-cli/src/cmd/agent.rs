@@ -780,6 +780,54 @@ pub(crate) fn emit_agent_pane(target: &str, lines: usize, ansi: bool, as_json: b
     }
 }
 
+/// `bn agent activity <session>` — the session's transcript as a readable timeline (prompts, agent
+/// prose, collapsed tool runs). The companion to `pane` for the web dashboard: `pane` mirrors a
+/// live tmux window, this reads the transcript, so it still works once the window has closed. A
+/// session id with no transcript under either harness root is a `no_transcript` failure envelope
+/// rather than an empty success — "we can't find this session" and "this session did nothing" are
+/// different answers.
+pub(crate) fn emit_agent_activity(session: &str, limit: usize, as_json: bool) {
+    let session = session.trim();
+    let Some(activity) = bn_core::agent::activity_for(session, limit) else {
+        let msg = format!("no transcript for session '{session}' under either harness");
+        if as_json {
+            println!(
+                "{}",
+                Envelope::failure("agent_activity", "no_transcript", &msg).to_json()
+            );
+        } else {
+            eprintln!("bn agent activity: {msg}");
+        }
+        return;
+    };
+
+    if as_json {
+        let data = serde_json::json!({
+            "session_id": activity.session_id,
+            "harness": activity.harness,
+            "entries": activity.entries,
+            "total": activity.total,
+            "count": activity.entries.len(),
+        });
+        println!("{}", Envelope::success("agent_activity", data).to_json());
+        return;
+    }
+
+    for e in &activity.entries {
+        match e.kind {
+            bn_core::agent::EntryKind::User => println!("\n\x1b[1;34myou\x1b[0m\n{}", e.text),
+            bn_core::agent::EntryKind::Agent => println!("\n\x1b[1;32magent\x1b[0m\n{}", e.text),
+            bn_core::agent::EntryKind::Tools => println!("\n\x1b[2m· {}\x1b[0m", e.summary),
+        }
+    }
+    println!(
+        "\n\x1b[2m{} of {} entries · {}\x1b[0m",
+        activity.entries.len(),
+        activity.total,
+        activity.harness
+    );
+}
+
 /// The last `n` lines of a captured pane: right-trim each line, drop tmux's bottom padding of blank
 /// lines, then keep the trailing `n`. Interior blank lines are preserved so the pane's layout
 /// survives; only the padded tail is dropped. Pure, so it's unit-testable without tmux.

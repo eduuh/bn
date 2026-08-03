@@ -1,11 +1,8 @@
 ---
 name: sentinel
-class: info
 on_calendar: "Mon..Fri *-*-* 22:30:00"
 run: "bn run sentinel"
-window: ":sentinel"
 network: false
-reuse: true
 description: "bn — the Debt Sentinel: nightly estate patrol (aging TODOs, stale deps, flaky verify, branch/note rot) → ranked attention findings + ≤2 night-shift promotions (opt-in; no-ops unless [sentinel]/[night] repos allowlisted)"
 gather: "bn staff gather sentinel"
 sinks: ["attn"]

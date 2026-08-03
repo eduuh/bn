@@ -1,11 +1,8 @@
 ---
 name: quarter-review
-class: info
 on_calendar: "Sun *-*-* 18:00:00"
 run: "bn run quarter-review"
-window: ":quarter-review"
 network: true
-reuse: true
 description: "bn — quarter impact agent: score the window's shipped work against the quarter goals, append a validated review, flag at-risk goals (opt-in; [quarter].enabled)"
 ---
 # quarter-review

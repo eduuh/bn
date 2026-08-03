@@ -173,11 +173,17 @@ pub struct PaneQuery {
     pub lines: Option<usize>,
 }
 
-/// `GET /api/agents/{target}/pane?lines=40` — the live tmux-pane tail for the agent-detail page,
-/// polled every ~2s by the browser. A read (open on loopback, token-gated on a LAN bind like every
-/// other read), but the capture is a tmux spawn, so it runs through the CLI boundary
-/// (`bn agent pane` via [`crate::bn_runner`]) rather than bn-web shelling tmux directly (design §5
-/// blast-radius). `target` is `repo:branch`; a validated, argv-interpolated field — never a shell.
+/// `GET /api/agents/{target}/pane?lines=40` — the raw tmux-pane tail for one agent.
+///
+/// No longer what the dashboard reads: [`agent_activity`] replaced the pane mirror, because a
+/// ~200-column pane can't be rendered in a browser-width grid and says nothing about an agent whose
+/// window has closed. This is kept as the escape hatch the transcript genuinely can't cover — an
+/// agent sitting on a TUI permission prompt or trust menu, which never reaches the transcript at
+/// all. Same shape as `bn agent pane`, so a `curl` answers "what is it actually stuck on?".
+///
+/// The capture is a tmux spawn, so it runs through the CLI boundary (`bn agent pane` via
+/// [`crate::bn_runner`]) rather than bn-web shelling tmux directly (design §5 blast-radius).
+/// `target` is `repo:branch`; a validated, argv-interpolated field — never a shell.
 pub async fn agent_pane(Path(target): Path<String>, Query(q): Query<PaneQuery>) -> Response {
     if !actions::valid_target(&target) {
         return (
@@ -211,6 +217,70 @@ pub async fn agent_pane(Path(target): Path<String>, Query(q): Query<PaneQuery>) 
         )
             .into_response(),
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ActivityQuery {
+    /// How many trailing timeline entries to return (default 40, capped at 200).
+    pub limit: Option<usize>,
+}
+
+/// `GET /api/agents/{session_id}/activity?limit=40` — the agent-detail page's activity feed: the
+/// session transcript folded into prompts, agent prose, and collapsed tool runs. The read that
+/// replaced the pane mirror as the primary supervise surface, because it reads a file on disk and
+/// so still answers for an agent whose tmux window has closed.
+///
+/// Keyed by *session id*, not `repo:branch` — the transcript is per-session, and the detail page
+/// already has the id. Runs through the CLI boundary (`bn agent activity` via
+/// [`crate::bn_runner`]) like every other read. A session id is a harness-issued uuid; it's
+/// validated here so a path segment can never widen into a filesystem traversal.
+pub async fn agent_activity(
+    Path(session_id): Path<String>,
+    Query(q): Query<ActivityQuery>,
+) -> Response {
+    if !valid_session_id(&session_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(Envelope::failure(
+                "agent_activity",
+                "invalid_session",
+                "session id must be alphanumeric with dashes",
+            )),
+        )
+            .into_response();
+    }
+    let limit = q.limit.unwrap_or(40).clamp(1, 200);
+    let args = [
+        "agent".to_string(),
+        "activity".to_string(),
+        session_id,
+        "--limit".to_string(),
+        limit.to_string(),
+    ];
+    let result = tokio::task::spawn_blocking(move || {
+        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        bn_runner::run(&refs, None)
+    })
+    .await;
+    match result {
+        Ok(rr) => (StatusCode::OK, Json(rr.envelope)).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(Envelope::failure(
+                "agent_activity",
+                "join_error",
+                e.to_string(),
+            )),
+        )
+            .into_response(),
+    }
+}
+
+/// Whether `s` is shaped like a harness session id: a non-empty run of ASCII alphanumerics and
+/// dashes, length-bounded. Both harnesses issue uuids; this rejects path separators, dots, and
+/// anything else that could escape a transcript directory. Pure.
+fn valid_session_id(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 128 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 // ---------------------------------------------------------------------------
@@ -1113,4 +1183,21 @@ fn frame_to_sse(frame: &Arc<StreamFrame>) -> SseEvent {
     SseEvent::default()
         .event(frame.event)
         .data(frame.data.as_str())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_id_validation_rejects_path_escapes() {
+        assert!(valid_session_id("0cc26ff2-2876-4e41-a436-1b2f46716249"));
+        assert!(valid_session_id("abc123"));
+        // The whole point of the guard: nothing that could climb out of a transcript directory.
+        assert!(!valid_session_id("../../etc/passwd"));
+        assert!(!valid_session_id("a/b"));
+        assert!(!valid_session_id("sess.jsonl"));
+        assert!(!valid_session_id(""));
+        assert!(!valid_session_id(&"a".repeat(129)));
+    }
 }

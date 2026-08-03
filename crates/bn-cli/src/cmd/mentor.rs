@@ -282,14 +282,7 @@ pub(crate) fn run_mentor_pipeline(
                 "mentor: page attention for failure",
             );
         }
-        staff::record_run(
-            mentor::AGENT,
-            today,
-            status,
-            Some(&error),
-            tokens,
-            wall_ms,
-        );
+        staff::record_run(mentor::AGENT, today, status, Some(&error), tokens, wall_ms);
         MentorReport {
             ok: false,
             status,
@@ -319,8 +312,14 @@ pub(crate) fn run_mentor_pipeline(
     let prompt = mentor_prompt(&skill, &packet_json, today);
     let output = match dispatch(&prompt) {
         Dispatched::Output(o) => o,
-        Dispatched::Failed(status) => {
-            return report_fail(status, format!("dispatch failed ({})", status.as_str()), 0)
+        Dispatched::Failed(status, detail) => {
+            let status_str = status.as_str();
+            let error = if detail.is_empty() {
+                format!("dispatch failed ({status_str})")
+            } else {
+                format!("dispatch failed ({status_str}): {detail}")
+            };
+            return report_fail(status, error, 0);
         }
     };
     let tokens = staff::estimate_tokens(prompt.len() + output.len());
@@ -352,14 +351,7 @@ pub(crate) fn run_mentor_pipeline(
     }
 
     let wall_ms = started.elapsed().as_millis() as u64;
-    staff::record_run(
-        mentor::AGENT,
-        today,
-        RunStatus::Ok,
-        None,
-        tokens,
-        wall_ms,
-    );
+    staff::record_run(mentor::AGENT, today, RunStatus::Ok, None, tokens, wall_ms);
     MentorReport {
         ok: true,
         status: RunStatus::Ok,
@@ -379,12 +371,12 @@ pub(crate) fn run_mentor_pipeline(
 /// default), killed past [`WALL_SECS`], classified via the shared #271 taxonomy.
 fn real_dispatch(prompt: &str) -> Dispatched {
     let Some(cmd) = staff_dispatch_command("copilot", prompt, None, None) else {
-        return Dispatched::Failed(RunStatus::Fail);
+        return Dispatched::Failed(RunStatus::Fail, "unknown harness 'copilot'".into());
     };
     let (success, stdout, combined) = dispatch_capture(cmd, Some(Duration::from_secs(WALL_SECS)));
     match staff::classify_run(success, &combined) {
         RunStatus::Ok => Dispatched::Output(stdout),
-        other => Dispatched::Failed(other),
+        other => Dispatched::Failed(other, staff::failure_detail(&combined)),
     }
 }
 

@@ -1089,7 +1089,7 @@ pub(crate) enum CmdStaff {
 #[derive(Subcommand, Debug)]
 pub(crate) enum CmdShellUi {
     /// Scaffold ~/.config/bn/config.toml (if absent) and regenerate the legacy plaintext
-    /// file (work-repos) the bash bn reads, from the loaded config.
+    /// file (work-repos) config loading still falls back to, from the loaded config.
     Setup,
     /// Remote GitHub agent dispatch (#280): scaffold the `claude-dispatch.yml` workflow into the
     /// current repo and verify the `ANTHROPIC_API_KEY` secret. The repo-side setup that lets a
@@ -1484,10 +1484,6 @@ pub(crate) enum CmdMisc {
     Version,
     /// Print one bounded current-state snapshot of live agents, orchestration, and attention.
     Bearings,
-    /// Any command bn doesn't implement natively → delegated to the bash bn fallback.
-    /// We don't reimplement peripheral helpers (blog, learn, worktrees, …) for parity.
-    #[command(external_subcommand)]
-    External(Vec<String>),
 }
 
 #[derive(Subcommand, Debug)]
@@ -3009,6 +3005,18 @@ pub(crate) enum AgentCmd {
         #[arg(long)]
         ansi: bool,
     },
+    /// Read a session's transcript as a readable timeline: your prompts, the agent's prose, and
+    /// consecutive tool calls collapsed into one summary row. Powers the web dashboard's agent
+    /// activity feed — unlike `pane`, it works for a session whose tmux window has already closed,
+    /// because the transcript is on disk. `<session>` is the harness session id (the `session_id`
+    /// from `bn agent live`). bn agent activity <session> [--limit N].
+    Activity {
+        /// The harness session id — a Claude transcript or a Copilot session directory.
+        session: String,
+        /// How many trailing timeline entries to return (default 40).
+        #[arg(long, default_value_t = 40)]
+        limit: usize,
+    },
     /// Claude Code SessionStart hook: point this worktree's auto-memory at a per-worktree
     /// `.claude/memory` (written idempotently to the gitignored `.claude/settings.local.json`,
     /// since the checked-in settings ignore `autoMemoryDirectory`), then print `bn handoff read`
@@ -3400,38 +3408,6 @@ pub(crate) enum OrchestrateCmd {
         /// Validate and print the decomposition without creating or enqueueing issues.
         #[arg(long)]
         dry_run: bool,
-    },
-    /// The orchestrator **cockpit** (#647) in the shared `planning` tmux session: one place that
-    /// shows the live backlog, todos and attention (a read-only grounding view) so the operator can
-    /// orient from one session. Composes existing reads (`orchestrate status`, `attn`, `next`); it
-    /// only ever creates the `planning` session and its own grounding window — it never links,
-    /// unlinks, or touches fleet windows or the `main` worktree.
-    #[command(subcommand)]
-    Cockpit(CockpitCmd),
-}
-
-/// `bn orchestrate cockpit` subcommands (#647). Bare `cockpit` is not valid — pick a verb.
-#[derive(Subcommand, Debug)]
-pub(crate) enum CockpitCmd {
-    /// Create-or-attach the `planning` session + its cockpit grounding window (idempotent).
-    /// `--repo` scopes a per-repo `cockpit-<repo>` window; the default is the shared cross-repo
-    /// `cockpit` window. `--attach` follows a human in (only at an interactive tty inside tmux).
-    Up {
-        /// Scope the cockpit to one repo (per-repo `cockpit-<repo>` window). Default: shared cockpit.
-        #[arg(long)]
-        repo: Option<String>,
-        /// After setting up, switch the attached tmux client into the `planning` session.
-        #[arg(long)]
-        attach: bool,
-    },
-    /// Show the cockpit session's window(s).
-    Status,
-    /// Print the read-only grounding snapshot (orchestrate status + attention + `bn next` + todos)
-    /// once — the cockpit window wraps this in a refresh loop.
-    Ground {
-        /// Scope grounding to one repo's run (default: every live run).
-        #[arg(long)]
-        repo: Option<String>,
     },
 }
 

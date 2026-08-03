@@ -17,7 +17,7 @@ export function SteerPanel({ target }: { target: string }) {
 
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: queryKeys.fleet });
-    void qc.invalidateQueries({ queryKey: queryKeys.pane(target) });
+    void qc.invalidateQueries({ queryKey: queryKeys.activityAll });
   };
   const onError = (e: unknown, label: string) => {
     pushToast(`${label} failed: ${(e as Error).message}`, "error");

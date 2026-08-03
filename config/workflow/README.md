@@ -87,28 +87,10 @@ worktree creation. See `config/hooks/post-create` for a starting point.
 | A   | `bin/tmux-agent.sh` (spawn Copilot agent window — the default) |
 | G   | `bin/tmux-agent.sh … copilot` (spawn Copilot agent window, explicit) |
 | S   | `bn tmux-cockpit` (native; orchestration roll-up) |
-| P   | `bn orchestrate cockpit up --attach` (native; #647 — bring up the orchestrator grounding cockpit) |
 | j   | `bn jump` (native; everything that needs you: windows + `bn next` queue) |
 | Tab | `bn jump --next` (native; jump to top window needing you; repeat to cycle) |
 | f   | `bn fleet pick` (native; jump to ANY agent + orchestrator window, live preview) |
 | m   | watch this window (silence → ✓) |
-
-## Orchestrator cockpit (#647)
-
-`bn orchestrate cockpit` turns the shared `planning` session into a single place to **see**
-the whole fleet at a glance. `up` creates-or-attaches `planning` with a live **grounding**
-window (backlog + todos + attention, refreshed every 15s from `orchestrate status` + `attn`
-+ `next`). It is a read-only view — the cockpit never links, unlinks, moves, or kills any
-window, and never touches the `main` worktree. Each lane keeps running untouched in its home
-repo session; to jump to a specific lane, use `prefix j` (`bn jump`) or `prefix f`
-(`bn fleet pick`).
-
-- `bn orchestrate cockpit up [--repo <r>] [--attach]` — bring up the grounding cockpit (idempotent).
-- `bn orchestrate cockpit status` / `ground` — the cockpit's window(s) / the grounding snapshot.
-
-Auto-create is single-owner: the `--all-repos` supervisor owns it when running, and the
-`cockpit-ensure` cron (re-)ensures the grounding cockpit exists every ~10 min whenever any
-lane is live.
 
 ## Live agent activity in the status bar
 

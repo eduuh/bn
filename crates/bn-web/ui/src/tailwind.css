@@ -55,11 +55,16 @@
 
   --radius: 0.65rem;
 
-  --font-sans: "Styrene B", "Styrene A", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    Helvetica, Arial, sans-serif;
+  /* Roboto, bundled as a variable woff2 via @fontsource (imported in `main.tsx`) rather than
+     linked from a CDN — the dashboard is served off the LAN and often has no route out. The old
+     stack led with Styrene, which isn't licensed here, so every surface silently rendered in the
+     system UI face; naming a font we actually ship is what makes the type intentional. */
+  --font-sans: "Roboto Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial,
+    sans-serif;
   /* Display face for page/section titles — the serif is what makes the surface read as Claude. */
   --font-display: "Copernicus", "Tiempos Text", ui-serif, Georgia, "Times New Roman", serif;
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, "Cascadia Code", monospace;
+  --font-mono: "Roboto Mono Variable", ui-monospace, SFMono-Regular, "SF Mono", Menlo,
+    "Cascadia Code", monospace;
 }
 
 .dark {

@@ -148,15 +148,6 @@ pub(crate) fn orchestrate_all_unit() -> String {
     "bn-orchestrate-__all__.service".to_string()
 }
 
-/// Whether the cross-repo (`--all-repos`) orchestrate supervisor `--user` unit is currently active
-/// (#647 single-owner gate). Best-effort: `false` when systemctl is absent or the unit isn't active.
-/// Only called from the Linux branch of [`crate::cmd::cockpit::all_repos_daemon_active`]; cfg-gated
-/// here too so non-Linux builds don't flag it as dead code.
-#[cfg(target_os = "linux")]
-pub(crate) fn orchestrate_all_active() -> bool {
-    have_systemctl() && run_user(&["is-active", "--quiet", &orchestrate_all_unit()]).is_ok()
-}
-
 /// The pre-#395 machine-wide singleton orchestrate `--user` unit name — retired by the legacy
 /// migration so the old daemon can't keep driving (or resurrecting) the moved state file.
 pub(crate) fn orchestrate_legacy_unit() -> String {

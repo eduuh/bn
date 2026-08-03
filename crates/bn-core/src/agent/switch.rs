@@ -192,7 +192,10 @@ pub fn last_request_for(session_id: &str, harness: &str) -> Option<String> {
 }
 
 /// Locate a Claude transcript `<session>.jsonl` under `~/.claude/projects/<encoded-cwd>/`.
-fn find_claude_transcript(projects: &Path, session_id: &str) -> Option<std::path::PathBuf> {
+pub(super) fn find_claude_transcript(
+    projects: &Path,
+    session_id: &str,
+) -> Option<std::path::PathBuf> {
     let file = format!("{session_id}.jsonl");
     std::fs::read_dir(projects)
         .ok()?

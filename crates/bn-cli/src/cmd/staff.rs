@@ -202,12 +202,15 @@ pub(crate) fn staff_run_code(
         |prompt| {
             let Some(cmd) = staff_dispatch_command(&harness, prompt, None, sid.as_deref()) else {
                 eprintln!("bn staff: unknown harness '{harness}' (use copilot | claude)");
-                return staff::Dispatched::Failed(staff::RunStatus::Fail);
+                return staff::Dispatched::Failed(
+                    staff::RunStatus::Fail,
+                    format!("unknown harness '{harness}' (use copilot | claude)"),
+                );
             };
             let (success, stdout, combined) = dispatch_capture(cmd, None);
             match staff::classify_run(success, &combined) {
                 staff::RunStatus::Ok => staff::Dispatched::Output(stdout),
-                other => staff::Dispatched::Failed(other),
+                other => staff::Dispatched::Failed(other, staff::failure_detail(&combined)),
             }
         },
         &today,
@@ -370,13 +373,21 @@ pub(crate) fn emit_staff_gather(cfg: &Config, agent: &str) -> i32 {
             0
         }
         "staff-chief-am" => {
-            let packet = crate::cmd::chief::gather_chief_packet(cfg, bn_core::chief::Slot::Am, &today());
-            println!("{}", serde_json::to_string(&packet).unwrap_or_else(|_| "{}".into()));
+            let packet =
+                crate::cmd::chief::gather_chief_packet(cfg, bn_core::chief::Slot::Am, &today());
+            println!(
+                "{}",
+                serde_json::to_string(&packet).unwrap_or_else(|_| "{}".into())
+            );
             0
         }
         "staff-chief-pm" => {
-            let packet = crate::cmd::chief::gather_chief_packet(cfg, bn_core::chief::Slot::Pm, &today());
-            println!("{}", serde_json::to_string(&packet).unwrap_or_else(|_| "{}".into()));
+            let packet =
+                crate::cmd::chief::gather_chief_packet(cfg, bn_core::chief::Slot::Pm, &today());
+            println!(
+                "{}",
+                serde_json::to_string(&packet).unwrap_or_else(|_| "{}".into())
+            );
             0
         }
         "staff-mentor" | "mentor" => {
@@ -482,14 +493,14 @@ pub(crate) fn emit_staff_board(cfg: &Config, ctx: Option<&Resolved>, as_json: bo
             (None, Some(r)) => format!("{} ago", ago(now - r.ts)),
             (None, None) => "never run".to_string(),
         };
-        let mark = if unread.contains(&a.name) {
-            " ●"
-        } else {
-            ""
-        };
+        let mark = if unread.contains(&a.name) { " ●" } else { "" };
         println!(
             "  {:<16} {:<20} {colour}{:<13}\x1b[0m {}{}",
-            a.name, a.on_calendar.as_deref().unwrap_or(""), health, when, mark
+            a.name,
+            a.on_calendar.as_deref().unwrap_or(""),
+            health,
+            when,
+            mark
         );
         if let Some(slot) = missed_since {
             // Missed silence is death, not design — say so, and never conflate it with a run that

@@ -54,7 +54,6 @@ pub(crate) use cmd::attn::*;
 pub(crate) use cmd::bearings::*;
 pub(crate) use cmd::build::*;
 pub(crate) use cmd::chief::*;
-pub(crate) use cmd::cockpit::*;
 pub(crate) use cmd::control::*;
 pub(crate) use cmd::core_cmds::*;
 pub(crate) use cmd::cost::*;

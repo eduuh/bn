@@ -1,11 +1,8 @@
 ---
 name: m365-sweep
-class: info
 on_calendar: "Mon..Fri *-*-* 14:55:00"
 run: "bn run m365-sweep"
-window: ":m365-sweep"
 network: true
-reuse: true
 description: "bn — sweep M365 (workIQ) for urgent emails, Teams mentions, commitments, owed replies"
 ---
 # m365-sweep

@@ -181,6 +181,9 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
                 lines,
                 ansi,
             }) => emit_agent_pane(&target, lines, ansi, json),
+            Some(AgentCmd::Activity { session, limit }) => {
+                emit_agent_activity(&session, limit, json)
+            }
             None | Some(AgentCmd::Sessions { .. }) => {
                 let (repo, branch) = match action {
                     Some(AgentCmd::Sessions { repo, branch }) => (repo, branch),

@@ -63,7 +63,7 @@ pub fn web_token() -> Option<String> {
     }
 }
 
-/// Directory bn's binaries (`bn`, `bn-mcp`, `bn-bash`, the workflow tools) live in. Resolution,
+/// Directory bn's binaries (`bn`, `bn-mcp`, the workflow tools) live in. Resolution,
 /// high → low: `$BN_BIN_DIR` wins; else `<bn_home>/bin` (the new `~/.bn` layout) when `BN_HOME`
 /// is set or that dir already exists; else the legacy `~/.bin` while it still exists; else
 /// default to `<bn_home>/bin`. install.sh keeps these in step with [`config_dir`].

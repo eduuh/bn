@@ -1,4 +1,9 @@
-//! `bn cron` — job scheduling: run/register/dashboard + tmux cron-pane dispatch.
+//! `bn cron` — job scheduling: run/register/dashboard.
+//!
+//! Crons are **headless**: `bn run <job>` executes the job in this process and records the
+//! outcome. There is no tmux session, window, or pane involved — a cron never creates a session,
+//! never steals focus, and never leaves a window behind. Read a run's result from the event log
+//! (`bn cron`) rather than from a parked terminal.
 use crate::*;
 
 fn run_builtin_job(cfg: &Config, ctx: Option<&Resolved>, job: &str) -> Option<i32> {
@@ -13,29 +18,7 @@ fn run_builtin_job(cfg: &Config, ctx: Option<&Resolved>, job: &str) -> Option<i3
     None
 }
 
-pub(crate) fn should_dispatch_cron_window(
-    configured: bool,
-    nested_run: bool,
-    interactive: bool,
-) -> bool {
-    configured && !nested_run && !interactive
-}
-
-fn run_script(script: &std::path::Path, job_path: &str, in_window: bool) -> (i32, String) {
-    if in_window {
-        return match std::process::Command::new("/bin/sh")
-            .arg(script)
-            .env("PATH", job_path)
-            .status()
-        {
-            Ok(status) => (status.code().unwrap_or(-1), String::new()),
-            Err(e) => {
-                eprintln!("bn run: failed to launch {}: {e}", script.display());
-                (127, e.to_string())
-            }
-        };
-    }
-
+fn run_script(script: &std::path::Path, job_path: &str) -> (i32, String) {
     match std::process::Command::new("/bin/sh")
         .arg(script)
         .env("PATH", job_path)
@@ -68,30 +51,11 @@ fn cron_event_target(
     }
 }
 
-/// Run a native, staff, or shell cron job and record its outcome.
+/// Run a native, staff, or shell cron job **in this process** and record its outcome. Output goes
+/// to this process's stdout/stderr and the tail is persisted to the event log; nothing is ever
+/// dispatched into tmux.
 pub(crate) fn run_job(cfg: &Config, ctx: Option<&Resolved>, job: &str) -> i32 {
-    use std::io::IsTerminal;
     use std::time::Instant;
-
-    // Visible-cron dispatch, decided up-front so it applies to NATIVE and staff jobs too — not
-    // just shell scripts (the old placement ran after `run_builtin_job`, which returns early for
-    // native jobs, so those never got a window). An `info`-class cron runs in a tmux window that
-    // prints its result; `jobs.tmux_window` still forces every class visible for back-compat.
-    let in_window = std::env::var_os("BN_RUN_IN_WINDOW").is_some();
-    if !in_window && !cfg!(windows) && cfg.job_allowed_here(job) {
-        let class = bn_core::crons::job_class(cfg, ctx, job);
-        let want_window = class.is_visible() || cfg.jobs_tmux_window;
-        if should_dispatch_cron_window(want_window, in_window, std::io::stdout().is_terminal()) {
-            // Native/staff jobs resolve to no script → Global scope with no window-dir override.
-            let (scope, script) = match resolver::job_script(cfg, ctx, job) {
-                Some((s, p)) => (s, Some(p)),
-                None => (resolver::JobScope::Global, None),
-            };
-            if dispatch_to_tmux_window(cfg, ctx, scope, job, script.as_deref(), class) {
-                return 0;
-            }
-        }
-    }
 
     if let Some(code) = run_builtin_job(cfg, ctx, job) {
         return code;
@@ -120,7 +84,7 @@ pub(crate) fn run_job(cfg: &Config, ctx: Option<&Resolved>, job: &str) -> i32 {
     let path = std::env::var("PATH").unwrap_or_default();
     let job_path = format!("{home}/.local/bin:{home}/.bin:{path}");
 
-    let (code, tail) = run_script(&script, &job_path, in_window);
+    let (code, tail) = run_script(&script, &job_path);
     let duration_ms = t0.elapsed().as_millis() as i64;
     let (repo, branch) = cron_event_target(ctx, scope);
     let _ = bn_core::events::log_cron_run(
@@ -136,418 +100,27 @@ pub(crate) fn run_job(cfg: &Config, ctx: Option<&Resolved>, job: &str) -> i32 {
     code
 }
 
-/// Select the pinned, global, or repo-scoped tmux session for a cron run.
-pub(crate) fn cron_session(ctx: Option<&Resolved>, scope: resolver::JobScope) -> String {
-    if let Some(s) = std::env::var("BN_CRON_SESSION")
-        .ok()
-        .filter(|s| !s.is_empty())
-    {
-        return s;
-    }
-    match scope {
-        resolver::JobScope::Global => crate::wt::orchestrator_session().to_string(),
-        _ => ctx
-            .map(|c| c.repo.clone())
-            .filter(|r| !r.is_empty())
-            .unwrap_or_else(|| "main".to_string()),
-    }
-}
-
-/// Working dir for the cron window: the repo's checked-out worktree for repo-scoped jobs, else
-/// `$HOME`.
-pub(crate) fn cron_window_dir(
-    cfg: &Config,
-    ctx: Option<&Resolved>,
-    scope: resolver::JobScope,
-) -> String {
-    let home = || std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    match scope {
-        resolver::JobScope::Global => home(),
-        _ => ctx
-            .map(|c| cfg.worktree_dir.join(&c.repo).join(&c.branch))
-            .filter(|p| p.is_dir())
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(home),
-    }
-}
-
 /// Single-quote a string for safe embedding inside a shell command.
 pub(crate) fn shq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-fn ensure_cron_session(session: &str, session_dir: &str) {
-    if !proc::tmux_ok(&["has-session", "-t", &format!("={session}")]) {
-        let _ = proc::tmux_run(&["new-session", "-d", "-s", session, "-c", session_dir]);
-    }
-}
-
-pub(crate) fn cron_inner_command(
-    bn: &str,
-    job: &str,
-    ctx: Option<&Resolved>,
-    scope: resolver::JobScope,
-    class: bn_core::crons::CronClass,
-) -> String {
-    let mut run = format!("{} run {}", shq(bn), shq(job));
-    if !matches!(scope, resolver::JobScope::Global) {
-        if let Some(c) = ctx {
-            run.push_str(&format!(
-                " --repo {} --branch {}",
-                shq(&c.repo),
-                shq(&c.branch)
-            ));
-        }
-    }
-    window_hold_command(&run, class)
-}
-
-/// Wrap a core shell command with the window-visibility behavior shared by the `bn run` crons and
-/// the self-describing agents (which supply their own `run:` command). An `info`-class (visible)
-/// window tees the output and holds the window open ONLY if the command printed something — a
-/// silent run lets the shell exit so the window auto-closes ("hide when there are no results").
-/// A forced-visible (housekeeping) window always runs then holds open. `mktemp` gates the tee; if
-/// it is unavailable we fail *closed* — run and hold open (never a predictable `/tmp` path, which
-/// would be a symlink race on a shared host).
-pub(crate) fn window_hold_command(run: &str, class: bn_core::crons::CronClass) -> String {
-    if class.is_visible() {
-        format!(
-            "if __bnout=$(mktemp 2>/dev/null); then {run} 2>&1 | tee \"$__bnout\"; \
-             if grep -q '[^[:space:]]' \"$__bnout\" 2>/dev/null; then rm -f \"$__bnout\"; exec \"${{SHELL:-sh}}\"; else rm -f \"$__bnout\"; fi; \
-             else {run}; exec \"${{SHELL:-sh}}\"; fi"
-        )
-    } else {
-        format!("{run}; exec \"${{SHELL:-sh}}\"")
-    }
-}
-
-/// The tmux window/pane name for a cron. Usually the job name; the LLM attention agent gets the
-/// more descriptive `agent-attention-list` the user pins as the cron session's headline surface.
-pub(crate) fn cron_window_name(job: &str) -> &str {
-    match job {
-        "attention-agent" => "agent-attention-list",
-        other => other,
-    }
-}
-
-/// Run `job` inside a tmux window named after it (visible-cron mode). Returns true if it
-/// dispatched the window; false when tmux is unreachable, so the caller runs the job directly.
-/// `script` is `None` for native/staff jobs (no `.sh` to anchor the window dir on).
-pub(crate) fn dispatch_to_tmux_window(
-    cfg: &Config,
-    ctx: Option<&Resolved>,
-    scope: resolver::JobScope,
-    job: &str,
-    script: Option<&std::path::Path>,
-    class: bn_core::crons::CronClass,
-) -> bool {
-    if !proc::tmux_ok(&["info"]) {
-        return false;
-    }
-
-    // Don't stomp a still-running run. Every dispatch collapses the job back to one window by
-    // killing/respawning the prior one; if the previous run is still executing (a job slower than
-    // its schedule interval, or a catch-up racing the scheduled tick), killing it would SIGKILL
-    // real work mid-flight and it would never complete. A fresh `running/<job>` marker means the
-    // last run is still going — leave it be and treat this tick as dispatched.
-    if bn_core::events::running_jobs().iter().any(|j| j == job) {
-        return true;
-    }
-
-    let session = cron_session(ctx, scope);
-    let session_dir = cron_window_dir(cfg, ctx, scope);
-    let window_dir = script
-        .and_then(|p| p.parent())
-        .map(|p| p.display().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| session_dir.clone());
-
-    ensure_cron_session(&session, &session_dir);
-
-    let bn = std::env::current_exe()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "bn".to_string());
-    let inner = cron_inner_command(&bn, job, ctx, scope, class);
-    let env_args = cron_env_args();
-    // The window/pane is named for display + collapse-matching; the attention agent is pinned as
-    // the descriptive `agent-attention-list` while the inner command still runs the real job.
-    let wname = cron_window_name(job);
-
-    match scope {
-        resolver::JobScope::Global if !cfg.jobs_cron_global_pane => {
-            dispatch_global_cron_window(&session, wname, &window_dir, &inner, &env_args)
-        }
-        _ => dispatch_cron_pane(&session, wname, &window_dir, &inner, &env_args),
-    }
-}
-
-/// `-e KEY=VAL` flags forwarding the recursion guard + BN_* overrides into a cron window/pane.
-pub(crate) fn cron_env_args() -> Vec<String> {
-    let mut v = vec!["-e".into(), "BN_RUN_IN_WINDOW=1".into()];
-    for key in [
-        "BN_JOBS_DIR",
-        "BN_STATE_DIR",
-        "BN_NOTES_DIR",
-        "BN_NOTES_DIR_WORK",
-        "BN_WORKTREE_DIR",
-        "BN_CONFIG",
-        "BN_HOSTNAME",
-        "BN_TMUX_SESSION",
-    ] {
-        if let Some(val) = std::env::var_os(key) {
-            v.push("-e".into());
-            v.push(format!("{key}={}", val.to_string_lossy()));
-        }
-    }
-    v
-}
-
-/// Kill every window named `name` in `session` (exact match), by id. Unlike `kill-window -t
-/// <session>:<name>` — which removes only the first match — this enumerates and kills all of them,
-/// so a cron job's window count can never stack past one. No-op when none match or tmux is absent.
-pub(crate) fn kill_windows_named(session: &str, name: &str) {
-    let Some(out) = proc::tmux(&[
-        "list-windows",
-        "-t",
-        &format!("={session}"),
-        "-F",
-        "#{window_id} #{window_name}",
-    ]) else {
-        return;
-    };
-    for line in out.lines() {
-        if let Some((id, wname)) = line.split_once(' ') {
-            if wname == name {
-                let _ = proc::tmux_ok(&["kill-window", "-t", id]);
-            }
-        }
-    }
-}
-
-/// Tag a cron pane so later runs can find it again: `@bn_job` is a tmux user option, immune to the
-/// terminal title escapes a shell emits (unlike `pane_title`), so it's the stable match key. The
-/// pane title is set too, purely for the visible border label.
-pub(crate) fn tag_cron_pane(pane_id: &str, job: &str) {
-    let _ = proc::tmux_ok(&["set-option", "-p", "-t", pane_id, "@bn_job", job]);
-    let _ = proc::tmux_ok(&["select-pane", "-t", pane_id, "-T", job]);
-}
-
-/// Global cron: one background window per job in the `cron` session. Kill EVERY existing window of
-/// this job first (a session-only `-t` can't target a window by name, so `new-window -k` wouldn't
-/// replace it), then create fresh. `-d` keeps it in the background so a firing cron never yanks
-/// your focus.
+/// Run one self-describing agent's `run:` command **headlessly**, in this process. The single run
+/// path shared by the `info-gather` cron (filter = due) and `bn startup` (filter = startup): both
+/// execute the agent's own command (defaulting to `bn run <name>`, so the existing native / staff
+/// / script gather runs unchanged) and let its output go to this process's stdout/stderr. This is
+/// the whole "drop a file → it runs" contract.
 ///
-/// We kill *all* same-named windows, not just one: `kill-window -t <session>:<job>` removes a single
-/// match, so if more than one ever existed (a prior accumulation, or a catch-up run racing the
-/// scheduled one), single-kill would leave the surplus forever — the failure that once filled the
-/// session with hundreds of `notify`/`wt-cleanup` windows. Enumerate by name and kill each, so a run
-/// always collapses the job back to exactly one window. Self-healing: even a session already in a bad
-/// state converges on the next run.
-pub(crate) fn dispatch_global_cron_window(
-    session: &str,
-    job: &str,
-    window_dir: &str,
-    inner: &str,
-    env_args: &[String],
-) -> bool {
-    kill_windows_named(session, job);
-
-    let mut args: Vec<String> = vec![
-        "new-window".into(),
-        "-d".into(),
-        "-t".into(),
-        format!("{session}:"),
-        "-n".into(),
-        job.to_string(),
-        "-c".into(),
-        window_dir.to_string(),
-    ];
-    args.extend(env_args.iter().cloned());
-    args.push(inner.to_string());
-
-    proc::tmux_run(&args)
-}
-
-/// Paned cron: a single background `cron` window in `session`, one pane per job. The job's pane is
-/// matched by its `@bn_job` tag — found → its contents are replaced (`respawn-pane -k`), absent → a
-/// new pane is split and the window re-tiled. The first job creates the window. `-d` keeps it
-/// backgrounded so a firing cron never steals focus. Used for repo crons (repo session) and, when
-/// `[jobs].cron_global_layout = "pane"`, global crons (the `cron` session).
-pub(crate) fn dispatch_cron_pane(
-    session: &str,
-    job: &str,
-    window_dir: &str,
-    inner: &str,
-    env_args: &[String],
-) -> bool {
-    let win = format!("={session}:cron");
-
-    let have_window = proc::tmux_raw(&[
-        "list-windows",
-        "-t",
-        &format!("={session}"),
-        "-F",
-        "#{window_name}",
-    ])
-    .map(|o| o.lines().any(|w| w == "cron"))
-    .unwrap_or(false);
-
-    if !have_window {
-        // First repo cron: create the `cron` window, its sole pane running this job.
-        let mut args: Vec<String> = vec![
-            "new-window".into(),
-            "-d".into(),
-            "-P".into(),
-            "-F".into(),
-            "#{pane_id}".into(),
-            "-t".into(),
-            format!("{session}:"),
-            "-n".into(),
-            "cron".into(),
-            "-c".into(),
-            window_dir.to_string(),
-        ];
-        args.extend(env_args.iter().cloned());
-        args.push(inner.to_string());
-        let Some(pane_id) = proc::tmux(&args) else {
-            return false;
-        };
-        // Show each pane's job name on its border.
-        let _ = proc::tmux_ok(&["set-option", "-w", "-t", &win, "pane-border-status", "top"]);
-        let _ = proc::tmux_ok(&[
-            "set-option",
-            "-w",
-            "-t",
-            &win,
-            "pane-border-format",
-            " #{pane_title} ",
-        ]);
-        tag_cron_pane(&pane_id, job);
-        return true;
-    }
-
-    // Window exists — does this job already own a pane? Match on the stable `@bn_job` tag.
-    let pane_for_job = proc::tmux_raw(&["list-panes", "-t", &win, "-F", "#{pane_id} #{@bn_job}"])
-        .and_then(|o| {
-            o.lines().find_map(|l| {
-                let (id, tag) = l.split_once(' ')?;
-                (tag == job).then(|| id.to_string())
-            })
-        });
-
-    if let Some(pane_id) = pane_for_job {
-        // Replace the pane's contents in place — `-k` kills the holding shell first.
-        let mut args: Vec<String> = vec![
-            "respawn-pane".into(),
-            "-k".into(),
-            "-t".into(),
-            pane_id.clone(),
-            "-c".into(),
-            window_dir.to_string(),
-        ];
-        args.extend(env_args.iter().cloned());
-        args.push(inner.to_string());
-        let ok = proc::tmux_run(&args);
-        tag_cron_pane(&pane_id, job);
-        return ok;
-    }
-
-    // New job → split a fresh pane, tag it, re-tile so every job's pane stays visible.
-    let mut args: Vec<String> = vec![
-        "split-window".into(),
-        "-d".into(),
-        "-P".into(),
-        "-F".into(),
-        "#{pane_id}".into(),
-        "-t".into(),
-        win.clone(),
-        "-c".into(),
-        window_dir.to_string(),
-    ];
-    args.extend(env_args.iter().cloned());
-    args.push(inner.to_string());
-    let Some(pane_id) = proc::tmux(&args) else {
-        return false;
-    };
-    tag_cron_pane(&pane_id, job);
-    let _ = proc::tmux_ok(&["select-layout", "-t", &win, "tiled"]);
-    true
-}
-
-/// Does a window named `window` exist in `session`? Exact-name match — the reuse decision for
-/// [`dispatch_agent_window`].
-fn window_exists(session: &str, window: &str) -> bool {
-    proc::tmux_raw(&[
-        "list-windows",
-        "-t",
-        &format!("={session}"),
-        "-F",
-        "#{window_name}",
-    ])
-    .map(|o| o.lines().any(|w| w == window))
-    .unwrap_or(false)
-}
-
-/// Place `inner` in `session:window`, reusing the window in place when it exists and `reuse` is
-/// set: `respawn-window -k` kills the holding shell and re-runs the command without churning the
-/// window index. Otherwise (no window yet, or `reuse = false`) it collapses any stale duplicates
-/// and creates one fresh background (`-d`) window, so a firing agent never steals focus and the
-/// window count can never stack past one.
-fn dispatch_agent_window(
-    session: &str,
-    window: &str,
-    window_dir: &str,
-    inner: &str,
-    env_args: &[String],
-    reuse: bool,
-) -> bool {
-    if reuse && window_exists(session, window) {
-        let mut args: Vec<String> = vec![
-            "respawn-window".into(),
-            "-k".into(),
-            "-t".into(),
-            format!("={session}:{window}"),
-            "-c".into(),
-            window_dir.to_string(),
-        ];
-        args.extend(env_args.iter().cloned());
-        args.push(inner.to_string());
-        return proc::tmux_run(&args);
-    }
-    kill_windows_named(session, window);
-    let mut args: Vec<String> = vec![
-        "new-window".into(),
-        "-d".into(),
-        "-t".into(),
-        format!("{session}:"),
-        "-n".into(),
-        window.to_string(),
-        "-c".into(),
-        window_dir.to_string(),
-    ];
-    args.extend(env_args.iter().cloned());
-    args.push(inner.to_string());
-    proc::tmux_run(&args)
-}
-
-/// Dispatch one self-describing agent into its resolved tmux window, reusing the window in place.
-/// The single dispatch path shared by the `info-gather` cron (filter = due) and `bn startup`
-/// (filter = startup): both build the same visible `bn run <agent.name>` inner command (so the
-/// existing native/staff/script gather runs unchanged, printing its result) and place it via the
-/// agent's `window` field. Returns true when the dispatch was issued — or intentionally skipped
-/// because the agent is scheduled and not due at `now` (the shared schedule gate), or because a
-/// prior run of the same job is still in flight (the preserved running-marker guard) — and false
-/// when tmux is unreachable.
-pub(crate) fn dispatch_agent(
-    cfg: &Config,
-    ctx: Option<&Resolved>,
-    agent: &bn_core::agents::AgentDef,
-) -> bool {
-    if !proc::tmux_ok(&["info"]) {
+/// Returns true when the agent ran — or was intentionally skipped because it is scheduled and not
+/// due at `now` (the shared schedule gate), or because a prior run of the same job is still in
+/// flight (the running-marker guard) — and false when the command could not be launched.
+pub(crate) fn run_agent(agent: &bn_core::agents::AgentDef) -> bool {
+    if cfg!(windows) {
+        eprintln!("bn: agent runs are unix-only (sh); not supported on native Windows");
         return false;
     }
     // Honor the agent's schedule here, at the single choke point every launch path funnels
-    // through, so `bn startup` (and any future caller) can never open a scheduled agent's window
+    // through, so `bn startup` (and any future caller) can never fire a scheduled agent
     // off-calendar — only when `AgentDef::due` says a slot has passed. Unscheduled startup-class
     // agents (no `on_calendar`) stay launchable, so boot-time firing is unaffected. The
     // `info-gather` cron's `due_agents()` pre-filter still selects the roster; this is the shared
@@ -556,29 +129,22 @@ pub(crate) fn dispatch_agent(
     if !agent.launchable(bn_core::events::last_run(&agent.name).as_ref(), now) {
         return true;
     }
-    // Don't stomp a still-running gather — the same guard the per-info crons used (a run slower
-    // than its interval, or a catch-up racing the tick, would otherwise be SIGKILLed mid-flight).
+    // Don't stomp a still-running gather — a run slower than its interval, or a catch-up racing
+    // the tick, would otherwise be started twice concurrently.
     if bn_core::events::running_jobs().contains(&agent.name) {
         return true;
     }
-    let fallback = cron_session(ctx, resolver::JobScope::Global);
-    let place = bn_core::agents::placement(agent.window.as_deref(), &agent.name, &fallback);
-    let session_dir = cron_window_dir(cfg, ctx, resolver::JobScope::Global);
-
-    ensure_cron_session(&place.session, &session_dir);
-
-    // The agent's own `run:` command (defaults to `bn run <name>`), wrapped with the shared
-    // window-visibility behavior. This is the whole "drop a file → it runs" contract.
-    let inner = window_hold_command(&agent.run, agent.class);
-    let env_args = cron_env_args();
-    dispatch_agent_window(
-        &place.session,
-        &place.window,
-        &session_dir,
-        &inner,
-        &env_args,
-        agent.reuse,
-    )
+    match std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(&agent.run)
+        .status()
+    {
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!("bn: failed to run agent '{}': {e}", agent.name);
+            false
+        }
+    }
 }
 
 /// The names of every cron agent whose schedule is DUE at `now` (never run / last failed / a slot
@@ -597,20 +163,21 @@ pub(crate) fn due_agents(
 }
 
 /// `info-gather` — the single cron that replaces the ten per-info timers. It loads the
-/// self-describing agents and dispatches every DUE one into its own window (reusing in place),
-/// running `bn run <agent.name>` so each gather's existing implementation is preserved. Headless
-/// itself: the visible output is each agent's window, not this dispatcher's.
+/// self-describing agents and runs every DUE one in turn (`bn run <agent.name>` by default, so
+/// each gather's existing implementation is preserved). Headless like every other cron: results
+/// land in the event log, not in a parked tmux window.
 pub(crate) fn job_info_gather(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
     let now = bn_core::util::now_epoch_secs();
     for agent in due_agents(cfg, ctx, now) {
-        dispatch_agent(cfg, ctx, &agent);
+        run_agent(&agent);
     }
     0
 }
 
 /// The tmux server PID (`tmux display-message -p '#{pid}'`) — the stable boot key for the startup
-/// dedup. `None` when no server is running (or tmux is absent), in which case there is nowhere to
-/// place windows and `bn startup` is a no-op.
+/// dedup. `None` when no server is running (or tmux is absent), in which case there was no boot to
+/// respond to and `bn startup` is a no-op. This is the only thing `bn startup` asks tmux for: the
+/// agents it fires run headlessly, in-process.
 fn tmux_server_pid() -> Option<String> {
     proc::tmux(&["display-message", "-p", "#{pid}"])
 }
@@ -643,7 +210,7 @@ pub(crate) fn emit_startup(cfg: &Config, ctx: Option<&Resolved>) {
     }
     for agent in bn_core::agents::discover(cfg, ctx) {
         if agent.is_startup() {
-            dispatch_agent(cfg, ctx, &agent);
+            run_agent(&agent);
         }
     }
 }
@@ -874,8 +441,8 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
         } else {
             ""
         };
-        // Info-class crons run in a visible tmux window that prints their result; mark them so the
-        // dashboard shows which crons surface information vs. do silent housekeeping.
+        // `info` crons gather something a person reads, `housekeeping` ones do silent estate work.
+        // Both run headlessly; the tag is a descriptive label for the dashboard, nothing more.
         let class_tag = match class(name) {
             Some(bn_core::crons::CronClass::Info) => "  👁 info",
             _ => "",
@@ -898,24 +465,18 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
         };
         println!("{:<24} {last}", "");
 
-        // Under the single info-gather cron, list the agents it dispatches: each one's placement,
-        // schedule, and whether it is due right now — the ten info gathers that used to be their
-        // own timer rows.
+        // Under the single info-gather cron, list the agents it runs: each one's schedule and
+        // whether it is due right now — the ten info gathers that used to be their own timer rows.
         if name == "info-gather" && !agents.is_empty() {
-            let fallback = cron_session(ctx, resolver::JobScope::Global);
             for a in &agents {
                 let last = bn_core::events::last_run(&a.name);
-                let place = bn_core::agents::placement(a.window.as_deref(), &a.name, &fallback);
                 let sched = a.on_calendar.as_deref().unwrap_or("startup-only");
                 let state = if a.due(last.as_ref(), now) {
                     "due"
                 } else {
                     "idle"
                 };
-                println!(
-                    "  ├ {:<14} {}:{} · {} · {}",
-                    a.name, place.session, place.window, sched, state
-                );
+                println!("  ├ {:<14} {} · {}", a.name, sched, state);
             }
         }
     }

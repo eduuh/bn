@@ -1,11 +1,8 @@
 ---
 name: scout
-class: info
 on_calendar: "Sat *-*-* 10:00:00"
 run: "bn run scout"
-window: ":scout"
 network: true
-reuse: true
 gather: "bn staff gather scout"
 sinks: ["research"]
 description: "Saturday read-only radar over upstreams, dependencies, and tooling."

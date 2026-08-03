@@ -14,7 +14,7 @@ import type {
   CostView,
   Envelope,
   AgentDetailView,
-  PaneView,
+  ActivityView,
   NotesView,
   NoteDetail,
   HandoffView,
@@ -66,8 +66,11 @@ export const queryKeys = {
   cost: (windowDays: number) => ["cost", windowDays] as const,
   /** One agent's detail header, keyed by session id. */
   agent: (id: string) => ["agent", id] as const,
-  /** The live pane tail, keyed by tmux target (`repo:branch`). */
-  pane: (target: string) => ["pane", target] as const,
+  /** One session's activity timeline, keyed by session id. */
+  activity: (sessionId: string) => ["activity", sessionId] as const,
+  /** Every activity feed, as a prefix — for writes that know a `repo:branch` target but not which
+   * session is on screen (steer, harness switch). react-query matches keys by prefix. */
+  activityAll: ["activity"] as const,
   /** The branch-note rollup list. */
   notes: ["notes"] as const,
   /** One full note, keyed by repo + note-key branch. */
@@ -186,18 +189,20 @@ export function agentDetailQuery(id: string) {
   };
 }
 
-/** The live tmux-pane tail, polled every 2s *while the tab is visible* (a hidden tab returns
- * `false`, pausing the poll — the design's "refreshed while the tab is visible"). `target` is the
- * agent's `repo:branch`; `lines` caps the tail (default 40). */
-export function paneQuery(target: string, lines = 40) {
+/** The agent's session timeline, polled every 4s while the tab is visible (a hidden tab returns
+ * `false`, pausing the poll). Each tick re-reads and folds a transcript that can be a megabyte, and
+ * prose doesn't change as fast as a spinner does, so this is deliberately unhurried.
+ * `keepPreviousData` holds the last feed on screen while a refetch is in flight, so the view never
+ * blanks between ticks. */
+export function activityQuery(sessionId: string, limit = 40) {
   return {
-    queryKey: queryKeys.pane(target),
+    queryKey: queryKeys.activity(sessionId),
     queryFn: () =>
-      fetchEnvelope<PaneView>(
-        `/api/agents/${encodeURIComponent(target)}/pane?lines=${lines}`,
+      fetchEnvelope<ActivityView>(
+        `/api/agents/${encodeURIComponent(sessionId)}/activity?limit=${limit}`,
       ),
-    refetchInterval: () => (document.visibilityState === "visible" ? 2000 : (false as const)),
-    // A transient capture miss shouldn't spam retries — the next 2s tick reconciles.
+    refetchInterval: () => (document.visibilityState === "visible" ? 4000 : (false as const)),
+    placeholderData: keepPreviousData,
     retry: 0,
     staleTime: 0,
   };

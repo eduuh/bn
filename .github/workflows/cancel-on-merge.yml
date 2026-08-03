@@ -1,0 +1,66 @@
+name: Cancel CI on merge
+
+# A PR that merges while its CI is still running leaves those jobs holding runner slots to
+# compute a verdict nobody will read — the branch is gone and the checks can no longer gate
+# anything. On a small self-hosted pool that is the difference between the next PR starting
+# now or queueing behind a dead run. (#980 merged 26s after its CI started; the remaining
+# lanes ran on for another five minutes.)
+#
+# `concurrency: cancel-in-progress` in ci.yml does NOT cover this: it only cancels runs
+# superseded by a *new push to the same ref*, and a merge is not a push to the PR's ref.
+#
+# Deliberately scoped to `merged == true`. A PR closed *without* merging is often closed by
+# accident or reopened moments later, and killing its CI would just mean paying for the run
+# twice.
+on:
+  pull_request:
+    types: [closed]
+
+# Only the ability to cancel runs — no checkout, no contents access.
+permissions:
+  actions: write
+
+jobs:
+  cancel:
+    # `github.event.pull_request.merged` is a real boolean here, not a string.
+    if: github.event.pull_request.merged
+    name: cancel in-flight CI for the merged branch
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["self-hosted","bn-ci"]') }}
+    steps:
+      - name: Cancel runs still in flight on this PR's head branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          SELF: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # `queued` and `in_progress` are separate states in the API and both matter: a run
+          # sitting in the queue is exactly the one worth killing on a small pool, and asking
+          # for one status does not return the other.
+          # Not named `status`: that is read-only in some shells, and a workflow step is not
+          # the place to discover it.
+          ids=""
+          for run_state in in_progress queued; do
+            found=$(gh api --paginate \
+              "repos/$REPO/actions/runs?branch=$BRANCH&status=$run_state" \
+              --jq '.workflow_runs[].id' || true)
+            ids="$ids $found"
+          done
+
+          # This workflow runs on the same branch, so it appears in its own results. Cancelling
+          # ourselves would abort the loop before the real runs are dealt with.
+          cancelled=0
+          for id in $(echo "$ids" | tr ' ' '\n' | grep -E '^[0-9]+$' | sort -u); do
+            [ "$id" = "$SELF" ] && continue
+            if gh api -X POST "repos/$REPO/actions/runs/$id/cancel" >/dev/null 2>&1; then
+              echo "cancelled run $id"
+              cancelled=$((cancelled + 1))
+            else
+              # Most likely it finished between the list and the cancel — a race, not a failure.
+              echo "could not cancel run $id (already finished?)"
+            fi
+          done
+
+          echo "::notice::cancelled $cancelled in-flight run(s) for merged branch $BRANCH"

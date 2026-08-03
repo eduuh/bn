@@ -33,12 +33,8 @@ tokio = { workspace = true, features = ["net", "sync", "signal"] }
 # Adapts the SSE broadcast channel into an `impl Stream` for axum's `Sse` response (and re-exports
 # the `Stream` trait + combinators), so `/api/stream` needs no extra `futures` dep.
 tokio-stream = { version = "0.1", features = ["sync"] }
-# `ws` adds the WebSocket upgrade extractor for the live agent terminal (#491); the default axum
-# features cover the rest of the router.
-axum = { version = "0.8", features = ["ws"] }
-# The terminal WebSocket splits the socket into a send half (streamed pane frames) and a recv half
-# (client input/resize) driven by two tasks — `SinkExt`/`StreamExt::split` come from futures-util.
-futures-util = { version = "0.3", default-features = false }
+# Default features cover the whole router; the SSE stream needs nothing extra (see tokio-stream).
+axum = "0.8"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 # `debug-embed` bakes ui/dist into the binary in EVERY profile (not just release), so an installed
 # or copied `bn-web` always serves its UI without the source tree present. `interpolate-folder-path`

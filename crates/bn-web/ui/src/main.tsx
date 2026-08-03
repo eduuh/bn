@@ -4,25 +4,34 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom";
 import { App } from "./App";
 import { Console } from "./routes/Console";
-import { CommandCenter } from "./routes/CommandCenter";
-import { Today } from "./routes/Today";
-import { Fleet } from "./routes/Fleet";
-import { Nodes } from "./routes/Nodes";
-import { Start } from "./routes/Start";
-import { CostView } from "./routes/CostView";
-import { Insights } from "./routes/Insights";
-import { AgentDetail } from "./routes/AgentDetail";
-import { NotesPage } from "./routes/NotesPage";
-import { Handoff } from "./routes/Handoff";
-import { Attention } from "./routes/Attention";
-import { Goals } from "./routes/Goals";
-import { Cron } from "./routes/Cron";
-import { CronDetail } from "./routes/CronDetail";
-import { Skills } from "./routes/Skills";
-import { Research } from "./routes/Research";
-import { Repos } from "./routes/Repos";
-import { RepoDetail } from "./routes/RepoDetail";
-import "uplot/dist/uPlot.min.css";
+import { lazyRoute, prefetchRoutes } from "./lib/lazyRoute";
+// Every route but the console is lazy. The console is the index route, so it stays in the entry
+// chunk and paints without a fallback; the other nineteen views — and the libraries only they pull
+// in, uPlot for the cost charts, the markdown renderer for notes and packets — arrive on
+// navigation. Bundled eagerly they made a single ~850 kB entry chunk.
+const CommandCenter = lazyRoute(() => import("./routes/CommandCenter"), "CommandCenter");
+const Today = lazyRoute(() => import("./routes/Today"), "Today");
+const Fleet = lazyRoute(() => import("./routes/Fleet"), "Fleet");
+const Nodes = lazyRoute(() => import("./routes/Nodes"), "Nodes");
+const Start = lazyRoute(() => import("./routes/Start"), "Start");
+const CostView = lazyRoute(() => import("./routes/CostView"), "CostView");
+const Insights = lazyRoute(() => import("./routes/Insights"), "Insights");
+const AgentDetail = lazyRoute(() => import("./routes/AgentDetail"), "AgentDetail");
+const NotesPage = lazyRoute(() => import("./routes/NotesPage"), "NotesPage");
+const Handoff = lazyRoute(() => import("./routes/Handoff"), "Handoff");
+const Attention = lazyRoute(() => import("./routes/Attention"), "Attention");
+const Goals = lazyRoute(() => import("./routes/Goals"), "Goals");
+const Cron = lazyRoute(() => import("./routes/Cron"), "Cron");
+const CronDetail = lazyRoute(() => import("./routes/CronDetail"), "CronDetail");
+const Skills = lazyRoute(() => import("./routes/Skills"), "Skills");
+const Research = lazyRoute(() => import("./routes/Research"), "Research");
+const Repos = lazyRoute(() => import("./routes/Repos"), "Repos");
+const RepoDetail = lazyRoute(() => import("./routes/RepoDetail"), "RepoDetail");
+// Roboto, self-hosted. The dashboard is embedded in the binary and served on a LAN (often with no
+// route to the internet), so a Google Fonts <link> would silently fall back to system UI. These
+// bundle the woff2 into `ui/dist`, which `build.rs` bakes into the binary alongside the JS.
+import "@fontsource-variable/roboto";
+import "@fontsource-variable/roboto-mono";
 import "./index.css";
 import "./tailwind.css";
 
@@ -72,6 +81,10 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     </QueryClientProvider>
   </React.StrictMode>,
 );
+
+// The console is on screen; spend the idle time pulling the other routes into the (service worker)
+// cache so navigation is instant and an offline phone still has every view.
+prefetchRoutes();
 
 // PWA: register the service worker so the dashboard is installable and the app shell works on a
 // flaky mobile connection (the SW is network-first for `/api`, so live data is never stale-served).

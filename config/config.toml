@@ -152,9 +152,6 @@ fleet_poll_secs = 2
 tmux_mcp_autostart = true
 tmux_mcp_badge = true
 
-[cockpit]
-ground_secs = 30                # cockpit grounding-loop redraw cadence (s); env $BN_COCKPIT_GROUND_SECS
-
 [dispatch]
 plan_review = false
 plan_reviewers = 3
@@ -171,8 +168,6 @@ remote_overflow = false
 # daily_cost_usd_research = 5.0
 
 [jobs]
-tmux_window = false
-cron_global_layout = "window"   # window | pane
 # [jobs.only_on]
 # commit-notes = ["my-laptop"]  # host allowlist per job
 # pr-observe = ["my-laptop", "work-pc"]

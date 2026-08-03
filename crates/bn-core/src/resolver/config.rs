@@ -170,11 +170,6 @@ pub struct PipelineModel {
     pub harness: Option<String>,
 }
 
-/// Default cockpit grounding-loop redraw cadence (seconds). Raised from the original 15s to cut
-/// the flicker of a full clear+redraw; overridable via `[cockpit].ground_secs` /
-/// `$BN_COCKPIT_GROUND_SECS`.
-pub const DEFAULT_COCKPIT_GROUND_SECS: u64 = 30;
-
 /// Storage + classification config, resolved from env + `config.toml` once (mirrors oracle
 /// startup). Layering, low → high precedence: hardcoded defaults → config.toml → legacy
 /// plaintext → env overrides. Env always wins, preserving the test contract.
@@ -228,19 +223,6 @@ pub struct Config {
     /// Folder the GIF recorder (e.g. ScreenToGif) saves into; backs `bn shot --gif`. From
     /// `$BN_GIF_DIR` or config.toml `[capture].gif_dir`.
     pub gif_dir: Option<PathBuf>,
-    /// `[jobs].tmux_window`: run each cron job in a tmux window named after it (visible cron)
-    /// instead of headlessly. Default false. Backs `bn run`'s windowed dispatch.
-    pub jobs_tmux_window: bool,
-    /// `[jobs].cron_global_layout` = `"pane"` (or `$BN_CRON_GLOBAL_LAYOUT=pane`): global visible-crons
-    /// share one `cron` window (a pane per job) instead of one window per job. Default false (window
-    /// per job). Repo crons are always paned, independent of this.
-    pub jobs_cron_global_pane: bool,
-    /// `[jobs].session` (or `$BN_CRON_SESSION`): the tmux session that hosts global crons *and* the
-    /// fleet/cockpit agents (controller, attention lanes, dispatch orchestrator, scheduled
-    /// `agents/*.md`). One knob to re-home the whole automation fleet; default `"cron"`. A per-agent
-    /// `window: <session>:<window>` frontmatter still wins for that one agent. Backs
-    /// `wt::orchestrator_session()`.
-    pub cockpit_session: String,
     /// `[work].only` (or `$BN_WORK_ONLY`): this is a work machine — cross-repo views (branches,
     /// next, summary, metrics) hide everything outside [`work_repos`] so personal work never
     /// surfaces on a work screen. Default false. Backs [`is_visible_repo`](Config::is_visible_repo).
@@ -274,12 +256,6 @@ pub struct Config {
     /// `[web]`: the `bn-web` dashboard server settings (port / bind / fleet poll cadence). See
     /// [`WebConfig`]. Backs `bn serve` and the `bn-web` binary.
     pub web: WebConfig,
-    /// `[cockpit].ground_secs` (or `$BN_COCKPIT_GROUND_SECS`): how often the `bn orchestrate
-    /// cockpit` grounding window redraws its snapshot, in seconds. From
-    /// [`DEFAULT_COCKPIT_GROUND_SECS`] (30) by default; clamped `>= 1` so it can never become a
-    /// `sleep 0` busy loop. Backs the `bn orchestrate cockpit` grounding loop (`ground_loop_cmd`
-    /// in `bn-cli`).
-    pub cockpit_ground_secs: u64,
     /// `[scout]`: the Scout radar agent (#262) — the public `owner/repo` watchlist, the tool-stack
     /// repos, and the findings cap. Empty watch/tools = the collectors idle. See
     /// [`crate::scout::ScoutConfig`].
@@ -391,9 +367,6 @@ impl Default for Config {
             attention_max_age_hours: 24.0,
             screenshot_dir: None,
             gif_dir: None,
-            jobs_tmux_window: false,
-            jobs_cron_global_pane: false,
-            cockpit_session: "cron".to_string(),
             work_only: false,
             managed_repos: Vec::new(),
             hosts: HashMap::new(),
@@ -402,7 +375,6 @@ impl Default for Config {
             nodes: Vec::new(),
             coarse_sizes: crate::calib::CoarseSizes::default(),
             web: WebConfig::default(),
-            cockpit_ground_secs: DEFAULT_COCKPIT_GROUND_SECS,
             scout: crate::scout::ScoutConfig::default(),
             log: LogConfig::default(),
             dispatch_plan_review: false,
@@ -513,27 +485,6 @@ impl Config {
             .unwrap_or_else(read_hostname);
 
         let job_only_on = file.map(|f| f.job_only_on()).unwrap_or_default();
-
-        let jobs_tmux_window = non_empty_env("BN_JOBS_TMUX_WINDOW")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .or_else(|| file.and_then(|f| f.jobs_tmux_window()))
-            .unwrap_or(false);
-
-        let jobs_cron_global_pane = non_empty_env("BN_CRON_GLOBAL_LAYOUT")
-            .map(|v| v.eq_ignore_ascii_case("pane"))
-            .or_else(|| {
-                file.and_then(|f| f.cron_global_layout())
-                    .map(|v| v.eq_ignore_ascii_case("pane"))
-            })
-            .unwrap_or(false);
-
-        // The single session that hosts global crons + the fleet/cockpit agents. `$BN_CRON_SESSION`
-        // (the long-standing cron override) wins so it re-homes agents too; else `[jobs].session`;
-        // else `"cron"`. `wt::orchestrator_session()` caches this so every launch/protection path
-        // resolves the same name.
-        let cockpit_session = non_empty_env("BN_CRON_SESSION")
-            .or_else(|| file.and_then(|f| f.jobs_session()))
-            .unwrap_or_else(|| "cron".to_string());
 
         let weekly_anchor = non_empty_env("BN_WEEKLY_ANCHOR")
             .and_then(|s| parse_weekday(&s))
@@ -647,16 +598,6 @@ impl Config {
                 tmux_mcp_badge,
             }
         };
-
-        // `[cockpit].ground_secs` / `$BN_COCKPIT_GROUND_SECS`: cockpit grounding-loop redraw
-        // cadence (seconds). Env wins over config.toml over the default; clamped `>= 1` so a
-        // stray `0` can never spin the loop with `sleep 0`.
-        let cockpit_ground_secs = non_empty_env("BN_COCKPIT_GROUND_SECS")
-            .and_then(|s| s.trim().parse::<u64>().ok())
-            .or_else(|| file.and_then(|f| f.cockpit_ground_secs()))
-            .filter(|s| *s > 0)
-            .unwrap_or(DEFAULT_COCKPIT_GROUND_SECS)
-            .max(1);
 
         // `[log]`: the opt-in verbose/debug action log. Env wins over config.toml over the
         // off-by-default. `BN_VERBOSE` is a bare on switch; `BN_LOG` may be `1`/`true` or a level
@@ -845,9 +786,6 @@ impl Config {
             weekly_anchor,
             screenshot_dir,
             gif_dir,
-            jobs_tmux_window,
-            jobs_cron_global_pane,
-            cockpit_session,
             work_only,
             sla_first_review_hours,
             sla_merge_hours,
@@ -861,7 +799,6 @@ impl Config {
             nodes,
             coarse_sizes,
             web,
-            cockpit_ground_secs,
             scout,
             log,
             dispatch_plan_review,

@@ -477,34 +477,36 @@ mod tests {
     }
 
     #[test]
-    fn info_gather_manifest_entry_renders_for_all_backends() {
-        // The ten per-info timers (pr-queue, meetings, quarter-review, …) collapsed into ONE
-        // shipped `info-gather` cron; each agent's own schedule now drives its cadence in-process
-        // (see `crate::cmd::cron::job_info_gather`). That single entry must still generate valid
-        // artifacts for BOTH backends `bn cron register` targets — systemd (verbatim OnCalendar)
-        // and launchd (translated) — so the WSL/Windows systemd-in-WSL path wires it too. This is
-        // the successor of the retired quarter-review-specific guard.
+    fn cadence_tick_manifest_entries_render_for_all_backends() {
+        // Two rounds of consolidation land on these three entries: the ten per-info timers
+        // (pr-queue, meetings, quarter-review, …) collapsed into `info-gather`, and the ten
+        // same-cadence jobs then collapsed into `tick-5m`/`tick-10m`/`tick-15m` (which now owns
+        // `info-gather`). They are the sub-hourly timers `bn cron register` materializes, so each
+        // must generate valid artifacts for BOTH backends — systemd (verbatim OnCalendar) and
+        // launchd (translated) — or the whole cluster silently never fires on that platform.
         let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/crons.toml");
         let entries = bn_core::crons::parse_manifest(std::path::Path::new(manifest))
             .expect("config/crons.toml parses");
-        let ig = entries
-            .iter()
-            .find(|e| e.job == "info-gather")
-            .expect("config/crons.toml must declare the single info-gather cron");
-        let resolved = ResolvedCron {
-            entry: ig.clone(),
-            scope: JobScope::Global,
-            repo: None,
-            source: manifest.into(),
-        };
-        let (svc, timer) = render_systemd(&resolved, "/home/u/.bin/bn");
-        assert!(svc.contains("ExecStart=/home/u/.bin/bn run info-gather"));
-        assert!(timer.contains(&format!("OnCalendar={}", ig.on_calendar)));
-        assert!(
-            render_launchd(&resolved, "/home/u/.bin/bn").is_ok(),
-            "info-gather schedule '{}' must translate for launchd",
-            ig.on_calendar
-        );
+        for tick in ["tick-5m", "tick-10m", "tick-15m"] {
+            let entry = entries
+                .iter()
+                .find(|e| e.job == tick)
+                .unwrap_or_else(|| panic!("config/crons.toml must declare the {tick} cron"));
+            let resolved = ResolvedCron {
+                entry: entry.clone(),
+                scope: JobScope::Global,
+                repo: None,
+                source: manifest.into(),
+            };
+            let (svc, timer) = render_systemd(&resolved, "/home/u/.bin/bn");
+            assert!(svc.contains(&format!("ExecStart=/home/u/.bin/bn run {tick}")));
+            assert!(timer.contains(&format!("OnCalendar={}", entry.on_calendar)));
+            assert!(
+                render_launchd(&resolved, "/home/u/.bin/bn").is_ok(),
+                "{tick} schedule '{}' must translate for launchd",
+                entry.on_calendar
+            );
+        }
     }
 
     #[test]

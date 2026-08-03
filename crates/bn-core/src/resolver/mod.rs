@@ -198,35 +198,6 @@ mod tests {
     }
 
     #[test]
-    fn cron_global_layout_resolves_to_pane_flag() {
-        // "pane" → shared-window layout for global crons; anything else (or unset) → window-per-job.
-        let cf: ConfigFile = toml::from_str("[jobs]\ncron_global_layout = \"pane\"\n").unwrap();
-        assert_eq!(cf.cron_global_layout().as_deref(), Some("pane"));
-        assert!(Config::resolve(Some(&cf)).jobs_cron_global_pane);
-
-        let cf: ConfigFile = toml::from_str("[jobs]\ncron_global_layout = \"window\"\n").unwrap();
-        assert!(!Config::resolve(Some(&cf)).jobs_cron_global_pane);
-
-        // Unset → default window-per-job.
-        let cf: ConfigFile = toml::from_str("[jobs]\ntmux_window = true\n").unwrap();
-        assert!(!Config::resolve(Some(&cf)).jobs_cron_global_pane);
-    }
-
-    #[test]
-    fn cockpit_session_resolves_from_config_and_default() {
-        // `[jobs].session` re-homes the whole cron/fleet cockpit.
-        let cf: ConfigFile = toml::from_str("[jobs]\nsession = \"fleet\"\n").unwrap();
-        assert_eq!(Config::resolve(Some(&cf)).cockpit_session, "fleet");
-
-        // Unset [jobs].session → default "cron".
-        let cf: ConfigFile = toml::from_str("[jobs]\ntmux_window = true\n").unwrap();
-        assert_eq!(Config::resolve(Some(&cf)).cockpit_session, "cron");
-
-        // No config file at all → default "cron".
-        assert_eq!(Config::resolve(None).cockpit_session, "cron");
-    }
-
-    #[test]
     fn staff_home_resolves_from_config_and_env() {
         // `[staff].home` from config.toml.
         let cf: ConfigFile = toml::from_str("[staff]\nhome = \"boxB\"\n").unwrap();

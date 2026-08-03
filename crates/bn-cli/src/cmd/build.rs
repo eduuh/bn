@@ -1,36 +1,9 @@
-//! `bn build`/`bn delegate` + target-context resolution helpers.
+//! `bn build` + target-context resolution helpers.
 use crate::*;
-
-/// Delegate an unimplemented command to the bash bn fallback. Rust bn is the primary, but
-/// peripheral helpers (blog, learn, worktrees, …) pass through to bash rather than being
-/// reimplemented for parity. Fallback path: `$BN_BASH_FALLBACK`, else `<bin_dir>/bn-bash`
-/// (the `~/.bn/bin` home layout, or legacy `~/.bin` — see [`resolver::bin_dir`]).
-pub(crate) fn delegate(args: &[String]) -> i32 {
-    if cfg!(windows) {
-        let cmd = args.first().map(String::as_str).unwrap_or("");
-        eprintln!("bn: '{cmd}' is part of the unix-only bash/workflow layer, not available on native Windows");
-        return 2;
-    }
-    let fallback = std::env::var("BN_BASH_FALLBACK").unwrap_or_else(|_| {
-        resolver::bin_dir()
-            .join("bn-bash")
-            .to_string_lossy()
-            .into_owned()
-    });
-    match std::process::Command::new(&fallback).args(args).status() {
-        Ok(s) => s.code().unwrap_or(1),
-        Err(e) => {
-            let cmd = args.first().map(String::as_str).unwrap_or("");
-            eprintln!("bn: unknown command '{cmd}', and no bash fallback at {fallback}: {e}");
-            2
-        }
-    }
-}
 
 /// `bn build [name]` — resolve the worktree's `<name>.sh` (default `build`) via the same
 /// branch → repo → global `job_script` lookup `wt pool warm` and the cron use, then run it in the
-/// current directory. This unifies `bn build` with the pool's build script (one `jobs/build.sh`),
-/// replacing the bash fallback that resolved stale machine-less paths.
+/// current directory. This unifies `bn build` with the pool's build script (one `jobs/build.sh`).
 pub(crate) fn run_build_cmd(cfg: &Config, name: Option<String>) -> i32 {
     let cwd = std::env::current_dir().unwrap_or_default();
     let Ok(ctx) = resolver::resolve(cfg, &cwd) else {

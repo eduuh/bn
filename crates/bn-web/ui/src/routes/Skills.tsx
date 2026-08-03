@@ -180,7 +180,7 @@ export function Skills() {
           <BookOpen className="h-8 w-8 text-muted-foreground" />
           <h3 className="text-lg font-semibold">No skills</h3>
           <p className="max-w-sm text-sm text-muted-foreground">
-            No skills defined in any tier. Create one with <code className="font-mono">bn skill new</code>.
+            No skills defined in any tier. Create one with <code className="font-mono">bn skills new</code>.
           </p>
         </Card>
       )}
