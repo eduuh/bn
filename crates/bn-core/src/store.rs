@@ -493,15 +493,19 @@ pub fn section_bullets(body: &str, section: Section) -> Vec<(bool, String)> {
 fn collect_section_bullets(body: &str, heading: &str) -> Vec<(bool, String)> {
     let mut out = Vec::new();
     let mut in_section = false;
-    for line in body.lines() {
+    for (line, code) in crate::markdown::scan(body) {
         if !in_section {
-            if line == heading {
+            if !code && line == heading {
                 in_section = true;
             }
             continue;
         }
-        if line.starts_with("## ") || line == "---" {
+        if !code && (line.starts_with("## ") || line == "---") {
             break;
+        }
+        // Bullets quoted inside a fence are sample text, not items of this section.
+        if code {
+            continue;
         }
         let trimmed = line.trim_end();
         if trimmed == "-" || trimmed == "- [ ]" || trimmed == "- [ ] test" {
@@ -528,8 +532,8 @@ fn strip_item_sections(body: &str) -> String {
     let headings: Vec<&str> = Section::all().map(Section::heading).collect();
     let mut out: Vec<&str> = Vec::new();
     let mut skipping = false;
-    for line in body.lines() {
-        if line.starts_with("## ") {
+    for (line, code) in crate::markdown::scan(body) {
+        if !code && line.starts_with("## ") {
             skipping = headings.contains(&line);
             if skipping {
                 continue;
@@ -537,7 +541,7 @@ fn strip_item_sections(body: &str) -> String {
         }
         if skipping {
             // stop skipping at the next non-item H2 or a fence
-            if line == "---" {
+            if !code && line == "---" {
                 skipping = false;
                 out.push(line);
             }

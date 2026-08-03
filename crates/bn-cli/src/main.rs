@@ -33,6 +33,7 @@ mod staff_pick;
 mod systemd;
 mod tat;
 mod timers;
+mod toast;
 mod version;
 mod wake;
 mod winsched;

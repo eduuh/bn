@@ -197,6 +197,18 @@ fn row_for(f: &Finding) -> Row {
             link: String::new(),
             path: String::new(),
         },
+        Finding::ShellInit(s) => Row {
+            display: format!(
+                "\x1b[33m• {} wrappers\x1b[0m  \x1b[2m{} — {}\x1b[0m",
+                s.shell, s.problem, s.fix
+            ),
+            kind: "shell-init",
+            id: String::new(),
+            job: String::new(),
+            link: String::new(),
+            // The rc file is the thing to open, so the picker's edit action lands in the right place.
+            path: s.rc_path.clone(),
+        },
     }
 }
 

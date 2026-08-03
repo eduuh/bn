@@ -155,12 +155,13 @@ pub fn compose(note: &Note, written: &str, input: &HandoffInput) -> Handoff {
 fn progress_tail(body: &str) -> Vec<String> {
     let mut all: Vec<String> = Vec::new();
     let mut in_section = false;
-    for line in body.lines() {
-        if line.starts_with("## ") {
+    for (line, code) in crate::markdown::scan(body) {
+        if !code && line.starts_with("## ") {
             in_section = line == "## Progress";
             continue;
         }
-        if in_section {
+        // A `- ` line inside a fenced block is sample text, not a progress bullet.
+        if in_section && !code {
             if let Some(rest) = line.trim_start().strip_prefix("- ") {
                 let rest = rest.trim();
                 if !rest.is_empty() {

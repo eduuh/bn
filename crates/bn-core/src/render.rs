@@ -108,6 +108,14 @@ pub fn brief(note: &Note, repo: &str, branch: &str) -> String {
     out
 }
 
+/// Whether a scanned `(line, is_code)` pair is a *structural* section heading — a `## ` line that
+/// isn't sitting inside a fenced code block. Section readers and writers below all go through this
+/// rather than testing `starts_with("## ")` directly, so a plan or note that quotes markdown in a
+/// fence doesn't split into phantom sections (see [`crate::markdown`]).
+fn is_heading((line, code): (&str, bool)) -> bool {
+    !code && crate::markdown::is_section_heading(line)
+}
+
 /// First non-blank line in a `## Heading` body section (e.g. the goal line).
 /// The note's Goal — the first non-blank line under `## Goal`, if any.
 pub fn goal_text(body: &str) -> Option<String> {
@@ -118,25 +126,25 @@ pub fn goal_text(body: &str) -> Option<String> {
 /// the inverse of `goal_text`). Preserves the rest of the body verbatim. If there's no
 /// `## Goal` heading, appends one. Keeps the template shape: heading, blank, goal line.
 pub fn set_goal_in_body(body: &str, text: &str) -> String {
-    let lines: Vec<&str> = body.lines().collect();
+    let lines: Vec<(&str, bool)> = crate::markdown::scan(body).collect();
     let mut out: Vec<String> = Vec::new();
     let mut i = 0;
     let mut replaced = false;
     while i < lines.len() {
-        if lines[i] == "## Goal" {
+        if !lines[i].1 && lines[i].0 == "## Goal" {
             out.push("## Goal".to_string());
             out.push(String::new());
             out.push(text.to_string());
             // Drop the old section content up to (not including) the next heading.
             i += 1;
-            while i < lines.len() && !lines[i].starts_with("## ") {
+            while i < lines.len() && !is_heading(lines[i]) {
                 i += 1;
             }
             out.push(String::new()); // blank line before whatever follows
             replaced = true;
             continue;
         }
-        out.push(lines[i].to_string());
+        out.push(lines[i].0.to_string());
         i += 1;
     }
     if !replaced {
@@ -154,13 +162,13 @@ pub fn set_goal_in_body(body: &str, text: &str) -> String {
 /// or at EOF), creating the section at the end of the body if it's absent. Used by `bn notes`,
 /// `bn tc`, and `bn log-progress` to grow the prose sections. Preserves everything else.
 pub fn append_to_section(body: &str, heading: &str, line: &str) -> String {
-    let lines: Vec<&str> = body.lines().collect();
     let mut out: Vec<String> = Vec::new();
     let mut in_section = false;
     let mut inserted = false;
-    for &l in &lines {
+    for entry in crate::markdown::scan(body) {
+        let (l, code) = entry;
         // Leaving our section (next heading): drop trailing blanks, append, then a blank.
-        if in_section && l.starts_with("## ") {
+        if in_section && is_heading(entry) {
             while out.last().is_some_and(|s| s.is_empty()) {
                 out.pop();
             }
@@ -169,7 +177,7 @@ pub fn append_to_section(body: &str, heading: &str, line: &str) -> String {
             in_section = false;
             inserted = true;
         }
-        if l == heading {
+        if !code && l == heading {
             in_section = true;
         }
         out.push(l.to_string());
@@ -200,24 +208,26 @@ pub fn append_to_section(body: &str, heading: &str, line: &str) -> String {
 /// plan without stacking duplicates on re-approve). `content` keeps its own line structure; leading
 /// / trailing blank lines are trimmed and the section is fenced from neighbours by a blank line.
 ///
-/// Callers must keep `content` free of level-2 (`## `) headings — those are the note's own section
-/// delimiters, so an embedded one would leak into a sibling section (see `commands::record_plan`,
-/// which demotes a plan's headings first).
+/// Callers must keep `content`'s *prose* free of level-2 (`## `) headings — those are the note's own
+/// section delimiters, so an embedded one would leak into a sibling section (see
+/// `commands::record_plan`, which demotes a plan's headings first). A `## ` inside a fenced code
+/// block is safe: every reader here is fence-aware, so quoted markdown stays quoted.
 pub fn set_section(body: &str, heading: &str, content: &str) -> String {
     let content = content.trim_matches('\n');
     let mut out: Vec<String> = Vec::new();
     let mut skipping = false;
     let mut replaced = false;
-    for line in body.lines() {
+    for entry in crate::markdown::scan(body) {
+        let (line, code) = entry;
         // While swallowing the old section body, drop everything until the next heading.
         if skipping {
-            if line.starts_with("## ") {
+            if is_heading(entry) {
                 skipping = false;
             } else {
                 continue;
             }
         }
-        if line == heading && !replaced {
+        if !code && line == heading && !replaced {
             out.push(line.to_string());
             out.push(String::new());
             for c in content.lines() {
@@ -249,13 +259,13 @@ pub fn set_section(body: &str, heading: &str, content: &str) -> String {
 pub fn section_content(body: &str, heading: &str) -> Vec<String> {
     let mut in_section = false;
     let mut out: Vec<String> = Vec::new();
-    for line in body.lines() {
-        if line.starts_with("## ") {
-            in_section = line == heading;
+    for entry in crate::markdown::scan(body) {
+        if is_heading(entry) {
+            in_section = entry.0 == heading;
             continue;
         }
         if in_section {
-            out.push(line.to_string());
+            out.push(entry.0.to_string());
         }
     }
     while out.first().is_some_and(|s| s.trim().is_empty()) {
@@ -269,13 +279,13 @@ pub fn section_content(body: &str, heading: &str) -> Vec<String> {
 
 fn first_nonblank_in_section(body: &str, heading: &str) -> Option<String> {
     let mut in_section = false;
-    for line in body.lines() {
-        if line.starts_with("## ") {
-            in_section = line == heading;
+    for entry in crate::markdown::scan(body) {
+        if is_heading(entry) {
+            in_section = entry.0 == heading;
             continue;
         }
-        if in_section && !line.trim().is_empty() {
-            return Some(line.trim().to_string());
+        if in_section && !entry.0.trim().is_empty() {
+            return Some(entry.0.trim().to_string());
         }
     }
     None
@@ -285,13 +295,14 @@ fn first_nonblank_in_section(body: &str, heading: &str) -> Option<String> {
 fn bullets_in_section(body: &str, heading: &str) -> Vec<String> {
     let mut in_section = false;
     let mut out = Vec::new();
-    for line in body.lines() {
-        if line.starts_with("## ") {
-            in_section = line == heading;
+    for entry in crate::markdown::scan(body) {
+        if is_heading(entry) {
+            in_section = entry.0 == heading;
             continue;
         }
-        if in_section {
-            if let Some(rest) = line.trim_start().strip_prefix("- ") {
+        // A `- ` line inside a fence is sample text, not a bullet of this section.
+        if in_section && !entry.1 {
+            if let Some(rest) = entry.0.trim_start().strip_prefix("- ") {
                 if !rest.trim().is_empty() {
                     out.push(rest.trim().to_string());
                 }
@@ -416,6 +427,94 @@ pub fn related_footer(related: &[crate::related::RelatedBranch]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A note whose Plan quotes the note format itself — the case that used to split into
+    /// phantom sections. Everything between the fences is content, not structure.
+    const FENCED: &str = "\
+# r / b
+
+## Goal
+
+ship it
+
+## Plan
+
+Notes look like this:
+
+```markdown
+## Goal
+
+the goal
+
+## Progress
+- a bullet
+```
+
+Then run it.
+
+## Progress
+- real progress
+";
+
+    #[test]
+    fn a_fenced_heading_does_not_end_the_section_it_sits_in() {
+        let plan = section_content(FENCED, "## Plan");
+        assert_eq!(plan.first().unwrap(), "Notes look like this:");
+        assert_eq!(plan.last().unwrap(), "Then run it.");
+        // The quoted `## Progress` stayed inside the Plan section rather than starting one.
+        assert!(plan.iter().any(|l| l == "## Progress"));
+    }
+
+    #[test]
+    fn a_fenced_goal_does_not_shadow_the_real_one() {
+        assert_eq!(goal_text(FENCED).as_deref(), Some("ship it"));
+    }
+
+    #[test]
+    fn a_fenced_bullet_is_not_collected_as_a_real_one() {
+        // `- a bullet` lives inside the Plan's code block; only the real one counts.
+        assert_eq!(
+            bullets_in_section(FENCED, "## Progress"),
+            vec!["real progress"]
+        );
+    }
+
+    #[test]
+    fn appending_lands_after_the_fence_not_inside_it() {
+        let out = append_to_section(FENCED, "## Plan", "- a new plan line");
+        let plan = section_content(&out, "## Plan");
+        assert_eq!(plan.last().unwrap(), "- a new plan line");
+        // The code block survived intact, and Progress is still its own section.
+        assert!(out.contains("```markdown\n## Goal\n"));
+        assert_eq!(
+            bullets_in_section(&out, "## Progress"),
+            vec!["real progress"]
+        );
+    }
+
+    #[test]
+    fn replacing_a_section_keeps_the_sections_after_a_fence() {
+        let out = set_section(FENCED, "## Plan", "a shorter plan");
+        assert_eq!(section_content(&out, "## Plan"), vec!["a shorter plan"]);
+        // Progress used to be swallowed as part of the fenced block's fallout.
+        assert_eq!(
+            bullets_in_section(&out, "## Progress"),
+            vec!["real progress"]
+        );
+        assert_eq!(goal_text(&out).as_deref(), Some("ship it"));
+        assert!(!out.contains("```"));
+    }
+
+    #[test]
+    fn setting_the_goal_leaves_a_fenced_goal_block_alone() {
+        let out = set_goal_in_body(FENCED, "new goal");
+        assert_eq!(goal_text(&out).as_deref(), Some("new goal"));
+        assert!(out.contains("```markdown\n## Goal\n\nthe goal\n"));
+        assert_eq!(
+            bullets_in_section(&out, "## Progress"),
+            vec!["real progress"]
+        );
+    }
 
     #[test]
     fn set_goal_seeds_empty_template_section() {

@@ -215,6 +215,8 @@ mod tests {
             repo: "bn".into(),
             branch: "wave".into(),
             target: "bn:wave".into(),
+            worktree: None,
+            tmux_target: None,
             last_activity_ts: 0,
             idle_secs: 0,
             health: AgentHealth::Active,

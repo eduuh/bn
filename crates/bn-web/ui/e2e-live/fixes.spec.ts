@@ -61,7 +61,7 @@ test("the steer panel refuses agents bn cannot address, with a reason", async ({
 
   if (current.control === "none" || current.control === "ambiguous") {
     await expect(
-      page.getByRole("status").filter({ hasText: /Observed only|shares this branch/ }),
+      page.getByRole("status").filter({ hasText: /No live checkout|shares this branch/ }),
     ).toBeVisible();
     // Inert, not merely annotated.
     await expect(page.getByPlaceholder(/Not steerable from here/)).toBeDisabled();
@@ -73,7 +73,7 @@ test("the steer panel refuses agents bn cannot address, with a reason", async ({
     // It became addressable while we watched — then the panel must have opened up to match.
     await expect(page.getByPlaceholder(/Message the agent/)).toBeEnabled();
     await expect(
-      page.getByRole("status").filter({ hasText: /Observed only|shares this branch/ }),
+      page.getByRole("status").filter({ hasText: /No live checkout|shares this branch/ }),
     ).toHaveCount(0);
   }
 });

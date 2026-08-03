@@ -8,6 +8,7 @@ import { useNow } from "../hooks/useNow";
 import { useToasts } from "../hooks/useToasts";
 import { useBacklogActions } from "../hooks/useBacklogActions";
 import { FleetEntryCard } from "../components/FleetEntryCard";
+import { FleetRow } from "../components/FleetRow";
 import { NodeStrip } from "../components/NodeStrip";
 import { PageHead } from "../components/PageHead";
 import { LanesPanel } from "../components/backlog/LanesPanel";
@@ -58,9 +59,18 @@ function SectionHead({
   );
 }
 
-/** Responsive card grid shared by every fleet tier. */
+/** Responsive card grid, for the tiers that still warrant a card (needs-you, orchestrators). */
 function CardGrid({ children }: { children: React.ReactNode }) {
   return <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{children}</div>;
+}
+
+/** The working tier's list surface — one bordered panel of hairline-separated rows. */
+function RowList({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="divide-y divide-border/60 rounded-lg border border-border bg-card px-1 py-0.5">
+      {children}
+    </div>
+  );
 }
 
 /**
@@ -173,35 +183,31 @@ export function Fleet() {
         </section>
       )}
 
+      {/* Rows, not cards: nothing in this tier is waiting on a decision, so it earns density —
+          and it keeps a card on this board meaning "this one needs you". */}
       {working.length > 0 && (
         <section className="space-y-3" aria-label="Working">
           <SectionHead title="Working" count={working.length} />
-          <CardGrid>
+          <RowList>
             {working.map((e) => (
-              <FleetEntryCard key={e.key} entry={e} now={now} harnesses={fleet.data?.harnesses} />
+              <FleetRow key={e.key} entry={e} now={now} harnesses={fleet.data?.harnesses} />
             ))}
-          </CardGrid>
+          </RowList>
         </section>
       )}
 
       {starting > 0 && (
         <section className="space-y-3" aria-label="Starting">
           <SectionHead title="Starting…" count={starting} tone="info" />
-          <CardGrid>
+          <RowList>
             {Array.from({ length: starting }).map((_, i) => (
-              <Card
-                key={i}
-                className="relative flex items-center gap-3 overflow-hidden p-3 pl-4"
-              >
-                <span className="absolute inset-y-0 left-0 w-1 bg-info" aria-hidden="true" />
-                <Loader2 className="h-4 w-4 shrink-0 animate-spin text-info" />
-                <div className="space-y-2">
-                  <div className="text-sm font-medium text-foreground">Starting…</div>
-                  <Skeleton className="h-3 w-40" />
-                </div>
-              </Card>
+              <div key={i} className="flex items-center gap-2 px-2 py-2">
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-info" />
+                <span className="text-sm text-muted-foreground">Starting…</span>
+                <Skeleton className="h-3 w-40" />
+              </div>
             ))}
-          </CardGrid>
+          </RowList>
         </section>
       )}
 

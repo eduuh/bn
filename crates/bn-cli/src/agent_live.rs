@@ -598,8 +598,16 @@ pub fn publish_actionable_wakes(
             "stuck" => bn_core::wake::FleetTransition::Stuck,
             _ => bn_core::wake::FleetTransition::Waiting,
         };
+        // The event id names the *escalation*, not the instant it was observed. It used to embed
+        // `now`, which meant the wake queue's `seen_event_ids` could never dedup it: the only
+        // guard was the `previous` set below, and that file is rewritten unconditionally with
+        // whatever this pass could see. One degraded pass (tmux briefly unreachable, a pane
+        // capture race) dropped keys from it, and the next healthy pass re-toasted the entire
+        // escalating fleet under brand-new ids. With a stable id the queue collapses the repeat,
+        // and `previous` keeps its real job: letting a genuinely resolved-then-returned
+        // escalation fire again.
         let wake = bn_core::wake::ActionableWake::classify(
-            format!("fleet:{key}:{now}"),
+            format!("fleet:{key}"),
             now,
             transition,
             format!("{} — {reason}", row.target),
@@ -621,9 +629,10 @@ pub fn publish_actionable_wakes(
 }
 
 /// The last `n` non-empty lines of a window's active pane — the "what is it doing right now" glance
-/// for the fleet board. Targets the window by its exact `=repo:branch` name (its active pane).
+/// for the fleet board. Targets the window exactly (its active pane); callers that already resolved
+/// a window name to an exact target pass it through untouched rather than picking up a second `=`.
 fn capture_tail(target: &str, n: usize) -> Vec<String> {
-    let t = format!("={target}");
+    let t = crate::cmd::agent::tmux_exact_target(target);
     let out = match bounded_tmux(
         &["capture-pane", "-p", "-t", &t],
         Duration::from_millis(500),
@@ -1920,6 +1929,8 @@ mod tests {
             repo: repo.into(),
             branch: branch.into(),
             target: format!("{repo}:{branch}"),
+            worktree: None,
+            tmux_target: None,
             last_activity_ts: 0,
             idle_secs: 42,
             health,

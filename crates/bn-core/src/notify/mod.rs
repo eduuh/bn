@@ -1,8 +1,16 @@
-//! Cross-platform, best-effort desktop toasts + clipboard for the notification cron jobs
-//! (`notify`, `standup-push`, `wrap-digest`). A direct port of the shell helpers those shims
-//! carried: a toast backend chosen from `notify-send` / PowerShell BurntToast / `osascript`, and a
-//! clipboard backend from `wl-copy` / `xclip` / `clip.exe` / `pbcopy`. Everything is best-effort —
-//! a missing backend or a failed call is swallowed, exactly like the `… || true` shell idiom.
+//! Cross-platform, best-effort desktop toasts + clipboard. A direct port of the shell helpers the
+//! notification cron shims carried: a toast backend chosen from `notify-send` / PowerShell
+//! BurntToast / `osascript`, and a clipboard backend from `wl-copy` / `xclip` / `clip.exe` /
+//! `pbcopy`. Everything is best-effort — a missing backend or a failed call is swallowed, exactly
+//! like the `… || true` shell idiom.
+//!
+//! The raw backend is **deliberately not public**. Every desktop toast in `bn` goes through
+//! [`policy::deliver`], which decides whether the interruption is warranted (class bar, quiet
+//! windows, dedup, cooldown, daily budget) before [`emit`] ever runs. Keeping [`emit`]
+//! `pub(crate)` means `bn-cli` cannot reach around the gate: the chokepoint is enforced by
+//! visibility, not by convention. See [`policy`] for the model.
+
+pub mod policy;
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -38,7 +46,10 @@ const OSA_TOAST: &str = r#"on run
 end run"#;
 
 /// Show a desktop toast. Tries each backend in turn; returns whether one ran.
-pub fn toast(title: &str, body: &str) -> bool {
+///
+/// `pub(crate)` on purpose — call [`policy::deliver`] instead. This is the unconditional backend:
+/// it interrupts the user with no notion of why, so nothing outside the policy gate may call it.
+pub(crate) fn emit(title: &str, body: &str) -> bool {
     if has("notify-send") {
         return ok(Command::new("notify-send").arg(title).arg(body));
     }

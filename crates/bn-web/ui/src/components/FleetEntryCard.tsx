@@ -2,10 +2,12 @@ import { Link } from "react-router-dom";
 import { AlertTriangle, ChevronRight } from "lucide-react";
 import type { FleetEntry } from "../lib/fleet";
 import type { HarnessOption } from "../api/types";
-import { fmtTokens, timeAgo } from "../lib/format";
+import { timeAgo } from "../lib/format";
 import { prHref, prLabel, jumpCommand } from "../lib/board";
 import { CopyButton } from "./CopyButton";
-import { HarnessSwitcher } from "./HarnessSwitcher";
+import { Age, Dot, FleetCounters } from "./FleetMeta";
+import { HarnessMenu } from "./HarnessMenu";
+import { RelaunchButton } from "./RelaunchButton";
 import { Badge } from "./ui/badge";
 import { Card } from "./ui/card";
 import { toneVariant } from "./StateChip";
@@ -20,26 +22,21 @@ const BAR: Record<string, string> = {
   neutral: "bg-border",
 };
 
-/** A small metadata tag on a card's footer row. */
-function Tag({ children, className }: { children: React.ReactNode; className?: string }) {
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground",
-        className,
-      )}
-    >
-      {children}
-    </span>
-  );
-}
-
 /**
- * The glanceable Fleet card (#479): status · repo:branch · one-line state · tokens · age, on one
- * tap-sized surface. Taps through to the agent detail when a live session backs it, or to the
- * Reviews inbox when it's paused for plan-review; otherwise it stays a static glance card with a
- * copy-to-jump target. The left border colours by state so the board scans at a glance. A live
- * agent also carries a harness switcher (#501) to relaunch it under another harness in place.
+ * The full-attention Fleet card — the form reserved for agents that need you and for orchestrators.
+ * Everything healthy renders as a [`FleetRow`] instead, so this surface is spent only where a
+ * decision is waiting.
+ *
+ * Hierarchy is branch-first (#479 rev.2): on a single-repo fleet the repo is identical on every
+ * card, so the branch is the headline and the repo joins the meta line. Under it, the one-line
+ * state, the reason you're being asked, the motion counters (turns · tools · tokens · age) that say
+ * whether it's actually progressing, and the two actions worth taking from a board — relaunch, and
+ * copy the tmux jump. The harness is a chip that opens [`HarnessMenu`]; it used to be a permanent
+ * segmented block on every card, which spent the most valuable pixels on the rarest action.
+ *
+ * Taps through to the agent detail when a live session backs it, or to the Reviews inbox when it's
+ * paused for plan-review; otherwise it stays a static glance card. The left border colours by state
+ * so the board scans without reading.
  */
 export function FleetEntryCard({
   entry,
@@ -57,12 +54,18 @@ export function FleetEntryCard({
       : null;
   const href = prHref(entry.pr ?? undefined);
   const isOrchestrator = entry.role === "orchestrator";
+  const age = timeAgo(entry.updatedAt, now);
 
   const inner = (
     <>
-      <span className={cn("absolute inset-y-0 left-0 w-1", BAR[entry.tone] ?? BAR.neutral)} aria-hidden="true" />
+      {/* The card can't clip (the harness menu has to escape it), so the bar rounds itself. */}
+      <span
+        className={cn("absolute inset-y-0 left-0 w-1 rounded-l-lg", BAR[entry.tone] ?? BAR.neutral)}
+        aria-hidden="true"
+      />
+
       <div className="flex items-center gap-2">
-        <span className="truncate font-mono text-sm font-semibold text-foreground">{entry.repo}</span>
+        <span className="truncate font-mono text-sm font-semibold text-foreground">{entry.branch}</span>
         {isOrchestrator && (
           <Badge variant="info" className="shrink-0 gap-1">
             ◆ Orchestrator
@@ -75,7 +78,6 @@ export function FleetEntryCard({
         {to && <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}
       </div>
 
-      <div className="mt-1 truncate font-mono text-xs text-muted-foreground">{entry.branch}</div>
       <div className="mt-1 text-sm text-foreground/90">{entry.stateLabel}</div>
 
       {entry.needs && entry.needsReason && (
@@ -84,13 +86,16 @@ export function FleetEntryCard({
           className="mt-2 flex items-center gap-1.5 rounded-md border border-warn/30 bg-warn-muted px-2 py-1 text-xs font-medium text-warn"
         >
           <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-          {entry.needsReason}
+          {entry.needsReason} for {age}
         </div>
       )}
 
-      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        {entry.harness && <Tag>{entry.harness}</Tag>}
-        {entry.outputTokens ? <Tag>{fmtTokens(entry.outputTokens)} tok</Tag> : null}
+      <div className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1">
+        <span className="font-mono text-xs text-muted-foreground">{entry.repo}</span>
+        <HarnessMenu target={entry.target} current={entry.harness} harnesses={harnesses} />
+        <FleetCounters entry={entry} />
+        <Dot />
+        <Age ts={entry.updatedAt} now={now} />
         {entry.pr &&
           (href ? (
             <a
@@ -103,14 +108,18 @@ export function FleetEntryCard({
               {prLabel(entry.pr)}
             </a>
           ) : (
-            <Tag>{prLabel(entry.pr)}</Tag>
+            <span className="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+              {prLabel(entry.pr)}
+            </span>
           ))}
-        <Tag className="text-muted-foreground/70">{timeAgo(entry.updatedAt, now)}</Tag>
       </div>
 
-      {entry.harness && (
-        <div className="mt-2">
-          <HarnessSwitcher target={entry.target} current={entry.harness} harnesses={harnesses} />
+      {/* The actions a stuck agent actually needs from a board. Steering it means reading what it
+          said, so that stays behind the card's tap-through rather than duplicating a composer here. */}
+      {entry.needs && (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <RelaunchButton target={entry.target} control={entry.control} />
+          <CopyButton text={jumpCommand(entry.target)} label={`⧉ ${entry.target}`} />
         </div>
       )}
     </>
@@ -126,17 +135,21 @@ export function FleetEntryCard({
 
   if (to) {
     return (
-      <Link to={to} className={surface}>
+      // `overflow-hidden` would clip the harness menu, so the popover-bearing card clips only the
+      // tone bar's corners via the rounded surface itself.
+      <Link to={to} className={cn(surface, "overflow-visible")}>
         {inner}
       </Link>
     );
   }
   return (
-    <Card className={cn(surface, "block")}>
+    <Card className={cn(surface, "block overflow-visible")}>
       {inner}
-      <div className="mt-2">
-        <CopyButton text={jumpCommand(entry.target)} label={`⧉ ${entry.target}`} />
-      </div>
+      {!entry.needs && (
+        <div className="mt-2">
+          <CopyButton text={jumpCommand(entry.target)} label={`⧉ ${entry.target}`} />
+        </div>
+      )}
     </Card>
   );
 }

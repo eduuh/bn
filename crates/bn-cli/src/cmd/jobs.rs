@@ -87,12 +87,11 @@ pub(crate) fn native_job(job: &str) -> Option<NativeJob> {
 }
 
 /// The `*:0/5` cadence cluster, in run order.
-pub(crate) const TICK_5M: &[&str] = &[
-    "tools-reconcile",
-    "notify",
-    "routine-tick",
-    "attention-sync",
-];
+///
+/// `notify` deliberately left this cluster: `bn watch` (the `*:0/2` cron) owns attention delivery,
+/// and running both meant every urgent item was toasted twice on two independent dedup ledgers.
+/// The job still exists for `bn run notify` — see [`job_notify`].
+pub(crate) const TICK_5M: &[&str] = &["tools-reconcile", "routine-tick", "attention-sync"];
 
 /// The `*:0/10` cadence cluster, in run order.
 pub(crate) const TICK_10M: &[&str] = &[
@@ -988,7 +987,15 @@ pub(crate) fn job_auto_review_poll(cfg: &Config, _ctx: Option<&Resolved>) -> i32
     }
 }
 
-/// `jobs/notify.sh` — push an OS toast for each urgent attention item, then mark it notified.
+/// `jobs/notify.sh` — offer each urgent attention item to the notification gate, then mark it
+/// notified.
+///
+/// **`bn watch` owns attention delivery** (the `*:0/2` cron: faster, and it batches a burst into
+/// one interrupt instead of one toast per item). This job therefore no longer rides `tick-5m` —
+/// running both on their own cadences, each with its own dedup ledger, is what toasted every
+/// urgent item twice. It stays registered so `bn run notify` and its cron-health row keep working,
+/// and it keys deliveries `attn:<id>` exactly as watch does, so the shared ledger makes a
+/// duplicate impossible even if the two ever run together again.
 pub(crate) fn job_notify(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     let items = bn_core::attention::to_notify(&today());
     if items.is_empty() {
@@ -1000,9 +1007,21 @@ pub(crate) fn job_notify(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
             Some(l) if !l.is_empty() => l,
             _ => "urgent — needs attention",
         };
-        bn_core::notify::toast(&format!("bn: {}", it.title), body);
+        // Urgent attention is blocking by definition: it is open, unacknowledged, and yours.
+        let sent = crate::toast::toast(
+            crate::toast::Class::Blocking,
+            &format!("attn:{}", it.id),
+            &it.source,
+            &format!("bn: {}", it.title),
+            body,
+        );
         let _ = bn_core::attention::mark_notified(&it.id);
-        println!("notify: toasted {} ({})", it.id, it.title);
+        println!(
+            "notify: {} {} ({})",
+            if sent { "toasted" } else { "held" },
+            it.id,
+            it.title
+        );
     }
     0
 }
@@ -1068,8 +1087,16 @@ pub(crate) fn job_standup_push(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
         println!("standup-push: nothing to push");
         return 0;
     }
+    // The clipboard copy is the point of this job and never interrupts, so it runs regardless of
+    // policy; the toast is a digest and stays off the toast channel under the default bar.
     bn_core::notify::clipboard(&line);
-    bn_core::notify::toast("bn standup", &line);
+    crate::toast::toast(
+        crate::toast::Class::Digest,
+        &format!("standup:{}", today()),
+        "standup",
+        "bn standup",
+        &line,
+    );
     println!("{line}");
     0
 }
@@ -1107,7 +1134,13 @@ pub(crate) fn job_wrap_digest(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
         println!("wrap-digest: clean day (or disabled) — nothing to push");
         return 0;
     }
-    bn_core::notify::toast("bn wrap — end of day", &digest);
+    crate::toast::toast(
+        crate::toast::Class::Digest,
+        &format!("wrap:{today}"),
+        "wrap",
+        "bn wrap — end of day",
+        &digest,
+    );
     println!("{digest}");
     0
 }

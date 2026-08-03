@@ -414,7 +414,21 @@ pub(crate) fn emit_agent_done(
     .unwrap_or_else(|e| fail(&format!("bn agent done: controller event: {e}")));
     set_tmux_agent(outcome);
     if notify {
-        bn_core::notify::toast(if failed { "Agent failed" } else { "Agent done" }, &title);
+        // A failure is blocking — the work stopped and it is yours again. A success is a
+        // completion, which the default bar keeps off the toast channel; but `--notify` is an
+        // explicit ask, so it clears the bar (the quiet windows and budgets still apply).
+        let (class, kind) = if failed {
+            (crate::toast::Class::Blocking, "failed")
+        } else {
+            (crate::toast::Class::Completion, "done")
+        };
+        crate::toast::toast_requested(
+            class,
+            &format!("agent:{}/{}:{kind}", ctx.repo, ctx.branch),
+            "agent",
+            if failed { "Agent failed" } else { "Agent done" },
+            &title,
+        );
     }
 
     let raised = !skipped;
@@ -439,9 +453,23 @@ pub(crate) fn emit_agent_done(
     }
 }
 
-/// Resolve a `repo:branch` target to `(worktree_path, harness, session_id)` from the branch note's
-/// recorded `agent-session: <harness> <id>` line (latest wins), for reliable `-p --resume` steering.
-/// `None` when the target isn't a `repo:branch`, has no note, or recorded no session.
+/// Resolve a `repo:branch` target to `(worktree_path, harness, session_id)` for a `-p --resume`
+/// steer turn.
+///
+/// Two sources, strongest first:
+///
+/// 1. the branch note's recorded `agent-session: <harness> <id>` line (latest wins) — what the
+///    dispatcher wrote down when bn launched the agent;
+/// 2. failing that, the **live transcript**: supervision found this agent by reading its session
+///    log, so it holds the session id and the harness whether or not bn started it. That is a
+///    resume key, and it is what lets a `claude` someone ran by hand in a terminal be steered
+///    instead of being written off as observed-only. Where a branch hosts several live agents the
+///    record in (1) cannot say which one it means, so this tier is also the *better* answer there —
+///    but only when exactly one live agent claims the target, since otherwise we would be picking
+///    for the caller.
+///
+/// `None` when the target isn't a `repo:branch`, or when neither source yields a session in a
+/// checkout that still exists.
 pub(crate) fn resolve_agent_session(
     cfg: &Config,
     target: &str,
@@ -468,19 +496,60 @@ pub(crate) fn resolve_agent_session(
         repo = recorded_repo.to_string();
         branch = recorded_branch.to_string();
     }
-    let ctx = Resolved {
-        repo: repo.clone(),
-        branch: branch.clone(),
-    };
-    let note = bn_core::store::read(&cfg.note_file(&ctx)).ok()?;
     // The dispatcher records `agent-session: <harness> <id>` in the collab section; take the latest.
-    let (harness, id) = note.front.collab.iter().rev().find_map(|it| {
-        let rest = it.text.trim().strip_prefix("agent-session:")?;
-        let mut w = rest.split_whitespace();
-        Some((w.next()?.to_string(), w.next()?.to_string()))
-    })?;
-    let wt = cfg.worktree_dir.join(repo).join(branch);
-    Some((wt, harness, id))
+    if let Some((harness, id)) = recorded_session(cfg, &repo, &branch) {
+        // `<worktree_dir>/<repo>/<branch>` is a convention, not a fact: a dispatched branch lives in
+        // a pool slot and a reused directory keeps its old name. A resume turn spawned in a
+        // directory that doesn't exist fails after a full harness invocation, so resolve the real
+        // checkout and fall through rather than hand back a path nothing is running in.
+        if let Some(wt) = resolve_agent_channel(cfg, &repo, &branch)
+            .worktree
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_dir())
+        {
+            return Some((wt, harness, id));
+        }
+    }
+    observed_agent_session(cfg, &repo, &branch)
+}
+
+/// The live transcript's own resume key for a `repo:branch`, for agents no note recorded.
+///
+/// Supervision reads every running session's log, so it knows each one's session id, harness and
+/// cwd — the three things a `--resume` turn needs — regardless of who launched it. Exactly one live
+/// agent must claim the target: with two, only the caller knows which was meant, and silently
+/// picking one is the mistake `ControlChannel::Ambiguous` exists to prevent.
+///
+/// This spawns a supervisor pass, so it is deliberately the *fallback*: steering is a
+/// human-initiated write, not a polled read, and the recorded-session path above already covers
+/// every agent bn launched itself.
+fn observed_agent_session(
+    cfg: &Config,
+    repo: &str,
+    branch: &str,
+) -> Option<(std::path::PathBuf, String, String)> {
+    let fleet = bn_core::agent::supervise(
+        cfg,
+        bn_core::agent::DEFAULT_IDLE_MINS,
+        bn_core::agent::DEFAULT_STUCK_MINS,
+    );
+    let mut hits = fleet
+        .agents
+        .iter()
+        .filter(|a| a.repo == repo && a.branch == branch);
+    let agent = hits.next()?;
+    if hits.next().is_some() {
+        return None; // two live sessions on this branch — the caller has to disambiguate
+    }
+    let wt = agent
+        .worktree
+        .as_deref()
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_dir())?;
+    if agent.session_id.is_empty() || agent.harness.is_empty() {
+        return None;
+    }
+    Some((wt, agent.harness.clone(), agent.session_id.clone()))
 }
 
 /// Build the `-p --resume` command for a harness (shared by the sync + detached steer paths).
@@ -595,6 +664,82 @@ pub(crate) fn tmux_exact_target(target: &str) -> String {
     }
 }
 
+/// The exact tmux target hosting `repo:branch`, and the checkout it is running in.
+///
+/// A window is named after whatever the launcher chose — the branch with slashes dashed, a pooled
+/// slot, or a directory reused from earlier work — so the `repo:branch` identity bn addresses an
+/// agent by is frequently *not* a window name. This runs the same tiered join the supervisor uses
+/// ([`bn_core::agent::resolve_channels`]): lease, then window session id, then checkout, then the
+/// window's `@bn_*` stamps, then the name. One `list-windows` plus one lease read.
+fn resolve_agent_channel(cfg: &Config, repo: &str, branch: &str) -> bn_core::agent::AgentChannel {
+    let windows = bn_core::agent::parse_window_rows(
+        &proc::tmux_raw(&["list-windows", "-a", "-F", bn_core::agent::WINDOW_FORMAT])
+            .unwrap_or_default(),
+    );
+    let leases = bn_core::agent::load_agent_leases(&bn_core::agent::agent_lease_registry_path())
+        .unwrap_or_default()
+        .leases;
+    // The note's record seeds the session-id tiers; the git-known checkout seeds the path tier.
+    let session = recorded_session(cfg, repo, branch)
+        .map(|(_, id)| id)
+        .unwrap_or_default();
+    // git knows where a branch is really checked out; the conventional layout is the last resort
+    // for a repo git can't enumerate (no bare clone), and only if it actually exists.
+    let known = bn_core::lifecycle::worktree_path(cfg, repo, branch)
+        .or_else(|| {
+            Some(cfg.worktree_dir.join(repo).join(branch)).filter(|p: &std::path::PathBuf| p.is_dir())
+        })
+        .map(|p| p.to_string_lossy().into_owned());
+    let key = bn_core::agent::AgentKey {
+        session_id: &session,
+        repo,
+        branch,
+        worktree: known.as_deref(),
+    };
+    let mut channel = bn_core::agent::resolve_channels(&[key], &windows, &leases)
+        .pop()
+        .unwrap_or_default();
+    channel.worktree = channel
+        .worktree
+        .filter(|p| std::path::Path::new(p).is_dir())
+        .or(known);
+    channel
+}
+
+/// The branch note's recorded `agent-session: <harness> <id>` (latest wins) — the resume channel's
+/// only input, shared by [`resolve_agent_session`] and the window join.
+fn recorded_session(cfg: &Config, repo: &str, branch: &str) -> Option<(String, String)> {
+    let ctx = Resolved {
+        repo: repo.to_string(),
+        branch: branch.to_string(),
+    };
+    let note = bn_core::store::read(&cfg.note_file(&ctx)).ok()?;
+    note.front.collab.iter().rev().find_map(|it| {
+        let rest = it.text.trim().strip_prefix("agent-session:")?;
+        let mut w = rest.split_whitespace();
+        Some((w.next()?.to_string(), w.next()?.to_string()))
+    })
+}
+
+/// A `repo:branch` target as the exact tmux target that actually hosts it.
+///
+/// [`tmux_exact_target`] alone only guards against fnmatch widening — it still assumes the window is
+/// *called* `repo:branch`, which is how steering came to miss every pooled agent. Ids and
+/// already-exact targets pass through untouched, and a target the join can't place falls back to the
+/// literal so nothing regresses when tmux is unreachable.
+pub(crate) fn resolve_tmux_target(cfg: &Config, target: &str) -> String {
+    if target.starts_with(['=', '%', '@', '$']) {
+        return target.to_string();
+    }
+    let Some((repo, branch)) = target.split_once(':') else {
+        return tmux_exact_target(target);
+    };
+    resolve_agent_channel(cfg, repo, branch)
+        .tmux_target
+        .as_deref()
+        .map_or_else(|| tmux_exact_target(target), tmux_exact_target)
+}
+
 /// Build the tmux step plan that primes pane `target`'s input box with `msg` via a paste-buffer
 /// named `buf`. Mirrors the seed launcher (`wt::launch_agent_in_window`): stage the message into a
 /// buffer with `set-buffer` (a `--` guard so a leading `-` in `msg` isn't parsed as a flag),
@@ -657,8 +802,10 @@ pub(crate) fn report_resume(target: &str, harness: &str, msg: &str, reply: &str,
 /// Kill a running agent by closing its tmux window. Idempotent: a `repo:branch` target with no live
 /// window is reported as already gone (not an error), so the web dashboard's kill button and the
 /// orchestrator's give-up path can call it without racing the window's own teardown. The target is
-/// normalized to an exact-match name so a `kill-window` never resolves a prefix/fnmatch neighbor.
-pub(crate) fn emit_agent_kill(target: &str, as_json: bool) {
+/// normalized to an exact-match name so a `kill-window` never resolves a prefix/fnmatch neighbor,
+/// and resolved through the window join first ([`resolve_tmux_target`]) so an agent whose window is
+/// named after its pooled slot is found rather than reported as already gone.
+pub(crate) fn emit_agent_kill(cfg: &Config, target: &str, as_json: bool) {
     let target = target.trim();
     // Guard the shape (`repo:branch`) so a malformed/empty input can't widen the tmux target. The
     // arg is passed to tmux as a distinct argv element (never a shell), so there's no injection —
@@ -677,17 +824,19 @@ pub(crate) fn emit_agent_kill(target: &str, as_json: bool) {
     }
 
     // List live windows once so we can distinguish "killed", "already gone" (idempotent success),
-    // and "tmux unreachable" (a real failure) rather than treating every non-zero as the same.
+    // and "tmux unreachable" (a real failure) rather than treating every non-zero as the same. The
+    // presence check compares the *resolved* window, since the target is an identity, not a name.
+    let exact = resolve_tmux_target(cfg, target);
     let windows =
         crate::proc::tmux(&["list-windows", "-a", "-F", "#{session_name}:#{window_name}"]);
     let (killed, gone, err) = match windows {
         None => (false, false, Some("tmux unreachable")),
         Some(list) => {
-            let present = list.lines().any(|w| w == target);
+            let present = list.lines().any(|w| tmux_exact_target(w) == exact);
             if !present {
                 (false, true, None) // no such window — already gone
             } else {
-                let ok = crate::proc::tmux_ok(&["kill-window", "-t", &tmux_exact_target(target)]);
+                let ok = crate::proc::tmux_ok(&["kill-window", "-t", &exact]);
                 if ok {
                     (true, true, None)
                 } else {
@@ -725,7 +874,13 @@ pub(crate) fn emit_agent_kill(target: &str, as_json: bool) {
 /// trailing `lines` are returned. Emits a `render::Envelope` so the web API / MCP / CLI share one
 /// shape; `--json` carries `{target, lines:[…], count}`. With `ansi`, `capture-pane -e` keeps the
 /// pane's SGR escape sequences so a terminal renderer (the web live terminal) shows real colours.
-pub(crate) fn emit_agent_pane(target: &str, lines: usize, ansi: bool, as_json: bool) {
+pub(crate) fn emit_agent_pane(
+    cfg: &Config,
+    target: &str,
+    lines: usize,
+    ansi: bool,
+    as_json: bool,
+) {
     let target = target.trim();
     // Guard the shape (`repo:branch`) so a malformed/empty input can't widen the tmux target. The
     // arg is passed to tmux as a distinct argv element (never a shell), so there's no injection.
@@ -742,7 +897,7 @@ pub(crate) fn emit_agent_pane(target: &str, lines: usize, ansi: bool, as_json: b
         return;
     }
 
-    let exact = tmux_exact_target(target);
+    let exact = resolve_tmux_target(cfg, target);
     // `-e` includes SGR (colour/attribute) escapes for a real-terminal render; without it the tail
     // is plain text. `-e` covers only text attributes, not cursor motion, so the frame stays
     // line-oriented (safe to re-render in a resized xterm).
@@ -915,15 +1070,19 @@ pub(crate) fn emit_agent_send(
         }
         true
     };
+    // Resolve the identity to the window that actually hosts it once, and steer that — the window
+    // is rarely named `repo:branch` (pool slots, reused directories), and every step below must
+    // address the same pane.
+    let window = resolve_tmux_target(cfg, target);
     let buf = format!("bn-steer-{}", bn_core::util::now_epoch_secs());
-    let pasted = run_steps(keys_paste_steps(target, &buf, msg));
+    let pasted = run_steps(keys_paste_steps(&window, &buf, msg));
     let mut confirmed = false;
     if pasted {
         for _ in 0..agent_live::SUBMIT_BACKOFF.submit_attempts() {
-            if !run_steps(keys_submit_steps(target)) {
+            if !run_steps(keys_submit_steps(&window)) {
                 break;
             }
-            if agent_live::steer_landed(target) {
+            if agent_live::steer_landed(&window) {
                 confirmed = true;
                 break;
             }
@@ -1547,6 +1706,92 @@ fn claude_has_session(cwd: &str, session_id: &str) -> bool {
         .is_file()
 }
 
+/// One launched agent session, as the note and the cost log record it.
+pub(crate) struct LaunchedSession<'a> {
+    pub(crate) ctx: &'a Resolved,
+    pub(crate) harness: &'a str,
+    pub(crate) session_id: &'a str,
+    pub(crate) worktree: &'a str,
+    pub(crate) work_class: bn_core::cost::WorkClass,
+    pub(crate) task_name: Option<&'a str>,
+    pub(crate) controller_id: Option<&'a str>,
+}
+
+/// Record a launched agent session: the note's `agent-session: <harness> <id>` collab line, plus the
+/// cost log's work-class attribution.
+///
+/// The single writer for every launch path — `bn dispatch`'s lane and `--attach` forms and a
+/// hand-typed `claude` through the shell wrapper — because that note line is the *only* input to
+/// [`resolve_agent_session`] and the supervisor's resume channel. Three hand-rolled copies could
+/// drift from the two readers; one cannot. Callers must pass an id the harness will actually run
+/// under (see [`effective_session_id`]) — recording an id that was never pinned puts a lie in the
+/// note that `bn agent send` would later try to resume.
+pub(crate) fn record_launched_session(cfg: &Config, s: LaunchedSession<'_>) {
+    let line = format!("agent-session: {} {}", s.harness, s.session_id);
+    // Idempotent on the exact line: `bn dispatch --attach` records, then execs a launcher that
+    // reaches this same writer, and one session should leave one record.
+    let _ = commands::add(cfg, s.ctx, "collab", &line, Some(&line), &today());
+    bn_core::cost::attribute_session(bn_core::cost::SessionLaunch {
+        session_id: s.session_id,
+        work_class: s.work_class,
+        repo: &s.ctx.repo,
+        branch: &s.ctx.branch,
+        task_name: s.task_name,
+        harness: Some(s.harness),
+        worktree: Some(s.worktree),
+        controller_id: s.controller_id,
+    });
+}
+
+/// Whether the user's own harness arguments already decide which session this launch runs in.
+///
+/// `claude --continue`, `claude --resume <id>` and an explicit `--session-id` are the user driving
+/// the session themselves; bn pinning a freshly minted id on top would either be ignored or refused
+/// by the harness as a conflicting flag. Pure.
+pub(crate) fn passthrough_controls_session(passthrough: &[String]) -> bool {
+    passthrough.iter().any(|a| {
+        let flag = a.split('=').next().unwrap_or(a);
+        matches!(
+            flag,
+            "--continue" | "-c" | "--resume" | "-r" | "--session-id" | "--session"
+        )
+    })
+}
+
+/// The harness session id this launch will *actually* run under, or `None` when the harness picks
+/// its own and bn never learns it up front.
+///
+/// Mirrors [`build_claude_args`] / [`build_copilot_args`] branch for branch, because the answer is
+/// exactly "which branch did the arg builder take". `claude --continue` is the `None` case: bn may
+/// have minted an id, but it is never passed, so the live session ends up with the harness's own —
+/// and a note recording the minted one would send `bn agent send --resume` at a session that does
+/// not exist. Copilot resumes by appending to the same session, so a resume id *is* the live id.
+pub(crate) fn effective_session_id(
+    harness: Harness,
+    plan: &LaunchPlan,
+    has_transcripts: bool,
+    copilot_resume: Option<&str>,
+) -> Option<String> {
+    if !plan.fresh {
+        match harness {
+            Harness::Claude => {
+                if let Some(id) = &plan.resume_session {
+                    return Some(id.clone());
+                }
+                if has_transcripts {
+                    return None;
+                }
+            }
+            Harness::Copilot => {
+                if let Some(id) = copilot_resume {
+                    return Some(id.to_string());
+                }
+            }
+        }
+    }
+    plan.session.clone()
+}
+
 /// Set `BN_AGENT_GUARD=0` to launch an agent wherever you are, bypassing the placement rule — the
 /// deliberate-override valve, mirroring `git commit --no-verify` against the repo's `pre-commit`
 /// hook. Anything else (including unset) enforces.
@@ -1572,11 +1817,18 @@ fn launch_guard_enabled() -> bool {
 /// hand-typed `claude` is leased exactly like a dispatched one and the *next* launch sees it. The
 /// lease is committed before the exec (which runs no destructors); `bn wt cleanup`/`reap` and the
 /// reconcile sweep release it when the window goes away.
+///
+/// It also records the session on the branch note exactly as `bn dispatch` does — without that line
+/// a hand-typed agent has no resume channel, which is the difference between a steerable agent and
+/// one the dashboard can only watch. `session` is the id the harness will really run under
+/// ([`effective_session_id`]); `None` means the harness picked its own, so there is nothing
+/// truthful to write and the window join is left to provide the channel.
 fn enforce_launch_placement(
     cfg: &Config,
     cwd: &std::path::Path,
     harness: Harness,
     session: Option<&str>,
+    pinned_session: &str,
 ) -> Option<()> {
     if !launch_guard_enabled() {
         return None;
@@ -1607,6 +1859,14 @@ fn enforce_launch_placement(
     // Only lease a checkout bn can name (a resolvable repo/branch). Outside one — a scratch clone,
     // a detached path — there is nothing to key a lease on, so the launch simply proceeds unleased.
     let ctx = resolver::resolve(cfg, &canonical).ok()?;
+
+    // 3. **Agents live in tmux windows.** Typed on a bare terminal there is no window to steer, kill
+    //    or even name, so the agent would run outside the control plane bn exists to provide. Open
+    //    the window bn would have opened and attach to it — the same shape `bn dispatch` produces.
+    if redirect_into_window_wanted() {
+        redirect_into_window(cfg, &ctx, &canonical, harness, pinned_session);
+    }
+
     // Lease under the caller's session id when it gave one (`bn dispatch --attach` passes
     // `--session <sid>`), so that caller can release this exact lease when the foreground agent
     // exits. A hand-typed launch has no id yet and mints one.
@@ -1614,10 +1874,14 @@ fn enforce_launch_placement(
         .map(str::to_string)
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(gen_uuid);
-    let tmux_target = crate::proc::tmux_raw(&["display-message", "-p", "#{session_name}:#{window_name}"])
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| format!("{}:{}", ctx.repo, ctx.branch));
+    // Outside tmux there is no window to lease against, and inventing `repo:branch` would stamp
+    // `@bn_session_id` onto whatever unrelated window happens to bear that name. Lease with no
+    // target instead, and skip the stamping that would go with it.
+    let current_window =
+        crate::proc::tmux_raw(&["display-message", "-p", "#{session_name}:#{window_name}"])
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty() && std::env::var_os("TMUX").is_some());
+    let tmux_target = current_window.clone().unwrap_or_default();
     match agent_lease::reserve(agent_lease::AgentLeaseRequest {
         repo: &ctx.repo,
         branch: &ctx.branch,
@@ -1630,8 +1894,28 @@ fn enforce_launch_placement(
         in_place: true,
     }) {
         Ok(reservation) => {
-            agent_lease::mark_window(reservation.lease());
+            if current_window.is_some() {
+                agent_lease::mark_window(reservation.lease());
+            }
             reservation.commit();
+            // Only a session the harness will actually run under earns a note record; a
+            // `--continue` launch (session `None`) is left to the window join for its channel.
+            if let Some(sid) = session.map(str::trim).filter(|s| !s.is_empty()) {
+                record_launched_session(
+                    cfg,
+                    LaunchedSession {
+                        ctx: &ctx,
+                        harness: harness.bin(),
+                        session_id: sid,
+                        worktree: &canonical.to_string_lossy(),
+                        // A human typing `claude` in a worktree is shipping work, not running the
+                        // fleet — the same class `bn dispatch` gives a worker.
+                        work_class: bn_core::cost::WorkClass::Coding,
+                        task_name: None,
+                        controller_id: None,
+                    },
+                );
+            }
         }
         // A refusal here is the placement invariant talking (the controller slot, or a main worktree
         // whose path shape the check above didn't catch). Surface it verbatim and stop.
@@ -1641,6 +1925,127 @@ fn enforce_launch_placement(
         }
     }
     None
+}
+
+/// Whether a launch typed outside tmux should be moved into a bn-managed window.
+///
+/// Every gate has to hold, because this is the one rule that *relocates* the user's terminal:
+/// there must be no surrounding tmux session (inside one, the current window is already a fine
+/// home), a reachable tmux server, and a real terminal on both ends — a script, a hook or a CI step
+/// piping `claude` must never be teleported into a window it cannot see. `BN_AGENT_TMUX_REDIRECT=0`
+/// turns it off outright, the same shape of valve as `BN_AGENT_GUARD=0`.
+fn redirect_into_window_wanted() -> bool {
+    use std::io::IsTerminal;
+    if std::env::var_os("TMUX").is_some() {
+        return false;
+    }
+    if matches!(
+        std::env::var("BN_AGENT_TMUX_REDIRECT").as_deref().map(str::trim),
+        Ok("0")
+    ) {
+        return false;
+    }
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return false;
+    }
+    // A reachable server is required: `new-window` cannot adopt a session that doesn't exist yet
+    // here, and a failed relocation would strand the launch.
+    crate::proc::tmux_raw(&["list-sessions", "-F", "#{session_name}"]).is_some()
+}
+
+/// Move a bare-terminal launch into the tmux window bn would have opened for this branch, and
+/// attach to it.
+///
+/// Mirrors what `bn dispatch` does for a lane, minus the branch and worktree creation: lease the
+/// checkout against the window that is about to exist, record the session, open the window running
+/// this very command inside it, then attach. The inner `bn agent launch` sees the lease as
+/// [`agent_lease::WorktreeHolder::Ours`] and so neither re-leases nor re-records.
+///
+/// Returns normally only when the window could not be opened — the caller then continues with the
+/// in-place launch rather than leaving the user with nothing.
+fn redirect_into_window(
+    cfg: &Config,
+    ctx: &Resolved,
+    worktree: &std::path::Path,
+    harness: Harness,
+    pinned_session: &str,
+) {
+    let window = bn_core::orchestrate::tmux_window_name(&ctx.branch);
+    let tmux_target = format!("{}:{window}", ctx.repo);
+    let reservation = match agent_lease::reserve(agent_lease::AgentLeaseRequest {
+        repo: &ctx.repo,
+        branch: &ctx.branch,
+        worktree,
+        session_id: pinned_session,
+        harness: harness.bin(),
+        kind: bn_core::agent::AgentLeaseKind::Dispatch,
+        tmux_target: &tmux_target,
+        replace: false,
+        in_place: false,
+    }) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            eprintln!("bn agent launch: {error}");
+            std::process::exit(1);
+        }
+    };
+
+    // Re-run *this* invocation inside the window, with the session pinned so the window's agent and
+    // the record we are about to write name the same session.
+    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("bn"));
+    let mut argv: Vec<String> = std::env::args().skip(1).collect();
+    if !argv.iter().any(|a| a == "--session") {
+        // Before any `--`, so it lands on the launcher rather than the harness passthrough.
+        let at = argv.iter().position(|a| a == "--").unwrap_or(argv.len());
+        argv.splice(at..at, ["--session".to_string(), pinned_session.to_string()]);
+    }
+    let cmd = std::iter::once(exe.to_string_lossy().into_owned())
+        .chain(argv)
+        .map(|a| wt::shell_single_quote(&a))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    eprintln!("bn agent launch: opening {tmux_target} — attaching.");
+    if !wt::open_worktree_window_cmd_named(
+        &ctx.repo,
+        &ctx.branch,
+        &window,
+        worktree,
+        false,
+        Some(&cmd),
+        true,
+        None,
+    ) {
+        eprintln!("bn agent launch: could not open {tmux_target} — starting here instead.");
+        let _ = reservation.rollback();
+        return;
+    }
+    agent_lease::mark_window(reservation.lease());
+    reservation.commit();
+    record_launched_session(
+        cfg,
+        LaunchedSession {
+            ctx,
+            harness: harness.bin(),
+            session_id: pinned_session,
+            worktree: &worktree.to_string_lossy(),
+            work_class: bn_core::cost::WorkClass::Coding,
+            task_name: None,
+            controller_id: None,
+        },
+    );
+
+    // Focus the new window before attaching, so the client lands on the agent rather than whatever
+    // window the session happened to leave current.
+    let _ = crate::proc::tmux_ok(&["select-window", "-t", &tmux_exact_target(&tmux_target)]);
+    exec_harness(
+        "tmux",
+        &[
+            "attach-session".to_string(),
+            "-t".to_string(),
+            format!("={}", ctx.repo),
+        ],
+    )
 }
 
 /// The main-worktree redirect: ask what the work is, then hand off to `bn dispatch`, which leases a
@@ -1696,6 +2101,10 @@ fn redirect_from_main(worktree: &std::path::Path, harness: Harness) -> ! {
 /// dispatch`, `bn control start`, the `claude`/`copilot` shell wrappers, and a plain `cd <wt> && bn
 /// agent launch` — so the placement rule in [`enforce_launch_placement`] lives here rather than
 /// being restated by each caller.
+///
+/// Two of that rule's branches replace this process with something other than the harness: a launch
+/// in the main worktree becomes `bn dispatch`, and a launch on a bare terminal becomes a tmux
+/// attach onto the window the agent was started in. Either way this call does not return.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_agent_launch(
     cfg: &Config,
@@ -1724,30 +2133,58 @@ pub(crate) fn emit_agent_launch(
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    enforce_launch_placement(cfg, std::path::Path::new(&cwd), harness, session.as_deref());
-
+    // Pin a session id when the caller didn't give one, exactly as `bn dispatch` does. Without it a
+    // fresh hand-typed launch takes whatever id the harness invents, which bn never learns — and an
+    // id bn doesn't know is an agent bn cannot resume. Skipped when the user drove the session
+    // themselves (`claude --continue`, `claude --resume <id>`): pinning on top of their flag is at
+    // best redundant and at worst an argument conflict.
+    let user_owns_session = passthrough_controls_session(&passthrough);
     let mut plan = LaunchPlan {
         seed,
         yolo_force: yolo,
         fresh,
-        session,
+        session: session
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| (!user_owns_session).then(gen_uuid)),
         resume_session,
         passthrough,
     };
+    let pinned_session = plan.session.clone().unwrap_or_default();
+
+    // Resolve the resume-or-fresh decision *before* the placement guard, so the guard can record the
+    // id this launch will genuinely run under. Both probes are read-only filesystem checks.
+    if harness == Harness::Claude
+        && !plan.fresh
+        && plan
+            .resume_session
+            .as_deref()
+            .is_some_and(|id| !claude_has_session(&cwd, id))
+    {
+        eprintln!("bn agent launch: recorded Claude session is missing; starting fresh");
+        plan.fresh = true;
+    }
+    let has_transcripts = harness == Harness::Claude && claude_has_transcripts(&cwd);
+    let copilot_resume = (harness == Harness::Copilot)
+        .then(|| {
+            plan.resume_session
+                .clone()
+                .or_else(|| copilot_resume_id(&cwd))
+        })
+        .flatten();
+    let effective = effective_session_id(harness, &plan, has_transcripts, copilot_resume.as_deref());
+
+    enforce_launch_placement(
+        cfg,
+        std::path::Path::new(&cwd),
+        harness,
+        effective.as_deref(),
+        &pinned_session,
+    );
 
     match harness {
         Harness::Claude => {
-            if !plan.fresh
-                && plan
-                    .resume_session
-                    .as_deref()
-                    .is_some_and(|id| !claude_has_session(&cwd, id))
-            {
-                eprintln!("bn agent launch: recorded Claude session is missing; starting fresh");
-                plan.fresh = true;
-            }
             let args = with_claude_controller_hook(
-                build_claude_args(&plan, claude_has_transcripts(&cwd)),
+                build_claude_args(&plan, has_transcripts),
                 controller_launch(),
             );
             exec_harness(harness.bin(), &args)
@@ -1768,10 +2205,7 @@ pub(crate) fn emit_agent_launch(
                 let _ = std::fs::create_dir_all(std::path::Path::new(&home).join(".copilot"));
             }
             crate::cmd::promote::apply_folder_trust(&cwd, "copilot");
-            let resume_id = plan
-                .resume_session
-                .clone()
-                .or_else(|| copilot_resume_id(&cwd));
+            let resume_id = copilot_resume;
             let args = build_copilot_args(&plan, resume_id.as_deref());
             if resume_id.is_some() && !plan.fresh {
                 match run_copilot_resume(harness.bin(), &args) {
@@ -2311,6 +2745,44 @@ pub(crate) fn emit_agent_sessions(
 }
 
 #[cfg(test)]
+mod target_tests {
+    use super::*;
+
+    #[test]
+    fn resolve_tmux_target_passes_exact_targets_through() {
+        // Ids and `=`-guarded names are already unambiguous; resolving them again would be a wasted
+        // tmux spawn, and re-prefixing would produce `==name`, which matches nothing.
+        let cfg = Config::default();
+        for exact in ["=bn:feature", "%12", "@4", "$1"] {
+            assert_eq!(resolve_tmux_target(&cfg, exact), exact);
+        }
+    }
+
+    #[test]
+    fn the_bare_terminal_redirect_stays_out_of_the_way_when_told_to() {
+        let _lock = bn_core::test_support::env_lock();
+        // Already inside tmux: the current window is a perfectly good home, so never relocate.
+        {
+            let _tmux = bn_core::test_support::EnvGuard::set("TMUX", "/tmp/tmux-0/default,1,0");
+            assert!(!redirect_into_window_wanted());
+        }
+        // Outside tmux, the kill-switch wins before any tty or server probe.
+        {
+            let _tmux = bn_core::test_support::EnvGuard::remove("TMUX");
+            let _off = bn_core::test_support::EnvGuard::set("BN_AGENT_TMUX_REDIRECT", "0");
+            assert!(!redirect_into_window_wanted());
+        }
+    }
+
+    #[test]
+    fn resolve_tmux_target_falls_back_to_the_literal_when_it_is_not_repo_branch() {
+        // Not a `repo:branch` identity, so there is nothing to join — guard it and hand it back.
+        let cfg = Config::default();
+        assert_eq!(resolve_tmux_target(&cfg, "scratch"), "=scratch");
+    }
+}
+
+#[cfg(test)]
 mod memory_hook_tests {
     use super::merge_auto_memory_dir;
 
@@ -2361,6 +2833,71 @@ mod launch_tests {
             resume_session: None,
             passthrough: passthrough.iter().map(|s| s.to_string()).collect(),
         }
+    }
+
+    #[test]
+    fn a_user_driven_session_flag_suppresses_the_minted_id() {
+        // Typing `claude --continue` (or `--resume <id>`) means the user chose the session; bn
+        // pinning `--session-id` on top of it is a conflicting flag, not a nicety.
+        for flag in ["--continue", "-c", "--resume", "-r", "--session-id"] {
+            assert!(
+                passthrough_controls_session(&[flag.to_string()]),
+                "should defer to: {flag}"
+            );
+        }
+        assert!(passthrough_controls_session(&[
+            "--resume=abc".to_string()
+        ]));
+        assert!(!passthrough_controls_session(&[
+            "-p".to_string(),
+            "summarize this".to_string()
+        ]));
+        assert!(!passthrough_controls_session(&[]));
+    }
+
+    #[test]
+    fn effective_session_id_is_none_for_a_claude_continue() {
+        // `--continue` never passes `--session-id`, so the live session ends up with the harness's
+        // own id. Recording the minted one would leave the note pointing at a session that never
+        // existed, and `bn agent send --resume` would fail against it.
+        let p = plan(None, false, false, Some("minted-id"), &[]);
+        assert_eq!(
+            effective_session_id(Harness::Claude, &p, true, None),
+            None,
+            "existing transcripts and no --fresh means --continue"
+        );
+    }
+
+    #[test]
+    fn effective_session_id_is_the_minted_id_for_a_fresh_claude() {
+        let fresh_worktree = plan(None, false, false, Some("minted-id"), &[]);
+        assert_eq!(
+            effective_session_id(Harness::Claude, &fresh_worktree, false, None),
+            Some("minted-id".to_string())
+        );
+        // `--fresh` pins the id even where transcripts exist.
+        let forced = plan(None, false, true, Some("minted-id"), &[]);
+        assert_eq!(
+            effective_session_id(Harness::Claude, &forced, true, None),
+            Some("minted-id".to_string())
+        );
+    }
+
+    #[test]
+    fn effective_session_id_is_the_resume_id_when_one_is_resumed() {
+        // Copilot appends to the resumed session, so the resume id *is* the live id.
+        let p = plan(None, false, false, Some("minted-id"), &[]);
+        assert_eq!(
+            effective_session_id(Harness::Copilot, &p, false, Some("older-session")),
+            Some("older-session".to_string())
+        );
+        // Claude's explicit `--resume <id>` is the same story.
+        let mut resumed = plan(None, false, false, Some("minted-id"), &[]);
+        resumed.resume_session = Some("older-session".into());
+        assert_eq!(
+            effective_session_id(Harness::Claude, &resumed, true, None),
+            Some("older-session".to_string())
+        );
     }
 
     #[test]

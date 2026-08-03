@@ -1,8 +1,8 @@
 ---
-name: lavish
+name: lavish-plan
 description: Draft a plan (or diagram/report) visually with the Lavish AXI, then distill the agreed result into the branch note — done-when criteria + ordered todos, not just an HTML artifact.
 when: You want to think a plan, comparison, or design through visually (rich HTML / Mermaid) with the human in the loop, and land the agreed outcome in the branch note so it can be executed and measured.
-keywords: [lavish, lavish-axi, axi, plan, visualize, visualization, html artifact, mermaid, diagram, design, report, save plan, branch note]
+keywords: [lavish, lavish-plan, lavish-axi, axi, plan, visualize, visualization, html artifact, mermaid, diagram, design, report, save plan, branch note]
 arguments:
   - { name: topic, description: What to plan or visualize. Omit to use the note's current Goal., required: false }
 ---
@@ -11,6 +11,11 @@ in a local browser so a human can annotate elements, edit Mermaid diagrams as wh
 feedback back to you (https://github.com/kunchenguid/lavish-axi). Here it is the *thinking surface*
 for a plan; the **branch note is the durable record**. An HTML artifact nobody can execute is not a
 plan — this skill ends with the plan written into the note, exactly like `plan`.
+
+This skill is *planning through* Lavish, not Lavish itself: the upstream agent-skill installed by
+`npx skills add kunchenguid/lavish-axi --skill lavish` owns the bare name `lavish` and provides the
+AXI, while this one drives it toward a durable branch note. Two names, deliberately — bn materializes
+its skills into `~/.claude/skills` too, so sharing the name would collide with the upstream file.
 
 1. **Preflight the AXI.** The skill runs Lavish through `npx -y lavish-axi`, so try
    `npx -y lavish-axi update --check` (or `command -v lavish-axi`). If it is unavailable and you
@@ -46,5 +51,5 @@ plan — this skill ends with the plan written into the note, exactly like `plan
    is ready to execute or gated on an `investigate`. Keep it scannable — the note holds the detail.
 
 If this surfaced a rough edge in *this* skill — a missing step, an instruction that misfired —
-capture it with `bn reflect "skill:lavish — <what to change>"` (via the harness). That is how this
+capture it with `bn reflect "skill:lavish-plan — <what to change>"` (via the harness). That is how this
 skill evolves; `evolve-skills` folds those notes back into this file.

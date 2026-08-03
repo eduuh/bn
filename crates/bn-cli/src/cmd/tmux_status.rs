@@ -329,9 +329,16 @@ pub(crate) fn emit_tmux_done_badge(win: &str) {
     let _ = crate::proc::tmux_run(&["set-window-option", "-t", win, "monitor-silence", "0"]);
 
     let msg = format!("{name} finished");
-    // Best-effort desktop toast via the shared notify seam (notify-send / PowerShell / osascript);
-    // a missing backend is swallowed so the hook never fails.
-    let _ = bn_core::notify::toast("tmux", &msg);
+    // Best-effort desktop toast through the policy gate; a missing backend is swallowed so the
+    // hook never fails. A completion duplicates the ✓ badge set just above, so under the default
+    // bar the badge is the whole notification.
+    let _ = crate::toast::toast(
+        crate::toast::Class::Completion,
+        &format!("tmux:{win}:silent"),
+        "tmux",
+        "tmux",
+        &msg,
+    );
 }
 
 // ---- bn tmux-cockpit : orchestration roll-up popup (prefix S) -----------------------------------

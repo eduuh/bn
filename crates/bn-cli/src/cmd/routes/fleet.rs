@@ -40,6 +40,9 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
             }
         }
         CmdFleet::Mobile { host } => mobile::run(cfg, &host),
+        CmdFleet::Notify { action } => match action {
+            None | Some(NotifyCmd::Status) => cmd::notify::emit_notify_status(cfg, json),
+        },
         CmdFleet::Focus { action } => match action {
             None | Some(FocusCmd::Status) => emit_focus_status(json),
             Some(FocusCmd::Start { dur }) => emit_focus_start(&dur, json),
@@ -175,12 +178,12 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
                 base,
                 yes,
             }) => emit_agent_recover(cfg, repo, branch, all, base.as_deref(), yes, json),
-            Some(AgentCmd::Kill { target }) => emit_agent_kill(&target, json),
+            Some(AgentCmd::Kill { target }) => emit_agent_kill(cfg, &target, json),
             Some(AgentCmd::Pane {
                 target,
                 lines,
                 ansi,
-            }) => emit_agent_pane(&target, lines, ansi, json),
+            }) => emit_agent_pane(cfg, &target, lines, ansi, json),
             Some(AgentCmd::Activity { session, limit }) => {
                 emit_agent_activity(&session, limit, json)
             }

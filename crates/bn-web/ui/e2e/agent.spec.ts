@@ -158,13 +158,9 @@ test("agent detail: activity + steer/relaunch/kill/land issue real authorized wr
   ]);
   expect(killReq.method()).toBe("POST");
 
-  // Land ready PRs (confirm dialog) → POST /api/land {repo}.
-  page.once("dialog", (d) => d.accept());
-  const [landReq] = await Promise.all([
-    page.waitForRequest((r) => r.url().includes("/api/land") && r.method() === "POST"),
-    page.getByRole("button", { name: /Land ready PRs/ }).click(),
-  ]);
-  expect(JSON.parse(landReq.postData() ?? "{}").repo).toBe("bn");
+  // Landing is not on this page: `bn wt merge --all` is a repo-wide sweep, not this agent's PR, so
+  // a button for it here misnames what it does. It lives on the repo/console surfaces.
+  await expect(page.getByRole("button", { name: /Land ready PRs/ })).toHaveCount(0);
 });
 
 test("agent detail: switching harness relaunches in place under the chosen harness (#501)", async ({
@@ -174,16 +170,27 @@ test("agent detail: switching harness relaunches in place under the chosen harne
   await primeToken(page);
   await page.goto(`/agents/${SESSION}`);
 
-  const panel = page.getByRole("group", { name: "Harness: switch harness" });
-  await expect(panel.getByText("Harness", { exact: true })).toBeVisible();
-  // The agent runs under claude → that option is the active one.
-  await expect(panel.getByRole("button", { name: /claude/ })).toHaveAttribute("aria-pressed", "true");
+  // The harness rides in the header's identity row (repo · branch · state · harness) as a chip, not
+  // as a sidebar card of segmented buttons — switching stops and relaunches the agent, so it earns
+  // one tap of disclosure rather than permanent real estate.
+  const header = page.getByRole("heading", { level: 2 }).locator("xpath=..");
+  const chip = header.getByRole("button", { name: /claude/ });
+  await expect(chip).toBeVisible();
+  await expect(page.getByRole("menu", { name: "Switch harness" })).toHaveCount(0);
+
+  // Open it: the running harness is checked, the alternative is offered.
+  await chip.click();
+  const menu = page.getByRole("menu", { name: "Switch harness" });
+  await expect(menu.getByRole("menuitem", { name: /claude/ })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
 
   // Switch to copilot: confirm → POST /relaunch {harness:"copilot"} on the agent's own target.
   page.once("dialog", (d) => d.accept());
   const [switchReq] = await Promise.all([
     page.waitForRequest((r) => r.url().includes("/relaunch") && r.method() === "POST"),
-    panel.getByRole("button", { name: /copilot/ }).click(),
+    menu.getByRole("menuitem", { name: /copilot/ }).click(),
   ]);
   expect(switchReq.url()).toContain(encodeURIComponent(TARGET));
   expect(JSON.parse(switchReq.postData() ?? "{}").harness).toBe("copilot");

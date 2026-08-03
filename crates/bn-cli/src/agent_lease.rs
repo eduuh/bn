@@ -129,22 +129,25 @@ fn remove_dead_launch_target(target: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Stamp a leased window with everything needed to find it again: the session it hosts, the kind of
+/// agent, and the repo/branch/worktree it belongs to.
+///
+/// The repo/branch/worktree options are what [`observed_agent_windows`] filters on and what the
+/// supervisor's window join and `bn agent send`'s target resolution read — a window carrying only
+/// `@bn_session_id` is invisible to all three. `wt::open_worktree_window_cmd_named` stamps the same
+/// three when *it* creates a window; this covers the in-place case, where the window already existed
+/// and the agent moved in.
 pub(crate) fn mark_window(lease: &AgentLease) {
     let target = format!("={}", lease.tmux_target);
-    let _ = crate::proc::tmux_run(&[
-        "set-window-option",
-        "-t",
-        &target,
-        "@bn_session_id",
-        &lease.session_id,
-    ]);
-    let _ = crate::proc::tmux_run(&[
-        "set-window-option",
-        "-t",
-        &target,
-        "@bn_agent_kind",
-        lease.kind.label(),
-    ]);
+    for (option, value) in [
+        ("@bn_session_id", lease.session_id.as_str()),
+        ("@bn_agent_kind", lease.kind.label()),
+        ("@bn_repo", lease.key.repo.as_str()),
+        ("@bn_branch", lease.key.branch.as_str()),
+        ("@bn_worktree", lease.key.worktree.as_str()),
+    ] {
+        let _ = crate::proc::tmux_run(&["set-window-option", "-t", &target, option, value]);
+    }
 }
 
 /// Drop the lease held by `session_id` (idempotent). Called when a lease-holding agent is

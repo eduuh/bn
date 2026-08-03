@@ -960,7 +960,17 @@ impl JobFixture {
         c.output().unwrap()
     }
     /// Run a native toast job with its enable flag (`BN_STANDUP_ENABLED`/`BN_WRAP_ENABLED`).
+    ///
+    /// Runs with the notification bar wide open. Standup and wrap are `Digest`-class, so the
+    /// shipped default bar (`blocking`) holds them at the policy gate — these validators are about
+    /// the job's *payload*, so they open the bar to reach the backend. That the default bar keeps
+    /// them silent is asserted separately, in `digest_jobs_do_not_toast_under_the_default_bar`.
     fn job(&self, enable_var: &str, enabled: &str, job: &str) -> String {
+        self.job_with_bar(enable_var, enabled, job, "all")
+    }
+
+    /// [`Self::job`] with an explicit `[notify].bar` (via `$BN_NOTIFY_BAR`).
+    fn job_with_bar(&self, enable_var: &str, enabled: &str, job: &str, bar: &str) -> String {
         let out = Command::new(env!("CARGO_BIN_EXE_bn"))
             .current_dir(&self.run)
             .env("PATH", &self.path_env)
@@ -969,6 +979,7 @@ impl JobFixture {
             .env("BN_HOSTNAME", "h")
             .env("BN_TODAY", "2026-06-26")
             .env("BN_CONFIG_DIR", &self.cfg)
+            .env("BN_NOTIFY_BAR", bar)
             .env(enable_var, enabled)
             .args(["run", job])
             .output()
@@ -1025,7 +1036,13 @@ fn standup_push_content_idempotent_and_silent_when_off() {
     let first = last(&f.job("BN_STANDUP_ENABLED", "1", "standup-push"));
     let second = last(&f.job("BN_STANDUP_ENABLED", "1", "standup-push"));
     assert_eq!(second, first, "copy line stable across runs");
-    assert_eq!(f.notify_calls(), 2, "two runs → two toasts");
+    // The copy line is idempotent, but the *interruption* is not repeated: both runs share the
+    // delivery key `standup:<today>`, so the policy gate's cooldown holds the second toast.
+    assert_eq!(
+        f.notify_calls(),
+        1,
+        "two runs → one toast (the second is inside the key cooldown)"
+    );
 
     // silent when off
     let t3 = tempfile::tempdir().unwrap();
@@ -1083,7 +1100,12 @@ fn wrap_digest_content_idempotent_and_silent_when_clean_or_off() {
     let first = f.job("BN_WRAP_ENABLED", "1", "wrap-digest");
     let second = f.job("BN_WRAP_ENABLED", "1", "wrap-digest");
     assert_eq!(second, first, "output stable across runs");
-    assert_eq!(f.notify_calls(), 2, "two runs → two toasts");
+    // As with standup: stable output, but one interruption — both runs key `wrap:<today>`.
+    assert_eq!(
+        f.notify_calls(),
+        1,
+        "two runs → one toast (the second is inside the key cooldown)"
+    );
 
     // silent when clean
     let t3 = tempfile::tempdir().unwrap();
@@ -1106,6 +1128,38 @@ fn wrap_digest_content_idempotent_and_silent_when_clean_or_off() {
     let out = f.job("BN_WRAP_ENABLED", "0", "wrap-digest");
     assert!(out.contains("nothing to push"), "no-op message: {out}");
     assert_eq!(f.notify_calls(), 0, "notify NOT invoked when disabled");
+}
+
+/// The shipped default: a toast means work has stopped and needs your decision, so the scheduled
+/// digests produce their content and reach the policy gate but never interrupt. The two tests
+/// above deliberately raise the bar to inspect the payload; this one pins the default.
+#[test]
+fn digest_jobs_do_not_toast_under_the_default_bar() {
+    for (enable_var, job, marker) in [
+        ("BN_STANDUP_ENABLED", "standup-push", "today 1 planned"),
+        (
+            "BN_WRAP_ENABLED",
+            "wrap-digest",
+            "ship the validate scripts",
+        ),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = job_fixture(tmp.path());
+        assert!(f
+            .bn(&["daily", "add", "ship the validate scripts"])
+            .status
+            .success());
+        let out = f.job_with_bar(enable_var, "1", job, "blocking");
+        assert!(
+            out.contains(marker),
+            "{job} still produces its content: {out}"
+        );
+        assert_eq!(
+            f.notify_calls(),
+            0,
+            "{job} is a digest — it must not interrupt under the default bar"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -34,6 +34,7 @@ pub(crate) mod learnings;
 pub(crate) mod lifecycle;
 pub(crate) mod mentor;
 pub(crate) mod night;
+pub(crate) mod notify;
 pub(crate) mod orchestrate;
 pub(crate) mod pipeline;
 pub(crate) mod plan_review;

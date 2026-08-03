@@ -6,9 +6,7 @@ import { useNow } from "../hooks/useNow";
 import { AgentHeader } from "../components/AgentHeader";
 import { AgentActivity } from "../components/AgentActivity";
 import { SteerPanel } from "../components/SteerPanel";
-import { HarnessSwitcher } from "../components/HarnessSwitcher";
 import { PlanReviewPanel } from "../components/PlanReviewPanel";
-import { LandButton } from "../components/LandButton";
 import { SessionNote } from "../components/SessionNote";
 import { ToastStack } from "../components/ToastStack";
 import { Button } from "../components/ui/button";
@@ -37,10 +35,14 @@ function LoadingSkeleton() {
 
 /**
  * `/agents/:id` — one agent's detail + full steering surface (design §479 lifecycle: supervise →
- * steer → land). Header (repo/branch/health/tokens/turns/jump), the session activity feed with the
- * steer composer beneath it, a plan-review panel when the agent is paused for approval, the harness
- * switcher, and a Land control to merge its ready PR. Single-column on a phone;
- * feed-beside-controls on desktop.
+ * steer). Header (repo/branch/health/harness/tokens/turns/jump), the session activity feed with the
+ * steer composer beneath it, and a plan-review panel when the agent is paused for approval.
+ * Single-column on a phone; feed-beside-controls on desktop.
+ *
+ * Landing is not here. `bn wt merge --all` is a *repo*-wide sweep — it merges every ready PR in the
+ * repo, not this agent's — so a button for it on one agent's page misnames what it does; it belongs
+ * to the repo surfaces. The harness moved up to the header, where it reads as this agent's identity
+ * rather than a step in the steer column.
  *
  * The feed replaced the streamed xterm terminal (#491): mirroring a 200-column tmux pane into a
  * half-as-wide browser grid wrapped every line into noise, and said nothing at all about an agent
@@ -79,7 +81,7 @@ export function AgentDetail() {
 
       {detail.data && agent && (
         <>
-          <AgentHeader detail={detail.data} now={now} />
+          <AgentHeader detail={detail.data} now={now} harnesses={detail.data.harnesses} />
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
             {/* Read the session, then reply to it — the composer sits directly under the feed it
                 answers, so steering is one continuous motion instead of a hunt across the page. */}
@@ -89,14 +91,6 @@ export function AgentDetail() {
             </div>
             <div className="space-y-3">
               <PlanReviewPanel repo={agent.repo} branch={agent.branch} />
-              <Card className="p-4">
-                <HarnessSwitcher
-                  target={agent.target}
-                  current={agent.harness}
-                  harnesses={detail.data.harnesses}
-                />
-              </Card>
-              <LandButton repo={agent.repo} />
             </div>
           </div>
           <SessionNote detail={detail.data} />

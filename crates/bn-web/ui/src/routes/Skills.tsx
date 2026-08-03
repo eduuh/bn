@@ -25,13 +25,16 @@ import { cn } from "../lib/utils";
 import { PageHead } from "../components/PageHead";
 
 /** One-line summary of the Claude/Copilot native-skill sync that rides on every mutation, so a
- * stale harness is visible rather than silent. */
+ * stale harness is visible rather than silent. Each root syncs independently, so a partial result
+ * names both halves: what was refreshed and what refused. */
 function nativeSummary(native: SkillNativeSync): string {
-  if (!native.synced) return `harness sync failed: ${native.error}`;
-  const { created, updated, removed } = native;
-  const touched = created + updated + removed;
-  const where = native.harnesses.length ? native.harnesses.join(" + ") : "no harness";
-  return touched === 0 ? `${where} already current` : `synced to ${where}`;
+  const { created, updated, removed, harnesses, failures } = native;
+  const where = harnesses.length ? harnesses.join(" + ") : "no harness";
+  const ok =
+    created + updated + removed === 0 ? `${where} already current` : `synced to ${where}`;
+  if (!failures?.length) return ok;
+  const bad = failures.map((f) => `${f.harness} (${f.scope}): ${f.error}`).join("; ");
+  return harnesses.length ? `${ok} — but ${bad}` : bad;
 }
 
 /** Toast the outcome of a skill mutation, folding the harness sync into the same line: a source
@@ -388,8 +391,12 @@ export function Skills() {
           <BookOpen className="h-8 w-8 text-muted-foreground" />
           <h3 className="text-lg font-semibold">No skills</h3>
           <p className="max-w-sm text-sm text-muted-foreground">
+<<<<<<< Updated upstream
             No skills defined in any tier. Create one here, or with{" "}
             <code className="font-mono">bn skills new</code>.
+=======
+            No skills defined in any tier. Create one with <code className="font-mono">bn skills new</code>.
+>>>>>>> Stashed changes
           </p>
           <Button className="mt-2" onClick={() => setCreating(true)}>
             <Plus className="h-4 w-4" /> New skill

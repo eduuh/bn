@@ -31,7 +31,15 @@ fn announce_reap(name: &str, reason: &str) {
         "merged PR" => "PR merged — worktree reclaimed; the code is on main.",
         _ => "Worktree reclaimed by the cleanup sweep.",
     };
-    bn_core::notify::toast(&format!("bn: reclaimed {name}"), body);
+    // Lifecycle: the sweep already did the work and nothing was lost, so under the default bar
+    // this explains a vanished tmux window in `bn notify status` rather than interrupting.
+    crate::toast::toast(
+        crate::toast::Class::Lifecycle,
+        &format!("wt:{name}:reclaimed"),
+        "wt",
+        &format!("bn: reclaimed {name}"),
+        body,
+    );
 }
 
 // --- cleanup (the worktree+note+tmux teardown) -----------------------------

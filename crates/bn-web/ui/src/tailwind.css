@@ -85,3 +85,83 @@
     border-color: hsl(var(--border));
   }
 }
+
+/* Syntax highlighting for markdown code blocks (`lib/highlight.ts`).
+ *
+ * Written against this file's own tokens instead of importing one of highlight.js's stock themes:
+ * every stock theme carries its own palette, and a rainbow of saturated hues would break the rule
+ * the design system is built on — colour is spent sparingly, and a saturated hue means something
+ * needs you. So the mapping is deliberately flat: comments recede, literals take the one warm
+ * signal hue, and everything structural stays neutral. The point is scannability, not decoration. */
+.hljs {
+  color: hsl(var(--foreground) / 0.9);
+}
+
+.hljs-comment,
+.hljs-quote {
+  color: hsl(var(--muted-foreground) / 0.75);
+  font-style: italic;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag,
+.hljs-name {
+  color: hsl(var(--primary));
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-addition {
+  color: hsl(var(--ok));
+}
+
+.hljs-number,
+.hljs-meta,
+.hljs-built_in,
+.hljs-attr,
+.hljs-attribute,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-type {
+  color: hsl(var(--info));
+}
+
+.hljs-title,
+.hljs-section,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: hsl(var(--foreground));
+  font-weight: 600;
+}
+
+.hljs-deletion {
+  color: hsl(var(--urgent));
+}
+
+/* Diffs are the one place a background pays for itself — a patch is read line-by-line, and the
+   tinted row is what makes an added line legible next to a removed one at a glance. */
+.hljs-addition,
+.hljs-deletion {
+  display: inline-block;
+  width: 100%;
+}
+
+.hljs-addition {
+  background: hsl(var(--ok) / 0.12);
+}
+
+.hljs-deletion {
+  background: hsl(var(--urgent) / 0.12);
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: 600;
+}

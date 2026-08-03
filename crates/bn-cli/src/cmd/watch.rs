@@ -27,7 +27,20 @@ fn afk_wake_line(wake: &bn_core::wake::ActionableWake) -> String {
     format!("  ● {}", wake.summary)
 }
 
-fn publish_attention_wakes(today: &str, now: i64) -> usize {
+/// What one pass published from the attention list: how many items were relevant, and which of
+/// their event ids are *blocking* (open + `urgent`).
+///
+/// The split matters because the queue and the toast channel want different things: **publish
+/// broadly, toast narrowly.** Warn items, agent-sourced items and completions all belong in the
+/// queue — `bn afk end`, `bn next` and the controller consumers read them — but only an open
+/// urgent item is something that stopped and needs a decision now. Classification therefore
+/// happens at the toast boundary in [`emit_watch`], not here.
+struct PublishedAttention {
+    relevant: usize,
+    blocking: std::collections::HashSet<String>,
+}
+
+fn publish_attention_wakes(today: &str, now: i64) -> PublishedAttention {
     let queue = bn_core::wake::WakeQueue::default();
     let open = bn_core::attention::open_items(today)
         .into_iter()
@@ -38,10 +51,16 @@ fn publish_attention_wakes(today: &str, now: i64) -> usize {
     let completed = bn_core::attention::completed_items(today)
         .into_iter()
         .map(|item| (item, bn_core::wake::FleetTransition::Done));
-    let mut relevant = 0;
+    let mut out = PublishedAttention {
+        relevant: 0,
+        blocking: std::collections::HashSet::new(),
+    };
     for (item, transition) in open.chain(completed) {
-        relevant += 1;
+        out.relevant += 1;
         let event_id = format!("attn:{}", item.id);
+        if transition == bn_core::wake::FleetTransition::Attention && item.severity == "urgent" {
+            out.blocking.insert(event_id.clone());
+        }
         let wake = bn_core::wake::ActionableWake::classify(
             event_id,
             now,
@@ -54,7 +73,36 @@ fn publish_attention_wakes(today: &str, now: i64) -> usize {
             eprintln!("bn wake: publish attention wake: {error}");
         }
     }
-    relevant
+    out
+}
+
+/// How loud a pending wake is. The queue carries genuinely actionable transitions *and* things
+/// that merely happened, and before the policy gate every one of them toasted under the headline
+/// "N need you" — including completions, which [`bn_core::attention::completed_items`] documents
+/// as explicitly *not* attention ("they hold no action for you beyond a look").
+fn wake_class(
+    wake: &bn_core::wake::ActionableWake,
+    blocking_attn: &std::collections::HashSet<String>,
+) -> crate::toast::Class {
+    use bn_core::wake::FleetTransition as T;
+    match wake.transition {
+        // Work has stopped and it is yours: parked, failed, stuck, or an escalation whose reason
+        // did not map to a more specific transition.
+        T::Blocked | T::Failed | T::Stuck | T::Waiting => crate::toast::Class::Blocking,
+        // Finished work awaiting a look — the review inbox, not an interruption.
+        T::Done | T::PrOpened => crate::toast::Class::Completion,
+        // An attention item is blocking only when it is open and urgent; warn and agent-sourced
+        // items stay in `bn next` and the tmux badge.
+        T::Attention => {
+            if blocking_attn.contains(&wake.event_id) {
+                crate::toast::Class::Blocking
+            } else {
+                crate::toast::Class::Lifecycle
+            }
+        }
+        // Never published — `FleetTransition::is_actionable` filters it out at classify time.
+        T::Progress => crate::toast::Class::Lifecycle,
+    }
 }
 
 /// `bn watch` — the cheap (no-LLM) wake reactor. Each pass classifies what needs you (fleet
@@ -90,7 +138,8 @@ pub(crate) fn emit_watch(cfg: &Config, once: bool, interval: u64, stuck: i64, as
                     0
                 }
             };
-        watching += publish_attention_wakes(&today(), now);
+        let attn = publish_attention_wakes(&today(), now);
+        watching += attn.relevant;
         let new = match queue.pending(&target) {
             Ok(items) => items,
             Err(error) => {
@@ -100,12 +149,28 @@ pub(crate) fn emit_watch(cfg: &Config, once: bool, interval: u64, stuck: i64, as
         };
 
         if !new.is_empty() {
-            let body = new
+            // One interrupt per pass, never one per item: the survivors of the gate are folded
+            // into a single toast, and the headline counts *those*, so "N need you" is finally
+            // true. Everything held back stays in the queue's other consumers and in `bn next`.
+            let candidates: Vec<_> = new
                 .iter()
-                .map(|item| item.summary.as_str())
-                .collect::<Vec<_>>()
-                .join(" · ");
-            bn_core::notify::toast(&format!("bn — {} need you", new.len()), &body);
+                .map(|item| {
+                    bn_core::notify::policy::Notification::new(
+                        wake_class(item, &attn.blocking),
+                        &item.event_id,
+                        "watch",
+                        "bn",
+                        &item.summary,
+                    )
+                })
+                .collect();
+            bn_core::notify::policy::deliver_batch(
+                cfg,
+                &candidates,
+                &|n| format!("bn — {n} need you"),
+                " · ",
+                now,
+            );
         }
 
         if as_json {
@@ -317,7 +382,63 @@ pub(crate) fn afk_digest(
 
 #[cfg(test)]
 mod tests {
-    use super::{afk_wake_json, afk_wake_line, toast_label};
+    use super::{afk_wake_json, afk_wake_line, toast_label, wake_class};
+    use crate::toast::Class;
+
+    fn wake(transition: bn_core::wake::FleetTransition, id: &str) -> bn_core::wake::ActionableWake {
+        bn_core::wake::ActionableWake::classify(
+            id,
+            42,
+            transition,
+            "summary",
+            bn_core::wake::WakeOwner::None,
+        )
+        .expect("test transitions are actionable")
+    }
+
+    #[test]
+    fn completions_are_not_a_reason_to_interrupt() {
+        // `attention::completed_items` documents completions as explicitly NOT attention: "they
+        // hold no action for you beyond a look". They were nonetheless toasted under the headline
+        // "bn — N need you", which is what made that headline untrustworthy.
+        use bn_core::wake::FleetTransition as T;
+        let blocking = std::collections::HashSet::new();
+        for transition in [T::Done, T::PrOpened] {
+            assert_eq!(
+                wake_class(&wake(transition, "attn:done-1"), &blocking),
+                Class::Completion
+            );
+        }
+    }
+
+    #[test]
+    fn stopped_work_is_blocking() {
+        use bn_core::wake::FleetTransition as T;
+        let blocking = std::collections::HashSet::new();
+        for transition in [T::Blocked, T::Failed, T::Stuck, T::Waiting] {
+            assert_eq!(
+                wake_class(&wake(transition, "fleet:a:x"), &blocking),
+                Class::Blocking,
+                "{transition:?} means the work stopped and it is yours"
+            );
+        }
+    }
+
+    #[test]
+    fn only_an_urgent_attention_item_interrupts() {
+        // `bn watch` publishes warn and agent-sourced items too, so the queue stays useful to
+        // `bn afk end` and `bn next` — but only the urgent ones clear the toast bar.
+        use bn_core::wake::FleetTransition::Attention;
+        let blocking = std::collections::HashSet::from(["attn:urgent-1".to_string()]);
+        assert_eq!(
+            wake_class(&wake(Attention, "attn:urgent-1"), &blocking),
+            Class::Blocking
+        );
+        assert_eq!(
+            wake_class(&wake(Attention, "attn:warn-1"), &blocking),
+            Class::Lifecycle
+        );
+    }
 
     #[test]
     fn staff_sourced_toast_carries_the_agent_name() {

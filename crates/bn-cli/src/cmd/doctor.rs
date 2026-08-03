@@ -1,6 +1,45 @@
 //! `bn doctor`/`bn next`/`bn gap`/`bn wrap`/`bn rate` — health, next-action, day close.
 use crate::*;
 
+/// Is `bn shell-init`'s `claude`/`copilot` wrapper actually driving launches in this shell?
+///
+/// Reads the two signals only a live process has: `$BN_SHELL_WRAPPERS`, exported by the wrappers
+/// themselves (a child cannot see its parent's shell functions, so this is the sole proof they were
+/// sourced), and the login rc's text, the only place a *shadowing* redefinition after the source
+/// line is visible. Quiet for a shell bn ships no wrappers for — `bn shell-init` emits bash and zsh
+/// only. The classification itself is pure ([`bn_core::doctor::shell_init_problem`]).
+fn shell_init_finding() -> Option<bn_core::doctor::Finding> {
+    use bn_core::doctor::{Finding, ShellInitFinding, SHELL_WRAPPER_MARKER};
+    let shell_path = std::env::var("SHELL").unwrap_or_default();
+    let shell = std::path::Path::new(&shell_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let home = dirs::home_dir().unwrap_or_default();
+    let candidates: Vec<std::path::PathBuf> = match shell.as_str() {
+        "zsh" => vec![std::env::var("ZDOTDIR")
+            .map(|d| std::path::Path::new(&d).join(".zshrc"))
+            .unwrap_or_else(|_| home.join(".zshrc"))],
+        "bash" => vec![home.join(".bashrc"), home.join(".bash_profile")],
+        _ => return None,
+    };
+    // `read_to_string` follows the symlink a dotfiles repo usually leaves here; the first readable
+    // candidate is the one the shell would have sourced.
+    let (rc_path, rc) = candidates
+        .into_iter()
+        .find_map(|p| std::fs::read_to_string(&p).ok().map(|body| (p, body)))?;
+    let marker = std::env::var(SHELL_WRAPPER_MARKER).ok();
+    let problem = bn_core::doctor::shell_init_problem(&rc, marker.as_deref())?;
+    let (label, fix) = problem.describe(&shell);
+    Some(Finding::ShellInit(ShellInitFinding {
+        shell,
+        rc_path: rc_path.to_string_lossy().into_owned(),
+        problem: label.to_string(),
+        fix,
+    }))
+}
+
 pub(crate) fn emit_doctor(cfg: &Config, stale_days: i64, brief: bool, as_json: bool) {
     // #534: reconcile stale `wt-stuck:*` notices (worktree reaped out of band) so the attention
     // fold below reflects reality. Skipped in --brief (the fast SessionStart hook) — the wt-cleanup
@@ -26,7 +65,13 @@ pub(crate) fn emit_doctor(cfg: &Config, stale_days: i64, brief: bool, as_json: b
     let root = bn_core::resolver::repo_root(&cwd);
     let ctx = target_ctx(cfg, None, None);
     let repo_ref = root.as_deref().zip(ctx.as_ref().map(|c| c.repo.as_str()));
-    let findings = bn_core::doctor::doctor(cfg, &today(), stale_days, repo_ref);
+    let mut findings = bn_core::doctor::doctor(cfg, &today(), stale_days, repo_ref);
+    // Folded in here rather than in the core aggregation because it reads *this process's*
+    // environment and login rc — machine state, not notes state — which the notes-scoped
+    // aggregation (and its tests) has no business depending on.
+    findings.extend(shell_init_finding());
+    bn_core::doctor::sort_findings(&mut findings);
+    let findings = findings;
     // Machine-level cron drift (global tier): declared-but-unregistered jobs. A fresh box has the
     // manifest and zero timers — surface it here so SessionStart/`bn doctor` flags it unprompted.
     let drift = cron_drift(cfg, None);
@@ -201,6 +246,10 @@ pub(crate) fn emit_doctor(cfg: &Config, stale_days: i64, brief: bool, as_json: b
                 };
                 println!("{}  [inbox:{}d] {}", i.id, i.idle_days, i.text);
                 println!("  captured {}{} — bn q drain", i.created, loc);
+            }
+            Finding::ShellInit(s) => {
+                println!("shell  [{}] {}", s.shell, s.problem);
+                println!("  {} — fix: {}", s.rc_path, s.fix);
             }
             Finding::Mcp(m) => {
                 println!(
@@ -409,6 +458,17 @@ pub(crate) fn emit_next(
     // unprotected work/learning block (or routine disabled) stays silent.
     if let Some(reason) = routine_snap.as_ref().and_then(|s| s.explanation()) {
         println!("{reason}\n");
+    }
+    // Notification gate: same discipline as the routine line above — say it once when toasts were
+    // actually withheld, stay silent otherwise. The withheld items are already in the list below,
+    // so this only explains why the desktop stayed quiet about them.
+    {
+        let mut ledger = bn_core::notify::policy::load_ledger();
+        ledger.roll(&today);
+        let withheld = ledger.withheld_today();
+        if withheld > 0 {
+            println!("{} {withheld} notification(s) held back today — bn notify status\n", bn_core::glyph::BELL);
+        }
     }
 
     if actions.is_empty() && untimed.is_empty() {

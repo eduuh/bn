@@ -827,6 +827,12 @@ pub(crate) enum CmdFleet {
         #[command(subcommand)]
         action: Option<FocusCmd>,
     },
+    /// Desktop-notification policy: what toasted today, what was held back, and why. A toast
+    /// means work has stopped and needs your decision; everything else stays in `bn next`.
+    Notify {
+        #[command(subcommand)]
+        action: Option<NotifyCmd>,
+    },
     /// AI-agent session telemetry. Bare `bn agent` lists this branch's recent Claude/Copilot
     /// sessions; `bn agent ingest` folds new sessions into the metrics log (the poller's call).
     Agent {
@@ -2897,6 +2903,13 @@ pub(crate) enum FocusCmd {
 }
 
 #[derive(Subcommand, Debug)]
+pub(crate) enum NotifyCmd {
+    /// Today's toast budget, the open quiet window, and what the gate held back. Same as bare
+    /// `bn notify`.
+    Status,
+}
+
+#[derive(Subcommand, Debug)]
 pub(crate) enum QCmd {
     /// Triage the inbox: route each capture to a branch todo/research, today's goals, the
     /// attention queue, or drop it. Interactive (needs a tty) unless --auto.
@@ -3815,10 +3828,11 @@ pub(crate) enum SkillsCmd {
         #[arg(long, default_value = "global-shared")]
         scope: String,
     },
-    /// Internal (run by install.sh): (re)generate the native Copilot Agent Skills under
-    /// `~/.copilot/skills` from the global bn skills, so the shipped prompts + personal skills
-    /// appear as `/name` in Copilot CLI — which loads native SKILL.md skills, not MCP prompts.
-    /// Idempotent; only ever writes or removes bn-managed files.
+    /// Internal (run by install.sh): (re)generate the native Agent Skills under `~/.copilot/skills`
+    /// and `~/.claude/skills` from the global bn skills, so the shipped prompts + personal skills
+    /// appear as `/name` in Copilot CLI and Claude Code — matching what the dashboard's skill CRUD
+    /// writes on every edit. Idempotent; only ever writes or removes bn-managed files, and a
+    /// harness whose root holds a same-named skill bn doesn't own is reported, not fatal.
     #[command(hide = true)]
     Install,
 }

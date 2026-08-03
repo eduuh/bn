@@ -795,6 +795,30 @@ pub fn has_native_install(
 /// Every native harness bn can materialize skills into — the set a source mutation refreshes.
 pub const NATIVE_HARNESSES: [NativeHarness; 2] = [NativeHarness::Claude, NativeHarness::Copilot];
 
+/// One harness root a sync could not refresh, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeSyncFailure {
+    pub harness: NativeHarness,
+    /// `"global"` or `"repo"` — which root of that harness failed.
+    pub scope: &'static str,
+    pub error: String,
+}
+
+/// The outcome of [`sync_native_skills`]: what changed, plus the roots that could not be refreshed.
+/// Partial by design — see the function docs for why a failure is per-root, not fatal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct NativeSyncReport {
+    pub changes: Vec<NativeSkillChange>,
+    pub failures: Vec<NativeSyncFailure>,
+}
+
+impl NativeSyncReport {
+    /// Whether every root bn tried to refresh actually got refreshed.
+    pub fn complete(&self) -> bool {
+        self.failures.is_empty()
+    }
+}
+
 /// Re-materialize the native Agent Skills after a bn skill source file was created, edited, or
 /// deleted, so Claude and Copilot never serve a stale copy of what `bn skills` shows.
 ///
@@ -804,29 +828,35 @@ pub const NATIVE_HARNESSES: [NativeHarness; 2] = [NativeHarness::Claude, NativeH
 /// already hold a bn-managed skill ([`has_native_install`]) — a dashboard edit must not start
 /// committing generated files into a repo that never opted in.
 ///
-/// [`install_native_skills`] does the work per target, so this inherits its guarantees: idempotent,
-/// preflighted, and it refuses to overwrite a same-named skill bn does not own. Deletion is covered
-/// by the same call — a managed native skill whose source no longer exists is removed.
-pub fn sync_native_skills(
-    cfg: &Config,
-    base_dir: &Path,
-    home: &Path,
-) -> Result<NativeSkillsReport, String> {
-    let mut changes = Vec::new();
-    for scope in [NativeScope::Global, NativeScope::Repo] {
-        let harnesses: Vec<NativeHarness> = NATIVE_HARNESSES
-            .into_iter()
-            .filter(|harness| {
-                scope == NativeScope::Global || has_native_install(base_dir, home, scope, *harness)
-            })
-            .collect();
-        if harnesses.is_empty() {
-            continue;
+/// [`install_native_skills`] does the work for one root, so each root keeps that function's
+/// guarantees: idempotent, every path preflighted before any write, and it refuses to overwrite a
+/// same-named skill bn does not own. Deletion needs no separate pass — a managed native skill whose
+/// source is gone is swept by the same call.
+///
+/// **Each root is installed independently**, and a failing one is collected rather than returned.
+/// The preflight is deliberately all-or-nothing *within* a root, but that must not reach across
+/// roots: `install.sh` drops an upstream `lavish` skill into `~/.claude/skills`, and bn ships a
+/// skill of the same name, so on those machines the Claude root legitimately refuses. Batching the
+/// harnesses into one call made that refusal abort the preflight for **both**, leaving Copilot
+/// silently unsynced too — a name clash in one harness is not a reason to stop maintaining another.
+pub fn sync_native_skills(cfg: &Config, base_dir: &Path, home: &Path) -> NativeSyncReport {
+    let mut report = NativeSyncReport::default();
+    for (scope, label) in [(NativeScope::Global, "global"), (NativeScope::Repo, "repo")] {
+        for harness in NATIVE_HARNESSES {
+            if scope == NativeScope::Repo && !has_native_install(base_dir, home, scope, harness) {
+                continue;
+            }
+            match install_native_skills(cfg, base_dir, home, scope, &[harness]) {
+                Ok(ok) => report.changes.extend(ok.changes),
+                Err(error) => report.failures.push(NativeSyncFailure {
+                    harness,
+                    scope: label,
+                    error,
+                }),
+            }
         }
-        let report = install_native_skills(cfg, base_dir, home, scope, &harnesses)?;
-        changes.extend(report.changes);
     }
-    Ok(NativeSkillsReport { changes })
+    report
 }
 
 /// Delete the skill source file at `path` — the create/read/update/**delete** counterpart of
@@ -1408,7 +1438,7 @@ mod tests {
         write(&source, "ship.md", "---\ndescription: Ship\n---\nfirst\n");
 
         // No repo install yet → only the two global roots are materialized.
-        sync_native_skills(&cfg, repo.path(), home.path()).unwrap();
+        assert!(sync_native_skills(&cfg, repo.path(), home.path()).complete());
         assert!(home.path().join(".claude/skills/ship/SKILL.md").exists());
         assert!(home.path().join(".copilot/skills/ship/SKILL.md").exists());
         assert!(!repo.path().join(".claude/skills/ship/SKILL.md").exists());
@@ -1425,7 +1455,7 @@ mod tests {
         )
         .unwrap();
         write(&source, "ship.md", "---\ndescription: Ship\n---\nsecond\n");
-        sync_native_skills(&cfg, repo.path(), home.path()).unwrap();
+        assert!(sync_native_skills(&cfg, repo.path(), home.path()).complete());
         let repo_claude = repo.path().join(".claude/skills/ship/SKILL.md");
         assert!(std::fs::read_to_string(&repo_claude)
             .unwrap()
@@ -1435,10 +1465,58 @@ mod tests {
 
         // A deleted source skill is swept out of every root the sync touches.
         delete_skill(&source.join("ship.md")).unwrap();
-        sync_native_skills(&cfg, repo.path(), home.path()).unwrap();
+        assert!(sync_native_skills(&cfg, repo.path(), home.path()).complete());
         assert!(!home.path().join(".claude/skills/ship/SKILL.md").exists());
         assert!(!home.path().join(".copilot/skills/ship/SKILL.md").exists());
         assert!(!repo_claude.exists());
+    }
+
+    #[test]
+    fn sync_native_skills_isolates_a_failing_harness_from_the_others() {
+        // Regression: `install.sh` installs an upstream `lavish` skill into `~/.claude/skills` and
+        // bn ships a skill of the same name, so the Claude root legitimately refuses to overwrite
+        // it. Batching both harnesses into one `install_native_skills` call made that refusal abort
+        // the shared preflight, so Copilot silently went unsynced too — on every dashboard write.
+        let _env = crate::test_support::env_lock();
+        let repo = git_repo();
+        let home = tempfile::tempdir().unwrap();
+        let personal = tempfile::tempdir().unwrap();
+        let _personal =
+            crate::test_support::EnvGuard::set("BN_MCP_PERSONAL_SKILLS_DIR", personal.path());
+        let cfg = crate::test_support::config(repo.path());
+        let source = repo.path().join("config").join("prompts");
+        write(
+            &source,
+            "lavish.md",
+            "---\ndescription: bn lavish\n---\nbn\n",
+        );
+        write(&source, "ship.md", "---\ndescription: Ship\n---\nbody\n");
+        // A same-named skill bn does not own (no managed marker) blocks the Claude root only.
+        write(
+            &home.path().join(".claude/skills/lavish"),
+            "SKILL.md",
+            "---\nname: lavish\ndescription: upstream lavish\n---\nupstream\n",
+        );
+
+        let report = sync_native_skills(&cfg, repo.path(), home.path());
+
+        assert!(!report.complete());
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(report.failures[0].harness, NativeHarness::Claude);
+        assert_eq!(report.failures[0].scope, "global");
+        assert!(report.failures[0].error.contains("refusing to overwrite"));
+        // Copilot is fully synced despite the Claude clash, and the upstream file is untouched.
+        assert!(home.path().join(".copilot/skills/ship/SKILL.md").exists());
+        assert!(home.path().join(".copilot/skills/lavish/SKILL.md").exists());
+        assert!(report
+            .changes
+            .iter()
+            .all(|change| change.harness == NativeHarness::Copilot));
+        assert!(
+            std::fs::read_to_string(home.path().join(".claude/skills/lavish/SKILL.md"))
+                .unwrap()
+                .contains("upstream")
+        );
     }
 
     #[test]

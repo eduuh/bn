@@ -18,6 +18,7 @@
 //! so callers keep using `agent::ingest`, `agent::supervise`, … as before.
 
 mod activity;
+mod channel;
 mod digest;
 mod lease;
 mod parse;
@@ -27,6 +28,7 @@ mod supervise;
 mod switch;
 
 pub use activity::*;
+pub use channel::*;
 pub use digest::*;
 pub use lease::*;
 pub use registry::*;

@@ -178,6 +178,60 @@ pub struct BacklogFinding {
     pub sample: Vec<String>,
 }
 
+/// The `claude`/`copilot` shell wrappers from `bn shell-init` are not driving launches here, so a
+/// harness typed in this shell starts outside bn: unleased, unrecorded, and steerable only by
+/// whatever the window join can infer. Nothing installs the wrappers automatically (the rc file is
+/// usually a symlink into a dotfiles repo), so the failure is silent by construction — which is
+/// exactly why it belongs on the attention list rather than in a README.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ShellInitFinding {
+    /// The login shell the check read (`zsh` / `bash`).
+    pub shell: String,
+    /// The rc file inspected.
+    pub rc_path: String,
+    /// What is wrong, as a short phrase.
+    pub problem: String,
+    /// One-line fix.
+    pub fix: String,
+}
+
+/// Why the wrappers aren't driving launches — the three distinguishable states, each with a
+/// different remedy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellInitProblem {
+    /// The rc never sources `bn shell-init`.
+    NotInstalled,
+    /// The rc sources it, but this shell predates the change (or the line is inside a guard that
+    /// didn't run), so nothing is active right now.
+    SourcedNotActive,
+    /// The rc sources it and then *redefines* `claude`/`copilot`/`yolo` afterwards — the later
+    /// definition wins, so the wrapper is loaded and immediately shadowed.
+    Shadowed,
+}
+
+impl ShellInitProblem {
+    /// The short phrase and the one-line remedy, keyed to the shell's rc file.
+    pub fn describe(self, shell: &str) -> (&'static str, String) {
+        match self {
+            ShellInitProblem::NotInstalled => (
+                "the claude/copilot wrappers are not installed",
+                format!("add to your rc: source <(bn shell-init {shell})"),
+            ),
+            ShellInitProblem::SourcedNotActive => (
+                "sourced in your rc but not active in this shell",
+                "start a new shell (or re-source your rc) to pick the wrappers up".to_string(),
+            ),
+            ShellInitProblem::Shadowed => (
+                "a later claude/copilot definition in your rc shadows the wrappers",
+                format!(
+                    "remove the hand-written claude()/copilot() functions below the \
+                     `bn shell-init {shell}` line"
+                ),
+            ),
+        }
+    }
+}
+
 /// One row on the attention list, tagged by where it came from. Serializes with a `kind`
 /// discriminator (`note` | `cron` | `staff` | `attn` | `todo` | `inbox` | `mcp` | `stalestaff` |
 /// `notesleak`) and the variant's fields flattened alongside. (The discriminator is `kind`, not
@@ -196,6 +250,7 @@ pub enum Finding {
     StaleStaff(StaleStaffFinding),
     NotesLeak(NotesLeakFinding),
     Backlog(BacklogFinding),
+    ShellInit(ShellInitFinding),
 }
 
 impl Finding {
@@ -231,6 +286,9 @@ impl Finding {
             Finding::NotesLeak(_) => action_rank::WARN,
             // Passive: the work still runs, it just has no record. Worth clearing, not urgent.
             Finding::Backlog(_) => action_rank::WARN,
+            // Inactive wrappers mean every agent you start by hand lands outside bn's control
+            // plane — a setup misconfig in the same band as an unusable MCP server.
+            Finding::ShellInit(_) => action_rank::WARN,
         }
     }
 
@@ -254,6 +312,8 @@ impl Finding {
             // The more foreign machines are leaking in, the higher within its band.
             Finding::NotesLeak(l) => l.foreign_machines.len() as i64,
             Finding::Backlog(b) => b.untasked as i64,
+            // A configuration state, not a duration — nothing to age within its band.
+            Finding::ShellInit(_) => 0,
         }
     }
 
@@ -280,6 +340,7 @@ impl Finding {
                 "{} queued item(s) with no task — work with no durable record",
                 b.untasked
             ),
+            Finding::ShellInit(s) => format!("{}: {}", s.shell, s.problem),
         }
     }
 }
@@ -330,9 +391,16 @@ pub fn doctor(
             &std::env::var("PATH").unwrap_or_default(),
         ));
     }
-    // Stable sort: shared base rank, then age desc. Stability preserves source order on a tie.
-    out.sort_by(|a, b| a.rank().compare(b.rank()).then(b.age().cmp(&a.age())));
+    sort_findings(&mut out);
     out
+}
+
+/// Order an attention list: shared base rank, then age desc. Stable, so source order survives a tie.
+/// Public because a caller that folds in its own findings — the CLI adds the shell-wrapper check,
+/// which reads *its* process environment rather than the notes tree — must re-establish the same
+/// order rather than tacking rows on the end.
+pub fn sort_findings(out: &mut [Finding]) {
+    out.sort_by(|a, b| a.rank().compare(b.rank()).then(b.age().cmp(&a.age())));
 }
 
 // ---------------------------------------------------------------------------
@@ -694,6 +762,56 @@ const MCP_CONFIGS: &[(&str, &str)] = &[
     (".vscode/mcp.json", "servers"),
     (".github/mcp.json", "mcpServers"),
 ];
+
+/// The environment variable `bn shell-init`'s wrappers export. A child process cannot inspect its
+/// parent shell's functions, so this marker is the only honest signal that the wrappers were
+/// actually sourced into the shell that ran `bn`.
+pub const SHELL_WRAPPER_MARKER: &str = "BN_SHELL_WRAPPERS";
+
+/// Why the `claude`/`copilot` wrappers aren't driving launches in this shell, or `None` when they
+/// are.
+///
+/// Two inputs, because neither alone is sufficient: `marker` is `$BN_SHELL_WRAPPERS` inherited from
+/// the shell that spawned bn — the only proof of "sourced" — while `rc` is the login file's text,
+/// the only place a *shadowing* redefinition is visible at all. A rc that sources the wrappers and
+/// then defines its own `claude()` looks perfectly healthy from the environment; it is the case
+/// this check exists for. Pure.
+pub fn shell_init_problem(rc: &str, marker: Option<&str>) -> Option<ShellInitProblem> {
+    let sourced_at = rc
+        .lines()
+        .position(|l| !is_comment(l) && l.contains("bn shell-init"));
+    let active = marker.is_some_and(|m| !m.trim().is_empty());
+    match (sourced_at, active) {
+        (None, _) => Some(ShellInitProblem::NotInstalled),
+        (Some(_), false) => Some(ShellInitProblem::SourcedNotActive),
+        (Some(at), true) => rc
+            .lines()
+            .skip(at + 1)
+            .any(defines_harness_function)
+            .then_some(ShellInitProblem::Shadowed),
+    }
+}
+
+fn is_comment(line: &str) -> bool {
+    line.trim_start().starts_with('#')
+}
+
+/// A shell function definition for one of the harness commands the wrappers own — `claude() {`,
+/// `function copilot {`, `yolo() {`. Matched loosely on purpose: any later definition of these
+/// names wins over the sourced wrapper, whichever syntax declared it.
+fn defines_harness_function(line: &str) -> bool {
+    let line = line.trim();
+    if is_comment(line) {
+        return false;
+    }
+    let body = line.strip_prefix("function ").unwrap_or(line);
+    ["claude", "copilot", "yolo"].iter().any(|name| {
+        body.strip_prefix(name).is_some_and(|rest| {
+            let rest = rest.trim_start();
+            rest.starts_with("()") || rest.starts_with('{')
+        })
+    })
+}
 
 /// MCP servers configured in the current repo the agent harness couldn't use: a local `command`
 /// that doesn't resolve against `path_var`, or an HTTP `url` whose endpoint isn't reachable. Each
@@ -1152,6 +1270,7 @@ mod tests {
                     Finding::StaleStaff(_) => "stale-staff",
                     Finding::NotesLeak(_) => "notes-leak",
                     Finding::Backlog(_) => "backlog-untasked",
+                    Finding::ShellInit(_) => "shell-init",
                 })
                 .collect();
             assert_eq!(&sources[3..], &["warn", "note"]);
@@ -1215,6 +1334,80 @@ later id:t6 branch:main snooze:2026-07-01 repo:myrepo
                 .iter()
                 .all(|x| !matches!(x, Finding::Todo(_))));
         });
+    }
+
+    #[test]
+    fn shell_init_problem_flags_a_later_claude_override() {
+        // The real shape this check was written for: the rc sources the wrappers, then defines its
+        // own `claude`. The environment says "sourced" and the wrapper is nonetheless dead.
+        let rc = "\
+command -v bn >/dev/null && source <(bn shell-init zsh)
+claude() { bn note >/dev/null 2>&1; command claude \"$@\"; }
+";
+        assert_eq!(
+            shell_init_problem(rc, Some("1")),
+            Some(ShellInitProblem::Shadowed)
+        );
+        // Order matters: a definition *above* the source line is overwritten by it, not shadowing.
+        let rc_before = "\
+claude() { command claude \"$@\"; }
+source <(bn shell-init zsh)
+";
+        assert_eq!(shell_init_problem(rc_before, Some("1")), None);
+    }
+
+    #[test]
+    fn shell_init_problem_separates_not_installed_from_not_active() {
+        let bare = "export EDITOR=nvim\n";
+        assert_eq!(
+            shell_init_problem(bare, None),
+            Some(ShellInitProblem::NotInstalled)
+        );
+        // Installed but this shell predates it — a new shell fixes it, editing the rc again does not.
+        let installed = "source <(bn shell-init zsh)\n";
+        assert_eq!(
+            shell_init_problem(installed, None),
+            Some(ShellInitProblem::SourcedNotActive)
+        );
+        assert_eq!(
+            shell_init_problem(installed, Some("")),
+            Some(ShellInitProblem::SourcedNotActive)
+        );
+        assert_eq!(shell_init_problem(installed, Some("1")), None);
+    }
+
+    #[test]
+    fn shell_init_problem_ignores_commented_out_lines() {
+        // A commented source line installs nothing…
+        let commented = "# source <(bn shell-init zsh)\n";
+        assert_eq!(
+            shell_init_problem(commented, Some("1")),
+            Some(ShellInitProblem::NotInstalled)
+        );
+        // …and a commented-out redefinition shadows nothing.
+        let commented_shadow =
+            "source <(bn shell-init zsh)\n# claude() { command claude \"$@\"; }\n";
+        assert_eq!(shell_init_problem(commented_shadow, Some("1")), None);
+    }
+
+    #[test]
+    fn shell_init_problem_catches_every_definition_syntax() {
+        for line in [
+            "claude() { :; }",
+            "function copilot { :; }",
+            "  yolo ()  { :; }",
+            "function claude() { :; }",
+        ] {
+            let rc = format!("source <(bn shell-init zsh)\n{line}\n");
+            assert_eq!(
+                shell_init_problem(&rc, Some("1")),
+                Some(ShellInitProblem::Shadowed),
+                "should flag: {line}"
+            );
+        }
+        // An unrelated function of another name is not a shadow.
+        let unrelated = "source <(bn shell-init zsh)\nclaudia() { :; }\n";
+        assert_eq!(shell_init_problem(unrelated, Some("1")), None);
     }
 
     #[test]

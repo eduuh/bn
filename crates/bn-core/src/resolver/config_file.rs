@@ -39,6 +39,10 @@ pub(super) struct ConfigFile {
     /// Deserialized directly into the domain's own raw shape (mirrors `pipeline`) since the
     /// block list is structural, not scalar — no per-field windows overlay for the array.
     routine: Option<crate::routine::RoutineFileConfig>,
+    /// `[notify]` — the desktop-toast policy gate. Deserialized into the domain's own raw shape
+    /// for the same reason `routine` is: the clamping and the `bar` vocabulary belong next to the
+    /// policy that reads them. See [`crate::notify::policy`].
+    notify: Option<crate::notify::policy::NotifyFileConfig>,
     staff: Option<StaffSection>,
     mcp: Option<McpSection>,
     managed_repos: Option<ManagedReposSection>,
@@ -1010,6 +1014,14 @@ impl ConfigFile {
         self.win()
             .and_then(|w| w.routine.clone())
             .or_else(|| self.routine.clone())
+    }
+
+    /// `[notify]` — the toast policy gate, windows-overlaid like the rest (a Windows box may want
+    /// a different bar than a Linux one).
+    pub(super) fn notify(&self) -> Option<crate::notify::policy::NotifyFileConfig> {
+        self.win()
+            .and_then(|w| w.notify.clone())
+            .or_else(|| self.notify.clone())
     }
 
     /// `[staff].home` — the machine the agent staff runs on (#270), windows-overlaid like the

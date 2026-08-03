@@ -7,7 +7,7 @@ job = "watch"
 on_calendar = "*:0/2"
 persistent = false
 randomized_delay = "20s"
-description = "bn — wake reactor: toast on NEW needs-you events (agents waiting/blocked/stuck/done, urgent attention); quiet otherwise"
+description = "bn — wake reactor and sole owner of attention toasts: ONE batched toast for NEW blocking events (agents waiting/blocked/stuck/failed, urgent attention) via the notification policy gate; completions and warn items stay pull-only; quiet otherwise"
 
 # Worktree/branch/session reclamation is intentionally MANUAL — no cron.
 # The `wt-cleanup` and `fleet-reap` crons were removed so automated reclamation can never delete
@@ -33,7 +33,7 @@ job = "tick-5m"
 on_calendar = "*:0/5"
 persistent = true
 randomized_delay = "30s"
-description = "bn — 5-minute tick: tools-reconcile (restart downed managed tools), notify (OS toasts for urgent attention), routine-tick (personal schedule coach), attention-sync (refresh the prefix-J attention cache)"
+description = "bn — 5-minute tick: tools-reconcile (restart downed managed tools), routine-tick (personal schedule coach), attention-sync (refresh the prefix-J attention cache)"
 
 [[cron]]
 job = "tick-10m"

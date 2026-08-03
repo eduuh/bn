@@ -205,7 +205,11 @@ build_from_source() {
   # bn-mcp is built and installed alongside: `register_mcp` points every MCP client at the stdio
   # launcher `bn mcp serve`, which execs the sibling `bn-mcp`. Omitting it left that launcher
   # dead ("could not exec bn-mcp") and silently cost Claude Code / Copilot every bn tool and
+<<<<<<< Updated upstream
   # session-safe skill prompt — a failure only visible inside the client, never from `bn` itself.
+=======
+  # skill prompt — a failure only visible inside the client, never from `bn` itself.
+>>>>>>> Stashed changes
   ( cd "$repo" && cargo build --release -p bn-cli -p bn-web -p bn-mcp )
   # Copy, don't symlink: a symlink into target/release breaks on `cargo clean`,
   # silently bricking the live `bn`. Re-run install.sh after rebuilding to refresh.
@@ -458,7 +462,9 @@ fi
 "$bindir/bn" cron register || true
 
 echo "Completion: add to ~/.zshrc -> source <(bn completion zsh)"
-echo "Wrappers:   add to ~/.zshrc -> source <(bn shell-init zsh)   # agency claude|copilot -> pooled scout in-repo"
+echo "Wrappers:   add to ~/.zshrc -> source <(bn shell-init zsh)   # claude|copilot start inside bn"
+echo "            (nothing is appended for you — your rc is usually a symlink into a dotfiles repo."
+echo "             'bn doctor' warns while the wrappers are missing, inactive, or shadowed.)"
 
 # --- register the bn MCP server globally for MCP clients (Claude Code + VS Code Copilot + Copilot
 # CLI) ---------------------------------------------------------------------------------------------
@@ -476,8 +482,13 @@ register_mcp() {
   # from the Dock) inherits none of the shell PATH — its PATH is /usr/bin:/bin:/usr/sbin:/sbin, so
   # `command: "bn"` simply fails to start and the client shows an MCP server that never connects.
   # An absolute path is also immune to a stale shadowing copy earlier on PATH. Prefer the stable
+<<<<<<< Updated upstream
   # $cfgdir/bn anchor for the same reason the cron units use it: it survives the binary moving
   # between $bindir layouts.
+=======
+  # $cfgdir/bn anchor (line ~236) for the same reason the cron units use it: it survives the binary
+  # moving between $bindir layouts.
+>>>>>>> Stashed changes
   local bn_cmd="$cfgdir/bn"
   [ -x "$bn_cmd" ] || bn_cmd="$bindir/bn"
 
@@ -492,9 +503,12 @@ register_mcp() {
     rm -f "$tmp"; echo "warning: could not update $cc (not valid JSON?)" >&2
   fi
 
-  # VS Code Copilot — user mcp.json. Covers native (~/.config/Code) and Remote-WSL
-  # (~/.vscode-server) profiles, stable + Insiders. Only writes profiles that exist; skips
-  # (without clobbering) any file jq can't parse, e.g. one containing JSONC comments.
+  # VS Code Copilot — user mcp.json. Covers Linux/WSL (~/.config/Code, ~/.vscode-server) AND
+  # macOS (~/Library/Application Support/Code), stable + Insiders. The macOS paths matter: VS Code
+  # stores user config under Application Support there, so a Linux-only list silently matched
+  # nothing on every Mac and printed "No VS Code user profile found" even with VS Code installed.
+  # Only writes profiles that exist; skips (without clobbering) any file jq can't parse, e.g. one
+  # containing JSONC comments.
   local wrote=0 dir f
   for dir in \
     "$HOME/.config/Code/User" \
@@ -522,10 +536,17 @@ register_mcp() {
   # Claude Desktop — a separate product from Claude Code, with its own config file and its own
   # `mcpServers` key. Only register when it is actually installed.
   #
+<<<<<<< Updated upstream
   # Caveat: the stdio launcher scopes itself to the client's cwd, and a GUI app's cwd is `/`, so the
   # branch-note *tools* report "no branch scope" there. The skill *prompts* still work (seeded from
   # the global tiers, not the worktree). Pointing Desktop at a repo needs the HTTP transport
   # (`bn serve` + X-Bn-Repo/X-Bn-Branch).
+=======
+  # Caveat worth knowing: the stdio launcher scopes itself to the client's cwd, and a GUI app's cwd
+  # is `/`, so the branch-note *tools* will report "no branch scope" there. The skill *prompts*
+  # still work (they are seeded from the global tiers, not the worktree), which is most of the
+  # value. Pointing Desktop at a repo needs the HTTP transport (`bn serve` + X-Bn-Repo/X-Bn-Branch).
+>>>>>>> Stashed changes
   local desktop_dir="$HOME/Library/Application Support/Claude"
   [ -d "$desktop_dir" ] || desktop_dir="$HOME/.config/Claude"   # Linux
   if [ -d "$desktop_dir" ]; then
@@ -638,14 +659,16 @@ echo "Installing the workflow layer (tmux + worktrees)…"
 ln -sfn "$repo" "$cfgdir/repo"
 echo "Linked $cfgdir/repo -> $repo"
 
-# Copilot CLI surfaces workflows as *native* Agent Skills (~/.copilot/skills/<name>/SKILL.md),
-# not MCP prompts — so (re)generate them here from the shipped prompts (config/prompts) plus any
-# personal skills. Claude Code gets the same workflows over MCP via `bn serve`; this covers the
-# Copilot side. Idempotent and safe (only ever touches bn-managed SKILL.md files).
+# Copilot CLI and Claude Code both load *native* Agent Skills (~/.copilot/skills/<name>/SKILL.md,
+# ~/.claude/skills/<name>/SKILL.md), so (re)generate both roots here from the shipped prompts
+# (config/prompts) plus any personal skills. Claude also gets these over MCP via `bn serve`; the
+# native copy is what keeps this in step with the dashboard, whose skill CRUD writes both roots on
+# every edit. Idempotent and safe (only ever touches bn-managed SKILL.md files), and a harness whose
+# root holds a same-named skill bn doesn't own is skipped rather than failing the other.
 if "$bindir/bn" skills install >/dev/null 2>&1; then
-  echo "Regenerated ~/.copilot/skills from bn skills (Copilot slash commands)"
+  echo "Regenerated ~/.copilot/skills and ~/.claude/skills from bn skills (slash commands)"
 else
-  echo "note: 'bn skills install' skipped/failed; Copilot slash-command skills not refreshed" >&2
+  echo "note: 'bn skills install' skipped/failed; native slash-command skills not refreshed" >&2
 fi
 
 # Review specialists (repo-scoped PR reviewers) are compiled to *native* Copilot/Claude custom

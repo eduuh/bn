@@ -170,14 +170,23 @@ pub(crate) fn emit_skill_edit(
     }
 }
 
-/// (Re)generate the native Copilot Agent Skills under `~/.copilot/skills` from the two global bn
-/// skill tiers (the shipped `config/prompts` + the personal `config_dir()/skills`). This is the
-/// delivery path for **Copilot CLI**, which surfaces workflows as native `SKILL.md` skills rather
-/// than MCP prompts (Claude Code gets the same workflows over MCP via `bn serve`). Run by
-/// `install.sh`; idempotent and safe — [`install_native_skills`] refuses to touch non-bn files.
-/// The shipped tier is resolved through the stable `config_dir()/repo` install anchor so this
-/// works regardless of the current directory.
+/// (Re)generate the native Agent Skills under `~/.copilot/skills` **and** `~/.claude/skills` from
+/// the two global bn skill tiers (the shipped `config/prompts` + the personal `config_dir()/skills`).
+///
+/// Copilot CLI surfaces workflows only as native `SKILL.md` skills, so it has always needed this.
+/// Claude Code is covered twice over — natively from here and as `/bn:<name>` MCP prompts from
+/// `bn serve` — which is deliberate: the dashboard's skill CRUD materializes into both roots on
+/// every write, so an install that skipped Claude would leave the CLI and the web disagreeing about
+/// what is on disk.
+///
+/// Run by `install.sh`; idempotent and safe — [`install_native_skills`] refuses to touch non-bn
+/// files. Each harness installs independently, so a root that legitimately refuses (a name held by
+/// a skill bn does not own) doesn't stop the other from being maintained; the command reports the
+/// per-harness outcome and exits non-zero only if **every** root failed. The shipped tier resolves
+/// through the stable `config_dir()/repo` install anchor, so this works from any directory.
 pub(crate) fn emit_skill_install(cfg: &Config, json: bool) {
+    use bn_core::skills::{NativeHarness, NativeInstallAction as A, NativeScope};
+
     let home = dirs::home_dir().unwrap_or_default();
     let anchor = bn_core::resolver::config_dir().join("repo");
     let base = if anchor.is_dir() {
@@ -185,48 +194,69 @@ pub(crate) fn emit_skill_install(cfg: &Config, json: bool) {
     } else {
         std::env::current_dir().unwrap_or_default()
     };
-    match bn_core::skills::install_native_skills(
-        cfg,
-        &base,
-        &home,
-        bn_core::skills::NativeScope::Global,
-        &[bn_core::skills::NativeHarness::Copilot],
-    ) {
-        Ok(report) => {
-            use bn_core::skills::NativeInstallAction as A;
-            let (mut created, mut updated, mut removed, mut unchanged) = (0, 0, 0, 0);
-            for c in &report.changes {
-                match c.action {
-                    A::Created => created += 1,
-                    A::Updated => updated += 1,
-                    A::Removed => removed += 1,
-                    A::Unchanged => unchanged += 1,
+
+    let mut rows = Vec::new();
+    let mut errors = Vec::new();
+    for harness in bn_core::skills::NATIVE_HARNESSES {
+        let root = match harness {
+            NativeHarness::Claude => home.join(".claude").join("skills"),
+            NativeHarness::Copilot => home.join(".copilot").join("skills"),
+        };
+        match bn_core::skills::install_native_skills(
+            cfg,
+            &base,
+            &home,
+            NativeScope::Global,
+            &[harness],
+        ) {
+            Ok(report) => {
+                let (mut created, mut updated, mut removed, mut unchanged) = (0, 0, 0, 0);
+                for c in &report.changes {
+                    match c.action {
+                        A::Created => created += 1,
+                        A::Updated => updated += 1,
+                        A::Removed => removed += 1,
+                        A::Unchanged => unchanged += 1,
+                    }
+                }
+                rows.push(serde_json::json!({
+                    "harness": harness.label(),
+                    "root": root.display().to_string(),
+                    "created": created,
+                    "updated": updated,
+                    "removed": removed,
+                    "unchanged": unchanged,
+                }));
+                if !json {
+                    println!(
+                        "Regenerated {} skills in {} ({created} created, {updated} updated, {removed} removed, {unchanged} unchanged)",
+                        harness.label(),
+                        root.display()
+                    );
                 }
             }
-            let root = home.join(".copilot").join("skills");
-            if json {
-                println!(
-                    "{}",
-                    Envelope::success(
-                        "skill_install",
-                        serde_json::json!({
-                            "harness": "copilot",
-                            "root": root.display().to_string(),
-                            "created": created,
-                            "updated": updated,
-                            "removed": removed,
-                            "unchanged": unchanged,
-                        }),
-                    )
-                    .to_json()
-                );
-            } else {
-                println!(
-                    "Regenerated Copilot skills in {} ({created} created, {updated} updated, {removed} removed, {unchanged} unchanged)",
-                    root.display()
-                );
+            Err(e) => {
+                errors.push(serde_json::json!({ "harness": harness.label(), "error": e }));
+                if !json {
+                    eprintln!("warning: {} skills not regenerated: {e}", harness.label());
+                }
             }
         }
-        Err(e) => fail(&format!("bn skills install: {e}")),
+    }
+
+    if json {
+        println!(
+            "{}",
+            Envelope::success(
+                "skill_install",
+                serde_json::json!({ "harnesses": rows, "failures": errors }),
+            )
+            .to_json()
+        );
+    }
+    // Only a total failure is an error: one harness refusing must not fail an install that did
+    // refresh the other.
+    if rows.is_empty() {
+        fail("bn skills install: no harness could be regenerated");
     }
 }

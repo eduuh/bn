@@ -322,6 +322,8 @@ mod tests {
             repo: "bn".into(),
             branch: "feature".into(),
             target: "bn:feature".into(),
+            worktree: None,
+            tmux_target: None,
             last_activity_ts: 100,
             idle_secs,
             health: AgentHealth::Active,

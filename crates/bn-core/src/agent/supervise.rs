@@ -317,8 +317,19 @@ pub struct LiveAgent {
     pub harness: String,
     pub repo: String,
     pub branch: String,
-    /// `repo:branch` — the tmux send-keys target (`bn agent send`).
+    /// `repo:branch` — the public identity every bn surface addresses this agent by
+    /// (`bn agent send`), which is *not* necessarily what the hosting tmux window is called.
     pub target: String,
+    /// The exact `session:window` hosting this agent, resolved by [`crate::agent::resolve_channels`]
+    /// — the target a send-keys or kill actually has to use, since a window may be named after a
+    /// reused directory or a pooled slot rather than the branch. `None` when nothing was found.
+    /// `#[serde(default)]` keeps older fleet JSON valid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmux_target: Option<String>,
+    /// The agent's real checkout — its transcript cwd, refined by the window/lease join. Beats
+    /// reconstructing `<worktree_dir>/<repo>/<branch>`, which is wrong for every pooled slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<String>,
     /// Epoch secs of the last recorded tool/event activity.
     pub last_activity_ts: i64,
     /// Seconds since `last_activity_ts` at the supervisor pass.
@@ -516,6 +527,10 @@ fn pending_agents(
                 repo: l.repo.clone(),
                 branch: l.branch.clone(),
                 target: format!("{}:{}", l.repo, l.branch),
+                // A launch record carries no checkout; the window join still finds one by session
+                // id if the launcher already stamped or leased its window.
+                worktree: None,
+                tmux_target: None,
                 last_activity_ts: l.launched_at,
                 idle_secs: age,
                 health: AgentHealth::Starting,
@@ -543,45 +558,78 @@ fn stamp_roles(agents: &mut [LiveAgent], attribution: &BTreeMap<String, WorkClas
     }
 }
 
-/// Stamp each agent's [`ControlChannel`] — whether bn has a way to write to it at all.
+/// Stamp each agent's [`ControlChannel`] — whether bn has a way to write to it at all — along with
+/// the exact window and checkout the join found.
 ///
 /// tmux is enumerated **once** for the whole pass rather than probed per agent, because the fleet
 /// endpoint is polled every couple of seconds and a `tmux display-message` per agent would put a
-/// process spawn on that hot path. The note lookup that follows is a single small file read per
-/// agent, and only for agents with no tmux window.
+/// process spawn on that hot path. The lease registry is one file read for the pass; the note lookup
+/// that follows is a single small file read per agent.
+///
+/// The join itself is [`crate::agent::resolve_channels`] — a window is matched by lease, by session
+/// id, by checkout, by its `@bn_*` stamps, and only last by name. Matching on name alone (as this
+/// did) misses every window called after a pooled slot or a reused directory, which is why the
+/// `Tmux` channel used to be unreachable in practice.
 fn stamp_control(cfg: &Config, agents: &mut [LiveAgent]) {
-    let windows = tmux_window_names();
-    // Every write channel is keyed by `repo:branch`, so two live sessions on one branch are
-    // mutually indistinguishable to all of them. Count first, then refuse those outright.
-    let mut per_target: BTreeMap<&str, usize> = BTreeMap::new();
-    for a in agents.iter() {
-        *per_target.entry(a.target.as_str()).or_default() += 1;
-    }
-    let shared: HashSet<String> = per_target
-        .into_iter()
-        .filter(|&(_, n)| n > 1)
-        .map(|(t, _)| t.to_string())
-        .collect();
+    let windows = crate::agent::parse_window_rows(
+        &crate::tmux::tmux_raw(&["list-windows", "-a", "-F", crate::agent::WINDOW_FORMAT])
+            .unwrap_or_default(),
+    );
+    let leases = crate::agent::load_agent_leases(&crate::agent::agent_lease_registry_path())
+        .unwrap_or_default()
+        .leases;
 
-    for a in agents.iter_mut() {
-        a.control = if shared.contains(&a.target) {
-            ControlChannel::Ambiguous
-        } else if recorded_session(cfg, &a.repo, &a.branch).is_some() {
-            ControlChannel::Resume
-        } else if windows.contains(&a.target) {
-            ControlChannel::Tmux
-        } else {
-            ControlChannel::None
-        };
+    let keys: Vec<crate::agent::AgentKey<'_>> = agents
+        .iter()
+        .map(|a| crate::agent::AgentKey {
+            session_id: &a.session_id,
+            repo: &a.repo,
+            branch: &a.branch,
+            worktree: a.worktree.as_deref(),
+        })
+        .collect();
+    let resolved = crate::agent::resolve_channels(&keys, &windows, &leases);
+
+    for (a, ch) in agents.iter_mut().zip(resolved) {
+        let recorded = recorded_state(
+            recorded_session(cfg, &a.repo, &a.branch)
+                .map(|(_, id)| id)
+                .as_deref(),
+            &a.session_id,
+        );
+        // Settle the checkout *before* asking for the channel: the join's answer beats the
+        // transcript's cwd (a pane may have wandered into a subdirectory), and the resume fallback
+        // needs a directory that still exists — a `--resume` turn spawned in a deleted worktree
+        // fails after a full harness invocation, which is worse than saying "no channel".
+        a.tmux_target = ch.tmux_target.clone();
+        a.worktree = ch
+            .worktree
+            .clone()
+            .or_else(|| a.worktree.take())
+            .filter(|p| std::path::Path::new(p).is_dir());
+        a.control = crate::agent::control_channel(
+            &ch,
+            recorded,
+            crate::agent::ObservedSession {
+                session_id: &a.session_id,
+                worktree: a.worktree.as_deref(),
+            },
+        );
     }
 }
 
-/// Every tmux window name on the machine, across all sessions. Empty when tmux is absent or no
-/// server is running — which is exactly the "nothing is steerable" answer we want.
-fn tmux_window_names() -> HashSet<String> {
-    crate::tmux::tmux_raw(&["list-windows", "-a", "-F", "#{window_name}"])
-        .map(|out| out.lines().map(|l| l.trim().to_string()).collect())
-        .unwrap_or_default()
+/// Whether a branch note's recorded `agent-session:` id names the live session in front of us.
+/// Pure — the branch-keyed record can outlive the agent it named (a previous dispatch, or a
+/// `--continue` launch that adopted the harness's own id), and resuming into a dead id steers
+/// nothing at all.
+fn recorded_state(recorded: Option<&str>, live_session: &str) -> crate::agent::RecordedSession {
+    match recorded {
+        None => crate::agent::RecordedSession::None,
+        Some(id) if canonical_session_id(id) == canonical_session_id(live_session) => {
+            crate::agent::RecordedSession::Same
+        }
+        Some(_) => crate::agent::RecordedSession::Other,
+    }
 }
 
 /// The `agent-session: <harness> <id>` the dispatcher records in a branch note's collab section,
@@ -738,6 +786,10 @@ fn parse_live_claude(
         session_id,
         harness: "claude".into(),
         target: format!("{repo}:{branch}"),
+        // The transcript's own cwd is the strongest hint about where this agent lives, and the key
+        // [`stamp_control`] joins it to a tmux window with.
+        worktree: Some(cwd).filter(|c| !c.is_empty()),
+        tmux_target: None,
         repo,
         branch,
         last_activity_ts,
@@ -832,6 +884,8 @@ fn parse_live_copilot(
         session_id,
         harness: "copilot".into(),
         target: format!("{repo}:{branch}"),
+        worktree: Some(cwd).filter(|c| !c.is_empty()),
+        tmux_target: None,
         repo,
         branch,
         last_activity_ts,
@@ -1371,6 +1425,26 @@ mod tests {
     }
 
     #[test]
+    fn a_record_naming_another_session_is_not_this_agents_resume_channel() {
+        // The note's `agent-session:` is keyed by branch, so it outlives the agent it named. Only
+        // an id that matches the live session earns `Resume`; a stale one must fall through to the
+        // window join rather than offering a button that resumes a dead session.
+        assert_eq!(
+            recorded_state(Some("A1B2-c3"), "a1b2-C3"),
+            crate::agent::RecordedSession::Same,
+            "ids are compared canonically, as the role join already does"
+        );
+        assert_eq!(
+            recorded_state(Some("older-session"), "live-session"),
+            crate::agent::RecordedSession::Other
+        );
+        assert_eq!(
+            recorded_state(None, "live-session"),
+            crate::agent::RecordedSession::None
+        );
+    }
+
+    #[test]
     fn stamp_roles_only_marks_orchestration_sessions() {
         let worker = |sid: &str, branch: &str| LiveAgent {
             session_id: sid.into(),
@@ -1378,6 +1452,8 @@ mod tests {
             repo: "bn".into(),
             branch: branch.into(),
             target: format!("bn:{branch}"),
+            worktree: None,
+            tmux_target: None,
             last_activity_ts: 0,
             idle_secs: 0,
             health: AgentHealth::Active,
@@ -1410,6 +1486,8 @@ mod tests {
             repo: "bn".into(),
             branch: "wave".into(),
             target: "bn:wave".into(),
+            worktree: None,
+            tmux_target: None,
             last_activity_ts: 0,
             idle_secs: 0,
             health: AgentHealth::Active,

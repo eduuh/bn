@@ -8,7 +8,9 @@
       <code class="font-mono text-xs">MARKDOWN_PROSE</code>, a hand-rolled stand-in for the typography
       plugin, which cannot be used while preflight is off. Agent output is mostly commands and diffs,
       so <code class="font-mono text-xs">pre</code> and <code class="font-mono text-xs">code</code>
-      carry more weight here than in ordinary prose.
+      carry more weight here than in ordinary prose — fenced blocks are syntax-highlighted against
+      these same tokens (no stock highlight.js theme, which would import its own palette), labelled
+      with their language, and copyable.
     </p>
   </header>
 
@@ -29,9 +31,31 @@
       </ul>
 
       <h3 class="mt-3 text-sm font-semibold text-foreground">Verify</h3>
-      <pre class="overflow-auto rounded-md border border-border bg-muted/60 p-3 text-xs"><code class="bg-transparent p-0">npm run typecheck &amp;&amp; npm run test
-npm run build &amp;&amp; cargo build -p bn-web
-curl -s localhost:7770 | head</code></pre>
+      <!-- Fenced block: language label at rest, copy button on hover, highlighted when the fence
+           names a grammar we ship. The card inlines the token utilities the `.hljs-*` rules in
+           `src/tailwind.css` resolve to, since the preview compiles its own CSS. -->
+      <div class="group/code relative">
+        <pre class="overflow-auto rounded-md border border-border bg-muted/60 p-3 text-xs"><code class="bg-transparent p-0 text-foreground/90"><span class="text-info">npm</span> run typecheck &amp;&amp; <span class="text-info">npm</span> run test
+<span class="text-info">npm</span> run build &amp;&amp; <span class="text-info">cargo</span> build -p bn-web
+<span class="text-info">curl</span> -s localhost:7770 | <span class="text-info">head</span></code></pre>
+        <div class="absolute right-1.5 top-1.5 flex items-center gap-1.5">
+          <span class="select-none font-mono text-[0.65rem] uppercase tracking-wide text-muted-foreground/70">bash</span>
+          <button class="inline-flex h-6 items-center gap-1 rounded border border-border bg-card px-1.5 text-[0.68rem] font-medium text-muted-foreground opacity-0 transition-opacity group-hover/code:opacity-100">copy</button>
+        </div>
+      </div>
+
+      <!-- A diff is the one place a tinted row earns its keep: added and removed lines have to be
+           told apart at a glance while scanning a patch. -->
+      <div class="group/code relative">
+        <pre class="overflow-auto rounded-md border border-border bg-muted/60 p-3 text-xs"><code class="bg-transparent p-0 text-foreground/90"><span class="text-info">--- a/src/lib/console.ts</span>
+<span class="text-info">+++ b/src/lib/console.ts</span>
+<span class="inline-block w-full bg-urgent-muted text-urgent">-  const sel = rows[0];</span>
+<span class="inline-block w-full bg-ok-muted text-ok">+  const sel = rows.find(r =&gt; r.id === params.sel) ?? rows[0];</span></code></pre>
+        <div class="absolute right-1.5 top-1.5 flex items-center gap-1.5">
+          <span class="select-none font-mono text-[0.65rem] uppercase tracking-wide text-muted-foreground/70">diff</span>
+          <button class="inline-flex h-6 items-center gap-1 rounded border border-border bg-card px-1.5 text-[0.68rem] font-medium text-muted-foreground opacity-0 transition-opacity group-hover/code:opacity-100">copy</button>
+        </div>
+      </div>
 
       <blockquote class="border-l-2 border-border pl-3 text-muted-foreground">
         The old UI offered "Start agent" on every row, including plan reviews — where the correct
@@ -67,7 +91,7 @@ curl -s localhost:7770 | head</code></pre>
 
   <p class="text-xs text-muted-foreground">
     Every element the renderer can emit is exercised above — headings h1–h3, paragraphs, both list
-    kinds, inline and fenced code, blockquote, table, links. Anything missing from this card is
-    unstyled in the app and nobody has noticed yet.
+    kinds, inline code, highlighted and diff code blocks, blockquote, table, links. Anything missing
+    from this card is unstyled in the app and nobody has noticed yet.
   </p>
 </div>

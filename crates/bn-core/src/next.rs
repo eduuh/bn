@@ -651,8 +651,9 @@ fn from_doctor(cfg: &Config, today: &str) -> Vec<Action> {
             // `bn staff` territory, so they stay off the `bn next` list like note hygiene.
             Finding::Staff(_) | Finding::StaleStaff(_) => None,
             // A cross-machine notes leak is a machine-setup misconfig surfaced by `bn doctor`, not
-            // a per-repo task — keep it off the `bn next` action list.
-            Finding::NotesLeak(_) => None,
+            // a per-repo task — keep it off the `bn next` action list. Inactive shell wrappers are
+            // the same shape of problem: your shell's setup, not the next piece of work.
+            Finding::NotesLeak(_) | Finding::ShellInit(_) => None,
             Finding::Backlog(_) => None,
         })
         .collect()

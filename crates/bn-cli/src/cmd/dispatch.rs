@@ -2020,24 +2020,18 @@ pub(crate) fn run_dispatch(
             // events: those are background-lane bookkeeping with no meaning for a live pane.
             if attach {
                 let worktree = wt_path.to_string_lossy().into_owned();
-                let _ = commands::add(
+                crate::cmd::agent::record_launched_session(
                     cfg,
-                    &target,
-                    "collab",
-                    &format!("agent-session: {kind} {sid}"),
-                    None,
-                    &today(),
+                    crate::cmd::agent::LaunchedSession {
+                        ctx: &target,
+                        harness: kind,
+                        session_id: &sid,
+                        worktree: &worktree,
+                        work_class,
+                        task_name: Some(&task_name),
+                        controller_id: controller_id.as_deref(),
+                    },
                 );
-                bn_core::cost::attribute_session(bn_core::cost::SessionLaunch {
-                    session_id: &sid,
-                    work_class,
-                    repo: &repo,
-                    branch: &branch,
-                    task_name: Some(&task_name),
-                    harness: Some(kind),
-                    worktree: Some(&worktree),
-                    controller_id: controller_id.as_deref(),
-                });
                 if !json {
                     eprintln!(
                         "bn dispatch: {kind} {} in this pane → {}{}",
@@ -2127,14 +2121,6 @@ pub(crate) fn run_dispatch(
                     );
                 }
             };
-            let _ = commands::add(
-                cfg,
-                &target,
-                "collab",
-                &format!("agent-session: {kind} {sid}"),
-                None,
-                &today(),
-            );
             if let Some(controller_id) = &controller_id {
                 let _ = commands::add(
                     cfg,
@@ -2146,16 +2132,18 @@ pub(crate) fn run_dispatch(
                 );
             }
             let worktree = wt_path.to_string_lossy().into_owned();
-            bn_core::cost::attribute_session(bn_core::cost::SessionLaunch {
-                session_id: &sid,
-                work_class,
-                repo: &repo,
-                branch: &branch,
-                task_name: Some(&task_name),
-                harness: Some(kind),
-                worktree: Some(&worktree),
-                controller_id: controller_id.as_deref(),
-            });
+            crate::cmd::agent::record_launched_session(
+                cfg,
+                crate::cmd::agent::LaunchedSession {
+                    ctx: &target,
+                    harness: kind,
+                    session_id: &sid,
+                    worktree: &worktree,
+                    work_class,
+                    task_name: Some(&task_name),
+                    controller_id: controller_id.as_deref(),
+                },
+            );
             agent_launched = wt::open_worktree_window_cmd_named(
                 &repo,
                 &sanitized,

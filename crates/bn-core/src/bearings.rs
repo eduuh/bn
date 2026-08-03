@@ -368,6 +368,8 @@ mod tests {
             repo: "bn".into(),
             branch: format!("feature-{index}"),
             target: format!("bn:feature-{index}"),
+            worktree: None,
+            tmux_target: None,
             last_activity_ts: 100,
             idle_secs: index as i64 * 60,
             health: AgentHealth::Active,

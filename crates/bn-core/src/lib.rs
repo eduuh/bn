@@ -64,6 +64,7 @@ pub mod learnings;
 pub mod lifecycle;
 pub mod log;
 pub mod machine;
+pub mod markdown;
 pub mod mcp;
 pub mod meetings;
 pub mod mentor;

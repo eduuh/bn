@@ -24,8 +24,16 @@ export interface LiveAgent {
   harness: string;
   repo: string;
   branch: string;
-  /** `repo:branch` — the tmux send-keys / switch-client target. */
+  /** `repo:branch` — the identity every bn command addresses this agent by. */
   target: string;
+  /**
+   * The exact `session:window` hosting this agent, when the supervisor's join found one. A window
+   * is often named after a pooled slot or a reused directory rather than the branch, so this is not
+   * derivable from `target`. Absent on older servers.
+   */
+  tmux_target?: string;
+  /** The agent's real checkout, from the transcript cwd refined by the window/lease join. */
+  worktree?: string;
   last_activity_ts: number;
   idle_secs: number;
   health: AgentHealth;
@@ -948,20 +956,29 @@ export const SKILL_SCOPES = [
 
 export type SkillScope = (typeof SKILL_SCOPES)[number];
 
+/** One harness root the sync could not refresh — e.g. a name clash with a skill bn doesn't own. */
+export interface SkillNativeFailure {
+  harness: string;
+  /** `global` (`~/.claude`, `~/.copilot`) or `repo` (`.claude/skills`, `.github/skills`). */
+  scope: string;
+  error: string;
+}
+
 /** The native-harness sync every skill create/edit/delete runs (`actions::sync_native_skills_summary`).
- * Non-fatal: the bn source file is already written, so `synced: false` means the harnesses are stale,
- * not that the write failed. */
-export type SkillNativeSync =
-  | {
-      synced: true;
-      /** Which harnesses were touched — `claude`, `copilot`, or both. */
-      harnesses: string[];
-      created: number;
-      updated: number;
-      removed: number;
-      unchanged: number;
-    }
-  | { synced: false; error: string };
+ * Non-fatal: the bn source file is already written, so `synced: false` means some harness root is
+ * stale, not that the write failed. Each root syncs independently, so the result can be partial —
+ * `harnesses` lists what was refreshed, `failures` what wasn't. */
+export interface SkillNativeSync {
+  /** True only when every root bn tried to refresh succeeded. */
+  synced: boolean;
+  /** Which harnesses were actually touched — `claude`, `copilot`, or both. */
+  harnesses: string[];
+  created: number;
+  updated: number;
+  removed: number;
+  unchanged: number;
+  failures: SkillNativeFailure[];
+}
 
 /** The reply every skill mutation returns: the affected skill plus the harness sync result.
  * `remaining_scope` (delete only) is the tier that now defines the name — a lower-tier definition

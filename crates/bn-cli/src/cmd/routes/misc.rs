@@ -209,6 +209,11 @@ const SHELL_WRAPPERS: &str = r#"# bn shell wrappers (bn shell-init) — `claude`
 # what the work is and dispatches into a warm pool slot instead), and a worktree that already has a
 # live agent refuses a second one. Outside a repo they fall through to the real binary untouched.
 # Escape hatch for one call: BN_AGENT_GUARD=0 claude …
+#
+# The marker below is how `bn doctor` can tell these wrappers are actually live in your shell: a
+# child process cannot see its parent's functions, only its environment.
+export BN_SHELL_WRAPPERS=1
+
 _bn_launch() {
   local _bn_h="$1"; shift
   if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -277,6 +282,16 @@ mod tests {
         assert!(SHELL_WRAPPERS.contains("command \"$_bn_h\" \"$@\""));
         // The documented per-call escape hatch is discoverable in the emitted script itself.
         assert!(SHELL_WRAPPERS.contains("BN_AGENT_GUARD=0"));
+    }
+
+    #[test]
+    fn shell_wrappers_export_the_marker_doctor_checks() {
+        // `bn doctor`'s shell check reads this from the environment — a child process has no other
+        // way to know whether the wrappers were sourced (it cannot see the parent's functions).
+        assert!(SHELL_WRAPPERS.contains(&format!(
+            "export {}=1",
+            bn_core::doctor::SHELL_WRAPPER_MARKER
+        )));
     }
 
     #[test]

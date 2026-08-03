@@ -25,6 +25,6 @@ actually happens — not batched at session end — and only record what genuine
 
 Skills are reusable workflows served as MCP prompts (`/bn:<name>` in Claude Code,
 `/mcp.bn.<name>` in Copilot). MCP only serves session-safe skills such as `start-session`,
-`wrap-session`, `stow`, `axi`, and `lavish`; use the CLI for cross-branch skills.
+`wrap-session`, `stow`, `axi`, and `lavish-plan`; use the CLI for cross-branch skills.
 
 <!-- END bn -->

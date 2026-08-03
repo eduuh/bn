@@ -1518,33 +1518,32 @@ fn valid_skill_name(name: &str) -> bool {
 /// The caller sees `{ synced: true, created, updated, removed, unchanged }` or
 /// `{ synced: false, error }` and can surface it.
 fn sync_native_skills_summary(cfg: &bn_core::resolver::Config) -> serde_json::Value {
+    use bn_core::skills::NativeInstallAction as A;
     let home = dirs::home_dir().unwrap_or_default();
-    match bn_core::skills::sync_native_skills(cfg, std::path::Path::new("."), &home) {
-        Ok(report) => {
-            use bn_core::skills::NativeInstallAction as A;
-            let count = |want: A| {
-                report
-                    .changes
-                    .iter()
-                    .filter(|change| change.action == want)
-                    .count()
-            };
-            let harnesses: std::collections::BTreeSet<&str> = report
-                .changes
-                .iter()
-                .map(|change| change.harness.label())
-                .collect();
-            json!({
-                "synced": true,
-                "harnesses": harnesses,
-                "created": count(A::Created),
-                "updated": count(A::Updated),
-                "removed": count(A::Removed),
-                "unchanged": count(A::Unchanged),
-            })
-        }
-        Err(e) => json!({ "synced": false, "error": e }),
-    }
+    let report = bn_core::skills::sync_native_skills(cfg, std::path::Path::new("."), &home);
+    let count = |want: A| {
+        report
+            .changes
+            .iter()
+            .filter(|change| change.action == want)
+            .count()
+    };
+    // The harnesses that actually got refreshed — reported separately from the ones that failed, so
+    // a partial sync (one harness clashing with a non-bn skill) is legible instead of all-or-nothing.
+    let harnesses: std::collections::BTreeSet<&str> = report
+        .changes
+        .iter()
+        .map(|change| change.harness.label())
+        .collect();
+    json!({
+        "synced": report.complete(),
+        "harnesses": harnesses,
+        "created": count(A::Created),
+        "updated": count(A::Updated),
+        "removed": count(A::Removed),
+        "unchanged": count(A::Unchanged),
+        "failures": report.failures,
+    })
 }
 
 /// `POST /api/skills {name, description, scope?, body?, overwrite?}` — create a skill from the

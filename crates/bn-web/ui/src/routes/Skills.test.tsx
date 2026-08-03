@@ -35,12 +35,13 @@ const DETAIL = {
 const MUTATION = {
   skill: SKILLS.skills[0],
   native: {
-    synced: true as const,
+    synced: true,
     harnesses: ["claude", "copilot"],
     created: 1,
     updated: 0,
     removed: 0,
     unchanged: 4,
+    failures: [],
   },
 };
 

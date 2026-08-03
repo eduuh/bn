@@ -16,12 +16,12 @@ export function SteerPanel({ target, control }: { target: string; control?: Agen
   const qc = useQueryClient();
   const [message, setMessage] = useState("");
 
-  // bn drives agents through a recorded session (`--resume`) or a live tmux window (send-keys). The
-  // fleet *observes* every running session on the machine, including ones bn never launched — for
-  // those there is no write channel at all, and every button here fails after the click with
-  // "no such tmux window, or tmux absent". Say so up front instead. `undefined` means the server
-  // predates the field, so we allow the attempt rather than locking the panel against a stale
-  // binary.
+  // bn drives agents through a recorded session (`--resume`) or a live tmux window (send-keys), and
+  // a session it never launched still resumes against its own transcript — so the fleet no longer
+  // carries agents it can only watch. What remains unsteerable is a genuine absence: no live
+  // checkout to run a turn in, or two sessions a write could land on with no way to tell them
+  // apart. `undefined` means the server predates the field, so we allow the attempt rather than
+  // locking the panel against a stale binary.
   const steerable = control !== "none" && control !== "ambiguous";
 
   const invalidate = () => {
@@ -74,16 +74,16 @@ export function SteerPanel({ target, control }: { target: string; control?: Agen
               <span className="font-medium text-foreground">
                 More than one session shares this branch.
               </span>{" "}
-              Every write channel is keyed by <code className="font-mono">{target}</code>, so bn
-              cannot tell which session a message — or a kill — would reach. Steering is disabled
-              until only one is left.
+              Every write channel here is keyed by <code className="font-mono">{target}</code>, and
+              neither session has a live checkout to resume into, so bn cannot tell which one a
+              message — or a kill — would reach. Steering is disabled until only one is left.
             </>
           ) : (
             <>
-              <span className="font-medium text-foreground">Observed only.</span> This session was
-              started outside bn, so there is no window or recorded session to write to — bn can read
-              its transcript but cannot steer, relaunch or kill it. Drive it from the terminal it is
-              running in.
+              <span className="font-medium text-foreground">No live checkout.</span> bn steers a
+              session by running a <code className="font-mono">--resume</code> turn in the directory
+              it is working in, and this one's checkout is gone or was never recorded — so there is
+              nowhere to run the turn. Drive it from the terminal it is running in.
             </>
           )}
         </p>

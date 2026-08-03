@@ -342,6 +342,11 @@ pub struct Config {
     /// this, so a broken `[routine]` section never breaks unrelated commands. See
     /// [`crate::routine::RoutineConfig`].
     pub routine: Result<crate::routine::RoutineConfig, String>,
+    /// `[notify]`: the desktop-toast policy gate — which classes may interrupt, the per-key
+    /// cooldown, and the daily/per-source budgets. Unlike [`Self::routine`] this is infallible:
+    /// a bad value clamps or falls back to the default, because a notification preference must
+    /// never break an unrelated command. See [`crate::notify::policy`].
+    pub notify: crate::notify::policy::NotifyConfig,
 }
 
 impl Default for Config {
@@ -405,6 +410,7 @@ impl Default for Config {
             orchestrate_remote_overflow: false,
             staff_home: None,
             routine: Ok(crate::routine::RoutineConfig::disabled()),
+            notify: crate::notify::policy::NotifyConfig::default(),
         }
     }
 }
@@ -703,6 +709,22 @@ impl Config {
         // message rather than panicking the whole `Config::resolve` on a bad `[routine]` section.
         let routine = crate::routine::RoutineConfig::resolve(file.and_then(|f| f.routine()));
 
+        // `[notify]`: the desktop-toast policy gate. Infallible by design (a bad value clamps or
+        // falls back), so a notification preference can never break an unrelated command. The env
+        // overrides are the two a person reaches for on a specific machine — a kill switch, and
+        // the bar — matching how every other `BN_*` override layers over config.toml.
+        let mut notify =
+            crate::notify::policy::NotifyConfig::resolve(file.and_then(|f| f.notify()));
+        if let Some(raw) = non_empty_env("BN_NOTIFY_ENABLED") {
+            notify.enabled = raw == "1" || raw.eq_ignore_ascii_case("true");
+        }
+        if let Some(bar) = non_empty_env("BN_NOTIFY_BAR")
+            .as_deref()
+            .and_then(crate::notify::policy::Bar::parse)
+        {
+            notify.bar = bar;
+        }
+
         // `[orchestrate].agent` (#382): env override wins, then config.toml; trimmed, empty → None
         // so a blank value falls back to the `copilot` default. Normalized to a canonical harness at
         // use (it accepts the `bn dispatch` aliases), so an unparseable value degrades to the default.
@@ -826,6 +848,7 @@ impl Config {
             orchestrate_remote_overflow,
             staff_home,
             routine,
+            notify,
         }
     }
 

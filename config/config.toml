@@ -123,6 +123,17 @@ catchup_horizon_minutes = 30
 # end = "12:30"
 # kind = "work"                 # work | learning | family | recovery | exercise | sleep
 
+# Desktop-notification policy. A toast means work has STOPPED and needs your decision;
+# completions and lifecycle narration stay pull-only in `bn next` / `bn attn` / the tmux badges.
+# `bn notify status` shows what was held back and why. Nothing configured here is ever lost —
+# the underlying items stay on the pull surfaces regardless.
+[notify]
+enabled = true
+bar = "blocking"                # blocking (default) | completion | all
+cooldown_mins = 30              # a still-true condition re-pings at most this often
+daily_budget = 12               # past it, only first-ever keys still land
+source_budget = 4               # one source's share of that budget
+
 [today]
 enabled = false
 

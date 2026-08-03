@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { ChevronDown } from "lucide-react";
-import type { AgentDetailView } from "../api/types";
+import type { AgentDetailView, HarnessOption } from "../api/types";
 import { healthTone, jumpCommand } from "../lib/board";
 import { fmtTokens, timeAgo } from "../lib/format";
 import { CopyButton } from "./CopyButton";
+import { HarnessMenu } from "./HarnessMenu";
 import { toneVariant } from "./StateChip";
 import { Badge } from "./ui/badge";
 import { Card } from "./ui/card";
@@ -41,10 +42,24 @@ const BAR: Record<string, string> = {
   neutral: "bg-border",
 };
 
-/** The agent-detail header (design §4(c)): repo/branch, health, harness, live tokens + turns, the
- * session id, and the tmux target with a copy-jump (#347's web analog). Falls back to the latest
- * recorded session's post-mortem stats when the live session hasn't reported tokens yet. */
-export function AgentHeader({ detail, now }: { detail: AgentDetailView; now: number }) {
+/**
+ * The agent-detail header (design §4(c)): repo/branch, health, the harness switcher, live tokens +
+ * turns, the session id, and the tmux target with a copy-jump (#347's web analog). Falls back to
+ * the latest recorded session's post-mortem stats when the live session hasn't reported tokens yet.
+ *
+ * The harness lives on the title row rather than in a card down the sidebar: "what is this agent
+ * running under" is identity, read at the same moment as the repo and the branch, and switching it
+ * is a property of *this* agent rather than a step in the steer → land column.
+ */
+export function AgentHeader({
+  detail,
+  now,
+  harnesses,
+}: {
+  detail: AgentDetailView;
+  now: number;
+  harnesses?: HarnessOption[];
+}) {
   const { agent, latest_session, last_request } = detail;
   const [showRequest, setShowRequest] = useState(false);
   const outTokens = agent.output_tokens || latest_session?.output_tokens || 0;
@@ -52,9 +67,11 @@ export function AgentHeader({ detail, now }: { detail: AgentDetailView; now: num
   const tone = healthTone(agent.health);
 
   return (
-    <Card className="relative overflow-hidden p-4 pl-5">
+    // Not `overflow-hidden`: the harness menu has to escape the header, so the tone bar rounds
+    // its own corners instead of being clipped.
+    <Card className="relative p-4 pl-5">
       <span
-        className={cn("absolute inset-y-0 left-0 w-1", BAR[tone] ?? BAR.neutral)}
+        className={cn("absolute inset-y-0 left-0 w-1 rounded-l-lg", BAR[tone] ?? BAR.neutral)}
         aria-hidden="true"
       />
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -65,10 +82,13 @@ export function AgentHeader({ detail, now }: { detail: AgentDetailView; now: num
         <Badge variant={toneVariant(tone)} className="shrink-0 capitalize">
           {agent.health}
         </Badge>
+        {/* Beside the branch, not pushed to the far edge: repo · branch · state · harness is one
+            identity cluster, and a `flex-1` spacer would strand it 800px away on a wide header and
+            break it onto its own line on a narrow one. */}
+        <HarnessMenu target={agent.target} current={agent.harness} harnesses={harnesses} />
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
-        {agent.harness && <Tag>{agent.harness}</Tag>}
         <Tag title="live output tokens">{fmtTokens(outTokens)} out tok</Tag>
         <Tag title="assistant turns">{turns} turns</Tag>
         <Tag title="last activity" className="text-muted-foreground/70">

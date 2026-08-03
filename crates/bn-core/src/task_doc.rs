@@ -64,13 +64,13 @@ impl TaskDoc {
         let want = format!("## {heading}");
         let mut out = Vec::new();
         let mut inside = false;
-        for line in self.text.lines() {
-            if line.trim_end() == want {
+        for (line, code) in crate::markdown::scan(&self.text) {
+            if !code && line.trim_end() == want {
                 inside = true;
                 continue;
             }
             if inside {
-                if line.starts_with("## ") {
+                if !code && line.starts_with("## ") {
                     break;
                 }
                 out.push(line);

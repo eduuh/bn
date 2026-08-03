@@ -1409,20 +1409,17 @@ pub const DUPLICATE_RISK: &str = "at-least-once: a crash between a successful no
 /// attempt — `watch`'s sleep-until computation when a tick reports `error`.
 pub const INVALID_CONFIG_RETRY_SECS: i64 = 60;
 
-/// Delivers a desktop notification — the seam ticks call through, so tests can inject a
-/// deterministic fake instead of exercising real OS toast backends (#801 amendment invariant 8).
-pub trait Notifier {
-    fn notify(&self, title: &str, body: &str) -> bool;
-}
-
-/// The production notifier: [`crate::notify::toast`].
-pub struct RealNotifier;
-
-impl Notifier for RealNotifier {
-    fn notify(&self, title: &str, body: &str) -> bool {
-        crate::notify::toast(title, body)
-    }
-}
+/// The notification seam ticks call through — re-exported from [`crate::notify::policy`], which
+/// now owns it: the policy gate, rather than the routine tick, is the thing worth faking. Existing
+/// callers and test fakes are unaffected by the move.
+///
+/// Note that two dedup layers now cover a routine reminder, and both are deliberate: this module's
+/// schedule-shaped key (stable block id + resolved instant + event kind, see [`DUPLICATE_RISK`])
+/// decides whether the *reminder* is due, while the gate's interrupt-shaped key decides whether
+/// it is worth interrupting for. A reminder the gate holds back is still recorded as notified
+/// here, so the tick does not retry it every five minutes — `bn notify status` is where a
+/// suppressed one shows up, and `bn routine status` still shows the block itself.
+pub use crate::notify::policy::{Notifier, RealNotifier};
 
 /// One due reminder/start-of-block candidate before dedupe/horizon classification.
 struct DueEvent {

@@ -2846,7 +2846,12 @@ pub(crate) fn orchestrate_run(
                     worked.repo, c.merged, c.failed
                 );
             }
-            bn_core::notify::toast(
+            // A drained queue is a completion report — `bn orchestrate status` has it whenever
+            // you want it, and nothing here is waiting on you.
+            crate::toast::toast(
+                crate::toast::Class::Completion,
+                &format!("orchestrate:{}:drained", worked.repo),
+                "orchestrate",
                 &format!("bn orchestrate: {} done", worked.repo),
                 &format!("{} merged, {} failed", c.merged, c.failed),
             );
@@ -3805,7 +3810,13 @@ fn harvest_answers(cfg: &Config, st: &mut OrchestrateState, now: i64) {
             Some(&key),
             &bn_core::util::today(),
         );
-        bn_core::notify::toast(
+        // An `info` attention item for this same answer was raised a few lines above, so the
+        // toast was always the second copy of one notification. It stays a completion: the scout
+        // finished and the write-up is waiting to be read, not acted on.
+        crate::toast::toast(
+            crate::toast::Class::Completion,
+            &format!("orchestrate:{}/{branch}:answer", st.repo),
+            "orchestrate",
             &format!("bn orchestrate: answer ready — {}", st.repo),
             &format!("{question}\n{path_str}"),
         );
@@ -4157,7 +4168,11 @@ fn reconcile_external_state(
         ),
         now,
     );
-    bn_core::notify::toast(
+    // Pure bookkeeping: a PR that merged elsewhere, reconciled into the ledger. Nothing stopped.
+    crate::toast::toast(
+        crate::toast::Class::Lifecycle,
+        &format!("orchestrate:{}/{branch}:reconciled", st.repo),
+        "orchestrate",
         &format!("bn orchestrate: {}/{branch} reconciled", st.repo),
         &format!("already done ({via}) — marked merged"),
     );
@@ -4328,7 +4343,13 @@ fn execute_action(
                     &[("repo", &repo), ("branch", branch), ("answer", "session")],
                 );
             } else {
-                bn_core::notify::toast(
+                // Blocking: only a human can grant this. `execute_action` runs on every supervise
+                // pass (15s active), so the key names the *condition* rather than the moment —
+                // the gate's cooldown is what finally makes this "once per transition".
+                crate::toast::toast(
+                    crate::toast::Class::Blocking,
+                    &format!("orchestrate:{target}:command-approval"),
+                    "orchestrate",
                     &format!("bn orchestrate: {target} needs command approval"),
                     obs.tail
                         .last()
@@ -4346,8 +4367,13 @@ fn execute_action(
         }
         SupervisorAction::AnswerQuestion => {
             // A blocking question is a genuine decision — surface it rather than guess an answer
-            // (auto-answering arbitrary prompts is unsafe). Toast once per transition.
-            bn_core::notify::toast(
+            // (auto-answering arbitrary prompts is unsafe). Toast once per transition: this arm
+            // runs on every supervise pass, so the condition-shaped key plus the gate's cooldown
+            // are what actually deliver the "once" this comment has always claimed.
+            crate::toast::toast(
+                crate::toast::Class::Blocking,
+                &format!("orchestrate:{target}:question"),
+                "orchestrate",
                 &format!("bn orchestrate: {target} needs a decision"),
                 obs.tail
                     .last()
@@ -4435,7 +4461,12 @@ fn switch_limited_lane(st: &mut OrchestrateState, id: &str, branch: &str, now: i
         ),
         now,
     );
-    bn_core::notify::toast(
+    // The system recovered by itself — it switched harness and kept working. Knowing is
+    // curiosity, not a decision.
+    crate::toast::toast(
+        crate::toast::Class::Lifecycle,
+        &format!("orchestrate:{repo}/{branch}:harness-switch"),
+        "orchestrate",
         &format!("bn orchestrate: {repo}/{branch} hit a usage limit"),
         &format!("auto-switched to {to} to keep working"),
     );
@@ -4483,7 +4514,12 @@ fn relaunch_to_resume(
                     "gave up after backoff cap — surfaced",
                     now,
                 );
-                bn_core::notify::toast(
+                // Terminal failure: the backoff cap is spent and the lane is not coming back
+                // without you.
+                crate::toast::toast(
+                    crate::toast::Class::Blocking,
+                    &format!("orchestrate:{}/{branch}:relaunch-gave-up", st.repo),
+                    "orchestrate",
                     &format!("bn orchestrate: {}/{branch} needs you", st.repo),
                     &format!(
                         "relaunch gave up after {attempts} attempts ({})",

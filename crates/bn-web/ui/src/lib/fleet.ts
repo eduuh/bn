@@ -25,6 +25,10 @@ export interface FleetEntry {
   statusLabel: string;
   tone: ChipTone;
   outputTokens?: number;
+  /** Assistant turns so far — the "is it actually moving" counter the token total can't give you. */
+  turns?: number;
+  /** Tool calls so far, the other half of that signal. */
+  toolCalls?: number;
   updatedAt: number;
   /** True when this agent needs the human: stuck/dead/errored, or waiting-for-plan-review. */
   needs: boolean;
@@ -80,7 +84,9 @@ const HEALTH_LABEL: Record<string, string> = {
   starting: "Starting…",
   active: "Active",
   idle: "Idle",
-  stuck: "Stuck — no progress",
+  // Just "Stuck" — the *why* is the card's needs-reason strip, and saying it twice on one card
+  // reads as two problems.
+  stuck: "Stuck",
 };
 
 /** An in-flight orchestrate item → a fleet entry, joined to its live agent for tokens + session. */
@@ -106,6 +112,8 @@ function entryFromItem(item: QueueItem, run: RunView, fleet?: FleetView): FleetE
     statusLabel: needsReview ? "review" : item.last_state ? item.last_state : "in-flight",
     tone: needsReview ? "amber" : paneTone(item.last_state),
     outputTokens: agent?.output_tokens,
+    turns: agent?.turns,
+    toolCalls: agent?.tool_calls,
     updatedAt: item.updated_at,
     needs,
     needsReason: needsReview ? "Plan awaiting approval" : stateNeedsYou(item.last_state) ? paneStateLabel(item.last_state) : undefined,
@@ -132,6 +140,8 @@ function entryFromAgent(a: LiveAgent): FleetEntry {
     statusLabel: orchestrator ? "orchestrator" : a.health,
     tone: healthTone(a.health),
     outputTokens: a.output_tokens,
+    turns: a.turns,
+    toolCalls: a.tool_calls,
     updatedAt: a.last_activity_ts,
     needs: a.health === "stuck",
     needsReason: a.health === "stuck" ? "No progress" : undefined,

@@ -127,10 +127,14 @@ pub fn record_plan(cfg: &Config, ctx: &Resolved, plan: &str, today: &str) -> Res
 /// Demote a plan's markdown ATX headings by two levels (`# ` → `### `, `## ` → `#### `, …) so none
 /// sits at level 2 — the note's section-delimiter level. This lets the whole plan nest safely
 /// inside the note's `## Plan` section without an inner heading leaking into a sibling section.
+///
+/// Lines inside fenced code blocks are left alone: a `# build the thing` shell comment or a plan
+/// quoting markdown is content, and demoting it would silently rewrite the code the plan is
+/// telling you to run.
 fn demote_headings(plan: &str) -> String {
-    plan.lines()
-        .map(|line| {
-            if line.starts_with('#') {
+    crate::markdown::scan(plan)
+        .map(|(line, code)| {
+            if !code && line.starts_with('#') {
                 let hashes = line.chars().take_while(|&c| c == '#').count();
                 let rest = &line[hashes..];
                 // Only a real ATX heading if a space (or EOL) follows the run of `#`.
@@ -159,4 +163,41 @@ pub fn read_body_section(
     }
     let note = store::read(&note_md)?;
     Ok(crate::render::section_content(&note.body, heading))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn headings_demote_by_two_levels() {
+        assert_eq!(
+            demote_headings("# Top\n## Two\ntext"),
+            "### Top\n#### Two\ntext"
+        );
+    }
+
+    #[test]
+    fn a_hash_without_a_space_is_not_a_heading() {
+        assert_eq!(demote_headings("#tag not a heading"), "#tag not a heading");
+    }
+
+    #[test]
+    fn shell_comments_inside_a_fence_survive_verbatim() {
+        // The plan tells you to run this; demoting the comment would corrupt the command.
+        let plan = "# Steps\n\n```sh\n# build the thing\nmake all\n```\n";
+        assert_eq!(
+            demote_headings(plan),
+            "### Steps\n\n```sh\n# build the thing\nmake all\n```"
+        );
+    }
+
+    #[test]
+    fn quoted_markdown_inside_a_fence_is_left_alone() {
+        let plan = "## Approach\n\n````markdown\n## Goal\n\nthe goal\n````\n";
+        assert_eq!(
+            demote_headings(plan),
+            "#### Approach\n\n````markdown\n## Goal\n\nthe goal\n````"
+        );
+    }
 }

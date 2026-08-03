@@ -189,6 +189,21 @@ pub(crate) fn live_worktree_paths(bare_dir: &Path) -> HashMap<String, HashMap<St
     map
 }
 
+/// Where one branch is actually checked out, asked of git rather than reconstructed.
+///
+/// `<worktree_dir>/<repo>/<branch>` is only a convention: a dispatched branch lives in a pool slot
+/// (`_pool/N`), and a worktree directory reused for later work keeps its original name. Any caller
+/// that needs a real cwd — resuming a session, running a harness turn — must consult git, or it
+/// ends up running in a directory that does not exist. One `git worktree list` for the named repo,
+/// so it is cheap enough for a single lookup (the whole-machine sweep is [`live_worktree_paths`]).
+pub fn worktree_path(cfg: &Config, repo: &str, branch: &str) -> Option<PathBuf> {
+    let bare = cfg.bare_dir().join(format!("{}.git", repo.to_lowercase()));
+    let porcelain = git_worktree_list(&bare)?;
+    worktree_paths_from_porcelain(&porcelain)
+        .remove(&branch.replace('/', "-"))
+        .filter(|p| p.is_dir())
+}
+
 /// The `dashed-branch → worktree_path` pairs from `git worktree list --porcelain`: each `worktree
 /// <path>` block is followed by a `branch refs/heads/<b>` line (the bare's own entry and any
 /// detached-HEAD worktree carry no such line, so they are naturally skipped — the pending
