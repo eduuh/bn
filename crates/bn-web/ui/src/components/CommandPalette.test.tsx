@@ -110,8 +110,9 @@ afterEach(() => {
 describe("Command palette (#565)", () => {
   it("prompts before a query, then renders ranked typed results", async () => {
     wrap();
-    // Empty box → the guidance prompt, no fetch.
-    expect(screen.getByText(/Type to search across everything bn tracks/)).toBeTruthy();
+    // Empty box → every destination, plus the guidance prompt. No fetch.
+    expect(screen.getByText(/type to search across everything bn tracks/)).toBeTruthy();
+    expect(screen.getByText("Destinations")).toBeTruthy();
 
     fireEvent.change(screen.getByPlaceholderText(/Search tasks, issues, notes/), {
       target: { value: "palette" },
@@ -123,6 +124,29 @@ describe("Command palette (#565)", () => {
     // The task offers "Work on"; the note offers "Jump".
     expect(screen.getByText("Work on")).toBeTruthy();
     expect(screen.getByText("Jump")).toBeTruthy();
+  });
+
+  it("reaches a screen by name, even when no data row matches", async () => {
+    // The regression this guards: the palette used to search *data* only, so typing the name of a
+    // screen with no same-named data row ("cost", "console") dead-ended on "No results." — the most
+    // common thing anyone types into a palette, and the only fast navigation on a phone.
+    wrap();
+    fireEvent.change(screen.getByPlaceholderText(/Search tasks, issues, notes/), {
+      target: { value: "cost" },
+    });
+
+    expect(screen.getByText("Go to")).toBeTruthy();
+    expect(screen.getByText("Cost")).toBeTruthy();
+    expect(screen.getByText("/cost")).toBeTruthy();
+    expect(screen.queryByText("No results.")).toBeNull();
+  });
+
+  it("matches a destination by synonym, not just its label", async () => {
+    wrap();
+    fireEvent.change(screen.getByPlaceholderText(/Search tasks, issues, notes/), {
+      target: { value: "money" },
+    });
+    expect(screen.getByText("Cost")).toBeTruthy();
   });
 
   it("acts on a task result by opening the reused Start-agent composer", async () => {

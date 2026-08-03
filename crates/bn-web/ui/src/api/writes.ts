@@ -265,6 +265,13 @@ export function warmRepoPool(repo: string): Promise<WarmPoolResult> {
   return post<WarmPoolResult>(`/api/repos/${encodeURIComponent(repo)}/pool/warm`);
 }
 
+/** `POST /api/repos/:repo/pool {size?}` — pool a repo at `size` slots, or stop pooling it with
+ * `size: null`. Writes the pools config the idle `pool-warm` cron reads, so enabling here is all it
+ * takes for the pool to be kept warm from then on. Slots are not built by this call. */
+export function setRepoPool(repo: string, size: number | null): Promise<{ repo: string; size: number | null; message: string }> {
+  return post(`/api/repos/${encodeURIComponent(repo)}/pool`, { size });
+}
+
 /** `POST /api/repos/:repo/orchestrate {goal?, harness?}` (#556) — start a guarded main-branch
  * orchestrator for the repo: the long-lived supervisor that drains the repo's open-issue backlog.
  * Idempotent — a `409` (an orchestrator already runs for this repo) throws `ApiError` with code

@@ -85,7 +85,7 @@ export function AgentDetail() {
                 answers, so steering is one continuous motion instead of a hunt across the page. */}
             <div className="space-y-3">
               <AgentActivity sessionId={agent.session_id} />
-              <SteerPanel target={agent.target} />
+              <SteerPanel target={agent.target} control={agent.control} />
             </div>
             <div className="space-y-3">
               <PlanReviewPanel repo={agent.repo} branch={agent.branch} />

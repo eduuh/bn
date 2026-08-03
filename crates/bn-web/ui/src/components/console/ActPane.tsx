@@ -226,7 +226,7 @@ export function ActPane({ item }: { item?: WorkItem }) {
     return (
       <div className={ACT_LAYOUT}>
         <PlanReviewPanel repo={a.repo} branch={a.branch} />
-        <SteerPanel target={a.target} />
+        <SteerPanel target={a.target} control={a.control} />
         <LandButton repo={a.repo} />
       </div>
     );

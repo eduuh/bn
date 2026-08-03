@@ -291,6 +291,21 @@ pub enum PoolCmd {
         #[arg(short = 'v', long)]
         verbose: bool,
     },
+    /// Turn pooling on for a repo at `size` slots, or off with `--off`. Writes the repo's entry in
+    /// the pools config (`~/.config/wt/pools`) — the opt-in every other pool command reads. Slots
+    /// aren't built here: the idle `pool-warm` cron picks the repo up on its next pass, or run
+    /// `bn wt pool warm --repo <repo>` to build them now.
+    Set {
+        /// Slot count to pool at (1..=16).
+        size: Option<usize>,
+        /// Target repo (defaults to the current repo, else an fzf pick).
+        #[arg(long)]
+        repo: Option<String>,
+        /// Stop pooling this repo — remove its entry. Existing slots stay on disk; remove them with
+        /// `bn wt pool destroy --all`.
+        #[arg(long)]
+        off: bool,
+    },
     /// Remove a specific slot or the whole pool. Dry-run by default; `--yes` executes. Leased,
     /// dirty, and in-use slots are skipped unless the matching `--include-*` flag opts in; a leased
     /// slot can only be removed by exact slot number plus `--include-leased` (never under `--all`).

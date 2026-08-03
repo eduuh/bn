@@ -21,6 +21,28 @@
 //! | `snooze:DATE` | deferred / hidden until a date |
 //! | `due:DATE`    | due date                       |
 //! | `from:a3`     | promoted-from-attention trail  |
+//! | `uid:9f2a…`   | immutable identity (see below) |
+//! | `mod:<epoch>` | last-modified stamp (see below)|
+//!
+//! # Surviving a union merge (#995)
+//!
+//! The file is `merge=union`, so a git sync **concatenates** both sides rather than conflicting.
+//! [`append_task`] is safe under that: two machines each appending land two distinct lines. But
+//! every *mutation* ([`save`]) is a full rewrite, and two machines that each rewrite produce two
+//! copies of **every** line. Two mechanisms keep that from corrupting the store, and they solve
+//! genuinely different problems:
+//!
+//! - **`uid:`** — minted once at creation, never changed. Two lines sharing a `uid:` are the same
+//!   task rewritten on two machines, so [`TodoFile::dedupe_by_uid`] collapses them, keeping the
+//!   highest `mod:`.
+//! - **`id:`** — the short `t<N>` handle you type. It is *positional*, so two machines working
+//!   offline can independently mint `t6` for two **different** tasks. [`TodoFile::heal_ids`]
+//!   renumbers the collision so both survive.
+//!
+//! Deduplicating on `id:` would be wrong: it cannot tell "one task written twice" from "two tasks
+//! that collided on a handle", and collapsing the latter silently deletes a task. So [`load`]
+//! runs `dedupe_by_uid` (identity) **before** `heal_ids` (handles) — the identity pass removes the
+//! true duplicates, and only genuine collisions are left for renumbering.
 //!
 //! Lifecycle is inline and self-contained: **open** (no `x`), **in-progress** (`@wip` context),
 //! **done** (`x <date>`), **cancelled** (`x <date> cancelled:1`, distinct from a real completion
@@ -29,6 +51,34 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+/// Meta key holding a task's immutable identity (see the module docs on union merges).
+pub const UID_KEY: &str = "uid";
+/// Meta key holding a task's last-modified epoch seconds.
+pub const MOD_KEY: &str = "mod";
+
+/// Mint an identity for a brand-new task: unique across machines and across tasks created in the
+/// same second on one machine.
+///
+/// Nanoseconds plus a process-local counter cover the same-machine case (two `add`s in one second
+/// still differ), and hashing the task text in makes a cross-machine collision require the same
+/// text at the same nanosecond. This is identity, not a security token — the cost of a collision
+/// is one wrongly-merged line, so a short opaque hex string is the right trade.
+fn mint_uid(text: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    nanos.hash(&mut h);
+    COUNTER.fetch_add(1, Ordering::Relaxed).hash(&mut h);
+    text.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
 
 /// One classified whitespace token in a task's description. Projects/contexts/meta are stored
 /// without their sigil; `Word` is anything else and passes through verbatim on render.
@@ -132,8 +182,30 @@ impl Task {
         })
     }
 
-    /// Set (or insert) a `key:value` meta, preserving position when it already exists.
+    /// Set (or insert) a `key:value` meta, preserving position when it already exists, and stamp
+    /// `mod:` with the current epoch.
+    ///
+    /// Stamping here rather than at each call site is deliberate: `mod:` is what
+    /// [`TodoFile::dedupe_by_uid`] uses to pick the winner after a union merge, so a mutation that
+    /// forgot to stamp would lose to an older copy of itself. The clock honors `$BN_NOW`
+    /// ([`crate::util::now_epoch_secs`]), so tests pin it the same way the rest of bn does.
+    ///
+    /// Use [`Task::set_meta_raw`] for writes that are *not* user edits — id healing on read, and
+    /// the identity fields themselves.
     pub fn set_meta(&mut self, key: &str, val: &str) {
+        self.set_meta_raw(key, val);
+        // `mod:` and `uid:` are bookkeeping, not content — stamping on them would recurse.
+        if key != MOD_KEY && key != UID_KEY {
+            self.touch();
+        }
+    }
+
+    /// Set a meta **without** stamping `mod:`.
+    ///
+    /// For writes that must not count as a modification: [`TodoFile::heal_ids`] runs on every
+    /// [`load`], and if healing stamped, merely listing tasks would make a stale copy look newer
+    /// than the real one.
+    pub fn set_meta_raw(&mut self, key: &str, val: &str) {
         for t in &mut self.desc {
             if let Token::Meta(k, v) = t {
                 if k == key {
@@ -146,9 +218,39 @@ impl Task {
             .push(Token::Meta(key.to_string(), val.to_string()));
     }
 
-    /// The task's `id:` (e.g. `t3`), if assigned.
+    /// Stamp `mod:` with the current epoch — "this line was just edited".
+    ///
+    /// The stamp is moved to the end of the line rather than updated in place, so it always trails
+    /// the task's real content instead of wedging itself between whatever two keys happened to be
+    /// edited first. Keeps rendered lines stable and readable across repeated edits.
+    pub fn touch(&mut self) {
+        self.desc
+            .retain(|t| !matches!(t, Token::Meta(k, _) if k == MOD_KEY));
+        self.desc.push(Token::Meta(
+            MOD_KEY.to_string(),
+            crate::util::now_epoch_secs().to_string(),
+        ));
+    }
+
+    /// The task's `id:` (e.g. `t3`), if assigned. A *positional* handle: [`TodoFile::heal_ids`]
+    /// may renumber it after a merge, so never treat it as identity — that's [`Task::uid`].
     pub fn id(&self) -> Option<&str> {
         self.meta("id")
+    }
+
+    /// The task's immutable identity, minted at creation and never rewritten. `None` for lines
+    /// authored before `uid:` existed (or by hand), which [`TodoFile::dedupe_by_uid`] then leaves
+    /// alone rather than guessing.
+    pub fn uid(&self) -> Option<&str> {
+        self.meta(UID_KEY)
+    }
+
+    /// Last-modified epoch seconds from `mod:`. `0` when absent, so an unstamped legacy line
+    /// always loses to a stamped one.
+    pub fn modified(&self) -> i64 {
+        self.meta(MOD_KEY)
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0)
     }
 
     /// The `+project` tags.
@@ -218,6 +320,7 @@ impl Task {
     pub fn mark_done(&mut self, today: &str) {
         self.done = true;
         self.completion = Some(today.to_string());
+        self.touch();
     }
 
     /// Mark done *as cancelled* — folds out of the open set like [`Task::mark_done`], but records
@@ -234,6 +337,7 @@ impl Task {
     pub fn mark_wip(&mut self) {
         if !self.contexts().contains(&"wip") {
             self.desc.push(Token::Context("wip".to_string()));
+            self.touch();
         }
     }
 
@@ -287,9 +391,12 @@ impl Task {
             created: Some(today.to_string()),
             desc: text.split_whitespace().map(Token::classify).collect(),
         };
-        task.set_meta("id", id);
-        task.set_meta("branch", branch);
-        task.set_meta("src", src);
+        task.set_meta_raw("id", id);
+        task.set_meta_raw("branch", branch);
+        task.set_meta_raw("src", src);
+        // Identity first, then the stamp — every task is born dedupable (#995).
+        task.set_meta_raw(UID_KEY, &mint_uid(text));
+        task.touch();
         task
     }
 
@@ -511,11 +618,63 @@ impl TodoFile {
                 None => {
                     max += 1;
                     let nid = format!("t{max}");
-                    t.set_meta("id", &nid);
+                    // Raw: healing runs on every `load`, and stamping `mod:` here would make a
+                    // merely-listed stale copy outrank the real one in `dedupe_by_uid`.
+                    t.set_meta_raw("id", &nid);
                     seen.insert(nid);
                 }
             }
         }
+    }
+
+    /// Collapse lines that a union merge duplicated, keeping each task's newest version.
+    ///
+    /// Two lines are the same task when they share a [`Task::uid`] — the identity minted once at
+    /// creation. The survivor is the one with the highest [`Task::modified`]; ties go to the last
+    /// in file order, so the result is deterministic regardless of which side of the merge landed
+    /// first. Each survivor stays at its own position, and non-task lines are untouched.
+    ///
+    /// Tasks with no `uid:` are left untouched — a hand-added or pre-#995 line has no identity to
+    /// match on, and guessing would risk deleting real work.
+    ///
+    /// **Not keyed on `id:`.** Two machines working offline can each mint `t6` for two different
+    /// tasks; collapsing those would silently delete one. That case is [`TodoFile::heal_ids`]'s,
+    /// and it runs after this pass. Returns the number of lines removed.
+    pub fn dedupe_by_uid(&mut self) -> usize {
+        use std::collections::HashMap;
+
+        // uid → (index of the winning line so far, its `mod:`)
+        let mut winner: HashMap<String, (usize, i64)> = HashMap::new();
+        for (idx, line) in self.lines.iter().enumerate() {
+            let Line::Task(t) = line else { continue };
+            let Some(uid) = t.uid().map(str::to_string) else {
+                continue;
+            };
+            let m = t.modified();
+            match winner.get(&uid) {
+                // `>=` so a tie resolves to the later line.
+                Some(&(_, best)) if m >= best => {
+                    winner.insert(uid, (idx, m));
+                }
+                Some(_) => {}
+                None => {
+                    winner.insert(uid, (idx, m));
+                }
+            }
+        }
+
+        let keep: std::collections::HashSet<usize> = winner.values().map(|&(idx, _)| idx).collect();
+        let before = self.lines.len();
+        let mut idx = 0;
+        self.lines.retain(|line| {
+            let this = idx;
+            idx += 1;
+            match line {
+                Line::Task(t) if t.uid().is_some() => keep.contains(&this),
+                _ => true,
+            }
+        });
+        before - self.lines.len()
     }
 
     /// Open tasks as of `today`, optionally filtered to one `branch`, in display order (see
@@ -693,12 +852,22 @@ impl TodoFile {
 }
 
 /// Load the todo file at `path`, or an empty file when it doesn't exist yet (first `add` creates
-/// it). Ids are healed on read (see [`TodoFile::heal_ids`]) so the loaded model is always
-/// uniquely addressable. Any I/O error other than "not found" propagates.
+/// it). Any I/O error other than "not found" propagates.
+///
+/// Two repair passes run on read, and **the order matters** (#995):
+///
+/// 1. [`TodoFile::dedupe_by_uid`] collapses lines a union merge duplicated, keeping each task's
+///    newest version.
+/// 2. [`TodoFile::heal_ids`] renumbers the `t<N>` handles that remain colliding, so the loaded
+///    model is uniquely addressable.
+///
+/// Reversed, healing would hand one copy of a duplicated task a fresh id, after which nothing
+/// could tell it apart from a genuinely distinct task — the duplicate would be permanent.
 pub fn load(path: &Path) -> std::io::Result<TodoFile> {
     match std::fs::read_to_string(path) {
         Ok(s) => {
             let mut f = TodoFile::parse(&s);
+            f.dedupe_by_uid();
             f.heal_ids();
             Ok(f)
         }
@@ -814,6 +983,31 @@ pub fn save(path: &Path, file: &TodoFile) -> std::io::Result<()> {
     };
     std::fs::write(&tmp, rendered)?;
     std::fs::rename(&tmp, path)
+}
+
+/// Ensure `<notes_root>/.gitattributes` marks the task store `merge=union`, so a sync
+/// concatenates both sides instead of raising a conflict on a file two machines both append to.
+///
+/// Idempotent, and additive: an existing `.gitattributes` keeps its content (the notes root
+/// already carries `**/events.jsonl merge=union`, the same treatment for the same reason). Silent
+/// on I/O failure — a missing merge driver degrades to ordinary conflicts, which is annoying but
+/// not lossy, and is never worth failing a task write over.
+///
+/// Union merge is only safe *because* [`load`] repairs the concatenation; see the module docs.
+pub fn ensure_union_merge(notes_root: &Path) -> std::io::Result<()> {
+    const LINE: &str = "tasks.txt merge=union";
+    let ga = notes_root.join(".gitattributes");
+    let existing = std::fs::read_to_string(&ga).unwrap_or_default();
+    if existing.lines().any(|l| l.trim() == LINE) {
+        return Ok(());
+    }
+    let mut content = existing;
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(LINE);
+    content.push('\n');
+    std::fs::write(&ga, content)
 }
 
 /// An advisory exclusive lock over a todo file's read-modify-write, released on drop. Serializes
@@ -964,9 +1158,11 @@ x 2026-07-04 2026-07-02 Drop JSONL idea cancelled:1 reason:PR-conflicts id:t0 br
         assert_eq!(t.meta("due"), Some("2026-09-01"));
         // id must be untouched and still last-but-one
         assert_eq!(t.id(), Some("t1"));
+        // A `mod:` stamp is appended after the edited keys (#995), so match the prefix only.
         assert!(t
             .render()
             .starts_with("thing snooze:2026-08-01 id:t1 due:2026-09-01"));
+        assert!(t.modified() > 0, "an edit stamps mod:");
     }
 
     #[test]
@@ -1150,10 +1346,15 @@ e branch:x
         append_task(&path, &t).unwrap();
         let on_disk = std::fs::read_to_string(&path).unwrap();
         // the original line is untouched (spacing intact); the new line is appended after a newline
-        assert_eq!(
-            on_disk,
-            "(A)   spaced   out   id:t1\n2026-07-04 new one id:t2 branch:x src:manual\n"
+        let (first, appended) = on_disk.split_once('\n').expect("two lines");
+        assert_eq!(first, "(A)   spaced   out   id:t1");
+        // `uid:`/`mod:` trail the stable meta (#995), so assert the prefix and the identity.
+        assert!(
+            appended.starts_with("2026-07-04 new one id:t2 branch:x src:manual uid:"),
+            "unexpected appended line: {appended}"
         );
+        assert!(appended.ends_with('\n'));
+        assert_eq!(t.uid(), parse_task(appended.trim_end()).uid());
     }
 
     #[test]
@@ -1184,10 +1385,14 @@ e branch:x
         let path = dir.path().join("TODO.txt");
         let t = Task::new_todo("t1", "first", Some('A'), "x", "manual", "2026-07-04");
         append_task(&path, &t).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "(A) 2026-07-04 first id:t1 branch:x src:manual\n"
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        // `uid:`/`mod:` trail the stable meta (#995), so assert the prefix rather than the whole
+        // line — the identity is minted fresh and the stamp is wall-clock.
+        assert!(
+            on_disk.starts_with("(A) 2026-07-04 first id:t1 branch:x src:manual uid:"),
+            "unexpected line: {on_disk}"
         );
+        assert!(on_disk.ends_with('\n'));
     }
 
     fn ing(text: &str, key: Option<&str>) -> IngestTodo {
@@ -1333,5 +1538,225 @@ e branch:x
         assert_eq!(v["summary"], "fix it @wip +bug");
         assert_eq!(v["due"], "2026-07-10");
         assert_eq!(v["src"], "agent");
+    }
+
+    // ---- #995: surviving a union merge -------------------------------------------------
+
+    /// One task line as two machines would each have rewritten it: same `uid:`, different `mod:`.
+    fn line(id: &str, uid: &str, modified: i64, text: &str) -> String {
+        format!("2026-08-03 {text} id:{id} uid:{uid} mod:{modified}")
+    }
+
+    #[test]
+    fn new_tasks_are_born_with_an_identity_and_a_stamp() {
+        let t = Task::new_todo("t1", "fix the thing", None, "main", "manual", "2026-08-03");
+        assert!(t.uid().is_some_and(|u| !u.is_empty()));
+        assert!(t.modified() > 0);
+    }
+
+    #[test]
+    fn distinct_tasks_never_share_an_identity() {
+        let a = Task::new_todo("t1", "same text", None, "main", "manual", "2026-08-03");
+        let b = Task::new_todo("t2", "same text", None, "main", "manual", "2026-08-03");
+        assert_ne!(a.uid(), b.uid(), "identical text must not collide");
+    }
+
+    /// The #995 acceptance case: both machines rewrote the file, git concatenated both copies,
+    /// and the load must come back with the original task count — each at its newest version.
+    #[test]
+    fn union_merged_rewrites_collapse_to_the_newest_copy() {
+        let merged = format!(
+            "{}\n{}\n{}\n{}\n",
+            line("t1", "aaa", 100, "ship the parser"),
+            line("t2", "bbb", 100, "write the docs"),
+            // …the same two tasks again, as the other machine last wrote them.
+            line("t1", "aaa", 200, "ship the parser @wip"),
+            line("t2", "bbb", 50, "write the docs"),
+        );
+        let mut f = TodoFile::parse(&merged);
+        let removed = f.dedupe_by_uid();
+
+        assert_eq!(removed, 2);
+        assert_eq!(f.tasks().count(), 2, "original task count restored");
+        let by_uid = |uid: &str| {
+            f.tasks()
+                .find(|t| t.uid() == Some(uid))
+                .expect("task survived")
+                .clone()
+        };
+        assert_eq!(by_uid("aaa").modified(), 200, "newest copy wins");
+        assert!(by_uid("aaa").contexts().contains(&"wip"));
+        assert_eq!(by_uid("bbb").modified(), 100, "newest copy wins");
+    }
+
+    /// The case a naive `dedupe_by_id` would silently destroy: two machines offline each minted
+    /// `t6` for a *different* task. They are not duplicates — both must survive, renumbered.
+    #[test]
+    fn two_tasks_that_collided_on_a_handle_both_survive() {
+        let merged = format!(
+            "{}\n{}\n",
+            line("t6", "aaa", 100, "fix the login bug"),
+            line("t6", "bbb", 100, "add the export button"),
+        );
+        let mut f = TodoFile::parse(&merged);
+
+        assert_eq!(f.dedupe_by_uid(), 0, "distinct tasks are not duplicates");
+        f.heal_ids();
+
+        assert_eq!(f.tasks().count(), 2);
+        let ids: Vec<&str> = f.tasks().filter_map(|t| t.id()).collect();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1], "the handle collision was renumbered");
+        let summaries: Vec<String> = f.tasks().map(|t| t.summary()).collect();
+        assert!(summaries.iter().any(|s| s.contains("login")));
+        assert!(summaries.iter().any(|s| s.contains("export")));
+    }
+
+    /// Dedupe must run before healing. Reversed, healing renumbers one copy of a duplicated task
+    /// and the duplicate becomes permanent — so assert the pipeline `load` actually uses.
+    #[test]
+    fn dedupe_runs_before_healing() {
+        let merged = format!(
+            "{}\n{}\n",
+            line("t1", "aaa", 100, "ship the parser"),
+            line("t1", "aaa", 200, "ship the parser @wip"),
+        );
+
+        let mut correct = TodoFile::parse(&merged);
+        correct.dedupe_by_uid();
+        correct.heal_ids();
+        assert_eq!(correct.tasks().count(), 1);
+
+        // The wrong order, spelled out: healing first mints a fresh id for the second copy, and
+        // dedupe can still see the shared uid — but the file has already been renumbered, which
+        // is what makes the duplicate look like real work to everything downstream.
+        let mut wrong = TodoFile::parse(&merged);
+        wrong.heal_ids();
+        let ids: Vec<String> = wrong
+            .tasks()
+            .filter_map(|t| t.id().map(str::to_string))
+            .collect();
+        assert_ne!(ids[0], ids[1], "healing first renumbers a true duplicate");
+    }
+
+    #[test]
+    fn lines_without_an_identity_are_left_alone() {
+        // Hand-added / pre-#995 lines have no `uid:` — there is nothing to match on, so dedupe
+        // must not guess. `heal_ids` still gives them addressable handles.
+        let merged = "2026-08-03 hand written note\n2026-08-03 hand written note\n";
+        let mut f = TodoFile::parse(merged);
+        assert_eq!(f.dedupe_by_uid(), 0);
+        assert_eq!(f.tasks().count(), 2);
+        f.heal_ids();
+        assert!(f.tasks().all(|t| t.id().is_some()));
+    }
+
+    #[test]
+    fn an_unstamped_copy_loses_to_a_stamped_one() {
+        let merged = format!(
+            "2026-08-03 ship it id:t1 uid:aaa\n{}\n",
+            line("t1", "aaa", 500, "ship it @wip"),
+        );
+        let mut f = TodoFile::parse(&merged);
+        f.dedupe_by_uid();
+        assert_eq!(f.tasks().count(), 1);
+        assert_eq!(f.tasks().next().unwrap().modified(), 500);
+    }
+
+    #[test]
+    fn dedupe_is_order_independent_and_deterministic() {
+        let a = line("t1", "aaa", 100, "ship it");
+        let b = line("t1", "aaa", 200, "ship it @wip");
+        let mut forward = TodoFile::parse(&format!("{a}\n{b}\n"));
+        let mut backward = TodoFile::parse(&format!("{b}\n{a}\n"));
+        forward.dedupe_by_uid();
+        backward.dedupe_by_uid();
+        assert_eq!(forward.tasks().next().unwrap().modified(), 200);
+        assert_eq!(backward.tasks().next().unwrap().modified(), 200);
+    }
+
+    #[test]
+    fn mutations_stamp_mod_but_healing_does_not() {
+        let mut t = Task::new_todo("t1", "ship it", None, "main", "manual", "2026-08-03");
+        t.set_meta_raw(MOD_KEY, "1000");
+
+        t.set_meta("due", "2026-08-10");
+        assert!(t.modified() > 1000, "a user edit stamps mod:");
+
+        t.set_meta_raw(MOD_KEY, "1000");
+        t.set_meta_raw("id", "t9");
+        assert_eq!(t.modified(), 1000, "healing an id must not stamp mod:");
+    }
+
+    #[test]
+    fn marking_done_and_wip_stamps_mod() {
+        let mut t = Task::new_todo("t1", "ship it", None, "main", "manual", "2026-08-03");
+        t.set_meta_raw(MOD_KEY, "1000");
+        t.mark_wip();
+        assert!(t.modified() > 1000);
+
+        t.set_meta_raw(MOD_KEY, "1000");
+        t.mark_done("2026-08-04");
+        assert!(t.modified() > 1000);
+    }
+
+    #[test]
+    fn load_repairs_a_union_merged_file_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.txt");
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n{}\n{}\n",
+                line("t1", "aaa", 100, "ship the parser"),
+                line("t1", "aaa", 200, "ship the parser @wip"),
+                line("t2", "bbb", 100, "write the docs"),
+            ),
+        )
+        .unwrap();
+
+        let f = load(&path).unwrap();
+        assert_eq!(f.tasks().count(), 2);
+        assert_eq!(
+            f.tasks()
+                .find(|t| t.uid() == Some("aaa"))
+                .unwrap()
+                .modified(),
+            200
+        );
+    }
+
+    #[test]
+    fn ensure_union_merge_is_idempotent_and_additive() {
+        let dir = tempfile::tempdir().unwrap();
+        let ga = dir.path().join(".gitattributes");
+        std::fs::write(&ga, "**/events.jsonl merge=union\n").unwrap();
+
+        ensure_union_merge(dir.path()).unwrap();
+        ensure_union_merge(dir.path()).unwrap();
+
+        let content = std::fs::read_to_string(&ga).unwrap();
+        assert_eq!(
+            content.matches("tasks.txt merge=union").count(),
+            1,
+            "written exactly once: {content}"
+        );
+        assert!(
+            content.contains("**/events.jsonl merge=union"),
+            "existing rules preserved: {content}"
+        );
+    }
+
+    #[test]
+    fn tasks_paths_are_person_scoped() {
+        // Person-scoped, not under `<machine>/` — a task list that differs per laptop would not
+        // be a single source of truth (#995).
+        let cfg = crate::resolver::Config {
+            personal_root: std::path::PathBuf::from("/notes"),
+            hostname: "somebox".into(),
+            ..Default::default()
+        };
+        assert_eq!(cfg.tasks_file(), std::path::Path::new("/notes/tasks.txt"));
+        assert_eq!(cfg.tasks_dir(), std::path::Path::new("/notes/tasks"));
     }
 }

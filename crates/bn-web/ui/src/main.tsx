@@ -5,6 +5,11 @@ import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom"
 import { App } from "./App";
 import { Console } from "./routes/Console";
 import { lazyRoute, prefetchRoutes } from "./lib/lazyRoute";
+// The 404 and the two error boundaries stay in the entry chunk on purpose. They are the screens
+// that render when something has already gone wrong — including a chunk that failed to load — so
+// making them lazy would risk needing the network to explain that the network broke. They are a few
+// hundred bytes.
+import { NotFound, RootError, RouteError } from "./routes/NotFound";
 // Every route but the console is lazy. The console is the index route, so it stays in the entry
 // chunk and paints without a fallback; the other nineteen views — and the libraries only they pull
 // in, uPlot for the cost charts, the markdown renderer for notes and packets — arrive on
@@ -43,33 +48,46 @@ const queryClient = new QueryClient({
   },
 });
 
+// The shell is guarded at three levels (#: live sweep). `RootError` replaces the page only if the
+// shell itself throws; the pathless layout route below owns `RouteError`, so a single screen
+// blowing up renders inside the rail instead of taking the dashboard down; and the trailing `*`
+// catches unmatched paths, which previously fell through to React Router's bare "Unexpected
+// Application Error!" page with no nav and no way home.
 const router = createBrowserRouter([
   {
     path: "/",
     element: <App />,
+    errorElement: <RootError />,
     children: [
-      { index: true, element: <Console /> },
-      // The classic action list keeps its home for the surfaces the console doesn't own yet
-      // (the automation hub + the completed history).
-      { path: "inbox", element: <CommandCenter /> },
-      { path: "today", element: <Today /> },
-      { path: "fleet", element: <Fleet /> },
-      { path: "nodes", element: <Nodes /> },
-      { path: "start", element: <Start /> },
-      { path: "reviews", element: <Navigate to="/inbox?tab=reviews" replace /> },
-      { path: "cost", element: <CostView /> },
-      { path: "insights", element: <Insights /> },
-      { path: "agents/:id", element: <AgentDetail /> },
-      { path: "notes", element: <NotesPage /> },
-      { path: "handoff", element: <Handoff /> },
-      { path: "attention", element: <Attention /> },
-      { path: "goals", element: <Goals /> },
-      { path: "cron", element: <Cron /> },
-      { path: "cron/:id", element: <CronDetail /> },
-      { path: "skills", element: <Skills /> },
-      { path: "research", element: <Research /> },
-      { path: "repos", element: <Repos /> },
-      { path: "repos/:repo", element: <RepoDetail /> },
+      {
+        errorElement: <RouteError />,
+        children: [
+          { index: true, element: <Console /> },
+          // The classic action list keeps its home for the surfaces the console doesn't own yet
+          // (the automation hub + the completed history).
+          { path: "inbox", element: <CommandCenter /> },
+          { path: "today", element: <Today /> },
+          { path: "fleet", element: <Fleet /> },
+          { path: "nodes", element: <Nodes /> },
+          { path: "start", element: <Start /> },
+          { path: "reviews", element: <Navigate to="/inbox?tab=reviews" replace /> },
+          { path: "cost", element: <CostView /> },
+          { path: "insights", element: <Insights /> },
+          { path: "agents/:id", element: <AgentDetail /> },
+          { path: "notes", element: <NotesPage /> },
+          { path: "handoff", element: <Handoff /> },
+          { path: "attention", element: <Attention /> },
+          { path: "goals", element: <Goals /> },
+          { path: "cron", element: <Cron /> },
+          { path: "cron/:id", element: <CronDetail /> },
+          { path: "skills", element: <Skills /> },
+          { path: "research", element: <Research /> },
+          { path: "repos", element: <Repos /> },
+          { path: "repos/:repo", element: <RepoDetail /> },
+          // Anything else is a stale link or a typo — a real screen, inside the shell.
+          { path: "*", element: <NotFound /> },
+        ],
+      },
     ],
   },
 ]);

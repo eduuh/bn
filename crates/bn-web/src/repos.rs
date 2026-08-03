@@ -1,9 +1,10 @@
 //! `GET /api/repos` — the multi-repo navigation rollup (#495).
 //!
-//! The Repos view groups the fleet by repo: every repo bn knows (the managed-repos config, the
-//! branch-note store, the live fleet, and the orchestrate runs), each with a per-repo rollup —
-//! active agents, open PRs, recent sessions (branches with notes / dispatches), last activity, and
-//! cost (`by_repo` from the #381 fold) — plus a drill-in session list. A read; all in-process
+//! The Repos view groups the fleet by repo: every repo bn knows (the bare clones it manages on this
+//! machine, the managed-repos config, the branch-note store, the live fleet, and the orchestrate
+//! runs), each with a per-repo rollup — active agents, open PRs, recent sessions (branches with
+//! notes / dispatches), last activity, and cost (`by_repo` from the #381 fold) — plus a drill-in
+//! session list. A read; all in-process
 //! `bn-core`, reusing the same rollups the Fleet / Notes / Cost surfaces read so the shapes stay
 //! one contract. The heavy lifting is a pure [`assemble`] over already-extracted rows, so the
 //! merge / rollup / sort is unit-tested without touching disk.
@@ -186,6 +187,27 @@ pub fn repos_view(cfg: &Config) -> Value {
 
     let managed: Vec<String> = cfg.managed_repos.iter().map(|u| repo_name(u)).collect();
 
+    // 4b) The repos bn actually manages on this machine: one `<repo>.git` bare clone each. Notes,
+    //     agents and runs only ever mention a repo you've *worked* in, so without this a freshly
+    //     cloned repo — or one whose notes all closed — had no card at all. Work-only machines keep
+    //     personal clones off the board, matching the note walk's own visibility rule.
+    let clone_dirs = bn_core::lifecycle::cloned_repo_dirs(cfg);
+    let cloned: Vec<String> = clone_dirs
+        .keys()
+        .filter(|r| cfg.is_visible_repo(r))
+        .cloned()
+        .collect();
+
+    // 4c) Where each repo lives in a browser, derived from the clone's `origin`. A file read per
+    //     repo, not a `git remote get-url` spawn — this whole view is on a 30s poll.
+    let links: BTreeMap<String, Value> = clone_dirs
+        .iter()
+        .filter_map(|(repo, dir)| {
+            let l = bn_core::forge::links_for(dir)?;
+            Some((repo.clone(), serde_json::to_value(l).ok()?))
+        })
+        .collect();
+
     // 5) Per-repo warm-pool state (#497): the live `bn wt pool` shape (size + warm/leased slots) for
     //    every pooled repo, read in-process from the shared `bn_core::pool` status. Keyed lowercased
     //    to match the rollup's note-canonical repo casing.
@@ -194,12 +216,16 @@ pub fn repos_view(cfg: &Config) -> Value {
         .map(|st| (st.repo.to_ascii_lowercase(), pool_json(st)))
         .collect();
 
-    assemble(&managed, seeds, &cv, &pools)
+    assemble(&managed, &cloned, seeds, &cv, &pools, &links)
 }
 
-/// The compact per-repo pool view attached to a repo rollup (#497): pooling-enabled, configured
-/// size, and the warm / leased / idle split, plus a best-effort last-warmed timestamp. A repo not in
-/// the pools config gets [`pool_disabled`] instead, so the field is always present.
+/// The per-repo pool view attached to a repo rollup (#497): pooling-enabled, configured size, the
+/// warm / leased / idle split, a best-effort last-warmed timestamp, and each slot's own state. A repo
+/// not in the pools config gets [`pool_disabled`] instead, so the field is always present.
+///
+/// Slots ride along because the counts alone can't answer the question you actually have about a
+/// half-leased pool — *which* branch is holding a slot. The list is bounded by the configured size
+/// (at most `MAX_POOL_SIZE`) and only pooled repos have one, so this stays a small payload.
 fn pool_json(st: &bn_core::pool::PoolStatus) -> Value {
     json!({
         "enabled": st.enabled,
@@ -208,23 +234,36 @@ fn pool_json(st: &bn_core::pool::PoolStatus) -> Value {
         "leased": st.leased,
         "idle": st.idle,
         "last_warmed_ts": st.last_warmed_ts,
+        "slots": st.slots.iter().map(|s| json!({
+            "n": s.n,
+            "leased": s.leased,
+            "warm": s.warm,
+            "branch": s.branch,
+            "holder": s.holder,
+            "age_secs": s.age_secs,
+            "warmed_ts": s.warmed_ts,
+        })).collect::<Vec<_>>(),
     })
 }
 
 /// The pool view for a repo with no pool configured — pooling disabled, no slots.
 fn pool_disabled() -> Value {
-    json!({ "enabled": false, "total": 0, "warm": 0, "leased": 0, "idle": 0, "last_warmed_ts": null })
+    json!({ "enabled": false, "total": 0, "warm": 0, "leased": 0, "idle": 0, "last_warmed_ts": null, "slots": [] })
 }
 
 /// Fold the raw session seeds into `{ repos: [RepoRollup, …] }` — pure, so the whole merge / rollup
-/// / sort is testable with hand-built rows. Repos come from the seeds *and* the managed set (a
-/// managed repo with no sessions yet still gets a card). Repos sort by last-activity desc (then
-/// active-agent count, then name); sessions within a repo sort in-flight-first, then most-recent.
+/// / sort is testable with hand-built rows. Repos come from the seeds, the managed set, *and* the
+/// bare clones on this machine — a repo with no sessions yet still gets a card, so the board lists
+/// everything bn can work in rather than only what it has already worked in. Repos sort by
+/// last-activity desc (then active-agent count, then name), which sinks the never-touched clones to
+/// the bottom; sessions within a repo sort in-flight-first, then most-recent.
 fn assemble(
     managed: &[String],
+    cloned: &[String],
     seeds: Vec<Session>,
     cost: &CostView,
     pools: &BTreeMap<String, Value>,
+    links: &BTreeMap<String, Value>,
 ) -> Value {
     // Cost lookup keyed by note-canonical (lowercased) repo.
     let cost_by_repo: BTreeMap<String, (Option<f64>, Option<f64>)> = cost
@@ -248,9 +287,9 @@ fn assemble(
     for (_, s) in merged {
         by_repo.entry(s.repo.clone()).or_default().push(s);
     }
-    // Every managed repo gets a card even with zero sessions.
-    for m in managed {
-        by_repo.entry(m.clone()).or_default();
+    // Every managed repo and every locally cloned repo gets a card even with zero sessions.
+    for r in managed.iter().chain(cloned) {
+        by_repo.entry(r.clone()).or_default();
     }
 
     let mut rollups: Vec<Value> = by_repo
@@ -281,6 +320,9 @@ fn assemble(
                 "aic": aic,
                 "cost_usd": cost_usd,
                 "pool": pools.get(&repo).cloned().unwrap_or_else(pool_disabled),
+                // `null` for a repo with no clone here or an origin we can't parse — the UI renders
+                // no link rather than a guessed one.
+                "links": links.get(&repo).cloned().unwrap_or(Value::Null),
                 "sessions": sessions.iter().map(Session::to_json).collect::<Vec<_>>(),
             })
         })
@@ -381,8 +423,10 @@ mod tests {
         ];
         let v = assemble(
             &[],
+            &[],
             seeds,
             &cost_with_repo("bn", 1.5, 0.9),
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
         let repos = repos_of(&v);
@@ -417,7 +461,14 @@ mod tests {
         };
         disp.status = Some("working".into());
         let seeds = vec![note_seed("bn", "dispatch-web-495", None, 1, 100), disp];
-        let v = assemble(&[], seeds, &CostView::default(), &BTreeMap::new());
+        let v = assemble(
+            &[],
+            &[],
+            seeds,
+            &CostView::default(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
         let repos = repos_of(&v);
         assert_eq!(repos.len(), 1);
         assert_eq!(repos[0]["session_count"], 1);
@@ -431,8 +482,10 @@ mod tests {
     fn managed_repo_with_no_sessions_still_gets_a_card() {
         let v = assemble(
             &["forge".into()],
+            &[],
             vec![note_seed("bn", "main", None, 0, 100)],
             &CostView::default(),
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
         let repos = repos_of(&v);
@@ -450,12 +503,79 @@ mod tests {
     }
 
     #[test]
+    fn locally_cloned_repo_with_no_notes_still_gets_a_card() {
+        // The regression: a repo bn has cloned but never taken a note in used to vanish from the
+        // board entirely, because every seed source (notes / fleet / runs) only knows repos that
+        // have already been worked in.
+        let v = assemble(
+            &[],
+            &["atlas".into(), "kube-homelab".into(), "bn".into()],
+            vec![note_seed("bn", "main", None, 0, 100)],
+            &CostView::default(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        let repos = repos_of(&v);
+        let names: Vec<&str> = repos.iter().map(|r| r["repo"].as_str().unwrap()).collect();
+        assert_eq!(names, vec!["bn", "atlas", "kube-homelab"], "clones missing");
+        let atlas = repos.iter().find(|r| r["repo"] == "atlas").unwrap();
+        assert_eq!(atlas["session_count"], 0);
+        assert_eq!(atlas["last_activity_ts"], 0);
+        // A clone is not a managed-repos-config entry, and its card is still fully shaped.
+        assert_eq!(atlas["managed"], false);
+        assert_eq!(atlas["pool"]["enabled"], false);
+        // A repo that is both cloned and noted stays one card, keeping its note's activity.
+        assert_eq!(repos[0]["session_count"], 1);
+        assert_eq!(repos[0]["last_activity_ts"], 100);
+    }
+
+    #[test]
+    fn forge_links_ride_along_and_stay_null_when_unresolvable() {
+        let links: BTreeMap<String, Value> = [(
+            "bn".to_string(),
+            serde_json::to_value(bn_core::forge::links_from_url(
+                "git@github.com:eduuh/bn.git",
+            ))
+            .unwrap(),
+        )]
+        .into_iter()
+        .collect();
+        let seeds = vec![
+            note_seed("bn", "main", None, 0, 100),
+            note_seed("local-only", "main", None, 0, 90),
+        ];
+        let v = assemble(
+            &[],
+            &[],
+            seeds,
+            &CostView::default(),
+            &BTreeMap::new(),
+            &links,
+        );
+        let repos = repos_of(&v);
+        let bn = repos.iter().find(|r| r["repo"] == "bn").unwrap();
+        assert_eq!(bn["links"]["forge"], "github");
+        assert_eq!(bn["links"]["issues"], "https://github.com/eduuh/bn/issues");
+        assert_eq!(bn["links"]["pulls"], "https://github.com/eduuh/bn/pulls");
+        // A repo with no parseable origin gets an explicit null, never a fabricated URL.
+        let other = repos.iter().find(|r| r["repo"] == "local-only").unwrap();
+        assert!(other["links"].is_null(), "{}", other["links"]);
+    }
+
+    #[test]
     fn repos_sort_most_recent_first() {
         let seeds = vec![
             note_seed("alpha", "b1", None, 0, 100),
             note_seed("zeta", "b2", None, 0, 999),
         ];
-        let v = assemble(&[], seeds, &CostView::default(), &BTreeMap::new());
+        let v = assemble(
+            &[],
+            &[],
+            seeds,
+            &CostView::default(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
         let repos = repos_of(&v);
         // zeta is more recently active despite sorting after alpha alphabetically.
         assert_eq!(repos[0]["repo"], "zeta");
@@ -483,7 +603,14 @@ mod tests {
             note_seed("bn", "main", None, 0, 100),
             note_seed("forge", "main", None, 0, 90),
         ];
-        let v = assemble(&[], seeds, &CostView::default(), &pools);
+        let v = assemble(
+            &[],
+            &[],
+            seeds,
+            &CostView::default(),
+            &pools,
+            &BTreeMap::new(),
+        );
         let repos = repos_of(&v);
         let bn = repos.iter().find(|r| r["repo"] == "bn").unwrap();
         assert_eq!(bn["pool"]["enabled"], true);

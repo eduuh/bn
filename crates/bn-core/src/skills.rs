@@ -1,5 +1,5 @@
 //! Prompt (and reference-skill) discovery + creation across the personal / global / per-repo
-//! tiers — the same tiers `bn serve` serves session-safe prompts from over MCP (seeded from
+//! tiers — the same tiers `bn serve` serves prompts from over MCP (seeded from
 //! [`global_skill_dirs`]). Invocable prompts live in `config/prompts/`. One engine, two faces:
 //! `bn skills` (CLI) and the nvim picker call in here. Mirrors how cron jobs resolve through
 //! [`crate::resolver::job_dirs`] / [`list_jobs`].
@@ -219,11 +219,11 @@ pub fn skill_dirs(cfg: &Config, base_dir: &Path) -> Vec<(SkillScope, PathBuf)> {
 }
 
 /// The two **global** skill tiers (shared built-ins + personal), independent of any worktree.
-/// The central HTTP MCP server has no launch directory, so it seeds its session-safe prompt set
+/// The central HTTP MCP server has no launch directory, so it seeds its prompt set
 /// from these alone: the shipped prompts (`BN_MCP_SKILLS_DIR` when exported, else the committed
 /// `config/prompts/` reached through the stable `config_dir()/repo` install anchor) plus the
 /// personal `BN_MCP_PERSONAL_SKILLS_DIR` / `config_dir()/skills`. Resolving the shipped tier via
-/// the anchor means `bn serve` serves the session-safe prompts in any launch mode (systemd unit,
+/// the anchor means `bn serve` serves those prompts in any launch mode (systemd unit,
 /// launchd, or a bare foreground run) with no per-process env or symlink to keep in sync. The
 /// per-repo tiers in [`skill_dirs`] are deliberately omitted — they require a git resolve the
 /// shared server can't do.

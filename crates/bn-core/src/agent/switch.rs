@@ -411,6 +411,7 @@ mod tests {
             input_tokens: 0,
             output_tokens: 0,
             cache_read_tokens: 0,
+            control: crate::agent::ControlChannel::None,
         };
         let o = SwitchOutgoing::from_live(&a);
         assert!(o.live);

@@ -3,8 +3,32 @@
 // (`repos.test.ts`) so the Repos routes stay a thin render of these values, matching the Fleet/board
 // split (fleet.ts / board.ts).
 
-import type { RepoRollup, RepoSession, ReposView } from "../api/types";
+import type { ForgeLinks, RepoRollup, RepoSession, ReposView } from "../api/types";
 import { healthTone, type ChipTone } from "./board";
+
+/** One rendered forge link: where it goes and what to call it. */
+export interface ForgeLink {
+  href: string;
+  label: string;
+}
+
+/** The forge links to render for a repo, in reading order (code · issues · PRs), naming each page
+ * the way its own forge does — Azure DevOps has work items and "pull requests", GitLab has merge
+ * requests. Only links the server actually resolved appear, so an unknown forge yields just its
+ * code page and a repo with no clone here yields nothing at all. */
+export function forgeLinks(links: ForgeLinks | null | undefined): ForgeLink[] {
+  if (!links) return [];
+  const named = {
+    github: { repo: "GitHub", issues: "issues", pulls: "pulls" },
+    "azure-devops": { repo: "Azure DevOps", issues: "work items", pulls: "PRs" },
+    gitlab: { repo: "GitLab", issues: "issues", pulls: "merge requests" },
+    unknown: { repo: "remote", issues: "issues", pulls: "PRs" },
+  }[links.forge];
+  const out: ForgeLink[] = [{ href: links.repo, label: named.repo }];
+  if (links.issues) out.push({ href: links.issues, label: named.issues });
+  if (links.pulls) out.push({ href: links.pulls, label: named.pulls });
+  return out;
+}
 
 /** The chip tone for a session: its live-agent health when running, in-flight green for a dispatch
  * with no joined agent yet, else neutral grey for a note-only branch. */

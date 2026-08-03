@@ -48,6 +48,7 @@ pub mod findings;
 pub mod findings_gather;
 pub mod fleet_gc;
 pub mod focus;
+pub mod forge;
 pub mod gh_pin;
 pub mod glyph;
 pub mod goals_align;

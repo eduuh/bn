@@ -705,8 +705,41 @@ pub async fn agent_relaunch(
     } else {
         "relaunch"
     };
-    let result = run_bn(args, None).await;
+    let result = no_op_is_not_success(run_bn(args, None).await, &target);
     respond_process(&state, action, &target, addr, result)
+}
+
+/// `bn agent recover` exits 0 whether or not it found anything to recover, reporting the count in
+/// `data.candidates`. Passed through unchanged that becomes `ok:true` for a run that did nothing —
+/// and the dashboard, which keys off `ok`, cheerfully toasts "relaunch triggered" while the stuck
+/// agent stays stuck. A success message for a no-op is worse than an error: it ends the operator's
+/// investigation at exactly the moment it should start. Demote `candidates: 0` to a typed failure.
+fn no_op_is_not_success(mut result: RunResult, target: &str) -> RunResult {
+    if !result.ok {
+        return result;
+    }
+    let recovered = result
+        .envelope
+        .get("data")
+        .and_then(|d| d.get("candidates"))
+        .and_then(serde_json::Value::as_i64);
+    if recovered != Some(0) {
+        return result;
+    }
+    result.ok = false;
+    result.envelope = serde_json::json!({
+        "ok": false,
+        "command": "agent_recover",
+        "data": null,
+        "error": {
+            "code": "nothing_to_recover",
+            "message": format!(
+                "no recoverable agent for '{target}' — bn drives agents through tmux, so a session \
+                 started outside it (or one whose window is gone) cannot be relaunched from here"
+            ),
+        },
+    });
+    result
 }
 
 /// `POST /api/agents/:target/kill` → the new `bn agent kill <target>` (tmux kill-window).
@@ -859,6 +892,86 @@ pub async fn repo_pool_warm(
         },
     };
     respond_process(&state, "repo-pool-warm", &repo, addr, result)
+}
+
+/// `POST /api/repos/{repo}/pool` body: the slot count to pool at, or `null`/omitted to stop pooling.
+#[derive(Debug, Default, Deserialize)]
+pub struct PoolSetBody {
+    #[serde(default)]
+    pub size: Option<usize>,
+}
+
+/// `POST /api/repos/{repo}/pool {size?}` — turn pooling on for a repo at `size` slots, or off when
+/// `size` is absent. The counterpart to the warm trigger: warming could only ever act on a repo
+/// someone had already hand-added to `~/.config/wt/pools`, so on a machine that had never edited
+/// that file every card read "pooling off" with no way out of it from here.
+///
+/// Writes the config in-process through `bn_core::pool` (the same edit `bn wt pool set` performs)
+/// rather than spawning the CLI — it's a small atomic file rewrite, not a long job, so the response
+/// can report the real outcome instead of an ack. Slots are not built here; the idle `pool-warm`
+/// cron picks the repo up, or the warm button builds them now.
+pub async fn repo_pool_set(
+    State(state): State<AppState>,
+    MaybeAddr(addr): MaybeAddr,
+    Path(repo): Path<String>,
+    Json(body): Json<PoolSetBody>,
+) -> Response {
+    let cmd = "repo_pool_set";
+    let repo = repo.trim().to_string();
+    if !valid_repo(&repo) {
+        return bad_request(cmd, "invalid_repo", "repo has invalid characters");
+    }
+    // `default` and `*` are the config's reserved any-repo keys; writing one as a repo name would
+    // silently re-point every unlisted repo's pool.
+    if repo == "default" || repo == "*" {
+        return bad_request(cmd, "reserved_repo", "that name is reserved by the config");
+    }
+    // Only a repo bn actually has a clone of — a typo here would become a dead config line that
+    // nothing ever warms.
+    let cloned = bn_core::lifecycle::cloned_repos(&state.cfg);
+    if !cloned.contains(&repo.to_ascii_lowercase()) {
+        return bad_request(cmd, "unknown_repo", "no bare clone for that repo here");
+    }
+    if let Some(n) = body.size {
+        if n == 0 || n > bn_core::pool::MAX_POOL_SIZE {
+            return bad_request(
+                cmd,
+                "invalid_size",
+                &format!("size must be 1..={}", bn_core::pool::MAX_POOL_SIZE),
+            );
+        }
+    }
+    let (repo_w, size) = (repo.clone(), body.size);
+    let wrote = tokio::task::spawn_blocking(move || bn_core::pool::set_pool_size(&repo_w, size))
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r.map_err(|e| e.to_string()));
+    let result = match wrote {
+        Ok(()) => RunResult {
+            ok: true,
+            envelope: json!({
+                "ok": true,
+                "command": cmd,
+                "data": {
+                    "repo": repo,
+                    "size": size,
+                    "message": match size {
+                        Some(n) => format!("pooling {repo} at {n} slot(s)"),
+                        None => format!("stopped pooling {repo}"),
+                    },
+                },
+                "error": null,
+            }),
+        },
+        Err(e) => RunResult {
+            ok: false,
+            envelope: json!({
+                "ok": false, "command": cmd, "data": null,
+                "error": { "code": "write_failed", "message": format!("could not write the pools config: {e}") },
+            }),
+        },
+    };
+    respond_process(&state, "repo-pool-set", &repo, addr, result)
 }
 
 #[derive(Debug, Default, Deserialize)]

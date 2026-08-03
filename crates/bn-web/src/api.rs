@@ -490,11 +490,12 @@ pub async fn brag(State(state): State<AppState>, Query(q): Query<InsightsQuery>)
 // Repos (multi-repo navigation, #495)
 // ---------------------------------------------------------------------------
 
-/// `GET /api/repos` — the multi-repo navigation rollup: every repo bn knows (managed-repos config,
-/// branch-note store, live fleet, orchestrate runs), each with a per-repo rollup (active agents,
-/// open PRs, session count, last activity, cost) and its drill-in session list. Delegates to
-/// [`crate::repos::repos_view`], which reuses the same Notes / Fleet / Cost rollups the other reads
-/// build from, so the Repos surface is one contract with the rest of the dashboard.
+/// `GET /api/repos` — the multi-repo navigation rollup: every repo bn knows (its bare clones on this
+/// machine, the managed-repos config, the branch-note store, the live fleet, the orchestrate runs),
+/// each with a per-repo rollup (active agents, open PRs, session count, last activity, cost) and
+/// its drill-in session list. Delegates to [`crate::repos::repos_view`], which reuses the same
+/// Notes / Fleet / Cost rollups the other reads build from, so the Repos surface is one contract
+/// with the rest of the dashboard.
 pub async fn repos(State(state): State<AppState>) -> Json<Envelope> {
     Json(Envelope::success(
         "repos",
@@ -965,8 +966,13 @@ pub async fn search(
             bn_core::agent::DEFAULT_IDLE_MINS,
             bn_core::agent::DEFAULT_STUCK_MINS,
         );
-        // Distinct repos across notes + the live fleet — the set the Repos page keys on.
-        let mut repo_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        // Distinct repos across this machine's clones + notes + the live fleet — the same set the
+        // Repos page keys on, so a repo you can jump to there is reachable from the palette too.
+        let mut repo_names: std::collections::BTreeSet<String> =
+            bn_core::lifecycle::cloned_repos(&cfg)
+                .into_iter()
+                .filter(|r| cfg.is_visible_repo(r))
+                .collect();
         for bn in &all_notes {
             repo_names.insert(bn.repo.to_ascii_lowercase());
         }

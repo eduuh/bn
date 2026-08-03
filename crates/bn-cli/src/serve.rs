@@ -27,8 +27,20 @@ fn bn_web_name() -> &'static str {
 /// Resolve the `bn-web` binary: prefer the sibling next to the running `bn` (same install dir, so a
 /// from-source or release install runs its matching build), else fall back to the bare name on
 /// `PATH`. Mirrors how `bn-mcp` is resolved beside `bn` (doctor.rs `bindir.join("bn-mcp")`).
+///
+/// Canonicalize first, for the same reason as `resolve_bn_mcp`: bn is commonly launched through
+/// the `<config_dir>/bn -> <bin_dir>/bn` anchor symlink (every cron unit spawns bn that way), and
+/// `current_exe()` reports the symlink, whose directory holds no `bn-web`. Without this, a
+/// `bn serve` reached through the anchor falls through to the bare name on `PATH` — which is
+/// empty for a launchd/systemd job — and the dashboard silently never starts.
 fn resolve_bn_web() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
+        if let Ok(real) = std::fs::canonicalize(&exe) {
+            let sibling = real.with_file_name(bn_web_name());
+            if sibling.is_file() {
+                return sibling;
+            }
+        }
         let sibling = exe.with_file_name(bn_web_name());
         if sibling.is_file() {
             return sibling;

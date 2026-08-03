@@ -9,7 +9,7 @@ use crate::runner::{CommandRunner, RealRunner};
 use crate::store;
 use crate::util::idle_days_since;
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// A note `prune` auto-closed because its worktree was removed.
@@ -39,7 +39,8 @@ pub struct PruneReport {
 /// path check, preserving the established behavior. The caller typically runs `archive` afterwards.
 pub fn prune(cfg: &Config) -> PruneReport {
     let bare_dir = cfg.bare_dir();
-    prune_with(cfg, &managed_repos(&bare_dir), &live_worktrees(&bare_dir))
+    let managed: BTreeSet<String> = managed_repos(&bare_dir).into_keys().collect();
+    prune_with(cfg, &managed, &live_worktrees(&bare_dir))
 }
 
 /// The decision core of [`prune`], taking the worktree-managed repo set and the git-discovered
@@ -48,7 +49,7 @@ pub fn prune(cfg: &Config) -> PruneReport {
 /// path is the fallback.
 fn prune_with(
     cfg: &Config,
-    managed: &HashSet<String>,
+    managed: &BTreeSet<String>,
     live: &HashMap<String, HashSet<String>>,
 ) -> PruneReport {
     let mut report = PruneReport::default();
@@ -78,25 +79,42 @@ fn prune_with(
     report
 }
 
-/// The worktree-managed repos: the lowercased stems of every `<name>.git` in `bare_dir`. Lowercased
-/// so it matches the note's repo key even when the bare dir keeps its original case (`BigMono.git`).
-fn managed_repos(bare_dir: &Path) -> HashSet<String> {
-    let mut set = HashSet::new();
+/// Every repo bn manages on this machine — the worktree layout's own inventory, read from
+/// `<worktree_dir>/../bare`. This is the only source that knows about a repo you have cloned but
+/// not yet taken a note on, so cross-repo views seed their repo list from it rather than showing
+/// only the repos that happen to have notes. Empty when the bare dir is unreadable.
+pub fn cloned_repos(cfg: &Config) -> BTreeSet<String> {
+    cloned_repo_dirs(cfg).into_keys().collect()
+}
+
+/// [`cloned_repos`] with each repo's git dir alongside its name — for callers that then have to
+/// *read* the clone (its remote, its config). The key is lowercased to match the note-canonical repo
+/// casing while the path keeps the directory's real case, so the lookup works on a case-sensitive
+/// filesystem where rebuilding `<bare>/<repo>.git` from the lowercased name would miss `BigMono.git`.
+pub fn cloned_repo_dirs(cfg: &Config) -> BTreeMap<String, PathBuf> {
+    managed_repos(&cfg.bare_dir())
+}
+
+/// The worktree-managed repos: the lowercased stems of every `<name>.git` in `bare_dir`, mapped to
+/// the dir itself. Lowercased so it matches the note's repo key even when the bare dir keeps its
+/// original case (`BigMono.git`).
+fn managed_repos(bare_dir: &Path) -> BTreeMap<String, PathBuf> {
+    let mut map = BTreeMap::new();
     let Ok(entries) = std::fs::read_dir(bare_dir) else {
-        return set;
+        return map;
     };
     for entry in entries.flatten() {
-        if let Some(repo) = entry
-            .path()
+        let path = entry.path();
+        if let Some(repo) = path
             .file_name()
             .and_then(|n| n.to_str())
             .and_then(|n| n.strip_suffix(".git"))
             .filter(|s| !s.is_empty())
         {
-            set.insert(repo.to_lowercase());
+            map.insert(repo.to_lowercase(), path.clone());
         }
     }
-    set
+    map
 }
 
 /// Live worktrees per repo, `repo_lc → { dashed-branch }`, discovered via git. Keyed to match
@@ -586,7 +604,7 @@ branch refs/heads/feat/x
                                                                               // `solo`: not worktree-managed at all → never pruned.
         add(&c, &ctx("solo", "main"), "todo", "x", None, "2026-06-20").unwrap();
 
-        let managed = HashSet::from(["bn".to_string(), "fake".to_string()]);
+        let managed = BTreeSet::from(["bn".to_string(), "fake".to_string()]);
         let mut live: HashMap<String, HashSet<String>> = HashMap::new();
         live.insert("bn".to_string(), HashSet::from(["main".to_string()]));
 

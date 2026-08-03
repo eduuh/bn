@@ -30,6 +30,26 @@ impl Config {
         self.note_dir(ctx).join("note.md")
     }
 
+    /// `<personal_root>/tasks.txt` — **the** task store (#995): one file holding every task, for
+    /// every repo, on every machine.
+    ///
+    /// **Person-scoped, not machine-scoped**, following [`Config::staff_feed_dir`] (#270) rather
+    /// than [`Config::note_dir`]. The `<machine>` segment exists so synced note repos never
+    /// git-conflict on a shared `main` note — but a task list that differs per laptop is not a
+    /// single source of truth, which is the whole point of the store. The file is `merge=union`
+    /// (see [`crate::todo::ensure_union_merge`]) and every line carries `uid:`/`mod:` so a
+    /// concatenating merge is repaired on read rather than conflicting.
+    pub fn tasks_file(&self) -> PathBuf {
+        self.personal_root.join("tasks.txt")
+    }
+
+    /// `<personal_root>/tasks` — the staging area for task context docs, before a task is picked
+    /// up into a worktree and its doc moves next to the branch note. Person-scoped like
+    /// [`Config::tasks_file`], and syncs with it.
+    pub fn tasks_dir(&self) -> PathBuf {
+        self.personal_root.join("tasks")
+    }
+
     /// `<personal_root>/<machine>/daily` — the daily-goals subtree. Day-scoped and
     /// cross-branch (never keyed by repo/branch), it lives beside the per-repo note dirs
     /// in this machine's subtree so it syncs with — but never collides with — branch notes.

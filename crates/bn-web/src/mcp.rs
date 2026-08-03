@@ -36,7 +36,7 @@ fn server_config() -> StreamableHttpServerConfig {
 
 /// The scoped branch-note MCP service (`POST /mcp`). Each request builds a fresh [`BnServer`] over
 /// [`Scope::Request`], so the branch identity is resolved per call from the request headers/query.
-/// The session-safe skill prompts are seeded from the global skill dirs
+/// The skill prompts are seeded from the global skill dirs
 /// ([`bn_core::skills::global_skill_dirs`]) — the shared server has no worktree, so the per-repo
 /// skill tiers are out of reach (skills authoring stays a `bn skills`/CLI workflow, #641).
 pub fn scoped_service(cfg: Arc<Config>) -> StreamableHttpService<BnServer, LocalSessionManager> {
@@ -125,10 +125,12 @@ mod tests {
     }
 
     #[test]
-    fn prompts_list_serves_the_session_safe_skills_over_http() {
+    fn prompts_list_serves_every_shipped_skill_over_http() {
         // The shared server has no launch worktree, so it seeds prompts from the GLOBAL skill dirs
-        // (BN_MCP_SKILLS_DIR). Point that at the repo's `config/prompts/` and only the session-safe set
-        // (start-session, wrap-session, stow, axi, lavish) must surface as MCP prompts (#641).
+        // (BN_MCP_SKILLS_DIR). Point that at the repo's `config/prompts/`; every shipped skill must
+        // surface as an MCP prompt. This previously asserted a five-name allowlist, which hid the
+        // other shipped workflows (plan, debug, execute, investigate, triage, …) from every MCP
+        // client while `bn skills` listed them all.
         let skills_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/prompts");
         let _guard = bn_core::test_support::EnvGuard::set("BN_MCP_SKILLS_DIR", skills_dir);
         let state = AppState::new(bn_core::resolver::Config::from_env());
@@ -152,11 +154,24 @@ mod tests {
                 .map(|p| p["name"].as_str().unwrap().to_string())
                 .collect();
             names.sort();
-            assert_eq!(
-                names,
-                vec!["axi", "lavish", "start-session", "stow", "wrap-session"],
-                "only session-safe skills are served as prompts; got {names:?}"
-            );
+
+            // Compare against what the tier actually holds rather than a name list, so adding a
+            // skill never needs this test edited — the invariant is "served == effective".
+            let mut expected: Vec<String> =
+                bn_core::skills::load_skill_set(&[std::path::PathBuf::from(skills_dir)])
+                    .into_iter()
+                    .map(|s| s.name)
+                    .collect();
+            expected.sort();
+            assert_eq!(names, expected, "every effective skill must be served");
+
+            // Pin the regression directly: these were the workflows the old allowlist hid.
+            for hidden in ["plan", "debug", "execute", "investigate", "triage"] {
+                assert!(
+                    names.iter().any(|n| n == hidden),
+                    "{hidden:?} must be served over MCP; got {names:?}"
+                );
+            }
         });
     }
 

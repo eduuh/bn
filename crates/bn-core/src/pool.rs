@@ -82,6 +82,73 @@ pub fn parse_pooled_repos(content: &str) -> Vec<(String, usize)> {
     out
 }
 
+/// The largest pool a single repo may be given. Each slot is a full checkout plus its build cache,
+/// so the ceiling is disk, not taste — and a typo in a size field shouldn't be able to ask for a
+/// hundred of them.
+pub const MAX_POOL_SIZE: usize = 16;
+
+/// Set (or with `size: None`, remove) `repo`'s entry in the pools config `content`, returning the
+/// new file text. A rewrite rather than an append: an existing entry is edited in place, so setting
+/// a size twice can't leave two lines whose winner depends on file order.
+///
+/// Comments, blank lines, ordering and the `default`/`*` fallback line are all preserved — this is
+/// a file a human also edits, and a write from the dashboard has no business reformatting it. A new
+/// entry appends. Size is clamped to `1..=MAX_POOL_SIZE`, matching the parser's own floor.
+///
+/// Pure so the whole edit is unit-tested; [`set_pool_size`] does the I/O.
+pub fn edit_pool_size(content: &str, repo: &str, size: Option<usize>) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut replaced = false;
+    for line in content.lines() {
+        let key = line
+            .split('#')
+            .next()
+            .unwrap_or("")
+            .split_whitespace()
+            .next();
+        if key == Some(repo) {
+            // The repo's line: rewrite it, or drop it entirely when unpooling.
+            if let Some(n) = size {
+                if !replaced {
+                    out.push(format!("{repo} {}", n.clamp(1, MAX_POOL_SIZE)));
+                }
+            }
+            replaced = true;
+            continue;
+        }
+        out.push(line.to_string());
+    }
+    if !replaced {
+        if let Some(n) = size {
+            out.push(format!("{repo} {}", n.clamp(1, MAX_POOL_SIZE)));
+        }
+    }
+    let mut text = out.join("\n");
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text
+}
+
+/// Pool a repo at `size` slots, or unpool it with `size: None`, by rewriting the pools config at
+/// [`pools_config_path`]. Creates the file (and its parent) on first use — a machine that has never
+/// pooled anything has neither.
+///
+/// The write is atomic: a temp sibling renamed into place, so `bn wt pool get` reading the config
+/// concurrently sees either the old file or the new one, never a half-written line that would parse
+/// as a different pool size.
+pub fn set_pool_size(repo: &str, size: Option<usize>) -> std::io::Result<()> {
+    let path = pools_config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let current = std::fs::read_to_string(&path).unwrap_or_default();
+    let next = edit_pool_size(&current, repo, size);
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    std::fs::write(&tmp, next)?;
+    std::fs::rename(&tmp, &path)
+}
+
 /// The lowest idle slot number in `1..=size` that isn't in `leased`, or `None` when every slot is
 /// leased (the pool is full). Slots are 1-indexed to match their on-disk `_pool/<n>` dirs. Leases
 /// are durable (held until `return`), so callers try this first and only reclaim genuinely
@@ -593,5 +660,51 @@ mod tests {
         let all = all_pool_status(&cfg);
         let names: Vec<&str> = all.iter().map(|s| s.repo.as_str()).collect();
         assert_eq!(names, vec!["arena", "forge"]);
+    }
+
+    #[test]
+    fn edit_pool_size_preserves_the_file_a_human_also_edits() {
+        let before = "# my pools\n\ndefault 2\narena 4  # the monorepo\nforge 1\n";
+        // An existing entry is edited in place — comments, blanks, order and the default line stay.
+        let after = edit_pool_size(before, "arena", Some(6));
+        assert_eq!(after, "# my pools\n\ndefault 2\narena 6\nforge 1\n");
+        // Unpooling drops only that line.
+        assert_eq!(
+            edit_pool_size(before, "arena", None),
+            "# my pools\n\ndefault 2\nforge 1\n"
+        );
+        // A repo not yet listed appends.
+        assert_eq!(
+            edit_pool_size(before, "bn", Some(3)),
+            "# my pools\n\ndefault 2\narena 4  # the monorepo\nforge 1\nbn 3\n"
+        );
+    }
+
+    #[test]
+    fn edit_pool_size_clamps_and_never_leaves_a_duplicate() {
+        // The parser floors at 1 and a slot is a whole checkout, so both ends are bounded.
+        assert_eq!(edit_pool_size("", "bn", Some(0)), "bn 1\n");
+        assert_eq!(
+            edit_pool_size("", "bn", Some(9_999)),
+            format!("bn {MAX_POOL_SIZE}\n")
+        );
+        // A file that already has two entries for one repo collapses to one, so the result can't
+        // depend on which line the parser happens to reach first.
+        let dupes = "bn 2\nbn 5\nforge 1\n";
+        assert_eq!(edit_pool_size(dupes, "bn", Some(3)), "bn 3\nforge 1\n");
+        assert_eq!(edit_pool_size(dupes, "bn", None), "forge 1\n");
+        // Unpooling the only entry leaves an empty file, not a stray newline.
+        assert_eq!(edit_pool_size("bn 2\n", "bn", None), "");
+    }
+
+    #[test]
+    fn edit_then_parse_round_trips_through_the_reader() {
+        // The write has to be legible to the parser that gates every pooled dispatch.
+        let text = edit_pool_size("", "arena", Some(4));
+        assert_eq!(parse_pool_size(&text, "arena"), Some(4));
+        assert_eq!(parse_pool_size(&text, "other"), None);
+        let off = edit_pool_size(&text, "arena", None);
+        assert_eq!(parse_pool_size(&off, "arena"), None);
+        assert!(parse_pooled_repos(&off).is_empty());
     }
 }

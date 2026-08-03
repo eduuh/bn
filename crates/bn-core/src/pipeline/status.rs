@@ -1,39 +1,55 @@
-//! Pure task-pipeline stage inference for the `bn pipeline` read model (#657).
+//! Pure task-pipeline **phase** inference for the `bn pipeline` read model (#657).
 //!
 //! The pipeline view deliberately owns no state. Callers gather the existing branch-note,
 //! plan-review, attention, verify, PR, and live-agent signals into [`TaskSignals`], then this
-//! module derives the current stage and the next action.
+//! module derives the current phase and the next action.
+//!
+//! # Phase is not [`crate::pipeline::stage::Stage`]
+//!
+//! Two vocabularies describe a task's position, and they are not interchangeable:
+//!
+//! - [`Phase`] (here) — the **4-value inference** shown by the `bn pipeline` tracker. Derived
+//!   read-only from signals on every call; nothing persists it.
+//! - [`crate::pipeline::stage::Stage`] — the **9-value durable state machine** (EPIC #746),
+//!   persisted in note frontmatter and the `pipeline_stage` event log.
+//!
+//! They were both named `Stage` and both serialize lowercase, so `"execute"` and `"plan"` are
+//! members of *both* vocabularies — a JSON consumer reading a field named `stage` could not tell
+//! which it had. This module's type is `Phase` and its JSON field is `phase` precisely so the
+//! 9-value vocabulary owns `stage` unambiguously on the wire.
 
 use serde::Serialize;
 
-/// The default coding pipeline from #649.
+/// The default coding pipeline from #649 — the inferred, non-persisted view.
+///
+/// See the module docs: this is **not** [`crate::pipeline::stage::Stage`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Stage {
+pub enum Phase {
     Plan,
     Execute,
     Critique,
     Done,
 }
 
-impl Stage {
-    pub const ALL: [Stage; 4] = [Stage::Plan, Stage::Execute, Stage::Critique, Stage::Done];
+impl Phase {
+    pub const ALL: [Phase; 4] = [Phase::Plan, Phase::Execute, Phase::Critique, Phase::Done];
 
     pub fn label(self) -> &'static str {
         match self {
-            Stage::Plan => "Plan",
-            Stage::Execute => "Execute",
-            Stage::Critique => "Critique",
-            Stage::Done => "Done",
+            Phase::Plan => "Plan",
+            Phase::Execute => "Execute",
+            Phase::Critique => "Critique",
+            Phase::Done => "Done",
         }
     }
 
     pub fn index(self) -> usize {
         match self {
-            Stage::Plan => 0,
-            Stage::Execute => 1,
-            Stage::Critique => 2,
-            Stage::Done => 3,
+            Phase::Plan => 0,
+            Phase::Execute => 1,
+            Phase::Critique => 2,
+            Phase::Done => 3,
         }
     }
 }
@@ -69,61 +85,64 @@ pub struct TaskSignals {
 }
 
 /// The stable machine/human read model emitted by `bn pipeline`.
+///
+/// The `phase`/`phases` fields carry the 4-value inference vocabulary. A field named `stage` on
+/// this type would collide with the durable 9-value one emitted by `bn pipeline status`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PipelineView {
     pub repo: String,
     pub branch: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub goal: Option<String>,
-    pub stage: Stage,
+    pub phase: Phase,
     pub action: String,
-    pub stages: Vec<StageView>,
+    pub phases: Vec<PhaseView>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct StageView {
-    pub id: Stage,
-    pub status: StageStatus,
+pub struct PhaseView {
+    pub id: Phase,
+    pub status: PhaseStatus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum StageStatus {
+pub enum PhaseStatus {
     Done,
     Active,
     Pending,
 }
 
-/// Infer a task's current stage and next action without reading or mutating any store.
+/// Infer a task's current phase and next action without reading or mutating any store.
 pub fn infer(signals: &TaskSignals) -> PipelineView {
-    let stage = if signals.note_closed {
-        Stage::Done
+    let phase = if signals.note_closed {
+        Phase::Done
     } else if signals.critic_failed {
-        Stage::Execute
+        Phase::Execute
     } else if signals.critic_passed {
-        Stage::Done
+        Phase::Done
     } else if signals.critic_active
         || (signals.pr_url.is_some()
             && signals.verify_passed
             && signals.open_todos == 0
             && signals.blocker.is_none())
     {
-        Stage::Critique
+        Phase::Critique
     } else if needs_planning(signals) {
-        Stage::Plan
+        Phase::Plan
     } else {
-        Stage::Execute
+        Phase::Execute
     };
 
-    let action = action_for(stage, signals);
-    let current = stage.index();
-    let stages = Stage::ALL
+    let action = action_for(phase, signals);
+    let current = phase.index();
+    let phases = Phase::ALL
         .into_iter()
-        .map(|id| StageView {
+        .map(|id| PhaseView {
             status: match id.index().cmp(&current) {
-                std::cmp::Ordering::Less => StageStatus::Done,
-                std::cmp::Ordering::Equal => StageStatus::Active,
-                std::cmp::Ordering::Greater => StageStatus::Pending,
+                std::cmp::Ordering::Less => PhaseStatus::Done,
+                std::cmp::Ordering::Equal => PhaseStatus::Active,
+                std::cmp::Ordering::Greater => PhaseStatus::Pending,
             },
             id,
         })
@@ -133,9 +152,9 @@ pub fn infer(signals: &TaskSignals) -> PipelineView {
         repo: signals.repo.clone(),
         branch: signals.branch.clone(),
         goal: signals.goal.clone(),
-        stage,
+        phase,
         action,
-        stages,
+        phases,
     }
 }
 
@@ -151,9 +170,9 @@ fn needs_planning(signals: &TaskSignals) -> bool {
     }
 }
 
-fn action_for(stage: Stage, signals: &TaskSignals) -> String {
-    match stage {
-        Stage::Plan => match &signals.plan_review {
+fn action_for(phase: Phase, signals: &TaskSignals) -> String {
+    match phase {
+        Phase::Plan => match &signals.plan_review {
             Some(PlanReview::Pending { id }) => format!("Review plan {id}"),
             Some(PlanReview::ChangesRequested { id }) => format!("Revise plan {id}"),
             Some(PlanReview::Rejected { id }) => format!("Plan {id} was rejected; restart or stop"),
@@ -164,8 +183,8 @@ fn action_for(stage: Stage, signals: &TaskSignals) -> String {
             }
             Some(PlanReview::Approved { .. }) | None => "Submit the plan for review".to_string(),
         },
-        Stage::Execute if signals.critic_failed => "Fix the critic findings".to_string(),
-        Stage::Execute => {
+        Phase::Execute if signals.critic_failed => "Fix the critic findings".to_string(),
+        Phase::Execute => {
             if let Some(state) = signals.agent_state.as_deref() {
                 match state {
                     "working" => return "Agent is working".to_string(),
@@ -190,15 +209,15 @@ fn action_for(stage: Stage, signals: &TaskSignals) -> String {
                 "Start a fresh-context critique".to_string()
             }
         }
-        Stage::Critique if signals.critic_active => {
+        Phase::Critique if signals.critic_active => {
             "Fresh-context critic is reviewing the change".to_string()
         }
-        Stage::Critique => signals
+        Phase::Critique => signals
             .pr_url
             .as_ref()
             .map(|url| format!("Run fresh-context critique for {url}"))
             .unwrap_or_else(|| "Run fresh-context critique".to_string()),
-        Stage::Done => "Task complete".to_string(),
+        Phase::Done => "Task complete".to_string(),
     }
 }
 
@@ -224,7 +243,7 @@ mod tests {
         let mut s = signals();
         s.has_done_when = false;
         let view = infer(&s);
-        assert_eq!(view.stage, Stage::Plan);
+        assert_eq!(view.phase, Phase::Plan);
         assert_eq!(view.action, "Write done-when criteria and ordered todos");
     }
 
@@ -242,7 +261,7 @@ mod tests {
         let mut s = signals();
         s.plan_review = Some(PlanReview::Approved { id: "r14".into() });
         let view = infer(&s);
-        assert_eq!(view.stage, Stage::Execute);
+        assert_eq!(view.phase, Phase::Execute);
         assert_eq!(view.action, "Next: t1 implement it");
     }
 
@@ -261,7 +280,7 @@ mod tests {
         s.verify_passed = true;
         s.pr_url = Some("https://github.com/eduuh/bn/pull/1".into());
         let view = infer(&s);
-        assert_eq!(view.stage, Stage::Critique);
+        assert_eq!(view.phase, Phase::Critique);
         assert!(view.action.contains("pull/1"));
     }
 
@@ -270,49 +289,49 @@ mod tests {
         let mut s = signals();
         s.verify_passed = true;
         s.pr_url = Some("https://github.com/eduuh/bn/pull/1".into());
-        assert_eq!(infer(&s).stage, Stage::Execute);
+        assert_eq!(infer(&s).phase, Phase::Execute);
 
         s.open_todos = 0;
         s.next_todo = None;
         s.blocker = Some("finish the migration".into());
-        assert_eq!(infer(&s).stage, Stage::Execute);
+        assert_eq!(infer(&s).phase, Phase::Execute);
     }
 
     #[test]
     fn critic_failure_loops_back_and_pass_finishes() {
         let mut s = signals();
         s.critic_failed = true;
-        assert_eq!(infer(&s).stage, Stage::Execute);
+        assert_eq!(infer(&s).phase, Phase::Execute);
         assert_eq!(infer(&s).action, "Fix the critic findings");
         s.critic_failed = false;
         s.critic_passed = true;
-        assert_eq!(infer(&s).stage, Stage::Done);
+        assert_eq!(infer(&s).phase, Phase::Done);
 
         s.critic_failed = true;
-        assert_eq!(infer(&s).stage, Stage::Execute);
+        assert_eq!(infer(&s).phase, Phase::Execute);
     }
 
     #[test]
-    fn stage_statuses_mark_past_active_and_pending() {
+    fn phase_statuses_mark_past_active_and_pending() {
         let view = infer(&signals());
         assert_eq!(
-            view.stages,
+            view.phases,
             vec![
-                StageView {
-                    id: Stage::Plan,
-                    status: StageStatus::Done,
+                PhaseView {
+                    id: Phase::Plan,
+                    status: PhaseStatus::Done,
                 },
-                StageView {
-                    id: Stage::Execute,
-                    status: StageStatus::Active,
+                PhaseView {
+                    id: Phase::Execute,
+                    status: PhaseStatus::Active,
                 },
-                StageView {
-                    id: Stage::Critique,
-                    status: StageStatus::Pending,
+                PhaseView {
+                    id: Phase::Critique,
+                    status: PhaseStatus::Pending,
                 },
-                StageView {
-                    id: Stage::Done,
-                    status: StageStatus::Pending,
+                PhaseView {
+                    id: Phase::Done,
+                    status: PhaseStatus::Pending,
                 },
             ]
         );
@@ -322,6 +341,25 @@ mod tests {
     fn closed_note_is_done_even_without_critic_signal() {
         let mut s = signals();
         s.note_closed = true;
-        assert_eq!(infer(&s).stage, Stage::Done);
+        assert_eq!(infer(&s).phase, Phase::Done);
+    }
+
+    /// The whole point of the rename (#994): the inferred vocabulary must never serialize into a
+    /// field named `stage`, because `bn pipeline status` emits the durable 9-value vocabulary under
+    /// that name and `"execute"`/`"plan"` are members of both.
+    #[test]
+    fn view_serializes_phase_never_stage() {
+        let json = serde_json::to_value(infer(&signals())).unwrap();
+        assert_eq!(json["phase"], "execute");
+        assert!(
+            json.get("stage").is_none(),
+            "PipelineView must not carry a `stage` field: {json}"
+        );
+        assert!(
+            json.get("stages").is_none(),
+            "PipelineView must not carry a `stages` field: {json}"
+        );
+        assert_eq!(json["phases"][1]["id"], "execute");
+        assert_eq!(json["phases"][1]["status"], "active");
     }
 }

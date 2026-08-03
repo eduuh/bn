@@ -47,18 +47,24 @@ export function fmtClock(ts: number): string {
   return `${hh}:${mm}`;
 }
 
+/** 2dp with thousands grouping — `332,589.65`. Money is read at a glance on these screens, and an
+ * ungrouped six-figure run of digits is the one number nobody can scan. */
+function money(n: number): string {
+  return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 /** AIC (the metered Copilot bill) — `—` when a group had no Copilot runs, else 2dp. Distinguishes
  * absent (null) from a real `0.00`. */
 export function fmtAic(aic: number | null): string {
   if (aic === null || !Number.isFinite(aic)) return "—";
-  return aic.toFixed(2);
+  return money(aic);
 }
 
 /** $ (the cache-aware API-equiv benchmark) — `—` when nothing in the group was priceable, else
  * `$1.23`. Never a bill; a benchmark. */
 export function fmtUsd(usd: number | null): string {
   if (usd === null || !Number.isFinite(usd)) return "—";
-  return `$${usd.toFixed(2)}`;
+  return `$${money(usd)}`;
 }
 
 /** Input tokens with the cached subset in parens — the `bn cost` INPUT(cache) column, e.g.

@@ -339,6 +339,39 @@ pub struct LiveAgent {
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub cache_read_tokens: i64,
+    /// How — or whether — bn can drive this agent. Supervision *observes* every running session on
+    /// the machine, including ones bn never launched, so being in the fleet does not imply being
+    /// steerable. Surfacing that lets a client disable steer/relaunch/kill up front instead of
+    /// failing after the click. `#[serde(default)]` keeps older fleet JSON valid — it reads as
+    /// [`ControlChannel::None`].
+    #[serde(default)]
+    pub control: ControlChannel,
+}
+
+/// The channel `bn agent send` would reach an agent through, in the order it tries them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ControlChannel {
+    /// A recorded `agent-session:` in the branch note — the reliable `--resume` path.
+    Resume,
+    /// A live tmux window named `repo:branch` — the send-keys path.
+    Tmux,
+    /// More than one live session shares this `repo:branch`, so neither channel can say *which* one
+    /// a write would land on: the tmux window name and the note's `agent-session:` record are both
+    /// keyed by branch, not session. Refusing is the only safe answer — a `kill` that might hit
+    /// either of two sessions is worse than no kill button at all.
+    Ambiguous,
+    /// Neither. Observed only: bn can read this agent's transcript but cannot steer, relaunch or
+    /// kill it. The common case is a session started outside bn (a plain `claude` in a terminal).
+    #[default]
+    None,
+}
+
+impl ControlChannel {
+    /// Whether a write can be aimed at exactly one agent.
+    pub fn is_steerable(self) -> bool {
+        matches!(self, ControlChannel::Resume | ControlChannel::Tmux)
+    }
 }
 
 /// Default minutes of quiet before an agent is *idle*.
@@ -415,6 +448,10 @@ pub fn supervise(cfg: &Config, idle_mins: i64, stuck_mins: i64) -> Fleet {
         fleet = Fleet::from_agents(agents);
         stamp_roles(&mut fleet.agents, &crate::cost::attribution_map());
     }
+    // Last, so it covers the pending entries folded in above too: can bn actually write to each of
+    // these, or is it only watching? Kept out of `supervise_from` for the same reason as roles —
+    // it shells out to tmux, and that core stays a pure filesystem read.
+    stamp_control(cfg, &mut fleet.agents);
     fleet
 }
 
@@ -488,6 +525,8 @@ fn pending_agents(
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_read_tokens: 0,
+                // Stamped by `stamp_control` once the whole fleet is assembled.
+                control: ControlChannel::None,
             })
         })
         .collect()
@@ -502,6 +541,62 @@ fn stamp_roles(agents: &mut [LiveAgent], attribution: &BTreeMap<String, WorkClas
             a.role = AgentRole::from_work_class(*wc);
         }
     }
+}
+
+/// Stamp each agent's [`ControlChannel`] — whether bn has a way to write to it at all.
+///
+/// tmux is enumerated **once** for the whole pass rather than probed per agent, because the fleet
+/// endpoint is polled every couple of seconds and a `tmux display-message` per agent would put a
+/// process spawn on that hot path. The note lookup that follows is a single small file read per
+/// agent, and only for agents with no tmux window.
+fn stamp_control(cfg: &Config, agents: &mut [LiveAgent]) {
+    let windows = tmux_window_names();
+    // Every write channel is keyed by `repo:branch`, so two live sessions on one branch are
+    // mutually indistinguishable to all of them. Count first, then refuse those outright.
+    let mut per_target: BTreeMap<&str, usize> = BTreeMap::new();
+    for a in agents.iter() {
+        *per_target.entry(a.target.as_str()).or_default() += 1;
+    }
+    let shared: HashSet<String> = per_target
+        .into_iter()
+        .filter(|&(_, n)| n > 1)
+        .map(|(t, _)| t.to_string())
+        .collect();
+
+    for a in agents.iter_mut() {
+        a.control = if shared.contains(&a.target) {
+            ControlChannel::Ambiguous
+        } else if recorded_session(cfg, &a.repo, &a.branch).is_some() {
+            ControlChannel::Resume
+        } else if windows.contains(&a.target) {
+            ControlChannel::Tmux
+        } else {
+            ControlChannel::None
+        };
+    }
+}
+
+/// Every tmux window name on the machine, across all sessions. Empty when tmux is absent or no
+/// server is running — which is exactly the "nothing is steerable" answer we want.
+fn tmux_window_names() -> HashSet<String> {
+    crate::tmux::tmux_raw(&["list-windows", "-a", "-F", "#{window_name}"])
+        .map(|out| out.lines().map(|l| l.trim().to_string()).collect())
+        .unwrap_or_default()
+}
+
+/// The `agent-session: <harness> <id>` the dispatcher records in a branch note's collab section,
+/// latest wins — the same record `bn agent send` resumes against. `None` means no resume channel.
+fn recorded_session(cfg: &Config, repo: &str, branch: &str) -> Option<(String, String)> {
+    let ctx = crate::resolver::Resolved {
+        repo: repo.to_string(),
+        branch: branch.to_string(),
+    };
+    let note = crate::store::read(&cfg.note_file(&ctx)).ok()?;
+    note.front.collab.iter().rev().find_map(|it| {
+        let rest = it.text.trim().strip_prefix("agent-session:")?;
+        let mut w = rest.split_whitespace();
+        Some((w.next()?.to_string(), w.next()?.to_string()))
+    })
 }
 
 /// [`supervise`] with explicit Claude + Copilot roots and `now` — the testable core. A session is
@@ -654,6 +749,7 @@ fn parse_live_claude(
         input_tokens: input,
         output_tokens: output,
         cache_read_tokens: cache_read,
+        control: ControlChannel::None,
     })
 }
 
@@ -747,6 +843,7 @@ fn parse_live_copilot(
         input_tokens: 0,
         output_tokens,
         cache_read_tokens: 0,
+        control: ControlChannel::None,
     })
 }
 
@@ -1290,6 +1387,7 @@ mod tests {
             input_tokens: 0,
             output_tokens: 0,
             cache_read_tokens: 0,
+            control: ControlChannel::None,
         };
         let mut agents = vec![worker("orch", "wave"), worker("ship", "ship")];
         let mut attribution = BTreeMap::new();
@@ -1321,6 +1419,7 @@ mod tests {
             input_tokens: 0,
             output_tokens: 0,
             cache_read_tokens: 0,
+            control: ControlChannel::None,
         };
         let mut attribution = BTreeMap::new();
         attribution.insert(

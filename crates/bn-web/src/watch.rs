@@ -331,6 +331,7 @@ mod tests {
             input_tokens: 0,
             output_tokens: 0,
             cache_read_tokens: 0,
+            control: bn_core::agent::ControlChannel::None,
         };
         let first = Fleet {
             active: 1,

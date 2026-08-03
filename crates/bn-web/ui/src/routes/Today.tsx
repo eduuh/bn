@@ -24,7 +24,7 @@ import {
 } from "../api/client";
 import { runCronJob, runTodayAgent, setSuggestionStatus } from "../api/writes";
 import type { CatalogItem, DailyGoal, QuarterGoal, Suggestion } from "../api/types";
-import { fmtAic, timeAgo } from "../lib/format";
+import { fmtAic, fmtUsd, timeAgo } from "../lib/format";
 import { pushToast } from "../lib/toast";
 import { StatTile } from "../components/StatTile";
 import { Badge, type BadgeProps } from "../components/ui/badge";
@@ -444,6 +444,11 @@ export function Today() {
   const liveAgents = fleet.data?.active ?? 0;
   const agentsToday = finishedToday + liveAgents;
   const aicToday = todayCost?.aic ?? null;
+  // AIC is the *Copilot* meter, so a Claude-only day has no AIC at all and the tile used to read
+  // `—` — leaving "what did today cost" unanswered on most days. Fall back to the API-equiv
+  // benchmark (and relabel, because the two are not the same unit) whenever there is no AIC.
+  const usdToday = todayCost?.cost_usd ?? null;
+  const spentIsAic = aicToday !== null;
 
   const loading = goals.isLoading || wrap.isLoading || cost.isLoading || fleet.isLoading;
   const achievedNothing =
@@ -499,10 +504,14 @@ export function Today() {
               }
             />
             <StatTile
-              label="AIC spent"
-              value={fmtAic(aicToday)}
+              label={spentIsAic ? "AIC spent" : "$ spent (API-equiv)"}
+              value={spentIsAic ? fmtAic(aicToday) : fmtUsd(usdToday)}
               tone="grey"
-              title="AI Credits — the metered Copilot bill for today's finished runs (lands once a run is ingested)"
+              title={
+                spentIsAic
+                  ? "AI Credits — the metered Copilot bill for today's finished runs (lands once a run is ingested)"
+                  : "No Copilot runs today, so there is no AIC bill — this is the cache-aware API-equivalent benchmark for today's finished runs. A benchmark, not a bill."
+              }
             />
           </div>
 

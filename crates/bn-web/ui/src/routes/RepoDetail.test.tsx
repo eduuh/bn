@@ -30,7 +30,9 @@ const rollup = (p: Partial<RepoRollup> = {}): RepoRollup => ({
     leased: 0,
     idle: 0,
     last_warmed_ts: null,
+    slots: [],
   },
+  links: null,
   sessions: [],
   ...p,
 });
@@ -172,6 +174,45 @@ describe("RepoDetail command center (#556)", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Start$/i }));
     // The reused StartAgentComposer opens with the issue's fix-and-PR prompt pre-filled.
     await waitFor(() => expect(screen.getByText(/Fixes #556/)).toBeTruthy());
+  });
+
+  it("shows each pool slot's holder, not just the counts", async () => {
+    stubFetch({
+      repos: [
+        rollup({
+          pool: {
+            enabled: true,
+            total: 3,
+            warm: 1,
+            leased: 1,
+            idle: 2,
+            last_warmed_ts: 900,
+            slots: [
+              { n: 1, leased: true, warm: true, branch: "feat/x", holder: "eduuh", age_secs: 60, warmed_ts: 900 },
+              { n: 2, leased: false, warm: true, branch: null, holder: null, age_secs: null, warmed_ts: 900 },
+              { n: 3, leased: false, warm: false, branch: null, holder: null, age_secs: null, warmed_ts: null },
+            ],
+          },
+        }),
+      ],
+    });
+    wrap(<RepoDetail />);
+    await waitFor(() => expect(screen.getByText("Warm pool")).toBeTruthy());
+    // The question counts can't answer: which branch is holding a slot, and who took it.
+    expect(screen.getByText("feat/x")).toBeTruthy();
+    expect(screen.getByText("eduuh")).toBeTruthy();
+    // Each slot's own state — leased vs warm vs never built.
+    expect(screen.getByText("leased")).toBeTruthy();
+    expect(screen.getByText("cold")).toBeTruthy();
+  });
+
+  it("explains the un-pooled state instead of just showing nothing", async () => {
+    stubFetch({});
+    wrap(<RepoDetail />);
+    await waitFor(() => expect(screen.getByText("Warm pool")).toBeTruthy());
+    expect(screen.getByText(/Not pooled/)).toBeTruthy();
+    // Points at the two ways to turn it on rather than leaving it a dead state.
+    expect(screen.getByText(/bn wt pool set 2/)).toBeTruthy();
   });
 
   it("surfaces a cross-repo task that references this repo but is filed elsewhere", async () => {

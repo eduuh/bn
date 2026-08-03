@@ -22,8 +22,22 @@ fn bn_mcp_name() -> &'static str {
 /// Resolve the `bn-mcp` binary: prefer the sibling next to the running `bn` (same install dir, so a
 /// from-source or release install runs its matching build), else fall back to the bare name on
 /// `PATH`. Mirrors `bn serve`'s `resolve_bn_web` — `bn-mcp` sits beside `bn` exactly like `bn-web`.
+///
+/// The **canonicalized** path is tried first, because bn is routinely launched through a symlink:
+/// install.sh maintains `<config_dir>/bn -> <bin_dir>/bn` as the stable anchor, and the cron units
+/// and MCP client registrations both spawn bn through it. `current_exe()` hands back that symlink
+/// path, whose sibling directory holds no `bn-mcp` — so resolving without canonicalizing looked
+/// beside the *anchor* instead of beside the real binary and died with "could not exec bn-mcp",
+/// taking every MCP client down with it. Falling back to the uncanonicalized sibling keeps a
+/// non-symlinked install working even if canonicalize() fails.
 fn resolve_bn_mcp() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
+        if let Ok(real) = std::fs::canonicalize(&exe) {
+            let sibling = real.with_file_name(bn_mcp_name());
+            if sibling.is_file() {
+                return sibling;
+            }
+        }
         let sibling = exe.with_file_name(bn_mcp_name());
         if sibling.is_file() {
             return sibling;

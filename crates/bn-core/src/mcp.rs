@@ -55,9 +55,10 @@ actually happens — not batched at session end — and only record what genuine
 
 Prompts are reusable workflows in `config/prompts/`. In Claude Code they are served as MCP prompts
 (`/bn:<name>`); in Copilot CLI they are installed as native skills referred to by their name (not
-`/mcp.bn.<name>` — Copilot does not surface MCP prompts). MCP only serves session-safe prompts such
-as `start-session`, `wrap-session`, `stow`, `axi`, and `lavish`; use the CLI for cross-branch
-workflows. Reference skills sit in `config/skills/` and are referred to by name from a prompt's body
+`/mcp.bn.<name>` — Copilot does not surface MCP prompts). Every effective skill is served, so a
+prompt exists for each workflow the tiers define; use the CLI for cross-branch workflows, and note
+that some prompts (PR review, orchestration) describe steps whose commands live only in the CLI.
+Reference skills sit in `config/skills/` and are referred to by name from a prompt's body
 rather than invoked directly.";
 
 /// One curated planning/productivity MCP server (#323). `command` is always a package *runner*

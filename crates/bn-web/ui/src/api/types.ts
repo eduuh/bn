@@ -36,7 +36,17 @@ export interface LiveAgent {
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
+  /**
+   * How bn can write to this agent — `resume` (a recorded session), `tmux` (a live window), or
+   * `none`. Supervision observes every running session on the machine, including ones bn never
+   * launched, so appearing in the fleet does not make an agent steerable. Absent on older servers,
+   * which is treated as unknown-but-allowed so the panel doesn't lock out against a stale binary.
+   */
+  control?: AgentControl;
 }
+
+/** `bn_core::agent::ControlChannel`. */
+export type AgentControl = "resume" | "tmux" | "ambiguous" | "none";
 
 /** `bn_core::agent::Fleet` — agents plus health counts, plus #501 harness availability. */
 export interface FleetView {
@@ -459,9 +469,47 @@ export interface RepoPool {
   idle: number;
   /** Best-effort last-warmed epoch-seconds (newest slot-dir mtime); `null` when no slot exists yet. */
   last_warmed_ts: number | null;
+  /** Each configured slot's own state — empty for an un-pooled repo. */
+  slots: RepoPoolSlot[];
 }
 
+/** One warm-pool slot, 1-indexed to match its on-disk `_pool/<n>` dir. */
+export interface RepoPoolSlot {
+  n: number;
+  /** Held by a branch (present in the pool's lease store). */
+  leased: boolean;
+  /** The checkout exists on disk — ready to lease without a cold create. */
+  warm: boolean;
+  /** The leased branch, when leased. */
+  branch: string | null;
+  /** The lease holder's recorded `USER`, when leased. */
+  holder: string | null;
+  /** Lease age in seconds, when leased. */
+  age_secs: number | null;
+  /** The slot dir's mtime (epoch secs) — a best-effort "last warmed"; null when not on disk yet. */
+  warmed_ts: number | null;
+}
+
+/** The largest pool a repo may be given — mirrors `bn_core::pool::MAX_POOL_SIZE`. */
+export const MAX_POOL_SIZE = 16;
+
 /** One repo's rollup — the card in the Repos list — `crate::repos::assemble`. */
+/** The forges whose web layout bn knows. `unknown` still carries a code URL — the remote parsed, its
+ * issue / PR paths just aren't ones we can name. */
+export type Forge = "github" | "azure-devops" | "gitlab" | "unknown";
+
+/** Where a repo lives in a browser, derived server-side from its clone's `origin` remote. `issues` /
+ * `pulls` are null on a forge whose layout is unknown — bn renders no link rather than a broken one. */
+export interface ForgeLinks {
+  forge: Forge;
+  /** The repo's code page — the one link every recognized remote yields. */
+  repo: string;
+  /** Issues (GitHub / GitLab) or the project's work items (Azure DevOps). */
+  issues: string | null;
+  /** Pull requests, or merge requests on GitLab. */
+  pulls: string | null;
+}
+
 export interface RepoRollup {
   repo: string;
   /** In the managed-repos config (`bn managed-repos`). */
@@ -476,10 +524,14 @@ export interface RepoRollup {
   cost_usd: number | null;
   /** The repo's warm-worktree pool state (#497). */
   pool: RepoPool;
+  /** Browsable forge pages from the clone's `origin`; `null` when there is no clone on this machine
+   * or its remote doesn't parse. */
+  links: ForgeLinks | null;
   sessions: RepoSession[];
 }
 
-/** GET /api/repos .data — every repo bn knows, each with its per-repo rollup + session list. */
+/** GET /api/repos .data — every repo bn knows (cloned on this machine, managed, or noted), each with
+ * its per-repo rollup + session list. A cloned-but-never-worked-in repo is a 0-session card. */
 export interface ReposView {
   repos: RepoRollup[];
 }

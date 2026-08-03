@@ -1,11 +1,12 @@
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, Flame } from "lucide-react";
+import { ChevronRight, ExternalLink, Flame, Minus, Plus } from "lucide-react";
 import { queryKeys, reposQuery } from "../api/client";
-import { warmRepoPool } from "../api/writes";
-import type { RepoPool, RepoRollup } from "../api/types";
+import { setRepoPool, warmRepoPool } from "../api/writes";
+import { MAX_POOL_SIZE, type RepoPool, type RepoRollup } from "../api/types";
 import { useNow } from "../hooks/useNow";
 import { timeAgo, fmtAic } from "../lib/format";
+import { forgeLinks } from "../lib/repos";
 import { pushToast } from "../lib/toast";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -73,13 +74,89 @@ function WarmButton({ repo }: { repo: string }) {
   );
 }
 
-/** The warm-pool strip (#497): a compact warm / leased / total indicator + a Warm button for a
- * pooled repo; a muted "pooling off" for one with no pool configured. */
+/** Turn pooling on / off / resize for a repo. Enabling writes the pools config the idle `pool-warm`
+ * cron reads, so one click is the whole setup — the cron builds the slots on its next idle pass and
+ * keeps them warm from then on. Sits inside the card `<Link>`, so clicks are stopped from bubbling
+ * into a navigation, same as the warm button. */
+function PoolSizeControl({ repo, pool }: { repo: string; pool: RepoPool }) {
+  const qc = useQueryClient();
+  const mut = useMutation({
+    mutationFn: (size: number | null) => setRepoPool(repo, size),
+    onSuccess: (r) => {
+      pushToast(r.message, "success");
+      void qc.invalidateQueries({ queryKey: queryKeys.repos });
+    },
+    onError: (e) => pushToast(`${repo}: ${(e as Error).message}`, "error"),
+  });
+  const stop = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+  if (!pool.enabled) {
+    return (
+      <Button
+        type="button"
+        variant="secondary"
+        size="sm"
+        disabled={mut.isPending}
+        title={`Pool ${repo} at 2 slots — the idle pool-warm cron keeps them warm`}
+        onClick={(e) => {
+          stop(e);
+          mut.mutate(2);
+        }}
+      >
+        <Flame className="h-3.5 w-3.5" />
+        {mut.isPending ? "enabling…" : "enable pool"}
+      </Button>
+    );
+  }
+  const resize = (n: number) => (e: React.MouseEvent) => {
+    stop(e);
+    // Below 1 slot there is no pool, so stepping down off the floor turns pooling off outright —
+    // but never silently: shrinking can strand slots, which `pool prune` reclaims.
+    if (n < 1) {
+      if (window.confirm(`Stop pooling ${repo}? Existing slots stay on disk.`)) mut.mutate(null);
+      return;
+    }
+    mut.mutate(n);
+  };
+  return (
+    <span className="inline-flex items-center gap-1">
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        disabled={mut.isPending}
+        title={pool.total > 1 ? `Shrink ${repo}'s pool` : `Stop pooling ${repo}`}
+        onClick={resize(pool.total - 1)}
+      >
+        <Minus className="h-3.5 w-3.5" />
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        disabled={mut.isPending || pool.total >= MAX_POOL_SIZE}
+        title={`Grow ${repo}'s pool`}
+        onClick={resize(pool.total + 1)}
+      >
+        <Plus className="h-3.5 w-3.5" />
+      </Button>
+    </span>
+  );
+}
+
+/** The warm-pool strip (#497): a compact warm / leased / total indicator, a resize control and a
+ * Warm button for a pooled repo; for an un-pooled one, the button that pools it. "pooling off" used
+ * to be a dead badge — the config it reflects was hand-edited only, so a machine that had never
+ * touched `~/.config/wt/pools` showed that state on every card with no way out of it. */
 function PoolStrip({ repo, pool, now }: { repo: string; pool: RepoPool; now: number }) {
   if (!pool.enabled) {
     return (
-      <div className="mt-2">
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
         <Badge variant="muted">pooling off</Badge>
+        <span className="flex-1" />
+        <PoolSizeControl repo={repo} pool={pool} />
       </div>
     );
   }
@@ -94,14 +171,42 @@ function PoolStrip({ repo, pool, now }: { repo: string; pool: RepoPool; now: num
         <Tag title="last warmed">warmed {timeAgo(pool.last_warmed_ts, now)}</Tag>
       )}
       <span className="flex-1" />
+      <PoolSizeControl repo={repo} pool={pool} />
       <WarmButton repo={repo} />
     </div>
   );
 }
 
+/** The repo's forge pages — code, issues, PRs — derived server-side from the clone's `origin`.
+ * Renders nothing for a repo with no clone here or an unparseable remote, and only the links that
+ * forge actually has. Deliberately *outside* the card's `<Link>`: an anchor inside an anchor is
+ * invalid HTML, and the tap targets have to stay distinct on a phone. */
+function ForgeLinkRow({ links }: { links: RepoRollup["links"] }) {
+  const items = forgeLinks(links);
+  if (items.length === 0) return null;
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      {items.map((l) => (
+        <a
+          key={l.href}
+          href={l.href}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          {l.label}
+          <ExternalLink className="h-3 w-3" />
+        </a>
+      ))}
+    </div>
+  );
+}
+
 /** One repo card: name · a live-active chip · a rollup meta strip (sessions · open PRs · managed ·
- * 30d AIC · last activity) · a warm-pool strip (#497). Taps through to the repo's session list.
- * Reuses the Fleet card surface so the Repos board scans like the rest of the dashboard. */
+ * 30d AIC · last activity) · its forge links · a warm-pool strip (#497). Taps through to the repo's
+ * session list. Reuses the Fleet card surface so the Repos board scans like the rest of the
+ * dashboard. */
 function RepoCard({ repo, now }: { repo: RepoRollup; now: number }) {
   const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
   return (
@@ -127,16 +232,19 @@ function RepoCard({ repo, now }: { repo: RepoRollup; now: number }) {
           )}
         </div>
       </Link>
+      <ForgeLinkRow links={repo.links} />
       <PoolStrip repo={repo.repo} pool={repo.pool} now={now} />
     </Card>
   );
 }
 
 /**
- * `/repos` — the multi-repo navigation layer (#495, Epic #488). Every repo bn knows (managed-repos
- * config + branch-note store + live fleet + orchestrate runs), each a card with a per-repo rollup:
- * active agents, sessions, open PRs, cost, and last activity. Drilling into a card opens that repo's
- * session list (`/repos/:repo`). Hydrated from `/api/repos`, patched by the fallback poll.
+ * `/repos` — the multi-repo navigation layer (#495, Epic #488). Every repo bn knows (its bare clones
+ * on this machine + managed-repos config + branch-note store + live fleet + orchestrate runs), each
+ * a card with a per-repo rollup: active agents, sessions, open PRs, cost, and last activity. A repo
+ * bn has cloned but never worked in is a 0-session card at the bottom, not a missing one. Drilling
+ * into a card opens that repo's session list (`/repos/:repo`). Hydrated from `/api/repos`, patched
+ * by the fallback poll.
  */
 export function Repos() {
   const repos = useQuery(reposQuery());

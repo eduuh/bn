@@ -1,6 +1,11 @@
-//! The MCP server: current-worktree branch-note tools plus session-safe workflow prompts.
-//! Deliberately narrower than the CLI: cross-branch, whole-person, and explicit repo/branch
+//! The MCP server: current-worktree branch-note tools plus the workflow prompts from every skill
+//! tier. Deliberately narrower than the CLI: cross-branch, whole-person, and explicit repo/branch
 //! targeting stay in `bn` so an MCP-connected agent cannot discover or act on unrelated sessions.
+//!
+//! The *tool* surface is what enforces that narrowness. Prompts are inert text — serving one only
+//! puts a workflow's instructions in front of the agent, and every action it then takes still goes
+//! through the same scoped tools. So the prompt list is not a security boundary and is no longer
+//! filtered: an allowlist here only hid skills from discovery while `bn skills` listed them all.
 
 use std::path::PathBuf;
 
@@ -26,8 +31,6 @@ use serde_json::json;
 
 use bn_core::skills::{load_skill_set, Skill};
 
-const SESSION_SAFE_SKILLS: &[&str] = &["start-session", "wrap-session", "stow", "axi", "lavish"];
-
 pub struct BnServer {
     cfg: Config,
     /// How each call decides which branch note to act on: a shared HTTP transport hands the
@@ -35,7 +38,7 @@ pub struct BnServer {
     /// headers/query. Note tools resolve their context from this per call rather than from a
     /// baked directory.
     scope: Scope,
-    /// Ordered skill source directories (low->high precedence) the session-safe MCP prompts are
+    /// Ordered skill source directories (low->high precedence) the MCP prompts are
     /// loaded from. Re-scanned on each prompt list/get so newly added skill files appear without
     /// restarting the server. The shared HTTP server seeds these from the global tiers
     /// ([`bn_core::skills::global_skill_dirs`]).
@@ -114,12 +117,11 @@ impl BnServer {
         }
     }
 
-    /// Current session-safe skills, freshly merged from `skill_dirs`.
+    /// Every effective skill, freshly merged from `skill_dirs` (higher tiers override lower ones
+    /// by name, so each prompt appears once). Re-read per call, so a newly authored skill shows up
+    /// without restarting the server.
     fn skills(&self) -> Vec<Skill> {
         load_skill_set(&self.skill_dirs)
-            .into_iter()
-            .filter(|s| SESSION_SAFE_SKILLS.contains(&s.name.as_str()))
-            .collect()
     }
 
     /// Resolve this call's branch-note context from its [`Scope`], failing closed when the scope
@@ -357,9 +359,12 @@ impl ServerHandler for BnServer {
              bn_cat, bn_status, bn_sync, bn_handoff_read, and bn_handoff_write. The MCP surface \
              cannot target another repo/branch and does not expose cross-branch rollups, search, \
              daily goals, reviews, metrics, attention queues, cron status, or agent fleet/session \
-             mining; use the `bn` CLI for those explicit whole-person workflows. Prompts served \
-             over MCP are filtered to session-safe workflows such as start-session, wrap-session, \
-             stow, axi, and lavish."
+             mining; use the `bn` CLI for those explicit whole-person workflows. Every effective \
+             skill is served as a prompt (start-session, wrap-session, stow, axi, plan, debug, \
+             execute, investigate, triage and the rest); list them to see what this worktree \
+             offers. A prompt only supplies a workflow's instructions — carrying one out still \
+             goes through the scoped tools above, so some skills (PR review, orchestration) \
+             describe steps that need the `bn` CLI and cannot be completed over MCP alone."
                 .to_string(),
         )
     }

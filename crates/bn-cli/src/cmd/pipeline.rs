@@ -1,9 +1,10 @@
 //! `bn pipeline` — a task's place in the pipeline, two complementary ways.
 //!
-//! **Bare `bn pipeline` (read-only inference, #657):** infers where a task sits in the
-//! Plan → Execute → Critique → Done flow from existing notes, plan reviews, attention,
-//! verify/PR markers, and live agents. `--all` lists the fleet; `--repo/--branch` targets
-//! another worktree.
+//! **Bare `bn pipeline` (read-only inference, #657):** infers which **phase** a task sits in —
+//! Plan → Execute → Critique → Done — from existing notes, plan reviews, attention, verify/PR
+//! markers, and live agents. `--all` lists the fleet; `--repo/--branch` targets another worktree.
+//! It emits `phase`/`phases`, never `stage` (#994): both vocabularies contain `"execute"` and
+//! `"plan"`, so the field name is the only thing telling a consumer which one it holds.
 //!
 //! **Subcommands (explicit state machine, PIPE-A / EPIC #746):** `set <stage>` / `advance`
 //! record the worktree's stage through the observable pipeline
@@ -17,7 +18,7 @@ use bn_core::pipeline::investigate::{
     next_after_investigation, plan_seed, sub_investigator_seed, InvestigationNext,
 };
 use bn_core::pipeline::stage::{self, BoardEntry, Stage};
-use bn_core::pipeline::status::{infer, PipelineView, PlanReview, StageStatus, TaskSignals};
+use bn_core::pipeline::status::{infer, PhaseStatus, PipelineView, PlanReview, TaskSignals};
 use bn_core::plan_review::{Review, ReviewStatus};
 use bn_core::rollups::BranchNote;
 
@@ -210,9 +211,9 @@ fn render_pipeline(view: &PipelineView, width: usize) -> String {
 
 fn render_wide(view: &PipelineView) -> String {
     let tracker = view
-        .stages
+        .phases
         .iter()
-        .map(|stage| format!("{} {}", status_glyph(stage.status), stage.id.label()))
+        .map(|phase| format!("{} {}", status_glyph(phase.status), phase.id.label()))
         .collect::<Vec<_>>()
         .join(" ───→ ");
     let mut out = format!(
@@ -228,9 +229,9 @@ fn render_wide(view: &PipelineView) -> String {
 fn render_narrow(view: &PipelineView, width: usize) -> String {
     let mut lines = vec![format!("{}/{}", view.repo, view.branch)];
     lines.extend(
-        view.stages
+        view.phases
             .iter()
-            .map(|stage| format!("{} {}", status_glyph(stage.status), stage.id.label())),
+            .map(|phase| format!("{} {}", status_glyph(phase.status), phase.id.label())),
     );
     lines.extend(wrap_line("▶ ", &view.action, width));
     if let Some(goal) = &view.goal {
@@ -248,8 +249,8 @@ fn render_pipeline_list(views: &[PipelineView]) -> String {
         .map(|view| {
             format!(
                 "{} {:<9} {}/{} — {}",
-                status_glyph(StageStatus::Active),
-                view.stage.label(),
+                status_glyph(PhaseStatus::Active),
+                view.phase.label(),
                 view.repo,
                 view.branch,
                 view.action
@@ -282,11 +283,11 @@ fn wrap_line(prefix: &str, text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-fn status_glyph(status: StageStatus) -> &'static str {
+fn status_glyph(status: PhaseStatus) -> &'static str {
     match status {
-        StageStatus::Done => "✓",
-        StageStatus::Active => "▶",
-        StageStatus::Pending => "·",
+        PhaseStatus::Done => "✓",
+        PhaseStatus::Active => "▶",
+        PhaseStatus::Pending => "·",
     }
 }
 
@@ -1093,11 +1094,12 @@ fn fmt_ts(ts: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bn_core::pipeline::stage::Stage as ExplicitStage;
-    use bn_core::pipeline::status::Stage;
+    // `Stage` (the durable 9-value machine) already arrives via `super::*`. `Phase` is the
+    // 4-value inference vocabulary — distinct types since #994, so neither needs an alias.
+    use bn_core::pipeline::status::Phase;
     use bn_core::resolver::RepoBranch;
 
-    fn view(stage: Stage) -> PipelineView {
+    fn view(phase: Phase) -> PipelineView {
         let mut signals = TaskSignals {
             repo: "bn".into(),
             branch: "dispatch-657".into(),
@@ -1107,28 +1109,28 @@ mod tests {
             next_todo: Some("t2 wire the CLI".into()),
             ..Default::default()
         };
-        match stage {
-            Stage::Plan => signals.has_done_when = false,
-            Stage::Execute => {}
-            Stage::Critique => {
+        match phase {
+            Phase::Plan => signals.has_done_when = false,
+            Phase::Execute => {}
+            Phase::Critique => {
                 signals.verify_passed = true;
                 signals.pr_url = Some("https://github.com/eduuh/bn/pull/9".into());
             }
-            Stage::Done => signals.note_closed = true,
+            Phase::Done => signals.note_closed = true,
         }
         infer(&signals)
     }
 
     #[test]
     fn wide_render_is_a_horizontal_tracker() {
-        let text = render_pipeline(&view(Stage::Execute), 100);
+        let text = render_pipeline(&view(Phase::Execute), 100);
         assert!(text.contains("✓ Plan ───→ ▶ Execute ───→ · Critique ───→ · Done"));
         assert!(text.contains("▶ Next: t2 wire the CLI"));
     }
 
     #[test]
-    fn narrow_render_keeps_one_stage_per_line() {
-        let mut view = view(Stage::Critique);
+    fn narrow_render_keeps_one_phase_per_line() {
+        let mut view = view(Phase::Critique);
         view.action = "Run a fresh-context critique that independently checks every acceptance criterion and edge case".into();
         let text = render_pipeline(&view, 48);
         assert!(text.contains("✓ Plan\n✓ Execute\n▶ Critique\n· Done"));
@@ -1144,16 +1146,31 @@ mod tests {
     }
 
     #[test]
-    fn json_shape_carries_stage_and_statuses() {
-        let data = serde_json::json!({ "all": false, "tasks": [view(Stage::Execute)] });
-        assert_eq!(data["tasks"][0]["stage"], "execute");
-        assert_eq!(data["tasks"][0]["stages"][0]["status"], "done");
-        assert_eq!(data["tasks"][0]["stages"][1]["status"], "active");
+    fn json_shape_carries_phase_and_statuses() {
+        let data = serde_json::json!({ "all": false, "tasks": [view(Phase::Execute)] });
+        assert_eq!(data["tasks"][0]["phase"], "execute");
+        assert_eq!(data["tasks"][0]["phases"][0]["status"], "done");
+        assert_eq!(data["tasks"][0]["phases"][1]["status"], "active");
+    }
+
+    /// The two vocabularies must stay distinguishable on the wire (#994): bare `bn pipeline`
+    /// emits the inferred `phase`, while `bn pipeline status` emits the durable `stage`. Both
+    /// render `"execute"`, so only the *field name* tells a consumer which it is holding.
+    #[test]
+    fn bare_pipeline_json_never_emits_a_stage_field() {
+        let data = serde_json::json!({ "all": false, "tasks": [view(Phase::Execute)] });
+        let task = &data["tasks"][0];
+        assert_eq!(task["phase"], "execute");
+        assert!(task.get("stage").is_none(), "leaked a `stage` field: {task}");
+        assert!(
+            task.get("stages").is_none(),
+            "leaked a `stages` field: {task}"
+        );
     }
 
     #[test]
     fn all_view_lists_multiple_tasks_and_empty_state() {
-        let text = render_pipeline_list(&[view(Stage::Plan), view(Stage::Done)]);
+        let text = render_pipeline_list(&[view(Phase::Plan), view(Phase::Done)]);
         assert_eq!(text.lines().count(), 2);
         assert!(text.contains("▶ Plan"));
         assert!(text.contains("▶ Done"));
@@ -1169,7 +1186,7 @@ mod tests {
         }
     }
 
-    fn save_board_note(cfg: &Config, repo: &str, branch: &str, stage: Option<ExplicitStage>) {
+    fn save_board_note(cfg: &Config, repo: &str, branch: &str, stage: Option<Stage>) {
         let ctx = Resolved {
             repo: repo.into(),
             branch: branch.into(),
@@ -1186,7 +1203,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let cfg = board_config(dir.path());
             save_board_note(&cfg, "bn", "legacy", None);
-            save_board_note(&cfg, "bn", "planned", Some(ExplicitStage::Plan));
+            save_board_note(&cfg, "bn", "planned", Some(Stage::Plan));
 
             let board = active_board(&cfg);
 
@@ -1197,7 +1214,7 @@ mod tests {
                     .find(|entry| entry.branch == "legacy")
                     .unwrap()
                     .stage,
-                ExplicitStage::Pickup
+                Stage::Pickup
             );
             assert_eq!(
                 board
@@ -1205,7 +1222,7 @@ mod tests {
                     .find(|entry| entry.branch == "planned")
                     .unwrap()
                     .stage,
-                ExplicitStage::Plan
+                Stage::Plan
             );
         });
     }
@@ -1218,7 +1235,7 @@ mod tests {
 
     fn save_investigate_note(cfg: &Config, ctx: &Resolved) {
         let mut note = bn_core::model::Note::new(ctx.rb(), "2026-07-19", "testhost");
-        note.front.stage = Some(ExplicitStage::Investigate);
+        note.front.stage = Some(Stage::Investigate);
         note.body = format!(
             "# {} / {}\n\n## Goal\n\nInvestigate pipeline handoff\n\n## Progress\n",
             ctx.repo, ctx.branch
@@ -1249,7 +1266,7 @@ mod tests {
             emit_pipeline_investigate_finish(&cfg, Some(&ctx), None, None, &[], None, true, false);
 
             let note = bn_core::store::read(&cfg.note_file(&ctx)).unwrap();
-            assert_eq!(note.front.stage, Some(ExplicitStage::Plan));
+            assert_eq!(note.front.stage, Some(Stage::Plan));
             let seed = plan_seed(
                 "Investigate pipeline handoff",
                 &note
@@ -1300,7 +1317,7 @@ mod tests {
                 })
                 .collect::<Vec<_>>();
             assert_eq!(tokens.len(), 2);
-            assert_eq!(note.front.stage, Some(ExplicitStage::Investigate));
+            assert_eq!(note.front.stage, Some(Stage::Investigate));
 
             emit_pipeline_investigate_finish(
                 &cfg,
@@ -1332,7 +1349,7 @@ mod tests {
                 false,
             );
             let note = bn_core::store::read(&cfg.note_file(&ctx)).unwrap();
-            assert_eq!(note.front.stage, Some(ExplicitStage::Investigate));
+            assert_eq!(note.front.stage, Some(Stage::Investigate));
 
             emit_pipeline_investigate_contribute(
                 &cfg,
@@ -1344,7 +1361,7 @@ mod tests {
                 false,
             );
             let note = bn_core::store::read(&cfg.note_file(&ctx)).unwrap();
-            assert_eq!(note.front.stage, Some(ExplicitStage::Plan));
+            assert_eq!(note.front.stage, Some(Stage::Plan));
             assert!(note
                 .front
                 .research
@@ -1411,7 +1428,7 @@ mod tests {
             );
 
             let note = bn_core::store::read(&cfg.note_file(&ctx)).unwrap();
-            assert_eq!(note.front.stage, Some(ExplicitStage::Investigate));
+            assert_eq!(note.front.stage, Some(Stage::Investigate));
         });
     }
 
@@ -1438,7 +1455,7 @@ mod tests {
             );
 
             let note = bn_core::store::read(&cfg.note_file(&ctx)).unwrap();
-            assert_eq!(note.front.stage, Some(ExplicitStage::Investigate));
+            assert_eq!(note.front.stage, Some(Stage::Investigate));
             assert!(note
                 .front
                 .blockers

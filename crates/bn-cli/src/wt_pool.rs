@@ -37,6 +37,7 @@ pub fn run(cfg: &Config, action: wt::PoolCmd) -> bool {
         wt::PoolCmd::Status { repo } => pool_status(cfg, repo),
         wt::PoolCmd::Warm { repo, here, new } => pool_warm(cfg, repo, here, new),
         wt::PoolCmd::Metrics { path, repo } => pool_metrics(cfg, path, repo),
+        wt::PoolCmd::Set { size, repo, off } => pool_set(cfg, repo, size, off),
         wt::PoolCmd::Prune {
             repo,
             yes,
@@ -546,6 +547,66 @@ struct PoolCtx {
 }
 
 /// Resolve repo → bare path + pool dir + size, or print why not and return `None`.
+/// `bn wt pool set [size] [--repo r] [--off]` — the pools config's only writer. Resolves the repo
+/// against the bare clones (so a typo is caught here rather than becoming a dead config line) and
+/// rewrites its entry via `bn_core::pool`, the same edit `/api/repos/{repo}/pool` performs.
+///
+/// Deliberately does not build the slots. Warming is a long checkout-plus-build per slot, and the
+/// `pool-warm` cron already does it while the box is idle; making the enable command block on a
+/// build would be a surprise, and doing it at a keystroke is exactly what that cron exists to avoid.
+fn pool_set(cfg: &Config, repo_arg: Option<String>, size: Option<usize>, off: bool) -> bool {
+    let (bare_dir, _) = wt::layout(cfg);
+    let Some(bare) = (match repo_arg {
+        Some(r) => {
+            let b = bare_dir.join(format!("{r}.git"));
+            if !b.is_dir() {
+                eprintln!("{RED}No bare repo '{r}' under {}{NC}", bare_dir.display());
+                return false;
+            }
+            Some(b)
+        }
+        None => wt::resolve_bare_or_pick(&bare_dir),
+    }) else {
+        return false;
+    };
+    let repo = wt::repo_name(&bare);
+
+    let target = if off {
+        None
+    } else {
+        match size {
+            Some(n) => Some(n.clamp(1, bn_core::pool::MAX_POOL_SIZE)),
+            None => {
+                eprintln!("{RED}Pass a slot count, or --off to stop pooling {repo}.{NC}");
+                return false;
+            }
+        }
+    };
+    if let Err(e) = bn_core::pool::set_pool_size(&repo, target) {
+        eprintln!(
+            "{RED}Could not write {}: {e}{NC}",
+            pools_config_path().display()
+        );
+        return false;
+    }
+    match target {
+        Some(n) => {
+            println!("{GREEN}Pooling {repo} at {n} slot(s).{NC}");
+            println!(
+                "{BLUE}The idle pool-warm cron builds them on its next pass; \
+                 `bn wt pool warm --repo {repo}` does it now.{NC}"
+            );
+        }
+        // Slots are left on disk on purpose: unpooling is a config change, and silently deleting
+        // checkouts (which may hold build caches worth hours) is not what "off" should mean.
+        None => println!(
+            "{GREEN}Stopped pooling {repo}. Existing slots remain — \
+             `bn wt pool destroy --repo {repo} --all` removes them.{NC}"
+        ),
+    }
+    true
+}
+
 fn resolve_pool(cfg: &Config, repo_arg: Option<String>) -> Option<PoolCtx> {
     let (bare_dir, worktree_dir) = wt::layout(cfg);
     let bare = match repo_arg {

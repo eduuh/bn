@@ -66,9 +66,14 @@ describe("Handoff view", () => {
     wrap(<Handoff />);
     // The rendered markdown heading (via react-markdown) appears once the packet loads.
     await waitFor(() => expect(screen.getByText(/Goal: Ship the handoff viewer\./)).toBeTruthy());
-    // The narrative textarea is prefilled from the loaded packet.
-    const narrative = screen.getByPlaceholderText(/A few sentences/) as HTMLTextAreaElement;
-    expect(narrative.value).toContain("one source of truth");
+    // The narrative textarea is prefilled from the loaded packet. Assert inside waitFor: the
+    // prefill lands in a *separate* state update from the markdown above, so the heading appearing
+    // does not mean the author layers have flushed yet. Reading straight after the first waitFor
+    // raced — green on a fast machine, "expected '' to contain …" under CI load.
+    await waitFor(() => {
+      const narrative = screen.getByPlaceholderText(/A few sentences/) as HTMLTextAreaElement;
+      expect(narrative.value).toContain("one source of truth");
+    });
   });
 
   it("POSTs the edited packet on Save (open write, no token)", async () => {

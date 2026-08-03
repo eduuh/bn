@@ -107,6 +107,7 @@ pub fn router(state: AppState) -> Router {
         // Warm-worktree pool (#497) — trigger `bn wt pool warm --repo <repo>` for a pooled repo.
         // Long-running, so the handler spawns it detached and returns a "started" ack (non-blocking).
         .route("/api/repos/{repo}/pool/warm", post(actions::repo_pool_warm))
+        .route("/api/repos/{repo}/pool", post(actions::repo_pool_set))
         // Goal-note connect/disconnect (#564) — native in-process daily-goal writes:
         .route("/api/goals/{id}/notes", post(actions::goal_note_connect))
         .route(
@@ -210,6 +211,7 @@ mod tests {
             input_tokens: 0,
             output_tokens: 0,
             cache_read_tokens: 0,
+            control: bn_core::agent::ControlChannel::None,
         };
         let fleet = Fleet {
             agents: vec![agent],
@@ -1080,6 +1082,87 @@ mod tests {
             let body = body_json(resp).await;
             assert_eq!(body["ok"], false);
             assert_eq!(body["error"]["code"], "not_pooled");
+        });
+    }
+
+    #[tokio::test]
+    async fn pool_set_rejects_a_bogus_or_reserved_repo() {
+        // Metacharacters never reach the config writer.
+        assert_eq!(
+            status_of(test_state(), post("/api/repos/bad!repo/pool", None, "{}")).await,
+            StatusCode::BAD_REQUEST
+        );
+        // `default` and `*` are the config's any-repo keys — writing one as a repo would silently
+        // re-point every unlisted repo's pool size.
+        let resp = respond(test_state(), post("/api/repos/default/pool", None, "{}")).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(body_json(resp).await["error"]["code"], "reserved_repo");
+    }
+
+    #[test]
+    fn pool_set_rejects_a_repo_with_no_clone_here() {
+        // A typo would otherwise become a config line nothing ever warms. Point the bare dir at an
+        // empty temp tree so no repo resolves, regardless of the host's real clones.
+        let _g = bn_core::test_support::env_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let _wt = bn_core::test_support::EnvGuard::set(
+            "BN_WORKTREE_DIR",
+            tmp.path().join("worktree").to_str().unwrap(),
+        );
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let resp = respond(
+                test_state(),
+                post("/api/repos/definitely-not-here/pool", None, r#"{"size":2}"#),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(body_json(resp).await["error"]["code"], "unknown_repo");
+        });
+    }
+
+    #[test]
+    fn pool_set_writes_the_config_the_warm_cron_reads() {
+        // The whole point of the endpoint: one POST makes a repo pooled, in the same file
+        // `bn wt pool` and the idle pool-warm job read. Redirect both the clone tree and the pools
+        // config into temp dirs so this never touches the host's real setup.
+        let _g = bn_core::test_support::env_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("bare").join("foo.git")).unwrap();
+        let pools = tmp.path().join("pools");
+        let _wt = bn_core::test_support::EnvGuard::set(
+            "BN_WORKTREE_DIR",
+            tmp.path().join("worktree").to_str().unwrap(),
+        );
+        let _p = bn_core::test_support::EnvGuard::set("WT_POOLS", pools.to_str().unwrap());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let resp = respond(
+                test_state(),
+                post("/api/repos/foo/pool", None, r#"{"size":3}"#),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(body_json(resp).await["ok"], true);
+            // Legible to the reader that gates every pooled dispatch.
+            let text = std::fs::read_to_string(&pools).unwrap();
+            assert_eq!(bn_core::pool::parse_pool_size(&text, "foo"), Some(3));
+
+            // An out-of-range size is refused rather than clamped silently — the caller asked for
+            // something specific and should be told it wasn't honoured.
+            let resp = respond(
+                test_state(),
+                post("/api/repos/foo/pool", None, r#"{"size":999}"#),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(body_json(resp).await["error"]["code"], "invalid_size");
+
+            // An omitted size unpools, leaving the file readable and the repo absent from it.
+            let resp = respond(test_state(), post("/api/repos/foo/pool", None, "{}")).await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            let text = std::fs::read_to_string(&pools).unwrap();
+            assert_eq!(bn_core::pool::parse_pool_size(&text, "foo"), None);
         });
     }
 

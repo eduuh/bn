@@ -472,11 +472,20 @@ register_mcp() {
   local tmp
   local tools='["bn_add","bn_done","bn_pr","bn_goal","bn_cat","bn_context","bn_status","bn_sync","bn_handoff_write","bn_handoff_read"]'
 
+  # Spawn bn by ABSOLUTE path, never the bare name. A GUI-launched client (Claude Desktop, VS Code
+  # from the Dock) inherits none of the shell PATH — its PATH is /usr/bin:/bin:/usr/sbin:/sbin, so
+  # `command: "bn"` simply fails to start and the client shows an MCP server that never connects.
+  # An absolute path is also immune to a stale shadowing copy earlier on PATH. Prefer the stable
+  # $cfgdir/bn anchor for the same reason the cron units use it: it survives the binary moving
+  # between $bindir layouts.
+  local bn_cmd="$cfgdir/bn"
+  [ -x "$bn_cmd" ] || bn_cmd="$bindir/bn"
+
   # Claude Code — user scope lives in ~/.claude.json under .mcpServers
   local cc="$HOME/.claude.json"
   [ -f "$cc" ] || echo '{}' > "$cc"
   tmp=$(mktemp)
-  if jq '.mcpServers.bn = {type: "stdio", command: "bn", args: ["mcp","serve"]}' \
+  if jq --arg bn "$bn_cmd" '.mcpServers.bn = {type: "stdio", command: $bn, args: ["mcp","serve"]}' \
         "$cc" > "$tmp" 2>/dev/null; then
     mv "$tmp" "$cc"; echo "Registered bn MCP for Claude Code (user scope) -> $cc"
   else
@@ -490,6 +499,8 @@ register_mcp() {
   for dir in \
     "$HOME/.config/Code/User" \
     "$HOME/.config/Code - Insiders/User" \
+    "$HOME/Library/Application Support/Code/User" \
+    "$HOME/Library/Application Support/Code - Insiders/User" \
     "$HOME/.vscode-server/data/User" \
     "$HOME/.vscode-server-insiders/data/User"; do
     [ -d "$dir" ] || continue
@@ -497,7 +508,7 @@ register_mcp() {
     # treat a missing or whitespace-only file as an empty object
     grep -q '[^[:space:]]' "$f" 2>/dev/null || echo '{}' > "$f"
     tmp=$(mktemp)
-    if jq '.servers.bn = {type: "stdio", command: "bn", args: ["mcp","serve"]}' \
+    if jq --arg bn "$bn_cmd" '.servers.bn = {type: "stdio", command: $bn, args: ["mcp","serve"]}' \
           "$f" > "$tmp" 2>/dev/null; then
       mv "$tmp" "$f"; echo "Registered bn MCP for VS Code Copilot -> $f"; wrote=1
     else
@@ -508,6 +519,27 @@ register_mcp() {
     echo "No VS Code user profile found; see README for manual Copilot MCP setup."
   fi
 
+  # Claude Desktop — a separate product from Claude Code, with its own config file and its own
+  # `mcpServers` key. Only register when it is actually installed.
+  #
+  # Caveat: the stdio launcher scopes itself to the client's cwd, and a GUI app's cwd is `/`, so the
+  # branch-note *tools* report "no branch scope" there. The skill *prompts* still work (seeded from
+  # the global tiers, not the worktree). Pointing Desktop at a repo needs the HTTP transport
+  # (`bn serve` + X-Bn-Repo/X-Bn-Branch).
+  local desktop_dir="$HOME/Library/Application Support/Claude"
+  [ -d "$desktop_dir" ] || desktop_dir="$HOME/.config/Claude"   # Linux
+  if [ -d "$desktop_dir" ]; then
+    local dcfg="$desktop_dir/claude_desktop_config.json"
+    grep -q '[^[:space:]]' "$dcfg" 2>/dev/null || echo '{}' > "$dcfg"
+    tmp=$(mktemp)
+    if jq --arg bn "$bn_cmd" '.mcpServers.bn = {command: $bn, args: ["mcp","serve"]}' \
+          "$dcfg" > "$tmp" 2>/dev/null; then
+      mv "$tmp" "$dcfg"; echo "Registered bn MCP for Claude Desktop -> $dcfg"
+    else
+      rm -f "$tmp"; echo "warning: could not update $dcfg (not valid JSON?)" >&2
+    fi
+  fi
+
   # GitHub Copilot CLI — a separate product from the VS Code extension, with its own user
   # config at ~/.copilot/mcp-config.json (key .mcpServers). It ignores the VS Code mcp.json
   # above. Only register when the CLI is present.
@@ -516,8 +548,8 @@ register_mcp() {
     mkdir -p "$HOME/.copilot"
     grep -q '[^[:space:]]' "$cli" 2>/dev/null || echo '{}' > "$cli"
     tmp=$(mktemp)
-    if jq --argjson tools "$tools" \
-          '.mcpServers.bn = {type: "local", command: "bn", args: ["mcp","serve"], tools: $tools}' \
+    if jq --argjson tools "$tools" --arg bn "$bn_cmd" \
+          '.mcpServers.bn = {type: "local", command: $bn, args: ["mcp","serve"], tools: $tools}' \
           "$cli" > "$tmp" 2>/dev/null; then
       mv "$tmp" "$cli"; echo "Registered bn MCP for GitHub Copilot CLI -> $cli"
     else

@@ -8,6 +8,8 @@ import {
   ChevronRight,
   CircleDot,
   DollarSign,
+  ExternalLink,
+  Flame,
   GitFork,
   Rocket,
   Users,
@@ -20,11 +22,18 @@ import {
   repoIssuesQuery,
 } from "../api/client";
 import { startRepoOrchestrator } from "../api/writes";
-import type { ActionItem, LiveAgent, RepoIssue, RepoSession } from "../api/types";
+import type { ActionItem, LiveAgent, RepoIssue, RepoPool, RepoSession } from "../api/types";
 import { useNow } from "../hooks/useNow";
 import { timeAgo, fmtTokens, fmtAic, fmtUsd } from "../lib/format";
 import { prHref, prLabel, jumpCommand } from "../lib/board";
-import { findRepo, splitSessions, sessionTo, sessionTone, sessionStatusLabel } from "../lib/repos";
+import {
+  findRepo,
+  forgeLinks,
+  splitSessions,
+  sessionTo,
+  sessionTone,
+  sessionStatusLabel,
+} from "../lib/repos";
 import { pushToast } from "../lib/toast";
 import { CopyButton } from "../components/CopyButton";
 import { StartAgentComposer } from "../components/StartAgentComposer";
@@ -302,6 +311,59 @@ function IssuesPanel({ repo, onStart }: { repo: string; onStart: (item: ActionIt
   );
 }
 
+/** The repo's warm worktree pool, slot by slot. The Repos card carries the counts; this answers what
+ * counts can't — *which* branch is holding a slot, who took it and how long ago, and which slots
+ * have no checkout yet. An un-pooled repo gets the explanation instead: pooling is opt-in, and the
+ * idle `pool-warm` cron is what keeps an enabled pool warm without anyone asking. */
+function PoolPanel({ pool, now }: { pool: RepoPool; now: number }) {
+  if (!pool.enabled) {
+    return (
+      <section className="space-y-3">
+        <SectionHead icon={Flame} title="Warm pool" />
+        <Card className="p-4 text-sm text-muted-foreground">
+          Not pooled. Enable it from the{" "}
+          <Link to="/repos" className="text-primary">
+            Repos board
+          </Link>{" "}
+          (or <code className="font-mono">bn wt pool set 2</code>) and the idle pool-warm job keeps
+          its slots built, so a dispatch leases a ready checkout instead of paying a cold install.
+        </Card>
+      </section>
+    );
+  }
+  return (
+    <section className="space-y-3">
+      <SectionHead icon={Flame} title="Warm pool" count={pool.total} />
+      <Card className="divide-y divide-border p-0">
+        {pool.slots.map((s) => (
+          <div key={s.n} className="flex items-center gap-3 px-4 py-2.5 text-sm">
+            <span className="font-mono text-xs text-muted-foreground">#{s.n}</span>
+            <Badge variant={s.leased ? "warn" : s.warm ? "ok" : "muted"}>
+              {s.leased ? "leased" : s.warm ? "warm" : "cold"}
+            </Badge>
+            <span className="min-w-0 flex-1 truncate font-mono text-xs">
+              {s.branch ?? <span className="text-muted-foreground">idle</span>}
+            </span>
+            {s.leased && s.holder && (
+              <span className="shrink-0 text-xs text-muted-foreground">{s.holder}</span>
+            )}
+            {s.leased && s.age_secs != null && (
+              <span className="shrink-0 text-xs text-muted-foreground">
+                {timeAgo(now - s.age_secs, now)}
+              </span>
+            )}
+            {!s.leased && s.warmed_ts != null && (
+              <span className="shrink-0 text-xs text-muted-foreground/70">
+                warmed {timeAgo(s.warmed_ts, now)}
+              </span>
+            )}
+          </div>
+        ))}
+      </Card>
+    </section>
+  );
+}
+
 /** Ask #3 — a compact 30-day cost summary for this repo (AIC + $ benchmark) with a jump to the full
  * Cost view. The figures ride the same `/api/repos` rollup the header uses. */
 function CostPanel({ aic, usd }: { aic: number | null; usd: number | null }) {
@@ -436,11 +498,29 @@ export function RepoDetail() {
               {plural(rollup.open_prs, "PR")}
               {rollup.aic != null && <> · {fmtAic(rollup.aic)} AIC</>}
             </p>
+            {/* Straight out to the forge — the issue list below is bn's own read via `gh`, which
+                can't show a PR, a discussion, or anything `gh` isn't authed for. */}
+            <div className="flex flex-wrap items-center gap-3 pt-1">
+              {forgeLinks(rollup.links).map((l) => (
+                <a
+                  key={l.href}
+                  href={l.href}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
+                >
+                  {l.label}
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+              ))}
+            </div>
           </header>
 
           <OrchestratorPanel repo={rollup.repo} agents={agents} />
 
           <IssuesPanel repo={rollup.repo} onStart={setComposer} />
+
+          <PoolPanel pool={rollup.pool} now={now} />
 
           <CostPanel aic={rollup.aic} usd={rollup.cost_usd} />
 
