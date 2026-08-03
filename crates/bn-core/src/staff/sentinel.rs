@@ -1402,7 +1402,8 @@ mod tests {
             // Highest-metric markers win (d=70, c=60).
             assert!(r.promotions.iter().any(|p| p.branch.contains("d-rs")));
             assert!(r.promotions.iter().any(|p| p.branch.contains("c-rs")));
-            let queued = attention::open_auto_eligible("2026-07-01");
+            let queued =
+                attention::open_auto_eligible(&crate::resolver::Config::default(), "2026-07-01");
             assert_eq!(queued.len(), 2);
             // Night-shift fuel: mode auto, manual-trust source, sentinel-tagged key.
             assert!(queued
@@ -1454,7 +1455,11 @@ mod tests {
             assert!(!r1.promotions[0].already_queued);
             // Next patrol, same finding still open → promotion is a keyed no-op, not a duplicate.
             let r2 = patrol(&cfg, &inputs, &pcfg(&["myrepo"]), "2026-07-02").unwrap();
-            assert_eq!(attention::open_auto_eligible("2026-07-02").len(), 1);
+            assert_eq!(
+                attention::open_auto_eligible(&crate::resolver::Config::default(), "2026-07-02")
+                    .len(),
+                1
+            );
             assert!(r2.promotions.iter().all(|p| p.already_queued));
         });
     }

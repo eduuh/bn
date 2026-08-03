@@ -3,7 +3,7 @@
 // this is just a small `fetch` wrapper that unwraps the standard `Envelope` and throws a typed
 // `ApiError` on any transport / command failure. Reads still go through `api/client.ts`.
 
-import type { Counts, Envelope, SkillInfo } from "./types";
+import type { Counts, Envelope, SkillMutation, SkillScope } from "./types";
 import type { HandoffView } from "./types";
 import type { GoalNote } from "./types";
 
@@ -148,12 +148,36 @@ export function saveHandoff(body: HandoffWriteBody): Promise<HandoffView> {
   return post<HandoffView>("/api/handoff", body);
 }
 
-// --- Skill edit (#483) — write back the effective skill file ---
+// --- Skill CRUD (#483) — the skill source file, plus a Claude/Copilot native sync per write ---
 
-/** `PUT /api/skills/:name {content}` — overwrite the effective skill's markdown source. Returns the
- * updated skill metadata; a `400` (invalid content) or `404` (unknown skill) throws `ApiError`. */
-export function saveSkill(name: string, content: string): Promise<{ skill: SkillInfo }> {
+/** The body `POST /api/skills` accepts (`bn_web::actions::SkillCreateBody`). `scope` defaults to
+ * `global-personal` server-side; `overwrite` replaces a same-named skill in that tier. */
+export interface SkillCreateBody {
+  name: string;
+  description: string;
+  scope?: SkillScope;
+  body?: string;
+  overwrite?: boolean;
+}
+
+/** `POST /api/skills {name, description, scope?, body?}` — create a skill and materialize it into
+ * the native Claude/Copilot skill roots. A `400` (bad name/description/scope) or `409` (that tier
+ * already defines the name) throws `ApiError`. */
+export function createSkill(body: SkillCreateBody): Promise<SkillMutation> {
+  return post<SkillMutation>("/api/skills", body);
+}
+
+/** `PUT /api/skills/:name {content}` — overwrite the effective skill's markdown source, then re-sync
+ * the native harnesses. A `400` (invalid content) or `404` (unknown skill) throws `ApiError`. */
+export function saveSkill(name: string, content: string): Promise<SkillMutation> {
   return request("PUT", `/api/skills/${encodeURIComponent(name)}`, { content });
+}
+
+/** `DELETE /api/skills/:name` — delete the effective definition and sweep it out of the native
+ * harness roots. A lower tier defining the same name is unshadowed, not removed — the reply's
+ * `remaining_scope` says which. A `404` (unknown skill) throws `ApiError`. */
+export function deleteSkill(name: string): Promise<SkillMutation> {
+  return del<SkillMutation>(`/api/skills/${encodeURIComponent(name)}`);
 }
 
 // --- Agent steer actions (#394, design §4(c)) — the per-agent write endpoints ---
@@ -298,4 +322,48 @@ export function decideReview(
   notes?: string,
 ): Promise<{ review: Review }> {
   return post(`/api/reviews/${encodeURIComponent(id)}`, { action, notes });
+}
+
+// --- Task writes (#1006), split by latency ---------------------------------------------------
+//
+// `createTask` / `taskAction` are file writes: they answer with the result. `taskAgent` launches
+// an LLM agent that runs for minutes, so the server spawns it detached and answers immediately —
+// the caller watches the fleet rather than holding a request open.
+
+export interface TaskCreate {
+  title: string;
+  repo?: string;
+  day?: string;
+  est?: string;
+  priority?: string;
+}
+
+/** `POST /api/tasks` — create a task. Returns its new id. */
+export function createTask(body: TaskCreate): Promise<{ id: string }> {
+  return post("/api/tasks", body);
+}
+
+/** The fast mutations `POST /api/tasks/:id` accepts. */
+export type TaskAction = "day" | "priority" | "done" | "wip" | "snooze";
+
+/** `POST /api/tasks/:id {action, value?}` — schedule, prioritize, finish, start or defer a task. */
+export function taskAction(
+  id: string,
+  action: TaskAction,
+  value?: string,
+): Promise<{ id: string; action: string }> {
+  return post(`/api/tasks/${encodeURIComponent(id)}`, { action, value });
+}
+
+/** `POST /api/tasks/:id/agent {agent, steer?}` — launch the improve or triage agent.
+ *
+ * Returns as soon as the process is spawned, **not** when the agent finishes: these take minutes,
+ * and holding the request open would tie up a server worker with no progress and no way to cancel.
+ * Watch `/api/fleet` for what happens next. */
+export function taskAgent(
+  id: string,
+  agent: "improve" | "triage",
+  steer?: string,
+): Promise<{ id: string; agent: string; started: boolean; watch: string }> {
+  return post(`/api/tasks/${encodeURIComponent(id)}/agent`, { agent, steer });
 }

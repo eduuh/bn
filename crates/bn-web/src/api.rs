@@ -503,36 +503,53 @@ pub async fn repos(State(state): State<AppState>) -> Json<Envelope> {
     ))
 }
 
-/// `GET /api/repos/{repo}/issues` — one repo's open GitHub issues (#556), so the per-repo command
-/// center can surface + pick what a fleet should work on. Resolves the repo's `owner/repo` slug
-/// from its local bare clone (`<bare_dir>/<repo>.git`) and lists via `gh issue list -R <slug>`.
-/// Best-effort: an unknown repo, a non-GitHub remote, or any `gh`/`git` failure yields an empty
-/// list (never an error), so the section degrades gracefully offline / unauthed.
+/// `GET /api/repos/{repo}/issues` — one repo's open GitHub issues (#556).
+///
+/// Migrated onto the #999 cache (#1005). It used to shell `gh issue list` on **every request**,
+/// unbounded and uncached, and `.unwrap_or_default()` any failure into an empty list — so a
+/// missing `gh`, an expired login, or a rate limit rendered as "this repo has no open issues".
+///
+/// Now: a TTL cache in front, a bounded fetch behind, and `stale` / `error` on the response so the
+/// page can say *"12 minutes old, gh is unavailable"* instead of quietly lying. The `issues` key
+/// keeps its shape for the existing per-repo view; the new fields are additive.
 pub async fn repo_issues(State(state): State<AppState>, Path(repo): Path<String>) -> Response {
     let cmd = "repo-issues";
-    let repo = repo.trim().to_string();
+    let repo = repo.trim().to_ascii_lowercase();
     if !actions::valid_repo(&repo) {
         return bad_request(cmd, "invalid_repo", "repo has invalid characters");
     }
-    let git_dir = state.cfg.bare_dir().join(format!("{repo}.git"));
-    let issues = tokio::task::spawn_blocking(move || {
+    let cfg = state.cfg.clone();
+    let name = repo.clone();
+    let found = tokio::task::spawn_blocking(move || {
         let runner = bn_core::runner::RealRunner;
-        match bn_core::remote::github_slug(&runner, &git_dir) {
-            Some(slug) => {
-                let hits = bn_core::palette::github_issues_repo(&runner, &slug, 30);
-                (Some(slug), hits)
-            }
-            None => (None, Vec::new()),
-        }
+        bn_core::issues::for_repo(&cfg, &runner, &name, bn_core::util::now_epoch_secs())
     })
     .await
-    .unwrap_or((None, Vec::new()));
-    let (slug, hits) = issues;
-    Json(Envelope::success(
-        cmd,
-        json!({ "repo": repo, "slug": slug, "issues": hits }),
-    ))
-    .into_response()
+    .ok();
+
+    match found {
+        Some(r) => Json(Envelope::success(
+            cmd,
+            json!({
+                "repo": r.repo,
+                "slug": r.slug,
+                "issues": r.issues,
+                "fetched_at": r.fetched_at,
+                "stale": r.stale,
+                "error": r.error,
+            }),
+        ))
+        .into_response(),
+        None => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(Envelope::failure(
+                cmd,
+                "fetch_panicked",
+                "issue fetch failed",
+            )),
+        )
+            .into_response(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -670,12 +687,14 @@ pub async fn learnings(
 pub async fn goals(State(state): State<AppState>) -> Json<Envelope> {
     let today = bn_core::util::today();
 
-    let daily = match bn_core::daily::read(&state.cfg.daily_file(&today)) {
-        Ok(d) => {
-            let upcoming = bn_core::daily::scheduled_pending(&state.cfg, &today);
-            bn_core::payload::daily_data(&d, &upcoming)
-        }
-        Err(_) => json!({ "date": today, "goals": [], "open": 0, "done": 0, "upcoming": [] }),
+    // #1004: goals are a *projection* over the task store, so this read no longer depends on the
+    // CLI having written today's file first. `ensure_today` (the carry-forward) is a write, and a
+    // GET could never call it — so before this, carried-forward goals were invisible in bn-web
+    // until something else touched the day, and the rail's Goals badge read 0.
+    let daily = {
+        let d = bn_core::daily::view(&state.cfg, &today);
+        let upcoming = bn_core::daily::scheduled_pending(&state.cfg, &today);
+        bn_core::payload::daily_data(&d, &upcoming)
     };
 
     let quarter = match bn_core::quarter::quarter_id(&today).and_then(|qid| {
@@ -741,6 +760,237 @@ pub async fn attn() -> Json<Envelope> {
         "attn",
         bn_core::payload::attn_list_data(&items),
     ))
+}
+
+// ---------------------------------------------------------------------------
+// Tasks, issues, pipeline (#1005, EPIC #993) — the read side of the task-first model
+// ---------------------------------------------------------------------------
+
+/// Query params for `GET /api/tasks`.
+#[derive(Debug, Deserialize, Default)]
+pub struct TasksQuery {
+    /// `today` (the default view) or a `YYYY-MM-DD` date.
+    pub day: Option<String>,
+    pub repo: Option<String>,
+    /// Filter on the SMART verdict: `ok`, `fail`, `stuck`, or `unjudged`.
+    pub smart: Option<String>,
+    pub stage: Option<String>,
+    /// `1` to include the whole backlog rather than just what's actionable now.
+    pub all: Option<String>,
+}
+
+/// `GET /api/tasks` — the task store (#996), filtered.
+///
+/// Served **natively** from `bn_core::todo` rather than by shelling `bn task --json`: it is a file
+/// read, and `bn_runner` has no timeout, so a subprocess here would put an unbounded call on an
+/// axum worker for no gain.
+///
+/// The default view mirrors the CLI's: `day:` today-or-earlier plus unscheduled work. `?all=1`
+/// widens to the whole backlog. `?day=<date>` pins a specific day, which is what the Today page
+/// and #1004's goal projection read.
+pub async fn tasks(State(state): State<AppState>, Query(q): Query<TasksQuery>) -> Response {
+    let cmd = "tasks";
+    let today = bn_core::util::today();
+    let all = q.all.as_deref().is_some_and(|v| v == "1" || v == "true");
+    let repo = nonempty(q.repo).map(|r| r.to_ascii_lowercase());
+    let smart = nonempty(q.smart).map(|s| s.to_ascii_lowercase());
+    let stage = nonempty(q.stage).map(|s| s.to_ascii_lowercase());
+    let day = nonempty(q.day);
+
+    if let Some(d) = day.as_deref() {
+        if d != "today" && bn_core::util::epoch_day(d).is_none() {
+            return bad_request(cmd, "invalid_day", "day must be `today` or YYYY-MM-DD");
+        }
+    }
+    let day_filter = day.as_deref().map(|d| {
+        if d == "today" {
+            today.clone()
+        } else {
+            d.to_string()
+        }
+    });
+
+    let file = match bn_core::todo::load(&state.cfg.tasks_file()) {
+        Ok(f) => f,
+        // An unreadable store is a real failure, not an empty list — the same honesty rule the
+        // issue cache follows. A caller must be able to tell "no tasks" from "couldn't read".
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(Envelope::failure(
+                    cmd,
+                    "store_unreadable",
+                    format!("could not read the task store: {e}"),
+                )),
+            )
+                .into_response()
+        }
+    };
+
+    let rows: Vec<Value> = file
+        .open_sorted(&today, None)
+        .into_iter()
+        .filter(|t| {
+            repo.as_deref()
+                .is_none_or(|want| t.meta("repo").is_some_and(|r| r.eq_ignore_ascii_case(want)))
+        })
+        .filter(|t| {
+            stage.as_deref().is_none_or(|want| {
+                t.meta("stage")
+                    .is_some_and(|s| s.eq_ignore_ascii_case(want))
+            })
+        })
+        .filter(|t| match smart.as_deref() {
+            None => true,
+            // `unjudged` is a first-class state, not a missing value: a pulled task (#1000) has
+            // never been through the gate, which is exactly what the improve queue looks for.
+            Some("unjudged") => t.meta("smart").is_none(),
+            Some(want) => t
+                .meta("smart")
+                .is_some_and(|s| s.eq_ignore_ascii_case(want)),
+        })
+        .filter(|t| match (&day_filter, all) {
+            (Some(d), _) => t.meta("day") == Some(d.as_str()),
+            (None, true) => true,
+            // The bare view: actionable now — dated today or earlier (so overdue work stays
+            // visible), plus everything unscheduled.
+            (None, false) => match t
+                .meta("day")
+                .filter(|d| bn_core::util::epoch_day(d).is_some())
+            {
+                Some(d) => d <= today.as_str(),
+                None => true,
+            },
+        })
+        .map(|t| t.to_json(&today))
+        .collect();
+
+    Json(Envelope::success(
+        cmd,
+        json!({
+            "today": today,
+            "all": all,
+            "day": day_filter,
+            "repo": repo,
+            "smart": smart,
+            "stage": stage,
+            "count": rows.len(),
+            "tasks": rows,
+        }),
+    ))
+    .into_response()
+}
+
+/// `GET /api/issues` — every repo's open issues, each with its own freshness (#999).
+///
+/// The cross-repo aggregate the dashboard never had. Per-repo `stale` / `error` are **not
+/// optional**: an empty `issues` list with no error means the backlog is genuinely empty, and one
+/// with an error means we could not ask. Conflating those is the bug #999 exists to remove, so the
+/// shape forces callers to keep them apart.
+///
+/// A repo whose slug could not be resolved is present with `slug: null` and a reason, never
+/// omitted — a caller cannot act on a repo it never hears about.
+pub async fn issues(State(state): State<AppState>) -> Json<Envelope> {
+    let cfg = state.cfg.clone();
+    let repos = tokio::task::spawn_blocking(move || {
+        let runner = bn_core::runner::RealRunner;
+        bn_core::issues::all(&cfg, &runner, bn_core::util::now_epoch_secs())
+    })
+    .await
+    .unwrap_or_default();
+
+    let stale = repos.iter().filter(|r| r.stale).count();
+    let unreachable = repos
+        .iter()
+        .filter(|r| r.error.is_some() && !r.stale)
+        .count();
+    let total: usize = repos.iter().map(|r| r.issues.len()).sum();
+
+    Json(Envelope::success(
+        "issues",
+        json!({
+            "repos": repos,
+            "count": total,
+            "stale_repos": stale,
+            "unreachable_repos": unreachable,
+        }),
+    ))
+}
+
+/// `GET /api/pipeline/board` — every worktree's recorded stage, plus per-stage counts.
+///
+/// EPIC #746 built a nine-stage machine that the dashboard has never been able to see: before this,
+/// a grep of `crates/bn-web/src` for `pipeline` returned nothing. The counts are what the drawing
+/// (#1006) renders on each node.
+///
+/// The vocabulary on the wire is the durable nine-value `pipeline::stage::Stage`. The four-value
+/// inference model is `Phase` (#994) and stays CLI-internal, so a `stage` field is never ambiguous.
+pub async fn pipeline_board(State(state): State<AppState>) -> Json<Envelope> {
+    let entries = bn_core::pipeline::stage::board();
+
+    let mut counts = serde_json::Map::new();
+    for stage in bn_core::pipeline::stage::Stage::ALL {
+        let n = entries.iter().filter(|e| e.stage == stage).count();
+        counts.insert(stage.as_str().to_string(), json!(n));
+    }
+    let stages: Vec<Value> = bn_core::pipeline::stage::Stage::ALL
+        .iter()
+        .map(|s| {
+            json!({
+                "id": s.as_str(),
+                "glyph": s.glyph(),
+                "position": s.position(),
+                "count": entries.iter().filter(|e| e.stage == *s).count(),
+            })
+        })
+        .collect();
+
+    let _ = &state; // board() reads the shared event log, not the config
+    Json(Envelope::success(
+        "pipeline-board",
+        json!({ "board": entries, "counts": counts, "stages": stages }),
+    ))
+}
+
+/// `GET /api/pipeline/{repo}/{branch}` — one worktree's current stage and its full history.
+pub async fn pipeline_status(
+    State(state): State<AppState>,
+    Path((repo, branch)): Path<(String, String)>,
+) -> Response {
+    let cmd = "pipeline-status";
+    let repo = repo.trim().to_ascii_lowercase();
+    if !actions::valid_repo(&repo) {
+        return bad_request(cmd, "invalid_repo", "repo has invalid characters");
+    }
+    let branch = bn_core::plan_review::sanitize_branch(branch.trim());
+    if branch.is_empty() {
+        return bad_request(cmd, "invalid_branch", "branch must not be empty");
+    }
+
+    let ctx = bn_core::resolver::Resolved {
+        repo: repo.clone(),
+        branch: branch.clone(),
+    };
+    // Frontmatter is authoritative; the event log is the fallback for notes written before the
+    // stage was durable. Mirrors `stage::current_for_note`.
+    let stage = bn_core::store::read(&state.cfg.note_file(&ctx))
+        .ok()
+        .and_then(|n| bn_core::pipeline::stage::current_for_note(&n))
+        .or_else(|| bn_core::pipeline::stage::current(&repo, &branch));
+
+    let history = bn_core::pipeline::stage::history(&repo, &branch);
+    Json(Envelope::success(
+        cmd,
+        json!({
+            "repo": repo,
+            "branch": branch,
+            "stage": stage.map(|s| s.as_str()),
+            "position": stage.map(|s| s.position()),
+            "glyph": stage.map(|s| s.glyph()),
+            "history": history,
+        }),
+    ))
+    .into_response()
 }
 
 // ---------------------------------------------------------------------------

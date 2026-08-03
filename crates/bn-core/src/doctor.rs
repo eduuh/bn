@@ -168,6 +168,16 @@ pub struct NotesLeakFinding {
     pub foreign_machines: Vec<String>,
 }
 
+/// Live orchestrate backlog entries that name no task (#1001) — work that predates the invariant
+/// and would therefore execute with no durable record behind it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BacklogFinding {
+    /// How many live entries carry no `task:`.
+    pub untasked: usize,
+    /// A sample of their subjects, for the one-line render.
+    pub sample: Vec<String>,
+}
+
 /// One row on the attention list, tagged by where it came from. Serializes with a `kind`
 /// discriminator (`note` | `cron` | `staff` | `attn` | `todo` | `inbox` | `mcp` | `stalestaff` |
 /// `notesleak`) and the variant's fields flattened alongside. (The discriminator is `kind`, not
@@ -185,6 +195,7 @@ pub enum Finding {
     Mcp(McpFinding),
     StaleStaff(StaleStaffFinding),
     NotesLeak(NotesLeakFinding),
+    Backlog(BacklogFinding),
 }
 
 impl Finding {
@@ -218,6 +229,8 @@ impl Finding {
             // A cross-machine notes leak means another box's data is physically present and being
             // read here — an operational misconfig, on a par with the other WARN-band signals.
             Finding::NotesLeak(_) => action_rank::WARN,
+            // Passive: the work still runs, it just has no record. Worth clearing, not urgent.
+            Finding::Backlog(_) => action_rank::WARN,
         }
     }
 
@@ -240,6 +253,7 @@ impl Finding {
             Finding::StaleStaff(s) => s.idle_days,
             // The more foreign machines are leaking in, the higher within its band.
             Finding::NotesLeak(l) => l.foreign_machines.len() as i64,
+            Finding::Backlog(b) => b.untasked as i64,
         }
     }
 
@@ -262,8 +276,32 @@ impl Finding {
                 l.foreign_machines.len(),
                 l.personal_root
             ),
+            Finding::Backlog(b) => format!(
+                "{} queued item(s) with no task — work with no durable record",
+                b.untasked
+            ),
         }
     }
+}
+
+/// Live backlog entries that name no task (#1001) — work that predates the invariant.
+///
+/// Reported rather than deleted: an entry may be mid-flight, and an upgrade must never orphan
+/// running work. Goes quiet on its own as those entries reach a terminal state.
+fn backlog_findings() -> Vec<Finding> {
+    let backlog = crate::backlog::load(&crate::backlog::backlog_path());
+    let untasked = backlog.untasked();
+    if untasked.is_empty() {
+        return Vec::new();
+    }
+    Vec::from([Finding::Backlog(BacklogFinding {
+        untasked: untasked.len(),
+        sample: untasked
+            .iter()
+            .take(5)
+            .map(|e| format!("{}/{}", e.repo, e.item))
+            .collect(),
+    })])
 }
 
 /// The aggregated attention list, most-pressing first. Folds three sources: local notes with
@@ -284,6 +322,7 @@ pub fn doctor(
     out.extend(inbox_findings(cfg, today));
     out.extend(stale_staff_findings(cfg, today));
     out.extend(notes_leak_findings(cfg));
+    out.extend(backlog_findings());
     if let Some((root, name)) = repo {
         out.extend(todo_findings(cfg, name, today));
         out.extend(mcp_findings(
@@ -1112,6 +1151,7 @@ mod tests {
                     Finding::Mcp(_) => "mcp",
                     Finding::StaleStaff(_) => "stale-staff",
                     Finding::NotesLeak(_) => "notes-leak",
+                    Finding::Backlog(_) => "backlog-untasked",
                 })
                 .collect();
             assert_eq!(&sources[3..], &["warn", "note"]);

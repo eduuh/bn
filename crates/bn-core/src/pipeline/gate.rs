@@ -245,7 +245,10 @@ fn record_refusal(
     }
 
     let new = crate::attention::NewAttn {
-        source: "manual",
+        // NOT "manual" (#1003): a task may have been pulled from a public issue, so its content
+        // is not self-authored. The narrower `task` tier re-checks smart:ok, a known repo, and
+        // that this prompt is bn-authored before anything runs unattended.
+        source: crate::attention::SOURCE_TASK,
         title: &title,
         severity: if stuck { "warn" } else { "info" },
         repo: repo.as_deref(),

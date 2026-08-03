@@ -653,6 +653,7 @@ fn from_doctor(cfg: &Config, today: &str) -> Vec<Action> {
             // A cross-machine notes leak is a machine-setup misconfig surfaced by `bn doctor`, not
             // a per-repo task — keep it off the `bn next` action list.
             Finding::NotesLeak(_) => None,
+            Finding::Backlog(_) => None,
         })
         .collect()
 }
@@ -780,7 +781,9 @@ fn from_in_flight(cfg: &Config, now: i64) -> Vec<Action> {
 /// Today's open daily goals — the plan you set for yourself. Ensures today's file (carrying
 /// yesterday forward, same as `bn daily`); on any read error it just contributes nothing.
 fn from_goals(cfg: &Config, today: &str) -> Vec<Action> {
-    let Ok(daily) = daily::ensure_today(cfg, today) else {
+    let daily = daily::view(cfg, today);
+    #[allow(clippy::needless_else)]
+    let Some(daily) = Some(daily) else {
         return Vec::new();
     };
     daily

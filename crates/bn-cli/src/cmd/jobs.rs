@@ -1244,7 +1244,7 @@ pub(crate) fn job_attention_auto_trigger(cfg: &Config, _ctx: Option<&Resolved>) 
     // Fill every free concurrency slot in one idle sweep, highest-priority first. The batch is
     // capped at (BN_ATTN_AUTO_MAX − already-running), so we never overshoot; each start marks its
     // item in-flight, and later sweeps top the fleet back up as runs finish (done frees a slot).
-    let batch = bn_core::attention::next_auto_batch(&today(), attn_auto_max());
+    let batch = bn_core::attention::next_auto_batch(cfg, &today(), attn_auto_max());
     if batch.is_empty() {
         return 0; // at the concurrency cap, or nothing eligible
     }

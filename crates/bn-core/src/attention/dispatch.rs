@@ -139,6 +139,11 @@ pub fn promote_to_backlog(
             substrate: Default::default(),
             source: format!("attn:{}", item.id),
             controller_id: None,
+            // An attention item promoted to the backlog carries the task it names, when it names
+            // one (#1001). A hand-raised item legitimately has none — it *is* the record.
+            task: crate::attention::task_id_of(item)
+                .unwrap_or_default()
+                .to_string(),
         };
         BacklogEntry::new(repo, &subject, &spec, now)
     };

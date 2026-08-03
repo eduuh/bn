@@ -20,7 +20,13 @@ if [[ $# -gt 0 ]]; then
   # the file is sourced in this same nvim, already bootstrapped by -u above).
   cmd="PlenaryBustedFile nvim/tests/${1%_spec}_spec.lua"
 else
-  cmd="PlenaryBustedDirectory nvim/tests/ { minimal_init = '$init' }"
+  # `sequential = true` matters: plenary defaults to spawning one nvim per spec file and running
+  # them ALL concurrently. Several specs here assert on async work — a stubbed `bn` subprocess whose
+  # callback has to land inside a `vim.wait` budget — so seven competing nvim processes turn a
+  # generous budget into a coin flip. That is why these specs pass alone and fail in a full run,
+  # with a different file failing each time. Running one at a time trades a little wall-clock for a
+  # suite whose result means something.
+  cmd="PlenaryBustedDirectory nvim/tests/ { minimal_init = '$init', sequential = true }"
 fi
 
 nvim --headless -u "$init" -c "$cmd"

@@ -792,6 +792,52 @@ pub fn has_native_install(
     })
 }
 
+/// Every native harness bn can materialize skills into — the set a source mutation refreshes.
+pub const NATIVE_HARNESSES: [NativeHarness; 2] = [NativeHarness::Claude, NativeHarness::Copilot];
+
+/// Re-materialize the native Agent Skills after a bn skill source file was created, edited, or
+/// deleted, so Claude and Copilot never serve a stale copy of what `bn skills` shows.
+///
+/// The **global** roots (`~/.claude/skills`, `~/.copilot/skills`) are always regenerated: those are
+/// the harnesses' user-level skill sets and a bn source mutation is exactly the moment they should
+/// follow. The **repo** roots (`.claude/skills`, `.github/skills`) are refreshed only when they
+/// already hold a bn-managed skill ([`has_native_install`]) — a dashboard edit must not start
+/// committing generated files into a repo that never opted in.
+///
+/// [`install_native_skills`] does the work per target, so this inherits its guarantees: idempotent,
+/// preflighted, and it refuses to overwrite a same-named skill bn does not own. Deletion is covered
+/// by the same call — a managed native skill whose source no longer exists is removed.
+pub fn sync_native_skills(
+    cfg: &Config,
+    base_dir: &Path,
+    home: &Path,
+) -> Result<NativeSkillsReport, String> {
+    let mut changes = Vec::new();
+    for scope in [NativeScope::Global, NativeScope::Repo] {
+        let harnesses: Vec<NativeHarness> = NATIVE_HARNESSES
+            .into_iter()
+            .filter(|harness| {
+                scope == NativeScope::Global || has_native_install(base_dir, home, scope, *harness)
+            })
+            .collect();
+        if harnesses.is_empty() {
+            continue;
+        }
+        let report = install_native_skills(cfg, base_dir, home, scope, &harnesses)?;
+        changes.extend(report.changes);
+    }
+    Ok(NativeSkillsReport { changes })
+}
+
+/// Delete the skill source file at `path` — the create/read/update/**delete** counterpart of
+/// [`save_skill`]. Like `save_skill`, `path` is expected to come from [`effective_info`] (never raw
+/// caller input), so the file is known to be a real skill in a known tier. Deleting the effective
+/// definition unshadows any lower-tier skill of the same name, which then becomes what bn-mcp
+/// serves — deliberate: a delete removes one definition, not the name.
+pub fn delete_skill(path: &Path) -> Result<(), String> {
+    std::fs::remove_file(path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 fn render_native_skill(skill: &Skill, target: &dyn HarnessTarget) -> String {
     let mut body = skill.body.clone();
     for (index, arg) in skill.arguments.iter().enumerate() {
@@ -1325,6 +1371,74 @@ mod tests {
         let next = "---\ndescription: new\n---\nnew body\n";
         assert!(save_skill(&path, next).is_ok());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), next);
+    }
+
+    #[test]
+    fn delete_skill_removes_the_file_and_unshadows_the_lower_tier() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shared = tmp.path().join("shared");
+        let personal = tmp.path().join("personal");
+        write(&shared, "s.md", "---\ndescription: shared\n---\nb\n");
+        write(&personal, "s.md", "---\ndescription: personal\n---\nb\n");
+        let tiers = vec![
+            (SkillScope::GlobalShared, shared),
+            (SkillScope::GlobalPersonal, personal.clone()),
+        ];
+
+        delete_skill(&personal.join("s.md")).unwrap();
+        assert!(!personal.join("s.md").exists());
+        // The shadowed shared definition is now the effective one — the name survives the delete.
+        let after = discover_in(&tiers);
+        let eff = after.iter().find(|i| i.effective && i.name == "s").unwrap();
+        assert_eq!(eff.scope, SkillScope::GlobalShared);
+        // Deleting what is already gone is an error, not a silent success.
+        assert!(delete_skill(&personal.join("s.md")).is_err());
+    }
+
+    #[test]
+    fn sync_native_skills_always_refreshes_global_and_repo_only_when_installed() {
+        let _env = crate::test_support::env_lock();
+        let repo = git_repo();
+        let home = tempfile::tempdir().unwrap();
+        let personal = tempfile::tempdir().unwrap();
+        let _personal =
+            crate::test_support::EnvGuard::set("BN_MCP_PERSONAL_SKILLS_DIR", personal.path());
+        let cfg = crate::test_support::config(repo.path());
+        let source = repo.path().join("config").join("prompts");
+        write(&source, "ship.md", "---\ndescription: Ship\n---\nfirst\n");
+
+        // No repo install yet → only the two global roots are materialized.
+        sync_native_skills(&cfg, repo.path(), home.path()).unwrap();
+        assert!(home.path().join(".claude/skills/ship/SKILL.md").exists());
+        assert!(home.path().join(".copilot/skills/ship/SKILL.md").exists());
+        assert!(!repo.path().join(".claude/skills/ship/SKILL.md").exists());
+        assert!(!repo.path().join(".github/skills/ship/SKILL.md").exists());
+
+        // Once a repo install exists for one harness, a sync keeps that root current too — and
+        // still leaves the harness that never opted in alone.
+        install_native_skills(
+            &cfg,
+            repo.path(),
+            home.path(),
+            NativeScope::Repo,
+            &[NativeHarness::Claude],
+        )
+        .unwrap();
+        write(&source, "ship.md", "---\ndescription: Ship\n---\nsecond\n");
+        sync_native_skills(&cfg, repo.path(), home.path()).unwrap();
+        let repo_claude = repo.path().join(".claude/skills/ship/SKILL.md");
+        assert!(std::fs::read_to_string(&repo_claude)
+            .unwrap()
+            .contains("second"));
+        assert!(home.path().join(".claude/skills/ship/SKILL.md").exists());
+        assert!(!repo.path().join(".github/skills/ship/SKILL.md").exists());
+
+        // A deleted source skill is swept out of every root the sync touches.
+        delete_skill(&source.join("ship.md")).unwrap();
+        sync_native_skills(&cfg, repo.path(), home.path()).unwrap();
+        assert!(!home.path().join(".claude/skills/ship/SKILL.md").exists());
+        assert!(!home.path().join(".copilot/skills/ship/SKILL.md").exists());
+        assert!(!repo_claude.exists());
     }
 
     #[test]

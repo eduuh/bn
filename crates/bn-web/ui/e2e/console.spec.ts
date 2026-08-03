@@ -1,3 +1,5 @@
+// The console moved from `/` to `/console` in #1006: the index is now the task-first home,
+// because work only ever starts from a task.
 import { expect, test } from "@playwright/test";
 import { seed } from "./fixtures";
 import { primeToken, shot } from "./helpers";
@@ -8,7 +10,7 @@ test("the console is the index: one queue, grouped by what you'd do about it", a
   page,
 }, testInfo) => {
   await primeToken(page);
-  await page.goto("/");
+  await page.goto("/console");
 
   // The left column heads as "Queue" — "Console" is the rail entry that got you here, and having
   // the screen repeat its own nav label spent the one display-serif line on no information.
@@ -31,7 +33,7 @@ test("selecting a row fills the focus pane without navigating away from the queu
 }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "the queue only stays on screen at lg and up");
   await primeToken(page);
-  await page.goto("/");
+  await page.goto("/console");
 
   const queue = page.getByRole("complementary", { name: "work queue" });
   // The queue auto-selects the most-blocked row, so something is always in focus.
@@ -49,7 +51,7 @@ test("selecting a row fills the focus pane without navigating away from the queu
 test("on a phone the console is list-or-detail, with a way back", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "the swap only happens below lg");
   await primeToken(page);
-  await page.goto("/");
+  await page.goto("/console");
 
   const queue = page.getByRole("complementary", { name: "work queue" });
   // Nothing is auto-selected on a phone — you land on the list.
@@ -72,7 +74,7 @@ test("on a phone the console is list-or-detail, with a way back", async ({ page 
 test("j and k walk the queue from the keyboard", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "keyboard walking is a desktop affordance");
   await primeToken(page);
-  await page.goto("/");
+  await page.goto("/console");
   await expect(page).toHaveURL(/\?sel=/);
 
   // The suite shares one mutable server, so an earlier spec may have killed agents or acked items;
@@ -95,7 +97,7 @@ test("j and k walk the queue from the keyboard", async ({ page }, testInfo) => {
 
 test("a plan review offers a decision, not another agent", async ({ page }) => {
   await primeToken(page);
-  await page.goto("/");
+  await page.goto("/console");
 
   const queue = page.getByRole("complementary", { name: "work queue" });
   const review = queue.getByRole("button").filter({ hasText: /Plan review/i }).first();
@@ -108,7 +110,7 @@ test("a plan review offers a decision, not another agent", async ({ page }) => {
 
 test("the filter narrows the queue in place", async ({ page }) => {
   await primeToken(page);
-  await page.goto("/");
+  await page.goto("/console");
 
   const queue = page.getByRole("complementary", { name: "work queue" });
   const before = await queue.locator("button[aria-current]").count();
@@ -127,7 +129,7 @@ test("at tablet width Act folds under Focus — one pane, not a hidden column pl
   await primeToken(page);
   // Between `lg` and `wide`: the third column no longer fits, so Act becomes a horizontal strip.
   await page.setViewportSize({ width: 1100, height: 900 });
-  await page.goto("/");
+  await page.goto("/console");
 
   // Exactly one — the console used to render a second ActPane below the fold, which meant a
   // half-typed steer message existed twice and was lost on crossing the breakpoint.

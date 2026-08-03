@@ -174,6 +174,17 @@ fn row_for(f: &Finding) -> Row {
             link: String::new(),
             path: String::new(),
         },
+        Finding::Backlog(b) => Row {
+            display: format!(
+                "\x1b[33m• queued work with no task\x1b[0m  \x1b[2m{} entry(s) predate the task invariant — `bn orchestrate status` to see them\x1b[0m",
+                b.untasked
+            ),
+            kind: "backlog-untasked",
+            id: String::new(),
+            job: String::new(),
+            link: String::new(),
+            path: String::new(),
+        },
         Finding::NotesLeak(l) => Row {
             display: format!(
                 "\x1b[33m• personal notes leak\x1b[0m  \x1b[2m{} foreign machine(s) under {} — repoint [personal].notes_root\x1b[0m",

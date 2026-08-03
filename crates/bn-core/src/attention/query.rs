@@ -277,15 +277,15 @@ pub fn outcomes() -> Vec<AttnOutcome> {
         .collect()
 }
 
-/// Whether an item is eligible for the autonomous loop: `mode` auto, `source` manual (the trust
-/// boundary — a script/PR-sourced item is never auto-run even if it carries `mode=auto`), and
-/// carrying both a prompt and a repo/branch to open a window in.
-fn is_auto_eligible(i: &AttnItem) -> bool {
-    i.mode() == "auto"
-        && i.source == "manual"
-        && i.repo.is_some()
-        && i.branch.is_some()
-        && i.prompt.as_deref().is_some_and(|p| !p.is_empty())
+/// Whether an item may launch an agent unattended.
+///
+/// The trust boundary, now with two tiers (#1003): self-authored (`source: "manual"`) as before,
+/// plus the narrower task tier (`source: "task"`) that additionally requires a passing SMART
+/// verdict, a known repo, and a bn-authored prompt. A script/PR-sourced item is still never
+/// auto-run even if it carries `mode=auto`. See [`super::trust`] for why the task tier exists and
+/// why it is not simply `manual`.
+fn is_auto_eligible(cfg: &crate::resolver::Config, i: &AttnItem, today: &str) -> bool {
+    super::trust::auto_verdict(cfg, i, today).eligible()
 }
 
 /// The open, auto-eligible attention items — the promoted-todo queue that `bn attn promote` fuels
@@ -293,10 +293,10 @@ fn is_auto_eligible(i: &AttnItem) -> bool {
 /// concurrency bookkeeping: the caller ranks and gates them (the night planner ranks by `bn next`,
 /// then applies its allowlist / dirty / live-session / overlap / cap rails). Eligibility is
 /// [`is_auto_eligible`], so the trust boundary (self-authored only) still holds.
-pub fn open_auto_eligible(today: &str) -> Vec<AttnItem> {
+pub fn open_auto_eligible(cfg: &crate::resolver::Config, today: &str) -> Vec<AttnItem> {
     open_items(today)
         .into_iter()
-        .filter(is_auto_eligible)
+        .filter(|i| is_auto_eligible(cfg, i, today))
         .collect()
 }
 
@@ -310,7 +310,11 @@ pub fn open_auto_eligible(today: &str) -> Vec<AttnItem> {
 /// promoted off the same branch note serialize instead of launching into one worktree at once.
 /// `open_items` is urgent-first then oldest, so the batch is priority-ordered. `max_running` of 1
 /// reproduces the historical one-at-a-time loop.
-pub fn next_auto_batch(today: &str, max_running: usize) -> Vec<AttnItem> {
+pub fn next_auto_batch(
+    cfg: &crate::resolver::Config,
+    today: &str,
+    max_running: usize,
+) -> Vec<AttnItem> {
     let started = started_items();
     // A *done* item frees its slot (awaits review, not a running agent), so only started-not-done
     // auto items count toward the cap.
@@ -334,7 +338,7 @@ pub fn next_auto_batch(today: &str, max_running: usize) -> Vec<AttnItem> {
         if batch.len() >= slots {
             break;
         }
-        if !is_auto_eligible(&item) {
+        if !is_auto_eligible(cfg, &item, today) {
             continue;
         }
         // is_auto_eligible guarantees repo and branch are Some.
@@ -351,8 +355,12 @@ pub fn next_auto_batch(today: &str, max_running: usize) -> Vec<AttnItem> {
 /// The single next attention item the autonomous loop would start under a `max_running` cap — the
 /// head of [`next_auto_batch`]. `None` when the loop is at its concurrency cap or nothing is
 /// eligible. Powers the `bn attn next-auto` dry-run.
-pub fn next_auto(today: &str, max_running: usize) -> Option<AttnItem> {
-    next_auto_batch(today, max_running).into_iter().next()
+pub fn next_auto(
+    cfg: &crate::resolver::Config,
+    today: &str,
+    max_running: usize,
+) -> Option<AttnItem> {
+    next_auto_batch(cfg, today, max_running).into_iter().next()
 }
 
 #[cfg(test)]
@@ -498,7 +506,8 @@ mod tests {
     fn next_auto_picks_eligible_manual_auto_item() {
         with_state_dir(|| {
             let it = add_auto("refactor", "manual");
-            let picked = next_auto("2026-06-23", 1).expect("an eligible auto item");
+            let picked = next_auto(&crate::resolver::Config::default(), "2026-06-23", 1)
+                .expect("an eligible auto item");
             assert_eq!(picked.id, it.id);
         });
     }
@@ -508,7 +517,7 @@ mod tests {
         with_state_dir(|| {
             // A script/PR-sourced item with mode=auto must never be auto-run (R4 trust boundary).
             add_auto("from a job", "meetings");
-            assert!(next_auto("2026-06-23", 1).is_none());
+            assert!(next_auto(&crate::resolver::Config::default(), "2026-06-23", 1).is_none());
         });
     }
 
@@ -529,7 +538,10 @@ mod tests {
                 "2026-06-23",
             )
             .unwrap();
-            assert!(next_auto("2026-06-23", 1).is_none(), "no prompt → skip");
+            assert!(
+                next_auto(&crate::resolver::Config::default(), "2026-06-23", 1).is_none(),
+                "no prompt → skip"
+            );
             // auto + manual + prompt but no repo/branch → ineligible (nowhere to open a window)
             add_new(
                 &NewAttn {
@@ -544,7 +556,7 @@ mod tests {
             )
             .unwrap();
             assert!(
-                next_auto("2026-06-23", 1).is_none(),
+                next_auto(&crate::resolver::Config::default(), "2026-06-23", 1).is_none(),
                 "no repo/branch → skip"
             );
         });
@@ -568,7 +580,7 @@ mod tests {
             )
             .unwrap();
             add_simple("plain manual", "warn", None);
-            assert!(next_auto("2026-06-23", 1).is_none());
+            assert!(next_auto(&crate::resolver::Config::default(), "2026-06-23", 1).is_none());
         });
     }
 
@@ -580,14 +592,14 @@ mod tests {
             // Start the first → an agent is running → the loop is locked, though `second` is eligible.
             mark_started(&first.id).unwrap();
             assert!(
-                next_auto("2026-06-23", 1).is_none(),
+                next_auto(&crate::resolver::Config::default(), "2026-06-23", 1).is_none(),
                 "one running at a time — a started auto item holds the loop"
             );
             // Done-awaiting-review RELEASES the lock: the human gate gates closing, not starting —
             // an overnight queue drains instead of stalling after the first task.
             mark_done(&first.id, None, None).unwrap();
             assert_eq!(
-                next_auto("2026-06-23", 1).map(|i| i.id),
+                next_auto(&crate::resolver::Config::default(), "2026-06-23", 1).map(|i| i.id),
                 Some(second.id),
                 "a done item parks for review without blocking the queue"
             );
@@ -607,7 +619,7 @@ mod tests {
 
             // Cap 2 → the batch offers the two highest-priority eligible items at once (equal
             // severity → oldest-first: first then second, third held back).
-            let batch = next_auto_batch("2026-06-23", 2);
+            let batch = next_auto_batch(&crate::resolver::Config::default(), "2026-06-23", 2);
             assert_eq!(
                 batch.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
                 vec![first.id.clone(), second.id.clone()],
@@ -618,7 +630,7 @@ mod tests {
             mark_started(&first.id).unwrap();
             mark_started(&second.id).unwrap();
             assert!(
-                next_auto_batch("2026-06-23", 2).is_empty(),
+                next_auto_batch(&crate::resolver::Config::default(), "2026-06-23", 2).is_empty(),
                 "at the cap → no new runs while two auto agents are in-flight"
             );
 
@@ -626,7 +638,7 @@ mod tests {
             // still parks for the human ack, so it never re-enters the batch.
             mark_done(&first.id, None, None).unwrap();
             assert_eq!(
-                next_auto_batch("2026-06-23", 2)
+                next_auto_batch(&crate::resolver::Config::default(), "2026-06-23", 2)
                     .iter()
                     .map(|i| i.id.clone())
                     .collect::<Vec<_>>(),
@@ -662,7 +674,7 @@ mod tests {
             let _b = same("b");
 
             // Cap 3 has room, but the pair shares one branch → only one starts this sweep.
-            let batch = next_auto_batch("2026-06-23", 3);
+            let batch = next_auto_batch(&crate::resolver::Config::default(), "2026-06-23", 3);
             assert_eq!(batch.len(), 1, "one agent per branch, even with free slots");
             assert_eq!(
                 batch[0].id, a.id,
@@ -672,14 +684,14 @@ mod tests {
             // While `a` runs, its branch is occupied → the sibling stays held back.
             mark_started(&a.id).unwrap();
             assert!(
-                next_auto_batch("2026-06-23", 3).is_empty(),
+                next_auto_batch(&crate::resolver::Config::default(), "2026-06-23", 3).is_empty(),
                 "the sibling waits while a running agent owns the branch"
             );
             // `a` done-awaiting-review is no longer a running agent → the branch frees and the
             // sibling proceeds (it builds on `a`'s branch, same as the historical loop).
             mark_done(&a.id, None, None).unwrap();
             assert_eq!(
-                next_auto_batch("2026-06-23", 3).len(),
+                next_auto_batch(&crate::resolver::Config::default(), "2026-06-23", 3).len(),
                 1,
                 "a finished run frees its branch for the sibling"
             );

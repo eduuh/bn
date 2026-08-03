@@ -448,6 +448,12 @@ pub(super) fn orchestrate_decompose(
             substrate: Substrate::Auto,
             source: source.clone(),
             controller_id: std::env::var("BN_CONTROLLER_ID").ok(),
+            task: crate::cmd::task::task_for_enqueue(
+                cfg,
+                &repo,
+                &child.title,
+                &source,
+            ),
         };
         if let Err(error) = backlog::add(&path, &repo, &[child.number.to_string()], &spec, now) {
             return fail("backlog-write", error.to_string());

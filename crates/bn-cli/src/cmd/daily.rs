@@ -51,7 +51,12 @@ pub(crate) fn emit_daily(
             let view = date.unwrap_or_else(|| today.clone());
             let is_today = view == today;
             let daily = if is_today {
-                daily::ensure_today(cfg, &today).unwrap_or_else(|e| fail(&format!("bn daily: {e}")))
+                // #1004: today's goals are a projection over the task store, so `bn daily` and
+                // `bn task --day today` cannot drift. `ensure_today` still runs first, because it
+                // is what drains due scheduled follow-ups into the day; its carry-forward copy is
+                // now redundant but harmless.
+                let _ = daily::ensure_today(cfg, &today);
+                daily::view(cfg, &today)
             } else {
                 match daily::read(&cfg.daily_file(&view)) {
                     Ok(d) => d,

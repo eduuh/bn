@@ -3,7 +3,7 @@
 //! throughput from the event log (`crate::metrics`); builds typed structs the CLI/MCP
 //! render. No printing here beyond the text-render helpers.
 
-use crate::daily::{self, Daily, ScheduledItem};
+use crate::daily::{self, ScheduledItem};
 use crate::metrics;
 use crate::model::Item;
 use crate::resolver::Config;
@@ -136,12 +136,18 @@ pub struct Stand {
 /// checked-off goals and the achievements logs for dated entries; pure aggregation otherwise.
 pub fn stand(cfg: &Config, today: &str) -> Stand {
     let yday = util::add_days(today, -1).unwrap_or_else(|| today.to_string());
-    // Ensure today's daily exists (carry-forward) so a fresh day still resolves; past day as-is.
+    // Materialize today's file so scheduled follow-ups drain; goals themselves come from the
+    // task store (#1004), so this is no longer what makes today's list appear.
     util::best_effort(
         daily::ensure_today(cfg, today),
         "stand: ensure today's daily",
     );
-    let dailies = daily::read_window(cfg, &yday, today);
+    let mut dailies = daily::read_window(cfg, &yday, today);
+    // `read_window` is file-only; swap today's entry for the projection so `bn stand` counts the
+    // same goals `bn daily` shows.
+    if let Some(slot) = dailies.iter_mut().find(|d| d.front.date == today) {
+        *slot = daily::view(cfg, today);
+    }
     let achievements = rollups::achievements(cfg);
 
     let day = |date: &str| StandDay {
@@ -201,7 +207,12 @@ pub fn standup(cfg: &Config, today: &str) -> Standup {
         incomplete: d.open().map(|g| goal_view(g, today)).collect(),
     });
 
-    let today_daily = daily::ensure_today(cfg, today).unwrap_or_else(|_| empty_today(today));
+    // `standup` is a report you *run*, so materializing today (which is what carries yesterday's
+    // unfinished day-file goals forward) is fine here. `view` then folds the task store in on top.
+    // The read-only surfaces — `/api/goals`, the rail badge — deliberately skip this and rely on
+    // the projection alone, which is what makes carried work visible there without a write.
+    let _ = daily::ensure_today(cfg, today);
+    let today_daily = daily::view(cfg, today);
     let today_goals = today_daily.open().map(|g| goal_view(g, today)).collect();
 
     Standup {
@@ -283,8 +294,7 @@ pub fn weekly(cfg: &Config, today: &str, since: Option<i64>, dxi: bool) -> Weekl
     );
     let m = metrics::compute(&evs, util::now_epoch_secs(), window_days);
 
-    let still_open = daily::ensure_today(cfg, today)
-        .unwrap_or_else(|_| empty_today(today))
+    let still_open = daily::view(cfg, today)
         .open()
         .map(|g| goal_view(g, today))
         .collect();
@@ -331,19 +341,6 @@ fn dxi_trend(cfg: &Config, start: &str, end: &str) -> Option<DxiTrend> {
         avg_focus,
         avg_friction,
     })
-}
-
-/// A stand-in empty day when the store can't be read (keeps reports total-functions).
-fn empty_today(today: &str) -> Daily {
-    Daily {
-        front: crate::daily::DailyFront {
-            date: today.to_string(),
-            created: today.to_string(),
-            goals: vec![],
-            learnings: vec![],
-            reflections: vec![],
-        },
-    }
 }
 
 /// Text render for `bn standup`, tuned to read aloud.
@@ -598,8 +595,11 @@ pub fn note_last_activity(note: &crate::model::Note) -> String {
 /// forward) as a side effect — the CLI/cron behaviour. The read-only web dashboard uses
 /// [`wrap_readonly`] instead so a mere GET never creates or rolls the day.
 pub fn wrap(cfg: &Config, today: &str, note_since: &str, runner: &dyn CommandRunner) -> WrapDigest {
-    let carry_forward = daily::ensure_today(cfg, today)
-        .unwrap_or_else(|_| empty_today(today))
+    // Goals come from the task store (#1004), so project rather than reading the day file. The
+    // materialize is still worth doing for scheduled follow-ups, but it is no longer what makes
+    // today's goals appear.
+    let _ = daily::ensure_today(cfg, today);
+    let carry_forward = daily::view(cfg, today)
         .open()
         .map(|g| goal_view(g, today))
         .collect();
@@ -616,7 +616,7 @@ pub fn wrap_readonly(
     note_since: &str,
     runner: &dyn CommandRunner,
 ) -> WrapDigest {
-    let carry_forward = daily::read(&cfg.daily_file(today))
+    let carry_forward = Some(daily::view(cfg, today))
         .map(|d| d.open().map(|g| goal_view(g, today)).collect())
         .unwrap_or_default();
     wrap_with_carry(cfg, today, note_since, runner, carry_forward)

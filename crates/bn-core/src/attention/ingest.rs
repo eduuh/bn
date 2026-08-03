@@ -789,7 +789,10 @@ not json
                 "goal seeds the prompt: {prompt}"
             );
             // eligible for the loop right away
-            assert_eq!(next_auto("2026-06-23", 1).map(|i| i.id), Some(out.add.id));
+            assert_eq!(
+                next_auto(&crate::resolver::Config::default(), "2026-06-23", 1).map(|i| i.id),
+                Some(out.add.id)
+            );
         });
     }
 

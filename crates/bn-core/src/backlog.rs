@@ -205,6 +205,16 @@ pub struct BacklogEntry {
     /// Free-form provenance (e.g. `"triage"`, `"scout:341"`). Empty when unset.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source: String,
+    /// The task this work came from (#1001) — the id of a line in the global store.
+    ///
+    /// **The invariant that makes "work only ever starts from a task" checkable.** Without it,
+    /// `bn orchestrate add` could inject work with no durable record, so the promise was a
+    /// convention rather than something a test could assert.
+    ///
+    /// Empty only on entries that predate #1001; those are grandfathered read-only and reported by
+    /// `bn doctor` rather than deleted, so an in-flight run is never orphaned by the upgrade.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub task: String,
     /// Controller-agent ownership for work routed through `bn orchestrate`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub controller_id: Option<String>,
@@ -225,6 +235,9 @@ pub struct AddSpec {
     pub substrate: Substrate,
     pub source: String,
     pub controller_id: Option<String>,
+    /// The task this work comes from (#1001). Required by [`BacklogEntry::checked`]; the
+    /// unchecked [`BacklogEntry::new`] leaves it empty for the migration path only.
+    pub task: String,
 }
 
 impl BacklogEntry {
@@ -241,9 +254,68 @@ impl BacklogEntry {
             added_at: now,
             source: spec.source.clone(),
             controller_id: spec.controller_id.clone(),
+            task: spec.task.clone(),
             status: BacklogStatus::Pending,
             updated_at: now,
         }
+    }
+
+    /// Build a pending entry, **refusing one that names no task** (#1001).
+    ///
+    /// This is the enforcement point for "work only ever starts from a task". `new` stays
+    /// unchecked so the migration and the tests that predate the invariant still compile, but
+    /// every production enqueue goes through here — see [`Backlog::untasked`] for how the
+    /// grandfathered entries are surfaced rather than silently accepted.
+    pub fn checked(
+        repo: &str,
+        item: &str,
+        spec: &AddSpec,
+        now: i64,
+    ) -> Result<BacklogEntry, UntaskedEnqueue> {
+        if spec.task.trim().is_empty() {
+            return Err(UntaskedEnqueue {
+                repo: repo.to_string(),
+                item: item.to_string(),
+            });
+        }
+        Ok(BacklogEntry::new(repo, item, spec, now))
+    }
+}
+
+/// An attempt to enqueue work that no task governs (#1001).
+///
+/// A typed error rather than a panic or a silent accept: the caller's right move is usually to
+/// mint the task and retry, which `bn orchestrate add` does automatically.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UntaskedEnqueue {
+    pub repo: String,
+    pub item: String,
+}
+
+impl std::fmt::Display for UntaskedEnqueue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "refusing to queue work with no task: {} in {} — mint one with `bn task add` first",
+            self.item, self.repo
+        )
+    }
+}
+
+impl std::error::Error for UntaskedEnqueue {}
+
+impl Backlog {
+    /// Live entries that name no task — the pre-#1001 grandfathers.
+    ///
+    /// Reported by `bn doctor` rather than deleted: an in-flight run must not be orphaned by an
+    /// upgrade. Once this is empty the invariant holds for the whole store, and a caller can say
+    /// so honestly rather than assuming.
+    pub fn untasked(&self) -> Vec<&BacklogEntry> {
+        self.entries
+            .iter()
+            .filter(|e| e.status.is_active())
+            .filter(|e| e.task.trim().is_empty())
+            .collect()
     }
 }
 
@@ -1290,5 +1362,68 @@ mod tests {
         // After compaction the file is bounded to the live folded set (the 3 pending + hot state).
         assert!(read_lines(&path).len() <= 4);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    // --- #1001: every entry names a task -----------------------------------------------
+
+    fn spec_with_task(task: &str) -> AddSpec {
+        AddSpec {
+            task: task.to_string(),
+            ..AddSpec::default()
+        }
+    }
+
+    #[test]
+    fn a_checked_enqueue_requires_a_task() {
+        // The invariant that turns "work only ever starts from a task" from a convention into
+        // something a test can assert.
+        let err = BacklogEntry::checked("bn", "338", &AddSpec::default(), 100)
+            .expect_err("an untasked enqueue must be refused");
+        assert_eq!(err.repo, "bn");
+        assert_eq!(err.item, "338");
+        assert!(err.to_string().contains("bn task add"), "{err}");
+
+        // Whitespace is not a task id either.
+        assert!(BacklogEntry::checked("bn", "338", &spec_with_task("   "), 100).is_err());
+
+        let ok = BacklogEntry::checked("bn", "338", &spec_with_task("t42"), 100)
+            .expect("a tasked enqueue is admitted");
+        assert_eq!(ok.task, "t42");
+    }
+
+    #[test]
+    fn the_task_survives_a_serde_round_trip() {
+        let entry = BacklogEntry::new("bn", "338", &spec_with_task("t42"), 100);
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("\"task\":\"t42\""), "{json}");
+        let back: BacklogEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.task, "t42");
+    }
+
+    #[test]
+    fn a_pre_invariant_entry_still_loads_and_is_reported_not_dropped() {
+        // An upgrade must never orphan in-flight work, so old lines load with an empty task and
+        // are surfaced instead of deleted.
+        let legacy = r#"{"id":"338","repo":"bn","item":"338","status":"pending"}"#;
+        let old: BacklogEntry = serde_json::from_str(legacy).expect("legacy line still parses");
+        assert_eq!(old.task, "");
+
+        let mut backlog = Backlog::new();
+        backlog.apply(old);
+        backlog.apply(BacklogEntry::new("bn", "339", &spec_with_task("t7"), 100));
+
+        let untasked = backlog.untasked();
+        assert_eq!(untasked.len(), 1, "only the grandfather is reported");
+        assert_eq!(untasked[0].id, "338");
+    }
+
+    #[test]
+    fn a_terminal_untasked_entry_is_not_worth_reporting() {
+        // It is finished; nagging about it would be noise that never clears.
+        let mut done = BacklogEntry::new("bn", "338", &AddSpec::default(), 100);
+        done.status = BacklogStatus::Done;
+        let mut backlog = Backlog::new();
+        backlog.apply(done);
+        assert!(backlog.untasked().is_empty());
     }
 }

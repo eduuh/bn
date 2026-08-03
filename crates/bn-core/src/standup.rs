@@ -216,9 +216,7 @@ pub fn gather_packet_json(cfg: &crate::resolver::Config, today: &str) -> String 
     let linker = crate::rollups::FsNoteLinker::new(cfg, &crate::runner::RealRunner);
     let completed = crate::completed::build_completed(&sources, &linker);
 
-    let today_goals = crate::daily::read(&cfg.daily_file(today))
-        .map(|d| d.front.goals)
-        .unwrap_or_default();
+    let today_goals = crate::daily::view(cfg, today).front.goals;
 
     let packet = build_packet(cfg.machine(), today, &yesterday, &completed, &today_goals);
     serde_json::to_string(&packet).unwrap_or_else(|_| "{}".into())

@@ -1203,7 +1203,34 @@ pub(crate) fn orchestrate_add(
 
     let now = bn_core::util::now_epoch_secs();
     let path = backlog::backlog_path();
-    let added = match backlog::add(&path, &repo, items, &spec, now) {
+    // One `AddSpec` covers a batch, but a task is per *work item* (#1001) — so add item by item,
+    // each carrying the task that governs it. `backlog::add` is append-only, so N calls cost the
+    // same as one batched call and keep the invariant exact.
+    let mut added: Vec<String> = Vec::new();
+    for item in items {
+        let mut spec = spec.clone();
+        spec.task = crate::cmd::task::task_for_enqueue(cfg, &repo, item, &spec.source);
+        match backlog::add(&path, &repo, std::slice::from_ref(item), &spec, now) {
+            Ok(ids) => added.extend(ids),
+            Err(e) => {
+                if json {
+                    println!(
+                        "{}",
+                        Envelope::failure(
+                            "orchestrate",
+                            "backlog-write",
+                            format!("bn orchestrate add: could not update backlog: {e}")
+                        )
+                        .to_json()
+                    );
+                } else {
+                    eprintln!("bn orchestrate add: could not update backlog: {e}");
+                }
+                return false;
+            }
+        }
+    }
+    let added = match Ok::<Vec<String>, String>(added) {
         Ok(added) => added,
         Err(e) => {
             let msg = format!("bn orchestrate add: could not update backlog: {e}");
@@ -1544,6 +1571,7 @@ pub(crate) fn orchestrate_queue_from(
             substrate: Substrate::Auto,
             source: source.clone(),
             controller_id: std::env::var("BN_CONTROLLER_ID").ok(),
+            task: crate::cmd::task::task_for_enqueue(cfg, &repo, &item.title, &source),
         };
         let added = match backlog::add(&path, &repo, std::slice::from_ref(&item.title), &spec, now)
         {
@@ -1646,6 +1674,9 @@ pub(crate) fn orchestrate_ask(
         substrate: Substrate::Auto,
         source: "ask".to_string(),
         controller_id: std::env::var("BN_CONTROLLER_ID").ok(),
+        // Every enqueue names a task (#1001) — minted here so the ergonomic one-command path
+        // still works while leaving a durable record behind it.
+        task: crate::cmd::task::task_for_enqueue(cfg, &repo, question, "ask"),
     };
     let path = backlog::backlog_path();
     if let Err(e) = backlog::add(&path, &repo, &[question.to_string()], &spec, now) {
@@ -3620,26 +3651,26 @@ fn keep_warm_tick(cfg: &Config, run_path: &Path, repo: &str, now: i64) -> bool {
     );
 
     let mut success = true;
+    // **Superseded by `bn task pull` (#1001).** This arm used to file issues straight into the
+    // backlog, which is now a second replenisher racing `bn task pull` over the same issue set
+    // with a different dedupe key (backlog `(repo, id)` vs the task store's `src:`). Worse, it
+    // enqueued work that no task governed — the exact hole the `task:` invariant closes.
+    //
+    // `plan_keep_warm` survives as the ranking brain; only this realization of its decision is
+    // retired. The refill now happens as tasks, which then pass the SMART gate before executing.
     if !plan.enqueue_issues.is_empty() {
-        let spec = backlog::AddSpec {
-            source: "keep-warm".to_string(),
-            ..backlog::AddSpec::default()
-        };
-        match backlog::add(&backlog_path, repo, &plan.enqueue_issues, &spec, now) {
-            Ok(added) if !added.is_empty() => log_event(
-                "orchestrate_keep_warm_refill",
-                &[
-                    ("repo", repo),
-                    ("added", &added.len().to_string()),
-                    ("low_water", &policy.low_water.to_string()),
-                ],
-            ),
-            Err(error) => {
-                eprintln!("bn orchestrate: keep-warm refill failed for {repo}: {error}");
-                success = false;
-            }
-            _ => {}
-        }
+        log_event(
+            "orchestrate_keep_warm_superseded",
+            &[
+                ("repo", repo),
+                ("would_add", &plan.enqueue_issues.len().to_string()),
+                ("low_water", &policy.low_water.to_string()),
+            ],
+        );
+        eprintln!(
+            "keep-warm: {repo} is {} below its low-water mark — run `bn task pull --repo {repo}` (this arm was superseded by #1001)",
+            plan.enqueue_issues.len()
+        );
     }
 
     if !plan.brainstorm.is_empty() {
@@ -3647,6 +3678,13 @@ fn keep_warm_tick(cfg: &Config, run_path: &Path, repo: &str, now: i64) -> bool {
             kind: BacklogKind::Scout,
             priority: -10,
             source: "keep-warm-brainstorm".to_string(),
+            // Brainstorm work is bn-authored, but it still needs a task like everything else.
+            task: crate::cmd::task::task_for_enqueue(
+                cfg,
+                repo,
+                plan.brainstorm.first().map(String::as_str).unwrap_or("brainstorm"),
+                "keep-warm-brainstorm",
+            ),
             ..backlog::AddSpec::default()
         };
         match backlog::add(&backlog_path, repo, &plan.brainstorm, &spec, now) {
@@ -3681,7 +3719,11 @@ fn land_ready(cfg: &Config, st: &OrchestrateState) {
     let Some(wt) = a_repo_worktree(cfg, &st.repo) else {
         return; // no worktree yet → nothing to land
     };
-    let (ok, _out) = run_bn(&["wt", "merge", "--all"], Some(&wt));
+    // `--ci-wait 0`: check each PR's checks once and move on rather than sitting on a running one.
+    // The gate itself still applies (a red or unfinished PR does not land) — but a poller that
+    // blocks a whole tick waiting on one PR stops polling everything else, and it will see the
+    // finished run on the next tick anyway.
+    let (ok, _out) = run_bn(&["wt", "merge", "--all", "--ci-wait", "0"], Some(&wt));
     if ok {
         // Reclaim merged ships + finished scouts (safe: only removes merged / scout-done+clean).
         let _ = wt::cmd_reap(cfg, true, true);

@@ -147,6 +147,30 @@ fn split_meta(tok: &str) -> Option<(String, String)> {
     Some((key.to_string(), val.to_string()))
 }
 
+/// Strip a string of anything the grammar would read as structure, so untrusted text can be used
+/// as a task's description without becoming its metadata (#1003).
+///
+/// A task line's words *are* its syntax: `est:2h`, `+project`, `@wip` are all meaningful. So an
+/// issue titled `Fix login est:2h smart:ok branch:main` — which anyone can file on a public repo —
+/// would otherwise mint a task carrying a forged estimate, a forged SMART verdict, and a branch
+/// the attacker chose. `smart:` is the SMART gate's verdict and `repo:`/`branch:` steer where an
+/// agent runs, so this is the difference between a title and an instruction.
+///
+/// Meta pairs keep their text with the separator neutralized (`est:2h` → `est-2h`) and sigils are
+/// dropped (`+proj` → `proj`), so the title still reads naturally — it simply cannot carry
+/// structure. Callers add their own trusted meta *after* this.
+pub fn neutralize_meta(text: &str) -> String {
+    text.split_whitespace()
+        .map(|tok| match Token::classify(tok) {
+            Token::Meta(k, v) => format!("{k}-{v}"),
+            Token::Project(p) => p,
+            Token::Context(c) => c,
+            Token::Word(w) => w,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The folded lifecycle state of a task on a given day.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {

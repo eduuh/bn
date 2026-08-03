@@ -178,6 +178,8 @@ pub(super) fn route(cfg: &Config, action: CmdReview, json: bool) {
                             substrate: substrate.to_core(),
                             source: source.unwrap_or_default(),
                             controller_id: std::env::var("BN_CONTROLLER_ID").ok(),
+                            // Filled per item inside `orchestrate_add` (#1001).
+                            task: String::new(),
                         },
                         start,
                         concurrency,

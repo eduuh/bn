@@ -59,6 +59,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/goals", get(api::goals))
         .route("/api/wrap", get(api::wrap))
         .route("/api/attn", get(api::attn))
+        // The task-first read surface (#1005, EPIC #993).
+        .route("/api/tasks", get(api::tasks))
+        .route("/api/issues", get(api::issues))
+        .route("/api/pipeline/board", get(api::pipeline_board))
+        .route("/api/pipeline/{repo}/{branch}", get(api::pipeline_status))
         .route("/api/actions", get(api::actions))
         .route("/api/completed", get(api::completed))
         .route("/api/search", get(api::search))
@@ -116,8 +121,16 @@ pub fn router(state: AppState) -> Router {
         )
         // Attention actions (#483) — native append-only store write (ack/remove/snooze/plan):
         .route("/api/attention/{id}", post(actions::attn_action))
-        // Skill edit (#483) — native validated file write of the effective skill:
+        // Task writes (#1006), split by latency: the first two are file writes answered inline;
+        // the third launches an LLM agent and returns a handle rather than holding a worker.
+        .route("/api/tasks", post(actions::task_create))
+        .route("/api/tasks/{id}", post(actions::task_action))
+        .route("/api/tasks/{id}/agent", post(actions::task_agent))
+        // Skill CRUD (#483) — native validated file writes of the effective skill, each followed
+        // by a Claude/Copilot native-skill sync so the harnesses never serve a stale copy:
+        .route("/api/skills", post(actions::skill_create))
         .route("/api/skills/{name}", put(actions::skill_write))
+        .route("/api/skills/{name}", delete(actions::skill_delete))
         // MCP-in-API (#639): the P1 bn-mcp tool-router served over Streamable HTTP alongside the
         // REST API. `/mcp/orchestrate` (cross-worktree) is nested first so its longer prefix wins
         // over the scoped `/mcp` branch-note tools. `/mcp` derives its (repo, branch) per request
@@ -788,7 +801,33 @@ mod tests {
         });
     }
 
-    // --- Skill edit (#483) --------------------------------------------------
+    // --- Skill CRUD (#483) --------------------------------------------------
+
+    #[tokio::test]
+    async fn skill_create_validates_name_description_and_scope_before_touching_disk() {
+        // Every rejection below happens before `create_skill` runs, so none of these writes a file
+        // or triggers the native Claude/Copilot sync (which is why they're safe to run in-tree).
+        for (body, why) in [
+            (r#"{"name":"bad.name","description":"d"}"#, "name charset"),
+            (r#"{"name":"ok","description":"   "}"#, "empty description"),
+            (
+                r#"{"name":"ok","description":"d","scope":"nope"}"#,
+                "unknown scope",
+            ),
+        ] {
+            let s = status_of(test_state(), post("/api/skills", None, body)).await;
+            assert_eq!(s, StatusCode::BAD_REQUEST, "{why} should be a 400");
+        }
+    }
+
+    #[tokio::test]
+    async fn skill_delete_validates_the_name_and_404s_an_unknown_skill() {
+        let bad_name = status_of(test_state(), delete("/api/skills/bad.name")).await;
+        assert_eq!(bad_name, StatusCode::BAD_REQUEST);
+        // A well-formed name that no tier defines resolves to nothing → 404, never a delete.
+        let unknown = status_of(test_state(), delete("/api/skills/zzz-no-such-skill-xyz")).await;
+        assert_eq!(unknown, StatusCode::NOT_FOUND);
+    }
 
     #[tokio::test]
     async fn skill_write_validates_name_and_content_before_touching_disk() {
@@ -1243,6 +1282,203 @@ mod tests {
                         .is_some_and(|p| p.ends_with("testhost/bn/dispatch-561/note.md")),
                     "local note jump present: {todo:#?}"
                 );
+            });
+        });
+    }
+
+    // --- Task-first read surface (#1005, EPIC #993) -------------------------
+
+    /// Write a task store and point the config at it, then run `f`.
+    fn with_tasks<T>(lines: &str, f: impl FnOnce() -> T) -> T {
+        bn_core::test_support::with_state_dir(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let notes = dir.path().join("notes");
+            std::fs::create_dir_all(&notes).unwrap();
+            std::fs::write(notes.join("tasks.txt"), lines).unwrap();
+            let _notes = bn_core::test_support::EnvGuard::set("BN_NOTES_DIR", &notes);
+            let _host = bn_core::test_support::EnvGuard::set("BN_HOSTNAME", "testhost");
+            let _today = bn_core::test_support::EnvGuard::set("BN_TODAY", "2026-08-03");
+            f()
+        })
+    }
+
+    const TASKS: &str = "\
+(A) overdue work on the reconnect id:t1 repo:bn day:2026-08-01 smart:ok stage:investigate
+(B) todays work on the parser id:t2 repo:bn day:2026-08-03 smart:fail
+unscheduled work on the docs id:t3 repo:bn
+next week work on the cache id:t4 repo:bn day:2026-08-30
+other repo work entirely id:t5 repo:atlas day:2026-08-03
+x 2026-08-02 finished work already id:t6 repo:bn day:2026-08-02
+";
+
+    async fn tasks_body(uri: &str) -> serde_json::Value {
+        let resp = respond(test_state(), Request::get(uri).body(Body::empty()).unwrap()).await;
+        assert_eq!(resp.status(), StatusCode::OK, "{uri}");
+        body_json(resp).await
+    }
+
+    fn task_ids(body: &serde_json::Value) -> Vec<String> {
+        body["data"]["tasks"]
+            .as_array()
+            .expect("tasks array")
+            .iter()
+            .map(|t| t["id"].as_str().unwrap_or("?").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn tasks_read_defaults_to_what_is_actionable_now() {
+        with_tasks(TASKS, || {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let body = tasks_body("/api/tasks").await;
+                assert_eq!(body["ok"], true);
+                assert_eq!(body["command"], "tasks");
+                let ids = task_ids(&body);
+                // Overdue and today lead, unscheduled follows; future-dated and done are out.
+                assert!(ids.contains(&"t1".into()), "overdue stays visible: {ids:?}");
+                assert!(ids.contains(&"t2".into()));
+                assert!(ids.contains(&"t3".into()));
+                assert!(
+                    !ids.contains(&"t4".into()),
+                    "future work is not actionable now"
+                );
+                assert!(!ids.contains(&"t6".into()), "done work is not open");
+                assert_eq!(body["data"]["count"], ids.len());
+            });
+        });
+    }
+
+    #[test]
+    fn tasks_read_filters_by_all_repo_day_smart_and_stage() {
+        with_tasks(TASKS, || {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let all = task_ids(&tasks_body("/api/tasks?all=1").await);
+                assert!(
+                    all.contains(&"t4".into()),
+                    "--all shows the backlog: {all:?}"
+                );
+
+                let atlas = task_ids(&tasks_body("/api/tasks?repo=atlas&all=1").await);
+                assert_eq!(atlas, vec!["t5"]);
+
+                let day = task_ids(&tasks_body("/api/tasks?day=2026-08-01").await);
+                assert_eq!(day, vec!["t1"]);
+
+                let today = task_ids(&tasks_body("/api/tasks?day=today").await);
+                assert!(today.contains(&"t2".into()) && !today.contains(&"t1".into()));
+
+                let ok = task_ids(&tasks_body("/api/tasks?smart=ok&all=1").await);
+                assert_eq!(ok, vec!["t1"]);
+
+                // `unjudged` is a state, not a missing value — it is what the improve queue reads.
+                let unjudged = task_ids(&tasks_body("/api/tasks?smart=unjudged&all=1").await);
+                assert!(unjudged.contains(&"t3".into()) && !unjudged.contains(&"t1".into()));
+
+                let staged = task_ids(&tasks_body("/api/tasks?stage=investigate&all=1").await);
+                assert_eq!(staged, vec!["t1"]);
+            });
+        });
+    }
+
+    #[test]
+    fn tasks_read_rejects_a_malformed_day() {
+        with_tasks(TASKS, || {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let resp = respond(
+                    test_state(),
+                    Request::get("/api/tasks?day=soon")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await;
+                assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+                let body = body_json(resp).await;
+                assert_eq!(body["error"]["code"], "invalid_day");
+            });
+        });
+    }
+
+    #[test]
+    fn pipeline_board_exposes_the_nine_stage_vocabulary_with_counts() {
+        // #746 built the machine; before #1005 the dashboard could not see any of it.
+        with_tasks("", || {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let body = tasks_body("/api/pipeline/board").await;
+                assert_eq!(body["command"], "pipeline-board");
+                let stages = body["data"]["stages"].as_array().expect("stages");
+                assert_eq!(
+                    stages.len(),
+                    9,
+                    "the durable vocabulary, not the 4-value one"
+                );
+                let ids: Vec<&str> = stages.iter().map(|s| s["id"].as_str().unwrap()).collect();
+                assert_eq!(
+                    ids,
+                    vec![
+                        "pickup",
+                        "investigate",
+                        "plan",
+                        "consensus",
+                        "execute",
+                        "validate",
+                        "critique",
+                        "ship",
+                        "learn"
+                    ]
+                );
+                // Every node carries what the drawing needs.
+                assert!(stages
+                    .iter()
+                    .all(|s| s["glyph"].is_string() && s["count"].is_number()));
+                assert_eq!(body["data"]["counts"]["pickup"], 0);
+            });
+        });
+    }
+
+    #[test]
+    fn pipeline_status_validates_its_path_params() {
+        with_tasks("", || {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let resp = respond(
+                    test_state(),
+                    Request::get("/api/pipeline/..%2F..%2Fetc/main")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await;
+                assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+                // A worktree with no recorded stage reads as null, not an error.
+                let body = tasks_body("/api/pipeline/bn/never-existed").await;
+                assert_eq!(body["ok"], true);
+                assert!(body["data"]["stage"].is_null());
+                assert!(body["data"]["history"].as_array().unwrap().is_empty());
+            });
+        });
+    }
+
+    #[test]
+    fn issues_read_reports_per_repo_staleness_rather_than_an_empty_list() {
+        // The whole point of #999 surfacing over HTTP: a caller must be able to tell "no open
+        // issues" from "we could not ask".
+        with_tasks("", || {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let body = tasks_body("/api/issues").await;
+                assert_eq!(body["command"], "issues");
+                let repos = body["data"]["repos"].as_array().expect("repos array");
+                for r in repos {
+                    // The honesty contract is structural: every row carries all three.
+                    assert!(r["repo"].is_string());
+                    assert!(r.get("stale").is_some(), "stale is not optional: {r}");
+                    assert!(r.get("error").is_some(), "error is not optional: {r}");
+                    assert!(
+                        r.get("slug").is_some(),
+                        "slug is present even when null: {r}"
+                    );
+                }
+                assert!(body["data"]["count"].is_number());
+                assert!(body["data"]["stale_repos"].is_number());
+                assert!(body["data"]["unreachable_repos"].is_number());
             });
         });
     }

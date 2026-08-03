@@ -72,6 +72,15 @@ fn parse_body<T: Default + serde::de::DeserializeOwned>(
 
 /// A `400` carrying the standard failure envelope — for input the handler rejects before touching
 /// any state or subprocess.
+/// A 500 carrying the standard failure envelope — a write that reached the store and failed there.
+fn server_error(command: &str, code: &str, msg: &str) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(Envelope::failure(command, code, msg)),
+    )
+        .into_response()
+}
+
 fn bad_request(command: &str, code: &str, msg: &str) -> Response {
     (
         StatusCode::BAD_REQUEST,
@@ -1456,7 +1465,7 @@ fn attn_bool_response(
 }
 
 // ---------------------------------------------------------------------------
-// Skill edit (#483)
+// Skill CRUD (#483) — create / edit / delete, each followed by a native harness sync
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Default, Deserialize)]
@@ -1466,12 +1475,245 @@ pub struct SkillEditBody {
     pub content: String,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct SkillCreateBody {
+    /// The skill name — also the file stem (`<name>.md`) and how it is invoked.
+    #[serde(default)]
+    pub name: String,
+    /// The one-line `description:` frontmatter. Required — a skill without one is unservable.
+    #[serde(default)]
+    pub description: String,
+    /// Which tier to write into ([`bn_core::skills::SkillScope::parse`] labels). Defaults to
+    /// `global-personal`: private, present in every repo, and available even when bn-web runs
+    /// outside a git checkout.
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// The markdown body below the frontmatter. May be empty (a stub to fill in later).
+    #[serde(default)]
+    pub body: String,
+    /// Replace an existing skill of the same name in that tier instead of failing with a conflict.
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+/// The tier a `POST /api/skills` with no explicit `scope` writes into.
+const DEFAULT_CREATE_SCOPE: &str = "global-personal";
+
+/// Validate a skill name for the CRUD endpoints: the file-stem charset (letters, digits, `-`, `_`),
+/// non-empty and bounded. Keeps a bogus segment out of discovery and off any path.
+fn valid_skill_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Re-materialize the native Agent Skills for Claude and Copilot after a source mutation, and
+/// summarize the result for the response body.
+///
+/// Deliberately **non-fatal**: the bn source file is the system of record and has already been
+/// written, so a sync failure (an unwritable harness root, a name collision with a skill bn does
+/// not own) is reported alongside the success rather than turning a completed write into a `500`.
+/// The caller sees `{ synced: true, created, updated, removed, unchanged }` or
+/// `{ synced: false, error }` and can surface it.
+fn sync_native_skills_summary(cfg: &bn_core::resolver::Config) -> serde_json::Value {
+    let home = dirs::home_dir().unwrap_or_default();
+    match bn_core::skills::sync_native_skills(cfg, std::path::Path::new("."), &home) {
+        Ok(report) => {
+            use bn_core::skills::NativeInstallAction as A;
+            let count = |want: A| {
+                report
+                    .changes
+                    .iter()
+                    .filter(|change| change.action == want)
+                    .count()
+            };
+            let harnesses: std::collections::BTreeSet<&str> = report
+                .changes
+                .iter()
+                .map(|change| change.harness.label())
+                .collect();
+            json!({
+                "synced": true,
+                "harnesses": harnesses,
+                "created": count(A::Created),
+                "updated": count(A::Updated),
+                "removed": count(A::Removed),
+                "unchanged": count(A::Unchanged),
+            })
+        }
+        Err(e) => json!({ "synced": false, "error": e }),
+    }
+}
+
+/// `POST /api/skills {name, description, scope?, body?, overwrite?}` — create a skill from the
+/// dashboard. Writes `<tier>/<name>.md` through [`bn_core::skills::create_skill`] (the same engine
+/// as `bn skills new`), then syncs the native Claude/Copilot skills so the new workflow is
+/// immediately invocable in both harnesses. `400` on a bad name/description/scope; `409` when the
+/// tier already defines that name and `overwrite` is false.
+pub async fn skill_create(
+    State(state): State<AppState>,
+    MaybeAddr(addr): MaybeAddr,
+    raw: Bytes,
+) -> Response {
+    let cmd = "skill-create";
+    let body: SkillCreateBody = match parse_body(cmd, &raw) {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    let name = body.name.trim().to_string();
+    if !valid_skill_name(&name) {
+        return bad_request(
+            cmd,
+            "invalid_name",
+            "skill name may contain letters, digits, '-', '_'",
+        );
+    }
+    let description = body.description.trim().to_string();
+    if description.is_empty() {
+        return bad_request(cmd, "empty_description", "description is required");
+    }
+    let scope_label = body.scope.as_deref().unwrap_or(DEFAULT_CREATE_SCOPE);
+    let Some(scope) = bn_core::skills::SkillScope::parse(scope_label) else {
+        return bad_request(
+            cmd,
+            "invalid_scope",
+            "scope must be global-shared | global-personal | repo-shared | repo-personal-notes | repo-personal-local",
+        );
+    };
+
+    let cfg = state.cfg.clone();
+    let (name_call, skill_body, overwrite) = (name.clone(), body.body.clone(), body.overwrite);
+    let result = tokio::task::spawn_blocking(move || {
+        let path = bn_core::skills::create_skill(
+            &cfg,
+            std::path::Path::new("."),
+            scope,
+            &name_call,
+            &description,
+            &skill_body,
+            &[],
+            overwrite,
+        )?;
+        let native = sync_native_skills_summary(&cfg);
+        Ok::<_, std::io::Error>(json!({
+            "skill": { "name": name_call, "scope": scope, "path": path.display().to_string() },
+            "native": native,
+        }))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(data)) => {
+            audit::record(&state, cmd, &name, addr, true);
+            Json(Envelope::success(cmd, data)).into_response()
+        }
+        Ok(Err(e)) => {
+            audit::record(&state, cmd, &name, addr, false);
+            let msg = e.to_string();
+            // `create_skill` refuses to clobber an existing file unless `overwrite` — that's a
+            // conflict the UI resolves by re-submitting, not a malformed request.
+            if msg.contains("already exists") {
+                (
+                    StatusCode::CONFLICT,
+                    Json(Envelope::failure(cmd, "skill_exists", msg)),
+                )
+                    .into_response()
+            } else {
+                bad_request(cmd, "create_failed", &msg)
+            }
+        }
+        Err(e) => {
+            audit::record(&state, cmd, &name, addr, false);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(Envelope::failure(cmd, "join_error", e.to_string())),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `DELETE /api/skills/:name` — delete the *effective* skill `name` from the dashboard, then sync
+/// the native harnesses so Claude and Copilot drop it too. The path comes from discovery, never
+/// from the request (no arbitrary-path delete). `404` when no tier defines `name`.
+///
+/// Removes one definition, not the name: if a lower tier also defines `name`, that skill becomes
+/// the effective one and stays installed. The response's `remaining_scope` says whether that
+/// happened, so the UI can tell "gone" from "unshadowed".
+pub async fn skill_delete(
+    State(state): State<AppState>,
+    MaybeAddr(addr): MaybeAddr,
+    Path(name): Path<String>,
+) -> Response {
+    let cmd = "skill-delete";
+    let name = name.trim().to_string();
+    if !valid_skill_name(&name) {
+        return bad_request(
+            cmd,
+            "invalid_name",
+            "skill name may contain letters, digits, '-', '_'",
+        );
+    }
+
+    let cfg = state.cfg.clone();
+    let name_call = name.clone();
+    // `Err(None)` = no such skill (404); `Err(Some(msg))` = the delete itself failed (500).
+    let result =
+        tokio::task::spawn_blocking(move || -> Result<serde_json::Value, Option<String>> {
+            let here = std::path::Path::new(".");
+            let Some(info) = bn_core::skills::effective_info(&cfg, here, &name_call) else {
+                return Err(None);
+            };
+            bn_core::skills::delete_skill(std::path::Path::new(&info.path)).map_err(Some)?;
+            // A lower tier may now be the effective definition — report it rather than implying the
+            // name is gone.
+            let remaining = bn_core::skills::effective_info(&cfg, here, &name_call);
+            let native = sync_native_skills_summary(&cfg);
+            Ok(json!({
+                "skill": info,
+                "remaining_scope": remaining.map(|r| r.scope),
+                "native": native,
+            }))
+        })
+        .await;
+
+    match result {
+        Ok(Ok(data)) => {
+            audit::record(&state, cmd, &name, addr, true);
+            Json(Envelope::success(cmd, data)).into_response()
+        }
+        Ok(Err(None)) => {
+            audit::record(&state, cmd, &name, addr, false);
+            not_found_json(cmd, &format!("no skill named '{name}'"))
+        }
+        Ok(Err(Some(msg))) => {
+            audit::record(&state, cmd, &name, addr, false);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(Envelope::failure(cmd, "delete_failed", msg)),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            audit::record(&state, cmd, &name, addr, false);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(Envelope::failure(cmd, "join_error", e.to_string())),
+            )
+                .into_response()
+        }
+    }
+}
+
 /// `PUT /api/skills/:name {content}` — edit the *effective* skill `name` from the dashboard
 /// (#483). A native in-process write: it resolves the highest-precedence skill file (the one
 /// bn-mcp serves), validates the new `content` parses as a skill so a bad edit can't corrupt it,
-/// then overwrites the file. Authed by the token middleware and audited as a `web_action`. `404`
-/// when no tier defines `name`; `400` when the content isn't a valid skill. Only edits an existing
-/// skill — the file path comes from discovery, never from the request (no arbitrary-path write).
+/// then overwrites the file and syncs the native Claude/Copilot skills so both harnesses pick the
+/// edit up immediately. Audited as a `web_action`. `404` when no tier defines `name`; `400` when
+/// the content isn't a valid skill. Only edits an existing skill — the file path comes from
+/// discovery, never from the request (no arbitrary-path write).
 pub async fn skill_write(
     State(state): State<AppState>,
     MaybeAddr(addr): MaybeAddr,
@@ -1484,14 +1726,7 @@ pub async fn skill_write(
         Err(resp) => return resp,
     };
     let name = name.trim().to_string();
-    // Skill names are the file stem charset (letters, digits, '-', '_') — keeps a bogus segment
-    // out of discovery and off any path.
-    if name.is_empty()
-        || name.len() > 64
-        || !name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
+    if !valid_skill_name(&name) {
         return bad_request(
             cmd,
             "invalid_name",
@@ -1512,22 +1747,25 @@ pub async fn skill_write(
 
     let cfg = state.cfg.clone();
     let (name_call, content) = (name.clone(), body.content.clone());
-    let result = tokio::task::spawn_blocking(move || {
-        let Some(info) =
-            bn_core::skills::effective_info(&cfg, std::path::Path::new("."), &name_call)
-        else {
-            return Err(None); // no such skill → 404
-        };
-        bn_core::skills::save_skill(std::path::Path::new(&info.path), &content)
-            .map(|()| info)
-            .map_err(Some) // an IO failure on a known path → 500
-    })
-    .await;
+    // `Err(None)` = no such skill (404); `Err(Some(msg))` = an IO failure on a known path (500).
+    let result =
+        tokio::task::spawn_blocking(move || -> Result<serde_json::Value, Option<String>> {
+            let Some(info) =
+                bn_core::skills::effective_info(&cfg, std::path::Path::new("."), &name_call)
+            else {
+                return Err(None);
+            };
+            bn_core::skills::save_skill(std::path::Path::new(&info.path), &content)
+                .map_err(Some)?;
+            let native = sync_native_skills_summary(&cfg);
+            Ok(json!({ "skill": info, "native": native }))
+        })
+        .await;
 
     match result {
-        Ok(Ok(info)) => {
+        Ok(Ok(data)) => {
             audit::record(&state, "skill-edit", &name, addr, true);
-            Json(Envelope::success(cmd, json!({ "skill": info }))).into_response()
+            Json(Envelope::success(cmd, data)).into_response()
         }
         Ok(Err(None)) => {
             audit::record(&state, "skill-edit", &name, addr, false);
@@ -2041,5 +2279,277 @@ mod tests {
         assert!(!valid_target("no-colon"));
         assert!(!valid_target("bn:branch; rm -rf /"));
         assert!(!valid_target("bn:`id`"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Task writes (#1006, EPIC #993) — split by latency
+// ---------------------------------------------------------------------------
+//
+// Two shapes, deliberately kept apart:
+//
+// - **Synchronous** (create, day, priority, done, snooze) — file writes measured in milliseconds,
+//   served natively in a `spawn_blocking` and answered with the result.
+// - **Asynchronous** (improve, triage, investigate) — LLM agents measured in *minutes*.
+//   `bn_runner::run` is blocking and has no timeout, so serving one of these the same way would
+//   hold an axum worker for the whole run with no progress and no way to cancel. They spawn
+//   detached and return a handle immediately; progress shows up on the existing fleet surface.
+
+/// `POST /api/tasks` — create a task.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct TaskCreateBody {
+    pub title: String,
+    pub repo: Option<String>,
+    pub day: Option<String>,
+    pub est: Option<String>,
+    pub priority: Option<String>,
+}
+
+pub async fn task_create(
+    State(state): State<AppState>,
+    MaybeAddr(addr): MaybeAddr,
+    raw: Bytes,
+) -> Response {
+    let cmd = "task-create";
+    let body: TaskCreateBody = match parse_body(cmd, &raw) {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    let title = body.title.trim().to_string();
+    if title.is_empty() {
+        return bad_request(cmd, "empty_title", "a task needs a title");
+    }
+    if let Some(repo) = body.repo.as_deref().filter(|r| !r.trim().is_empty()) {
+        if !valid_repo(repo.trim()) {
+            return bad_request(cmd, "invalid_repo", "repo has invalid characters");
+        }
+    }
+    for (field, value) in [("day", &body.day), ("est", &body.est)] {
+        if let Some(v) = value.as_deref().filter(|v| !v.trim().is_empty()) {
+            if field == "day" && bn_core::util::epoch_day(v.trim()).is_none() {
+                return bad_request(cmd, "invalid_day", "day must be YYYY-MM-DD");
+            }
+            if field == "est" && bn_core::smart::parse_est_minutes(v.trim()).is_none() {
+                return bad_request(cmd, "invalid_est", "est must be like 90m, 2h or 1h30m");
+            }
+        }
+    }
+    let priority = match body
+        .priority
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        None => None,
+        Some(p) if p.len() == 1 && ('A'..='C').contains(&p.chars().next().unwrap_or('z')) => {
+            p.chars().next()
+        }
+        Some(_) => return bad_request(cmd, "invalid_priority", "priority must be A, B or C"),
+    };
+
+    let cfg = state.cfg.clone();
+    let audit_title = title.clone();
+    let created = tokio::task::spawn_blocking(move || {
+        let path = cfg.tasks_file();
+        let _lock = bn_core::todo::lock(&path);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let mut file = bn_core::todo::load(&path).map_err(|e| e.to_string())?;
+        let today = bn_core::util::today();
+        let id = file.next_id();
+        // The title comes off the wire, so defang it before it becomes a description — a task
+        // line's words are its syntax, and #1003 made `smart:`/`repo:` security signals.
+        let text = bn_core::todo::neutralize_meta(&title);
+        let mut task = bn_core::todo::Task::new_todo(&id, &text, priority, "", "web", &today);
+        for (key, value) in [
+            ("repo", body.repo.as_deref()),
+            ("day", body.day.as_deref()),
+            ("est", body.est.as_deref()),
+        ] {
+            if let Some(v) = value.map(str::trim).filter(|v| !v.is_empty()) {
+                task.set_meta_raw(key, &v.to_ascii_lowercase());
+            }
+        }
+        file.push_task(task);
+        bn_core::todo::save(&path, &file).map_err(|e| e.to_string())?;
+        Ok::<String, String>(id)
+    })
+    .await;
+
+    match created {
+        Ok(Ok(id)) => {
+            audit::record(&state, "task-create", &audit_title, addr, true);
+            Json(Envelope::success(cmd, json!({ "id": id }))).into_response()
+        }
+        Ok(Err(e)) => {
+            audit::record(&state, "task-create", &audit_title, addr, false);
+            server_error(cmd, "write_failed", &e)
+        }
+        Err(_) => server_error(cmd, "panicked", "the task write panicked"),
+    }
+}
+
+/// `POST /api/tasks/{id}` — a fast mutation on one task.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct TaskActionBody {
+    pub action: String,
+    pub value: Option<String>,
+}
+
+pub async fn task_action(
+    State(state): State<AppState>,
+    MaybeAddr(addr): MaybeAddr,
+    Path(id): Path<String>,
+    raw: Bytes,
+) -> Response {
+    let cmd = "task-action";
+    let body: TaskActionBody = match parse_body(cmd, &raw) {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    let id = id.trim().to_string();
+    if id.is_empty() || id.len() > 32 || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return bad_request(cmd, "invalid_id", "task id must be alphanumeric (e.g. t42)");
+    }
+    let action = body.action.trim().to_ascii_lowercase();
+    let value = body.value.map(|v| v.trim().to_string()).unwrap_or_default();
+
+    match action.as_str() {
+        "day" | "snooze" if bn_core::util::epoch_day(&value).is_none() => {
+            return bad_request(cmd, "invalid_date", "value must be YYYY-MM-DD")
+        }
+        "priority"
+            if !(value.len() == 1
+                && ('A'..='C').contains(&value.chars().next().unwrap_or('z'))) =>
+        {
+            return bad_request(cmd, "invalid_priority", "value must be A, B or C")
+        }
+        "day" | "snooze" | "priority" | "done" | "wip" => {}
+        _ => {
+            return bad_request(
+                cmd,
+                "invalid_action",
+                "action must be day | priority | done | wip | snooze",
+            )
+        }
+    }
+
+    let cfg = state.cfg.clone();
+    let (act, val, task_id) = (action.clone(), value.clone(), id.clone());
+    let result = tokio::task::spawn_blocking(move || {
+        let path = cfg.tasks_file();
+        let _lock = bn_core::todo::lock(&path);
+        let mut file = bn_core::todo::load(&path).map_err(|e| e.to_string())?;
+        let today = bn_core::util::today();
+        let ok = match act.as_str() {
+            "done" => file.mark_done(&task_id, &today),
+            "wip" => file.mark_wip(&task_id),
+            "snooze" => file.snooze(&task_id, &val),
+            other => match file.task_mut(&task_id) {
+                Some(task) => {
+                    if other == "priority" {
+                        task.priority = val.chars().next();
+                    } else {
+                        task.set_meta(other, &val);
+                    }
+                    true
+                }
+                None => false,
+            },
+        };
+        if !ok {
+            return Err(format!("no task {task_id}"));
+        }
+        bn_core::todo::save(&path, &file).map_err(|e| e.to_string())?;
+        Ok::<(), String>(())
+    })
+    .await;
+
+    let label = format!("task-{action}");
+    match result {
+        Ok(Ok(())) => {
+            audit::record(&state, &label, &id, addr, true);
+            Json(Envelope::success(
+                cmd,
+                json!({ "id": id, "action": action }),
+            ))
+            .into_response()
+        }
+        Ok(Err(e)) if e.starts_with("no task") => {
+            audit::record(&state, &label, &id, addr, false);
+            not_found_json(cmd, &e)
+        }
+        Ok(Err(e)) => {
+            audit::record(&state, &label, &id, addr, false);
+            server_error(cmd, "write_failed", &e)
+        }
+        Err(_) => server_error(cmd, "panicked", "the task write panicked"),
+    }
+}
+
+/// `POST /api/tasks/{id}/agent` — launch a task agent and return immediately.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct TaskAgentBody {
+    /// `improve` or `triage`.
+    pub agent: String,
+    /// The operator's "things to look out for", passed into the seed.
+    pub steer: Option<String>,
+}
+
+pub async fn task_agent(
+    State(state): State<AppState>,
+    MaybeAddr(addr): MaybeAddr,
+    Path(id): Path<String>,
+    raw: Bytes,
+) -> Response {
+    let cmd = "task-agent";
+    let body: TaskAgentBody = match parse_body(cmd, &raw) {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    let id = id.trim().to_string();
+    if id.is_empty() || id.len() > 32 || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return bad_request(cmd, "invalid_id", "task id must be alphanumeric (e.g. t42)");
+    }
+    let agent = body.agent.trim().to_ascii_lowercase();
+    if !matches!(agent.as_str(), "improve" | "triage") {
+        return bad_request(cmd, "invalid_agent", "agent must be improve | triage");
+    }
+
+    // Built as argv, never a shell string — the steer text is operator input and must not be
+    // interpretable as anything but one argument.
+    let mut args: Vec<String> = vec!["task".into(), agent.clone()];
+    if agent == "improve" {
+        args.push(id.clone());
+        if let Some(steer) = body
+            .steer
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            args.push("--steer".into());
+            args.push(steer.to_string());
+        }
+    }
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    // Detached: an LLM agent runs for minutes, and holding an axum worker for that would block a
+    // pooled thread with no progress and no way to cancel. The client watches the fleet instead.
+    let spawned = bn_runner::spawn_detached(&argv);
+    audit::record(&state, &format!("task-{agent}"), &id, addr, spawned.is_ok());
+    match spawned {
+        Ok(pid) => Json(Envelope::success(
+            cmd,
+            json!({
+                "id": id,
+                "agent": agent,
+                "started": true,
+                "pid": pid,
+                "watch": "/api/fleet",
+            }),
+        ))
+        .into_response(),
+        Err(e) => server_error(cmd, "spawn_failed", &e.to_string()),
     }
 }

@@ -113,6 +113,7 @@ pub mod standup;
 pub mod store;
 pub mod suggestions;
 pub mod sync;
+pub mod task_agents;
 pub mod task_doc;
 pub mod task_pull;
 #[cfg(any(test, feature = "test-support"))]

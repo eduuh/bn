@@ -20,6 +20,7 @@ mod model;
 mod query;
 mod status;
 mod store;
+mod trust;
 
 pub use dispatch::*;
 pub use ingest::*;
@@ -28,6 +29,7 @@ pub use model::*;
 pub use query::*;
 pub use status::*;
 pub use store::*;
+pub use trust::*;
 
 #[cfg(test)]
 fn add_simple(title: &str, severity: &str, key: Option<&str>) -> AddOutcome {

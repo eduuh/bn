@@ -200,9 +200,7 @@ pub fn build_packet(
 /// the Command Center activity fold (the same reads the `/api/actions` handler does), build the
 /// packet, and serialize it. A read-only gather — it never creates a daily/quarter file.
 pub fn gather_packet_json(cfg: &Config, today: &str) -> String {
-    let daily_goals = crate::daily::read(&cfg.daily_file(today))
-        .map(|d| d.front.goals)
-        .unwrap_or_default();
+    let daily_goals = crate::daily::view(cfg, today).front.goals;
 
     let quarter = crate::quarter::quarter_id(today)
         .and_then(|qid| crate::quarter::read_quarter(cfg, &qid).ok().flatten());

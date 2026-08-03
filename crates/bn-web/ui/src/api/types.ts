@@ -936,6 +936,42 @@ export interface SkillDetail {
   content: string;
 }
 
+/** The tiers a new skill can be written into, lowest → highest precedence. Mirrors
+ * `bn_core::skills::SkillScope`; the repo tiers need bn-web to be running inside a git repo. */
+export const SKILL_SCOPES = [
+  "global-shared",
+  "global-personal",
+  "repo-shared",
+  "repo-personal-notes",
+  "repo-personal-local",
+] as const;
+
+export type SkillScope = (typeof SKILL_SCOPES)[number];
+
+/** The native-harness sync every skill create/edit/delete runs (`actions::sync_native_skills_summary`).
+ * Non-fatal: the bn source file is already written, so `synced: false` means the harnesses are stale,
+ * not that the write failed. */
+export type SkillNativeSync =
+  | {
+      synced: true;
+      /** Which harnesses were touched — `claude`, `copilot`, or both. */
+      harnesses: string[];
+      created: number;
+      updated: number;
+      removed: number;
+      unchanged: number;
+    }
+  | { synced: false; error: string };
+
+/** The reply every skill mutation returns: the affected skill plus the harness sync result.
+ * `remaining_scope` (delete only) is the tier that now defines the name — a lower-tier definition
+ * the delete unshadowed — or `null` when the name is gone entirely. */
+export interface SkillMutation {
+  skill: SkillInfo | { name: string; scope: string; path: string };
+  native: SkillNativeSync;
+  remaining_scope?: string | null;
+}
+
 // --- Goals (GET /api/goals .data) ---
 
 /** A note connected to a daily goal (#564) — `bn_core::model::GoalNote`. Either a linked branch
@@ -1239,4 +1275,85 @@ export interface WeeklyView {
 export interface BragView {
   rendered: string;
   [key: string]: unknown;
+}
+
+// --- Task-first model (#993) ---------------------------------------------------------------
+
+/** One task from the global store (`bn_core::todo`, #996). */
+export interface TaskRow {
+  id: string;
+  status: string;
+  priority: string | null;
+  summary: string;
+  created: string | null;
+  completion: string | null;
+  due: string | null;
+  snooze: string | null;
+  branch: string | null;
+  src: string | null;
+  projects: string[];
+  contexts: string[];
+  repo: string | null;
+  day: string | null;
+  est: string | null;
+  doc: string | null;
+  /** The SMART gate's verdict (#998): `ok` | `fail` | `stuck`, or null when never judged. */
+  smart: string | null;
+  stage: string | null;
+  uid: string | null;
+  mod: number;
+}
+
+export interface TasksView {
+  today: string;
+  all: boolean;
+  day: string | null;
+  repo: string | null;
+  count: number;
+  tasks: TaskRow[];
+}
+
+export interface IssueRow {
+  repo: string;
+  number: number;
+  title: string;
+  url: string;
+  state: string;
+  labels: string[];
+  updated_at: string | null;
+  assignees: string[];
+  is_assigned: boolean;
+}
+
+/** One repo's issues **and how much to trust them** (#999). `stale`/`error` are not optional:
+ * an empty list with an error means "we could not ask", which is a different fact from "no open
+ * issues". The UI must never render the two the same way. */
+export interface RepoIssues {
+  repo: string;
+  slug: string | null;
+  fetched_at: number;
+  stale: boolean;
+  error: string | null;
+  issues: IssueRow[];
+}
+
+export interface IssuesView {
+  repos: RepoIssues[];
+  count: number;
+  stale_repos: number;
+  unreachable_repos: number;
+}
+
+/** One node of the nine-stage pipeline drawing (#746 made visible by #1005). */
+export interface PipelineStage {
+  id: string;
+  glyph: string;
+  position: number;
+  count: number;
+}
+
+export interface PipelineBoardView {
+  board: { repo: string; branch: string; stage: string; ts: number }[];
+  counts: Record<string, number>;
+  stages: PipelineStage[];
 }

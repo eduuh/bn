@@ -28,7 +28,7 @@ pub(crate) fn night_base() -> String {
 pub(crate) fn night_candidates(
     cfg: &Config,
 ) -> Vec<(bn_core::attention::AttnItem, bn_core::night::Candidate)> {
-    let open = bn_core::attention::open_auto_eligible(&today());
+    let open = bn_core::attention::open_auto_eligible(cfg, &today());
     if open.is_empty() {
         return Vec::new();
     }

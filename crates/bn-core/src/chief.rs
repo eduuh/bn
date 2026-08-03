@@ -595,7 +595,7 @@ pub fn add_night_goals(cfg: &Config, today: &str, night: &[NightPr]) -> usize {
     }
     // Seed the dedup set with links already on today's list, then treat it as an insert-set so a
     // duplicate PR within this run is caught too.
-    let mut seen: std::collections::HashSet<String> = crate::daily::ensure_today(cfg, today)
+    let mut seen: std::collections::HashSet<String> = Some(crate::daily::view(cfg, today))
         .map(|d| {
             d.front
                 .goals

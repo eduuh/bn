@@ -3,7 +3,7 @@ import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom";
 import { App } from "./App";
-import { Console } from "./routes/Console";
+import { Home } from "./routes/Home";
 import { lazyRoute, prefetchRoutes } from "./lib/lazyRoute";
 // The 404 and the two error boundaries stay in the entry chunk on purpose. They are the screens
 // that render when something has already gone wrong — including a chunk that failed to load — so
@@ -14,6 +14,9 @@ import { NotFound, RootError, RouteError } from "./routes/NotFound";
 // chunk and paints without a fallback; the other nineteen views — and the libraries only they pull
 // in, uPlot for the cost charts, the markdown renderer for notes and packets — arrive on
 // navigation. Bundled eagerly they made a single ~850 kB entry chunk.
+// The console is no longer the entry point (#1006) — the task-first home is — so it becomes a
+// lazy chunk like every other destination.
+const Console = lazyRoute(() => import("./routes/Console"), "Console");
 const CommandCenter = lazyRoute(() => import("./routes/CommandCenter"), "CommandCenter");
 const Today = lazyRoute(() => import("./routes/Today"), "Today");
 const Fleet = lazyRoute(() => import("./routes/Fleet"), "Fleet");
@@ -62,7 +65,9 @@ const router = createBrowserRouter([
       {
         errorElement: <RouteError />,
         children: [
-          { index: true, element: <Console /> },
+          // `/` is the task-first home (#1006). Work starts from a task or it does not start.
+          { index: true, element: <Home /> },
+          { path: "console", element: <Console /> },
           // The classic action list keeps its home for the surfaces the console doesn't own yet
           // (the automation hub + the completed history).
           { path: "inbox", element: <CommandCenter /> },

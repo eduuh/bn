@@ -2850,6 +2850,32 @@ pub(crate) enum TaskCmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Make a task executable: fill in why it matters, the `## Done When` the SMART gate reads,
+    /// an estimate and a day. Prints the agent seed with --dry-run. `--steer` passes your own
+    /// "things to look out for" straight into the seed.
+    Improve {
+        /// Task id (e.g. t42). Omit with --due to take the next task needing work.
+        id: Option<String>,
+        /// Things to look out for, passed to the agent verbatim.
+        #[arg(long)]
+        steer: Option<String>,
+        /// Take the highest-ranked task that failed the gate, rather than a named one.
+        #[arg(long)]
+        due: bool,
+        /// Print the seed instead of launching an agent.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Decide what is genuinely doable today: rank every open task deterministically, then let an
+    /// agent reorder the shortlist and stamp `day:`. Writes its reasoning to the day's triage note.
+    Triage {
+        /// The day to triage for (default today).
+        #[arg(long, value_name = "DATE")]
+        day: Option<String>,
+        /// Print the ranking and the seed instead of launching an agent.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Absorb a legacy repo-local `TODO.txt` into the global store: bn task import <path>.
     /// Idempotent — re-running imports only what's new. Ids are reminted globally, and `repo:` is
     /// stamped from `--repo` or the source file's directory name. The original is left in place.

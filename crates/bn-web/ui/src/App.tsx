@@ -41,7 +41,9 @@ export function App() {
 
   // The console is a full-bleed three-column app that manages its own scrolling; every other route
   // is a document on the prototype's 1060px measure.
-  const bare = location.pathname === "/";
+  // The console is the only full-bleed, self-scrolling screen; since #1006 it lives at
+  // `/console` rather than at the index.
+  const bare = location.pathname === "/console";
 
   return (
     <div className="flex h-[100dvh] flex-col overflow-hidden">

@@ -40,14 +40,16 @@ pub(crate) fn merge_pr_via_gh(
     crate::gh::gh_run_in(&home(), &args)
 }
 
-pub(crate) fn cmd_merge(
-    cfg: &Config,
-    merge: bool,
-    rebase: bool,
-    no_delete_branch: bool,
-    admin: bool,
-    no_gate: bool,
-) -> bool {
+pub(crate) fn cmd_merge(cfg: &Config, flags: MergeFlags) -> bool {
+    let MergeFlags {
+        merge,
+        rebase,
+        no_delete_branch,
+        admin,
+        no_gate,
+        ci,
+        ..
+    } = flags;
     let wt_path = cwd();
     let Some(bare) = find_bare_repo(&wt_path) else {
         eprintln!("{RED}Not inside a worktree{NC}");
@@ -100,6 +102,13 @@ pub(crate) fn cmd_merge(
                 "{YELLOW}bn wt merge: could not resolve repo context — skipping the pre-merge gate.{NC}"
             ),
         }
+    }
+
+    // The published CI verdict. The gate above proves the head builds *here*; this proves the
+    // checks the repo actually publishes agreed. Checked after it, so a PR that can't pass locally
+    // never costs the wait budget.
+    if ci.enabled && !ci_gate_open(&slug, &branch, &format!("{slug}/{branch}"), ci.wait) {
+        return false;
     }
 
     let method = merge_method(merge, rebase);
@@ -201,6 +210,199 @@ pub(crate) fn pr_mergeable(slug: &str, number: i64) -> Mergeable {
             _ => Mergeable::Unknown,
         },
         None => Mergeable::Unknown,
+    }
+}
+
+/// The CLI flags every `bn wt merge` entry point shares. Carried as one value rather than eight
+/// positional bools: the single-PR merge, `--all`, and `--all-repos` all take the same set, and a
+/// positional list that long is one transposed argument away from landing with the wrong gate.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MergeFlags {
+    pub merge: bool,
+    pub rebase: bool,
+    pub no_delete_branch: bool,
+    pub admin: bool,
+    pub no_auto_rebase: bool,
+    pub no_gate: bool,
+    pub ci: CiGate,
+}
+
+/// The CI-gate setting, threaded from the CLI through every merge path so the single-PR merge,
+/// `--all`, and `--all-repos` can't drift into disagreeing about whether checks are required.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CiGate {
+    pub enabled: bool,
+    pub wait: Duration,
+}
+
+impl Default for CiGate {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            wait: Duration::from_secs(600),
+        }
+    }
+}
+
+/// What the PR's GitHub checks say right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Checks {
+    /// Every check finished green (or was skipped/neutral) — safe to land.
+    Green,
+    /// At least one check is still queued or running. Not a verdict: poll, then skip if it stays.
+    Pending,
+    /// At least one check finished red (failure, timeout, or cancelled).
+    Red,
+    /// The PR has no checks at all — nothing to gate on, so this never blocks a landing.
+    None,
+}
+
+/// Classify one rollup entry. Split out from the `gh` call so the state machine — which strings
+/// mean "still running", which mean "red" — is unit-testable without the network.
+fn classify_check(status: &str, conclusion: &str, state: &str) -> Checks {
+    let status = status.trim().to_ascii_uppercase();
+    let conclusion = conclusion.trim().to_ascii_uppercase();
+    let state = state.trim().to_ascii_uppercase();
+    // A check run still in flight, or a legacy commit status still pending.
+    if matches!(
+        status.as_str(),
+        "QUEUED" | "IN_PROGRESS" | "WAITING" | "PENDING" | "REQUESTED"
+    ) || state == "PENDING"
+    {
+        return Checks::Pending;
+    }
+    let verdict = if conclusion.is_empty() {
+        state.as_str()
+    } else {
+        conclusion.as_str()
+    };
+    match verdict {
+        "SUCCESS" | "SKIPPED" | "NEUTRAL" => Checks::Green,
+        // Nothing decided yet — treat as still running rather than as a pass.
+        "" => Checks::Pending,
+        _ => Checks::Red,
+    }
+}
+
+/// The PR's check state via `gh pr view --json statusCheckRollup`.
+///
+/// A **cancelled** check counts as [`Checks::Red`], not as "no result". That is exactly the shape a
+/// merge-then-cancel loop produces: this repo cancels in-flight CI the moment a PR merges, so a run
+/// that was killed proves only that nobody waited for it. Treating it as green would let the gate
+/// agree with whatever raced it.
+///
+/// A failed `gh` call reads as [`Checks::Pending`] rather than green: an unreadable rollup is a
+/// reason to wait and retry, never a reason to land.
+pub(crate) fn pr_checks(slug: &str, selector: &str) -> Checks {
+    #[derive(serde::Deserialize)]
+    struct RollupView {
+        #[serde(default, rename = "statusCheckRollup")]
+        rollup: Vec<CheckRun>,
+    }
+    #[derive(serde::Deserialize)]
+    struct CheckRun {
+        /// Check runs: QUEUED / IN_PROGRESS / COMPLETED. Empty for a legacy commit status.
+        #[serde(default)]
+        status: String,
+        /// SUCCESS / FAILURE / CANCELLED / SKIPPED / NEUTRAL / TIMED_OUT, once completed.
+        #[serde(default)]
+        conclusion: String,
+        /// Legacy commit-status state (SUCCESS / PENDING / FAILURE) when `status` is empty.
+        #[serde(default)]
+        state: String,
+    }
+    let Some(view) = bn_core::runner::gh_json::<RollupView>(
+        &bn_core::runner::RealRunner,
+        &[
+            "pr",
+            "view",
+            selector,
+            "--repo",
+            slug,
+            "--json",
+            "statusCheckRollup",
+        ],
+    ) else {
+        return Checks::Pending;
+    };
+    rollup_verdict(
+        view.rollup
+            .iter()
+            .map(|r| classify_check(&r.status, &r.conclusion, &r.state)),
+    )
+}
+
+/// Fold per-check verdicts into one: any red is red (report the worst), else any pending is
+/// pending, else green — and an empty rollup is [`Checks::None`].
+fn rollup_verdict(checks: impl Iterator<Item = Checks>) -> Checks {
+    let mut seen = false;
+    let mut pending = false;
+    for c in checks {
+        seen = true;
+        match c {
+            Checks::Red => return Checks::Red,
+            Checks::Pending => pending = true,
+            _ => {}
+        }
+    }
+    if !seen {
+        Checks::None
+    } else if pending {
+        Checks::Pending
+    } else {
+        Checks::Green
+    }
+}
+
+/// Poll [`pr_checks`] until CI settles: up to `attempts` tries, sleeping `delay` between them,
+/// returning as soon as the rollup is no longer [`Checks::Pending`]. A run that never settles
+/// returns `Pending` so the caller skips the PR — a poller that blocks forever on one PR stops
+/// being a poller, and the next pass picks it up anyway.
+pub(crate) fn wait_for_checks(slug: &str, selector: &str, attempts: u32, delay: Duration) -> Checks {
+    let mut last = Checks::Pending;
+    for i in 0..attempts.max(1) {
+        last = pr_checks(slug, selector);
+        if last != Checks::Pending {
+            return last;
+        }
+        if i + 1 < attempts.max(1) {
+            std::thread::sleep(delay);
+        }
+    }
+    last
+}
+
+/// Whether the PR may land as far as GitHub CI is concerned, printing why when it may not.
+///
+/// `wait` bounds how long we sit on a still-running run. A human merge gets the full budget (the
+/// answer is worth waiting for); the orchestrate poller passes `0` — one look, then move on — so a
+/// single unfinished PR can't stall a tick that has other work to do.
+pub(crate) fn ci_gate_open(slug: &str, selector: &str, label: &str, wait: Duration) -> bool {
+    // ~One poll every 10s across the budget: infrequent enough not to hammer the API, frequent
+    // enough that a run finishing mid-wait is noticed promptly. A zero budget is a single check.
+    let delay = Duration::from_secs(10);
+    let attempts = (wait.as_secs() / delay.as_secs()).max(1) as u32;
+    match wait_for_checks(slug, selector, attempts, delay) {
+        Checks::Green | Checks::None => true,
+        Checks::Red => {
+            eprintln!(
+                "{RED}Holding {label} — CI is red. Fix and re-push, or bypass with \
+                 `--no-ci-gate`.{NC}"
+            );
+            false
+        }
+        Checks::Pending => {
+            let waited = if wait.as_secs() == 0 {
+                String::new()
+            } else {
+                format!(" after {}s", wait.as_secs())
+            };
+            eprintln!(
+                "{YELLOW}Holding {label} — CI hasn't finished{waited}; it'll land on a later \
+                 pass.{NC}"
+            );
+            false
+        }
     }
 }
 
@@ -742,6 +944,15 @@ pub(crate) struct MergeAllOpts {
     /// blocking finding resolved. Set from `[review].diff_gate` AND `!--no-gate` (the deliberate
     /// bypass), so an unconfigured land behaves exactly as before.
     pub review_gate: bool,
+    /// Require the PR's **GitHub** checks to have finished green before landing it. The local
+    /// `gate` proves the head builds on this machine; this proves the checks the repo actually
+    /// publishes agreed — the thing a reviewer reads before approving. Without it a poller merges
+    /// whatever is mergeable *now*, and since merging cancels in-flight CI, the run never gets to
+    /// report: the checks stop being a gate and become a race the merge usually wins. `--no-ci-gate`
+    /// is the deliberate bypass.
+    pub ci_gate: bool,
+    /// How long to sit on a still-running CI run before skipping the PR for a later pass.
+    pub ci_wait: Duration,
 }
 
 /// Running tally of a `--all` landing pass, so the cross-repo rollup can sum per-repo outcomes.
@@ -764,15 +975,16 @@ impl LandTally {
     }
 }
 
-pub(crate) fn cmd_merge_all(
-    cfg: &Config,
-    merge: bool,
-    rebase: bool,
-    no_delete_branch: bool,
-    admin: bool,
-    no_auto_rebase: bool,
-    no_gate: bool,
-) -> bool {
+pub(crate) fn cmd_merge_all(cfg: &Config, flags: MergeFlags) -> bool {
+    let MergeFlags {
+        merge,
+        rebase,
+        no_delete_branch,
+        admin,
+        no_auto_rebase,
+        no_gate,
+        ci,
+    } = flags;
     let wt_path = cwd();
     let Some(bare) = find_bare_repo(&wt_path) else {
         eprintln!("{RED}Not inside a worktree — run `bn wt merge --all` from within the repo{NC}");
@@ -801,6 +1013,8 @@ pub(crate) fn cmd_merge_all(
         no_auto_rebase,
         gate: false,
         review_gate: cfg.review_diff_gate && !no_gate,
+        ci_gate: ci.enabled,
+        ci_wait: ci.wait,
     };
     let t = merge_all_in_repo(cfg, &bare, &slug, &repo, &opts);
     let rebased_note = if t.rebased > 0 {
@@ -930,6 +1144,19 @@ pub(crate) fn merge_all_in_repo(
                 t.gated_out += 1;
                 continue;
             }
+            // The published CI verdict, checked last — after the cheap local gates have already
+            // ruled the PR out, so we never spend the wait budget on a PR that can't land anyway.
+            if opts.ci_gate
+                && !ci_gate_open(
+                    slug,
+                    &pr.number.to_string(),
+                    &format!("#{} [{branch}]", pr.number),
+                    opts.ci_wait,
+                )
+            {
+                t.gated_out += 1;
+                continue;
+            }
             let tag = if serialize { " (serialized)" } else { "" };
             println!(
                 "{BLUE}Merging #{} [{branch}] ({}){tag}{NC}",
@@ -1042,15 +1269,16 @@ fn adversarial_gate_open(cfg: &Config, slug: &str, repo: &str, number: i64) -> b
 /// gap. Rolls through repos in a deterministic order ([`bn_core::crossrepo::cross_repo_land_order`]),
 /// gating each PR on that repo's own verify (unless `no_gate`), and prints a per-repo section plus a
 /// grand total. Non-GitHub repos are noted + skipped (gh-only, like `--all`).
-pub(crate) fn cmd_merge_all_repos(
-    cfg: &Config,
-    merge: bool,
-    rebase: bool,
-    no_delete_branch: bool,
-    admin: bool,
-    no_auto_rebase: bool,
-    no_gate: bool,
-) -> bool {
+pub(crate) fn cmd_merge_all_repos(cfg: &Config, flags: MergeFlags) -> bool {
+    let MergeFlags {
+        merge,
+        rebase,
+        no_delete_branch,
+        admin,
+        no_auto_rebase,
+        no_gate,
+        ci,
+    } = flags;
     let (bare_dir, _) = layout(cfg);
     let names: Vec<String> = bare_repos(&bare_dir).iter().map(|b| repo_name(b)).collect();
     let order = bn_core::crossrepo::cross_repo_land_order(&names);
@@ -1070,6 +1298,8 @@ pub(crate) fn cmd_merge_all_repos(
         no_auto_rebase,
         gate: !no_gate,
         review_gate: cfg.review_diff_gate && !no_gate,
+        ci_gate: ci.enabled,
+        ci_wait: ci.wait,
     };
     println!(
         "{BLUE}merge --all-repos: rolling through {} repo(s): {}{NC}",
@@ -1123,4 +1353,85 @@ pub(crate) fn cmd_merge_all_repos(
         total.merged, total.skipped, total.failed, repos_with_prs
     );
     total.failed == 0
+}
+
+#[cfg(test)]
+mod ci_gate_tests {
+    use super::*;
+
+    fn verdict(runs: &[(&str, &str, &str)]) -> Checks {
+        rollup_verdict(runs.iter().map(|(s, c, st)| classify_check(s, c, st)))
+    }
+
+    #[test]
+    fn a_finished_green_rollup_opens_the_gate() {
+        assert_eq!(
+            verdict(&[
+                ("COMPLETED", "SUCCESS", ""),
+                // Skipped and neutral checks are results, not absences — they don't hold a PR.
+                ("COMPLETED", "SKIPPED", ""),
+                ("COMPLETED", "NEUTRAL", ""),
+            ]),
+            Checks::Green
+        );
+    }
+
+    #[test]
+    fn a_running_check_is_pending_not_a_pass() {
+        for status in ["QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED"] {
+            assert_eq!(
+                verdict(&[("COMPLETED", "SUCCESS", ""), (status, "", "")]),
+                Checks::Pending,
+                "{status} should hold the gate"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cancelled_check_is_red() {
+        // The case this gate exists for: merging cancels in-flight CI, so a cancelled run means
+        // nobody waited for the answer. Reading it as green would let the gate agree with the race.
+        assert_eq!(
+            verdict(&[("COMPLETED", "SUCCESS", ""), ("COMPLETED", "CANCELLED", "")]),
+            Checks::Red
+        );
+    }
+
+    #[test]
+    fn any_failure_outranks_green_and_pending() {
+        assert_eq!(
+            verdict(&[
+                ("COMPLETED", "SUCCESS", ""),
+                ("IN_PROGRESS", "", ""),
+                ("COMPLETED", "FAILURE", ""),
+            ]),
+            Checks::Red
+        );
+        assert_eq!(verdict(&[("COMPLETED", "TIMED_OUT", "")]), Checks::Red);
+    }
+
+    #[test]
+    fn legacy_commit_statuses_are_read_from_state() {
+        assert_eq!(verdict(&[("", "", "SUCCESS")]), Checks::Green);
+        assert_eq!(verdict(&[("", "", "PENDING")]), Checks::Pending);
+        assert_eq!(verdict(&[("", "", "FAILURE")]), Checks::Red);
+    }
+
+    #[test]
+    fn a_completed_run_with_no_conclusion_yet_is_pending() {
+        // GitHub can report COMPLETED a beat before the conclusion lands; that gap must not read
+        // as a pass.
+        assert_eq!(verdict(&[("COMPLETED", "", "")]), Checks::Pending);
+    }
+
+    #[test]
+    fn a_repo_with_no_checks_is_not_blocked() {
+        assert_eq!(verdict(&[]), Checks::None);
+    }
+
+    #[test]
+    fn verdicts_are_case_insensitive() {
+        assert_eq!(verdict(&[("completed", "success", "")]), Checks::Green);
+        assert_eq!(verdict(&[("in_progress", "", "")]), Checks::Pending);
+    }
 }

@@ -1031,8 +1031,8 @@ pub(crate) fn emit_attn_promote(
 /// Show the item the autonomous loop would start next — the dry-run of `attention-auto-trigger`
 /// (trust + concurrency-cap gate applied; idle gate is the cron's). Prints nothing when at the cap
 /// (`BN_ATTN_AUTO_MAX`) or nothing is eligible.
-pub(crate) fn emit_attn_next_auto(as_json: bool) {
-    match bn_core::attention::next_auto(&today(), attn_auto_max()) {
+pub(crate) fn emit_attn_next_auto(cfg: &Config, as_json: bool) {
+    match bn_core::attention::next_auto(cfg, &today(), attn_auto_max()) {
         Some(item) => {
             if as_json {
                 println!(
@@ -1182,6 +1182,7 @@ pub(crate) fn emit_attn_dispatch(
                 substrate: out.entry.substrate,
                 source: out.entry.source.clone(),
                 controller_id: out.entry.controller_id.clone(),
+                task: out.entry.task.clone(),
             };
             bn_core::backlog::add(&path, &repo, std::slice::from_ref(&out.subject), &spec, now)
                 .map(|_| ())

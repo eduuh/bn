@@ -218,6 +218,18 @@ pub(crate) fn emit_doctor(cfg: &Config, stale_days: i64, brief: bool, as_json: b
                     "  the staff home machine may be down — re-home `[staff].home` onto a live box"
                 );
             }
+            Finding::Backlog(b) => {
+                println!(
+                    "backlog  [untasked] {} queued item(s) name no task",
+                    b.untasked
+                );
+                for subject in b.sample.iter().take(3) {
+                    println!("  {subject}");
+                }
+                println!(
+                    "  these predate #1001 and will run with no durable record; they are left in place deliberately so nothing in flight is orphaned"
+                );
+            }
             Finding::NotesLeak(l) => {
                 println!(
                     "notes  [leak] {} foreign machine subtree(s) under the personal notes root",

@@ -119,7 +119,7 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
                 repo,
                 branch,
             }) => emit_attn_promote(cfg, &todo_id, &mode, &severity, repo, branch, json),
-            Some(AttnCmd::NextAuto) => emit_attn_next_auto(json),
+            Some(AttnCmd::NextAuto) => emit_attn_next_auto(cfg, json),
             Some(AttnCmd::Plan { id, section }) => emit_attn_plan(cfg, &id, &section, json),
             Some(AttnCmd::Dispatch { id, repo }) => {
                 emit_attn_dispatch(cfg, &id, repo.as_deref(), json)

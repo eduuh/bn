@@ -124,7 +124,7 @@ on_calendar = "*:5/10"
 persistent = false
 randomized_delay = "1m"
 network = true
-description = "bn — keep owned orchestrate repos supplied to their configured low-water mark; brainstorm enhancement issues when truly dry (opt-in; [orchestrate].keep_warm + own)"
+description = "bn — brainstorm enhancement issues for owned orchestrate repos when truly dry (opt-in; [orchestrate].keep_warm + own). Issue->work refill was superseded by `bn task pull` in #1001; this arm now only reports the deficit."
 
 [[cron]]
 job = "pool-warm"

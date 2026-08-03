@@ -27,6 +27,7 @@ import {
   goalsQuery,
   nodesQuery,
   orchestrateQuery,
+  tasksQuery,
 } from "../../api/client";
 import { fleetEntries, needsYou } from "../../lib/fleet";
 import { cn } from "../../lib/utils";
@@ -70,12 +71,14 @@ export function Rail() {
   const cron = useQuery(cronQuery());
   const goals = useQuery(goalsQuery());
   const nodes = useQuery(nodesQuery());
+  const tasks = useQuery(tasksQuery("today"));
 
   const entries = fleetEntries(orch.data, fleet.data);
   const needAttention = needsYou(entries).length;
   const urgentActions = (actions.data?.actions ?? []).filter((a) => a.severity === "urgent").length;
   const failingCron = (cron.data?.jobs ?? []).filter((j) => j.ok === false).length;
   const allNodes = nodes.data?.nodes ?? [];
+  const todayTasks = tasks.data?.count ?? 0;
   const host = allNodes.find((n) => n.local)?.host;
 
   const groups: NavGroup[] = [
@@ -84,9 +87,16 @@ export function Rail() {
       items: [
         {
           to: "/",
+          label: "Today",
+          Icon: Sun,
+          end: true,
+          count: todayTasks,
+          tone: "plain",
+        },
+        {
+          to: "/console",
           label: "Console",
           Icon: SquareTerminal,
-          end: true,
           count: urgentActions,
           tone: "hot",
         },
@@ -106,7 +116,6 @@ export function Rail() {
     {
       title: "Work",
       items: [
-        { to: "/today", label: "Today", Icon: Sun },
         { to: "/goals", label: "Goals", Icon: Target, count: goals.data?.daily.open ?? 0 },
         { to: "/repos", label: "Repos", Icon: Folder },
       ],
@@ -139,12 +148,16 @@ export function Rail() {
         "md:order-none md:flex-col md:gap-1 md:overflow-x-visible md:overflow-y-auto md:border-r md:border-t-0 md:px-2.5 md:py-3",
       )}
     >
+      {/* #1006: work only ever starts from a task, so the pinned verb is *New task*, not
+          "Start an agent". The old button spawned a process from a free-text prompt and left no
+          durable record — when the agent died, the intent died with it. */}
       <NavLink
-        to="/start"
+        to="/"
+        end
         className="mb-2.5 hidden h-[34px] items-center justify-center gap-[7px] rounded-[9px] bg-primary text-[13.5px] font-semibold text-primary-foreground no-underline shadow-card transition-[filter] hover:brightness-110 md:flex"
       >
         <Plus className="h-4 w-4" />
-        Start an agent
+        New task
       </NavLink>
 
       {groups.map((g) => (
@@ -161,12 +174,13 @@ export function Rail() {
       {/* Start has no rail row on a phone — it rides the console's own composer there — so the tab
           bar stays the *destinations*, not a mix of destinations and verbs. */}
       <NavLink
-        to="/start"
+        to="/"
+        end
         className={({ isActive }) => tabClass(isActive) + " md:hidden"}
-        aria-label="Start an agent"
+        aria-label="New task"
       >
         <Plus className="h-[18px] w-[18px]" />
-        <span>Start</span>
+        <span>New</span>
       </NavLink>
 
       {host && (

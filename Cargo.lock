@@ -279,6 +279,7 @@ dependencies = [
  "axum",
  "bn-core",
  "bn-mcp",
+ "dirs",
  "rand 0.8.6",
  "rmcp",
  "rust-embed",

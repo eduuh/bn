@@ -298,19 +298,57 @@ pub fn previous_day(cfg: &Config, today: &str) -> Option<Daily> {
 /// Read every existing day file in the inclusive date range `[start..=end]`, oldest first.
 /// Missing days are skipped. Used by the weekly review to gather completed goals.
 pub fn read_window(cfg: &Config, start: &str, end: &str) -> Vec<Daily> {
+    // Goals live in the task store since #1004, so a file-only window would report a quiet week
+    // for a week that shipped. Each day folds in the tasks *completed* on it; open work is not
+    // reconstructible for a past day (a task open now was not necessarily open then), and
+    // guessing would inflate every historical count.
+    let finished = completed_by_day(cfg, start, end);
     let mut out = Vec::new();
     let mut cur = start.to_string();
     while cur.as_str() <= end {
         let path = cfg.daily_file(&cur);
-        if path.exists() {
-            if let Ok(d) = read(&path) {
-                out.push(d);
-            }
+        let mut day = match (path.exists(), read(&path)) {
+            (true, Ok(d)) => Some(d),
+            _ => None,
+        };
+        if let Some(goals) = finished.get(&cur) {
+            let d = day.get_or_insert_with(|| Daily::empty(&cur));
+            let mut projected = goals.clone();
+            projected.append(&mut d.front.goals);
+            d.front.goals = projected;
+        }
+        if let Some(d) = day {
+            out.push(d);
         }
         match util::add_days(&cur, 1) {
             Some(next) => cur = next,
             None => break,
         }
+    }
+    out
+}
+
+/// Tasks finished on each day of `[start..=end]`, as goals. One pass over the store rather than
+/// one per day.
+fn completed_by_day(
+    cfg: &Config,
+    start: &str,
+    end: &str,
+) -> std::collections::HashMap<String, Vec<Item>> {
+    let mut out: std::collections::HashMap<String, Vec<Item>> = Default::default();
+    let Ok(file) = crate::todo::load(&cfg.tasks_file()) else {
+        return out;
+    };
+    for task in file.tasks() {
+        let Some(done_on) = task.completion.as_deref() else {
+            continue;
+        };
+        if done_on < start || done_on > end {
+            continue;
+        }
+        out.entry(done_on.to_string())
+            .or_default()
+            .push(task_as_goal(task, done_on));
     }
     out
 }
@@ -597,6 +635,11 @@ pub fn add_full(
     if let Some(date) = on {
         return schedule(cfg, today, text, link, q, date, est);
     }
+    // Goals written by hand keep living in the day file for now: `connect_note`, the night
+    // planner's goals, `rollover` and the DXI ratings all attach `GoalNote`s to a file-backed
+    // goal, and the task grammar has no equivalent. #1004 unifies the *read* side — every surface
+    // now sees tasks and day-file goals as one list — and leaves that write-side collapse as
+    // follow-up rather than half-migrating five subsystems.
     let mut daily = ensure_today(cfg, today)?;
     let id = next_id(&daily.front.goals, GOAL_PREFIX);
     daily.front.goals.push(Item {
@@ -620,6 +663,84 @@ pub fn add_full(
         scheduled: None,
         landed_today: true,
     })
+}
+
+// --- Goals as a projection over tasks (#1004, EPIC #993) -------------------------------------
+
+/// One task rendered as a daily goal.
+///
+/// A daily goal and a task stamped `day:` were the same idea in two stores, which meant keeping
+/// them in sync by hand — exactly what #993 removes. Tasks are now the store; this is the lens.
+fn task_as_goal(task: &crate::todo::Task, today: &str) -> Item {
+    let done = matches!(
+        task.status(today),
+        crate::todo::Status::Done | crate::todo::Status::Cancelled
+    );
+    Item {
+        id: task.id().unwrap_or("?").to_string(),
+        text: task.summary(),
+        created: task.created.clone().unwrap_or_else(|| today.to_string()),
+        done: Some(done),
+        done_at: task.completion.clone(),
+        // The issue a pulled task came from is the goal's link — the same field `bn daily add
+        // --link` fills, so the rendering needs no special case.
+        link: task.meta("src").map(str::to_string),
+        pct: None,
+        est: task.meta("est").map(str::to_string),
+        actual: task.meta("actual").map(str::to_string),
+        q: task.meta("q").map(str::to_string),
+        notes: Vec::new(),
+    }
+}
+
+/// Today's goals, projected from the task store.
+///
+/// **Carry-forward is free here, and that is the point.** `ensure_today` copies yesterday's open
+/// goals into a new file, which is a *write* — so `GET /api/goals` (a read) never triggered it and
+/// carried-forward goals were invisible in bn-web until the CLI happened to touch the day. A query
+/// needs no write, so the bug cannot recur: an open task dated today *or earlier* is simply still
+/// today's work.
+///
+/// Included: open tasks dated today or earlier, and tasks completed today. Excluded: future-dated
+/// work (not today's), snoozed work (deliberately out of view), and anything finished on an
+/// earlier day (it belongs to that day's record).
+pub fn task_goals(cfg: &Config, today: &str) -> Vec<Item> {
+    let Ok(file) = crate::todo::load(&cfg.tasks_file()) else {
+        return Vec::new();
+    };
+    file.tasks()
+        .filter(|t| {
+            let day = t
+                .meta("day")
+                .filter(|d| crate::util::epoch_day(d).is_some());
+            match (day, t.status(today)) {
+                // Open and scheduled for today or earlier — including work that slipped.
+                (Some(d), crate::todo::Status::Open | crate::todo::Status::Wip) => d <= today,
+                // Finished today, whenever it was scheduled: it is part of today's record.
+                (_, crate::todo::Status::Done | crate::todo::Status::Cancelled) => {
+                    t.completion.as_deref() == Some(today)
+                }
+                _ => false,
+            }
+        })
+        .map(|t| task_as_goal(t, today))
+        .collect()
+}
+
+/// Today, as the rest of bn should read it: goals projected from tasks, plus the day file's own
+/// learnings and reflections.
+///
+/// Legacy goals written into the day file before #1004 are kept and listed after the projected
+/// ones, so nothing anyone recorded disappears and no migration has to run. `bn daily add` writes
+/// tasks from here on, so that set only shrinks.
+pub fn view(cfg: &Config, today: &str) -> Daily {
+    let mut daily = read(&cfg.daily_file(today)).unwrap_or_else(|_| Daily::empty(today));
+    let mut goals = task_goals(cfg, today);
+    // Legacy file goals keep their place *after* the projection: the store is the source of truth,
+    // and these are a shrinking tail.
+    goals.append(&mut daily.front.goals);
+    daily.front.goals = goals;
+    daily
 }
 
 /// Which day-scoped log a [`log_entry`] call appends to.
@@ -697,6 +818,8 @@ pub fn done(
     query: &str,
     pct: Option<u8>,
 ) -> Result<DoneOutcome, CmdError> {
+    // A task-backed goal is finished with `bn task do <id>`; this path owns the day file's own
+    // goals. Both show up in `view`, so `bn daily` lists them as one set either way.
     let mut daily = ensure_today(cfg, today)?;
     let q = query.trim();
 
@@ -2180,5 +2303,118 @@ mod tests {
         // Estimated but unlinked → can't join the timeline → skip cleanly.
         add_est(&c, day, "unlinked goal", None, None, Some("1h".into())).unwrap();
         assert!(done(&c, day, "unlinked", None).unwrap().actual.is_none());
+    }
+
+    // --- #1004: goals projected from the task store ------------------------------------
+
+    fn write_tasks(c: &Config, lines: &str) {
+        let path = c.tasks_file();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, lines).unwrap();
+    }
+
+    #[test]
+    fn tasks_scheduled_for_today_read_as_goals() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = cfg(dir.path());
+        write_tasks(
+            &c,
+            "ship the parser id:t1 repo:bn day:2026-06-22 est:2h q:2026-Q2\n",
+        );
+        let goals = task_goals(&c, "2026-06-22");
+        assert_eq!(goals.len(), 1);
+        assert_eq!(goals[0].id, "t1");
+        assert_eq!(goals[0].text, "ship the parser");
+        assert_eq!(goals[0].done, Some(false));
+        assert_eq!(goals[0].est.as_deref(), Some("2h"));
+        assert_eq!(
+            goals[0].q.as_deref(),
+            Some("2026-Q2"),
+            "quarter alignment survives"
+        );
+    }
+
+    /// The bug this closes: `ensure_today` (the carry-forward) is a *write*, so a GET could never
+    /// trigger it — carried goals were invisible in bn-web until the CLI touched the day. A
+    /// projection needs no write, so an overdue task is simply still today's work.
+    #[test]
+    fn work_that_slipped_is_still_todays_work_without_any_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = cfg(dir.path());
+        write_tasks(&c, "carry me id:t1 repo:bn day:2026-06-20\n");
+
+        let goals = task_goals(&c, "2026-06-22");
+        assert_eq!(goals.len(), 1, "an overdue task is still open work");
+        // Nothing was materialized to make that true.
+        assert!(
+            !c.daily_file("2026-06-22").exists(),
+            "the read stayed a read"
+        );
+    }
+
+    #[test]
+    fn future_snoozed_and_previously_finished_work_is_not_todays() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = cfg(dir.path());
+        write_tasks(
+            &c,
+            "next week id:t1 repo:bn day:2026-07-01\n\
+             later id:t2 repo:bn day:2026-06-20 snooze:2099-01-01\n\
+             x 2026-06-19 finished earlier id:t3 repo:bn day:2026-06-19\n\
+             finished today id:t4 repo:bn day:2026-06-22\n",
+        );
+        let ids: Vec<String> = task_goals(&c, "2026-06-22")
+            .into_iter()
+            .map(|g| g.id)
+            .collect();
+        assert_eq!(ids, vec!["t4"], "got {ids:?}");
+    }
+
+    #[test]
+    fn work_finished_today_counts_as_done_whenever_it_was_scheduled() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = cfg(dir.path());
+        write_tasks(
+            &c,
+            "x 2026-06-22 2026-06-01 shipped it id:t1 repo:bn day:2026-06-01\n",
+        );
+        let goals = task_goals(&c, "2026-06-22");
+        assert_eq!(goals.len(), 1);
+        assert_eq!(goals[0].done, Some(true));
+    }
+
+    #[test]
+    fn the_view_folds_tasks_and_the_day_files_own_goals_into_one_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = cfg(dir.path());
+        add(&c, "2026-06-22", "a hand-added goal", None, None).unwrap();
+        write_tasks(&c, "a task-backed goal id:t1 repo:bn day:2026-06-22\n");
+        learned(&c, "2026-06-22", "something new", &LogProvenance::default()).unwrap();
+
+        let v = view(&c, "2026-06-22");
+        let texts: Vec<&str> = v.front.goals.iter().map(|g| g.text.as_str()).collect();
+        assert!(texts.contains(&"a task-backed goal"));
+        assert!(texts.contains(&"a hand-added goal"));
+        assert_eq!(v.open().count(), 2);
+        // Learnings are journal entries, not tasks — they stay in the day file.
+        assert_eq!(v.front.learnings.len(), 1);
+    }
+
+    #[test]
+    fn a_historical_window_reports_the_tasks_finished_on_each_day() {
+        // Otherwise the weekly chronicle reports a quiet week for a week that shipped.
+        let dir = tempfile::tempdir().unwrap();
+        let c = cfg(dir.path());
+        write_tasks(
+            &c,
+            "x 2026-06-21 2026-06-20 shipped on monday id:t1 repo:bn\n\
+             x 2026-06-30 2026-06-20 shipped outside the window id:t2 repo:bn\n",
+        );
+        let window = read_window(&c, "2026-06-20", "2026-06-22");
+        let wins: Vec<String> = window
+            .iter()
+            .flat_map(|d| d.completed().map(|g| g.text.clone()))
+            .collect();
+        assert_eq!(wins, vec!["shipped on monday"], "got {wins:?}");
     }
 }

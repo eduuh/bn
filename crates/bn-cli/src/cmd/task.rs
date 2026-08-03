@@ -673,6 +673,210 @@ pub(crate) fn emit_task_ingest(
     }
 }
 
+// --- The two task agents (#1002, EPIC #993) -----------------------------------------------
+
+/// Whether this machine is the one allowed to rewrite the shared task store wholesale.
+///
+/// Triage restamps `day:` across every open task, so two laptops running it on the same synced
+/// file would fight — the union-merge repair in #995 collapses duplicates, but the *decisions*
+/// would still flip-flop. `[staff].home` is the shipped "only one machine does this" knob, so
+/// reuse it rather than inventing a second one.
+fn triage_allowed_here(cfg: &Config) -> bool {
+    match cfg.staff_home.as_deref() {
+        Some(home) => home == cfg.machine(),
+        None => true,
+    }
+}
+
+/// Launch a fresh-context agent on `seed`, or print the seed when `dry_run`.
+///
+/// Returns whether an agent was actually launched. Deliberately thin: what the agent is *told*
+/// lives in `bn_core::task_agents` where it is unit-tested, and this only carries it across.
+fn run_task_agent(label: &str, seed: &str, dry_run: bool, as_json: bool) -> bool {
+    if dry_run {
+        if as_json {
+            let data = serde_json::json!({ "agent": label, "seed": seed, "launched": false });
+            println!("{}", Envelope::success("task_agent", data).to_json());
+        } else {
+            println!("{seed}");
+        }
+        return false;
+    }
+    let dir = bn_core::resolver::state_dir().join("seeds");
+    if std::fs::create_dir_all(&dir).is_err() {
+        fail("bn task: could not create the seed dir");
+    }
+    let path = dir.join(format!("{label}-{}.md", bn_core::util::now_epoch_secs()));
+    if std::fs::write(&path, seed).is_err() {
+        fail(&format!("bn task: could not write {}", path.display()));
+    }
+    println!("Seed written to {}", path.display());
+    println!("Launch it with your harness, e.g.:  claude --seed-file {}", path.display());
+    true
+}
+
+/// `bn task improve <id>` — make one task executable.
+pub(crate) fn emit_task_improve(
+    cfg: &Config,
+    id: Option<&str>,
+    steer: Option<&str>,
+    due: bool,
+    dry_run: bool,
+    as_json: bool,
+) {
+    let path = task_path(cfg);
+    let file = bn_core::todo::load(&path).unwrap_or_else(|e| fail(&format!("bn task: {e}")));
+    let today = today();
+
+    let task = match (id, due) {
+        (Some(id), _) => file
+            .tasks()
+            .find(|t| t.id() == Some(id))
+            .cloned()
+            .unwrap_or_else(|| fail(&format!("bn task improve: no task {id}"))),
+        // `--due` picks the work the gate actually rejected, highest-ranked first — the queue the
+        // idle loop drains. A `stuck` task is excluded: three agents already failed at it, so it
+        // is waiting on a person, not on another attempt.
+        (None, true) => {
+            let open: Vec<&bn_core::todo::Task> = file
+                .tasks()
+                .filter(|t| t.is_open(&today))
+                .filter(|t| !matches!(t.meta("smart"), Some("ok") | Some("stuck")))
+                .collect();
+            match bn_core::task_agents::rank(&open, &today).first() {
+                Some(t) => (*t).clone(),
+                None => {
+                    println!("Nothing needs improving — every open task has a verdict.");
+                    return;
+                }
+            }
+        }
+        (None, false) => fail("bn task improve: pass a task id, or --due for the next one"),
+    };
+
+    let task_id = task.id().unwrap_or("?").to_string();
+    // Re-judge now so the seed names the *current* gaps rather than a stale stamp.
+    let known = bn_core::issues::known_repos(cfg).into_iter().collect();
+    let doc = bn_core::task_doc::read(cfg, &task);
+    let verdict = bn_core::smart::check(&task, doc.as_ref(), &known, &today);
+    if verdict.ok {
+        println!("{task_id} already passes the SMART gate — nothing to improve.");
+        return;
+    }
+
+    let seed = bn_core::task_agents::improve_seed(&task, Some(&verdict), steer);
+    if as_json && !dry_run {
+        let data = serde_json::json!({
+            "id": task_id, "gaps": verdict.codes(), "seed": seed,
+        });
+        println!("{}", Envelope::success("task_improve", data).to_json());
+        return;
+    }
+    if !dry_run {
+        println!("Improving {task_id} — fails on: {}", verdict.codes().join(", "));
+    }
+    run_task_agent("task-improve", &seed, dry_run, as_json);
+}
+
+/// `bn task triage` — decide what is doable today.
+pub(crate) fn emit_task_triage(cfg: &Config, day: Option<&str>, dry_run: bool, as_json: bool) {
+    if !dry_run && !triage_allowed_here(cfg) {
+        fail(&format!(
+            "bn task triage: this machine is not the staff home ({}); triage rewrites the shared store, so it runs in one place",
+            cfg.staff_home.as_deref().unwrap_or("?")
+        ));
+    }
+    let day = day.map(str::to_string).unwrap_or_else(today);
+    if bn_core::util::epoch_day(&day).is_none() {
+        fail("bn task triage: --day must be YYYY-MM-DD");
+    }
+
+    let path = task_path(cfg);
+    let file = bn_core::todo::load(&path).unwrap_or_else(|e| fail(&format!("bn task: {e}")));
+    let open: Vec<&bn_core::todo::Task> = file.tasks().filter(|t| t.is_open(&day)).collect();
+    if open.is_empty() {
+        println!("No open tasks to triage — `bn task pull` to refill.");
+        return;
+    }
+    let ranked = bn_core::task_agents::rank(&open, &day);
+    let seed = bn_core::task_agents::triage_seed(&ranked, &day, None);
+
+    if as_json {
+        let shortlist: Vec<serde_json::Value> = ranked
+            .iter()
+            .take(bn_core::task_agents::TRIAGE_WINDOW)
+            .map(|t| {
+                serde_json::json!({
+                    "id": t.id(),
+                    "summary": t.summary(),
+                    "score": bn_core::task_agents::pre_score(t, &day),
+                })
+            })
+            .collect();
+        let data = serde_json::json!({ "day": day, "shortlist": shortlist, "seed": seed });
+        println!("{}", Envelope::success("task_triage", data).to_json());
+        return;
+    }
+
+    println!("Ranked shortlist for {day} ({} open):", open.len());
+    for t in ranked.iter().take(bn_core::task_agents::TRIAGE_WINDOW) {
+        println!(
+            "  {:>5}  {}  {}",
+            bn_core::task_agents::pre_score(t, &day),
+            t.id().unwrap_or("?"),
+            t.summary()
+        );
+    }
+    run_task_agent("task-triage", &seed, dry_run, as_json);
+}
+
+/// The task id governing `subject` in `repo`, minting one if nothing covers it yet (#1001).
+///
+/// Every enqueue must name a task — that invariant is what turns "work only ever starts from a
+/// task" from a convention into something a test can assert. Rather than making callers refuse,
+/// this mints the missing record so the ergonomic path stays one command: `bn orchestrate add
+/// "..."` still works, it just leaves a durable trail behind it.
+///
+/// Idempotent on `key:enqueue:<hash of subject>`, so re-queuing the same subject reuses its task
+/// instead of minting a second one.
+pub(crate) fn task_for_enqueue(cfg: &Config, repo: &str, subject: &str, src: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    subject.trim().hash(&mut h);
+    repo.hash(&mut h);
+    let key = format!("enqueue:{:016x}", h.finish());
+
+    let path = task_path(cfg);
+    let _lock = bn_core::todo::lock(&path);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let Ok(mut file) = bn_core::todo::load(&path) else {
+        return String::new();
+    };
+    if let Some(existing) = file
+        .tasks()
+        .find(|t| t.meta("key") == Some(key.as_str()))
+        .and_then(|t| t.id())
+    {
+        return existing.to_string();
+    }
+
+    let today = today();
+    let id = file.next_id();
+    // The subject may be free text from anywhere, so defang it before it becomes a description —
+    // the same rule #1003 applies to issue titles.
+    let text = bn_core::todo::neutralize_meta(subject);
+    let mut task = bn_core::todo::Task::new_todo(&id, &text, None, "", src, &today);
+    task.set_meta_raw("repo", repo);
+    task.set_meta_raw("key", &key);
+    file.push_task(task);
+    if bn_core::todo::save(&path, &file).is_err() {
+        return String::new();
+    }
+    id
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

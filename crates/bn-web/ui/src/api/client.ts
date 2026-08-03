@@ -6,6 +6,9 @@
 import { keepPreviousData } from "@tanstack/react-query";
 
 import type {
+  TasksView,
+  IssuesView,
+  PipelineBoardView,
   FleetView,
   MachineView,
   NodesView,
@@ -77,6 +80,12 @@ export const queryKeys = {
   note: (repo: string, branch: string) => ["note", repo, branch] as const,
   /** One branch's handoff resume packet, keyed by repo + note-key branch (#509). */
   handoff: (repo: string, branch: string) => ["handoff", repo, branch] as const,
+  /** The task store, keyed by the filter in play (#996). */
+  tasks: (scope: string) => ["tasks", scope] as const,
+  /** Every repo's open issues, with per-repo freshness (#999). */
+  issues: ["issues"] as const,
+  /** The nine-stage pipeline board (#746 / #1005). */
+  pipeline: ["pipeline"] as const,
   /** Open attention items (drives the plan-review panel). */
   attn: ["attn"] as const,
   /** The unified action-center list (#522) — every actionable signal, ranked. */
@@ -501,5 +510,35 @@ export function bragQuery() {
     queryKey: queryKeys.brag,
     queryFn: () => fetchEnvelope<BragView>("/api/brag"),
     refetchInterval: 60_000,
+  };
+}
+
+/** Today's tasks — `day:` today-or-earlier plus unscheduled, mirroring the CLI's bare view so the
+ * dashboard and `bn task` never disagree about what "today" means. */
+export function tasksQuery(scope: "today" | "all" = "today") {
+  return {
+    queryKey: queryKeys.tasks(scope),
+    queryFn: () =>
+      fetchEnvelope<TasksView>(`/api/tasks${scope === "all" ? "?all=1" : ""}`),
+    refetchInterval: 30_000,
+  };
+}
+
+/** Every repo's open issues — the reservoir tasks are pulled from. Polls slowly: the server holds
+ * a TTL cache (#999), so a tight poll would only re-serve the same bytes. */
+export function issuesQuery() {
+  return {
+    queryKey: queryKeys.issues,
+    queryFn: () => fetchEnvelope<IssuesView>("/api/issues"),
+    refetchInterval: 120_000,
+  };
+}
+
+/** The nine-stage pipeline board with per-stage counts. */
+export function pipelineQuery() {
+  return {
+    queryKey: queryKeys.pipeline,
+    queryFn: () => fetchEnvelope<PipelineBoardView>("/api/pipeline/board"),
+    refetchInterval: 30_000,
   };
 }

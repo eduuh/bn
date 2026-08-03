@@ -181,6 +181,16 @@ pub enum WtCmd {
         /// With `--all`/`--all-repos`: skip conflicting PRs instead of auto-rebasing them onto origin/main.
         #[arg(long)]
         no_auto_rebase: bool,
+        /// Land without waiting for the PR's GitHub checks. By default a merge requires the
+        /// published checks to have finished green — a PR whose CI is still running is left for a
+        /// later pass, and a red one is never landed. This is what stops the poller from merging
+        /// faster than CI can report (a merge cancels the in-flight run, so an ungated poller turns
+        /// every check into a race it wins). Use only to land something deliberately.
+        #[arg(long)]
+        no_ci_gate: bool,
+        /// Seconds to wait on a still-running CI run before leaving the PR for a later pass.
+        #[arg(long, value_name = "SECS", default_value_t = 600)]
+        ci_wait: u64,
     },
     /// Surface worktrees with uncommitted changes — the ones `cleanup` can't remove until you
     /// commit or stash. The "stuck worktree" report (local + fast; add --pr to flag merged ones).
@@ -381,29 +391,27 @@ pub fn run_code(cfg: &Config, action: WtCmd) -> i32 {
             all,
             all_repos,
             no_auto_rebase,
+            no_ci_gate,
+            ci_wait,
         } => {
+            let flags = MergeFlags {
+                merge,
+                rebase,
+                no_delete_branch,
+                admin,
+                no_auto_rebase,
+                no_gate,
+                ci: CiGate {
+                    enabled: !no_ci_gate,
+                    wait: Duration::from_secs(ci_wait),
+                },
+            };
             if all_repos {
-                cmd_merge_all_repos(
-                    cfg,
-                    merge,
-                    rebase,
-                    no_delete_branch,
-                    admin,
-                    no_auto_rebase,
-                    no_gate,
-                )
+                cmd_merge_all_repos(cfg, flags)
             } else if all {
-                cmd_merge_all(
-                    cfg,
-                    merge,
-                    rebase,
-                    no_delete_branch,
-                    admin,
-                    no_auto_rebase,
-                    no_gate,
-                )
+                cmd_merge_all(cfg, flags)
             } else {
-                cmd_merge(cfg, merge, rebase, no_delete_branch, admin, no_gate)
+                cmd_merge(cfg, flags)
             }
         }
         WtCmd::Status { all, pr } => cmd_status(cfg, all, pr),
