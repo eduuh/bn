@@ -86,12 +86,16 @@ impl GateDecision {
     }
 }
 
-/// Whether entering `stage` is gated. Only the step into real work is.
+/// Whether entering `stage` needs SMART judgement. Only the step into real work does.
 ///
 /// Deliberately keyed on the *destination* rather than the (from, to) pair: `transition` records a
 /// stage without knowing where the worktree came from, and gating every entry into `investigate`
 /// is both simpler and stricter than gating one specific edge.
-pub fn is_gated(stage: Stage) -> bool {
+///
+/// This is the *machine* gate — it asks whether the task is well-formed enough to work on, and a
+/// refusal is handed to the improve agent, not to a person. The human's per-stage `hold` policy is
+/// a separate question asked after this one; see [`super::stage::transition`] for the ordering.
+pub fn is_smart_gated(stage: Stage) -> bool {
     stage == Stage::Investigate
 }
 
@@ -121,7 +125,7 @@ pub fn check_entry(
     stage: Stage,
     today: &str,
 ) -> GateDecision {
-    if !is_gated(stage) {
+    if !is_smart_gated(stage) {
         return GateDecision::Admitted;
     }
     let Some(task) = governing_task(cfg, repo, branch) else {
@@ -319,8 +323,8 @@ mod tests {
     }
 
     #[test]
-    fn only_entry_to_investigate_is_gated() {
-        assert!(is_gated(Stage::Investigate));
+    fn only_entry_to_investigate_is_smart_gated() {
+        assert!(is_smart_gated(Stage::Investigate));
         for s in [
             Stage::Pickup,
             Stage::Plan,
@@ -331,7 +335,7 @@ mod tests {
             Stage::Ship,
             Stage::Learn,
         ] {
-            assert!(!is_gated(s), "{s} must not be gated");
+            assert!(!is_smart_gated(s), "{s} must not be gated");
         }
     }
 

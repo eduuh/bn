@@ -784,7 +784,7 @@ pub(crate) fn run_attn_start_attributed(
         return None;
     }
     let stage = pipeline_stage_for_task_type(item.task_type());
-    match bn_core::pipeline::stage::transition(&cfg.note_file(&ctx), stage) {
+    match bn_core::pipeline::stage::transition(cfg, &cfg.note_file(&ctx), stage) {
         Err(e) => {
             eprintln!(
                 "bn attn start: failed to enter pipeline stage {stage} for {repo}/{branch}: {e}"

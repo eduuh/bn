@@ -211,6 +211,30 @@ pub enum Harness {
     Copilot,
 }
 
+/// Whether `model` is an id the Claude Code CLI accepts as `--model`: a tier alias
+/// (`opus`/`sonnet`/`haiku`/`fable`) or an Anthropic id in native *dashed* form
+/// (`claude-opus-4-8`). bn's canonical *dotted* ids (`claude-opus-4.8`) and any non-Anthropic id
+/// (`gpt-5.4`) are rejected — Claude Code parks on "model does not exist" for them (bn#963). The
+/// dashed-vs-dotted split is the same digit-separator convention `normalize_model_id` folds.
+fn is_native_claude_model(model: &str) -> bool {
+    const ALIASES: [&str; 4] = ["opus", "sonnet", "haiku", "fable"];
+    let lower = model.trim().to_ascii_lowercase();
+    ALIASES.contains(&lower.as_str())
+        || (lower.starts_with("claude") && !has_dotted_version(&lower))
+}
+
+/// True when `s` carries a `<digit>.<digit>` version separator — bn's canonical dotted form, which
+/// the Claude CLI can't parse (it wants the dashed `claude-opus-4-8`, not `claude-opus-4.8`).
+fn has_dotted_version(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    s.char_indices().any(|(i, ch)| {
+        ch == '.'
+            && i > 0
+            && bytes[i - 1].is_ascii_digit()
+            && bytes.get(i + 1).is_some_and(u8::is_ascii_digit)
+    })
+}
+
 impl Harness {
     pub fn parse(s: &str) -> Option<Harness> {
         match s.to_lowercase().as_str() {
@@ -224,6 +248,24 @@ impl Harness {
         match self {
             Harness::Claude => "claude",
             Harness::Copilot => "copilot",
+        }
+    }
+
+    /// The `--model` value to hand this harness for the configured id `model`, or `None` when that
+    /// id is not a valid *native* id for the harness — the caller then omits `--model` entirely and
+    /// lets the harness fall back to its own default (bn#963). The **Copilot CLI** is a multi-model
+    /// gateway that accepts bn's dotted catalog ids (`gpt-5.4`, `claude-sonnet-4.6`, `auto`), so any
+    /// non-empty id passes through unchanged. **Claude Code** accepts only its native *dashed* ids
+    /// (`claude-opus-4-8`) or tier aliases (`opus`/`sonnet`/…); bn's dotted ids (`claude-opus-4.8`)
+    /// and cross-provider ids (`gpt-5.4`) are omitted so a dispatched claude agent still boots.
+    pub fn model_arg(self, model: &str) -> Option<&str> {
+        let model = model.trim();
+        if model.is_empty() {
+            return None;
+        }
+        match self {
+            Harness::Copilot => Some(model),
+            Harness::Claude => is_native_claude_model(model).then_some(model),
         }
     }
 
@@ -614,6 +656,35 @@ mod tests {
             Harness::Claude.yolo_args(),
             ["--dangerously-skip-permissions"]
         );
+    }
+
+    #[test]
+    fn model_arg_gates_ids_by_harness_native_format() {
+        // Copilot is the multi-model gateway: bn's dotted catalog ids (and `auto`) pass through.
+        assert_eq!(Harness::Copilot.model_arg("gpt-5.4"), Some("gpt-5.4"));
+        assert_eq!(
+            Harness::Copilot.model_arg("claude-sonnet-4.6"),
+            Some("claude-sonnet-4.6")
+        );
+        assert_eq!(Harness::Copilot.model_arg("auto"), Some("auto"));
+        // Claude Code accepts only native dashed ids or tier aliases...
+        assert_eq!(
+            Harness::Claude.model_arg("claude-opus-4-8"),
+            Some("claude-opus-4-8")
+        );
+        assert_eq!(
+            Harness::Claude.model_arg("claude-opus-4-5-20251101"),
+            Some("claude-opus-4-5-20251101")
+        );
+        assert_eq!(Harness::Claude.model_arg("opus"), Some("opus"));
+        assert_eq!(Harness::Claude.model_arg("SONNET"), Some("SONNET"));
+        // ...and rejects bn's dotted canonical ids and cross-provider ids (bn#963).
+        assert_eq!(Harness::Claude.model_arg("claude-opus-4.8"), None);
+        assert_eq!(Harness::Claude.model_arg("gpt-5.4"), None);
+        assert_eq!(Harness::Claude.model_arg("gemini-3-pro-preview"), None);
+        // A blank id is omitted for either harness (fall back to the harness default).
+        assert_eq!(Harness::Claude.model_arg("  "), None);
+        assert_eq!(Harness::Copilot.model_arg(""), None);
     }
 
     #[test]

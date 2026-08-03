@@ -391,12 +391,8 @@ export function Skills() {
           <BookOpen className="h-8 w-8 text-muted-foreground" />
           <h3 className="text-lg font-semibold">No skills</h3>
           <p className="max-w-sm text-sm text-muted-foreground">
-<<<<<<< Updated upstream
             No skills defined in any tier. Create one here, or with{" "}
             <code className="font-mono">bn skills new</code>.
-=======
-            No skills defined in any tier. Create one with <code className="font-mono">bn skills new</code>.
->>>>>>> Stashed changes
           </p>
           <Button className="mt-2" onClick={() => setCreating(true)}>
             <Plus className="h-4 w-4" /> New skill

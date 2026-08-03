@@ -29,8 +29,20 @@ function smartBadge(smart: string | null) {
   }
 }
 
-/** One task row: what it is, where, and the one action it actually admits. */
-function TaskRowView({ task, today }: { task: TaskRow; today: string }) {
+/** One task row: what it is, where, and the one action it actually admits.
+ *
+ * `skill` is the workflow its agent is *actually* running, joined from the pipeline board rather
+ * than inferred from the stage — an explicit `bn dispatch --skill debug` sits in `execute` while
+ * running `debug`, and showing the stage default there would be a confident lie. */
+function TaskRowView({
+  task,
+  today,
+  skill,
+}: {
+  task: TaskRow;
+  today: string;
+  skill?: string;
+}) {
   const qc = useQueryClient();
   const smart = smartBadge(task.smart);
   const overdue = !!task.day && task.day < today;
@@ -81,6 +93,11 @@ function TaskRowView({ task, today }: { task: TaskRow; today: string }) {
       {task.stage && (
         <Badge variant="info" className="font-mono">
           {task.stage}
+        </Badge>
+      )}
+      {skill && (
+        <Badge variant="muted" className="font-mono" title={`running the \`${skill}\` workflow`}>
+          ⌁ {skill}
         </Badge>
       )}
       <Badge variant={smart.variant} title={smart.hint}>
@@ -248,6 +265,16 @@ export function Home() {
     return stage ? all.filter((t) => t.stage === stage) : all;
   }, [tasks.data, stage]);
 
+  // `repo/branch` → the skill that worktree is actually running, so a task row can show what its
+  // agent is doing. Keyed off the board because the skill lives in the branch note, not the task.
+  const skillByWorktree = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const e of pipeline.data?.board ?? []) {
+      if (e.skill) m.set(`${e.repo}/${e.branch}`, e.skill);
+    }
+    return m;
+  }, [pipeline.data]);
+
   const create = useMutation({
     mutationFn: createTask,
     onSuccess: (r) => {
@@ -294,7 +321,14 @@ export function Home() {
         ) : (
           <ul>
             {rows.map((t) => (
-              <TaskRowView key={t.id} task={t} today={today} />
+              <TaskRowView
+                key={t.id}
+                task={t}
+                today={today}
+                skill={
+                  t.repo && t.branch ? skillByWorktree.get(`${t.repo}/${t.branch}`) : undefined
+                }
+              />
             ))}
           </ul>
         )}

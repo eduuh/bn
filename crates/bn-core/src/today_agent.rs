@@ -1,20 +1,29 @@
-//! Today's agent (#577): synthesize the cron findings store (#576) into a reviewable list of
-//! suggested tasks. It generalizes the `bn staff` / `bn chief` pattern — gather a deterministic
-//! packet, produce a validated output, route it — but its packet is the cron findings and its
-//! output is *suggested tasks* (written to the [`crate::suggestions`] store, reviewed on Today;
-//! promotion to a real Command Center item is #578).
+//! Today's agent (#577): the agent that works the day with you.
 //!
-//! The synthesis here is deterministic and offline: each recent finding item becomes one proposal,
-//! carrying its source finding (source + key + url) and a plain-language rationale. That keeps the
-//! agent verifiable and cheap enough to run on a cron without an LLM round-trip, while the packet
-//! [`gather_packet_json`] builds is exactly what a headless-agent variant would consume later.
-//! Re-runs are idempotent via the suggestions store's id dedupe, so a scheduled run over unchanged
-//! findings adds nothing.
+//! It began as a deterministic offline fold — gather the cron findings store (#576), turn each
+//! finding item into one proposed task, upsert it into the [`crate::suggestions`] store — and that
+//! fold is still here. What changed is what it *is*: Today's agent is now a **hosted, steerable
+//! harness session**, launched into the persistent tmux `planning` session and driven from the
+//! dashboard's Today page. The deterministic half became its two supporting halves:
+//!
+//!   * [`gather_packet_json`] is the agent's **opening packet** — the same JSON a headless variant
+//!     would have consumed, now seeded into a live session by [`build_seed`];
+//!   * [`run`] is the **offline fallback** — what a box with no tmux and no harness still gets, so
+//!     a headless machine keeps its suggestions instead of silently getting nothing.
+//!
+//! This module owns the *pure* half of that: the packet, the synthesis, the seed, and the small
+//! durable record of which session is Today's agent ([`AgentRecord`]). Launching the session —
+//! tmux windows, agent leases, harness argv — lives in `bn-cli`, next to the `bn control` code it
+//! mirrors, because that is where every other launch path lives.
+//!
+//! Re-runs of the offline fold stay idempotent via the suggestions store's id dedupe.
 
 use crate::findings::{self, FindingsRun};
+use crate::resolver::{state_dir, Config, Resolved};
 use crate::suggestions::{self, Suggestion};
 use crate::util::{local_date_of, now_epoch_secs};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 /// Default number of days of findings the agent looks back over.
 pub const DEFAULT_LOOKBACK_DAYS: i64 = 7;
@@ -139,6 +148,189 @@ pub fn run(today: &str, lookback_days: i64, per_source: usize) -> std::io::Resul
     })
 }
 
+// ---------------------------------------------------------------------------
+// The hosted agent: identity, durable record, and seed
+// ---------------------------------------------------------------------------
+
+/// The synthetic repo Today's agent is addressed under. Today's agent belongs to the *day*, not to
+/// any checkout, so — exactly like `bn control`'s `control` repo — it takes a synthetic repo name
+/// and lets the date be the branch. That gives it a real `repo:branch` target, which is the only
+/// thing every steering path (`bn agent send`, the web Steer panel, the window join in
+/// [`crate::agent::channel`]) actually needs.
+pub const TODAY_REPO: &str = "today";
+
+/// The tmux window Today's agent runs in, inside [`PLANNING_SESSION`].
+pub const TODAY_WINDOW: &str = "today";
+
+/// The persistent tmux session that hosts planning and orchestration — the one
+/// `config/workflow/tmux.conf` creates on server start and prefix `C-p` jumps to. Today's agent
+/// lands here rather than in a per-repo session because it is not about a repo, and because this
+/// is the session you are already in when you are planning the day.
+///
+/// Deliberately *not* the fleet's orchestrator session (`cron`): that one holds workers, gets
+/// reaped, and is not where a human sits.
+pub const PLANNING_SESSION: &str = "planning";
+
+/// The `repo:branch` target for a given day's agent — what you pass to `bn agent send`.
+pub fn target(date: &str) -> String {
+    format!("{TODAY_REPO}:{date}")
+}
+
+/// The exact `session:window` Today's agent occupies.
+pub fn tmux_target() -> String {
+    format!("{PLANNING_SESSION}:{TODAY_WINDOW}")
+}
+
+/// Where a recorded agent sits in its lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentStatus {
+    /// The window has been opened; the harness may still be booting.
+    Starting,
+    /// Launched and recorded — the steady state while the session lives.
+    Running,
+    /// Deliberately stopped (`bn today agent stop`).
+    Stopped,
+}
+
+impl AgentStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AgentStatus::Starting => "starting",
+            AgentStatus::Running => "running",
+            AgentStatus::Stopped => "stopped",
+        }
+    }
+}
+
+/// What bn knows about the Today agent it launched: enough to *find* the session again (so the
+/// dashboard can stream and steer it) and no more. The live truth — is it actually alive, is it
+/// waiting on you — comes from [`crate::agent::supervise`], never from this file; a record whose
+/// session has since died is stale, not authoritative.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentRecord {
+    /// The day this agent was started for (`YYYY-MM-DD`) — also its branch.
+    pub date: String,
+    /// The harness session id, pinned at launch so the resume channel can aim at it.
+    pub session_id: String,
+    pub harness: String,
+    pub repo: String,
+    pub branch: String,
+    /// The `repo:branch` steering target.
+    pub target: String,
+    /// The `session:window` tmux target.
+    pub tmux_target: String,
+    /// The directory the session runs in.
+    pub cwd: String,
+    pub status: AgentStatus,
+    pub started_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped_at: Option<i64>,
+}
+
+fn record_path() -> PathBuf {
+    state_dir().join("today-agent.json")
+}
+
+/// The recorded agent, or `None` when none was ever launched. A corrupt file reads as `None` — the
+/// same forgiving posture the suggestions store takes, because the fix is always "start it again".
+pub fn read_record() -> Option<AgentRecord> {
+    let text = std::fs::read_to_string(record_path()).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Persist the record, creating the state dir on first write.
+pub fn write_record(record: &AgentRecord) -> std::io::Result<()> {
+    let path = record_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(record)?)
+}
+
+/// Mark the recorded agent stopped. A no-op returning `false` when there is nothing recorded.
+pub fn mark_stopped(now: i64) -> std::io::Result<bool> {
+    let Some(mut record) = read_record() else {
+        return Ok(false);
+    };
+    record.status = AgentStatus::Stopped;
+    record.stopped_at = Some(now);
+    write_record(&record)?;
+    Ok(true)
+}
+
+/// The built-in seed, used when no `today-agent` agent file is discoverable. Kept in sync with
+/// `config/agents/today-agent.md` so behaviour degrades rather than disappears.
+fn default_seed(date: &str, packet: &str) -> String {
+    format!(
+        "You are bn's Today agent for {date}. You own the *day*: you keep the plan honest and you \
+route work — you do NOT implement. ABSOLUTE RULES: do not edit, create, or delete code; do not \
+commit, push, or open PRs yourself — dispatch a worker instead. Use ONLY documented `bn` \
+subcommands; if unsure a flag exists, run `bn <command> --help` first. \
+START: run `bn daily` for today's goals and `bn today list` for the open suggestions, then read \
+the findings packet below. \
+LOOP: reconcile the packet against the day's goals; accept what is worth doing (`bn today accept \
+<id>`), dismiss the noise (`bn today dismiss <id>`), and dispatch the accepted work with `bn \
+dispatch \"<task>\" --repo <repo> --agent copilot --yolo` (add `--scout` to investigate first). \
+One suggestion → one worker → one branch. \
+MONITOR: `bn fleet` is the live board; nudge a worker with `bn agent send <target> \"<message>\" \
+--detach`. Workers report done themselves — never re-dispatch a finished one. \
+REPORT: after each pass, a few scannable lines — what you started, what is running, and what needs \
+a decision from the user. Then wait; the user steers you from the Today page. \
+\n\nTODAY'S FINDINGS PACKET (JSON: sources[].items[] = {{key,text,url}}):\n{packet}"
+    )
+}
+
+/// The seed prompt Today's agent launches with: the operating brief from the `today-agent` agent
+/// file (`config/agents/today-agent.md`), with `{date}` and `{packet}` substituted, falling back to
+/// [`default_seed`] when no agent file is discoverable.
+///
+/// The packet is [`gather_packet_json`] — the same deterministic gather the offline fold has always
+/// done. The agent therefore starts already knowing what the crons found, instead of spending its
+/// first turns rediscovering it.
+pub fn build_seed(cfg: &Config, ctx: Option<&Resolved>, date: &str, packet: &str) -> String {
+    if let Some(def) = crate::agents::discover(cfg, ctx)
+        .into_iter()
+        .find(|a| a.name == "today-agent")
+    {
+        let body = def.body.trim();
+        if !body.is_empty() {
+            return body.replace("{date}", date).replace("{packet}", packet);
+        }
+    }
+    default_seed(date, packet)
+}
+
+/// The whole truth about Today's agent, as both `bn today agent status` and
+/// `GET /api/today/agent` serve it — one builder so the CLI and the dashboard can never disagree
+/// about whether the agent is up.
+///
+/// `running` is decided by the **live fleet**, never by the record. The record says what bn
+/// launched; [`crate::agent::supervise`] says what is actually alive. A record whose session has
+/// died is stale, and reporting it as running would put a dead Steer panel on the Today page.
+pub fn status_view(cfg: &Config) -> serde_json::Value {
+    let Some(record) = read_record() else {
+        return serde_json::json!({ "running": false, "agent": serde_json::Value::Null });
+    };
+    let fleet = crate::agent::supervise(
+        cfg,
+        crate::agent::DEFAULT_IDLE_MINS,
+        crate::agent::DEFAULT_STUCK_MINS,
+    );
+    let live = fleet
+        .agents
+        .iter()
+        .find(|a| a.session_id == record.session_id);
+    serde_json::json!({
+        "running": live.is_some() && record.status != AgentStatus::Stopped,
+        "agent": record,
+        "health": live.map(|a| a.health.label()),
+        "control": live.map(|a| a.control),
+        "last_activity_ts": live.map(|a| a.last_activity_ts),
+        "output_tokens": live.map(|a| a.output_tokens),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,5 +419,71 @@ mod tests {
         // per_source=2 → only the first two slots considered; the empty one is dropped.
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].title, "one");
+    }
+
+    fn record(date: &str) -> AgentRecord {
+        AgentRecord {
+            date: date.into(),
+            session_id: "sess-1".into(),
+            harness: "claude".into(),
+            repo: TODAY_REPO.into(),
+            branch: date.into(),
+            target: target(date),
+            tmux_target: tmux_target(),
+            cwd: "/tmp/notes".into(),
+            status: AgentStatus::Running,
+            started_at: 1_700_000_000,
+            stopped_at: None,
+        }
+    }
+
+    #[test]
+    fn target_is_the_synthetic_repo_and_the_date() {
+        // The steering identity every write path keys off. `today:<date>` rather than a checkout,
+        // because the agent belongs to the day.
+        assert_eq!(target(TODAY), "today:2026-07-16");
+        assert_eq!(tmux_target(), "planning:today");
+    }
+
+    #[test]
+    fn record_roundtrips_and_absent_reads_as_none() {
+        with_state_dir(|| {
+            assert_eq!(read_record(), None, "nothing launched yet");
+            let r = record(TODAY);
+            write_record(&r).unwrap();
+            assert_eq!(read_record(), Some(r));
+        });
+    }
+
+    #[test]
+    fn mark_stopped_flips_the_record_and_no_ops_when_absent() {
+        with_state_dir(|| {
+            assert!(!mark_stopped(42).unwrap(), "nothing to stop");
+            write_record(&record(TODAY)).unwrap();
+            assert!(mark_stopped(42).unwrap());
+            let stored = read_record().unwrap();
+            assert_eq!(stored.status, AgentStatus::Stopped);
+            assert_eq!(stored.stopped_at, Some(42));
+        });
+    }
+
+    #[test]
+    fn a_corrupt_record_reads_as_none_rather_than_panicking() {
+        with_state_dir(|| {
+            let path = record_path();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "{not json").unwrap();
+            assert_eq!(read_record(), None);
+        });
+    }
+
+    #[test]
+    fn default_seed_carries_the_date_and_the_packet() {
+        // The seed is the agent's whole starting context: without the packet it would spend its
+        // first turns rediscovering what the crons already gathered.
+        let seed = default_seed(TODAY, r#"{"sources":[]}"#);
+        assert!(seed.contains(TODAY));
+        assert!(seed.contains(r#"{"sources":[]}"#));
+        assert!(seed.contains("bn today accept"), "it must know how to act");
     }
 }

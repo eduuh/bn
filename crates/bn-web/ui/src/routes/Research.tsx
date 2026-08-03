@@ -2,14 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ArrowUpRight, Inbox, Search } from "lucide-react";
-import { attnQuery, fleetQuery, orchestrateQuery } from "../api/client";
-import type { FleetView, RunView } from "../api/types";
+import { attnQuery, orchestrateQuery } from "../api/client";
 import { apiDispatch } from "../api/writes";
 import { pushToast } from "../lib/toast";
 import { ToastStack } from "../components/ToastStack";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
-import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
 import {
@@ -20,16 +18,9 @@ import {
   SelectValue,
 } from "../components/ui/select";
 import { PageHead } from "../components/PageHead";
+import { RepoSelect } from "../components/RepoSelect";
 
 type Harness = "claude" | "copilot";
-
-/** Repos seen in the live runs / fleet — the repo combobox options. */
-function knownRepos(runs: RunView[], fleet?: FleetView): string[] {
-  const s = new Set<string>();
-  for (const r of runs) if (r.repo) s.add(r.repo);
-  for (const a of fleet?.agents ?? []) if (a.repo) s.add(a.repo);
-  return [...s].sort();
-}
 
 /**
  * `/research` — start a **research agent** (#483, ties to #378). A first-class, read-only *scout*:
@@ -40,12 +31,10 @@ function knownRepos(runs: RunView[], fleet?: FleetView): string[] {
  */
 export function Research() {
   const orch = useQuery(orchestrateQuery());
-  const fleet = useQuery(fleetQuery());
   const attn = useQuery(attnQuery());
   const navigate = useNavigate();
 
   const runs = orch.data?.runs ?? [];
-  const repoOptions = knownRepos(runs, fleet.data);
   const defaultRepo = runs[0]?.repo ?? "";
 
   const [question, setQuestion] = useState("");
@@ -74,7 +63,6 @@ export function Research() {
 
   // Agent-raised attention items are the scout asks/answers coming back (source ≠ a manual raise).
   const asks = (attn.data?.items ?? []).filter((i) => i.source !== "manual");
-  const reposListId = "research-repo-options";
 
   return (
     <div className="space-y-5 pb-8">
@@ -104,26 +92,15 @@ export function Research() {
               Repo
               <span className="text-xs font-normal text-muted-foreground/80">required</span>
             </Label>
-            <Input
+            <RepoSelect
               id="research-repo"
-              className="font-mono"
-              list={repoOptions.length ? reposListId : undefined}
               value={repo}
-              placeholder="repo (required)"
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(e) => {
+              required
+              onChange={(v) => {
                 repoTouched.current = true;
-                setRepo(e.target.value);
+                setRepo(v);
               }}
             />
-            {repoOptions.length > 0 && (
-              <datalist id={reposListId}>
-                {repoOptions.map((r) => (
-                  <option key={r} value={r} />
-                ))}
-              </datalist>
-            )}
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="research-harness">Harness</Label>

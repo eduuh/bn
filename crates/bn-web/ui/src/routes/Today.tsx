@@ -18,12 +18,21 @@ import {
   goalsQuery,
   queryKeys,
   suggestionsQuery,
+  todayAgentQuery,
   todayAgentsQuery,
   todayCronsQuery,
   wrapQuery,
 } from "../api/client";
-import { runCronJob, runTodayAgent, setSuggestionStatus } from "../api/writes";
+import {
+  runCronJob,
+  runTodayAgent,
+  setSuggestionStatus,
+  startTodayAgent,
+  stopTodayAgent,
+} from "../api/writes";
 import type { CatalogItem, DailyGoal, QuarterGoal, Suggestion } from "../api/types";
+import { AgentActivity } from "../components/AgentActivity";
+import { SteerPanel } from "../components/SteerPanel";
 import { fmtAic, fmtUsd, timeAgo } from "../lib/format";
 import { pushToast } from "../lib/toast";
 import { StatTile } from "../components/StatTile";
@@ -324,6 +333,139 @@ function TodayAutomation() {
   );
 }
 
+/**
+ * Today's agent, hosted right here.
+ *
+ * The agent is a live harness session in the tmux `planning` session — not a one-shot job — so this
+ * card is a *window onto a running thing*, not a button. It carries the three affordances that make
+ * a hosted agent usable without leaving the page: whether it is alive, what it is doing
+ * (`AgentActivity`, the same transcript stream the agent-detail page renders), and a way to talk to
+ * it (`SteerPanel`, the same composer → `bn agent send`).
+ *
+ * Both of those components are reused verbatim rather than reimplemented: `SteerPanel` already
+ * knows how to grey itself when the control channel is `none`/`ambiguous`, and getting that wrong
+ * here would mean a composer that silently writes into nothing.
+ *
+ * A recorded-but-dead agent is shown as stopped **with its record still visible** — knowing the
+ * 08:30 run died is a fact worth seeing, and it is why `running` comes from the live fleet rather
+ * than from the record's own status field.
+ */
+function TodayAgentCard() {
+  const qc = useQueryClient();
+  const agent = useQuery(todayAgentQuery());
+  const view = agent.data;
+  const record = view?.agent ?? null;
+  const running = view?.running ?? false;
+
+  const invalidate = () => {
+    void qc.invalidateQueries({ queryKey: queryKeys.todayAgent });
+    void qc.invalidateQueries({ queryKey: queryKeys.fleet });
+  };
+
+  const start = useMutation({
+    mutationFn: () => startTodayAgent(),
+    onSuccess: () => {
+      pushToast("Today's agent starting — it lands in the tmux `planning` session", "success");
+      invalidate();
+    },
+    onError: (e) => pushToast(`Could not start Today's agent: ${(e as Error).message}`, "error"),
+  });
+  const stop = useMutation({
+    mutationFn: () => stopTodayAgent(),
+    onSuccess: () => {
+      pushToast("Today's agent stopped", "success");
+      invalidate();
+    },
+    onError: (e) => pushToast(`Could not stop Today's agent: ${(e as Error).message}`, "error"),
+  });
+
+  const busy = start.isPending || stop.isPending;
+
+  return (
+    <Card className="space-y-3 p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <Bot className="h-4 w-4 text-primary" aria-hidden="true" />
+        <SectionHead title="Today's agent" />
+        <Badge variant={running ? "ok" : "muted"}>{running ? "running" : "not running"}</Badge>
+        {running && view?.health && <Badge variant="info">{view.health}</Badge>}
+        <span className="flex-1" />
+        {running ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={busy}
+            title="Close the agent's tmux window and release its lease"
+            onClick={() => {
+              if (window.confirm("Stop Today's agent?")) stop.mutate();
+            }}
+          >
+            {stop.isPending ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" /> stopping…
+              </>
+            ) : (
+              <>
+                <X className="h-4 w-4" /> Stop
+              </>
+            )}
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            disabled={busy}
+            title="Launch Today's agent into the tmux `planning` session, seeded with today's findings"
+            onClick={() => start.mutate()}
+          >
+            {start.isPending ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" /> starting…
+              </>
+            ) : (
+              <>
+                <Sparkles className="h-4 w-4" /> Start agent
+              </>
+            )}
+          </Button>
+        )}
+      </div>
+
+      {agent.isLoading ? (
+        <Skeleton className="h-16 w-full" />
+      ) : !record ? (
+        <p className="text-sm text-muted-foreground">
+          Today's agent hasn't run yet. Starting it opens a live session in the{" "}
+          <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">planning</code> tmux
+          session, seeded with what this morning's crons found — then you steer it from here.
+        </p>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            <span className="font-mono" title="steering target — `bn agent send <target>`">
+              {record.target}
+            </span>
+            <span className="font-mono" title="tmux session:window — prefix C-p jumps here">
+              {record.tmux_target}
+            </span>
+            <span>{record.harness}</span>
+            {!running && (
+              <span className="text-warn">
+                recorded, but no live session — start it again to pick the day back up
+              </span>
+            )}
+          </div>
+
+          {running && (
+            <>
+              <AgentActivity sessionId={record.session_id} />
+              <SteerPanel target={record.target} control={view?.control ?? undefined} />
+            </>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
+
 /** Suggested tasks (#577) — Today's agent synthesizes the cron findings into reviewable proposals.
  * A manual Run trigger fires `POST /api/today/run`; each proposal can be accepted or dismissed.
  * Shows the open (suggested) list, refreshing the query after every write. */
@@ -364,20 +506,23 @@ function SuggestedTasks() {
       <div className="flex items-center gap-2">
         <SectionHead title="Suggested tasks" count={open.length} />
         <span className="flex-1" />
+        {/* The offline fold, demoted: Today's agent is the hosted session above, and this is the
+            deterministic re-synthesis from the findings store — useful to refresh the list without
+            spending a turn, and what a headless box falls back to. */}
         <Button
-          variant="secondary"
+          variant="ghost"
           size="sm"
           disabled={runMut.isPending}
-          title="Run Today's agent — synthesize suggestions from the cron findings"
+          title="Re-synthesize suggestions from the cron findings (offline, no agent turn)"
           onClick={() => runMut.mutate()}
         >
           {runMut.isPending ? (
             <>
-              <Loader2 className="h-4 w-4 animate-spin" /> running…
+              <Loader2 className="h-4 w-4 animate-spin" /> syncing…
             </>
           ) : (
             <>
-              <Sparkles className="h-4 w-4" /> Run
+              <RotateCw className="h-4 w-4" /> Re-synthesize
             </>
           )}
         </Button>
@@ -387,8 +532,8 @@ function SuggestedTasks() {
         <Skeleton className="h-16 w-full" />
       ) : open.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          No suggestions yet — hit <span className="font-medium">Run</span> to synthesize them from
-          the cron findings.
+          No suggestions yet — start Today's agent above, or hit{" "}
+          <span className="font-medium">Re-synthesize</span> to fold the cron findings in offline.
         </p>
       ) : (
         <ul className="space-y-3">
@@ -622,6 +767,8 @@ export function Today() {
               )}
             </Card>
           </div>
+
+          <TodayAgentCard />
 
           <SuggestedTasks />
 

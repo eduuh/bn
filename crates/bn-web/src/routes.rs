@@ -33,6 +33,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/agents/catalog", get(api::agents_catalog))
         .route("/api/today/crons", get(api::today_crons))
         .route("/api/today/agents", get(api::today_agents))
+        // Singular: Today's one *hosted* agent, not the scheduled roster above.
+        .route("/api/today/agent", get(api::today_agent))
         .route("/api/agents/{session_id}", get(api::agent_detail))
         .route("/api/agents/{target}/pane", get(api::agent_pane))
         .route(
@@ -106,9 +108,12 @@ pub fn router(state: AppState) -> Router {
         // Cron re-run (#538) — fire a job on demand via the same `bn run <job>` code path a timer
         // uses; returns the runner's envelope (exit + captured output tail).
         .route("/api/cron/run", post(actions::cron_run))
-        // Today's agent (#577) — manual trigger + suggestion review (native in-process store writes):
+        // Today's agent (#577) — offline re-synthesis + suggestion review (native in-process
+        // store writes), then the hosted agent's lifecycle (shelled, like every other launch).
         .route("/api/today/run", post(actions::today_run))
         .route("/api/suggestions/{id}", post(actions::suggestion_status))
+        .route("/api/today/agent/start", post(actions::today_agent_start))
+        .route("/api/today/agent/stop", post(actions::today_agent_stop))
         // Warm-worktree pool (#497) — trigger `bn wt pool warm --repo <repo>` for a pooled repo.
         // Long-running, so the handler spawns it detached and returns a "started" ack (non-blocking).
         .route("/api/repos/{repo}/pool/warm", post(actions::repo_pool_warm))
@@ -741,6 +746,25 @@ mod tests {
                     assert!(body["data"]["agents"].is_array());
                     assert!(body["data"]["count"].is_number());
                 }
+            });
+        });
+    }
+
+    /// The singular hosted-agent read must not be shadowed by the plural roster route, and must
+    /// answer honestly on a box that has never started one: `running: false` with a null record,
+    /// never an error and never a fabricated agent.
+    #[test]
+    fn today_agent_read_reports_no_hosted_agent_on_a_cold_box() {
+        bn_core::test_support::with_state_dir(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let resp = respond(test_state(), get("/api/today/agent", None)).await;
+                assert_eq!(resp.status(), StatusCode::OK);
+                let body = body_json(resp).await;
+                assert_eq!(body["ok"], true);
+                assert_eq!(body["command"], "today-agent");
+                assert_eq!(body["data"]["running"], false);
+                assert!(body["data"]["agent"].is_null());
             });
         });
     }

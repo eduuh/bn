@@ -7,9 +7,10 @@ import type { PipelineStage } from "../api/types";
 afterEach(cleanup);
 
 const STAGES: PipelineStage[] = [
-  { id: "pickup", glyph: "\u25e6", position: 1, count: 2 },
-  { id: "investigate", glyph: "\ud83d\udd0d", position: 2, count: 0 },
-  { id: "plan", glyph: "\u25c7", position: 3, count: 1 },
+  // `pickup` runs no workflow skill \u2014 a real `null`, not a gap in the fixture.
+  { id: "pickup", glyph: "\u25e6", position: 1, count: 2, skill: null },
+  { id: "investigate", glyph: "\ud83d\udd0d", position: 2, count: 0, skill: "investigate" },
+  { id: "plan", glyph: "\u25c7", position: 3, count: 1, skill: "plan-investigate" },
 ];
 
 describe("PipelineFlow", () => {
@@ -49,5 +50,15 @@ describe("PipelineFlow", () => {
   it("renders nothing when the board has no stages", () => {
     const { container } = render(<PipelineFlow stages={[]} />);
     expect(container.innerHTML).toBe("");
+  });
+
+  it("captions each stage with the skill it dispatches, and nothing where there is none", () => {
+    // The drawing should say what a stage *does*, not only how many sit in it. `pickup` runs no
+    // workflow, so it gets no caption rather than a plausible-looking placeholder.
+    render(<PipelineFlow stages={STAGES} />);
+    expect(screen.getByText("plan-investigate")).toBeTruthy();
+    expect(screen.getByTitle("runs the `investigate` skill")).toBeTruthy();
+    const pickup = screen.getByLabelText("pickup: 2 in flight");
+    expect(pickup.querySelector("[title]")).toBeNull();
   });
 });

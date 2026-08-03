@@ -9,7 +9,6 @@ import {
   defaultRepo as computeDefaultRepo,
   harnessAvailable,
   harnessReason,
-  knownRepos,
   runningHarness,
   type Harness,
 } from "../lib/start";
@@ -17,7 +16,6 @@ import { pushToast } from "../lib/toast";
 import { ToastStack } from "../components/ToastStack";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
-import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
 import {
@@ -29,6 +27,7 @@ import {
 } from "../components/ui/select";
 import { cn } from "../lib/utils";
 import { PageHead } from "../components/PageHead";
+import { RepoSelect } from "../components/RepoSelect";
 
 type Mode = "dispatch" | "queue" | "daemon";
 type Kind = "ship" | "scout";
@@ -139,7 +138,6 @@ export function Start() {
   const navigate = useNavigate();
 
   const runs = orch.data?.runs ?? [];
-  const repoOptions = knownRepos(runs, fleet.data);
   const defaultRepo = computeDefaultRepo(runs, fleet.data);
   const runningHarnessName = runningHarness(fleet.data);
 
@@ -269,23 +267,7 @@ export function Start() {
                 <span className="text-xs font-normal text-muted-foreground/80">required</span>
               )}
             </Label>
-            <Input
-              id="start-repo"
-              className="font-mono"
-              list={repoOptions.length ? "start-repo-list" : undefined}
-              value={repo}
-              placeholder={needsRepo ? "repo (required)" : "repo (optional)"}
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(e) => onRepo(e.target.value)}
-            />
-            {repoOptions.length > 0 && (
-              <datalist id="start-repo-list">
-                {repoOptions.map((r) => (
-                  <option key={r} value={r} />
-                ))}
-              </datalist>
-            )}
+            <RepoSelect id="start-repo" value={repo} onChange={onRepo} required={needsRepo} />
           </div>
 
           {mode === "daemon" && (

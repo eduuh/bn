@@ -34,6 +34,21 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** The POST the composer made. The component also GETs `/api/repos` to populate the repo picker,
+ * so the write is not necessarily the first call. */
+/** Whether the composer has issued its write yet (the repo GET fires first). */
+function madeAPost(fetchMock: { mock: { calls: unknown[] } }): boolean {
+  const calls = fetchMock.mock.calls as unknown as [string, RequestInit | undefined][];
+  return calls.some((c) => c[1]?.method === "POST");
+}
+
+function writeCall(fetchMock: { mock: { calls: unknown[] } }): [string, RequestInit] {
+  const calls = fetchMock.mock.calls as unknown as [string, RequestInit | undefined][];
+  const call = calls.find((c) => c[1]?.method === "POST");
+  if (!call) throw new Error("no POST was made");
+  return call as unknown as [string, RequestInit];
+}
+
 describe("StartAgentComposer (#522)", () => {
   it("dispatches an urgent item via POST /api/dispatch with the edited prompt", async () => {
     const fetchMock = vi.fn(async () => ({
@@ -52,8 +67,8 @@ describe("StartAgentComposer (#522)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Dispatch agent/ }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    await waitFor(() => expect(madeAPost(fetchMock)).toBe(true));
+    const [url, init] = writeCall(fetchMock);
     expect(url).toBe("/api/dispatch");
     expect(init.method).toBe("POST");
     const body = JSON.parse(init.body as string);
@@ -73,8 +88,8 @@ describe("StartAgentComposer (#522)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Add to queue/ }));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    await waitFor(() => expect(madeAPost(fetchMock)).toBe(true));
+    const [url, init] = writeCall(fetchMock);
     expect(url).toBe("/api/orchestrate/queue");
     expect(init.method).toBe("POST");
   });

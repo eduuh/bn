@@ -813,6 +813,13 @@ fn append_plan_gate(
 /// the task type picks — a scout runs `investigate` (read-only findings), a ship runs `plan-work`
 /// (burn the note's plan down to its done-when criteria). `debug` is the explicit pick for a
 /// repro-first bugfix.
+///
+/// Deliberately **not** the same mapping as [`bn_core::pipeline::stage::Stage::default_skill`],
+/// which answers a different question. This one is "what does an ad-hoc `bn dispatch` run?" — a
+/// ship gets `plan-work`, because a dispatched lane writes its own plan and burns it down. That one
+/// is "what does the nine-stage pipeline run at this stage?" — `execute` picks up an *already
+/// approved* plan. Both are correct; folding them together would silently change what dispatch
+/// launches.
 pub(crate) fn dispatch_skill_name(explicit: Option<&str>, scout: bool) -> &str {
     explicit.unwrap_or(if scout { "investigate" } else { "plan-work" })
 }
@@ -1234,8 +1241,16 @@ pub(crate) fn agent_model_suffix(
     disabled_mcps: &[String],
 ) -> String {
     let mut suffix = String::from(" --");
-    suffix.push_str(" --model ");
-    suffix.push_str(&shq(&model.model));
+    // Only pin `--model` when the configured id is one this harness actually accepts; otherwise
+    // omit it and let the harness fall back to its own default. bn stores dotted catalog ids
+    // (e.g. claude-opus-4.8) that Claude Code rejects, which parked every dispatched claude agent
+    // on "model does not exist" (bn#963). Copilot accepts the dotted ids, so it is unaffected.
+    if let Some(model_id) =
+        bn_core::mcp::Harness::parse(agent_kind).and_then(|harness| harness.model_arg(&model.model))
+    {
+        suffix.push_str(" --model ");
+        suffix.push_str(&shq(model_id));
+    }
     suffix.push(' ');
     suffix.push_str(if agent_kind == "claude" {
         "--effort"
@@ -1288,6 +1303,7 @@ fn enter_dispatched_investigate_stage(
     target: &Resolved,
 ) -> Result<bn_core::pipeline::gate::GateDecision, bn_core::store::StoreError> {
     bn_core::pipeline::stage::transition(
+        cfg,
         &cfg.note_file(target),
         bn_core::pipeline::stage::Stage::Investigate,
     )
@@ -3287,9 +3303,40 @@ mod remote_tests {
             agent_model_suffix("copilot", &model, &["atlas".into(), "forge".into()]),
             " -- --model 'gpt-5.4' --reasoning-effort 'high' --disable-mcp-server 'atlas' --disable-mcp-server 'forge'"
         );
+        // `gpt-5.4` is an OpenAI id — invalid for Claude Code, so `--model` is dropped and only the
+        // passthrough boundary + effort remain (bn#963).
         assert_eq!(
             agent_model_suffix("claude", &model, &[]),
-            " -- --model 'gpt-5.4' --effort 'high'"
+            " -- --effort 'high'"
+        );
+    }
+
+    #[test]
+    fn agent_model_suffix_omits_invalid_claude_models_but_keeps_valid_ones() {
+        let m = |model: &str| bn_core::resolver::PipelineModel {
+            model: model.into(),
+            effort: "max".into(),
+            harness: None,
+        };
+        // bn's canonical *dotted* claude id is not a valid Claude-CLI id -> omit `--model` so the
+        // harness falls back to its own default, but keep the boundary + effort (bn#963).
+        assert_eq!(
+            agent_model_suffix("claude", &m("claude-opus-4.8"), &[]),
+            " -- --effort 'max'"
+        );
+        // A native dashed claude id and a tier alias are valid -> passed through.
+        assert_eq!(
+            agent_model_suffix("claude", &m("claude-opus-4-8"), &[]),
+            " -- --model 'claude-opus-4-8' --effort 'max'"
+        );
+        assert_eq!(
+            agent_model_suffix("claude", &m("opus"), &[]),
+            " -- --model 'opus' --effort 'max'"
+        );
+        // Copilot accepts bn's dotted catalog ids unchanged, alongside any MCP suppressions.
+        assert_eq!(
+            agent_model_suffix("copilot", &m("gpt-5.4"), &["atlas".into()]),
+            " -- --model 'gpt-5.4' --reasoning-effort 'max' --disable-mcp-server 'atlas'"
         );
     }
 

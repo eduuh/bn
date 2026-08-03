@@ -547,6 +547,10 @@ export interface RepoRollup {
  * its per-repo rollup + session list. A cloned-but-never-worked-in repo is a 0-session card. */
 export interface ReposView {
   repos: RepoRollup[];
+  /** Every repo bn can work in, alphabetical — managed repos, local bare clones, and anything
+   * with a branch note. The option source for every repo picker, derived from the same rollups
+   * above so a dropdown can never offer a repo the board doesn't know about. */
+  known: string[];
 }
 
 /** One open GitHub issue for a repo — `bn_core::palette::IssueHit` (#556). */
@@ -876,6 +880,38 @@ export interface TodayRunReport {
 export interface TodayRunResult {
   report: TodayRunReport;
   suggestions: Suggestion[];
+}
+
+/** What bn recorded when it launched Today's hosted agent — `bn_core::today_agent::AgentRecord`.
+ * `target` is the `repo:branch` every steering write is keyed by (`today:<date>`); `tmux_target`
+ * is the `session:window` you can drop into by hand. */
+export interface TodayAgentRecord {
+  date: string;
+  session_id: string;
+  harness: string;
+  repo: string;
+  branch: string;
+  target: string;
+  tmux_target: string;
+  cwd: string;
+  status: "starting" | "running" | "stopped";
+  started_at: number;
+  stopped_at?: number;
+}
+
+/** GET /api/today/agent .data — Today's hosted agent (`bn_core::today_agent::status_view`).
+ *
+ * `running` comes from the **live fleet**, not from `agent.status`: the record says what bn
+ * launched, the supervisor says what is alive. A recorded agent whose session has died reads as
+ * `running: false` with the record still present, which is what lets the card say "it's gone"
+ * rather than offering a Steer composer that writes into nothing. */
+export interface TodayAgentView {
+  running: boolean;
+  agent: TodayAgentRecord | null;
+  health?: AgentHealth | null;
+  control?: AgentControl | null;
+  last_activity_ts?: number | null;
+  output_tokens?: number | null;
 }
 
 // --- Triggerable-agent catalog (GET /api/agents/catalog .data; #557) ---
@@ -1367,10 +1403,25 @@ export interface PipelineStage {
   glyph: string;
   position: number;
   count: number;
+  /** The workflow skill this stage dispatches by default — its *intent*. `null` for the stages
+   * that run no harness workflow at all (pickup leases, consensus votes, validate is `bn verify`,
+   * ship hands off), which is a fact rather than a missing value. */
+  skill: string | null;
+}
+
+/** One worktree's row on the board. `skill` is what it is **actually** running, read from the
+ * `skill:` decision its dispatch recorded — which can differ from its stage's default whenever
+ * someone passed an explicit `--skill`. */
+export interface PipelineBoardEntry {
+  repo: string;
+  branch: string;
+  stage: string;
+  ts: number;
+  skill: string | null;
 }
 
 export interface PipelineBoardView {
-  board: { repo: string; branch: string; stage: string; ts: number }[];
+  board: PipelineBoardEntry[];
   counts: Record<string, number>;
   stages: PipelineStage[];
 }

@@ -2148,6 +2148,65 @@ pub async fn today_run(
 }
 
 #[derive(Debug, Default, Deserialize)]
+pub struct TodayAgentStartBody {
+    /// `claude` | `copilot`. Absent ⇒ the machine's configured default.
+    #[serde(default)]
+    pub harness: Option<String>,
+}
+
+/// `POST /api/today/agent/start {harness?}` → `bn today agent start`.
+///
+/// Shelled rather than run in-process, like every other launch this server offers (see
+/// [`dispatch`]): opening a tmux window, reserving an agent lease and pinning a harness session are
+/// bn-cli's job, and duplicating that ordering here is how the two copies drift. Idempotent at the
+/// CLI — a live agent for today is reported, not duplicated — so a double-click cannot fork the day.
+pub async fn today_agent_start(
+    State(state): State<AppState>,
+    MaybeAddr(addr): MaybeAddr,
+    raw: Bytes,
+) -> Response {
+    let cmd = "today-agent-start";
+    let body: TodayAgentStartBody = if raw.is_empty() {
+        TodayAgentStartBody::default()
+    } else {
+        match parse_body(cmd, &raw) {
+            Ok(b) => b,
+            Err(resp) => return resp,
+        }
+    };
+    let mut args = vec![
+        "today".to_string(),
+        "agent".to_string(),
+        "start".to_string(),
+    ];
+    if let Some(h) = body
+        .harness
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let Some(harness) = normalize_harness(Some(h)) else {
+            return bad_request(cmd, "invalid_harness", "harness must be claude or copilot");
+        };
+        args.push("--harness".to_string());
+        args.push(harness.to_string());
+    }
+    let result = run_bn(args, None).await;
+    respond_process(&state, "today-agent-start", "today-agent", addr, result)
+}
+
+/// `POST /api/today/agent/stop` → `bn today agent stop`. Idempotent: stopping an agent that is
+/// already gone succeeds, because the state the caller asked for is the state they get.
+pub async fn today_agent_stop(
+    State(state): State<AppState>,
+    MaybeAddr(addr): MaybeAddr,
+) -> Response {
+    let args = vec!["today".to_string(), "agent".to_string(), "stop".to_string()];
+    let result = run_bn(args, None).await;
+    respond_process(&state, "today-agent-stop", "today-agent", addr, result)
+}
+
+#[derive(Debug, Default, Deserialize)]
 pub struct SuggestionStatusBody {
     pub status: String,
 }

@@ -72,6 +72,30 @@ const TODAY_AGENTS = {
   ],
 };
 
+/** `GET /api/today/agent` — no hosted agent has ever been started on this box. */
+const NO_TODAY_AGENT = { running: false, agent: null };
+
+/** A live hosted agent: recorded, alive in the fleet, and steerable. */
+const LIVE_TODAY_AGENT = {
+  running: true,
+  health: "active",
+  control: "tmux",
+  last_activity_ts: 3_000,
+  output_tokens: 120,
+  agent: {
+    date: "2026-07-16",
+    session_id: "sess-today-1",
+    harness: "claude",
+    repo: "today",
+    branch: "2026-07-16",
+    target: "today:2026-07-16",
+    tmux_target: "planning:today",
+    cwd: "/home/u/projects/personal-notes",
+    status: "running",
+    started_at: 2_500,
+  },
+};
+
 const SUGGESTIONS = {
   count: 1,
   suggestions: [
@@ -97,7 +121,9 @@ function wrap(node: ReactNode) {
   );
 }
 
-beforeEach(() => {
+/** Installs the fetch stub. `hostedAgent` is what `GET /api/today/agent` answers, so a test can
+ * pick between "never started" and "live" without restubbing every other route. */
+function stubFetch(hostedAgent: unknown = NO_TODAY_AGENT) {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string | URL) => {
@@ -109,12 +135,21 @@ beforeEach(() => {
       if (u.startsWith("/api/cost")) return env("cost", COST) as unknown as Response;
       if (u.startsWith("/api/today/crons"))
         return env("today-crons", TODAY_CRONS) as unknown as Response;
+      // Order matters: `/api/today/agents` (the roster) must be matched before `/api/today/agent`
+      // (the one hosted session), or the plural route would never be reached.
       if (u.startsWith("/api/today/agents"))
         return env("today-agents", TODAY_AGENTS) as unknown as Response;
+      if (u.startsWith("/api/today/agent"))
+        return env("today-agent", hostedAgent) as unknown as Response;
+      if (u.startsWith("/api/agents/")) return env("activity", { entries: [] }) as unknown as Response;
       if (u.startsWith("/api/fleet")) return env("fleet", FLEET) as unknown as Response;
       throw new Error(`unexpected fetch: ${u}`);
     }),
   );
+}
+
+beforeEach(() => {
+  stubFetch();
 });
 
 afterEach(() => {
@@ -132,14 +167,14 @@ describe("Today — suggested tasks (#577)", () => {
     expect(screen.getByText(/Surfaced by the 'gh-prs' cron/)).toBeTruthy();
   });
 
-  it("fires the manual trigger via POST /api/today/run", async () => {
+  it("fires the offline re-synthesis via POST /api/today/run", async () => {
     const spy = vi.spyOn(writes, "runTodayAgent").mockResolvedValue({
       report: { sources: 1, items: 1, added: 0 },
       suggestions: [],
     });
     wrap(<Today />);
     await waitFor(() => expect(screen.getByText("Suggested tasks")).toBeTruthy());
-    fireEvent.click(screen.getByRole("button", { name: /Run/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Re-synthesize/ }));
     await waitFor(() => expect(spy).toHaveBeenCalled());
   });
 
@@ -151,6 +186,42 @@ describe("Today — suggested tasks (#577)", () => {
     await waitFor(() => expect(screen.getByText("Suggested tasks")).toBeTruthy());
     fireEvent.click(await screen.findByRole("button", { name: /Accept Review PR 1/ }));
     await waitFor(() => expect(spy).toHaveBeenCalledWith("gh-prs-pr-1", "accepted"));
+  });
+});
+
+describe("Today — the hosted agent", () => {
+  it("offers Start when no agent has ever run, and posts to /api/today/agent/start", async () => {
+    const spy = vi.spyOn(writes, "startTodayAgent").mockResolvedValue({});
+    wrap(<Today />);
+    await waitFor(() => expect(screen.getByText("Today's agent")).toBeTruthy());
+    expect(screen.getByText("not running")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Start agent/ }));
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+  });
+
+  it("streams and steers a live agent, keyed by its repo:branch target", async () => {
+    vi.unstubAllGlobals();
+    stubFetch(LIVE_TODAY_AGENT);
+    wrap(<Today />);
+    await waitFor(() => expect(screen.getByText("running")).toBeTruthy());
+    // The steering identity is on the page, and the Steer composer is live rather than greyed —
+    // `control: "tmux"` is what SteerPanel keys that decision off.
+    expect(await screen.findByText("today:2026-07-16")).toBeTruthy();
+    expect(screen.getByText("planning:today")).toBeTruthy();
+    expect(screen.getByText("Steer")).toBeTruthy();
+    const composer = screen.getByPlaceholderText(/Message the agent/);
+    expect((composer as HTMLTextAreaElement).disabled).toBe(false);
+  });
+
+  it("shows a recorded-but-dead agent as stopped instead of offering a dead composer", async () => {
+    vi.unstubAllGlobals();
+    stubFetch({ ...LIVE_TODAY_AGENT, running: false, control: null, health: null });
+    wrap(<Today />);
+    // Wait for the record itself, not the badge: `not running` is also the pre-load default, so
+    // asserting on it alone would pass before the response ever arrived.
+    expect(await screen.findByText(/no live session/)).toBeTruthy();
+    expect(screen.getByText("not running")).toBeTruthy();
+    expect(screen.queryByText("Steer")).toBeNull();
   });
 });
 

@@ -38,6 +38,10 @@ pub enum AgentLeaseKind {
     PipelinePlan,
     /// The `bn control` coordination agent — reserved to the repo's controller pool slot.
     Control,
+    /// Today's agent — the day's hosted session in the `planning` tmux session. Unlike every other
+    /// kind it is not tied to a repo checkout at all, so it carries no placement rule beyond the
+    /// universal "not the main worktree".
+    Today,
 }
 
 impl AgentLeaseKind {
@@ -49,6 +53,7 @@ impl AgentLeaseKind {
             AgentLeaseKind::PipelineInvestigate => "pipeline-investigate",
             AgentLeaseKind::PipelinePlan => "pipeline-plan",
             AgentLeaseKind::Control => "control",
+            AgentLeaseKind::Today => "today",
         }
     }
 }

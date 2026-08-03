@@ -81,6 +81,7 @@ describe("findRepo", () => {
     repos: [
       { repo: "bn", managed: true, active_agents: 1, open_prs: 0, session_count: 2, last_activity_ts: 5, aic: null, cost_usd: null, pool: { enabled: false, total: 0, warm: 0, leased: 0, idle: 0, last_warmed_ts: null, slots: [] }, links: null, sessions: [] },
     ],
+    known: ["bn"],
   };
 
   it("matches case-insensitively", () => {

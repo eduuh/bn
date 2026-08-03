@@ -3,7 +3,9 @@ use crate::*;
 
 /// Build the headless dispatch command for a staff run: a fresh (non-resume) `-p <prompt>` turn in
 /// the trusted-autonomy mode each harness needs to run unattended. A configured `model` is passed
-/// through as `--model` so the roster's per-agent tier is honored (empty = harness default).
+/// through as `--model` so the roster's per-agent tier is honored, but only when it is a valid id
+/// for the harness — an empty or harness-invalid id (e.g. bn's dotted `claude-opus-4.8` to Claude
+/// Code) is omitted so the harness uses its own default instead of parking on a model error (#963).
 /// `None` for an unknown harness. stdout carries the model's reply (the would-be briefing card) for
 /// both harnesses.
 pub(crate) fn staff_dispatch_command(
@@ -27,7 +29,12 @@ pub(crate) fn staff_dispatch_command(
         }
         _ => return None,
     };
-    if let Some(m) = model.filter(|m| !m.is_empty()) {
+    // Only pass `--model` when the configured id is one this harness accepts; an id it rejects
+    // (e.g. bn's dotted claude-opus-4.8 handed to Claude Code) would park the agent on "model does
+    // not exist", so omit it and let the harness use its own default (bn#963).
+    if let Some(m) =
+        model.and_then(|m| bn_core::mcp::Harness::parse(harness).and_then(|h| h.model_arg(m)))
+    {
         c.args(["--model", m]);
     }
     if staff_harness_supports_session_id(harness) {
@@ -822,6 +829,45 @@ mod tests {
             ["-p", "prompt", "--dangerously-skip-permissions"]
         );
         assert!(staff_dispatch_command("unknown", "prompt", None, Some("session")).is_none());
+    }
+
+    #[test]
+    fn staff_dispatch_gates_model_by_harness_validity() {
+        // Claude Code rejects bn's dotted canonical id -> `--model` is dropped (#963).
+        let claude_bad =
+            staff_dispatch_command("claude", "prompt", Some("claude-opus-4.8"), None)
+                .expect("known harness");
+        assert_eq!(
+            command_args(&claude_bad),
+            ["-p", "prompt", "--dangerously-skip-permissions"]
+        );
+        // A native dashed claude id is valid -> passed through.
+        let claude_ok = staff_dispatch_command("claude", "prompt", Some("claude-opus-4-8"), None)
+            .expect("known harness");
+        assert_eq!(
+            command_args(&claude_ok),
+            [
+                "-p",
+                "prompt",
+                "--dangerously-skip-permissions",
+                "--model",
+                "claude-opus-4-8"
+            ]
+        );
+        // Copilot accepts bn's dotted catalog ids.
+        let copilot = staff_dispatch_command("copilot", "prompt", Some("gpt-5.4"), None)
+            .expect("known harness");
+        assert_eq!(
+            command_args(&copilot),
+            [
+                "-p",
+                "prompt",
+                "--allow-all-tools",
+                "--allow-all-paths",
+                "--model",
+                "gpt-5.4"
+            ]
+        );
     }
 
     fn card(agent: &str, date: &str) -> BriefingCard {

@@ -262,6 +262,19 @@ export function runTodayAgent(body?: {
   return post<TodayRunResult>("/api/today/run", body ?? {});
 }
 
+/** `POST /api/today/agent/start {harness?}` — launch Today's **hosted** agent into the tmux
+ * `planning` session. Idempotent server-side: a live agent for today is reported, not duplicated,
+ * so a double-click cannot fork the day. Returns the runner's envelope. */
+export function startTodayAgent(body?: { harness?: string }): Promise<unknown> {
+  return post<unknown>("/api/today/agent/start", body ?? {});
+}
+
+/** `POST /api/today/agent/stop` — close Today's agent's window and release its lease. Idempotent:
+ * stopping one that is already gone succeeds. */
+export function stopTodayAgent(): Promise<unknown> {
+  return post<unknown>("/api/today/agent/stop", {});
+}
+
 /** `POST /api/suggestions/:id {status}` — review one suggestion (accept / dismiss / re-open). The
  * native in-process store write; returns the id + new status. */
 export function setSuggestionStatus(

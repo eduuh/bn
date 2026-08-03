@@ -88,6 +88,29 @@ impl Stage {
         }
     }
 
+    /// The workflow skill this stage dispatches by default — the *intent* of the stage, as
+    /// opposed to [`skill_for_note`], which reports what a given worktree actually ran.
+    ///
+    /// `None` is a real answer, not a gap: `pickup` leases a worktree, `consensus` is reviewer
+    /// votes, `validate` is `bn verify`, and `ship` hands off to the orchestrator. None of those
+    /// are a harness following a workflow, and naming a skill for them would be a decoration that
+    /// reads as a fact.
+    ///
+    /// Distinct from `bn dispatch`'s `dispatch_skill_name`, which answers "what does an ad-hoc
+    /// dispatch run?" (a ship gets `plan-work`, which writes its own plan first). This answers
+    /// "what does the nine-stage pipeline run here?", where `execute` picks up a plan that
+    /// `consensus` already approved. Both are right; they are not the same question.
+    pub fn default_skill(self) -> Option<&'static str> {
+        match self {
+            Stage::Investigate => Some("investigate"),
+            Stage::Plan => Some("plan-investigate"),
+            Stage::Execute => Some("execute"),
+            Stage::Critique => Some("critique-fresh"),
+            Stage::Learn => Some("evolve-skills"),
+            Stage::Pickup | Stage::Consensus | Stage::Validate | Stage::Ship => None,
+        }
+    }
+
     /// The 1-based position of this stage in the flow (`pickup` == 1, `learn` == 9).
     pub fn position(self) -> usize {
         Stage::ALL.iter().position(|s| *s == self).unwrap_or(0) + 1
@@ -142,6 +165,11 @@ pub struct BoardEntry {
     pub stage: Stage,
     /// Unix epoch seconds of the latest transition.
     pub ts: i64,
+    /// The workflow skill this worktree's agent is actually running ([`skill_for_note`]).
+    /// `None` from [`board`], which reads only the event log; filled by [`board_with_skills`],
+    /// which also reads the notes.
+    #[serde(default)]
+    pub skill: Option<String>,
 }
 
 fn field_str(ev: &events::Event, key: &str) -> Option<String> {
@@ -197,6 +225,32 @@ pub fn current_for_note(note: &crate::model::Note) -> Option<Stage> {
         .or_else(|| current(&note.front.repo, &note.front.branch))
 }
 
+/// The workflow skill a worktree's agent is **actually** running, read back from the `skill: <name>
+/// — …` decision `bn dispatch` writes into the note at launch.
+///
+/// Reality, as opposed to [`Stage::default_skill`]'s intent: an explicit `bn dispatch --skill debug`
+/// puts `debug` here while the stage still reads `execute`, and showing the stage default in that
+/// case would be a confident lie about what the agent is doing.
+///
+/// `None` when the note carries no such decision — a hand-made branch, or a dispatch from before
+/// the line was recorded.
+pub fn skill_for_note(note: &crate::model::Note) -> Option<String> {
+    note.front.decisions.iter().find_map(|d| {
+        let rest = d.text.trim().strip_prefix("skill:")?;
+        // The recorded line is `skill: <name> — <why>`. Cut at the em-dash, or at a spaced ASCII
+        // hyphen — never a bare `-`, which lives *inside* half the skill names (`plan-work`,
+        // `critique-fresh`, `auto-review-pr`) and would truncate them to their first word.
+        let name = rest
+            .split_once('—')
+            .or_else(|| rest.split_once(" - "))
+            .map(|(name, _)| name)
+            .unwrap_or(rest)
+            .trim()
+            .to_string();
+        (!name.is_empty()).then_some(name)
+    })
+}
+
 /// Persist the durable current stage and append its transition event — **through the SMART gate**.
 ///
 /// This is the single enforcement point for #998. Everything that starts work (`bn dispatch`,
@@ -207,18 +261,20 @@ pub fn current_for_note(note: &crate::model::Note) -> Option<Stage> {
 ///
 /// Ungated stages and worktrees with no governing task pass straight through, so this is safe to
 /// call for every transition.
+///
+/// `cfg` is threaded in rather than loaded here: every caller already holds one, and the
+/// per-stage gate policy makes the config needed on *every* transition, not just gated ones.
 pub fn transition(
+    cfg: &crate::resolver::Config,
     note_path: &Path,
     stage: Stage,
 ) -> Result<gate::GateDecision, crate::store::StoreError> {
     let _lock = crate::store::NoteLock::acquire_required(note_path)?;
     let mut note = crate::store::read(note_path)?;
 
-    let decision = if gate::is_gated(stage) {
-        // Only load the config on a gated transition — the common path stays a note write.
-        let cfg = crate::resolver::Config::load();
+    let decision = if gate::is_smart_gated(stage) {
         gate::check_entry(
-            &cfg,
+            cfg,
             &note.front.repo,
             &note.front.branch,
             stage,
@@ -269,18 +325,106 @@ pub fn board() -> Vec<BoardEntry> {
             branch,
             stage,
             ts,
+            skill: None,
         })
         .collect();
     out.sort_by_key(|b| std::cmp::Reverse(b.ts));
     out
 }
 
+/// [`board`], with each row's actual workflow skill filled in from its branch note.
+///
+/// A separate function rather than a change to `board` because the two read different things:
+/// `board` is a fold over the event log and touches no filesystem beyond it, while this reads one
+/// note per row. Callers that only want stage counts should keep paying the cheaper price.
+pub fn board_with_skills(cfg: &crate::resolver::Config) -> Vec<BoardEntry> {
+    board()
+        .into_iter()
+        .map(|mut entry| {
+            let ctx = crate::resolver::Resolved {
+                repo: entry.repo.clone(),
+                branch: entry.branch.clone(),
+            };
+            entry.skill = crate::store::read(&cfg.note_file(&ctx))
+                .ok()
+                .and_then(|note| skill_for_note(&note));
+            entry
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::Note;
-    use crate::resolver::RepoBranch;
+    use crate::resolver::{Config, RepoBranch};
     use crate::test_support::with_state_dir_path as with_state_dir;
+
+    /// A note carrying the `skill:` decision `bn dispatch` writes at launch.
+    fn note_with_decision(text: &str) -> Note {
+        let mut note = Note::new(RepoBranch::new("bn", "feat"), "2026-07-18", "testhost");
+        note.front.decisions.push(crate::model::Item {
+            id: "d1".into(),
+            text: text.into(),
+            created: "2026-07-18".into(),
+            done: None,
+            done_at: None,
+            link: None,
+            pct: None,
+            est: None,
+            actual: None,
+            q: None,
+            notes: Vec::new(),
+        });
+        note
+    }
+
+    #[test]
+    fn default_skill_names_a_workflow_only_where_an_agent_runs_one() {
+        // Intent per stage. The `None`s are the point: pickup leases, consensus votes, validate is
+        // `bn verify`, ship hands to the orchestrator — none of them is a harness running a skill.
+        assert_eq!(Stage::Investigate.default_skill(), Some("investigate"));
+        assert_eq!(Stage::Plan.default_skill(), Some("plan-investigate"));
+        assert_eq!(Stage::Execute.default_skill(), Some("execute"));
+        assert_eq!(Stage::Critique.default_skill(), Some("critique-fresh"));
+        assert_eq!(Stage::Learn.default_skill(), Some("evolve-skills"));
+        for s in [
+            Stage::Pickup,
+            Stage::Consensus,
+            Stage::Validate,
+            Stage::Ship,
+        ] {
+            assert_eq!(s.default_skill(), None, "{s} runs no workflow skill");
+        }
+    }
+
+    #[test]
+    fn skill_for_note_reads_the_dispatch_decision_line() {
+        // The exact text `bn dispatch` writes (dispatch.rs), em-dash and all.
+        let note = note_with_decision("skill: plan-work — the workflow this dispatch follows");
+        assert_eq!(skill_for_note(&note), Some("plan-work".to_string()));
+    }
+
+    #[test]
+    fn skill_for_note_keeps_hyphens_that_live_inside_the_name() {
+        // The regression that matters: half the skill names contain a hyphen, so cutting at a bare
+        // `-` would report `critique` / `auto` / `plan` for three real workflows.
+        for name in ["critique-fresh", "auto-review-pr", "plan-investigate"] {
+            let note = note_with_decision(&format!(
+                "skill: {name} — the workflow this dispatch follows"
+            ));
+            assert_eq!(skill_for_note(&note), Some(name.to_string()));
+        }
+    }
+
+    #[test]
+    fn skill_for_note_is_none_without_the_decision() {
+        let note = Note::new(RepoBranch::new("bn", "feat"), "2026-07-18", "testhost");
+        assert_eq!(skill_for_note(&note), None);
+        // A decision that merely mentions skills is not a skill record.
+        let other = note_with_decision("task: ship — deliver a change");
+        assert_eq!(skill_for_note(&other), None);
+    }
 
     #[test]
     fn stage_str_round_trips() {
@@ -348,7 +492,7 @@ mod tests {
             let note = Note::new(RepoBranch::new("bn", "feat"), "2026-07-18", "testhost");
             crate::store::save(&note, &path).unwrap();
 
-            transition(&path, Stage::Plan).unwrap();
+            transition(&Config::default(), &path, Stage::Plan).unwrap();
 
             let saved = crate::store::read(&path).unwrap();
             assert_eq!(saved.front.stage, Some(Stage::Plan));
@@ -397,7 +541,7 @@ mod tests {
             // The advance engine: start at the flow entry point, then walk `next()` to the end,
             // persisting each hop through the real `transition()` (frontmatter + event log).
             let mut stage = Stage::DEFAULT;
-            transition(&path, stage).unwrap();
+            transition(&Config::default(), &path, stage).unwrap();
 
             let mut visited = vec![stage];
             let mut expected_position = 1;
@@ -420,7 +564,7 @@ mod tests {
                 match stage.next() {
                     Some(next) => {
                         stage = next;
-                        transition(&path, stage).unwrap();
+                        transition(&Config::default(), &path, stage).unwrap();
                         visited.push(stage);
                         expected_position += 1;
                     }

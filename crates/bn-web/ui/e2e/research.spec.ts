@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { seed } from "./fixtures";
-import { primeToken, shot } from "./helpers";
+import { pickRepo, primeToken, shot } from "./helpers";
 
 test.beforeEach(() => seed());
 
@@ -14,7 +14,7 @@ test("research dispatches a scout and shows recent findings", async ({ page }, t
   await expect(page.getByText(/which crate owns the cron registry/)).toBeVisible();
 
   await page.locator("#research-q").fill("why is the nvim status_spec flaky?");
-  await page.locator("#research-repo").fill("bn");
+  await pickRepo(page, "research-repo", "bn");
 
   await shot(page, testInfo, "research");
 

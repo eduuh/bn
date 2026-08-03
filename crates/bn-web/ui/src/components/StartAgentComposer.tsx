@@ -15,7 +15,6 @@ import {
 } from "./ui/dialog";
 import { Badge, type BadgeProps } from "./ui/badge";
 import { Button } from "./ui/button";
-import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Textarea } from "./ui/textarea";
 import {
@@ -26,6 +25,7 @@ import {
   SelectValue,
 } from "./ui/select";
 import { cn } from "../lib/utils";
+import { RepoSelect } from "./RepoSelect";
 
 type Harness = "claude" | "copilot";
 type Kind = "ship" | "scout";
@@ -191,12 +191,11 @@ export function StartAgentComposer({
               Repo
               {needsRepo && <span className="text-xs font-normal text-muted-foreground/80">required</span>}
             </Label>
-            <Input
+            <RepoSelect
               id="composer-repo"
-              className="font-mono"
               value={repo}
-              placeholder={needsRepo ? "repo (required)" : "repo (optional)"}
-              onChange={(e) => setRepo(e.target.value)}
+              required={needsRepo}
+              onChange={setRepo}
             />
           </div>
           {urgency === "urgent" && (

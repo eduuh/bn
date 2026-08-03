@@ -1,17 +1,17 @@
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, Plus, Rocket } from "lucide-react";
-import { queryKeys, reposQuery } from "../../api/client";
+import { queryKeys } from "../../api/client";
 import { apiDispatch, apiQueueAdd, attnAction } from "../../api/writes";
 import { pushToast } from "../../lib/toast";
 import type { WorkItem } from "../../lib/console";
 import { PlanReviewPanel } from "../PlanReviewPanel";
 import { SteerPanel } from "../SteerPanel";
 import { LandButton } from "../LandButton";
+import { RepoSelect } from "../RepoSelect";
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
 import { Textarea } from "../ui/textarea";
-import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { cn } from "../../lib/utils";
 
@@ -31,13 +31,6 @@ function DispatchPanel({ item }: { item: WorkItem }) {
   const qc = useQueryClient();
   const [prompt, setPrompt] = useState(action.suggested_prompt);
   const [repo, setRepo] = useState(payloadStr(item, "repo") || action.repo || "");
-  const repos = useQuery(reposQuery());
-  // Managed repos first, then the rest by recent activity — the order you'd actually reach for.
-  const knownRepos = (repos.data?.repos ?? [])
-    .slice()
-    .sort((a, b) => Number(b.managed) - Number(a.managed) || b.last_activity_ts - a.last_activity_ts)
-    .map((r) => r.repo);
-
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: queryKeys.actions });
     void qc.invalidateQueries({ queryKey: queryKeys.fleet });
@@ -84,19 +77,7 @@ function DispatchPanel({ item }: { item: WorkItem }) {
         <Label htmlFor="act-repo" className="text-xs text-muted-foreground">
           Repo
         </Label>
-        <Input
-          id="act-repo"
-          list="act-repo-options"
-          value={repo}
-          onChange={(e) => setRepo(e.target.value)}
-          placeholder="pick a repo"
-          className="h-8 font-mono text-xs"
-        />
-        <datalist id="act-repo-options">
-          {knownRepos.map((r) => (
-            <option key={r} value={r} />
-          ))}
-        </datalist>
+        <RepoSelect id="act-repo" value={repo} onChange={setRepo} />
       </div>
 
       <div className="space-y-1.5">

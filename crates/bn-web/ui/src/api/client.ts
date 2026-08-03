@@ -28,6 +28,7 @@ import type {
   LearningsView,
   CronView,
   CatalogView,
+  TodayAgentView,
   FindingsView,
   SuggestionsView,
   SkillsView,
@@ -106,6 +107,8 @@ export const queryKeys = {
   todayCrons: ["today-crons"] as const,
   /** Today's scheduled staff agents (#575) — the roster agents whose schedule fires today. */
   todayAgents: ["today-agents"] as const,
+  /** Today's one *hosted* agent — the live session the Today page streams and steers. */
+  todayAgent: ["today-agent"] as const,
   /** Every skill across the tiers (#483). */
   skills: ["skills"] as const,
   /** One skill's editable source, keyed by name (#483). */
@@ -358,6 +361,18 @@ export function todayAgentsQuery() {
     queryKey: queryKeys.todayAgents,
     queryFn: () => fetchEnvelope<CatalogView>("/api/today/agents"),
     refetchInterval: 60_000,
+  };
+}
+
+/** Today's **hosted** agent — the live session in the tmux `planning` session that the Today page
+ * streams and steers. Polled briskly (5s): this is the one card whose state changes while you
+ * watch it, and a stale `control` channel is the difference between a live Steer composer and a
+ * greyed one. */
+export function todayAgentQuery() {
+  return {
+    queryKey: queryKeys.todayAgent,
+    queryFn: () => fetchEnvelope<TodayAgentView>("/api/today/agent"),
+    refetchInterval: 5_000,
   };
 }
 

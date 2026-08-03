@@ -65,7 +65,7 @@ export function PipelineFlow({
                   aria-label={`${stage.id}: ${stage.count} in flight`}
                   onClick={() => onSelect?.(active ? undefined : stage.id)}
                   className={cn(
-                    "flex min-w-[5.4rem] flex-col items-center gap-0.5 rounded-[9px] border px-2 py-1.5 transition-colors",
+                    "flex min-w-[6.6rem] max-w-[8rem] flex-col items-center gap-0.5 rounded-[9px] border px-2 py-1.5 transition-colors",
                     active
                       ? "border-primary bg-primary/[0.13] text-primary"
                       : occupied
@@ -85,6 +85,18 @@ export function PipelineFlow({
                   >
                     {stage.count}
                   </span>
+                  {/* The skill this stage dispatches — the node then says what the stage *does*,
+                      not only how many sit in it. A stage that runs no workflow (pickup leases,
+                      consensus votes, validate is `bn verify`) shows nothing rather than a
+                      plausible-looking placeholder. */}
+                  {stage.skill && (
+                    <span
+                      title={`runs the \`${stage.skill}\` skill`}
+                      className="w-full truncate font-mono text-[9.5px] leading-none text-muted-foreground/70"
+                    >
+                      {stage.skill}
+                    </span>
+                  )}
                 </button>
                 {i < stages.length - 1 && (
                   <span

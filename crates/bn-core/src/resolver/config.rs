@@ -139,10 +139,11 @@ pub struct RepoPlacementPolicy {
     pub excludes: Vec<String>,
 }
 
-/// One `[pipeline.models.<stage>]` entry. Any field may be omitted so repo-specific entries can
-/// override only the model, effort, or harness while inheriting the other global/default values.
+/// One `[pipeline.stages.<stage>]` entry — and the shape of every override layer above it (task
+/// meta, note decision, CLI flag). Any field may be omitted so a narrower entry can override only
+/// what it cares about while inheriting the rest; see [`crate::pipeline::profile::layer`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
-pub struct PipelineModelConfig {
+pub struct StageConfig {
     pub model: Option<String>,
     pub effort: Option<String>,
     /// Agent harness (`claude` | `copilot`) for a dispatch launched at this stage. `None` inherits
@@ -150,13 +151,26 @@ pub struct PipelineModelConfig {
     /// dispatch call site (this resolver is a hot, non-`Result` path).
     #[serde(alias = "agent")]
     pub harness: Option<String>,
+    /// Workflow skill this stage runs, by `bn skills` name. `None` inherits, ultimately falling
+    /// back to the launcher's built-in default for the stage.
+    pub skill: Option<String>,
+    /// Reference tokens attached to this stage's seed: `["*"]` for every reference in the store,
+    /// `[]` for none, or explicit names. `None` inherits. Interpreted into a
+    /// [`crate::pipeline::profile::RefSelection`] by the resolver.
+    pub references: Option<Vec<String>>,
+    /// `auto` | `hold`. Raw string so this stays a non-`Result` path; parsed by the resolver, which
+    /// treats an unparseable value as absent.
+    pub gate: Option<String>,
 }
 
-/// `[pipeline]` model policy, also accepted below `[repo.<name>.pipeline]` for repo overrides.
+/// `[pipeline]` per-stage policy, also accepted below `[repo.<name>.pipeline]` for repo overrides.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct PipelineConfig {
-    #[serde(default)]
-    pub models: HashMap<Stage, PipelineModelConfig>,
+    /// Keyed by [`Stage`]. `models` is the pre-rename table name and is still accepted; a file
+    /// carrying *both* names is a serde duplicate-field error, which is the loud outcome we want
+    /// over silently merging two tables that disagree.
+    #[serde(default, alias = "models")]
+    pub stages: HashMap<Stage, StageConfig>,
 }
 
 /// The fully resolved model selection passed to an agent harness.
@@ -240,7 +254,7 @@ pub struct Config {
     /// default; see [`repo_verify`](Config::repo_verify) and
     /// [`repo_placement_policy`](Config::repo_placement_policy).
     pub repos: HashMap<String, RepoConfig>,
-    /// `[pipeline.models.<stage>]`: global per-stage agent model/effort overrides. Missing entries
+    /// `[pipeline.stages.<stage>]`: global per-stage agent model/effort overrides. Missing entries
     /// use the built-in stage-specific defaults.
     pub pipeline: PipelineConfig,
     /// `[nodes.<node_id>]` (#729): the declarative multi-node worker registry — each node's
@@ -920,37 +934,23 @@ impl Config {
     }
 
     /// Resolve the agent model and reasoning effort for `stage`, layering built-in defaults →
-    /// `[pipeline.models.<stage>]` → `[repo.<name>.pipeline.models.<stage>]`. Blank override values
+    /// `[pipeline.stages.<stage>]` → `[repo.<name>.pipeline.stages.<stage>]`. Blank override values
     /// are ignored. Repo matching follows [`repo_verify`](Self::repo_verify): full slug first,
     /// then trailing repo name, case-insensitively.
     pub fn pipeline_model(&self, repo: &str, stage: Stage) -> PipelineModel {
-        let (default_model, default_effort) = match stage {
-            Stage::Plan | Stage::Critique => ("claude-opus-4.8", "max"),
-            Stage::Investigate => ("gpt-5.4", "high"),
-            _ => ("gpt-5.4-mini", "medium"),
-        };
-        let mut resolved = PipelineModel {
-            model: default_model.to_string(),
-            effort: default_effort.to_string(),
-            harness: None,
-        };
-        Self::apply_pipeline_model(&mut resolved, self.pipeline.models.get(&stage));
-
-        let base = repo.rsplit('/').next().unwrap_or(repo);
-        let by = |want: &str| {
-            self.repos
-                .iter()
-                .find(|(key, _)| key.eq_ignore_ascii_case(want))
-                .map(|(_, value)| value)
-        };
-        if let Some(overrides) = by(repo)
-            .or_else(|| by(base))
-            .and_then(|repo| repo.pipeline.as_ref())
-            .and_then(|pipeline| pipeline.models.get(&stage))
-        {
-            Self::apply_pipeline_model(&mut resolved, Some(overrides));
+        // Config-only view of the full per-stage profile: one layering implementation, so this and
+        // `bn pipeline preview` can never disagree about which model a stage runs.
+        let profile = crate::pipeline::profile::layer(
+            self,
+            repo,
+            stage,
+            &crate::pipeline::profile::Overrides::default(),
+        );
+        PipelineModel {
+            model: profile.model,
+            effort: profile.effort,
+            harness: profile.harness,
         }
-        resolved
     }
 
     /// Whether a repo should appear in cross-repo views on this machine. Always true on a
@@ -958,36 +958,6 @@ impl Config {
     /// the single predicate that keeps personal work off a work screen.
     pub fn is_visible_repo(&self, repo: &str) -> bool {
         !self.work_only || self.is_work_repo(repo)
-    }
-
-    fn apply_pipeline_model(resolved: &mut PipelineModel, override_: Option<&PipelineModelConfig>) {
-        let Some(override_) = override_ else {
-            return;
-        };
-        if let Some(model) = override_
-            .model
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            resolved.model = model.to_string();
-        }
-        if let Some(effort) = override_
-            .effort
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            resolved.effort = effort.to_string();
-        }
-        if let Some(harness) = override_
-            .harness
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            resolved.harness = Some(harness.to_string());
-        }
     }
 
     fn normalized_capabilities(values: &[String]) -> Vec<String> {

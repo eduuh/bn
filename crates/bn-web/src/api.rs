@@ -925,8 +925,17 @@ pub async fn issues(State(state): State<AppState>) -> Json<Envelope> {
 ///
 /// The vocabulary on the wire is the durable nine-value `pipeline::stage::Stage`. The four-value
 /// inference model is `Phase` (#994) and stays CLI-internal, so a `stage` field is never ambiguous.
+/// Each stage node also carries the **skill** that stage dispatches by default, and each board row
+/// the skill its worktree is actually running — intent and reality side by side, because an
+/// explicit `--skill` makes them differ and only showing the default would state the wrong one
+/// confidently.
 pub async fn pipeline_board(State(state): State<AppState>) -> Json<Envelope> {
-    let entries = bn_core::pipeline::stage::board();
+    let cfg = state.cfg.clone();
+    // One note read per row (`board_with_skills`), so do it off the axum worker.
+    let entries =
+        tokio::task::spawn_blocking(move || bn_core::pipeline::stage::board_with_skills(&cfg))
+            .await
+            .unwrap_or_default();
 
     let mut counts = serde_json::Map::new();
     for stage in bn_core::pipeline::stage::Stage::ALL {
@@ -941,11 +950,11 @@ pub async fn pipeline_board(State(state): State<AppState>) -> Json<Envelope> {
                 "glyph": s.glyph(),
                 "position": s.position(),
                 "count": entries.iter().filter(|e| e.stage == *s).count(),
+                "skill": s.default_skill(),
             })
         })
         .collect();
 
-    let _ = &state; // board() reads the shared event log, not the config
     Json(Envelope::success(
         "pipeline-board",
         json!({ "board": entries, "counts": counts, "stages": stages }),
@@ -973,10 +982,14 @@ pub async fn pipeline_status(
     };
     // Frontmatter is authoritative; the event log is the fallback for notes written before the
     // stage was durable. Mirrors `stage::current_for_note`.
-    let stage = bn_core::store::read(&state.cfg.note_file(&ctx))
-        .ok()
-        .and_then(|n| bn_core::pipeline::stage::current_for_note(&n))
+    let note = bn_core::store::read(&state.cfg.note_file(&ctx)).ok();
+    let stage = note
+        .as_ref()
+        .and_then(bn_core::pipeline::stage::current_for_note)
         .or_else(|| bn_core::pipeline::stage::current(&repo, &branch));
+    let skill = note
+        .as_ref()
+        .and_then(bn_core::pipeline::stage::skill_for_note);
 
     let history = bn_core::pipeline::stage::history(&repo, &branch);
     Json(Envelope::success(
@@ -987,6 +1000,9 @@ pub async fn pipeline_status(
             "stage": stage.map(|s| s.as_str()),
             "position": stage.map(|s| s.position()),
             "glyph": stage.map(|s| s.glyph()),
+            // What this worktree is actually running, next to what its stage dispatches by default.
+            "skill": skill,
+            "default_skill": stage.and_then(|s| s.default_skill()),
             "history": history,
         }),
     ))
@@ -1096,6 +1112,24 @@ pub async fn today_agents(State(state): State<AppState>) -> Json<Envelope> {
     .await
     .unwrap_or_else(|_| serde_json::json!({ "count": 0, "agents": [] }));
     Json(Envelope::success("today-agents", data))
+}
+
+/// `GET /api/today/agent` — Today's **hosted** agent: the record of what bn launched, joined with
+/// the live fleet so the page can tell "bn started one" from "one is alive right now".
+///
+/// Singular, and deliberately distinct from `/api/today/agents` above (the scheduled staff-agent
+/// roster). This is the one session the Today page streams and steers; the payload carries its
+/// `target` and `control` channel, which is exactly what `SteerPanel` needs to decide whether the
+/// composer is live or greyed.
+///
+/// Built by `bn_core::today_agent::status_view`, the same builder `bn today agent status` prints —
+/// so the CLI and the dashboard cannot drift on whether the agent is up.
+pub async fn today_agent(State(state): State<AppState>) -> Json<Envelope> {
+    let cfg = state.cfg.clone();
+    let data = tokio::task::spawn_blocking(move || bn_core::today_agent::status_view(&cfg))
+        .await
+        .unwrap_or_else(|_| json!({ "running": false, "agent": Value::Null }));
+    Json(Envelope::success("today-agent", data))
 }
 
 /// `GET /api/completed` — the Command Center's **Completed** tab (#561): the counterpart to the

@@ -8,6 +8,7 @@ import { Button } from "./ui/button";
 import { Card } from "./ui/card";
 import { Input } from "./ui/input";
 import { cn } from "../lib/utils";
+import { RepoSelect } from "./RepoSelect";
 
 const WINDOWS: { label: string; value: number | "all" }[] = [
   { label: "7d", value: 7 },
@@ -114,11 +115,12 @@ export function LearningsFeed() {
           onChange={setWindowSel}
         />
         <SegmentGroup label="author" options={AUTHORS} value={author} onChange={setAuthor} />
-        <Input
-          className="h-8 w-28"
+        <RepoSelect
+          className="h-8 w-32 text-xs"
           value={repo}
-          onChange={(e) => setRepo(e.target.value)}
-          placeholder="repo…"
+          onChange={setRepo}
+          allowClear
+          placeholder="any repo"
         />
         <Input
           className="h-8 w-28"

@@ -205,11 +205,7 @@ build_from_source() {
   # bn-mcp is built and installed alongside: `register_mcp` points every MCP client at the stdio
   # launcher `bn mcp serve`, which execs the sibling `bn-mcp`. Omitting it left that launcher
   # dead ("could not exec bn-mcp") and silently cost Claude Code / Copilot every bn tool and
-<<<<<<< Updated upstream
   # session-safe skill prompt — a failure only visible inside the client, never from `bn` itself.
-=======
-  # skill prompt — a failure only visible inside the client, never from `bn` itself.
->>>>>>> Stashed changes
   ( cd "$repo" && cargo build --release -p bn-cli -p bn-web -p bn-mcp )
   # Copy, don't symlink: a symlink into target/release breaks on `cargo clean`,
   # silently bricking the live `bn`. Re-run install.sh after rebuilding to refresh.
@@ -482,13 +478,8 @@ register_mcp() {
   # from the Dock) inherits none of the shell PATH — its PATH is /usr/bin:/bin:/usr/sbin:/sbin, so
   # `command: "bn"` simply fails to start and the client shows an MCP server that never connects.
   # An absolute path is also immune to a stale shadowing copy earlier on PATH. Prefer the stable
-<<<<<<< Updated upstream
   # $cfgdir/bn anchor for the same reason the cron units use it: it survives the binary moving
   # between $bindir layouts.
-=======
-  # $cfgdir/bn anchor (line ~236) for the same reason the cron units use it: it survives the binary
-  # moving between $bindir layouts.
->>>>>>> Stashed changes
   local bn_cmd="$cfgdir/bn"
   [ -x "$bn_cmd" ] || bn_cmd="$bindir/bn"
 
@@ -536,17 +527,10 @@ register_mcp() {
   # Claude Desktop — a separate product from Claude Code, with its own config file and its own
   # `mcpServers` key. Only register when it is actually installed.
   #
-<<<<<<< Updated upstream
   # Caveat: the stdio launcher scopes itself to the client's cwd, and a GUI app's cwd is `/`, so the
   # branch-note *tools* report "no branch scope" there. The skill *prompts* still work (seeded from
   # the global tiers, not the worktree). Pointing Desktop at a repo needs the HTTP transport
   # (`bn serve` + X-Bn-Repo/X-Bn-Branch).
-=======
-  # Caveat worth knowing: the stdio launcher scopes itself to the client's cwd, and a GUI app's cwd
-  # is `/`, so the branch-note *tools* will report "no branch scope" there. The skill *prompts*
-  # still work (they are seeded from the global tiers, not the worktree), which is most of the
-  # value. Pointing Desktop at a repo needs the HTTP transport (`bn serve` + X-Bn-Repo/X-Bn-Branch).
->>>>>>> Stashed changes
   local desktop_dir="$HOME/Library/Application Support/Claude"
   [ -d "$desktop_dir" ] || desktop_dir="$HOME/.config/Claude"   # Linux
   if [ -d "$desktop_dir" ]; then

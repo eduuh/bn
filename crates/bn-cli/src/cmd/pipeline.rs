@@ -409,7 +409,7 @@ pub(crate) fn emit_pipeline_advance(
 
 /// Record the transition and report it (JSON envelope or a one-line human message).
 fn transition(cfg: &Config, ctx: &Resolved, stage: Stage, as_json: bool) {
-    let decision = match stage::transition(&cfg.note_file(ctx), stage) {
+    let decision = match stage::transition(cfg, &cfg.note_file(ctx), stage) {
         Ok(decision) => decision,
         Err(e) => fail(&format!("bn pipeline: failed to transition stage: {e}")),
     };
@@ -743,7 +743,7 @@ fn enter_plan(
     as_json: bool,
 ) {
     // Entering `plan` is not a gated transition, so this only fails on real I/O trouble.
-    if let Err(e) = stage::transition(&cfg.note_file(ctx), Stage::Plan) {
+    if let Err(e) = stage::transition(cfg, &cfg.note_file(ctx), Stage::Plan) {
         fail(&format!(
             "bn pipeline investigate: failed to advance to plan: {e}"
         ));
@@ -1030,6 +1030,7 @@ fn active_board(cfg: &Config) -> Vec<BoardEntry> {
         .into_iter()
         .map(|branch_note| {
             let event = recorded.get(&(branch_note.repo.clone(), branch_note.branch.clone()));
+            let skill = stage::skill_for_note(&branch_note.note);
             BoardEntry {
                 repo: branch_note.repo,
                 branch: branch_note.branch,
@@ -1040,6 +1041,7 @@ fn active_board(cfg: &Config) -> Vec<BoardEntry> {
                     .or_else(|| event.map(|entry| entry.stage))
                     .unwrap_or(Stage::DEFAULT),
                 ts: event.map(|entry| entry.ts).unwrap_or(0),
+                skill,
             }
         })
         .collect();

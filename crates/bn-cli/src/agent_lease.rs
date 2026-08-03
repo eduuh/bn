@@ -301,6 +301,7 @@ fn parse_observed_agent_windows(output: &str) -> Vec<ObservedAgentWindow> {
                     harness: "unknown".into(),
                     kind: match kind {
                         "control" => AgentLeaseKind::Control,
+                        "today" => AgentLeaseKind::Today,
                         "pipeline-plan" => AgentLeaseKind::PipelinePlan,
                         "pipeline-investigate" => AgentLeaseKind::PipelineInvestigate,
                         _ if target.contains("-plan-") => AgentLeaseKind::PipelinePlan,

@@ -67,6 +67,14 @@ pub(super) fn route(cfg: &Config, action: CmdInsights, json: bool) {
             Some(TodayCmd::Dismiss { id }) => {
                 today_set_status(&id, bn_core::suggestions::SuggestionStatus::Dismissed, json)
             }
+            Some(TodayCmd::Agent { action }) => match action {
+                TodayAgentCmd::Start {
+                    harness,
+                    lookback_days,
+                } => today_agent_start(cfg, harness.as_deref(), lookback_days, json),
+                TodayAgentCmd::Stop => today_agent_stop(json),
+                TodayAgentCmd::Status => today_agent_status(cfg, json),
+            },
         },
         CmdInsights::Metrics {
             since,

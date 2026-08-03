@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { TaskCreate } from "../api/writes";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
+import { RepoSelect } from "./RepoSelect";
 
 /**
  * The only way to originate work by hand (#1006).
@@ -71,15 +72,10 @@ export function NewTaskDialog({
             />
           </label>
           <div className="grid grid-cols-3 gap-2">
-            <label className="block space-y-1">
+            <div className="block space-y-1">
               <span className="text-[11px] font-medium text-muted-foreground">Repo</span>
-              <input
-                value={repo}
-                onChange={(e) => setRepo(e.target.value)}
-                placeholder="bn"
-                className={field}
-              />
-            </label>
+              <RepoSelect value={repo} onChange={setRepo} />
+            </div>
             <label className="block space-y-1">
               <span className="text-[11px] font-medium text-muted-foreground">Day</span>
               <input

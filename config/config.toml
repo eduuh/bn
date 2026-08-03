@@ -27,27 +27,35 @@ sla_first_review_hours = 4
 sla_merge_hours = 24
 # harness = "copilot"           # copilot | claude; default current harness, then copilot
 
-# Pipeline models are left to the harness default (latest). Uncomment to pin a stage.
+# Per-stage pipeline policy, keyed by stage name. Everything is left to the harness default
+# (latest) until you pin it. Layering, low → high: built-in default → [pipeline.stages.<stage>] →
+# [repo.<name>.pipeline.stages.<stage>]. Omitted fields inherit, so a repo entry can override only
+# the model and keep the global effort/harness.
+#
 # `harness` (claude | copilot) picks the agent for a dispatch LAUNCHED at that stage — it's the
 # stage-aware default when `--agent` isn't pinned (an explicit `--agent` still wins). A single
 # dispatched run uses one harness for its whole pipeline, so this only differs across separate
 # dispatches (a `--skill plan` pass vs an execute pass), not mid-run. Only investigate/plan/execute
 # (and critique via `bn critic`) are reachable launch stages.
-# [pipeline.models.investigate]
+#
+# `stages` was called `models` before per-stage policy grew beyond model selection; the old name is
+# still accepted. Don't write both — a file carrying both tables is rejected as malformed rather
+# than silently merged.
+# [pipeline.stages.investigate]
 # model = "gpt-5.4"
 # effort = "high"               # effort tier
-# [pipeline.models.plan]
+# [pipeline.stages.plan]
 # model = "claude-fable-5"
 # effort = "max"
 # harness = "claude"            # fable runs only under the claude harness
-# [pipeline.models.execute]
+# [pipeline.stages.execute]
 # model = "claude-opus-4.8"
 # effort = "max"
 # harness = "copilot"           # executors run copilot + opus
-# [pipeline.models.critique]
+# [pipeline.stages.critique]
 # model = "gpt-5.4"
 # effort = "high"
-# [repo.my-repo.pipeline.models.execute]
+# [repo.my-repo.pipeline.stages.execute]
 # model = "claude-sonnet-4.6"   # inherits omitted fields (harness too)
 
 [attention]

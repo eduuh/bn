@@ -2247,6 +2247,33 @@ pub(crate) enum TodayCmd {
     Accept { id: String },
     /// Dismiss a suggestion — it stays recorded so the agent never re-proposes it.
     Dismiss { id: String },
+    /// Start, stop, or inspect Today's **hosted** agent — a live harness session in the tmux
+    /// `planning` session, seeded with today's findings packet and steerable from the dashboard's
+    /// Today page (or `bn agent send today:<date> "..."`).
+    Agent {
+        #[command(subcommand)]
+        action: TodayAgentCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum TodayAgentCmd {
+    /// Launch Today's agent into the `planning` tmux session. Idempotent: a live agent for today
+    /// is reported, not duplicated. The session is leased and its id recorded, so it is steerable
+    /// (`bn agent send today:<date>`) the moment it comes up.
+    Start {
+        /// Harness to launch: copilot or claude. Omit to use the configured default
+        /// (`[harness].default` / `$BN_HARNESS`).
+        #[arg(long)]
+        harness: Option<String>,
+        /// Days of findings to seed the packet with (default 7).
+        #[arg(long)]
+        lookback_days: Option<i64>,
+    },
+    /// Stop Today's agent: close its tmux window and release its lease.
+    Stop,
+    /// Show the recorded agent joined with its live state (health, control channel).
+    Status,
 }
 
 #[derive(Subcommand, Debug)]

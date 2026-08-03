@@ -18,8 +18,8 @@ mod tools_config;
 mod util;
 
 pub use config::{
-    Config, ContextError, LogConfig, PipelineConfig, PipelineModel, PipelineModelConfig,
-    RepoBranch, RepoConfig, RepoPlacementPolicy, Resolved, WebConfig,
+    Config, ContextError, LogConfig, PipelineConfig, PipelineModel, RepoBranch, RepoConfig,
+    RepoPlacementPolicy, Resolved, StageConfig, WebConfig,
 };
 pub use context::{repo_root, resolve, resolve_hint, resolve_target};
 pub use dirs::{
@@ -545,15 +545,15 @@ mod tests {
     }
 
     #[test]
-    fn config_file_parses_global_and_repo_pipeline_models() {
+    fn config_file_parses_global_and_repo_pipeline_stages() {
         let cf: ConfigFile = toml::from_str(
             r#"
-[pipeline.models.plan]
+[pipeline.stages.plan]
 model = "claude-fable-5"
 effort = "max"
 harness = "claude"
 
-[repo.arena.pipeline.models.execute]
+[repo.arena.pipeline.stages.execute]
 model = "claude-sonnet-4.6"
 agent = "copilot"
 "#,
@@ -561,20 +561,71 @@ agent = "copilot"
         .unwrap();
         let global = cf.pipeline().unwrap();
         assert_eq!(
-            global.models[&crate::pipeline::stage::Stage::Plan],
-            PipelineModelConfig {
+            global.stages[&crate::pipeline::stage::Stage::Plan],
+            StageConfig {
                 model: Some("claude-fable-5".into()),
                 effort: Some("max".into()),
                 harness: Some("claude".into()),
+                ..Default::default()
             }
         );
         let repos = cf.repos().unwrap();
-        let execute = &repos["arena"].pipeline.as_ref().unwrap().models
+        let execute = &repos["arena"].pipeline.as_ref().unwrap().stages
             [&crate::pipeline::stage::Stage::Execute];
         assert_eq!(execute.model.as_deref(), Some("claude-sonnet-4.6"));
         assert_eq!(execute.effort, None);
         // `agent` is an accepted alias for `harness`.
         assert_eq!(execute.harness.as_deref(), Some("copilot"));
+    }
+
+    #[test]
+    fn the_pre_rename_models_table_still_parses() {
+        // Configs written before per-stage policy grew past model selection keep working.
+        let cf: ConfigFile = toml::from_str(
+            r#"
+[pipeline.models.plan]
+model = "claude-fable-5"
+
+[repo.arena.pipeline.models.execute]
+model = "claude-sonnet-4.6"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cf.pipeline().unwrap().stages[&crate::pipeline::stage::Stage::Plan]
+                .model
+                .as_deref(),
+            Some("claude-fable-5")
+        );
+        let repos = cf.repos().unwrap();
+        assert_eq!(
+            repos["arena"].pipeline.as_ref().unwrap().stages
+                [&crate::pipeline::stage::Stage::Execute]
+                .model
+                .as_deref(),
+            Some("claude-sonnet-4.6")
+        );
+    }
+
+    #[test]
+    fn writing_both_stage_table_names_is_rejected_not_merged() {
+        // Two tables that disagree must not be silently folded together — the whole point of
+        // using a serde alias rather than reading both keys.
+        let err = toml::from_str::<ConfigFile>(
+            r#"
+[pipeline.stages.plan]
+model = "a"
+
+[pipeline.models.plan]
+model = "b"
+"#,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("models") || msg.contains("duplicate"),
+            "expected a duplicate-field error naming the offending table, got: {msg}"
+        );
     }
 
     #[test]
@@ -615,24 +666,26 @@ agent = "copilot"
             }
         );
 
-        c.pipeline.models.insert(
+        c.pipeline.stages.insert(
             Stage::Execute,
-            PipelineModelConfig {
+            StageConfig {
                 model: Some("gpt-5.6-sol".into()),
                 effort: Some("high".into()),
                 harness: None,
+                ..Default::default()
             },
         );
         c.repos.insert(
             "Arena".into(),
             RepoConfig {
                 pipeline: Some(PipelineConfig {
-                    models: HashMap::from([(
+                    stages: HashMap::from([(
                         Stage::Execute,
-                        PipelineModelConfig {
+                        StageConfig {
                             model: None,
                             effort: Some("max".into()),
                             harness: None,
+                            ..Default::default()
                         },
                     )]),
                 }),
@@ -655,12 +708,13 @@ agent = "copilot"
 
         let mut c = cfg(vec![]);
         // Global stage harness applies...
-        c.pipeline.models.insert(
+        c.pipeline.stages.insert(
             Stage::Execute,
-            PipelineModelConfig {
+            StageConfig {
                 model: Some("claude-opus-4.8".into()),
                 effort: Some("max".into()),
                 harness: Some("copilot".into()),
+                ..Default::default()
             },
         );
         assert_eq!(
@@ -672,12 +726,13 @@ agent = "copilot"
             "Arena".into(),
             RepoConfig {
                 pipeline: Some(PipelineConfig {
-                    models: HashMap::from([(
+                    stages: HashMap::from([(
                         Stage::Execute,
-                        PipelineModelConfig {
+                        StageConfig {
                             model: None,
                             effort: None,
                             harness: Some("claude".into()),
+                            ..Default::default()
                         },
                     )]),
                 }),
@@ -696,12 +751,13 @@ agent = "copilot"
         use crate::pipeline::stage::Stage;
 
         let mut c = cfg(vec![]);
-        c.pipeline.models.insert(
+        c.pipeline.stages.insert(
             Stage::Plan,
-            PipelineModelConfig {
+            StageConfig {
                 model: None,
                 effort: None,
                 harness: Some("   ".into()),
+                ..Default::default()
             },
         );
         assert_eq!(c.pipeline_model("bn", Stage::Plan).harness, None);

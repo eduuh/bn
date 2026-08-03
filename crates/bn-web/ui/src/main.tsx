@@ -3,7 +3,6 @@ import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom";
 import { App } from "./App";
-<<<<<<< Updated upstream
 import { Home } from "./routes/Home";
 import { lazyRoute, prefetchRoutes } from "./lib/lazyRoute";
 // The 404 and the two error boundaries stay in the entry chunk on purpose. They are the screens
@@ -11,20 +10,13 @@ import { lazyRoute, prefetchRoutes } from "./lib/lazyRoute";
 // making them lazy would risk needing the network to explain that the network broke. They are a few
 // hundred bytes.
 import { NotFound, RootError, RouteError } from "./routes/NotFound";
-=======
-import { Console } from "./routes/Console";
-import { lazyRoute, prefetchRoutes } from "./lib/lazyRoute";
->>>>>>> Stashed changes
 // Every route but the console is lazy. The console is the index route, so it stays in the entry
 // chunk and paints without a fallback; the other nineteen views — and the libraries only they pull
 // in, uPlot for the cost charts, the markdown renderer for notes and packets — arrive on
 // navigation. Bundled eagerly they made a single ~850 kB entry chunk.
-<<<<<<< Updated upstream
 // The console is no longer the entry point (#1006) — the task-first home is — so it becomes a
 // lazy chunk like every other destination.
 const Console = lazyRoute(() => import("./routes/Console"), "Console");
-=======
->>>>>>> Stashed changes
 const CommandCenter = lazyRoute(() => import("./routes/CommandCenter"), "CommandCenter");
 const Today = lazyRoute(() => import("./routes/Today"), "Today");
 const Fleet = lazyRoute(() => import("./routes/Fleet"), "Fleet");

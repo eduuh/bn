@@ -348,7 +348,23 @@ fn assemble(
             .then(name(a).cmp(&name(b)))
     });
 
-    json!({ "repos": rollups })
+    // The flat, alphabetical name list every repo *picker* wants (#1006 follow-up). Derived from
+    // the same rollups the cards render, so a repo can never be offered in a dropdown that the
+    // board doesn't know about, or vice versa. Sorted by name rather than by activity: a picker is
+    // scanned alphabetically, while the cards above are ranked by what's hot.
+    //
+    // Synthetic repos are excluded: Today's agent is addressed as `today:<date>` so it has a real
+    // steering target, which gives it a branch note and therefore a rollup — but you cannot
+    // dispatch work *into* `today`, so offering it in a picker would only invite a failed dispatch.
+    let mut known: Vec<String> = rollups
+        .iter()
+        .filter_map(|r| r.get("repo").and_then(Value::as_str))
+        .filter(|repo| *repo != bn_core::today_agent::TODAY_REPO)
+        .map(str::to_string)
+        .collect();
+    known.sort();
+
+    json!({ "repos": rollups, "known": known })
 }
 
 /// The note file's modified time as epoch-seconds — the best last-activity signal a note carries
@@ -411,6 +427,36 @@ mod tests {
 
     fn repos_of(v: &Value) -> &Vec<Value> {
         v.get("repos").and_then(Value::as_array).unwrap()
+    }
+
+    #[test]
+    fn known_lists_every_pickable_repo_alphabetically_minus_the_synthetic_one() {
+        // `known` is the option source for every repo picker. It must cover repos with no sessions
+        // yet (managed / cloned), and must NOT offer `today` — the synthetic repo Today's agent is
+        // addressed under. That one has a branch note, so it earns a rollup, but you cannot
+        // dispatch into it, and offering it would only produce a failed dispatch.
+        let seeds = vec![
+            note_seed("bn", "feat", None, 0, 100),
+            note_seed("today", "2026-08-03", None, 0, 200),
+        ];
+        let v = assemble(
+            &["nvim".to_string()],
+            &["atlas".to_string()],
+            seeds,
+            &cost_with_repo("bn", 0.0, 0.0),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        let known: Vec<&str> = v
+            .get("known")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .map(|k| k.as_str().unwrap())
+            .collect();
+        assert_eq!(known, vec!["atlas", "bn", "nvim"]);
+        // The card is still there — only the picker filters it.
+        assert!(repos_of(&v).iter().any(|r| r["repo"] == "today"));
     }
 
     #[test]
