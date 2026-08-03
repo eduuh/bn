@@ -2448,6 +2448,22 @@ pub async fn task_create(
     }
 }
 
+/// Has this task earned the right to be started?
+///
+/// Two different agents contribute, and both are required. `triage` decides what is genuinely
+/// doable **today** and stamps `day:`; `improve` makes one task SMART and records the `smart:`
+/// verdict. Requiring both means an agent is never handed work that is either unscheduled or
+/// unscoped — and it is exactly what `task_agents::pre_score` already *ranks* by (+250 due today,
+/// +200 `smart:ok`). The gate only enforces what the ranker already believed.
+///
+/// A `day:` in the future is deliberately not startable: it was triaged *for another day*.
+fn is_triaged(task: &bn_core::todo::Task, today: &str) -> bool {
+    let scheduled = task
+        .meta("day")
+        .is_some_and(|d| bn_core::util::epoch_day(d).is_some() && d <= today);
+    scheduled && task.meta("smart") == Some("ok")
+}
+
 /// `POST /api/tasks/{id}` — a fast mutation on one task.
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct TaskActionBody {
@@ -2483,12 +2499,12 @@ pub async fn task_action(
         {
             return bad_request(cmd, "invalid_priority", "value must be A, B or C")
         }
-        "day" | "snooze" | "priority" | "done" | "wip" => {}
+        "day" | "snooze" | "priority" | "done" | "wip" | "cancel" => {}
         _ => {
             return bad_request(
                 cmd,
                 "invalid_action",
-                "action must be day | priority | done | wip | snooze",
+                "action must be day | priority | done | wip | snooze | cancel",
             )
         }
     }
@@ -2500,9 +2516,29 @@ pub async fn task_action(
         let _lock = bn_core::todo::lock(&path);
         let mut file = bn_core::todo::load(&path).map_err(|e| e.to_string())?;
         let today = bn_core::util::today();
+        // The Start gate. Enforced here rather than by hiding a button, because the dashboard is
+        // not the only caller: the CLI and every agent hit this same endpoint, and a rule that
+        // only the UI honours is a suggestion. `smart:` alone would not do it — it is a *ranking*
+        // signal (`task_agents::pre_score` adds +200 for `ok`), and ranking never blocked anything.
+        if act == "wip" {
+            match file.tasks().find(|t| t.id() == Some(task_id.as_str())) {
+                Some(t) if !is_triaged(t, &today) => {
+                    return Err(format!("not_triaged: {task_id} has not been triaged"))
+                }
+                _ => {}
+            }
+        }
         let ok = match act.as_str() {
             "done" => file.mark_done(&task_id, &today),
             "wip" => file.mark_wip(&task_id),
+            // Cancelling *is* the delete: the store never purges (done and cancelled lines stay,
+            // so the file is the complete record), and `cancelled:1` keeps abandoned work from
+            // ever being counted as a completion. An empty reason records no reason at all.
+            "cancel" => file.cancel(
+                &task_id,
+                &today,
+                Some(val.as_str()).filter(|r| !r.is_empty()),
+            ),
             "snooze" => file.snooze(&task_id, &val),
             other => match file.task_mut(&task_id) {
                 Some(task) => {
@@ -2537,6 +2573,17 @@ pub async fn task_action(
         Ok(Err(e)) if e.starts_with("no task") => {
             audit::record(&state, &label, &id, addr, false);
             not_found_json(cmd, &e)
+        }
+        // A refused Start is a conflict with the task's state, not a malformed request: the caller
+        // sent something valid that this task has not earned yet, and triaging it makes the same
+        // call succeed unchanged.
+        Ok(Err(e)) if e.starts_with("not_triaged") => {
+            audit::record(&state, &label, &id, addr, false);
+            conflict(
+                cmd,
+                "not_triaged",
+                "only triaged tasks can be started — run triage, or improve it past the SMART gate",
+            )
         }
         Ok(Err(e)) => {
             audit::record(&state, &label, &id, addr, false);

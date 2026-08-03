@@ -7,6 +7,7 @@ import { fmtTokens, timeAgo } from "../../lib/format";
 import { jumpCommand } from "../../lib/board";
 import type { WorkItem } from "../../lib/console";
 import { AgentActivity } from "../AgentActivity";
+import { SteerPanel } from "../SteerPanel";
 import { SessionNote } from "../SessionNote";
 import { Markdown } from "../Markdown";
 import { CopyButton } from "../CopyButton";
@@ -63,9 +64,15 @@ function FocusHeader({
     <header className="flex-none space-y-2 px-5 pb-3 pt-4">
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
-          <div className="mb-1 flex items-center gap-2 text-[0.66rem] font-semibold uppercase tracking-[0.09em] text-muted-foreground">
-            {kind}
-            {where && <span className="font-mono normal-case tracking-normal">{where}</span>}
+          <div className="mb-1 flex min-w-0 items-center gap-2 text-[0.66rem] font-semibold uppercase tracking-[0.09em] text-muted-foreground">
+            <span className="shrink-0">{kind}</span>
+            {/* `repo/branch` has no break opportunity a browser will take, so without truncation a
+                long dispatch branch stretched this row and wrapped the label one letter per line. */}
+            {where && (
+              <span className="truncate font-mono normal-case tracking-normal" title={where}>
+                {where}
+              </span>
+            )}
           </div>
           <h2 className="font-display text-[1.35rem] leading-tight tracking-tight text-foreground">
             {title}
@@ -137,6 +144,17 @@ function AgentFocus({ item, now }: { item: WorkItem; now: number }) {
               {detail.isLoading ? "Loading the branch note…" : "No branch note for this session."}
             </p>
           ))}
+      </div>
+
+      {/* Reply where you read. The composer used to live off in the act column, so answering the
+          thing you had just read meant crossing the screen — the agent page never made you do that
+          (see `AgentDetail`), and neither should this.
+
+          It sits *outside* the scroll container so it stays pinned while the transcript moves, and
+          *outside* the tab switch so a half-typed message survives a trip to the plan or the note —
+          the same state-loss the act pane already learned about the hard way. */}
+      <div className="flex-none border-t border-border px-5 py-3">
+        <SteerPanel target={agent.target} control={agent.control} />
       </div>
     </div>
   );

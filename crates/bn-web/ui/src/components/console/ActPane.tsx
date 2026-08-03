@@ -6,8 +6,6 @@ import { apiDispatch, apiQueueAdd, attnAction } from "../../api/writes";
 import { pushToast } from "../../lib/toast";
 import type { WorkItem } from "../../lib/console";
 import { PlanReviewPanel } from "../PlanReviewPanel";
-import { SteerPanel } from "../SteerPanel";
-import { LandButton } from "../LandButton";
 import { RepoSelect } from "../RepoSelect";
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
@@ -189,8 +187,8 @@ const ACT_LAYOUT = cn(
  * The console's right column: **only the decisions available for the selected item**. This is the
  * flow fix that matters most — the old list offered the same "Start agent" button on every row,
  * including plan reviews, where launching a second agent is precisely the wrong move. Here a
- * review offers approve/request-changes/reject, a live agent offers steer/relaunch/kill/land, and
- * only genuinely un-started work offers dispatch.
+ * review offers approve/request-changes/reject, a live agent offers plan-decide/land, and only
+ * genuinely un-started work offers dispatch.
  */
 export function ActPane({ item }: { item?: WorkItem }) {
   if (!item) {
@@ -201,14 +199,13 @@ export function ActPane({ item }: { item?: WorkItem }) {
     );
   }
 
-  // A live agent: decide its plan if it's paused on one, then steer / land.
+  // A live agent: decide the plan it is paused on. Steering is *not* here — the composer belongs
+  // under the transcript it answers, so it renders inline in the focus pane (see `FocusPane`).
   if (item.agent) {
     const a = item.agent;
     return (
       <div className={ACT_LAYOUT}>
         <PlanReviewPanel repo={a.repo} branch={a.branch} />
-        <SteerPanel target={a.target} control={a.control} />
-        <LandButton repo={a.repo} />
       </div>
     );
   }
@@ -222,8 +219,6 @@ export function ActPane({ item }: { item?: WorkItem }) {
       {action.type === "plan-review" && action.repo && action.branch && (
         <PlanReviewPanel repo={action.repo} branch={action.branch} />
       )}
-
-      {action.type === "stale-pr" && action.repo && <LandButton repo={action.repo} />}
 
       {attnId && <AttnPanel id={attnId} />}
 

@@ -22,8 +22,9 @@ test("the console is the index: one queue, grouped by what you'd do about it", a
   await expect(queue.getByRole("heading", { name: "Running" })).toBeVisible();
   await expect(queue.getByRole("heading", { name: "Backlog" })).toBeVisible();
 
-  // Starting work is always one click away, on every selection.
-  await expect(queue.getByRole("button", { name: /Start/ })).toBeVisible();
+  // Starting work is *not* offered here: the queue lists what already exists, and the rail's
+  // "New task" plus ⌘K own the way in.
+  await expect(queue.getByRole("button", { name: /^Start/ })).toHaveCount(0);
 
   await shot(page, testInfo, "console");
 });
@@ -143,3 +144,7 @@ test("at tablet width Act folds under Focus — one pane, not a hidden column pl
   expect(box!.y).toBeGreaterThan(focus!.y);
   expect(Math.abs(box!.x - focus!.x)).toBeLessThan(4);
 });
+
+// Where the steer composer lives (focus pane, under the transcript — not the act column) is
+// covered by `src/components/console/panes.test.tsx` instead: the hermetic fixture seeds actions
+// and plan reviews but no *live* agent, so no queue row here ever opens an agent focus pane.

@@ -9,6 +9,8 @@ import type {
   TasksView,
   IssuesView,
   PipelineBoardView,
+  PipelineStagesView,
+  DoneTasksView,
   FleetView,
   MachineView,
   NodesView,
@@ -87,6 +89,10 @@ export const queryKeys = {
   issues: ["issues"] as const,
   /** The nine-stage pipeline board (#746 / #1005). */
   pipeline: ["pipeline"] as const,
+  /** The pipeline joined to its tasks and their agents — one key per drill-down. */
+  pipelineStages: ["pipeline", "stages"] as const,
+  /** A day's finished record: completions and cancellations, kept apart. */
+  doneTasks: (day: string) => ["tasks", "done", day] as const,
   /** Open attention items (drives the plan-review panel). */
   attn: ["attn"] as const,
   /** The unified action-center list (#522) — every actionable signal, ranked. */
@@ -262,6 +268,8 @@ export function attnQuery() {
     queryKey: queryKeys.attn,
     queryFn: () => fetchEnvelope<AttnView>("/api/attn"),
     refetchInterval: 20_000,
+    placeholderData: keepPrevious<AttnView>,
+    ...TODAY_CACHE.work,
   };
 }
 
@@ -528,6 +536,34 @@ export function bragQuery() {
   };
 }
 
+/** How long Today's reads stay fresh.
+ *
+ * The global default is `staleTime: 5_000`, which is right for a screen you sit on and wrong for
+ * one you navigate back to: every return to `/` refired six queries and repainted the lists from
+ * their loading states. These windows are set from how fast each source *actually* changes, so a
+ * remount inside the window is served from cache with no request at all.
+ *
+ * The SSE stream only does a blanket invalidate when it reconnects after a drop (`useBnStream`),
+ * so `refetchInterval` still carries liveness — this caches *between* those polls, it does not
+ * replace them. `gcTime` is deliberately much longer than any window: keeping a few KB of JSON so
+ * a back-navigation paints instantly is a trade worth making every time.
+ */
+const TODAY_CACHE = {
+  /** The task store and the pipeline change only when you or an agent act. */
+  work: { staleTime: 15_000, gcTime: 10 * 60_000 },
+  /** A day's finished record barely moves, and past days never do. */
+  done: { staleTime: 60_000, gcTime: 30 * 60_000 },
+  /** The server already holds a TTL cache for issues (#999) — polling faster just re-serves it. */
+  slow: { staleTime: 120_000, gcTime: 30 * 60_000 },
+} as const;
+
+/** Keep the previous page of data on screen while a refetch is in flight.
+ *
+ * Without this, every background refetch drops the lists back to `undefined` for a frame and the
+ * screen flashes its empty states — "Nothing is ready", "Nothing is in flight" — which reads as
+ * *the work disappeared*, not as *we are reloading*. */
+const keepPrevious = <T,>(prev: T | undefined) => prev;
+
 /** Today's tasks — `day:` today-or-earlier plus unscheduled, mirroring the CLI's bare view so the
  * dashboard and `bn task` never disagree about what "today" means. */
 export function tasksQuery(scope: "today" | "all" = "today") {
@@ -536,6 +572,8 @@ export function tasksQuery(scope: "today" | "all" = "today") {
     queryFn: () =>
       fetchEnvelope<TasksView>(`/api/tasks${scope === "all" ? "?all=1" : ""}`),
     refetchInterval: 30_000,
+    placeholderData: keepPrevious<TasksView>,
+    ...TODAY_CACHE.work,
   };
 }
 
@@ -546,6 +584,8 @@ export function issuesQuery() {
     queryKey: queryKeys.issues,
     queryFn: () => fetchEnvelope<IssuesView>("/api/issues"),
     refetchInterval: 120_000,
+    placeholderData: keepPrevious<IssuesView>,
+    ...TODAY_CACHE.slow,
   };
 }
 
@@ -555,5 +595,43 @@ export function pipelineQuery() {
     queryKey: queryKeys.pipeline,
     queryFn: () => fetchEnvelope<PipelineBoardView>("/api/pipeline/board"),
     refetchInterval: 30_000,
+  };
+}
+
+/** The pipeline as *work*: each stage with the tasks actually sitting in it, their live agents,
+ * and any orphan worktrees.
+ *
+ * This replaces drawing `/api/pipeline/board`'s counts next to a separately-queried task list.
+ * Those were two different populations joined by a filter on `task.stage`, a field nothing ever
+ * writes — so a node could read `3` above the words "Nothing is in execute". Here the count and
+ * the rows are one value, which is why the component can no longer render them out of step. */
+export function pipelineStagesQuery() {
+  return {
+    queryKey: queryKeys.pipelineStages,
+    queryFn: () => fetchEnvelope<PipelineStagesView>("/api/pipeline/stages"),
+    refetchInterval: 30_000,
+    // The most expensive read on the page — it folds the event log, the task store *and* a fleet
+    // supervise pass — and it is the one the stage drill-down reads from. Caching it means
+    // clicking through stages costs nothing: the filtering is already client-side over this one
+    // payload, so no stage selection ever issues a request.
+    placeholderData: keepPrevious<PipelineStagesView>,
+    ...TODAY_CACHE.work,
+  };
+}
+
+/** What was finished on a day — completions *and* cancellations, kept apart. Defaults to today. */
+export function doneTasksQuery(day?: string) {
+  return {
+    queryKey: queryKeys.doneTasks(day ?? "today"),
+    queryFn: () =>
+      fetchEnvelope<DoneTasksView>(
+        `/api/tasks?status=done${day ? `&day=${encodeURIComponent(day)}` : ""}`,
+      ),
+    // A past day is immutable: nothing can be completed on a day that has already ended, so it is
+    // fetched once per session and never again. Only today's record keeps polling.
+    ...(day
+      ? { staleTime: Infinity, gcTime: TODAY_CACHE.done.gcTime }
+      : { refetchInterval: 60_000, ...TODAY_CACHE.done }),
+    placeholderData: keepPrevious<DoneTasksView>,
   };
 }

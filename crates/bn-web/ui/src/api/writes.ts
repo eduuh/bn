@@ -204,11 +204,6 @@ export function killAgent(target: string): Promise<unknown> {
   return post(`/api/agents/${encodeURIComponent(target)}/kill`);
 }
 
-/** `POST /api/land {repo}` — land the repo's ready PRs (`bn wt merge --all`). */
-export function apiLand(repo: string): Promise<unknown> {
-  return post("/api/land", { repo });
-}
-
 // --- Goal notes (#564) — connect/disconnect a note on a daily goal ---
 
 /** The reply shape both goal-note writes return: the goal the note now hangs on + the note. */
@@ -357,9 +352,16 @@ export function createTask(body: TaskCreate): Promise<{ id: string }> {
 }
 
 /** The fast mutations `POST /api/tasks/:id` accepts. */
-export type TaskAction = "day" | "priority" | "done" | "wip" | "snooze";
+export type TaskAction = "day" | "priority" | "done" | "wip" | "snooze" | "cancel";
 
-/** `POST /api/tasks/:id {action, value?}` — schedule, prioritize, finish, start or defer a task. */
+/** `POST /api/tasks/:id {action, value?}` — schedule, prioritize, finish, start, defer or cancel.
+ *
+ * `wip` is gated: the server answers **409 `not_triaged`** for a task that has not been triaged,
+ * so hiding the Start button is a courtesy to the operator, not the enforcement. Callers must
+ * handle that rejection rather than assume a disabled button prevented it.
+ *
+ * `cancel` takes the reason as `value`. It is the delete: the store never purges, and `cancelled:1`
+ * is what keeps abandoned work from ever being counted as a completion. */
 export function taskAction(
   id: string,
   action: TaskAction,

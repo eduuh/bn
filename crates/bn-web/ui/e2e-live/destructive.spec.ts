@@ -128,49 +128,9 @@ test("relaunching a stuck agent runs the recovery path", async ({ page }, testIn
   ).toBeGreaterThan(0);
 });
 
-/**
- * "Land ready PRs" runs `bn wt merge --all`, which merges *every* open PR of yours for the repo —
- * and `--all` is documented as "the fast, ungated batch path", i.e. it skips the rebase-onto-main +
- * verify gate that a single `bn wt merge` applies by default.
- *
- * With zero open PRs this is a proven no-op, so it exercises the whole button → API → `bn` path
- * without merging anything.
- */
-test("landing with nothing ready is a clean no-op", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "desktop", "one land is enough");
-
-  const open = await page.request
-    .get("https://api.github.com/repos/eduuh/bn/pulls?state=open")
-    .then((r) => r.json())
-    .catch(() => []);
-  test.skip(
-    Array.isArray(open) && open.length > 0,
-    `${Array.isArray(open) ? open.length : "?"} PRs are open — landing would really merge them`,
-  );
-
-  const diags = watch(page, "/", testInfo.project.name);
-  await primeToken(page);
-  await visit(page, "/");
-
-  const land = page.getByRole("button", { name: /Land ready PRs/ });
-  await expect(land).toBeVisible();
-
-  page.once("dialog", (d) => void d.accept());
-
-  const [res] = await Promise.all([
-    page.waitForResponse((r) => r.url().includes("/api/land") && r.request().method() === "POST", {
-      timeout: 60_000,
-    }),
-    land.click(),
-  ]);
-  const body = await res.json();
-
-  await shot(page, testInfo, "land-noop");
-  recordDiagnostics(diags);
-
-  expect(body.ok, `land errored: ${JSON.stringify(body.error)}`).toBe(true);
-  expect(diags.filter((d) => d.kind === "pageerror")).toEqual([]);
-});
+// The "landing with nothing ready is a clean no-op" test went with the button it drove: the web
+// no longer offers a one-click `bn wt merge --all`. Landing is a terminal decision made per PR,
+// and an ungated batch merge behind a single console button was the wrong shape for it.
 
 /**
  * The plan-review happy path needs an agent parked awaiting approval, and there is none. Testing

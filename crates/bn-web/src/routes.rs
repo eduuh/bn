@@ -65,6 +65,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tasks", get(api::tasks))
         .route("/api/issues", get(api::issues))
         .route("/api/pipeline/board", get(api::pipeline_board))
+        // Registered before the `{repo}/{branch}` wildcard so `stages` stays a literal segment.
+        .route("/api/pipeline/stages", get(api::pipeline_stages))
         .route("/api/pipeline/{repo}/{branch}", get(api::pipeline_status))
         .route("/api/actions", get(api::actions))
         .route("/api/completed", get(api::completed))
@@ -1420,6 +1422,185 @@ x 2026-08-02 finished work already id:t6 repo:bn day:2026-08-02
                 assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
                 let body = body_json(resp).await;
                 assert_eq!(body["error"]["code"], "invalid_day");
+            });
+        });
+    }
+
+    /// The whole point of `/api/pipeline/stages`: a stage's count **is** its row count.
+    ///
+    /// Before this, the drawing counted worktrees from the event log while the list beside it
+    /// filtered tasks on `task.stage` — a field nothing ever writes — so a node could read `1`
+    /// above the words "Nothing is in investigate". The two numbers now come from one value, so
+    /// that state is not merely fixed but unrepresentable.
+    #[test]
+    fn pipeline_stages_joins_tasks_to_worktrees_so_the_count_is_the_row_count() {
+        // A dedicated fixture: the join key is `(repo, branch)`, so these tasks must carry a
+        // `branch:` — the shared `TASKS` deliberately do not, which is itself the pre-pipeline
+        // case covered below.
+        let lines = "\
+(A) overdue work on the reconnect id:t1 repo:bn branch:reconnect day:2026-08-01 smart:ok
+(B) work with no worktree yet id:t2 repo:bn day:2026-08-03 smart:ok
+pulled from an issue, no branch at all id:t3 repo:bn
+";
+        with_tasks(lines, || {
+            // t1 lives on a branch that is sitting in `investigate`.
+            bn_core::pipeline::stage::record(
+                "bn",
+                "reconnect",
+                bn_core::pipeline::stage::Stage::Investigate,
+            )
+            .unwrap();
+            // …and a worktree at `execute` that no task claims: an orphan, not a silent drop.
+            bn_core::pipeline::stage::record(
+                "bn",
+                "legacy-ui",
+                bn_core::pipeline::stage::Stage::Execute,
+            )
+            .unwrap();
+
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let body = tasks_body("/api/pipeline/stages").await;
+                assert_eq!(body["command"], "pipeline-stages");
+                let stages = body["data"]["stages"].as_array().expect("stages");
+                assert_eq!(stages.len(), 9, "the durable nine-stage vocabulary");
+
+                for stage in stages {
+                    let count = stage["count"].as_u64().unwrap();
+                    let rows = stage["tasks"].as_array().unwrap().len() as u64;
+                    assert_eq!(
+                        count, rows,
+                        "stage {} claimed {count} but listed {rows}",
+                        stage["id"]
+                    );
+                }
+
+                let investigate = stages.iter().find(|s| s["id"] == "investigate").unwrap();
+                assert_eq!(investigate["count"], 1);
+                assert_eq!(investigate["tasks"][0]["id"], "t1");
+
+                // The orphan is reported at its stage rather than inflating the task count.
+                let execute = stages.iter().find(|s| s["id"] == "execute").unwrap();
+                assert_eq!(execute["count"], 0, "no task claims that worktree");
+                assert_eq!(execute["orphans"][0]["branch"], "legacy-ui");
+                assert_eq!(body["data"]["orphans"], 1);
+
+                // Pre-pipeline work is in no stage at all — a task with no `branch:` (created
+                // outside a worktree, or pulled from an issue) can join to nothing, and must not
+                // be smeared across every stage to make the numbers look busier.
+                assert_eq!(
+                    body["data"]["in_flight"], 1,
+                    "only t1 is actually in flight"
+                );
+            });
+        });
+    }
+
+    /// A finished day has to be readable, and cancelled work must never read as an achievement.
+    #[test]
+    fn tasks_done_scope_keeps_cancelled_apart_from_a_real_completion() {
+        let lines = "\
+x 2026-08-03 shipped the parser id:t1 repo:bn
+x 2026-08-03 abandoned the canvas rewrite id:t2 repo:bn cancelled:1 reason:wrong-approach
+x 2026-08-02 yesterdays work id:t3 repo:bn
+open work id:t4 repo:bn
+";
+        with_tasks(lines, || {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let body = tasks_body("/api/tasks?status=done").await;
+                assert_eq!(body["data"]["day"], "2026-08-03");
+                // Both are listed…
+                assert_eq!(body["data"]["count"], 2);
+                let ids = task_ids(&body);
+                assert!(ids.contains(&"t1".into()) && ids.contains(&"t2".into()));
+                assert!(!ids.contains(&"t3".into()), "that is yesterday's record");
+                assert!(!ids.contains(&"t4".into()), "still open");
+                // …but they are never summed into one number.
+                assert_eq!(body["data"]["done"], 1);
+                assert_eq!(body["data"]["cancelled"], 1);
+
+                let cancelled = body["data"]["tasks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|t| t["id"] == "t2")
+                    .unwrap();
+                assert_eq!(cancelled["status"], "cancelled");
+                assert_eq!(cancelled["reason"], "wrong-approach");
+
+                // An earlier day is still reachable.
+                let past = tasks_body("/api/tasks?status=done&day=2026-08-02").await;
+                assert_eq!(task_ids(&past), vec!["t3"]);
+            });
+        });
+    }
+
+    /// The Start gate, enforced where it actually binds.
+    ///
+    /// Hiding the button only disciplines the dashboard; the CLI and every agent POST here too. A
+    /// gate that lives in the UI is a suggestion, so this asserts the *endpoint* refuses.
+    #[test]
+    fn only_a_triaged_task_can_be_started() {
+        with_tasks(TASKS, || {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                // t2 is scheduled for today but failed the SMART gate — not startable.
+                let resp = respond(
+                    test_state(),
+                    post("/api/tasks/t2", None, r#"{"action":"wip"}"#),
+                )
+                .await;
+                assert_eq!(resp.status(), StatusCode::CONFLICT);
+                assert_eq!(body_json(resp).await["error"]["code"], "not_triaged");
+
+                // t3 is smart-unjudged and unscheduled — not startable either.
+                let resp = respond(
+                    test_state(),
+                    post("/api/tasks/t3", None, r#"{"action":"wip"}"#),
+                )
+                .await;
+                assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+                // t1 is `smart:ok` and dated 2026-08-01 — overdue is still today's work.
+                let resp = respond(
+                    test_state(),
+                    post("/api/tasks/t1", None, r#"{"action":"wip"}"#),
+                )
+                .await;
+                assert_eq!(resp.status(), StatusCode::OK, "triaged work starts");
+            });
+        });
+    }
+
+    /// Deleting a task is cancelling it: the store never purges, and `cancelled:1` is what keeps
+    /// abandoned work out of a completion count.
+    #[test]
+    fn cancel_records_the_reason_and_folds_the_task_out_of_the_open_set() {
+        with_tasks(TASKS, || {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let resp = respond(
+                    test_state(),
+                    post(
+                        "/api/tasks/t2",
+                        None,
+                        r#"{"action":"cancel","value":"superseded"}"#,
+                    ),
+                )
+                .await;
+                assert_eq!(resp.status(), StatusCode::OK);
+
+                let open = task_ids(&tasks_body("/api/tasks?all=1").await);
+                assert!(!open.contains(&"t2".into()), "cancelled work is not open");
+
+                let done = tasks_body("/api/tasks?status=done").await;
+                assert_eq!(done["data"]["cancelled"], 1);
+                assert_eq!(done["data"]["done"], 0, "never counted as an achievement");
+                let row = done["data"]["tasks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|t| t["id"] == "t2")
+                    .cloned()
+                    .expect("the cancelled task");
+                assert_eq!(row["reason"], "superseded");
             });
         });
     }

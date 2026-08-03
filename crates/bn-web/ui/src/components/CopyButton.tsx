@@ -25,12 +25,19 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
       onClick={onClick}
       title={text}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 font-mono text-xs transition-colors",
+        // `min-w-0` + a truncating label: agent targets run long (a dispatch branch name plus its
+        // repo), and as an unshrinkable flex child this chip pushed its whole row wider than the
+        // column it sits in.
+        "inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 font-mono text-xs transition-colors",
         copied ? "border-ok/30 text-ok" : "text-muted-foreground hover:bg-accent hover:text-foreground",
       )}
     >
-      {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-      {copied ? "copied" : label}
+      {copied ? (
+        <Check className="h-3 w-3 shrink-0" />
+      ) : (
+        <Copy className="h-3 w-3 shrink-0" />
+      )}
+      <span className="truncate">{copied ? "copied" : label}</span>
     </button>
   );
 }

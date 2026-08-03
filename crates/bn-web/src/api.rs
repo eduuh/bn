@@ -20,6 +20,7 @@ use axum::{
 use bn_core::render::Envelope;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio_stream::wrappers::BroadcastStream;
@@ -777,6 +778,11 @@ pub struct TasksQuery {
     pub stage: Option<String>,
     /// `1` to include the whole backlog rather than just what's actionable now.
     pub all: Option<String>,
+    /// `open` (the default) or `done` — the finished record for a day.
+    ///
+    /// Without this the web UI could not see a completed task at all: every path below reads
+    /// `open_sorted`, so "what did I finish today" had no answer on the wire.
+    pub status: Option<String>,
 }
 
 /// `GET /api/tasks` — the task store (#996), filtered.
@@ -796,10 +802,16 @@ pub async fn tasks(State(state): State<AppState>, Query(q): Query<TasksQuery>) -
     let smart = nonempty(q.smart).map(|s| s.to_ascii_lowercase());
     let stage = nonempty(q.stage).map(|s| s.to_ascii_lowercase());
     let day = nonempty(q.day);
+    let status = nonempty(q.status).map(|s| s.to_ascii_lowercase());
 
     if let Some(d) = day.as_deref() {
         if d != "today" && bn_core::util::epoch_day(d).is_none() {
             return bad_request(cmd, "invalid_day", "day must be `today` or YYYY-MM-DD");
+        }
+    }
+    if let Some(s) = status.as_deref() {
+        if s != "open" && s != "done" {
+            return bad_request(cmd, "invalid_status", "status must be `open` or `done`");
         }
     }
     let day_filter = day.as_deref().map(|d| {
@@ -826,6 +838,53 @@ pub async fn tasks(State(state): State<AppState>, Query(q): Query<TasksQuery>) -
                 .into_response()
         }
     };
+
+    // The finished record for a day. Cancelled work is *listed but never conflated* with a real
+    // completion — the store keeps them apart on purpose (`x <date> cancelled:1`, `todo.rs`), so
+    // folding them into one count here would let abandoned work inflate a day's output.
+    if status.as_deref() == Some("done") {
+        let want_day = day_filter.unwrap_or_else(|| today.clone());
+        let mut done = 0usize;
+        let mut cancelled = 0usize;
+        let mut rows: Vec<Value> = Vec::new();
+
+        for t in file.tasks() {
+            if t.completion.as_deref() != Some(want_day.as_str()) {
+                continue;
+            }
+            if repo
+                .as_deref()
+                .is_some_and(|want| !t.meta("repo").is_some_and(|r| r.eq_ignore_ascii_case(want)))
+            {
+                continue;
+            }
+            match t.status(&today) {
+                bn_core::todo::Status::Cancelled => cancelled += 1,
+                bn_core::todo::Status::Done => done += 1,
+                // Not finished on this day — a `completion` with an open status is a malformed
+                // line, and guessing at it would be worse than leaving it out.
+                _ => continue,
+            }
+            let mut row = t.to_json(&today);
+            row["reason"] = json!(t.meta("reason"));
+            rows.push(row);
+        }
+
+        return Json(Envelope::success(
+            cmd,
+            json!({
+                "today": today,
+                "day": want_day,
+                "repo": repo,
+                "status": "done",
+                "count": rows.len(),
+                "done": done,
+                "cancelled": cancelled,
+                "tasks": rows,
+            }),
+        ))
+        .into_response();
+    }
 
     let rows: Vec<Value> = file
         .open_sorted(&today, None)
@@ -959,6 +1018,164 @@ pub async fn pipeline_board(State(state): State<AppState>) -> Json<Envelope> {
         "pipeline-board",
         json!({ "board": entries, "counts": counts, "stages": stages }),
     ))
+}
+
+/// `GET /api/pipeline/stages` — the pipeline as *work*, not as counters.
+///
+/// `/api/pipeline/board` answers "how many worktrees sit at each stage" from the event log, and the
+/// dashboard drew that number next to a task list fed by a completely different query. The two
+/// could never agree, and the click-through filtered on `task.stage` — a meta field that is *read*
+/// (`todo.rs`) and written nowhere, so selecting any stage produced an empty list forever.
+///
+/// This endpoint removes the possibility rather than fixing the symptom: **the count and the rows
+/// are the same value**. `stages[].count == stages[].tasks.len()`, by construction.
+///
+/// The join key is `(repo, branch)` — the one identity all three stores already share:
+/// `BoardEntry` (stage), the task store (`repo:`/`branch:` metas), and `LiveAgent`, whose `target`
+/// is literally `repo:branch`. Nothing new is persisted and nothing is mirrored, so there is no
+/// second copy of pipeline state to drift — the same reason #1004 made daily goals a projection.
+///
+/// A worktree at a stage with no task behind it is an **orphan**, reported per stage instead of
+/// dropped: it is precisely the gap EPIC #993 closes, and silently hiding it would make the
+/// pipeline read as emptier than it is.
+pub async fn pipeline_stages(State(state): State<AppState>) -> Response {
+    let cmd = "pipeline-stages";
+    let today = bn_core::util::today();
+    // `board_with_skills` reads one note per row to learn what each worktree is *actually* running
+    // (#1041), so it goes off the axum worker like `/api/pipeline/board` does. Carrying it here
+    // means the drill-down shows the real workflow rather than the stage's default — an explicit
+    // `bn dispatch --skill debug` sits in `execute` while running `debug`, and showing the default
+    // would state the wrong thing confidently.
+    let cfg = state.cfg.clone();
+    let entries =
+        tokio::task::spawn_blocking(move || bn_core::pipeline::stage::board_with_skills(&cfg))
+            .await
+            .unwrap_or_default();
+
+    let file = match bn_core::todo::load(&state.cfg.tasks_file()) {
+        Ok(f) => f,
+        // An unreadable store is a real failure, not an empty pipeline — the same honesty rule
+        // `/api/tasks` and the issue cache follow.
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(Envelope::failure(
+                    cmd,
+                    "store_unreadable",
+                    format!("could not read the task store: {e}"),
+                )),
+            )
+                .into_response()
+        }
+    };
+
+    let fleet = bn_core::agent::supervise(
+        &state.cfg,
+        bn_core::agent::DEFAULT_IDLE_MINS,
+        bn_core::agent::DEFAULT_STUCK_MINS,
+    );
+
+    // `(repo, branch)` lowercased is the join key everywhere below. Both sides are user-authored
+    // (a `repo:` meta typed into a task, a branch name from the event log), so matching them
+    // case-sensitively would silently split `bn/Today-Redesign` from `bn/today-redesign`.
+    let key = |repo: &str, branch: &str| (repo.to_ascii_lowercase(), branch.to_ascii_lowercase());
+
+    let agent_at: HashMap<(String, String), &bn_core::agent::LiveAgent> = fleet
+        .agents
+        .iter()
+        .map(|a| (key(&a.repo, &a.branch), a))
+        .collect();
+
+    // Only open work is "in flight" — a finished task keeps its branch, and counting it here would
+    // leave every shipped worktree permanently occupying its stage.
+    let open = file.open_sorted(&today, None);
+
+    let stages: Vec<Value> = bn_core::pipeline::stage::Stage::ALL
+        .iter()
+        .map(|stage| {
+            let here: Vec<&bn_core::pipeline::stage::BoardEntry> =
+                entries.iter().filter(|e| e.stage == *stage).collect();
+
+            let mut tasks: Vec<Value> = Vec::new();
+            let mut orphans: Vec<Value> = Vec::new();
+
+            for entry in &here {
+                let k = key(&entry.repo, &entry.branch);
+                let matched: Vec<&&bn_core::todo::Task> = open
+                    .iter()
+                    .filter(|t| {
+                        match (t.meta("repo"), t.meta("branch")) {
+                            (Some(r), Some(b)) => key(r, b) == k,
+                            // A task with no `branch:` is pre-pipeline work (created outside a
+                            // worktree, or pulled from an issue) — it belongs to no stage.
+                            _ => false,
+                        }
+                    })
+                    .collect();
+
+                if matched.is_empty() {
+                    orphans.push(json!({
+                        "repo": entry.repo,
+                        "branch": entry.branch,
+                        "ts": entry.ts,
+                    }));
+                    continue;
+                }
+
+                for t in matched {
+                    let mut row = t.to_json(&today);
+                    // What this worktree is really running, joined server-side rather than
+                    // reassembled in the browser from a second endpoint.
+                    row["skill"] = json!(entry.skill);
+                    // The agent is attached to the row rather than listed separately so a task and
+                    // the thing currently working on it can never be rendered out of sync.
+                    if let Some(a) = agent_at.get(&k) {
+                        row["agent"] = json!({
+                            "session_id": a.session_id,
+                            "target": a.target,
+                            "harness": a.harness,
+                            "health": a.health,
+                            "idle_secs": a.idle_secs,
+                        });
+                    }
+                    tasks.push(row);
+                }
+            }
+
+            json!({
+                "id": stage.as_str(),
+                "glyph": stage.glyph(),
+                "position": stage.position(),
+                // Intent (what this stage dispatches by default) beside reality (what each row is
+                // actually running), because an explicit `--skill` makes the two differ.
+                "skill": stage.default_skill(),
+                // The contract that makes the old bug unrepresentable: this *is* the row count.
+                "count": tasks.len(),
+                "tasks": tasks,
+                "orphans": orphans,
+            })
+        })
+        .collect();
+
+    let in_flight: usize = stages
+        .iter()
+        .map(|s| s["count"].as_u64().unwrap_or(0) as usize)
+        .sum();
+    let orphan_count: usize = stages
+        .iter()
+        .map(|s| s["orphans"].as_array().map_or(0, Vec::len))
+        .sum();
+
+    Json(Envelope::success(
+        cmd,
+        json!({
+            "today": today,
+            "in_flight": in_flight,
+            "orphans": orphan_count,
+            "stages": stages,
+        }),
+    ))
+    .into_response()
 }
 
 /// `GET /api/pipeline/{repo}/{branch}` — one worktree's current stage and its full history.

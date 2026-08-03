@@ -1425,3 +1425,68 @@ export interface PipelineBoardView {
   counts: Record<string, number>;
   stages: PipelineStage[];
 }
+
+/** The agent currently working a task, joined on `(repo, branch)` — `LiveAgent`'s `target` *is*
+ * `repo:branch`. Attached to the task row rather than listed apart, so a task and the thing
+ * working on it cannot be rendered out of sync. Absent when nothing is running. */
+export interface TaskAgent {
+  session_id: string;
+  target: string;
+  harness: string;
+  health: AgentHealth;
+  idle_secs: number;
+}
+
+/** A task in flight: the store row, whatever is working on it, and the workflow it is running. */
+export interface StageTask extends TaskRow {
+  agent?: TaskAgent;
+  /** The skill this worktree is **actually** running (#1041), joined from its branch note — not
+   * the stage's default. An explicit `bn dispatch --skill debug` sits in `execute` running `debug`,
+   * so showing the stage default would state the wrong thing confidently. */
+  skill?: string | null;
+}
+
+/** A worktree recorded at a stage with **no task behind it**. Reported rather than dropped: it is
+ * exactly the gap EPIC #993 closes, and hiding it would make the pipeline read as emptier than it
+ * is. `count` deliberately excludes these — they are not tasks. */
+export interface StageOrphan {
+  repo: string;
+  branch: string;
+  ts: number;
+}
+
+/** One stage of `GET /api/pipeline/stages`.
+ *
+ * **`count === tasks.length`, by construction on the server.** The old bug — a node reading `3`
+ * over an empty list — is not fixed here so much as made unrepresentable. */
+export interface PipelineStageWork {
+  id: string;
+  glyph: string;
+  position: number;
+  /** The workflow this stage dispatches by *default* — its intent, as against each row's `skill`,
+   * which is what that worktree is really running. */
+  skill: string | null;
+  count: number;
+  tasks: StageTask[];
+  orphans: StageOrphan[];
+}
+
+export interface PipelineStagesView {
+  today: string;
+  in_flight: number;
+  orphans: number;
+  stages: PipelineStageWork[];
+}
+
+/** A day's finished record. `done` and `cancelled` are counted separately and must never be summed
+ * into one figure: the store keeps `x <date> cancelled:1` distinct from a real completion so that
+ * abandoned work cannot inflate a day's output. */
+export interface DoneTasksView {
+  today: string;
+  day: string;
+  status: "done";
+  count: number;
+  done: number;
+  cancelled: number;
+  tasks: (TaskRow & { reason: string | null })[];
+}

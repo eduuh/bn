@@ -22,33 +22,39 @@ export function PipelineFlow({
   stages,
   selected,
   onSelect,
+  bare = false,
 }: {
   stages: PipelineStage[];
   selected?: string;
   onSelect?: (stage: string | undefined) => void;
+  /** Drop the built-in heading. Set when the caller already titles the section it sits in —
+   * otherwise the count renders twice, once per owner, and the two can read differently. */
+  bare?: boolean;
 }) {
   if (stages.length === 0) return null;
   const total = stages.reduce((n, s) => n + s.count, 0);
 
   return (
     <section aria-label="pipeline" className="space-y-1.5">
-      <div className="flex items-baseline gap-2">
-        <h2 className="font-display text-sm font-semibold tracking-tight text-foreground">
-          Pipeline
-        </h2>
-        <span className="font-mono text-[11px] tabular-nums text-muted-foreground/70">
-          {total === 0 ? "nothing in flight" : `${total} in flight`}
-        </span>
-        {selected && (
-          <button
-            type="button"
-            onClick={() => onSelect?.(undefined)}
-            className="ml-auto text-[11px] text-primary hover:underline"
-          >
-            clear filter
-          </button>
-        )}
-      </div>
+      {!bare && (
+        <div className="flex items-baseline gap-2">
+          <h2 className="font-display text-sm font-semibold tracking-tight text-foreground">
+            Pipeline
+          </h2>
+          <span className="font-mono text-[11px] tabular-nums text-muted-foreground/70">
+            {total === 0 ? "nothing in flight" : `${total} in flight`}
+          </span>
+          {selected && (
+            <button
+              type="button"
+              onClick={() => onSelect?.(undefined)}
+              className="ml-auto text-[11px] text-primary hover:underline"
+            >
+              clear filter
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Horizontal scroll rather than a wrap: the flow is an *order*, and wrapping it mid-way
           reads as two pipelines. The container scrolls; the page never does. */}

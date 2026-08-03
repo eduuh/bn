@@ -10,7 +10,6 @@ import { useMediaQuery } from "../hooks/useMediaQuery";
 import { QueuePane } from "../components/console/QueuePane";
 import { FocusPane } from "../components/console/FocusPane";
 import { ActPane } from "../components/console/ActPane";
-import { StartButton } from "../components/console/StartButton";
 import { ToastStack } from "../components/ToastStack";
 import { cn } from "../lib/utils";
 
@@ -143,15 +142,17 @@ export function Console() {
             selected ? "hidden" : "flex",
           )}
         >
-          <div className="flex-none space-y-2.5 px-3.5 pb-2 pt-3.5">
+          <div className="flex-none px-3.5 pb-2 pt-3.5">
             {/* The prototype's `.queue-head`: the title and the state of the queue on one baseline,
                 counts pushed to the right edge where they read as a status line rather than a
                 subtitle. */}
             <div className="flex items-baseline gap-2">
-              <h1 className="font-display text-lg font-semibold tracking-tight text-foreground">
+              {/* `shrink-0`: the counts wrap to a second line on a busy queue, and without it the
+                  flex row squeezed the title until it broke mid-word ("Queu / e"). */}
+              <h1 className="shrink-0 font-display text-lg font-semibold tracking-tight text-foreground">
                 Queue
               </h1>
-              <span className="ml-auto font-mono text-[11px] tabular-nums text-muted-foreground/70">
+              <span className="ml-auto text-right font-mono text-[11px] tabular-nums text-muted-foreground/70">
                 {counts.blocked > 0 ? (
                   <span className="font-semibold text-urgent">{counts.blocked} blocked</span>
                 ) : (
@@ -163,8 +164,9 @@ export function Console() {
                 {counts.backlog} queued
               </span>
             </div>
-            {/* Always here, on every selection — starting work is never a matter of navigating. */}
-            <StartButton repo={selected?.agent?.repo ?? selected?.action?.repo ?? ""} />
+            {/* No "Start" here. The queue's job is the work that already exists; the rail's clay
+                "New task" and ⌘K are the ways in, and a second start button sitting on top of the
+                list only competed with them. */}
           </div>
           {loading ? (
             <p className="px-3 py-4 text-xs text-muted-foreground">Loading the queue…</p>
