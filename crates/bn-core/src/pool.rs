@@ -18,10 +18,18 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+/// The smallest usable pool: the reserved controller slot plus one worker. Slot
+/// [`crate::agent::CONTROLLER_POOL_SLOT`] never serves workers, so a size of 1 would leave a pooled
+/// repo with nowhere to dispatch — every configured size clamps up to this.
+pub const MIN_POOL_SIZE: usize = 2;
+
 /// Pool size for `repo` parsed from the pools config `content`, or `None` when the repo isn't
-/// pooled. Lines are `<repo> <size>`; `#` starts a comment; blank lines are ignored. A missing or
-/// unparseable size defaults to 1, and any size is clamped to at least 1 (a pooled repo always has
-/// at least one slot).
+/// pooled. Lines are `<repo> <size>`; `#` starts a comment; blank lines are ignored.
+///
+/// The size counts **all** slots, of which slot 1 is the reserved controller slot — so `<repo> 4`
+/// means one controller plus three workers. A missing or unparseable size, and any size below the
+/// floor, clamps to [`MIN_POOL_SIZE`]: a pooled repo always has the controller slot plus at least
+/// one worker.
 ///
 /// A `default <size>` line — or its `*` alias — sets a fallback that makes *any* repo poolable at
 /// that size, so a heavy checkout anywhere can lease a warm slot without being pre-registered. An
@@ -40,8 +48,8 @@ pub fn parse_pool_size(content: &str, repo: &str) -> Option<usize> {
         let size = it
             .next()
             .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(1)
-            .max(1);
+            .unwrap_or(MIN_POOL_SIZE)
+            .max(MIN_POOL_SIZE);
         if key == repo {
             // An explicit per-repo entry always wins over the default fallback.
             return Some(size);
@@ -61,7 +69,7 @@ fn is_default_key(key: &str) -> bool {
 
 /// Every `(repo, size)` pair in the pools config `content`, in file order — the multi-repo view of
 /// [`parse_pool_size`] (same line grammar: `<repo> <size>`, `#` comments, blank lines skipped; a
-/// missing/unparseable size defaults to 1, clamped to at least 1). Used to enumerate every pooled
+/// missing/unparseable size clamps to [`MIN_POOL_SIZE`]). Used to enumerate every pooled
 /// repo for a rollup (the dashboard's per-repo pool state) without probing each name individually.
 /// The `default`/`*` fallback line is skipped — it isn't a concrete repo, only the any-repo size.
 pub fn parse_pooled_repos(content: &str) -> Vec<(String, usize)> {
@@ -77,7 +85,7 @@ pub fn parse_pooled_repos(content: &str) -> Vec<(String, usize)> {
             continue;
         }
         let size = it.next().and_then(|s| s.parse::<usize>().ok()).unwrap_or(1);
-        out.push((repo.to_string(), size.max(1)));
+        out.push((repo.to_string(), size.max(MIN_POOL_SIZE)));
     }
     out
 }
@@ -93,7 +101,9 @@ pub const MAX_POOL_SIZE: usize = 16;
 ///
 /// Comments, blank lines, ordering and the `default`/`*` fallback line are all preserved — this is
 /// a file a human also edits, and a write from the dashboard has no business reformatting it. A new
-/// entry appends. Size is clamped to `1..=MAX_POOL_SIZE`, matching the parser's own floor.
+/// entry appends. Size is clamped to `MIN_POOL_SIZE..=MAX_POOL_SIZE`, matching the parser's own
+/// floor — a size of 1 is all controller slot and no worker, so the writer must not be able to
+/// produce a line the reader would silently widen back to 2.
 ///
 /// Pure so the whole edit is unit-tested; [`set_pool_size`] does the I/O.
 pub fn edit_pool_size(content: &str, repo: &str, size: Option<usize>) -> String {
@@ -110,7 +120,7 @@ pub fn edit_pool_size(content: &str, repo: &str, size: Option<usize>) -> String 
             // The repo's line: rewrite it, or drop it entirely when unpooling.
             if let Some(n) = size {
                 if !replaced {
-                    out.push(format!("{repo} {}", n.clamp(1, MAX_POOL_SIZE)));
+                    out.push(format!("{repo} {}", n.clamp(MIN_POOL_SIZE, MAX_POOL_SIZE)));
                 }
             }
             replaced = true;
@@ -120,7 +130,7 @@ pub fn edit_pool_size(content: &str, repo: &str, size: Option<usize>) -> String 
     }
     if !replaced {
         if let Some(n) = size {
-            out.push(format!("{repo} {}", n.clamp(1, MAX_POOL_SIZE)));
+            out.push(format!("{repo} {}", n.clamp(MIN_POOL_SIZE, MAX_POOL_SIZE)));
         }
     }
     let mut text = out.join("\n");
@@ -149,12 +159,24 @@ pub fn set_pool_size(repo: &str, size: Option<usize>) -> std::io::Result<()> {
     std::fs::rename(&tmp, &path)
 }
 
-/// The lowest idle slot number in `1..=size` that isn't in `leased`, or `None` when every slot is
-/// leased (the pool is full). Slots are 1-indexed to match their on-disk `_pool/<n>` dirs. Leases
-/// are durable (held until `return`), so callers try this first and only reclaim genuinely
-/// abandoned slots as a fallback before deciding the pool is full.
+/// The lowest idle **worker** slot in `2..=size` that isn't in `leased`, or `None` when every one
+/// is leased (the pool is full). Slots are 1-indexed to match their on-disk `_pool/<n>` dirs, and
+/// slot [`CONTROLLER_POOL_SLOT`] is never returned here — it belongs to `bn control` alone (see
+/// [`pick_controller_slot`]). Leases are durable (held until `return`), so callers try this first
+/// and only reclaim genuinely abandoned slots as a fallback before deciding the pool is full.
+///
+/// [`CONTROLLER_POOL_SLOT`]: crate::agent::CONTROLLER_POOL_SLOT
 pub fn pick_slot(size: usize, leased: &BTreeSet<u32>) -> Option<u32> {
-    (1..=size as u32).find(|n| !leased.contains(n))
+    let first_worker = crate::agent::CONTROLLER_POOL_SLOT + 1;
+    (first_worker..=size as u32).find(|n| !leased.contains(n))
+}
+
+/// The controller's reserved slot, or `None` when it is already leased. `bn control start` is the
+/// only caller: the controller never rotates through the worker range, so this is a fixed-slot
+/// availability check rather than a search.
+pub fn pick_controller_slot(leased: &BTreeSet<u32>) -> Option<u32> {
+    let n = crate::agent::CONTROLLER_POOL_SLOT;
+    (!leased.contains(&n)).then_some(n)
 }
 
 /// Whether a pool lease's holder can still be alive — the decision behind recovering a pool after
@@ -219,8 +241,9 @@ pub enum WorktreeMode {
 /// Leasing is the default dispatch path, so *every* repo pools at this size unless it names its own
 /// size (an explicit `<repo> <size>` line — or a `default`/`*` fallback — overrides it). Slots are
 /// created on demand and reused (reap-safe); a full pool spills to a cold worktree. Kept small — a
-/// few concurrent dispatch lanes per repo before the cold spill.
-pub const DEFAULT_DISPATCH_POOL_SIZE: usize = 3;
+/// few concurrent dispatch lanes per repo before the cold spill. Counts the reserved controller
+/// slot, so this is three worker lanes plus `bn control`.
+pub const DEFAULT_DISPATCH_POOL_SIZE: usize = 4;
 
 /// Route a dispatch to a warm pool slot or a cold worktree. Leasing is the **default**: every
 /// dispatch pools (a reap-safe slot, created on demand, deps + build cache reused) unless
@@ -453,15 +476,16 @@ mod tests {
         let cfg = "# comment\narena 4\nbigmono   3  # trailing\nzero 0\n\n";
         assert_eq!(parse_pool_size(cfg, "arena"), Some(4));
         assert_eq!(parse_pool_size(cfg, "bigmono"), Some(3));
-        // A size of 0 clamps to 1 — a pooled repo always has at least one slot.
-        assert_eq!(parse_pool_size(cfg, "zero"), Some(1));
+        // A size below the floor clamps up — a pooled repo always has the reserved controller
+        // slot plus at least one worker.
+        assert_eq!(parse_pool_size(cfg, "zero"), Some(MIN_POOL_SIZE));
         // Not listed → not pooled.
         assert_eq!(parse_pool_size(cfg, "missing"), None);
     }
 
     #[test]
-    fn parse_pool_size_defaults_absent_size_to_one() {
-        assert_eq!(parse_pool_size("arena\n", "arena"), Some(1));
+    fn parse_pool_size_defaults_absent_size_to_the_floor() {
+        assert_eq!(parse_pool_size("arena\n", "arena"), Some(MIN_POOL_SIZE));
     }
 
     #[test]
@@ -476,8 +500,8 @@ mod tests {
 
     #[test]
     fn star_is_an_alias_for_default_and_clamps() {
-        // `*` behaves exactly like `default`; a 0 size clamps to 1.
-        assert_eq!(parse_pool_size("* 0\n", "whatever"), Some(1));
+        // `*` behaves exactly like `default`; a 0 size clamps up to the floor.
+        assert_eq!(parse_pool_size("* 0\n", "whatever"), Some(MIN_POOL_SIZE));
         assert_eq!(parse_pool_size("*  3\n", "whatever"), Some(3));
     }
 
@@ -493,29 +517,45 @@ mod tests {
         let pools = parse_pooled_repos("default 2\narena 4\n* 3\nforge 1\n");
         assert_eq!(
             pools,
-            vec![("arena".to_string(), 4), ("forge".to_string(), 1)]
+            vec![
+                ("arena".to_string(), 4),
+                ("forge".to_string(), MIN_POOL_SIZE)
+            ]
         );
     }
 
     #[test]
-    fn pick_slot_returns_lowest_idle() {
+    fn pick_slot_returns_lowest_idle_worker_never_the_controller() {
         let mut leased = BTreeSet::new();
-        // Empty pool → slot 1.
-        assert_eq!(pick_slot(3, &leased), Some(1));
-        leased.insert(1);
-        // 1 leased → next idle is 2.
-        assert_eq!(pick_slot(3, &leased), Some(2));
-        // A hole (2 free while 1 and 3 are taken) is filled lowest-first.
-        leased.insert(3);
-        assert_eq!(pick_slot(3, &leased), Some(2));
+        // Slot 1 belongs to `bn control`, so an empty pool hands a worker slot 2.
+        assert_eq!(pick_slot(4, &leased), Some(2));
+        leased.insert(2);
+        assert_eq!(pick_slot(4, &leased), Some(3));
+        // A hole (3 free while 2 and 4 are taken) is filled lowest-first.
+        leased.insert(4);
+        assert_eq!(pick_slot(4, &leased), Some(3));
+        // Even with slot 1 idle, a worker never gets it.
+        let only_workers_leased: BTreeSet<u32> = [2, 3].into_iter().collect();
+        assert_eq!(pick_slot(3, &only_workers_leased), None);
     }
 
     #[test]
     fn pick_slot_none_when_full() {
         let leased: BTreeSet<u32> = [1, 2].into_iter().collect();
         assert_eq!(pick_slot(2, &leased), None);
-        // Size 0 has no slots at all.
+        // A pool with no worker range at all.
+        assert_eq!(pick_slot(1, &BTreeSet::new()), None);
         assert_eq!(pick_slot(0, &BTreeSet::new()), None);
+    }
+
+    #[test]
+    fn controller_slot_is_handed_out_only_while_idle() {
+        assert_eq!(pick_controller_slot(&BTreeSet::new()), Some(1));
+        // Workers holding 2..n never block the controller.
+        let workers: BTreeSet<u32> = [2, 3].into_iter().collect();
+        assert_eq!(pick_controller_slot(&workers), Some(1));
+        let held: BTreeSet<u32> = [1].into_iter().collect();
+        assert_eq!(pick_controller_slot(&held), None);
     }
 
     #[test]
@@ -585,9 +625,9 @@ mod tests {
             vec![
                 ("arena".to_string(), 4),
                 ("bigmono".to_string(), 3),
-                // Size 0 clamps to 1; a bare line defaults to 1.
-                ("zero".to_string(), 1),
-                ("bare".to_string(), 1),
+                // Size 0 clamps up to the floor; a bare line defaults to it.
+                ("zero".to_string(), MIN_POOL_SIZE),
+                ("bare".to_string(), MIN_POOL_SIZE),
             ]
         );
         assert!(parse_pooled_repos("# only comments\n\n").is_empty());
@@ -682,8 +722,16 @@ mod tests {
 
     #[test]
     fn edit_pool_size_clamps_and_never_leaves_a_duplicate() {
-        // The parser floors at 1 and a slot is a whole checkout, so both ends are bounded.
-        assert_eq!(edit_pool_size("", "bn", Some(0)), "bn 1\n");
+        // The parser floors at MIN_POOL_SIZE (slot 1 is the controller's) and a slot is a whole
+        // checkout, so both ends are bounded.
+        assert_eq!(
+            edit_pool_size("", "bn", Some(0)),
+            format!("bn {MIN_POOL_SIZE}\n")
+        );
+        assert_eq!(
+            edit_pool_size("", "bn", Some(1)),
+            format!("bn {MIN_POOL_SIZE}\n")
+        );
         assert_eq!(
             edit_pool_size("", "bn", Some(9_999)),
             format!("bn {MAX_POOL_SIZE}\n")

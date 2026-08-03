@@ -119,6 +119,7 @@ fn launch_session_window(launch: &WindowLaunch<'_>, json: bool) -> Result<(), St
         kind: bn_core::agent::AgentLeaseKind::Dispatch,
         tmux_target: &lease_target,
         replace: false,
+        in_place: false,
     })?;
     let launched = if json {
         wt::open_worktree_window_cmd_named_quiet(

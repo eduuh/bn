@@ -493,6 +493,11 @@ export interface RepoPoolSlot {
 /** The largest pool a repo may be given — mirrors `bn_core::pool::MAX_POOL_SIZE`. */
 export const MAX_POOL_SIZE = 16;
 
+/** The smallest usable pool — mirrors `bn_core::pool::MIN_POOL_SIZE`. Slot 1 is the controller's
+ * reserved slot, so a size of 1 is a pool with no worker; the server refuses it. Shrinking below
+ * this unpools the repo rather than being a no-op the writer would silently clamp back up. */
+export const MIN_POOL_SIZE = 2;
+
 /** One repo's rollup — the card in the Repos list — `crate::repos::assemble`. */
 /** The forges whose web layout bn knows. `unknown` still carries a code URL — the remote parsed, its
  * issue / PR paths just aren't ones we can name. */

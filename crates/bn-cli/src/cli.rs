@@ -423,16 +423,21 @@ pub(crate) enum CmdPlanning {
     },
     /// List open todos across all branches.
     Todo,
-    /// The strong per-repo todo file (`<repo>/TODO.txt`, todo.txt format). Bare `bn task` lists
-    /// this branch's open items, priority-first; `--all` spans branches. Add/close/defer with the
-    /// subcommands. Distinct from `bn todo` (the branch-note rollup).
+    /// The task list — one global store for every repo (`<personal_root>/tasks.txt`, todo.txt
+    /// format). Bare `bn task` shows what's actionable today: work dated today or earlier, plus
+    /// anything unscheduled. `--all` is the whole backlog; `--repo .` (or a name) narrows to one
+    /// repo. No git repo needed — it works from anywhere. Distinct from `bn todo` (the
+    /// branch-note rollup), which stays per-branch.
     #[command(visible_alias = "t")]
     Task {
         #[command(subcommand)]
         action: Option<TaskCmd>,
-        /// Span every branch, not just the current one (applies to the listing).
+        /// Show the whole backlog, not just what's actionable today (applies to the listing).
         #[arg(long, global = true)]
         all: bool,
+        /// Only this repo. `.` means the repo you're standing in.
+        #[arg(long, global = true, value_name = "REPO")]
+        repo: Option<String>,
     },
     /// Per-branch rollup (open-todo + blocker counts).
     List,
@@ -1300,11 +1305,12 @@ pub(crate) enum CmdMisc {
         /// Shell to generate completions for.
         shell: Shell,
     },
-    /// Print the `agency` shell wrapper so `agency claude` / `agency copilot` dispatch a pooled,
-    /// foreground investigation agent when run inside a git repo — and fall through to the real
-    /// binary otherwise (or when given no args). Namespaced under `agency` so the bare
-    /// `claude`/`copilot` commands are never shadowed. Source it from your shell rc, e.g.
-    /// `source <(bn shell-init zsh)` (bash|zsh).
+    /// Print the shell wrappers that make agent placement enforceable: inside a git repo, `claude`
+    /// and `copilot` route through `bn agent launch`, which keeps the main worktree agent-free
+    /// (asking what the work is and dispatching into a warm pool slot instead) and refuses a second
+    /// agent in a worktree that already has one. Outside a repo they fall through to the real
+    /// binary. `agency claude` / `agency copilot` remain the explicit pooled-scout form. Source
+    /// from your shell rc, e.g. `source <(bn shell-init zsh)` (bash|zsh).
     ShellInit {
         /// Shell to emit wrappers for (bash or zsh).
         shell: Shell,
@@ -2776,10 +2782,11 @@ pub(crate) enum AttnCmd {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum TaskCmd {
-    /// List open tasks (default — same as bare `bn task`), priority-first for the current branch.
+    /// List open tasks (default — same as bare `bn task`): today's work first, then unscheduled.
     List,
     /// Add a task: bn task add "<text>" [-p A] [--due YYYY-MM-DD] [--src S]. The text may inline
-    /// +project and @context tokens; it's stamped with an id, creation date, and the branch.
+    /// +project, @context, and any `key:value` meta — so `bn task add "fix it repo:atlas day:
+    /// 2026-08-03 est:2h"` sets those directly. `repo:` defaults to the repo you're standing in.
     Add {
         #[arg(required = true)]
         text: Vec<String>,
@@ -2819,6 +2826,36 @@ pub(crate) enum TaskCmd {
         /// this source that's absent from the batch.
         #[arg(long)]
         replace: bool,
+    },
+    /// Open a task's context doc — the long form the one-line task can't hold: why it matters,
+    /// the `## Done When` checklist the SMART gate reads, investigation findings, open questions.
+    /// Created from a template on first use. Lives in the notes tree, beside the branch note once
+    /// the task is picked up. Prints the path; `--open` launches $EDITOR.
+    Doc {
+        /// Task id (e.g. t42).
+        id: String,
+        /// Open it in $EDITOR instead of just printing the path.
+        #[arg(long)]
+        open: bool,
+    },
+    /// Refill the task list from the GitHub-issue reservoir, bounded by a low-water mark: it tops
+    /// each repo back up to N actionable tasks and no further, so the store stays readable.
+    /// Idempotent — an issue already pulled is never minted twice. Pulled tasks carry no `smart:`
+    /// verdict, so the gate routes them to the improve agent before anything executes them.
+    Pull {
+        /// Tasks to keep actionable per repo (the low-water mark).
+        #[arg(long, short = 'n', default_value_t = bn_core::orchestrate::DEFAULT_KEEP_WARM_LOW_WATER)]
+        low_water: usize,
+        /// Show what would be pulled and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Absorb a legacy repo-local `TODO.txt` into the global store: bn task import <path>.
+    /// Idempotent — re-running imports only what's new. Ids are reminted globally, and `repo:` is
+    /// stamped from `--repo` or the source file's directory name. The original is left in place.
+    Import {
+        /// The legacy todo.txt file to read.
+        path: std::path::PathBuf,
     },
 }
 

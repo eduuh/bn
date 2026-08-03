@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, ExternalLink, Flame, Minus, Plus } from "lucide-react";
 import { queryKeys, reposQuery } from "../api/client";
 import { setRepoPool, warmRepoPool } from "../api/writes";
-import { MAX_POOL_SIZE, type RepoPool, type RepoRollup } from "../api/types";
+import { MAX_POOL_SIZE, MIN_POOL_SIZE, type RepoPool, type RepoRollup } from "../api/types";
 import { useNow } from "../hooks/useNow";
 import { timeAgo, fmtAic } from "../lib/format";
 import { forgeLinks } from "../lib/repos";
@@ -99,10 +99,10 @@ function PoolSizeControl({ repo, pool }: { repo: string; pool: RepoPool }) {
         variant="secondary"
         size="sm"
         disabled={mut.isPending}
-        title={`Pool ${repo} at 2 slots — the idle pool-warm cron keeps them warm`}
+        title={`Pool ${repo} at ${MIN_POOL_SIZE} slots — the idle pool-warm cron keeps them warm`}
         onClick={(e) => {
           stop(e);
-          mut.mutate(2);
+          mut.mutate(MIN_POOL_SIZE);
         }}
       >
         <Flame className="h-3.5 w-3.5" />
@@ -112,9 +112,10 @@ function PoolSizeControl({ repo, pool }: { repo: string; pool: RepoPool }) {
   }
   const resize = (n: number) => (e: React.MouseEvent) => {
     stop(e);
-    // Below 1 slot there is no pool, so stepping down off the floor turns pooling off outright —
-    // but never silently: shrinking can strand slots, which `pool prune` reclaims.
-    if (n < 1) {
+    // Slot 1 is the controller's, so MIN_POOL_SIZE is the smallest pool with a worker in it.
+    // Stepping below that turns pooling off outright rather than sending a size the server would
+    // refuse — but never silently: shrinking can strand slots, which `pool prune` reclaims.
+    if (n < MIN_POOL_SIZE) {
       if (window.confirm(`Stop pooling ${repo}? Existing slots stay on disk.`)) mut.mutate(null);
       return;
     }
@@ -127,7 +128,7 @@ function PoolSizeControl({ repo, pool }: { repo: string; pool: RepoPool }) {
         variant="ghost"
         size="sm"
         disabled={mut.isPending}
-        title={pool.total > 1 ? `Shrink ${repo}'s pool` : `Stop pooling ${repo}`}
+        title={pool.total > MIN_POOL_SIZE ? `Shrink ${repo}'s pool` : `Stop pooling ${repo}`}
         onClick={resize(pool.total - 1)}
       >
         <Minus className="h-3.5 w-3.5" />

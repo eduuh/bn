@@ -84,8 +84,20 @@ pub(super) fn route(cfg: &Config, action: CmdPlanning, json: bool) {
                 }
             }
         }
-        CmdPlanning::Task { action, all } => match action {
-            None | Some(TaskCmd::List) => emit_task_list(cfg, all, json),
+        CmdPlanning::Task { action, all, repo } => match action {
+            None | Some(TaskCmd::List) => emit_task_list(
+                cfg,
+                if all { TaskView::All } else { TaskView::Today },
+                repo.as_deref(),
+                json,
+            ),
+            Some(TaskCmd::Import { path }) => {
+                emit_task_import(cfg, &path, repo.as_deref(), json)
+            }
+            Some(TaskCmd::Doc { id, open }) => emit_task_doc(cfg, &id, open, json),
+            Some(TaskCmd::Pull { low_water, dry_run }) => {
+                emit_task_pull(cfg, repo.as_deref(), low_water, dry_run, json)
+            }
             Some(TaskCmd::Add {
                 text,
                 priority,

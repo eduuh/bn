@@ -476,6 +476,17 @@ fn parse_md_sections_into(front: &mut Frontmatter, body: &str) {
     }
 }
 
+/// The checklist bullets under `section`'s heading in a free markdown body, as `(done, text)`.
+///
+/// The same parser the legacy-note migration uses, exposed so anything shaped like a note body —
+/// a task context doc (#997), for instance — reads its `## Done When` through *this* rather than
+/// growing a second, subtly-different checklist parser. Template placeholders (`-`, `- [ ]`) are
+/// skipped, so an untouched template yields nothing, which is what makes the SMART gate's
+/// "measurable" check honest.
+pub fn section_bullets(body: &str, section: Section) -> Vec<(bool, String)> {
+    collect_section_bullets(body, section.heading())
+}
+
 /// Collect bullet lines under a heading until the next `## ` / `---` / EOF.
 /// Returns (done, text) per bullet; `done` is meaningful only for todo checkboxes.
 /// Skips the template placeholder lines (`-`, `- [ ]`, `- [ ] test`).

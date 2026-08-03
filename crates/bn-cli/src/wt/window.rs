@@ -126,16 +126,49 @@ pub(crate) fn start_attn_item(cfg: &Config, id: &str) -> Option<PathBuf> {
 
 /// Sanitized branch names that already have a worktree directory for `repo` (the `open` picker's
 /// candidate list). Empty when the repo has no worktrees yet.
+///
+/// Ordered **most-recently-active first**, with `main`/`master` forced last: fzf highlights the top
+/// row, so this makes the default landing spot the worktree you were actually working in rather
+/// than the main checkout — which hosts no agents and is meant to stay clean. Activity is the newer
+/// of the worktree dir's own mtime and its `.git` pointer's (checkouts, index writes and branch
+/// switches all touch one of the two); it is a heuristic for ordering a picker, nothing more.
+///
+/// The `_pool` container is filtered out — its slots are leased by `bn dispatch`/`bn control`, never
+/// picked by hand, and it is not a branch.
 pub(crate) fn existing_worktree_branches(worktree_dir: &Path, repo: &str) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(worktree_dir.join(repo))
+    let recency = |dir: &Path| {
+        let stamp = |p: &Path| {
+            std::fs::symlink_metadata(p)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        };
+        stamp(dir).max(stamp(&dir.join(".git")))
+    };
+    let mut entries: Vec<(bool, u64, String)> = std::fs::read_dir(worktree_dir.join(repo))
         .into_iter()
         .flatten()
         .flatten()
         .filter(|e| e.path().is_dir())
-        .map(|e| e.file_name().to_string_lossy().to_string())
+        .map(|e| (e.path(), e.file_name().to_string_lossy().to_string()))
+        .filter(|(_, name)| name != "_pool")
+        .map(|(path, name)| {
+            (
+                bn_core::agent::is_reserved_branch(&name),
+                recency(&path),
+                name,
+            )
+        })
         .collect();
-    names.sort();
-    names
+    // (is_main asc → main last) then (recency desc) then (name asc) for a stable tie-break.
+    entries.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then(b.1.cmp(&a.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    entries.into_iter().map(|(_, _, name)| name).collect()
 }
 
 /// Like `fzf_select` but `--print-query`: returns the highlighted item, or — when the typed query

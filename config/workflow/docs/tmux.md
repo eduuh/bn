@@ -48,10 +48,29 @@ The left pill shows the session name and **flips to reverse-video `PREFIX`** the
 
 | Key | Action |
 |-----|--------|
-| `o` | **Go to or create worktree.** fzf list of existing worktrees. Select one → opens as window. Type a new name + Enter → creates worktree from latest `main`, opens as window. |
+| `o` | **Go to or create worktree.** fzf list of existing worktrees, **most recently active first** with `main` last — so the default row is where you were actually working. Select one → opens as window. Type a new name + Enter → creates worktree from latest `main`, opens as window. |
 | `X` | Remove current window's worktree + kill the window. Refuses `main`/`master`. Prompts for `--force` if dirty. |
 
 In a non-bare session, `o` just opens/selects a `main` window at the repo path.
+
+## Where agents run
+
+One rule, enforced in `bn agent launch` — the chokepoint every entry point funnels through (the keybinds, `bn dispatch`, `bn control start`, and the `claude`/`copilot` shell wrappers from `bn shell-init`):
+
+| Worktree | May host |
+|---|---|
+| `worktree/<repo>/main` | **nothing.** It stays clean on `main`, matching the `pre-commit` hook that already refuses commits there. |
+| `_pool/1` | the `bn control` orchestrator, and only it. `bn control start` leases this slot from anywhere in the repo. |
+| `_pool/2…N`, branch worktrees | exactly **one** agent each. |
+
+So:
+
+- Typing `claude` (or `copilot`) in `main` doesn't dead-end — it asks *what is this worktree for?*, then hands the answer to `bn dispatch`, which leases a warm pool slot, seeds that branch's note with the goal **and** an open todo, and starts the agent there.
+- Typing it in a worktree that already has a live agent refuses, naming the holder: steer it with `bn agent send <repo>:<branch> "…"`, or free it with `bn agent kill <repo>:<branch>`.
+- `wt pool status` shows slot 1 labelled `(controller)`; the configured pool size counts it, so `<repo> 4` means one controller plus three workers.
+- `BN_AGENT_GUARD=0 claude …` bypasses the rule for one call — the deliberate override, like `git commit --no-verify`.
+
+A harness started outside the shell (an IDE extension, an absolute path, a terminal that never sourced `bn shell-init`) skips the wrapper. `bn doctor` reports any lease that broke the rule after the fact.
 
 ## Codespaces (remote worktrees)
 

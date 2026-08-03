@@ -409,8 +409,15 @@ pub(crate) fn emit_pipeline_advance(
 
 /// Record the transition and report it (JSON envelope or a one-line human message).
 fn transition(cfg: &Config, ctx: &Resolved, stage: Stage, as_json: bool) {
-    if let Err(e) = stage::transition(&cfg.note_file(ctx), stage) {
-        fail(&format!("bn pipeline: failed to transition stage: {e}"));
+    let decision = match stage::transition(&cfg.note_file(ctx), stage) {
+        Ok(decision) => decision,
+        Err(e) => fail(&format!("bn pipeline: failed to transition stage: {e}")),
+    };
+    // The SMART gate (#998) refused: nothing was written, so reporting the stage as recorded
+    // would be a plain lie. The task has been stamped and an attention item raised.
+    if !decision.admits() {
+        let why = decision.refusal_line().unwrap_or_default();
+        fail_json(as_json, "pipeline", "smart-gate", &format!("bn pipeline: {why}"));
     }
     if as_json {
         println!(
@@ -566,6 +573,7 @@ fn launch_sub_investigator(
         kind: bn_core::agent::AgentLeaseKind::PipelineInvestigate,
         tmux_target: &tmux_target,
         replace: false,
+        in_place: false,
     }) {
         Ok(reservation) => reservation,
         Err(error) => {
@@ -673,6 +681,7 @@ fn launch_plan_agent(
         kind: bn_core::agent::AgentLeaseKind::PipelinePlan,
         tmux_target: &tmux_target,
         replace: false,
+        in_place: false,
     }) {
         Ok(lease) => lease,
         Err(error) => {
@@ -733,6 +742,7 @@ fn enter_plan(
     no_tmux: bool,
     as_json: bool,
 ) {
+    // Entering `plan` is not a gated transition, so this only fails on real I/O trouble.
     if let Err(e) = stage::transition(&cfg.note_file(ctx), Stage::Plan) {
         fail(&format!(
             "bn pipeline investigate: failed to advance to plan: {e}"

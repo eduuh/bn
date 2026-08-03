@@ -575,7 +575,7 @@ fn pool_set(cfg: &Config, repo_arg: Option<String>, size: Option<usize>, off: bo
         None
     } else {
         match size {
-            Some(n) => Some(n.clamp(1, bn_core::pool::MAX_POOL_SIZE)),
+            Some(n) => Some(n.clamp(bn_core::pool::MIN_POOL_SIZE, bn_core::pool::MAX_POOL_SIZE)),
             None => {
                 eprintln!("{RED}Pass a slot count, or --off to stop pooling {repo}.{NC}");
                 return false;
@@ -722,7 +722,7 @@ fn pool_get(
         eprintln!("{RED}Usage: wt pool get <branch>{NC}");
         return false;
     };
-    let Some(leased) = acquire_slot(&ctx, &branch, holder) else {
+    let Some(leased) = acquire_slot(&ctx, &branch, holder, SlotRole::Worker) else {
         return false;
     };
     finish_get(&ctx, &leased.slot, &branch, path_only, no_tmux)
@@ -736,12 +736,38 @@ struct Leased {
     fresh: bool,
 }
 
+/// Which half of the pool a lease may draw from. Slot [`CONTROLLER_POOL_SLOT`] is `bn control`'s
+/// alone; everything else leases from the worker range, so the two can never collide.
+///
+/// [`CONTROLLER_POOL_SLOT`]: bn_core::agent::CONTROLLER_POOL_SLOT
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SlotRole {
+    Worker,
+    Controller,
+}
+
+impl SlotRole {
+    fn owns(self, n: u32) -> bool {
+        let controller = n == bn_core::agent::CONTROLLER_POOL_SLOT;
+        match self {
+            SlotRole::Worker => !controller,
+            SlotRole::Controller => controller,
+        }
+    }
+}
+
 /// Lease a warm slot for `branch` in an already-resolved pool. Reuses the slot already leased to
 /// this branch (idempotent warm hit), else picks — and if the pool is full, reclaims an abandoned
 /// — idle slot, creates it cold if it isn't warm yet, switches `branch` in, and persists the lease.
 /// Returns `None` (message already printed) when the pool is full or a git op failed. Shared by
-/// `wt pool get` and `bn dispatch --pool` so both lease identically.
-fn acquire_slot(ctx: &PoolCtx, branch: &str, holder: Option<String>) -> Option<Leased> {
+/// `wt pool get` and `bn dispatch --pool` so both lease identically. `class` decides which slots are
+/// even candidates: a worker never sees the controller's slot, and vice versa.
+fn acquire_slot(
+    ctx: &PoolCtx,
+    branch: &str,
+    holder: Option<String>,
+    class: SlotRole,
+) -> Option<Leased> {
     let _ = std::fs::create_dir_all(&ctx.pool_dir);
     let mut leases = read_leases(&ctx.pool_dir);
 
@@ -751,27 +777,44 @@ fn acquire_slot(ctx: &PoolCtx, branch: &str, holder: Option<String>) -> Option<L
     // very slot this call needs. Same-boot dead holders are left for the last-resort sweep below.
     reclaim_stale(ctx, &mut leases, ReclaimScope::PriorBootOnly);
 
-    // Already leased to this branch? Hand back the same slot (idempotent, a warm hit).
-    if let Some((&n, _)) = leases.slots.iter().find(|(_, l)| l.branch == branch) {
+    // Already leased to this branch, in a slot of the right class? Hand back the same slot
+    // (idempotent, a warm hit).
+    if let Some((&n, _)) = leases
+        .slots
+        .iter()
+        .find(|(&n, l)| l.branch == branch && class.owns(n))
+    {
         let slot = slot_path(&ctx.pool_dir, n);
         log_pool_event("pool_get", &ctx.repo, n, branch, Some(true));
         return Some(Leased { slot, fresh: false });
     }
 
-    // Pick the lowest idle slot (pure policy in bn-core). Live-boot leases are durable (held until
-    // `return`), so we DON'T reclaim them pre-emptively — only as a last resort when every slot is
-    // leased, and only for slots whose holder is genuinely gone (dead pid, nothing running in them).
+    // Pick the lowest idle slot of this class (pure policy in bn-core). Live-boot leases are durable
+    // (held until `return`), so we DON'T reclaim them pre-emptively — only as a last resort when
+    // every slot is leased, and only for slots whose holder is genuinely gone (dead pid, nothing
+    // running in them).
     let leased_set = |l: &Leases| l.slots.keys().copied().collect::<BTreeSet<u32>>();
-    let mut n = bn_core::pool::pick_slot(ctx.size, &leased_set(&leases));
+    let pick = |l: &Leases| match class {
+        SlotRole::Worker => bn_core::pool::pick_slot(ctx.size, &leased_set(l)),
+        SlotRole::Controller => bn_core::pool::pick_controller_slot(&leased_set(l)),
+    };
+    let mut n = pick(&leases);
     if n.is_none() && reclaim_stale(ctx, &mut leases, ReclaimScope::AnyDeadHolder).changed() {
-        n = bn_core::pool::pick_slot(ctx.size, &leased_set(&leases));
+        n = pick(&leases);
     }
     let Some(n) = n else {
-        eprintln!(
-            "{RED}Pool full: {}/{} slots leased.{NC} Return one with `wt pool return`.",
-            leases.slots.len(),
-            ctx.size
-        );
+        match class {
+            SlotRole::Controller => eprintln!(
+                "{RED}Controller slot {} is already leased.{NC} Stop the running controller with \
+                 `bn control stop <id>`, or hand the slot back with `wt pool return`.",
+                bn_core::agent::CONTROLLER_POOL_SLOT
+            ),
+            SlotRole::Worker => eprintln!(
+                "{RED}Pool full: {}/{} worker slots leased.{NC} Return one with `wt pool return`.",
+                leases.slots.keys().filter(|&&n| class.owns(n)).count(),
+                ctx.size.saturating_sub(1)
+            ),
+        }
         return None;
     };
 
@@ -794,11 +837,19 @@ fn acquire_slot(ctx: &PoolCtx, branch: &str, holder: Option<String>) -> Option<L
             return None;
         }
     }
-    if !switch_into_slot(&slot_s, &bare_s, branch) {
-        eprintln!(
-            "{RED}Failed to switch '{branch}' into slot {n} (branch checked out elsewhere?){NC}"
-        );
-        return None;
+    match class {
+        SlotRole::Worker => {
+            if !switch_into_slot(&slot_s, &bare_s, branch) {
+                eprintln!(
+                    "{RED}Failed to switch '{branch}' into slot {n} (branch checked out elsewhere?){NC}"
+                );
+                return None;
+            }
+        }
+        // The controller coordinates and ships nothing, so its slot stays **detached** at the base
+        // rather than checking a branch out: `main` is already checked out in the main worktree, and
+        // git refuses the same branch twice. A reset also clears whatever a prior tenant left.
+        SlotRole::Controller => warm_reset(&slot_s, &bare_s),
     }
 
     leases.slots.insert(
@@ -827,8 +878,57 @@ fn acquire_slot(ctx: &PoolCtx, branch: &str, holder: Option<String>) -> Option<L
 /// [`resolve_dispatch_pool`]).
 pub fn lease_for_dispatch(cfg: &Config, repo: &str, branch: &str) -> Option<(PathBuf, bool)> {
     let ctx = resolve_dispatch_pool(cfg, repo)?;
-    let leased = acquire_slot(&ctx, branch, None)?;
+    let leased = acquire_slot(&ctx, branch, None, SlotRole::Worker)?;
     Some((leased.slot, leased.fresh))
+}
+
+/// The lease label the controller's slot carries in `leases.json` and `wt pool status`. It is not a
+/// branch — the slot sits detached at the base — but the lease store is keyed by this string, so a
+/// stable label makes re-leasing idempotent.
+pub const CONTROLLER_LEASE_LABEL: &str = "control";
+
+/// Lease the controller's reserved slot (`_pool/1`) for `bn control start`. Returns the slot path
+/// and whether the lease is fresh, or `None` when the repo has no bn-managed bare clone or the
+/// controller slot is already held (message printed). The controller never rotates through the
+/// worker range, so this can only ever hand back slot [`bn_core::agent::CONTROLLER_POOL_SLOT`].
+pub fn lease_controller_slot(cfg: &Config, repo: &str) -> Option<(PathBuf, bool)> {
+    let ctx = resolve_dispatch_pool(cfg, repo)?;
+    let leased = acquire_slot(
+        &ctx,
+        CONTROLLER_LEASE_LABEL,
+        Some("bn-control".into()),
+        SlotRole::Controller,
+    )?;
+    Some((leased.slot, leased.fresh))
+}
+
+/// Hand the controller's slot back when `bn control stop` tears its window down, so the next
+/// `bn control start` can lease it instead of reporting the slot held by a controller that is gone.
+/// Quiet and idempotent: a slot that isn't leased (or a repo with no pool) is simply a no-op, since
+/// this runs on every stop including controllers that predate slot leasing. Dirty slots are left
+/// alone — `wt pool return --force` is the deliberate discard.
+pub fn release_controller_slot(cfg: &Config, repo: &str) {
+    let Some(ctx) = resolve_dispatch_pool(cfg, repo) else {
+        return;
+    };
+    let n = bn_core::agent::CONTROLLER_POOL_SLOT;
+    let mut leases = read_leases(&ctx.pool_dir);
+    if !leases.slots.contains_key(&n) {
+        return;
+    }
+    let slot = slot_path(&ctx.pool_dir, n);
+    if wt::dirty_count(&slot.to_string_lossy()) > 0 {
+        eprintln!(
+            "{YELLOW}Controller slot {n} ({}) has uncommitted changes — leaving it leased. \
+             Inspect it, then `wt pool return {n} --force`.{NC}",
+            ctx.repo
+        );
+        return;
+    }
+    warm_reset(&slot.to_string_lossy(), &ctx.bare.to_string_lossy());
+    leases.slots.remove(&n);
+    let _ = write_leases(&ctx.pool_dir, &leases);
+    log_pool_event("pool_return", &ctx.repo, n, CONTROLLER_LEASE_LABEL, None);
 }
 
 /// Resolve the pool for a dispatch — pooling *every* repo by default, since leasing is the default
@@ -933,7 +1033,12 @@ fn pool_status(cfg: &Config, repo: Option<String>) -> bool {
     // Self-heal on read: reclaim any slot left leased by a prior boot (WSL/host restart) so the
     // status reflects a recovered pool, not phantom leases pinned by recycled pids.
     let recovered = reclaim_stale(&ctx, &mut leases, ReclaimScope::PriorBootOnly);
-    println!("{BLUE}{} pool — {} slots{NC}", ctx.repo, ctx.size);
+    println!(
+        "{BLUE}{} pool — {} slots ({} worker + 1 controller){NC}",
+        ctx.repo,
+        ctx.size,
+        ctx.size.saturating_sub(1)
+    );
     if !recovered.prior_boot.is_empty() {
         println!(
             "  {GREEN}recovered {} slot(s) from a prior boot: {}{NC}",
@@ -944,6 +1049,13 @@ fn pool_status(cfg: &Config, repo: Option<String>) -> bool {
     let now = now_epoch();
     let current_boot = current_boot_id();
     for n in 1..=ctx.size as u32 {
+        // Slot 1 is `bn control`'s alone — label it so an idle controller slot doesn't read as
+        // spare worker capacity.
+        let role = if n == bn_core::agent::CONTROLLER_POOL_SLOT {
+            "  (controller)"
+        } else {
+            ""
+        };
         match leases.slots.get(&n) {
             Some(l) => {
                 // A same-boot lease whose holder pid has died is abandoned — flag it so a stuck
@@ -958,7 +1070,7 @@ fn pool_status(cfg: &Config, repo: Option<String>) -> bool {
                 );
                 let flag = if alive { "" } else { "  (holder gone)" };
                 println!(
-                    "  {YELLOW}[{n}] leased{NC}  {}  holder={} age={}{flag}",
+                    "  {YELLOW}[{n}] leased{NC}{role}  {}  holder={} age={}{flag}",
                     l.branch,
                     l.holder,
                     fmt_age(now - l.at)
@@ -970,7 +1082,7 @@ fn pool_status(cfg: &Config, repo: Option<String>) -> bool {
                 } else {
                     "—"
                 };
-                println!("  {GREEN}[{n}] {state}{NC}");
+                println!("  {GREEN}[{n}] {state}{NC}{role}");
             }
         }
     }
@@ -2026,9 +2138,10 @@ mod tests {
         ]);
         git(&["--git-dir", &bare_s, "fetch", "-q", "origin"]);
 
-        // Pools config marks `repo` pooled with 2 slots.
+        // Pools config marks `repo` pooled with 3 slots: the reserved controller slot 1, plus two
+        // worker slots (2 and 3) — the only ones a dispatch may lease.
         let pools = root.join("pools");
-        std::fs::write(&pools, "repo 2\n").unwrap();
+        std::fs::write(&pools, "repo 3\n").unwrap();
 
         // Isolate process-global env behind bn-core's shared lock: WT_ROOT drives `layout()`,
         // WT_POOLS the pools config, BN_STATE_DIR the best-effort pool event log.
@@ -2040,12 +2153,13 @@ mod tests {
 
         let cfg = bn_core::test_support::config(root);
 
-        // Fresh lease → lowest idle slot (1), a live checkout switched onto the branch.
+        // Fresh lease → lowest idle *worker* slot (2, since 1 is the controller's), a live checkout
+        // switched onto the branch.
         let (slot1, fresh1) = lease_for_dispatch(&cfg, "repo", "dispatch/x").expect("first lease");
         assert!(fresh1, "a new branch lease is fresh");
         assert!(
-            slot1.ends_with("_pool/1"),
-            "lowest idle slot, got {slot1:?}"
+            slot1.ends_with("_pool/2"),
+            "lowest idle worker slot, got {slot1:?}"
         );
         assert!(is_live_slot(&slot1), "slot is a live warm checkout");
         assert_eq!(head_branch(&slot1).as_deref(), Some("dispatch/x"));
@@ -2065,15 +2179,20 @@ mod tests {
             "warm cache survived — no fresh checkout/install"
         );
 
-        // A distinct branch takes the next idle slot.
+        // A distinct branch takes the next idle worker slot.
         let (slot2, fresh2) = lease_for_dispatch(&cfg, "repo", "dispatch/y").expect("second lease");
         assert!(fresh2);
-        assert!(slot2.ends_with("_pool/2"), "second slot, got {slot2:?}");
+        assert!(slot2.ends_with("_pool/3"), "second slot, got {slot2:?}");
 
-        // Pool full (size 2, both leased to a live holder) → refuse; dispatch falls back to cold.
+        // Worker range full (2 and 3 leased to a live holder) → refuse; dispatch falls back to
+        // cold. The idle controller slot is never handed out to cover the shortfall.
         assert!(
             lease_for_dispatch(&cfg, "repo", "dispatch/z").is_none(),
             "a full pool refuses to lease"
+        );
+        assert!(
+            !slot_path(&pool_dir(&root.join("worktree"), "repo"), 1).exists(),
+            "the controller slot was never created for a worker"
         );
     }
 
@@ -2116,9 +2235,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         build_pooled_bare(root);
-        // A size-1 pool: one held slot means "full", so only a genuine recovery can free it.
+        // The smallest pool: the reserved controller slot plus a single worker (slot 2). One held
+        // worker means "full", so only a genuine recovery can free it.
         let pools = root.join("pools");
-        std::fs::write(&pools, "repo 1\n").unwrap();
+        std::fs::write(&pools, "repo 2\n").unwrap();
 
         let _g = bn_core::test_support::env_lock();
         let _root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
@@ -2128,10 +2248,10 @@ mod tests {
         let _boot_a = bn_core::test_support::EnvGuard::set("BN_BOOT_ID", "boot-A");
         let cfg = bn_core::test_support::config(root);
 
-        // Boot A: lease the only slot to X. Its holder pid is this test's live parent.
+        // Boot A: lease the only worker slot to X. Its holder pid is this test's live parent.
         let (slot1, fresh1) = lease_for_dispatch(&cfg, "repo", "dispatch/x").expect("first lease");
         assert!(fresh1);
-        assert!(slot1.ends_with("_pool/1"));
+        assert!(slot1.ends_with("_pool/2"));
 
         // Still boot A, holder alive → the durable lease holds; a second branch can't take it, and
         // it is NOT pre-emptively reclaimed (we don't reclaim live-boot leases).
@@ -2158,8 +2278,8 @@ mod tests {
         let leases = read_leases(&pdir);
         let held = leases
             .slots
-            .get(&1)
-            .expect("slot 1 is leased to Y after recovery");
+            .get(&2)
+            .expect("the worker slot is leased to Y after recovery");
         assert_eq!(held.branch, "dispatch/y");
         assert_eq!(
             held.boot_id, "boot-B",

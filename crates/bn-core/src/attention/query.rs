@@ -98,7 +98,7 @@ pub(crate) fn open_raw(today: &str) -> Vec<AttnItem> {
 /// refreshes this one record instead of stacking a duplicate the open-lane dedup can't see once
 /// the item has been started (#534). Only a terminal ack/remove/planned frees the key for a fresh
 /// occurrence. Latest matching `attn` event wins (chronological append order).
-pub(crate) fn live_by_key(key: &str) -> Option<AttnItem> {
+pub fn live_by_key(key: &str) -> Option<AttnItem> {
     let events = events::read_all();
     let (states, overrides) = fold_states(&events);
     let mut found = None;

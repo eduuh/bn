@@ -202,6 +202,7 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
                 resume_session,
                 passthrough,
             }) => cmd::agent::emit_agent_launch(
+                cfg,
                 harness,
                 seed,
                 seed_file,

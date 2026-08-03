@@ -933,11 +933,17 @@ pub async fn repo_pool_set(
         return bad_request(cmd, "unknown_repo", "no bare clone for that repo here");
     }
     if let Some(n) = body.size {
-        if n == 0 || n > bn_core::pool::MAX_POOL_SIZE {
+        // Slot 1 is the controller's, so a size of 1 is a pool with nowhere to dispatch. Refuse it
+        // rather than let the writer clamp it up — a caller that asked for 1 should hear that back.
+        if !(bn_core::pool::MIN_POOL_SIZE..=bn_core::pool::MAX_POOL_SIZE).contains(&n) {
             return bad_request(
                 cmd,
                 "invalid_size",
-                &format!("size must be 1..={}", bn_core::pool::MAX_POOL_SIZE),
+                &format!(
+                    "size must be {}..={} (slot 1 is the controller's)",
+                    bn_core::pool::MIN_POOL_SIZE,
+                    bn_core::pool::MAX_POOL_SIZE
+                ),
             );
         }
     }

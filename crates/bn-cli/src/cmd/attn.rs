@@ -784,9 +784,23 @@ pub(crate) fn run_attn_start_attributed(
         return None;
     }
     let stage = pipeline_stage_for_task_type(item.task_type());
-    if let Err(e) = bn_core::pipeline::stage::transition(&cfg.note_file(&ctx), stage) {
-        eprintln!("bn attn start: failed to enter pipeline stage {stage} for {repo}/{branch}: {e}");
-        return None;
+    match bn_core::pipeline::stage::transition(&cfg.note_file(&ctx), stage) {
+        Err(e) => {
+            eprintln!(
+                "bn attn start: failed to enter pipeline stage {stage} for {repo}/{branch}: {e}"
+            );
+            return None;
+        }
+        // The SMART gate (#998) refused. Don't open a window on work that isn't ready — that is
+        // precisely the wasted worktree the gate exists to prevent.
+        Ok(decision) if !decision.admits() => {
+            eprintln!(
+                "bn attn start: {}",
+                decision.refusal_line().unwrap_or_default()
+            );
+            return None;
+        }
+        Ok(_) => {}
     }
     // Only record it in-flight once the window is actually open.
     let _ = bn_core::attention::mark_started(&item.id);

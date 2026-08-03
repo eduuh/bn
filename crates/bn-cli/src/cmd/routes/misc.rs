@@ -194,16 +194,35 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
     }
 }
 
-/// The `agency` wrapper script emitted by `bn shell-init` (bash and zsh share this POSIX function
-/// syntax verbatim). It is deliberately namespaced under `agency <claude|copilot>` rather than
-/// shadowing the bare `claude`/`copilot` commands, so the real tools stay untouched on a machine
-/// that also uses them directly — you opt into the dispatched flow per-invocation with the
-/// `agency` prefix. `command` (and the `execvp` the harness launcher uses) bypass shell functions,
-/// so the wrapper never recurses into itself.
-const SHELL_WRAPPERS: &str = r#"# bn shell wrapper (bn shell-init) — `agency <claude|copilot> ...` dispatches a pooled, foreground
-# investigation agent when run inside a git repo, and falls through to the real binary otherwise.
-# It does NOT shadow the bare `claude`/`copilot` commands, so the real tools stay untouched — you
-# opt into the dispatched flow per-invocation with the `agency` prefix.
+/// The wrapper script emitted by `bn shell-init` (bash and zsh share this POSIX function syntax
+/// verbatim).
+///
+/// `claude` and `copilot` **are** shadowed here: that is the point. The placement rule — main hosts
+/// no agents, one agent per worktree — can only be enforced if the bare commands people actually
+/// type are routed through `bn agent launch`, where the guard lives. Outside a git work tree the
+/// functions fall straight through to the real binary, so non-repo use is untouched.
+///
+/// `agency <claude|copilot>` is kept as the explicit form of the same thing. `command` (and the
+/// `execvp` the harness launcher uses) bypass shell functions, so neither wrapper recurses.
+const SHELL_WRAPPERS: &str = r#"# bn shell wrappers (bn shell-init) — `claude` / `copilot` inside a git repo are routed through
+# `bn agent launch`, which enforces where an agent may run: the main worktree hosts none (it asks
+# what the work is and dispatches into a warm pool slot instead), and a worktree that already has a
+# live agent refuses a second one. Outside a repo they fall through to the real binary untouched.
+# Escape hatch for one call: BN_AGENT_GUARD=0 claude …
+_bn_launch() {
+  local _bn_h="$1"; shift
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    command "$_bn_h" "$@"
+    return $?
+  fi
+  bn agent launch "$_bn_h" -- "$@"
+}
+
+claude() { _bn_launch claude "$@"; }
+copilot() { _bn_launch copilot "$@"; }
+
+# The explicit form: `agency claude "investigate X"` runs a pooled, foreground scout in its own warm
+# slot — an interactive investigation that hands the slot back the moment it exits.
 agency() {
   if [ "$#" -eq 0 ]; then
     echo "usage: agency <claude|copilot> [args...]" >&2
@@ -222,12 +241,13 @@ agency() {
 }
 "#;
 
-/// Emit the `agency` shell wrapper to stdout — source it with `source <(bn shell-init zsh)`.
-/// `agency <claude|copilot> <args>` inside a git work tree runs
-/// `bn dispatch --agent <h> --yolo --scout --pool --attach -- <args>`: a pooled, foreground
-/// investigation whose warm slot returns to the pool the moment the agent exits. With no extra
-/// args, or outside a repo, it falls through to the real binary (`command <h>`), so the bare
-/// `claude`/`copilot` commands are never shadowed and normal use is unaffected.
+/// Emit the shell wrappers to stdout — source them with `source <(bn shell-init zsh)`.
+///
+/// `claude`/`copilot` inside a git work tree route through `bn agent launch`, the chokepoint that
+/// enforces agent placement; outside a repo they fall through to the real binary (`command <h>`).
+/// `agency <claude|copilot> <args>` stays the explicit pooled-scout form
+/// (`bn dispatch --agent <h> --yolo --scout --pool --attach -- <args>`), a foreground investigation
+/// whose warm slot returns to the pool the moment the agent exits.
 fn emit_shell_init(shell: Shell) {
     match shell {
         Shell::Bash | Shell::Zsh => {}
@@ -244,19 +264,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shell_wrappers_define_pooled_foreground_scout() {
-        // A single `agency` dispatcher — NOT bare `claude`/`copilot` overrides (no global shadow).
+    fn shell_wrappers_shadow_the_bare_harness_commands() {
+        // The bare commands ARE shadowed — that is what makes the placement rule enforceable for a
+        // hand-typed launch rather than opt-in.
+        assert!(SHELL_WRAPPERS.contains("claude() { _bn_launch claude \"$@\"; }"));
+        assert!(SHELL_WRAPPERS.contains("copilot() { _bn_launch copilot \"$@\"; }"));
+        // …and they route through the guarded chokepoint, not straight at the harness.
+        assert!(SHELL_WRAPPERS.contains("bn agent launch \"$_bn_h\" -- \"$@\""));
+        // Outside a work tree, fall through to the real binary (no recursion — `command` skips
+        // shell functions).
+        assert!(SHELL_WRAPPERS.contains("git rev-parse --is-inside-work-tree"));
+        assert!(SHELL_WRAPPERS.contains("command \"$_bn_h\" \"$@\""));
+        // The documented per-call escape hatch is discoverable in the emitted script itself.
+        assert!(SHELL_WRAPPERS.contains("BN_AGENT_GUARD=0"));
+    }
+
+    #[test]
+    fn agency_still_dispatches_a_pooled_foreground_scout() {
         assert!(SHELL_WRAPPERS.contains("agency() {"));
-        assert!(!SHELL_WRAPPERS.contains("claude() {"));
-        assert!(!SHELL_WRAPPERS.contains("copilot() {"));
         // Only the two known harnesses are accepted.
         assert!(SHELL_WRAPPERS.contains("claude|copilot) ;;"));
         // Inside a repo with args: a pooled, foreground investigation (the exact opt-in defaults).
         assert!(SHELL_WRAPPERS
             .contains("bn dispatch --agent \"$_bn_h\" --yolo --scout --pool --attach -- \"$@\""));
-        // Fall-through to the real binary (no recursion) when given no args or not in a work tree.
         assert!(SHELL_WRAPPERS.contains("[ \"$#\" -eq 0 ]"));
-        assert!(SHELL_WRAPPERS.contains("git rev-parse --is-inside-work-tree"));
-        assert!(SHELL_WRAPPERS.contains("command \"$_bn_h\" \"$@\""));
     }
 }

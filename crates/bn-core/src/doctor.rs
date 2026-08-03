@@ -285,7 +285,7 @@ pub fn doctor(
     out.extend(stale_staff_findings(cfg, today));
     out.extend(notes_leak_findings(cfg));
     if let Some((root, name)) = repo {
-        out.extend(todo_findings(root, name, today));
+        out.extend(todo_findings(cfg, name, today));
         out.extend(mcp_findings(
             root,
             &std::env::var("PATH").unwrap_or_default(),
@@ -618,9 +618,10 @@ fn notes_leak_findings(cfg: &Config) -> Vec<Finding> {
     })]
 }
 
-/// Pressing open todos from `<root>/TODO.txt` — those overdue (`due` on/before today) or priority
-/// A. Ordinary open todos are deliberately excluded so the list stays a signal, not a backlog
-/// dump; they remain in `bn task`. A missing/unreadable file yields nothing.
+/// Pressing open tasks from the global store (`Config::tasks_file`, #996), scoped to the repo
+/// doctor was asked about — those overdue (`due` on/before today) or priority A. Ordinary open
+/// tasks are deliberately excluded so the list stays a signal, not a backlog dump; they remain in
+/// `bn task`. A missing/unreadable store yields nothing.
 /// Days a capture may sit in the inbox before doctor nags — the inbox is never a home.
 const INBOX_STALE_DAYS: i64 = 3;
 
@@ -746,12 +747,15 @@ fn http_endpoint_reachable(url: &str) -> bool {
     !any
 }
 
-fn todo_findings(root: &Path, repo: &str, today: &str) -> Vec<Finding> {
-    let Ok(file) = crate::todo::load(&root.join("TODO.txt")) else {
+fn todo_findings(cfg: &Config, repo: &str, today: &str) -> Vec<Finding> {
+    let Ok(file) = crate::todo::load(&cfg.tasks_file()) else {
         return Vec::new();
     };
     file.tasks()
         .filter(|t| t.is_open(today))
+        // The store is global now (#996), so scope the fold to the repo doctor was asked about.
+        // A task with no `repo:` is unattributable and would otherwise nag in every repo.
+        .filter(|t| t.meta("repo").is_some_and(|r| r.eq_ignore_ascii_case(repo)))
         .filter_map(|t| {
             let due = t.meta("due").map(str::to_string);
             let overdue = due.as_deref().is_some_and(|d| d <= today);
@@ -1124,15 +1128,19 @@ mod tests {
             let root = dir.path();
             let repo = root.join("myrepo");
             std::fs::create_dir_all(&repo).unwrap();
+            // The global store (#996), scoped by `repo:` rather than by which file it lives in.
+            // The `otherrepo` and unattributed rows below prove the scoping.
             std::fs::write(
-                repo.join("TODO.txt"),
+                cfg(root).tasks_file(),
                 "\
-(A) urgent one id:t1 branch:main
-(C) low-key chore id:t2 branch:main
-2026-06-10 overdue thing id:t3 branch:main due:2026-06-15
-someday id:t4 branch:main due:2026-08-01
-x 2026-06-19 done id:t5 branch:main
-later id:t6 branch:main snooze:2026-07-01
+(A) urgent one id:t1 branch:main repo:myrepo
+(C) low-key chore id:t2 branch:main repo:myrepo
+2026-06-10 overdue thing id:t3 branch:main due:2026-06-15 repo:myrepo
+someday id:t4 branch:main due:2026-08-01 repo:myrepo
+x 2026-06-19 done id:t5 branch:main repo:myrepo
+later id:t6 branch:main snooze:2026-07-01 repo:myrepo
+(A) urgent elsewhere id:t7 branch:main repo:otherrepo
+(A) urgent but unattributed id:t8 branch:main
 ",
             )
             .unwrap();
@@ -1149,9 +1157,13 @@ later id:t6 branch:main snooze:2026-07-01
             // Only the priority-A (t1) and the overdue (t3) surface. The C-priority, the
             // future-dated, the done, and the snoozed all stay in `bn task`.
             let ids: Vec<&str> = todos.iter().map(|t| t.id.as_str()).collect();
-            assert_eq!(ids.len(), 2);
+            assert_eq!(ids.len(), 2, "got {ids:?}");
             assert!(ids.contains(&"t1"));
             assert!(ids.contains(&"t3"));
+            // Another repo's urgent task, and one that names no repo, must not nag here (#996) —
+            // the store is shared now, so scoping is what keeps doctor a per-repo signal.
+            assert!(!ids.contains(&"t7"));
+            assert!(!ids.contains(&"t8"));
 
             let overdue = todos.iter().find(|t| t.id == "t3").unwrap();
             assert!(overdue.overdue);

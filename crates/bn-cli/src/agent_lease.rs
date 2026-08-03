@@ -18,6 +18,11 @@ pub(crate) struct AgentLeaseRequest<'a> {
     pub kind: AgentLeaseKind,
     pub tmux_target: &'a str,
     pub replace: bool,
+    /// The agent runs in a window that **already exists** — the caller's own pane, not one the
+    /// launcher is about to create. `bn agent launch` sets this for an in-place launch; a dispatch
+    /// that opens a fresh window leaves it false, so a live window at its target still means a
+    /// leftover to clear (see [`remove_dead_launch_target`]).
+    pub in_place: bool,
 }
 
 pub(crate) struct AgentLeaseReservation {
@@ -150,6 +155,43 @@ pub(crate) fn release(session_id: &str) -> Result<bool, String> {
         .map_err(|error| format!("agent lease release: {error}"))
 }
 
+/// Who holds `worktree` right now, from the perspective of a launch about to happen in it.
+pub(crate) enum WorktreeHolder {
+    /// Nobody — the launch should take a lease of its own.
+    Free,
+    /// A lease taken for *this* window, moments ago, by the launcher that seeded this agent
+    /// (`bn dispatch`, `bn control start`). Not a conflict, and not something to lease over.
+    Ours,
+    /// A different live agent. The launch must refuse rather than put two agents in one checkout.
+    Other(Box<AgentLease>),
+}
+
+/// Read the lease state of `worktree` for the one-agent-per-worktree guard in `bn agent launch`.
+///
+/// The window comparison is what separates [`WorktreeHolder::Ours`] from a real conflict: a seeded
+/// launch runs *inside* the window its launcher just leased, so without this every dispatched agent
+/// would refuse itself. Outside tmux there is no window to compare and [`lease_is_live`] cannot see
+/// the holder either, so the read degrades to `Free` — which is why the shell wrapper, not this, is
+/// the enforcing layer for a hand-typed launch on a bare terminal.
+pub(crate) fn worktree_holder(worktree: &Path) -> WorktreeHolder {
+    let Ok(registry) = bn_core::agent::load_agent_leases(&agent_lease_registry_path()) else {
+        return WorktreeHolder::Free;
+    };
+    let key = AgentLeaseKey::new("", "", worktree);
+    let here = current_window_id();
+    let mut holder = WorktreeHolder::Free;
+    for lease in registry.leases {
+        if lease.key.worktree != key.worktree || !lease_is_live(&lease) {
+            continue;
+        }
+        if here.is_some() && window_id_for_target(&lease.tmux_target) == here {
+            return WorktreeHolder::Ours;
+        }
+        holder = WorktreeHolder::Other(Box::new(lease));
+    }
+    holder
+}
+
 pub(crate) fn reserve(request: AgentLeaseRequest<'_>) -> Result<AgentLeaseReservation, String> {
     let lease = AgentLease {
         key: AgentLeaseKey::new(request.repo, request.branch, request.worktree),
@@ -187,12 +229,14 @@ pub(crate) fn reserve(request: AgentLeaseRequest<'_>) -> Result<AgentLeaseReserv
                 }
                 return Err(error);
             }
-            if let Err(error) = remove_dead_launch_target(&reservation.lease().tmux_target) {
-                let rollback = reservation.rollback();
-                if let Err(rollback_error) = rollback {
-                    return Err(format!("{error}; {rollback_error}"));
+            if !request.in_place {
+                if let Err(error) = remove_dead_launch_target(&reservation.lease().tmux_target) {
+                    let rollback = reservation.rollback();
+                    if let Err(rollback_error) = rollback {
+                        return Err(format!("{error}; {rollback_error}"));
+                    }
+                    return Err(error);
                 }
-                return Err(error);
             }
             reservation.discard_replaced();
             Ok(AgentLeaseReservation { inner: reservation })

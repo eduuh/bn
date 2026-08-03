@@ -287,29 +287,25 @@ fn start_controller(
     let task_name = bn_core::agent::derive_task_name(name.as_deref(), &source_name);
     let window_name = bn_core::agent::task_window_name(&task_name, &id);
     let target = control_target(&window_name);
-    let cwd = std::env::current_dir().unwrap_or_default();
-    let resolved = resolver::resolve_hint(cfg, &cwd);
-    let repo = resolved
-        .as_ref()
-        .map(|ctx| ctx.repo.clone())
-        .unwrap_or_else(|| "control".to_string());
-    let branch = resolved
-        .as_ref()
-        .map(|ctx| ctx.branch.clone())
-        .unwrap_or_else(|| id.clone());
-    // Hard-pin: the bn control coordination agent may run ONLY in a repo's main/master worktree
-    // (the bidirectional main↔control invariant). Refuse anywhere else — including outside a repo,
-    // where `branch` falls back to the controller id — and point the operator at the main checkout.
-    if !bn_core::agent::is_reserved_branch(&branch) {
-        let where_now = resolved
-            .as_ref()
-            .map(|ctx| format!("{}/{}", ctx.repo, ctx.branch))
-            .unwrap_or_else(|| cwd.to_string_lossy().into_owned());
+    let invoked_from = std::env::current_dir().unwrap_or_default();
+    let resolved = resolver::resolve_hint(cfg, &invoked_from);
+    let Some(repo) = resolved.as_ref().map(|ctx| ctx.repo.clone()) else {
         fail(&format!(
-            "bn control start: the controller may run only in a repo's main worktree — you're in \
-             {where_now}. cd to the repo's `main` checkout and retry."
+            "bn control start: not inside a repo ({}). cd into the repo you want a controller for \
+             and retry.",
+            invoked_from.display()
         ));
-    }
+    };
+    // The controller runs in its own reserved pool slot (`_pool/1`), never in the main worktree —
+    // main hosts no agents and stays clean. Leasing here means you can start a controller from
+    // anywhere in the repo; the slot, not your cwd, is where it lands.
+    let Some((cwd, _fresh)) = wt_pool::lease_controller_slot(cfg, &repo) else {
+        fail(&format!(
+            "bn control start: could not lease the controller slot for {repo}. Check \
+             `wt pool status`; a running controller holds it until `bn control stop`."
+        ));
+    };
+    let branch = wt_pool::CONTROLLER_LEASE_LABEL.to_string();
     let candidate = ControllerRecord {
         controller_id: id.clone(),
         session_id,
@@ -411,10 +407,10 @@ fn start_controller(
         wt::shell_single_quote(&record.session_id),
         wt::shell_single_quote(&seed),
     );
-    // Reserve the main worktree for exactly this control agent (bidirectional main↔control
-    // invariant). Refuse mode: never displace another live agent — surface the conflict so two
-    // controllers (or a stray agent) can't share the main checkout. Rolled back if the window
-    // fails to open, released on `bn control stop`.
+    // Reserve the controller slot for exactly this control agent — the lease layer independently
+    // refuses a Control lease anywhere but `_pool/1`, and refuses any other kind *in* it. Refuse
+    // mode: never displace another live agent, so two controllers can't share the slot. Rolled back
+    // if the window fails to open, released on `bn control stop`.
     let reservation = match agent_lease::reserve(agent_lease::AgentLeaseRequest {
         repo: &record.repo,
         branch: &record.branch,
@@ -424,6 +420,7 @@ fn start_controller(
         kind: bn_core::agent::AgentLeaseKind::Control,
         tmux_target: &record.target,
         replace: false,
+        in_place: false,
     }) {
         Ok(reservation) => reservation,
         Err(error) => {
@@ -835,7 +832,7 @@ fn controller_stuck_lanes(
         .collect()
 }
 
-fn stop_controller(id: String, json: bool) {
+fn stop_controller(cfg: &Config, id: String, json: bool) {
     let path = controller::registry_path();
     let registry = controller::load_registry(&path)
         .unwrap_or_else(|e| fail(&format!("bn control stop: read controllers: {e}")));
@@ -846,12 +843,13 @@ fn stop_controller(id: String, json: bool) {
     if !stopped_window && controller_window_exists(&record.target) {
         fail("bn control stop: could not terminate controller window");
     }
-    // Free the main worktree lease this controller held, so main is immediately available again
-    // rather than waiting for the next reconcile to notice the window is gone. Idempotent for
-    // controllers started before leasing existed.
+    // Free both leases this controller held — the agent lease and the pool slot itself — so the
+    // slot is immediately available again rather than waiting for the next reconcile to notice the
+    // window is gone. Both are idempotent for controllers started before leasing existed.
     if let Err(error) = agent_lease::release(&record.session_id) {
         eprintln!("bn control stop: {error}");
     }
+    wt_pool::release_controller_slot(cfg, &record.repo);
     controller::update_registry(&path, |registry| {
         registry.stop(&id, bn_core::util::now_epoch_secs())
     })
@@ -941,7 +939,7 @@ pub(crate) fn emit_control(cfg: &Config, action: ControlCmd, json: bool) {
             request,
         } => start_controller(cfg, id, name, harness, request, json),
         ControlCmd::Status { id } => status_controllers(id, json),
-        ControlCmd::Stop { id } => stop_controller(id, json),
+        ControlCmd::Stop { id } => stop_controller(cfg, id, json),
         ControlCmd::Lease { id } => lease_request(id, json),
         ControlCmd::Complete {
             id,

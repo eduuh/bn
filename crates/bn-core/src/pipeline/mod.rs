@@ -4,6 +4,7 @@
 //! unit-tested so the stateful CLI glue stays thin.
 
 pub mod critic;
+pub mod gate;
 pub mod investigate;
 pub mod stage;
 pub mod status;

@@ -7,6 +7,7 @@
 //! `pipeline_stage` event keyed by `(repo, branch)`. Legacy notes fall back to their latest event,
 //! or to [`Stage::DEFAULT`] when neither source exists.
 
+use super::gate;
 use crate::events;
 use crate::util::now_epoch_secs;
 use serde::{Deserialize, Serialize};
@@ -196,14 +197,44 @@ pub fn current_for_note(note: &crate::model::Note) -> Option<Stage> {
         .or_else(|| current(&note.front.repo, &note.front.branch))
 }
 
-/// Persist the durable current stage and append its transition event.
-pub fn transition(note_path: &Path, stage: Stage) -> Result<(), crate::store::StoreError> {
+/// Persist the durable current stage and append its transition event — **through the SMART gate**.
+///
+/// This is the single enforcement point for #998. Everything that starts work (`bn dispatch`,
+/// `bn attn start`, `bn pipeline set`/`advance`) records its stage here, so all of them are gated
+/// by construction rather than by remembering to call a checker. A refused transition writes
+/// nothing: the note keeps its old stage, no event is appended, and the returned
+/// [`gate::GateDecision`] carries the reasons plus the attention item that was raised to fix them.
+///
+/// Ungated stages and worktrees with no governing task pass straight through, so this is safe to
+/// call for every transition.
+pub fn transition(
+    note_path: &Path,
+    stage: Stage,
+) -> Result<gate::GateDecision, crate::store::StoreError> {
     let _lock = crate::store::NoteLock::acquire_required(note_path)?;
     let mut note = crate::store::read(note_path)?;
+
+    let decision = if gate::is_gated(stage) {
+        // Only load the config on a gated transition — the common path stays a note write.
+        let cfg = crate::resolver::Config::load();
+        gate::check_entry(
+            &cfg,
+            &note.front.repo,
+            &note.front.branch,
+            stage,
+            &crate::util::today(),
+        )
+    } else {
+        gate::GateDecision::Admitted
+    };
+    if !decision.admits() {
+        return Ok(decision);
+    }
+
     note.front.stage = Some(stage);
     crate::store::save(&note, note_path)?;
     record(&note.front.repo, &note.front.branch, stage)?;
-    Ok(())
+    Ok(decision)
 }
 
 /// Every worktree with a transition event, newest-transition first.

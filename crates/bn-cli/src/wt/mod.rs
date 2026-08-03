@@ -1187,15 +1187,27 @@ detached
     }
 
     #[test]
-    fn existing_worktree_branches_lists_sorted_dirs() {
+    fn existing_worktree_branches_lists_recent_first_with_main_last() {
         let tmp = std::env::temp_dir().join(format!("bn_wt_open_test_{}", std::process::id()));
         let repo = tmp.join("myrepo");
-        std::fs::create_dir_all(repo.join("feat-b")).unwrap();
-        std::fs::create_dir_all(repo.join("feat-a")).unwrap();
+        // Created oldest → newest, so `feat-b` is the most recently touched.
+        for dir in ["main", "feat-a", "feat-b"] {
+            std::fs::create_dir_all(repo.join(dir)).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+        }
+        std::fs::create_dir_all(repo.join("_pool").join("1")).unwrap(); // the pool isn't a branch
         std::fs::write(repo.join("a-file"), b"x").unwrap(); // files are ignored
         let got = existing_worktree_branches(&tmp, "myrepo");
         let _ = std::fs::remove_dir_all(&tmp);
-        assert_eq!(got, vec!["feat-a".to_string(), "feat-b".to_string()]);
+        // Most-recent worktree first; the main checkout is never the default landing spot.
+        assert_eq!(
+            got,
+            vec![
+                "feat-b".to_string(),
+                "feat-a".to_string(),
+                "main".to_string()
+            ]
+        );
     }
 
     #[test]

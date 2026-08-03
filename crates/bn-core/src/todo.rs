@@ -245,6 +245,17 @@ impl Task {
         self.meta(UID_KEY)
     }
 
+    /// Give a task an identity if it has none, so it becomes dedupable from here on.
+    ///
+    /// For lines that entered the store already parsed rather than built by [`Task::new_todo`] —
+    /// imported from a legacy file, or hand-written. A task that already has a `uid:` is left
+    /// exactly as it is: identity is minted once and never rewritten, or dedupe loses its anchor.
+    pub fn ensure_uid(&mut self) {
+        if self.uid().is_none() {
+            self.set_meta_raw(UID_KEY, &mint_uid(&self.summary()));
+        }
+    }
+
     /// Last-modified epoch seconds from `mod:`. `0` when absent, so an unstamped legacy line
     /// always loses to a stamped one.
     pub fn modified(&self) -> i64 {
@@ -333,6 +344,22 @@ impl Task {
         }
     }
 
+    /// Drop a `key:value` meta entirely. `true` when one was present.
+    ///
+    /// Distinct from setting it empty: an absent key and a key with a blank value read very
+    /// differently (a cleared `smart:` verdict means "unjudged", `smart:` with nothing after it
+    /// means a bug).
+    pub fn remove_meta(&mut self, key: &str) -> bool {
+        let before = self.desc.len();
+        self.desc
+            .retain(|t| !matches!(t, Token::Meta(k, _) if k == key));
+        let removed = self.desc.len() != before;
+        if removed {
+            self.touch();
+        }
+        removed
+    }
+
     /// Mark in progress by adding the `@wip` context (idempotent — no duplicate).
     pub fn mark_wip(&mut self) {
         if !self.contexts().contains(&"wip") {
@@ -357,6 +384,16 @@ impl Task {
             "src": self.meta("src"),
             "projects": self.projects(),
             "contexts": self.contexts(),
+            // The global-store vocabulary (#996). Null until the owning child fills it in:
+            // `doc:` is #997, `smart:` is #998, `stage:` mirrors the pipeline once dispatched.
+            "repo": self.meta("repo"),
+            "day": self.meta("day"),
+            "est": self.meta("est"),
+            "doc": self.meta("doc"),
+            "smart": self.meta("smart"),
+            "stage": self.meta("stage"),
+            "uid": self.uid(),
+            "mod": self.modified(),
         })
     }
 
@@ -392,8 +429,15 @@ impl Task {
             desc: text.split_whitespace().map(Token::classify).collect(),
         };
         task.set_meta_raw("id", id);
-        task.set_meta_raw("branch", branch);
-        task.set_meta_raw("src", src);
+        // Skip empty scopes rather than emitting a bare `branch:` / `src:`. The global store
+        // (#996) has tasks with no branch — one created outside a worktree, or pulled from an
+        // issue (#1000) — and an empty meta is noise that reads like a missing value.
+        if !branch.is_empty() {
+            task.set_meta_raw("branch", branch);
+        }
+        if !src.is_empty() {
+            task.set_meta_raw("src", src);
+        }
         // Identity first, then the stamp — every task is born dedupable (#995).
         task.set_meta_raw(UID_KEY, &mint_uid(text));
         task.touch();

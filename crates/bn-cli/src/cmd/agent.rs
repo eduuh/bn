@@ -1547,13 +1547,158 @@ fn claude_has_session(cwd: &str, session_id: &str) -> bool {
         .is_file()
 }
 
-/// `bn agent launch` — the native port of `workflow/bin/agent`. Resolves the seed, pre-trusts the
-/// worktree for Copilot, computes the resume-or-fresh argv, and **execs** the harness (this process
-/// is replaced; on success it never returns). A Copilot resume whose session no longer exists is
-/// retried exactly once as a fresh launch. On an unknown harness it exits 2; on exec failure it
-/// prints the error and exits 127, mirroring a failed `exec` in the shell launcher.
+/// Set `BN_AGENT_GUARD=0` to launch an agent wherever you are, bypassing the placement rule — the
+/// deliberate-override valve, mirroring `git commit --no-verify` against the repo's `pre-commit`
+/// hook. Anything else (including unset) enforces.
+fn launch_guard_enabled() -> bool {
+    !matches!(
+        std::env::var("BN_AGENT_GUARD").as_deref().map(str::trim),
+        Ok("0")
+    )
+}
+
+/// Refuse to start an agent where one may not run, and otherwise take this worktree's lease.
+///
+/// Two rules, in order:
+///
+/// 1. **The main worktree hosts no agents.** It stays clean on `main` — the same checkout the
+///    repo's `pre-commit` hook refuses commits in. Rather than dead-ending, this asks what the work
+///    is and hands the whole thing to `bn dispatch`, which leases a warm pool slot, seeds the goal
+///    and a todo, and launches the agent there (execs — never returns).
+/// 2. **One agent per worktree.** A checkout already held by a live agent refuses the second one,
+///    naming the holder and the two ways out (steer it, or kill it).
+///
+/// A launch that survives both takes a [`AgentLeaseKind::Dispatch`] lease for the worktree, so a
+/// hand-typed `claude` is leased exactly like a dispatched one and the *next* launch sees it. The
+/// lease is committed before the exec (which runs no destructors); `bn wt cleanup`/`reap` and the
+/// reconcile sweep release it when the window goes away.
+fn enforce_launch_placement(
+    cfg: &Config,
+    cwd: &std::path::Path,
+    harness: Harness,
+    session: Option<&str>,
+) -> Option<()> {
+    if !launch_guard_enabled() {
+        return None;
+    }
+    let canonical = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    if bn_core::agent::is_main_worktree_path(&canonical) {
+        redirect_from_main(&canonical, harness);
+    }
+    match agent_lease::worktree_holder(&canonical) {
+        // A launcher already leased this window for this very launch (a dispatched worker, the
+        // controller in its slot). Nothing to add — leasing again would only collide with itself.
+        agent_lease::WorktreeHolder::Ours => return None,
+        agent_lease::WorktreeHolder::Other(owner) => {
+            let target = format!("{}:{}", owner.key.repo, owner.key.branch);
+            eprintln!(
+                "bn agent launch: {} already has a live {} agent — one agent per worktree.\n  \
+                 session {} in {}\n  steer it:  bn agent send {target} \"<message>\"\n  \
+                 or free it: bn agent kill {target}",
+                canonical.display(),
+                owner.kind.label(),
+                owner.session_id,
+                owner.tmux_target,
+            );
+            std::process::exit(1);
+        }
+        agent_lease::WorktreeHolder::Free => {}
+    }
+    // Only lease a checkout bn can name (a resolvable repo/branch). Outside one — a scratch clone,
+    // a detached path — there is nothing to key a lease on, so the launch simply proceeds unleased.
+    let ctx = resolver::resolve(cfg, &canonical).ok()?;
+    // Lease under the caller's session id when it gave one (`bn dispatch --attach` passes
+    // `--session <sid>`), so that caller can release this exact lease when the foreground agent
+    // exits. A hand-typed launch has no id yet and mints one.
+    let session_id = session
+        .map(str::to_string)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(gen_uuid);
+    let tmux_target = crate::proc::tmux_raw(&["display-message", "-p", "#{session_name}:#{window_name}"])
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| format!("{}:{}", ctx.repo, ctx.branch));
+    match agent_lease::reserve(agent_lease::AgentLeaseRequest {
+        repo: &ctx.repo,
+        branch: &ctx.branch,
+        worktree: &canonical,
+        session_id: &session_id,
+        harness: harness.bin(),
+        kind: bn_core::agent::AgentLeaseKind::Dispatch,
+        tmux_target: &tmux_target,
+        replace: false,
+        in_place: true,
+    }) {
+        Ok(reservation) => {
+            agent_lease::mark_window(reservation.lease());
+            reservation.commit();
+        }
+        // A refusal here is the placement invariant talking (the controller slot, or a main worktree
+        // whose path shape the check above didn't catch). Surface it verbatim and stop.
+        Err(error) => {
+            eprintln!("bn agent launch: {error}");
+            std::process::exit(1);
+        }
+    }
+    None
+}
+
+/// The main-worktree redirect: ask what the work is, then hand off to `bn dispatch`, which leases a
+/// warm pool slot, seeds the new branch's note (goal + todo) and launches the agent in this pane.
+/// Execs, so it never returns. With no terminal to prompt on (a script, a hook) it prints the
+/// command to run and exits non-zero instead of guessing a goal.
+fn redirect_from_main(worktree: &std::path::Path, harness: Harness) -> ! {
+    use std::io::Write;
+    eprintln!(
+        "bn agent launch: {} is the main worktree — it hosts no agents and stays clean.",
+        worktree.display()
+    );
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        eprintln!(
+            "  Start the work in its own pool slot instead:\n    bn dispatch \"<what you're doing>\" --agent {} --pool --attach",
+            harness.bin()
+        );
+        std::process::exit(1);
+    }
+    eprint!("  What is this worktree for? (blank to abort) > ");
+    let _ = std::io::stderr().flush();
+    let mut goal = String::new();
+    if std::io::stdin().read_line(&mut goal).is_err() || goal.trim().is_empty() {
+        eprintln!("  Aborted — nothing dispatched.");
+        std::process::exit(1);
+    }
+    let goal = goal.trim().to_string();
+    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("bn"));
+    eprintln!("  Leasing a pool slot for: {goal}");
+    exec_harness(
+        &exe.to_string_lossy(),
+        &[
+            "dispatch".into(),
+            "--agent".into(),
+            harness.bin().into(),
+            "--yolo".into(),
+            "--pool".into(),
+            "--attach".into(),
+            "--".into(),
+            goal,
+        ],
+    )
+}
+
+/// `bn agent launch` — the native port of `workflow/bin/agent`. Enforces where an agent may run,
+/// resolves the seed, pre-trusts the worktree for Copilot, computes the resume-or-fresh argv, and
+/// **execs** the harness (this process is replaced; on success it never returns). A Copilot resume
+/// whose session no longer exists is retried exactly once as a fresh launch. On an unknown harness
+/// it exits 2; on exec failure it prints the error and exits 127, mirroring a failed `exec` in the
+/// shell launcher.
+///
+/// This is the single chokepoint every entry point funnels through — the tmux keybinds, `bn
+/// dispatch`, `bn control start`, the `claude`/`copilot` shell wrappers, and a plain `cd <wt> && bn
+/// agent launch` — so the placement rule in [`enforce_launch_placement`] lives here rather than
+/// being restated by each caller.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_agent_launch(
+    cfg: &Config,
     harness: Option<String>,
     seed: Option<String>,
     seed_file: Option<String>,
@@ -1578,6 +1723,8 @@ pub(crate) fn emit_agent_launch(
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
+
+    enforce_launch_placement(cfg, std::path::Path::new(&cwd), harness, session.as_deref());
 
     let mut plan = LaunchPlan {
         seed,

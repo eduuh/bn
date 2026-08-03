@@ -1286,7 +1286,7 @@ pub(crate) fn effective_launch_harness(
 fn enter_dispatched_investigate_stage(
     cfg: &Config,
     target: &Resolved,
-) -> Result<(), bn_core::store::StoreError> {
+) -> Result<bn_core::pipeline::gate::GateDecision, bn_core::store::StoreError> {
     bn_core::pipeline::stage::transition(
         &cfg.note_file(target),
         bn_core::pipeline::stage::Stage::Investigate,
@@ -1729,6 +1729,10 @@ pub(crate) fn run_dispatch(
     let _ = commands::ensure_note(cfg, &target, &today());
     if created {
         let _ = commands::set_goal(cfg, &target, &title, &today());
+        // The goal says what the worktree is *for*; the todo makes it trackable work — it lands in
+        // `bn todo` / `bn next` and can be closed with `bn done`, so a dispatched task is visible in
+        // the same places as anything you captured by hand.
+        let _ = commands::add(cfg, &target, "todo", &title, None, &today());
         if let Some(u) = &url {
             let _ = commands::add(
                 cfg,
@@ -1778,13 +1782,26 @@ pub(crate) fn run_dispatch(
             );
         }
         if pipeline_investigate {
-            if let Err(e) = enter_dispatched_investigate_stage(cfg, &target) {
-                fail_json(
+            match enter_dispatched_investigate_stage(cfg, &target) {
+                Err(e) => fail_json(
                     json,
                     "dispatch",
                     "pipeline-stage",
                     &format!("bn dispatch: failed to enter investigate stage: {e}"),
-                );
+                ),
+                // The SMART gate (#998) refused. This is a real stop, not a warning: dispatching
+                // an unscoped task is exactly the wasted-worktree case the gate exists to prevent.
+                // The task has been stamped and an attention item raised to get it fixed.
+                Ok(decision) if !decision.admits() => {
+                    let why = decision.refusal_line().unwrap_or_default();
+                    fail_json(
+                        json,
+                        "dispatch",
+                        "smart-gate",
+                        &format!("bn dispatch: {why}"),
+                    );
+                }
+                Ok(_) => {}
             }
         }
     }
@@ -2034,6 +2051,11 @@ pub(crate) fn run_dispatch(
                     );
                 }
                 let ran = run_agent_foreground(&cmd, &wt_path);
+                // The launcher's placement guard leased this worktree under our `sid` (one agent per
+                // checkout, even for a hand-typed `claude`). The pane is now free, so release it
+                // here — the window it was keyed to is the user's own shell and outlives the agent,
+                // so nothing else would ever notice it went idle.
+                let _ = agent_lease::release(&sid);
                 // A scout leaves the slot clean, so it returns to the warm pool; `Return` refuses a
                 // dirty slot (a ship that wrote code) rather than discard work — surfaced, not forced.
                 let slot_returned = used_pool
@@ -2093,6 +2115,7 @@ pub(crate) fn run_dispatch(
                 kind: bn_core::agent::AgentLeaseKind::Dispatch,
                 tmux_target: &lease_target,
                 replace: fresh,
+                in_place: false,
             }) {
                 Ok(lease) => lease,
                 Err(error) => {

@@ -36,7 +36,7 @@ pub enum AgentLeaseKind {
     Dispatch,
     PipelineInvestigate,
     PipelinePlan,
-    /// The `bn control` coordination agent — reserved to a repo's main/master worktree.
+    /// The `bn control` coordination agent — reserved to the repo's controller pool slot.
     Control,
 }
 
@@ -53,27 +53,77 @@ impl AgentLeaseKind {
     }
 }
 
-/// A repo's primary branch, reserved exclusively for the `bn control` coordination agent. No
-/// dispatched / pipeline / worker agent may ever occupy it, and — conversely — a control agent may
-/// occupy *only* this branch (the bidirectional invariant enforced in [`begin_agent_lease`]).
-/// Compared case-insensitively so a normalized lease key ("main") and a raw branch name ("Main")
-/// agree with the dispatch / reap / cleanup guards.
+/// A repo's primary branch. Never dispatched onto, never reaped, and never the base of new work —
+/// the guard dispatch, reap, and the sentinel share. Compared case-insensitively so a normalized
+/// lease key ("main") and a raw branch name ("Main") agree.
 pub fn is_reserved_branch(branch: &str) -> bool {
     let b = branch.trim().to_ascii_lowercase();
     b == "main" || b == "master"
 }
 
-/// The main↔control invariant checked before every acquisition: the reserved (main/master)
-/// worktree is control-only, and a control agent is reserved-branch-only. Returns a human-readable
-/// refusal when the pairing is illegal, so the message surfaces verbatim to the operator.
-fn validate_kind_branch(kind: AgentLeaseKind, branch: &str) -> Result<(), String> {
-    match (kind, is_reserved_branch(branch)) {
+/// The number of the pool slot reserved for the `bn control` coordination agent. Workers lease
+/// `2..=size`; this one is never handed out to them.
+pub const CONTROLLER_POOL_SLOT: u32 = 1;
+
+/// The stow-source main worktree — `…/worktree/<repo>/main` — which must host no agent at all and
+/// stay clean on `main`. Matches the shape the repo's `pre-commit` hook already refuses commits in
+/// (`case "$top" in */worktree/*/main)`), so the agent rule and the commit rule read the same
+/// checkout the same way.
+pub fn is_main_worktree_path(worktree: &Path) -> bool {
+    let mut parts = worktree.components().rev().filter_map(|c| match c {
+        std::path::Component::Normal(part) => part.to_str(),
+        _ => None,
+    });
+    let Some(leaf) = parts.next() else {
+        return false;
+    };
+    if !is_reserved_branch(leaf) {
+        return false;
+    }
+    // …/worktree/<repo>/<leaf>: skip the repo segment, then require the `worktree` root.
+    parts
+        .next()
+        .is_some_and(|_repo| parts.next() == Some("worktree"))
+}
+
+/// The controller's reserved pool slot — `…/_pool/1`. The pool lays slots out as
+/// `<root>/worktree/<repo>/_pool/<n>`, so the check is the slot number under a `_pool` parent.
+pub fn is_controller_slot_path(worktree: &Path) -> bool {
+    let mut parts = worktree.components().rev().filter_map(|c| match c {
+        std::path::Component::Normal(part) => part.to_str(),
+        _ => None,
+    });
+    let Some(slot) = parts.next().and_then(|n| n.parse::<u32>().ok()) else {
+        return false;
+    };
+    slot == CONTROLLER_POOL_SLOT && parts.next() == Some("_pool")
+}
+
+/// The placement invariant checked before every acquisition, keyed on the worktree the lease
+/// actually points at rather than its branch name:
+///
+/// 1. the main worktree hosts no agent, of any kind — work happens in a leased pool slot;
+/// 2. a control agent runs only in the controller pool slot, and that slot takes no other kind.
+///
+/// Returns a human-readable refusal when the placement is illegal, so the message surfaces verbatim
+/// to the operator.
+fn validate_kind_placement(kind: AgentLeaseKind, key: &AgentLeaseKey) -> Result<(), String> {
+    let worktree = Path::new(&key.worktree);
+    if is_main_worktree_path(worktree) {
+        return Err(format!(
+            "{} is the main worktree — it hosts no agents and stays clean on '{}'. Lease a pool \
+             slot instead: bn dispatch \"<what you're doing>\"",
+            key.worktree, key.branch
+        ));
+    }
+    match (kind, is_controller_slot_path(worktree)) {
         (AgentLeaseKind::Control, false) => Err(format!(
-            "the bn control agent may only run in a repo's main/master worktree, not '{branch}'"
+            "the bn control agent may only run in its reserved pool slot (_pool/{CONTROLLER_POOL_SLOT}), not {}",
+            key.worktree
         )),
         (kind, true) if kind != AgentLeaseKind::Control => Err(format!(
-            "'{branch}' is reserved for the bn control agent — a {} agent cannot occupy the \
-             main/master worktree",
+            "_pool/{CONTROLLER_POOL_SLOT} is reserved for the bn control agent — a {} agent cannot \
+             occupy it",
             kind.label()
         )),
         _ => Ok(()),
@@ -182,16 +232,17 @@ pub struct AgentLeaseReconcile {
     pub removed: Vec<AgentLeaseRemoval>,
 }
 
-/// Agent-lease invariant violations for `bn doctor`: every lease whose kind/branch pairing breaks
-/// the main↔control rule, rendered `repo/branch (session): reason`. Empty in a healthy fleet — the
-/// acquire-time guard in [`begin_agent_lease`] prevents new ones — so a non-empty result means a
-/// lease predating the guard or hand-edited state that an operator should reconcile.
+/// Agent-lease invariant violations for `bn doctor`: every lease whose placement breaks the
+/// main-is-agent-free / controller-slot rule, rendered `repo/branch (session): reason`. Empty in a
+/// healthy fleet — the acquire-time guard in [`begin_agent_lease`] prevents new ones — so a
+/// non-empty result means a lease predating the guard or hand-edited state to reconcile. This is
+/// also what surfaces leases written under the old main↔control rule after an upgrade.
 pub fn lease_invariant_violations(registry: &AgentLeaseRegistry) -> Vec<String> {
     registry
         .leases
         .iter()
         .filter_map(|lease| {
-            validate_kind_branch(lease.kind, &lease.key.branch)
+            validate_kind_placement(lease.kind, &lease.key)
                 .err()
                 .map(|reason| {
                     format!(
@@ -239,9 +290,9 @@ pub fn begin_agent_lease(
     now: i64,
     is_live: impl Fn(&AgentLease) -> bool,
 ) -> std::io::Result<AgentLeaseBegin> {
-    // Enforce the main↔control invariant before touching the registry: a rule violation is a
-    // policy refusal, not a transient conflict, so fail fast without taking the lock.
-    if let Err(reason) = validate_kind_branch(lease.kind, &lease.key.branch) {
+    // Enforce the placement invariant before touching the registry: a rule violation is a policy
+    // refusal, not a transient conflict, so fail fast without taking the lock.
+    if let Err(reason) = validate_kind_placement(lease.kind, &lease.key) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             reason,
@@ -690,9 +741,17 @@ mod tests {
         assert!(load_agent_leases(&path).unwrap().leases.is_empty());
     }
 
-    fn control_lease(root: &Path, branch: &str, session: &str) -> AgentLease {
+    /// The three placements the rule distinguishes, laid out exactly as the worktree root is on
+    /// disk: `<root>/worktree/<repo>/{main,_pool/1,_pool/2,<branch>}`.
+    fn placement(root: &Path, tail: &str) -> PathBuf {
+        let dir = root.join("worktree").join("bn").join(tail);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn control_lease(root: &Path, tail: &str, session: &str) -> AgentLease {
         AgentLease {
-            key: AgentLeaseKey::new("bn", branch, root),
+            key: AgentLeaseKey::new("bn", tail, &placement(root, tail)),
             session_id: session.into(),
             harness: "copilot".into(),
             kind: AgentLeaseKind::Control,
@@ -701,9 +760,9 @@ mod tests {
         }
     }
 
-    fn agent_lease_on(root: &Path, branch: &str, session: &str) -> AgentLease {
+    fn agent_lease_on(root: &Path, tail: &str, session: &str) -> AgentLease {
         AgentLease {
-            key: AgentLeaseKey::new("bn", branch, root),
+            key: AgentLeaseKey::new("bn", tail, &placement(root, tail)),
             session_id: session.into(),
             harness: "copilot".into(),
             kind: AgentLeaseKind::Dispatch,
@@ -724,32 +783,94 @@ mod tests {
     }
 
     #[test]
-    fn control_agent_is_refused_off_main() {
+    fn main_worktree_path_matches_only_the_stow_source_checkout() {
+        assert!(is_main_worktree_path(Path::new(
+            "/home/me/projects/worktree/bn/main"
+        )));
+        assert!(is_main_worktree_path(Path::new(
+            "/home/me/projects/worktree/other/master"
+        )));
+        // A branch worktree, a pool slot, and a repo literally named `main` are all fine.
+        assert!(!is_main_worktree_path(Path::new(
+            "/home/me/projects/worktree/bn/feat-x"
+        )));
+        assert!(!is_main_worktree_path(Path::new(
+            "/home/me/projects/worktree/bn/_pool/1"
+        )));
+        assert!(!is_main_worktree_path(Path::new("/home/e/worktree/main")));
+        assert!(!is_main_worktree_path(Path::new("/main")));
+    }
+
+    #[test]
+    fn controller_slot_path_matches_only_pool_slot_one() {
+        assert!(is_controller_slot_path(Path::new(
+            "/home/me/projects/worktree/bn/_pool/1"
+        )));
+        assert!(!is_controller_slot_path(Path::new(
+            "/home/me/projects/worktree/bn/_pool/2"
+        )));
+        assert!(!is_controller_slot_path(Path::new(
+            "/home/me/projects/worktree/bn/1"
+        )));
+        assert!(!is_controller_slot_path(Path::new(
+            "/home/me/projects/worktree/bn/main"
+        )));
+    }
+
+    #[test]
+    fn every_kind_is_refused_in_the_main_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        for (n, lease) in [
+            agent_lease_on(dir.path(), "main", "ship"),
+            control_lease(dir.path(), "main", "ctrl"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let path = dir.path().join(format!("leases-{n}.json"));
+            let err = match begin_agent_lease(
+                &path,
+                lease,
+                AgentLeaseAcquireMode::Refuse,
+                100,
+                |_| false,
+            ) {
+                Ok(_) => panic!("an agent in the main worktree must be refused"),
+                Err(err) => err,
+            };
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+            assert!(err.to_string().contains("is the main worktree"));
+            assert!(load_agent_leases(&path).unwrap().leases.is_empty());
+        }
+    }
+
+    #[test]
+    fn control_agent_is_refused_outside_its_pool_slot() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("leases.json");
         let err = match begin_agent_lease(
             &path,
-            control_lease(dir.path(), "dispatch/feature", "ctrl"),
+            control_lease(dir.path(), "_pool/2", "ctrl"),
             AgentLeaseAcquireMode::Refuse,
             100,
             |_| false,
         ) {
-            Ok(_) => panic!("control off main must be refused"),
+            Ok(_) => panic!("control outside its slot must be refused"),
             Err(err) => err,
         };
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
-        assert!(err.to_string().contains("only run in a repo's main"));
+        assert!(err.to_string().contains("reserved pool slot"));
         assert!(load_agent_leases(&path).unwrap().leases.is_empty());
     }
 
     #[test]
-    fn control_agent_is_accepted_on_main() {
+    fn control_agent_is_accepted_in_its_pool_slot() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("leases.json");
         assert!(matches!(
             acquire_agent_lease(
                 &path,
-                control_lease(dir.path(), "main", "ctrl"),
+                control_lease(dir.path(), "_pool/1", "ctrl"),
                 AgentLeaseAcquireMode::Refuse,
                 100,
                 |_| false,
@@ -760,17 +881,17 @@ mod tests {
     }
 
     #[test]
-    fn non_control_agent_is_refused_on_main() {
+    fn worker_is_refused_in_the_controller_slot() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("leases.json");
         let err = match begin_agent_lease(
             &path,
-            agent_lease_on(dir.path(), "master", "ship"),
+            agent_lease_on(dir.path(), "_pool/1", "ship"),
             AgentLeaseAcquireMode::Refuse,
             100,
             |_| false,
         ) {
-            Ok(_) => panic!("non-control agent on main must be refused"),
+            Ok(_) => panic!("a worker in the controller slot must be refused"),
             Err(err) => err,
         };
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
@@ -781,25 +902,29 @@ mod tests {
     }
 
     #[test]
-    fn lease_invariant_violations_flags_only_illegal_pairings() {
+    fn lease_invariant_violations_flags_only_illegal_placements() {
         let dir = tempfile::tempdir().unwrap();
         let clean = AgentLeaseRegistry {
             leases: vec![
-                control_lease(dir.path(), "main", "ctrl"),
+                control_lease(dir.path(), "_pool/1", "ctrl"),
+                agent_lease_on(dir.path(), "_pool/2", "pooled"),
                 agent_lease_on(dir.path(), "dispatch/feature", "ship"),
             ],
         };
         assert!(lease_invariant_violations(&clean).is_empty());
 
+        // Exactly the shapes an upgrade from the old main↔control rule leaves behind.
         let dirty = AgentLeaseRegistry {
             leases: vec![
-                control_lease(dir.path(), "dispatch/off-main", "stray-ctrl"),
+                control_lease(dir.path(), "main", "legacy-ctrl"),
                 agent_lease_on(dir.path(), "main", "stray-ship"),
+                control_lease(dir.path(), "dispatch/off-slot", "stray-ctrl"),
             ],
         };
         let violations = lease_invariant_violations(&dirty);
-        assert_eq!(violations.len(), 2);
-        assert!(violations.iter().any(|v| v.contains("stray-ctrl")));
-        assert!(violations.iter().any(|v| v.contains("stray-ship")));
+        assert_eq!(violations.len(), 3);
+        for session in ["legacy-ctrl", "stray-ship", "stray-ctrl"] {
+            assert!(violations.iter().any(|v| v.contains(session)));
+        }
     }
 }
