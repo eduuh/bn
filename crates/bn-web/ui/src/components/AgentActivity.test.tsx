@@ -69,7 +69,14 @@ describe("AgentActivity", () => {
     expect(screen.getByText("agent")).toBeTruthy();
     // The agent's markdown is rendered, not printed as literal asterisks. `Markdown` lazy-loads
     // its renderer (showing the raw source meanwhile), so this is the async assertion.
-    expect((await screen.findByText("removed")).tagName).toBe("STRONG");
+    //
+    // The explicit timeout is the point: the fallback renders the *raw source*, so until the chunk
+    // lands this query finds a plain text node and the tag assertion fails rather than retrying
+    // against nothing. That chunk is react-markdown + remark-gfm — the heaviest dependency in the
+    // bundle — and transforming it cold on a loaded CI runner comfortably exceeds the default 1s
+    // budget, which made this the one test in the suite that failed on CI and passed everywhere
+    // else. 5s is still far below the point where a genuinely broken renderer would look healthy.
+    expect((await screen.findByText("removed", {}, { timeout: 5000 })).tagName).toBe("STRONG");
   });
 
   it("collapses a tool run behind its summary and expands it on click", async () => {

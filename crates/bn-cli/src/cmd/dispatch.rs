@@ -117,6 +117,11 @@ impl<'a> DispatchInvocation<'a> {
         if self.fresh {
             args.push("--fresh".to_string());
         }
+        // The orchestrator *is* the queue: queueing an item it just pulled off that queue would
+        // loop. Its concurrency cap already bounds how many worktrees a run can grow, so the
+        // daemon keeps the historical cold fallback while interactive/dashboard dispatches get the
+        // queueing default.
+        args.extend(["--on-pool-full".to_string(), "cold".to_string()]);
         if self.json {
             args.push("--json".to_string());
         }
@@ -235,6 +240,49 @@ fn dispatch_branch_occupied(
 
 fn may_reuse_occupied_worktree(fresh: bool, launching_agent: bool) -> bool {
     fresh && launching_agent
+}
+
+/// Queue `item` on `repo`'s orchestrate run because the warm pool has no free slot, then exit.
+///
+/// The alternative — what dispatch did for years — is to cut a cold worktree, which succeeds every
+/// time and is exactly the problem: nothing reclaims those directories, so a pool that fills up
+/// once quietly grows the disk from then on. Queueing says the true thing (there is no capacity
+/// right now) and keeps the work: `RunState::extend` dedupes by derived id, so re-dispatching the
+/// same item is idempotent rather than a second queue entry.
+///
+/// **Returns** only when there is no live run to queue onto — the caller then falls back to cold,
+/// since refusing to start work on a repo that isn't orchestrated at all would be worse than a
+/// directory. Otherwise it prints the envelope and exits 0: the dispatch was *handled*, not failed.
+fn schedule_on_pool_full(repo: &str, item: &str, json: bool) {
+    let path = bn_core::orchestrate::state_path_for(repo);
+    let now = bn_core::util::now_epoch_secs();
+    let queued = match bn_core::orchestrate::mutate(&path, |st| st.extend(&[item.to_string()], now))
+    {
+        Ok(Some(n)) => n,
+        // No run for this repo — nothing to schedule onto.
+        Ok(None) => return,
+        Err(e) => {
+            eprintln!("bn dispatch: could not queue on {repo}'s run ({e})");
+            return;
+        }
+    };
+    if json {
+        let data = serde_json::json!({
+            "repo": repo,
+            "item": item,
+            "dispatched": false,
+            "scheduled": true,
+            "reason": "pool_full",
+            "queued": queued,
+        });
+        println!("{}", Envelope::success("dispatch", data).to_json());
+    } else {
+        println!(
+            "bn dispatch: every warm slot for '{repo}' is leased — scheduled on the run instead \
+             ({queued} newly queued). It starts as soon as a slot frees."
+        );
+    }
+    std::process::exit(0);
 }
 
 /// A repo's primary branch that must never host a dispatched agent (its worktree would be the
@@ -1385,6 +1433,8 @@ pub(crate) fn run_dispatch(
     fresh: bool,
     keep_project_mcps: bool,
     no_pool: bool,
+    on_pool_full: crate::cli::OnPoolFull,
+    task_id: Option<&str>,
     attach: bool,
     refs: &[String],
     json: bool,
@@ -1647,14 +1697,40 @@ pub(crate) fn run_dispatch(
                     ),
                 )
             }
-            None => {
-                eprintln!(
-                    "bn dispatch: couldn't lease a warm slot for '{repo}' (pool full? run \
-                     `bn wt pool warm`, or pass --no-pool) — falling back to a cold worktree."
-                );
-                let (p, c) = cold_worktree();
-                (p, c, false)
-            }
+            // Every worker slot is leased. Cutting a cold worktree here is what the code used to
+            // do unconditionally, and it is unbounded — nothing ever reclaims those directories,
+            // so a busy day left dozens behind. Capacity is finite; the honest answer is to
+            // schedule the work and let it start when a slot frees.
+            None => match on_pool_full {
+                crate::cli::OnPoolFull::Queue => {
+                    schedule_on_pool_full(&repo, raw, json);
+                    // `schedule_on_pool_full` returns only when there was no run to queue onto.
+                    eprintln!(
+                        "bn dispatch: pool full for '{repo}' and no orchestrate run to queue onto \
+                         — falling back to a cold worktree."
+                    );
+                    let (p, c) = cold_worktree();
+                    (p, c, false)
+                }
+                crate::cli::OnPoolFull::Fail => fail_json(
+                    json,
+                    "dispatch",
+                    "pool_full",
+                    &format!(
+                        "bn dispatch: every warm slot for '{repo}' is leased. Free one with \
+                         `bn agent kill <repo:branch>` or `wt pool return`, or pass \
+                         --on-pool-full cold to cut a throwaway worktree."
+                    ),
+                ),
+                crate::cli::OnPoolFull::Cold => {
+                    eprintln!(
+                        "bn dispatch: couldn't lease a warm slot for '{repo}' (pool full? run \
+                         `bn wt pool warm`, or pass --no-pool) — falling back to a cold worktree."
+                    );
+                    let (p, c) = cold_worktree();
+                    (p, c, false)
+                }
+            },
         },
         bn_core::pool::WorktreeMode::Cold => {
             let (p, c) = cold_worktree();
@@ -1743,21 +1819,35 @@ pub(crate) fn run_dispatch(
         branch: sanitized.clone(),
     };
     let _ = commands::ensure_note(cfg, &target, &today());
+
+    // Bind the task to this worktree, so the fleet can say what the agent is working on and link
+    // through to it. Done here — after the branch and worktree exist, before the agent launches —
+    // so the very first supervisor poll after the launch already sees the binding. Not fatal: an
+    // unknown id is worth a warning, not a refusal to start work that is otherwise ready.
+    if let Some(id) = task_id {
+        match bn_core::todo::claim(&cfg.tasks_file(), id, &repo, &sanitized) {
+            Ok(true) => {}
+            Ok(false) => eprintln!(
+                "bn dispatch: no task '{id}' in the store — dispatching anyway, but the fleet \
+                 won't show a task for this agent"
+            ),
+            Err(e) => eprintln!("bn dispatch: could not bind task '{id}': {e}"),
+        }
+    }
+
     if created {
         let _ = commands::set_goal(cfg, &target, &title, &today());
         // The goal says what the worktree is *for*; the todo makes it trackable work — it lands in
         // `bn todo` / `bn next` and can be closed with `bn done`, so a dispatched task is visible in
         // the same places as anything you captured by hand.
-        let _ = commands::add(cfg, &target, "todo", &title, None, &today());
+        // `if_absent` on both, matching the `decision:` writes just below. Without it a
+        // re-dispatch (or two dispatches racing the same branch) seeds the same todo twice as `t1`
+        // and `t2`, and the source link twice — the note then claims two pieces of work where
+        // there is one.
+        let _ = commands::add(cfg, &target, "todo", &title, Some(&title), &today());
         if let Some(u) = &url {
-            let _ = commands::add(
-                cfg,
-                &target,
-                "collab",
-                &format!("source: {u}"),
-                None,
-                &today(),
-            );
+            let source = format!("source: {u}");
+            let _ = commands::add(cfg, &target, "collab", &source, Some(&source), &today());
         }
         // Record the task type in the note itself (bn's own store — no new format): a scout
         // investigates and reports, a ship delivers a change. `bn promote` flips scout → ship.
@@ -3034,6 +3124,8 @@ mod dispatch_invocation_tests {
                 "investigate",
                 "--verify",
                 "--yolo",
+                "--on-pool-full",
+                "cold",
                 "--json",
             ]
         );
@@ -3042,7 +3134,9 @@ mod dispatch_invocation_tests {
     #[test]
     fn canonical_invocation_carries_orchestrator_recovery_semantics() {
         // Pooling is the default dispatch path now, so the canonical orchestrator invocation
-        // forwards no pool flag — the spawned `bn dispatch` leases a warm slot on its own.
+        // forwards no pool *size* flag — the spawned `bn dispatch` leases a warm slot on its own.
+        // It does pin `--on-pool-full cold`: the daemon is the queue, so queueing an item it just
+        // pulled off that queue would loop.
         let args = DispatchInvocation::new("ship it", "bn", "claude")
             .verify(true)
             .yolo(true)
@@ -3053,8 +3147,18 @@ mod dispatch_invocation_tests {
         assert_eq!(
             args,
             [
-                "dispatch", "ship it", "--repo", "bn", "--agent", "claude", "--verify", "--yolo",
-                "--fresh", "--json",
+                "dispatch",
+                "ship it",
+                "--repo",
+                "bn",
+                "--agent",
+                "claude",
+                "--verify",
+                "--yolo",
+                "--fresh",
+                "--on-pool-full",
+                "cold",
+                "--json",
             ]
         );
         assert!(

@@ -94,7 +94,14 @@ const DESTINATIONS: { to: string; label: string; Icon: LucideIcon; keywords: str
   { to: "/goals", label: "Goals", Icon: Target, keywords: "objectives quarter daily targets" },
   { to: "/repos", label: "Repos", Icon: FolderGit2, keywords: "repositories projects worktrees" },
   { to: "/insights", label: "Insights", Icon: LineChart, keywords: "trends metrics analytics charts" },
-  { to: "/cost", label: "Cost", Icon: CircleDollarSign, keywords: "spend money usage tokens aic bill" },
+  // Cost is a tab of the insights page, but it keeps its own palette entry: "money" is what people
+  // type, and deep-linking straight to the tab is the whole point of `?tab=`.
+  {
+    to: "/insights?tab=cost",
+    label: "Cost",
+    Icon: CircleDollarSign,
+    keywords: "spend money usage tokens aic bill",
+  },
   { to: "/notes", label: "Notes", Icon: FileText, keywords: "branch notes writeups docs" },
   { to: "/skills", label: "Skills", Icon: Zap, keywords: "mcp tools capabilities prompts" },
   { to: "/handoff", label: "Handoff", Icon: ArrowLeftRight, keywords: "context transfer session wrap" },

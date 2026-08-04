@@ -189,6 +189,19 @@ fn read_leases(pool_dir: &Path) -> Leases {
         .unwrap_or_default()
 }
 
+/// Hold the pool's lease file for a read-modify-write.
+///
+/// `leases.json` is read, edited and written back by `acquire`, `return` and the release paths, and
+/// two dispatches racing that sequence can hand the *same* slot to both — each reads a lease set
+/// without the other's entry, picks the same lowest-free slot, and the second write erases the
+/// first. Every mutation now takes this lock first, so slot allocation is serialized per repo.
+/// [`bn_core::store::FileLock::acquire`] warns and proceeds unowned rather than blocking forever,
+/// which keeps a stuck lock from wedging the pool.
+fn lock_leases(pool_dir: &Path) -> bn_core::store::FileLock {
+    let _ = std::fs::create_dir_all(pool_dir);
+    bn_core::store::FileLock::acquire(&leases_path(pool_dir))
+}
+
 /// Write the lease file atomically (temp + rename) so a crash mid-write can't corrupt it.
 fn write_leases(pool_dir: &Path, leases: &Leases) -> std::io::Result<()> {
     let path = leases_path(pool_dir);
@@ -768,7 +781,10 @@ fn acquire_slot(
     holder: Option<String>,
     class: SlotRole,
 ) -> Option<Leased> {
-    let _ = std::fs::create_dir_all(&ctx.pool_dir);
+    // Held for the whole pick-and-persist sequence: two concurrent dispatches that each read the
+    // lease set before either wrote would pick the same lowest-free slot and the second write would
+    // erase the first, putting two agents in one worktree.
+    let _lock = lock_leases(&ctx.pool_dir);
     let mut leases = read_leases(&ctx.pool_dir);
 
     // Self-heal first: reclaim any lease left by a *prior boot* (WSL shutdown / host reboot). Its
@@ -879,7 +895,203 @@ fn acquire_slot(
 pub fn lease_for_dispatch(cfg: &Config, repo: &str, branch: &str) -> Option<(PathBuf, bool)> {
     let ctx = resolve_dispatch_pool(cfg, repo)?;
     let leased = acquire_slot(&ctx, branch, None, SlotRole::Worker)?;
+    // Taking a slot may have taken the *last* one. Refill behind ourselves so the next dispatch
+    // finds capacity already waiting instead of discovering the pool is full.
+    ensure_spare_slot(&ctx);
     Some((leased.slot, leased.fresh))
+}
+
+/// What handing a slot back did — the honest outcomes of [`release_dispatch_slot`], so a caller can
+/// report "returned" separately from "left alone because it holds work".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum SlotRelease {
+    /// The slot was leased and is now reset and back in the pool.
+    Returned {
+        repo: String,
+        slot: u32,
+        branch: String,
+    },
+    /// The slot holds uncommitted changes — left leased on purpose. Never discard work implicitly;
+    /// `wt pool return <n> --force` is the deliberate discard.
+    Dirty {
+        repo: String,
+        slot: u32,
+        dirty: usize,
+    },
+    /// The path is not a `_pool/<n>` slot (a cold worktree) — nothing to return.
+    NotASlot,
+    /// The slot was already free. Idempotent success: releasing twice is not an error.
+    NotLeased { repo: String, slot: u32 },
+    /// The lease file could not be written — the slot is still leased and the caller must say so.
+    Failed {
+        repo: String,
+        slot: u32,
+        error: String,
+    },
+}
+
+impl SlotRelease {
+    /// A one-line human summary, or `None` for a path that was never a pool slot.
+    pub fn message(&self) -> Option<String> {
+        match self {
+            SlotRelease::Returned { repo, slot, .. } => {
+                Some(format!("returned pool slot {slot} ({repo})"))
+            }
+            SlotRelease::Dirty { repo, slot, dirty } => Some(format!(
+                "pool slot {slot} ({repo}) has {dirty} uncommitted change(s) — left leased; \
+                 inspect it, then `wt pool return {slot} --force`"
+            )),
+            SlotRelease::NotASlot => None,
+            SlotRelease::NotLeased { repo, slot } => {
+                Some(format!("pool slot {slot} ({repo}) was already free"))
+            }
+            SlotRelease::Failed { repo, slot, error } => Some(format!(
+                "could not return pool slot {slot} ({repo}): {error} — the slot is still leased"
+            )),
+        }
+    }
+}
+
+/// Hand a dispatch slot back when the agent holding it is gone (`bn agent kill`).
+///
+/// Leasing a slot is durable-until-returned, and until this existed *nothing* returned a worker
+/// slot: every killed agent leaked one, so a pool filled up over a day's work and every later
+/// dispatch silently fell back to cutting a cold worktree. Safe by construction — a slot with
+/// uncommitted changes is left leased rather than reset, a slot that isn't leased is a no-op, and a
+/// failed lease write is *reported* instead of swallowed, because "the slot came back" and "the
+/// write failed" are the same picture on disk otherwise. Takes the pool lock, so a concurrent
+/// dispatch cannot lease the slot mid-reset.
+pub fn release_dispatch_slot(cfg: &Config, worktree: &Path) -> SlotRelease {
+    let Some((repo, n, pdir)) = slot_parts(worktree) else {
+        return SlotRelease::NotASlot;
+    };
+    let (bare_dir, _) = wt::layout(cfg);
+    let bare = bare_dir.join(format!("{repo}.git"));
+
+    let _lock = lock_leases(&pdir);
+    let mut leases = read_leases(&pdir);
+    let Some(lease) = leases.slots.get(&n).cloned() else {
+        return SlotRelease::NotLeased { repo, slot: n };
+    };
+    let dirty = wt::dirty_count(&worktree.to_string_lossy());
+    if dirty > 0 {
+        return SlotRelease::Dirty {
+            repo,
+            slot: n,
+            dirty,
+        };
+    }
+    warm_reset(&worktree.to_string_lossy(), &bare.to_string_lossy());
+    leases.slots.remove(&n);
+    if let Err(e) = write_leases(&pdir, &leases) {
+        return SlotRelease::Failed {
+            repo,
+            slot: n,
+            error: e.to_string(),
+        };
+    }
+    log_pool_event("pool_return", &repo, n, &lease.branch, None);
+    SlotRelease::Returned {
+        repo,
+        slot: n,
+        branch: lease.branch,
+    }
+}
+
+/// Refresh the lease on the slot an agent is being *relaunched* into.
+///
+/// A relaunch respawns into the same worktree, so the slot must stay leased — but the recorded
+/// holder pid belongs to the process that just got killed, and [`reclaim_stale`] would read that as
+/// an abandoned slot and hand it to someone else mid-relaunch. Re-stamping `pid`/`at`/`boot_id`
+/// keeps the lease provably live. No-op for a cold worktree or an unleased slot.
+pub fn touch_dispatch_lease(cfg: &Config, worktree: &Path) -> bool {
+    let _ = cfg;
+    let Some((_repo, n, pdir)) = slot_parts(worktree) else {
+        return false;
+    };
+    let _lock = lock_leases(&pdir);
+    let mut leases = read_leases(&pdir);
+    let Some(lease) = leases.slots.get_mut(&n) else {
+        return false;
+    };
+    lease.pid = caller_pid();
+    lease.at = now_epoch();
+    lease.boot_id = current_boot_id().unwrap_or_default();
+    write_leases(&pdir, &leases).is_ok()
+}
+
+/// What [`ensure_spare_slot`] found when it looked one lease ahead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SpareSlot {
+    /// An idle slot already holds a live checkout — the next dispatch is an instant warm hit.
+    Ready(u32),
+    /// An idle slot number is free but has no checkout yet; a warm was scheduled to build it.
+    Warming(u32),
+    /// Every slot is leased. Capacity is what the operator configured, so this is *reported*, not
+    /// papered over — `bn dispatch --on-pool-full` decides what happens next.
+    Full(usize),
+}
+
+/// Keep a **warm** slot ready for the next dispatch, so leasing the last idle one is not a cliff.
+///
+/// Slots are otherwise built lazily, at the moment they're leased: the dispatch that finds a cold
+/// slot pays for the checkout and the dep install before its agent starts. Looking one step ahead
+/// after each lease moves that cost off the critical path.
+///
+/// It deliberately does **not** grow the pool. An automatic `set_pool_size` bump would mean the
+/// pool is never full — which sounds helpful and is the exact failure being fixed: capacity would
+/// again be unbounded, just through a different door, and a dispatch would be silently rewriting
+/// the operator's `wt/pools` config as a side effect. The cliff is real and belongs to
+/// `--on-pool-full`, which can queue the work instead of manufacturing a worktree for it.
+///
+/// Best-effort: it never fails a dispatch, it only makes the next one cheaper.
+fn ensure_spare_slot(ctx: &PoolCtx) -> SpareSlot {
+    let leased: BTreeSet<u32> = {
+        let _lock = lock_leases(&ctx.pool_dir);
+        read_leases(&ctx.pool_dir).slots.keys().copied().collect()
+    };
+    let Some(n) = bn_core::pool::pick_slot(ctx.size, &leased) else {
+        return SpareSlot::Full(ctx.size);
+    };
+    if is_live_slot(&slot_path(&ctx.pool_dir, n)) {
+        return SpareSlot::Ready(n);
+    }
+    schedule_warm(&ctx.repo);
+    SpareSlot::Warming(n)
+}
+
+/// Kick off `bn wt pool warm --repo <repo> --new --here` detached, so building a slot's checkout
+/// and deps never blocks the dispatch that revealed the need. `--new` touches only slots with no
+/// checkout yet, so a warm racing a live agent can't disturb it. Output is discarded: this is a
+/// background top-up, and its failure is not the caller's problem.
+fn schedule_warm(repo: &str) {
+    // Never under `cargo test`: `current_exe()` there is the *test binary*, so spawning it with
+    // `wt pool warm` argv would re-run the test suite as a subprocess. The Phase-8 integration
+    // test drives the real `bn` binary out-of-process, where this is `false` and the warm runs.
+    if cfg!(test) {
+        return;
+    }
+    // The bn binary, not whatever is running us — `$BN_BIN`, else a sibling of the current exe,
+    // else PATH. Same resolution the rest of bn uses to re-invoke itself.
+    let exe = std::env::var("BN_BIN")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_file())
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|e| e.parent().map(|d| d.join("bn")))
+                .filter(|p| p.is_file())
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("bn"));
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(["wt", "pool", "warm", "--repo", repo, "--new", "--here"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    // A spawn failure just means no background warm — the next lease still creates the slot cold.
+    let _ = cmd.spawn();
 }
 
 /// The lease label the controller's slot carries in `leases.json` and `wt pool status`. It is not a
@@ -912,6 +1124,7 @@ pub fn release_controller_slot(cfg: &Config, repo: &str) {
         return;
     };
     let n = bn_core::agent::CONTROLLER_POOL_SLOT;
+    let _lock = lock_leases(&ctx.pool_dir);
     let mut leases = read_leases(&ctx.pool_dir);
     if !leases.slots.contains_key(&n) {
         return;
@@ -996,6 +1209,7 @@ fn pool_return(cfg: &Config, target: Option<String>, force: bool) -> bool {
     };
     let bare = bare_dir.join(format!("{repo}.git"));
 
+    let _lock = lock_leases(&pdir);
     let mut leases = read_leases(&pdir);
     if !leases.slots.contains_key(&n) && !force {
         eprintln!("{YELLOW}Slot {n} ({repo}) isn't leased. Use --force to reset it anyway.{NC}");

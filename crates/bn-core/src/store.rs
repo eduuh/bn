@@ -97,7 +97,11 @@ pub fn save(note: &Note, note_md: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-fn atomic_temp_path(path: &Path) -> PathBuf {
+/// A temp sibling of `path` no other writer can collide with: pid (cross-process) plus a
+/// process-local counter (cross-thread). A *fixed* temp name is the subtle bug this avoids — two
+/// writers would share one scratch file and each could rename the other's half-written bytes into
+/// place. Shared with the task store, which needs the same guarantee.
+pub(crate) fn atomic_temp_path(path: &Path) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
 

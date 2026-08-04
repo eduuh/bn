@@ -49,3 +49,66 @@ test("fleet renders live agents, needs-you, and the bottom tab-bar", async ({ pa
 
   await shot(page, testInfo, "fleet");
 });
+
+test("fleet: an agent shows the task it is working on, and the chip jumps to it", async ({
+  page,
+}) => {
+  await primeToken(page);
+  await page.goto("/fleet");
+
+  // The board could always say an agent was *running*; it could not say what it was running.
+  // `t1` is bound to the live orchestrator's (repo, branch), so its card carries the task.
+  const orchestrators = page.getByRole("region", { name: "Orchestrators" });
+  const chip = orchestrators.getByTestId("task-chip").first();
+  await expect(chip).toBeVisible();
+  await expect(chip).toContainText("Wire the fleet task chip");
+
+  // Tapping the chip navigates to the task — not to the card's own agent link. The chip is a
+  // button driving useNavigate precisely so it can win over the surrounding <Link>.
+  await chip.click();
+  await expect(page).toHaveURL(/\/tasks\/t1$/);
+  await expect(page.getByRole("heading", { name: "Wire the fleet task chip" })).toBeVisible();
+
+  // The round trip closes: the task page names the agent working it and links back to its
+  // transcript, so a task and the thing running it are never two disconnected screens.
+  await expect(page.getByText("Working on it")).toBeVisible();
+  const agentLink = page.getByRole("link", { name: /bn:orchestrator/ });
+  await expect(agentLink).toBeVisible();
+  await agentLink.click();
+  await expect(page).toHaveURL(/\/agents\//);
+});
+
+test("fleet: an agent with no task says so rather than rendering an empty gap", async ({ page }) => {
+  await primeToken(page);
+  await page.goto("/fleet");
+
+  // A needs-you card is the surface the board spends on a decision, and "we don't know what this
+  // is working on" is part of that decision — so it is stated, not silently omitted.
+  const needs = page.getByRole("region", { name: "Needs you" });
+  await expect(needs.getByTestId("no-task").first()).toBeVisible();
+});
+
+test("fleet: Relaunch runs `bn agent relaunch`, never `bn agent recover`", async ({ page }) => {
+  await primeToken(page);
+  await page.goto("/fleet");
+
+  const needs = page.getByRole("region", { name: "Needs you" });
+  page.once("dialog", (d) => d.accept());
+  const [res] = await Promise.all([
+    page.waitForResponse((r) => r.url().includes("/relaunch") && r.request().method() === "POST"),
+    needs.getByRole("button", { name: /Relaunch/ }).first().click(),
+  ]);
+
+  // The stub `bn` echoes its argv, so this asserts the *command the server actually issued*.
+  // Relaunch used to shell out to `bn agent recover --yes`, which pushes a branch and opens a PR —
+  // a different operation entirely from the word on the button.
+  const body = await res.json();
+  expect(body.data.args).toContain("agent relaunch");
+  expect(body.data.args).not.toContain("recover");
+});
+
+test("task page: an unknown id gets a real screen, not a blank one", async ({ page }) => {
+  await primeToken(page);
+  await page.goto("/tasks/t999");
+  await expect(page.getByRole("heading", { name: /No task t999/ })).toBeVisible();
+});

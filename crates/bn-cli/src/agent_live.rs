@@ -1941,6 +1941,7 @@ mod tests {
             output_tokens: 20,
             cache_read_tokens: 5,
             control: bn_core::agent::ControlChannel::None,
+            task: None,
         }
     }
     fn win(session: &str, window: &str, state: &str) -> WinState {

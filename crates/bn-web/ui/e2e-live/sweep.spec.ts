@@ -19,7 +19,7 @@ const ROUTES: { path: string; name: string; heading?: RegExp }[] = [
   { path: "/fleet", name: "fleet", heading: /Fleet/ },
   { path: "/nodes", name: "nodes", heading: /Nodes/ },
   { path: "/start", name: "start", heading: /Start/ },
-  { path: "/cost", name: "cost", heading: /Cost/ },
+  { path: "/insights?tab=cost", name: "cost", heading: /Cost/ },
   { path: "/insights", name: "insights", heading: /Insights/ },
   { path: "/notes", name: "notes", heading: /Notes/ },
   { path: "/handoff", name: "handoff", heading: /Handoff/ },

@@ -8,6 +8,7 @@ import { CopyButton } from "./CopyButton";
 import { Age, Dot, FleetCounters } from "./FleetMeta";
 import { HarnessMenu } from "./HarnessMenu";
 import { RelaunchButton } from "./RelaunchButton";
+import { NoTaskChip, TaskChip } from "./TaskChip";
 import { Badge } from "./ui/badge";
 import { Card } from "./ui/card";
 import { toneVariant } from "./StateChip";
@@ -78,7 +79,14 @@ export function FleetEntryCard({
         {to && <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}
       </div>
 
-      <div className="mt-1 text-sm text-foreground/90">{entry.stateLabel}</div>
+      {/* One fact, one encoding. A stuck agent used to say it three times — the `stuck` badge, a
+          "Stuck" line, and the "No progress for 21h" banner — so the two lines that carried no new
+          information crowded out the one that did. The banner supersedes the state line whenever it
+          renders, and the state line also drops when it merely restates the badge. */}
+      {!(entry.needs && entry.needsReason) &&
+        entry.stateLabel.toLowerCase() !== entry.statusLabel.toLowerCase() && (
+          <div className="mt-1 text-sm text-foreground/90">{entry.stateLabel}</div>
+        )}
 
       {entry.needs && entry.needsReason && (
         <div
@@ -92,6 +100,9 @@ export function FleetEntryCard({
 
       <div className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1">
         <span className="font-mono text-xs text-muted-foreground">{entry.repo}</span>
+        {/* On a card the empty state is worth the pixels: this surface is reserved for agents that
+            need a decision, and "we don't know what this is working on" is part of that decision. */}
+        {entry.task ? <TaskChip task={entry.task} className="max-w-[16rem]" /> : <NoTaskChip />}
         <HarnessMenu target={entry.target} current={entry.harness} harnesses={harnesses} />
         <FleetCounters entry={entry} />
         <Dot />

@@ -7,6 +7,7 @@ import { keepPreviousData } from "@tanstack/react-query";
 
 import type {
   TasksView,
+  TaskDetailView,
   IssuesView,
   PipelineBoardView,
   PipelineStagesView,
@@ -48,12 +49,38 @@ import type {
 } from "./types";
 
 /** Fetch a bn read endpoint and return its envelope `data`, throwing on a transport/api failure. */
+/** A failed read. Carries the HTTP status so a caller can tell "no such thing" (404) from "the
+ * server broke" (500) — a distinction the message string alone forced every caller to parse.
+ * Still an `Error`, so existing `(err as Error).message` handling is unaffected. */
+export class FetchError extends Error {
+  readonly status: number;
+  readonly code?: string;
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = "FetchError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
 export async function fetchEnvelope<T>(url: string): Promise<T> {
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url} → HTTP ${res.status}`);
+  if (!res.ok) {
+    // The body is a bn envelope even on a non-2xx, so prefer its message over the bare status.
+    const env = (await res.json().catch(() => null)) as Envelope<T> | null;
+    throw new FetchError(
+      env?.error?.message ?? `${url} → HTTP ${res.status}`,
+      res.status,
+      env?.error?.code ?? undefined,
+    );
+  }
   const env = (await res.json()) as Envelope<T>;
   if (!env.ok || env.data == null) {
-    throw new Error(env.error?.message ?? `${url} returned a failure envelope`);
+    throw new FetchError(
+      env.error?.message ?? `${url} returned a failure envelope`,
+      res.status,
+      env.error?.code ?? undefined,
+    );
   }
   return env.data;
 }
@@ -85,6 +112,8 @@ export const queryKeys = {
   handoff: (repo: string, branch: string) => ["handoff", repo, branch] as const,
   /** The task store, keyed by the filter in play (#996). */
   tasks: (scope: string) => ["tasks", scope] as const,
+  /** One task, by id — the `/tasks/:id` detail page. */
+  task: (id: string) => ["task", id] as const,
   /** Every repo's open issues, with per-repo freshness (#999). */
   issues: ["issues"] as const,
   /** The nine-stage pipeline board (#746 / #1005). */
@@ -566,6 +595,17 @@ const keepPrevious = <T,>(prev: T | undefined) => prev;
 
 /** Today's tasks — `day:` today-or-earlier plus unscheduled, mirroring the CLI's bare view so the
  * dashboard and `bn task` never disagree about what "today" means. */
+/** One task plus everything already joined to it: the live agent on its worktree, its branch note,
+ * and its context doc. Polls at the read cadence — a task page is a place you sit and watch. */
+export function taskQuery(id: string) {
+  return {
+    queryKey: queryKeys.task(id),
+    queryFn: () => fetchEnvelope<TaskDetailView>(`/api/tasks/${encodeURIComponent(id)}`),
+    refetchInterval: 15_000,
+    ...TODAY_CACHE.work,
+  };
+}
+
 export function tasksQuery(scope: "today" | "all" = "today") {
   return {
     queryKey: queryKeys.tasks(scope),

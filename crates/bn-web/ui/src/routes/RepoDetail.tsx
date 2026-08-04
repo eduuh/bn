@@ -376,7 +376,7 @@ function CostPanel({ aic, usd }: { aic: number | null; usd: number | null }) {
           <div className="text-xs text-muted-foreground">{fmtUsd(usd)} API-equiv benchmark</div>
         </div>
         <Link
-          to="/cost"
+          to="/insights?tab=cost"
           className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
         >
           View details <ArrowUpRight className="h-3.5 w-3.5" />

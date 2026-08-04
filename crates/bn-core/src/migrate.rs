@@ -47,6 +47,9 @@ fn migrate_one(note_md: &std::path::Path) -> Result<bool, StoreError> {
     if is_single_file {
         return Ok(false);
     }
+    // Locked: a migration rewrites the whole note, so an unlocked read-then-save here would drop
+    // any concurrent edit made between the two.
+    let _lock = store::NoteLock::acquire(note_md);
     let note = store::read(note_md)?;
     store::save(&note, note_md)?;
     Ok(true)

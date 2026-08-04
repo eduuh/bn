@@ -72,6 +72,56 @@ pub(crate) fn task_ctx_opt(cfg: &Config) -> Option<Resolved> {
     target_ctx(cfg, None, None)
 }
 
+/// `bn task claim <id> [--repo] [--branch]` — bind a task to the worktree working it.
+///
+/// The write that makes the fleet's "what is this agent working on?" answerable: it stamps the
+/// `repo:`/`branch:` metas the `(repo, branch)` join already keys on. `bn dispatch --task` does
+/// this automatically; this is the hand path — an agent running it from inside its own checkout,
+/// or an operator adopting a worktree that was started before the task existed.
+pub(crate) fn emit_task_claim(
+    cfg: &Config,
+    id: &str,
+    repo: Option<String>,
+    branch: Option<String>,
+    as_json: bool,
+) {
+    let (repo, branch) = match (repo, branch) {
+        (Some(r), Some(b)) => (r, b),
+        (r, b) => match task_ctx_opt(cfg) {
+            // A partial `--repo`/`--branch` is completed from the cwd rather than refused.
+            Some(ctx) => (r.unwrap_or(ctx.repo), b.unwrap_or(ctx.branch)),
+            None => fail_json(
+                as_json,
+                "task_claim",
+                "no_target",
+                "bn task claim: not in a git repo — pass --repo and --branch",
+            ),
+        },
+    };
+    let path = task_path(cfg);
+    match bn_core::todo::claim(&path, id, &repo, &branch) {
+        Ok(true) => {}
+        Ok(false) => fail_json(
+            as_json,
+            "task_claim",
+            "not_found",
+            &format!("bn task claim: no task '{id}'"),
+        ),
+        Err(e) => fail_json(
+            as_json,
+            "task_claim",
+            "write_failed",
+            &format!("bn task claim: {e}"),
+        ),
+    }
+    let data = serde_json::json!({ "id": id, "repo": repo.to_lowercase(), "branch": branch });
+    if as_json {
+        println!("{}", Envelope::success("task_claim", data).to_json());
+    } else {
+        println!("{id} → {}/{branch}", repo.to_lowercase());
+    }
+}
+
 /// Where a task sits relative to `today`, for the bare view's ordering.
 ///
 /// `None` means "not actionable today" — scheduled for a future day, so it folds out of the

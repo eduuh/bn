@@ -165,7 +165,7 @@ test("headline money is grouped and readable", async ({ page }, testInfo) => {
     "nothing four-figure to group on this host",
   );
 
-  await visit(page, "/cost");
+  await visit(page, "/insights?tab=cost");
   const main = page.locator("main");
   const text = await main.innerText();
 

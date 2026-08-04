@@ -3,7 +3,6 @@ import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeftRight,
   Bell,
-  CircleDollarSign,
   Clock,
   FileText,
   Folder,
@@ -122,10 +121,8 @@ export function Rail() {
     },
     {
       title: "Insight",
-      items: [
-        { to: "/insights", label: "Insights", Icon: LineChart },
-        { to: "/cost", label: "Cost", Icon: CircleDollarSign },
-      ],
+      // Cost is a tab of the insights page now, not a sibling destination.
+      items: [{ to: "/insights", label: "Insights", Icon: LineChart }],
     },
     {
       title: "Knowledge",

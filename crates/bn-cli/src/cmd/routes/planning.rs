@@ -113,6 +113,9 @@ pub(super) fn route(cfg: &Config, action: CmdPlanning, json: bool) {
                 due,
                 src,
             }) => emit_task_add(cfg, &text.join(" "), priority, due.as_deref(), &src, json),
+            Some(TaskCmd::Claim { id, repo, branch }) => {
+                crate::cmd::task::emit_task_claim(cfg, &id, repo, branch, json)
+            }
             Some(TaskCmd::Do { id }) => emit_task_mutate(cfg, TaskOp::Do, &id, json),
             Some(TaskCmd::Wip { id }) => emit_task_mutate(cfg, TaskOp::Wip, &id, json),
             Some(TaskCmd::Snooze { id, until }) => {

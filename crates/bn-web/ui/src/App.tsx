@@ -8,6 +8,7 @@ import { RouteBoundary } from "./components/RouteBoundary";
 import { TopBar } from "./components/shell/TopBar";
 import { Rail } from "./components/shell/Rail";
 import { cn } from "./lib/utils";
+import { pageWidth } from "./lib/layout";
 
 /**
  * The shell (clay console redesign, #966): a 46px topbar carrying identity and host vitals over a
@@ -39,11 +40,11 @@ export function App() {
     return () => document.removeEventListener("keydown", onKey);
   }, []);
 
-  // The console is a full-bleed three-column app that manages its own scrolling; every other route
-  // is a document on the prototype's 1060px measure.
-  // The console is the only full-bleed, self-scrolling screen; since #1006 it lives at
-  // `/console` rather than at the index.
-  const bare = location.pathname === "/console";
+  // How wide this route wants to be (see `lib/layout`). `full` routes are the console language —
+  // full-bleed, multi-column, scrolling their own panes; `standard` and `document` are page-scrolled
+  // measures, fluid and narrow respectively.
+  const width = pageWidth(location.pathname);
+  const bare = width === "full";
 
   return (
     <div className="flex h-[100dvh] flex-col overflow-hidden">
@@ -63,7 +64,20 @@ export function App() {
                 {bare ? (
                   <Outlet />
                 ) : (
-                  <div className="mx-auto max-w-[1060px] px-3 py-3.5 md:px-6 md:py-5">
+                  <div
+                    className={cn(
+                      "px-3 py-3.5 md:px-6 md:py-5",
+                      // `standard` stays fluid to a generous max so the content tracks the topbar
+                      // instead of floating in 355px gutters at 1920.
+                      //
+                      // `document` keeps the narrow measure forms and prose want, but is *not*
+                      // centred: centring a narrow column inside the content area put `/start`'s
+                      // page title 170px right of the title on every other route, so the heading
+                      // jumped every time you navigated. Left-aligned, every page's title lands on
+                      // the same x and only the measure changes.
+                      width === "document" ? "max-w-[52rem]" : "mx-auto max-w-[100rem]",
+                    )}
+                  >
                     <Outlet />
                   </div>
                 )}

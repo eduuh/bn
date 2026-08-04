@@ -141,7 +141,15 @@ pub fn append_event_at(
         .create(true)
         .append(true)
         .open(path)?;
-    writeln!(f, "{}", serde_json::to_string(&ev)?)?;
+    // ONE write, payload and newline together. `writeln!` issues them as separate `write` calls,
+    // and these logs are appended to concurrently by unrelated `bn` processes — every note command
+    // writes a metric — so a split write lets two lines interleave into one corrupt line. An
+    // O_APPEND write is atomic per call on the platforms bn runs on, so keeping it to a single call
+    // is what makes the log parseable. (`read_events_at` skips unparseable lines, which is exactly
+    // why this went unnoticed: the corruption showed up as quietly missing data.)
+    let mut line = serde_json::to_string(&ev)?;
+    line.push('\n');
+    f.write_all(line.as_bytes())?;
     Ok(())
 }
 
@@ -169,7 +177,11 @@ pub fn append_event_at_synced(
         .create(true)
         .append(true)
         .open(path)?;
-    writeln!(f, "{}", serde_json::to_string(&ev)?)?;
+    // Single write, for the same reason as [`append_event_at`]: two `write` calls can interleave
+    // with a concurrent appender's.
+    let mut line = serde_json::to_string(&ev)?;
+    line.push('\n');
+    f.write_all(line.as_bytes())?;
     f.sync_all()?;
     Ok(())
 }

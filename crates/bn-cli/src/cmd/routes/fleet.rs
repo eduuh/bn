@@ -179,6 +179,11 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
                 yes,
             }) => emit_agent_recover(cfg, repo, branch, all, base.as_deref(), yes, json),
             Some(AgentCmd::Kill { target }) => emit_agent_kill(cfg, &target, json),
+            Some(AgentCmd::Relaunch {
+                target,
+                hard,
+                harness,
+            }) => crate::cmd::agent_relaunch::emit(cfg, &target, hard, harness.as_deref(), json),
             Some(AgentCmd::Pane {
                 target,
                 lines,

@@ -64,7 +64,11 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
             branch,
         } => {
             let ctx = target_ctx(cfg, repo, branch).unwrap_or_else(|| fail("Not in a git repo"));
-            emit_switch(cfg, &ctx, harness, prompt, in_place, reason, json);
+            // A single-target switch that didn't happen exits non-zero — the envelope already said
+            // why, and `bn_runner` (and any shell caller) reads the status.
+            if !emit_switch(cfg, &ctx, harness, prompt, in_place, reason, json) {
+                std::process::exit(1);
+            }
         }
         CmdStaff::Run {
             job,

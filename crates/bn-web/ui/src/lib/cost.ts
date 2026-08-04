@@ -18,18 +18,35 @@ export const CATEGORY_ORDER: WorkClass[] = [
   "unattributed",
 ];
 
-/** Label + colour per known work-class (title-case labels match the CLI's `WorkClass::label`). */
+/**
+ * Label + colour per known work-class (title-case labels match the CLI's `WorkClass::label`).
+ *
+ * The colours used to be GitHub Primer's defaults (`#a371f7`, `#3fb950`, `#58a6ff`, and the
+ * blue-grey `#6e7681`), left over from before the surface moved to the warm clay system. That put
+ * the app's one chart in a different palette from everything around it — and Primer's greys are
+ * blue-grey, which is the exact thing `tailwind.css` opens by rejecting.
+ *
+ * These are the validated categorical steps for a dark surface, assigned **in fixed slot order** —
+ * the order is what makes the set colourblind-safe, so it must never be shuffled or cycled. Checked
+ * against this app's actual card surface (`#242321`, i.e. `--card`) with the palette validator:
+ * lightness band, chroma floor, protan/deutan separation (worst adjacent ΔE 8.4), normal-vision
+ * floor (19.3) and ≥3:1 contrast all pass.
+ *
+ * `unattributed` is deliberately *not* a categorical slot: it is the residual bucket, so it takes a
+ * warm neutral (3.56:1 on the card) and spends no hue on identity it doesn't have.
+ */
 const CATEGORY_META: Record<string, { label: string; color: string }> = {
-  orchestration: { label: "Orchestration", color: "#a371f7" },
-  coding: { label: "Coding", color: "#3fb950" },
-  scheduled: { label: "Scheduled", color: "#d29922" },
-  research: { label: "Research", color: "#58a6ff" },
-  remote: { label: "Remote", color: "#db6d28" },
-  unattributed: { label: "Unattributed", color: "#6e7681" },
+  orchestration: { label: "Orchestration", color: "#3987e5" }, // slot 1 · blue
+  coding: { label: "Coding", color: "#d95926" }, //              slot 2 · orange
+  scheduled: { label: "Scheduled", color: "#199e70" }, //        slot 3 · aqua
+  research: { label: "Research", color: "#c98500" }, //          slot 4 · yellow
+  remote: { label: "Remote", color: "#d55181" }, //              slot 5 · magenta
+  unattributed: { label: "Unattributed", color: "#7d7869" }, //  residual · warm neutral
 };
 
-/** Colours for any category not in the known table, so an added work-class never crashes the UI. */
-const FALLBACK_COLORS = ["#ec6547", "#79c0ff", "#e3b341", "#56d364", "#ff7b72", "#d2a8ff"];
+/** Slots 6–8 of the same validated set, for any work-class not in the table above, so an added
+ * category never crashes the UI and never invents an unvalidated hue. */
+const FALLBACK_COLORS = ["#008300", "#9085e9", "#e66767"];
 
 /** The human label for a category key (title-case for known classes, else the raw key). */
 export function categoryLabel(cat: string): string {

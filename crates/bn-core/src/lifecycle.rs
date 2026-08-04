@@ -64,7 +64,20 @@ fn prune_with(
         if alive {
             continue; // still checked out
         }
-        let mut note = bn.note;
+        // Lock and **re-read** before flipping the status. `machine_notes` read every note up
+        // front, so `bn.note` is a snapshot that may already be stale — saving it back would
+        // silently revert whatever a live agent wrote in between. The note being closed here is
+        // one whose worktree is gone, so contention is rare; correctness is cheap.
+        let _lock = store::NoteLock::acquire(&bn.path);
+        let mut note = match store::read(&bn.path) {
+            Ok(n) => n,
+            Err(e) => {
+                report
+                    .failed
+                    .push(format!("{}/{}: {e}", bn.repo, bn.branch));
+                continue;
+            }
+        };
         note.front.status = "closed".to_string();
         match store::save(&note, &bn.path) {
             Ok(()) => report.closed.push(PrunedNote {
@@ -163,7 +176,7 @@ fn branches_from_porcelain(porcelain: &str) -> impl Iterator<Item = String> + '_
 /// successfully appear; a repo absent here (unreadable / not a real bare) leaves callers to their
 /// own fallback. Keyed like note keys (`crate::resolver::normalize`): repo lowercased, branch
 /// slashes→dashes.
-pub(crate) fn live_worktree_paths(bare_dir: &Path) -> HashMap<String, HashMap<String, PathBuf>> {
+pub fn live_worktree_paths(bare_dir: &Path) -> HashMap<String, HashMap<String, PathBuf>> {
     let mut map: HashMap<String, HashMap<String, PathBuf>> = HashMap::new();
     let Ok(entries) = std::fs::read_dir(bare_dir) else {
         return map;
@@ -412,6 +425,9 @@ pub fn clean(
     if !note_md.exists() {
         return Err(CmdError::NoNote);
     }
+    // Locked read-modify-write, like every `commands::*` verb — otherwise a `bn clean` racing a
+    // live agent's `bn add` writes back a note that predates the add.
+    let _lock = store::NoteLock::acquire(&note_md);
     let mut note = store::read(&note_md)?;
     let removed = strip_empty_items(&mut note);
     if removed > 0 {
@@ -425,7 +441,13 @@ pub fn clean(
 pub fn clean_all(cfg: &Config) -> Vec<CleanEntry> {
     let mut out = Vec::new();
     for bn in machine_notes(cfg, true) {
-        let mut note = bn.note;
+        // Re-read under the lock rather than saving the up-front `machine_notes` snapshot back —
+        // a sweep across every note is exactly where a stale write is most likely to land on a
+        // note an agent is actively editing.
+        let _lock = store::NoteLock::acquire(&bn.path);
+        let Ok(mut note) = store::read(&bn.path) else {
+            continue;
+        };
         let removed = strip_empty_items(&mut note);
         if removed > 0 && store::save(&note, &bn.path).is_ok() {
             out.push(CleanEntry {

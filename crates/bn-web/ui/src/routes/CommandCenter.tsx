@@ -49,7 +49,6 @@ import { Card } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { cn } from "../lib/utils";
-import { PageHead } from "../components/PageHead";
 
 /** Map a severity to a chip variant + the row's left accent bar colour. */
 const SEVERITY: Record<string, { variant: BadgeProps["variant"]; bar: string }> = {
@@ -92,8 +91,12 @@ function ActionRow({ item, onStart }: { item: ActionItem; onStart: (i: ActionIte
     >
       {/* Left accent bar keyed to severity so the list scans at a glance. */}
       <span className={cn("absolute inset-y-0 left-0 w-1", bar)} aria-hidden="true" />
-      <div className="flex flex-col gap-3 p-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0 flex-1 space-y-1.5">
+      {/* `justify-start` with a capped text block, not `justify-between`: on a wide screen
+          `justify-between` pinned "Start agent" to the far right edge, leaving several hundred px
+          of nothing between a todo and the button that acts on it. Capping the measure keeps the
+          two together and stops the title running to an unreadable line length. */}
+      <div className="flex flex-col gap-3 p-3 sm:flex-row sm:items-start">
+        <div className="min-w-0 flex-1 space-y-1.5 lg:max-w-[96ch]">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant={variant} className="uppercase tracking-wide">
               {KIND_LABEL[item.type]}
@@ -150,13 +153,19 @@ function ActionRow({ item, onStart }: { item: ActionItem; onStart: (i: ActionIte
   );
 }
 
-/** A small labelled stat in the glance strip. */
+/** A small labelled stat in the glance strip — a cell in the band, not a floating card. */
 function Glance({ n, label, tone }: { n: number; label: string; tone?: string }) {
   return (
-    <Card className="flex flex-1 flex-col gap-0.5 px-4 py-3">
-      <span className={cn("text-2xl font-semibold tabular-nums leading-none", tone)}>{n}</span>
-      <span className="text-xs text-muted-foreground">{label}</span>
-    </Card>
+    <div className="flex flex-col justify-center gap-1 bg-card px-3.5 py-3">
+      <span
+        className={cn("font-mono text-[1.35rem] font-semibold leading-none tabular-nums", tone)}
+      >
+        {n}
+      </span>
+      <span className="text-[0.68rem] uppercase tracking-[0.08em] text-muted-foreground">
+        {label}
+      </span>
+    </div>
   );
 }
 
@@ -658,16 +667,19 @@ export function CommandCenter() {
   const hiddenTodoCount = todos.length - visibleTodos.length;
 
   return (
-    <div className="space-y-5 pb-8">
-      <PageHead title="Command center" sub="everything that needs you — one click to an agent" />
-
-      <Tabs
-        value={tab}
-        onValueChange={(v) =>
-          setSearchParams(v === "actions" ? {} : { tab: v }, { replace: true })
-        }
-      >
-        <TabsList>
+    <Tabs
+      value={tab}
+      onValueChange={(v) => setSearchParams(v === "actions" ? {} : { tab: v }, { replace: true })}
+      className="flex h-full min-h-0 flex-col"
+    >
+      <header className="flex flex-none flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-2.5">
+        <h1 className="font-display text-lg font-semibold tracking-tight text-foreground">
+          Command center
+        </h1>
+        <span className="hidden font-mono text-[11px] text-muted-foreground/70 lg:inline">
+          everything that needs you — one click to an agent
+        </span>
+        <TabsList className="ml-1">
           <TabsTrigger value="actions">Actions</TabsTrigger>
           <TabsTrigger value="reviews">
             Reviews
@@ -679,9 +691,16 @@ export function CommandCenter() {
           </TabsTrigger>
           <TabsTrigger value="completed">Completed</TabsTrigger>
         </TabsList>
+      </header>
 
-        <TabsContent value="actions" className="space-y-5">
-          <div className="flex gap-3">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        {/* The action list is a column of rows, so it takes a measure rather than the full bleed:
+            at 1900px each row left ~740px of nothing to the right of its button, and three stat
+            cells stretched to 560px each to hold a two-digit number. Full-bleed is right for the
+            grids and the master/detail screens; it is not right for a single stack of rows. */}
+        <TabsContent value="actions" className="mt-0 max-w-[76rem] space-y-5">
+          {/* A band of cells divided by the grid's own background, not three floating cards. */}
+          <div className="grid auto-rows-fr grid-cols-3 gap-px border-y border-border bg-border">
         <Glance n={items.length} label="actionable" />
         <Glance n={urgentCount} label="urgent" tone={urgentCount > 0 ? "text-urgent" : undefined} />
         <Glance n={running} label="running" tone={running > 0 ? "text-ok" : undefined} />
@@ -781,17 +800,17 @@ export function CommandCenter() {
           )}
         </TabsContent>
 
-        <TabsContent value="reviews">
+        <TabsContent value="reviews" className="mt-0">
           <ReviewsInbox />
         </TabsContent>
 
-        <TabsContent value="completed">
+        <TabsContent value="completed" className="mt-0">
           <CompletedList />
         </TabsContent>
-      </Tabs>
+      </div>
 
       {composing && <StartAgentComposer item={composing} onClose={() => setComposing(null)} />}
       <ToastStack />
-    </div>
+    </Tabs>
   );
 }

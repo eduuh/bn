@@ -3,7 +3,7 @@
 // and map machine states to one-line human labels. Side-effect-free + unit-tested (`fleet.test.ts`)
 // so the mobile Fleet view stays a thin render of these values.
 
-import type { AgentControl, AgentRole, FleetView, LiveAgent, OrchestrateView, PaneState, QueueItem, RunView } from "../api/types";
+import type { AgentControl, AgentRole, AgentTask, FleetView, LiveAgent, OrchestrateView, PaneState, QueueItem, RunView } from "../api/types";
 import { agentForItem, healthTone, nonOrchestratedAgents, paneTone, type ChipTone } from "./board";
 
 /** A unified fleet card viewmodel — one running agent (an in-flight orchestrate item joined to its
@@ -37,6 +37,8 @@ export interface FleetEntry {
   pr?: string | null;
   /** Whether bn has a write channel to this agent — gates the steer controls (see [`SteerPanel`]). */
   control?: AgentControl;
+  /** The task this agent is working on, when one is bound to its worktree. */
+  task?: AgentTask;
 }
 
 /** Human one-liner for a #340 pane state. */
@@ -104,6 +106,9 @@ function entryFromItem(item: QueueItem, run: RunView, fleet?: FleetView): FleetE
     target,
     sessionId: agent?.session_id,
     control: agent?.control,
+    // Carried from the live agent, not the queue item: the binding lives on the worktree, and the
+    // queue item has no idea which task it came from.
+    task: agent?.task,
     harness: item.harness ?? agent?.harness,
     // An orchestrate queue item is always a ship (worker) agent; the orchestrator is the daemon
     // driving the wave, surfaced separately as a live agent below.
@@ -133,6 +138,7 @@ function entryFromAgent(a: LiveAgent): FleetEntry {
     target: a.target,
     sessionId: a.session_id,
     control: a.control,
+    task: a.task,
     harness: a.harness,
     role,
     // An orchestrator runs the wave rather than shipping, so read its health as a fleet-tick signal.

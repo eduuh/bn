@@ -394,6 +394,10 @@ pub(crate) fn run_critic_verdict(
                 true,
                 false,
                 false,
+                // A critic re-dispatch is a retry of work already in flight, so a full pool means
+                // "wait for the slot", not "cut another worktree".
+                crate::cli::OnPoolFull::Queue,
+                None,
                 false,
                 &[],
                 json,

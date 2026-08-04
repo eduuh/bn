@@ -154,6 +154,20 @@ pub(crate) enum CmdIntake {
         /// no bare clone (or a full pool) already falls back to cold automatically.
         #[arg(long)]
         no_pool: bool,
+        /// What to do when every warm pool slot is leased. `queue` (default) schedules the item on
+        /// the repo's orchestrate run so it starts as soon as a slot frees; `cold` cuts a fresh
+        /// worktree anyway (the old behaviour — unbounded, since nothing ever reclaims those);
+        /// `fail` reports `pool_full` and does nothing, for scripted callers that want to decide.
+        /// A repo with no bn-managed bare clone is not "full" — it was never poolable — and always
+        /// goes cold.
+        #[arg(long, value_name = "MODE", default_value = "queue")]
+        on_pool_full: OnPoolFull,
+        /// Bind this dispatch to a task id (`t42`) from the global store, stamping the task's
+        /// `repo:`/`branch:` so the fleet can show which task each running agent is on and link
+        /// through to it. Without it the worktree is ungoverned — the agent runs, but nothing
+        /// records what it is for.
+        #[arg(long, value_name = "ID")]
+        task: Option<String>,
         /// Deprecated no-op: leasing a warm pool slot is now the default, so `--pool` no longer does
         /// anything (kept hidden so existing scripts/callers that still pass it don't break). Use
         /// `--no-pool` to opt out.
@@ -2833,6 +2847,18 @@ pub(crate) enum TaskCmd {
         #[arg(long, default_value = "manual")]
         src: String,
     },
+    /// Bind a task to the worktree working it, so the fleet can show which task an agent is on:
+    /// bn task claim <id> [--repo R] [--branch B]. Defaults to the repo/branch you're standing in,
+    /// which is what an agent runs from inside its own checkout. Idempotent.
+    Claim {
+        id: String,
+        /// Repo to bind to (default: the cwd's).
+        #[arg(long)]
+        repo: Option<String>,
+        /// Branch to bind to (default: the cwd's).
+        #[arg(long)]
+        branch: Option<String>,
+    },
     /// Mark a task done: bn task do <id>.
     Do { id: String },
     /// Mark a task in progress (@wip): bn task wip <id>.
@@ -3085,13 +3111,37 @@ pub(crate) enum AgentCmd {
         #[arg(long)]
         detach: bool,
     },
-    /// Kill a running agent by closing its tmux window (`repo:branch`, the `target` from
-    /// `bn agent live`). Frees the slot when an agent is wedged past recovery — the hard stop the
-    /// web dashboard's kill button and the orchestrator's give-up path call. Idempotent: a target
-    /// with no window is reported as already gone. bn agent kill <target>.
+    /// Kill a running agent: its process tree, its tmux window, its agent lease and its warm pool
+    /// slot (`repo:branch`, the `target` from `bn agent live`). The hard stop the web dashboard's
+    /// kill button and the orchestrator's give-up path call — it genuinely frees the slot, rather
+    /// than closing the window and leaving the harness reparented and running. Idempotent: a target
+    /// with no window is reported as already gone. A slot holding uncommitted work is left leased
+    /// and said so, never reset. bn agent kill <target>.
     Kill {
         /// `repo:branch` of the agent — its tmux window name (slashes already dashed).
         target: String,
+    },
+    /// Kill a running agent and start it again in the SAME worktree — the repair a stuck agent
+    /// actually wants, and what the dashboard's Relaunch button now calls.
+    ///
+    /// Its process tree is reaped (a bare `kill-window` leaves the harness reparented and running),
+    /// then the harness is respawned in the checkout git says the branch is really in — never the
+    /// conventional `<worktree_dir>/<repo>/<branch>`, which is wrong for every pooled slot. By
+    /// default the new session RESUMES the old transcript; `--hard` starts a fresh one seeded from
+    /// the branch note's handoff. The warm pool slot is kept (that is what `kill` frees), and a
+    /// relaunch that could not happen exits non-zero rather than reporting success.
+    /// bn agent relaunch <target> [--hard] [--harness claude|copilot].
+    Relaunch {
+        /// `repo:branch` of the agent — the `target` from `bn agent live`.
+        target: String,
+        /// Start a FRESH session seeded from the branch note's handoff instead of resuming the
+        /// recorded transcript. For an agent whose context is the problem.
+        #[arg(long)]
+        hard: bool,
+        /// Relaunch under a different harness. Implies `--hard`: a Claude transcript is not
+        /// resumable by Copilot. Availability-gated — a disabled harness is an error, not a no-op.
+        #[arg(long)]
+        harness: Option<String>,
     },
     /// Capture the last N lines of a running agent's tmux pane (read-only). Powers the web
     /// dashboard's live-pane view; `<target>` is `repo:branch` (the `target` from `bn agent live`).
@@ -3221,6 +3271,22 @@ pub(crate) enum IssueCmd {
         #[arg(long)]
         allow_duplicate: bool,
     },
+}
+
+/// What `bn dispatch` does when every warm pool slot is already leased.
+///
+/// The old behaviour was `Cold`, unconditionally and silently: a full pool meant a brand-new
+/// worktree directory, every time, forever, with nothing to reclaim them. Queueing is the honest
+/// default — capacity is finite, so work waits for a slot rather than growing the disk.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum OnPoolFull {
+    /// Schedule the item on the repo's orchestrate run and start nothing now.
+    #[default]
+    Queue,
+    /// Cut a cold worktree anyway.
+    Cold,
+    /// Report `pool_full` and do nothing.
+    Fail,
 }
 
 /// The problem kind for `bn issue file`, each mapping to a canonical label.

@@ -67,8 +67,9 @@ test("the phone tab-bar carries every destination, with no drawer to open", asyn
   const nav = page.getByRole("navigation", { name: "primary" });
   await expect(nav).toBeVisible();
   await expect(nav.getByRole("link", { name: /Console/ })).toBeVisible();
-  // Destinations from every group, including the ones that used to sit behind the drawer.
-  await expect(nav.getByRole("link", { name: "Cost" })).toBeVisible();
+  // Destinations from every group, including the ones that used to sit behind the drawer. The
+  // Insight group's entry is Insights — cost is a tab of that page, not its own destination.
+  await expect(nav.getByRole("link", { name: "Insights" })).toBeVisible();
   await expect(nav.getByRole("link", { name: "Cron" })).toBeVisible();
   await expect(nav.getByRole("link", { name: "Handoff" })).toBeVisible();
 });

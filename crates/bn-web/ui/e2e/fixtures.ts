@@ -232,6 +232,19 @@ export function seed(): void {
   ].join("\n");
   write(path.join(notes, HOSTNAME, "metrics", "events.jsonl"), metrics + "\n");
 
+  // --- The task store (#1006), at <personal_root>/tasks.txt. `t1` is BOUND to the live
+  // orchestrator's (repo, branch), which is what makes the fleet's task chip render: the fleet
+  // joins an agent to its task on exactly that key. `t2` is unbound, so the task page can be
+  // exercised for a task nothing is running. ---
+  write(
+    path.join(notes, "tasks.txt"),
+    [
+      "2026-08-04 Wire the fleet task chip id:t1 repo:bn branch:orchestrator stage:execute",
+      "2026-08-04 Unbound backlog item id:t2",
+      "",
+    ].join("\n"),
+  );
+
   // --- Branch notes (#495): the "recent sessions" per repo the Repos view reads via rollups.
   // Written in the machine-subtree layout <notes>/<host>/<repo>/<branch>/note.md. These are
   // note-only branches (no live agent / dispatch), so they populate a repo's "Recent" list, its

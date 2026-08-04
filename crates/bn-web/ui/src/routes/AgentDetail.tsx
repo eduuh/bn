@@ -1,7 +1,9 @@
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, ArrowLeft } from "lucide-react";
-import { agentDetailQuery } from "../api/client";
+import { agentDetailQuery, reviewsQuery } from "../api/client";
+import { pendingReviewFor } from "../lib/review";
+import { cn } from "../lib/utils";
 import { useNow } from "../hooks/useNow";
 import { AgentHeader } from "../components/AgentHeader";
 import { AgentActivity } from "../components/AgentActivity";
@@ -54,6 +56,12 @@ export function AgentDetail() {
   const now = useNow();
   const agent = detail.data?.agent;
 
+  // Ask the same question `PlanReviewPanel` asks itself, so the layout knows whether the aside will
+  // have a body before it reserves a track for one.
+  const reviews = useQuery(reviewsQuery());
+  const hasPlanReview =
+    !!agent && !!reviews.data && !!pendingReviewFor(reviews.data.reviews, agent.repo, agent.branch);
+
   return (
     <div className="space-y-5 pb-8">
       <Button asChild variant="ghost" size="sm" className="-ml-2 text-muted-foreground">
@@ -82,16 +90,27 @@ export function AgentDetail() {
       {detail.data && agent && (
         <>
           <AgentHeader detail={detail.data} now={now} harnesses={detail.data.harnesses} />
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
+          {/* The aside is only a column when it has something in it. `PlanReviewPanel` renders
+              nothing unless the agent is paused for approval — which is the uncommon case — so a
+              hardcoded `22rem` track left the feed ending 370px short of its own header on every
+              ordinary agent, for a column that was empty. */}
+          <div
+            className={cn(
+              "grid grid-cols-1 gap-4",
+              hasPlanReview && "lg:grid-cols-[minmax(0,1fr)_22rem]",
+            )}
+          >
             {/* Read the session, then reply to it — the composer sits directly under the feed it
                 answers, so steering is one continuous motion instead of a hunt across the page. */}
             <div className="space-y-3">
               <AgentActivity sessionId={agent.session_id} />
               <SteerPanel target={agent.target} control={agent.control} />
             </div>
-            <div className="space-y-3">
-              <PlanReviewPanel repo={agent.repo} branch={agent.branch} />
-            </div>
+            {hasPlanReview && (
+              <div className="space-y-3">
+                <PlanReviewPanel repo={agent.repo} branch={agent.branch} />
+              </div>
+            )}
           </div>
           <SessionNote detail={detail.data} />
         </>

@@ -246,8 +246,11 @@ export function Cron() {
         </Card>
       )}
 
+      {/* `items-start`: grid cells stretch to their row's tallest sibling by default, so a
+            three-line job card sitting next to a nine-line one grew a void under its content
+            rather than staying its own size. */}
       {sorted.length > 0 && (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2">
           {sorted.map((j) => (
             <CronCard key={`${j.scope}:${j.job}`} job={j} now={now} />
           ))}

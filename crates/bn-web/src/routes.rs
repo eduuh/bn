@@ -63,6 +63,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/attn", get(api::attn))
         // The task-first read surface (#1005, EPIC #993).
         .route("/api/tasks", get(api::tasks))
+        .route("/api/tasks/{id}", get(api::task_detail))
         .route("/api/issues", get(api::issues))
         .route("/api/pipeline/board", get(api::pipeline_board))
         // Registered before the `{repo}/{branch}` wildcard so `stages` stays a literal segment.
@@ -234,6 +235,7 @@ mod tests {
             output_tokens: 0,
             cache_read_tokens: 0,
             control: bn_core::agent::ControlChannel::None,
+            task: None,
         };
         let fleet = Fleet {
             agents: vec![agent],

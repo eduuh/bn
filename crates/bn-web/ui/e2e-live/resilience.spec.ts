@@ -38,7 +38,7 @@ test("a screen that throws mid-render does not take the dashboard with it", asyn
     route.fulfill({ status: 200, contentType: "application/json", body: POISON }),
   );
 
-  await visit(page, "/cost");
+  await visit(page, "/insights?tab=cost");
 
   // The shell must survive so the operator can leave.
   await expect(
@@ -143,7 +143,7 @@ test("a slow API shows loading affordances instead of an empty screen", async ({
     return route.continue();
   });
 
-  await page.goto("/cost", { waitUntil: "domcontentloaded" });
+  await page.goto("/insights?tab=cost", { waitUntil: "domcontentloaded" });
 
   // While the query is in flight the screen must show *something* — the skeletons the route
   // already defines — rather than reading as an empty dataset.
@@ -170,9 +170,9 @@ test("a 500 from one endpoint does not blank the screen that uses it", async ({
     }),
   );
 
-  await visit(page, "/cost");
+  await visit(page, "/insights?tab=cost");
   await expect(page.getByRole("navigation", { name: "primary" })).toBeVisible();
-  // CostView declares an explicit error card — it must be what shows.
+  // The cost panel declares an explicit error card — it must be what shows.
   await expect(page.getByText(/Could not load cost/i)).toBeVisible();
   await shot(page, testInfo, "cost-5xx");
 });

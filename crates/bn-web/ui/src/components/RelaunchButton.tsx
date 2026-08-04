@@ -7,8 +7,11 @@ import { pushToast } from "../lib/toast";
 import { cn } from "../lib/utils";
 
 /**
- * Soft-relaunch an agent from the fleet board — the one repair a stuck card almost always wants,
- * previously reachable only by opening the agent detail.
+ * Relaunch an agent from the fleet board — the one repair a stuck card almost always wants.
+ *
+ * Relaunch means what it says: the agent's process tree is killed and the harness is started again
+ * in the same worktree, resuming its own transcript. (It used to run `bn agent recover`, which
+ * pushes the branch and opens a PR — nothing to do with the word on the button.)
  *
  * bn drives agents through a recorded session (`--resume`) or a live tmux window; the fleet also
  * *observes* sessions bn never launched, and those have no write channel at all. Rather than
@@ -38,7 +41,7 @@ export function RelaunchButton({ target, control }: { target: string; control?: 
       disabled={!steerable || mut.isPending}
       title={
         steerable
-          ? `Relaunch ${target} — same worktree and branch, note preserved`
+          ? `Relaunch ${target} — kill it and start it again in the same worktree, resuming its transcript`
           : "bn has no write channel to this agent (it was not launched by bn)"
       }
       className={cn(
@@ -51,7 +54,11 @@ export function RelaunchButton({ target, control }: { target: string; control?: 
         e.preventDefault();
         e.stopPropagation();
         if (!steerable || mut.isPending) return;
-        if (window.confirm(`Relaunch ${target}? Same worktree and branch — the note is preserved.`)) {
+        if (
+          window.confirm(
+            `Relaunch ${target}?\n\nThis kills the running agent and starts it again in the same worktree, resuming its transcript.`,
+          )
+        ) {
           mut.mutate();
         }
       }}

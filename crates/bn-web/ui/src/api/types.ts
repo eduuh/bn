@@ -51,6 +51,22 @@ export interface LiveAgent {
    * which is treated as unknown-but-allowed so the panel doesn't lock out against a stale binary.
    */
   control?: AgentControl;
+  /**
+   * The task this agent is working on — `bn_core::agent::AgentTask`. Present when a task is bound
+   * to the agent's `(repo, branch)` (`bn dispatch --task`, `bn task claim`); absent otherwise, and
+   * absent on older servers. An agent with no task is a normal state, not an error.
+   */
+  task?: AgentTask;
+}
+
+/** `bn_core::agent::AgentTask` — enough of a task to recognize it and link to it. */
+export interface AgentTask {
+  /** The positional handle (`t42`) — what `/tasks/:id` is addressed by. */
+  id: string;
+  summary: string;
+  stage?: string;
+  /** The SMART gate's verdict, when judged. */
+  smart?: string;
 }
 
 /** `bn_core::agent::ControlChannel`. */
@@ -1435,6 +1451,19 @@ export interface TaskAgent {
   harness: string;
   health: AgentHealth;
   idle_secs: number;
+}
+
+/** `GET /api/tasks/:id` — one task with everything already joined to it, so the detail page renders
+ * from a single fetch and a task can never disagree with the agent shown beside it. */
+export interface TaskDetailView {
+  today: string;
+  task: TaskRow;
+  /** The live agent on this task's worktree, or null when nothing is running it. */
+  agent: TaskAgent | null;
+  /** The branch note for the task's `(repo, branch)`, when it has one. */
+  note: NoteDetail | null;
+  /** The task's context doc (`## Done When` and the rest), when one was written. */
+  doc: { path: string; body: string } | null;
 }
 
 /** A task in flight: the store row, whatever is working on it, and the workflow it is running. */

@@ -137,7 +137,7 @@ describe("Command palette (#565)", () => {
 
     expect(screen.getByText("Go to")).toBeTruthy();
     expect(screen.getByText("Cost")).toBeTruthy();
-    expect(screen.getByText("/cost")).toBeTruthy();
+    expect(screen.getByText("/insights?tab=cost")).toBeTruthy();
     expect(screen.queryByText("No results.")).toBeNull();
   });
 

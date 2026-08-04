@@ -15,6 +15,12 @@ pub struct GoalOutcome {
 
 /// Ensure the branch note exists, creating an empty single-file note if missing.
 /// Returns the note directory (what bare `bn` prints).
+///
+/// Locked, and the existence check is repeated *inside* the lock. Unlocked, this was a
+/// check-then-act: two processes could both see no note, and the loser would write a blank
+/// `Note::new` over the goal and todos the winner had just seeded. `bn dispatch` calls this first
+/// thing on every dispatch, so two dispatches landing together on one branch — a re-dispatch, an
+/// orchestrator retry — could silently erase the note they had come to create.
 pub fn ensure_note(
     cfg: &Config,
     ctx: &Resolved,
@@ -22,9 +28,13 @@ pub fn ensure_note(
 ) -> Result<std::path::PathBuf, CmdError> {
     let note_md = cfg.note_file(ctx);
     if !note_md.exists() {
-        let mut note = Note::new(ctx.rb(), today, &cfg.hostname);
-        note.front.record_session();
-        store::save(&note, &note_md)?;
+        let _lock = store::NoteLock::acquire(&note_md);
+        // Re-check under the lock: another writer may have created (and seeded) it while we waited.
+        if !note_md.exists() {
+            let mut note = Note::new(ctx.rb(), today, &cfg.hostname);
+            note.front.record_session();
+            store::save(&note, &note_md)?;
+        }
     }
     Ok(cfg.note_dir(ctx))
 }

@@ -62,7 +62,9 @@ test("⌘K reaches a destination by name and navigates to it", async ({ page }, 
   await expect(palette.getByText("No results.")).toHaveCount(0);
 
   await palette.getByRole("option").first().click();
-  await expect(page).toHaveURL(/\/cost$/);
+  // Cost is a tab of the insights page since the two reporting screens merged; the palette entry
+  // deep-links straight to it.
+  await expect(page).toHaveURL(/\/insights\?tab=cost$/);
 });
 
 test("⌘K matches a destination by synonym", async ({ page }, testInfo) => {
@@ -100,7 +102,7 @@ test("every rail destination is reachable by click and lands on its screen", asy
   await visit(page, "/");
 
   const nav = page.getByRole("navigation", { name: "primary" });
-  const labels = ["Fleet", "Nodes", "Cron", "Attention", "Today", "Goals", "Repos", "Insights", "Cost"];
+  const labels = ["Fleet", "Nodes", "Cron", "Attention", "Today", "Goals", "Repos", "Insights"];
 
   for (const label of labels) {
     await nav.getByRole("link", { name: new RegExp(`^${label}`) }).first().click();
@@ -112,9 +114,9 @@ test("every rail destination is reachable by click and lands on its screen", asy
 });
 
 test("cost switches window, metric and breakdown dimension", async ({ page }, testInfo) => {
-  const diags = watch(page, "/cost", testInfo.project.name);
+  const diags = watch(page, "/insights?tab=cost", testInfo.project.name);
   await primeToken(page);
-  await visit(page, "/cost");
+  await visit(page, "/insights?tab=cost");
 
   // Window: 7d / 30d / 90d must each re-query and re-render without blanking the chart.
   const windows = page.getByRole("tablist", { name: "window" });

@@ -785,6 +785,106 @@ pub struct TasksQuery {
     pub status: Option<String>,
 }
 
+/// `GET /api/tasks/:id` — one task, plus everything already joined to it.
+///
+/// A task had no address of its own: the list endpoint could show it in a row, but nothing could
+/// link *to* it — so the fleet's "this agent is working on t42" had nowhere to go. This is that
+/// address.
+///
+/// The `agent` join is the same `(lowercase repo, lowercase branch)` key, and the same five fields,
+/// that [`pipeline_stages`] attaches — deliberately, so a task and the thing working on it can
+/// never render out of sync, and so the existing `TaskAgent` type is reused rather than forked.
+/// Runs on `spawn_blocking`: it folds the task store *and* a supervisor pass.
+pub async fn task_detail(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let cmd = "task";
+    let id = id.trim().to_string();
+    // Same rule `actions::task_action` enforces, so a link that works for a read works for a write.
+    if id.is_empty() || id.len() > 32 || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return bad_request(cmd, "invalid_id", "task id must be alphanumeric (e.g. t42)");
+    }
+
+    let id_for_msg = id.clone();
+    let st = state.clone();
+    let found = tokio::task::spawn_blocking(move || {
+        let today = bn_core::util::today();
+        // An unreadable store is a real failure, not a missing task — a caller must be able to
+        // tell "no such task" from "couldn't read the store".
+        let file = bn_core::todo::load(&st.cfg.tasks_file()).map_err(|e| e.to_string())?;
+        let Some(task) = file.tasks().find(|t| t.id() == Some(id.as_str())).cloned() else {
+            return Ok(None);
+        };
+        let repo = task.meta("repo").map(str::to_string);
+        let branch = task.meta("branch").map(str::to_string);
+
+        // The live agent on this task's worktree, if any.
+        let agent = match (&repo, &branch) {
+            (Some(r), Some(b)) => {
+                let fleet = bn_core::agent::supervise(
+                    &st.cfg,
+                    bn_core::agent::DEFAULT_IDLE_MINS,
+                    bn_core::agent::DEFAULT_STUCK_MINS,
+                );
+                fleet
+                    .agents
+                    .iter()
+                    .find(|a| a.repo.eq_ignore_ascii_case(r) && a.branch.eq_ignore_ascii_case(b))
+                    .map(|a| {
+                        json!({
+                            "session_id": a.session_id,
+                            "target": a.target,
+                            "harness": a.harness,
+                            "health": a.health,
+                            "idle_secs": a.idle_secs,
+                        })
+                    })
+            }
+            _ => None,
+        };
+        let note = match (&repo, &branch) {
+            (Some(r), Some(b)) => resolve_note(&st, r, b),
+            _ => Value::Null,
+        };
+        let doc = bn_core::task_doc::read(&st.cfg, &task)
+            .map(|d| json!({ "path": d.path, "body": d.text }));
+
+        Ok::<_, String>(Some(json!({
+            "today": today,
+            "task": task.to_json(&today),
+            "agent": agent,
+            "note": note,
+            "doc": doc,
+        })))
+    })
+    .await;
+
+    match found {
+        Ok(Ok(Some(data))) => Json(Envelope::success(cmd, data)).into_response(),
+        Ok(Ok(None)) => (
+            StatusCode::NOT_FOUND,
+            Json(Envelope::failure(
+                cmd,
+                "not_found",
+                format!("no task '{id_for_msg}'"),
+            )),
+        )
+            .into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(Envelope::failure(
+                cmd,
+                "store_unreadable",
+                format!("could not read the task store: {e}"),
+            )),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(Envelope::failure(cmd, "join_failed", e.to_string())),
+        )
+            .into_response(),
+    }
+}
+
 /// `GET /api/tasks` — the task store (#996), filtered.
 ///
 /// Served **natively** from `bn_core::todo` rather than by shelling `bn task --json`: it is a file

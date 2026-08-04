@@ -24,7 +24,7 @@ test("insights switches its metrics window and keeps the chart populated", async
   await primeToken(page);
   await visit(page, "/insights");
 
-  const windows = page.getByRole("tablist", { name: "metrics window" });
+  const windows = page.getByRole("tablist", { name: "window" });
   await expect(windows).toBeVisible();
 
   const tabs = await windows.getByRole("tab").all();
@@ -39,8 +39,8 @@ test("insights switches its metrics window and keeps the chart populated", async
     expect((await page.locator("main").innerText()).trim().length).toBeGreaterThan(0);
   }
 
-  // Insights is four screens behind one nav entry (Metrics / Weekly / Insights / Brag); the route
-  // sweep only ever saw whichever one is default, so walk them all.
+  // Insights is five screens behind one nav entry (Metrics / Cost / Weekly / Insights / Brag); the
+  // route sweep only ever saw whichever one is default, so walk them all.
   const views = page.getByRole("tablist", { name: "insights view" });
   for (const tab of await views.getByRole("tab").all()) {
     const label = (await tab.innerText()).trim();

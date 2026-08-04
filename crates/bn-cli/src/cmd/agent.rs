@@ -178,32 +178,28 @@ pub(crate) fn emit_agent_recover(
     as_json: bool,
 ) {
     let base = base.unwrap_or("main");
-    // Build the target list: --all sweeps every worktree (repo/branch dirs), else one target.
-    let mut targets: Vec<(String, String, std::path::PathBuf)> = Vec::new();
+    // Build the target list. Both arms ask *git* where a branch is checked out rather than
+    // reconstructing `<worktree_dir>/<repo>/<branch>`: that join is a convention, and a dispatched
+    // branch lives in a pool slot (`_pool/N`) while a reused directory keeps its old name — so the
+    // reconstructed path misses most of a real fleet, and this swept right past the very agents it
+    // exists to rescue. `None` means "could not locate", which is reported, not silently skipped.
+    let mut targets: Vec<(String, String, Option<std::path::PathBuf>)> = Vec::new();
     if all {
-        if let Ok(repos) = std::fs::read_dir(&cfg.worktree_dir) {
-            for r in repos.flatten().filter(|e| e.path().is_dir()) {
-                let repo = r.file_name().to_string_lossy().into_owned();
-                if let Ok(branches) = std::fs::read_dir(r.path()) {
-                    for b in branches.flatten().filter(|e| e.path().is_dir()) {
-                        let br = b.file_name().to_string_lossy().into_owned();
-                        if br == "main" || br == "_pool" {
-                            continue;
-                        }
-                        targets.push((repo.clone(), br, b.path()));
-                    }
+        // git's own answer per repo, so pooled slots are swept instead of skipped by name.
+        for (repo_lc, branches) in bn_core::lifecycle::live_worktree_paths(&cfg.bare_dir()) {
+            for (branch, path) in branches {
+                if branch == "main" {
+                    continue;
                 }
+                targets.push((repo_lc.clone(), branch, Some(path)));
             }
         }
     } else {
         let ctx = target_ctx(cfg, repo, branch).unwrap_or_else(|| {
             fail("bn agent recover: not in a git repo — pass --repo/--branch or --all")
         });
-        targets.push((
-            ctx.repo.clone(),
-            ctx.branch.clone(),
-            cfg.worktree_dir.join(&ctx.repo).join(&ctx.branch),
-        ));
+        let wt = agent_worktree(cfg, &ctx.repo, &ctx.branch);
+        targets.push((ctx.repo.clone(), ctx.branch, wt));
     }
 
     let gitout = |wt: &std::path::Path, args: &[&str]| -> Option<String> {
@@ -211,10 +207,18 @@ pub(crate) fn emit_agent_recover(
     };
 
     let mut results: Vec<serde_json::Value> = Vec::new();
+    let mut unlocated = 0usize;
     for (repo, branch, wt) in targets {
-        if !wt.is_dir() {
+        let Some(wt) = wt.filter(|p| p.is_dir()) else {
+            // Not a silent `continue`: "I could not find this branch's checkout" and "there was
+            // nothing to recover" are different answers, and conflating them is what let a failed
+            // recover read as a clean no-op.
+            unlocated += 1;
+            results.push(serde_json::json!({
+                "repo": repo, "branch": branch, "action": "no-worktree",
+            }));
             continue;
-        }
+        };
         // Commits ahead of base? (nothing to recover otherwise)
         let ahead = gitout(&wt, &["rev-list", "--count", &format!("{base}..HEAD")])
             .and_then(|s| s.parse::<u32>().ok())
@@ -277,8 +281,15 @@ pub(crate) fn emit_agent_recover(
         }));
     }
 
+    // `candidates` keeps its meaning — recoverable branches — so the "could not find the checkout"
+    // rows ride alongside in `unlocated` rather than inflating it.
+    let candidates = results.len() - unlocated;
     if as_json {
-        let data = serde_json::json!({ "candidates": results.len(), "results": results });
+        let data = serde_json::json!({
+            "candidates": candidates,
+            "unlocated": unlocated,
+            "results": results,
+        });
         println!("{}", Envelope::success("agent_recover", data).to_json());
     } else if results.is_empty() {
         println!("nothing to recover (no worktree with commits ahead + no PR)");
@@ -286,8 +297,12 @@ pub(crate) fn emit_agent_recover(
         for r in &results {
             let repo = r["repo"].as_str().unwrap_or("");
             let branch = r["branch"].as_str().unwrap_or("");
-            let ahead = r["commits_ahead"].as_u64().unwrap_or(0);
             let action = r["action"].as_str().unwrap_or("");
+            if action == "no-worktree" {
+                println!("  no-worktree {repo}/{branch} (git knows no checkout for it)");
+                continue;
+            }
+            let ahead = r["commits_ahead"].as_u64().unwrap_or(0);
             match r["pr"].as_str() {
                 Some(pr) => println!("  {action} {repo}/{branch} ({ahead} commits) → {pr}"),
                 None => println!("  {action} {repo}/{branch} ({ahead} commits ahead, no PR)"),
@@ -706,9 +721,25 @@ fn resolve_agent_channel(cfg: &Config, repo: &str, branch: &str) -> bn_core::age
     channel
 }
 
+/// The checkout a `repo:branch` agent is really running in — git's answer, never the conventional
+/// `<worktree_dir>/<repo>/<branch>`.
+///
+/// That join is a convention, not a fact: a dispatched branch lives in a pool slot (`_pool/N`) and
+/// a worktree directory reused for later work keeps its original name, so reconstructing the path
+/// lands in a directory that does not exist for most of a real fleet. Every caller that needs a
+/// *cwd* — recovering a ship turn, swapping a harness in place, respawning an agent — goes through
+/// here, which settles the path through the same tiered join the supervisor uses and only ever
+/// returns a directory that exists.
+pub(crate) fn agent_worktree(cfg: &Config, repo: &str, branch: &str) -> Option<std::path::PathBuf> {
+    resolve_agent_channel(cfg, repo, branch)
+        .worktree
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_dir())
+}
+
 /// The branch note's recorded `agent-session: <harness> <id>` (latest wins) — the resume channel's
 /// only input, shared by [`resolve_agent_session`] and the window join.
-fn recorded_session(cfg: &Config, repo: &str, branch: &str) -> Option<(String, String)> {
+pub(crate) fn recorded_session(cfg: &Config, repo: &str, branch: &str) -> Option<(String, String)> {
     let ctx = Resolved {
         repo: repo.to_string(),
         branch: branch.to_string(),
@@ -799,12 +830,21 @@ pub(crate) fn report_resume(target: &str, harness: &str, msg: &str, reply: &str,
 /// (a working spinner) rather than firing blind — retrying the CR and, if it still can't confirm,
 /// escalating to `-p --resume` when a session id is known (#306). Also used as the fallback when no
 /// session id is recorded for the target.
-/// Kill a running agent by closing its tmux window. Idempotent: a `repo:branch` target with no live
-/// window is reported as already gone (not an error), so the web dashboard's kill button and the
-/// orchestrator's give-up path can call it without racing the window's own teardown. The target is
-/// normalized to an exact-match name so a `kill-window` never resolves a prefix/fnmatch neighbor,
-/// and resolved through the window join first ([`resolve_tmux_target`]) so an agent whose window is
-/// named after its pooled slot is found rather than reported as already gone.
+/// Kill a running agent: its process tree, its tmux window, its agent lease, and its pool slot.
+///
+/// Closing the window is only the visible part. Agent windows are created with `remain-on-exit on`
+/// ([`crate::wt::window`]), so a bare `kill-window` leaves the harness *reparented and running* —
+/// the machine keeps paying for an agent nobody can see. And a killed agent used to keep its warm
+/// pool slot forever, because nothing ever handed a worker slot back: a day's kills filled the pool,
+/// and every later dispatch silently fell back to cutting a cold worktree. So a kill now reaps the
+/// tree ([`crate::reap::kill_window_trees`], the same primitive `wt cleanup` and the lease reaper
+/// use), verifies the window is actually gone, releases the agent lease, and returns the slot.
+///
+/// Idempotent: a `repo:branch` with no live window is "already gone", not an error, so the dashboard
+/// button and the orchestrator's give-up path can both call it without racing the window's teardown.
+/// The target is resolved through the window join first ([`resolve_tmux_target`]) so an agent whose
+/// window is named after its pooled slot is found rather than reported as already gone, and
+/// normalized to an exact-match name so a `kill-window` never resolves a prefix/fnmatch neighbor.
 pub(crate) fn emit_agent_kill(cfg: &Config, target: &str, as_json: bool) {
     let target = target.trim();
     // Guard the shape (`repo:branch`) so a malformed/empty input can't widen the tmux target. The
@@ -822,50 +862,148 @@ pub(crate) fn emit_agent_kill(cfg: &Config, target: &str, as_json: bool) {
         }
         return;
     }
+    let (repo, branch) = target.split_once(':').unwrap_or_default();
 
-    // List live windows once so we can distinguish "killed", "already gone" (idempotent success),
-    // and "tmux unreachable" (a real failure) rather than treating every non-zero as the same. The
-    // presence check compares the *resolved* window, since the target is an identity, not a name.
+    // Resolved once, before anything is killed: the worktree is what tells us which pool slot to
+    // hand back, and after the window is gone the join can no longer find it.
+    let worktree = agent_worktree(cfg, repo, branch);
     let exact = resolve_tmux_target(cfg, target);
-    let windows =
-        crate::proc::tmux(&["list-windows", "-a", "-F", "#{session_name}:#{window_name}"]);
-    let (killed, gone, err) = match windows {
-        None => (false, false, Some("tmux unreachable")),
-        Some(list) => {
-            let present = list.lines().any(|w| tmux_exact_target(w) == exact);
-            if !present {
-                (false, true, None) // no such window — already gone
+
+    let outcome = match reap_agent_window(&exact) {
+        Ok(o) => o,
+        Err(e) => {
+            if as_json {
+                println!(
+                    "{}",
+                    Envelope::failure("agent_kill", "kill_failed", &e).to_json()
+                );
             } else {
-                let ok = crate::proc::tmux_ok(&["kill-window", "-t", &exact]);
-                if ok {
-                    (true, true, None)
-                } else {
-                    (false, false, Some("kill-window failed"))
-                }
+                eprintln!("bn agent kill: {target}: {e}");
             }
+            return;
         }
     };
 
-    if let Some(e) = err {
-        if as_json {
-            println!(
-                "{}",
-                Envelope::failure("agent_kill", "kill_failed", e).to_json()
-            );
-        } else {
-            eprintln!("bn agent kill: {target}: {e}");
-        }
-        return;
-    }
+    // Release the agent lease so the worktree isn't reported as occupied by a session that no
+    // longer exists — otherwise the next launch there refuses. Best-effort: the window is already
+    // down, and a stale lease is reconciled away on the next `reserve`.
+    let lease_released = outcome
+        .session_id
+        .as_deref()
+        .and_then(|sid| agent_lease::release(sid).ok())
+        .unwrap_or(false);
+
+    // Hand the warm slot back. A slot holding uncommitted work is deliberately left leased — the
+    // outcome says so rather than discarding it.
+    let slot = worktree
+        .as_deref()
+        .map(|wt| crate::wt_pool::release_dispatch_slot(cfg, wt))
+        .unwrap_or(crate::wt_pool::SlotRelease::NotASlot);
 
     if as_json {
-        let data = serde_json::json!({ "target": target, "killed": killed, "gone": gone });
+        let data = serde_json::json!({
+            "target": target,
+            "killed": outcome.killed,
+            "gone": true,
+            "window_id": outcome.window_id,
+            "processes": outcome.processes,
+            "lease_released": lease_released,
+            "worktree": worktree,
+            "slot": slot,
+        });
         println!("{}", Envelope::success("agent_kill", data).to_json());
-    } else if killed {
-        println!("bn agent kill: {target} — window closed ✓");
+        return;
+    }
+    if outcome.killed {
+        println!(
+            "bn agent kill: {target} — window closed, {} process(es) signalled ✓",
+            outcome.processes
+        );
     } else {
         println!("bn agent kill: {target} — already gone");
     }
+    if let Some(m) = slot.message() {
+        println!("bn agent kill: {m}");
+    }
+}
+
+/// What tearing an agent's window down actually did.
+pub(crate) struct KillOutcome {
+    /// False when there was no such window (idempotent "already gone").
+    pub killed: bool,
+    /// The tmux window id the tree was reaped through — stable across a rename mid-kill.
+    pub window_id: Option<String>,
+    /// How many processes the tree kill signalled.
+    pub processes: usize,
+    /// The window's `@bn_session_id` stamp, so the agent lease can be released by id.
+    pub session_id: Option<String>,
+}
+
+impl KillOutcome {
+    /// The `killed` field of a kill/relaunch envelope: `null` when there was no window to begin
+    /// with, so "nothing was running" reads differently from "a tree was reaped".
+    pub(crate) fn as_json(&self) -> serde_json::Value {
+        if !self.killed {
+            return serde_json::Value::Null;
+        }
+        serde_json::json!({
+            "window_id": self.window_id,
+            "processes": self.processes,
+            "session_id": self.session_id,
+        })
+    }
+}
+
+/// Reap the process tree behind `exact`, close the window, and verify it is gone.
+///
+/// Split out so the sequence — *tree first, window second, then check* — is stated once. The order
+/// matters: `kill-window` alone reparents the pane's children (`remain-on-exit`), and skipping the
+/// verification is how a kill came to report success over a window that was still live.
+/// `Err` is a real failure (tmux unreachable, or the window survived); `Ok(killed: false)` is the
+/// idempotent "nothing was there". Shared with `bn agent relaunch`, which must tear the old agent
+/// down by exactly these rules before it respawns.
+pub(crate) fn reap_agent_window(exact: &str) -> Result<KillOutcome, String> {
+    let windows = crate::proc::tmux(&["list-windows", "-a", "-F", "#{session_name}:#{window_name}"])
+        .ok_or("tmux unreachable")?;
+    if !windows.lines().any(|w| tmux_exact_target(w) == exact) {
+        return Ok(KillOutcome {
+            killed: false,
+            window_id: None,
+            processes: 0,
+            session_id: None,
+        });
+    }
+    // Address the tree by window *id*: a window renamed between the lookup and the kill would
+    // otherwise move the target out from under us.
+    let window_id = crate::proc::tmux_raw(&["display-message", "-p", "-t", exact, "#{window_id}"])
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("could not resolve a window id for {exact}"))?;
+    let session_id =
+        crate::proc::tmux_raw(&["display-message", "-p", "-t", &window_id, "#{@bn_session_id}"])
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+    let processes = crate::reap::kill_window_trees(std::slice::from_ref(&window_id));
+    let _ = crate::proc::tmux_ok(&["kill-window", "-t", &window_id]);
+
+    // Verify rather than trust: `kill-window`'s exit status says the command ran, not that the
+    // window is gone, and reporting a live agent as killed is the failure mode this whole path
+    // exists to remove.
+    if crate::proc::tmux_raw(&["display-message", "-p", "-t", &window_id, "#{window_id}"])
+        .map(|s| s.trim() == window_id)
+        .unwrap_or(false)
+    {
+        return Err(format!(
+            "window {exact} ({window_id}) is still live after reaping {processes} process(es)"
+        ));
+    }
+    Ok(KillOutcome {
+        killed: true,
+        window_id: Some(window_id),
+        processes,
+        session_id,
+    })
 }
 
 /// Capture the last `lines` lines of a running agent's tmux pane (read-only). Powers the web
@@ -2262,6 +2400,12 @@ fn exec_harness(bin: &str, args: &[String]) -> ! {
 /// hopping harnesses mid-task (e.g. Claude hit a limit → finish in Copilot). With `in_place`,
 /// the swap is performed rather than printed: trust is granted and the worktree's tmux pane is
 /// respawned running the target harness (shell-backed), seeded to read the handoff.
+///
+/// Returns whether the switch succeeded. The result rather than a bare `exit` because
+/// [`run_fleet_fix`] loops this over every usage-limited agent: one target whose worktree or window
+/// can't be resolved must not abort the sweep for the rest. The single-target CLI route turns a
+/// `false` into a non-zero exit.
+#[must_use]
 pub(crate) fn emit_switch(
     cfg: &Config,
     ctx: &Resolved,
@@ -2270,7 +2414,7 @@ pub(crate) fn emit_switch(
     in_place: bool,
     reason: Option<String>,
     as_json: bool,
-) {
+) -> bool {
     // Fold any freshly-finished sessions into metrics so the finished-session fallback is current
     // (idempotent; a live session is only read for the summary below, never ingested here).
     let _ = bn_core::agent::ingest(cfg);
@@ -2302,16 +2446,39 @@ pub(crate) fn emit_switch(
                     Envelope::failure("switch", "bad_harness", msg).to_json()
                 );
             } else {
-                fail(&msg);
+                eprintln!("{msg}");
             }
-            return;
+            return false;
         }
+    };
+
+    // The checkout to swap, asked of git ([`agent_worktree`]) rather than reconstructed — a pooled
+    // or reused directory is not at `<worktree_dir>/<repo>/<branch>`, and respawning a pane with
+    // `-c <that path>` would root the incoming harness in a directory that does not exist.
+    //
+    // Resolved *before* the note is touched: everything below writes (a WIP bullet, a todo, the
+    // handoff packet, a metrics row), and a switch that cannot happen must not leave a paper trail
+    // claiming it did.
+    let Some(wt) = agent_worktree(cfg, &ctx.repo, &ctx.branch) else {
+        let msg = format!(
+            "bn switch: no checkout for {}:{} — git lists no worktree for the branch, so there is \
+             nothing to swap in place",
+            ctx.repo, ctx.branch
+        );
+        if as_json {
+            println!(
+                "{}",
+                Envelope::failure("switch", "no_worktree", msg).to_json()
+            );
+        } else {
+            eprintln!("{msg}");
+        }
+        return false;
     };
 
     // Capture the session's *content*, not just its counts: the uncommitted worktree diff (what
     // was done) and its last user prompt (what was asked). Both fold forward so the incoming
     // harness can actually finish the work.
-    let wt = cfg.worktree_dir.join(&ctx.repo).join(&ctx.branch);
     let wip = git_wip(&wt);
     let last_request = outgoing
         .as_ref()
@@ -2352,9 +2519,9 @@ pub(crate) fn emit_switch(
                     Envelope::failure("switch", "no_note", format!("bn switch: {e}")).to_json()
                 );
             } else {
-                fail(&format!("bn switch: {e}"));
+                eprintln!("bn switch: {e}");
             }
-            return;
+            return false;
         }
     };
 
@@ -2404,10 +2571,10 @@ pub(crate) fn emit_switch(
     // handoff and trust must already be on disk (they are, above) and any output after this
     // point may never print. In that self-swap case the user's evidence of success is the new
     // harness booting in their pane.
-    let swap = in_place.then(|| run_in_place_swap(ctx, &wt, &to, &launch));
+    let swap = in_place.then(|| run_in_place_swap(cfg, ctx, &wt, &to, &launch));
 
     if as_json {
-        let mut data = serde_json::json!({
+        let data = serde_json::json!({
             "from": from,
             "to": to,
             "outgoing": outgoing,
@@ -2416,15 +2583,10 @@ pub(crate) fn emit_switch(
             "launch_command": launch,
             "handoff": payload::handoff_data(&handoff),
         });
-        if let Some(s) = &swap {
-            data["in_place"] = serde_json::json!({
-                "pane": s.pane,
-                "trusted": s.trusted,
-                "error": s.error,
-            });
-        }
-        println!("{}", Envelope::success("switch", data).to_json());
-        return;
+        let envelope = switch_envelope(data, swap.as_ref(), &launch);
+        let ok = envelope.ok;
+        println!("{}", envelope.to_json());
+        return ok;
     }
 
     print!("{}", bn_core::handoff::render_orientation(&handoff));
@@ -2437,8 +2599,42 @@ pub(crate) fn emit_switch(
         }) => {
             eprintln!("bn switch --in-place: {why}");
             println!("\nStart {to} here:\n  {launch}");
+            return false;
         }
         _ => println!("\nStart {to} here:\n  {launch}"),
+    }
+    true
+}
+
+/// The envelope `bn switch --json` prints, given the swap outcome.
+///
+/// A `--in-place` swap that failed used to ride inside a **success** envelope with the reason buried
+/// at `data.in_place.error`, so `bn switch --json` exited 0 with `ok:true` while nothing had been
+/// swapped — and the dashboard cheerfully toasted "restarting under claude…" over an agent that
+/// never moved. A failure the caller can only find by reading a nested field is a failure the caller
+/// will not find. Pure → unit-testable; `launch` is folded into the message so the operator still
+/// gets the command to run by hand.
+fn switch_envelope(
+    mut data: serde_json::Value,
+    swap: Option<&SwapOutcome>,
+    launch: &str,
+) -> Envelope {
+    if let Some(s) = swap {
+        data["in_place"] = serde_json::json!({
+            "pane": s.pane,
+            "trusted": s.trusted,
+            "error": s.error,
+        });
+    }
+    match swap {
+        Some(SwapOutcome {
+            error: Some(why), ..
+        }) => Envelope::failure(
+            "switch",
+            "swap_failed",
+            format!("bn switch --in-place: {why} — start it manually:\n  {launch}"),
+        ),
+        _ => Envelope::success("switch", data),
     }
 }
 
@@ -2482,7 +2678,10 @@ pub(crate) fn run_fleet_fix(cfg: &Config, idle: i64, stuck: i64, as_json: bool) 
             continue;
         };
         // The fleet auto-switch is always rate-limit driven — the agent hit its usage limit.
-        emit_switch(
+        // One target whose worktree or window can't be resolved is reported and skipped: the
+        // point of the sweep is the *other* limited agents, and aborting on the first failure
+        // would leave them sitting at their limit prompt.
+        if !emit_switch(
             cfg,
             &ctx,
             to,
@@ -2490,7 +2689,9 @@ pub(crate) fn run_fleet_fix(cfg: &Config, idle: i64, stuck: i64, as_json: bool) 
             true,
             Some("limit".to_string()),
             as_json,
-        );
+        ) {
+            eprintln!("bn fleet --fix: switching {} failed — skipped", r.target);
+        }
     }
 }
 
@@ -2509,22 +2710,22 @@ pub(crate) struct SwapOutcome {
 /// worktree — the calling pane (`$TMUX_PANE`). Never errors hard: a missing tmux target is
 /// reported in the outcome and the caller falls back to printing the launch command.
 pub(crate) fn run_in_place_swap(
+    cfg: &Config,
     ctx: &Resolved,
     wt: &std::path::Path,
     to: &str,
     launch: &str,
 ) -> SwapOutcome {
     let trusted = apply_folder_trust(&wt.to_string_lossy(), to);
-    // First pane of the worktree's window under the session-per-repo layout, if it exists.
-    let window_pane = proc::tmux(&[
-        "list-panes",
-        "-t",
-        &format!("={}:{}", ctx.repo, ctx.branch),
-        "-F",
-        "#{pane_id}",
-    ])
-    .and_then(|out| out.lines().next().map(|l| l.trim().to_string()))
-    .filter(|p| !p.is_empty());
+    // First pane of the agent's window. Resolved through the same tiered join `send` and `kill` use
+    // ([`resolve_agent_channel`]) rather than assuming the window is *called* `repo:branch` — it
+    // usually isn't. A pooled slot or a reused directory names the window after whatever the
+    // launcher chose, which is exactly how the in-place swap came to miss every pooled agent.
+    let window_pane = resolve_agent_channel(cfg, &ctx.repo, &ctx.branch)
+        .tmux_target
+        .and_then(|t| proc::tmux(&["list-panes", "-t", &tmux_exact_target(&t), "-F", "#{pane_id}"]))
+        .and_then(|out| out.lines().next().map(|l| l.trim().to_string()))
+        .filter(|p| !p.is_empty());
     // $TMUX_PANE is only a valid target when bn is running *inside* this worktree — from an
     // orchestrator window it would respawn the orchestrator's own pane.
     let cwd_in_wt = std::env::current_dir()

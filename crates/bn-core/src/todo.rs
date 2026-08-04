@@ -1045,12 +1045,43 @@ fn ingest_priority(priority: Option<&str>, severity: Option<&str>) -> Result<Opt
 /// rewrite from clobbering an append; the CLI serializes each read-modify-write under [`lock`].
 pub fn save(path: &Path, file: &TodoFile) -> std::io::Result<()> {
     let rendered = file.render();
-    let tmp = match path.file_name() {
-        Some(name) => path.with_file_name(format!(".{}.tmp", name.to_string_lossy())),
-        None => path.with_extension("tmp"),
-    };
+    // A pid+seq-unique temp ([`crate::store::atomic_temp_path`]), not the fixed `.tasks.txt.tmp`
+    // this used to write: the task store is a single machine-wide file, so two `bn` processes
+    // saving it at once shared one scratch path and could rename each other's partial bytes into
+    // place. Every other atomic write in bn already uses this helper.
+    let tmp = crate::store::atomic_temp_path(path);
     std::fs::write(&tmp, rendered)?;
-    std::fs::rename(&tmp, path)
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Bind a task to the worktree that is now working it: stamp `repo:` and `branch:`.
+///
+/// This is the write that makes "which task is this agent on?" answerable. The join itself already
+/// existed in two places — [`crate::pipeline::gate::governing_task`] and the pipeline-stages API
+/// both key on `(repo, branch)` — but nothing ever *wrote* `branch:` except [`Task::new_todo`], and
+/// only when `bn task add` happened to run inside that worktree. So the join almost never fired,
+/// and a running agent could not say what it was working on.
+///
+/// Idempotent, and locked like every other task-store mutation. `set_meta` (not `set_meta_raw`)
+/// stamps `mod:`, which is what [`TodoFile::dedupe_by_uid`] picks the winner by when a union merge
+/// brings two machines' copies together — without it, a stale binding from another machine could
+/// win. Returns `false` for an unknown id.
+pub fn claim(path: &Path, id: &str, repo: &str, branch: &str) -> std::io::Result<bool> {
+    let _lock = lock(path);
+    let mut file = load(path)?;
+    let Some(task) = file.task_mut(id) else {
+        return Ok(false);
+    };
+    // Lowercased repo to match the join's key rule (`resolver::context::normalize`); the branch
+    // keeps its slashes — `governing_task` compares the branch as written.
+    task.set_meta("repo", &repo.to_lowercase());
+    task.set_meta("branch", branch);
+    save(path, &file)?;
+    Ok(true)
 }
 
 /// Ensure `<notes_root>/.gitattributes` marks the task store `merge=union`, so a sync

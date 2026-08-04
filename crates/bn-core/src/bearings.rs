@@ -380,6 +380,7 @@ mod tests {
             output_tokens: 3,
             cache_read_tokens: 0,
             control: crate::agent::ControlChannel::None,
+            task: None,
         }
     }
 

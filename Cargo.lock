@@ -221,7 +221,7 @@ dependencies = [
 
 [[package]]
 name = "bn-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bincode",
  "bn-core",
@@ -238,7 +238,7 @@ dependencies = [
 
 [[package]]
 name = "bn-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bincode",
  "chrono",
@@ -257,7 +257,7 @@ dependencies = [
 
 [[package]]
 name = "bn-mcp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "bn-core",
@@ -273,7 +273,7 @@ dependencies = [
 
 [[package]]
 name = "bn-web"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",

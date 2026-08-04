@@ -639,33 +639,36 @@ pub struct RelaunchBody {
     pub harness: Option<String>,
 }
 
-/// The `bn switch` argv a harness relaunch issues: swap the running agent to `harness` in place
-/// (same worktree/branch, handoff re-seeded from the note), tagged `--reason relaunch` so the
-/// metrics log distinguishes a dashboard harness-switch from a manual/limit-driven hop. Pure →
-/// unit-testable; `harness` is already the canonical name from `resolve_relaunch`.
-fn relaunch_switch_args(harness: &str, repo: &str, branch: &str) -> Vec<String> {
-    vec![
-        "switch".to_string(),
-        harness.to_string(),
-        "--in-place".to_string(),
-        "--repo".to_string(),
-        repo.to_string(),
-        "--branch".to_string(),
-        branch.to_string(),
-        "--reason".to_string(),
+/// The `bn agent relaunch` argv a relaunch issues. Pure → unit-testable; `harness`, when present,
+/// is already the canonical name from [`bn_core::harness::resolve_relaunch`].
+fn relaunch_args(target: &str, hard: bool, harness: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "agent".to_string(),
         "relaunch".to_string(),
-    ]
+        target.to_string(),
+    ];
+    if hard {
+        args.push("--hard".to_string());
+    }
+    if let Some(h) = harness {
+        args.push("--harness".to_string());
+        args.push(h.to_string());
+    }
+    args
 }
 
-/// `POST /api/agents/:target/relaunch {hard?, harness?}`. Two modes on the same running agent's
-/// `repo:branch` target:
-///   * `{harness}` (#501) → `bn switch <harness> --in-place --repo <r> --branch <b> --reason
-///     relaunch`: stop the current agent and relaunch it in the *same* worktree/branch under the
-///     chosen harness, re-seeding from the branch note. The harness is availability-gated first
-///     (copilot always; a org-disabled claude is a `400`, never a silent no-op).
-///   * otherwise → `bn agent recover --repo <r> --branch <b> --yes` (finish an interrupted ship
-///     turn). `hard` is recorded on the audit trail (`relaunch-hard`) so the softer/harder
-///     distinction is visible; both currently drive the same recover.
+/// `POST /api/agents/:target/relaunch {hard?, harness?}` → `bn agent relaunch <repo:branch>`.
+///
+/// Kill the agent's process tree and start it again in the *same* worktree — resuming its own
+/// transcript by default, or, with `hard` (or a `harness` change, which implies it), a fresh session
+/// seeded from the branch note's handoff. The warm pool slot is deliberately kept; freeing it is
+/// `kill`'s job.
+///
+/// This used to shell out to `bn agent recover --yes`, which is not a relaunch at all — it pushes a
+/// branch and opens a PR — and which located the worktree by the conventional
+/// `<worktree_dir>/<repo>/<branch>` join, wrong for every pooled agent. Both are fixed in the CLI,
+/// which now also *fails* when a relaunch didn't happen, so the dashboard needs no special-casing
+/// here: the envelope's `ok` is the truth.
 pub async fn agent_relaunch(
     State(state): State<AppState>,
     MaybeAddr(addr): MaybeAddr,
@@ -680,75 +683,30 @@ pub async fn agent_relaunch(
     if !valid_target(&target) {
         return bad_request(cmd, "invalid_target", "target must be repo:branch");
     }
-    let Some((repo, branch)) = target.split_once(':') else {
-        return bad_request(cmd, "invalid_target", "target must be repo:branch");
-    };
 
-    // #501 harness switch: relaunch in place under the requested harness instead of recovering.
-    if let Some(requested) = body
+    // Availability-gate an explicit harness here so an org-disabled harness is a `400` the client
+    // can show, rather than a subprocess round-trip. The CLI gates it again — this is the fast path,
+    // not the enforcement.
+    let requested = body
         .harness
         .as_deref()
         .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        let canonical = match bn_core::harness::resolve_relaunch(&state.cfg, requested) {
-            Ok(c) => c,
+        .filter(|s| !s.is_empty());
+    let canonical = match requested {
+        Some(h) => match bn_core::harness::resolve_relaunch(&state.cfg, h) {
+            Ok(c) => Some(c),
             Err(reason) => return bad_request(cmd, "harness_unavailable", &reason),
-        };
-        let args = relaunch_switch_args(canonical, repo, branch);
-        let result = run_bn(args, None).await;
-        return respond_process(&state, "relaunch-harness", &target, addr, result);
-    }
-
-    let args = vec![
-        "agent".to_string(),
-        "recover".to_string(),
-        "--repo".to_string(),
-        repo.to_string(),
-        "--branch".to_string(),
-        branch.to_string(),
-        "--yes".to_string(),
-    ];
-    let action = if body.hard {
-        "relaunch-hard"
-    } else {
-        "relaunch"
-    };
-    let result = no_op_is_not_success(run_bn(args, None).await, &target);
-    respond_process(&state, action, &target, addr, result)
-}
-
-/// `bn agent recover` exits 0 whether or not it found anything to recover, reporting the count in
-/// `data.candidates`. Passed through unchanged that becomes `ok:true` for a run that did nothing —
-/// and the dashboard, which keys off `ok`, cheerfully toasts "relaunch triggered" while the stuck
-/// agent stays stuck. A success message for a no-op is worse than an error: it ends the operator's
-/// investigation at exactly the moment it should start. Demote `candidates: 0` to a typed failure.
-fn no_op_is_not_success(mut result: RunResult, target: &str) -> RunResult {
-    if !result.ok {
-        return result;
-    }
-    let recovered = result
-        .envelope
-        .get("data")
-        .and_then(|d| d.get("candidates"))
-        .and_then(serde_json::Value::as_i64);
-    if recovered != Some(0) {
-        return result;
-    }
-    result.ok = false;
-    result.envelope = serde_json::json!({
-        "ok": false,
-        "command": "agent_recover",
-        "data": null,
-        "error": {
-            "code": "nothing_to_recover",
-            "message": format!(
-                "no recoverable agent for '{target}' — bn drives agents through tmux, so a session \
-                 started outside it (or one whose window is gone) cannot be relaunched from here"
-            ),
         },
-    });
-    result
+        None => None,
+    };
+
+    let action = match (canonical, body.hard) {
+        (Some(_), _) => "relaunch-harness",
+        (None, true) => "relaunch-hard",
+        (None, false) => "relaunch",
+    };
+    let result = run_bn(relaunch_args(&target, body.hard, canonical), None).await;
+    respond_process(&state, action, &target, addr, result)
 }
 
 /// `POST /api/agents/:target/kill` → the new `bn agent kill <target>` (tmux kill-window).
@@ -2292,24 +2250,27 @@ mod tests {
     }
 
     #[test]
-    fn relaunch_switch_args_target_the_branch_in_place() {
-        // #501: a harness relaunch is a `bn switch <h> --in-place` on the agent's own repo/branch,
-        // reason-tagged so metrics can tell a dashboard switch from a manual/limit hop.
-        let args = relaunch_switch_args("claude", "bn", "dispatch/web-501");
+    fn relaunch_args_call_the_relaunch_command_not_recover() {
+        // The whole point of this endpoint's rewrite: Relaunch must run a command that relaunches.
+        // It used to shell out to `bn agent recover --yes`, which pushes a branch and opens a PR.
+        let plain = relaunch_args("bn:dispatch/web-501", false, None);
+        assert_eq!(plain, vec!["agent", "relaunch", "bn:dispatch/web-501"]);
+
+        let hard = relaunch_args("bn:feat", true, None);
+        assert_eq!(hard, vec!["agent", "relaunch", "bn:feat", "--hard"]);
+
+        // A harness change rides the same command — it no longer detours through `bn switch`,
+        // which reported success even when the swap failed.
+        let swap = relaunch_args("bn:feat", false, Some("copilot"));
         assert_eq!(
-            args,
-            vec![
-                "switch",
-                "claude",
-                "--in-place",
-                "--repo",
-                "bn",
-                "--branch",
-                "dispatch/web-501",
-                "--reason",
-                "relaunch",
-            ]
+            swap,
+            vec!["agent", "relaunch", "bn:feat", "--harness", "copilot"]
         );
+
+        for args in [plain, hard, swap] {
+            assert!(!args.contains(&"recover".to_string()), "{args:?}");
+            assert!(!args.contains(&"switch".to_string()), "{args:?}");
+        }
     }
 
     #[test]

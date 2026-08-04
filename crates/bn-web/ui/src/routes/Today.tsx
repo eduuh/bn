@@ -35,13 +35,12 @@ import { AgentActivity } from "../components/AgentActivity";
 import { SteerPanel } from "../components/SteerPanel";
 import { fmtAic, fmtUsd, timeAgo } from "../lib/format";
 import { pushToast } from "../lib/toast";
-import { StatTile } from "../components/StatTile";
+import { StatGrid, StatTile } from "../components/StatTile";
 import { Badge, type BadgeProps } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
-import { Card } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
 import { cn } from "../lib/utils";
-import { PageHead } from "../components/PageHead";
+import { Pane, PaneRule, Section } from "../components/ui/pane";
 
 /** Quarter-goal health → Badge variant (mirrors the CLI's status palette); unknown → muted. */
 const STATUS_VARIANT: Record<string, BadgeProps["variant"]> = {
@@ -108,18 +107,6 @@ function QuarterRow({ goal }: { goal: QuarterGoal }) {
   );
 }
 
-/** A section header — title + a live count on the right. */
-function SectionHead({ title, count }: { title: string; count?: number | string }) {
-  return (
-    <div className="flex items-center gap-2">
-      <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        {title}
-      </h3>
-      {count != null && <span className="text-xs text-muted-foreground">{count}</span>}
-    </div>
-  );
-}
-
 /** One suggested task: the proposal text (a link when it carries its source finding url), the
  * rationale + source finding, and accept/dismiss controls that hit `POST /api/suggestions/:id`. */
 function SuggestionRow({
@@ -132,9 +119,12 @@ function SuggestionRow({
   pending: boolean;
 }) {
   return (
-    <li className="flex items-start gap-2 text-sm">
+    <li className="flex items-start gap-2 px-3.5 py-2.5 text-sm hover:bg-muted/40">
       <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
-      <div className="min-w-0 flex-1 space-y-0.5">
+      {/* Cap the text at a readable measure so accept/dismiss stay *next to* the proposal they act
+          on. Left to `flex-1` the row stretched the full column and parked the two controls 300px
+          away from the sentence, which is a long way to travel to say "no". */}
+      <div className="min-w-0 flex-1 space-y-0.5 lg:max-w-[88ch]">
         {s.url ? (
           <a
             href={s.url}
@@ -232,8 +222,10 @@ function AutomationRow({
   const failed = item.ok === false;
   const bar = failed ? "bg-urgent" : item.last_run != null ? "bg-ok" : "bg-border";
   return (
-    <Card className="relative overflow-hidden p-3 pl-4">
-      <span className={cn("absolute inset-y-0 left-0 w-1", bar)} aria-hidden="true" />
+    // A row with a health rail, not a card: twenty of these stack in one column, and twenty
+    // bordered rounded rectangles is twenty edges competing with the pane's own.
+    <div className="relative overflow-hidden rounded-sm bg-muted/25 py-2 pl-3 pr-2 hover:bg-muted/45">
+      <span className={cn("absolute inset-y-0 left-0 w-0.5", bar)} aria-hidden="true" />
       <div className="flex flex-wrap items-center gap-2">
         {staff ? (
           <Bot className="h-4 w-4 text-primary" aria-hidden="true" />
@@ -274,7 +266,7 @@ function AutomationRow({
         )}
         {item.description && <span className="truncate">{item.description}</span>}
       </div>
-    </Card>
+    </div>
   );
 }
 
@@ -290,18 +282,20 @@ function TodayAutomation() {
   const cronItems = crons.data?.agents ?? [];
   const agentItems = agents.data?.agents ?? [];
 
+  // Stacked, not side-by-side. These used to be two `md:grid-cols-2` cards, which was fine on a
+  // full-page measure and wrong the moment they moved into a column — the inner grid fought the
+  // outer one and split the centre column into two thin lanes of its own.
   return (
-    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-      <Card className="space-y-3 p-4">
-        <SectionHead title="Today's crons" count={cronItems.length} />
+    <>
+      <Section label="Today's crons" meta={String(cronItems.length)}>
         {crons.isLoading ? (
           <Skeleton className="h-16 w-full" />
         ) : crons.isError ? (
-          <p className="text-sm text-urgent">Could not load today's crons.</p>
+          <p className="text-sm text-urgent">Could not load today&apos;s crons.</p>
         ) : cronItems.length === 0 ? (
           <p className="text-sm text-muted-foreground">No crons scheduled to fire today.</p>
         ) : (
-          <ul className="space-y-2">
+          <ul className="space-y-1.5">
             {cronItems.map((item) => (
               <li key={item.job}>
                 <AutomationRow item={item} now={now} label="run" />
@@ -309,18 +303,19 @@ function TodayAutomation() {
             ))}
           </ul>
         )}
-      </Card>
+      </Section>
 
-      <Card className="space-y-3 p-4">
-        <SectionHead title="Today's agents" count={agentItems.length} />
+      <PaneRule />
+
+      <Section label="Today's agents" meta={String(agentItems.length)}>
         {agents.isLoading ? (
           <Skeleton className="h-16 w-full" />
         ) : agents.isError ? (
-          <p className="text-sm text-urgent">Could not load today's agents.</p>
+          <p className="text-sm text-urgent">Could not load today&apos;s agents.</p>
         ) : agentItems.length === 0 ? (
           <p className="text-sm text-muted-foreground">No agents scheduled to run today.</p>
         ) : (
-          <ul className="space-y-2">
+          <ul className="space-y-1.5">
             {agentItems.map((item) => (
               <li key={item.job}>
                 <AutomationRow item={item} now={now} label="trigger" />
@@ -328,8 +323,8 @@ function TodayAutomation() {
             ))}
           </ul>
         )}
-      </Card>
-    </div>
+      </Section>
+    </>
   );
 }
 
@@ -382,14 +377,23 @@ function TodayAgentCard() {
   const busy = start.isPending || stop.isPending;
 
   return (
-    <Card className="space-y-3 p-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <Bot className="h-4 w-4 text-primary" aria-hidden="true" />
-        <SectionHead title="Today's agent" />
-        <Badge variant={running ? "ok" : "muted"}>{running ? "running" : "not running"}</Badge>
-        {running && view?.health && <Badge variant="info">{view.health}</Badge>}
-        <span className="flex-1" />
-        {running ? (
+    <Pane
+      scroll={false}
+      className="flex-none"
+      title={
+        <span className="inline-flex items-center gap-1.5">
+          <Bot className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
+          Today&apos;s agent
+        </span>
+      }
+      meta={
+        <span className="inline-flex items-center gap-1.5">
+          <Badge variant={running ? "ok" : "muted"}>{running ? "running" : "not running"}</Badge>
+          {running && view?.health && <Badge variant="info">{view.health}</Badge>}
+        </span>
+      }
+      actions={
+        running ? (
           <Button
             variant="secondary"
             size="sm"
@@ -426,9 +430,10 @@ function TodayAgentCard() {
               </>
             )}
           </Button>
-        )}
-      </div>
-
+        )
+      }
+    >
+      <div className="space-y-3 px-3.5 py-3">
       {agent.isLoading ? (
         <Skeleton className="h-16 w-full" />
       ) : !record ? (
@@ -456,13 +461,17 @@ function TodayAgentCard() {
 
           {running && (
             <>
+              {/* The live transcript, on Today rather than only on `/agents/:id`. Today's agent is
+                  the one session you are supervising all day, so watching it should not cost a
+                  navigation away from the day it is working on. */}
               <AgentActivity sessionId={record.session_id} />
               <SteerPanel target={record.target} control={view?.control ?? undefined} />
             </>
           )}
         </>
       )}
-    </Card>
+      </div>
+    </Pane>
   );
 }
 
@@ -502,13 +511,15 @@ function SuggestedTasks() {
   });
 
   return (
-    <Card className="space-y-3 p-4">
-      <div className="flex items-center gap-2">
-        <SectionHead title="Suggested tasks" count={open.length} />
-        <span className="flex-1" />
-        {/* The offline fold, demoted: Today's agent is the hosted session above, and this is the
-            deterministic re-synthesis from the findings store — useful to refresh the list without
-            spending a turn, and what a headless box falls back to. */}
+    <Pane
+      scroll={false}
+      className="flex-none"
+      title="Suggested tasks"
+      meta={open.length > 0 ? String(open.length) : undefined}
+      actions={
+        /* The offline fold, demoted: Today's agent is the hosted session, and this is the
+           deterministic re-synthesis from the findings store — useful to refresh the list without
+           spending a turn, and what a headless box falls back to. */
         <Button
           variant="ghost"
           size="sm"
@@ -526,17 +537,19 @@ function SuggestedTasks() {
             </>
           )}
         </Button>
-      </div>
-
+      }
+    >
       {suggestions.isLoading ? (
-        <Skeleton className="h-16 w-full" />
+        <Skeleton className="m-3.5 h-16" />
       ) : open.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          No suggestions yet — start Today's agent above, or hit{" "}
+        <p className="px-3.5 py-3 text-sm text-muted-foreground">
+          No suggestions yet — start Today&apos;s agent, or hit{" "}
           <span className="font-medium">Re-synthesize</span> to fold the cron findings in offline.
         </p>
       ) : (
-        <ul className="space-y-3">
+        // Rows divided by rules rather than gaps, and each row is its own hit area — the list is
+        // the pane's whole body, so it scrolls independently of the columns beside it.
+        <ul className="divide-y divide-border">
           {open.map((s) => (
             <SuggestionRow
               key={s.id}
@@ -547,7 +560,7 @@ function SuggestedTasks() {
           ))}
         </ul>
       )}
-    </Card>
+    </Pane>
   );
 }
 
@@ -600,79 +613,58 @@ export function Today() {
     doneGoals.length === 0 && mergedPrs.length === 0 && commits.length === 0;
 
   return (
-    <div className="space-y-5 pb-8">
-      <PageHead title="Today" sub={`${todayDate ?? "—"} · aimed vs achieved`} />
+    <div className="flex h-full min-h-0 flex-col">
+      {/* The day's identity on one baseline with its date, flush to the top rule — the console's
+          header treatment, rather than a document title floating above a stack of cards. */}
+      <header className="flex flex-none items-baseline gap-3 border-b border-border px-4 py-2.5">
+        <h1 className="font-display text-lg font-semibold tracking-tight text-foreground">Today</h1>
+        <span className="font-mono text-[11px] tabular-nums text-muted-foreground/70">
+          {todayDate ?? "—"} · aimed vs achieved
+        </span>
+      </header>
 
-      {loading && (
-        <div className="space-y-5" aria-hidden="true">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            {[0, 1, 2, 3].map((i) => (
-              <Skeleton key={i} className="h-20 w-full" />
-            ))}
-          </div>
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            {[0, 1].map((i) => (
-              <Card key={i} className="space-y-3 p-4">
-                <Skeleton className="h-4 w-1/3" />
-                <Skeleton className="h-4 w-2/3" />
-                <Skeleton className="h-4 w-1/2" />
-              </Card>
-            ))}
-          </div>
+      {(goals.isError || wrap.isError) && (
+        <div className="m-4 rounded-lg border border-urgent/30 bg-urgent-muted p-4 text-sm text-urgent">
+          Could not load today&apos;s data.
         </div>
       )}
 
       {/* Hold the whole aimed-vs-achieved digest until every feeding query resolves — otherwise the
           summary tiles and "Achieved today" count render 0/empty on a cold load, then snap to the
           real values (0 PRs → 11 PRs, etc). OR across the queries, never AND (#544). */}
-      {!loading && (
-        <>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <StatTile
-              label="goals done"
-              value={`${doneCount}/${totalGoals}`}
-              tone={totalGoals > 0 && doneCount >= totalGoals ? "green" : "grey"}
-            />
-            <StatTile
-              label="PRs merged"
-              value={String(mergedPrs.length)}
-              tone={mergedPrs.length > 0 ? "green" : "grey"}
-            />
-            <StatTile
-              label="agents today"
-              value={String(agentsToday)}
-              tone={agentsToday > 0 ? "blue" : "grey"}
-              title={
-                liveAgents > 0
-                  ? `${finishedToday} finished + ${liveAgents} running now`
-                  : "finished, ingested runs today"
-              }
-            />
-            <StatTile
-              label={spentIsAic ? "AIC spent" : "$ spent (API-equiv)"}
-              value={spentIsAic ? fmtAic(aicToday) : fmtUsd(usdToday)}
-              tone="grey"
-              title={
-                spentIsAic
-                  ? "AI Credits — the metered Copilot bill for today's finished runs (lands once a run is ingested)"
-                  : "No Copilot runs today, so there is no AIC bill — this is the cache-aware API-equivalent benchmark for today's finished runs. A benchmark, not a bill."
-              }
-            />
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <Card className="space-y-4 p-4">
-              <SectionHead title="Aimed today" count={openGoals.length} />
+      {loading ? (
+        <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[20rem_minmax(0,1fr)]" aria-hidden="true">
+          {[0, 1].map((i) => (
+            <div key={i} className="space-y-3 border-border p-3.5 lg:border-r">
+              <Skeleton className="h-4 w-1/3" />
+              <Skeleton className="h-4 w-2/3" />
+              <Skeleton className="h-4 w-1/2" />
+            </div>
+          ))}
+        </div>
+      ) : (
+        /* Three columns on a wide screen: the day's intent, the work to act on, and the agent
+           working it. Below 1181px the agent column folds *under* the centre column rather than
+           disappearing (same element, re-placed), and on a phone the whole thing is one stack. */
+        <div
+          className={cn(
+            "grid min-h-0 flex-1 grid-cols-1",
+            "lg:grid-cols-[20rem_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)_auto]",
+            "wide:grid-cols-[20rem_minmax(0,1fr)_22rem] wide:grid-rows-1",
+          )}
+        >
+          <aside
+            aria-label="the day"
+            className="flex min-h-0 flex-col overflow-y-auto border-border lg:col-start-1 lg:row-span-2 lg:row-start-1 lg:border-r wide:row-span-1"
+          >
+            <Section label="Aimed today" meta={openGoals.length > 0 ? `${openGoals.length} open` : undefined}>
               {dailyGoals.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
                   No daily goals yet — set them with{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
-                    bn daily add
-                  </code>
-                  .
+                  <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">bn daily add</code>.
                 </p>
               ) : openGoals.length === 0 ? (
-                <p className="text-sm text-muted-foreground">All of today's goals are done. 🎉</p>
+                <p className="text-sm text-muted-foreground">All of today&apos;s goals are done. 🎉</p>
               ) : (
                 <ul className="space-y-2">
                   {openGoals.map((g) => (
@@ -680,129 +672,164 @@ export function Today() {
                   ))}
                 </ul>
               )}
+            </Section>
 
-              {quarter && quarter.goals.length > 0 && (
-                <div className="space-y-2 border-t border-border pt-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <h4 className="text-sm font-semibold text-foreground">
-                      Quarter {quarter.quarter}
-                    </h4>
-                    <span className="text-xs text-muted-foreground">
-                      {quarter.on_track}/{quarter.total} on track
-                    </span>
-                  </div>
+            {quarter && quarter.goals.length > 0 && (
+              <>
+                <PaneRule />
+                <Section
+                  label={`Quarter ${quarter.quarter}`}
+                  meta={`${quarter.on_track}/${quarter.total} on track`}
+                >
                   <ul className="space-y-2">
                     {quarter.goals.map((g) => (
                       <QuarterRow key={g.key} goal={g} />
                     ))}
                   </ul>
-                </div>
-              )}
-            </Card>
+                </Section>
+              </>
+            )}
 
-            <Card className="space-y-4 p-4">
-              <SectionHead title="Achieved today" count={doneGoals.length + mergedPrs.length} />
-
-              {doneGoals.length > 0 && (
-                <div className="space-y-2">
-                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    Goals completed
-                  </div>
+            <PaneRule />
+            <Section
+              label="Achieved today"
+              meta={
+                doneGoals.length + mergedPrs.length > 0
+                  ? String(doneGoals.length + mergedPrs.length)
+                  : undefined
+              }
+            >
+              <div className="space-y-3">
+                {doneGoals.length > 0 && (
                   <ul className="space-y-2">
                     {doneGoals.map((g) => (
                       <GoalRow key={g.id} goal={g} />
                     ))}
                   </ul>
-                </div>
-              )}
+                )}
 
-              {mergedPrs.length > 0 && (
-                <div className="space-y-2">
-                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    PRs merged
+                {mergedPrs.length > 0 && (
+                  <div className="space-y-1.5">
+                    <div className="text-[0.68rem] uppercase tracking-[0.08em] text-muted-foreground/70">
+                      PRs merged
+                    </div>
+                    <ul className="space-y-2">
+                      {mergedPrs.map((pr) => (
+                        <li key={pr.number} className="flex items-start gap-2 text-sm">
+                          <Check className="mt-0.5 h-4 w-4 shrink-0 text-ok" aria-hidden="true" />
+                          <a
+                            className="min-w-0 flex-1 text-primary underline underline-offset-2"
+                            href={pr.url}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            #{pr.number} {pr.title}
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
                   </div>
+                )}
+
+                {commits.length > 0 && (
+                  <div className="space-y-1.5">
+                    <div className="flex items-baseline gap-2 text-[0.68rem] uppercase tracking-[0.08em] text-muted-foreground/70">
+                      Commits
+                      <span className="font-mono normal-case tracking-normal">→ bn sync</span>
+                    </div>
+                    <ul className="space-y-2">
+                      {commits.map((c) => (
+                        <li key={c.hash} className="flex items-start gap-2 text-sm">
+                          <code className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-xs text-muted-foreground">
+                            {c.hash}
+                          </code>
+                          <span className="min-w-0 flex-1 text-foreground/90">{c.subject}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {achievedNothing && wrap.isSuccess && goals.isSuccess && (
+                  <p className="text-sm text-muted-foreground">
+                    Nothing wrapped up yet — close a goal or merge a PR to fill this in.
+                  </p>
+                )}
+              </div>
+            </Section>
+          </aside>
+
+          <section
+            aria-label="proposals and open work"
+            className="flex min-h-0 flex-col overflow-y-auto border-border lg:col-start-2 lg:row-start-1 lg:border-r"
+          >
+            <SuggestedTasks />
+            <PaneRule />
+            <TodayAutomation />
+            {openTodos.length > 0 && (
+              <>
+                <PaneRule />
+                <Section label="Open todos" meta="across branch notes · rolling forward">
                   <ul className="space-y-2">
-                    {mergedPrs.map((pr) => (
-                      <li key={pr.number} className="flex items-start gap-2 text-sm">
-                        <Check className="mt-0.5 h-4 w-4 shrink-0 text-ok" aria-hidden="true" />
-                        <a
-                          className="min-w-0 flex-1 text-primary underline underline-offset-2"
-                          href={pr.url}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          #{pr.number} {pr.title}
-                        </a>
+                    {openTodos.slice(0, 12).map((t, i) => (
+                      <li key={`${t.repo}/${t.branch}/${i}`} className="flex items-start gap-2 text-sm">
+                        <ChevronRight
+                          className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground"
+                          aria-hidden="true"
+                        />
+                        <span className="min-w-0 flex-1 text-foreground/90">{t.text}</span>
+                        <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                          {t.repo}/{t.branch}
+                        </span>
                       </li>
                     ))}
                   </ul>
-                </div>
-              )}
+                </Section>
+              </>
+            )}
+          </section>
 
-              {commits.length > 0 && (
-                <div className="space-y-2">
-                  <div className="flex items-baseline gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    Commits
-                    <span className="font-mono normal-case text-muted-foreground/80">
-                      → bn sync
-                    </span>
-                  </div>
-                  <ul className="space-y-2">
-                    {commits.map((c) => (
-                      <li key={c.hash} className="flex items-start gap-2 text-sm">
-                        <code className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-xs text-muted-foreground">
-                          {c.hash}
-                        </code>
-                        <span className="min-w-0 flex-1 text-foreground/90">{c.subject}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {achievedNothing && wrap.isSuccess && goals.isSuccess && (
-                <p className="text-sm text-muted-foreground">
-                  Nothing wrapped up yet — close a goal or merge a PR to fill this in.
-                </p>
-              )}
-            </Card>
-          </div>
-
-          <TodayAgentCard />
-
-          <SuggestedTasks />
-
-          <TodayAutomation />
-
-          {openTodos.length > 0 && (
-            <Card className="space-y-3 p-4">
-              <SectionHead title="Open todos" count="across branch notes · rolling forward" />
-              <ul className="space-y-2">
-                {openTodos.slice(0, 12).map((t, i) => (
-                  <li
-                    key={`${t.repo}/${t.branch}/${i}`}
-                    className="flex items-start gap-2 text-sm"
-                  >
-                    <ChevronRight
-                      className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground"
-                      aria-hidden="true"
-                    />
-                    <span className="min-w-0 flex-1 text-foreground/90">{t.text}</span>
-                    <span className="shrink-0 font-mono text-xs text-muted-foreground">
-                      {t.repo}/{t.branch}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </Card>
-          )}
-        </>
-      )}
-
-      {(goals.isError || wrap.isError) && (
-        <Card className="border-urgent/30 bg-urgent-muted p-4 text-sm text-urgent">
-          Could not load today's data.
-        </Card>
+          <aside
+            aria-label="today's agent"
+            className="flex min-h-0 flex-col overflow-y-auto border-t border-border lg:col-start-2 lg:row-start-2 wide:col-start-3 wide:row-start-1 wide:border-t-0"
+          >
+            <TodayAgentCard />
+            <PaneRule />
+            {/* The day's numbers sit with the agent that moved them, not in a banner overhead. */}
+            <StatGrid cols={2} className="border-b border-border">
+              <StatTile
+                label="goals done"
+                value={`${doneCount}/${totalGoals}`}
+                tone={totalGoals > 0 && doneCount >= totalGoals ? "green" : "grey"}
+              />
+              <StatTile
+                label="PRs merged"
+                value={String(mergedPrs.length)}
+                tone={mergedPrs.length > 0 ? "green" : "grey"}
+              />
+              <StatTile
+                label="agents today"
+                value={String(agentsToday)}
+                tone={agentsToday > 0 ? "blue" : "grey"}
+                title={
+                  liveAgents > 0
+                    ? `${finishedToday} finished + ${liveAgents} running now`
+                    : "finished, ingested runs today"
+                }
+              />
+              <StatTile
+                label={spentIsAic ? "AIC spent" : "$ spent"}
+                value={spentIsAic ? fmtAic(aicToday) : fmtUsd(usdToday)}
+                tone="grey"
+                title={
+                  spentIsAic
+                    ? "AI Credits — the metered Copilot bill for today's finished runs (lands once a run is ingested)"
+                    : "No Copilot runs today, so there is no AIC bill — this is the cache-aware API-equivalent benchmark for today's finished runs. A benchmark, not a bill."
+                }
+              />
+            </StatGrid>
+          </aside>
+        </div>
       )}
     </div>
   );

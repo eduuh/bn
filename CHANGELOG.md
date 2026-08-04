@@ -3,6 +3,25 @@
 All notable changes to this project are documented here. Generated from conventional commits
 by `scripts/release-pr.py`; the `v{version}` tag is pushed by `release-plz release` on merge.
 
+## [0.4.0] - 2026-08-04
+
+### Features
+
+- **web**: Cost folds into Insights, so one screen answers how the window went (#1049)
+- **web**: Today becomes the task lifecycle, and the pipeline drills into it (#1045)
+- **pipeline**: per-stage profile resolution with a gate ratchet (#1043)
+- **today**: host Today's agent in the planning session, steerable from Today (#1041)
+- **markdown**: fenced code is content, not structure — and the web renders it as code (#1037)
+- **web**: spend the fleet board on what needs you, and retire "observed only" (#1036)
+
+### Bug Fixes
+
+- **web**: steer under the transcript, and drop the console's batch controls (#1045) (#1048)
+- **dispatch**: omit invalid per-harness --model so dispatched claude agents boot (#963) (#1046)
+- **web**: repair the e2e specs #1041 broke, and the stale Suggested-tasks copy (#1044)
+- **web**: strip the stash conflict markers #1036 committed, which broke the build (#1039)
+- **web**: remove merge-conflict markers that #1036 committed by mistake (#1038)
+
 ## [0.3.0] - 2026-08-03
 
 ### Features

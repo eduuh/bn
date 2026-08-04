@@ -94,18 +94,25 @@ function NotesBrowser() {
                       : "border-border bg-card hover:border-border/80 hover:bg-accent/40",
                   )}
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="truncate font-mono text-sm font-medium text-foreground">
-                      {b.repo}
+                  {/* Branch first. This list is one repo's branches far more often than not, so
+                      leading with the repo made every row open with the same word and demoted the
+                      only field that tells them apart to a grey subtitle. `break-all` because the
+                      branch is the identifier — truncating three `dispatch-pick-up-this-open-tod…`
+                      rows to the same string makes them literally indistinguishable. */}
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="min-w-0 break-all font-mono text-sm font-medium text-foreground">
+                      {b.branch}
                     </span>
-                    {b.status && (
+                    {/* Only a status worth reading. Every note here is "active", and a badge that
+                        is on every row carries no information — it just adds a column of noise. */}
+                    {b.status && b.status !== "active" && (
                       <Badge variant="muted" className="shrink-0">
                         {b.status}
                       </Badge>
                     )}
                   </div>
                   <div className="mt-0.5 truncate font-mono text-xs text-muted-foreground">
-                    {b.branch}
+                    {b.repo}
                   </div>
                   {(b.todos.length > 0 || b.blockers.length > 0) && (
                     <div className="mt-1.5 flex flex-wrap gap-1.5">

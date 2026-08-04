@@ -226,7 +226,11 @@ export function Start() {
         : "Starts a launchd-daemonized run that works the queue at the chosen concurrency.";
 
   return (
-    <div className="mx-auto max-w-2xl space-y-5 pb-8">
+    // No nested measure. This used to be `mx-auto max-w-2xl` *inside* the shell's own centred
+    // container, which centred the form within the centred column and pushed this page's title
+    // 170px right of the title on every other route. The shell now gives `/start` a `document`
+    // width (see `lib/layout`), so the page just fills what it is given.
+    <div className="space-y-5 pb-8">
       <PageHead title="Start an agent" sub="dispatch · queue · daemon run" />
 
       <Card className="space-y-4 p-4">

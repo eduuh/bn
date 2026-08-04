@@ -30,7 +30,11 @@ describe("category palette", () => {
   });
 
   it("colours known classes stably and cycles a fallback for unknowns", () => {
-    expect(categoryColor("coding")).toBe("#3fb950");
+    // Slot 2 of the validated dark categorical set (see `CATEGORY_META`). Pinned because the slot
+    // *order* is the colourblind-safety mechanism — a reshuffle must fail here, not ship quietly.
+    expect(categoryColor("coding")).toBe("#d95926");
+    // The residual bucket spends no hue on identity it doesn't have.
+    expect(categoryColor("unattributed")).toBe("#7d7869");
     // Unknown → fallback palette, never undefined.
     expect(categoryColor("mystery", 0)).toMatch(/^#/);
     expect(categoryColor("mystery", 0)).not.toBe(categoryColor("mystery", 1));

@@ -357,6 +357,30 @@ pub struct LiveAgent {
     /// [`ControlChannel::None`].
     #[serde(default)]
     pub control: ControlChannel,
+    /// The task this agent is working on, when one is bound to its `(repo, branch)`.
+    ///
+    /// The fleet could always say an agent was *running*; it could not say what it was running.
+    /// Bound by [`crate::todo::claim`] (which `bn dispatch --task` and `bn task claim` call), and
+    /// absent — rendered as nothing, never as an error — for an agent whose worktree no task
+    /// governs. `#[serde(default)]` keeps older fleet JSON valid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<AgentTask>,
+}
+
+/// The task an agent is working on, as much of it as a fleet card needs: enough to recognize the
+/// work and to link through to it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentTask {
+    /// The positional handle (`t42`) — what `/tasks/:id` is addressed by.
+    pub id: String,
+    /// The task text, metadata stripped.
+    pub summary: String,
+    /// The pipeline stage, when the task records one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    /// The SMART gate's verdict (`ok` / `fail` / `stuck`), when judged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smart: Option<String>,
 }
 
 /// The channel `bn agent send` would reach an agent through, in the order it tries them.
@@ -463,7 +487,57 @@ pub fn supervise(cfg: &Config, idle_mins: i64, stuck_mins: i64) -> Fleet {
     // these, or is it only watching? Kept out of `supervise_from` for the same reason as roles —
     // it shells out to tmux, and that core stays a pure filesystem read.
     stamp_control(cfg, &mut fleet.agents);
+    stamp_tasks(cfg, &mut fleet.agents);
     fleet
+}
+
+/// Attach each agent's governing task, so the fleet can say what an agent is working on.
+///
+/// One read of the task store for the whole pass, not one per agent — the same budget
+/// [`stamp_control`] accepts for its lease-registry read, and this runs on a 2-second dashboard
+/// poll. An unreadable or empty store leaves every `task` as `None`, which is the honest answer and
+/// renders as nothing.
+fn stamp_tasks(cfg: &Config, agents: &mut [LiveAgent]) {
+    if agents.is_empty() {
+        return;
+    }
+    let Ok(file) = crate::todo::load(&cfg.tasks_file()) else {
+        return;
+    };
+    let tasks: Vec<crate::todo::Task> = file.tasks().cloned().collect();
+    let today = crate::util::today();
+    for a in agents.iter_mut() {
+        a.task = task_for(&tasks, &a.repo, &a.branch, &today).map(|t| AgentTask {
+            id: t.id().unwrap_or_default().to_string(),
+            summary: t.summary(),
+            stage: t.meta("stage").map(str::to_string),
+            smart: t.meta("smart").map(str::to_string),
+        });
+    }
+}
+
+/// The task governing `(repo, branch)`, or `None`.
+///
+/// Keyed exactly like [`crate::pipeline::gate::governing_task`] and the pipeline-stages API —
+/// case-insensitive repo, case-insensitive branch — so the three joins cannot drift apart and
+/// disagree about which task owns a worktree. An open task wins over a finished one: an agent that
+/// has just closed its task is still *on* it, but if it has moved on to a second task on the same
+/// branch, that is the one to show. Pure → unit-testable.
+fn task_for<'a>(
+    tasks: &'a [crate::todo::Task],
+    repo: &str,
+    branch: &str,
+    today: &str,
+) -> Option<&'a crate::todo::Task> {
+    let matches = |t: &&crate::todo::Task| {
+        t.meta("repo").is_some_and(|r| r.eq_ignore_ascii_case(repo))
+            && t.meta("branch")
+                .is_some_and(|b| b.eq_ignore_ascii_case(branch))
+    };
+    tasks
+        .iter()
+        .filter(matches)
+        .max_by_key(|t| (t.is_open(today), t.modified()))
 }
 
 pub fn supervision_roots() -> (PathBuf, PathBuf) {
@@ -542,6 +616,7 @@ fn pending_agents(
                 cache_read_tokens: 0,
                 // Stamped by `stamp_control` once the whole fleet is assembled.
                 control: ControlChannel::None,
+                task: None,
             })
         })
         .collect()
@@ -802,6 +877,7 @@ fn parse_live_claude(
         output_tokens: output,
         cache_read_tokens: cache_read,
         control: ControlChannel::None,
+        task: None,
     })
 }
 
@@ -898,6 +974,7 @@ fn parse_live_copilot(
         output_tokens,
         cache_read_tokens: 0,
         control: ControlChannel::None,
+        task: None,
     })
 }
 
@@ -1464,6 +1541,7 @@ mod tests {
             output_tokens: 0,
             cache_read_tokens: 0,
             control: ControlChannel::None,
+            task: None,
         };
         let mut agents = vec![worker("orch", "wave"), worker("ship", "ship")];
         let mut attribution = BTreeMap::new();
@@ -1498,6 +1576,7 @@ mod tests {
             output_tokens: 0,
             cache_read_tokens: 0,
             control: ControlChannel::None,
+            task: None,
         };
         let mut attribution = BTreeMap::new();
         attribution.insert(

@@ -4,16 +4,14 @@ import { AlertTriangle } from "lucide-react";
 import { costQuery } from "../api/client";
 import { fmtAic, fmtTokens, fmtUsd } from "../lib/format";
 import { categoryColor, categoryLabel, presentCategories, type CostMetric } from "../lib/cost";
-import { StatTile } from "../components/StatTile";
-import { CostChart } from "../components/CostChart";
-import { CostTable, type CostDimension } from "../components/CostTable";
-import { CostLive } from "../components/CostLive";
-import { Card } from "../components/ui/card";
-import { Skeleton } from "../components/ui/skeleton";
-import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
-import { PageHead } from "../components/PageHead";
+import { StatGrid, StatTile } from "./StatTile";
+import { CostChart } from "./CostChart";
+import { CostTable, type CostDimension } from "./CostTable";
+import { CostLive } from "./CostLive";
+import { Card } from "./ui/card";
+import { Skeleton } from "./ui/skeleton";
+import { Tabs, TabsList, TabsTrigger } from "./ui/tabs";
 
-const WINDOWS = [7, 30, 90];
 const METRICS: { key: CostMetric; label: string }[] = [
   { key: "output_tokens", label: "Output tokens" },
   { key: "aic", label: "AIC" },
@@ -42,14 +40,17 @@ function LoadingSkeleton() {
 }
 
 /**
- * `/cost` — Cost & Usage (design §4(b)), the #381 dual-cost surface. Stat tiles (AIC + $, tokens,
- * sessions, machines), a uPlot stacked-bar chart of usage by day coloured by work-class category,
- * a breakdown table with a `by` switcher mirroring `bn cost`'s columns, and a live in-flight
- * section fed by the SSE `fleet` frame. The window picker drives the refetch; the table dimension
- * and chart metric are client-side selections over the single fetched view.
+ * Cost & Usage (design §4(b)), the #381 dual-cost surface: stat tiles (AIC + $, tokens, sessions,
+ * machines), a uPlot stacked-bar chart of usage by day coloured by work-class category, a breakdown
+ * table with a `by` switcher mirroring `bn cost`'s columns, and a live in-flight section fed by the
+ * SSE `fleet` frame.
+ *
+ * It was its own `/cost` route until the reporting surfaces merged: cost is one more answer to "how
+ * did the window go", so it is now the Cost tab of `/insights` and takes that page's window picker
+ * as a prop rather than carrying a second, separately-remembered one. The table dimension and chart
+ * metric stay client-side selections over the single fetched view.
  */
-export function CostView() {
-  const [windowDays, setWindowDays] = useState(30);
+export function CostPanel({ windowDays }: { windowDays: number }) {
   const [by, setBy] = useState<CostDimension>("repo");
   const [metric, setMetric] = useState<CostMetric>("output_tokens");
   const cost = useQuery(costQuery(windowDays));
@@ -61,27 +62,11 @@ export function CostView() {
   const categoryChartDegenerate = cats.length <= 1;
 
   return (
-    <div className="space-y-5 pb-8">
-      <PageHead
-        title="Cost & Usage"
-        sub={
-          <>
-            <span className="font-semibold text-ok">AIC</span> = metered Copilot bill ·{" "}
-            <span className="font-semibold text-info">$</span> = cache-aware API-equiv (not a bill)
-          </>
-        }
-        right={
-          <Tabs value={String(windowDays)} onValueChange={(v) => setWindowDays(Number(v))}>
-            <TabsList aria-label="window">
-              {WINDOWS.map((w) => (
-                <TabsTrigger key={w} value={String(w)}>
-                  {w}d
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
-        }
-      />
+    <div className="space-y-5">
+      <p className="text-xs text-muted-foreground">
+        <span className="font-semibold text-ok">AIC</span> = metered Copilot bill ·{" "}
+        <span className="font-semibold text-info">$</span> = cache-aware API-equiv (not a bill)
+      </p>
 
       {cost.isLoading && <LoadingSkeleton />}
 
@@ -94,7 +79,7 @@ export function CostView() {
 
       {view && (
         <>
-          <div className="flex flex-wrap gap-3">
+          <StatGrid cols={5} className="border-y border-border">
             <StatTile
               label="AIC · Copilot bill"
               value={fmtAic(view.totals.aic)}
@@ -110,7 +95,7 @@ export function CostView() {
             <StatTile label="output tokens" value={fmtTokens(view.totals.output_tokens)} tone="grey" />
             <StatTile label="sessions" value={String(view.totals.sessions)} tone="grey" />
             <StatTile label="active machines" value={String(view.by_machine.length)} tone="grey" />
-          </div>
+          </StatGrid>
 
           <Card className="space-y-3 p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">

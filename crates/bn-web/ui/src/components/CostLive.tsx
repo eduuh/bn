@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { fleetQuery } from "../api/client";
 import { fmtTokens } from "../lib/format";
-import { StatTile } from "./StatTile";
+import { StatGrid, StatTile } from "./StatTile";
 import { Badge } from "./ui/badge";
 import { Card } from "./ui/card";
 
@@ -32,14 +32,14 @@ export function CostLive() {
         <p className="text-sm text-muted-foreground">Loading live usage…</p>
       ) : (
         <>
-          <div className="flex gap-3">
+          <StatGrid cols={3} className="border-y border-border">
             <StatTile label="in-flight tokens" value={fmtTokens(totalTokens)} tone="blue" />
             <StatTile
               label="running agents"
               value={String(active)}
               tone={active > 0 ? "green" : "grey"}
             />
-          </div>
+          </StatGrid>
 
           {agents.length === 0 ? (
             <p className="text-sm text-muted-foreground">

@@ -100,6 +100,8 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
             fresh,
             keep_project_mcps,
             no_pool,
+            on_pool_full,
+            task,
             // Deprecated no-op: pooling is the default dispatch path now (kept hidden for
             // back-compat with callers/scripts that still pass `--pool`).
             pool: _,
@@ -202,6 +204,8 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
                 fresh,
                 keep_project_mcps,
                 no_pool,
+                on_pool_full,
+                task.as_deref(),
                 attach,
                 &refs,
                 json,

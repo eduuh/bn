@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle } from "lucide-react";
 import {
@@ -10,11 +11,10 @@ import {
 } from "../api/client";
 import type { MetricsTrendPoint, MetricsView } from "../api/types";
 import { fmtAic, fmtRate } from "../lib/format";
-import { StatTile } from "../components/StatTile";
+import { StatGrid, StatTile } from "../components/StatTile";
 import { Card } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
-import { PageHead } from "../components/PageHead";
 
 const WINDOWS = [7, 30, 90];
 
@@ -93,7 +93,7 @@ function MetricsPanel({ view, trend }: { view: MetricsView; trend: MetricsTrendP
         )}
       </Card>
 
-      <div className="flex flex-wrap gap-3">
+      <StatGrid cols={6} className="border-y border-border">
         <StatTile label="PRs merged" value={String(pr.merged)} tone="green" />
         <StatTile label="in flight" value={String(pr.in_flight)} tone="blue" />
         <StatTile
@@ -109,11 +109,13 @@ function MetricsPanel({ view, trend }: { view: MetricsView; trend: MetricsTrendP
           title="Active notes with at least one open todo — the context-switch tax"
         />
         <StatTile label="open branches" value={String(view.open_branches)} tone="grey" />
-      </div>
+      </StatGrid>
 
       <div className="space-y-2">
-        <h3 className="text-sm font-semibold text-muted-foreground">Agent telemetry</h3>
-        <div className="flex flex-wrap gap-3">
+        <h3 className="text-[0.68rem] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+          Agent telemetry
+        </h3>
+        <StatGrid cols={4} className="border-y border-border">
           <StatTile label="sessions" value={String(agent.sessions)} tone="grey" />
           <StatTile label="agent time" value={fmtMinutes(agent.total_minutes)} tone="grey" />
           <StatTile label="AIC" value={fmtAic(agent.cost_aiu)} tone="green" />
@@ -122,7 +124,7 @@ function MetricsPanel({ view, trend }: { view: MetricsView; trend: MetricsTrendP
             value={`${agent.lines_added}/${agent.lines_removed}`}
             tone="grey"
           />
-        </div>
+        </StatGrid>
       </div>
     </div>
   );
@@ -159,14 +161,40 @@ function DigestPanel({
   );
 }
 
+const TABS = ["metrics", "cost", "weekly", "insights", "brag"];
+
 /**
- * `/insights` — Insights & Metrics (#507), the reporting surface closing a dashboard-parity gap
- * (#488). A window picker drives the `bn metrics` scorecard (velocity/throughput tiles + a small
- * merged-PR trend chart and agent telemetry), and three sub-tabs surface the `bn weekly` /
- * `bn insights` weekly digests and the `bn brag` accomplishments packet. All read-only.
+ * The cost panel is split out of this route's chunk on purpose: it pulls uPlot in with it, which
+ * tripled the insights chunk (22 kB → 69 kB) when the two screens merged. Folding cost into this
+ * page must not make the four non-cost tabs pay for a charting library they never draw with, so
+ * the tab loads it on first open instead.
+ */
+const CostPanel = lazy(() =>
+  import("../components/CostPanel").then((m) => ({ default: m.CostPanel })),
+);
+
+/**
+ * `/insights` — Insights & Cost (#507), the reporting surface closing a dashboard-parity gap
+ * (#488). One window picker drives the `bn metrics` scorecard (velocity/throughput tiles + a small
+ * merged-PR trend chart and agent telemetry) *and* the `bn cost` dual-cost view, with three more
+ * sub-tabs for the `bn weekly` / `bn insights` weekly digests and the `bn brag` accomplishments
+ * packet. All read-only.
+ *
+ * Cost used to be its own `/cost` route with its own duplicate 7/30/90 picker, which meant answering
+ * "how did the last 30 days go, and what did they cost" took two screens and two window selections
+ * that could silently disagree. `/cost` now redirects here (see `main.tsx`).
+ *
+ * The active tab lives in `?tab=` so every panel is linkable — `/insights?tab=cost` is what the old
+ * `/cost` link resolves to, and what the rail, the palette and RepoDetail's "view details" point at.
+ * Switching tabs *replaces* the history entry rather than pushing one, so Back still returns to
+ * wherever you came from instead of walking you through five tabs first. Radix unmounts inactive
+ * panels, so the cost fetch — and the chunk it lives in — only load once its tab is opened; landing
+ * on `/insights` costs exactly what it did before.
  */
 export function Insights() {
   const [windowDays, setWindowDays] = useState(30);
+  const [params, setParams] = useSearchParams();
+  const tab = TABS.includes(params.get("tab") ?? "") ? params.get("tab")! : "metrics";
   const metrics = useQuery(metricsQuery(windowDays));
   const trend = useQuery(metricsTrendQuery());
   const weekly = useQuery(weeklyQuery());
@@ -174,45 +202,77 @@ export function Insights() {
   const brag = useQuery(bragQuery());
 
   return (
-    <div className="space-y-5 pb-8">
-      <PageHead
-        title="Insights & Metrics"
-        sub="velocity · throughput · weekly digests"
-        right={
-          <Tabs value={String(windowDays)} onValueChange={(v) => setWindowDays(Number(v))}>
-            <TabsList aria-label="metrics window">
-              {WINDOWS.map((d) => (
-                <TabsTrigger key={d} value={String(d)}>
-                  {d}d
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
-        }
-      />
+    // One `Tabs` root spanning the whole screen: the view switcher lives in the header bar and its
+    // panels own the scrolling body, so flipping tabs never moves the controls. Previously the head,
+    // both switchers and the panel all stacked in a document, which pushed the chart below the fold
+    // and left the window picker floating over an empty measure.
+    <Tabs
+      value={tab}
+      onValueChange={(v) => {
+        // `replace` so tab-flipping doesn't bury the entry the user actually navigated from.
+        const next = new URLSearchParams(params);
+        if (v === "metrics") next.delete("tab");
+        else next.set("tab", v);
+        setParams(next, { replace: true });
+      }}
+      className="flex h-full min-h-0 flex-col"
+    >
+      <header className="flex flex-none flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-2.5">
+        <h1 className="font-display text-lg font-semibold tracking-tight text-foreground">
+          Insights &amp; Cost
+        </h1>
+        <span className="hidden font-mono text-[11px] text-muted-foreground/70 lg:inline">
+          velocity · throughput · spend · weekly digests
+        </span>
 
-      <Tabs defaultValue="metrics">
-        <TabsList aria-label="insights view">
+        <TabsList aria-label="insights view" className="ml-1">
           <TabsTrigger value="metrics">Metrics</TabsTrigger>
+          <TabsTrigger value="cost">Cost</TabsTrigger>
           <TabsTrigger value="weekly">Weekly</TabsTrigger>
           <TabsTrigger value="insights">Insights</TabsTrigger>
           <TabsTrigger value="brag">Brag</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="metrics" className="mt-4">
+        {/* One picker for the whole page — it windows the cost view as well as the metrics, which
+            is the point of folding the two screens together. */}
+        <Tabs
+          value={String(windowDays)}
+          onValueChange={(v) => setWindowDays(Number(v))}
+          className="ml-auto"
+        >
+          <TabsList aria-label="window">
+            {WINDOWS.map((d) => (
+              <TabsTrigger key={d} value={String(d)}>
+                {d}d
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+      </header>
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <TabsContent value="metrics" className="mt-0 px-4 py-4">
           {metrics.isLoading && <Skeleton className="h-72 w-full" />}
           {metrics.isError && (
-            <Card className="flex items-center gap-2 border-urgent/30 bg-urgent-muted p-4 text-sm text-urgent">
+            <div className="flex items-center gap-2 rounded-lg border border-urgent/30 bg-urgent-muted p-4 text-sm text-urgent">
               <AlertTriangle className="h-4 w-4" />
               Could not load metrics.
-            </Card>
+            </div>
           )}
           {metrics.data && (
             <MetricsPanel view={metrics.data} trend={trend.data?.snapshots ?? []} />
           )}
         </TabsContent>
 
-        <TabsContent value="weekly" className="mt-4">
+        <TabsContent value="cost" className="mt-0 px-4 py-4">
+          <Suspense fallback={<Skeleton className="h-72 w-full" />}>
+            <CostPanel windowDays={windowDays} />
+          </Suspense>
+        </TabsContent>
+
+        {/* The digests are prose. They keep a reading measure even though the page is full-bleed —
+            a 1900px line of markdown is unreadable, and "dense" is not the same as "edge to edge". */}
+        <TabsContent value="weekly" className="mt-0 max-w-[60rem] px-4 py-4">
           <DigestPanel
             text={weekly.data?.rendered}
             isLoading={weekly.isLoading}
@@ -222,7 +282,7 @@ export function Insights() {
           />
         </TabsContent>
 
-        <TabsContent value="insights" className="mt-4">
+        <TabsContent value="insights" className="mt-0 max-w-[60rem] px-4 py-4">
           <DigestPanel
             text={insights.data?.rendered}
             isLoading={insights.isLoading}
@@ -232,7 +292,7 @@ export function Insights() {
           />
         </TabsContent>
 
-        <TabsContent value="brag" className="mt-4">
+        <TabsContent value="brag" className="mt-0 max-w-[60rem] px-4 py-4">
           <DigestPanel
             text={brag.data?.rendered}
             isLoading={brag.isLoading}
@@ -241,7 +301,7 @@ export function Insights() {
             label="the brag packet"
           />
         </TabsContent>
-      </Tabs>
-    </div>
+      </div>
+    </Tabs>
   );
 }

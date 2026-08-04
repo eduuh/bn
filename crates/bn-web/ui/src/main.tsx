@@ -22,9 +22,9 @@ const Today = lazyRoute(() => import("./routes/Today"), "Today");
 const Fleet = lazyRoute(() => import("./routes/Fleet"), "Fleet");
 const Nodes = lazyRoute(() => import("./routes/Nodes"), "Nodes");
 const Start = lazyRoute(() => import("./routes/Start"), "Start");
-const CostView = lazyRoute(() => import("./routes/CostView"), "CostView");
 const Insights = lazyRoute(() => import("./routes/Insights"), "Insights");
 const AgentDetail = lazyRoute(() => import("./routes/AgentDetail"), "AgentDetail");
+const TaskDetail = lazyRoute(() => import("./routes/TaskDetail"), "TaskDetail");
 const NotesPage = lazyRoute(() => import("./routes/NotesPage"), "NotesPage");
 const Handoff = lazyRoute(() => import("./routes/Handoff"), "Handoff");
 const Attention = lazyRoute(() => import("./routes/Attention"), "Attention");
@@ -76,9 +76,11 @@ const router = createBrowserRouter([
           { path: "nodes", element: <Nodes /> },
           { path: "start", element: <Start /> },
           { path: "reviews", element: <Navigate to="/inbox?tab=reviews" replace /> },
-          { path: "cost", element: <CostView /> },
+          // Cost merged into the insights page as a tab — the old URL keeps working.
+          { path: "cost", element: <Navigate to="/insights?tab=cost" replace /> },
           { path: "insights", element: <Insights /> },
           { path: "agents/:id", element: <AgentDetail /> },
+          { path: "tasks/:id", element: <TaskDetail /> },
           { path: "notes", element: <NotesPage /> },
           { path: "handoff", element: <Handoff /> },
           { path: "attention", element: <Attention /> },

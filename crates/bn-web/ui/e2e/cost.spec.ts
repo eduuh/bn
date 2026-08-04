@@ -6,7 +6,7 @@ test.beforeEach(() => seed());
 
 test("cost view renders totals + a by-category breakdown", async ({ page }, testInfo) => {
   await primeToken(page);
-  await page.goto("/cost");
+  await page.goto("/insights?tab=cost");
 
   await expect(page.getByRole("heading", { name: /Cost/ })).toBeVisible();
   await expect(page.getByText("AIC · Copilot bill")).toBeVisible();

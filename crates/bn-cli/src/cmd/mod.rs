@@ -4,6 +4,7 @@
 //! thin per-CLI-group dispatch matches that delegate into those handlers.
 
 pub(crate) mod agent;
+pub(crate) mod agent_relaunch;
 pub(crate) mod agents;
 pub(crate) mod archivist;
 pub(crate) mod attn;

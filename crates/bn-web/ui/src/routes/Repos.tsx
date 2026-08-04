@@ -13,7 +13,6 @@ import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
 import { cn } from "../lib/utils";
-import { PageHead } from "../components/PageHead";
 
 /** A small metadata tag on a card's meta row. */
 function Tag({
@@ -247,54 +246,65 @@ function RepoCard({ repo, now }: { repo: RepoRollup; now: number }) {
  * into a card opens that repo's session list (`/repos/:repo`). Hydrated from `/api/repos`, patched
  * by the fallback poll.
  */
+/** The repo grid. `items-start` because grid cells otherwise stretch to their row's tallest
+ * sibling, so a three-line repo card beside a nine-line one grew a void under its content. The
+ * column count climbs with the viewport: at full-bleed, two columns made each card 850px wide to
+ * hold four short stats. */
+const GRID =
+  "grid grid-cols-1 items-start gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4";
+
 export function Repos() {
   const repos = useQuery(reposQuery());
   const now = useNow();
   const list = repos.data?.repos ?? [];
 
   return (
-    <div className="space-y-5 pb-8">
-      <PageHead
-        title="Repos"
-        sub={
-          repos.isLoading ? "loading…" : `${list.length} repo${list.length === 1 ? "" : "s"} · live`
-        }
-      />
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="flex flex-none items-baseline gap-3 border-b border-border px-4 py-2.5">
+        <h1 className="font-display text-lg font-semibold tracking-tight text-foreground">Repos</h1>
+        <span className="font-mono text-[11px] tabular-nums text-muted-foreground/70">
+          {repos.isLoading
+            ? "loading…"
+            : `${list.length} repo${list.length === 1 ? "" : "s"} · live`}
+        </span>
+      </header>
 
-      {repos.isLoading && (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2" aria-hidden="true">
-          {[0, 1, 2, 3].map((i) => (
-            <Card key={i} className="space-y-2 p-3">
-              <Skeleton className="h-4 w-1/2" />
-              <Skeleton className="h-3 w-2/3" />
-              <Skeleton className="h-6 w-1/3" />
-            </Card>
-          ))}
-        </div>
-      )}
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        {repos.isLoading && (
+          <div className={GRID} aria-hidden="true">
+            {[0, 1, 2, 3].map((i) => (
+              <Card key={i} className="space-y-2 p-3">
+                <Skeleton className="h-4 w-1/2" />
+                <Skeleton className="h-3 w-2/3" />
+                <Skeleton className="h-6 w-1/3" />
+              </Card>
+            ))}
+          </div>
+        )}
 
-      {repos.isError && (
-        <Card className="border-urgent/30 bg-urgent-muted p-4 text-sm text-urgent">
-          Could not load repos.
-        </Card>
-      )}
+        {repos.isError && (
+          <div className="rounded-lg border border-urgent/30 bg-urgent-muted p-4 text-sm text-urgent">
+            Could not load repos.
+          </div>
+        )}
 
-      {!repos.isLoading && list.length === 0 && (
-        <Card className="flex flex-col items-center gap-2 px-6 py-12 text-center">
-          <h3 className="text-lg font-semibold">No repos yet</h3>
-          <p className="max-w-sm text-sm text-muted-foreground">
-            bn isn&apos;t managing any repos and has no branch notes yet.
-          </p>
-        </Card>
-      )}
+        {!repos.isLoading && list.length === 0 && (
+          <div className="flex flex-col items-center gap-2 px-6 py-12 text-center">
+            <h3 className="font-display text-base font-semibold">No repos yet</h3>
+            <p className="max-w-sm text-sm text-muted-foreground">
+              bn isn&apos;t managing any repos and has no branch notes yet.
+            </p>
+          </div>
+        )}
 
-      {list.length > 0 && (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {list.map((r) => (
-            <RepoCard key={r.repo} repo={r} now={now} />
-          ))}
-        </div>
-      )}
+        {list.length > 0 && (
+          <div className={GRID}>
+            {list.map((r) => (
+              <RepoCard key={r.repo} repo={r} now={now} />
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

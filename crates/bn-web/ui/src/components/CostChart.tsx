@@ -1,14 +1,22 @@
 import { useEffect, useMemo, useRef } from "react";
 import uPlot from "uplot";
-// uPlot's stylesheet rides with whichever chunk pulls in uPlot itself (the cost route), instead of
-// sitting in the entry CSS for the fifteen routes that draw no charts.
+// uPlot's stylesheet rides with whichever chunk pulls in uPlot itself (the lazily-loaded cost
+// panel), instead of sitting in the entry CSS for the fifteen routes that draw no charts.
 import "uplot/dist/uPlot.min.css";
 import type { DayCategory } from "../api/types";
 import { fmtTokens } from "../lib/format";
 import { buildStackModel, categoryColor, stackForDraw, type CostMetric } from "../lib/cost";
 
-const AXIS = "#8b949e";
-const GRID = "#21262d";
+// Axis ink and gridlines, read off the app's own tokens rather than hardcoded. They used to be
+// Primer's `#8b949e` / `#21262d` — blue-greys, on a surface whose whole premise is a warm neutral
+// ramp, which is why the chart always looked like it belonged to a different app. uPlot needs
+// concrete colours (it paints to canvas, where `hsl(var(--…))` means nothing), so resolve the
+// custom properties off the document at draw time.
+function token(name: string, fallback: string): string {
+  if (typeof window === "undefined") return fallback;
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v ? `hsl(${v})` : fallback;
+}
 
 /** Format a y-axis tick for the chart's current metric: token counts compactly, cost units as
  * plain / dollar numbers (rounded — axis ticks don't need cents). */
@@ -46,6 +54,10 @@ export function CostChart({
     const xs = days.map((_, i) => i);
     const data: uPlot.AlignedData = [xs, ...cumulative];
 
+    const AXIS = token("--muted-foreground", "#a8a294");
+    const GRID = token("--border", "#3c3a36");
+    const surface = token("--card", "#242321");
+
     const bars = uPlot.paths.bars!({ size: [0.68, 60], align: 0 });
     const series: uPlot.Series[] = [
       {},
@@ -53,9 +65,13 @@ export function CostChart({
         const color = categoryColor(categories[catIdx], catIdx);
         return {
           label: categories[catIdx],
-          stroke: color,
+          // A 2px stroke in the *surface* colour, not the fill: it puts a hairline gap between
+          // stacked segments so two adjacent categories read as two marks rather than one blended
+          // block. Without it the only thing separating them is a hue step, which is exactly the
+          // cue a colourblind reader doesn't get.
+          stroke: surface,
           fill: color,
-          width: 0,
+          width: 2,
           paths: bars,
           points: { show: false },
         } as uPlot.Series;

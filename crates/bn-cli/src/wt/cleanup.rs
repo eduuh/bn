@@ -785,9 +785,15 @@ pub fn rename(cfg: &Config, new_branch: &str) -> bool {
         }
         if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
             eprintln!("Warning: branch renamed but note move failed: {e}");
-        } else if let Ok(mut note) = bn_core::store::read(&cfg.note_file(&new_ctx)) {
-            note.front.branch = new_ctx.branch.clone();
-            let _ = bn_core::store::save(&note, &cfg.note_file(&new_ctx));
+        } else {
+            // Locked read-modify-write: the note has just moved to its new path, and anything
+            // already writing there must not have its edit rewritten away by this one field fix.
+            let note_md = cfg.note_file(&new_ctx);
+            let _lock = bn_core::store::NoteLock::acquire(&note_md);
+            if let Ok(mut note) = bn_core::store::read(&note_md) {
+                note.front.branch = new_ctx.branch;
+                let _ = bn_core::store::save(&note, &note_md);
+            }
         }
     }
 
