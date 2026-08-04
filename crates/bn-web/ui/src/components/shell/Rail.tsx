@@ -29,6 +29,7 @@ import {
   tasksQuery,
 } from "../../api/client";
 import { fleetEntries, needsYou } from "../../lib/fleet";
+import { useExperimental } from "../../lib/experimental";
 import { cn } from "../../lib/utils";
 
 /** Count-pill tone. `hot` is the one that means *a human is blocked*; everything else is neutral,
@@ -42,6 +43,8 @@ interface NavItem {
   end?: boolean;
   count?: number;
   tone?: Tone;
+  /** The `?experimental=` key that reveals this tab. Absent means ungated — only Today, for now. */
+  exp?: string;
 }
 
 interface NavGroup {
@@ -61,8 +64,15 @@ interface NavGroup {
  * Groups follow the clay prototype (Operate · Work · Insight · Knowledge), extended with the four
  * destinations the prototype's rail left out (Attention, Automation, Research, and Start as the
  * pinned button) so nothing that exists falls out of the nav.
+ *
+ * All of that is currently behind `?experimental` (see `lib/experimental`). Until a screen is
+ * tested end to end it stays out of the rail, which by default carries exactly one destination —
+ * Today — plus the pinned *New task* verb. Each tab carries the `exp` key that reveals it, so
+ * `?experimental=fleet,cron` brings back those two and nothing else. The routes still resolve
+ * either way; they are simply not advertised.
  */
 export function Rail() {
+  const experimental = useExperimental();
   const orch = useQuery(orchestrateQuery());
   const fleet = useQuery(fleetQuery());
   const attn = useQuery(attnQuery());
@@ -80,7 +90,7 @@ export function Rail() {
   const todayTasks = tasks.data?.count ?? 0;
   const host = allNodes.find((n) => n.local)?.host;
 
-  const groups: NavGroup[] = [
+  const allGroups: NavGroup[] = [
     {
       title: "Operate",
       items: [
@@ -98,42 +108,76 @@ export function Rail() {
           Icon: SquareTerminal,
           count: urgentActions,
           tone: "hot",
+          exp: "console",
         },
-        { to: "/fleet", label: "Fleet", Icon: Server, count: needAttention, tone: "hot" },
-        { to: "/nodes", label: "Nodes", Icon: HardDrive, count: allNodes.length },
-        { to: "/cron", label: "Cron", Icon: Clock, count: failingCron, tone: "hot" },
+        {
+          to: "/fleet",
+          label: "Fleet",
+          Icon: Server,
+          count: needAttention,
+          tone: "hot",
+          exp: "fleet",
+        },
+        {
+          to: "/nodes",
+          label: "Nodes",
+          Icon: HardDrive,
+          count: allNodes.length,
+          exp: "nodes",
+        },
+        {
+          to: "/cron",
+          label: "Cron",
+          Icon: Clock,
+          count: failingCron,
+          tone: "hot",
+          exp: "cron",
+        },
         {
           to: "/attention",
           label: "Attention",
           Icon: Bell,
           count: attn.data?.items.length ?? 0,
           tone: "hot",
+          exp: "attention",
         },
-        { to: "/inbox", label: "Automation", Icon: Workflow },
+        { to: "/inbox", label: "Automation", Icon: Workflow, exp: "inbox" },
       ],
     },
     {
       title: "Work",
       items: [
-        { to: "/goals", label: "Goals", Icon: Target, count: goals.data?.daily.open ?? 0 },
-        { to: "/repos", label: "Repos", Icon: Folder },
+        {
+          to: "/goals",
+          label: "Goals",
+          Icon: Target,
+          count: goals.data?.daily.open ?? 0,
+          exp: "goals",
+        },
+        { to: "/repos", label: "Repos", Icon: Folder, exp: "repos" },
       ],
     },
     {
       title: "Insight",
       // Cost is a tab of the insights page now, not a sibling destination.
-      items: [{ to: "/insights", label: "Insights", Icon: LineChart }],
+      items: [{ to: "/insights", label: "Insights", Icon: LineChart, exp: "insights" }],
     },
     {
       title: "Knowledge",
       items: [
-        { to: "/notes", label: "Notes", Icon: FileText },
-        { to: "/skills", label: "Skills", Icon: Zap },
-        { to: "/handoff", label: "Handoff", Icon: ArrowLeftRight },
-        { to: "/research", label: "Research", Icon: Microscope },
+        { to: "/notes", label: "Notes", Icon: FileText, exp: "notes" },
+        { to: "/skills", label: "Skills", Icon: Zap, exp: "skills" },
+        { to: "/handoff", label: "Handoff", Icon: ArrowLeftRight, exp: "handoff" },
+        { to: "/research", label: "Research", Icon: Microscope, exp: "research" },
       ],
     },
   ];
+
+  // Only the tabs `?experimental=` named, and only the group headings that still label something.
+  // A lone "Operate" caption over a single tab is noise, not structure.
+  const groups = allGroups
+    .map((g) => ({ ...g, items: g.items.filter((i) => experimental.has(i.exp)) }))
+    .filter((g) => g.items.length > 0);
 
   return (
     <nav
@@ -159,9 +203,11 @@ export function Rail() {
 
       {groups.map((g) => (
         <div key={g.title} className="contents md:block">
-          <div className="hidden px-2 pb-1 pt-2.5 text-[10.5px] font-semibold uppercase tracking-[0.09em] text-muted-foreground/70 md:block">
-            {g.title}
-          </div>
+          {experimental.any && (
+            <div className="hidden px-2 pb-1 pt-2.5 text-[10.5px] font-semibold uppercase tracking-[0.09em] text-muted-foreground/70 md:block">
+              {g.title}
+            </div>
+          )}
           {g.items.map((it) => (
             <RailLink key={it.to} item={it} />
           ))}

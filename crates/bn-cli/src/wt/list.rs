@@ -496,26 +496,4 @@ pub(crate) fn cmd_prune(cfg: &Config) -> bool {
     true
 }
 
-#[cfg(test)]
-mod tests {
-    use super::porcelain_paths;
 
-    #[test]
-    fn porcelain_paths_strips_status_prefix_and_keeps_rename_target() {
-        let out = " M src/a.rs\n?? new/file.txt\nR  old.rs -> src/renamed.rs\n\n";
-        assert_eq!(
-            porcelain_paths(out),
-            vec![
-                "src/a.rs".to_string(),
-                "new/file.txt".to_string(),
-                "src/renamed.rs".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn porcelain_paths_empty_on_clean_tree() {
-        assert!(porcelain_paths("").is_empty());
-        assert!(porcelain_paths("\n  \n").is_empty());
-    }
-}

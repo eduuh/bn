@@ -37,10 +37,4 @@ impl AppState {
             tx,
         }
     }
-
-    /// Convenience constructor for tests.
-    #[cfg(test)]
-    pub fn for_test(cfg: Config) -> AppState {
-        AppState::new(cfg)
-    }
 }

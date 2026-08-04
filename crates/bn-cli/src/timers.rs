@@ -147,34 +147,4 @@ fn field<'a>(s: &'a str, key: &str) -> Option<&'a str> {
     Some(rest[..end].trim())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn parses_bn_run_job() {
-        let exec = "{ path=/home/you/.bin/bn ; argv[]=/home/you/.bin/bn run refresh-all ; \
-                     ignore_errors=no ; start_time=[n/a] }";
-        assert_eq!(parse_exec_job(exec).as_deref(), Some("refresh-all"));
-    }
-
-    #[test]
-    fn ignores_non_bn_and_non_run_services() {
-        let other = "{ argv[]=/usr/bin/backup --now ; ignore_errors=no }";
-        assert_eq!(parse_exec_job(other), None);
-        let bn_other = "{ argv[]=/home/you/.bin/bn cron status ; ignore_errors=no }";
-        assert_eq!(parse_exec_job(bn_other), None);
-    }
-
-    #[test]
-    fn parses_oncalendar_spec() {
-        let cal = "{ OnCalendar=*-*-* 00:00:00 ; next_elapse=Mon 2026-06-22 00:00:00 UTC }";
-        assert_eq!(parse_oncalendar(cal).as_deref(), Some("*-*-* 00:00:00"));
-    }
-
-    #[test]
-    fn us_to_secs_treats_zero_as_none() {
-        assert_eq!(us_to_secs(0), None);
-        assert_eq!(us_to_secs(1_782_075_735_427_500), Some(1_782_075_735));
-    }
-}

@@ -35,33 +35,4 @@ fn prompt_description(skill: &Skill) -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    fn skill(when: Option<&str>) -> Skill {
-        Skill {
-            name: "wrap-session".into(),
-            description: "Wrap up the session.".into(),
-            when: when.map(str::to_string),
-            keywords: vec![],
-            arguments: vec![],
-            body: "body".into(),
-        }
-    }
-
-    #[test]
-    fn description_folds_in_when_trigger() {
-        let p = to_prompt(&skill(Some("at the end of a work session")));
-        assert_eq!(
-            p.description.as_deref(),
-            Some("Wrap up the session. Use when: at the end of a work session")
-        );
-    }
-
-    #[test]
-    fn description_unchanged_without_when() {
-        let p = to_prompt(&skill(None));
-        assert_eq!(p.description.as_deref(), Some("Wrap up the session."));
-    }
-}

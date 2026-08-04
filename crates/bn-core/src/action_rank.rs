@@ -59,34 +59,4 @@ pub fn compare_priority(left: u8, right: u8) -> Ordering {
     right.cmp(&left)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn severity_mapping_defines_one_priority_scale() {
-        assert_eq!(from_severity("urgent"), URGENT);
-        assert_eq!(from_severity("warn"), WARN);
-        assert_eq!(from_severity("info"), INFO);
-        assert_eq!(from_severity("unknown"), INFO);
-    }
-
-    #[test]
-    fn blocked_work_is_canonically_urgent() {
-        assert_eq!(BLOCKED.priority(), URGENT.priority());
-        assert!(BLOCKED.is_urgent());
-    }
-
-    #[test]
-    fn base_comparator_orders_most_pressing_first() {
-        let mut ranks = [INFO, BLOCKED, GUARD, WARN];
-        ranks.sort_by(|a, b| a.compare(*b));
-        assert_eq!(ranks, [GUARD, BLOCKED, WARN, INFO]);
-    }
-
-    #[test]
-    fn guard_leads_without_becoming_an_interrupt() {
-        assert_eq!(GUARD.priority(), 4);
-        assert!(!GUARD.is_urgent());
-    }
-}

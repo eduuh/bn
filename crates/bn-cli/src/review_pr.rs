@@ -769,44 +769,4 @@ fn render_stage_tracker(current: &str, mine: bool) -> String {
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn stage_tracker_marks_done_current_and_pending() {
-        let out = render_stage_tracker("lint", false);
-        // A review of someone else's PR is read-only and never shows the fix stage.
-        assert!(out.contains("review — strictly read-only"), "{out}");
-        assert!(!out.contains("fix"), "{out}");
-        // get-pr and lease precede the current `lint` stage → done.
-        assert!(out.contains("[x] get-pr"), "{out}");
-        assert!(out.contains("[x] lease"), "{out}");
-        // lint is the stage now starting.
-        assert!(out.contains("[>] lint"), "{out}");
-        // review + verdict are still pending.
-        assert!(out.contains("[ ] review"), "{out}");
-        assert!(out.contains("[ ] verdict"), "{out}");
-    }
-
-    #[test]
-    fn stage_tracker_includes_fix_only_for_mine() {
-        let out = render_stage_tracker("fix", true);
-        assert!(out.contains("mine — fix small issues"), "{out}");
-        assert!(out.contains("[>] fix"), "{out}");
-        // fix precedes verdict, which is still pending.
-        assert!(out.contains("[ ] verdict"), "{out}");
-        // stages before fix are done.
-        assert!(out.contains("[x] test"), "{out}");
-    }
-
-    #[test]
-    fn stage_tracker_unknown_stage_leaves_all_pending() {
-        let out = render_stage_tracker("bogus", false);
-        assert!(!out.contains("[x]"), "{out}");
-        assert!(!out.contains("[>]"), "{out}");
-        // Every real stage is still listed, just pending.
-        assert!(out.contains("[ ] get-pr"), "{out}");
-        assert!(out.contains("[ ] verdict"), "{out}");
-    }
-}

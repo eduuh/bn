@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 
 import { machineQuery, nodesQuery } from "../../api/client";
 import { gaugeTone, gb, Meter } from "../MachineHealth";
+import { useExperimental } from "../../lib/experimental";
 import { cn } from "../../lib/utils";
 import type { StreamStatus } from "../../hooks/useBnStream";
 
@@ -70,6 +71,7 @@ export function TopBar({
   status: StreamStatus;
   onOpenPalette: () => void;
 }) {
+  const experimental = useExperimental();
   const machine = useQuery(machineQuery());
   const nodes = useQuery(nodesQuery());
 
@@ -120,16 +122,40 @@ export function TopBar({
           </>
         )}
 
-        {all.length > 0 && (
+        {/* The reading stays either way; only the link into `/nodes` is gated, so the topbar does
+            not hand out a route the rail is currently hiding. */}
+        {all.length > 0 &&
+          (experimental.has("nodes") ? (
+            <Link
+              to="/nodes"
+              className="flex items-center gap-[7px] font-mono text-[11.5px] tabular-nums text-muted-foreground no-underline hover:text-foreground"
+              title="nodes reachable — open the nodes view"
+            >
+              <span>nodes</span>
+              <span className={cn(up < all.length ? "text-urgent" : "text-foreground")}>
+                {up}/{all.length}
+              </span>
+            </Link>
+          ) : (
+            <Vital label="nodes" title="nodes reachable">
+              <span className={cn(up < all.length ? "text-urgent" : "text-foreground")}>
+                {up}/{all.length}
+              </span>
+            </Vital>
+          ))}
+
+        {/* Without this the gate is invisible: the set is sticky across reloads, so there has to be
+            something on screen that says why the rail looks the way it does — which tabs are
+            unlocked, and how to lock them again. */}
+        {experimental.any && (
           <Link
-            to="/nodes"
-            className="flex items-center gap-[7px] font-mono text-[11.5px] tabular-nums text-muted-foreground no-underline hover:text-foreground"
-            title="nodes reachable — open the nodes view"
+            to="/?experimental=0"
+            title={`experimental tabs showing: ${
+              experimental.keys.includes("*") ? "all" : experimental.keys.join(", ")
+            } — click to hide them again`}
+            className="rounded border border-warn/40 bg-warn-muted px-1.5 py-px font-mono text-[10.5px] uppercase tracking-wide text-warn no-underline"
           >
-            <span>nodes</span>
-            <span className={cn(up < all.length ? "text-urgent" : "text-foreground")}>
-              {up}/{all.length}
-            </span>
+            exp
           </Link>
         )}
 

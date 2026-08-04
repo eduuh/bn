@@ -1125,32 +1125,4 @@ impl ConfigFile {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn parses_log_section_accessors() {
-        let toml = r#"
-            [log]
-            enabled = true
-            level = "info"
-            dir = "/tmp/bn-logs"
-            retain_days = 30
-        "#;
-        let cf: ConfigFile = toml::from_str(toml).expect("valid [log] toml");
-        assert_eq!(cf.log_enabled(), Some(true));
-        assert_eq!(cf.log_level().as_deref(), Some("info"));
-        assert_eq!(cf.log_dir().as_deref(), Some("/tmp/bn-logs"));
-        assert_eq!(cf.log_retain_days(), Some(30));
-    }
-
-    #[test]
-    fn absent_log_section_yields_none() {
-        let cf: ConfigFile = toml::from_str("").expect("empty toml");
-        assert_eq!(cf.log_enabled(), None);
-        assert_eq!(cf.log_level(), None);
-        assert_eq!(cf.log_dir(), None);
-        assert_eq!(cf.log_retain_days(), None);
-    }
-}

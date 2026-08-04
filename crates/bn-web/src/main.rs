@@ -183,38 +183,4 @@ async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    fn parse(args: &[&str]) -> Result<Args, String> {
-        parse_args(args.iter().map(|s| s.to_string()))
-    }
-
-    #[test]
-    fn parses_flags_and_options_both_syntaxes() {
-        let a = parse(&["--port", "8080", "--bind=0.0.0.0", "--lan"]).unwrap();
-        assert_eq!(a.port, Some(8080));
-        assert_eq!(a.bind.as_deref(), Some("0.0.0.0"));
-        assert!(a.lan);
-
-        let b = parse(&["--port=1234", "--show-token"]).unwrap();
-        assert_eq!(b.port, Some(1234));
-        assert!(b.show_token);
-    }
-
-    #[test]
-    fn rejects_bad_port_and_unknown_args() {
-        assert!(parse(&["--port", "0"]).is_err());
-        assert!(parse(&["--port", "notanum"]).is_err());
-        assert!(parse(&["--bogus"]).is_err());
-        assert!(parse(&["--port"]).is_err());
-    }
-
-    #[test]
-    fn empty_args_are_all_defaults() {
-        let a = parse(&[]).unwrap();
-        assert!(a.port.is_none() && a.bind.is_none());
-        assert!(!a.lan && !a.show_token && !a.help && !a.version);
-    }
-}

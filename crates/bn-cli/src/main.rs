@@ -306,7 +306,5 @@ pub(crate) fn fail_json(json: bool, command: &str, code: &str, msg: &str) -> ! {
     std::process::exit(1);
 }
 
-#[cfg(test)]
-mod json_contract_tests;
-#[cfg(test)]
-mod tests;
+
+

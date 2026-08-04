@@ -159,13 +159,16 @@ download_release() {
 # Build the bn-web dashboard UI (crates/bn-web/ui → dist) so the from-source build.rs embeds the
 # real single-page app instead of the "UI not built" placeholder. Node-optional and best-effort:
 # with no npm we leave the placeholder and the server (JSON API + MCP + dashboard shell) still runs.
-# Skips the slow rebuild when dist already exists unless BN_REBUILD_UI=1 forces it, so repeat
-# installs stay fast. Never aborts the install — a UI hiccup must not block the Rust binary.
+# Rebuilds the UI on EVERY install so a from-source build always embeds the current dashboard —
+# build.rs re-embeds via `cargo:rerun-if-changed` on ui/dist, so the recompiled bn-web picks the
+# change up. Set BN_SKIP_UI=1 to skip it (fast Rust-only rebuilds). Dependencies are only
+# (re)installed when node_modules is missing (or BN_REBUILD_UI=1 forces a clean reinstall), so the
+# repeat build stays fast. Never aborts the install — a UI hiccup must not block the Rust binary.
 build_web_ui() {
   local ui="$repo/crates/bn-web/ui" fresh_deps=1
   [ -f "$ui/package.json" ] || return 0
-  if [ -f "$ui/dist/index.html" ] && [ "${BN_REBUILD_UI:-0}" != "1" ]; then
-    echo "bn-web UI already built ($ui/dist) — set BN_REBUILD_UI=1 to force a rebuild."
+  if [ "${BN_SKIP_UI:-0}" = "1" ]; then
+    echo "bn-web UI build skipped (BN_SKIP_UI=1) — the binary embeds whatever is already in $ui/dist."
     return 0
   fi
   if ! command -v npm >/dev/null 2>&1; then

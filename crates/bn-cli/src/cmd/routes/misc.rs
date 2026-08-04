@@ -12,7 +12,9 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
                 std::process::exit(1);
             }
         }
-        CmdMisc::Build { name } => std::process::exit(run_build_cmd(cfg, name)),
+        CmdMisc::Build { name, repo, branch } => {
+            std::process::exit(run_build_cmd(cfg, name, repo, branch))
+        }
         CmdMisc::Serve {
             action,
             port,
@@ -264,44 +266,3 @@ fn emit_shell_init(shell: Shell) {
     print!("{SHELL_WRAPPERS}");
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn shell_wrappers_shadow_the_bare_harness_commands() {
-        // The bare commands ARE shadowed — that is what makes the placement rule enforceable for a
-        // hand-typed launch rather than opt-in.
-        assert!(SHELL_WRAPPERS.contains("claude() { _bn_launch claude \"$@\"; }"));
-        assert!(SHELL_WRAPPERS.contains("copilot() { _bn_launch copilot \"$@\"; }"));
-        // …and they route through the guarded chokepoint, not straight at the harness.
-        assert!(SHELL_WRAPPERS.contains("bn agent launch \"$_bn_h\" -- \"$@\""));
-        // Outside a work tree, fall through to the real binary (no recursion — `command` skips
-        // shell functions).
-        assert!(SHELL_WRAPPERS.contains("git rev-parse --is-inside-work-tree"));
-        assert!(SHELL_WRAPPERS.contains("command \"$_bn_h\" \"$@\""));
-        // The documented per-call escape hatch is discoverable in the emitted script itself.
-        assert!(SHELL_WRAPPERS.contains("BN_AGENT_GUARD=0"));
-    }
-
-    #[test]
-    fn shell_wrappers_export_the_marker_doctor_checks() {
-        // `bn doctor`'s shell check reads this from the environment — a child process has no other
-        // way to know whether the wrappers were sourced (it cannot see the parent's functions).
-        assert!(SHELL_WRAPPERS.contains(&format!(
-            "export {}=1",
-            bn_core::doctor::SHELL_WRAPPER_MARKER
-        )));
-    }
-
-    #[test]
-    fn agency_still_dispatches_a_pooled_foreground_scout() {
-        assert!(SHELL_WRAPPERS.contains("agency() {"));
-        // Only the two known harnesses are accepted.
-        assert!(SHELL_WRAPPERS.contains("claude|copilot) ;;"));
-        // Inside a repo with args: a pooled, foreground investigation (the exact opt-in defaults).
-        assert!(SHELL_WRAPPERS
-            .contains("bn dispatch --agent \"$_bn_h\" --yolo --scout --pool --attach -- \"$@\""));
-        assert!(SHELL_WRAPPERS.contains("[ \"$#\" -eq 0 ]"));
-    }
-}

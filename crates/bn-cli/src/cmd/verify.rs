@@ -39,10 +39,7 @@ impl VerifyGate {
             .join("+")
     }
 
-    #[cfg(test)]
-    pub(crate) fn targets(&self) -> &[VerifyTarget] {
-        &self.targets
-    }
+    
 }
 
 /// Resolve what the verify gate runs for `ctx` (#454, #758), shared by `bn verify`

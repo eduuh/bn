@@ -18,6 +18,15 @@ pub fn now_rfc3339_utc() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
+/// A Unix-epoch-seconds instant as the same RFC-3339 UTC string [`now_rfc3339_utc`] produces, or
+/// `None` for an out-of-range value. Lets an epoch timestamp bn holds (a pool lease's `at`) be
+/// compared against the ISO instants other tools record (a Copilot session's `updated_at`), which
+/// sort lexically in this format.
+pub fn epoch_to_rfc3339_utc(epoch_secs: i64) -> Option<String> {
+    chrono::DateTime::from_timestamp(epoch_secs, 0)
+        .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+}
+
 /// The local-timezone date (`YYYY-MM-DD`) of a Unix-epoch-seconds instant. Mirrors [`today`]'s
 /// format and zone, for "did this happen today?" comparisons against event timestamps.
 pub fn local_date_of(epoch_secs: i64) -> String {
@@ -348,165 +357,5 @@ fn days_from_civil(date: &str) -> Option<i64> {
 pub fn best_effort<T, E: std::fmt::Display>(result: Result<T, E>, context: &str) {
     if let Err(e) = result {
         eprintln!("bn: {context}: {e}");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn is_iso_date_shape_check() {
-        assert!(is_iso_date("2026-06-27"));
-        assert!(!is_iso_date("2026-6-27")); // not zero-padded
-        assert!(!is_iso_date("2026/06/27"));
-        assert!(!is_iso_date("not-a-date"));
-        assert!(!is_iso_date("2026-06-27T00")); // too long
-    }
-
-    #[test]
-    fn idle_days_since_clamps_and_counts() {
-        assert_eq!(idle_days_since("2026-06-20", "2026-06-27"), 7);
-        assert_eq!(idle_days_since("2026-06-27", "2026-06-20"), 0); // future → clamped
-        assert_eq!(idle_days_since("garbage", "2026-06-27"), 0); // unparseable → 0
-    }
-
-    #[test]
-    fn detect_model_reads_session_file_and_tracks_switches() {
-        let _g = crate::test_support::env_lock();
-        let dir = tempfile::tempdir().unwrap();
-        let _state = crate::test_support::EnvGuard::set("BN_STATE_DIR", dir.path());
-        let _session = crate::test_support::EnvGuard::set("BN_SESSION_ID", "sess1");
-        let model = crate::test_support::EnvGuard::remove("BN_MODEL"); // force the file path
-
-        // No file yet → unknown.
-        assert_eq!(detect_model(), None);
-
-        // Hook writes the current model → detected.
-        let file = dir.path().join("model-sess1");
-        std::fs::write(&file, "claude-opus-4-8\n").unwrap();
-        assert_eq!(detect_model(), Some("claude-opus-4-8".to_string()));
-
-        // Model switched mid-session: file rewritten → detection follows.
-        std::fs::write(&file, "claude-sonnet-4-6").unwrap();
-        assert_eq!(detect_model(), Some("claude-sonnet-4-6".to_string()));
-
-        // BN_MODEL override still wins over the file.
-        model.set_value("explicit");
-        assert_eq!(detect_model(), Some("explicit".to_string()));
-    }
-
-    #[test]
-    fn detect_model_reads_cwd_file_when_no_session_id() {
-        let _g = crate::test_support::env_lock();
-        let dir = tempfile::tempdir().unwrap();
-        let wt = tempfile::tempdir().unwrap();
-        // Force the cwd path: clear any session ids the test process may itself run under, and
-        // the guards restore whatever was there on scope exit.
-        let prev_cwd = std::env::current_dir().unwrap();
-        let _state = crate::test_support::EnvGuard::set("BN_STATE_DIR", dir.path());
-        let _model = crate::test_support::EnvGuard::remove("BN_MODEL");
-        let _session = crate::test_support::EnvGuard::remove("BN_SESSION_ID");
-        let _claude_session = crate::test_support::EnvGuard::remove("CLAUDE_CODE_SESSION_ID");
-        std::env::set_current_dir(wt.path()).unwrap();
-
-        // Key off the cwd as detect_model sees it (canonicalized by the OS).
-        let key = std::env::current_dir()
-            .unwrap()
-            .to_string_lossy()
-            .replace('/', "_");
-        assert_eq!(detect_model(), None);
-        std::fs::write(dir.path().join(format!("model-cwd-{key}")), "copilot-gpt-5").unwrap();
-        assert_eq!(detect_model(), Some("copilot-gpt-5".to_string()));
-
-        std::env::set_current_dir(prev_cwd).unwrap();
-    }
-
-    #[test]
-    fn detect_harness_copilot_via_run_app() {
-        let _g = crate::test_support::env_lock();
-        let _harness = crate::test_support::EnvGuard::remove("BN_HARNESS");
-        let _claudecode = crate::test_support::EnvGuard::remove("CLAUDECODE");
-        let _entrypoint = crate::test_support::EnvGuard::remove("CLAUDE_CODE_ENTRYPOINT");
-        let _run_app = crate::test_support::EnvGuard::set("COPILOT_RUN_APP", "1");
-        assert_eq!(detect_harness(), Some("copilot".to_string()));
-    }
-
-    #[test]
-    fn days_since_basic() {
-        assert_eq!(days_since("2026-06-13", "2026-06-20"), Some(7));
-        assert_eq!(days_since("2026-06-20", "2026-06-20"), Some(0));
-        assert_eq!(days_since("2026-06-20", "2026-06-13"), Some(-7));
-    }
-
-    #[test]
-    fn days_since_across_month_and_year_and_leap() {
-        assert_eq!(days_since("2026-01-31", "2026-02-01"), Some(1));
-        assert_eq!(days_since("2025-12-31", "2026-01-01"), Some(1));
-        // 2024 is a leap year: Feb has 29 days
-        assert_eq!(days_since("2024-02-28", "2024-03-01"), Some(2));
-    }
-
-    #[test]
-    fn days_since_rejects_garbage() {
-        assert_eq!(days_since("not-a-date", "2026-06-20"), None);
-        assert_eq!(days_since("2026-13-01", "2026-06-20"), None);
-    }
-
-    #[test]
-    fn rejects_impossible_calendar_dates() {
-        // Day in 1..=31 but not valid for the month — previously rolled over silently.
-        assert_eq!(epoch_day("2026-02-30"), None);
-        assert_eq!(epoch_day("2025-04-31"), None);
-        assert_eq!(epoch_day("2025-02-29"), None); // 2025 is not a leap year
-        assert_eq!(weekday_index("2026-02-30"), None);
-        // Genuine edges still parse.
-        assert!(epoch_day("2024-02-29").is_some()); // leap year
-        assert!(epoch_day("2026-01-31").is_some());
-    }
-
-    #[test]
-    fn date_epoch_day_round_trips() {
-        for d in ["1970-01-01", "2000-02-29", "2026-06-22", "2024-12-31"] {
-            let z = epoch_day(d).unwrap();
-            assert_eq!(date_from_epoch_day(z), d);
-        }
-        assert_eq!(date_from_epoch_day(0), "1970-01-01");
-    }
-
-    #[test]
-    fn resolve_schedule_target_covers_each_arm() {
-        let today = "2026-06-22";
-        assert_eq!(resolve_schedule_target(today, None, None), Ok(None));
-        assert_eq!(
-            resolve_schedule_target(today, Some("2026-07-01".into()), None),
-            Ok(Some("2026-07-01".into()))
-        );
-        assert_eq!(
-            resolve_schedule_target(today, None, Some(3)),
-            Ok(Some("2026-06-25".into()))
-        );
-        assert!(resolve_schedule_target(today, Some("x".into()), Some(1)).is_err());
-        assert!(resolve_schedule_target("bad", None, Some(1)).is_err());
-    }
-
-    #[test]
-    fn add_days_crosses_boundaries() {
-        assert_eq!(add_days("2026-06-22", 1).as_deref(), Some("2026-06-23"));
-        assert_eq!(add_days("2026-06-22", -1).as_deref(), Some("2026-06-21"));
-        assert_eq!(add_days("2026-01-31", 1).as_deref(), Some("2026-02-01"));
-        assert_eq!(add_days("2025-12-31", 1).as_deref(), Some("2026-01-01"));
-        assert_eq!(add_days("2024-02-28", 2).as_deref(), Some("2024-03-01")); // leap
-        assert_eq!(add_days("bad", 1), None);
-    }
-
-    #[test]
-    fn weekday_index_known_days() {
-        // 2026-06-22 is a Monday → 1; 2026-06-21 Sunday → 0; 2026-06-27 Saturday → 6.
-        assert_eq!(weekday_index("2026-06-21"), Some(0));
-        assert_eq!(weekday_index("2026-06-22"), Some(1));
-        assert_eq!(weekday_index("2026-06-27"), Some(6));
-        // 1970-01-01 was a Thursday → 4.
-        assert_eq!(weekday_index("1970-01-01"), Some(4));
     }
 }

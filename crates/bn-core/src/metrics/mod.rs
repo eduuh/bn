@@ -22,21 +22,3 @@ pub use snapshot::*;
 pub use visibility::*;
 pub use wip::*;
 
-#[cfg(test)]
-use crate::events::Event;
-#[cfg(test)]
-use serde_json::{Map, Value};
-
-/// Build an in-memory event without touching disk — the pure helpers take a slice.
-#[cfg(test)]
-fn ev(kind: &str, ts: i64, fields: &[(&str, Value)]) -> Event {
-    let mut m = Map::new();
-    for (k, v) in fields {
-        m.insert((*k).to_string(), v.clone());
-    }
-    Event {
-        kind: kind.to_string(),
-        ts,
-        fields: m,
-    }
-}

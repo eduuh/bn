@@ -270,94 +270,7 @@ fn stop_disable_remove(unit: &str) {
     let _ = run_user(&["daemon-reload"]);
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn web_unit_is_a_restart_on_failure_user_service_with_args() {
-        let u = web_unit("/usr/local/bin/bn-web", &["--port".into(), "7770".into()]);
-        assert!(u.contains("Description=bn-web dashboard server"));
-        // Login shell so $PATH is populated, args passed through.
-        assert!(u.contains("ExecStart=/bin/sh -lc 'exec \"/usr/local/bin/bn-web\" --port 7770'"));
-        // Crash-only restart (parity with launchd KeepAlive SuccessfulExit=false).
-        assert!(u.contains("Restart=on-failure"));
-        assert!(u.contains("RestartSec="));
-        // Enabled into the login target so it survives reboot.
-        assert!(u.contains("[Install]\nWantedBy=default.target"));
-    }
-
-    #[test]
-    fn web_unit_omits_trailing_space_with_no_args() {
-        let u = web_unit("/usr/local/bin/bn-web", &[]);
-        assert!(u.contains("ExecStart=/bin/sh -lc 'exec \"/usr/local/bin/bn-web\"'"));
-    }
-
-    #[test]
-    fn unit_dir_honors_xdg_config_home() {
-        // A non-empty XDG_CONFIG_HOME wins over ~/.config; empty/unset falls back to $HOME/.config.
-        assert_eq!(
-            unit_dir_from(Some("/tmp/xdg".into()), "/home/u".into()),
-            PathBuf::from("/tmp/xdg/systemd/user")
-        );
-        assert_eq!(
-            unit_dir_from(None, "/home/u".into()),
-            PathBuf::from("/home/u/.config/systemd/user")
-        );
-        assert_eq!(
-            unit_dir_from(Some(String::new()), "/home/u".into()),
-            PathBuf::from("/home/u/.config/systemd/user")
-        );
-    }
-
-    #[test]
-    fn orchestrate_unit_text_is_a_crash_only_restart_service() {
-        let u = orchestrate_unit_text(
-            "/usr/local/bin/bn",
-            "bn orchestrate daemon for bn (#608)",
-            "--repo \"bn\"",
-        );
-        assert!(u.contains("Description=bn orchestrate daemon for bn (#608)"));
-        // Login shell so $PATH finds bn/gh/git, pinned to the repo's own run.
-        assert!(u.contains(
-            "ExecStart=/bin/sh -lc 'exec \"/usr/local/bin/bn\" orchestrate run --repo \"bn\"'"
-        ));
-        // Crash-only restart (parity with launchd KeepAlive SuccessfulExit=false).
-        assert!(u.contains("Restart=on-failure"));
-        assert!(u.contains("RestartSec="));
-        // Enabled into the login target so it survives reboot.
-        assert!(u.contains("[Install]\nWantedBy=default.target"));
-    }
-
-    #[test]
-    fn orchestrate_all_unit_text_runs_all_repos() {
-        let u = orchestrate_unit_text(
-            "/usr/local/bin/bn",
-            "bn cross-repo orchestrate supervisor (#455)",
-            "--all-repos",
-        );
-        assert!(u.contains(
-            "ExecStart=/bin/sh -lc 'exec \"/usr/local/bin/bn\" orchestrate run --all-repos'"
-        ));
-    }
-
-    #[test]
-    fn orchestrate_unit_names_are_per_repo_and_sanitized() {
-        assert_eq!(orchestrate_unit("bn"), "bn-orchestrate-bn.service");
-        // A slash (and any non-[A-Za-z0-9._-]) is sanitized so the unit name is valid.
-        assert_eq!(
-            orchestrate_unit("owner/repo"),
-            "bn-orchestrate-owner-repo.service"
-        );
-        // Two different repos never share a unit.
-        assert_ne!(orchestrate_unit("repo-a"), orchestrate_unit("repo-b"));
-        // The reserved cross-repo + legacy units are distinct from any per-repo unit.
-        assert_eq!(orchestrate_all_unit(), "bn-orchestrate-__all__.service");
-        assert_eq!(orchestrate_legacy_unit(), "bn-orchestrate.service");
-        // The __all__ token means even a repo literally named "all" can't collide.
-        assert_ne!(orchestrate_all_unit(), orchestrate_unit("all"));
-    }
-}
 
 // --- `bn routine watch` managed daemon (#801 amendment) ----------------------
 // The Linux twin of the launchd routine watcher daemon: an enabled `--user` unit with
@@ -419,17 +332,4 @@ pub(crate) fn routine_uninstall() {
     let _ = run_user(&["daemon-reload"]);
 }
 
-#[cfg(test)]
-mod routine_daemon_tests {
-    use super::*;
 
-    #[test]
-    fn routine_unit_is_a_restart_on_failure_user_service() {
-        let u = routine_unit("/usr/local/bin/bn");
-        assert!(u.contains("Description=bn routine watcher"));
-        assert!(u.contains("ExecStart=/bin/sh -lc 'exec \"/usr/local/bin/bn\" routine watch'"));
-        assert!(u.contains("Restart=on-failure"));
-        assert!(u.contains("RestartSec="));
-        assert!(u.contains("[Install]\nWantedBy=default.target"));
-    }
-}

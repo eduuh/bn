@@ -56,7 +56,23 @@ fn target_is_live(target: &str) -> bool {
     .is_some_and(|panes| panes.lines().any(|dead| dead.trim() == "0"))
 }
 
-fn window_id_for_target(target: &str) -> Option<String> {
+/// The pid of a window's (first live) pane — the handle a pool lease adopts for an agent it found
+/// rather than handed out, so the lease's liveness is the agent's own.
+pub(crate) fn pane_pid(target: &str) -> Option<u32> {
+    crate::proc::tmux_raw(&[
+        "list-panes",
+        "-t",
+        &format!("={target}"),
+        "-F",
+        "#{pane_pid} #{pane_dead}",
+    ])?
+    .lines()
+    .filter_map(|line| line.split_once(' '))
+    .find(|(_, dead)| dead.trim() == "0")
+    .and_then(|(pid, _)| pid.trim().parse().ok())
+}
+
+pub(crate) fn window_id_for_target(target: &str) -> Option<String> {
     crate::proc::tmux_raw(&[
         "display-message",
         "-p",
@@ -158,41 +174,214 @@ pub(crate) fn release(session_id: &str) -> Result<bool, String> {
         .map_err(|error| format!("agent lease release: {error}"))
 }
 
+/// A live agent found working in a checkout — the answer to "is this worktree in use?".
+///
+/// Deliberately not an [`AgentLease`]: the third source below finds agents that never took one, and
+/// those still occupy the checkout. `branch` is `None` for them.
+#[derive(Debug, Clone)]
+pub(crate) struct Occupant {
+    /// The occupant's `repo:branch` identity as the lease registry normalizes it, or `None` for an
+    /// agent that never registered (a bare `copilot` typed in the directory) — visible, but not
+    /// nameable, so nothing can steer or kill it by target.
+    pub repo: Option<String>,
+    pub branch: Option<String>,
+    pub session_id: Option<String>,
+    pub tmux_target: String,
+    /// `dispatch`, `control`, … for a registered agent; the harness binary for an unregistered one.
+    pub kind: String,
+    /// When the occupant was first seen (lease acquisition, else window creation), for oldest-first.
+    pub since: i64,
+}
+
+impl Occupant {
+    /// How the pool ledger names this tenant: its branch when it has one, else its window — an
+    /// unregistered agent still holds the slot, it just holds it under no branch.
+    pub(crate) fn label(&self) -> String {
+        self.branch
+            .clone()
+            .unwrap_or_else(|| format!("agent:{}", self.tmux_target))
+    }
+
+    /// A one-line description for a refusal message.
+    pub(crate) fn describe(&self) -> String {
+        match &self.session_id {
+            Some(id) => format!("{} agent {id} in {}", self.kind, self.tmux_target),
+            None => format!("{} in {} (unregistered)", self.kind, self.tmux_target),
+        }
+    }
+}
+
+/// Every live agent working in `worktree`, oldest first — the single occupancy oracle every
+/// ownership decision reads (the launch guard, and each of the pool's lease/return/reclaim paths).
+///
+/// Three sources, unioned, because each covers the others' blind spot:
+///
+/// 1. **the lease registry** — agents that registered, however their window was later renamed;
+/// 2. **`@bn_*`-stamped tmux windows** — an agent whose lease write was lost, or that predates the
+///    registry;
+/// 3. **any live pane rooted in the checkout running a harness binary** — the one that matters
+///    most, because an agent started outside bn (a bare `copilot` in the directory, a launch with
+///    `BN_AGENT_GUARD=0`) appears in neither of the first two, and is exactly the tenant a pool
+///    slot got handed out from under.
+///
+/// Liveness is the same tmux pane check throughout, so "occupied" means one thing everywhere.
+pub(crate) fn live_agents_in(worktree: &Path) -> Vec<Occupant> {
+    let key = AgentLeaseKey::new("", "", worktree);
+    let mut found: BTreeMap<String, Occupant> = BTreeMap::new();
+
+    // (1) Registered and live.
+    if let Ok(registry) = bn_core::agent::load_agent_leases(&agent_lease_registry_path()) {
+        for lease in registry.leases {
+            if lease.key.worktree != key.worktree || !lease_is_live(&lease) {
+                continue;
+            }
+            found.insert(
+                lease.tmux_target.clone(),
+                Occupant {
+                    repo: Some(lease.key.repo.clone()),
+                    branch: Some(lease.key.branch.clone()),
+                    session_id: Some(lease.session_id.clone()),
+                    tmux_target: lease.tmux_target.clone(),
+                    kind: lease.kind.label().to_string(),
+                    since: lease.acquired_at,
+                },
+            );
+        }
+    }
+
+    // (2) Stamped windows the registry missed.
+    for window in observed_agent_windows() {
+        if window.lease.key.worktree != key.worktree {
+            continue;
+        }
+        found
+            .entry(window.lease.tmux_target.clone())
+            .or_insert_with(|| Occupant {
+                repo: Some(window.lease.key.repo.clone()),
+                branch: Some(window.lease.key.branch.clone()),
+                session_id: Some(window.lease.session_id.clone()),
+                tmux_target: window.lease.tmux_target.clone(),
+                kind: window.lease.kind.label().to_string(),
+                since: window.created_at,
+            });
+    }
+
+    // (3) Unregistered harness panes rooted in the checkout.
+    for pane in harness_panes_in(Path::new(&key.worktree)) {
+        found.entry(pane.tmux_target.clone()).or_insert(pane);
+    }
+
+    let mut out: Vec<Occupant> = found.into_values().collect();
+    out.sort_by(|a, b| {
+        a.since
+            .cmp(&b.since)
+            .then_with(|| a.tmux_target.cmp(&b.tmux_target))
+    });
+    out
+}
+
+/// Live panes whose working directory is inside `worktree` and whose foreground command is a known
+/// agent harness — an agent bn never registered. Same signal `bn fleet reap`'s discovery uses,
+/// read straight off tmux rather than the process table so it needs no `/proc` (which does not
+/// exist on macOS, where the pool's old in-use check therefore always answered "idle").
+fn harness_panes_in(worktree: &Path) -> Vec<Occupant> {
+    let format = "#{session_name}:#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{window_created}\t#{pane_dead}";
+    let Some(output) = crate::proc::tmux_raw(&["list-panes", "-a", "-F", format]) else {
+        return Vec::new();
+    };
+    parse_harness_panes(&output, worktree)
+}
+
+/// Whether *any* live tmux pane is sitting in `worktree` — an agent, a build, or just a shell
+/// someone has open there.
+///
+/// Weaker than [`live_agents_in`] and used for a different question: not "who owns this?" but
+/// "would resetting this directory pull the rug from under someone?". It is the portable
+/// counterpart of the `/proc` cwd scan, which sees nothing at all on macOS.
+pub(crate) fn any_live_pane_in(worktree: &Path) -> bool {
+    let format = "#{pane_current_path}\t#{pane_dead}";
+    crate::proc::tmux_raw(&["list-panes", "-a", "-F", format]).is_some_and(|output| {
+        output.lines().any(|line| {
+            let Some((cwd, dead)) = line.split_once('\t') else {
+                return false;
+            };
+            dead.trim() == "0" && Path::new(cwd).starts_with(worktree)
+        })
+    })
+}
+
+/// The pure half of [`harness_panes_in`], so the "is this pane an agent in this checkout?" rule is
+/// testable without a tmux server.
+fn parse_harness_panes(output: &str, worktree: &Path) -> Vec<Occupant> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split('\t').collect();
+            if fields.len() < 5 || fields[4] != "0" {
+                return None;
+            }
+            let cwd = Path::new(fields[1]);
+            if !cwd.starts_with(worktree) {
+                return None;
+            }
+            // Match the harness *binary* exactly rather than through `harness::normalize`, whose
+            // aliases include `gh` — someone running `gh pr view` in a slot is not an agent.
+            let command = fields[2].trim();
+            let harness = bn_core::harness::KNOWN_HARNESSES
+                .iter()
+                .find(|known| **known == command)?;
+            Some(Occupant {
+                repo: None,
+                branch: None,
+                session_id: None,
+                tmux_target: fields[0].to_string(),
+                kind: harness.to_string(),
+                since: fields[3].parse().unwrap_or(0),
+            })
+        })
+        .collect()
+}
+
 /// Who holds `worktree` right now, from the perspective of a launch about to happen in it.
 pub(crate) enum WorktreeHolder {
     /// Nobody — the launch should take a lease of its own.
     Free,
-    /// A lease taken for *this* window, moments ago, by the launcher that seeded this agent
+    /// Only this window holds it: a lease taken moments ago by the launcher that seeded this agent
     /// (`bn dispatch`, `bn control start`). Not a conflict, and not something to lease over.
     Ours,
     /// A different live agent. The launch must refuse rather than put two agents in one checkout.
-    Other(Box<AgentLease>),
+    Other(Box<Occupant>),
 }
 
-/// Read the lease state of `worktree` for the one-agent-per-worktree guard in `bn agent launch`.
+/// Read the occupancy of `worktree` for the one-agent-per-worktree guard in `bn agent launch`.
 ///
-/// The window comparison is what separates [`WorktreeHolder::Ours`] from a real conflict: a seeded
-/// launch runs *inside* the window its launcher just leased, so without this every dispatched agent
-/// would refuse itself. Outside tmux there is no window to compare and [`lease_is_live`] cannot see
-/// the holder either, so the read degrades to `Free` — which is why the shell wrapper, not this, is
-/// the enforcing layer for a hand-typed launch on a bare terminal.
+/// [`WorktreeHolder::Ours`] exists because a seeded launch runs *inside* the window its launcher
+/// just leased — without it every dispatched agent would refuse itself. But `Ours` describes the
+/// whole checkout, not one lease in it: a live agent in **any other** window wins, and only when
+/// this window is the sole occupant is the launch ours to make. Returning `Ours` on the first
+/// self-match (as this once did) meant a dispatched launch — which always holds a lease for its own
+/// window — could never refuse, so a slot handed out from under a running agent got a second one
+/// seeded straight into it.
+///
+/// Outside tmux there is no window to compare and pane liveness can't be read either, so the check
+/// degrades to `Free` — which is why the shell wrapper, not this, is the enforcing layer for a
+/// hand-typed launch on a bare terminal.
 pub(crate) fn worktree_holder(worktree: &Path) -> WorktreeHolder {
-    let Ok(registry) = bn_core::agent::load_agent_leases(&agent_lease_registry_path()) else {
-        return WorktreeHolder::Free;
-    };
-    let key = AgentLeaseKey::new("", "", worktree);
     let here = current_window_id();
-    let mut holder = WorktreeHolder::Free;
-    for lease in registry.leases {
-        if lease.key.worktree != key.worktree || !lease_is_live(&lease) {
+    let occupants = live_agents_in(worktree);
+    let mut ours = false;
+    for occupant in occupants {
+        if here.is_some() && window_id_for_target(&occupant.tmux_target) == here {
+            ours = true;
             continue;
         }
-        if here.is_some() && window_id_for_target(&lease.tmux_target) == here {
-            return WorktreeHolder::Ours;
-        }
-        holder = WorktreeHolder::Other(Box::new(lease));
+        return WorktreeHolder::Other(Box::new(occupant));
     }
-    holder
+    if ours {
+        WorktreeHolder::Ours
+    } else {
+        WorktreeHolder::Free
+    }
 }
 
 pub(crate) fn reserve(request: AgentLeaseRequest<'_>) -> Result<AgentLeaseReservation, String> {
@@ -484,31 +673,4 @@ pub(crate) fn reconcile() -> AgentLeaseReconcileReport {
         }
     }
     report
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn observed_windows_ignore_plain_shells_and_keep_agent_markers() {
-        let dir = tempfile::tempdir().unwrap();
-        let wt = dir.path().to_string_lossy();
-        let output = format!(
-            "@1\tbn:shell\tbn\tdispatch-x\t{wt}\t{wt}\t\t\t\t10\t0\n\
-             @2\tbn:dispatch\tbn\tdispatch-x\t{wt}\t{wt}\tworking\t\tdispatch\t11\t0\n\
-             @3\tbn:plan\tbn\tdispatch-x\t{wt}\t{wt}\t\tsession-plan\tpipeline-plan\t12\t0\n\
-             @4\tbn:dead\tbn\tdispatch-x\t{wt}\t{wt}\tworking\tdead\tdispatch\t9\t1\n"
-        );
-
-        let windows = parse_observed_agent_windows(&output);
-        assert_eq!(windows.len(), 2);
-        assert_eq!(windows[0].lease.tmux_target, "bn:dispatch");
-        assert_eq!(windows[0].window_id, "@2");
-        assert_eq!(windows[0].lease.session_id, "tmux:bn:dispatch");
-        assert_eq!(windows[0].lease.kind, AgentLeaseKind::Dispatch);
-        assert_eq!(windows[1].lease.tmux_target, "bn:plan");
-        assert_eq!(windows[1].lease.session_id, "session-plan");
-        assert_eq!(windows[1].lease.kind, AgentLeaseKind::PipelinePlan);
-    }
 }

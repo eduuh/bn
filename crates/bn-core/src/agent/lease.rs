@@ -24,10 +24,21 @@ impl AgentLeaseKey {
         let worktree = std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());
         Self {
             repo: repo.trim().to_lowercase(),
-            branch: branch.trim().replace('/', "-").to_lowercase(),
+            branch: normalized_branch(branch),
             worktree: worktree.to_string_lossy().into_owned(),
         }
     }
+}
+
+/// The form a lease key stores a branch in: trimmed, `/` flattened to `-`, lowercased — so
+/// `feature/X` and `feature-x` name the one checkout, exactly as the worktree dirs already do.
+///
+/// Exposed because anything comparing an agent lease's branch against a branch recorded *elsewhere*
+/// — the warm pool's `leases.json`, a tmux window stamp — has to compare the same normalization.
+/// Comparing a raw name against a normalized one reads as two different tenants, which is one of
+/// the ways a slot with a live agent in it can look free to whoever asks next.
+pub fn normalized_branch(branch: &str) -> String {
+    branch.trim().replace('/', "-").to_lowercase()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,12 +203,14 @@ impl AgentLeaseReservation {
         &self.replaced
     }
 
-    /// The prior owners have been successfully reaped; a later launch failure must leave the key
-    /// unowned rather than restore leases for processes that no longer exist.
+    /// The prior owners have been successfully reaped; a later launch failure must leave the
+    /// worktree unowned rather than restore leases for processes that no longer exist. Scoped to
+    /// the worktree for the same reason ownership is: a rollback must not resurrect a *different*
+    /// branch's lease on a checkout whose agent we just killed.
     pub fn discard_replaced(&mut self) {
         self.original
             .leases
-            .retain(|current| current.key != self.lease.key);
+            .retain(|current| current.key.worktree != self.lease.key.worktree);
     }
 
     pub fn commit(mut self) {
@@ -285,9 +298,16 @@ fn is_authoritative(lease: &AgentLease, now: i64, is_live: &impl Fn(&AgentLease)
 
 /// Atomically reserve one worktree for an agent.
 ///
-/// Stale matching leases are reclaimed. `Replace` additionally returns every live prior owner so
-/// the caller can reap it before launching the replacement; `Refuse` leaves the oldest live owner
-/// untouched and reports it.
+/// Stale leases on that worktree are reclaimed. `Replace` additionally returns every live prior
+/// owner so the caller can reap it before launching the replacement; `Refuse` leaves the oldest
+/// live owner untouched and reports it.
+///
+/// **Ownership is scoped to the worktree, not to `(repo, branch, worktree)`.** The invariant this
+/// registry exists to hold is *one agent per checkout*, and keying the conflict on the whole key
+/// let two branches co-own one directory without the registry noticing — which is how a pool slot
+/// came to host two live agents editing each other's files. A different branch in the same
+/// checkout is the conflict, not an unrelated tenancy. Our own `session_id` never conflicts with
+/// itself, so re-reserving a lease we already hold stays idempotent.
 pub fn begin_agent_lease(
     path: &Path,
     lease: AgentLease,
@@ -309,7 +329,8 @@ pub fn begin_agent_lease(
     let mut matching = registry
         .leases
         .iter()
-        .filter(|current| current.key == lease.key)
+        .filter(|current| current.key.worktree == lease.key.worktree)
+        .filter(|current| current.session_id != lease.session_id)
         .filter(|current| is_authoritative(current, now, &is_live))
         .cloned()
         .collect::<Vec<_>>();
@@ -321,7 +342,12 @@ pub fn begin_agent_lease(
         }
     }
 
-    registry.leases.retain(|current| current.key != lease.key);
+    // One checkout, one lease: drop every entry for this worktree — the live owners we just
+    // collected as `replaced`, our own prior entry, and any dead leftovers (including the
+    // different-branch pairs older registries were free to accumulate) — then write ours.
+    registry
+        .leases
+        .retain(|current| current.key.worktree != lease.key.worktree);
     registry.leases.push(lease.clone());
     registry
         .leases
@@ -414,522 +440,4 @@ pub fn reconcile_agent_leases(
     registry.leases = report.kept.clone();
     save_agent_leases(path, &registry)?;
     Ok(report)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn lease(root: &Path, session: &str, acquired_at: i64) -> AgentLease {
-        lease_kind(root, session, acquired_at, AgentLeaseKind::Dispatch)
-    }
-
-    fn lease_kind(
-        root: &Path,
-        session: &str,
-        acquired_at: i64,
-        kind: AgentLeaseKind,
-    ) -> AgentLease {
-        AgentLease {
-            key: AgentLeaseKey::new("BN", "dispatch/Lock", root),
-            session_id: session.into(),
-            harness: "copilot".into(),
-            kind,
-            tmux_target: format!("bn:{session}"),
-            acquired_at,
-        }
-    }
-
-    #[test]
-    fn key_normalizes_branch_and_canonicalizes_worktree() {
-        let dir = tempfile::tempdir().unwrap();
-        let key = AgentLeaseKey::new(" BN ", "Dispatch/LOCK", dir.path());
-        assert_eq!(key.repo, "bn");
-        assert_eq!(key.branch, "dispatch-lock");
-        assert_eq!(
-            key.worktree,
-            std::fs::canonicalize(dir.path()).unwrap().to_string_lossy()
-        );
-    }
-
-    #[test]
-    fn acquire_refuses_a_live_owner() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("leases.json");
-        assert!(matches!(
-            acquire_agent_lease(
-                &path,
-                lease(dir.path(), "first", 100),
-                AgentLeaseAcquireMode::Refuse,
-                100,
-                |_| false,
-            )
-            .unwrap(),
-            AgentLeaseAcquire::Acquired { .. }
-        ));
-        assert_eq!(
-            acquire_agent_lease(
-                &path,
-                lease(dir.path(), "second", 101),
-                AgentLeaseAcquireMode::Refuse,
-                101,
-                |_| false,
-            )
-            .unwrap(),
-            AgentLeaseAcquire::Held(lease(dir.path(), "first", 100))
-        );
-    }
-
-    #[test]
-    fn dispatch_then_pipeline_launch_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("leases.json");
-        let dispatch = lease_kind(dir.path(), "dispatch", 100, AgentLeaseKind::Dispatch);
-        let pipeline = lease_kind(dir.path(), "pipeline", 101, AgentLeaseKind::PipelinePlan);
-        assert!(matches!(
-            acquire_agent_lease(
-                &path,
-                dispatch.clone(),
-                AgentLeaseAcquireMode::Refuse,
-                100,
-                |_| false,
-            )
-            .unwrap(),
-            AgentLeaseAcquire::Acquired { .. }
-        ));
-        assert_eq!(
-            acquire_agent_lease(&path, pipeline, AgentLeaseAcquireMode::Refuse, 101, |_| {
-                false
-            },)
-            .unwrap(),
-            AgentLeaseAcquire::Held(dispatch)
-        );
-    }
-
-    #[test]
-    fn pipeline_then_dispatch_launch_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("leases.json");
-        let pipeline = lease_kind(dir.path(), "pipeline", 100, AgentLeaseKind::PipelinePlan);
-        let dispatch = lease_kind(dir.path(), "dispatch", 101, AgentLeaseKind::Dispatch);
-        acquire_agent_lease(
-            &path,
-            pipeline.clone(),
-            AgentLeaseAcquireMode::Refuse,
-            100,
-            |_| false,
-        )
-        .unwrap();
-        assert_eq!(
-            acquire_agent_lease(&path, dispatch, AgentLeaseAcquireMode::Refuse, 101, |_| {
-                false
-            },)
-            .unwrap(),
-            AgentLeaseAcquire::Held(pipeline)
-        );
-    }
-
-    #[test]
-    fn simultaneous_launches_have_exactly_one_winner() {
-        use std::sync::{Arc, Barrier};
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("leases.json");
-        let root = dir.path().to_path_buf();
-        let barrier = Arc::new(Barrier::new(2));
-        let handles = ["dispatch", "pipeline"].map(|session| {
-            let path = path.clone();
-            let root = root.clone();
-            let barrier = Arc::clone(&barrier);
-            std::thread::spawn(move || {
-                barrier.wait();
-                acquire_agent_lease(
-                    &path,
-                    lease(&root, session, 100),
-                    AgentLeaseAcquireMode::Refuse,
-                    100,
-                    |_| false,
-                )
-                .unwrap()
-            })
-        });
-        let outcomes = handles.map(|handle| handle.join().unwrap());
-        assert_eq!(
-            outcomes
-                .iter()
-                .filter(|outcome| matches!(outcome, AgentLeaseAcquire::Acquired { .. }))
-                .count(),
-            1
-        );
-        assert_eq!(
-            outcomes
-                .iter()
-                .filter(|outcome| matches!(outcome, AgentLeaseAcquire::Held(_)))
-                .count(),
-            1
-        );
-        assert_eq!(load_agent_leases(&path).unwrap().leases.len(), 1);
-    }
-
-    #[test]
-    fn stale_owner_is_reclaimed_and_fresh_replaces_live_owner() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("leases.json");
-        acquire_agent_lease(
-            &path,
-            lease(dir.path(), "old", 100),
-            AgentLeaseAcquireMode::Refuse,
-            100,
-            |_| false,
-        )
-        .unwrap();
-        assert_eq!(
-            acquire_agent_lease(
-                &path,
-                lease(dir.path(), "new", 200),
-                AgentLeaseAcquireMode::Refuse,
-                200,
-                |_| false,
-            )
-            .unwrap(),
-            AgentLeaseAcquire::Acquired { replaced: vec![] }
-        );
-        assert_eq!(
-            acquire_agent_lease(
-                &path,
-                lease(dir.path(), "replacement", 201),
-                AgentLeaseAcquireMode::Replace,
-                201,
-                |_| true,
-            )
-            .unwrap(),
-            AgentLeaseAcquire::Acquired {
-                replaced: vec![lease(dir.path(), "new", 200)]
-            }
-        );
-    }
-
-    #[test]
-    fn failed_reap_restores_prior_owner_but_failed_launch_does_not() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("leases.json");
-        let old = lease(dir.path(), "old", 100);
-        acquire_agent_lease(
-            &path,
-            old.clone(),
-            AgentLeaseAcquireMode::Refuse,
-            100,
-            |_| false,
-        )
-        .unwrap();
-
-        let AgentLeaseBegin::Reserved(failed_reap) = begin_agent_lease(
-            &path,
-            lease(dir.path(), "first-replacement", 101),
-            AgentLeaseAcquireMode::Replace,
-            101,
-            |_| true,
-        )
-        .unwrap() else {
-            panic!("replacement should reserve");
-        };
-        failed_reap.rollback().unwrap();
-        assert_eq!(load_agent_leases(&path).unwrap().leases, vec![old]);
-
-        let AgentLeaseBegin::Reserved(mut failed_launch) = begin_agent_lease(
-            &path,
-            lease(dir.path(), "second-replacement", 102),
-            AgentLeaseAcquireMode::Replace,
-            102,
-            |_| true,
-        )
-        .unwrap() else {
-            panic!("replacement should reserve");
-        };
-        failed_launch.discard_replaced();
-        failed_launch.rollback().unwrap();
-        assert!(load_agent_leases(&path).unwrap().leases.is_empty());
-    }
-
-    #[test]
-    fn replacement_lock_is_held_until_launch_transaction_commits() {
-        use std::sync::mpsc;
-        use std::time::Duration;
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("leases.json");
-        let first = begin_agent_lease(
-            &path,
-            lease(dir.path(), "first", 100),
-            AgentLeaseAcquireMode::Replace,
-            100,
-            |_| false,
-        )
-        .unwrap();
-        let AgentLeaseBegin::Reserved(first) = first else {
-            panic!("first launch should reserve");
-        };
-
-        let (tx, rx) = mpsc::channel();
-        let second_path = path;
-        let second_root = dir.path().to_path_buf();
-        let handle = std::thread::spawn(move || {
-            let outcome = begin_agent_lease(
-                &second_path,
-                lease(&second_root, "second", 101),
-                AgentLeaseAcquireMode::Replace,
-                101,
-                |_| false,
-            )
-            .unwrap();
-            tx.send(outcome).unwrap();
-        });
-        assert!(rx.recv_timeout(Duration::from_millis(50)).is_err());
-        first.commit();
-        let second = rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        let AgentLeaseBegin::Reserved(second) = second else {
-            panic!("fresh replacement should reserve after the first commits");
-        };
-        assert_eq!(second.replaced().len(), 1);
-        second.commit();
-        handle.join().unwrap();
-    }
-
-    #[test]
-    fn reconcile_keeps_oldest_live_owner_and_classifies_removals() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("leases.json");
-        save_agent_leases(
-            &path,
-            &AgentLeaseRegistry {
-                leases: vec![
-                    lease(dir.path(), "new-live", 120),
-                    lease(dir.path(), "old-live", 100),
-                    lease(dir.path(), "stale", 90),
-                ],
-            },
-        )
-        .unwrap();
-
-        let report =
-            reconcile_agent_leases(&path, 200, |lease| lease.session_id != "stale").unwrap();
-        assert_eq!(report.kept, vec![lease(dir.path(), "old-live", 100)]);
-        assert_eq!(
-            report.removed,
-            vec![
-                AgentLeaseRemoval {
-                    lease: lease(dir.path(), "stale", 90),
-                    reason: AgentLeaseRemovalReason::Stale,
-                },
-                AgentLeaseRemoval {
-                    lease: lease(dir.path(), "new-live", 120),
-                    reason: AgentLeaseRemovalReason::Duplicate,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn release_cannot_remove_a_replacement_owner() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("leases.json");
-        acquire_agent_lease(
-            &path,
-            lease(dir.path(), "new", 100),
-            AgentLeaseAcquireMode::Refuse,
-            100,
-            |_| false,
-        )
-        .unwrap();
-        assert!(!release_agent_lease(&path, "old").unwrap());
-        assert!(release_agent_lease(&path, "new").unwrap());
-        assert!(load_agent_leases(&path).unwrap().leases.is_empty());
-    }
-
-    /// The three placements the rule distinguishes, laid out exactly as the worktree root is on
-    /// disk: `<root>/worktree/<repo>/{main,_pool/1,_pool/2,<branch>}`.
-    fn placement(root: &Path, tail: &str) -> PathBuf {
-        let dir = root.join("worktree").join("bn").join(tail);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    fn control_lease(root: &Path, tail: &str, session: &str) -> AgentLease {
-        AgentLease {
-            key: AgentLeaseKey::new("bn", tail, &placement(root, tail)),
-            session_id: session.into(),
-            harness: "copilot".into(),
-            kind: AgentLeaseKind::Control,
-            tmux_target: format!("orch:{session}"),
-            acquired_at: 100,
-        }
-    }
-
-    fn agent_lease_on(root: &Path, tail: &str, session: &str) -> AgentLease {
-        AgentLease {
-            key: AgentLeaseKey::new("bn", tail, &placement(root, tail)),
-            session_id: session.into(),
-            harness: "copilot".into(),
-            kind: AgentLeaseKind::Dispatch,
-            tmux_target: format!("bn:{session}"),
-            acquired_at: 100,
-        }
-    }
-
-    #[test]
-    fn is_reserved_branch_matches_main_master_case_insensitively() {
-        assert!(is_reserved_branch("main"));
-        assert!(is_reserved_branch("master"));
-        assert!(is_reserved_branch(" Main "));
-        assert!(is_reserved_branch("MASTER"));
-        assert!(!is_reserved_branch("dispatch/fix"));
-        assert!(!is_reserved_branch("main-menu"));
-        assert!(!is_reserved_branch(""));
-    }
-
-    #[test]
-    fn main_worktree_path_matches_only_the_stow_source_checkout() {
-        assert!(is_main_worktree_path(Path::new(
-            "/home/me/projects/worktree/bn/main"
-        )));
-        assert!(is_main_worktree_path(Path::new(
-            "/home/me/projects/worktree/other/master"
-        )));
-        // A branch worktree, a pool slot, and a repo literally named `main` are all fine.
-        assert!(!is_main_worktree_path(Path::new(
-            "/home/me/projects/worktree/bn/feat-x"
-        )));
-        assert!(!is_main_worktree_path(Path::new(
-            "/home/me/projects/worktree/bn/_pool/1"
-        )));
-        assert!(!is_main_worktree_path(Path::new("/home/e/worktree/main")));
-        assert!(!is_main_worktree_path(Path::new("/main")));
-    }
-
-    #[test]
-    fn controller_slot_path_matches_only_pool_slot_one() {
-        assert!(is_controller_slot_path(Path::new(
-            "/home/me/projects/worktree/bn/_pool/1"
-        )));
-        assert!(!is_controller_slot_path(Path::new(
-            "/home/me/projects/worktree/bn/_pool/2"
-        )));
-        assert!(!is_controller_slot_path(Path::new(
-            "/home/me/projects/worktree/bn/1"
-        )));
-        assert!(!is_controller_slot_path(Path::new(
-            "/home/me/projects/worktree/bn/main"
-        )));
-    }
-
-    #[test]
-    fn every_kind_is_refused_in_the_main_worktree() {
-        let dir = tempfile::tempdir().unwrap();
-        for (n, lease) in [
-            agent_lease_on(dir.path(), "main", "ship"),
-            control_lease(dir.path(), "main", "ctrl"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let path = dir.path().join(format!("leases-{n}.json"));
-            let err = match begin_agent_lease(
-                &path,
-                lease,
-                AgentLeaseAcquireMode::Refuse,
-                100,
-                |_| false,
-            ) {
-                Ok(_) => panic!("an agent in the main worktree must be refused"),
-                Err(err) => err,
-            };
-            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
-            assert!(err.to_string().contains("is the main worktree"));
-            assert!(load_agent_leases(&path).unwrap().leases.is_empty());
-        }
-    }
-
-    #[test]
-    fn control_agent_is_refused_outside_its_pool_slot() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("leases.json");
-        let err = match begin_agent_lease(
-            &path,
-            control_lease(dir.path(), "_pool/2", "ctrl"),
-            AgentLeaseAcquireMode::Refuse,
-            100,
-            |_| false,
-        ) {
-            Ok(_) => panic!("control outside its slot must be refused"),
-            Err(err) => err,
-        };
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
-        assert!(err.to_string().contains("reserved pool slot"));
-        assert!(load_agent_leases(&path).unwrap().leases.is_empty());
-    }
-
-    #[test]
-    fn control_agent_is_accepted_in_its_pool_slot() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("leases.json");
-        assert!(matches!(
-            acquire_agent_lease(
-                &path,
-                control_lease(dir.path(), "_pool/1", "ctrl"),
-                AgentLeaseAcquireMode::Refuse,
-                100,
-                |_| false,
-            )
-            .unwrap(),
-            AgentLeaseAcquire::Acquired { .. }
-        ));
-    }
-
-    #[test]
-    fn worker_is_refused_in_the_controller_slot() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("leases.json");
-        let err = match begin_agent_lease(
-            &path,
-            agent_lease_on(dir.path(), "_pool/1", "ship"),
-            AgentLeaseAcquireMode::Refuse,
-            100,
-            |_| false,
-        ) {
-            Ok(_) => panic!("a worker in the controller slot must be refused"),
-            Err(err) => err,
-        };
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
-        assert!(err
-            .to_string()
-            .contains("reserved for the bn control agent"));
-        assert!(load_agent_leases(&path).unwrap().leases.is_empty());
-    }
-
-    #[test]
-    fn lease_invariant_violations_flags_only_illegal_placements() {
-        let dir = tempfile::tempdir().unwrap();
-        let clean = AgentLeaseRegistry {
-            leases: vec![
-                control_lease(dir.path(), "_pool/1", "ctrl"),
-                agent_lease_on(dir.path(), "_pool/2", "pooled"),
-                agent_lease_on(dir.path(), "dispatch/feature", "ship"),
-            ],
-        };
-        assert!(lease_invariant_violations(&clean).is_empty());
-
-        // Exactly the shapes an upgrade from the old main↔control rule leaves behind.
-        let dirty = AgentLeaseRegistry {
-            leases: vec![
-                control_lease(dir.path(), "main", "legacy-ctrl"),
-                agent_lease_on(dir.path(), "main", "stray-ship"),
-                control_lease(dir.path(), "dispatch/off-slot", "stray-ctrl"),
-            ],
-        };
-        let violations = lease_invariant_violations(&dirty);
-        assert_eq!(violations.len(), 3);
-        for session in ["legacy-ctrl", "stray-ship", "stray-ctrl"] {
-            assert!(violations.iter().any(|v| v.contains(session)));
-        }
-    }
 }

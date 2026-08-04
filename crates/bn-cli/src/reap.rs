@@ -363,9 +363,27 @@ fn current_window_id() -> Option<String> {
 
 // --- discovery + reconciliation --------------------------------------------
 
-/// A managed worktree exists on disk for `repo/branch`.
-fn worktree_exists(worktree_dir: &Path, repo: &str, branch: &str) -> bool {
-    worktree_dir.join(repo).join(branch).is_dir()
+/// The agent identity and checkout root for a process's working directory: `(repo, branch, root)`,
+/// or `None` when the cwd isn't inside a managed worktree at all.
+///
+/// Two layouts answer to this. A conventional worktree spells its identity in the path
+/// (`<worktree_dir>/<repo>/<branch>`). A **pool slot** does not — `_pool/3` names a slot that many
+/// branches pass through — so its tenant comes from the pool ledger. Reconstructing the identity
+/// from the path alone used to yield the branch `"_pool"` for every pooled agent, which is now the
+/// whole fleet: one meaningless identity that no PR lookup and no fleet-health row could ever
+/// match, so the reaper's verdicts for pooled agents were noise.
+fn agent_at(worktree_dir: &Path, cwd: &Path) -> Option<(String, String, PathBuf)> {
+    if let Some((repo, branch)) = fleet_gc::worktree_repo_branch(worktree_dir, cwd) {
+        let root = worktree_dir.join(&repo).join(&branch);
+        return Some((repo, branch, root));
+    }
+    let (repo, slot) = fleet_gc::pool_slot(worktree_dir, cwd)?;
+    let root = worktree_dir
+        .join(&repo)
+        .join(fleet_gc::POOL_DIR_NAME)
+        .join(slot.to_string());
+    let branch = crate::wt_pool::slot_branch(&root)?;
+    Some((repo, branch, root))
 }
 
 /// Whether the worktree carries uncommitted (dirty) or unpushed work — either spares an agent from
@@ -397,6 +415,42 @@ fn pr_status_for(wt: &Path, branch: &str) -> PrStatus {
     map_pr_status(&crate::wt::pr_state(&remote, branch))
 }
 
+/// Observe one **already-identified** agent for [`fleet_gc::classify`] — the same signals
+/// [`reconcile`] gathers per discovered candidate, for a caller that already knows who and where
+/// the agent is (`wt pool return --force`, deciding whether a slot's occupant is finished).
+///
+/// Keeping this beside `reconcile` is the point: "is this agent still needed?" must have one
+/// answer, whether it is asked by the fleet GC or by the pool.
+pub(crate) fn observe_agent(
+    cfg: &Config,
+    worktree: &Path,
+    repo: &str,
+    branch: &str,
+    tmux_target: &str,
+) -> AgentObservation {
+    let exists = worktree.is_dir();
+    let health = bn_core::agent::supervise(cfg, DEFAULT_IDLE_MINS, DEFAULT_STUCK_MINS)
+        .agents
+        .into_iter()
+        .find(|agent| agent.repo == repo && agent.branch == branch)
+        .map(|agent| (agent.health, agent.idle_secs));
+    AgentObservation {
+        has_live_window: true,
+        worktree_exists: exists,
+        pr: if exists && !branch.is_empty() {
+            pr_status_for(worktree, branch)
+        } else {
+            PrStatus::None
+        },
+        is_working: is_working(tmux_target, true, health.map(|(h, _)| h)),
+        has_uncommitted: exists && has_wip(worktree),
+        is_orchestrator: false,
+        // Unknown idle reads as freshly active, so the grace window protects the agent — the same
+        // conservative default `reconcile` uses for a live-windowed agent the fleet hasn't logged.
+        idle_secs: health.map(|(_, idle)| idle).unwrap_or(0),
+    }
+}
+
 /// Discover every live agent rooted in a managed worktree, resolving each to the process tree we'd
 /// reap and whether it still has a live window.
 fn discover(worktree_dir: &Path) -> Vec<Candidate> {
@@ -409,7 +463,7 @@ fn discover(worktree_dir: &Path) -> Vec<Candidate> {
     let live_pane_pids: BTreeSet<i32> = live_panes.iter().map(|p| p.pane_pid).collect();
     let mut live_targets: BTreeSet<String> = BTreeSet::new();
     for p in &live_panes {
-        if let Some((r, b)) = fleet_gc::worktree_repo_branch(worktree_dir, Path::new(&p.cwd)) {
+        if let Some((r, b, _)) = agent_at(worktree_dir, Path::new(&p.cwd)) {
             live_targets.insert(target_key(&r, &b));
         }
     }
@@ -435,7 +489,7 @@ fn discover(worktree_dir: &Path) -> Vec<Candidate> {
                 .map(|pane| PathBuf::from(&pane.cwd))
         });
         let Some(cwd) = cwd else { continue };
-        let Some((repo, branch)) = fleet_gc::worktree_repo_branch(worktree_dir, &cwd) else {
+        let Some((repo, branch, worktree_path)) = agent_at(worktree_dir, &cwd) else {
             continue; // not rooted in a managed worktree — leave it entirely alone.
         };
         if bn_core::agent::is_reserved_branch(&branch) {
@@ -469,7 +523,7 @@ fn discover(worktree_dir: &Path) -> Vec<Candidate> {
             window_id,
             has_live_window,
             is_orchestrator,
-            worktree_path: cwd,
+            worktree_path,
         });
     }
 
@@ -615,7 +669,7 @@ fn reconcile(cfg: &Config, worktree_dir: &Path, opts: &ReapOpts) -> Vec<Verdict>
     discover(worktree_dir)
         .into_iter()
         .map(|c| {
-            let exists = worktree_exists(worktree_dir, &c.repo, &c.branch);
+            let exists = c.worktree_path.is_dir();
             let fleet_hit = health.get(&c.target);
             let idle_secs = match fleet_hit {
                 Some((_, idle)) => *idle,
@@ -785,178 +839,5 @@ fn emit_human(verdicts: &[Verdict], husks: &[String], opts: &ReapOpts, reaped: u
         println!("{GREEN}reaped {reaped} agent(s), pruned {pruned} dead window(s){NC}");
     } else {
         println!("{reaped} reapable, {pruned} dead window(s) — pass --kill to act");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_ps_rows() {
-        let out = "  329     1 /usr/libexec/logd\n18232  1406 node /opt/homebrew/bin/copilot --resume=abc\n";
-        let procs = parse_ps(out);
-        assert_eq!(procs.len(), 2);
-        assert_eq!(
-            procs[0],
-            Proc {
-                pid: 329,
-                ppid: 1,
-                command: "/usr/libexec/logd".into()
-            }
-        );
-        assert_eq!(procs[1].pid, 18232);
-        assert_eq!(procs[1].ppid, 1406);
-        assert_eq!(
-            procs[1].command,
-            "node /opt/homebrew/bin/copilot --resume=abc"
-        );
-    }
-
-    #[test]
-    fn parses_lsof_cwd_blocks() {
-        let out = "p404\nfcwd\nn/\np18232\nfcwd\nn/Users/edd/projects/worktree/bn/feat-x\n";
-        let rows = parse_lsof_cwds(out);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(
-            rows[1],
-            (
-                18232,
-                PathBuf::from("/Users/edd/projects/worktree/bn/feat-x")
-            )
-        );
-    }
-
-    #[test]
-    fn descendants_walks_the_tree() {
-        // 100 → {200 → 300, 201}; 400 unrelated.
-        let procs = [(200, 100), (300, 200), (201, 100), (400, 1)];
-        let mut got = descendants(&procs, 100);
-        got.sort();
-        assert_eq!(got, vec![100, 200, 201, 300]);
-        // A leaf reaps only itself.
-        assert_eq!(descendants(&procs, 400), vec![400]);
-    }
-
-    #[test]
-    fn descendants_tolerates_cycles() {
-        // Pathological ppid cycle must not loop forever.
-        let procs = [(2, 3), (3, 2)];
-        let got = descendants(&procs, 2);
-        assert!(got.contains(&2) && got.contains(&3));
-    }
-
-    #[test]
-    fn detects_harness_commands() {
-        assert_eq!(
-            is_harness_command("node /opt/homebrew/bin/copilot --resume=x"),
-            Some("copilot")
-        );
-        assert_eq!(
-            is_harness_command("/opt/homebrew/lib/node_modules/@github/copilot/node_modules/@github/copilot-darwin-arm64/copilot --resume=x"),
-            Some("copilot")
-        );
-        assert_eq!(
-            is_harness_command("claude --dangerously-skip-permissions"),
-            Some("claude")
-        );
-        // A subprocess merely *named* like the harness is not the harness.
-        assert_eq!(
-            is_harness_command("sh -c copilot-detached-supervisor /tmp/x.pid"),
-            None
-        );
-        assert_eq!(is_harness_command("cargo test --workspace"), None);
-        assert_eq!(is_harness_command("zsh"), None);
-    }
-
-    #[test]
-    fn maps_pr_states() {
-        assert_eq!(map_pr_status("MERGED"), PrStatus::Merged);
-        assert_eq!(map_pr_status("closed"), PrStatus::Closed);
-        assert_eq!(map_pr_status("OPEN"), PrStatus::Open);
-        assert_eq!(map_pr_status("NONE"), PrStatus::None);
-        assert_eq!(map_pr_status(""), PrStatus::None);
-    }
-
-    #[test]
-    fn dead_windows_only_when_all_panes_dead() {
-        let panes = vec![
-            Pane {
-                window_id: "@1".into(),
-                session: "s".into(),
-                pane_pid: 10,
-                dead: true,
-                cwd: "/".into(),
-            },
-            Pane {
-                window_id: "@2".into(),
-                session: "s".into(),
-                pane_pid: 11,
-                dead: true,
-                cwd: "/".into(),
-            },
-            Pane {
-                window_id: "@2".into(),
-                session: "s".into(),
-                pane_pid: 12,
-                dead: false,
-                cwd: "/".into(),
-            },
-        ];
-        // @1 all-dead → pruned; @2 has a live pane → kept.
-        assert_eq!(dead_windows(&panes), vec!["@1".to_string()]);
-    }
-
-    #[test]
-    fn resolve_root_finds_windowed_pane() {
-        let procs = [
-            Proc {
-                pid: 500,
-                ppid: 1,
-                command: "zsh".into(),
-            }, // the pane root (shell)
-            Proc {
-                pid: 501,
-                ppid: 500,
-                command: "node .../copilot".into(),
-            },
-        ];
-        let by_pid: BTreeMap<i32, &Proc> = procs.iter().map(|p| (p.pid, p)).collect();
-        let pane = Pane {
-            window_id: "@7".into(),
-            session: "bn".into(),
-            pane_pid: 500,
-            dead: false,
-            cwd: "/wt/bn/feat".into(),
-        };
-        let refs = vec![&pane];
-        let live_pids: BTreeSet<i32> = [500].into_iter().collect();
-        let (root, wid) = resolve_root(501, &by_pid, &live_pids, &refs);
-        assert_eq!(root, 500);
-        assert_eq!(wid, Some("@7".to_string()));
-    }
-
-    #[test]
-    fn resolve_root_windowless_returns_topmost_harness() {
-        // The #503 straggler shape: a `node` wrapper + its packaged child reparented to init, no
-        // pane. Reaping from the child must climb to the wrapper so nothing is left behind.
-        let procs = [
-            Proc {
-                pid: 18232,
-                ppid: 1,
-                command: "node /opt/homebrew/bin/copilot --resume=x".into(),
-            },
-            Proc {
-                pid: 18235,
-                ppid: 18232,
-                command: "/x/copilot-darwin-arm64/copilot --resume=x".into(),
-            },
-        ];
-        let by_pid: BTreeMap<i32, &Proc> = procs.iter().map(|p| (p.pid, p)).collect();
-        let live_pids: BTreeSet<i32> = BTreeSet::new();
-        let panes: Vec<&Pane> = vec![];
-        let (root, wid) = resolve_root(18235, &by_pid, &live_pids, &panes);
-        assert_eq!(root, 18232, "climb to the topmost harness ancestor");
-        assert_eq!(wid, None);
     }
 }

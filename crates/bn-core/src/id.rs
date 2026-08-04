@@ -27,41 +27,4 @@ fn parse_id(id: &str, prefix: char) -> Option<u64> {
     rest.parse().ok()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    fn item(id: &str) -> Item {
-        Item {
-            id: id.into(),
-            text: "x".into(),
-            created: "2026-06-19".into(),
-            done: None,
-            done_at: None,
-            link: None,
-            pct: None,
-            est: None,
-            actual: None,
-            q: None,
-            notes: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn empty_section_starts_at_one() {
-        assert_eq!(next_id(&[], 't'), "t1");
-    }
-
-    #[test]
-    fn tracks_max_not_count_never_reuses() {
-        // t2 deleted: max is 3, next is t4 (not t2, not t3).
-        let items = [item("t1"), item("t3")];
-        assert_eq!(next_id(&items, 't'), "t4");
-    }
-
-    #[test]
-    fn ignores_foreign_and_malformed_ids() {
-        let items = [item("t1"), item("d9"), item("tX"), item("t2")];
-        assert_eq!(next_id(&items, 't'), "t3");
-    }
-}

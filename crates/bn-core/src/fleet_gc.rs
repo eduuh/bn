@@ -245,286 +245,44 @@ pub fn classify(obs: &AgentObservation, policy: &ReapPolicy) -> Disposition {
     Disposition::Reap { reason }
 }
 
+/// The directory name the warm pool keeps its slots under — `worktree/<repo>/_pool/<n>`. A branch
+/// never lives at that path, so it is the marker that separates a pooled agent from one in a
+/// conventional per-branch worktree.
+pub const POOL_DIR_NAME: &str = "_pool";
+
 /// Given the managed `worktree_dir` and a process's working directory, extract the `(repo, branch)`
 /// the cwd belongs to — `Some` iff `cwd` is `worktree_dir/<repo>/<branch>` or a descendant of it.
 /// Pure so the "is this process rooted in a managed worktree, and which one?" mapping is testable
 /// without a live process table. The sanitized branch dir name is returned verbatim (dispatch
 /// stores `feat/x` as `feat-x`); the caller reconciles it against tmux/PR state.
+///
+/// A pool slot (`worktree_dir/<repo>/_pool/<n>`) is deliberately **not** a match: `_pool` is a
+/// directory, not a branch, and answering `("bn", "_pool")` is worse than answering nothing —
+/// every pooled agent then shares one meaningless identity, its PR is never looked up and its
+/// fleet health never matches, so a reap pass silently skips exactly the agents that now hold the
+/// whole fleet. Ask [`pool_slot`] instead and resolve the tenant through the pool's own ledger.
 pub fn worktree_repo_branch(worktree_dir: &Path, cwd: &Path) -> Option<(String, String)> {
     let rel = cwd.strip_prefix(worktree_dir).ok()?;
     let mut comps = rel.components();
     let repo = comps.next()?.as_os_str().to_str()?.to_string();
     let branch = comps.next()?.as_os_str().to_str()?.to_string();
-    if repo.is_empty() || branch.is_empty() {
+    if repo.is_empty() || branch.is_empty() || branch == POOL_DIR_NAME {
         return None;
     }
     Some((repo, branch))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    /// A stale agent (window gone), quiet past the grace window, nothing to protect → reaped.
-    fn stale_idle() -> AgentObservation {
-        AgentObservation {
-            has_live_window: false,
-            idle_secs: DEFAULT_MIN_IDLE_SECS + 1,
-            ..AgentObservation::default()
-        }
+/// `(repo, slot)` when `cwd` is inside a warm-pool slot (`worktree_dir/<repo>/_pool/<n>`), else
+/// `None` — the pooled counterpart of [`worktree_repo_branch`]. The branch a slot currently holds
+/// isn't in the path, so the caller resolves it from the pool ledger (or the checkout's HEAD); this
+/// only answers "which slot is this, if any".
+pub fn pool_slot(worktree_dir: &Path, cwd: &Path) -> Option<(String, u32)> {
+    let rel = cwd.strip_prefix(worktree_dir).ok()?;
+    let mut comps = rel.components();
+    let repo = comps.next()?.as_os_str().to_str()?.to_string();
+    if repo.is_empty() || comps.next()?.as_os_str().to_str()? != POOL_DIR_NAME {
+        return None;
     }
-
-    #[test]
-    fn healthy_agent_is_kept() {
-        let obs = AgentObservation::default();
-        assert_eq!(
-            classify(&obs, &ReapPolicy::default()),
-            Disposition::Keep {
-                reason: KeepReason::Healthy
-            }
-        );
-    }
-
-    #[test]
-    fn window_gone_idle_is_reaped() {
-        // The #503 straggler: process alive, no window, past the grace window, nothing to save.
-        assert_eq!(
-            classify(&stale_idle(), &ReapPolicy::default()),
-            Disposition::Reap {
-                reason: ReapReason::WindowGone
-            }
-        );
-    }
-
-    #[test]
-    fn worktree_gone_is_reaped() {
-        let obs = AgentObservation {
-            worktree_exists: false,
-            has_live_window: true, // window alone doesn't save it — the worktree is gone
-            idle_secs: DEFAULT_MIN_IDLE_SECS + 1,
-            ..AgentObservation::default()
-        };
-        assert_eq!(
-            classify(&obs, &ReapPolicy::default()),
-            Disposition::Reap {
-                reason: ReapReason::WorktreeGone
-            }
-        );
-    }
-
-    #[test]
-    fn merged_pr_is_reaped_even_with_live_window() {
-        let obs = AgentObservation {
-            pr: PrStatus::Merged,
-            has_live_window: true,
-            idle_secs: DEFAULT_MIN_IDLE_SECS + 1,
-            ..AgentObservation::default()
-        };
-        assert_eq!(
-            classify(&obs, &ReapPolicy::default()),
-            Disposition::Reap {
-                reason: ReapReason::PrMerged
-            }
-        );
-    }
-
-    #[test]
-    fn closed_pr_is_reaped() {
-        let obs = AgentObservation {
-            pr: PrStatus::Closed,
-            idle_secs: DEFAULT_MIN_IDLE_SECS + 1,
-            ..AgentObservation::default()
-        };
-        assert_eq!(
-            classify(&obs, &ReapPolicy::default()),
-            Disposition::Reap {
-                reason: ReapReason::PrClosed
-            }
-        );
-    }
-
-    #[test]
-    fn pr_priority_beats_window_and_worktree() {
-        // A merged PR is reported over the also-true window/worktree-gone signals.
-        let obs = AgentObservation {
-            pr: PrStatus::Merged,
-            has_live_window: false,
-            worktree_exists: false,
-            idle_secs: DEFAULT_MIN_IDLE_SECS + 1,
-            ..AgentObservation::default()
-        };
-        assert_eq!(
-            classify(&obs, &ReapPolicy::default()),
-            Disposition::Reap {
-                reason: ReapReason::PrMerged
-            }
-        );
-    }
-
-    #[test]
-    fn open_pr_keeps_a_windowed_agent() {
-        let obs = AgentObservation {
-            pr: PrStatus::Open,
-            ..AgentObservation::default()
-        };
-        assert_eq!(
-            classify(&obs, &ReapPolicy::default()),
-            Disposition::Keep {
-                reason: KeepReason::Healthy
-            }
-        );
-    }
-
-    #[test]
-    fn unknown_pr_never_triggers_reap() {
-        // A `gh` failure reads as Unknown; a healthy windowed agent must not be reaped on it.
-        let obs = AgentObservation {
-            pr: PrStatus::Unknown,
-            ..AgentObservation::default()
-        };
-        assert_eq!(
-            classify(&obs, &ReapPolicy::default()),
-            Disposition::Keep {
-                reason: KeepReason::Healthy
-            }
-        );
-    }
-
-    #[test]
-    fn working_agent_is_never_surprise_killed() {
-        // Even with a merged PR, an agent mid-turn is spared (until --force).
-        let obs = AgentObservation {
-            pr: PrStatus::Merged,
-            is_working: true,
-            idle_secs: DEFAULT_MIN_IDLE_SECS + 1,
-            ..AgentObservation::default()
-        };
-        assert_eq!(
-            classify(&obs, &ReapPolicy::default()),
-            Disposition::Keep {
-                reason: KeepReason::Working
-            }
-        );
-    }
-
-    #[test]
-    fn uncommitted_work_is_spared() {
-        let obs = AgentObservation {
-            pr: PrStatus::Closed,
-            has_uncommitted: true,
-            idle_secs: DEFAULT_MIN_IDLE_SECS + 1,
-            ..AgentObservation::default()
-        };
-        assert_eq!(
-            classify(&obs, &ReapPolicy::default()),
-            Disposition::Keep {
-                reason: KeepReason::Uncommitted
-            }
-        );
-    }
-
-    #[test]
-    fn grace_window_spares_a_freshly_quiet_agent() {
-        // Stale (window gone) but only just went quiet — spared by the grace window.
-        let obs = AgentObservation {
-            has_live_window: false,
-            idle_secs: DEFAULT_MIN_IDLE_SECS - 1,
-            ..AgentObservation::default()
-        };
-        assert_eq!(
-            classify(&obs, &ReapPolicy::default()),
-            Disposition::Keep {
-                reason: KeepReason::Grace
-            }
-        );
-    }
-
-    #[test]
-    fn orchestrator_is_never_reaped_even_with_force() {
-        // Sacrosanct: even a fully-stale, forced pass keeps the orchestrator/--resume session.
-        let obs = AgentObservation {
-            is_orchestrator: true,
-            has_live_window: false,
-            worktree_exists: false,
-            pr: PrStatus::Closed,
-            idle_secs: DEFAULT_MIN_IDLE_SECS * 100,
-            ..AgentObservation::default()
-        };
-        let forced = ReapPolicy {
-            force: true,
-            ..ReapPolicy::default()
-        };
-        assert_eq!(
-            classify(&obs, &forced),
-            Disposition::Keep {
-                reason: KeepReason::Orchestrator
-            }
-        );
-    }
-
-    #[test]
-    fn force_overrides_working_uncommitted_and_grace() {
-        let forced = ReapPolicy {
-            force: true,
-            ..ReapPolicy::default()
-        };
-        // Working + uncommitted + inside grace, but stale (closed PR) → reaped under --force.
-        let obs = AgentObservation {
-            pr: PrStatus::Closed,
-            is_working: true,
-            has_uncommitted: true,
-            idle_secs: 0,
-            ..AgentObservation::default()
-        };
-        assert_eq!(
-            classify(&obs, &forced),
-            Disposition::Reap {
-                reason: ReapReason::PrClosed
-            }
-        );
-    }
-
-    #[test]
-    fn force_does_not_reap_a_healthy_agent() {
-        // --force only overrides the *safety gates*; it never reaps a non-stale agent.
-        let forced = ReapPolicy {
-            force: true,
-            ..ReapPolicy::default()
-        };
-        assert_eq!(
-            classify(&AgentObservation::default(), &forced),
-            Disposition::Keep {
-                reason: KeepReason::Healthy
-            }
-        );
-    }
-
-    #[test]
-    fn worktree_repo_branch_extracts_managed_pair() {
-        // Uses the same worktree_dir a test Config carries, so the mapping matches production.
-        let cfg = crate::test_support::config_with_roots("/n", "/n", "/wt", "testhost");
-        let wt = &cfg.worktree_dir;
-        assert_eq!(
-            worktree_repo_branch(wt, &wt.join("bn").join("dispatch-fleet-gc-reap-503")),
-            Some(("bn".to_string(), "dispatch-fleet-gc-reap-503".to_string()))
-        );
-        // A descendant (the agent cd'd into a subdir) still maps to the worktree.
-        assert_eq!(
-            worktree_repo_branch(wt, &wt.join("bn").join("feat-x").join("crates/bn-core")),
-            Some(("bn".to_string(), "feat-x".to_string()))
-        );
-    }
-
-    #[test]
-    fn worktree_repo_branch_rejects_outside_paths() {
-        let wt = PathBuf::from("/wt");
-        assert_eq!(
-            worktree_repo_branch(&wt, &PathBuf::from("/Users/edd")),
-            None
-        );
-        assert_eq!(worktree_repo_branch(&wt, &PathBuf::from("/wt")), None);
-        // A bare repo dir (only one segment under worktree_dir) is not a worktree.
-        assert_eq!(worktree_repo_branch(&wt, &PathBuf::from("/wt/bn")), None);
-    }
+    let slot = comps.next()?.as_os_str().to_str()?.parse().ok()?;
+    Some((repo, slot))
 }

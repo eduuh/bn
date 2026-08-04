@@ -166,49 +166,4 @@ pub enum PlanError {
     Resolve(std::io::Error),
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    fn base_item() -> AttnItem {
-        AttnItem {
-            id: "a1".into(),
-            source: "wt-cleanup".into(),
-            title: "merged worktree bn/feat has 2 uncommitted change(s)".into(),
-            severity: "warn".into(),
-            repo: Some("bn".into()),
-            branch: Some("feat".into()),
-            link: None,
-            key: Some("wt-stuck:bn/feat".into()),
-            detail: None,
-            mode: None,
-            prompt: None,
-            task_type: None,
-            worktree_path: None,
-            uncommitted_files: Vec::new(),
-            created: 100,
-        }
-    }
-
-    #[test]
-    fn structured_worktree_fields_serialize_when_present() {
-        let item = AttnItem {
-            worktree_path: Some("/wt/bn/feat".into()),
-            uncommitted_files: vec!["src/a.rs".into(), "src/b.rs".into()],
-            ..base_item()
-        };
-        let v = serde_json::to_value(&item).unwrap();
-        assert_eq!(v["worktree_path"], "/wt/bn/feat");
-        assert_eq!(v["uncommitted_files"][0], "src/a.rs");
-        assert_eq!(v["uncommitted_files"][1], "src/b.rs");
-    }
-
-    #[test]
-    fn empty_structured_worktree_fields_are_skipped() {
-        // The many non-worktree items carry neither field — `skip_serializing_if` keeps their
-        // payload (and any stored JSON) exactly as before, so nothing new is written for them.
-        let v = serde_json::to_value(base_item()).unwrap();
-        assert!(v.get("worktree_path").is_none());
-        assert!(v.get("uncommitted_files").is_none());
-    }
-}

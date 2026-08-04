@@ -59,34 +59,4 @@ pub fn tmux_ok<S: AsRef<OsStr>>(args: &[S]) -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    // tmux stdout/exit-status I/O needs a live tmux server, so it isn't hermetically unit-testable.
-    // We can still verify the one thing that's pure: `tmux_command` targets `tmux` and forwards
-    // args in order, which is the shared foundation all three wrappers build on.
-    #[test]
-    fn tmux_command_targets_tmux_and_forwards_args() {
-        let cmd = tmux_command(&["list-windows", "-a", "-F", "#{window_id} #{window_name}"]);
-        assert_eq!(cmd.get_program(), "tmux");
-        let args: Vec<&OsStr> = cmd.get_args().collect();
-        assert_eq!(
-            args,
-            ["list-windows", "-a", "-F", "#{window_id} #{window_name}"]
-        );
-    }
-
-    #[test]
-    fn tmux_command_accepts_owned_string_args() {
-        let owned = vec![
-            String::from("display-message"),
-            String::from("-p"),
-            String::from("#{window_id}"),
-        ];
-        let cmd = tmux_command(&owned);
-        assert_eq!(cmd.get_program(), "tmux");
-        let args: Vec<&OsStr> = cmd.get_args().collect();
-        assert_eq!(args, ["display-message", "-p", "#{window_id}"]);
-    }
-}

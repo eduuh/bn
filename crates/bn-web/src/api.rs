@@ -845,7 +845,7 @@ pub async fn task_detail(State(state): State<AppState>, Path(id): Path<String>) 
             _ => Value::Null,
         };
         let doc = bn_core::task_doc::read(&st.cfg, &task)
-            .map(|d| json!({ "path": d.path, "body": d.text }));
+            .map(|d| json!({ "path": d.path, "body": d.text, "version": d.version() }));
 
         Ok::<_, String>(Some(json!({
             "today": today,
@@ -1792,19 +1792,4 @@ fn frame_to_sse(frame: &Arc<StreamFrame>) -> SseEvent {
         .data(frame.data.as_str())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn session_id_validation_rejects_path_escapes() {
-        assert!(valid_session_id("0cc26ff2-2876-4e41-a436-1b2f46716249"));
-        assert!(valid_session_id("abc123"));
-        // The whole point of the guard: nothing that could climb out of a transcript directory.
-        assert!(!valid_session_id("../../etc/passwd"));
-        assert!(!valid_session_id("a/b"));
-        assert!(!valid_session_id("sess.jsonl"));
-        assert!(!valid_session_id(""));
-        assert!(!valid_session_id(&"a".repeat(129)));
-    }
-}

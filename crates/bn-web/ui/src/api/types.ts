@@ -1463,7 +1463,7 @@ export interface TaskDetailView {
   /** The branch note for the task's `(repo, branch)`, when it has one. */
   note: NoteDetail | null;
   /** The task's context doc (`## Done When` and the rest), when one was written. */
-  doc: { path: string; body: string } | null;
+  doc: { path: string; body: string; version: string } | null;
 }
 
 /** A task in flight: the store row, whatever is working on it, and the workflow it is running. */

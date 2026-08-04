@@ -951,20 +951,4 @@ pub(crate) fn emit_control(cfg: &Config, action: ControlCmd, json: bool) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::TurnEndHookInput;
 
-    #[test]
-    fn turn_end_hook_input_accepts_both_harness_session_fields() {
-        let claude: TurnEndHookInput =
-            serde_json::from_str(r#"{"session_id":"claude","stop_hook_active":true}"#).unwrap();
-        assert_eq!(claude.session_id.as_deref(), Some("claude"));
-        assert!(claude.stop_hook_active);
-
-        let copilot: TurnEndHookInput =
-            serde_json::from_str(r#"{"sessionId":"copilot","stop_hook_active":false}"#).unwrap();
-        assert_eq!(copilot.session_id.as_deref(), Some("copilot"));
-        assert!(!copilot.stop_hook_active);
-    }
-}

@@ -64,7 +64,7 @@ cold `npm install`/build. This matters most for heavy monorepos like **BigMono**
   worktree.
 - **Keep pools warm.** Leasing only pays off while idle warm slots exist. Before a wave of heavy-repo
   work, check `bn wt pool status --repo <repo>`; if slots are cold or all leased, refill with `bn wt
-  pool warm --repo <repo>` — it is long-running (a checkout + `build.sh` per slot), so let it run in
+  pool warm --repo <repo>` — it is long-running (a checkout + a `bn build` per slot), so let it run in
   its own window rather than blocking your loop.
 - **`--no-pool` opts out** for a throwaway one-off or a deliberately isolated cold checkout.
 - Pool size comes from `~/.config/wt/pools` (an explicit `<repo> <size>` line, or `default <size>` /

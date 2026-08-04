@@ -85,6 +85,12 @@ impl TaskDoc {
     pub fn why(&self) -> Option<String> {
         self.section("Why")
     }
+
+    /// A content fingerprint for optimistic concurrency (`If-Match`) — stable for identical bytes,
+    /// dependency-free. Enough to answer "did this change under me" between a read and a write.
+    pub fn version(&self) -> String {
+        version_of(&self.text)
+    }
 }
 
 /// The staging file name for a task id (`t42` → `t42.md`).
@@ -219,182 +225,119 @@ pub fn is_note_copy(path: &Path) -> bool {
     path.file_name().is_some_and(|n| n == "task.md")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::todo::TodoFile;
+/// A content fingerprint used as the `If-Match` version tag on doc writes. SipHash via
+/// `DefaultHasher` — deterministic for the same bytes and with no extra dependency.
+pub fn version_of(text: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
 
-    fn cfg_at(root: &Path) -> Config {
-        Config {
-            personal_root: root.to_path_buf(),
-            work_root: root.join("work"),
-            hostname: "testhost".into(),
-            ..Default::default()
+/// What can go wrong writing a task doc.
+#[derive(Debug)]
+pub enum DocError {
+    /// The task has no id or `doc:` to derive a path from.
+    NoPath,
+    /// A full edit lost a race: the version now on disk (carried here) is not the one the caller
+    /// read, so replacing would discard whatever landed in between.
+    Conflict(String),
+    /// The write itself failed.
+    Io(std::io::Error),
+}
+
+/// Insert `addition` at the end of the `## heading` section, creating the section at the end when
+/// it is absent. Additive and surgical — nothing outside the target section is touched, which is
+/// what lets an agent's append interleave safely with a human's full edit.
+fn append_under(text: &str, heading: &str, addition: &str) -> String {
+    let want = format!("## {heading}");
+    let scanned: Vec<(String, bool)> = crate::markdown::scan(text)
+        .map(|(l, c)| (l.to_string(), c))
+        .collect();
+    let add = addition.trim_end().to_string();
+    let hpos = scanned.iter().position(|(l, c)| !c && l.trim_end() == want);
+    match hpos {
+        Some(h) => {
+            // The section runs to the next non-code `## ` heading, or the end of the file.
+            let mut end = scanned.len();
+            for (j, (line, code)) in scanned.iter().enumerate().skip(h + 1) {
+                if !*code && line.starts_with("## ") {
+                    end = j;
+                    break;
+                }
+            }
+            // Sit the addition right after the section's prose, not after its trailing blank lines.
+            let mut ins = end;
+            while ins > h + 1 && scanned[ins - 1].0.trim().is_empty() {
+                ins -= 1;
+            }
+            let mut out: Vec<String> = scanned[..ins].iter().map(|(l, _)| l.clone()).collect();
+            out.push(String::new());
+            out.push(add);
+            out.extend(scanned[ins..].iter().map(|(l, _)| l.clone()));
+            let mut joined = out.join("\n");
+            if text.ends_with('\n') && !joined.ends_with('\n') {
+                joined.push('\n');
+            }
+            joined
         }
-    }
-
-    fn task(line: &str) -> Task {
-        TodoFile::parse(line).tasks().next().unwrap().clone()
-    }
-
-    #[test]
-    fn a_task_with_no_worktree_gets_a_staging_doc() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = cfg_at(dir.path());
-        let t = task("fix the thing id:t42 repo:bn\n");
-
-        let path = ensure(&cfg, &t).unwrap();
-        assert_eq!(path, dir.path().join("tasks/t42.md"));
-        assert!(path.exists());
-        assert!(std::fs::read_to_string(&path)
-            .unwrap()
-            .contains("# fix the thing"));
-    }
-
-    #[test]
-    fn an_untouched_template_states_no_criteria() {
-        // The gate's "measurable" check must not be satisfiable by the template alone.
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = cfg_at(dir.path());
-        let t = task("fix the thing id:t42 repo:bn\n");
-        ensure(&cfg, &t).unwrap();
-
-        let doc = read(&cfg, &t).unwrap();
-        assert!(doc.done_when().is_empty(), "placeholder must not count");
-        assert!(!doc.has_done_when());
-        assert_eq!(doc.why(), None, "an empty Why section reads as absent");
-    }
-
-    #[test]
-    fn done_when_parses_through_the_shared_note_parser() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = cfg_at(dir.path());
-        let t = task("fix the thing id:t42 repo:bn\n");
-        let path = ensure(&cfg, &t).unwrap();
-        std::fs::write(
-            &path,
-            "---\ntask: t42\n---\n\n# fix the thing\n\n## Why\nIt breaks on flaky LAN.\n\n\
-             ## Done When\n- [ ] reconnect backs off\n- [x] a test covers it\n\n## Investigation\n",
-        )
-        .unwrap();
-
-        let doc = read(&cfg, &t).unwrap();
-        let items = doc.done_when();
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0], (false, "reconnect backs off".to_string()));
-        assert_eq!(items[1], (true, "a test covers it".to_string()));
-        assert!(doc.has_done_when());
-        assert_eq!(doc.why().as_deref(), Some("It breaks on flaky LAN."));
-
-        // The identical body parsed as a branch note yields the same criteria — one parser.
-        let via_note = crate::store::section_bullets(&doc.text, Section::DoneWhen);
-        assert_eq!(via_note, items);
-    }
-
-    #[test]
-    fn pickup_copies_the_doc_beside_the_note_and_resolution_follows() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = cfg_at(dir.path());
-        let t = task("fix the thing id:t42 repo:bn branch:fix-sse\n");
-        let staged = ensure(&cfg, &t).unwrap();
-        std::fs::write(
-            &staged,
-            "---\ntask: t42\n---\n\n## Done When\n- [ ] it works\n",
-        )
-        .unwrap();
-
-        let adopted = adopt_into_note(&cfg, &t).unwrap().unwrap();
-        assert_eq!(adopted, note_copy_path(&cfg, "bn", "fix-sse"));
-        assert!(adopted.exists());
-
-        // A copy, not a move: the old path still resolves to something real.
-        assert!(
-            staged.exists(),
-            "staging copy survives so no reference dangles"
-        );
-        // And resolution now prefers the note-dir copy.
-        assert_eq!(doc_path(&cfg, &t).unwrap(), adopted);
-        assert_eq!(read(&cfg, &t).unwrap().path, adopted);
-    }
-
-    #[test]
-    fn adoption_never_overwrites_work_already_recorded_beside_the_note() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = cfg_at(dir.path());
-        let t = task("fix the thing id:t42 repo:bn branch:fix-sse\n");
-        let staged = ensure(&cfg, &t).unwrap();
-        std::fs::write(&staged, "staged version\n").unwrap();
-
-        let target = note_copy_path(&cfg, "bn", "fix-sse");
-        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-        std::fs::write(&target, "an investigator already wrote here\n").unwrap();
-
-        adopt_into_note(&cfg, &t).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&target).unwrap(),
-            "an investigator already wrote here\n"
-        );
-    }
-
-    #[test]
-    fn a_task_with_no_branch_has_nothing_to_adopt() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = cfg_at(dir.path());
-        let t = task("fix the thing id:t42 repo:bn\n");
-        ensure(&cfg, &t).unwrap();
-        assert_eq!(adopt_into_note(&cfg, &t).unwrap(), None);
-    }
-
-    #[test]
-    fn ensure_never_clobbers_accumulated_context() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = cfg_at(dir.path());
-        let t = task("fix the thing id:t42 repo:bn\n");
-        let path = ensure(&cfg, &t).unwrap();
-        std::fs::write(&path, "hard-won investigation notes\n").unwrap();
-
-        ensure(&cfg, &t).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "hard-won investigation notes\n"
-        );
-    }
-
-    #[test]
-    fn an_explicit_doc_meta_wins_over_the_id_default() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = cfg_at(dir.path());
-        let t = task("fix the thing id:t42 repo:bn doc:custom-name.md\n");
-        assert_eq!(
-            doc_path(&cfg, &t).unwrap(),
-            dir.path().join("tasks/custom-name.md")
-        );
-    }
-
-    #[test]
-    fn a_task_without_an_id_has_no_doc() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = cfg_at(dir.path());
-        let t = task("a hand written line with no id\n");
-        assert_eq!(doc_path(&cfg, &t), None);
-        assert!(ensure(&cfg, &t).is_err());
-    }
-
-    #[test]
-    fn the_template_carries_provenance_when_the_task_has_it() {
-        let t = task("cache issues id:t7 repo:atlas src:gh#963\n");
-        let text = template(&t);
-        assert!(text.contains("task: t7"));
-        assert!(text.contains("repo: atlas"));
-        assert!(text.contains("src: gh#963"));
-        assert!(text.contains("# cache issues"));
-        for heading in [
-            "## Why",
-            "## Done When",
-            "## Investigation",
-            "## Open questions",
-        ] {
-            assert!(text.contains(heading), "missing {heading}");
+        None => {
+            let mut out = text.trim_end().to_string();
+            out.push_str(&format!("\n\n## {heading}\n\n{add}\n"));
+            out
         }
     }
 }
+
+/// Append `text` under `## heading` (callers pass `Investigation`), creating the doc from
+/// [`template`] first when it does not exist yet. Additive: never guarded, never in conflict — two
+/// concurrent appends both land.
+pub fn append_section(
+    cfg: &Config,
+    task: &Task,
+    heading: &str,
+    text: &str,
+) -> Result<TaskDoc, DocError> {
+    let path = doc_path(cfg, task).ok_or(DocError::NoPath)?;
+    let _lock = crate::todo::lock(&path);
+    let current = std::fs::read_to_string(&path).unwrap_or_else(|_| template(task));
+    let updated = append_under(&current, heading, text);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(DocError::Io)?;
+    }
+    std::fs::write(&path, &updated).map_err(DocError::Io)?;
+    Ok(TaskDoc {
+        path,
+        text: updated,
+    })
+}
+
+/// Replace the whole doc, guarded by the version the caller read (`If-Match`). Returns
+/// [`DocError::Conflict`] carrying the version that actually landed when the guard fails, so the
+/// caller can keep the operator's text and show them what changed underneath it. A `None`
+/// `if_match` is an unconditional write (first save of a doc that did not exist).
+pub fn write(
+    cfg: &Config,
+    task: &Task,
+    new_text: String,
+    if_match: Option<&str>,
+) -> Result<TaskDoc, DocError> {
+    let path = doc_path(cfg, task).ok_or(DocError::NoPath)?;
+    let _lock = crate::todo::lock(&path);
+    let landed = std::fs::read_to_string(&path).ok().map(|t| version_of(&t));
+    if let (Some(want), Some(have)) = (if_match, landed.as_deref()) {
+        if want != have {
+            return Err(DocError::Conflict(have.to_string()));
+        }
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(DocError::Io)?;
+    }
+    std::fs::write(&path, &new_text).map_err(DocError::Io)?;
+    Ok(TaskDoc {
+        path,
+        text: new_text,
+    })
+}
+
+

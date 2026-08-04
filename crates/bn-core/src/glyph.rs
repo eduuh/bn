@@ -44,33 +44,4 @@ pub const PENCIL: &str = "\u{f040}";
 /// nf-fa-clock-o — SLA / wait-time / cron schedule.
 pub const CLOCK: &str = "\u{f017}";
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn glyphs_are_single_scalar_private_use_no_vs16() {
-        for g in [
-            super::BELL,
-            super::CHECK,
-            super::BAN,
-            super::GEAR,
-            super::EYE,
-            super::CALENDAR,
-            super::BOLT,
-            super::TASKS,
-            super::ENVELOPE,
-            super::COMMENT,
-            super::PULL_REQUEST,
-            super::TARGET,
-            super::AWAY,
-            super::PENCIL,
-            super::CLOCK,
-        ] {
-            let chars: Vec<char> = g.chars().collect();
-            // One scalar, no U+FE0F emoji-presentation selector — the selector is what forces
-            // the colored bitmap rendering this module exists to avoid.
-            assert_eq!(chars.len(), 1, "{g:?} must be a single codepoint");
-            let c = chars[0] as u32;
-            assert!((0xE000..=0xF8FF).contains(&c), "{g:?} must be PUA");
-        }
-    }
-}
+

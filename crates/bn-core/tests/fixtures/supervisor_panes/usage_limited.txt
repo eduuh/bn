@@ -1,3 +1,0 @@
-You've reached your usage limit.
-❯ 1. Stop and wait for limit to reset (resets 7pm)
-  2. Upgrade your plan

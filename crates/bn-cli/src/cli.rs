@@ -1352,11 +1352,19 @@ pub(crate) enum CmdMisc {
         new_branch: String,
     },
     /// Run a worktree's build script — `<note>/jobs/<name>.sh` resolved branch → repo → global
-    /// (the SAME script `wt pool warm` runs in each slot, and the cron resolves). Defaults to
-    /// `build`. Runs in the current dir with `~/.local/bin:~/.bin` prepended to PATH.
+    /// (`wt pool warm` warms each slot by invoking THIS command, and the cron resolves the same
+    /// way). Defaults to `build`. Runs in the current dir with `~/.local/bin:~/.bin` prepended to
+    /// PATH. `--repo`/`--branch` name the note to resolve from explicitly, for callers whose cwd
+    /// can't answer it — a detached pool slot, or a cron.
     Build {
         /// Script name (default `build` → `build.sh`).
         name: Option<String>,
+        /// Resolve the script for this repo instead of the current dir (with `--branch`).
+        #[arg(long)]
+        repo: Option<String>,
+        /// Target branch (with `--repo`).
+        #[arg(long)]
+        branch: Option<String>,
     },
     /// Start the bn-web dashboard server (#386/#388): a thin launcher that execs the sibling
     /// `bn-web` binary (native axum server over bn-core), the same way `bn-mcp` sits beside `bn`.

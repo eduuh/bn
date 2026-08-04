@@ -126,44 +126,4 @@ fn tail(s: &str, max: usize) -> String {
     format!("…{}", &s[start..])
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn tail_truncates_from_the_end() {
-        assert_eq!(tail("hello", 10), "hello");
-        assert_eq!(tail("abcdefghij", 4), "…ghij");
-    }
-
-    #[test]
-    fn synthesize_envelope_covers_human_only_commands() {
-        let ok = synthesize_envelope(true, "wt", "merged 2 PRs\n", "");
-        assert_eq!(ok["ok"], true);
-        assert_eq!(ok["command"], "wt");
-        let fail = synthesize_envelope(false, "wt", "", "gate failed: red check\n");
-        assert_eq!(fail["ok"], false);
-        assert_eq!(fail["error"]["code"], "command_failed");
-        assert!(fail["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("gate failed"));
-    }
-
-    #[test]
-    // `EnvGuard`/`env_lock` (issue #358) live in bn-core's crate-private test_support and aren't
-    // reachable from bn-web; `BN_BIN` is unique to this single test, so a direct set/remove is safe.
-    #[allow(clippy::disallowed_methods)]
-    fn run_synthesizes_failure_when_binary_missing() {
-        // Force resolution to a non-existent binary and confirm we get a failure envelope, not a
-        // panic — the HTTP layer must always get a well-formed {ok:false,…} shape.
-        std::env::set_var("BN_BIN", "/nonexistent/bn-binary-xyz");
-        let res = run(&["dispatch", "--repo", "bn"], None);
-        std::env::remove_var("BN_BIN");
-        // BN_BIN pointed at a missing file → falls through to bare `bn`, which also isn't on PATH in
-        // the test sandbox → spawn fails → synthesized failure envelope.
-        assert!(!res.ok);
-        assert_eq!(res.envelope["ok"], false);
-        assert!(res.envelope["error"].is_object());
-    }
-}

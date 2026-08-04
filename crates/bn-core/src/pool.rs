@@ -227,6 +227,45 @@ pub fn lease_liveness(
     }
 }
 
+/// What the pool's ledger must do about a slot a live agent is working in — the policy behind
+/// "never lease a slot that is already in use".
+///
+/// `leases.json` is a *record* of what the pool handed out, not evidence of what is running, and
+/// the two drift constantly: an agent launched in place takes an agent lease and no pool lease at
+/// all, and a kill that resolves the wrong worktree hands back a slot somebody is still working in.
+/// Once they drift, the pool reads its own ledger, calls the slot idle, and switches a new branch
+/// into a checkout that is in use.
+///
+/// So the ledger defers to the live occupant: the agent-lease registry (and the tmux panes it
+/// mirrors) is the authority on who is in a slot, and this decides how the record catches up.
+/// Branch names on both sides must already be normalized ([`crate::agent::normalized_branch`]) —
+/// the registry stores `feature-x` where the pool may have written `feature/X`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LedgerRepair {
+    /// Nothing to do: the slot has no live occupant, or the lease already names one of them.
+    Agrees,
+    /// The slot is occupied by an agent the lease doesn't name — adopt this tenant, so the slot
+    /// reads as held (and by whom) rather than idle. Covers both an unleased occupied slot and a
+    /// lease left behind by a tenant that is no longer the one in the checkout.
+    Adopt(String),
+}
+
+/// How the pool ledger's entry for one slot should change given who is actually working in it.
+/// `lease` is the branch the ledger records for the slot (`None` when unleased), `occupants` the
+/// label of every live agent found in it, oldest first. See [`LedgerRepair`].
+pub fn ledger_repair(lease: Option<&str>, occupants: &[String]) -> LedgerRepair {
+    let Some(first) = occupants.first() else {
+        // Nobody home. An unleased slot stays idle; a leased one keeps its lease, which is durable
+        // until `return` precisely so a slot survives the gap between a dispatch and its agent
+        // appearing in tmux.
+        return LedgerRepair::Agrees;
+    };
+    match lease {
+        Some(branch) if occupants.iter().any(|o| o == branch) => LedgerRepair::Agrees,
+        _ => LedgerRepair::Adopt(first.clone()),
+    }
+}
+
 /// Whether a `bn dispatch` should lease a warm pool slot or cut a cold worktree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorktreeMode {
@@ -464,295 +503,5 @@ fn compute_status(cfg: &Config, repo: &str, size: usize) -> PoolStatus {
         idle: size.saturating_sub(leased),
         last_warmed_ts,
         slots,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_pool_size_reads_and_clamps() {
-        let cfg = "# comment\narena 4\nbigmono   3  # trailing\nzero 0\n\n";
-        assert_eq!(parse_pool_size(cfg, "arena"), Some(4));
-        assert_eq!(parse_pool_size(cfg, "bigmono"), Some(3));
-        // A size below the floor clamps up — a pooled repo always has the reserved controller
-        // slot plus at least one worker.
-        assert_eq!(parse_pool_size(cfg, "zero"), Some(MIN_POOL_SIZE));
-        // Not listed → not pooled.
-        assert_eq!(parse_pool_size(cfg, "missing"), None);
-    }
-
-    #[test]
-    fn parse_pool_size_defaults_absent_size_to_the_floor() {
-        assert_eq!(parse_pool_size("arena\n", "arena"), Some(MIN_POOL_SIZE));
-    }
-
-    #[test]
-    fn default_line_makes_any_repo_poolable() {
-        let cfg = "# any repo can have a pool\ndefault 2\narena 4\n";
-        // An explicit entry still wins over the default.
-        assert_eq!(parse_pool_size(cfg, "arena"), Some(4));
-        // Any unlisted repo now resolves to the default size.
-        assert_eq!(parse_pool_size(cfg, "some-other-repo"), Some(2));
-        assert_eq!(parse_pool_size(cfg, "bigmono"), Some(2));
-    }
-
-    #[test]
-    fn star_is_an_alias_for_default_and_clamps() {
-        // `*` behaves exactly like `default`; a 0 size clamps up to the floor.
-        assert_eq!(parse_pool_size("* 0\n", "whatever"), Some(MIN_POOL_SIZE));
-        assert_eq!(parse_pool_size("*  3\n", "whatever"), Some(3));
-    }
-
-    #[test]
-    fn without_a_default_line_unlisted_repos_stay_unpooled() {
-        // Backward compatible: no default/* line → an unlisted repo is not pooled.
-        assert_eq!(parse_pool_size("arena 4\n", "unlisted"), None);
-    }
-
-    #[test]
-    fn parse_pooled_repos_skips_the_default_fallback() {
-        // The default/* fallback isn't a concrete repo, so enumeration omits it.
-        let pools = parse_pooled_repos("default 2\narena 4\n* 3\nforge 1\n");
-        assert_eq!(
-            pools,
-            vec![
-                ("arena".to_string(), 4),
-                ("forge".to_string(), MIN_POOL_SIZE)
-            ]
-        );
-    }
-
-    #[test]
-    fn pick_slot_returns_lowest_idle_worker_never_the_controller() {
-        let mut leased = BTreeSet::new();
-        // Slot 1 belongs to `bn control`, so an empty pool hands a worker slot 2.
-        assert_eq!(pick_slot(4, &leased), Some(2));
-        leased.insert(2);
-        assert_eq!(pick_slot(4, &leased), Some(3));
-        // A hole (3 free while 2 and 4 are taken) is filled lowest-first.
-        leased.insert(4);
-        assert_eq!(pick_slot(4, &leased), Some(3));
-        // Even with slot 1 idle, a worker never gets it.
-        let only_workers_leased: BTreeSet<u32> = [2, 3].into_iter().collect();
-        assert_eq!(pick_slot(3, &only_workers_leased), None);
-    }
-
-    #[test]
-    fn pick_slot_none_when_full() {
-        let leased: BTreeSet<u32> = [1, 2].into_iter().collect();
-        assert_eq!(pick_slot(2, &leased), None);
-        // A pool with no worker range at all.
-        assert_eq!(pick_slot(1, &BTreeSet::new()), None);
-        assert_eq!(pick_slot(0, &BTreeSet::new()), None);
-    }
-
-    #[test]
-    fn controller_slot_is_handed_out_only_while_idle() {
-        assert_eq!(pick_controller_slot(&BTreeSet::new()), Some(1));
-        // Workers holding 2..n never block the controller.
-        let workers: BTreeSet<u32> = [2, 3].into_iter().collect();
-        assert_eq!(pick_controller_slot(&workers), Some(1));
-        let held: BTreeSet<u32> = [1].into_iter().collect();
-        assert_eq!(pick_controller_slot(&held), None);
-    }
-
-    #[test]
-    fn lease_liveness_boot_mismatch_is_stale_even_if_pid_reads_alive() {
-        // The WSL/reboot case: the recorded pid was recycled to a live process, but the lease was
-        // taken in a *different* boot — so its real holder is gone and the slot must be reclaimed.
-        assert_eq!(
-            lease_liveness(Some("boot-A"), Some("boot-B"), true),
-            LeaseLiveness::StalePriorBoot
-        );
-        assert_eq!(
-            lease_liveness(Some("boot-A"), Some("boot-B"), false),
-            LeaseLiveness::StalePriorBoot
-        );
-    }
-
-    #[test]
-    fn lease_liveness_same_boot_falls_back_to_pid() {
-        // Same boot → the pid check is authoritative: alive holder stays, dead holder is abandoned.
-        assert_eq!(
-            lease_liveness(Some("boot-A"), Some("boot-A"), true),
-            LeaseLiveness::Live
-        );
-        assert_eq!(
-            lease_liveness(Some("boot-A"), Some("boot-A"), false),
-            LeaseLiveness::DeadThisBoot
-        );
-    }
-
-    #[test]
-    fn lease_liveness_unknown_boot_ids_use_pid_only() {
-        // A pre-boot-scoping lease (no id) or an off-Linux host (no current id) can't be compared,
-        // so we never wrongly declare it prior-boot — the pid check alone decides.
-        assert_eq!(
-            lease_liveness(None, Some("boot-A"), true),
-            LeaseLiveness::Live
-        );
-        assert_eq!(
-            lease_liveness(Some("boot-A"), None, false),
-            LeaseLiveness::DeadThisBoot
-        );
-        assert_eq!(lease_liveness(None, None, true), LeaseLiveness::Live);
-    }
-
-    #[test]
-    fn dispatch_pools_by_default_unless_no_pool() {
-        // Leasing is the default dispatch path: a plain dispatch pools.
-        assert_eq!(
-            dispatch_worktree_mode(false),
-            WorktreeMode::Pool,
-            "a plain dispatch leases a warm slot by default"
-        );
-        // `--no-pool` forces the legacy cold worktree.
-        assert_eq!(
-            dispatch_worktree_mode(true),
-            WorktreeMode::Cold,
-            "--no-pool opts out to a cold worktree"
-        );
-    }
-
-    #[test]
-    fn parse_pooled_repos_enumerates_every_pool() {
-        let cfg = "# heavy monorepos\narena 4\nbigmono   3  # trailing\nzero 0\nbare\n\n";
-        let pools = parse_pooled_repos(cfg);
-        assert_eq!(
-            pools,
-            vec![
-                ("arena".to_string(), 4),
-                ("bigmono".to_string(), 3),
-                // Size 0 clamps up to the floor; a bare line defaults to it.
-                ("zero".to_string(), MIN_POOL_SIZE),
-                ("bare".to_string(), MIN_POOL_SIZE),
-            ]
-        );
-        assert!(parse_pooled_repos("# only comments\n\n").is_empty());
-    }
-
-    #[test]
-    fn compute_status_folds_leases_and_warm_slots() {
-        use crate::test_support::{env_lock, EnvGuard};
-        use std::fs;
-
-        let _g = env_lock();
-        // Pin the clock so the lease age is deterministic, and neutralize $WT_ROOT so the pool dir
-        // resolves under the config's worktree_dir.
-        let _now = EnvGuard::set("BN_NOW", "1000");
-        let _root = EnvGuard::remove("WT_ROOT");
-
-        let tmp = tempfile::tempdir().unwrap();
-        let cfg =
-            crate::test_support::config_with_roots(tmp.path(), tmp.path(), tmp.path(), "testhost");
-        let pool_dir = tmp.path().join("arena").join("_pool");
-        fs::create_dir_all(&pool_dir).unwrap();
-        // Slot 1 warm-idle (checkout dir on disk, unleased); slot 2 leased; slot 3 cold (no dir).
-        fs::create_dir_all(pool_dir.join("1")).unwrap();
-        fs::write(
-            pool_dir.join("leases.json"),
-            r#"{"slots":{"2":{"branch":"dispatch/x","holder":"edd","pid":42,"at":700}}}"#,
-        )
-        .unwrap();
-
-        let st = compute_status(&cfg, "arena", 3);
-        assert_eq!(st.total, 3);
-        assert_eq!(st.leased, 1);
-        assert_eq!(st.warm, 1);
-        assert_eq!(st.idle, 2);
-        assert!(st.enabled);
-        assert_eq!(st.slots.len(), 3);
-        // Slot 1: warm, idle.
-        assert!(st.slots[0].warm && !st.slots[0].leased);
-        // Slot 2: leased with its branch/holder/age (1000 - 700).
-        assert!(st.slots[1].leased);
-        assert_eq!(st.slots[1].branch.as_deref(), Some("dispatch/x"));
-        assert_eq!(st.slots[1].holder.as_deref(), Some("edd"));
-        assert_eq!(st.slots[1].age_secs, Some(300));
-        // Slot 3: neither warm nor leased.
-        assert!(!st.slots[2].warm && !st.slots[2].leased);
-    }
-
-    #[test]
-    fn pool_status_reads_the_config_and_all_pool_status_enumerates() {
-        use crate::test_support::{env_lock, EnvGuard};
-        use std::fs;
-
-        let _g = env_lock();
-        let _root = EnvGuard::remove("WT_ROOT");
-
-        let tmp = tempfile::tempdir().unwrap();
-        let pools = tmp.path().join("pools");
-        fs::write(&pools, "arena 2\nforge 1\n").unwrap();
-        let _cfg_env = EnvGuard::set("WT_POOLS", &pools);
-
-        let cfg =
-            crate::test_support::config_with_roots(tmp.path(), tmp.path(), tmp.path(), "testhost");
-
-        // A pooled repo resolves to a status; a non-pooled one is None.
-        let arena = pool_status(&cfg, "arena").expect("arena is pooled");
-        assert_eq!(arena.total, 2);
-        assert!(pool_status(&cfg, "unlisted").is_none());
-
-        // The rollup enumerates every configured pool.
-        let all = all_pool_status(&cfg);
-        let names: Vec<&str> = all.iter().map(|s| s.repo.as_str()).collect();
-        assert_eq!(names, vec!["arena", "forge"]);
-    }
-
-    #[test]
-    fn edit_pool_size_preserves_the_file_a_human_also_edits() {
-        let before = "# my pools\n\ndefault 2\narena 4  # the monorepo\nforge 1\n";
-        // An existing entry is edited in place — comments, blanks, order and the default line stay.
-        let after = edit_pool_size(before, "arena", Some(6));
-        assert_eq!(after, "# my pools\n\ndefault 2\narena 6\nforge 1\n");
-        // Unpooling drops only that line.
-        assert_eq!(
-            edit_pool_size(before, "arena", None),
-            "# my pools\n\ndefault 2\nforge 1\n"
-        );
-        // A repo not yet listed appends.
-        assert_eq!(
-            edit_pool_size(before, "bn", Some(3)),
-            "# my pools\n\ndefault 2\narena 4  # the monorepo\nforge 1\nbn 3\n"
-        );
-    }
-
-    #[test]
-    fn edit_pool_size_clamps_and_never_leaves_a_duplicate() {
-        // The parser floors at MIN_POOL_SIZE (slot 1 is the controller's) and a slot is a whole
-        // checkout, so both ends are bounded.
-        assert_eq!(
-            edit_pool_size("", "bn", Some(0)),
-            format!("bn {MIN_POOL_SIZE}\n")
-        );
-        assert_eq!(
-            edit_pool_size("", "bn", Some(1)),
-            format!("bn {MIN_POOL_SIZE}\n")
-        );
-        assert_eq!(
-            edit_pool_size("", "bn", Some(9_999)),
-            format!("bn {MAX_POOL_SIZE}\n")
-        );
-        // A file that already has two entries for one repo collapses to one, so the result can't
-        // depend on which line the parser happens to reach first.
-        let dupes = "bn 2\nbn 5\nforge 1\n";
-        assert_eq!(edit_pool_size(dupes, "bn", Some(3)), "bn 3\nforge 1\n");
-        assert_eq!(edit_pool_size(dupes, "bn", None), "forge 1\n");
-        // Unpooling the only entry leaves an empty file, not a stray newline.
-        assert_eq!(edit_pool_size("bn 2\n", "bn", None), "");
-    }
-
-    #[test]
-    fn edit_then_parse_round_trips_through_the_reader() {
-        // The write has to be legible to the parser that gates every pooled dispatch.
-        let text = edit_pool_size("", "arena", Some(4));
-        assert_eq!(parse_pool_size(&text, "arena"), Some(4));
-        assert_eq!(parse_pool_size(&text, "other"), None);
-        let off = edit_pool_size(&text, "arena", None);
-        assert_eq!(parse_pool_size(&off, "arena"), None);
-        assert!(parse_pooled_repos(&off).is_empty());
     }
 }

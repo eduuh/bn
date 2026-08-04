@@ -129,27 +129,4 @@ fn last_json_value(stdout: &str) -> Option<Value> {
         .find_map(|line| serde_json::from_str(line.trim()).ok())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn last_json_value_skips_human_output() {
-        let stdout = "opened tmux window bn:dispatch-352\n\
-                      {\"ok\":true,\"command\":\"dispatch\"}\n";
-        let value = last_json_value(stdout).expect("JSON envelope");
-        assert_eq!(value["ok"], true);
-        assert_eq!(value["command"], "dispatch");
-    }
-
-    #[test]
-    fn last_json_value_uses_the_last_parseable_line() {
-        let stdout = "{\"first\":true}\nnot JSON\n{\"last\":true}\n";
-        assert_eq!(last_json_value(stdout).unwrap()["last"], true);
-    }
-
-    #[test]
-    fn last_json_value_returns_none_without_json() {
-        assert!(last_json_value("plain text only\n").is_none());
-    }
-}

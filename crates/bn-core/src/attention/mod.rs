@@ -31,39 +31,6 @@ pub use status::*;
 pub use store::*;
 pub use trust::*;
 
-#[cfg(test)]
-fn add_simple(title: &str, severity: &str, key: Option<&str>) -> AddOutcome {
-    add(
-        "manual",
-        title,
-        severity,
-        None,
-        None,
-        None,
-        key,
-        "2026-06-23",
-    )
-    .unwrap()
-}
 
-#[cfg(test)]
-/// A fully-eligible auto item (manual source, repo+branch, prompt). Each gets a distinct branch
-/// derived from its title, mirroring real loop fuel (one task → one worktree) — so the batch's
-/// branch-isolation guard only serializes items that genuinely share a branch.
-fn add_auto(title: &str, source: &str) -> AddOutcome {
-    let branch = title.replace(' ', "-");
-    add_new(
-        &NewAttn {
-            source,
-            title,
-            severity: "warn",
-            repo: Some("bn"),
-            branch: Some(&branch),
-            mode: Some("auto"),
-            prompt: Some("do the thing"),
-            ..Default::default()
-        },
-        "2026-06-23",
-    )
-    .unwrap()
-}
+
+

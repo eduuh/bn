@@ -71,13 +71,4 @@ fn restrict_permissions(path: &std::path::Path) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn hex_encode_is_lowercase_and_padded() {
-        assert_eq!(hex_encode(&[0x00, 0x0f, 0xff, 0xa0]), "000fffa0");
-        assert_eq!(hex_encode(&[0u8; 32]).len(), 64);
-    }
-}

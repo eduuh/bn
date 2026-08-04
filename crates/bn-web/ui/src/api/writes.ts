@@ -382,3 +382,23 @@ export function taskAgent(
 ): Promise<{ id: string; agent: string; started: boolean; watch: string }> {
   return post(`/api/tasks/${encodeURIComponent(id)}/agent`, { agent, steer });
 }
+
+/** The task doc after a write: its body and the new version tag to guard the next edit with. */
+export interface TaskDocResult {
+  path: string;
+  body: string;
+  version: string;
+}
+
+/** `POST /api/tasks/:id/doc/append {text, section?}` — append context under a section (default
+ * `Investigation`). Additive and unguarded: two appends both land, so this never conflicts. */
+export function appendTaskDoc(id: string, text: string, section?: string): Promise<TaskDocResult> {
+  return post(`/api/tasks/${encodeURIComponent(id)}/doc/append`, { text, section });
+}
+
+/** `PUT /api/tasks/:id/doc {body, if_match}` — replace the whole doc, guarded by the version it was
+ * read at. A stale version throws `ApiError` with code **`doc_conflict`** (HTTP 409) — the write is
+ * refused, not lost, so the caller keeps the operator's text and reloads to show what landed. */
+export function editTaskDoc(id: string, body: string, ifMatch: string): Promise<TaskDocResult> {
+  return request("PUT", `/api/tasks/${encodeURIComponent(id)}/doc`, { body, if_match: ifMatch });
+}

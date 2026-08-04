@@ -893,11 +893,16 @@ pub(crate) fn emit_agent_kill(cfg: &Config, target: &str, as_json: bool) {
         .and_then(|sid| agent_lease::release(sid).ok())
         .unwrap_or(false);
 
-    // Hand the warm slot back. A slot holding uncommitted work is deliberately left leased — the
-    // outcome says so rather than discarding it.
+    // Hand the warm slot back — but only if we actually stopped an agent. A kill that found no
+    // window ("already gone") stopped nothing, and the worktree it resolved came from a tiered
+    // join that will happily answer with a stale lease entry or with git's current checkout of the
+    // branch: returning a slot on that basis is how a *live* agent's slot got reset under it and
+    // re-leased to the next dispatch. A slot holding uncommitted work, or another live agent, is
+    // likewise left leased — the outcome says so rather than discarding it.
     let slot = worktree
         .as_deref()
-        .map(|wt| crate::wt_pool::release_dispatch_slot(cfg, wt))
+        .filter(|_| outcome.killed)
+        .map(|wt| crate::wt_pool::release_dispatch_slot(cfg, wt, outcome.session_id.as_deref()))
         .unwrap_or(crate::wt_pool::SlotRelease::NotASlot);
 
     if as_json {
@@ -1654,13 +1659,22 @@ pub(crate) fn claude_project_dirname(cwd: &str) -> String {
 /// Pick the newest recorded Copilot session id for `cwd` from `(session_cwd, updated_at, id)` rows.
 /// ISO-8601 `updated_at` sorts lexically, so the string max is the newest. Pure — the IO wrapper
 /// [`copilot_resume_id`] scans the `workspace.yaml` files and feeds it here. Empty ids are ignored.
+///
+/// `since` is the RFC-3339 instant the directory's current tenancy began, for a pool slot — one
+/// path that many branches pass through, where a session recorded before the current lease belongs
+/// to the previous tenant and resuming it is the "why am I back in someone else's conversation?"
+/// bug. `None` for a per-branch worktree, whose whole history is its own.
 pub(crate) fn pick_copilot_resume<'a>(
     rows: impl IntoIterator<Item = (&'a str, &'a str, &'a str)>,
     cwd: &str,
+    since: Option<&str>,
 ) -> Option<String> {
     let mut best: Option<(&str, &str)> = None; // (updated_at, id)
     for (c, ts, id) in rows {
         if c != cwd || id.is_empty() {
+            continue;
+        }
+        if since.is_some_and(|floor| ts < floor) {
             continue;
         }
         if best.is_none_or(|(bts, _)| ts > bts) {
@@ -1807,14 +1821,24 @@ fn copilot_resume_id(cwd: &str) -> Option<String> {
         };
         rows.push((field("cwd:"), field("updated_at:"), field("id:")));
     }
+    let since = crate::wt_pool::slot_lease_started_at(std::path::Path::new(cwd))
+        .and_then(bn_core::util::epoch_to_rfc3339_utc);
     pick_copilot_resume(
         rows.iter()
             .map(|(c, t, i)| (c.as_str(), t.as_str(), i.as_str())),
         cwd,
+        since.as_deref(),
     )
 }
 
-/// Whether this worktree has any recorded Claude transcript (`~/.claude/projects/<proj>/*.jsonl`).
+/// Whether this worktree has a Claude transcript (`~/.claude/projects/<proj>/*.jsonl`) belonging to
+/// its **current tenant** — the thing `--continue` would resume.
+///
+/// Transcripts are filed by directory, and a pool slot is one directory that many branches pass
+/// through, so "this path has transcripts" is not the same question as "I have transcripts". In a
+/// slot, only history from the current lease onward counts ([`wt_pool::slot_lease_started_at`]);
+/// otherwise typing `claude` in a returned, idle slot silently resumes the previous tenant's
+/// session. A per-branch worktree has no lease and keeps its whole history.
 fn claude_has_transcripts(cwd: &str) -> bool {
     let Ok(home) = std::env::var("HOME") else {
         return false;
@@ -1824,12 +1848,30 @@ fn claude_has_transcripts(cwd: &str) -> bool {
         .join(".claude")
         .join("projects")
         .join(proj);
+    let since = crate::wt_pool::slot_lease_started_at(std::path::Path::new(cwd));
     std::fs::read_dir(&dir)
         .map(|rd| {
             rd.flatten()
-                .any(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
+                .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
+                .any(|e| transcript_is_current(&e, since))
         })
         .unwrap_or(false)
+}
+
+/// Whether a transcript file belongs to the tenancy that began at `since` — always true when there
+/// is no lease boundary to respect. Modification time is the signal: a session touched since this
+/// slot was leased is this tenant's, and one that stopped before it belongs to whoever had the
+/// directory before.
+fn transcript_is_current(entry: &std::fs::DirEntry, since: Option<i64>) -> bool {
+    let Some(since) = since else {
+        return true;
+    };
+    entry
+        .metadata()
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .is_some_and(|age| age.as_secs() as i64 >= since)
 }
 
 fn claude_has_session(cwd: &str, session_id: &str) -> bool {
@@ -1980,15 +2022,24 @@ fn enforce_launch_placement(
         // controller in its slot). Nothing to add — leasing again would only collide with itself.
         agent_lease::WorktreeHolder::Ours => return None,
         agent_lease::WorktreeHolder::Other(owner) => {
-            let target = format!("{}:{}", owner.key.repo, owner.key.branch);
+            // An agent that never registered has no `repo:branch` to steer by — its window is the
+            // only handle there is, so the advice has to be phrased against that instead.
+            let steer = match (&owner.repo, &owner.branch) {
+                (Some(repo), Some(branch)) => format!(
+                    "  steer it:  bn agent send {repo}:{branch} \"<message>\"\n  \
+                     or free it: bn agent kill {repo}:{branch}"
+                ),
+                _ => format!(
+                    "  it never registered with bn, so it has no repo:branch to steer — \
+                     stop it in its window: {}",
+                    owner.tmux_target
+                ),
+            };
             eprintln!(
-                "bn agent launch: {} already has a live {} agent — one agent per worktree.\n  \
-                 session {} in {}\n  steer it:  bn agent send {target} \"<message>\"\n  \
-                 or free it: bn agent kill {target}",
+                "bn agent launch: {} already has a live {} — one agent per worktree.\n  {}\n{steer}",
                 canonical.display(),
-                owner.kind.label(),
-                owner.session_id,
-                owner.tmux_target,
+                owner.kind,
+                owner.describe(),
             );
             std::process::exit(1);
         }
@@ -2945,430 +2996,10 @@ pub(crate) fn emit_agent_sessions(
     }
 }
 
-#[cfg(test)]
-mod target_tests {
-    use super::*;
 
-    #[test]
-    fn resolve_tmux_target_passes_exact_targets_through() {
-        // Ids and `=`-guarded names are already unambiguous; resolving them again would be a wasted
-        // tmux spawn, and re-prefixing would produce `==name`, which matches nothing.
-        let cfg = Config::default();
-        for exact in ["=bn:feature", "%12", "@4", "$1"] {
-            assert_eq!(resolve_tmux_target(&cfg, exact), exact);
-        }
-    }
 
-    #[test]
-    fn the_bare_terminal_redirect_stays_out_of_the_way_when_told_to() {
-        let _lock = bn_core::test_support::env_lock();
-        // Already inside tmux: the current window is a perfectly good home, so never relocate.
-        {
-            let _tmux = bn_core::test_support::EnvGuard::set("TMUX", "/tmp/tmux-0/default,1,0");
-            assert!(!redirect_into_window_wanted());
-        }
-        // Outside tmux, the kill-switch wins before any tty or server probe.
-        {
-            let _tmux = bn_core::test_support::EnvGuard::remove("TMUX");
-            let _off = bn_core::test_support::EnvGuard::set("BN_AGENT_TMUX_REDIRECT", "0");
-            assert!(!redirect_into_window_wanted());
-        }
-    }
 
-    #[test]
-    fn resolve_tmux_target_falls_back_to_the_literal_when_it_is_not_repo_branch() {
-        // Not a `repo:branch` identity, so there is nothing to join — guard it and hand it back.
-        let cfg = Config::default();
-        assert_eq!(resolve_tmux_target(&cfg, "scratch"), "=scratch");
-    }
-}
 
-#[cfg(test)]
-mod memory_hook_tests {
-    use super::merge_auto_memory_dir;
 
-    #[test]
-    fn writes_from_empty_when_absent_or_unparseable() {
-        for input in [None, Some("not json"), Some("")] {
-            let out = merge_auto_memory_dir(input, "/w/.claude/memory").expect("should write");
-            assert!(out.contains("\"autoMemoryDirectory\": \"/w/.claude/memory\""));
-            assert!(out.ends_with('\n'));
-        }
-    }
 
-    #[test]
-    fn preserves_existing_keys_and_overwrites_stale_dir() {
-        let input = r#"{"model":"opus","autoMemoryDirectory":"/old/mem"}"#;
-        let out = merge_auto_memory_dir(Some(input), "/new/mem").expect("should rewrite");
-        assert!(out.contains("\"model\": \"opus\""), "keeps unrelated keys");
-        assert!(out.contains("\"autoMemoryDirectory\": \"/new/mem\""));
-        assert!(!out.contains("/old/mem"));
-    }
 
-    #[test]
-    fn idempotent_when_already_pointing_here() {
-        let input = r#"{"autoMemoryDirectory":"/w/mem"}"#;
-        assert!(
-            merge_auto_memory_dir(Some(input), "/w/mem").is_none(),
-            "no rewrite when the dir already matches"
-        );
-    }
-}
-
-#[cfg(test)]
-mod launch_tests {
-    use super::*;
-
-    fn plan(
-        seed: Option<&str>,
-        yolo_force: bool,
-        fresh: bool,
-        session: Option<&str>,
-        passthrough: &[&str],
-    ) -> LaunchPlan {
-        LaunchPlan {
-            seed: seed.map(String::from),
-            yolo_force,
-            fresh,
-            session: session.map(String::from),
-            resume_session: None,
-            passthrough: passthrough.iter().map(|s| s.to_string()).collect(),
-        }
-    }
-
-    #[test]
-    fn a_user_driven_session_flag_suppresses_the_minted_id() {
-        // Typing `claude --continue` (or `--resume <id>`) means the user chose the session; bn
-        // pinning `--session-id` on top of it is a conflicting flag, not a nicety.
-        for flag in ["--continue", "-c", "--resume", "-r", "--session-id"] {
-            assert!(
-                passthrough_controls_session(&[flag.to_string()]),
-                "should defer to: {flag}"
-            );
-        }
-        assert!(passthrough_controls_session(&[
-            "--resume=abc".to_string()
-        ]));
-        assert!(!passthrough_controls_session(&[
-            "-p".to_string(),
-            "summarize this".to_string()
-        ]));
-        assert!(!passthrough_controls_session(&[]));
-    }
-
-    #[test]
-    fn effective_session_id_is_none_for_a_claude_continue() {
-        // `--continue` never passes `--session-id`, so the live session ends up with the harness's
-        // own id. Recording the minted one would leave the note pointing at a session that never
-        // existed, and `bn agent send --resume` would fail against it.
-        let p = plan(None, false, false, Some("minted-id"), &[]);
-        assert_eq!(
-            effective_session_id(Harness::Claude, &p, true, None),
-            None,
-            "existing transcripts and no --fresh means --continue"
-        );
-    }
-
-    #[test]
-    fn effective_session_id_is_the_minted_id_for_a_fresh_claude() {
-        let fresh_worktree = plan(None, false, false, Some("minted-id"), &[]);
-        assert_eq!(
-            effective_session_id(Harness::Claude, &fresh_worktree, false, None),
-            Some("minted-id".to_string())
-        );
-        // `--fresh` pins the id even where transcripts exist.
-        let forced = plan(None, false, true, Some("minted-id"), &[]);
-        assert_eq!(
-            effective_session_id(Harness::Claude, &forced, true, None),
-            Some("minted-id".to_string())
-        );
-    }
-
-    #[test]
-    fn effective_session_id_is_the_resume_id_when_one_is_resumed() {
-        // Copilot appends to the resumed session, so the resume id *is* the live id.
-        let p = plan(None, false, false, Some("minted-id"), &[]);
-        assert_eq!(
-            effective_session_id(Harness::Copilot, &p, false, Some("older-session")),
-            Some("older-session".to_string())
-        );
-        // Claude's explicit `--resume <id>` is the same story.
-        let mut resumed = plan(None, false, false, Some("minted-id"), &[]);
-        resumed.resume_session = Some("older-session".into());
-        assert_eq!(
-            effective_session_id(Harness::Claude, &resumed, true, None),
-            Some("older-session".to_string())
-        );
-    }
-
-    #[test]
-    fn harness_parse_defaults_and_rejects() {
-        assert_eq!(Harness::parse(None), Some(Harness::Copilot));
-        assert_eq!(Harness::parse(Some("copilot")), Some(Harness::Copilot));
-        assert_eq!(Harness::parse(Some("claude")), Some(Harness::Claude));
-        assert_eq!(Harness::parse(Some("codex")), None);
-    }
-
-    #[test]
-    fn project_dirname_replaces_every_non_alnum() {
-        assert_eq!(
-            claude_project_dirname("/home/u/projects/worktree/bn/feat_x"),
-            "-home-u-projects-worktree-bn-feat-x"
-        );
-    }
-
-    #[test]
-    fn pick_copilot_resume_takes_newest_matching_cwd() {
-        let rows = [
-            ("/w/a", "2026-01-01T00:00:00Z", "old"),
-            ("/w/a", "2026-06-01T00:00:00Z", "new"),
-            ("/w/b", "2026-12-01T00:00:00Z", "other"), // different cwd — ignored
-            ("/w/a", "2026-03-01T00:00:00Z", ""),      // empty id — ignored
-        ];
-        assert_eq!(pick_copilot_resume(rows, "/w/a").as_deref(), Some("new"));
-        assert_eq!(pick_copilot_resume(rows, "/w/none"), None);
-    }
-
-    // --- claude argv ------------------------------------------------------
-
-    #[test]
-    fn claude_resume_uses_continue_and_yolo_when_unseeded() {
-        let args = build_claude_args(&plan(None, false, false, Some("sid"), &[]), true);
-        // Unseeded → yolo; transcripts present + not fresh → --continue (session id NOT pinned).
-        assert_eq!(args, ["--dangerously-skip-permissions", "--continue"]);
-    }
-
-    #[test]
-    fn claude_exact_resume_uses_recorded_session_id() {
-        let mut p = plan(None, false, false, Some("R1"), &[]);
-        p.resume_session = Some("R1".into());
-        assert_eq!(
-            build_claude_args(&p, true),
-            ["--dangerously-skip-permissions", "--resume", "R1"]
-        );
-    }
-
-    #[test]
-    fn claude_fresh_pins_session_and_passes_seed_as_prompt() {
-        let args = build_claude_args(
-            &plan(Some("do the thing"), false, false, Some("sid"), &[]),
-            false,
-        );
-        // Seeded → NOT yolo (no --yolo); no transcripts → fresh: pin sid + seed as positional prompt.
-        assert_eq!(args, ["--session-id", "sid", "do the thing"]);
-    }
-
-    #[test]
-    fn claude_fresh_flag_overrides_existing_transcripts() {
-        let args = build_claude_args(&plan(Some("seed"), true, true, Some("sid"), &["-x"]), true);
-        // --fresh skips --continue even with transcripts; --yolo forces skip-permissions despite seed.
-        assert_eq!(
-            args,
-            [
-                "--dangerously-skip-permissions",
-                "--session-id",
-                "sid",
-                "seed",
-                "-x"
-            ]
-        );
-    }
-
-    #[test]
-    fn claude_controller_launch_adds_stop_hook_settings() {
-        let args = with_claude_controller_hook(
-            build_claude_args(&plan(Some("seed"), true, true, Some("sid"), &[]), false),
-            true,
-        );
-        assert_eq!(args[0], "--settings");
-        let settings: serde_json::Value = serde_json::from_str(&args[1]).unwrap();
-        assert_eq!(
-            settings["hooks"]["Stop"][0]["hooks"][0]["command"],
-            controller_turn_end_hook_command()
-        );
-        assert_eq!(args[2], "--dangerously-skip-permissions");
-    }
-
-    #[test]
-    fn controller_hook_is_not_attached_to_owned_workers() {
-        assert!(controller_launch_env(Some("ctrl-a"), None));
-        assert!(!controller_launch_env(
-            Some("ctrl-a"),
-            Some("worker-session")
-        ));
-        assert!(!controller_launch_env(None, None));
-    }
-
-    #[test]
-    fn ordinary_claude_launch_does_not_add_controller_settings() {
-        let base = build_claude_args(&plan(None, false, false, Some("sid"), &[]), true);
-        assert_eq!(with_claude_controller_hook(base.clone(), false), base);
-    }
-
-    // --- copilot argv -----------------------------------------------------
-
-    #[test]
-    fn copilot_controller_hook_uses_agent_stop_and_shared_guard() {
-        let config = copilot_controller_hook_config();
-        assert_eq!(config["version"], 1);
-        assert_eq!(
-            config["hooks"]["agentStop"][0]["command"],
-            controller_turn_end_hook_command()
-        );
-        assert!(config["hooks"].get("Stop").is_none());
-    }
-
-    #[test]
-    fn copilot_controller_hook_install_is_idempotent() {
-        let dir = tempfile::tempdir().unwrap();
-        let hooks = dir.path().join("hooks");
-
-        install_copilot_controller_hook_at(&hooks).unwrap();
-        let path = hooks.join("bn-controller.json");
-        let first = std::fs::read(&path).unwrap();
-        install_copilot_controller_hook_at(&hooks).unwrap();
-
-        assert_eq!(std::fs::read(&path).unwrap(), first);
-        let config: serde_json::Value = serde_json::from_slice(&first).unwrap();
-        assert_eq!(
-            config["hooks"]["agentStop"][0]["command"],
-            controller_turn_end_hook_command()
-        );
-    }
-
-    #[test]
-    fn copilot_resume_uses_resume_flag_and_yolo_when_unseeded() {
-        let args = build_copilot_args(&plan(None, false, false, Some("sid"), &[]), Some("R1"));
-        // Unseeded → yolo pair; resume id present + not fresh → --resume=<id> (session id NOT pinned).
-        assert_eq!(
-            args,
-            ["--allow-all-tools", "--allow-all-paths", "--resume=R1"]
-        );
-    }
-
-    #[test]
-    fn copilot_fresh_pins_session_and_seeds_with_dash_i() {
-        let args = build_copilot_args(&plan(Some("go"), false, false, Some("sid"), &[]), None);
-        // Seeded → NOT yolo; no resume id → fresh: pin sid + `-i <seed>`.
-        assert_eq!(args, ["--session-id", "sid", "-i", "go"]);
-    }
-
-    #[test]
-    fn copilot_fresh_flag_ignores_resume_id_and_passthrough_after_seed() {
-        let args = build_copilot_args(
-            &plan(Some("go"), true, true, None, &["--disable-mcp-server", "x"]),
-            Some("R1"),
-        );
-        // --fresh skips --resume even with a resume id; --yolo forces the allow-all pair despite seed;
-        // passthrough trails the seed.
-        assert_eq!(
-            args,
-            [
-                "--allow-all-tools",
-                "--allow-all-paths",
-                "-i",
-                "go",
-                "--disable-mcp-server",
-                "x"
-            ]
-        );
-    }
-
-    #[test]
-    fn copilot_unseeded_fresh_no_session_is_bare_yolo() {
-        let args = build_copilot_args(&plan(None, false, true, None, &[]), None);
-        assert_eq!(args, ["--allow-all-tools", "--allow-all-paths"]);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn copilot_resume_retries_only_for_missing_session_failure() {
-        use std::os::unix::process::ExitStatusExt;
-
-        let failed = std::process::ExitStatus::from_raw(1 << 8);
-        let succeeded = std::process::ExitStatus::from_raw(0);
-        let missing = "Error: No session, task, or name matched 'dead-session'.";
-
-        assert!(should_retry_copilot_resume(failed, missing));
-        assert!(!should_retry_copilot_resume(
-            failed,
-            "Error: authentication failed"
-        ));
-        assert!(!should_retry_copilot_resume(succeeded, missing));
-    }
-
-    #[test]
-    fn copilot_missing_resume_falls_back_to_pinned_fresh_session() {
-        let mut launch = plan(
-            Some("resume the task"),
-            true,
-            false,
-            Some("new-session"),
-            &["--disable-mcp-server", "broken"],
-        );
-        assert_eq!(
-            build_copilot_args(&launch, Some("phantom-session")),
-            [
-                "--allow-all-tools",
-                "--allow-all-paths",
-                "--resume=phantom-session",
-                "--disable-mcp-server",
-                "broken"
-            ]
-        );
-
-        launch.fresh = true;
-        let fallback = build_copilot_args(&launch, None);
-        assert_eq!(
-            fallback,
-            [
-                "--allow-all-tools",
-                "--allow-all-paths",
-                "--session-id",
-                "new-session",
-                "-i",
-                "resume the task",
-                "--disable-mcp-server",
-                "broken"
-            ]
-        );
-        assert!(!fallback.iter().any(|arg| arg.contains("phantom-session")));
-    }
-}
-
-#[cfg(test)]
-mod done_tests {
-    use super::*;
-    use bn_core::store;
-    use bn_core::test_support::{config_with_hostname, with_state_and_notes_dir};
-
-    #[test]
-    fn agent_done_with_pr_sets_front_pr() {
-        let dir = tempfile::tempdir().unwrap();
-        with_state_and_notes_dir(dir.path(), "testhost", || {
-            let cfg = config_with_hostname(dir.path(), "testhost");
-            let ctx = crate::resolver::Resolved {
-                repo: "demo".into(),
-                branch: "feat".into(),
-            };
-            let pr = "https://github.com/eduuh/bn/pull/648";
-            emit_agent_done(
-                &cfg,
-                Some("did the thing".into()),
-                Some(pr.into()),
-                false,
-                false,
-                false,
-                Some(ctx.repo.clone()),
-                Some(ctx.branch.clone()),
-                true,
-            );
-            let note = store::read(&cfg.note_file(&ctx)).unwrap();
-            assert_eq!(
-                note.front.pr,
-                Some(bn_core::model::Scalar::Str(pr.into())),
-                "front.pr must be set on the primary `agent done --pr` path"
-            );
-        });
-    }
-}

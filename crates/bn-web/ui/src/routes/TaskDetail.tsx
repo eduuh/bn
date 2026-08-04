@@ -1,13 +1,19 @@
+import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, ArrowLeft, Loader2 } from "lucide-react";
-import { FetchError, taskQuery } from "../api/client";
-import type { TaskAgent } from "../api/types";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AlertTriangle, ArrowLeft, Loader2, Pencil, Plus, Save, X } from "lucide-react";
+import { FetchError, queryKeys, taskQuery } from "../api/client";
+import type { TaskAgent, TaskDetailView } from "../api/types";
+import { ApiError, appendTaskDoc, editTaskDoc } from "../api/writes";
+import { pushToast } from "../lib/toast";
 import { PageHead } from "../components/PageHead";
 import MarkdownBody from "../components/MarkdownBody";
+import { ToastStack } from "../components/ToastStack";
 import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
+import { Textarea } from "../components/ui/textarea";
 
 /** The health tone for the agent chip — the same scale the fleet board uses. */
 const HEALTH_TONE: Record<string, "ok" | "warn" | "urgent" | "muted"> = {
@@ -31,6 +37,144 @@ function AgentLine({ agent }: { agent: TaskAgent }) {
         idle {Math.round(agent.idle_secs / 60)}m
       </span>
     </Link>
+  );
+}
+
+/**
+ * The task's `task.md`, read and edited from the browser (task t1's Done-When list).
+ *
+ * Two writes, two temperaments. **Add context** appends under `## Investigation` — additive, so an
+ * agent's append and this box never fight over the file. **Edit** replaces the whole document,
+ * guarded by the version it was read at. A lost edit comes back as a `409`: the text stays in the
+ * box and the version that landed is shown, so nothing a session typed is ever silently discarded.
+ */
+function DocEditor({ taskId, doc }: { taskId: string; doc: NonNullable<TaskDetailView["doc"]> }) {
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(doc.body);
+  const [context, setContext] = useState("");
+  const [conflict, setConflict] = useState(false);
+  const refetch = () => void qc.invalidateQueries({ queryKey: queryKeys.task(taskId) });
+
+  const append = useMutation({
+    mutationFn: (text: string) => appendTaskDoc(taskId, text),
+    onSuccess: () => {
+      pushToast("Added to Investigation", "success");
+      setContext("");
+      refetch();
+    },
+    onError: (e) => pushToast(`Could not add context: ${(e as Error).message}`, "error"),
+  });
+
+  const save = useMutation({
+    mutationFn: () => editTaskDoc(taskId, draft, doc.version),
+    onSuccess: () => {
+      pushToast("Saved task.md", "success");
+      setConflict(false);
+      setEditing(false);
+      refetch();
+    },
+    onError: (e) => {
+      // A lost race is not something to report and forget: keep the operator's text, pull the
+      // version that landed, and show it so they can reconcile and save again.
+      if (e instanceof ApiError && e.code === "doc_conflict") {
+        pushToast("Someone else saved first — your text is kept; the latest is shown below", "error");
+        setConflict(true);
+        refetch();
+      } else {
+        pushToast(`Could not save: ${(e as Error).message}`, "error");
+      }
+    },
+  });
+
+  if (editing) {
+    return (
+      <Card className="space-y-2 p-3">
+        <Textarea
+          className="min-h-[24rem] font-mono text-[13px] leading-relaxed"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          spellCheck={false}
+        />
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" disabled={save.isPending} onClick={() => save.mutate()}>
+            {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              setDraft(doc.body);
+              setConflict(false);
+              setEditing(false);
+            }}
+          >
+            <X className="h-4 w-4" /> Cancel
+          </Button>
+          <span className="ml-auto font-mono text-[11px] text-muted-foreground/70">
+            guarded by version {doc.version.slice(0, 8)}
+          </span>
+        </div>
+        {conflict && (
+          <div className="space-y-1 rounded-md border border-warn/40 bg-warn-muted p-2 text-xs">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-medium text-warn">
+                The doc changed under you — your text is kept above. What landed:
+              </span>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  setDraft(doc.body);
+                  setConflict(false);
+                }}
+              >
+                Load latest
+              </Button>
+            </div>
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap font-mono text-muted-foreground">
+              {doc.body}
+            </pre>
+          </div>
+        )}
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <Card className="p-4">
+        <MarkdownBody text={doc.body} />
+      </Card>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
+        <Textarea
+          className="min-h-[3.5rem] flex-1 font-mono text-[13px]"
+          placeholder="Add context — appends under ## Investigation"
+          value={context}
+          onChange={(e) => setContext(e.target.value)}
+        />
+        <div className="flex gap-2 sm:flex-col">
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={append.isPending || !context.trim()}
+            onClick={() => append.mutate(context.trim())}
+          >
+            {append.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} Add context
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setDraft(doc.body);
+              setEditing(true);
+            }}
+          >
+            <Pencil className="h-4 w-4" /> Edit
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -130,14 +274,13 @@ export function TaskDetail() {
             )}
           </section>
 
-          {q.data?.doc?.body && (
+          {q.data?.doc && (
             <section className="space-y-2">
               <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                Context
+                Context{" "}
+                <span className="font-mono normal-case text-muted-foreground/70">· task.md</span>
               </h3>
-              <Card className="p-4">
-                <MarkdownBody text={q.data.doc.body} />
-              </Card>
+              <DocEditor taskId={task.id} doc={q.data.doc} />
             </section>
           )}
 
@@ -156,6 +299,7 @@ export function TaskDetail() {
           )}
         </>
       )}
+      <ToastStack />
     </div>
   );
 }

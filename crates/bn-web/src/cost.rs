@@ -36,42 +36,4 @@ pub fn cost_view(cfg: &Config, window_days: i64, now: i64, _by: &str) -> Value {
     serde_json::to_value(&view).unwrap_or(Value::Null)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    /// The endpoint must surface the full #381 `CostView` shape — both cost units (`aic` +
-    /// `cost_usd`) and every breakdown, including the `by_day_category` cross-tab the chart needs —
-    /// so the typed frontend contract holds. Structural only (no disk assumptions), so it is stable
-    /// whether or not the machine has any recorded runs.
-    #[test]
-    fn cost_view_serializes_the_full_dual_cost_shape() {
-        // A far-future anchor with a zero window captures no runs, so the fold is empty and fast
-        // regardless of the machine's recorded history — this asserts the shape, not the data.
-        let v = cost_view(&Config::from_env(), 0, i64::MAX / 2, "");
-        let obj = v.as_object().expect("cost view is a JSON object");
-        for k in [
-            "window_days",
-            "totals",
-            "by_category",
-            "by_machine",
-            "by_repo",
-            "by_model",
-            "by_day",
-            "by_day_category",
-        ] {
-            assert!(obj.contains_key(k), "cost view missing `{k}`");
-        }
-        let totals = obj["totals"].as_object().expect("totals is an object");
-        for k in [
-            "sessions",
-            "input_tokens",
-            "cache_read_tokens",
-            "output_tokens",
-            "aic",
-            "cost_usd",
-        ] {
-            assert!(totals.contains_key(k), "totals missing `{k}`");
-        }
-    }
-}

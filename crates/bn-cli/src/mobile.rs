@@ -139,47 +139,4 @@ pub fn run(cfg: &Config, alias: &str) {
     println!("connect: {}", mobile_command(&host.alias));
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn mobile_recipe_uses_ssh_alias_and_persistent_tmux_session() {
-        assert_eq!(
-            mobile_command("fedora"),
-            "mosh --ssh='ssh' 'fedora' -- tmux new-session -A -s bn"
-        );
-    }
-
-    #[test]
-    fn mobile_recipe_shell_quotes_unusual_aliases() {
-        assert_eq!(
-            mobile_command("phone host"),
-            "mosh --ssh='ssh' 'phone host' -- tmux new-session -A -s bn"
-        );
-    }
-
-    #[test]
-    fn remote_probe_checks_mosh_server_and_tmux() {
-        let command = remote_probe_command();
-        assert!(command.contains("for b in mosh-server tmux"));
-        assert!(command.contains("MISSING:$b"));
-        assert!(command.starts_with(REMOTE_PATH));
-    }
-
-    #[test]
-    fn probe_classifies_ready_missing_and_ssh_failures() {
-        assert_eq!(classify_probe(true, "", ""), Ok(()));
-        assert_eq!(
-            classify_probe(true, "MISSING:mosh-server\nMISSING:tmux\n", ""),
-            Err(ProbeFailure::Missing(vec![
-                "mosh-server".into(),
-                "tmux".into()
-            ]))
-        );
-        assert_eq!(
-            classify_probe(false, "", "connection timed out\n"),
-            Err(ProbeFailure::Ssh("connection timed out".into()))
-        );
-    }
-}

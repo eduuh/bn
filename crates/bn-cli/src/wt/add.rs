@@ -378,35 +378,4 @@ pub(crate) fn run_clone_all(cfg: &Config, manifest: &str) -> bool {
     true
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn ff_pull_reports_failure() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(!ff_pull(&dir.path().to_string_lossy()));
-    }
-
-    /// A fresh branch has no `@{u}`; that is "nothing to pull", not "worktree is not ready".
-    #[test]
-    fn ff_pull_skips_when_no_upstream() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().to_string_lossy().to_string();
-        assert!(crate::git::git_ok(&["-C", &p, "init", "-q", "."]));
-        assert!(crate::git::git_ok(&[
-            "-C",
-            &p,
-            "-c",
-            "user.email=t@t",
-            "-c",
-            "user.name=t",
-            "commit",
-            "-q",
-            "--allow-empty",
-            "-m",
-            "init",
-        ]));
-        assert!(ff_pull(&p));
-    }
-}

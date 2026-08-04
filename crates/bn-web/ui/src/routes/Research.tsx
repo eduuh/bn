@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArrowUpRight, Inbox, Search } from "lucide-react";
-import { attnQuery, orchestrateQuery } from "../api/client";
-import { apiDispatch } from "../api/writes";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowUpRight, Inbox, Plus, Search } from "lucide-react";
+import { attnQuery, orchestrateQuery, queryKeys } from "../api/client";
+import type { AttnItem } from "../api/types";
+import { apiDispatch, createTask } from "../api/writes";
 import { pushToast } from "../lib/toast";
 import { ToastStack } from "../components/ToastStack";
 import { Button } from "../components/ui/button";
@@ -21,6 +22,64 @@ import { PageHead } from "../components/PageHead";
 import { RepoSelect } from "../components/RepoSelect";
 
 type Harness = "claude" | "copilot";
+
+/**
+ * One research ask/finding, with a **Create task** that drops it into the enhance queue — so a
+ * scout's findings become work rather than staying notes on a branch (#993). The task is created
+ * with the finding's title and repo; the enhance agent then scopes it toward the SMART gate.
+ */
+function AskCard({ it }: { it: AttnItem }) {
+  const qc = useQueryClient();
+  const make = useMutation({
+    mutationFn: () => createTask({ title: it.title, repo: it.repo ?? undefined }),
+    onSuccess: (r) => {
+      pushToast(`Created ${r.id} — the enhance agent will scope it`, "success");
+      void qc.invalidateQueries({ queryKey: queryKeys.tasks("today") });
+    },
+    onError: (e: unknown) =>
+      pushToast(e instanceof Error ? e.message : "could not create task", "error"),
+  });
+  return (
+    <Card className="space-y-2 p-3">
+      <div className="flex items-start gap-2">
+        <span className="min-w-0 flex-1 font-medium leading-tight text-foreground">{it.title}</span>
+        <span className="shrink-0 font-mono text-xs text-muted-foreground">{it.source}</span>
+      </div>
+      {it.repo && (
+        <div className="font-mono text-xs text-muted-foreground">
+          {it.repo}
+          {it.branch ? `/${it.branch}` : ""}
+        </div>
+      )}
+      {it.detail && (
+        <pre className="max-h-48 overflow-auto rounded-md border border-border bg-muted/60 p-2 font-mono text-xs text-muted-foreground">
+          {it.detail}
+        </pre>
+      )}
+      <div className="flex items-center gap-3 pt-0.5">
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={make.isPending}
+          onClick={() => make.mutate()}
+          title="create a task from this finding — it lands in the enhance queue"
+        >
+          <Plus className="h-4 w-4" /> Create task
+        </Button>
+        {it.link && (
+          <a
+            href={it.link}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-0.5 text-sm text-primary"
+          >
+            open <ArrowUpRight className="h-3.5 w-3.5" />
+          </a>
+        )}
+      </div>
+    </Card>
+  );
+}
 
 /**
  * `/research` — start a **research agent** (#483, ties to #378). A first-class, read-only *scout*:
@@ -151,37 +210,7 @@ export function Research() {
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {asks.map((it) => (
-              <Card key={it.id} className="space-y-2 p-3">
-                <div className="flex items-start gap-2">
-                  <span className="min-w-0 flex-1 font-medium leading-tight text-foreground">
-                    {it.title}
-                  </span>
-                  <span className="shrink-0 font-mono text-xs text-muted-foreground">
-                    {it.source}
-                  </span>
-                </div>
-                {it.repo && (
-                  <div className="font-mono text-xs text-muted-foreground">
-                    {it.repo}
-                    {it.branch ? `/${it.branch}` : ""}
-                  </div>
-                )}
-                {it.detail && (
-                  <pre className="max-h-48 overflow-auto rounded-md border border-border bg-muted/60 p-2 font-mono text-xs text-muted-foreground">
-                    {it.detail}
-                  </pre>
-                )}
-                {it.link && (
-                  <a
-                    href={it.link}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-0.5 text-sm text-primary"
-                  >
-                    open <ArrowUpRight className="h-3.5 w-3.5" />
-                  </a>
-                )}
-              </Card>
+              <AskCard key={it.id} it={it} />
             ))}
           </div>
         )}

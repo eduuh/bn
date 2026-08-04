@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { searchQuery } from "../api/client";
 import type { ActionItem, SearchResult, SearchResultKind } from "../api/types";
+import { type Experimental, useExperimental } from "../lib/experimental";
 import { StartAgentComposer } from "./StartAgentComposer";
 import { ToastStack } from "./ToastStack";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
@@ -83,17 +84,79 @@ function verb(r: SearchResult): "Work on" | "Open" | "Jump" {
  * `keywords` carry the synonyms the label misses — what you'd type when you don't recall the name
  * bn uses ("money" for Cost, "agents" for Fleet, "schedule" for Cron).
  */
-const DESTINATIONS: { to: string; label: string; Icon: LucideIcon; keywords: string }[] = [
+const DESTINATIONS: {
+  to: string;
+  label: string;
+  Icon: LucideIcon;
+  keywords: string;
+  /** The `?experimental=` key that lists this destination — the palette advertises the same
+   * surface the rail does, so an untested screen does not come back through the search box. */
+  exp?: string;
+}[] = [
   { to: "/", label: "Console", Icon: SquareTerminal, keywords: "home queue index start work" },
-  { to: "/fleet", label: "Fleet", Icon: Server, keywords: "agents running live sessions workers" },
-  { to: "/nodes", label: "Nodes", Icon: HardDrive, keywords: "machines hosts cpu ram health" },
-  { to: "/cron", label: "Cron", Icon: Clock, keywords: "jobs schedule timers automation runs" },
-  { to: "/attention", label: "Attention", Icon: Bell, keywords: "alerts needs you urgent inbox" },
-  { to: "/inbox", label: "Automation", Icon: Workflow, keywords: "reviews plans completed history" },
-  { to: "/today", label: "Today", Icon: Sun, keywords: "daily aimed achieved standup goals" },
-  { to: "/goals", label: "Goals", Icon: Target, keywords: "objectives quarter daily targets" },
-  { to: "/repos", label: "Repos", Icon: FolderGit2, keywords: "repositories projects worktrees" },
-  { to: "/insights", label: "Insights", Icon: LineChart, keywords: "trends metrics analytics charts" },
+  {
+    to: "/fleet",
+    label: "Fleet",
+    Icon: Server,
+    keywords: "agents running live sessions workers",
+    exp: "fleet",
+  },
+  {
+    to: "/nodes",
+    label: "Nodes",
+    Icon: HardDrive,
+    keywords: "machines hosts cpu ram health",
+    exp: "nodes",
+  },
+  {
+    to: "/cron",
+    label: "Cron",
+    Icon: Clock,
+    keywords: "jobs schedule timers automation runs",
+    exp: "cron",
+  },
+  {
+    to: "/attention",
+    label: "Attention",
+    Icon: Bell,
+    keywords: "alerts needs you urgent inbox",
+    exp: "attention",
+  },
+  {
+    to: "/inbox",
+    label: "Automation",
+    Icon: Workflow,
+    keywords: "reviews plans completed history",
+    exp: "inbox",
+  },
+  {
+    to: "/today",
+    label: "Today",
+    Icon: Sun,
+    keywords: "daily aimed achieved standup goals",
+    exp: "today",
+  },
+  {
+    to: "/goals",
+    label: "Goals",
+    Icon: Target,
+    keywords: "objectives quarter daily targets",
+    exp: "goals",
+  },
+  {
+    to: "/repos",
+    label: "Repos",
+    Icon: FolderGit2,
+    keywords: "repositories projects worktrees",
+    exp: "repos",
+  },
+  {
+    to: "/insights",
+    label: "Insights",
+    Icon: LineChart,
+    keywords: "trends metrics analytics charts",
+    exp: "insights",
+  },
   // Cost is a tab of the insights page, but it keeps its own palette entry: "money" is what people
   // type, and deep-linking straight to the tab is the whole point of `?tab=`.
   {
@@ -101,22 +164,52 @@ const DESTINATIONS: { to: string; label: string; Icon: LucideIcon; keywords: str
     label: "Cost",
     Icon: CircleDollarSign,
     keywords: "spend money usage tokens aic bill",
+    exp: "cost",
   },
-  { to: "/notes", label: "Notes", Icon: FileText, keywords: "branch notes writeups docs" },
-  { to: "/skills", label: "Skills", Icon: Zap, keywords: "mcp tools capabilities prompts" },
-  { to: "/handoff", label: "Handoff", Icon: ArrowLeftRight, keywords: "context transfer session wrap" },
-  { to: "/research", label: "Research", Icon: Microscope, keywords: "findings investigations scout" },
-  { to: "/start", label: "Start an agent", Icon: Rocket, keywords: "dispatch new run queue daemon" },
+  {
+    to: "/notes",
+    label: "Notes",
+    Icon: FileText,
+    keywords: "branch notes writeups docs",
+    exp: "notes",
+  },
+  {
+    to: "/skills",
+    label: "Skills",
+    Icon: Zap,
+    keywords: "mcp tools capabilities prompts",
+    exp: "skills",
+  },
+  {
+    to: "/handoff",
+    label: "Handoff",
+    Icon: ArrowLeftRight,
+    keywords: "context transfer session wrap",
+    exp: "handoff",
+  },
+  {
+    to: "/research",
+    label: "Research",
+    Icon: Microscope,
+    keywords: "findings investigations scout",
+    exp: "research",
+  },
+  {
+    to: "/start",
+    label: "Start an agent",
+    Icon: Rocket,
+    keywords: "dispatch new run queue daemon",
+    exp: "start",
+  },
 ];
 
 /** Destinations matching `q` — label first, then keyword hits, capped so they never bury the data. */
-function matchDestinations(q: string): typeof DESTINATIONS {
+function matchDestinations(q: string, experimental: Experimental): typeof DESTINATIONS {
+  const pool = DESTINATIONS.filter((d) => experimental.has(d.exp));
   const needle = q.trim().toLowerCase();
-  if (!needle) return DESTINATIONS;
-  const byLabel = DESTINATIONS.filter((d) => d.label.toLowerCase().includes(needle));
-  const byKeyword = DESTINATIONS.filter(
-    (d) => !byLabel.includes(d) && d.keywords.includes(needle),
-  );
+  if (!needle) return pool;
+  const byLabel = pool.filter((d) => d.label.toLowerCase().includes(needle));
+  const byKeyword = pool.filter((d) => !byLabel.includes(d) && d.keywords.includes(needle));
   return [...byLabel, ...byKeyword].slice(0, 6);
 }
 
@@ -137,6 +230,7 @@ export function CommandPalette({
   onOpenChange: (open: boolean) => void;
 }) {
   const navigate = useNavigate();
+  const experimental = useExperimental();
   const [raw, setRaw] = useState("");
   const [debounced, setDebounced] = useState("");
   const [composing, setComposing] = useState<ActionItem | null>(null);
@@ -161,7 +255,7 @@ export function CommandPalette({
   // Matched against the *raw* box, not the debounced value: navigation is local, so it should feel
   // instant rather than trailing the 150ms the data search needs. The group heading below reads
   // `raw` for the same reason — heading and list must not disagree while the search debounces.
-  const destinations = matchDestinations(raw);
+  const destinations = matchDestinations(raw, experimental);
 
   const run = (r: SearchResult) => {
     if (r.action) {

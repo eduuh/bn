@@ -1,4 +1,0 @@
-  bn agent: fatal — harness crashed (exit 137)
-  Last output before the process exited:
-    thread 'main' panicked at 'harness OOM-killed'
-[Process completed — pane is dead]

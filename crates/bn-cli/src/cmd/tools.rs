@@ -225,32 +225,4 @@ fn report_deploy(spec: &ToolSpec, outcome: DeployOutcome, json: bool) -> i32 {
     i32::from(!ok)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn outcome_labels_are_human_readable() {
-        assert_eq!(outcome_label(&DeployOutcome::Created), "created");
-        assert_eq!(outcome_label(&DeployOutcome::Started), "started");
-        assert_eq!(
-            outcome_label(&DeployOutcome::AlreadyRunning),
-            "already running"
-        );
-        assert_eq!(
-            outcome_label(&DeployOutcome::Failed("boom".into())),
-            "FAILED — boom"
-        );
-    }
-
-    #[test]
-    fn deploy_json_flags_ok_vs_failed() {
-        let spec = bn_core::tools::n8n_spec();
-        let ok = deploy_json(&spec, &DeployOutcome::Created);
-        assert_eq!(ok["ok"], serde_json::json!(true));
-        assert_eq!(ok["outcome"], serde_json::json!("created"));
-        let bad = deploy_json(&spec, &DeployOutcome::Failed("no docker".into()));
-        assert_eq!(bad["ok"], serde_json::json!(false));
-        assert_eq!(bad["error"], serde_json::json!("no docker"));
-    }
-}

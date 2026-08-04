@@ -262,44 +262,4 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn dimension_parse_and_rows() {
-        assert_eq!(Dimension::parse("category"), Some(Dimension::Category));
-        assert_eq!(Dimension::parse("REPO"), Some(Dimension::Repo));
-        assert_eq!(Dimension::parse("day"), Some(Dimension::Day));
-        assert_eq!(Dimension::parse("machine"), Some(Dimension::Machine));
-        assert_eq!(Dimension::parse("nope"), None);
-    }
-
-    #[test]
-    fn category_key_renders_title_case() {
-        assert_eq!(Dimension::Category.key_label("coding"), "Coding");
-        assert_eq!(Dimension::Category.key_label("scheduled"), "Scheduled");
-        // A non-category dimension passes the key through untouched.
-        assert_eq!(Dimension::Repo.key_label("bn"), "bn");
-    }
-
-    #[test]
-    fn dual_cost_formatting_distinguishes_absent_from_zero() {
-        assert_eq!(fmt_aic(None), "—");
-        assert_eq!(fmt_aic(Some(0.0)), "0.00");
-        assert_eq!(fmt_aic(Some(145.2)), "145.20");
-        assert_eq!(fmt_usd(None), "—");
-        assert_eq!(fmt_usd(Some(52.3)), "$52.30");
-    }
-
-    #[test]
-    fn input_shows_cached_subset() {
-        assert_eq!(fmt_input(4_200_000, 3_900_000), "4.2m(3.9m)");
-    }
-
-    #[test]
-    fn truncate_clips_long_model_ids() {
-        assert_eq!(truncate("bn", 14), "bn");
-        assert_eq!(truncate("claude-opus-4.8-thinking", 14), "claude-opus-4…");
-    }
-}

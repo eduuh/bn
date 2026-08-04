@@ -9,6 +9,7 @@ import { TopBar } from "./components/shell/TopBar";
 import { Rail } from "./components/shell/Rail";
 import { cn } from "./lib/utils";
 import { pageWidth } from "./lib/layout";
+import { syncExperimentalFromUrl } from "./lib/experimental";
 
 /**
  * The shell (clay console redesign, #966): a 46px topbar carrying identity and host vitals over a
@@ -39,6 +40,13 @@ export function App() {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, []);
+
+  // `?experimental=1` reveals the thirteen destinations that are still being tested; `=0` hides
+  // them again. Read on every navigation, not just at load, because React Router owns the URL once
+  // the shell is up (see `lib/experimental`).
+  useEffect(() => {
+    syncExperimentalFromUrl(location.search);
+  }, [location.search]);
 
   // How wide this route wants to be (see `lib/layout`). `full` routes are the console language —
   // full-bleed, multi-column, scrolling their own panes; `standard` and `document` are page-scrolled

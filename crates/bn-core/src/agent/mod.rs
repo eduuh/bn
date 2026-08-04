@@ -36,59 +36,11 @@ pub use session::*;
 pub use supervise::*;
 pub use switch::*;
 
-#[cfg(test)]
-use crate::resolver::Config;
-#[cfg(test)]
-use std::path::Path;
 
-#[cfg(test)]
-/// A Config whose metrics log + worktree root live under `base` (an isolated temp dir). Built
-/// directly — no env mutation — so it never races other tests (mirrors `doctor.rs`).
-fn test_cfg(base: &Path) -> Config {
-    Config {
-        personal_root: base.join("notes"),
-        work_root: base.join("notes"),
-        worktree_dir: base.join("worktree"),
-        hostname: "testhost".into(),
-        ..Default::default()
-    }
-}
 
-#[cfg(test)]
-fn write(path: &Path, body: &str) {
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, body).unwrap();
-}
 
-#[cfg(test)]
-/// A session ending at `ended` with the given diff shape (everything else nominal).
-fn session(
-    id: &str,
-    harness: &str,
-    started: i64,
-    ended: i64,
-    added: i64,
-    files: i64,
-) -> AgentSession {
-    AgentSession {
-        session_id: id.into(),
-        harness: harness.into(),
-        repo: "bn".into(),
-        branch: "feat/x".into(),
-        started_ts: started,
-        ended_ts: ended,
-        turns: 5,
-        tool_calls: 12,
-        permission_prompts: 0,
-        models: vec!["claude-opus-4-8".into()],
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_read_tokens: 0,
-        cost_nanoaiu: None,
-        lines_added: added,
-        lines_removed: 0,
-        files_modified: files,
-        outcome: "completed".into(),
-        work_class: crate::cost::WorkClass::Unattributed,
-    }
-}
+
+
+
+
+

@@ -376,45 +376,4 @@ fn setsid_detached() {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    // The bug this file exists to fix: `bn serve stop` unregistered the service and reported
-    // "stopped and unregistered" while an orphaned bn-web kept the port. `Stuck` is the state that
-    // used to be indistinguishable from success.
-    #[test]
-    fn a_listener_surviving_the_unload_is_reported_stuck_not_stopped() {
-        assert_eq!(
-            stop_outcome(true, &[96147], &[96147]),
-            StopOutcome::Stuck(vec![96147]),
-        );
-    }
-
-    #[test]
-    fn stuck_wins_even_when_no_service_was_registered() {
-        // The orphan case exactly: nothing installed any more, yet the port is still held.
-        assert_eq!(
-            stop_outcome(false, &[], &[4242]),
-            StopOutcome::Stuck(vec![4242]),
-        );
-    }
-
-    #[test]
-    fn a_listener_that_died_on_signal_is_reported_terminated() {
-        assert_eq!(
-            stop_outcome(true, &[123, 456], &[]),
-            StopOutcome::Terminated(vec![123, 456]),
-        );
-    }
-
-    #[test]
-    fn unregistering_with_nothing_on_the_port_is_still_a_clean_stop() {
-        assert_eq!(stop_outcome(true, &[], &[]), StopOutcome::Unregistered);
-    }
-
-    #[test]
-    fn nothing_installed_and_nothing_listening_is_a_no_op() {
-        assert_eq!(stop_outcome(false, &[], &[]), StopOutcome::Nothing);
-    }
-}

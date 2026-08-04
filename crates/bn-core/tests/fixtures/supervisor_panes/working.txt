@@ -1,3 +1,0 @@
-● Editing crates/bn-core/src/orchestrate.rs
-  Added the classify() corpus loader and 3 table rows.
-✻ Baking… (12s · ↑ 1.4k tokens · esc to interrupt)

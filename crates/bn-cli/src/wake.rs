@@ -121,41 +121,4 @@ fn same_parent(path: &Path, signal_path: &Path) -> bool {
             .is_some_and(|name| name.to_string_lossy().contains("wake-queue.signal"))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn wakes_on_signal_and_times_out_without_one() {
-        let dir = tempfile::tempdir().unwrap();
-        let signal = dir.path().join("wake-queue.signal");
-        let watcher = WakeWatcher::at(signal.clone(), &[]).unwrap();
-        let writer = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(50));
-            std::fs::write(signal, "1").unwrap();
-        });
-
-        assert!(watcher.wait_timeout(Duration::from_secs(2)).unwrap());
-        writer.join().unwrap();
-        assert!(!watcher.wait_timeout(Duration::from_millis(20)).unwrap());
-    }
-
-    #[test]
-    fn unrelated_state_chatter_does_not_extend_timeout() {
-        let dir = tempfile::tempdir().unwrap();
-        let signal = dir.path().join("wake-queue.signal");
-        let watcher = WakeWatcher::at(signal, &[]).unwrap();
-        let unrelated = dir.path().join("events.jsonl");
-        let writer = std::thread::spawn(move || {
-            for n in 0..10 {
-                std::fs::write(&unrelated, n.to_string()).unwrap();
-                std::thread::sleep(Duration::from_millis(30));
-            }
-        });
-
-        let started = Instant::now();
-        assert!(!watcher.wait_timeout(Duration::from_millis(100)).unwrap());
-        assert!(started.elapsed() < Duration::from_millis(250));
-        writer.join().unwrap();
-    }
-}

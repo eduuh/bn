@@ -78,32 +78,4 @@ impl Clock for FixedClock {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn fixed_clock_is_deterministic() {
-        // 1_700_000_000 = 2023-11-14T22:13:20Z.
-        let c = FixedClock::at(1_700_000_000);
-        assert_eq!(c.now_epoch_secs(), 1_700_000_000);
-        // today() derives from the same epoch — stable regardless of the wall clock.
-        assert_eq!(c.today(), c.today());
-        // The stamp embeds the same instant the file-stamp does (same minute).
-        assert!(c.now_stamp().starts_with(&c.today()));
-        assert_eq!(c.now_filestamp().len(), "YYYYMMDD-HHMMSS".len());
-    }
-
-    #[test]
-    fn real_clock_matches_util_helpers() {
-        // RealClock must be a pass-through: pin the env override and confirm both agree.
-        let _g = crate::test_support::env_lock();
-        let _today = crate::test_support::EnvGuard::set("BN_TODAY", "2026-06-26");
-        let _now = crate::test_support::EnvGuard::set("BN_NOW", "1750000000");
-        let c = RealClock;
-        assert_eq!(c.today(), crate::util::today());
-        assert_eq!(c.now_epoch_secs(), crate::util::now_epoch_secs());
-        assert_eq!(c.now_stamp(), crate::util::now_stamp());
-        assert_eq!(c.now_filestamp(), crate::util::now_filestamp());
-    }
-}

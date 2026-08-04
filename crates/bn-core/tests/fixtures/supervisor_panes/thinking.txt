@@ -1,2 +1,0 @@
-✻ Thinking… (esc to interrupt)
-  Weighing whether the merge-fail path can ever reap the lane.

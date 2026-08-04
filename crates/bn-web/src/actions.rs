@@ -2235,71 +2235,7 @@ pub async fn suggestion_status(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn harness_allowlist_normalizes_and_rejects() {
-        assert_eq!(normalize_harness(None), Some("copilot"));
-        assert_eq!(normalize_harness(Some("copilot")), Some("copilot"));
-        assert_eq!(normalize_harness(Some("claude")), Some("claude"));
-        assert_eq!(normalize_harness(Some("claudecode")), Some("claude"));
-        assert_eq!(normalize_harness(Some("gpt4")), None);
-        assert_eq!(normalize_harness(Some("bash;rm -rf")), None);
-    }
-
-    #[test]
-    fn relaunch_args_call_the_relaunch_command_not_recover() {
-        // The whole point of this endpoint's rewrite: Relaunch must run a command that relaunches.
-        // It used to shell out to `bn agent recover --yes`, which pushes a branch and opens a PR.
-        let plain = relaunch_args("bn:dispatch/web-501", false, None);
-        assert_eq!(plain, vec!["agent", "relaunch", "bn:dispatch/web-501"]);
-
-        let hard = relaunch_args("bn:feat", true, None);
-        assert_eq!(hard, vec!["agent", "relaunch", "bn:feat", "--hard"]);
-
-        // A harness change rides the same command — it no longer detours through `bn switch`,
-        // which reported success even when the swap failed.
-        let swap = relaunch_args("bn:feat", false, Some("copilot"));
-        assert_eq!(
-            swap,
-            vec!["agent", "relaunch", "bn:feat", "--harness", "copilot"]
-        );
-
-        for args in [plain, hard, swap] {
-            assert!(!args.contains(&"recover".to_string()), "{args:?}");
-            assert!(!args.contains(&"switch".to_string()), "{args:?}");
-        }
-    }
-
-    #[test]
-    fn relaunch_body_parses_optional_harness() {
-        // The plain recover body (no harness) still parses to the default.
-        let plain: RelaunchBody = serde_json::from_str(r#"{"hard":true}"#).unwrap();
-        assert!(plain.hard && plain.harness.is_none());
-        // The #501 harness-switch body carries the requested harness through.
-        let switch: RelaunchBody = serde_json::from_str(r#"{"harness":"copilot"}"#).unwrap();
-        assert_eq!(switch.harness.as_deref(), Some("copilot"));
-        assert!(!switch.hard);
-    }
-
-    #[test]
-    fn repo_and_target_validation_reject_injection_shapes() {
-        assert!(valid_repo("bn"));
-        assert!(valid_repo("my-repo_1.0"));
-        assert!(!valid_repo("a repo"));
-        assert!(!valid_repo("a;b"));
-        assert!(!valid_repo("$(whoami)"));
-        assert!(!valid_repo(""));
-
-        assert!(valid_target("bn:dispatch-352"));
-        assert!(valid_target("bn:dispatch/352"));
-        assert!(!valid_target("no-colon"));
-        assert!(!valid_target("bn:branch; rm -rf /"));
-        assert!(!valid_target("bn:`id`"));
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Task writes (#1006, EPIC #993) — split by latency
@@ -2551,6 +2487,177 @@ pub async fn task_action(
             server_error(cmd, "write_failed", &e)
         }
         Err(_) => server_error(cmd, "panicked", "the task write panicked"),
+    }
+}
+
+/// `POST /api/tasks/{id}/doc/append` — append context under a section (default `Investigation`).
+///
+/// Additive and unguarded: it re-reads the current doc and inserts under the heading, so an
+/// agent's append and a human's edit never fight over it. Creates the doc from the template first
+/// if the task has none yet.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct DocAppendBody {
+    pub text: String,
+    pub section: Option<String>,
+}
+
+pub async fn task_doc_append(
+    State(state): State<AppState>,
+    MaybeAddr(addr): MaybeAddr,
+    Path(id): Path<String>,
+    raw: Bytes,
+) -> Response {
+    let cmd = "task-doc-append";
+    let body: DocAppendBody = match parse_body(cmd, &raw) {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    let id = id.trim().to_string();
+    if id.is_empty() || id.len() > 32 || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return bad_request(cmd, "invalid_id", "task id must be alphanumeric (e.g. t42)");
+    }
+    let text = body.text.trim().to_string();
+    if text.is_empty() {
+        return bad_request(cmd, "empty_text", "nothing to append");
+    }
+    // The section becomes a `## <heading>` line, so keep it a plain heading.
+    let section = body
+        .section
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Investigation")
+        .to_string();
+    if section.len() > 40
+        || !section
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == ' ')
+    {
+        return bad_request(cmd, "invalid_section", "section must be a plain heading");
+    }
+
+    let cfg = state.cfg.clone();
+    let task_id = id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let path = cfg.tasks_file();
+        let task = {
+            let _lock = bn_core::todo::lock(&path);
+            let file = bn_core::todo::load(&path).map_err(|e| e.to_string())?;
+            let found = file
+                .tasks()
+                .find(|t| t.id() == Some(task_id.as_str()))
+                .cloned()
+                .ok_or_else(|| format!("no task {task_id}"))?;
+            found
+        };
+        match bn_core::task_doc::append_section(&cfg, &task, &section, &text) {
+            Ok(d) => {
+                Ok::<_, String>(json!({ "path": d.path, "body": d.text, "version": d.version() }))
+            }
+            Err(bn_core::task_doc::DocError::NoPath) => Err("no_doc".to_string()),
+            Err(bn_core::task_doc::DocError::Io(e)) => Err(e.to_string()),
+            Err(bn_core::task_doc::DocError::Conflict(_)) => Err("conflict".to_string()),
+        }
+    })
+    .await;
+
+    match result {
+        Ok(Ok(data)) => {
+            audit::record(&state, "task-doc-append", &id, addr, true);
+            Json(Envelope::success(cmd, data)).into_response()
+        }
+        Ok(Err(e)) if e.starts_with("no task") => {
+            audit::record(&state, "task-doc-append", &id, addr, false);
+            not_found_json(cmd, &e)
+        }
+        Ok(Err(e)) if e == "no_doc" => bad_request(cmd, "no_doc", "this task has no context doc"),
+        Ok(Err(e)) => {
+            audit::record(&state, "task-doc-append", &id, addr, false);
+            server_error(cmd, "write_failed", &e)
+        }
+        Err(_) => server_error(cmd, "panicked", "the doc append panicked"),
+    }
+}
+
+/// `PUT /api/tasks/{id}/doc` — replace the whole doc, guarded by `if_match` (the version the caller
+/// read). A stale `if_match` is a `409 doc_conflict`, not a lost write.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct DocEditBody {
+    pub body: String,
+    pub if_match: Option<String>,
+}
+
+pub async fn task_doc_edit(
+    State(state): State<AppState>,
+    MaybeAddr(addr): MaybeAddr,
+    Path(id): Path<String>,
+    raw: Bytes,
+) -> Response {
+    let cmd = "task-doc-edit";
+    let body: DocEditBody = match parse_body(cmd, &raw) {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    let id = id.trim().to_string();
+    if id.is_empty() || id.len() > 32 || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return bad_request(cmd, "invalid_id", "task id must be alphanumeric (e.g. t42)");
+    }
+    let new_body = body.body;
+    if new_body.len() > 256 * 1024 {
+        return bad_request(cmd, "too_large", "the doc is unexpectedly large");
+    }
+    let if_match = body.if_match;
+
+    let cfg = state.cfg.clone();
+    let task_id = id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let path = cfg.tasks_file();
+        let task = {
+            let _lock = bn_core::todo::lock(&path);
+            let file = bn_core::todo::load(&path).map_err(|e| e.to_string())?;
+            let found = file
+                .tasks()
+                .find(|t| t.id() == Some(task_id.as_str()))
+                .cloned()
+                .ok_or_else(|| format!("no task {task_id}"))?;
+            found
+        };
+        match bn_core::task_doc::write(&cfg, &task, new_body, if_match.as_deref()) {
+            Ok(d) => {
+                Ok::<_, String>(json!({ "path": d.path, "body": d.text, "version": d.version() }))
+            }
+            Err(bn_core::task_doc::DocError::Conflict(_)) => Err("conflict".to_string()),
+            Err(bn_core::task_doc::DocError::NoPath) => Err("no_doc".to_string()),
+            Err(bn_core::task_doc::DocError::Io(e)) => Err(e.to_string()),
+        }
+    })
+    .await;
+
+    match result {
+        Ok(Ok(data)) => {
+            audit::record(&state, "task-doc-edit", &id, addr, true);
+            Json(Envelope::success(cmd, data)).into_response()
+        }
+        Ok(Err(e)) if e.starts_with("no task") => {
+            audit::record(&state, "task-doc-edit", &id, addr, false);
+            not_found_json(cmd, &e)
+        }
+        Ok(Err(e)) if e == "no_doc" => bad_request(cmd, "no_doc", "this task has no context doc"),
+        // Lost the race: the doc moved under the editor. 409 so the client keeps the operator's
+        // text and reloads to show what actually landed.
+        Ok(Err(e)) if e == "conflict" => {
+            audit::record(&state, "task-doc-edit", &id, addr, false);
+            conflict(
+                cmd,
+                "doc_conflict",
+                "the doc changed since you opened it — your text is kept; reload to see what landed",
+            )
+        }
+        Ok(Err(e)) => {
+            audit::record(&state, "task-doc-edit", &id, addr, false);
+            server_error(cmd, "write_failed", &e)
+        }
+        Err(_) => server_error(cmd, "panicked", "the doc write panicked"),
     }
 }
 

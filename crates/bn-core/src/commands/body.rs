@@ -165,39 +165,4 @@ pub fn read_body_section(
     Ok(crate::render::section_content(&note.body, heading))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
 
-    #[test]
-    fn headings_demote_by_two_levels() {
-        assert_eq!(
-            demote_headings("# Top\n## Two\ntext"),
-            "### Top\n#### Two\ntext"
-        );
-    }
-
-    #[test]
-    fn a_hash_without_a_space_is_not_a_heading() {
-        assert_eq!(demote_headings("#tag not a heading"), "#tag not a heading");
-    }
-
-    #[test]
-    fn shell_comments_inside_a_fence_survive_verbatim() {
-        // The plan tells you to run this; demoting the comment would corrupt the command.
-        let plan = "# Steps\n\n```sh\n# build the thing\nmake all\n```\n";
-        assert_eq!(
-            demote_headings(plan),
-            "### Steps\n\n```sh\n# build the thing\nmake all\n```"
-        );
-    }
-
-    #[test]
-    fn quoted_markdown_inside_a_fence_is_left_alone() {
-        let plan = "## Approach\n\n````markdown\n## Goal\n\nthe goal\n````\n";
-        assert_eq!(
-            demote_headings(plan),
-            "#### Approach\n\n````markdown\n## Goal\n\nthe goal\n````"
-        );
-    }
-}

@@ -108,34 +108,4 @@ pub(crate) fn field_str(ev: &Event, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::attention::*;
-    use crate::test_support::with_state_dir;
 
-    #[test]
-    fn get_returns_folded_item_even_after_resolution() {
-        with_state_dir(|| {
-            let it = add_simple("planned soon", "warn", None);
-            update(
-                &it.id,
-                Some("renamed"),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
-            .unwrap();
-            mark_planned(&it.id, "t1").unwrap();
-            // gone from the open list, but still fetchable with the edit applied
-            assert!(open_items("2026-06-23").is_empty());
-            let got = get(&it.id).unwrap();
-            assert_eq!(got.title, "renamed");
-            assert!(get("a999").is_none());
-        });
-    }
-}

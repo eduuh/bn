@@ -1,3 +1,0 @@
-  All set — the corpus is in place and tests are green.
-  Type / for commands, or just tell me what to do next.
-❯

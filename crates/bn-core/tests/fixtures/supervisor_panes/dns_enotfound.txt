@@ -1,3 +1,0 @@
-⎿ Error: getaddrinfo ENOTFOUND api.anthropic.com
-      at GetAddrInfoReqWrap.onlookup (node:dns:120:26)
-  The harness cannot resolve the API host — the network is down.

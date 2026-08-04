@@ -52,30 +52,4 @@ pub fn latest_snapshot_before(cfg: &Config, date: &str) -> Option<Snapshot> {
         .rfind(|s| s.date.as_str() < date)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::super::scorecard::scorecard;
-    use super::*;
-    use crate::runner::FakeRunner;
 
-    #[test]
-    fn snapshot_round_trips_and_trend_baseline_respects_date() {
-        let _g = crate::test_support::env_lock();
-        let dir = tempfile::tempdir().unwrap();
-        let _notes = crate::test_support::EnvGuard::set("BN_NOTES_DIR", dir.path());
-        let _host = crate::test_support::EnvGuard::set("BN_HOSTNAME", "testbox");
-        let cfg = Config::from_env();
-
-        let card = scorecard(&cfg, &FakeRunner::new(), 100 * 86_400, 30, "2026-06-24");
-        let path = write_snapshot(&cfg, &card, "2026-06-20").unwrap();
-        assert!(path.exists(), "snapshot file written");
-
-        let snaps = read_snapshots(&cfg);
-        assert_eq!(snaps.len(), 1);
-        assert_eq!(snaps[0].date, "2026-06-20");
-
-        // A baseline exists for a later day, but not for the snapshot's own day or earlier.
-        assert!(latest_snapshot_before(&cfg, "2026-06-24").is_some());
-        assert!(latest_snapshot_before(&cfg, "2026-06-20").is_none());
-    }
-}

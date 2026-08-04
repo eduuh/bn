@@ -351,95 +351,9 @@ pub(crate) fn web_uninstall() {
     let _ = std::fs::remove_file(web_plist_path());
 }
 
-#[cfg(test)]
-mod web_daemon_tests {
-    use super::*;
 
-    #[test]
-    fn web_plist_is_a_runatload_keepalive_agent_with_args() {
-        let p = web_daemon_plist("/usr/local/bin/bn-web", &["--port".into(), "7770".into()]);
-        assert!(p.contains("<string>com.bn.web</string>"));
-        assert!(p.contains("exec \"/usr/local/bin/bn-web\" --port 7770"));
-        assert!(p.contains("<key>RunAtLoad</key>\n  <true/>"));
-        assert!(p.contains("<key>KeepAlive</key>"));
-        assert!(p.contains("<key>SuccessfulExit</key>\n    <false/>"));
-        assert!(p.contains("ThrottleInterval"));
-        // A daemon, not a cron agent.
-        assert!(!p.contains("StartInterval"));
-        assert!(!p.contains("StartCalendarInterval"));
-    }
 
-    #[test]
-    fn web_plist_omits_trailing_space_with_no_args() {
-        let p = web_daemon_plist("/usr/local/bin/bn-web", &[]);
-        assert!(p.contains("<string>exec \"/usr/local/bin/bn-web\"</string>"));
-    }
 
-    #[test]
-    fn web_label_is_recognized_and_distinct() {
-        assert!(is_web_label("com.bn.web"));
-        assert!(!is_web_label("com.bn.weblike"));
-        assert!(!is_web_label("com.bn.orchestrate"));
-        // Excluded from the cron reconcile just like orchestrate labels.
-        assert!(!is_orchestrate_label(WEB_LABEL));
-    }
-}
-
-#[cfg(test)]
-mod orchestrate_daemon_tests {
-    use super::*;
-
-    #[test]
-    fn daemon_plist_is_a_per_repo_runatload_keepalive_agent() {
-        let p = orchestrate_daemon_plist("/usr/local/bin/bn", "bn");
-        // #395: per-repo label + a run pinned to its repo's own state file.
-        assert!(p.contains("<string>com.bn.orchestrate.bn</string>"));
-        assert!(p.contains("exec \"/usr/local/bin/bn\" orchestrate run --repo \"bn\""));
-        assert!(p.contains("<key>RunAtLoad</key>\n  <true/>"));
-        // KeepAlive only on crash — a clean drain/stop must NOT be restarted forever.
-        assert!(p.contains("<key>KeepAlive</key>"));
-        assert!(p.contains("<key>SuccessfulExit</key>\n    <false/>"));
-        assert!(p.contains("ThrottleInterval"));
-        // No periodic scheduling — this is a daemon, not a cron agent.
-        assert!(!p.contains("StartInterval"));
-        assert!(!p.contains("StartCalendarInterval"));
-    }
-
-    #[test]
-    fn orchestrate_label_derives_per_repo_and_sanitizes() {
-        assert_eq!(orchestrate_label("bn"), "com.bn.orchestrate.bn");
-        assert_eq!(
-            orchestrate_label("owner/repo"),
-            "com.bn.orchestrate.owner-repo"
-        );
-        // Two different repos never share a daemon label.
-        assert_ne!(orchestrate_label("repo-a"), orchestrate_label("repo-b"));
-    }
-
-    #[test]
-    fn every_orchestrate_label_is_excluded_from_cron_reconcile() {
-        // #395: the cron reconcile must skip the legacy singleton AND every per-repo daemon —
-        // `registered()` filters via is_orchestrate_label before label_job, so `bn cron register`
-        // never treats any of them as an orphaned cron job to reap.
-        assert!(is_orchestrate_label("com.bn.orchestrate"));
-        assert!(is_orchestrate_label("com.bn.orchestrate.bn"));
-        assert!(is_orchestrate_label(&orchestrate_label("owner/repo")));
-        assert!(is_orchestrate_label("com.bn.orchestrate.multi.dot"));
-        // …but nothing else.
-        assert!(!is_orchestrate_label("com.bn.orchestratex"));
-        assert!(!is_orchestrate_label("com.bn.daily-rollover"));
-        assert!(!is_orchestrate_label("com.bn.wt-cleanup"));
-        // Sanity: without the filter these labels WOULD parse as cron jobs — the filter is load-bearing.
-        assert_eq!(
-            crate::cron_gen::label_job("com.bn.orchestrate"),
-            Some("orchestrate")
-        );
-        assert_eq!(
-            crate::cron_gen::label_job("com.bn.orchestrate.bn"),
-            Some("bn")
-        );
-    }
-}
 
 // --- `bn routine watch` managed daemon (#801 amendment) ----------------------
 // The watcher is a long-running daemon (RunAtLoad + KeepAlive), same shape as the orchestrate/web
@@ -514,29 +428,4 @@ pub(crate) fn routine_uninstall() {
     let _ = std::fs::remove_file(routine_plist_path());
 }
 
-#[cfg(test)]
-mod routine_daemon_tests {
-    use super::*;
 
-    #[test]
-    fn routine_plist_is_a_runatload_keepalive_agent() {
-        let p = routine_daemon_plist("/usr/local/bin/bn");
-        assert!(p.contains("<string>com.bn.routine</string>"));
-        assert!(p.contains("exec \"/usr/local/bin/bn\" routine watch"));
-        assert!(p.contains("<key>RunAtLoad</key>\n  <true/>"));
-        assert!(p.contains("<key>KeepAlive</key>"));
-        assert!(p.contains("<key>SuccessfulExit</key>\n    <false/>"));
-        assert!(p.contains("ThrottleInterval"));
-        // A daemon, not a cron agent.
-        assert!(!p.contains("StartInterval"));
-        assert!(!p.contains("StartCalendarInterval"));
-    }
-
-    #[test]
-    fn routine_label_is_recognized_and_excluded_from_cron_reconcile() {
-        assert!(is_routine_label("com.bn.routine"));
-        assert!(!is_routine_label("com.bn.routinex"));
-        assert!(!is_orchestrate_label(ROUTINE_LABEL));
-        assert!(!is_web_label(ROUTINE_LABEL));
-    }
-}

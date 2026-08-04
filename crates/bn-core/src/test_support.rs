@@ -6,11 +6,7 @@
 //! test bleeds into another mid-flight — a classic source of order-dependent flakes. Everything
 //! here funnels through [`env_lock`] (a process-wide mutex) and [`EnvGuard`] (RAII set/restore).
 //!
-//! It compiles under `#[cfg(test)]` for this crate's own tests, and under the `test-support`
-//! cargo feature so `bn-cli` can enable it as a dev-dependency feature and share the *same* lock
-//! and guard rather than rolling its own unlocked mutations.
-//!
-//! Direct `std::env::set_var`/`remove_var` is denied workspace-wide by `clippy.toml`; the only
+//! It compiles under ` the only
 //! sanctioned raw calls live in [`EnvGuard`] below.
 
 use crate::resolver::Config;
