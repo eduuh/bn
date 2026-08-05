@@ -1,0 +1,12 @@
+# Frontend build + dependency artifacts. The Rust build (build.rs) embeds `dist/` when present,
+# else a placeholder — so a source checkout without these still compiles. CI builds them for the
+# released binary.
+node_modules/
+dist/
+*.local
+
+# Playwright E2E (runtime server tree + reports); screenshots ARE committed.
+/e2e/.runtime/
+/test-results/
+/playwright-report/
+/blob-report/

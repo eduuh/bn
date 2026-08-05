@@ -1,0 +1,500 @@
+//! Host registry for native SSH (`bn connect`, `bn dispatch --host`). `~/.ssh/config` is the
+//! source of truth for connection details; the config.toml `[hosts]` table only adds what ssh
+//! config can't express (where worktrees live on that box, the default agent harness, whether
+//! `bn` is installed there). Resolution: enumerate `Host` stanzas (wildcards and `Match` blocks
+//! skipped), left-join `[hosts]` by alias, filter out localhost.
+
+use std::collections::HashMap;
+use std::path::Path;
+
+/// A `[hosts.<alias>]` entry from config.toml — the enrichment ssh config can't carry.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct HostExtra {
+    /// Where worktrees live on that box (the remote's `worktree_dir`).
+    pub repo_root: Option<String>,
+    /// Default agent harness when dispatching there (`claude` / `copilot`).
+    pub harness: Option<String>,
+    /// Whether `bn` is installed on the target. `false` = connect works but dispatch/preview
+    /// degrade; unset = unknown (probed at dispatch time).
+    pub bn: Option<bool>,
+}
+
+/// A connectable host: an ssh-config alias plus its `[hosts]` enrichment.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Host {
+    /// The `Host` alias as typed after `ssh ` — the join key for `[hosts]`.
+    pub alias: String,
+    /// `HostName` from the stanza (what ssh actually dials), if set.
+    pub hostname: Option<String>,
+    /// `User` from the stanza, if set.
+    pub user: Option<String>,
+    /// `Port` from the stanza, if set and numeric.
+    pub port: Option<u16>,
+    /// Whether the alias has a `[hosts.<alias>]` entry — the trust registration
+    /// `bn dispatch --host` requires.
+    pub registered: bool,
+    pub extra: HostExtra,
+}
+
+impl Host {
+    /// `user@hostname[:port]` — the connection target ssh resolves the alias to. Falls back to
+    /// the alias itself when the stanza sets no `HostName`.
+    pub fn target(&self) -> String {
+        let name = self.hostname.as_deref().unwrap_or(&self.alias);
+        let base = match &self.user {
+            Some(u) => format!("{u}@{name}"),
+            None => name.to_string(),
+        };
+        match self.port {
+            Some(p) => format!("{base}:{p}"),
+            None => base,
+        }
+    }
+}
+
+/// A node's lifecycle in the registry (#717). Only [`Ready`](NodeStatus::Ready) is eligible for
+/// placement; every other state (and an unheard-from / freshly-stubbed node) is filtered out by
+/// the pure scheduler before it can be chosen. `Unknown` is the default so a record with no live
+/// heartbeat yet is never treated as placeable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NodeStatus {
+    /// Heartbeating and accepting work — the only placement-eligible state.
+    Ready,
+    /// Reachable but shedding load; no new work should be placed here.
+    Draining,
+    /// Not reachable / heartbeat lapsed.
+    Offline,
+    /// No heartbeat observed yet (freshly stubbed) — the default.
+    #[default]
+    Unknown,
+}
+
+/// A worker node in the execution registry (#717, M1 foundation) — the identity + capacity record
+/// dispatch will place work against once [`crate::backlog::ExecutionTarget::SshHost`] targeting is
+/// wired end-to-end. This is the **stub shape only**: the fields are persisted and the pure
+/// scheduler filters on [`status`](NodeRecord::status), but no live capacity is fetched yet (that's
+/// a later slice — #719). `ram_reserved_mb` is what the daemon has already committed to in-flight
+/// agents on that node; `ram_total_mb - ram_reserved_mb` is the headroom a future capacity-aware
+/// pick will weigh. `labels` (e.g. `wsl-box`, `fedora-box`) let a target select a *class* of node.
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+pub struct NodeRecord {
+    /// Stable node id — the `~/.ssh/config` alias the [`crate::backlog::ExecutionTarget::SshHost`]
+    /// target names, so placement resolves a target to a concrete registry record.
+    pub node_id: String,
+    /// **Where this node executes** (#729): the [`crate::backlog::ExecutionTarget`] dispatch places
+    /// a picked item onto — [`Local`](crate::backlog::ExecutionTarget::Local) for the box the daemon
+    /// runs on (e.g. `wsl-box`), or [`SshHost`](crate::backlog::ExecutionTarget::SshHost) for a
+    /// remote worker (e.g. `fedora-box` → `ssh:fedora`). Defaults to `Local` so a pre-#729 record
+    /// (which carried no target) reads as the implicit local box.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::backlog::ExecutionTarget::is_local"
+    )]
+    pub target: crate::backlog::ExecutionTarget,
+    /// Free-form capability labels (e.g. `os:linux`, `mt5-bridge`, `has-node`) placement matches a
+    /// repo's required capabilities against (#728).
+    #[serde(default)]
+    pub labels: Vec<String>,
+    /// Total RAM on the node in MB (0 until a capacity probe fills it — stub).
+    #[serde(default)]
+    pub ram_total_mb: u64,
+    /// RAM already committed to in-flight agents on the node in MB (0 = idle / unknown).
+    #[serde(default)]
+    pub ram_reserved_mb: u64,
+    /// Repositories this node owns and may execute. Empty preserves the pre-ownership behavior:
+    /// the node accepts any repo that passes its capability policy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owned_repos: Vec<String>,
+    /// Last worker-status capacity snapshot. `None` means the signal is unknown and resource
+    /// guards fail open, matching local observation semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capacity: Option<crate::worker::capacity::Capacity>,
+    /// Active worker attempts reported by the node. The current worker admission policy is
+    /// single-slot, so a non-zero count makes the node busy for automatic placement.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub active_attempts: usize,
+    /// Epoch secs of the last heartbeat (0 = never heard from).
+    #[serde(default)]
+    pub last_heartbeat: i64,
+    /// The node's lifecycle state; only [`NodeStatus::Ready`] is placement-eligible.
+    #[serde(default)]
+    pub status: NodeStatus,
+}
+
+/// A `[nodes.<node_id>]` entry from config.toml — the declarative worker list (#729). This is the
+/// *operator-declared* shape of a node (its execution target, owned repos, capability labels, and
+/// RAM budget);
+/// [`into_record`](NodeConfig::into_record) turns it into the runtime [`NodeRecord`] dispatch
+/// places against. `status`/`last_heartbeat` are intentionally not configurable: they're liveness
+/// state the daemon's preflight fills in (a freshly-loaded node starts [`NodeStatus::Unknown`],
+/// never `Ready`, so it can't be placed on until a preflight confirms it).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct NodeConfig {
+    /// The node's [`crate::backlog::ExecutionTarget`] label (`local`, `ssh:<alias>`,
+    /// `github-runner`). Absent/blank ⇒ `local` (the box the daemon runs on).
+    pub target: Option<String>,
+    /// Capability labels (e.g. `os:linux`, `mt5-bridge`, `has-node`) placement matches a repo's
+    /// required capabilities against (#728).
+    #[serde(default)]
+    pub labels: Vec<String>,
+    /// Total RAM on the node in MB (0 = unknown).
+    #[serde(default)]
+    pub ram_total_mb: u64,
+    /// RAM the operator reserves as always-committed headroom on the node in MB (0 = none).
+    #[serde(default)]
+    pub ram_reserved_mb: u64,
+    /// Repositories this node owns. Empty means unrestricted for backward compatibility.
+    #[serde(default)]
+    pub repos: Vec<String>,
+}
+
+impl NodeConfig {
+    /// Resolve this config entry into a runtime [`NodeRecord`] under `node_id`. The `target`
+    /// string is parsed via [`crate::backlog::ExecutionTarget::parse`]; an unrecognized/blank
+    /// value falls back to [`crate::backlog::ExecutionTarget::Local`]. `status` starts
+    /// [`NodeStatus::Unknown`] — never placement-eligible until a live preflight promotes it.
+    pub fn into_record(self, node_id: &str) -> NodeRecord {
+        let target = self
+            .target
+            .as_deref()
+            .and_then(crate::backlog::ExecutionTarget::parse)
+            .unwrap_or_default();
+        NodeRecord {
+            node_id: node_id.to_string(),
+            target,
+            labels: self.labels,
+            ram_total_mb: self.ram_total_mb,
+            ram_reserved_mb: self.ram_reserved_mb,
+            owned_repos: self.repos,
+            capacity: None,
+            active_attempts: 0,
+            last_heartbeat: 0,
+            status: NodeStatus::Unknown,
+        }
+    }
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
+}
+
+/// Resolve the declarative `[nodes]` table (`node_id → `[`NodeConfig`]`) into the runtime registry,
+/// sorted by `node_id` for a stable, deterministic first-fit placement order (#729). An empty map
+/// yields an empty registry — the pre-#729 single-node behavior (placement then always lands
+/// `Local`).
+pub fn resolve_nodes(nodes: &HashMap<String, NodeConfig>) -> Vec<NodeRecord> {
+    let mut records: Vec<NodeRecord> = nodes
+        .iter()
+        .map(|(id, cfg)| cfg.clone().into_record(id))
+        .collect();
+    records.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    records
+}
+
+/// The lifecycle state a node takes after a **BatchMode key-auth preflight** (#729). A node whose
+/// `ssh -o BatchMode=yes` probe succeeded (reachable *and* key auth works — no password prompt) is
+/// [`Ready`](NodeStatus::Ready) and placement-eligible; a probe that failed (unreachable, or
+/// password-only auth the unattended daemon can't answer) marks it [`Offline`](NodeStatus::Offline)
+/// so the scheduler never places on a node it can't actually reach. Pure so the mapping is
+/// unit-testable; the CLI supplies the live probe result.
+pub fn node_status_from_preflight(reachable_with_key_auth: bool) -> NodeStatus {
+    if reachable_with_key_auth {
+        NodeStatus::Ready
+    } else {
+        NodeStatus::Offline
+    }
+}
+
+/// ssh's first-obtained-value semantics.
+pub fn parse_ssh_config(text: &str) -> Vec<Host> {
+    let mut hosts: Vec<Host> = Vec::new();
+    // Indices into `hosts` for the stanza currently being filled; empty while inside a
+    // `Match` block or a stanza whose aliases were all wildcards.
+    let mut current: Vec<usize> = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = split_directive(line) else {
+            continue;
+        };
+        if key.eq_ignore_ascii_case("host") {
+            current.clear();
+            for alias in value.split_whitespace() {
+                if alias.contains(['*', '?']) || alias.starts_with('!') {
+                    continue;
+                }
+                current.push(hosts.len());
+                hosts.push(Host {
+                    alias: alias.to_string(),
+                    ..Host::default()
+                });
+            }
+            continue;
+        }
+        if key.eq_ignore_ascii_case("match") {
+            current.clear();
+            continue;
+        }
+        for &i in &current {
+            let h = &mut hosts[i];
+            if key.eq_ignore_ascii_case("hostname") {
+                if h.hostname.is_none() {
+                    h.hostname = Some(value.to_string());
+                }
+            } else if key.eq_ignore_ascii_case("user") {
+                if h.user.is_none() {
+                    h.user = Some(value.to_string());
+                }
+            } else if key.eq_ignore_ascii_case("port") && h.port.is_none() {
+                h.port = value.parse().ok();
+            }
+        }
+    }
+    hosts
+}
+
+/// Split an ssh_config directive into `(keyword, value)`. Both `Key value` and `Key=value`
+/// forms are accepted; returns `None` for a keyword with no value.
+fn split_directive(line: &str) -> Option<(&str, &str)> {
+    let (key, rest) = line.split_once(|c: char| c.is_whitespace() || c == '=')?;
+    let value = rest.trim_start_matches(|c: char| c.is_whitespace() || c == '=');
+    if key.is_empty() || value.is_empty() {
+        None
+    } else {
+        Some((key, value.trim()))
+    }
+}
+
+/// Left-join `[hosts]` extras onto the ssh-config hosts and drop localhost entries (connecting
+/// to the machine you're on is never the point). ssh config is the left side: a host present
+/// only there still appears (unregistered, default extras); a `[hosts]` entry with no matching
+/// ssh stanza is dropped — connection details live in ssh config by decision.
+pub fn merge(ssh_hosts: Vec<Host>, extras: &HashMap<String, HostExtra>) -> Vec<Host> {
+    ssh_hosts
+        .into_iter()
+        .filter(|h| !is_localhost(h))
+        .map(|mut h| {
+            if let Some(e) = extras.get(&h.alias) {
+                h.registered = true;
+                h.extra = e.clone();
+            }
+            h
+        })
+        .collect()
+}
+
+fn is_localhost(h: &Host) -> bool {
+    let localhost = |s: &str| s.eq_ignore_ascii_case("localhost") || s == "127.0.0.1" || s == "::1";
+    localhost(&h.alias) || h.hostname.as_deref().is_some_and(localhost)
+}
+
+/// Production entry: parse `<ssh_dir>/config` (absent file ⇒ no ssh hosts) and merge the
+/// `[hosts]` extras. Callers pass `~/.ssh` so tests can point elsewhere.
+pub fn load(ssh_dir: &Path, extras: &HashMap<String, HostExtra>) -> Vec<Host> {
+    let text = std::fs::read_to_string(ssh_dir.join("config")).unwrap_or_default();
+    merge(parse_ssh_config(&text), extras)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn extras(pairs: &[(&str, HostExtra)]) -> HashMap<String, HostExtra> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn node_config_resolves_target_labels_and_ram() {
+        use crate::backlog::ExecutionTarget;
+        let cfg: HashMap<String, NodeConfig> = toml::from_str(
+            r#"
+[wsl-box]
+labels = ["os:windows-wsl", "mt5-bridge", "has-node"]
+repos = ["mt5-data-api"]
+ram_total_mb = 13000
+ram_reserved_mb = 2000
+
+[fedora-box]
+target = "ssh:fedora"
+labels = ["os:linux"]
+repos = ["bn", "wira360"]
+ram_total_mb = 6377
+"#,
+        )
+        .unwrap();
+        let records = resolve_nodes(&cfg);
+        // Sorted by node_id for deterministic first-fit: fedora-box before wsl-box.
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].node_id, "fedora-box");
+        assert_eq!(records[1].node_id, "wsl-box");
+
+        let wsl = &records[1];
+        // No `target` key ⇒ Local (the box the daemon runs on).
+        assert_eq!(wsl.target, ExecutionTarget::Local);
+        assert_eq!(wsl.labels, vec!["os:windows-wsl", "mt5-bridge", "has-node"]);
+        assert_eq!(wsl.ram_total_mb, 13000);
+        assert_eq!(wsl.ram_reserved_mb, 2000);
+        assert_eq!(wsl.owned_repos, vec!["mt5-data-api"]);
+        // A freshly-loaded node is never placement-eligible until a preflight promotes it.
+        assert_eq!(wsl.status, NodeStatus::Unknown);
+
+        let fedora = &records[0];
+        assert_eq!(fedora.target, ExecutionTarget::SshHost("fedora".into()));
+        assert_eq!(fedora.labels, vec!["os:linux"]);
+        assert_eq!(fedora.owned_repos, vec!["bn", "wira360"]);
+        assert_eq!(fedora.status, NodeStatus::Unknown);
+    }
+
+    #[test]
+    fn node_config_empty_table_yields_empty_registry() {
+        assert!(resolve_nodes(&HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn node_config_unrecognized_target_falls_back_to_local() {
+        use crate::backlog::ExecutionTarget;
+        let rec = NodeConfig {
+            target: Some("nonsense".into()),
+            ..NodeConfig::default()
+        }
+        .into_record("weird");
+        assert_eq!(rec.target, ExecutionTarget::Local);
+    }
+
+    #[test]
+    fn preflight_maps_reachable_to_ready_and_failure_to_offline() {
+        // Key-auth reachable ⇒ Ready (placement-eligible); a failed probe (unreachable or
+        // password-only) ⇒ Offline so the scheduler never places on an unusable node.
+        assert_eq!(node_status_from_preflight(true), NodeStatus::Ready);
+        assert_eq!(node_status_from_preflight(false), NodeStatus::Offline);
+    }
+
+    #[test]
+    fn parses_aliases_hostname_user_port() {
+        let cfg = "
+Host workstation
+  HostName 10.0.0.5
+  User edd
+  Port 2222
+";
+        let hosts = parse_ssh_config(cfg);
+        assert_eq!(hosts.len(), 1);
+        let h = &hosts[0];
+        assert_eq!(h.alias, "workstation");
+        assert_eq!(h.hostname.as_deref(), Some("10.0.0.5"));
+        assert_eq!(h.user.as_deref(), Some("edd"));
+        assert_eq!(h.port, Some(2222));
+        assert_eq!(h.target(), "edd@10.0.0.5:2222");
+    }
+
+    #[test]
+    fn skips_wildcard_and_negated_aliases() {
+        let cfg = "
+Host *
+  User nobody
+Host web-? !bad staging
+  HostName stage.example.com
+";
+        let hosts = parse_ssh_config(cfg);
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].alias, "staging");
+        assert_eq!(hosts[0].hostname.as_deref(), Some("stage.example.com"));
+        // The wildcard stanza's User must not leak into a concrete host.
+        assert_eq!(hosts[0].user, None);
+    }
+
+    #[test]
+    fn skips_match_blocks() {
+        let cfg = "
+Match user edd
+  HostName should-not-appear
+Host real
+  HostName real.example.com
+";
+        let hosts = parse_ssh_config(cfg);
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].alias, "real");
+    }
+
+    #[test]
+    fn multi_alias_host_line_yields_one_entry_each() {
+        let cfg = "
+Host box1 box2
+  HostName shared.example.com
+";
+        let hosts = parse_ssh_config(cfg);
+        let aliases: Vec<_> = hosts.iter().map(|h| h.alias.as_str()).collect();
+        assert_eq!(aliases, ["box1", "box2"]);
+        assert!(hosts
+            .iter()
+            .all(|h| h.hostname.as_deref() == Some("shared.example.com")));
+    }
+
+    #[test]
+    fn first_value_wins_and_equals_form_accepted() {
+        let cfg = "
+Host dup
+  HostName=first.example.com
+  HostName second.example.com
+";
+        let hosts = parse_ssh_config(cfg);
+        assert_eq!(hosts[0].hostname.as_deref(), Some("first.example.com"));
+    }
+
+    #[test]
+    fn merge_left_joins_extras() {
+        let ssh = parse_ssh_config("Host workstation\nHost plain\n");
+        let ex = extras(&[(
+            "workstation",
+            HostExtra {
+                repo_root: Some("~/projects/worktree".into()),
+                harness: Some("claude".into()),
+                bn: Some(true),
+            },
+        )]);
+        let merged = merge(ssh, &ex);
+        assert_eq!(merged.len(), 2);
+        let ws = merged.iter().find(|h| h.alias == "workstation").unwrap();
+        assert!(ws.registered);
+        assert_eq!(ws.extra.harness.as_deref(), Some("claude"));
+        assert_eq!(ws.extra.bn, Some(true));
+        // Host only in ssh config still appears, unregistered with default extras.
+        let plain = merged.iter().find(|h| h.alias == "plain").unwrap();
+        assert!(!plain.registered);
+        assert_eq!(plain.extra, HostExtra::default());
+    }
+
+    #[test]
+    fn merge_drops_extras_without_ssh_stanza() {
+        let ssh = parse_ssh_config("Host real\n");
+        let ex = extras(&[("ghost", HostExtra::default())]);
+        let merged = merge(ssh, &ex);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].alias, "real");
+    }
+
+    #[test]
+    fn merge_filters_localhost() {
+        let ssh = parse_ssh_config(
+            "Host localhost\nHost loop\n  HostName 127.0.0.1\nHost real\n  HostName r.example.com\n",
+        );
+        let merged = merge(ssh, &HashMap::new());
+        let aliases: Vec<_> = merged.iter().map(|h| h.alias.as_str()).collect();
+        assert_eq!(aliases, ["real"]);
+    }
+
+    #[test]
+    fn target_falls_back_to_alias() {
+        let h = Host {
+            alias: "bare".into(),
+            ..Host::default()
+        };
+        assert_eq!(h.target(), "bare");
+    }
+}

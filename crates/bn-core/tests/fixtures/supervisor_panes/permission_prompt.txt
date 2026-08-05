@@ -1,0 +1,5 @@
+● I'd like to run the test suite to verify the change compiles.
+  Allow command: cargo test --workspace
+❯ 1. Yes
+  2. Yes, and don't ask again this session
+  3. No, and tell me what to do differently

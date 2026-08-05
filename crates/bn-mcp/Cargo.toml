@@ -1,0 +1,37 @@
+[package]
+name = "bn-mcp"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "bn_mcp"
+path = "src/lib.rs"
+
+# The per-worktree stdio launcher (`bn mcp serve` execs this): pins its `(repo, branch)` to the
+# launch cwd so a plain MCP client needs no per-call scope headers. Sits beside `bn`, like `bn-web`.
+[[bin]]
+name = "bn-mcp"
+path = "src/main.rs"
+
+[dependencies]
+bn-core.workspace = true
+rmcp.workspace = true
+# Read the per-request HTTP scope (repo/branch headers/query) that the shared Streamable-HTTP
+# transport injects into each tool call's `RequestContext` as `http::request::Parts` (epic #637 P2).
+# Pinned to the same `http` 1.x rmcp/axum resolve to, so the injected `Parts` type matches.
+http = "1"
+tokio.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+bn-core = { workspace = true, features = ["test-support"] }
+tempfile = "3"

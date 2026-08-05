@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bn agent memory-hook"
+          }
+        ]
+      }
+    ]
+  }
+}

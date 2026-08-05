@@ -1,0 +1,2 @@
+✗ The request to the model API timed out after 60000ms.
+  Error: connect ETIMEDOUT 160.79.104.10:443

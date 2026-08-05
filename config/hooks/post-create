@@ -1,0 +1,27 @@
+#!/usr/bin/env sh
+# post-create — bn worktree lifecycle hook (SAMPLE).
+#
+# Runs once, right after bn creates a new worktree, so a fresh branch is ready to
+# work in without manual setup. Install by copying to one of:
+#   ~/.config/bn/hooks/post-create        every repo (personal)
+#   <repo>/.bn/hooks/post-create          just that repo (committable)
+# and making it executable (chmod +x). Both run if both exist (global first).
+#
+# cwd is the new worktree. These vars are set:
+#   BN_WORKTREE_PATH  the new worktree dir (== cwd)
+#   BN_BRANCH         the branch name (e.g. feat/login)
+#   BN_REPO           the repo name
+#   BN_MAIN_PATH      the repo's main worktree (copy shared, gitignored files from here)
+#
+# A non-zero exit is reported but never blocks worktree creation.
+set -eu
+
+# Pull gitignored local files the new worktree needs but git won't carry over.
+for f in .env .env.local; do
+  [ -f "$BN_MAIN_PATH/$f" ] && [ ! -e "$f" ] && cp "$BN_MAIN_PATH/$f" "$f" && echo "  copied $f"
+done
+
+# Install deps when a lockfile is present (uncomment what fits the repo).
+# [ -f package-lock.json ] && npm ci
+# [ -f pnpm-lock.yaml ]    && pnpm install --frozen-lockfile
+# [ -f Cargo.toml ]        && cargo fetch

@@ -1,0 +1,317 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Advisory lane: surfaces rustfmt drift without gating merges. `continue-on-error`
+  # keeps a failing Format from failing the workflow run, and — crucially — this is a
+  # SEPARATE job from `test`, so fmt drift can never abort clippy/tests the way the old
+  # single sequential `fmt · clippy · test` job did (Format ran first, so any drift
+  # aborted the job before Test, silently disabling test gating).
+  fmt:
+    name: fmt (advisory)
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["self-hosted","Linux","X64","fedora"]') }}
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        env:
+          HOME: ${{ runner.temp }}/checkout-home-${{ github.job }}
+          GIT_CONFIG_GLOBAL: ${{ runner.temp }}/gitconfig-${{ github.job }}
+        with:
+          set-safe-directory: false
+
+      # rust-toolchain.toml pins the version + components; `rustup show` installs it.
+      - name: Install Rust toolchain
+        run: |
+          # All Fedora self-hosted runners share $HOME (/home/me). A shared
+          # CARGO_HOME/RUSTUP_HOME lets concurrent jobs on different runners
+          # reinstall rustup and the pinned toolchain into the same tree at
+          # once, deleting rustc out from under a sibling build ("could not
+          # execute process .../rustc (never executed): No such file or
+          # directory"). Isolate the toolchain state per runner.
+          state="$HOME/ci-rust/$RUNNER_NAME"
+          mkdir -p "$state/cargo/bin" "$state/rustup"
+          echo "CARGO_HOME=$state/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$state/rustup" >> "$GITHUB_ENV"
+          export CARGO_HOME="$state/cargo" RUSTUP_HOME="$state/rustup"
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          export PATH="$CARGO_HOME/bin:$PATH"
+          if ! command -v rustup >/dev/null 2>&1; then
+            for proxy in "$CARGO_HOME/bin"/*; do
+              if [ -L "$proxy" ] && [ ! -e "$proxy" ]; then
+                rm -f "$proxy"
+              fi
+            done
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+              sh -s -- -y --default-toolchain none --no-modify-path
+          fi
+          rustup show
+
+      - name: Clean stale workspace target (self-hosted hygiene)
+        # Self-hosted runners reuse _work/<repo> across jobs and runs, and
+        # rust-cache prunes target/ in its post step. A later job can then
+        # inherit a half-cleaned target whose stale *.d dep-info points at
+        # deleted artifacts ("could not parse/generate dep info ... No such
+        # file or directory"). Wipe it so rust-cache restores a coherent
+        # snapshot into a clean directory.
+        run: rm -rf "$GITHUB_WORKSPACE/target"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Isolate cache per self-hosted runner: rust-cache bakes absolute
+          # target/*.d paths into the cache, and each runner has a distinct
+          # _work dir, so a shared cache corrupts dep info across runners
+          # ("could not parse/generate dep info ... No such file or directory").
+          prefix-key: "v0-rust-${{ runner.name }}"
+
+      - name: Format
+        run: cargo fmt --all --check
+
+  # The real merge gate. No `needs: fmt`, so it always runs regardless of formatting.
+  test:
+    name: clippy · test
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["self-hosted","Linux","X64","fedora"]') }}
+    steps:
+      - uses: actions/checkout@v4
+        env:
+          HOME: ${{ runner.temp }}/checkout-home-${{ github.job }}
+          GIT_CONFIG_GLOBAL: ${{ runner.temp }}/gitconfig-${{ github.job }}
+        with:
+          set-safe-directory: false
+
+      # rust-toolchain.toml pins the version + components; `rustup show` installs it.
+      - name: Install Rust toolchain
+        run: |
+          # All Fedora self-hosted runners share $HOME (/home/me). A shared
+          # CARGO_HOME/RUSTUP_HOME lets concurrent jobs on different runners
+          # reinstall rustup and the pinned toolchain into the same tree at
+          # once, deleting rustc out from under a sibling build ("could not
+          # execute process .../rustc (never executed): No such file or
+          # directory"). Isolate the toolchain state per runner.
+          state="$HOME/ci-rust/$RUNNER_NAME"
+          mkdir -p "$state/cargo/bin" "$state/rustup"
+          echo "CARGO_HOME=$state/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$state/rustup" >> "$GITHUB_ENV"
+          export CARGO_HOME="$state/cargo" RUSTUP_HOME="$state/rustup"
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          export PATH="$CARGO_HOME/bin:$PATH"
+          if ! command -v rustup >/dev/null 2>&1; then
+            for proxy in "$CARGO_HOME/bin"/*; do
+              if [ -L "$proxy" ] && [ ! -e "$proxy" ]; then
+                rm -f "$proxy"
+              fi
+            done
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+              sh -s -- -y --default-toolchain none --no-modify-path
+          fi
+          rustup show
+
+      - name: Clean stale workspace target (self-hosted hygiene)
+        # Self-hosted runners reuse _work/<repo> across jobs and runs, and
+        # rust-cache prunes target/ in its post step. A later job can then
+        # inherit a half-cleaned target whose stale *.d dep-info points at
+        # deleted artifacts ("could not parse/generate dep info ... No such
+        # file or directory"). Wipe it so rust-cache restores a coherent
+        # snapshot into a clean directory.
+        run: rm -rf "$GITHUB_WORKSPACE/target"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Isolate cache per self-hosted runner: rust-cache bakes absolute
+          # target/*.d paths into the cache, and each runner has a distinct
+          # _work dir, so a shared cache corrupts dep info across runners
+          # ("could not parse/generate dep info ... No such file or directory").
+          prefix-key: "v0-rust-${{ runner.name }}"
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+  # Separate lane so a flaky shell harness never blocks the fast rust gate above.
+  integration:
+    name: shell harnesses
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["self-hosted","Linux","X64","fedora"]') }}
+    steps:
+      - uses: actions/checkout@v4
+        env:
+          HOME: ${{ runner.temp }}/checkout-home-${{ github.job }}
+          GIT_CONFIG_GLOBAL: ${{ runner.temp }}/gitconfig-${{ github.job }}
+        with:
+          set-safe-directory: false
+
+      - name: Verify harness dependencies
+        run: |
+          for command in jq nvim yq zsh; do
+            command -v "$command" >/dev/null || {
+              echo "::error::$command is required on the Fedora runner"
+              exit 1
+            }
+          done
+
+      - name: Install Rust toolchain
+        run: |
+          # All Fedora self-hosted runners share $HOME (/home/me). A shared
+          # CARGO_HOME/RUSTUP_HOME lets concurrent jobs on different runners
+          # reinstall rustup and the pinned toolchain into the same tree at
+          # once, deleting rustc out from under a sibling build ("could not
+          # execute process .../rustc (never executed): No such file or
+          # directory"). Isolate the toolchain state per runner.
+          state="$HOME/ci-rust/$RUNNER_NAME"
+          mkdir -p "$state/cargo/bin" "$state/rustup"
+          echo "CARGO_HOME=$state/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$state/rustup" >> "$GITHUB_ENV"
+          export CARGO_HOME="$state/cargo" RUSTUP_HOME="$state/rustup"
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          export PATH="$CARGO_HOME/bin:$PATH"
+          if ! command -v rustup >/dev/null 2>&1; then
+            for proxy in "$CARGO_HOME/bin"/*; do
+              if [ -L "$proxy" ] && [ ! -e "$proxy" ]; then
+                rm -f "$proxy"
+              fi
+            done
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+              sh -s -- -y --default-toolchain none --no-modify-path
+          fi
+          rustup show
+
+      - name: Clean stale workspace target (self-hosted hygiene)
+        # Self-hosted runners reuse _work/<repo> across jobs and runs, and
+        # rust-cache prunes target/ in its post step. A later job can then
+        # inherit a half-cleaned target whose stale *.d dep-info points at
+        # deleted artifacts ("could not parse/generate dep info ... No such
+        # file or directory"). Wipe it so rust-cache restores a coherent
+        # snapshot into a clean directory.
+        run: rm -rf "$GITHUB_WORKSPACE/target"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Isolate cache per self-hosted runner: rust-cache bakes absolute
+          # target/*.d paths into the cache, and each runner has a distinct
+          # _work dir, so a shared cache corrupts dep info across runners
+          # ("could not parse/generate dep info ... No such file or directory").
+          prefix-key: "v0-rust-${{ runner.name }}"
+
+      # Harnesses run both the debug and release binaries; build once up front.
+      - name: Build bn
+        run: cargo build --workspace
+
+      - name: Build bn (release)
+        run: cargo build --workspace --release
+
+      # parity.sh hardcodes REPO=$HOME/projects/bn and writes notes under $HOME.
+      # Give it an isolated HOME with the checkout symlinked into place so it never
+      # touches anything real and resolves the repo correctly on the runner.
+      - name: parity.sh (vs zsh oracle)
+        run: |
+          PARITY_HOME="$(mktemp -d)"
+          mkdir -p "$PARITY_HOME/projects"
+          ln -s "$GITHUB_WORKSPACE" "$PARITY_HOME/projects/bn"
+          HOME="$PARITY_HOME" bash config/scripts/parity.sh
+
+
+
+      # nvim cockpit specs: headless plenary suite over nvim/tests/. The runner
+      # clones plenary on first use (network is available here); neovim is already
+      # installed above. Fails the job on any failing spec.
+      - name: nvim cockpit specs
+        run: bash nvim/tests/run.sh
+
+  # The bn-web dashboard: unit (vitest) + end-to-end (Playwright) over the real server (#479/#477).
+  # Isolated lane so a browser flake never blocks the rust gate. Builds the UI, embeds it into a
+  # debug bn-web, then drives the built dashboard headless against seeded fixtures (globalSetup
+  # boots the server; a stub `bn` stands in for tmux/git/gh), asserting every orchestration flow.
+  web-e2e:
+    name: web · vitest + playwright
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["self-hosted","Linux","X64","fedora"]') }}
+    defaults:
+      run:
+        working-directory: crates/bn-web/ui
+    steps:
+      - uses: actions/checkout@v4
+        env:
+          HOME: ${{ runner.temp }}/checkout-home-${{ github.job }}
+          GIT_CONFIG_GLOBAL: ${{ runner.temp }}/gitconfig-${{ github.job }}
+        with:
+          set-safe-directory: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: crates/bn-web/ui/package-lock.json
+
+      - name: Install Rust toolchain
+        run: |
+          # All Fedora self-hosted runners share $HOME (/home/me). A shared
+          # CARGO_HOME/RUSTUP_HOME lets concurrent jobs on different runners
+          # reinstall rustup and the pinned toolchain into the same tree at
+          # once, deleting rustc out from under a sibling build ("could not
+          # execute process .../rustc (never executed): No such file or
+          # directory"). Isolate the toolchain state per runner.
+          state="$HOME/ci-rust/$RUNNER_NAME"
+          mkdir -p "$state/cargo/bin" "$state/rustup"
+          echo "CARGO_HOME=$state/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$state/rustup" >> "$GITHUB_ENV"
+          export CARGO_HOME="$state/cargo" RUSTUP_HOME="$state/rustup"
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          export PATH="$CARGO_HOME/bin:$PATH"
+          if ! command -v rustup >/dev/null 2>&1; then
+            for proxy in "$CARGO_HOME/bin"/*; do
+              if [ -L "$proxy" ] && [ ! -e "$proxy" ]; then
+                rm -f "$proxy"
+              fi
+            done
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+              sh -s -- -y --default-toolchain none --no-modify-path
+          fi
+          rustup show
+
+      - name: Clean stale workspace target (self-hosted hygiene)
+        # Self-hosted runners reuse _work/<repo> across jobs and runs, and
+        # rust-cache prunes target/ in its post step. A later job can then
+        # inherit a half-cleaned target whose stale *.d dep-info points at
+        # deleted artifacts ("could not parse/generate dep info ... No such
+        # file or directory"). Wipe it so rust-cache restores a coherent
+        # snapshot into a clean directory.
+        run: rm -rf "$GITHUB_WORKSPACE/target"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Isolate cache per self-hosted runner: rust-cache bakes absolute
+          # target/*.d paths into the cache, and each runner has a distinct
+          # _work dir, so a shared cache corrupts dep info across runners
+          # ("could not parse/generate dep info ... No such file or directory").
+          prefix-key: "v0-rust-${{ runner.name }}"
+
+      - name: Install UI deps
+        run: npm ci
+
+      - name: Unit tests (vitest)
+        run: npm run test
+
+      - name: Build UI
+        run: npm run build
+
+      # Build the server AFTER the UI so build.rs embeds the freshly-built dist.
+      - name: Build bn-web (embeds the UI)
+        run: cargo build -p bn-web
+        working-directory: .
+
+      - name: Install Playwright browser
+        run: npx playwright install chromium
+
+      - name: E2E (Playwright, headless)
+        run: npm run e2e

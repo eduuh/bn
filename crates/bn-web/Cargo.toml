@@ -1,0 +1,65 @@
+[package]
+name = "bn-web"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "bn-web"
+path = "src/main.rs"
+
+[dependencies]
+bn-core.workspace = true
+# Reuse the P1 MCP handlers (scoped branch-note tools + orchestrator) over HTTP; `Scope::Request`
+# lets the shared server derive its `(repo, branch)` per request (#639).
+bn-mcp.workspace = true
+# `transport-streamable-http-server` mounts the MCP tool-router as a tower service on this router
+# (POST /mcp). `server` + `macros` come along with the shared handlers.
+rmcp = { workspace = true, features = [
+    "server",
+    "transport-streamable-http-server",
+    "macros",
+] }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+# tokio: reuse the workspace base (rt-multi-thread + macros) and add what the server needs —
+# `net` (TcpListener), `sync` (the SSE broadcast channel in AppState), `signal` (graceful shutdown).
+tokio = { workspace = true, features = ["net", "sync", "signal"] }
+# Adapts the SSE broadcast channel into an `impl Stream` for axum's `Sse` response (and re-exports
+# the `Stream` trait + combinators), so `/api/stream` needs no extra `futures` dep.
+tokio-stream = { version = "0.1", features = ["sync"] }
+# `ws` adds the WebSocket upgrade extractor for the live agent terminal (#491); the default axum
+# features cover the rest of the router.
+axum = { version = "0.8", features = ["ws"] }
+# The terminal WebSocket splits the socket into a send half (streamed pane frames) and a recv half
+# (client input/resize) driven by two tasks — `SinkExt`/`StreamExt::split` come from futures-util.
+futures-util = { version = "0.3", default-features = false }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+# `debug-embed` bakes ui/dist into the binary in EVERY profile (not just release), so an installed
+# or copied `bn-web` always serves its UI without the source tree present. `interpolate-folder-path`
+# lets the derive read `$OUT_DIR/ui-dist` (populated by build.rs), and `mime-guess` gives each
+# embedded file a Content-Type. build.rs guarantees the embedded folder exists — the real ui/dist
+# when built, else a placeholder page — so `cargo build` never needs node.
+rust-embed = { version = "8", features = [
+    "debug-embed",
+    "interpolate-folder-path",
+    "mime-guess",
+] }
+rand = "0.8"
+
+[dev-dependencies]
+# Drives a `GET` through the full `Router` in tests via `ServiceExt::oneshot`, so the endpoint
+# smoke tests exercise real routing + `Envelope` serialization without binding a socket. `tower`
+# is already in the tree (an axum dependency); `util` just exposes the `oneshot` helper.
+tower = { version = "0.5", features = ["util"] }
+# Isolated notes/worktree scratch dirs for the MCP orchestrator tool tests (list_attention /
+# spin_up_work), matching the bn-cli test convention.
+tempfile = "3"
+# Share bn-core's env lock + `with_state_dir` guard so plan-review (#349) endpoint tests can seed
+# an isolated `BN_STATE_DIR` without racing other tests over process-global env.
+bn-core = { workspace = true, features = ["test-support"] }

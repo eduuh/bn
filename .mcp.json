@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "bn": {
+      "type": "stdio",
+      "command": "bn",
+      "args": ["mcp", "serve"]
+    }
+  }
+}

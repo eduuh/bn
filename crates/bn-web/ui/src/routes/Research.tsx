@@ -1,0 +1,220 @@
+import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { ArrowUpRight, Inbox, Search } from "lucide-react";
+import { attnQuery, fleetQuery, orchestrateQuery } from "../api/client";
+import type { FleetView, RunView } from "../api/types";
+import { apiDispatch } from "../api/writes";
+import { pushToast } from "../lib/toast";
+import { ToastStack } from "../components/ToastStack";
+import { Button } from "../components/ui/button";
+import { Card } from "../components/ui/card";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+import { Textarea } from "../components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select";
+
+type Harness = "claude" | "copilot";
+
+/** Repos seen in the live runs / fleet — the repo combobox options. */
+function knownRepos(runs: RunView[], fleet?: FleetView): string[] {
+  const s = new Set<string>();
+  for (const r of runs) if (r.repo) s.add(r.repo);
+  for (const a of fleet?.agents ?? []) if (a.repo) s.add(a.repo);
+  return [...s].sort();
+}
+
+/**
+ * `/research` — start a **research agent** (#483, ties to #378). A first-class, read-only *scout*:
+ * distinct from the ship "Start agent", it investigates a question and returns its findings to the
+ * branch note (and raises an ask on the attention list when it needs you) rather than opening a PR.
+ * Dispatches `POST /api/dispatch {kind:"scout"}`; a paired token authorizes the write. Recent
+ * agent-raised asks/answers surface below so you can read what came back.
+ */
+export function Research() {
+  const orch = useQuery(orchestrateQuery());
+  const fleet = useQuery(fleetQuery());
+  const attn = useQuery(attnQuery());
+  const navigate = useNavigate();
+
+  const runs = orch.data?.runs ?? [];
+  const repoOptions = knownRepos(runs, fleet.data);
+  const defaultRepo = runs[0]?.repo ?? "";
+
+  const [question, setQuestion] = useState("");
+  const [repo, setRepo] = useState(defaultRepo);
+  const [harness, setHarness] = useState<Harness>("claude");
+
+  const repoTouched = useRef(false);
+  useEffect(() => {
+    if (!repoTouched.current && !repo && defaultRepo) setRepo(defaultRepo);
+  }, [defaultRepo, repo]);
+
+  const q = question.trim();
+  const canSubmit = q.length > 0 && repo.trim().length > 0;
+
+  const research = useMutation({
+    mutationFn: () => apiDispatch({ repo: repo.trim(), item: q, harness, kind: "scout" }),
+    onSuccess: () => {
+      pushToast("Research agent dispatched — findings land on the branch note", "success");
+      setQuestion("");
+      navigate("/fleet");
+    },
+    onError: (e: unknown) => {
+      pushToast(e instanceof Error ? e.message : "could not start research", "error");
+    },
+  });
+
+  // Agent-raised attention items are the scout asks/answers coming back (source ≠ a manual raise).
+  const asks = (attn.data?.items ?? []).filter((i) => i.source !== "manual");
+  const reposListId = "research-repo-options";
+
+  return (
+    <div className="mx-auto max-w-3xl space-y-5 pb-8">
+      <header className="space-y-1">
+        <h2 className="text-2xl font-semibold tracking-tight">Research</h2>
+        <p className="text-sm text-muted-foreground">
+          Send a read-only scout to investigate — no PR, just findings.
+        </p>
+      </header>
+
+      <Card className="space-y-4 p-4">
+        <div className="space-y-1.5">
+          <Label htmlFor="research-q" className="flex items-baseline gap-2">
+            Question
+            <span className="text-xs font-normal text-muted-foreground/80">
+              what should the scout find out?
+            </span>
+          </Label>
+          <Textarea
+            id="research-q"
+            className="min-h-[6rem] font-mono text-[13px] leading-relaxed"
+            rows={3}
+            placeholder={"e.g. why is the nvim status_spec flaky?\nwhich crate owns the cron registry?"}
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+          />
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label htmlFor="research-repo" className="flex items-baseline gap-2">
+              Repo
+              <span className="text-xs font-normal text-muted-foreground/80">required</span>
+            </Label>
+            <Input
+              id="research-repo"
+              className="font-mono"
+              list={repoOptions.length ? reposListId : undefined}
+              value={repo}
+              placeholder="repo (required)"
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(e) => {
+                repoTouched.current = true;
+                setRepo(e.target.value);
+              }}
+            />
+            {repoOptions.length > 0 && (
+              <datalist id={reposListId}>
+                {repoOptions.map((r) => (
+                  <option key={r} value={r} />
+                ))}
+              </datalist>
+            )}
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="research-harness">Harness</Label>
+            <Select value={harness} onValueChange={(v) => setHarness(v as Harness)}>
+              <SelectTrigger id="research-harness">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="claude">claude</SelectItem>
+                <SelectItem value="copilot">copilot</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        <Button
+          type="button"
+          className="w-full"
+          onClick={() => canSubmit && !research.isPending && research.mutate()}
+          disabled={research.isPending || !canSubmit}
+        >
+          <Search className="h-4 w-4" />
+          Start research agent
+        </Button>
+        <p className="text-xs text-muted-foreground">
+          Runs read-only (a scout): it writes what it learns to the branch note and raises an ask
+          here if it needs you. Watch it on the Fleet.
+        </p>
+      </Card>
+
+      <section className="space-y-3">
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            Recent asks &amp; findings
+          </h3>
+          <span className="text-xs text-muted-foreground">{asks.length}</span>
+        </div>
+        {attn.isLoading ? (
+          <div className="text-sm text-muted-foreground">Loading research asks…</div>
+        ) : asks.length === 0 ? (
+          <Card className="flex flex-col items-center gap-2 px-6 py-10 text-center">
+            <Inbox className="h-8 w-8 text-muted-foreground" />
+            <p className="max-w-sm text-sm text-muted-foreground">
+              No agent-raised research asks right now. Findings from a scout appear here and on its
+              branch note.
+            </p>
+          </Card>
+        ) : (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {asks.map((it) => (
+              <Card key={it.id} className="space-y-2 p-3">
+                <div className="flex items-start gap-2">
+                  <span className="min-w-0 flex-1 font-medium leading-tight text-foreground">
+                    {it.title}
+                  </span>
+                  <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                    {it.source}
+                  </span>
+                </div>
+                {it.repo && (
+                  <div className="font-mono text-xs text-muted-foreground">
+                    {it.repo}
+                    {it.branch ? `/${it.branch}` : ""}
+                  </div>
+                )}
+                {it.detail && (
+                  <pre className="max-h-48 overflow-auto rounded-md border border-border bg-muted/60 p-2 font-mono text-xs text-muted-foreground">
+                    {it.detail}
+                  </pre>
+                )}
+                {it.link && (
+                  <a
+                    href={it.link}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-0.5 text-sm text-primary"
+                  >
+                    open <ArrowUpRight className="h-3.5 w-3.5" />
+                  </a>
+                )}
+              </Card>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <ToastStack />
+    </div>
+  );
+}

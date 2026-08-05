@@ -1,0 +1,21 @@
+{
+  "name": "bn — agent fleet",
+  "short_name": "bn",
+  "description": "Monitor and drive the bn agent fleet from your phone — start agents, review plans, watch cost.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0a0d12",
+  "theme_color": "#0a0d12",
+  "orientation": "portrait-primary",
+  "categories": ["productivity", "developer"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

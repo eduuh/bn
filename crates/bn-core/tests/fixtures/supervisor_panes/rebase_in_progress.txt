@@ -1,0 +1,2 @@
+● Running: git rebase origin/main to bring the branch up to date
+  Rebasing (3/7): applying "test: supervisor corpus" (esc to interrupt)

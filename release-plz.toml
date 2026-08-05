@@ -1,0 +1,47 @@
+# release-plz config — automated release-on-merge (see .github/workflows/release-plz.yml
+# and the "Releases" section of README.md).
+#
+# Flow: on every push to `main`, release-plz opens/updates a "release PR" that bumps the
+# shared workspace version and regenerates the changelog from the merged commits. Merging
+# that PR pushes a single `v{version}` git tag, which triggers the tag-driven cargo-dist
+# `release.yml` to build + publish the GitHub Release. release-plz is idempotent — it
+# no-ops when there is nothing releasable and never re-releases an already-tagged version,
+# so there is no release loop.
+#
+# bn is an internal tool that is NOT published to crates.io, so we run in git-only mode
+# (versions are derived from git tags, never `cargo publish`) and let cargo-dist — not
+# release-plz — create the GitHub Release, so the build/publish is never duplicated.
+
+[workspace]
+# Private tool: derive the current version from git tags, never publish to a cargo registry.
+git_only = true
+# cargo-dist owns the GitHub Release (built from the pushed tag). Don't let release-plz
+# create one too, or every release would be published twice.
+git_release_enable = false
+# Lockstep workspace: disable per-crate tags by default so the whole workspace releases
+# under ONE tag. bn-cli (below) re-enables tagging to drive that single tag.
+git_tag_enable = false
+# The unified tag name shared by every crate — matches cargo-dist's `release.yml` trigger
+# (`**[0-9]+.[0-9]+.[0-9]+*`) and the existing `v0.2.0`-style tags.
+git_tag_name = "v{{ version }}"
+# No crates.io baseline to diff against, so skip the (library-only) semver-check gate.
+semver_check = false
+
+# bn-cli owns the `bn` binary and drives the single workspace-wide tag.
+[[package]]
+name = "bn-cli"
+git_tag_enable = true
+version_group = "bn"
+
+# The remaining crates share bn-cli's version (lockstep) but never get their own tag.
+[[package]]
+name = "bn-core"
+version_group = "bn"
+
+[[package]]
+name = "bn-mcp"
+version_group = "bn"
+
+[[package]]
+name = "bn-web"
+version_group = "bn"

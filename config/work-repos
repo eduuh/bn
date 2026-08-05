@@ -1,0 +1,4 @@
+# Repos treated as "work" — their notes go to the work notes dir.
+# One repo name per line; '#' comments allowed. Copy to ~/.config/bn/work-repos.
+# example-internal-repo
+# another-work-repo

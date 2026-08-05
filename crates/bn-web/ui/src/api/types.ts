@@ -1,0 +1,1131 @@
+// Typed viewmodels for the bn-web read API. Every shape here mirrors a `bn-core` payload builder
+// exactly (design §3), so the SSE frames (raw viewmodel) and the REST `Envelope.data` (same
+// viewmodel) share one contract and later pages (#391/#393/#394) inherit correct types.
+
+/** The standard bn JSON envelope wrapping every REST response (`bn_core::render::Envelope`). */
+export interface Envelope<T> {
+  ok: boolean;
+  command: string;
+  data: T;
+  error: { code: string; message: string } | null;
+}
+
+// --- Fleet (GET /api/fleet .data; SSE `fleet` frame is this shape raw) ---
+
+export type AgentHealth = "starting" | "active" | "idle" | "stuck";
+
+/** An agent's fleet role — `bn_core::agent::AgentRole` (#500). Orchestrators run the wave and pin
+ * to their own top tier; workers ship PRs and render normally. Absent on pre-#500 payloads. */
+export type AgentRole = "worker" | "orchestrator";
+
+/** One live agent — `bn_core::agent::LiveAgent`, serialized verbatim. */
+export interface LiveAgent {
+  session_id: string;
+  harness: string;
+  repo: string;
+  branch: string;
+  /** `repo:branch` — the tmux send-keys / switch-client target. */
+  target: string;
+  last_activity_ts: number;
+  idle_secs: number;
+  health: AgentHealth;
+  /** Worker vs orchestrator (#500); defaults to `worker` when absent. */
+  role?: AgentRole;
+  turns: number;
+  tool_calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+}
+
+/** `bn_core::agent::Fleet` — agents plus health counts, plus #501 harness availability. */
+export interface FleetView {
+  agents: LiveAgent[];
+  /** Just-dispatched agents with no transcript yet (#545) — the pending "starting…" tier. */
+  starting?: number;
+  active: number;
+  idle: number;
+  stuck: number;
+  total_tokens: number;
+  /** Per-machine harness availability for the switcher (copilot always; claude may be disabled). */
+  harnesses?: HarnessOption[];
+}
+
+// --- Machine health (GET /api/machine .data) — #525 ---
+
+/** Coarse traffic-light for the machine-health widget (`bn_core::machine::Level`). */
+export type MachineLevel = "ok" | "warn" | "critical";
+
+/** CPU load snapshot (`bn_core::machine::Cpu`). Load figures are best-effort — `null` when
+ * unreadable (never a false alarm). `load_per_core` is `load1 / cores`, the normalized gauge. */
+export interface MachineCpu {
+  load1: number | null;
+  load5: number | null;
+  load15: number | null;
+  cores: number;
+  load_per_core: number | null;
+}
+
+/** RAM snapshot in MB (`bn_core::machine::Ram`). `swap_used_mb` is the real OOM signal. Fractions
+ * are `null` when the denominator is unknown (no swap configured, or total unreadable). */
+export interface MachineRam {
+  total_mb: number;
+  free_mb: number;
+  used_mb: number;
+  swap_total_mb: number;
+  swap_used_mb: number;
+  used_frac: number | null;
+  swap_used_frac: number | null;
+}
+
+/** The derived near-saturation state (`bn_core::machine::Saturation`). */
+export interface MachineSaturation {
+  level: MachineLevel;
+  reasons: string[];
+}
+
+/** `GET /api/machine` .data (#525) — the host the fleet runs on + how many agents load it. */
+export interface MachineView {
+  cpu: MachineCpu;
+  ram: MachineRam;
+  saturation: MachineSaturation;
+  agents: { active: number };
+}
+
+/** One harness option for the per-agent switcher (#501) — `bn_core::harness::HarnessOption`.
+ * `available:false` renders it disabled with `reason` as a tooltip (never a silent drop). */
+export interface HarnessOption {
+  name: string;
+  available: boolean;
+  reason?: string;
+}
+
+// --- Orchestrate (GET /api/orchestrate .data; SSE `orchestrate` frame is this raw) ---
+
+/** The #340 classified pane state, kebab-cased (`bn_core::orchestrate::PaneState`). */
+export type PaneState =
+  | "working"
+  | "idle-clean"
+  | "idle-with-wip"
+  | "trust-menu"
+  | "command-approval"
+  | "question-menu"
+  | "api-error"
+  | "dns-outage"
+  | "limited"
+  | "done"
+  | "dead";
+
+/** Queue-item lifecycle status, kebab-cased (`bn_core::orchestrate::ItemStatus`). */
+export type ItemStatus = "queued" | "dispatched" | "merged" | "failed";
+
+/** The recovery action taken, kebab-cased (`bn_core::orchestrate::SupervisorAction`). */
+export type SupervisorAction =
+  | "leave"
+  | "land"
+  | "answer-trust-menu"
+  | "answer-command-approval"
+  | "answer-question"
+  | "relaunch-to-resume"
+  | "switch-harness";
+
+/** One queued work item — `bn_core::orchestrate::QueueItem`. */
+export interface QueueItem {
+  id: string;
+  item: string;
+  status: ItemStatus;
+  dispatch_phase?: "pending" | "claimed" | "dispatched";
+  claimed_remote?: boolean;
+  branch?: string | null;
+  pr?: string | null;
+  attempts: number;
+  dispatched_at: number;
+  last_relaunch_at: number;
+  updated_at: number;
+  last_state?: PaneState | null;
+  // #372: navigation coordinates from `payload::orchestrate_status_data`. `repo` is always set;
+  // `tmux_session`/`tmux_window` (session = repo, window = sanitized branch) and `harness` land
+  // once the item is dispatched. The board still joins the fleet for live tokens.
+  repo?: string;
+  tmux_session?: string;
+  tmux_window?: string;
+  harness?: string;
+  // #349: set on a dispatched item when a plan-review for its repo+branch is still `pending` —
+  // the agent is paused waiting-for-review. `review_id` links to that review.
+  waiting_for_review?: boolean;
+  review_id?: string;
+  // #376: while queued, the id of the in-flight item whose touch-area this one overlaps (why it's
+  // held rather than dispatched). #377: where the item runs — "auto" | "local" | "remote".
+  held_by?: string | null;
+  substrate?: "auto" | "local" | "remote";
+}
+
+export interface Counts {
+  queued: number;
+  in_flight: number;
+  merged: number;
+  failed: number;
+  total: number;
+  /** #377: of `in_flight`, how many run on a remote runner (occupying no local slot). */
+  remote?: number;
+}
+
+/** One recovery / lifecycle event (`bn_core::orchestrate::RecoveryEvent`); `repo` is added by the
+ * `/api/orchestrate/recovery` endpoint's cross-run fold. */
+export interface RecoveryEvent {
+  ts: number;
+  id: string;
+  state: PaneState;
+  action: SupervisorAction;
+  note: string;
+  repo?: string;
+}
+
+/** One orchestration run — `bn_core::payload::orchestrate_status_data`. */
+export interface RunView {
+  repo: string;
+  concurrency: number;
+  solo: boolean;
+  stopped: boolean;
+  drained: boolean;
+  started_at: number;
+  updated_at: number;
+  counts: Counts;
+  /** #377: the binding cap label ("ram"|"load"|"tokens"|"cost"|"local-cap") when local dispatch
+   * was capped/paused on the last pass, else absent. Why pending items aren't dispatching. */
+  dispatch_bind?: string | null;
+  queue: QueueItem[];
+  /** Newest-first, capped at 20 by the payload. */
+  recovery: RecoveryEvent[];
+}
+
+/** GET /api/orchestrate .data — every run on the machine (or one when `?repo=`). */
+export interface OrchestrateView {
+  runs: RunView[];
+}
+
+/** GET /api/orchestrate/recovery .data — cross-run recovery events, newest-first. */
+export interface RecoveryView {
+  recovery: RecoveryEvent[];
+}
+
+// --- Agent detail (GET /api/agents/:session_id .data) ---
+
+/** One recorded agent session — `bn_core::agent::AgentSession`, serialized verbatim. The detail
+ * header's post-mortem stats (turns, tokens, models, outcome) when a live session isn't running. */
+export interface AgentSession {
+  session_id: string;
+  harness: string;
+  repo: string;
+  branch: string;
+  started_ts: number;
+  ended_ts: number;
+  turns: number;
+  tool_calls: number;
+  permission_prompts: number;
+  models: string[];
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cost_nanoaiu: number | null;
+  lines_added: number;
+  lines_removed: number;
+  files_modified: number;
+  outcome: string;
+  work_class: WorkClass;
+}
+
+/** GET /api/agents/:session_id .data — the live fleet entry, its most-recent recorded session, the
+ * text of its last request, and the rendered branch note (all may be absent for a session
+ * mid-flight or a branch with no note). */
+export interface AgentDetailView {
+  agent: LiveAgent;
+  latest_session: AgentSession | null;
+  last_request: string | null;
+  /** The session's branch note (typed frontmatter + prose body + goal), or `null` if none. */
+  note: NoteDetail | null;
+  /** Per-machine harness availability for the detail switcher (#501). */
+  harnesses?: HarnessOption[];
+}
+
+/** GET /api/agents/:target/pane .data — the trailing tmux-pane lines for the live-pane view. */
+export interface PaneView {
+  target: string;
+  lines: string[];
+  count: number;
+}
+
+// --- Notes (GET /api/notes .data; GET /api/notes/:repo/:branch .data) ---
+
+/** A todo / blocker reference within a note — `bn_core::rollups::ItemRef`. */
+export interface ItemRef {
+  id: string;
+  text: string;
+  line: number;
+  /** Creation date (`YYYY-MM-DD`) — the recency signal the action center ranks todos by. */
+  created: string;
+}
+
+/** One branch-note rollup row — `bn_core::rollups::SummaryEntry`. */
+export interface SummaryEntry {
+  repo: string;
+  branch: string;
+  path: string;
+  status: string;
+  todos: ItemRef[];
+  blockers: ItemRef[];
+}
+
+/** GET /api/notes .data — every branch note's rollup (`payload::summary_data`). */
+export interface NotesView {
+  branches: SummaryEntry[];
+}
+
+/** One structured note item — `bn_core::model::Item`. Todos/done-when carry `done`; any item may
+ * carry a `link` (an ADO work item, a doc). */
+export interface NoteItem {
+  id: string;
+  text: string;
+  created: string;
+  done?: boolean | null;
+  done_at?: string | null;
+  link?: string | null;
+  pct?: number | null;
+}
+
+/** The typed note frontmatter — `bn_core::model::Frontmatter`, serialized verbatim. `pr`/`work_item`
+ * are YAML scalars (a bare number round-trips as a JSON number). The six structured sections plus
+ * `done_when` live here in the single-file layout; the prose (Goal/Progress/…) is in `body`. */
+export interface NoteFront {
+  repo: string;
+  branch: string;
+  created: string;
+  status: string;
+  machine?: string;
+  type?: string | null;
+  work_item?: string | number | null;
+  pr?: string | number | null;
+  tags: string[];
+  collaborators: string[];
+  harnesses?: string[];
+  models?: string[];
+  todos: NoteItem[];
+  blockers: NoteItem[];
+  decisions: NoteItem[];
+  research: NoteItem[];
+  collab: NoteItem[];
+  ask: NoteItem[];
+  done_when: NoteItem[];
+}
+
+/** GET /api/notes/:repo/:branch .data — one full note: typed frontmatter, prose body, goal line. */
+export interface NoteDetail {
+  repo: string;
+  branch: string;
+  front: NoteFront;
+  body: string;
+  goal: string;
+}
+
+// --- Handoff (GET/POST /api/handoff) — the per-branch resume packet (#509) ---
+
+/** Layer 1 — the state snapshot lifted from the note (`bn_core::handoff::StateSnapshot`). */
+export interface HandoffState {
+  goal?: string | null;
+  progress: string[];
+  open_todos: string[];
+  blockers: string[];
+}
+
+/** Layer 3 — decisions made (from the note) + deferred (author-supplied). */
+export interface HandoffDecisions {
+  made: string[];
+  deferred: string[];
+}
+
+/** The structured resume packet — `bn_core::handoff::Handoff`, serialized verbatim. */
+export interface Handoff {
+  repo: string;
+  branch: string;
+  written: string;
+  state: HandoffState;
+  narrative: string;
+  decisions: HandoffDecisions;
+  open_questions: string[];
+  priority_queue: string[];
+}
+
+/** GET/POST /api/handoff .data — the packet plus its rendered markdown mirror + orientation banner. */
+export interface HandoffView {
+  handoff: Handoff;
+  markdown: string;
+  rendered: string;
+}
+
+// --- Repos (GET /api/repos .data) — multi-repo navigation (#495) ---
+
+/** One session (branch) within a repo — a branch note joined to its live agent / dispatch, merged
+ * server-side by (repo, note-key branch) — `crate::repos::Session`. */
+export interface RepoSession {
+  repo: string;
+  branch: string;
+  /** The note status (`open`/`closed`/…) or an in-flight orchestrate pane-state; `null` if unknown. */
+  status: string | null;
+  /** PR URL or bare number from the note / dispatched item; `null` when none. */
+  pr: string | null;
+  open_todos: number;
+  blockers: number;
+  /** The checked-out worktree dir, or `null` for a note-only branch. */
+  worktree: string | null;
+  /** The `note.md` path, or `null` for an agent/dispatch with no note yet. */
+  path: string | null;
+  last_activity_ts: number;
+  /** Live-agent session id when a running session backs this branch — enables the detail link. */
+  session_id: string | null;
+  health: AgentHealth | null;
+  /** `repo:branch` tmux target, for the copy-jump on a non-live card. */
+  target: string | null;
+  output_tokens: number;
+  /** A live agent or in-flight dispatch backs this branch (vs. a note-only "recent" session). */
+  in_flight: boolean;
+}
+
+/** A repo's warm-worktree pool state (#497) — the `bn wt pool` shape surfaced on the rollup. Always
+ * present; a repo with no pool configured has `enabled:false` and zeroed counts. */
+export interface RepoPool {
+  /** The repo is opted into pooling (`~/.config/wt/pools`). */
+  enabled: boolean;
+  /** Configured slot count (the pool size). */
+  total: number;
+  /** Idle slots warm on disk (a live checkout ready to lease). */
+  warm: number;
+  /** Slots currently leased to a branch. */
+  leased: number;
+  /** Idle slots (`total - leased`) — warm plus not-yet-created. */
+  idle: number;
+  /** Best-effort last-warmed epoch-seconds (newest slot-dir mtime); `null` when no slot exists yet. */
+  last_warmed_ts: number | null;
+}
+
+/** One repo's rollup — the card in the Repos list — `crate::repos::assemble`. */
+export interface RepoRollup {
+  repo: string;
+  /** In the managed-repos config (`bn managed-repos`). */
+  managed: boolean;
+  active_agents: number;
+  open_prs: number;
+  session_count: number;
+  last_activity_ts: number;
+  /** AIC (real Copilot bill) over the trailing 30d; `null` = no Copilot runs. */
+  aic: number | null;
+  /** $ (API-equiv benchmark) over the trailing 30d; `null` = nothing priceable. */
+  cost_usd: number | null;
+  /** The repo's warm-worktree pool state (#497). */
+  pool: RepoPool;
+  sessions: RepoSession[];
+}
+
+/** GET /api/repos .data — every repo bn knows, each with its per-repo rollup + session list. */
+export interface ReposView {
+  repos: RepoRollup[];
+}
+
+/** One open GitHub issue for a repo — `bn_core::palette::IssueHit` (#556). */
+export interface RepoIssue {
+  number: number;
+  title: string;
+  url: string;
+  state: string;
+}
+
+/** GET /api/repos/:repo/issues .data — a repo's open GitHub issues (#556). Best-effort: `slug` is
+ * the resolved `owner/repo` (or `null` when the repo's remote couldn't be resolved), and `issues`
+ * is empty on any gh/git failure. */
+export interface RepoIssuesView {
+  repo: string;
+  slug: string | null;
+  issues: RepoIssue[];
+}
+
+// --- Attention (GET /api/attn .data) ---
+
+/** One open attention item — `bn_core::attention::AttnItem`. A `waiting-for-review` plan request
+ * (source `agent`, a `detail`/`prompt` plan body) drives the agent-detail plan-review panel. */
+export interface AttnItem {
+  id: string;
+  source: string;
+  title: string;
+  severity: string;
+  repo?: string | null;
+  branch?: string | null;
+  link?: string | null;
+  key?: string | null;
+  detail?: string | null;
+  mode?: string | null;
+  prompt?: string | null;
+  created: number;
+}
+
+/** GET /api/attn .data — open attention items for today (`payload::attn_list_data`). */
+export interface AttnView {
+  items: AttnItem[];
+}
+
+// --- Action center (GET /api/actions .data; #522) ---
+
+/** The kind of an action-center item — `bn_core::action_center::ActionKind`, kebab-cased. Drives
+ * the row icon, the prompt template, and the default urgency. */
+export type ActionKind =
+  | "attention"
+  | "plan-review"
+  | "todo"
+  | "blocker"
+  | "failing-cron"
+  | "stale-pr"
+  | "goal"
+  | "issue"
+  | "suggestion";
+
+/** Whether the Start-agent composer opens on dispatch-now or queue — `action_center::Urgency`. */
+export type Urgency = "urgent" | "queued";
+
+/** One unified actionable item — `bn_core::action_center::ActionItem`. Each carries a per-type
+ * editable `suggested_prompt` and a `default_urgency`, so any row can one-click Start an agent with
+ * a real starting-point instruction pre-filled. `payload` carries the dispatch coordinates
+ * (`repo`/`branch`/`target` + a type-specific id). */
+export interface ActionItem {
+  id: string;
+  /** The item's origin kind (serialized as `type`). */
+  type: ActionKind;
+  title: string;
+  source: string;
+  /** `urgent` | `warn` | `info` — tone + sort. */
+  severity: string;
+  repo?: string | null;
+  branch?: string | null;
+  link?: string | null;
+  detail?: string | null;
+  /** Dispatch hints: `{ repo?, branch?, target?, review_id?, cron?, pr?, attn_id?, goal_id? }`. */
+  payload: Record<string, unknown>;
+  /** The pre-filled, editable agent prompt (a per-type template). */
+  suggested_prompt: string;
+  default_urgency: Urgency;
+  created: number;
+  /** True for a stale, low-signal backlog todo (created past the staleness threshold, or undated).
+   * Always `false` for non-todo kinds. The UI de-emphasizes these and folds them under the todo
+   * section's "show all" expander so urgent work stays visible. */
+  stale: boolean;
+}
+
+/** GET /api/actions .data — the ranked unified action list (`payload::actions_data`). `cron_activity`
+ * (#557) is the observational feed of recent cron runs (ok + failed), its own Command Center section
+ * — distinct from the actionable `failing-cron` items. */
+export interface ActionsView {
+  count: number;
+  actions: ActionItem[];
+  cron_activity: CronActivity[];
+}
+
+/** One row in the cron-activity feed — `bn_core::action_center::CronActivity` (#557). A job the
+ * automation has actually *run*, with its most-recent outcome; ok + failed alike, most-recent-first.
+ * `severity` is `urgent` when the last run failed, else `info`. */
+export interface CronActivity {
+  job: string;
+  scope: string;
+  ok: boolean;
+  last_exit?: number | null;
+  last_run: number;
+  runs: number;
+  failures: number;
+  declared: boolean;
+  schedule?: string | null;
+  description?: string | null;
+  /** The last run's captured output tail — present only when that run failed. */
+  last_output?: string | null;
+  severity: string;
+}
+
+// --- Completed tab (GET /api/completed .data; #561) ---
+
+/** The kind of a completed item — `bn_core::completed::CompletedKind`, kebab-cased. Drives the
+ * row's icon + group label. */
+export type CompletedKind = "todo" | "goal" | "attention" | "merged-pr";
+
+/** A branch note's two jump locations — `bn_core::completed::NoteLink`. Both are best-effort: a
+ * note absent locally, or a notes repo with no git remote, leaves the corresponding field unset. */
+export interface NoteLink {
+  /** Absolute path of the branch note on this machine (the "open locally" jump). */
+  local_path?: string | null;
+  /** Web URL to the branch note in the synced remote (the "open remotely" jump). */
+  remote_url?: string | null;
+}
+
+/** One finished task — `bn_core::completed::CompletedItem`. `completed` is epoch-seconds of
+ * completion (the list is most-recent-first); `note` carries the local + remote jumps back to the
+ * branch note that holds its full context. */
+export interface CompletedItem {
+  id: string;
+  /** The item's origin kind (serialized as `type`). */
+  type: CompletedKind;
+  title: string;
+  source: string;
+  repo?: string | null;
+  branch?: string | null;
+  /** A deep link when the item has one (a merged PR url, a goal's attached link). */
+  link?: string | null;
+  detail?: string | null;
+  /** Epoch-seconds the item completed — the recency sort key. */
+  completed: number;
+  note: NoteLink;
+}
+
+/** GET /api/completed .data — the most-recent-first completed history (`payload::completed_data`). */
+export interface CompletedView {
+  count: number;
+  completed: CompletedItem[];
+}
+
+// --- Global search / command palette (GET /api/search .data; #565) ---
+
+/** The presentation kind of a palette result — `bn_core::palette::ResultKind`, kebab-cased. Drives
+ * the row icon + group heading. The first nine mirror `ActionKind` (they carry a "work on"
+ * `action`); the rest are navigational jump targets. */
+export type SearchResultKind =
+  | "todo"
+  | "blocker"
+  | "attention"
+  | "plan-review"
+  | "failing-cron"
+  | "stale-pr"
+  | "goal"
+  | "issue"
+  | "suggestion"
+  | "note"
+  | "learning"
+  | "agent"
+  | "repo"
+  | "cron"
+  | "skill";
+
+/** One typed, actionable palette result — `bn_core::palette::SearchResult`. When `action` is
+ * present the result can "work on this" (it feeds the reused `StartAgentComposer` verbatim);
+ * `route` is an in-app SPA path to jump to; `link` an external URL to open in a new tab. */
+export interface SearchResult {
+  id: string;
+  type: SearchResultKind;
+  title: string;
+  subtitle: string;
+  repo?: string | null;
+  branch?: string | null;
+  link?: string | null;
+  route?: string | null;
+  action?: ActionItem | null;
+  score: number;
+}
+
+/** GET /api/search .data — the ranked palette result set (`payload::palette_data`). `query` echoes
+ * the request so a slow response can be dropped if the box has moved on. */
+export interface SearchView {
+  query: string;
+  count: number;
+  results: SearchResult[];
+}
+
+// --- Plan-reviews (GET /api/reviews .data; #349) ---
+
+/** A plan-review's lifecycle status — `bn_core::plan_review::ReviewStatus`. */
+export type ReviewStatus = "pending" | "approved" | "changes-requested" | "rejected";
+
+/** One persisted plan-review record — `bn_core::plan_review::Review`. The dashboard's plan-review
+ * panel renders `plan` and drives approve / request-changes / reject on `id`. */
+export interface Review {
+  id: string;
+  repo: string;
+  branch: string;
+  session?: string | null;
+  plan: string;
+  status: ReviewStatus;
+  notes?: string | null;
+  attn_id?: string | null;
+  created: number;
+  updated: number;
+}
+
+/** GET /api/reviews .data — every plan-review, newest first (`payload::plan_reviews_data`). */
+export interface ReviewsView {
+  reviews: Review[];
+}
+
+// --- Cron registry (GET /api/cron .data; #483) ---
+
+/** One cron job's whole-picture status — `bn_core::crons::CronView`. Declared schedule + flags
+ * joined with last-run health from the event log; run-only orphans carry no `schedule`. */
+export interface CronJob {
+  job: string;
+  scope: string;
+  /** Whether a `[[cron]]` entry declares this job (in the registry, not just run-observed). */
+  declared: boolean;
+  /** The declared `on_calendar` spec, when declared. */
+  schedule?: string | null;
+  description?: string | null;
+  network: boolean;
+  catch_up: boolean;
+  has_script: boolean;
+  script_path?: string | null;
+  /** Epoch-seconds of the most recent recorded run, when it has ever run. */
+  last_run?: number | null;
+  last_exit?: number | null;
+  ok?: boolean | null;
+  runs: number;
+  failures: number;
+  /** The last run's captured output tail — present only when that run *failed* (`ok === false`),
+   * so the UI can show *why* without a shell. Bounded to the persisted 15-line tail. */
+  last_output?: string | null;
+}
+
+/** GET /api/cron .data — the machine-wide cron registry (`payload::crons_view_data`). */
+export interface CronView {
+  count: number;
+  jobs: CronJob[];
+}
+
+// --- Cron findings (GET /api/findings .data; #576) ---
+
+/** One gathered item — `bn_core::feed::FeedItem`, the `{key,text,url}` shape shared by the feed and
+ * the findings store. */
+export interface FeedItem {
+  key: string;
+  text: string;
+  url: string;
+}
+
+/** One run's findings — `bn_core::findings::FindingsRun` (#576): what a cron gathered, when, from
+ * where. `items` reuses the feed `{key,text,url}` shape; `raw` optionally carries the untransformed
+ * payload for later re-parsing. */
+export interface FindingsRun {
+  source: string;
+  run_id: string;
+  /** Epoch-seconds the run gathered these findings. */
+  gathered_at: number;
+  items: FeedItem[];
+  raw?: string | null;
+}
+
+/** GET /api/findings .data — recorded cron findings, newest-first (`api::findings`). */
+export interface FindingsView {
+  count: number;
+  runs: FindingsRun[];
+}
+
+// --- Today's agent suggestions (Today's agent, #577) ---
+
+/** Where a suggested task sits in its review lifecycle — `bn_core::suggestions::SuggestionStatus`. */
+export type SuggestionStatus = "suggested" | "accepted" | "dismissed";
+
+/** One proposed task synthesized from the cron findings — `bn_core::suggestions::Suggestion`
+ * (#577): what to do (`title`), why (`rationale`), and where it came from (`source` + `source_key`,
+ * plus an optional `url` to the finding). `id` is deterministic on `source`+`source_key`. */
+export interface Suggestion {
+  id: string;
+  title: string;
+  rationale: string;
+  source: string;
+  source_key: string;
+  url: string;
+  /** Epoch-seconds this suggestion was first created. */
+  created_at: number;
+  status: SuggestionStatus;
+}
+
+/** GET /api/suggestions .data — Today's agent's suggested tasks, newest-first (`api::suggestions`). */
+export interface SuggestionsView {
+  count: number;
+  suggestions: Suggestion[];
+}
+
+/** What one Today's-agent run did — `bn_core::today_agent::RunReport` (#577). */
+export interface TodayRunReport {
+  /** Distinct findings sources the packet drew from. */
+  sources: number;
+  /** Finding items considered across those sources. */
+  items: number;
+  /** Newly written suggestions (existing/dismissed ones are skipped). */
+  added: number;
+}
+
+/** POST /api/today/run .data — the run report plus the refreshed open suggestions (`actions::today_run`). */
+export interface TodayRunResult {
+  report: TodayRunReport;
+  suggestions: Suggestion[];
+}
+
+// --- Triggerable-agent catalog (GET /api/agents/catalog .data; #557) ---
+
+/** What a catalog entry is — `bn_core::action_center::CatalogKind`, kebab-cased. A scheduled staff
+ * agent (`agents.toml` roster) or a plain cron/native job. */
+export type CatalogKind = "staff-agent" | "cron";
+
+/** One triggerable agent/job — `bn_core::action_center::CatalogItem` (#557). Everything the
+ * automation can fire (declared crons + native jobs + the staff roster), with the metadata a human
+ * needs to decide whether to re-trigger it. `job` is exactly what `POST /api/cron/run {job}` fires;
+ * `skill`/`model`/`harness` are staff-agent-only enrichment. */
+export interface CatalogItem {
+  job: string;
+  name: string;
+  kind: CatalogKind;
+  scope: string;
+  declared: boolean;
+  /** No declared schedule → the job is only ever fired on demand (or run-observed). */
+  on_demand: boolean;
+  schedule?: string | null;
+  description?: string | null;
+  has_script: boolean;
+  network: boolean;
+  catch_up: boolean;
+  last_run?: number | null;
+  last_exit?: number | null;
+  ok?: boolean | null;
+  runs: number;
+  failures: number;
+  skill?: string | null;
+  model?: string | null;
+  harness?: string | null;
+}
+
+/** GET /api/agents/catalog .data — the triggerable-agent catalog (`payload::catalog_data`, #557). */
+export interface CatalogView {
+  count: number;
+  agents: CatalogItem[];
+}
+
+// --- Skills (GET /api/skills .data; GET /api/skills/:name .data; #483) ---
+
+/** One discovered skill — `bn_core::skills::SkillInfo`. `effective` marks the highest-precedence
+ * definition for its name (what bn-mcp serves); the others are shadowed. */
+export interface SkillInfo {
+  name: string;
+  description: string;
+  when?: string | null;
+  keywords?: string[];
+  /** Tier label: `global-shared` | `global-personal` | `repo-shared` | `repo-personal-*`. */
+  scope: string;
+  path: string;
+  effective: boolean;
+}
+
+/** GET /api/skills .data — every skill across the tiers (`payload::skills_data`). */
+export interface SkillsView {
+  count: number;
+  skills: SkillInfo[];
+}
+
+/** GET /api/skills/:name .data — one skill's editable source: its metadata + raw markdown. */
+export interface SkillDetail {
+  skill: SkillInfo;
+  content: string;
+}
+
+// --- Goals (GET /api/goals .data) ---
+
+/** A note connected to a daily goal (#564) — `bn_core::model::GoalNote`. Either a linked branch
+ * note (`repo`+`branch`, jumpable to the Notes view) and/or attached free-text / uploaded content
+ * (`text`), optionally titled. */
+export interface GoalNote {
+  id: string;
+  repo?: string | null;
+  branch?: string | null;
+  text?: string | null;
+  title?: string | null;
+  created: string;
+}
+
+/** One daily goal — `payload::daily_data` goal row. `est`/`actual` are aimed-vs-achieved minutes;
+ * `pct` is partial progress on a still-open goal; `q` is the aligned quarter-goal key (#490). */
+export interface DailyGoal {
+  id: string;
+  text: string;
+  link?: string | null;
+  done: boolean;
+  done_at?: string | null;
+  created: string;
+  pct?: number | null;
+  /** Human durations (`90m`, `2h`) — aimed vs achieved from `bn focus` calibration. */
+  est?: string | null;
+  actual?: string | null;
+  /** Aligned quarter-goal key (`bn daily add --q <key>`), or null when untagged. */
+  q?: string | null;
+  /** Notes connected to this goal (#564) — linked branch notes and/or attached content. */
+  notes?: GoalNote[];
+}
+
+/** A scheduled-but-not-yet-today goal — `payload::daily_data` upcoming row. */
+export interface UpcomingGoal {
+  id: string;
+  text: string;
+  link?: string | null;
+  scheduled: string;
+}
+
+/** The daily half of GET /api/goals .data — `payload::daily_data`. */
+export interface DailyGoals {
+  date: string;
+  open: number;
+  done: number;
+  goals: DailyGoal[];
+  upcoming: UpcomingGoal[];
+  rendered?: string;
+}
+
+/** One quarter goal — `payload::quarter_data` goal row. `status` is the derived on-track signal. */
+export interface QuarterGoal {
+  key: string;
+  text: string;
+  done: boolean;
+  done_at?: string | null;
+  metric?: string | null;
+  status: string;
+}
+
+/** The quarter half of GET /api/goals .data — `payload::quarter_data`. */
+export interface QuarterGoals {
+  quarter: string | null;
+  elapsed_pct?: number;
+  open: number;
+  done: number;
+  on_track: number;
+  total: number;
+  goals: QuarterGoal[];
+  reviews: unknown[];
+  header?: string;
+}
+
+/** GET /api/goals .data — today's daily goals plus the current quarter (`api::goals`). */
+export interface GoalsView {
+  daily: DailyGoals;
+  quarter: QuarterGoals;
+}
+
+// --- Learnings (GET /api/learnings .data; mirrors `bn_core::learnings::LearningsView`) ---
+
+/** The overseer's review decision on a learning entry, if acted on (`learnings::Review`). */
+export interface LearningReview {
+  decision?: string;
+  [k: string]: unknown;
+}
+
+/** One learning / reflection line — `bn_core::learnings::LearningEntry`. */
+export interface LearningEntry {
+  key: string;
+  kind: string;
+  date: string;
+  text: string;
+  repo?: string | null;
+  branch?: string | null;
+  issue?: string | null;
+  harness?: string | null;
+  skill?: string | null;
+  review?: LearningReview | null;
+  agent: boolean;
+}
+
+/** One theme group (a skill, a repo, or `general`) with its entries — `learnings::Group`. */
+export interface LearningGroup {
+  theme: string;
+  entries: LearningEntry[];
+}
+
+/** GET /api/learnings .data — theme groups plus headline counts (`learnings::LearningsView`). */
+export interface LearningsView {
+  start: string;
+  end: string;
+  groups: LearningGroup[];
+  total: number;
+  learned: number;
+  reflections: number;
+  agent: number;
+  mine: number;
+  promoted: number;
+  dismissed: number;
+  unreviewed: number;
+}
+
+// --- Cost (GET /api/cost .data; mirrors `bn_core::cost::CostView` from #381) ---
+
+/** The work-class category token on a cost row (`bn_core::cost::WorkClass::as_str`). Rows recorded
+ * before #381 threaded a class through fold into `unattributed` (expected to dominate history). */
+export type WorkClass =
+  | "orchestration"
+  | "coding"
+  | "scheduled"
+  | "research"
+  | "remote"
+  | "unattributed";
+
+/** One grouped cost line — `bn_core::cost::CostRow`. `aic` (the *metered Copilot bill*) is `null`
+ * for a group with no Copilot runs; `cost_usd` (the *API-equiv benchmark*) is `null` when nothing
+ * in the group had a priceable model. */
+export interface CostRow {
+  key: string;
+  /** Fresh (non-cached) input tokens. */
+  input_tokens: number;
+  /** Cached prompt tokens (priced ~10× cheaper). */
+  cache_read_tokens: number;
+  output_tokens: number;
+  sessions: number;
+  /** AIC — the real Copilot bill. */
+  aic: number | null;
+  /** $ — the cache-aware API-equiv benchmark. */
+  cost_usd: number | null;
+}
+
+/** Whole-window totals in both cost units — `bn_core::cost::CostTotals`. */
+export interface CostTotals {
+  sessions: number;
+  input_tokens: number;
+  cache_read_tokens: number;
+  output_tokens: number;
+  aic: number | null;
+  cost_usd: number | null;
+}
+
+/** One (day × category) cell — `bn_core::cost::DayCategory`, the stacked-bar chart's source. */
+export interface DayCategory {
+  day: string;
+  category: string;
+  sessions: number;
+  input_tokens: number;
+  cache_read_tokens: number;
+  output_tokens: number;
+  aic: number | null;
+  cost_usd: number | null;
+}
+
+/** GET /api/cost .data — `bn_core::cost::CostView`. Every breakdown is always present, so the page
+ * switches the table dimension client-side; only the window picker changes the fetch. */
+export interface CostView {
+  window_days: number;
+  totals: CostTotals;
+  by_category: CostRow[];
+  by_machine: CostRow[];
+  by_repo: CostRow[];
+  by_model: CostRow[];
+  by_day: CostRow[];
+  by_day_category: DayCategory[];
+}
+
+// --- Wrap: today's "achieved" digest (GET /api/wrap .data; #490) ---
+
+/** A PR merged today (`reports::MergedPr`). */
+export interface WrapMergedPr {
+  number: number;
+  title: string;
+  url: string;
+}
+
+/** A commit today with no corresponding note update (`reports::UnnotedCommit`). */
+export interface WrapCommit {
+  hash: string;
+  subject: string;
+}
+
+/** A still-open todo across active branch notes (`reports::OpenTodo`). */
+export interface WrapTodo {
+  repo: string;
+  branch: string;
+  text: string;
+}
+
+/** A daily goal carrying into tomorrow (`reports::GoalView`). */
+export interface WrapCarryGoal {
+  id: string;
+  text: string;
+  link?: string | null;
+  pending_days: number;
+}
+
+/** GET /api/wrap .data — the end-of-day digest (`payload::wrap_data` = `WrapDigest` + `rendered`). */
+export interface WrapView {
+  date: string;
+  branches_touched: string[];
+  unnoted_commits: WrapCommit[];
+  merged_prs: WrapMergedPr[];
+  open_todos: WrapTodo[];
+  carry_forward: WrapCarryGoal[];
+  rendered: string;
+}
+
+// --- Insights & metrics (#507) — GET /api/metrics · /api/metrics/trend · /api/insights ·
+//     /api/weekly · /api/brag. The metrics scorecard mirrors `bn_core::metrics::Scorecard`; the
+//     three digests each carry a `rendered` text/markdown field the tab shows verbatim. ---
+
+/** PR throughput block (`metrics::Metrics`) — the flow tiles read from this. */
+export interface MetricsPr {
+  window_days: number;
+  opened: number;
+  merged: number;
+  closed: number;
+  in_flight: number;
+  completion_rate: number | null;
+  cycle_median_hours: number | null;
+  cycle_p90_hours: number | null;
+  lead_median_hours: number | null;
+  lead_p90_hours: number | null;
+}
+
+/** AI-agent session telemetry (`metrics::AgentMetrics`) folded over the window. */
+export interface MetricsAgent {
+  sessions: number;
+  total_minutes: number;
+  by_harness: [string, number][];
+  by_model: [string, number][];
+  cost_aiu: number;
+  input_tokens: number;
+  output_tokens: number;
+  lines_added: number;
+  lines_removed: number;
+}
+
+/** GET /api/metrics .data — the velocity + throughput scorecard (`payload::scorecard_data`). Only
+ * the fields the dashboard renders are typed; the full record carries more (baselines, churn, …). */
+export interface MetricsView {
+  window_days: number;
+  pr: MetricsPr;
+  wip: number;
+  open_branches: number;
+  branch_age_median_days: number | null;
+  branch_age_max_days: number | null;
+  agent: MetricsAgent;
+}
+
+/** One recorded metrics snapshot row behind the trend chart. */
+export interface MetricsTrendPoint {
+  date: string;
+  wip: number;
+  merged: number;
+  close_out_lag_median_hours: number | null;
+}
+
+/** GET /api/metrics/trend .data — the snapshot history (empty until snapshots are written). */
+export interface MetricsTrendView {
+  snapshots: MetricsTrendPoint[];
+}
+
+/** GET /api/insights .data — the weekly auto-retro (`payload::insights_data`); `rendered` is the
+ * text digest the tab shows. The structured metrics are carried too but the tab renders the text. */
+export interface InsightsView {
+  rendered: string;
+  [key: string]: unknown;
+}
+
+/** GET /api/weekly .data — the weekly 1-1 review digest (`payload::weekly_data`). */
+export interface WeeklyView {
+  rendered: string;
+  [key: string]: unknown;
+}
+
+/** GET /api/brag .data — the accomplishments / impact packet (`payload::brag_data`); `rendered` is
+ * the markdown the tab shows. */
+export interface BragView {
+  rendered: string;
+  [key: string]: unknown;
+}

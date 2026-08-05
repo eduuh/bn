@@ -1,0 +1,962 @@
+//! `bn fleet reap` — the fleet garbage-collector (#503).
+//!
+//! The side-effecting realization of [`bn_core::fleet_gc`]: this module captures the live signals
+//! the pure policy needs — the process table, tmux windows/panes, worktree dirs, PR state — feeds
+//! each discovered agent through [`fleet_gc::classify`], and *acts* on the verdicts: terminate a
+//! stale agent's **full process tree** (SIGTERM → SIGKILL), then prune its now-dead tmux window.
+//! It also prunes `remain-on-exit` dead panes/windows that accumulate across dispatch waves.
+//!
+//! Discovery is **harness-process-centric**: an agent is a running `copilot`/`claude` process
+//! rooted in a managed worktree (`worktree_dir/<repo>/<branch>`). That single lens catches both
+//! windowed agents (their pane's process tree) and the windowless stragglers #503 is about — a
+//! copilot that reparented away from its killed pane and kept burning CPU with no window and no PR.
+//!
+//! Everything that can be pure is: the process-tree walk, the ps/lsof parsers, and the
+//! harness/orchestrator command classifiers are unit-tested; only the actual `ps`/`lsof`/`tmux`
+//! spawns and signal sends touch the OS.
+
+use crate::cmd::killport::{process_exists, send_signal, signal_kill, signal_term};
+use crate::proc::{tmux_raw, tmux_run};
+use bn_core::agent::{AgentHealth, DEFAULT_IDLE_MINS, DEFAULT_STUCK_MINS};
+use bn_core::fleet_gc::{self, AgentObservation, Disposition, PrStatus, ReapPolicy};
+use bn_core::orchestrate::{classify as classify_pane, PaneObservation, PaneState};
+use bn_core::render::Envelope;
+use bn_core::resolver::Config;
+use serde_json::json;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+/// The idle sentinel for a windowless straggler that isn't in the live fleet: if it were a fresh
+/// launch it'd have a live session log (and appear in `supervise`), so a windowless process the
+/// fleet doesn't know about is by definition long-quiet — well past any grace window.
+const STALE_IDLE_SENTINEL: i64 = 1_000_000_000;
+
+/// A row from `ps -axo pid=,ppid=,command=`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Proc {
+    pub pid: i32,
+    pub ppid: i32,
+    pub command: String,
+}
+
+/// One tmux pane, as the reaper reads it.
+#[derive(Debug, Clone)]
+struct Pane {
+    window_id: String,
+    session: String,
+    pane_pid: i32,
+    dead: bool,
+    cwd: String,
+}
+
+/// A discovered agent: the process tree we'd reap, plus everything the CLI needs to build a
+/// [`AgentObservation`] and act on the verdict.
+#[derive(Debug, Clone)]
+struct Candidate {
+    repo: String,
+    branch: String,
+    target: String,
+    /// The pid whose **tree** we terminate: the tmux pane root when windowed (so shells + the
+    /// harness + any grandchildren all die), else the topmost harness process itself.
+    root_pid: i32,
+    harness: Option<String>,
+    window_id: Option<String>,
+    has_live_window: bool,
+    is_orchestrator: bool,
+    worktree_path: PathBuf,
+}
+
+/// Options for a reap pass.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ReapOpts {
+    /// Act (kill + prune). `false` ⇒ dry-run (the default): report what *would* be reaped.
+    pub kill: bool,
+    /// Override the working / uncommitted / grace safety gates (never the orchestrator guard).
+    pub force: bool,
+    /// Idle-grace seconds before a stale agent is eligible.
+    pub min_idle_secs: i64,
+    /// Emit the JSON envelope instead of the human summary.
+    pub as_json: bool,
+    /// Query PR state per candidate (a network `gh`/`az` call each). Off for the fast opportunistic
+    /// sweep; on for `bn fleet reap` and the cron.
+    pub check_pr: bool,
+    /// Suppress the human summary entirely (for the opportunistic sweep folded into other commands).
+    pub quiet: bool,
+}
+
+impl Default for ReapOpts {
+    fn default() -> Self {
+        ReapOpts {
+            kill: false,
+            force: false,
+            min_idle_secs: fleet_gc::DEFAULT_MIN_IDLE_SECS,
+            as_json: false,
+            check_pr: true,
+            quiet: false,
+        }
+    }
+}
+
+// --- pure helpers (unit-tested) --------------------------------------------
+
+/// Parse one `ps -axo pid=,ppid=,command=` row → `(pid, ppid, command)`. `None` on a malformed line.
+pub(crate) fn parse_ps_line(line: &str) -> Option<Proc> {
+    let t = line.trim();
+    let (pid_s, rest) = t.split_once(char::is_whitespace)?;
+    let (ppid_s, cmd) = rest.trim_start().split_once(char::is_whitespace)?;
+    Some(Proc {
+        pid: pid_s.parse().ok()?,
+        ppid: ppid_s.parse().ok()?,
+        command: cmd.trim_start().to_string(),
+    })
+}
+
+/// Parse the full `ps` dump.
+pub(crate) fn parse_ps(out: &str) -> Vec<Proc> {
+    out.lines().filter_map(parse_ps_line).collect()
+}
+
+/// Parse `lsof -d cwd -Fpn` field output → `(pid, cwd)` per process. `p<pid>` lines set the current
+/// pid; `n<path>` lines record its cwd.
+// On Linux the binary reads cwds from /proc, so this lsof parser is only reached on non-Linux
+// targets (and by unit tests); allow it to be unused in the Linux `bin` build.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+pub(crate) fn parse_lsof_cwds(out: &str) -> Vec<(i32, PathBuf)> {
+    let mut cur: Option<i32> = None;
+    let mut rows = Vec::new();
+    for line in out.lines() {
+        match line.as_bytes().first() {
+            Some(b'p') => cur = line[1..].trim().parse().ok(),
+            Some(b'n') => {
+                if let Some(pid) = cur {
+                    let path = &line[1..];
+                    if !path.is_empty() {
+                        rows.push((pid, PathBuf::from(path)));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    rows
+}
+
+/// Every pid in `root`'s process tree (including `root`), via a breadth-first walk of the
+/// `(pid, ppid)` edges. Pure so the tree walk is testable without a live process table.
+pub(crate) fn descendants(procs: &[(i32, i32)], root: i32) -> Vec<i32> {
+    let mut children: BTreeMap<i32, Vec<i32>> = BTreeMap::new();
+    for &(pid, ppid) in procs {
+        children.entry(ppid).or_default().push(pid);
+    }
+    let mut out = vec![root];
+    let mut queue = vec![root];
+    let mut seen: BTreeSet<i32> = [root].into_iter().collect();
+    while let Some(p) = queue.pop() {
+        for &c in children.get(&p).map(Vec::as_slice).unwrap_or(&[]) {
+            if seen.insert(c) {
+                out.push(c);
+                queue.push(c);
+            }
+        }
+    }
+    out
+}
+
+/// The basename of a path-like token (the part after the last `/`).
+fn basename(tok: &str) -> &str {
+    tok.rsplit('/').next().unwrap_or(tok)
+}
+
+/// Whether a command line launches an agent harness — argv carries a `copilot` or `claude`
+/// executable token. Matches `node /opt/homebrew/bin/copilot …` and the packaged
+/// `…/copilot-darwin-arm64/copilot …`, but **not** an agent-spawned subprocess whose name merely
+/// contains the string (e.g. `copilot-detached-supervisor …`), so a reaper never mistakes a build
+/// step for the harness itself.
+pub(crate) fn is_harness_command(cmd: &str) -> Option<&'static str> {
+    for tok in cmd.split_whitespace() {
+        match basename(tok) {
+            "copilot" => return Some("copilot"),
+            "claude" => return Some("claude"),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Map a `pr_state` string (`MERGED`/`OPEN`/`CLOSED`/`NONE`) to a [`PrStatus`]. Anything else —
+/// including the `NONE` a failed lookup degrades to — reads as [`PrStatus::None`], which never
+/// triggers a reap.
+pub(crate) fn map_pr_status(state: &str) -> PrStatus {
+    match state.trim().to_ascii_uppercase().as_str() {
+        "MERGED" => PrStatus::Merged,
+        "CLOSED" => PrStatus::Closed,
+        "OPEN" => PrStatus::Open,
+        _ => PrStatus::None,
+    }
+}
+
+// --- OS captures -----------------------------------------------------------
+
+/// The process table: `pid ppid command` for every process. Empty on failure.
+fn ps_all() -> Vec<Proc> {
+    let out = std::process::Command::new("ps")
+        .args(["-axo", "pid=,ppid=,command="])
+        .output()
+        .ok();
+    out.filter(|o| o.status.success())
+        .map(|o| parse_ps(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or_default()
+}
+
+/// Every process's current working directory. Linux reads `/proc/<pid>/cwd`; elsewhere a single
+/// `lsof -d cwd` pass. Best-effort — empty when the tool is missing (windowed agents still resolve
+/// via their pane cwd).
+fn process_cwds() -> Vec<(i32, PathBuf)> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut rows = Vec::new();
+        if let Ok(rd) = std::fs::read_dir("/proc") {
+            for e in rd.flatten() {
+                if let Ok(pid) = e.file_name().to_string_lossy().parse::<i32>() {
+                    if let Ok(cwd) = std::fs::read_link(e.path().join("cwd")) {
+                        rows.push((pid, cwd));
+                    }
+                }
+            }
+        }
+        rows
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let out = std::process::Command::new("lsof")
+            .args(["-n", "-P", "-d", "cwd", "-Fpn"])
+            .output()
+            .ok();
+        out.filter(|o| o.status.success())
+            .map(|o| parse_lsof_cwds(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_default()
+    }
+}
+
+/// Every tmux pane across every session.
+fn read_panes() -> Vec<Pane> {
+    let fmt = "#{window_id}\t#{session_name}\t#{window_name}\t#{pane_pid}\t#{pane_dead}\t#{pane_current_path}";
+    let Some(out) = tmux_raw(&["list-panes", "-a", "-F", fmt]) else {
+        return Vec::new();
+    };
+    out.lines()
+        .filter_map(|line| {
+            let f: Vec<&str> = line.split('\t').collect();
+            if f.len() < 6 {
+                return None;
+            }
+            Some(Pane {
+                window_id: f[0].to_string(),
+                session: f[1].to_string(),
+                pane_pid: f[3].parse().unwrap_or(0),
+                dead: f[4] == "1",
+                cwd: f[5].to_string(),
+            })
+        })
+        .collect()
+}
+
+/// The last non-empty lines of a window's active pane — the live "is it mid-turn?" glance.
+fn capture_tail(target: &str, n: usize) -> Vec<String> {
+    let t = format!("={target}");
+    let Some(out) = tmux_raw(&["capture-pane", "-p", "-t", &t]) else {
+        return Vec::new();
+    };
+    let lines: Vec<String> = out
+        .lines()
+        .map(|l| l.trim_end().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let start = lines.len().saturating_sub(n);
+    lines[start..].to_vec()
+}
+
+/// SIGTERM the whole set, wait up to ~2s, then SIGKILL the survivors. Returns how many pids were
+/// alive to begin with. Reuses the same graceful→forceful primitives as `bn kill`.
+fn kill_tree(pids: &[i32]) -> usize {
+    let mut alive: Vec<i32> = pids
+        .iter()
+        .copied()
+        .filter(|p| process_exists(*p))
+        .collect();
+    let started = alive.len();
+    for pid in &alive {
+        let _ = send_signal(*pid, signal_term());
+    }
+    for _ in 0..4 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        alive.retain(|p| process_exists(*p));
+        if alive.is_empty() {
+            break;
+        }
+    }
+    for pid in &alive {
+        let _ = send_signal(*pid, signal_kill());
+    }
+    started
+}
+
+/// The `(pid, ppid)` edges of the live process table — the input to [`descendants`].
+fn ps_edges() -> Vec<(i32, i32)> {
+    ps_all().iter().map(|p| (p.pid, p.ppid)).collect()
+}
+
+/// The live (non-dead) pane pids of a specific tmux window.
+fn live_pane_pids_of_window(window_id: &str) -> Vec<i32> {
+    let Some(out) = tmux_raw(&[
+        "list-panes",
+        "-t",
+        window_id,
+        "-F",
+        "#{pane_pid} #{pane_dead}",
+    ]) else {
+        return Vec::new();
+    };
+    out.lines()
+        .filter_map(|line| {
+            let (pid, dead) = line.split_once(' ')?;
+            (dead == "0")
+                .then(|| pid.parse::<i32>().ok())
+                .flatten()
+                .filter(|p| *p > 0)
+        })
+        .collect()
+}
+
+/// Terminate the **full process tree** rooted at each live pane of the given windows — the piece
+/// `bn wt cleanup` was missing (#503 gap 2): with `remain-on-exit on` a killed window leaves the
+/// pane's process reparented and alive, so cleanup must kill the tree, not just the window. The
+/// window the caller is sitting in (our own shell) is always skipped, so an interactive `bn close`
+/// from inside a worktree never shoots its own shell out mid-cleanup. Returns how many processes
+/// were signalled.
+pub(crate) fn kill_window_trees(wins: &[String]) -> usize {
+    if wins.is_empty() {
+        return 0;
+    }
+    let cur = current_window_id();
+    let edges = ps_edges();
+    let mut killed = 0;
+    for wid in wins {
+        if cur.as_deref() == Some(wid.as_str()) {
+            continue; // never tree-kill the window we're running in
+        }
+        for pane_pid in live_pane_pids_of_window(wid) {
+            killed += kill_tree(&descendants(&edges, pane_pid));
+        }
+    }
+    killed
+}
+
+/// The tmux window id the caller is attached to, or `None` when not inside tmux.
+fn current_window_id() -> Option<String> {
+    std::env::var("TMUX")
+        .ok()
+        .and_then(|_| tmux_raw(&["display-message", "-p", "#{window_id}"]))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+// --- discovery + reconciliation --------------------------------------------
+
+/// A managed worktree exists on disk for `repo/branch`.
+fn worktree_exists(worktree_dir: &Path, repo: &str, branch: &str) -> bool {
+    worktree_dir.join(repo).join(branch).is_dir()
+}
+
+/// Whether the worktree carries uncommitted (dirty) or unpushed work — either spares an agent from
+/// a non-forced reap so nothing in flight is discarded.
+fn has_wip(wt: &Path) -> bool {
+    let wt_s = wt.to_string_lossy();
+    if crate::wt::dirty_count(&wt_s) > 0 {
+        return true;
+    }
+    // Unpushed commits: prefer the tracking branch, fall back to ahead-of-default (via wt helper).
+    if let Some(n) = crate::wt::git_out(&["-C", &wt_s, "rev-list", "--count", "@{upstream}..HEAD"])
+        .and_then(|s| s.trim().parse::<u32>().ok())
+    {
+        return n > 0;
+    }
+    crate::wt::commits_ahead(wt) > 0
+}
+
+/// PR status for a worktree's branch (a network call). [`PrStatus::None`] when the worktree/branch
+/// or remote can't be resolved — never a reap trigger on its own.
+fn pr_status_for(wt: &Path, branch: &str) -> PrStatus {
+    let Some(bare) = crate::wt::find_bare_repo(wt) else {
+        return PrStatus::None;
+    };
+    let remote = crate::wt::remote_for(&bare);
+    if remote == crate::wt::Remote::Other {
+        return PrStatus::None;
+    }
+    map_pr_status(&crate::wt::pr_state(&remote, branch))
+}
+
+/// Discover every live agent rooted in a managed worktree, resolving each to the process tree we'd
+/// reap and whether it still has a live window.
+fn discover(worktree_dir: &Path) -> Vec<Candidate> {
+    let procs = ps_all();
+    let cwds: BTreeMap<i32, PathBuf> = process_cwds().into_iter().collect();
+    let panes = read_panes();
+
+    // Live (non-dead) pane roots, and the set of targets that still have a live window.
+    let live_panes: Vec<&Pane> = panes.iter().filter(|p| !p.dead && p.pane_pid > 0).collect();
+    let live_pane_pids: BTreeSet<i32> = live_panes.iter().map(|p| p.pane_pid).collect();
+    let mut live_targets: BTreeSet<String> = BTreeSet::new();
+    for p in &live_panes {
+        if let Some((r, b)) = fleet_gc::worktree_repo_branch(worktree_dir, Path::new(&p.cwd)) {
+            live_targets.insert(target_key(&r, &b));
+        }
+    }
+
+    let by_pid: BTreeMap<i32, &Proc> = procs.iter().map(|p| (p.pid, p)).collect();
+    let mut out: Vec<Candidate> = Vec::new();
+
+    // Iterate every harness process (not just tree roots): the `node …/copilot` wrapper and its
+    // packaged-binary child can report *different* cwds (the wrapper stays where it launched, the
+    // worker chdir's into the session's worktree), so keying only on the wrapper would miss the
+    // real worktree. Each harness proc that maps to a managed worktree yields a candidate; the
+    // per-`root_pid` dedupe below collapses the wrapper+child of one agent into a single row.
+    for proc in procs
+        .iter()
+        .filter(|p| is_harness_command(&p.command).is_some())
+    {
+        let harness = is_harness_command(&proc.command).unwrap_or("copilot");
+        // The harness's cwd: prefer the process table, fall back to a containing pane's cwd.
+        let cwd = cwds.get(&proc.pid).cloned().or_else(|| {
+            panes
+                .iter()
+                .find(|pane| pane.pane_pid == proc.pid)
+                .map(|pane| PathBuf::from(&pane.cwd))
+        });
+        let Some(cwd) = cwd else { continue };
+        let Some((repo, branch)) = fleet_gc::worktree_repo_branch(worktree_dir, &cwd) else {
+            continue; // not rooted in a managed worktree — leave it entirely alone.
+        };
+        if branch == "main" || branch == "master" {
+            continue; // never reap the repo's main worktree / its agent
+        }
+
+        // Walk up the ppid chain: if we hit a live pane root, this agent is windowed — reap that
+        // pane's whole tree; else it's a windowless straggler — reap the topmost harness ancestor's
+        // tree (so the `node` wrapper dies with its worker child, not just the child).
+        let (root_pid, window_id) = resolve_root(proc.pid, &by_pid, &live_pane_pids, &live_panes);
+        let target = target_key(&repo, &branch);
+        let has_live_window = window_id.is_some() || live_targets.contains(&target);
+
+        // Orchestrator guard: the planning-session cockpit (#345) is sacrosanct. We deliberately do
+        // NOT sniff the command for "orchestrate" — a dispatched agent's seed prompt (passed as
+        // `copilot -i <prompt>`) routinely contains the word, and a harness process is never the
+        // orchestrator daemon itself anyway (that's the `bn orchestrate` process that spawns them).
+        let session = window_id
+            .as_ref()
+            .and_then(|wid| live_panes.iter().find(|p| &p.window_id == wid))
+            .map(|p| p.session.clone())
+            .unwrap_or_default();
+        let is_orchestrator = session.eq_ignore_ascii_case(crate::wt::orchestrator_session());
+
+        out.push(Candidate {
+            repo,
+            branch,
+            target,
+            root_pid,
+            harness: Some(harness.to_string()),
+            window_id,
+            has_live_window,
+            is_orchestrator,
+            worktree_path: cwd,
+        });
+    }
+
+    // Dedupe: the wrapper + worker of one agent (and any duplicate harness procs) collapse onto a
+    // single row per process tree we'd kill.
+    out.sort_by(|a, b| a.root_pid.cmp(&b.root_pid).then(a.target.cmp(&b.target)));
+    out.dedup_by(|a, b| a.root_pid == b.root_pid);
+    out
+}
+
+/// The managed `repo:sanitized-branch` targets that still have a live agent harness process.
+/// Orchestrator recovery uses this beside tmux visibility so a transiently missing window never
+/// causes a duplicate fresh launch while the original agent process is still running.
+pub(crate) fn live_agent_targets(worktree_dir: &Path) -> BTreeSet<String> {
+    discover(worktree_dir)
+        .into_iter()
+        .map(|candidate| candidate.target)
+        .collect()
+}
+
+/// Terminate the live agent process tree and tmux window for one managed lane. This is the
+/// stop-after-ship primitive: the caller has already confirmed the branch's PR merged, so unlike
+/// the general fleet GC it does not apply working/WIP/idle guards to a lane whose work is shipped.
+pub(crate) fn terminate_lane(worktree_dir: &Path, repo: &str, branch: &str) -> usize {
+    let target = target_key(repo, &crate::wt::sanitize_branch(branch));
+    let candidates: Vec<Candidate> = discover(worktree_dir)
+        .into_iter()
+        .filter(|candidate| candidate.target == target && !candidate.is_orchestrator)
+        .collect();
+    if candidates.is_empty() {
+        return 0;
+    }
+
+    let edges = ps_edges();
+    let mut killed = 0;
+    for candidate in candidates {
+        killed += kill_tree(&descendants(&edges, candidate.root_pid));
+        if let Some(window_id) = candidate.window_id {
+            let _ = tmux_run(&["kill-window", "-t", &window_id]);
+        }
+    }
+    killed
+}
+
+/// Resolve the tree root to reap for a harness process. Walk up the ppid chain: the first **live
+/// tmux pane** root found means the agent is windowed → reap that pane's whole tree (shell +
+/// harness + children) and report its window id. With no pane in the chain the agent is a
+/// windowless straggler → reap the **topmost harness ancestor** (so the `node` wrapper is killed
+/// alongside its worker child, leaving nothing reparented).
+fn resolve_root(
+    harness_pid: i32,
+    by_pid: &BTreeMap<i32, &Proc>,
+    live_pane_pids: &BTreeSet<i32>,
+    live_panes: &[&Pane],
+) -> (i32, Option<String>) {
+    let mut cur = harness_pid;
+    let mut topmost_harness = harness_pid;
+    let mut guard = 0;
+    loop {
+        if live_pane_pids.contains(&cur) {
+            let wid = live_panes
+                .iter()
+                .find(|p| p.pane_pid == cur)
+                .map(|p| p.window_id.clone());
+            return (cur, wid);
+        }
+        let Some(p) = by_pid.get(&cur) else { break };
+        if is_harness_command(&p.command).is_some() {
+            topmost_harness = cur;
+        }
+        if p.ppid <= 1 || guard > 64 {
+            break;
+        }
+        cur = p.ppid;
+        guard += 1;
+    }
+    (topmost_harness, None)
+}
+
+/// The lowercase `repo:branch` join key (matches `agent_live` / `supervise`).
+fn target_key(repo: &str, branch: &str) -> String {
+    format!("{}:{}", repo.to_lowercase(), branch.to_lowercase())
+}
+
+/// Windows whose panes are **all** dead (`remain-on-exit` leftovers) — safe to prune outright: the
+/// process already exited, so there's nothing to kill, just an inspectable husk to clear.
+fn dead_windows(panes: &[Pane]) -> Vec<String> {
+    let mut alive: BTreeSet<&str> = BTreeSet::new();
+    let mut all: BTreeSet<&str> = BTreeSet::new();
+    for p in panes {
+        all.insert(&p.window_id);
+        if !p.dead {
+            alive.insert(&p.window_id);
+        }
+    }
+    all.difference(&alive).map(|s| s.to_string()).collect()
+}
+
+/// Is a live-windowed agent mid-turn? The definitive spinner check (reuses the orchestrate pane
+/// classifier), so a working agent is never surprise-killed. Windowless agents have no pane to
+/// read → never "working".
+fn is_working(target: &str, has_live_window: bool, health: Option<AgentHealth>) -> bool {
+    if !has_live_window {
+        return false;
+    }
+    let tail = capture_tail(target, 6);
+    if !tail.is_empty() {
+        let obs = PaneObservation {
+            tail: &tail,
+            has_window: true,
+            plane_a: "",
+            has_wip: false,
+        };
+        if classify_pane(&obs) == PaneState::Working {
+            return true;
+        }
+    }
+    // Fall back to fleet health when the pane tail is empty/ambiguous.
+    health == Some(AgentHealth::Active)
+}
+
+/// One reconciled row: the candidate, its observation, and the verdict.
+struct Verdict {
+    candidate: Candidate,
+    obs: AgentObservation,
+    disposition: Disposition,
+}
+
+/// Build observations + verdicts for every discovered agent.
+fn reconcile(cfg: &Config, worktree_dir: &Path, opts: &ReapOpts) -> Vec<Verdict> {
+    let fleet = bn_core::agent::supervise(cfg, DEFAULT_IDLE_MINS, DEFAULT_STUCK_MINS);
+    let health: BTreeMap<String, (AgentHealth, i64)> = fleet
+        .agents
+        .iter()
+        .map(|a| (target_key(&a.repo, &a.branch), (a.health, a.idle_secs)))
+        .collect();
+
+    let policy = ReapPolicy {
+        force: opts.force,
+        min_idle_secs: opts.min_idle_secs,
+    };
+
+    discover(worktree_dir)
+        .into_iter()
+        .map(|c| {
+            let exists = worktree_exists(worktree_dir, &c.repo, &c.branch);
+            let fleet_hit = health.get(&c.target);
+            let idle_secs = match fleet_hit {
+                Some((_, idle)) => *idle,
+                None if c.has_live_window => 0, // fresh launch, no log yet → grace protects it
+                None => STALE_IDLE_SENTINEL,    // windowless + unknown to the fleet → long-quiet
+            };
+            let working = is_working(&c.target, c.has_live_window, fleet_hit.map(|(h, _)| *h));
+            let uncommitted = exists && has_wip(&c.worktree_path);
+            let pr = if opts.check_pr && exists {
+                pr_status_for(&c.worktree_path, &c.branch)
+            } else {
+                PrStatus::None
+            };
+            let obs = AgentObservation {
+                has_live_window: c.has_live_window,
+                worktree_exists: exists,
+                pr,
+                is_working: working,
+                has_uncommitted: uncommitted,
+                is_orchestrator: c.is_orchestrator,
+                idle_secs,
+            };
+            let disposition = fleet_gc::classify(&obs, &policy);
+            Verdict {
+                candidate: c,
+                obs,
+                disposition,
+            }
+        })
+        .collect()
+}
+
+/// `bn fleet reap` — the command entry. Dry-run + JSON by default; `--kill`/`--yes` to act.
+/// Returns a process exit code (always 0 — a GC pass with nothing to do is success).
+pub(crate) fn run_reap(cfg: &Config, opts: ReapOpts) -> i32 {
+    let (_, worktree_dir) = crate::wt::layout(cfg);
+    let verdicts = reconcile(cfg, &worktree_dir, &opts);
+    let panes = read_panes();
+    let husks = dead_windows(&panes);
+
+    let mut reaped = 0u32;
+    let mut pruned = 0u32;
+
+    // Act: reap stale process trees, then prune their (now-dead) windows.
+    if opts.kill {
+        let edges: Vec<(i32, i32)> = ps_all().iter().map(|p| (p.pid, p.ppid)).collect();
+        for v in verdicts.iter().filter(|v| v.disposition.is_reap()) {
+            let tree = descendants(&edges, v.candidate.root_pid);
+            kill_tree(&tree);
+            if let Some(wid) = &v.candidate.window_id {
+                let _ = tmux_run(&["kill-window", "-t", wid]);
+            }
+            reaped += 1;
+        }
+        // Prune remain-on-exit husks (independent of any live process).
+        for wid in &husks {
+            let _ = tmux_run(&["kill-window", "-t", wid]);
+            pruned += 1;
+        }
+    } else {
+        reaped = verdicts.iter().filter(|v| v.disposition.is_reap()).count() as u32;
+        pruned = husks.len() as u32;
+    }
+
+    if opts.as_json {
+        emit_json(&verdicts, &husks, &opts, reaped, pruned);
+    } else if !opts.quiet {
+        emit_human(&verdicts, &husks, &opts, reaped, pruned);
+    }
+    0
+}
+
+/// The fast opportunistic sweep folded into `bn dispatch` / `bn next`: prune dead windows and reap
+/// clearly-stale stragglers (window/worktree gone), skipping the per-candidate PR network calls.
+/// Safe by default — never touches working / WIP / orchestrator agents. Best-effort and quiet.
+pub(crate) fn sweep(cfg: &Config) {
+    // Best-effort and test-safe: skip entirely when there's no managed worktree root (a test
+    // config points it at /nonexistent), so a sweep never reads the real fleet from unit tests.
+    let (_, worktree_dir) = crate::wt::layout(cfg);
+    if !worktree_dir.is_dir() {
+        return;
+    }
+    // A slightly wider grace than the default so a just-detached window isn't reaped by a sweep
+    // that fires the instant after a dispatch.
+    run_reap(
+        cfg,
+        ReapOpts {
+            kill: true,
+            force: false,
+            min_idle_secs: fleet_gc::DEFAULT_MIN_IDLE_SECS,
+            as_json: false,
+            check_pr: false,
+            quiet: true,
+        },
+    );
+}
+
+// --- output ----------------------------------------------------------------
+
+fn row_json(v: &Verdict) -> serde_json::Value {
+    json!({
+        "repo": v.candidate.repo,
+        "branch": v.candidate.branch,
+        "target": v.candidate.target,
+        "harness": v.candidate.harness,
+        "pid": v.candidate.root_pid,
+        "window_id": v.candidate.window_id,
+        "has_live_window": v.obs.has_live_window,
+        "worktree_exists": v.obs.worktree_exists,
+        "pr": v.obs.pr,
+        "is_working": v.obs.is_working,
+        "has_uncommitted": v.obs.has_uncommitted,
+        "is_orchestrator": v.obs.is_orchestrator,
+        "idle_secs": v.obs.idle_secs,
+        "disposition": v.disposition,
+        "reason": v.disposition.reason_label(),
+    })
+}
+
+fn emit_json(verdicts: &[Verdict], husks: &[String], opts: &ReapOpts, reaped: u32, pruned: u32) {
+    let data = json!({
+        "acted": opts.kill,
+        "force": opts.force,
+        "reaped": reaped,
+        "dead_windows_pruned": pruned,
+        "dead_windows": husks,
+        "agents": verdicts.iter().map(row_json).collect::<Vec<_>>(),
+    });
+    println!("{}", Envelope::success("fleet reap", data).to_json());
+}
+
+fn emit_human(verdicts: &[Verdict], husks: &[String], opts: &ReapOpts, reaped: u32, pruned: u32) {
+    use crate::wt::{GREEN, NC, YELLOW};
+    let verb = if opts.kill { "reaped" } else { "would reap" };
+    let mut any = false;
+    for v in verdicts {
+        match v.disposition {
+            Disposition::Reap { reason } => {
+                any = true;
+                println!(
+                    "{YELLOW}{verb} {} (pid {}, {}){NC}",
+                    v.candidate.target,
+                    v.candidate.root_pid,
+                    reason.label()
+                );
+            }
+            Disposition::Keep { reason } => {
+                // Only surface kept agents that had a stale signal (so the reason is interesting).
+                if !matches!(reason, bn_core::fleet_gc::KeepReason::Healthy) {
+                    println!(
+                        "  keep {} (pid {}, {})",
+                        v.candidate.target,
+                        v.candidate.root_pid,
+                        reason.label()
+                    );
+                }
+            }
+        }
+    }
+    if !husks.is_empty() {
+        let pverb = if opts.kill { "pruned" } else { "would prune" };
+        println!("{pverb} {} dead tmux window(s)", husks.len());
+    }
+    if !any && husks.is_empty() {
+        println!("{GREEN}fleet clean — nothing to reap{NC}");
+    } else if opts.kill {
+        println!("{GREEN}reaped {reaped} agent(s), pruned {pruned} dead window(s){NC}");
+    } else {
+        println!("{reaped} reapable, {pruned} dead window(s) — pass --kill to act");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_ps_rows() {
+        let out = "  329     1 /usr/libexec/logd\n18232  1406 node /opt/homebrew/bin/copilot --resume=abc\n";
+        let procs = parse_ps(out);
+        assert_eq!(procs.len(), 2);
+        assert_eq!(
+            procs[0],
+            Proc {
+                pid: 329,
+                ppid: 1,
+                command: "/usr/libexec/logd".into()
+            }
+        );
+        assert_eq!(procs[1].pid, 18232);
+        assert_eq!(procs[1].ppid, 1406);
+        assert_eq!(
+            procs[1].command,
+            "node /opt/homebrew/bin/copilot --resume=abc"
+        );
+    }
+
+    #[test]
+    fn parses_lsof_cwd_blocks() {
+        let out = "p404\nfcwd\nn/\np18232\nfcwd\nn/Users/edd/projects/worktree/bn/feat-x\n";
+        let rows = parse_lsof_cwds(out);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[1],
+            (
+                18232,
+                PathBuf::from("/Users/edd/projects/worktree/bn/feat-x")
+            )
+        );
+    }
+
+    #[test]
+    fn descendants_walks_the_tree() {
+        // 100 → {200 → 300, 201}; 400 unrelated.
+        let procs = [(200, 100), (300, 200), (201, 100), (400, 1)];
+        let mut got = descendants(&procs, 100);
+        got.sort();
+        assert_eq!(got, vec![100, 200, 201, 300]);
+        // A leaf reaps only itself.
+        assert_eq!(descendants(&procs, 400), vec![400]);
+    }
+
+    #[test]
+    fn descendants_tolerates_cycles() {
+        // Pathological ppid cycle must not loop forever.
+        let procs = [(2, 3), (3, 2)];
+        let got = descendants(&procs, 2);
+        assert!(got.contains(&2) && got.contains(&3));
+    }
+
+    #[test]
+    fn detects_harness_commands() {
+        assert_eq!(
+            is_harness_command("node /opt/homebrew/bin/copilot --resume=x"),
+            Some("copilot")
+        );
+        assert_eq!(
+            is_harness_command("/opt/homebrew/lib/node_modules/@github/copilot/node_modules/@github/copilot-darwin-arm64/copilot --resume=x"),
+            Some("copilot")
+        );
+        assert_eq!(
+            is_harness_command("claude --dangerously-skip-permissions"),
+            Some("claude")
+        );
+        // A subprocess merely *named* like the harness is not the harness.
+        assert_eq!(
+            is_harness_command("sh -c copilot-detached-supervisor /tmp/x.pid"),
+            None
+        );
+        assert_eq!(is_harness_command("cargo test --workspace"), None);
+        assert_eq!(is_harness_command("zsh"), None);
+    }
+
+    #[test]
+    fn maps_pr_states() {
+        assert_eq!(map_pr_status("MERGED"), PrStatus::Merged);
+        assert_eq!(map_pr_status("closed"), PrStatus::Closed);
+        assert_eq!(map_pr_status("OPEN"), PrStatus::Open);
+        assert_eq!(map_pr_status("NONE"), PrStatus::None);
+        assert_eq!(map_pr_status(""), PrStatus::None);
+    }
+
+    #[test]
+    fn dead_windows_only_when_all_panes_dead() {
+        let panes = vec![
+            Pane {
+                window_id: "@1".into(),
+                session: "s".into(),
+                pane_pid: 10,
+                dead: true,
+                cwd: "/".into(),
+            },
+            Pane {
+                window_id: "@2".into(),
+                session: "s".into(),
+                pane_pid: 11,
+                dead: true,
+                cwd: "/".into(),
+            },
+            Pane {
+                window_id: "@2".into(),
+                session: "s".into(),
+                pane_pid: 12,
+                dead: false,
+                cwd: "/".into(),
+            },
+        ];
+        // @1 all-dead → pruned; @2 has a live pane → kept.
+        assert_eq!(dead_windows(&panes), vec!["@1".to_string()]);
+    }
+
+    #[test]
+    fn resolve_root_finds_windowed_pane() {
+        let procs = [
+            Proc {
+                pid: 500,
+                ppid: 1,
+                command: "zsh".into(),
+            }, // the pane root (shell)
+            Proc {
+                pid: 501,
+                ppid: 500,
+                command: "node .../copilot".into(),
+            },
+        ];
+        let by_pid: BTreeMap<i32, &Proc> = procs.iter().map(|p| (p.pid, p)).collect();
+        let pane = Pane {
+            window_id: "@7".into(),
+            session: "bn".into(),
+            pane_pid: 500,
+            dead: false,
+            cwd: "/wt/bn/feat".into(),
+        };
+        let refs = vec![&pane];
+        let live_pids: BTreeSet<i32> = [500].into_iter().collect();
+        let (root, wid) = resolve_root(501, &by_pid, &live_pids, &refs);
+        assert_eq!(root, 500);
+        assert_eq!(wid, Some("@7".to_string()));
+    }
+
+    #[test]
+    fn resolve_root_windowless_returns_topmost_harness() {
+        // The #503 straggler shape: a `node` wrapper + its packaged child reparented to init, no
+        // pane. Reaping from the child must climb to the wrapper so nothing is left behind.
+        let procs = [
+            Proc {
+                pid: 18232,
+                ppid: 1,
+                command: "node /opt/homebrew/bin/copilot --resume=x".into(),
+            },
+            Proc {
+                pid: 18235,
+                ppid: 18232,
+                command: "/x/copilot-darwin-arm64/copilot --resume=x".into(),
+            },
+        ];
+        let by_pid: BTreeMap<i32, &Proc> = procs.iter().map(|p| (p.pid, p)).collect();
+        let live_pids: BTreeSet<i32> = BTreeSet::new();
+        let panes: Vec<&Pane> = vec![];
+        let (root, wid) = resolve_root(18235, &by_pid, &live_pids, &panes);
+        assert_eq!(root, 18232, "climb to the topmost harness ancestor");
+        assert_eq!(wid, None);
+    }
+}

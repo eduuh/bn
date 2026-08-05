@@ -1,0 +1,3 @@
+✓ Pushed dispatch/test-supervisor-corpus-463 and opened PR #463.
+  Ran `bn agent done` — handing back to the supervisor to land.
+❯

@@ -1,0 +1,4 @@
+Do you trust the files in this folder?
+bn may read and execute the files in this directory.
+❯ 1. Yes, I trust the files
+  2. No, exit

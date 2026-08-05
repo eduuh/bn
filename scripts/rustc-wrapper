@@ -1,0 +1,16 @@
+#!/bin/sh
+# Repo rustc wrapper: transparently speed up builds with mold (fast linker) and sccache
+# (shared compile cache) *when present*, else exec rustc unchanged. Safe on any machine or CI
+# runner that lacks either tool — no hard dependency, so a bare checkout still builds.
+#
+# cargo invokes this as:  rustc-wrapper <rustc> [args...]
+if m=$(command -v mold 2>/dev/null); then
+    # mold ships a `libexec/mold/ld` symlink; putting it first on PATH makes the linker driver's
+    # default `ld` resolve to mold — works on GCC < 12 (which lacks `-fuse-ld=mold`).
+    lddir=$(CDPATH= cd -- "$(dirname -- "$m")/../libexec/mold" 2>/dev/null && pwd)
+    [ -n "$lddir" ] && PATH="$lddir:$PATH" && export PATH
+fi
+if command -v sccache >/dev/null 2>&1; then
+    exec sccache "$@"
+fi
+exec "$@"

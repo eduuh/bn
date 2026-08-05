@@ -1,0 +1,597 @@
+//! Pure pool policy (#457) — the decisions behind pool-backed dispatch, with no I/O.
+//!
+//! `bn wt pool` keeps a small set of *warm* worktree slots for a heavy monorepo so an agent task
+//! skips the cold `npm install`/build every fresh checkout would pay (the CLI primitive lives in
+//! `bn-cli`'s `wt_pool`). This module holds the two decisions that are pure enough to unit-test
+//! away from git and the filesystem:
+//!   - **which repos are pooled** — parsing the opt-in `~/.config/wt/pools` config
+//!     ([`parse_pool_size`]); and
+//!   - **slot selection** — picking the lowest idle slot ([`pick_slot`]); plus
+//!   - the **dispatch mode** gate — pool vs cold — that `bn dispatch` routes on (pool by default,
+//!     `--no-pool` to force cold) ([`dispatch_worktree_mode`]).
+//!
+//! Keeping these here mirrors [`crate::repo_resolve`]: the CLI does the I/O (read the config, lease
+//! the slot, run git) while the policy — parse rules, clamping, precedence — is tested in one place.
+
+use crate::resolver::Config;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+
+/// Pool size for `repo` parsed from the pools config `content`, or `None` when the repo isn't
+/// pooled. Lines are `<repo> <size>`; `#` starts a comment; blank lines are ignored. A missing or
+/// unparseable size defaults to 1, and any size is clamped to at least 1 (a pooled repo always has
+/// at least one slot).
+///
+/// A `default <size>` line — or its `*` alias — sets a fallback that makes *any* repo poolable at
+/// that size, so a heavy checkout anywhere can lease a warm slot without being pre-registered. An
+/// explicit `<repo> <size>` line always overrides the default; with no default line an unlisted repo
+/// stays unpooled (`None`), exactly as before. `default` and `*` are reserved keys and can't name a
+/// real repo. This is the sole definition of *which repos are pooled*.
+pub fn parse_pool_size(content: &str, repo: &str) -> Option<usize> {
+    let mut default_size: Option<usize> = None;
+    for line in content.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut it = line.split_whitespace();
+        let Some(key) = it.next() else { continue };
+        let size = it
+            .next()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(1)
+            .max(1);
+        if key == repo {
+            // An explicit per-repo entry always wins over the default fallback.
+            return Some(size);
+        }
+        if is_default_key(key) {
+            default_size = Some(size);
+        }
+    }
+    default_size
+}
+
+/// The reserved keys a pools-config line uses to declare the any-repo fallback size rather than a
+/// concrete repo: `default` and its `*` alias.
+fn is_default_key(key: &str) -> bool {
+    key == "default" || key == "*"
+}
+
+/// Every `(repo, size)` pair in the pools config `content`, in file order — the multi-repo view of
+/// [`parse_pool_size`] (same line grammar: `<repo> <size>`, `#` comments, blank lines skipped; a
+/// missing/unparseable size defaults to 1, clamped to at least 1). Used to enumerate every pooled
+/// repo for a rollup (the dashboard's per-repo pool state) without probing each name individually.
+/// The `default`/`*` fallback line is skipped — it isn't a concrete repo, only the any-repo size.
+pub fn parse_pooled_repos(content: &str) -> Vec<(String, usize)> {
+    let mut out = Vec::new();
+    for line in content.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut it = line.split_whitespace();
+        let Some(repo) = it.next() else { continue };
+        if is_default_key(repo) {
+            continue;
+        }
+        let size = it.next().and_then(|s| s.parse::<usize>().ok()).unwrap_or(1);
+        out.push((repo.to_string(), size.max(1)));
+    }
+    out
+}
+
+/// The lowest idle slot number in `1..=size` that isn't in `leased`, or `None` when every slot is
+/// leased (the pool is full). Slots are 1-indexed to match their on-disk `_pool/<n>` dirs. Leases
+/// are durable (held until `return`), so callers try this first and only reclaim genuinely
+/// abandoned slots as a fallback before deciding the pool is full.
+pub fn pick_slot(size: usize, leased: &BTreeSet<u32>) -> Option<u32> {
+    (1..=size as u32).find(|n| !leased.contains(n))
+}
+
+/// Whether a pool lease's holder can still be alive — the decision behind recovering a pool after
+/// the machine (or WSL) dies and comes back.
+///
+/// A lease records the *caller* pid (the long-lived agent/shell), so normally liveness is "is that
+/// pid still in `/proc`?". But a pid check alone is unsound across a reboot: WSL shutdown / a host
+/// restart kills every process, and the OS then hands the *same low pid numbers* back to brand-new,
+/// unrelated processes. A stale lease's recorded pid can therefore read as **alive** after a
+/// restart, pinning the slot leased forever ("Pool full") to a holder that no longer exists.
+///
+/// Tagging each lease with the current **boot id** (a value that changes on every boot) closes that
+/// hole: a lease whose boot id differs from the current one was taken in a previous boot, so its
+/// holder *cannot* still exist regardless of what the pid check says — it's [`StalePriorBoot`] and
+/// safe to reclaim. Only when the boot ids match (or either is unknown — an off-Linux host, or a
+/// lease written before boot-scoping) do we fall back to the pid check.
+///
+/// [`StalePriorBoot`]: LeaseLiveness::StalePriorBoot
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeaseLiveness {
+    /// The holder pid is alive in the *current* boot — a genuinely held lease.
+    Live,
+    /// Same boot, but the holder pid is gone: a normally-abandoned lease (holder crashed/exited).
+    DeadThisBoot,
+    /// The lease predates the current boot (its boot id differs), so the machine/WSL restarted and
+    /// the holder is provably gone — reclaim it even though its recycled pid may read as alive.
+    StalePriorBoot,
+}
+
+/// Classify a lease's holder liveness from its recorded boot id, the current boot id, and whether
+/// its recorded pid is alive — see [`LeaseLiveness`]. A boot-id mismatch (both known) is decisive
+/// (`StalePriorBoot`); otherwise the pid check decides. Pure so the recovery policy is unit-tested
+/// away from `/proc` and git.
+pub fn lease_liveness(
+    lease_boot: Option<&str>,
+    current_boot: Option<&str>,
+    pid_alive: bool,
+) -> LeaseLiveness {
+    if let (Some(lease), Some(current)) = (lease_boot, current_boot) {
+        if lease != current {
+            return LeaseLiveness::StalePriorBoot;
+        }
+    }
+    if pid_alive {
+        LeaseLiveness::Live
+    } else {
+        LeaseLiveness::DeadThisBoot
+    }
+}
+
+/// Whether a `bn dispatch` should lease a warm pool slot or cut a cold worktree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorktreeMode {
+    /// Lease a warm `bn wt pool` slot (deps/build cache intact) — skips the cold checkout+install.
+    /// The default dispatch path.
+    Pool,
+    /// Create a fresh cold worktree, paying the post-create install hook. The `--no-pool` opt-out.
+    Cold,
+}
+
+/// Built-in pool size for a dispatch to a repo with no explicit `~/.config/wt/pools` entry.
+/// Leasing is the default dispatch path, so *every* repo pools at this size unless it names its own
+/// size (an explicit `<repo> <size>` line — or a `default`/`*` fallback — overrides it). Slots are
+/// created on demand and reused (reap-safe); a full pool spills to a cold worktree. Kept small — a
+/// few concurrent dispatch lanes per repo before the cold spill.
+pub const DEFAULT_DISPATCH_POOL_SIZE: usize = 3;
+
+/// Route a dispatch to a warm pool slot or a cold worktree. Leasing is the **default**: every
+/// dispatch pools (a reap-safe slot, created on demand, deps + build cache reused) unless
+/// `--no-pool` forces the legacy cold checkout. The lease itself still degrades to cold at runtime
+/// when the repo has no bare clone or its pool is full (see the dispatch fallback), so `Pool` is
+/// always a safe choice — the caller need not pre-check whether the repo is pooled.
+pub fn dispatch_worktree_mode(no_pool: bool) -> WorktreeMode {
+    if no_pool {
+        WorktreeMode::Cold
+    } else {
+        WorktreeMode::Pool
+    }
+}
+
+// --- pools config + live status IO -----------------------------------------
+//
+// The `bn wt pool` primitive (deps/build cache, lease store) lives in `bn-cli`, but its *observable
+// state* — which repos are pooled, and each slot's idle/leased shape — is a read the dashboard needs
+// too. Keeping the read here (the IO counterpart of the pure policy above) lets `bn-web` surface a
+// repo's warm-pool without depending on `bn-cli`, reading the very files the CLI writes:
+//   - the opt-in config at [`pools_config_path`] (`<repo> <size>` lines), and
+//   - the per-pool lease store `<worktree>/<repo>/_pool/leases.json` the CLI persists.
+
+/// Path of the pools config — `$WT_POOLS` if set, else `<XDG>/wt/pools` (sibling of the clone
+/// manifest `wt/repos`). The single source of truth both `bn-cli`'s `wt_pool` and this read use.
+pub fn pools_config_path() -> PathBuf {
+    if let Ok(p) = std::env::var("WT_POOLS") {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    let cfgdir = std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("{}/.config", home_str()));
+    PathBuf::from(format!("{cfgdir}/wt/pools"))
+}
+
+fn home_str() -> String {
+    std::env::var("HOME").unwrap_or_else(|_| "/".to_string())
+}
+
+/// Pool size for `repo` from the config, or `None` when the repo has no explicit/`default` entry —
+/// the file read behind [`parse_pool_size`]. `bn wt pool` and `bn orchestrate` ask this directly;
+/// a plain `bn dispatch` instead pools *every* repo, falling back to [`DEFAULT_DISPATCH_POOL_SIZE`]
+/// when this is `None`.
+pub fn pool_size(repo: &str) -> Option<usize> {
+    let content = std::fs::read_to_string(pools_config_path()).ok()?;
+    parse_pool_size(&content, repo)
+}
+
+/// Every pooled `(repo, size)` from the config, or empty when it's absent/unset — the file read
+/// behind [`parse_pooled_repos`], for enumerating pools without knowing the repo names up front.
+pub fn pooled_repos() -> Vec<(String, usize)> {
+    std::fs::read_to_string(pools_config_path())
+        .map(|c| parse_pooled_repos(&c))
+        .unwrap_or_default()
+}
+
+/// The worktree root the pool slots live under, honoring `$WT_ROOT` (the `wtw` wrapper's override)
+/// exactly as `bn-cli`'s `wt::layout` does, else the resolved `cfg.worktree_dir`.
+fn worktree_root(cfg: &Config) -> PathBuf {
+    match std::env::var("WT_ROOT") {
+        Ok(root) if !root.is_empty() => PathBuf::from(root).join("worktree"),
+        _ => cfg.worktree_dir.clone(),
+    }
+}
+
+/// A pool's on-disk lease store shape (a read-only mirror of what `bn-cli`'s `wt_pool` writes): the
+/// fields this status view reads. Extra fields the CLI writes (e.g. `pid`) are ignored.
+#[derive(Deserialize, Default)]
+struct LeaseFile {
+    #[serde(default)]
+    slots: BTreeMap<u32, LeaseEntry>,
+}
+
+#[derive(Deserialize)]
+struct LeaseEntry {
+    #[serde(default)]
+    branch: String,
+    #[serde(default)]
+    holder: String,
+    /// Epoch seconds the lease was taken.
+    #[serde(default)]
+    at: i64,
+}
+
+/// One pool slot's live state, 1-indexed to match its on-disk `_pool/<n>` dir.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PoolSlot {
+    pub n: u32,
+    /// Held by a branch (present in `leases.json`).
+    pub leased: bool,
+    /// The checkout exists on disk (warm) — ready to lease without a cold create.
+    pub warm: bool,
+    /// The leased branch, when leased.
+    pub branch: Option<String>,
+    /// The lease holder (its recorded `USER`), when leased.
+    pub holder: Option<String>,
+    /// Lease age in seconds, when leased.
+    pub age_secs: Option<i64>,
+    /// This slot dir's mtime (epoch secs) — a best-effort "last warmed/refreshed" proxy, or `None`
+    /// when the slot isn't on disk yet.
+    pub warmed_ts: Option<i64>,
+}
+
+/// A repo's warm-pool state — configured size plus each slot's idle/leased shape. Only produced for
+/// a pooled repo (so `enabled` is always `true`); a non-pooled repo yields `None`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PoolStatus {
+    pub repo: String,
+    /// Always `true` for a returned status — the repo is in the pools config. Present so the
+    /// serialized shape carries an explicit enabled flag alongside a not-pooled repo's absence.
+    pub enabled: bool,
+    /// Configured slot count (the pool size).
+    pub total: usize,
+    /// Slots currently leased to a branch.
+    pub leased: usize,
+    /// Idle slots that are warm on disk (a live checkout ready to lease).
+    pub warm: usize,
+    /// Idle slots (`total - leased`) — warm plus not-yet-created.
+    pub idle: usize,
+    /// Best-effort "last warmed": the newest slot-dir mtime (epoch secs), or `None` when no slot
+    /// exists on disk yet. A proxy — the pool has no explicit warm timestamp.
+    pub last_warmed_ts: Option<i64>,
+    pub slots: Vec<PoolSlot>,
+}
+
+/// Read the pool's lease store (`<pool_dir>/leases.json`), treating a missing/corrupt file as an
+/// empty pool — mirroring the CLI's defensive read.
+fn read_lease_slots(pool_dir: &Path) -> BTreeMap<u32, LeaseEntry> {
+    std::fs::read_to_string(pool_dir.join("leases.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<LeaseFile>(&s).ok())
+        .unwrap_or_default()
+        .slots
+}
+
+/// A slot dir's mtime as epoch-seconds, or `None` when unreadable.
+fn dir_mtime(path: &Path) -> Option<i64> {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+}
+
+/// Live warm-pool status for `repo`, or `None` when it isn't pooled. Reads the lease store and scans
+/// the `_pool/<n>` dirs — the read counterpart of the CLI's `pool status`, exposed for the dashboard.
+pub fn pool_status(cfg: &Config, repo: &str) -> Option<PoolStatus> {
+    let size = pool_size(repo)?;
+    Some(compute_status(cfg, repo, size))
+}
+
+/// Warm-pool status for every pooled repo (from the config), for a multi-repo rollup.
+pub fn all_pool_status(cfg: &Config) -> Vec<PoolStatus> {
+    pooled_repos()
+        .into_iter()
+        .map(|(repo, size)| compute_status(cfg, &repo, size))
+        .collect()
+}
+
+/// Fold a pool's lease store + on-disk slot dirs into its [`PoolStatus`]. Over-size lease entries
+/// (a slot beyond the current config, e.g. after shrinking) are ignored — the view is the configured
+/// `1..=size` window, matching the CLI's `pool status`.
+fn compute_status(cfg: &Config, repo: &str, size: usize) -> PoolStatus {
+    let pool_dir = worktree_root(cfg).join(repo).join("_pool");
+    let leases = read_lease_slots(&pool_dir);
+    let now = crate::util::now_epoch_secs();
+
+    let mut slots = Vec::with_capacity(size);
+    let (mut leased, mut warm) = (0usize, 0usize);
+    let mut last_warmed_ts: Option<i64> = None;
+
+    for n in 1..=size as u32 {
+        let slot_dir = pool_dir.join(n.to_string());
+        let on_disk = slot_dir.is_dir();
+        let warmed_ts = if on_disk { dir_mtime(&slot_dir) } else { None };
+        if let Some(ts) = warmed_ts {
+            last_warmed_ts = Some(last_warmed_ts.map_or(ts, |m| m.max(ts)));
+        }
+        match leases.get(&n) {
+            Some(l) => {
+                leased += 1;
+                slots.push(PoolSlot {
+                    n,
+                    leased: true,
+                    warm: on_disk,
+                    branch: Some(l.branch.clone()),
+                    holder: Some(l.holder.clone()),
+                    age_secs: Some((now - l.at).max(0)),
+                    warmed_ts,
+                });
+            }
+            None => {
+                if on_disk {
+                    warm += 1;
+                }
+                slots.push(PoolSlot {
+                    n,
+                    leased: false,
+                    warm: on_disk,
+                    branch: None,
+                    holder: None,
+                    age_secs: None,
+                    warmed_ts,
+                });
+            }
+        }
+    }
+
+    PoolStatus {
+        repo: repo.to_string(),
+        enabled: true,
+        total: size,
+        leased,
+        warm,
+        idle: size.saturating_sub(leased),
+        last_warmed_ts,
+        slots,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_pool_size_reads_and_clamps() {
+        let cfg = "# comment\narena 4\nbigmono   3  # trailing\nzero 0\n\n";
+        assert_eq!(parse_pool_size(cfg, "arena"), Some(4));
+        assert_eq!(parse_pool_size(cfg, "bigmono"), Some(3));
+        // A size of 0 clamps to 1 — a pooled repo always has at least one slot.
+        assert_eq!(parse_pool_size(cfg, "zero"), Some(1));
+        // Not listed → not pooled.
+        assert_eq!(parse_pool_size(cfg, "missing"), None);
+    }
+
+    #[test]
+    fn parse_pool_size_defaults_absent_size_to_one() {
+        assert_eq!(parse_pool_size("arena\n", "arena"), Some(1));
+    }
+
+    #[test]
+    fn default_line_makes_any_repo_poolable() {
+        let cfg = "# any repo can have a pool\ndefault 2\narena 4\n";
+        // An explicit entry still wins over the default.
+        assert_eq!(parse_pool_size(cfg, "arena"), Some(4));
+        // Any unlisted repo now resolves to the default size.
+        assert_eq!(parse_pool_size(cfg, "some-other-repo"), Some(2));
+        assert_eq!(parse_pool_size(cfg, "bigmono"), Some(2));
+    }
+
+    #[test]
+    fn star_is_an_alias_for_default_and_clamps() {
+        // `*` behaves exactly like `default`; a 0 size clamps to 1.
+        assert_eq!(parse_pool_size("* 0\n", "whatever"), Some(1));
+        assert_eq!(parse_pool_size("*  3\n", "whatever"), Some(3));
+    }
+
+    #[test]
+    fn without_a_default_line_unlisted_repos_stay_unpooled() {
+        // Backward compatible: no default/* line → an unlisted repo is not pooled.
+        assert_eq!(parse_pool_size("arena 4\n", "unlisted"), None);
+    }
+
+    #[test]
+    fn parse_pooled_repos_skips_the_default_fallback() {
+        // The default/* fallback isn't a concrete repo, so enumeration omits it.
+        let pools = parse_pooled_repos("default 2\narena 4\n* 3\nforge 1\n");
+        assert_eq!(
+            pools,
+            vec![("arena".to_string(), 4), ("forge".to_string(), 1)]
+        );
+    }
+
+    #[test]
+    fn pick_slot_returns_lowest_idle() {
+        let mut leased = BTreeSet::new();
+        // Empty pool → slot 1.
+        assert_eq!(pick_slot(3, &leased), Some(1));
+        leased.insert(1);
+        // 1 leased → next idle is 2.
+        assert_eq!(pick_slot(3, &leased), Some(2));
+        // A hole (2 free while 1 and 3 are taken) is filled lowest-first.
+        leased.insert(3);
+        assert_eq!(pick_slot(3, &leased), Some(2));
+    }
+
+    #[test]
+    fn pick_slot_none_when_full() {
+        let leased: BTreeSet<u32> = [1, 2].into_iter().collect();
+        assert_eq!(pick_slot(2, &leased), None);
+        // Size 0 has no slots at all.
+        assert_eq!(pick_slot(0, &BTreeSet::new()), None);
+    }
+
+    #[test]
+    fn lease_liveness_boot_mismatch_is_stale_even_if_pid_reads_alive() {
+        // The WSL/reboot case: the recorded pid was recycled to a live process, but the lease was
+        // taken in a *different* boot — so its real holder is gone and the slot must be reclaimed.
+        assert_eq!(
+            lease_liveness(Some("boot-A"), Some("boot-B"), true),
+            LeaseLiveness::StalePriorBoot
+        );
+        assert_eq!(
+            lease_liveness(Some("boot-A"), Some("boot-B"), false),
+            LeaseLiveness::StalePriorBoot
+        );
+    }
+
+    #[test]
+    fn lease_liveness_same_boot_falls_back_to_pid() {
+        // Same boot → the pid check is authoritative: alive holder stays, dead holder is abandoned.
+        assert_eq!(
+            lease_liveness(Some("boot-A"), Some("boot-A"), true),
+            LeaseLiveness::Live
+        );
+        assert_eq!(
+            lease_liveness(Some("boot-A"), Some("boot-A"), false),
+            LeaseLiveness::DeadThisBoot
+        );
+    }
+
+    #[test]
+    fn lease_liveness_unknown_boot_ids_use_pid_only() {
+        // A pre-boot-scoping lease (no id) or an off-Linux host (no current id) can't be compared,
+        // so we never wrongly declare it prior-boot — the pid check alone decides.
+        assert_eq!(
+            lease_liveness(None, Some("boot-A"), true),
+            LeaseLiveness::Live
+        );
+        assert_eq!(
+            lease_liveness(Some("boot-A"), None, false),
+            LeaseLiveness::DeadThisBoot
+        );
+        assert_eq!(lease_liveness(None, None, true), LeaseLiveness::Live);
+    }
+
+    #[test]
+    fn dispatch_pools_by_default_unless_no_pool() {
+        // Leasing is the default dispatch path: a plain dispatch pools.
+        assert_eq!(
+            dispatch_worktree_mode(false),
+            WorktreeMode::Pool,
+            "a plain dispatch leases a warm slot by default"
+        );
+        // `--no-pool` forces the legacy cold worktree.
+        assert_eq!(
+            dispatch_worktree_mode(true),
+            WorktreeMode::Cold,
+            "--no-pool opts out to a cold worktree"
+        );
+    }
+
+    #[test]
+    fn parse_pooled_repos_enumerates_every_pool() {
+        let cfg = "# heavy monorepos\narena 4\nbigmono   3  # trailing\nzero 0\nbare\n\n";
+        let pools = parse_pooled_repos(cfg);
+        assert_eq!(
+            pools,
+            vec![
+                ("arena".to_string(), 4),
+                ("bigmono".to_string(), 3),
+                // Size 0 clamps to 1; a bare line defaults to 1.
+                ("zero".to_string(), 1),
+                ("bare".to_string(), 1),
+            ]
+        );
+        assert!(parse_pooled_repos("# only comments\n\n").is_empty());
+    }
+
+    #[test]
+    fn compute_status_folds_leases_and_warm_slots() {
+        use crate::test_support::{env_lock, EnvGuard};
+        use std::fs;
+
+        let _g = env_lock();
+        // Pin the clock so the lease age is deterministic, and neutralize $WT_ROOT so the pool dir
+        // resolves under the config's worktree_dir.
+        let _now = EnvGuard::set("BN_NOW", "1000");
+        let _root = EnvGuard::remove("WT_ROOT");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg =
+            crate::test_support::config_with_roots(tmp.path(), tmp.path(), tmp.path(), "testhost");
+        let pool_dir = tmp.path().join("arena").join("_pool");
+        fs::create_dir_all(&pool_dir).unwrap();
+        // Slot 1 warm-idle (checkout dir on disk, unleased); slot 2 leased; slot 3 cold (no dir).
+        fs::create_dir_all(pool_dir.join("1")).unwrap();
+        fs::write(
+            pool_dir.join("leases.json"),
+            r#"{"slots":{"2":{"branch":"dispatch/x","holder":"edd","pid":42,"at":700}}}"#,
+        )
+        .unwrap();
+
+        let st = compute_status(&cfg, "arena", 3);
+        assert_eq!(st.total, 3);
+        assert_eq!(st.leased, 1);
+        assert_eq!(st.warm, 1);
+        assert_eq!(st.idle, 2);
+        assert!(st.enabled);
+        assert_eq!(st.slots.len(), 3);
+        // Slot 1: warm, idle.
+        assert!(st.slots[0].warm && !st.slots[0].leased);
+        // Slot 2: leased with its branch/holder/age (1000 - 700).
+        assert!(st.slots[1].leased);
+        assert_eq!(st.slots[1].branch.as_deref(), Some("dispatch/x"));
+        assert_eq!(st.slots[1].holder.as_deref(), Some("edd"));
+        assert_eq!(st.slots[1].age_secs, Some(300));
+        // Slot 3: neither warm nor leased.
+        assert!(!st.slots[2].warm && !st.slots[2].leased);
+    }
+
+    #[test]
+    fn pool_status_reads_the_config_and_all_pool_status_enumerates() {
+        use crate::test_support::{env_lock, EnvGuard};
+        use std::fs;
+
+        let _g = env_lock();
+        let _root = EnvGuard::remove("WT_ROOT");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let pools = tmp.path().join("pools");
+        fs::write(&pools, "arena 2\nforge 1\n").unwrap();
+        let _cfg_env = EnvGuard::set("WT_POOLS", &pools);
+
+        let cfg =
+            crate::test_support::config_with_roots(tmp.path(), tmp.path(), tmp.path(), "testhost");
+
+        // A pooled repo resolves to a status; a non-pooled one is None.
+        let arena = pool_status(&cfg, "arena").expect("arena is pooled");
+        assert_eq!(arena.total, 2);
+        assert!(pool_status(&cfg, "unlisted").is_none());
+
+        // The rollup enumerates every configured pool.
+        let all = all_pool_status(&cfg);
+        let names: Vec<&str> = all.iter().map(|s| s.repo.as_str()).collect();
+        assert_eq!(names, vec!["arena", "forge"]);
+    }
+}

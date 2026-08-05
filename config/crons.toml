@@ -1,0 +1,269 @@
+# bn cron manifest.
+# Active [[cron]] entries are the shipped defaults used by bn cron register.
+# Expected fields: job name, systemd OnCalendar schedule, optional booleans, and duration jitter.
+
+[[cron]]
+job = "watch"
+on_calendar = "*:0/2"
+persistent = false
+randomized_delay = "20s"
+description = "bn — wake reactor: toast on NEW needs-you events (agents waiting/blocked/stuck/done, urgent attention); quiet otherwise"
+
+# Worktree/branch/session reclamation is intentionally MANUAL — no cron.
+# The `wt-cleanup` and `fleet-reap` crons were removed so automated reclamation can never delete
+# a branch, remove a worktree, or kill a tmux session out from under active work. The jobs still
+# exist for on-demand use; run cleanup by hand when you actually want it:
+#   bn wt cleanup   — reclaim worktrees whose PR merged (local + remote branch)
+#   bn wt reap      — remove finished/clean scout worktrees
+#   bn run fleet-reap — GC orphaned agent process trees + dead tmux windows
+# Do NOT re-add these as [[cron]] entries.
+
+[[cron]]
+job = "auto-review-poll"
+on_calendar = "*:0/15"
+persistent = true
+randomized_delay = "2m"
+network = true
+description = "bn — auto-review lifecycle: re-fetch active PRs, reclaim completed/abandoned, flag re-review"
+
+[[cron]]
+job = "auto-review-trigger"
+on_calendar = "*:0/10"
+persistent = true
+randomized_delay = "2m"
+network = true
+description = "bn — auto-review trigger: when idle, prepare the next queued PR + raise a ready-to-review item (no unattended agent)"
+
+[[cron]]
+job = "attention-auto-trigger"
+on_calendar = "*:0/10"
+persistent = false
+randomized_delay = "2m"
+description = "bn — autonomous pickup: when idle, start eligible auto attention items with their agents (self-authored only; up to BN_ATTN_AUTO_MAX concurrent, default 1)"
+
+[[cron]]
+job = "refresh-all"
+on_calendar = "daily"
+persistent = true
+randomized_delay = "5m"
+network = true
+description = "bn — refresh all branch-note worktrees (fetch, fast-forward, rebuild)"
+
+[[cron]]
+job = "self-update"
+on_calendar = "*-*-* 0/6:00:00"
+persistent = true
+randomized_delay = "15m"
+network = true
+description = "bn — rebuild + reinstall the CLI when bn/main advances (never run a stale binary)"
+
+[[cron]]
+job = "tools-reconcile"
+on_calendar = "*:0/5"
+persistent = false
+randomized_delay = "1m"
+description = "bn — reconcile managed tools: (re)start any opted-in docker-backed service that's down"
+
+[[cron]]
+job = "commit-notes"
+on_calendar = "*-*-* 07:00:00"
+persistent = true
+randomized_delay = "5m"
+network = true
+description = "bn — commit + push branch notes"
+
+[[cron]]
+job = "daily-rollover"
+on_calendar = "*-*-* 05:00:00"
+persistent = true
+randomized_delay = "5m"
+description = "bn — roll today's daily goals forward"
+
+[[cron]]
+job = "notify"
+on_calendar = "*:0/5"
+persistent = true
+randomized_delay = "30s"
+description = "bn — push OS toasts for urgent attention items (notify)"
+
+[[cron]]
+job = "routine-tick"
+on_calendar = "*:0/5"
+persistent = true
+randomized_delay = "30s"
+description = "bn — routine-aware personal schedule coach: shared at-least-once tick (deduped by stable block id + resolved instant + event kind, bounded by catchup_horizon_minutes; fails closed on an invalid live config). `routine-notify` is a compatibility alias for the same job. Prefer `bn routine service install` for deadline-driven coverage; this timer is the fallback (opt-in; [routine].enabled)."
+
+[[cron]]
+job = "attention-sync"
+on_calendar = "*:0/5"
+persistent = false
+randomized_delay = "30s"
+description = "bn — refresh the prefix-J attention cache (bn next --cached)"
+
+[[cron]]
+job = "metrics-snapshot"
+on_calendar = "Mon *-*-* 06:00:00"
+persistent = true
+randomized_delay = "10m"
+description = "bn — weekly metrics scorecard snapshot"
+
+[[cron]]
+job = "weekly-insights"
+on_calendar = "Mon *-*-* 06:30:00"
+persistent = true
+randomized_delay = "10m"
+description = "bn — weekly auto-retro: snapshot bn insights into <notes>/<machine>/insights/<YYYY-Www>.md"
+
+[[cron]]
+job = "dojo-cards"
+on_calendar = "*-*-* 03:30:00"
+persistent = true
+randomized_delay = "10m"
+description = "bn — mine new bn dojo cards from recent fix:/feat: commits + module tree (dojo-cards)"
+
+[[cron]]
+job = "agent-observe"
+on_calendar = "*:0/30"
+persistent = true
+randomized_delay = "2m"
+description = "bn — fold finished agent sessions into the metrics log (agent-observe)"
+
+[[cron]]
+job = "pr-observe"
+on_calendar = "*:15/30"
+persistent = true
+randomized_delay = "2m"
+network = true
+description = "bn — fold my PRs' GitHub lifecycle into the metrics log as pr_opened/pr_merged/pr_closed/pr_review (pr-observe)"
+
+[[cron]]
+job = "agent-supervise"
+on_calendar = "*:0/10"
+persistent = false
+randomized_delay = "1m"
+description = "bn — supervise the live agent fleet (stuck detection, agent-supervise)"
+
+[[cron]]
+job = "keep-warm"
+on_calendar = "*:5/10"
+persistent = false
+randomized_delay = "1m"
+network = true
+description = "bn — keep owned orchestrate repos supplied to their configured low-water mark; brainstorm enhancement issues when truly dry (opt-in; [orchestrate].keep_warm + own)"
+
+[[cron]]
+job = "pool-warm"
+on_calendar = "*-*-* 0/2:40:00"
+persistent = false
+randomized_delay = "5m"
+network = true
+description = "bn — refresh warm worktree pools for every pooled repo while the device is idle (off-peak, idle-gated + per-repo staleness); records pool_warm so bn metrics shows pool freshness"
+
+[[cron]]
+job = "night-shift"
+on_calendar = "*-*-* 23:15:00"
+persistent = true
+randomized_delay = "10m"
+network = true
+description = "bn — the night shift: dispatch promoted todos into worktrees + agents (opt-in; no-ops unless [night] enabled + repos allowlisted + kill switch clear)"
+
+[[cron]]
+job = "recall-index"
+on_calendar = "*-*-* 0/3:20:00"
+persistent = true
+randomized_delay = "5m"
+description = "bn — (re)build the local semantic-recall index (bn recall --index; incremental, offline)"
+
+[[cron]]
+job = "staff-archivist"
+on_calendar = "Fri *-*-* 17:30:00"
+persistent = true
+randomized_delay = "5m"
+description = "bn — the Archivist: the Friday private weekly chronicle (the story of the week) written to <notes>/<machine>/chronicle/<YYYY-Www>.md; drafts unlogged wins as feed cards, never auto-logged (opt-in; [archivist].enabled)"
+
+[[cron]]
+job = "staff-curriculum"
+on_calendar = "Sun *-*-* 18:00:00"
+persistent = true
+randomized_delay = "10m"
+network = true
+description = "bn — the Curriculum Director: one topic a week from recurring themes + dojo mastery (weakest/never-drilled areas), with a time-boxed resource, 2–3 dojo drills, a Monday goal + seeded learn note, and last week's honest verdict (#260)"
+
+[[cron]]
+job = "staff-interviewer"
+on_calendar = "Mon..Fri *-*-* 16:30:00"
+persistent = true
+randomized_delay = "2m"
+description = "bn — the Interviewer (pull agent): raise the Friday weekly-retro attention item, escalate once on Monday, then drop it (never nags twice). The session is run by hand — `bn retro chat`. Opt-in; [retro].enabled"
+
+[[cron]]
+job = "staff-eye-daily"
+on_calendar = "*-*-* 19:30:00"
+catch_up = true
+persistent = true
+randomized_delay = "5m"
+description = "bn — eye-health coach daily nudge: no-rubbing streak, protective-habit misses, urge-response protocol, and red-flag clinic guidance (opt-in; [eye].enabled)"
+
+[[cron]]
+job = "staff-eye-weekly"
+on_calendar = "Sun *-*-* 09:00:00"
+catch_up = true
+persistent = true
+randomized_delay = "10m"
+description = "bn — eye-health coach weekly summary: seven-day adherence, no-rubbing streak, misses, and keyed 6-12 month monitoring-review attention when due (opt-in; [eye].enabled)"
+
+[[cron]]
+job = "gather-findings"
+on_calendar = "Mon..Fri *-*-* 08:15:00"
+catch_up = true
+persistent = true
+randomized_delay = "2m"
+description = "bn — gather findings (#897): snapshot the local morning-planning caches (PR review queue, your open PRs, inbound feed, stale/blocked branches, night-shift reviewables, failing crons, sentinel, quarter goals, dojo cards) into the append-only findings store, one durable run per non-empty source. Offline/additive: reuses the warm caches (no network, no re-fetch) and touches no feed/attention/daily side effect; feeds today-agent (#577)."
+
+[[cron]]
+job = "staff-archive"
+on_calendar = "Sun *-*-* 04:00:00"
+persistent = true
+randomized_delay = "30m"
+description = "bn — staff store retention (#275): compact fully-elapsed quarters of feed cards into a per-quarter headline index and roll up staff_run ledger rows older than a year into monthly aggregates; chronicles + retro transcripts exempt (idempotent, safe to miss)"
+
+[[cron]]
+job = "cockpit-ensure"
+on_calendar = "*:3/10"
+persistent = false
+randomized_delay = "1m"
+description = "bn — orchestrator cockpit (#647): when any lane is live, ensure the planning-session grounding cockpit exists (read-only backlog/todos/attention view; idle no-op when no fleet). Never links, unlinks, moves, or kills any window."
+
+[[cron]]
+job = "cron-health"
+on_calendar = "*:0/15"
+persistent = false
+randomized_delay = "1m"
+description = "bn — failing-cron watchdog: raise an urgent attention item for any cron in a chronic-failure state (auto-acked on recovery)"
+
+[[cron]]
+job = "info-gather"
+on_calendar = "*:0/15"
+persistent = true
+randomized_delay = "1m"
+network = true
+description = "bn — info-gather: dispatch every DUE self-describing agent (agents/<name>.md) into its own tmux window"
+
+[[cron]]
+job = "attention-sweep"
+class = "info"                # visible cron: prints its result in a tmux window
+on_calendar = "Mon..Fri *-*-* 08,11,14,17:00:00"   # 4x/workday (EAT); the consolidated gatherer
+catch_up = true                                     # + first bn event of the day → a fresh sweep on late start
+persistent = true
+randomized_delay = "3m"
+network = true                                      # runs a headless agent over MCP servers
+description = "bn — attention sweep: ONE headless agent folds email, Teams, meetings, ADO work items/PRs, and ICM (agency MCP) into the attention list with per-item severity. The consolidated gatherer that supersedes m365-sweep/meetings/worksrc; complements the attention-agent synthesizer. No-ops where agency is unauthenticated."
+
+[[cron]]
+job = "webapp-quickwins"
+class = "info"                # visible cron: prints its result in a tmux window
+on_calendar = "Mon..Fri *-*-* 08..18/2:00:00"   # every 2h across the workday (EAT)
+persistent = true
+randomized_delay = "3m"
+network = true                                   # az boards query + a headless agent
+description = "bn — WebApp quick-wins: az boards lists recent OPEN Bugs under my team's area, then a headless ADO agent ranks the fast, low-risk fixes onto the attention list (deduped by bug id, self-reconciling). No-ops where az/agency are unauthenticated."

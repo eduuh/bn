@@ -1,0 +1,3 @@
+✗ API Error: 503 Service Unavailable
+  The model provider returned a server error while streaming the response.
+  This is not a network problem — the request reached the API.

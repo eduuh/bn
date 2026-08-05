@@ -1,0 +1,3 @@
+  The previous attempt hit an API Error: 500 — I'll retry the request.
+  Also saw a getaddrinfo ENOTFOUND blip a moment ago.
+● Working… (retrying · esc to interrupt)

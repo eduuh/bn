@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="bn">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#12233f"/>
+      <stop offset="1" stop-color="#0a0d12"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <g fill="none" stroke="#4c8dff" stroke-width="30" stroke-linecap="round" stroke-linejoin="round">
+    <!-- four-node fleet grid, echoing the Fleet tab icon, in the maskable safe zone -->
+    <rect x="150" y="150" width="86" height="86" rx="18"/>
+    <rect x="276" y="150" width="86" height="86" rx="18"/>
+    <rect x="150" y="276" width="86" height="86" rx="18"/>
+    <rect x="276" y="276" width="86" height="86" rx="18"/>
+  </g>
+  <text x="256" y="452" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="72" font-weight="800" fill="#e7edf4">bn</text>
+</svg>

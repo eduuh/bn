@@ -1,0 +1,34 @@
+[package]
+name = "bn-core"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_yaml.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+dirs.workspace = true
+bincode.workspace = true
+gethostname.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+iana-time-zone.workspace = true
+rusqlite.workspace = true
+tempfile = { version = "3", optional = true }
+
+[features]
+# Exposes `bn_core::test_support` (EnvGuard/env_lock/with_* helpers) to downstream crates so
+# `bn-cli` tests share the same env lock and guard. Off by default → the production `bn` binary
+# never links tempfile or the test scaffolding.
+test-support = ["dep:tempfile"]
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
