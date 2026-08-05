@@ -268,5 +268,3 @@ fn attn_clause(repo: &str, attention: &[AttnSignal]) -> String {
         .unwrap_or("info");
     format!("; {sev} attention open in {repo}")
 }
-
-

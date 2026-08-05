@@ -12,14 +12,14 @@ Then push `design/dist/` to the Claude Design project with the `DesignSync` tool
 
 ## Layout
 
-| path | |
-|---|---|
-| `cards/*.html` | card sources — a marker line plus body markup, authored as fragments |
-| `tokens/*.css` | the palettes cards render against (`baseline`, `clay`) |
-| `build.mjs` | compiles Tailwind over the cards and wraps each into a standalone document |
-| `tailwind.design.ts` | the app's Tailwind config with `content` repointed at `cards/` |
-| `input.css` | Tailwind entry + the border reset that preflight-off requires |
-| `dist/` | build output — what gets pushed. Generated; git-ignored. |
+| path                 |                                                                            |
+| -------------------- | -------------------------------------------------------------------------- |
+| `cards/*.html`       | card sources — a marker line plus body markup, authored as fragments       |
+| `tokens/*.css`       | the palettes cards render against (`baseline`, `clay`)                     |
+| `build.mjs`          | compiles Tailwind over the cards and wraps each into a standalone document |
+| `tailwind.design.ts` | the app's Tailwind config with `content` repointed at `cards/`             |
+| `input.css`          | Tailwind entry + the border reset that preflight-off requires              |
+| `dist/`              | build output — what gets pushed. Generated; git-ignored.                   |
 
 ## Authoring a card
 
@@ -41,16 +41,16 @@ a class string here disagrees with the component, the component is right and the
 
 ## Groups
 
-| group | what it answers |
-|---|---|
-| `Foundations` | colour ramp, signal scale, type, spacing/density, radius/elevation |
-| `Primitives` | the `components/ui/` kit — button, card, badge, forms, overlays, states |
-| `Components` | the composites carrying bn's identity — fleet card, stat tiles, terminal, markdown, both app shells, agent detail |
-| `Candidates` | proposed directions, clearly separated from what ships today |
+| group         | what it answers                                                                                                   |
+| ------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `Foundations` | colour ramp, signal scale, type, spacing/density, radius/elevation                                                |
+| `Primitives`  | the `components/ui/` kit — button, card, badge, forms, overlays, states                                           |
+| `Components`  | the composites carrying bn's identity — fleet card, stat tiles, terminal, markdown, both app shells, agent detail |
+| `Candidates`  | proposed directions, clearly separated from what ships today                                                      |
 
 ## Why the tokens are split out
 
-Cards inherit *structure* from the app's own `tailwind.config.ts` — the radius ladder, the font
+Cards inherit _structure_ from the app's own `tailwind.config.ts` — the radius ladder, the font
 slots, the shadow scale, the semantic colour names. They do **not** inherit the palette: every colour
 resolves through `hsl(var(--…))`, and `build.mjs` injects a `:root` block per card. One component
 set, swappable palettes.

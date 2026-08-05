@@ -1450,5 +1450,3 @@ pub fn render(daily: &Daily, upcoming: &[ScheduledItem]) -> String {
     }
     out
 }
-
-

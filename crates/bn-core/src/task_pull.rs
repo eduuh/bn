@@ -124,5 +124,3 @@ pub fn task_from_issue(id: &str, issue: &IssueRef, today: &str) -> Task {
     task.set_meta_raw("repo", &issue.repo);
     task
 }
-
-

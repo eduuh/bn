@@ -425,5 +425,3 @@ pub fn all_specs() -> Vec<ToolSpec> {
 pub fn find_spec(name: &str) -> Option<ToolSpec> {
     all_specs().into_iter().find(|s| s.name == name)
 }
-
-

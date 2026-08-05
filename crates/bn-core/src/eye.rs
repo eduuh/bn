@@ -274,5 +274,3 @@ pub fn seed_reference(cfg: &Config) -> Result<PathBuf, String> {
         .map_err(|e| format!("seed eye care reference: {e}"))?;
     Ok(path)
 }
-
-

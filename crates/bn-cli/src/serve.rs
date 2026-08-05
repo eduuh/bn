@@ -375,5 +375,3 @@ fn setsid_detached() {
         setsid();
     }
 }
-
-

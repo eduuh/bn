@@ -30,8 +30,7 @@ import { PageHead } from "../components/PageHead";
 function nativeSummary(native: SkillNativeSync): string {
   const { created, updated, removed, harnesses, failures } = native;
   const where = harnesses.length ? harnesses.join(" + ") : "no harness";
-  const ok =
-    created + updated + removed === 0 ? `${where} already current` : `synced to ${where}`;
+  const ok = created + updated + removed === 0 ? `${where} already current` : `synced to ${where}`;
   if (!failures?.length) return ok;
   const bad = failures.map((f) => `${f.harness} (${f.scope}): ${f.error}`).join("; ");
   return harnesses.length ? `${ok} — but ${bad}` : bad;
@@ -47,7 +46,13 @@ function reportMutation(message: string, result: SkillMutation) {
 /** The create form (#483): name + description + tier, with an optional starter body. The server
  * writes `<tier>/<name>.md` and materializes it into the native Claude/Copilot skill roots, so a
  * skill created here is invocable in both harnesses without a CLI round trip. */
-function NewSkillForm({ onDone, onCancel }: { onDone: (name: string) => void; onCancel: () => void }) {
+function NewSkillForm({
+  onDone,
+  onCancel,
+}: {
+  onDone: (name: string) => void;
+  onCancel: () => void;
+}) {
   const qc = useQueryClient();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -55,13 +60,14 @@ function NewSkillForm({ onDone, onCancel }: { onDone: (name: string) => void; on
   const [body, setBody] = useState("");
 
   const create = useMutation({
-    mutationFn: () => createSkill({ name: name.trim(), description: description.trim(), scope, body }),
+    mutationFn: () =>
+      createSkill({ name: name.trim(), description: description.trim(), scope, body }),
     onSuccess: (result) => {
       reportMutation(`Created skill “${name.trim()}”`, result);
       void qc.invalidateQueries({ queryKey: queryKeys.skills });
       onDone(name.trim());
     },
-    onError: (e) => pushToast(`Create failed: ${(e as Error).message}`, "error"),
+    onError: (e) => pushToast(`Create failed: ${e.message}`, "error"),
   });
 
   // The server applies the same rules; mirroring them here keeps the button honest.
@@ -144,9 +150,7 @@ function NewSkillForm({ onDone, onCancel }: { onDone: (name: string) => void; on
             </>
           )}
         </Button>
-        <span className="text-xs text-muted-foreground">
-          also installed for Claude and Copilot
-        </span>
+        <span className="text-xs text-muted-foreground">also installed for Claude and Copilot</span>
       </div>
     </Card>
   );
@@ -183,7 +187,7 @@ function SkillEditor({ name, onDeleted }: { name: string; onDeleted: () => void 
       void qc.invalidateQueries({ queryKey: queryKeys.skills });
     },
     onError: (e) => {
-      pushToast(`Save failed: ${(e as Error).message}`, "error");
+      pushToast(`Save failed: ${e.message}`, "error");
     },
   });
 
@@ -201,7 +205,7 @@ function SkillEditor({ name, onDeleted }: { name: string; onDeleted: () => void 
       onDeleted();
     },
     onError: (e) => {
-      pushToast(`Delete failed: ${(e as Error).message}`, "error");
+      pushToast(`Delete failed: ${e.message}`, "error");
       setConfirmingDelete(false);
     },
   });
@@ -310,7 +314,9 @@ function SkillRow({
         !skill.effective && "opacity-70",
       )}
     >
-      <span className="min-w-0 flex-1 truncate font-mono text-sm text-foreground">{skill.name}</span>
+      <span className="min-w-0 flex-1 truncate font-mono text-sm text-foreground">
+        {skill.name}
+      </span>
       <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">{skill.scope}</span>
       {skill.effective ? (
         <Badge variant="ok" title="the definition bn-mcp serves">

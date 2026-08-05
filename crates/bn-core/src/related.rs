@@ -261,5 +261,3 @@ fn find_notes(dir: &Path, out: &mut Vec<PathBuf>) {
         }
     }
 }
-
-

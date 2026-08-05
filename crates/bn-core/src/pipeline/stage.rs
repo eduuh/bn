@@ -352,5 +352,3 @@ pub fn board_with_skills(cfg: &crate::resolver::Config) -> Vec<BoardEntry> {
         })
         .collect()
 }
-
-

@@ -305,6 +305,3 @@ pub(crate) fn fail_json(json: bool, command: &str, code: &str, msg: &str) -> ! {
     }
     std::process::exit(1);
 }
-
-
-

@@ -236,5 +236,3 @@ pub fn gather_packet_json(cfg: &Config, today: &str) -> String {
     );
     serde_json::to_string(&packet).unwrap_or_else(|_| "{}".into())
 }
-
-

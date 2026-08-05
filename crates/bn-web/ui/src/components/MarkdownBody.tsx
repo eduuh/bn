@@ -29,7 +29,11 @@ function textOf(node: React.ReactNode): string {
 function codeChildProps(
   children: React.ReactNode,
 ): { className?: string; children?: React.ReactNode } | null {
-  const only = Array.isArray(children) ? children[0] : children;
+  // `Array.isArray` narrows ReactNode to `any[]`, so index it through an explicit element type
+  // rather than letting `only` come out as `any`.
+  const only: React.ReactNode = Array.isArray(children)
+    ? (children as React.ReactNode[])[0]
+    : children;
   if (only && typeof only === "object" && "props" in only) {
     return (only as { props: { className?: string; children?: React.ReactNode } }).props;
   }
@@ -66,10 +70,7 @@ function CodeBlock({ children }: { children?: React.ReactNode }) {
         ) : (
           // Safe: highlight.js escapes the source it is handed, so no markup survives from the
           // note body — only the `<span class="hljs-…">` wrappers it adds itself.
-          <code
-            className="hljs"
-            dangerouslySetInnerHTML={{ __html: html }}
-          />
+          <code className="hljs" dangerouslySetInnerHTML={{ __html: html }} />
         )}
       </pre>
       {/* Right-aligned row: the language reads as a quiet label, the copy button fades in on

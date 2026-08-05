@@ -804,5 +804,3 @@ fn fmt_hours(h: f64) -> String {
         format!("{:.1}d", h / 24.0)
     }
 }
-
-

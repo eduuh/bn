@@ -262,5 +262,3 @@ pub fn build_queue(check: &str, output: &str, group_by: GroupBy) -> Vec<QueueIte
     }
     items
 }
-
-

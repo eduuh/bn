@@ -216,5 +216,3 @@ fn field_str(ev: &Event, key: &str) -> Option<String> {
 fn field_i64(ev: &Event, key: &str) -> Option<i64> {
     ev.fields.get(key).and_then(Value::as_i64)
 }
-
-

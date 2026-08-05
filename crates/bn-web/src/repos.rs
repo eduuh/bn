@@ -377,5 +377,3 @@ fn file_mtime(path: &std::path::Path) -> i64 {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
-
-

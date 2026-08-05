@@ -20,12 +20,19 @@ import { useSyncExternalStore } from "react";
  * The flag is sticky. Gating on the param being present in the current URL would mean every in-app
  * `<NavLink>` had to carry it forward and a reload would drop you back to the bare shell, so the
  * resolved set is written to `localStorage` and stays until the param says otherwise.
+ *
+ * The URL is no longer the only way in: `/settings` writes the same set through
+ * [`setExperimental`], so a tab can be flipped from a switch instead of by hand-editing a query
+ * string you had to already know the syntax of.
  */
 const STORAGE_KEY = "bn:experimental";
 const PARAM = "experimental";
 
 /** The marker for *every* tab, both in the param and in storage. */
 const ALL = "*";
+
+/** The same marker, for callers that need to recognise or write "everything" (`/settings`). */
+export const EXPERIMENTAL_ALL = ALL;
 
 /** `?experimental` with no value reads as *on* — that is what typing it by hand means. */
 const ALL_VALUES = new Set(["", "1", "true", "yes", "on", "all", ALL]);
@@ -130,6 +137,24 @@ function build(set: Set<string>): Experimental {
 export function syncExperimentalFromUrl(search: string) {
   const next = fromSearch(search);
   if (next === null || same(next, keys)) return;
+  commit(next);
+}
+
+/**
+ * Replace the revealed set from the UI — what the `/settings` switches call.
+ *
+ * It writes the same store the query param does, so flipping a switch re-renders the rail on the
+ * spot and survives a reload, and `?experimental=` keeps overriding it on the next navigation.
+ * Pass `[EXPERIMENTAL_ALL]` for everything and `[]` for the bare shell.
+ */
+export function setExperimental(next: Iterable<string>) {
+  const set = new Set([...next].map(canonical).filter(Boolean));
+  if (same(set, keys)) return;
+  commit(set);
+}
+
+/** Adopt a resolved set: persist it, rebuild the snapshot, wake the subscribers. */
+function commit(next: Set<string>) {
   keys = next;
   persist(next);
   snapshot = build(next);

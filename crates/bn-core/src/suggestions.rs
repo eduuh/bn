@@ -185,5 +185,3 @@ pub fn list(status: Option<SuggestionStatus>, limit: usize) -> Vec<Suggestion> {
     }
     out
 }
-
-

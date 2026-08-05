@@ -26,5 +26,3 @@ fn parse_id(id: &str, prefix: char) -> Option<u64> {
     }
     rest.parse().ok()
 }
-
-

@@ -222,5 +222,3 @@ fn notified_ids() -> std::collections::HashSet<String> {
         .filter_map(|e| field_str(e, "ref"))
         .collect()
 }
-
-

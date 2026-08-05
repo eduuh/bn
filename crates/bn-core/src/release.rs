@@ -392,5 +392,3 @@ pub fn evaluate_gate(
     };
     decide(&inputs, plan)
 }
-
-

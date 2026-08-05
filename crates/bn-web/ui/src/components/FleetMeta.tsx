@@ -53,14 +53,12 @@ export function FleetCounters({
 
   return (
     <>
-      {[turns, tools, tokens]
-        .filter(Boolean)
-        .map((t) => (
-          <span key={t} className="contents">
-            <Dot />
-            <span className="whitespace-nowrap text-xs tabular-nums text-muted-foreground">{t}</span>
-          </span>
-        ))}
+      {[turns, tools, tokens].filter(Boolean).map((t) => (
+        <span key={t} className="contents">
+          <Dot />
+          <span className="whitespace-nowrap text-xs tabular-nums text-muted-foreground">{t}</span>
+        </span>
+      ))}
     </>
   );
 }

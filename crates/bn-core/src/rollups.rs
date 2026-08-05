@@ -501,5 +501,3 @@ impl NoteLinker for FsNoteLinker<'_> {
         }
     }
 }
-
-

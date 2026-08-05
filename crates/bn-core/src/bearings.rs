@@ -354,5 +354,3 @@ fn push_omitted(out: &mut Vec<String>, omitted: usize, noun: &str) {
         out.push(format!("- … {omitted} more {noun}."));
     }
 }
-
-

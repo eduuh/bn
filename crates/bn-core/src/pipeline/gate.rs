@@ -269,5 +269,3 @@ fn record_refusal(
     };
     let _ = crate::attention::add_new(&new, today);
 }
-
-

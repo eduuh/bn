@@ -399,5 +399,3 @@ pub fn hhmm(ts: i64) -> String {
         .map(|dt| dt.with_timezone(&chrono::Local).format("%H:%M").to_string())
         .unwrap_or_default()
 }
-
-

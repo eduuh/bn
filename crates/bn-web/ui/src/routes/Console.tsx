@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft } from "lucide-react";
@@ -53,17 +53,22 @@ export function Console() {
 
   const selected = all.find((i) => i.id === selectedId);
 
-  const select = (id?: string) => {
-    setParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        if (id) next.set("sel", id);
-        else next.delete("sel");
-        return next;
-      },
-      { replace: true },
-    );
-  };
+  // Stable across renders so the effects below can depend on it honestly: `setParams` is stable, so
+  // this identity never changes and neither effect re-runs on account of it.
+  const select = useCallback(
+    (id?: string) => {
+      setParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (id) next.set("sel", id);
+          else next.delete("sel");
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setParams],
+  );
 
   // Land on the top of the queue rather than an empty pane. The list is already ranked so that the
   // first row is the most-blocked thing, which means the answer to "what do I do next?" is on
@@ -80,7 +85,7 @@ export function Console() {
     if (autoSelected.current || !wide || !ready || selectedId || all.length === 0) return;
     autoSelected.current = true;
     select(all[0].id);
-  }, [wide, ready, all, selectedId]);
+  }, [wide, ready, all, selectedId, select]);
 
   // j / k walk the *filtered* queue; Escape clears. Skipped while typing so the filter box and the
   // steer composer keep their keys.
@@ -116,7 +121,7 @@ export function Console() {
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [items]);
+  }, [items, select]);
 
   const loading = orch.isLoading && fleet.isLoading && actions.isLoading;
 

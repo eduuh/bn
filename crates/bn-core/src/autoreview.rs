@@ -188,5 +188,3 @@ impl Ledger {
             .retain(|e| !(e.repo == repo && e.number == number));
     }
 }
-
-

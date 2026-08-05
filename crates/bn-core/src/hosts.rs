@@ -297,5 +297,3 @@ pub fn load(ssh_dir: &Path, extras: &HashMap<String, HostExtra>) -> Vec<Host> {
     let text = std::fs::read_to_string(ssh_dir.join("config")).unwrap_or_default();
     merge(parse_ssh_config(&text), extras)
 }
-
-

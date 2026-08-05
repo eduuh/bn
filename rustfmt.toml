@@ -1,0 +1,16 @@
+# Deliberately near-empty. `cargo fmt`'s defaults already match this codebase (max_width 100,
+# 4-space indent, reordered imports), and every knob worth wanting on top of them
+# (imports_granularity, group_imports, wrap_comments, format_code_in_doc_comments) is
+# nightly-only — the pinned stable toolchain in rust-toolchain.toml would silently ignore it.
+# The stable knobs that *do* change output (use_small_heuristics, fn_params_layout, …) would
+# reformat all 139k lines for no readability win.
+#
+# `edition` is the one that earns its place. The git hooks (.githooks/pre-commit) and the
+# Claude PostToolUse hook (scripts/claude-format-hook.sh) invoke bare `rustfmt <file>` rather
+# than `cargo fmt`, and bare rustfmt defaults to edition 2015 — which mangles `async`/`await`/
+# `dyn` in this workspace. Pinning it here makes a single-file format byte-identical to what
+# `cargo fmt --all --check` demands in CI.
+edition = "2021"
+
+# Matches .gitattributes, which already forces LF on every text file.
+newline_style = "Unix"

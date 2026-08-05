@@ -13,7 +13,10 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
       window.setTimeout(() => setCopied(false), 1200);
     };
     if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(text).then(done).catch(() => done());
+      navigator.clipboard
+        .writeText(text)
+        .then(done)
+        .catch(() => done());
     } else {
       done();
     }
@@ -29,14 +32,12 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
         // repo), and as an unshrinkable flex child this chip pushed its whole row wider than the
         // column it sits in.
         "inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 font-mono text-xs transition-colors",
-        copied ? "border-ok/30 text-ok" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+        copied
+          ? "border-ok/30 text-ok"
+          : "text-muted-foreground hover:bg-accent hover:text-foreground",
       )}
     >
-      {copied ? (
-        <Check className="h-3 w-3 shrink-0" />
-      ) : (
-        <Copy className="h-3 w-3 shrink-0" />
-      )}
+      {copied ? <Check className="h-3 w-3 shrink-0" /> : <Copy className="h-3 w-3 shrink-0" />}
       <span className="truncate">{copied ? "copied" : label}</span>
     </button>
   );

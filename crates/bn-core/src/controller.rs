@@ -681,4 +681,3 @@ pub fn join_ownership(
         })
         .collect()
 }
-

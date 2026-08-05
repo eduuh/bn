@@ -748,5 +748,3 @@ pub fn week_status(week: &str) -> WeekStatus {
     }
     status
 }
-
-

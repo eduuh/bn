@@ -62,5 +62,3 @@ pub fn orchestrator_service() -> StreamableHttpService<BnOrchestratorServer, Loc
         server_config(),
     )
 }
-
-

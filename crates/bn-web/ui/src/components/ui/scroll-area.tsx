@@ -12,7 +12,12 @@ const ScrollArea = React.forwardRef<
     className={cn("relative overflow-hidden", className)}
     {...props}
   >
-    <ScrollAreaPrimitive.Viewport className="h-full w-full rounded-[inherit]">
+    {/* `[&>div]:!block` is not cosmetic. Radix wraps the viewport's children in a div styled
+        `display: table; min-width: 100%`, and a table box sizes to its *content*, not its
+        container — so one long unbreakable string (a URL, a `repo/branch`) widens the whole column
+        and the content spills out from under its neighbour instead of wrapping. Forcing the
+        wrapper back to `block` restores normal width constraint. */}
+    <ScrollAreaPrimitive.Viewport className="h-full w-full rounded-[inherit] [&>div]:!block">
       {children}
     </ScrollAreaPrimitive.Viewport>
     <ScrollBar />

@@ -872,5 +872,3 @@ fn run_agent(runner: &dyn CommandRunner, harness: &str, prompt: &str) -> Option<
     };
     out.ok_stdout()
 }
-
-

@@ -58,5 +58,3 @@ pub fn tmux_ok<S: AsRef<OsStr>>(args: &[S]) -> bool {
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
-
-

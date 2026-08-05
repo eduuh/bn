@@ -907,5 +907,3 @@ pub fn live_rollup(cfg: &Config) -> LiveCost {
         by_category: group_by(&samples, |s| s.work_class.as_str().to_string()),
     }
 }
-
-

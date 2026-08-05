@@ -105,5 +105,3 @@ pub fn scan(body: &str) -> impl Iterator<Item = (&str, bool)> {
         (line, code)
     })
 }
-
-

@@ -48,9 +48,12 @@ where
 
 /// The ordered commands the UI gate runs when [`ui_gate_needed`]: a clean install (proves
 /// `package.json` + lockfile are complete — the #505 near-miss), then the build (`tsc && vite
-/// build`, catching type errors), then vitest (`vitest run`, non-watch). Playwright e2e is
-/// deliberately omitted — too slow for an inline gate (left to CI / opt-in per #505). Callers run
-/// them in order and stop at the first non-zero exit.
+/// build`, catching type errors), then vitest (`vitest run`, non-watch). Callers run them in
+/// order and stop at the first non-zero exit.
+///
+/// There is no e2e step: a055f1c deleted the Playwright suite and its fixtures, and the CI lane
+/// that ran it was removed with them. If e2e returns it belongs in CI first, not here — it was
+/// always too slow for an inline gate (#505).
 pub fn ui_gate_steps() -> Vec<UiStep> {
     vec![
         UiStep {
@@ -67,5 +70,3 @@ pub fn ui_gate_steps() -> Vec<UiStep> {
         },
     ]
 }
-
-

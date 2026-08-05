@@ -406,5 +406,3 @@ fn pr_repo_from_str(s: &str) -> Option<String> {
     let repo = segs.get(pull_idx.checked_sub(1)?)?;
     Some(format!("{owner}/{repo}"))
 }
-
-

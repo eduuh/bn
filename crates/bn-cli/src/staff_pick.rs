@@ -229,5 +229,3 @@ fn rate(date: &str, agent: &str, rating: staff::Rating) {
         let _ = staff::rate_card(date, agent, rating, "");
     }
 }
-
-

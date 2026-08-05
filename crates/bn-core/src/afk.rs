@@ -59,5 +59,3 @@ fn acknowledge_pending() -> std::io::Result<()> {
     acknowledge(&event_ids)?;
     Ok(())
 }
-
-

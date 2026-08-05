@@ -425,5 +425,3 @@ fn non_empty_opt(s: Option<&str>) -> Option<&str> {
 fn invalid_input(msg: String) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, msg)
 }
-
-

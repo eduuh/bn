@@ -1791,5 +1791,3 @@ fn frame_to_sse(frame: &Arc<StreamFrame>) -> SseEvent {
         .event(frame.event)
         .data(frame.data.as_str())
 }
-
-

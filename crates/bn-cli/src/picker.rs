@@ -527,5 +527,3 @@ fn hold_raw() -> bool {
     println!();
     true
 }
-
-

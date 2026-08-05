@@ -187,5 +187,3 @@ fn azure_links(host: &str, segs: &[&str]) -> Option<ForgeLinks> {
         repo: base,
     })
 }
-
-

@@ -498,5 +498,3 @@ pub fn baselines(
         positions,
     }
 }
-
-

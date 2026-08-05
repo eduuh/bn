@@ -46,6 +46,7 @@ import type {
   InsightsView,
   WeeklyView,
   BragView,
+  HealthView,
 } from "./types";
 
 /** Fetch a bn read endpoint and return its envelope `data`, throwing on a transport/api failure. */
@@ -88,6 +89,8 @@ export async function fetchEnvelope<T>(url: string): Promise<T> {
 /** The react-query cache keys the SSE stream and the components share. */
 export const queryKeys = {
   fleet: ["fleet"] as const,
+  /** The server's own vitals — version, identity, bind, uptime (the settings page). */
+  health: ["health"] as const,
   /** Machine-health snapshot (#525). */
   machine: ["machine"] as const,
   /** The fleet's machines as a list (#966 nodes view) — local today, remote-ready. */
@@ -160,7 +163,14 @@ export const queryKeys = {
   search: (q: string) => ["search", q] as const,
   /** The learnings feed, keyed by its filter. */
   learnings: (filter: LearningsFilter) =>
-    ["learnings", filter.since ?? null, filter.all ?? false, filter.repo ?? "", filter.skill ?? "", filter.agent ?? ""] as const,
+    [
+      "learnings",
+      filter.since ?? null,
+      filter.all ?? false,
+      filter.repo ?? "",
+      filter.skill ?? "",
+      filter.agent ?? "",
+    ] as const,
   /** The metrics scorecard (#507), keyed by trailing window. */
   metrics: (windowDays: number) => ["metrics", windowDays] as const,
   /** The metrics snapshot history behind the trend chart (#507). */
@@ -178,6 +188,16 @@ export function fleetQuery() {
     queryKey: queryKeys.fleet,
     queryFn: () => fetchEnvelope<FleetView>("/api/fleet"),
     refetchInterval: 15_000,
+  };
+}
+
+/** The server's own vitals. Nothing here moves except the uptime, so it is polled slowly — it is
+ * a settings-page readout, not a monitor. */
+export function healthQuery() {
+  return {
+    queryKey: queryKeys.health,
+    queryFn: () => fetchEnvelope<HealthView>("/api/health"),
+    refetchInterval: 60_000,
   };
 }
 
@@ -427,8 +447,7 @@ export function skillsQuery() {
 export function skillDetailQuery(name: string | null) {
   return {
     queryKey: queryKeys.skill(name ?? ""),
-    queryFn: () =>
-      fetchEnvelope<SkillDetail>(`/api/skills/${encodeURIComponent(name ?? "")}`),
+    queryFn: () => fetchEnvelope<SkillDetail>(`/api/skills/${encodeURIComponent(name ?? "")}`),
     enabled: !!name,
     staleTime: 0,
   };
@@ -459,8 +478,7 @@ export function reposQuery() {
 export function repoIssuesQuery(repo: string) {
   return {
     queryKey: queryKeys.repoIssues(repo),
-    queryFn: () =>
-      fetchEnvelope<RepoIssuesView>(`/api/repos/${encodeURIComponent(repo)}/issues`),
+    queryFn: () => fetchEnvelope<RepoIssuesView>(`/api/repos/${encodeURIComponent(repo)}/issues`),
     enabled: repo.length > 0,
     refetchInterval: 120_000,
   };
@@ -591,7 +609,7 @@ const TODAY_CACHE = {
  * Without this, every background refetch drops the lists back to `undefined` for a frame and the
  * screen flashes its empty states — "Nothing is ready", "Nothing is in flight" — which reads as
  * *the work disappeared*, not as *we are reloading*. */
-const keepPrevious = <T,>(prev: T | undefined) => prev;
+const keepPrevious = <T>(prev: T | undefined) => prev;
 
 /** Today's tasks — `day:` today-or-earlier plus unscheduled, mirroring the CLI's bare view so the
  * dashboard and `bn task` never disagree about what "today" means. */
@@ -609,8 +627,7 @@ export function taskQuery(id: string) {
 export function tasksQuery(scope: "today" | "all" = "today") {
   return {
     queryKey: queryKeys.tasks(scope),
-    queryFn: () =>
-      fetchEnvelope<TasksView>(`/api/tasks${scope === "all" ? "?all=1" : ""}`),
+    queryFn: () => fetchEnvelope<TasksView>(`/api/tasks${scope === "all" ? "?all=1" : ""}`),
     refetchInterval: 30_000,
     placeholderData: keepPrevious<TasksView>,
     ...TODAY_CACHE.work,

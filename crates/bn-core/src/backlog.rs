@@ -869,4 +869,3 @@ pub fn compact_if_needed(path: &Path) -> std::io::Result<bool> {
         Ok(false)
     }
 }
-

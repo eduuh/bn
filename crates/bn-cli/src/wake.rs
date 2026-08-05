@@ -120,5 +120,3 @@ fn same_parent(path: &Path, signal_path: &Path) -> bool {
             .file_name()
             .is_some_and(|name| name.to_string_lossy().contains("wake-queue.signal"))
 }
-
-

@@ -502,5 +502,3 @@ fn raw_of<T: Serialize>(items: &[T]) -> Option<String> {
         serde_json::to_string(items).ok()
     }
 }
-
-

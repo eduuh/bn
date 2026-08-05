@@ -728,5 +728,3 @@ fn link_if_github(url: &str) -> String {
         String::new()
     }
 }
-
-

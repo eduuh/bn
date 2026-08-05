@@ -34,5 +34,3 @@ fn prompt_description(skill: &Skill) -> String {
         _ => skill.description.clone(),
     }
 }
-
-

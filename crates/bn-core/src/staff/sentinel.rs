@@ -1149,5 +1149,3 @@ pub fn load_dep_cache(today: &str) -> Option<Vec<DepStatus>> {
     let cache: DepCache = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
     (cache.date == today).then_some(cache.deps)
 }
-
-

@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
 import { nodesQuery } from "../api/client";
-import { LEVEL_LABEL, LEVEL_TONE } from "./MachineHealth";
+import { LEVEL_LABEL, LEVEL_TONE } from "../lib/machine";
 import { cn } from "../lib/utils";
 
 /**
@@ -57,9 +57,7 @@ export function NodeStrip() {
                 down ? "text-urgent" : "text-muted-foreground/70",
               )}
             >
-              {down
-                ? "unreachable"
-                : `${n.agents.active} agent${n.agents.active === 1 ? "" : "s"}`}
+              {down ? "unreachable" : `${n.agents.active} agent${n.agents.active === 1 ? "" : "s"}`}
             </span>
           </Link>
         );

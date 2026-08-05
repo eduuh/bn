@@ -139,5 +139,3 @@ pub fn ensure_file(name: &str) -> std::io::Result<(PathBuf, bool)> {
     std::fs::write(&path, template(name))?;
     Ok((path, false))
 }
-
-

@@ -104,5 +104,3 @@ pub fn service_state(installed: bool, listening: bool) -> ServeState {
         (false, false) => ServeState::NotInstalled,
     }
 }
-
-

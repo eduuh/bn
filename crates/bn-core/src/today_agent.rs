@@ -330,4 +330,3 @@ pub fn status_view(cfg: &Config) -> serde_json::Value {
         "output_tokens": live.map(|a| a.output_tokens),
     })
 }
-

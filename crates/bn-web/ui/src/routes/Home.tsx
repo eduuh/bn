@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import {
@@ -6,7 +6,6 @@ import {
   ArrowUpRight,
   Ban,
   CalendarClock,
-  Check,
   Copy,
   CornerDownRight,
   ExternalLink,
@@ -16,33 +15,41 @@ import {
   Sparkles,
 } from "lucide-react";
 
-import {
-  attnQuery,
-  doneTasksQuery,
-  issuesQuery,
-  pipelineStagesQuery,
-  queryKeys,
-  tasksQuery,
-} from "../api/client";
-import type {
-  AttnItem,
-  IssueRow,
-  PipelineStageWork,
-  RepoIssues,
-  StageTask,
-  TaskRow,
-} from "../api/types";
-import { attnAction, createTask, sendMessage, taskAction, taskAgent } from "../api/writes";
-import { PipelineFlow } from "../components/PipelineFlow";
+import { attnQuery, doneTasksQuery, issuesQuery, queryKeys, tasksQuery } from "../api/client";
+import type { AttnItem, IssueRow, RepoIssues, TaskRow } from "../api/types";
+import { attnAction, createTask, taskAction, taskAgent } from "../api/writes";
 import { NewTaskDialog } from "../components/NewTaskDialog";
+import { Empty, Hint, RowsSkeleton, SectionCard } from "../components/SectionCard";
 import { SteerButton } from "../components/SteerButton";
 import { ToastStack } from "../components/ToastStack";
-import { useContextMenu, type ContextMenuItem } from "../components/ContextMenu";
 import { pushToast } from "../lib/toast";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../components/ui/alert-dialog";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { buttonVariants } from "../components/ui/button-variants";
 import { Card } from "../components/ui/card";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuLabel,
+  ContextMenuSeparator,
+  ContextMenuShortcut,
+  ContextMenuTrigger,
+} from "../components/ui/context-menu";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+import { Separator } from "../components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
+import { TooltipProvider } from "../components/ui/tooltip";
 import { cn } from "../lib/utils";
 import { Research } from "./Research";
 import { TodayQueue } from "./TodayQueue";
@@ -83,73 +90,70 @@ function tomorrow(): string {
   return new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
 }
 
-/** The card the whole deck is built from: a bordered surface that lifts its border on hover, with a
- * main row and an optional provenance sub-row. */
-const CARD =
-  "group flex flex-col gap-1.5 rounded-lg border border-border bg-muted px-3 py-2.5 shadow-sm transition-colors hover:border-input hover:bg-accent";
-const CARD_MAIN = "flex w-full flex-wrap items-center gap-x-2.5 gap-y-1";
+/**
+ * Open a dialog from a menu item.
+ *
+ * Radix closes the menu on `onSelect` and restores focus to the trigger in the same tick. Flipping
+ * a dialog open inside that tick races the restore — the dialog mounts, the menu's focus return
+ * steals it back, and the reason field ends up unfocused (occasionally with `pointer-events: none`
+ * still on `<body>`). Deferring by one turn of the event loop lets the menu finish closing first.
+ */
+function openAfterMenu(open: () => void) {
+  window.setTimeout(open, 0);
+}
 
 /** The work-order token (#993) — A..Z, the order to work through; A is the one to do next. */
 function OrderToken({ letter }: { letter?: string }) {
   if (!letter) return null;
   return (
-    <span
-      className={cn(
-        "flex h-5 w-5 shrink-0 items-center justify-center rounded font-mono text-[11px] font-bold tabular-nums",
-        letter === "A"
-          ? "bg-primary text-primary-foreground"
-          : "border border-border bg-background text-muted-foreground",
-      )}
-      title="work order — the order to work through; A is next"
-    >
-      {letter}
-    </span>
+    <Hint label="Work order — the order to work through. A is next.">
+      <span
+        className={cn(
+          "flex h-5 w-5 shrink-0 items-center justify-center rounded font-mono text-[11px] font-bold tabular-nums",
+          letter === "A"
+            ? "bg-primary text-primary-foreground"
+            : "border border-border bg-background text-muted-foreground",
+        )}
+      >
+        {letter}
+      </span>
+    </Hint>
   );
 }
 
-/** Where a task came from (`TaskRow.src`) — the provenance chip. */
-function SourceChip({ src }: { src: string | null }) {
-  if (!src) return null;
-  return (
-    <span
-      className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
-      title={`source: ${src}`}
-    >
-      <CornerDownRight className="h-3 w-3 shrink-0 opacity-70" /> {src}
-    </span>
-  );
-}
-
-/** The task's document (`TaskRow.doc`) — clicks through to the detail page, which fetches and
- * renders the doc body (`## Done When`, the plan, …) as markdown. This is the "read task.md from the
- * browser" path. */
-function DocChip({ doc, taskId }: { doc: string | null; taskId: string }) {
-  if (!doc) return null;
-  const name = doc.split("/").pop() || doc;
-  return (
-    <Link
-      to={`/tasks/${taskId}`}
-      className="inline-flex items-center gap-1 font-mono text-[11px] text-muted-foreground hover:text-primary"
-      title={`open ${doc} — read it in the browser`}
-    >
-      <FileText className="h-3 w-3 shrink-0 opacity-70" /> {name}
-    </Link>
-  );
-}
-
-/** The provenance sub-row — only present when the task actually carries a source or a doc. */
-function ProvSub({ task }: { task: TaskRow }) {
+/** The provenance sub-row — where a task came from (`src`) and its doc. Only rendered when the task
+ * actually carries one, so an empty row never reserves space. */
+function Provenance({ task }: { task: TaskRow }) {
   if (!task.src && !task.doc) return null;
+  const docName = task.doc ? task.doc.split("/").pop() || task.doc : null;
   return (
     <div className="flex w-full flex-wrap items-center gap-x-2 gap-y-1 pl-7">
-      <SourceChip src={task.src} />
-      <DocChip doc={task.doc} taskId={task.id} />
+      {task.src && (
+        <Hint label={`Source: ${task.src}`}>
+          <span className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+            <CornerDownRight className="h-3 w-3 shrink-0 opacity-70" /> {task.src}
+          </span>
+        </Hint>
+      )}
+      {task.src && task.doc && <Separator orientation="vertical" className="h-3" />}
+      {docName && (
+        // Clicks through to the detail page, which fetches and renders the doc body (`## Done When`,
+        // the plan, …) as markdown. This is the "read task.md from the browser" path.
+        <Hint label={`Open ${task.doc} — read it in the browser`}>
+          <Link
+            to={`/tasks/${task.id}`}
+            className="inline-flex items-center gap-1 font-mono text-[11px] text-muted-foreground hover:text-primary"
+          >
+            <FileText className="h-3 w-3 shrink-0 opacity-70" /> {docName}
+          </Link>
+        </Hint>
+      )}
     </div>
   );
 }
 
 /** The shared leading cells of a task row: id, summary, repo, day. */
-function RowHead({ task, today }: { task: TaskRow; today: string }) {
+function TaskMeta({ task, today }: { task: TaskRow; today: string }) {
   const overdue = !!task.day && task.day < today;
   return (
     <>
@@ -158,70 +162,191 @@ function RowHead({ task, today }: { task: TaskRow; today: string }) {
       {task.repo && (
         <span className="font-mono text-[11px] text-muted-foreground">[{task.repo}]</span>
       )}
-      {task.day && (
-        <span
-          className={cn(
-            "font-mono text-[11px]",
-            overdue ? "font-semibold text-warn" : "text-muted-foreground",
-          )}
-          title={overdue ? "carried over from an earlier day" : undefined}
-        >
-          {task.day}
-          {overdue ? "!" : ""}
-        </span>
-      )}
+      {task.day &&
+        (overdue ? (
+          <Hint label="Carried over from an earlier day.">
+            <span className="font-mono text-[11px] font-semibold text-warn">{task.day}!</span>
+          </Hint>
+        ) : (
+          <span className="font-mono text-[11px] text-muted-foreground">{task.day}</span>
+        ))}
     </>
   );
 }
 
-/** Prompt for a cancel reason, warning that a live agent is not stopped by cancelling the task. */
-function cancelWithPrompt(id: string, agentTarget: string | undefined, run: (reason: string) => void) {
-  const warn = agentTarget
-    ? `\n\n${agentTarget} is still running on it and will NOT be stopped — stop it in the fleet.`
-    : "";
-  const reason = window.prompt(`Cancel ${id}?${warn}\n\nReason (optional):`);
-  if (reason === null) return;
-  run(reason);
+/**
+ * Confirm a cancel and collect the reason.
+ *
+ * This replaces a `window.prompt`, which was wrong in two ways beyond looking out of place: the
+ * native prompt cannot render the warning below as anything but more prompt text, and it blocks the
+ * whole tab while the dashboard's SSE stream keeps pushing.
+ *
+ * The warning is the important part. Cancelling the *task* does not stop an agent working on it —
+ * those are two different lifetimes — so an operator who cancels and walks away would leave a
+ * process running against a task nobody is tracking.
+ */
+function CancelTaskDialog({
+  id,
+  agentTarget,
+  open,
+  onOpenChange,
+  onConfirm,
+}: {
+  id: string;
+  agentTarget?: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: (reason: string) => void;
+}) {
+  const [reason, setReason] = useState("");
+  return (
+    <AlertDialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) setReason("");
+        onOpenChange(next);
+      }}
+    >
+      <AlertDialogContent className="max-w-sm">
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            Cancel <span className="font-mono text-[15px]">{id}</span>?
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            {agentTarget ? (
+              <>
+                <span className="font-mono text-warn">{agentTarget}</span> is still running on it
+                and will <strong className="font-semibold text-warn">not</strong> be stopped — stop
+                it in the fleet.
+              </>
+            ) : (
+              "The task is closed as cancelled. It stays in the store and in Done today."
+            )}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+
+        <div className="space-y-1.5">
+          <Label htmlFor={`cancel-reason-${id}`} className="text-[11px]">
+            Reason (optional)
+          </Label>
+          <Input
+            id={`cancel-reason-${id}`}
+            autoFocus
+            value={reason}
+            placeholder="superseded by #1044"
+            onChange={(e) => setReason(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                onConfirm(reason.trim());
+                onOpenChange(false);
+              }
+            }}
+          />
+        </div>
+
+        <AlertDialogFooter>
+          <AlertDialogCancel>Keep it</AlertDialogCancel>
+          {/* Not `AlertDialogAction`: that renders the primary button, and cancelling is the
+              destructive branch — it should not look like the safe default. */}
+          <AlertDialogCancel
+            className={buttonVariants({ variant: "destructive", size: "sm" })}
+            onClick={() => onConfirm(reason.trim())}
+          >
+            Cancel task
+          </AlertDialogCancel>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
 }
 
 /** The right-click actions common to every task, wired to real endpoints. `onStart` is only passed
- * for startable work; everything with no server endpoint yet is simply left out. */
-function taskMenuItems(o: {
+ * for startable work; everything with no server endpoint yet is simply left out, so the menu only
+ * ever offers things that actually work. */
+function TaskMenu({
+  id,
+  onEnhance,
+  onStart,
+  onCancel,
+}: {
   id: string;
-  navigate: (to: string) => void;
   onEnhance: () => void;
   onStart?: () => void;
   onCancel: () => void;
-}): ContextMenuItem[] {
-  const items: ContextMenuItem[] = [
-    { label: "Open task", icon: ExternalLink, onSelect: () => o.navigate(`/tasks/${o.id}`) },
-    { label: "Enhance", icon: Sparkles, onSelect: o.onEnhance },
-  ];
-  if (o.onStart) items.push({ label: "Start", icon: Play, onSelect: o.onStart });
-  items.push({
-    label: (
-      <>
-        Copy id <span className="font-mono text-muted-foreground">{o.id}</span>
-      </>
-    ),
-    icon: Copy,
-    onSelect: () => copy(o.id),
-  });
-  items.push({
-    label: "Cancel task",
-    icon: Ban,
-    danger: true,
-    separatorBefore: true,
-    onSelect: o.onCancel,
-  });
-  return items;
+}) {
+  const navigate = useNavigate();
+  return (
+    <ContextMenuContent>
+      <ContextMenuLabel>{id}</ContextMenuLabel>
+      <ContextMenuItem onSelect={() => navigate(`/tasks/${id}`)}>
+        <ExternalLink /> Open task
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={onEnhance}>
+        <Sparkles /> Enhance
+      </ContextMenuItem>
+      {onStart && (
+        <ContextMenuItem onSelect={onStart}>
+          <Play /> Start
+        </ContextMenuItem>
+      )}
+      <ContextMenuItem onSelect={() => copy(id)}>
+        <Copy /> Copy id
+        <ContextMenuShortcut>{id}</ContextMenuShortcut>
+      </ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuItem danger onSelect={() => openAfterMenu(onCancel)}>
+        <Ban /> Cancel task
+      </ContextMenuItem>
+    </ContextMenuContent>
+  );
+}
+
+/**
+ * The card the whole deck is built from.
+ *
+ * A real `Card` rather than a class-string constant, so a row inherits the same surface, radius and
+ * shadow tokens as every other card on the dashboard and only overrides what makes it a *row*: a
+ * flatter `bg-muted` fill (it sits inside a section card) and a border that lifts on hover.
+ */
+function TaskCard({
+  task,
+  today,
+  letter,
+  menu,
+  children,
+}: {
+  task: TaskRow;
+  today: string;
+  letter?: string;
+  /** The `<ContextMenuContent>` for this row. */
+  menu: ReactNode;
+  /** State-specific chips and actions, appended to the main row. */
+  children: ReactNode;
+}) {
+  return (
+    <li>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <Card className="flex flex-col gap-1.5 border-border bg-muted px-3 py-2.5 shadow-sm transition-colors hover:border-input hover:bg-accent">
+            <div className="flex w-full flex-wrap items-center gap-x-2.5 gap-y-1">
+              <OrderToken letter={letter} />
+              <TaskMeta task={task} today={today} />
+              {children}
+            </div>
+            <Provenance task={task} />
+          </Card>
+        </ContextMenuTrigger>
+        {menu}
+      </ContextMenu>
+    </li>
+  );
 }
 
 /** A task that has been triaged: the only kind that offers Start. In the redesign these are the
  * *enhanced* tasks — their doc is past the SMART gate — so the badge reads `enhanced`. */
 function ReadyRow({ task, today, letter }: { task: TaskRow; today: string; letter?: string }) {
   const qc = useQueryClient();
-  const navigate = useNavigate();
+  const [cancelling, setCancelling] = useState(false);
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: queryKeys.tasks("today") });
     void qc.invalidateQueries({ queryKey: queryKeys.pipelineStages });
@@ -234,12 +359,12 @@ function ReadyRow({ task, today, letter }: { task: TaskRow; today: string; lette
     },
     // The gate lives on the server, so a refusal can still arrive here — say so plainly rather
     // than letting the row look broken.
-    onError: (e) => pushToast(`Could not start ${task.id}: ${(e as Error).message}`, "error"),
+    onError: (e) => pushToast(`Could not start ${task.id}: ${e.message}`, "error"),
   });
   const enhance = useMutation({
     mutationFn: () => taskAgent(task.id, "improve"),
     onSuccess: () => pushToast(`Enhance agent started on ${task.id} — watch the fleet`, "success"),
-    onError: (e) => pushToast(`Could not enhance: ${(e as Error).message}`, "error"),
+    onError: (e) => pushToast(`Could not enhance: ${e.message}`, "error"),
   });
   const cancel = useMutation({
     mutationFn: (reason: string) => taskAction(task.id, "cancel", reason || undefined),
@@ -247,56 +372,63 @@ function ReadyRow({ task, today, letter }: { task: TaskRow; today: string; lette
       pushToast(`Cancelled ${task.id}`, "success");
       invalidate();
     },
-    onError: (e) => pushToast(`Could not cancel: ${(e as Error).message}`, "error"),
+    onError: (e) => pushToast(`Could not cancel: ${e.message}`, "error"),
   });
-  const menu = useContextMenu(
-    taskMenuItems({
-      id: task.id,
-      navigate,
-      onEnhance: () => enhance.mutate(),
-      onStart: () => start.mutate(),
-      onCancel: () => cancelWithPrompt(task.id, undefined, (r) => cancel.mutate(r)),
-    }),
-    `actions for ${task.id}`,
-  );
 
   return (
-    <li className={CARD} onContextMenu={menu.onContextMenu}>
-      <div className={CARD_MAIN}>
-        <OrderToken letter={letter} />
-        <RowHead task={task} today={today} />
+    <>
+      <TaskCard
+        task={task}
+        today={today}
+        letter={letter}
+        menu={
+          <TaskMenu
+            id={task.id}
+            onEnhance={() => enhance.mutate()}
+            onStart={() => start.mutate()}
+            onCancel={() => setCancelling(true)}
+          />
+        }
+      >
         {task.est && (
           <span className="font-mono text-[11px] text-muted-foreground">{task.est}</span>
         )}
-        <Badge variant="ok" title="enhanced — past the SMART gate and triaged for today">
-          enhanced
-        </Badge>
-        <Button
-          size="sm"
-          disabled={start.isPending}
-          onClick={() => start.mutate()}
-          title="start this task — marks it wip"
-        >
-          <Play className="h-4 w-4" /> Start
+        <Hint label="Enhanced — past the SMART gate and triaged for today.">
+          <Badge variant="ok">enhanced</Badge>
+        </Hint>
+        <Button size="sm" disabled={start.isPending} onClick={() => start.mutate()}>
+          <Play /> Start
         </Button>
-      </div>
-      <ProvSub task={task} />
-      {menu.node}
-    </li>
+      </TaskCard>
+      <CancelTaskDialog
+        id={task.id}
+        open={cancelling}
+        onOpenChange={setCancelling}
+        onConfirm={(r) => cancel.mutate(r)}
+      />
+    </>
   );
 }
 
 /** A task in the **enhance queue** — not yet triaged. Start is present but disabled: an absent
  * button would read as "this task cannot be started ever", when the truth is "not yet, and here is
  * what to do". `Enhance` runs the improve agent that scopes it toward the SMART gate. */
-function EnhanceQueueRow({ task, today, letter }: { task: TaskRow; today: string; letter?: string }) {
-  const navigate = useNavigate();
+function EnhanceQueueRow({
+  task,
+  today,
+  letter,
+}: {
+  task: TaskRow;
+  today: string;
+  letter?: string;
+}) {
   const qc = useQueryClient();
+  const [cancelling, setCancelling] = useState(false);
   const reason = blockedReason(task, today);
   const enhance = useMutation({
     mutationFn: (steer: string) => taskAgent(task.id, "improve", steer || undefined),
     onSuccess: () => pushToast(`Enhance agent started on ${task.id} — watch the fleet`, "success"),
-    onError: (e) => pushToast(`Could not enhance: ${(e as Error).message}`, "error"),
+    onError: (e) => pushToast(`Could not enhance: ${e.message}`, "error"),
   });
   const cancel = useMutation({
     mutationFn: (r: string) => taskAction(task.id, "cancel", r || undefined),
@@ -304,178 +436,59 @@ function EnhanceQueueRow({ task, today, letter }: { task: TaskRow; today: string
       pushToast(`Cancelled ${task.id}`, "success");
       void qc.invalidateQueries({ queryKey: queryKeys.tasks("today") });
     },
-    onError: (e) => pushToast(`Could not cancel: ${(e as Error).message}`, "error"),
+    onError: (e) => pushToast(`Could not cancel: ${e.message}`, "error"),
   });
-  const menu = useContextMenu(
-    taskMenuItems({
-      id: task.id,
-      navigate,
-      onEnhance: () => enhance.mutate(""),
-      onCancel: () => cancelWithPrompt(task.id, undefined, (r) => cancel.mutate(r)),
-    }),
-    `actions for ${task.id}`,
-  );
 
   return (
-    <li className={CARD} onContextMenu={menu.onContextMenu}>
-      <div className={CARD_MAIN}>
-        <OrderToken letter={letter} />
-        <RowHead task={task} today={today} />
-        <Badge
-          variant={task.smart === "stuck" ? "urgent" : task.smart === "fail" ? "warn" : "muted"}
-          title={reason}
-        >
-          {task.smart === "stuck" ? "needs you" : task.smart === "fail" ? "not ready" : "unscoped"}
-        </Badge>
+    <>
+      <TaskCard
+        task={task}
+        today={today}
+        letter={letter}
+        menu={
+          <TaskMenu
+            id={task.id}
+            onEnhance={() => enhance.mutate("")}
+            onCancel={() => setCancelling(true)}
+          />
+        }
+      >
+        <Hint label={reason}>
+          <Badge
+            variant={task.smart === "stuck" ? "urgent" : task.smart === "fail" ? "warn" : "muted"}
+          >
+            {task.smart === "stuck"
+              ? "needs you"
+              : task.smart === "fail"
+                ? "not ready"
+                : "unscoped"}
+          </Badge>
+        </Hint>
         <SteerButton
           label="Enhance"
+          icon={Sparkles}
           title="run the enhance agent on this task"
           placeholder="things to look out for (optional)"
           busy={enhance.isPending}
           onSubmit={(steer) => enhance.mutate(steer)}
         />
-        <Button size="sm" variant="secondary" disabled title={reason} className="opacity-50">
-          <Play className="h-4 w-4" /> Start
-        </Button>
-      </div>
-      <ProvSub task={task} />
-      {menu.node}
-    </li>
-  );
-}
-
-/** Work in flight: its stage, whatever agent is on it, and the things you can do to it. */
-function InFlightRow({ task, today, letter }: { task: StageTask; today: string; letter?: string }) {
-  const qc = useQueryClient();
-  const navigate = useNavigate();
-  const invalidate = () => {
-    void qc.invalidateQueries({ queryKey: queryKeys.tasks("today") });
-    void qc.invalidateQueries({ queryKey: queryKeys.pipelineStages });
-    void qc.invalidateQueries({ queryKey: queryKeys.doneTasks("today") });
-    void qc.invalidateQueries({ queryKey: queryKeys.fleet });
-  };
-  const agent = task.agent;
-
-  const finish = useMutation({
-    mutationFn: () => taskAction(task.id, "done"),
-    onSuccess: () => {
-      pushToast(`Done ${task.id}`, "success");
-      invalidate();
-    },
-    onError: (e) => pushToast(`Could not finish ${task.id}: ${(e as Error).message}`, "error"),
-  });
-  const cancel = useMutation({
-    mutationFn: (reason: string) => taskAction(task.id, "cancel", reason || undefined),
-    onSuccess: () => {
-      pushToast(`Cancelled ${task.id}`, "success");
-      invalidate();
-    },
-    onError: (e) => pushToast(`Could not cancel ${task.id}: ${(e as Error).message}`, "error"),
-  });
-  // Addressed by `target` (`repo:branch`) — the identity every bn surface steers an agent by, and
-  // the same key this task was joined to it on.
-  const steer = useMutation({
-    mutationFn: (msg: string) => sendMessage(agent?.target ?? "", msg),
-    onSuccess: () => pushToast(`Steered ${agent?.target}`, "success"),
-    onError: (e) => pushToast(`Could not steer: ${(e as Error).message}`, "error"),
-  });
-  const enhance = useMutation({
-    mutationFn: () => taskAgent(task.id, "improve"),
-    onSuccess: () => pushToast(`Enhance agent started on ${task.id} — watch the fleet`, "success"),
-    onError: (e) => pushToast(`Could not enhance: ${(e as Error).message}`, "error"),
-  });
-  const menu = useContextMenu(
-    taskMenuItems({
-      id: task.id,
-      navigate,
-      onEnhance: () => enhance.mutate(),
-      onCancel: () => cancelWithPrompt(task.id, agent?.target, (r) => cancel.mutate(r)),
-    }),
-    `actions for ${task.id}`,
-  );
-
-  return (
-    <li className={CARD} onContextMenu={menu.onContextMenu}>
-      <div className={CARD_MAIN}>
-        <OrderToken letter={letter} />
-        <RowHead task={task} today={today} />
-        {task.branch && (
-          <span className="font-mono text-[11px] text-muted-foreground/80">{task.branch}</span>
-        )}
-        {task.stage && (
-          <Badge variant="info" className="font-mono">
-            {task.stage}
-          </Badge>
-        )}
-        {/* What this worktree is *actually* running (#1041), now carried by the same projection that
-            joined the task — an explicit `--skill debug` sits in `execute` while running `debug`, and
-            showing the stage default there would be a confident lie. */}
-        {task.skill && (
-          <Badge variant="muted" className="font-mono" title={`running the \`${task.skill}\` workflow`}>
-            ⌁ {task.skill}
-          </Badge>
-        )}
-        {/* The agent is only shown when one is really joined to this task — an always-present chip
-            would make an abandoned worktree look staffed. */}
-        {agent && (
-          <a
-            href={`/agents/${encodeURIComponent(agent.session_id)}`}
-            title={`${agent.harness} · ${agent.health} · idle ${Math.round(agent.idle_secs / 60)}m — open in the fleet`}
-            className={cn(
-              "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 font-mono text-[11px]",
-              agent.health === "stuck"
-                ? "border-urgent/50 bg-urgent/10 text-urgent"
-                : agent.health === "idle"
-                  ? "border-warn/50 bg-warn/10 text-warn"
-                  : "border-ok/50 bg-ok/10 text-ok",
-            )}
-          >
-            ◉ {agent.harness} · {agent.health}
-          </a>
-        )}
-        {/* Steering needs something to steer. Without a joined agent the control is disabled and
-            says why, rather than accepting a message that would go nowhere. */}
-        {agent ? (
-          <SteerButton
-            label="Steer"
-            title={`send a message to ${agent.target}`}
-            placeholder="what should it do differently?"
-            busy={steer.isPending}
-            onSubmit={(msg) => msg && steer.mutate(msg)}
-          />
-        ) : (
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled
-            title="no agent is running on this task"
-            className="opacity-50"
-          >
-            Steer
-          </Button>
-        )}
-        <Button
-          size="sm"
-          variant="secondary"
-          disabled={finish.isPending}
-          onClick={() => finish.mutate()}
-          title="mark done"
-        >
-          <Check className="h-4 w-4" />
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          disabled={cancel.isPending}
-          title="cancel this task"
-          onClick={() => cancelWithPrompt(task.id, agent?.target, (r) => cancel.mutate(r))}
-        >
-          <Ban className="h-4 w-4 text-urgent" />
-        </Button>
-      </div>
-      <ProvSub task={task} />
-      {menu.node}
-    </li>
+        {/* A disabled button fires no pointer events, so the tooltip needs a live wrapper — and the
+            wrapper is focusable so the reason is reachable from the keyboard too. */}
+        <Hint label={reason}>
+          <span tabIndex={0} className="inline-flex rounded-md">
+            <Button size="sm" variant="secondary" disabled className="opacity-50">
+              <Play /> Start
+            </Button>
+          </span>
+        </Hint>
+      </TaskCard>
+      <CancelTaskDialog
+        id={task.id}
+        open={cancelling}
+        onOpenChange={setCancelling}
+        onConfirm={(r) => cancel.mutate(r)}
+      />
+    </>
   );
 }
 
@@ -488,7 +501,7 @@ function AttnRow({ item }: { item: AttnItem }) {
     // Investigation is a task agent too: it enhances the record before anything executes.
     mutationFn: (steer: string) => taskAgent(item.id, "improve", steer || undefined),
     onSuccess: () => pushToast(`Investigating ${item.id} — watch the fleet`, "success"),
-    onError: (e) => pushToast(`Could not start: ${(e as Error).message}`, "error"),
+    onError: (e) => pushToast(`Could not start: ${e.message}`, "error"),
   });
   const plan = useMutation({
     mutationFn: () => attnAction(item.id, "plan"),
@@ -496,7 +509,7 @@ function AttnRow({ item }: { item: AttnItem }) {
       pushToast(`Added ${item.id} to the enhance queue`, "success");
       invalidate();
     },
-    onError: (e) => pushToast(`Could not enqueue: ${(e as Error).message}`, "error"),
+    onError: (e) => pushToast(`Could not enqueue: ${e.message}`, "error"),
   });
   const snooze = useMutation({
     mutationFn: () => attnAction(item.id, "snooze", { until: tomorrow() }),
@@ -504,7 +517,7 @@ function AttnRow({ item }: { item: AttnItem }) {
       pushToast(`Snoozed ${item.id} 1 day`, "success");
       invalidate();
     },
-    onError: (e) => pushToast(`Could not snooze: ${(e as Error).message}`, "error"),
+    onError: (e) => pushToast(`Could not snooze: ${e.message}`, "error"),
   });
   const dismiss = useMutation({
     mutationFn: () => attnAction(item.id, "remove"),
@@ -512,42 +525,57 @@ function AttnRow({ item }: { item: AttnItem }) {
       pushToast(`Dismissed ${item.id}`, "success");
       invalidate();
     },
-    onError: (e) => pushToast(`Could not dismiss: ${(e as Error).message}`, "error"),
+    onError: (e) => pushToast(`Could not dismiss: ${e.message}`, "error"),
   });
   const tone = item.severity === "urgent" ? "urgent" : item.severity === "warn" ? "warn" : "info";
-  const menu = useContextMenu(
-    [
-      { label: "Investigate", icon: Search, onSelect: () => investigate.mutate("") },
-      { label: "Add to enhance queue", icon: Sparkles, onSelect: () => plan.mutate() },
-      { label: "Snooze 1 day", icon: CalendarClock, onSelect: () => snooze.mutate() },
-      { label: "Copy", icon: Copy, onSelect: () => copy(item.title) },
-      { label: "Dismiss", icon: Ban, danger: true, separatorBefore: true, onSelect: () => dismiss.mutate() },
-    ],
-    `actions for ${item.id}`,
-  );
 
   return (
-    <li className={CARD} onContextMenu={menu.onContextMenu}>
-      <div className={CARD_MAIN}>
-        <Badge variant={tone} className="uppercase tracking-wide">
-          {item.severity}
-        </Badge>
-        <span className="min-w-0 flex-1 text-sm leading-snug text-foreground">{item.title}</span>
-        {item.repo && (
-          <span className="font-mono text-[11px] text-muted-foreground">
-            {item.repo}
-            {item.branch ? `/${item.branch}` : ""}
-          </span>
-        )}
-        <SteerButton
-          label="Investigate"
-          title="run an investigation agent, steered"
-          placeholder="things to look out for (optional)"
-          busy={investigate.isPending}
-          onSubmit={(steer) => investigate.mutate(steer)}
-        />
-      </div>
-      {menu.node}
+    <li>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <Card className="flex w-full flex-wrap items-center gap-x-2.5 gap-y-1 border-border bg-muted px-3 py-2.5 shadow-sm transition-colors hover:border-input hover:bg-accent">
+            <Badge variant={tone} className="uppercase tracking-wide">
+              {item.severity}
+            </Badge>
+            <span className="min-w-0 flex-1 text-sm leading-snug text-foreground">
+              {item.title}
+            </span>
+            {item.repo && (
+              <span className="font-mono text-[11px] text-muted-foreground">
+                {item.repo}
+                {item.branch ? `/${item.branch}` : ""}
+              </span>
+            )}
+            <SteerButton
+              label="Investigate"
+              icon={Search}
+              title="run an investigation agent, steered"
+              placeholder="things to look out for (optional)"
+              busy={investigate.isPending}
+              onSubmit={(steer) => investigate.mutate(steer)}
+            />
+          </Card>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuLabel>{item.id}</ContextMenuLabel>
+          <ContextMenuItem onSelect={() => investigate.mutate("")}>
+            <Search /> Investigate
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => plan.mutate()}>
+            <Sparkles /> Add to enhance queue
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => snooze.mutate()}>
+            <CalendarClock /> Snooze 1 day
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => copy(item.title)}>
+            <Copy /> Copy
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem danger onSelect={() => dismiss.mutate()}>
+            <Ban /> Dismiss
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
     </li>
   );
 }
@@ -556,43 +584,41 @@ function AttnRow({ item }: { item: AttnItem }) {
 function DoneRow({ t }: { t: TaskRow & { reason?: string | null } }) {
   const navigate = useNavigate();
   const cancelled = t.status === "cancelled";
-  const menu = useContextMenu(
-    [
-      { label: "Open task", icon: ExternalLink, onSelect: () => navigate(`/tasks/${t.id}`) },
-      {
-        label: (
-          <>
-            Copy id <span className="font-mono text-muted-foreground">{t.id}</span>
-          </>
-        ),
-        icon: Copy,
-        onSelect: () => copy(t.id),
-      },
-    ],
-    `actions for ${t.id}`,
-  );
   return (
-    <li
-      className="flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-md px-2 py-1.5 transition-colors hover:bg-accent"
-      onContextMenu={menu.onContextMenu}
-    >
-      <Badge variant={cancelled ? "muted" : "ok"}>{cancelled ? "✕" : "✓"}</Badge>
-      <span className="font-mono text-[11px] text-muted-foreground/80">{t.id}</span>
-      <span
-        className={cn(
-          "min-w-0 flex-1 text-sm leading-snug",
-          cancelled ? "text-muted-foreground line-through" : "text-foreground",
-        )}
-      >
-        {t.summary}
-      </span>
-      {t.repo && <span className="font-mono text-[11px] text-muted-foreground">[{t.repo}]</span>}
-      {/* Cancelled work is shown but never counted as finished — the two are separate figures in the
-          header for the same reason. */}
-      {cancelled && t.reason && (
-        <span className="font-mono text-[11px] text-muted-foreground/80">{t.reason}</span>
-      )}
-      {menu.node}
+    <li>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-md px-2 py-1.5 transition-colors hover:bg-accent">
+            <Badge variant={cancelled ? "muted" : "ok"}>{cancelled ? "✕" : "✓"}</Badge>
+            <span className="font-mono text-[11px] text-muted-foreground/80">{t.id}</span>
+            <span
+              className={cn(
+                "min-w-0 flex-1 text-sm leading-snug",
+                cancelled ? "text-muted-foreground line-through" : "text-foreground",
+              )}
+            >
+              {t.summary}
+            </span>
+            {t.repo && (
+              <span className="font-mono text-[11px] text-muted-foreground">[{t.repo}]</span>
+            )}
+            {/* Cancelled work is shown but never counted as finished — the two are separate figures
+                in the header for the same reason. */}
+            {cancelled && t.reason && (
+              <span className="font-mono text-[11px] text-muted-foreground/80">{t.reason}</span>
+            )}
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onSelect={() => navigate(`/tasks/${t.id}`)}>
+            <ExternalLink /> Open task
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => copy(t.id)}>
+            <Copy /> Copy id
+            <ContextMenuShortcut>{t.id}</ContextMenuShortcut>
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
     </li>
   );
 }
@@ -603,43 +629,49 @@ function IssueLine({ issue, repo }: { issue: IssueRow; repo: string }) {
   const make = useMutation({
     mutationFn: () => createTask({ title: issue.title, repo }),
     onSuccess: (r) => {
-      pushToast(`Created ${r.id} from #${issue.number} — the enhance agent will scope it`, "success");
+      pushToast(
+        `Created ${r.id} from #${issue.number} — the enhance agent will scope it`,
+        "success",
+      );
       void qc.invalidateQueries({ queryKey: queryKeys.tasks("today") });
     },
-    onError: (e) => pushToast(`Could not create: ${(e as Error).message}`, "error"),
+    onError: (e) => pushToast(`Could not create: ${e.message}`, "error"),
   });
-  const menu = useContextMenu(
-    [
-      { label: "Add to enhance queue", icon: Sparkles, onSelect: () => make.mutate() },
-      { label: "Open issue", icon: ExternalLink, onSelect: () => window.open(issue.url, "_blank", "noreferrer") },
-      {
-        label: (
-          <>
-            Copy <span className="font-mono text-muted-foreground">#{issue.number}</span>
-          </>
-        ),
-        icon: Copy,
-        onSelect: () => copy(`#${issue.number}`),
-      },
-    ],
-    `actions for issue #${issue.number}`,
-  );
+
   return (
-    <li
-      className="flex items-center gap-2 rounded-md px-1 py-0.5 text-[12px] transition-colors hover:bg-accent"
-      onContextMenu={menu.onContextMenu}
-    >
-      <span className="font-mono text-muted-foreground/80">#{issue.number}</span>
-      <a
-        href={issue.url}
-        target="_blank"
-        rel="noreferrer"
-        className="min-w-0 flex-1 truncate text-foreground hover:text-primary"
-      >
-        {issue.title}
-      </a>
-      {issue.is_assigned && <span className="text-[10.5px] text-muted-foreground">assigned</span>}
-      {menu.node}
+    <li>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <div className="flex items-center gap-2 rounded-md px-1 py-0.5 text-[12px] transition-colors hover:bg-accent">
+            <span className="font-mono text-muted-foreground/80">#{issue.number}</span>
+            <a
+              href={issue.url}
+              target="_blank"
+              rel="noreferrer"
+              className="min-w-0 flex-1 truncate text-foreground hover:text-primary"
+            >
+              {issue.title}
+            </a>
+            {issue.is_assigned && (
+              <Badge variant="muted" className="px-1.5 text-[10px]">
+                assigned
+              </Badge>
+            )}
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onSelect={() => make.mutate()}>
+            <Sparkles /> Add to enhance queue
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => window.open(issue.url, "_blank", "noreferrer")}>
+            <ExternalLink /> Open issue
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => copy(`#${issue.number}`)}>
+            <Copy /> Copy
+            <ContextMenuShortcut>#{issue.number}</ContextMenuShortcut>
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
     </li>
   );
 }
@@ -651,16 +683,20 @@ function RepoIssueGroup({ repo }: { repo: RepoIssues }) {
     : null;
   return (
     <div className="border-b border-border/60 py-2 last:border-b-0">
-      <div className="flex flex-wrap items-baseline gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <span className="font-mono text-[12px] font-semibold text-foreground">{repo.repo}</span>
         <span className="text-[11px] text-muted-foreground">{repo.issues.length} open</span>
         {/* The honesty contract from #999, surfaced: an empty list with an error is NOT the same
             fact as an empty backlog, so never let them render alike. */}
         {repo.error && (
-          <span className="inline-flex items-center gap-1 text-[11px] text-warn" title={repo.error}>
-            <AlertTriangle className="h-3 w-3" />
-            {repo.stale ? `stale${age !== null ? `, fetched ${age}m ago` : ""}` : "could not fetch"}
-          </span>
+          <Hint label={repo.error}>
+            <Badge variant="warn">
+              <AlertTriangle className="h-3 w-3" />
+              {repo.stale
+                ? `stale${age !== null ? `, fetched ${age}m ago` : ""}`
+                : "could not fetch"}
+            </Badge>
+          </Hint>
         )}
       </div>
       {repo.issues.length === 0 && !repo.error && (
@@ -675,45 +711,6 @@ function RepoIssueGroup({ repo }: { repo: RepoIssues }) {
   );
 }
 
-/** The underline tab-trigger style (matches the redesign prototype) — a bottom-border indicator in
- * clay instead of the default pill. */
-const TAB_TRIGGER =
-  "rounded-none border-b-2 border-transparent bg-transparent px-3 py-2 text-muted-foreground shadow-none data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none";
-
-function SectionCard({
-  eyebrow,
-  title,
-  count,
-  action,
-  tone,
-  children,
-}: {
-  eyebrow?: string;
-  title: string;
-  count?: string;
-  action?: React.ReactNode;
-  tone?: "ready";
-  children: React.ReactNode;
-}) {
-  return (
-    <Card className={cn("p-3.5", tone === "ready" && "border-ok/40 bg-ok/[0.05]")}>
-      <div className="mb-2.5 flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
-        {eyebrow && (
-          <span className="font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
-            {eyebrow}
-          </span>
-        )}
-        <h2 className="text-sm font-semibold tracking-tight text-foreground">{title}</h2>
-        {count && (
-          <span className="font-mono text-[11px] tabular-nums text-muted-foreground/70">{count}</span>
-        )}
-        {action && <span className="ml-auto">{action}</span>}
-      </div>
-      {children}
-    </Card>
-  );
-}
-
 /**
  * `/` — the task-first home (#1006, EPIC #993), reorganised as **the task lifecycle** (#1033) and
  * given the deck redesign: each task is a card carrying its work-order letter, its provenance
@@ -723,58 +720,48 @@ function SectionCard({
  *
  * Start appears only on triaged work, which the server enforces independently (409 `not_triaged`),
  * because the CLI and every agent hit the same endpoint and a gate only the dashboard honours is a
- * suggestion. The in-flight rows and pipeline counts come from a single projection joined on
- * `(repo, branch)`, so a node's number and the rows beneath it cannot disagree.
+ * suggestion.
+ *
+ * The screen is built entirely from the shadcn kit in `components/ui`: sections and rows are
+ * `Card`s, the right-click menus are Radix `ContextMenu`s, the cancel confirmation is an
+ * `AlertDialog` (it used to be a `window.prompt`), steering opens a `Popover`, and every "why is
+ * this like that" caption is a `Tooltip` instead of a native `title` the phone can never show.
  */
 export function Home() {
   const tasks = useQuery(tasksQuery("today"));
-  const stages = useQuery(pipelineStagesQuery());
   const done = useQuery(doneTasksQuery());
   const attn = useQuery(attnQuery());
   const issues = useQuery(issuesQuery());
   const qc = useQueryClient();
 
-  const [stage, setStage] = useState<string | undefined>();
   const [creating, setCreating] = useState(false);
 
   const today = tasks.data?.today ?? "";
   const openTasks = useMemo(() => tasks.data?.tasks ?? [], [tasks.data]);
 
-  // Partition the open store by lifecycle state. `wip` is in flight even when no worktree has
-  // reached a stage yet, so status leads and the pipeline refines.
-  const { ready, untriaged, wip } = useMemo(() => {
+  // Partition the open store by lifecycle state. Work already in flight (`wip`) has its own screens
+  // — it is not part of the deck, which is about what to pick up next.
+  const { ready, untriaged } = useMemo(() => {
     const ready: TaskRow[] = [];
     const untriaged: TaskRow[] = [];
-    const wip: TaskRow[] = [];
     for (const t of openTasks) {
-      if (t.status === "wip") wip.push(t);
-      else if (isTriaged(t, today)) ready.push(t);
+      if (t.status === "wip") continue;
+      if (isTriaged(t, today)) ready.push(t);
       else untriaged.push(t);
     }
-    return { ready, untriaged, wip };
+    return { ready, untriaged };
   }, [openTasks, today]);
 
-  const stageList: PipelineStageWork[] = stages.data?.stages ?? [];
-  const selected = stage ? stageList.find((s) => s.id === stage) : undefined;
-
-  // With a stage selected the rows come from the projection (so count and list are one value).
-  // With none, fall back to every wip task — including work whose worktree never recorded a stage,
-  // which would otherwise vanish from the screen entirely.
-  const stagedIds = new Set(stageList.flatMap((s) => s.tasks.map((t) => t.id)));
-  const inFlightRows: StageTask[] = selected
-    ? selected.tasks
-    : [...stageList.flatMap((s) => s.tasks), ...wip.filter((t) => !stagedIds.has(t.id))];
-
   // The work-order letters (#993): a single A..Z run down the actionable deck in reading order —
-  // Ready first (A is next), then in flight, then the enhance queue.
+  // Ready first (A is next), then the enhance queue.
   const orderOf = useMemo(() => {
     const m = new Map<string, string>();
     let i = 0;
-    for (const t of [...ready, ...inFlightRows, ...untriaged]) {
+    for (const t of [...ready, ...untriaged]) {
       if (i < 26 && !m.has(t.id)) m.set(t.id, String.fromCharCode(65 + i++));
     }
     return m;
-  }, [ready, inFlightRows, untriaged]);
+  }, [ready, untriaged]);
 
   const create = useMutation({
     mutationFn: createTask,
@@ -783,12 +770,12 @@ export function Home() {
       setCreating(false);
       void qc.invalidateQueries({ queryKey: queryKeys.tasks("today") });
     },
-    onError: (e) => pushToast(`Could not create: ${(e as Error).message}`, "error"),
+    onError: (e) => pushToast(`Could not create: ${e.message}`, "error"),
   });
   const triage = useMutation({
     mutationFn: () => taskAgent("t0", "triage"),
     onSuccess: () => pushToast("Triage started — watch the fleet", "success"),
-    onError: (e) => pushToast(`Could not start triage: ${(e as Error).message}`, "error"),
+    onError: (e) => pushToast(`Could not start triage: ${e.message}`, "error"),
   });
 
   const triageButton = (
@@ -799,7 +786,7 @@ export function Home() {
       onClick={() => triage.mutate()}
       title="rank everything and pick what's doable today"
     >
-      <Play className="h-4 w-4" /> Triage for today
+      <Play /> Triage for today
     </Button>
   );
 
@@ -816,230 +803,184 @@ export function Home() {
   const degraded = (issues.data?.stale_repos ?? 0) + (issues.data?.unreachable_repos ?? 0);
   const doneRows = done.data?.tasks ?? [];
 
+  const tabTrigger =
+    "rounded-none border-b-2 border-transparent bg-transparent px-3 py-2 text-muted-foreground shadow-none data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none";
+
   return (
-    <div className="space-y-4 pb-8">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="space-y-1">
-          <div className="flex items-baseline gap-3">
-            <h1 className="text-xl font-semibold tracking-tight text-foreground">Today</h1>
-            <span className="font-mono text-[11px] tabular-nums text-muted-foreground/70">
-              {today}
-            </span>
+    <TooltipProvider delayDuration={250}>
+      <div className="space-y-4 pb-8">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-1">
+            <div className="flex items-baseline gap-3">
+              <h1 className="text-xl font-semibold tracking-tight text-foreground">Today</h1>
+              <span className="font-mono text-[11px] tabular-nums text-muted-foreground/70">
+                {today}
+              </span>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              What can I start, what's already moving, and where it came from.
+            </p>
           </div>
-          <p className="text-sm text-muted-foreground">
-            What can I start, what's already moving, and where it came from.
-          </p>
+          <div className="flex items-center gap-2">
+            {triageButton}
+            <Button size="sm" onClick={() => setCreating(true)}>
+              <Sparkles /> New task
+            </Button>
+          </div>
         </div>
-        <span className="flex items-center gap-2">
-          {triageButton}
-          <Button size="sm" onClick={() => setCreating(true)}>
-            <Sparkles className="h-4 w-4" /> New task
-          </Button>
-        </span>
-      </div>
 
-      <Tabs defaultValue="deck" className="w-full">
-        <TabsList className="h-auto w-full justify-start gap-1 rounded-none border-b border-border bg-transparent p-0">
-          <TabsTrigger value="deck" className={TAB_TRIGGER}>
-            Task deck
-          </TabsTrigger>
-          <TabsTrigger value="queue" className={TAB_TRIGGER}>
-            Today's queue
-          </TabsTrigger>
-          <TabsTrigger value="research" className={TAB_TRIGGER}>
-            Research
-          </TabsTrigger>
-        </TabsList>
+        <Tabs defaultValue="deck" className="w-full">
+          <TabsList className="h-auto w-full justify-start gap-1 rounded-none border-b border-border bg-transparent p-0">
+            <TabsTrigger value="deck" className={tabTrigger}>
+              Task deck
+            </TabsTrigger>
+            <TabsTrigger value="queue" className={tabTrigger}>
+              Today's queue
+            </TabsTrigger>
+            <TabsTrigger value="research" className={tabTrigger}>
+              Research
+            </TabsTrigger>
+          </TabsList>
 
-        <TabsContent value="deck" className="space-y-4">
-          <SectionCard
-            eyebrow="Start now"
-            title="Ready to start"
-            tone="ready"
-            count={
-              tasks.isLoading
-                ? "loading…"
-                : `${ready.length} triaged · enhanced · the only tasks that can be started`
-            }
-          >
-            {ready.length === 0 ? (
-              <p className="py-2 text-sm text-muted-foreground">
-                Nothing is ready — run <span className="font-medium">Triage for today</span> to pick
-                what's doable, or <span className="font-medium">Enhance</span> a task past the SMART
-                gate.
-              </p>
-            ) : (
-              <ul className="space-y-2">
-                {ready.map((t) => (
-                  <ReadyRow key={t.id} task={t} today={today} letter={orderOf.get(t.id)} />
-                ))}
-              </ul>
-            )}
-          </SectionCard>
-
-          <SectionCard
-            title={selected ? `In flight · ${selected.id}` : "In flight"}
-            count={
-              stages.isLoading
-                ? "loading…"
-                : `${stages.data?.in_flight ?? 0} across the pipeline${
-                    selected ? ` · ${selected.count} here` : ""
-                  }`
-            }
-            action={
-              stage && (
-                <button
-                  type="button"
-                  onClick={() => setStage(undefined)}
-                  className="text-[11px] text-primary hover:underline"
-                >
-                  clear filter
-                </button>
-              )
-            }
-          >
-            {stageList.length > 0 && (
-              <div className="mb-2">
-                <PipelineFlow stages={stageList} selected={stage} onSelect={setStage} bare />
-              </div>
-            )}
-
-            {inFlightRows.length === 0 ? (
-              <p className="py-2 text-sm text-muted-foreground">
-                {selected ? `Nothing is in ${selected.id}.` : "Nothing is in flight."}
-              </p>
-            ) : (
-              <ul className="space-y-2">
-                {inFlightRows.map((t) => (
-                  <InFlightRow key={t.id} task={t} today={today} letter={orderOf.get(t.id)} />
-                ))}
-              </ul>
-            )}
-
-            {/* A worktree at a stage with no task behind it. Named rather than dropped: it is exactly
-                the gap #993 closes, and hiding it would make the count read as wrong instead of as a
-                fact about the pipeline. */}
-            {selected?.orphans.map((o) => (
-              <p key={`${o.repo}/${o.branch}`} className="mt-1.5 text-[11px] text-muted-foreground">
-                ⌁{" "}
-                <span className="font-mono text-foreground">
-                  {o.repo}/{o.branch}
-                </span>{" "}
-                is in {selected.id} with no task attached.
-              </p>
-            ))}
-          </SectionCard>
-
-          <SectionCard
-            eyebrow="Autonomous"
-            title="Enhance queue"
-            count={tasks.isLoading ? "loading…" : `${untriaged.length} waiting · cannot be started`}
-            action={triageButton}
-          >
-            {untriaged.length === 0 ? (
-              <p className="py-2 text-sm text-muted-foreground">
-                Everything open has been enhanced and triaged.
-              </p>
-            ) : (
-              <ul className="space-y-2">
-                {untriaged.map((t) => (
-                  <EnhanceQueueRow key={t.id} task={t} today={today} letter={orderOf.get(t.id)} />
-                ))}
-              </ul>
-            )}
-          </SectionCard>
-
-          <SectionCard
-            title="Done today"
-            count={
-              done.isLoading
-                ? "loading…"
-                : `${done.data?.done ?? 0} finished${
-                    (done.data?.cancelled ?? 0) > 0 ? ` · ${done.data?.cancelled} cancelled` : ""
-                  }`
-            }
-          >
-            {doneRows.length === 0 ? (
-              <p className="py-2 text-sm text-muted-foreground">Nothing finished yet today.</p>
-            ) : (
-              <ul className="space-y-0.5">
-                {doneRows.map((t) => (
-                  <DoneRow key={t.id} t={t} />
-                ))}
-              </ul>
-            )}
-          </SectionCard>
-
-          <SectionCard
-            title="Needs you"
-            count={attn.isLoading ? "loading…" : `${attnItems.length} open · most severe first`}
-            action={
-              <a href="/attention" className="inline-flex items-center gap-0.5 text-[11px] text-primary">
-                all {attnItems.length} <ArrowUpRight className="h-3 w-3" />
-              </a>
-            }
-          >
-            {attnItems.length === 0 ? (
-              <p className="py-2 text-sm text-muted-foreground">Nothing is waiting on you.</p>
-            ) : (
-              <>
+          <TabsContent value="deck" className="space-y-4">
+            <SectionCard
+              eyebrow="Start now"
+              title="Ready to start"
+              tone="ready"
+              count={`${ready.length} triaged · enhanced · the only tasks that can be started`}
+            >
+              {tasks.isLoading ? (
+                <RowsSkeleton />
+              ) : ready.length === 0 ? (
+                <Empty>
+                  Nothing is ready — run <span className="font-medium">Triage for today</span> to
+                  pick what's doable, or <span className="font-medium">Enhance</span> a task past
+                  the SMART gate.
+                </Empty>
+              ) : (
                 <ul className="space-y-2">
-                  {attnItems.slice(0, 8).map((i) => (
-                    <AttnRow key={i.id} item={i} />
+                  {ready.map((t) => (
+                    <ReadyRow key={t.id} task={t} today={today} letter={orderOf.get(t.id)} />
                   ))}
                 </ul>
-                {attnItems.length > 8 && (
-                  <p className="mt-1.5 text-[11px] text-muted-foreground">
-                    Showing the 8 most severe of {attnItems.length}.
-                  </p>
-                )}
-              </>
-            )}
-          </SectionCard>
+              )}
+            </SectionCard>
 
-          <SectionCard
-            title="Issues · all repos"
-            count={
-              issues.isLoading
-                ? "loading…"
-                : `${issues.data?.count ?? 0} open${
-                    degraded > 0 ? ` · ${degraded} repo(s) degraded` : ""
-                  } · right-click to enqueue`
-            }
-          >
-            {repos.length === 0 ? (
-              <p className="py-2 text-sm text-muted-foreground">
-                {issues.isLoading ? "Loading…" : "No repos known — set [managed_repos].repos."}
-              </p>
-            ) : (
-              <div>
-                {repos.map((r) => (
-                  <RepoIssueGroup key={r.repo} repo={r} />
-                ))}
-              </div>
-            )}
-            <a href="/repos" className="mt-2 inline-flex items-center gap-0.5 text-[11px] text-primary">
-              all repos <ArrowUpRight className="h-3 w-3" />
-            </a>
-          </SectionCard>
-        </TabsContent>
+            <SectionCard
+              eyebrow="Autonomous"
+              title="Enhance queue"
+              count={`${untriaged.length} waiting · cannot be started`}
+              action={triageButton}
+            >
+              {tasks.isLoading ? (
+                <RowsSkeleton rows={2} />
+              ) : untriaged.length === 0 ? (
+                <Empty>Everything open has been enhanced and triaged.</Empty>
+              ) : (
+                <ul className="space-y-2">
+                  {untriaged.map((t) => (
+                    <EnhanceQueueRow key={t.id} task={t} today={today} letter={orderOf.get(t.id)} />
+                  ))}
+                </ul>
+              )}
+            </SectionCard>
 
-        <TabsContent value="queue">
-          <TodayQueue />
-        </TabsContent>
-        <TabsContent value="research">
-          <Research />
-        </TabsContent>
-      </Tabs>
+            <SectionCard
+              title="Done today"
+              count={`${done.data?.done ?? 0} finished${
+                (done.data?.cancelled ?? 0) > 0 ? ` · ${done.data?.cancelled} cancelled` : ""
+              }`}
+            >
+              {done.isLoading ? (
+                <RowsSkeleton rows={2} />
+              ) : doneRows.length === 0 ? (
+                <Empty>Nothing finished yet today.</Empty>
+              ) : (
+                <ul className="space-y-0.5">
+                  {doneRows.map((t) => (
+                    <DoneRow key={t.id} t={t} />
+                  ))}
+                </ul>
+              )}
+            </SectionCard>
 
-      <NewTaskDialog
-        open={creating}
-        busy={create.isPending}
-        onOpenChange={setCreating}
-        onSubmit={(body) => create.mutate(body)}
-      />
-      <ToastStack />
-    </div>
+            <SectionCard
+              title="Needs you"
+              count={`${attnItems.length} open · most severe first`}
+              action={
+                <Link
+                  to="/attention"
+                  className="inline-flex items-center gap-0.5 text-[11px] text-primary hover:underline"
+                >
+                  all {attnItems.length} <ArrowUpRight className="h-3 w-3" />
+                </Link>
+              }
+            >
+              {attn.isLoading ? (
+                <RowsSkeleton rows={2} />
+              ) : attnItems.length === 0 ? (
+                <Empty>Nothing is waiting on you.</Empty>
+              ) : (
+                <>
+                  <ul className="space-y-2">
+                    {attnItems.slice(0, 8).map((i) => (
+                      <AttnRow key={i.id} item={i} />
+                    ))}
+                  </ul>
+                  {attnItems.length > 8 && (
+                    <p className="mt-1.5 text-[11px] text-muted-foreground">
+                      Showing the 8 most severe of {attnItems.length}.
+                    </p>
+                  )}
+                </>
+              )}
+            </SectionCard>
+
+            <SectionCard
+              title="Issues · all repos"
+              count={`${issues.data?.count ?? 0} open${
+                degraded > 0 ? ` · ${degraded} repo(s) degraded` : ""
+              } · right-click to enqueue`}
+            >
+              {issues.isLoading ? (
+                <RowsSkeleton rows={3} />
+              ) : repos.length === 0 ? (
+                <Empty>
+                  No repos known — set <code className="font-mono">[managed_repos].repos</code>.
+                </Empty>
+              ) : (
+                <div>
+                  {repos.map((r) => (
+                    <RepoIssueGroup key={r.repo} repo={r} />
+                  ))}
+                </div>
+              )}
+              <Link
+                to="/repos"
+                className="mt-2 inline-flex items-center gap-0.5 text-[11px] text-primary hover:underline"
+              >
+                all repos <ArrowUpRight className="h-3 w-3" />
+              </Link>
+            </SectionCard>
+          </TabsContent>
+
+          <TabsContent value="queue">
+            <TodayQueue />
+          </TabsContent>
+          <TabsContent value="research">
+            <Research />
+          </TabsContent>
+        </Tabs>
+
+        <NewTaskDialog
+          open={creating}
+          busy={create.isPending}
+          onOpenChange={setCreating}
+          onSubmit={(body) => create.mutate(body)}
+        />
+        <ToastStack />
+      </div>
+    </TooltipProvider>
   );
 }
 

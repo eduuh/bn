@@ -2,7 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
 import { machineQuery, nodesQuery } from "../../api/client";
-import { gaugeTone, gb, Meter } from "../MachineHealth";
+import { Meter } from "../MachineHealth";
+import { gaugeTone, gb } from "../../lib/machine";
 import { useExperimental } from "../../lib/experimental";
 import { cn } from "../../lib/utils";
 import type { StreamStatus } from "../../hooks/useBnStream";
@@ -19,7 +20,10 @@ function ConnDot({ status }: { status: StreamStatus }) {
   };
   return (
     <span
-      className={cn("h-[7px] w-[7px] flex-none rounded-full", tone[status] ?? "bg-muted-foreground")}
+      className={cn(
+        "h-[7px] w-[7px] flex-none rounded-full",
+        tone[status] ?? "bg-muted-foreground",
+      )}
       title={`live stream: ${status}`}
       aria-label={`live stream: ${status}`}
     />
@@ -97,15 +101,8 @@ export function TopBar({
 
         {m && (
           <>
-            <Vital
-              label="cpu"
-              title="CPU load per core"
-              className="hidden sm:flex"
-            >
-              <Meter
-                frac={m.cpu.load_per_core}
-                tone={gaugeTone(m.cpu.load_per_core, 0.7, 1.0)}
-              />
+            <Vital label="cpu" title="CPU load per core" className="hidden sm:flex">
+              <Meter frac={m.cpu.load_per_core} tone={gaugeTone(m.cpu.load_per_core, 0.7, 1.0)} />
               <span>
                 {m.cpu.load1 == null ? "—" : m.cpu.load1.toFixed(1)}/{m.cpu.cores}
               </span>
@@ -146,13 +143,15 @@ export function TopBar({
 
         {/* Without this the gate is invisible: the set is sticky across reloads, so there has to be
             something on screen that says why the rail looks the way it does — which tabs are
-            unlocked, and how to lock them again. */}
+            unlocked, and how to lock them again. It used to hide them all in one click, which was
+            the only control that existed; now it opens `/settings`, where the same set is a list of
+            switches and turning one tab back off doesn't cost you the other fourteen. */}
         {experimental.any && (
           <Link
-            to="/?experimental=0"
+            to="/settings"
             title={`experimental tabs showing: ${
               experimental.keys.includes("*") ? "all" : experimental.keys.join(", ")
-            } — click to hide them again`}
+            } — open settings to change them`}
             className="rounded border border-warn/40 bg-warn-muted px-1.5 py-px font-mono text-[10.5px] uppercase tracking-wide text-warn no-underline"
           >
             exp

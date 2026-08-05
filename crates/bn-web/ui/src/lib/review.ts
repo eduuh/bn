@@ -20,8 +20,6 @@ export function pendingReviewFor(
   const b = sanitizeBranch(branch);
   return reviews.find(
     (rv) =>
-      rv.status === "pending" &&
-      rv.repo.toLowerCase() === r &&
-      sanitizeBranch(rv.branch) === b,
+      rv.status === "pending" && rv.repo.toLowerCase() === r && sanitizeBranch(rv.branch) === b,
   );
 }

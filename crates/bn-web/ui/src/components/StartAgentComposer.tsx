@@ -17,13 +17,7 @@ import { Badge, type BadgeProps } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Label } from "./ui/label";
 import { Textarea } from "./ui/textarea";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "./ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { cn } from "../lib/utils";
 import { RepoSelect } from "./RepoSelect";
 
@@ -74,13 +68,7 @@ function Segment({
  * orchestrate tick (`POST /api/orchestrate/queue`). The repo is seeded from the item's payload and
  * stays editable (some items — a goal, a global attention item — carry none, so the owner picks).
  */
-export function StartAgentComposer({
-  item,
-  onClose,
-}: {
-  item: ActionItem;
-  onClose: () => void;
-}) {
+export function StartAgentComposer({ item, onClose }: { item: ActionItem; onClose: () => void }) {
   const qc = useQueryClient();
   const [urgency, setUrgency] = useState<Urgency>(item.default_urgency);
   const [prompt, setPrompt] = useState(item.suggested_prompt);
@@ -153,7 +141,11 @@ export function StartAgentComposer({
           <DialogDescription className="text-xs">{item.source}</DialogDescription>
         </DialogHeader>
 
-        <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1" role="group" aria-label="urgency">
+        <div
+          className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1"
+          role="group"
+          aria-label="urgency"
+        >
           <Segment
             active={urgency === "urgent"}
             onClick={() => setUrgency("urgent")}
@@ -189,14 +181,11 @@ export function StartAgentComposer({
           <div className="space-y-1.5">
             <Label htmlFor="composer-repo" className="flex items-baseline gap-2">
               Repo
-              {needsRepo && <span className="text-xs font-normal text-muted-foreground/80">required</span>}
+              {needsRepo && (
+                <span className="text-xs font-normal text-muted-foreground/80">required</span>
+              )}
             </Label>
-            <RepoSelect
-              id="composer-repo"
-              value={repo}
-              required={needsRepo}
-              onChange={setRepo}
-            />
+            <RepoSelect id="composer-repo" value={repo} required={needsRepo} onChange={setRepo} />
           </div>
           {urgency === "urgent" && (
             <div className="space-y-1.5">
@@ -217,7 +206,11 @@ export function StartAgentComposer({
         {urgency === "urgent" && (
           <div className="space-y-1.5">
             <Label>Kind</Label>
-            <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1" role="group" aria-label="ship or scout">
+            <div
+              className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1"
+              role="group"
+              aria-label="ship or scout"
+            >
               <Segment
                 active={kind === "ship"}
                 onClick={() => setKind("ship")}

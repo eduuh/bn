@@ -70,5 +70,3 @@ fn restrict_permissions(path: &std::path::Path) {
         let _ = path;
     }
 }
-
-

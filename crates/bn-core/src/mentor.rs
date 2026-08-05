@@ -471,5 +471,3 @@ pub fn feed_card(packet: &MentorPacket, reviews: &[PrReview]) -> crate::staff::B
         items,
     }
 }
-
-

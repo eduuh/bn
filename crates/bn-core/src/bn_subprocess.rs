@@ -128,5 +128,3 @@ fn last_json_value(stdout: &str) -> Option<Value> {
         .rev()
         .find_map(|line| serde_json::from_str(line.trim()).ok())
 }
-
-

@@ -412,5 +412,3 @@ fn goto(wid: &str) {
     }
     let _ = tmux_run(&["select-window", "-t", wid]);
 }
-
-

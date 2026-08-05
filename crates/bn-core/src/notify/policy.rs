@@ -681,5 +681,3 @@ impl Notifier for RealNotifier {
         )
     }
 }
-
-

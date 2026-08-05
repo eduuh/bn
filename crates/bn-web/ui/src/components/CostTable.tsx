@@ -56,7 +56,10 @@ export function CostTable({
   return (
     <div className="space-y-3">
       <Tabs value={by} onValueChange={(v) => onBy(v as CostDimension)}>
-        <TabsList className="flex w-full overflow-x-auto sm:w-auto sm:inline-flex" aria-label="breakdown dimension">
+        <TabsList
+          className="flex w-full overflow-x-auto sm:w-auto sm:inline-flex"
+          aria-label="breakdown dimension"
+        >
           {DIMENSIONS.map((d) => (
             <TabsTrigger key={d.key} value={d.key} className="flex-1 sm:flex-none">
               {d.label}
@@ -92,9 +95,15 @@ export function CostTable({
                   <td className="py-2 pl-3 text-right font-mono tabular-nums text-muted-foreground">
                     {fmtInputCache(r.input_tokens, r.cache_read_tokens)}
                   </td>
-                  <td className="py-2 pl-3 text-right font-mono tabular-nums">{fmtTokens(r.output_tokens)}</td>
-                  <td className="py-2 pl-3 text-right font-mono tabular-nums text-ok">{fmtAic(r.aic)}</td>
-                  <td className="py-2 pl-3 text-right font-mono tabular-nums text-info">{fmtUsd(r.cost_usd)}</td>
+                  <td className="py-2 pl-3 text-right font-mono tabular-nums">
+                    {fmtTokens(r.output_tokens)}
+                  </td>
+                  <td className="py-2 pl-3 text-right font-mono tabular-nums text-ok">
+                    {fmtAic(r.aic)}
+                  </td>
+                  <td className="py-2 pl-3 text-right font-mono tabular-nums text-info">
+                    {fmtUsd(r.cost_usd)}
+                  </td>
                 </tr>
               ))
             )}
@@ -107,9 +116,15 @@ export function CostTable({
                 <td className="py-2 pl-3 text-right font-mono tabular-nums text-muted-foreground">
                   {fmtInputCache(t.input_tokens, t.cache_read_tokens)}
                 </td>
-                <td className="py-2 pl-3 text-right font-mono tabular-nums">{fmtTokens(t.output_tokens)}</td>
-                <td className="py-2 pl-3 text-right font-mono tabular-nums text-ok">{fmtAic(t.aic)}</td>
-                <td className="py-2 pl-3 text-right font-mono tabular-nums text-info">{fmtUsd(t.cost_usd)}</td>
+                <td className="py-2 pl-3 text-right font-mono tabular-nums">
+                  {fmtTokens(t.output_tokens)}
+                </td>
+                <td className="py-2 pl-3 text-right font-mono tabular-nums text-ok">
+                  {fmtAic(t.aic)}
+                </td>
+                <td className="py-2 pl-3 text-right font-mono tabular-nums text-info">
+                  {fmtUsd(t.cost_usd)}
+                </td>
               </tr>
             </tfoot>
           )}

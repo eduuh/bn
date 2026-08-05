@@ -218,5 +218,3 @@ fn note_mtime(path: &std::path::Path) -> std::time::SystemTime {
         .and_then(|m| m.modified())
         .unwrap_or(std::time::UNIX_EPOCH)
 }
-
-

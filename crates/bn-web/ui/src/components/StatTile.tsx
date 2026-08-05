@@ -1,3 +1,5 @@
+import * as React from "react";
+
 import { cn } from "../lib/utils";
 
 /** Value tint per tone — the dashboard's ok/urgent/info/warn signal scale, grey → plain text. */
@@ -53,32 +55,34 @@ export function StatGrid({
  * background showing through rather than by gaps between floating cards — the same rule-not-gap
  * treatment the panes use, so a stat band reads as one object.
  */
-export function StatTile({
-  label,
-  value,
-  tone = "grey",
-  title,
-  sub,
-}: {
-  label: string;
-  value: string;
-  tone?: "green" | "red" | "blue" | "amber" | "grey";
-  title?: string;
-  /** Optional second line — a comparison, a unit, a freshness stamp. */
-  sub?: React.ReactNode;
-}) {
-  return (
-    <div className="flex flex-col justify-center gap-1 bg-card px-3.5 py-3" title={title}>
-      <div
-        className={cn(
-          "font-mono text-[1.35rem] font-semibold leading-none tabular-nums",
-          TONE[tone],
-        )}
-      >
-        {value}
-      </div>
-      <div className="text-[0.68rem] uppercase tracking-[0.08em] text-muted-foreground">{label}</div>
-      {sub && <div className="text-[0.7rem] text-muted-foreground/70">{sub}</div>}
+export const StatTile = React.forwardRef<
+  HTMLDivElement,
+  {
+    label: string;
+    value: string;
+    tone?: "green" | "red" | "blue" | "amber" | "grey";
+    /** Native tooltip. Prefer wrapping the tile in a `Hint` on screens that have a
+     * `TooltipProvider` — a `title` never appears on a touch device. */
+    title?: string;
+    /** Optional second line — a comparison, a unit, a freshness stamp. */
+    sub?: React.ReactNode;
+  } & React.HTMLAttributes<HTMLDivElement>
+>(({ label, value, tone = "grey", title, sub, className, ...props }, ref) => (
+  // Forwards its ref so a Radix `asChild` trigger (a `Tooltip` explaining the number, say) can
+  // anchor to the real element instead of silently losing the reference.
+  <div
+    ref={ref}
+    className={cn("flex flex-col justify-center gap-1 bg-card px-3.5 py-3", className)}
+    title={title}
+    {...props}
+  >
+    <div
+      className={cn("font-mono text-[1.35rem] font-semibold leading-none tabular-nums", TONE[tone])}
+    >
+      {value}
     </div>
-  );
-}
+    <div className="text-[0.68rem] uppercase tracking-[0.08em] text-muted-foreground">{label}</div>
+    {sub && <div className="text-[0.7rem] text-muted-foreground/70">{sub}</div>}
+  </div>
+));
+StatTile.displayName = "StatTile";

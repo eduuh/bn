@@ -344,5 +344,3 @@ fn repo_name_from_url(url: &str) -> Option<String> {
     let name = last.strip_suffix(".git").unwrap_or(last).trim();
     (!name.is_empty()).then(|| name.to_ascii_lowercase())
 }
-
-

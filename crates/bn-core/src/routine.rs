@@ -1767,5 +1767,3 @@ pub fn notify(cfg: &RoutineConfig, now: i64) -> NotifyOutcome {
         },
     }
 }
-
-

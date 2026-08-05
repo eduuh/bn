@@ -257,7 +257,9 @@ export function Start() {
             id="start-item"
             className="min-h-[6rem] font-mono text-[13px] leading-relaxed"
             rows={3}
-            placeholder={"#479\nhttps://github.com/eduuh/bn/issues/480\ninvestigate flaky nvim status_spec"}
+            placeholder={
+              "#479\nhttps://github.com/eduuh/bn/issues/480\ninvestigate flaky nvim status_spec"
+            }
             value={text}
             onChange={(e) => setText(e.target.value)}
           />
@@ -339,9 +341,7 @@ export function Start() {
           </div>
         )}
 
-        {badItem && (
-          <p className="text-sm text-urgent">Tasks can’t start with “-” ({badItem}).</p>
-        )}
+        {badItem && <p className="text-sm text-urgent">Tasks can’t start with “-” ({badItem}).</p>}
 
         <Button
           type="button"

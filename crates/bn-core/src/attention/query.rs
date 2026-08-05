@@ -362,5 +362,3 @@ pub fn next_auto(
 ) -> Option<AttnItem> {
     next_auto_batch(cfg, today, max_running).into_iter().next()
 }
-
-

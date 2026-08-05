@@ -1150,5 +1150,3 @@ pub fn gather_packet_json(cfg: &Config, runner: &dyn CommandRunner, today: &str)
     );
     serde_json::to_string(&packet).unwrap_or_else(|_| "{}".into())
 }
-
-

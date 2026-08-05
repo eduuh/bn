@@ -58,5 +58,3 @@ pub fn from_severity(severity: &str) -> Rank {
 pub fn compare_priority(left: u8, right: u8) -> Ordering {
     right.cmp(&left)
 }
-
-

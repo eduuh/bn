@@ -533,5 +533,3 @@ fn short_issue(issue: &str) -> String {
         issue.to_string()
     }
 }
-
-

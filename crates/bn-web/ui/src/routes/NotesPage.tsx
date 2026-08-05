@@ -116,9 +116,7 @@ function NotesBrowser() {
                   </div>
                   {(b.todos.length > 0 || b.blockers.length > 0) && (
                     <div className="mt-1.5 flex flex-wrap gap-1.5">
-                      {b.todos.length > 0 && (
-                        <Badge variant="muted">{b.todos.length} todo</Badge>
-                      )}
+                      {b.todos.length > 0 && <Badge variant="muted">{b.todos.length} todo</Badge>}
                       {b.blockers.length > 0 && (
                         <Badge variant="urgent">{b.blockers.length} blocked</Badge>
                       )}

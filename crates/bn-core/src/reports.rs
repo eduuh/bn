@@ -834,5 +834,3 @@ pub fn pr_delta(runner: &dyn CommandRunner) -> Option<String> {
     }
     Some(format!("PRs: {mine} open, {to_review} to review"))
 }
-
-

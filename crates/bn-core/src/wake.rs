@@ -228,5 +228,3 @@ impl WakeQueue {
         Ok(acknowledged)
     }
 }
-
-

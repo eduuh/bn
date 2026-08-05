@@ -102,9 +102,7 @@ function ActionRow({ item, onStart }: { item: ActionItem; onStart: (i: ActionIte
               {KIND_LABEL[item.type]}
             </Badge>
             <span className="font-medium leading-tight text-foreground">{item.title}</span>
-            {item.stale && (
-              <span className="text-xs font-medium text-muted-foreground">stale</span>
-            )}
+            {item.stale && <span className="text-xs font-medium text-muted-foreground">stale</span>}
           </div>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
             <span>{item.source}</span>
@@ -121,11 +119,7 @@ function ActionRow({ item, onStart }: { item: ActionItem; onStart: (i: ActionIte
               </a>
             )}
             {item.detail && (
-              <button
-                type="button"
-                className="text-primary"
-                onClick={() => setOpen((v) => !v)}
-              >
+              <button type="button" className="text-primary" onClick={() => setOpen((v) => !v)}>
                 {open ? "hide detail" : "detail"}
               </button>
             )}
@@ -238,7 +232,7 @@ function TriggerButton({ job }: { job: string }) {
   const mut = useMutation({
     mutationFn: () => runCronJob(job),
     onSuccess: () => pushToast(`Ran ${job}`, "success"),
-    onError: (e) => pushToast(`run ${job} failed: ${(e as Error).message}`, "error"),
+    onError: (e) => pushToast(`run ${job} failed: ${e.message}`, "error"),
     // Either way the run recorded an outcome — refresh so its new last-run health shows.
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: queryKeys.catalog });
@@ -475,9 +469,7 @@ function AutomationSection({ activity, now }: { activity: CronActivity[]; now: n
             className="text-muted-foreground"
             onClick={() => setShowAll((v) => !v)}
           >
-            <ChevronDown
-              className={cn("h-4 w-4 transition-transform", showAll && "rotate-180")}
-            />
+            <ChevronDown className={cn("h-4 w-4 transition-transform", showAll && "rotate-180")} />
             {showAll ? "show fewer" : `show all (${roster.length})`}
           </Button>
         )}
@@ -638,7 +630,9 @@ export function CommandCenter() {
   const tabParam = searchParams.get("tab");
   const tab = tabParam === "reviews" || tabParam === "completed" ? tabParam : "actions";
 
-  const items = actions.data?.actions ?? [];
+  // Memoised on the query data, not rebuilt per render: the `?? []` fallback is a fresh array every
+  // time, which would invalidate `kindsPresent` below on every render.
+  const items = useMemo(() => actions.data?.actions ?? [], [actions.data]);
   const cronActivity = actions.data?.cron_activity ?? [];
   const running = fleetEntries(orch.data, fleet.data).length;
   const urgentCount = items.filter((i) => i.severity === "urgent").length;
@@ -701,99 +695,103 @@ export function CommandCenter() {
         <TabsContent value="actions" className="mt-0 max-w-[76rem] space-y-5">
           {/* A band of cells divided by the grid's own background, not three floating cards. */}
           <div className="grid auto-rows-fr grid-cols-3 gap-px border-y border-border bg-border">
-        <Glance n={items.length} label="actionable" />
-        <Glance n={urgentCount} label="urgent" tone={urgentCount > 0 ? "text-urgent" : undefined} />
-        <Glance n={running} label="running" tone={running > 0 ? "text-ok" : undefined} />
-      </div>
-
-      <div
-        className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1"
-        role="group"
-        aria-label="filter actions"
-      >
-        <FilterChip
-          active={filter === "all"}
-          label="All"
-          count={items.length}
-          onClick={() => setFilter("all")}
-        />
-        <FilterChip
-          active={filter === "urgent"}
-          label="Urgent"
-          count={urgentCount}
-          onClick={() => setFilter("urgent")}
-        />
-        {kindsPresent.map((k) => (
-          <FilterChip
-            key={k}
-            active={filter === k}
-            label={KIND_LABEL[k]}
-            count={items.filter((i) => i.type === k).length}
-            onClick={() => setFilter(k)}
-          />
-        ))}
-      </div>
-
-      {actions.isLoading && <LoadingSkeleton />}
-
-      {actions.isError && (
-        <Card className="flex items-center gap-2 border-urgent/30 bg-urgent-muted p-4 text-sm text-urgent">
-          <AlertTriangle className="h-4 w-4" />
-          Could not load the action list.
-        </Card>
-      )}
-
-      {!actions.isLoading && !actions.isError && shown.length === 0 && (
-        <Card className="flex flex-col items-center gap-2 px-6 py-12 text-center">
-          <Inbox className="h-8 w-8 text-muted-foreground" />
-          <h3 className="text-lg font-semibold">All clear</h3>
-          <p className="max-w-sm text-sm text-muted-foreground">
-            Nothing needs you right now. New attention items, reviews, and stale PRs land here.
-          </p>
-        </Card>
-      )}
-
-      {pinned.length > 0 && (
-        <div className="space-y-2">
-          {pinned.map((it) => (
-            <ActionRow key={it.id} item={it} onStart={setComposing} />
-          ))}
-        </div>
-      )}
-
-      {todos.length > 0 && (
-        <section className="space-y-2">
-          <div className="flex items-center gap-2 pt-1">
-            <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Todos
-            </h3>
-            <span className="text-xs text-muted-foreground">{todos.length}</span>
+            <Glance n={items.length} label="actionable" />
+            <Glance
+              n={urgentCount}
+              label="urgent"
+              tone={urgentCount > 0 ? "text-urgent" : undefined}
+            />
+            <Glance n={running} label="running" tone={running > 0 ? "text-ok" : undefined} />
           </div>
-          <div className="space-y-2">
-            {visibleTodos.map((it) => (
-              <ActionRow key={it.id} item={it} onStart={setComposing} />
+
+          <div
+            className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1"
+            role="group"
+            aria-label="filter actions"
+          >
+            <FilterChip
+              active={filter === "all"}
+              label="All"
+              count={items.length}
+              onClick={() => setFilter("all")}
+            />
+            <FilterChip
+              active={filter === "urgent"}
+              label="Urgent"
+              count={urgentCount}
+              onClick={() => setFilter("urgent")}
+            />
+            {kindsPresent.map((k) => (
+              <FilterChip
+                key={k}
+                active={filter === k}
+                label={KIND_LABEL[k]}
+                count={items.filter((i) => i.type === k).length}
+                onClick={() => setFilter(k)}
+              />
             ))}
           </div>
-          {todos.length > TODO_CAP && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-muted-foreground"
-              onClick={() => setShowAllTodos((v) => !v)}
-            >
-              <ChevronDown
-                className={cn("h-4 w-4 transition-transform", showAllTodos && "rotate-180")}
-              />
-              {showAllTodos ? "show fewer" : `show all (${todos.length})`}
-              {!showAllTodos && hiddenTodoCount > 0 && (
-                <span className="text-muted-foreground/70">
-                  · {hiddenTodoCount} more, oldest first
-                </span>
-              )}
-            </Button>
+
+          {actions.isLoading && <LoadingSkeleton />}
+
+          {actions.isError && (
+            <Card className="flex items-center gap-2 border-urgent/30 bg-urgent-muted p-4 text-sm text-urgent">
+              <AlertTriangle className="h-4 w-4" />
+              Could not load the action list.
+            </Card>
           )}
-        </section>
-      )}
+
+          {!actions.isLoading && !actions.isError && shown.length === 0 && (
+            <Card className="flex flex-col items-center gap-2 px-6 py-12 text-center">
+              <Inbox className="h-8 w-8 text-muted-foreground" />
+              <h3 className="text-lg font-semibold">All clear</h3>
+              <p className="max-w-sm text-sm text-muted-foreground">
+                Nothing needs you right now. New attention items, reviews, and stale PRs land here.
+              </p>
+            </Card>
+          )}
+
+          {pinned.length > 0 && (
+            <div className="space-y-2">
+              {pinned.map((it) => (
+                <ActionRow key={it.id} item={it} onStart={setComposing} />
+              ))}
+            </div>
+          )}
+
+          {todos.length > 0 && (
+            <section className="space-y-2">
+              <div className="flex items-center gap-2 pt-1">
+                <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                  Todos
+                </h3>
+                <span className="text-xs text-muted-foreground">{todos.length}</span>
+              </div>
+              <div className="space-y-2">
+                {visibleTodos.map((it) => (
+                  <ActionRow key={it.id} item={it} onStart={setComposing} />
+                ))}
+              </div>
+              {todos.length > TODO_CAP && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground"
+                  onClick={() => setShowAllTodos((v) => !v)}
+                >
+                  <ChevronDown
+                    className={cn("h-4 w-4 transition-transform", showAllTodos && "rotate-180")}
+                  />
+                  {showAllTodos ? "show fewer" : `show all (${todos.length})`}
+                  {!showAllTodos && hiddenTodoCount > 0 && (
+                    <span className="text-muted-foreground/70">
+                      · {hiddenTodoCount} more, oldest first
+                    </span>
+                  )}
+                </Button>
+              )}
+            </section>
+          )}
 
           {!actions.isLoading && !actions.isError && (
             <AutomationSection activity={cronActivity} now={now} />

@@ -68,7 +68,9 @@ export function FleetRow({
         className={cn("h-4 w-1 shrink-0 rounded-full", DOT[entry.tone] ?? DOT.neutral)}
         aria-hidden="true"
       />
-      <span className="min-w-0 flex-1 truncate font-mono text-sm text-foreground">{entry.branch}</span>
+      <span className="min-w-0 flex-1 truncate font-mono text-sm text-foreground">
+        {entry.branch}
+      </span>
 
       {/* Fixed-width columns, not a right-packed pile: each field lands at the same x on every row,
           so the list reads down a column instead of forcing a re-scan per line. `sm:contents` keeps
@@ -77,39 +79,39 @@ export function FleetRow({
       {compact ? (
         <span className="shrink-0 text-xs text-muted-foreground">{entry.stateLabel}</span>
       ) : (
-      <span className="hidden sm:contents">
-        {/* What it's working on, before what it is: the task is the thing you scan a fleet for.
+        <span className="hidden sm:contents">
+          {/* What it's working on, before what it is: the task is the thing you scan a fleet for.
             Rows render nothing when unlinked — an extra muted word per line is noise at this
             density; the card variant says "no task" instead. */}
-        <span className="flex w-40 shrink-0 justify-start">
-          {entry.task && <TaskChip task={entry.task} className="max-w-full" />}
-        </span>
-        <span className="w-24 shrink-0 truncate text-right text-xs text-muted-foreground">
-          {entry.stateLabel}
-        </span>
-        {/* `relative z-10`: in select mode the row's hit area is a stretched button *behind* the
+          <span className="flex w-40 shrink-0 justify-start">
+            {entry.task && <TaskChip task={entry.task} className="max-w-full" />}
+          </span>
+          <span className="w-24 shrink-0 truncate text-right text-xs text-muted-foreground">
+            {entry.stateLabel}
+          </span>
+          {/* `relative z-10`: in select mode the row's hit area is a stretched button *behind* the
             content, so the controls that live inside the row have to sit above it to stay clickable. */}
-        <span className="relative z-10 flex w-24 shrink-0 justify-end">
-          <HarnessMenu target={entry.target} current={entry.harness} harnesses={harnesses} />
+          <span className="relative z-10 flex w-24 shrink-0 justify-end">
+            <HarnessMenu target={entry.target} current={entry.harness} harnesses={harnesses} />
+          </span>
+          <FleetCounters entry={entry} variant="columns" />
+          <span className="relative z-10 hidden w-12 shrink-0 truncate text-right text-xs md:block">
+            {entry.pr &&
+              (href ? (
+                <a
+                  href={href}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="text-primary"
+                >
+                  {prLabel(entry.pr)}
+                </a>
+              ) : (
+                <span className="text-muted-foreground">{prLabel(entry.pr)}</span>
+              ))}
+          </span>
         </span>
-        <FleetCounters entry={entry} variant="columns" />
-        <span className="relative z-10 hidden w-12 shrink-0 truncate text-right text-xs md:block">
-          {entry.pr &&
-            (href ? (
-              <a
-                href={href}
-                target="_blank"
-                rel="noreferrer"
-                onClick={(e) => e.stopPropagation()}
-                className="text-primary"
-              >
-                {prLabel(entry.pr)}
-              </a>
-            ) : (
-              <span className="text-muted-foreground">{prLabel(entry.pr)}</span>
-            ))}
-        </span>
-      </span>
       )}
 
       <span className="w-12 shrink-0 text-right">

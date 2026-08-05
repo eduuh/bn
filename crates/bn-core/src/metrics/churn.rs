@@ -304,5 +304,3 @@ pub fn agent_windows_for_repo(events: &[Event], repo: &str) -> Vec<AgentWindow> 
         })
         .collect()
 }
-
-

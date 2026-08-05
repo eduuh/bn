@@ -16,5 +16,3 @@ pub use body::*;
 pub use error::*;
 pub use note::*;
 pub use todo::*;
-
-

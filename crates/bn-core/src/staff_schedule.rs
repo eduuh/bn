@@ -513,5 +513,3 @@ pub fn health_label(last: Option<&LastRun>, missed: bool) -> &'static str {
         },
     }
 }
-
-

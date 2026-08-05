@@ -568,5 +568,3 @@ pub fn validate(md: &str, thin: bool) -> Result<(), String> {
         ))
     }
 }
-
-

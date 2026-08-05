@@ -171,5 +171,3 @@ pub fn terminal_prs(events: &[Event]) -> HashSet<(String, i64)> {
 pub fn link_is_terminal(terminal: &HashSet<(String, i64)>, link: &str) -> bool {
     parse_pr_link(link).is_some_and(|key| terminal.contains(&key))
 }
-
-

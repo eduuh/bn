@@ -26,8 +26,8 @@ export function NotFound() {
       <Compass className="h-6 w-6 text-muted-foreground" />
       <h3 className="text-lg font-semibold">Nothing lives here</h3>
       <p className="max-w-md text-sm text-muted-foreground">
-        No screen at <code className="font-mono">{location.pathname}</code>. It may have been renamed
-        — the rail on the left has every destination, or press{" "}
+        No screen at <code className="font-mono">{location.pathname}</code>. It may have been
+        renamed — the rail on the left has every destination, or press{" "}
         <kbd className="rounded border border-border px-1 font-mono text-xs">⌘K</kbd> to search.
       </p>
       <Button asChild size="sm" variant="secondary">
@@ -78,8 +78,8 @@ export function RootError() {
       <AlertTriangle className="h-6 w-6 text-urgent" />
       <h1 className="text-lg font-semibold">bn/web could not start</h1>
       <p className="max-w-md text-sm text-muted-foreground">
-        The app shell failed to render. A reload usually clears it; if it does not, the server may be
-        serving a stale bundle.
+        The app shell failed to render. A reload usually clears it; if it does not, the server may
+        be serving a stale bundle.
       </p>
       <p className="max-w-full overflow-x-auto font-mono text-xs text-muted-foreground">
         {describe(error)}
@@ -95,5 +95,18 @@ export function RootError() {
 function describe(error: unknown): string {
   if (isRouteErrorResponse(error)) return `${error.status} ${error.statusText}`;
   if (error instanceof Error) return error.message;
-  return String(error ?? "unknown error");
+  if (error == null) return "unknown error";
+  // Primitives stringify to something a human can read.
+  if (typeof error === "string") return error;
+  if (typeof error === "number" || typeof error === "boolean" || typeof error === "bigint") {
+    return String(error);
+  }
+  // Anything else the router threw — an object, a symbol, a function. `String(obj)` would render
+  // the literal text "[object Object]" into the page, which tells you nothing; JSON at least
+  // carries the shape.
+  try {
+    return JSON.stringify(error) ?? "unknown error";
+  } catch {
+    return "unknown error";
+  }
 }

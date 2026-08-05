@@ -299,5 +299,3 @@ pub fn render_launchd(rc: &ResolvedCron, bn_path: &str) -> Result<String, String
         job = rc.entry.job,
     ))
 }
-
-

@@ -1154,5 +1154,3 @@ fn lock_key(path: &Path) -> String {
     canon.hash(&mut h);
     format!("{:016x}", h.finish())
 }
-
-

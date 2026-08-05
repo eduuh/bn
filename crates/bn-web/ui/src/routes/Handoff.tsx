@@ -170,7 +170,7 @@ function HandoffPane({ entry }: { entry: SummaryEntry }) {
       void qc.invalidateQueries({ queryKey: queryKeys.handoff(entry.repo, entry.branch) });
     },
     onError: (e) => {
-      pushToast(`Save failed: ${(e as Error).message}`, "error");
+      pushToast(`Save failed: ${e.message}`, "error");
     },
   });
 

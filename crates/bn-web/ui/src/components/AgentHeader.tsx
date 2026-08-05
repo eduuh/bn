@@ -5,7 +5,7 @@ import { healthTone, jumpCommand } from "../lib/board";
 import { fmtTokens, timeAgo } from "../lib/format";
 import { CopyButton } from "./CopyButton";
 import { HarnessMenu } from "./HarnessMenu";
-import { toneVariant } from "./StateChip";
+import { toneVariant } from "../lib/tone";
 import { Badge } from "./ui/badge";
 import { Card } from "./ui/card";
 import { cn } from "../lib/utils";

@@ -65,7 +65,9 @@ export function useBnStream(): { status: StreamStatus } {
     };
 
     const startProbe = () => {
-      if (probeTimer === null) probeTimer = setInterval(probeHealth, HEALTH_PROBE_MS);
+      // `void` rather than passing the async fn straight to setInterval: a rejected probe would
+      // otherwise become an unhandled rejection, and setInterval discards the promise anyway.
+      if (probeTimer === null) probeTimer = setInterval(() => void probeHealth(), HEALTH_PROBE_MS);
     };
 
     const es = new EventSource("/api/stream");
@@ -89,14 +91,16 @@ export function useBnStream(): { status: StreamStatus } {
       startProbe();
     };
 
-    const onFleet = (e: MessageEvent) => {
+    // `MessageEvent<string>`, not bare `MessageEvent`: `data` is `any` on the unparameterised
+    // form, which silently makes every JSON.parse below untyped.
+    const onFleet = (e: MessageEvent<string>) => {
       try {
         qc.setQueryData<FleetView>(queryKeys.fleet, JSON.parse(e.data) as FleetView);
       } catch {
         /* a torn frame is ignored; the next frame or the fallback refetch reconciles */
       }
     };
-    const onOrchestrate = (e: MessageEvent) => {
+    const onOrchestrate = (e: MessageEvent<string>) => {
       try {
         qc.setQueryData<OrchestrateView>(
           queryKeys.orchestrate,

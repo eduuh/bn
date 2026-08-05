@@ -182,5 +182,3 @@ async fn main() {
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
-
-

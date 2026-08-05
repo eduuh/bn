@@ -14,13 +14,7 @@ import {
   Rocket,
   Users,
 } from "lucide-react";
-import {
-  actionsQuery,
-  fleetQuery,
-  queryKeys,
-  reposQuery,
-  repoIssuesQuery,
-} from "../api/client";
+import { actionsQuery, fleetQuery, queryKeys, reposQuery, repoIssuesQuery } from "../api/client";
 import { startRepoOrchestrator } from "../api/writes";
 import type { ActionItem, LiveAgent, RepoIssue, RepoPool, RepoSession } from "../api/types";
 import { useNow } from "../hooks/useNow";
@@ -37,7 +31,7 @@ import {
 import { pushToast } from "../lib/toast";
 import { CopyButton } from "../components/CopyButton";
 import { StartAgentComposer } from "../components/StartAgentComposer";
-import { toneVariant } from "../components/StateChip";
+import { toneVariant } from "../lib/tone";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -80,7 +74,9 @@ function SectionHead({
   return (
     <div className="flex items-center gap-2">
       <Icon className="h-4 w-4 text-muted-foreground" />
-      <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
+      <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        {title}
+      </h3>
       {count != null && <Badge variant="muted">{count}</Badge>}
     </div>
   );
@@ -168,9 +164,7 @@ function CardGrid({ children }: { children: React.ReactNode }) {
 
 /** A small "nothing here" placeholder used by the command-center sections. */
 function Empty({ children }: { children: React.ReactNode }) {
-  return (
-    <Card className="px-4 py-6 text-center text-sm text-muted-foreground">{children}</Card>
-  );
+  return <Card className="px-4 py-6 text-center text-sm text-muted-foreground">{children}</Card>;
 }
 
 /** Build the synthetic action the Start-agent composer consumes for a "work on this issue" launch —
@@ -275,9 +269,7 @@ function IssuesPanel({ repo, onStart }: { repo: string; onStart: (item: ActionIt
       {issues.isLoading ? (
         <Skeleton className="h-16 w-full" />
       ) : list.length === 0 ? (
-        <Empty>
-          No open issues found for this repo (or `gh` is unavailable).
-        </Empty>
+        <Empty>No open issues found for this repo (or `gh` is unavailable).</Empty>
       ) : (
         <ul className="space-y-2">
           {list.map((i) => (
@@ -401,7 +393,11 @@ function CrossRepoPanel({ repo }: { repo: string }) {
   if (items.length === 0) return null;
   return (
     <section className="space-y-3">
-      <SectionHead icon={GitFork} title="Cross-repo tasks touching this repo" count={items.length} />
+      <SectionHead
+        icon={GitFork}
+        title="Cross-repo tasks touching this repo"
+        count={items.length}
+      />
       <ul className="space-y-2">
         {items.map((a) => (
           <li
@@ -548,9 +544,7 @@ export function RepoDetail() {
 
           <CrossRepoPanel repo={rollup.repo} />
 
-          {rollup.sessions.length === 0 && (
-            <Empty>No sessions in this repo yet.</Empty>
-          )}
+          {rollup.sessions.length === 0 && <Empty>No sessions in this repo yet.</Empty>}
         </>
       )}
 

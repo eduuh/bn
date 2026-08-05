@@ -348,5 +348,3 @@ pub fn render(report: &Report) -> String {
     }
     out
 }
-
-

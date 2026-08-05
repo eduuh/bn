@@ -105,10 +105,7 @@ export function PipelineFlow({
                   )}
                 </button>
                 {i < stages.length - 1 && (
-                  <span
-                    aria-hidden="true"
-                    className="self-center px-0.5 text-muted-foreground/40"
-                  >
+                  <span aria-hidden="true" className="self-center px-0.5 text-muted-foreground/40">
                     →
                   </span>
                 )}

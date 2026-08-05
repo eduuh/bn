@@ -149,5 +149,3 @@ pub fn read() -> ReviewCache {
         Err(_) => ReviewCache::default(),
     }
 }
-
-

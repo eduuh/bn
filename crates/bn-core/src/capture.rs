@@ -196,5 +196,3 @@ fn move_file(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String>
     std::fs::remove_file(src).map_err(|e| format!("remove {}: {e}", src.display()))?;
     Ok(())
 }
-
-

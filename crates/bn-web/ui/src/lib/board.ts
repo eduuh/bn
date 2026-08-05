@@ -2,7 +2,15 @@
 // pane-state colouring, throughput/ETA, and the throughput sparkline series. All side-effect-free
 // and unit-tested (`board.test.ts`) so the visual layer stays a thin render of these values.
 
-import type { FleetView, LiveAgent, PaneState, QueueItem, RunView } from "../api/types";
+import type {
+  FleetView,
+  LiveAgent,
+  PaneState,
+  PipelineStageWork,
+  QueueItem,
+  RunView,
+  StageTask,
+} from "../api/types";
 
 /** tmux window names replace `/` with `-` (worktree layout), so a `dispatch/352` branch → window
  * `dispatch-352`. Used to reconstruct a `repo:window` target when the payload lacks tmux fields. */
@@ -12,11 +20,7 @@ export function sanitizeBranch(branch: string): string {
 
 /** The tmux `session:window` to jump to for an item: prefer #372's explicit fields, then the
  * joined live agent's `target`, then reconstruct `repo:sanitized-branch`. `null` if unknowable. */
-export function tmuxTarget(
-  item: QueueItem,
-  repo: string,
-  agent?: LiveAgent,
-): string | null {
+export function tmuxTarget(item: QueueItem, repo: string, agent?: LiveAgent): string | null {
   if (item.tmux_session && item.tmux_window) {
     return `${item.tmux_session}:${item.tmux_window}`;
   }
@@ -41,9 +45,7 @@ export function agentForItem(
   if (!fleet || !item.branch) return undefined;
   const branch = sanitizeBranch(item.branch);
   return fleet.agents.find(
-    (a) =>
-      sanitizeBranch(a.branch) === branch &&
-      a.repo.toLowerCase() === repo.toLowerCase(),
+    (a) => sanitizeBranch(a.branch) === branch && a.repo.toLowerCase() === repo.toLowerCase(),
   );
 }
 
@@ -118,9 +120,7 @@ export function throughput(run: RunView, now: number): Throughput {
   if (count === 0) return { mergedPerHour: 0, etaHours: null };
 
   const startSecs =
-    run.started_at > 0
-      ? run.started_at
-      : Math.min(...merged.map((m) => m.updated_at));
+    run.started_at > 0 ? run.started_at : Math.min(...merged.map((m) => m.updated_at));
   const elapsedHours = Math.max((now - startSecs) / 3600, 1 / 60);
   const rate = count / elapsedHours;
   const etaHours = queued === 0 ? 0 : rate > 0 ? queued / rate : null;
@@ -153,10 +153,7 @@ export function mergeSparkline(
 /** Agents not owned by any run's queue (matched by repo + normalized branch) — the non-orchestrated
  * fleet rail (`bn switch`, staff runs). Branches are [`sanitizeBranch`]-normalized because the live
  * fleet reports the dash form while the queue keeps slashes. */
-export function nonOrchestratedAgents(
-  fleet: FleetView | undefined,
-  runs: RunView[],
-): LiveAgent[] {
+export function nonOrchestratedAgents(fleet: FleetView | undefined, runs: RunView[]): LiveAgent[] {
   if (!fleet) return [];
   const tracked = new Set<string>();
   for (const run of runs) {
@@ -185,4 +182,17 @@ export function prLabel(pr: string): string {
   const bare = pr.replace(/^#/, "");
   if (/^\d+$/.test(bare)) return `#${bare}`;
   return pr;
+}
+
+/** The in-flight deck rows. With a stage selected they come from the projection (so count and list
+ * are one value). With none, fall back to every wip task — including work whose worktree never
+ * recorded a stage, which would otherwise vanish from the screen entirely. */
+export function inFlightTasks(
+  selected: PipelineStageWork | undefined,
+  stageList: PipelineStageWork[],
+  wip: StageTask[],
+): StageTask[] {
+  if (selected) return selected.tasks;
+  const stagedIds = new Set(stageList.flatMap((st) => st.tasks.map((t) => t.id)));
+  return [...stageList.flatMap((st) => st.tasks), ...wip.filter((t) => !stagedIds.has(t.id))];
 }

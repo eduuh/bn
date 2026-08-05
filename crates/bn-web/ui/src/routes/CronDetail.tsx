@@ -55,7 +55,7 @@ function RunNowButton({ job }: { job: string }) {
       void qc.invalidateQueries({ queryKey: queryKeys.findings(job) });
     },
     onError: (e) => {
-      pushToast(`run ${job} failed: ${(e as Error).message}`, "error");
+      pushToast(`run ${job} failed: ${e.message}`, "error");
       void qc.invalidateQueries({ queryKey: queryKeys.cron });
       void qc.invalidateQueries({ queryKey: queryKeys.findings(job) });
     },
@@ -153,7 +153,10 @@ export function CronDetail() {
 
             <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-sm text-muted-foreground">
               {job.schedule ? (
-                <span className="inline-flex items-center gap-1 font-mono" title="declared OnCalendar schedule">
+                <span
+                  className="inline-flex items-center gap-1 font-mono"
+                  title="declared OnCalendar schedule"
+                >
                   <CalendarClock className="h-4 w-4" /> {job.schedule}
                 </span>
               ) : (
@@ -172,7 +175,9 @@ export function CronDetail() {
               </span>
             </div>
 
-            {job.description && <p className="mt-3 text-sm text-foreground/90">{job.description}</p>}
+            {job.description && (
+              <p className="mt-3 text-sm text-foreground/90">{job.description}</p>
+            )}
 
             {(job.declared || job.has_script || job.network || job.catch_up) && (
               <div className="mt-3 flex flex-wrap items-center gap-1.5">

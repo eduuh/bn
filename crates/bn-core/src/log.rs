@@ -332,5 +332,3 @@ impl Timer {
         self.0.elapsed().as_millis() as u64
     }
 }
-
-

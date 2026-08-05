@@ -240,5 +240,3 @@ pub fn latest_session_events(events: &[Event]) -> Vec<&Event> {
     anonymous.extend(latest.into_values());
     anonymous
 }
-
-

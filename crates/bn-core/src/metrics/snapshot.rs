@@ -51,5 +51,3 @@ pub fn latest_snapshot_before(cfg: &Config, date: &str) -> Option<Snapshot> {
         .into_iter()
         .rfind(|s| s.date.as_str() < date)
 }
-
-

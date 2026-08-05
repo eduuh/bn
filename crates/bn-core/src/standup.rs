@@ -221,5 +221,3 @@ pub fn gather_packet_json(cfg: &crate::resolver::Config, today: &str) -> String 
     let packet = build_packet(cfg.machine(), today, &yesterday, &completed, &today_goals);
     serde_json::to_string(&packet).unwrap_or_else(|_| "{}".into())
 }
-
-

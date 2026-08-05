@@ -67,14 +67,22 @@ export function Fleet() {
   const loading = orch.isLoading || fleet.isLoading;
   const nothing = !loading && entries.length === 0 && runs.length === 0 && starting === 0;
   const manageBusy =
-    actions.pending.scale || actions.pending.stop || actions.pending.reorder || actions.pending.remove;
+    actions.pending.scale ||
+    actions.pending.stop ||
+    actions.pending.reorder ||
+    actions.pending.remove;
 
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
   // Which agent the detail pane is watching. Defaults to the one that most needs a human — the
   // board's whole point — and falls back to the first live worker so the pane is never empty while
   // agents are running.
-  const watchable = [...need, ...orchestratorEntries, ...working].filter((e) => e.sessionId);
+  // The type predicate is what makes `selected.sessionId` a `string` downstream. A plain
+  // `.filter((e) => e.sessionId)` narrows nothing, which is why the detail pane used to assert
+  // non-null on every use of it.
+  const watchable = [...need, ...orchestratorEntries, ...working].filter(
+    (e): e is typeof e & { sessionId: string } => Boolean(e.sessionId),
+  );
   const selected = watchable.find((e) => e.key === selectedKey) ?? watchable[0];
 
   return (
@@ -141,7 +149,12 @@ export function Fleet() {
             <Section label="Orchestrators" meta={String(orchestratorEntries.length)}>
               <div className="space-y-2">
                 {orchestratorEntries.map((e) => (
-                  <FleetEntryCard key={e.key} entry={e} now={now} harnesses={fleet.data?.harnesses} />
+                  <FleetEntryCard
+                    key={e.key}
+                    entry={e}
+                    now={now}
+                    harnesses={fleet.data?.harnesses}
+                  />
                 ))}
               </div>
             </Section>
@@ -153,7 +166,12 @@ export function Fleet() {
               <Section label="Needs you" meta={String(need.length)}>
                 <div className="space-y-2">
                   {need.map((e) => (
-                    <FleetEntryCard key={e.key} entry={e} now={now} harnesses={fleet.data?.harnesses} />
+                    <FleetEntryCard
+                      key={e.key}
+                      entry={e}
+                      now={now}
+                      harnesses={fleet.data?.harnesses}
+                    />
                   ))}
                 </div>
               </Section>
@@ -226,10 +244,7 @@ export function Fleet() {
           <RecoveryFeed />
         </aside>
 
-        <section
-          aria-label="agent transcript"
-          className="flex min-h-0 flex-col overflow-y-auto"
-        >
+        <section aria-label="agent transcript" className="flex min-h-0 flex-col overflow-y-auto">
           {selected ? (
             <>
               <div className="flex flex-none flex-wrap items-baseline gap-2 border-b border-border px-3.5 py-2.5">
@@ -241,12 +256,14 @@ export function Fleet() {
                 </span>
                 <div className="ml-auto">
                   <Button asChild variant="ghost" size="sm">
-                    <Link to={`/agents/${encodeURIComponent(selected.sessionId!)}`}>Open detail</Link>
+                    <Link to={`/agents/${encodeURIComponent(selected.sessionId)}`}>
+                      Open detail
+                    </Link>
                   </Button>
                 </div>
               </div>
               <div className="space-y-3 px-3.5 py-3">
-                <AgentActivity sessionId={selected.sessionId!} />
+                <AgentActivity sessionId={selected.sessionId} />
                 <SteerPanel target={selected.target} />
               </div>
             </>

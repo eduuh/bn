@@ -768,5 +768,3 @@ fn render_stage_tracker(current: &str, mine: bool) -> String {
     }
     out
 }
-
-

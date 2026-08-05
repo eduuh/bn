@@ -224,7 +224,10 @@ export interface GoalNoteConnectBody {
 
 /** `POST /api/goals/:id/notes {repo?, branch?, text?, title?}` — connect a note to today's daily
  * goal `id` (#564). Open per #526; a `400` (empty/invalid) or `404` (no such goal) throws. */
-export function connectGoalNote(goalId: string, body: GoalNoteConnectBody): Promise<GoalNoteResult> {
+export function connectGoalNote(
+  goalId: string,
+  body: GoalNoteConnectBody,
+): Promise<GoalNoteResult> {
   return post<GoalNoteResult>(`/api/goals/${encodeURIComponent(goalId)}/notes`, body);
 }
 
@@ -300,7 +303,10 @@ export function warmRepoPool(repo: string): Promise<WarmPoolResult> {
 /** `POST /api/repos/:repo/pool {size?}` — pool a repo at `size` slots, or stop pooling it with
  * `size: null`. Writes the pools config the idle `pool-warm` cron reads, so enabling here is all it
  * takes for the pool to be kept warm from then on. Slots are not built by this call. */
-export function setRepoPool(repo: string, size: number | null): Promise<{ repo: string; size: number | null; message: string }> {
+export function setRepoPool(
+  repo: string,
+  size: number | null,
+): Promise<{ repo: string; size: number | null; message: string }> {
   return post(`/api/repos/${encodeURIComponent(repo)}/pool`, { size });
 }
 

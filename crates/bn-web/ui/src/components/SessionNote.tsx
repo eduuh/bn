@@ -129,10 +129,7 @@ export function SessionNote({ detail }: { detail: AgentDetailView }) {
                 {s.items.map((it) => (
                   <li
                     key={it.id}
-                    className={cn(
-                      "flex items-start gap-2",
-                      s.key === "blockers" && "text-urgent",
-                    )}
+                    className={cn("flex items-start gap-2", s.key === "blockers" && "text-urgent")}
                   >
                     {s.checks && (
                       <input

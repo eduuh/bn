@@ -1170,12 +1170,7 @@ export interface LearningsView {
 /** The work-class category token on a cost row (`bn_core::cost::WorkClass::as_str`). Rows recorded
  * before #381 threaded a class through fold into `unattributed` (expected to dominate history). */
 export type WorkClass =
-  | "orchestration"
-  | "coding"
-  | "scheduled"
-  | "research"
-  | "remote"
-  | "unattributed";
+  "orchestration" | "coding" | "scheduled" | "research" | "remote" | "unattributed";
 
 /** One grouped cost line — `bn_core::cost::CostRow`. `aic` (the *metered Copilot bill*) is `null`
  * for a group with no Copilot runs; `cost_usd` (the *API-equiv benchmark*) is `null` when nothing
@@ -1518,4 +1513,22 @@ export interface DoneTasksView {
   done: number;
   cancelled: number;
   tasks: (TaskRow & { reason: string | null })[];
+}
+
+// --- Health (GET /api/health .data) ---
+
+/** The server's own vitals — what `/settings` shows under "Server". `machine` is the identity bn
+ * files this host's work under, which is not necessarily its hostname. */
+export interface HealthView {
+  status: string;
+  version: string;
+  machine: string;
+  uptime_secs: number;
+  /** False when the binary was built without the UI bundle baked in (a dev-server session). */
+  ui_built: boolean;
+  web: {
+    port: number;
+    bind: string;
+    fleet_poll_secs: number;
+  };
 }

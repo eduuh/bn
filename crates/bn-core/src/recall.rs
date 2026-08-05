@@ -896,5 +896,3 @@ fn sibling_docs(dir: &Path) -> Vec<PathBuf> {
     docs.sort();
     docs
 }
-
-

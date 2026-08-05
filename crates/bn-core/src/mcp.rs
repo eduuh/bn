@@ -638,4 +638,3 @@ fn write_instructions(path: &Path) -> Result<WrittenFile, String> {
         action,
     })
 }
-

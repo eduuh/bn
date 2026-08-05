@@ -139,7 +139,9 @@ export function Research() {
             id="research-q"
             className="min-h-[6rem] font-mono text-[13px] leading-relaxed"
             rows={3}
-            placeholder={"e.g. why is the nvim status_spec flaky?\nwhich crate owns the cron registry?"}
+            placeholder={
+              "e.g. why is the nvim status_spec flaky?\nwhich crate owns the cron registry?"
+            }
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
           />

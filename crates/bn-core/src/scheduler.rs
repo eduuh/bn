@@ -826,5 +826,3 @@ pub fn pick(st: &OrchestrateState, caps: &Caps, obs: &Observed) -> Plan {
     }
     plan
 }
-
-

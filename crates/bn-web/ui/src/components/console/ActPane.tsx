@@ -4,6 +4,7 @@ import { Check, Plus, Rocket } from "lucide-react";
 import { queryKeys } from "../../api/client";
 import { apiDispatch, apiQueueAdd, attnAction } from "../../api/writes";
 import { pushToast } from "../../lib/toast";
+import type { ActionItem } from "../../api/types";
 import type { WorkItem } from "../../lib/console";
 import { PlanReviewPanel } from "../PlanReviewPanel";
 import { RepoSelect } from "../RepoSelect";
@@ -24,8 +25,9 @@ function payloadStr(item: WorkItem, key: string): string {
  * the queue and the thing you're reading on screen while you write the instruction, so the prompt
  * lives in the act column beside them rather than covering both.
  */
-function DispatchPanel({ item }: { item: WorkItem }) {
-  const action = item.action!;
+// `action` is passed in rather than read off `item` again: only `ActPane` knows the row has one,
+// and threading it through keeps that narrowing instead of re-asserting it here.
+function DispatchPanel({ item, action }: { item: WorkItem; action: ActionItem }) {
   const qc = useQueryClient();
   const [prompt, setPrompt] = useState(action.suggested_prompt);
   const [repo, setRepo] = useState(payloadStr(item, "repo") || action.repo || "");
@@ -210,7 +212,17 @@ export function ActPane({ item }: { item?: WorkItem }) {
     );
   }
 
-  const action = item.action!;
+  // A queue row is either an agent (handled above) or a signal carrying an action. A row with
+  // neither shouldn't reach here, but say so plainly rather than asserting non-null and throwing
+  // a bare TypeError deep inside the render if the normaliser ever changes.
+  const action = item.action;
+  if (!action) {
+    return (
+      <div className="px-4 py-6 text-xs leading-relaxed text-muted-foreground/60">
+        Nothing to act on for this item.
+      </div>
+    );
+  }
   const attnId = payloadStr(item, "attn_id");
 
   return (
@@ -222,7 +234,7 @@ export function ActPane({ item }: { item?: WorkItem }) {
 
       {attnId && <AttnPanel id={attnId} />}
 
-      <DispatchPanel item={item} />
+      <DispatchPanel item={item} action={action} />
     </div>
   );
 }

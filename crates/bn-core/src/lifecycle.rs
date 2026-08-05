@@ -485,5 +485,3 @@ fn prune_empty_dir(dir: Option<&std::path::Path>) {
         }
     }
 }
-
-

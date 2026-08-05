@@ -1,7 +1,17 @@
 import { useState } from "react";
+
 import type { TaskCreate } from "../api/writes";
 import { Button } from "./ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "./ui/dialog";
+import { Input } from "./ui/input";
+import { Label } from "./ui/label";
 import { RepoSelect } from "./RepoSelect";
 
 /**
@@ -46,69 +56,74 @@ export function NewTaskDialog({
     setEst("");
   };
 
-  const field =
-    "w-full rounded-[7px] border border-border bg-background px-2.5 py-1.5 text-sm text-foreground placeholder:text-muted-foreground/70 focus:border-primary focus:outline-none";
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>New task</DialogTitle>
+          <DialogDescription>
+            Only the title is required. A task needs a repo, an estimate, a date and a{" "}
+            <code className="font-mono">## Done When</code> before an agent may execute it — the
+            improve agent fills in whatever you leave out.
+          </DialogDescription>
         </DialogHeader>
-        <div className="space-y-2.5">
-          <label className="block space-y-1">
-            <span className="text-[11px] font-medium text-muted-foreground">
+
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="task-title" className="text-[11px]">
               What changes, and where
-            </span>
-            <input
+            </Label>
+            <Input
+              id="task-title"
               autoFocus
               value={title}
               onChange={(e) => setTitle(e.target.value)}
+              // ⌘/Ctrl+Enter submits from the title field so a bare capture never needs the mouse.
               onKeyDown={(e) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit();
               }}
               placeholder="Fix the SSE reconnect storm on flaky LAN"
-              className={field}
             />
-          </label>
+          </div>
+
           <div className="grid grid-cols-3 gap-2">
-            <div className="block space-y-1">
-              <span className="text-[11px] font-medium text-muted-foreground">Repo</span>
+            <div className="space-y-1.5">
+              <Label className="text-[11px]">Repo</Label>
               <RepoSelect value={repo} onChange={setRepo} />
             </div>
-            <label className="block space-y-1">
-              <span className="text-[11px] font-medium text-muted-foreground">Day</span>
-              <input
+            <div className="space-y-1.5">
+              <Label htmlFor="task-day" className="text-[11px]">
+                Day
+              </Label>
+              <Input
+                id="task-day"
                 value={day}
                 onChange={(e) => setDay(e.target.value)}
                 placeholder="2026-08-03"
-                className={field}
               />
-            </label>
-            <label className="block space-y-1">
-              <span className="text-[11px] font-medium text-muted-foreground">Estimate</span>
-              <input
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="task-est" className="text-[11px]">
+                Estimate
+              </Label>
+              <Input
+                id="task-est"
                 value={est}
                 onChange={(e) => setEst(e.target.value)}
                 placeholder="2h"
-                className={field}
               />
-            </label>
-          </div>
-          <p className="text-[11px] leading-snug text-muted-foreground">
-            Only the title is required. A task needs a repo, an estimate, a date and a{" "}
-            <code className="font-mono">## Done When</code> before an agent may execute it — the
-            improve agent fills in whatever you leave out.
-          </p>
-          <div className="flex justify-end gap-2 pt-1">
-            <Button variant="secondary" size="sm" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button size="sm" disabled={busy || !title.trim()} onClick={submit}>
-              Create
-            </Button>
+            </div>
           </div>
         </div>
+
+        <DialogFooter>
+          <Button variant="secondary" size="sm" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button size="sm" disabled={busy || !title.trim()} onClick={submit}>
+            Create
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

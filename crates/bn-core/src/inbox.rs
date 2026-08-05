@@ -258,5 +258,3 @@ fn next_q_id(items: &[InboxItem]) -> String {
         .unwrap_or(0);
     format!("{Q_PREFIX}{}", max + 1)
 }
-
-

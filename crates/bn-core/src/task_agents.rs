@@ -200,5 +200,3 @@ pub fn triage_seed(ranked: &[&Task], today: &str, capacity_hint: Option<&str>) -
     ));
     seed
 }
-
-

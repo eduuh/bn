@@ -114,5 +114,3 @@ pub fn critic_seed(diff: &str, done_when: &[String], pr_url: Option<&str>) -> St
     );
     s
 }
-
-

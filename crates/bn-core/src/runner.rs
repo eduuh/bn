@@ -395,5 +395,3 @@ pub fn gh_json<T: serde::de::DeserializeOwned>(
     let stdout = runner.gh(args).ok_stdout()?;
     serde_json::from_str::<T>(&stdout).ok()
 }
-
-

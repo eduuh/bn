@@ -77,5 +77,3 @@ impl Clock for FixedClock {
             .unwrap_or_default()
     }
 }
-
-

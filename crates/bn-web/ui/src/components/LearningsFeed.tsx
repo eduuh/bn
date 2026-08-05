@@ -37,11 +37,7 @@ function SegmentGroup<T extends string | number>({
   onChange: (v: T) => void;
 }) {
   return (
-    <div
-      className="inline-flex gap-1 rounded-lg bg-muted p-1"
-      role="group"
-      aria-label={label}
-    >
+    <div className="inline-flex gap-1 rounded-lg bg-muted p-1" role="group" aria-label={label}>
       {options.map((o) => (
         <button
           key={o.label}
@@ -108,12 +104,7 @@ export function LearningsFeed() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <SegmentGroup
-          label="window"
-          options={WINDOWS}
-          value={windowSel}
-          onChange={setWindowSel}
-        />
+        <SegmentGroup label="window" options={WINDOWS} value={windowSel} onChange={setWindowSel} />
         <SegmentGroup label="author" options={AUTHORS} value={author} onChange={setAuthor} />
         <RepoSelect
           className="h-8 w-32 text-xs"

@@ -367,5 +367,3 @@ pub fn session_registry(cfg: &Config) -> std::io::Result<Vec<SessionRecord>> {
     rows.sort_by_key(|row| std::cmp::Reverse((row.updated_at, row.created_at)));
     Ok(rows)
 }
-
-

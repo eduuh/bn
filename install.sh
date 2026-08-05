@@ -156,14 +156,35 @@ download_release() {
   echo "Installed prebuilt bn + bn-web ($target) from the latest release."
 }
 
+# Fingerprint of the file that pins the UI's dependency tree — the lockfile when there is one, else
+# package.json. Stamped into node_modules after a successful install so the next run can tell a
+# stale tree from a current one. sha256 via whichever tool the platform ships; cksum is a weak last
+# resort, but it still changes when the file does, which is all this comparison needs.
+ui_deps_fingerprint() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | cut -d' ' -f1
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    cksum "$1" | cut -d' ' -f1
+  fi
+}
+
 # Build the bn-web dashboard UI (crates/bn-web/ui → dist) so the from-source build.rs embeds the
 # real single-page app instead of the "UI not built" placeholder. Node-optional and best-effort:
 # with no npm we leave the placeholder and the server (JSON API + MCP + dashboard shell) still runs.
 # Rebuilds the UI on EVERY install so a from-source build always embeds the current dashboard —
 # build.rs re-embeds via `cargo:rerun-if-changed` on ui/dist, so the recompiled bn-web picks the
-# change up. Set BN_SKIP_UI=1 to skip it (fast Rust-only rebuilds). Dependencies are only
-# (re)installed when node_modules is missing (or BN_REBUILD_UI=1 forces a clean reinstall), so the
-# repeat build stays fast. Never aborts the install — a UI hiccup must not block the Rust binary.
+# change up. Set BN_SKIP_UI=1 to skip it (fast Rust-only rebuilds).
+#
+# Dependencies are restored whenever the installed tree does not match the lockfile — missing, or
+# stale because a pull moved the lockfile under an existing node_modules. That staleness used to be
+# invisible: the old check installed only when node_modules was *absent*, so pulling a commit that
+# added a dependency left the previous tree in place and `npm run build` failed on the package that
+# was in package.json but never installed. Comparing a stamped fingerprint keeps the repeat build
+# fast (no reinstall when nothing moved) without ever building against a stale tree.
+# BN_REBUILD_UI=1 forces the reinstall regardless. Never aborts the install — a UI hiccup must not
+# block the Rust binary.
 build_web_ui() {
   local ui="$repo/crates/bn-web/ui" fresh_deps=1
   [ -f "$ui/package.json" ] || return 0
@@ -176,7 +197,11 @@ build_web_ui() {
     echo "      Install Node.js/npm and re-run ./install.sh (or BN_USE_RELEASE=1 for the prebuilt UI)." >&2
     return 0
   fi
-  if [ -d "$ui/node_modules" ] && [ "${BN_REBUILD_UI:-0}" != "1" ]; then
+  local pin="$ui/package.json" stamp="$ui/node_modules/.bn-deps-stamp" want=""
+  [ -f "$ui/package-lock.json" ] && pin="$ui/package-lock.json"
+  want=$(ui_deps_fingerprint "$pin")
+  if [ -d "$ui/node_modules" ] && [ "${BN_REBUILD_UI:-0}" != "1" ] &&
+    [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$want" ]; then
     fresh_deps=0
   fi
   echo "Building the bn-web dashboard UI (npm + vite) so the binary embeds it…"
@@ -184,6 +209,9 @@ build_web_ui() {
     cd "$ui"
     if [ "$fresh_deps" = "1" ]; then
       if [ -f package-lock.json ]; then npm ci; else npm install; fi
+      # After the install, not before: `npm ci` wipes node_modules (stamp included), and stamping
+      # only on success means a failed install stays stale and retries next run.
+      printf '%s\n' "$want" >"$stamp"
     fi
     npm run build
   ) || {

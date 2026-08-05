@@ -215,5 +215,3 @@ fn tail_events(path: &Path, offset: u64) -> std::io::Result<(Vec<Event>, u64)> {
         .collect();
     Ok((events, start + consumed as u64))
 }
-
-

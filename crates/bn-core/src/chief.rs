@@ -736,5 +736,3 @@ fn biggest_gap(sorted_times: &[u32]) -> Option<(u32, u32)> {
 fn hhmm(min: u32) -> String {
     format!("{:02}:{:02}", min / 60, min % 60)
 }
-
-

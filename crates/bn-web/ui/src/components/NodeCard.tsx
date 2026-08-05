@@ -2,7 +2,8 @@ import { AlertTriangle, Cpu, HardDrive, MemoryStick } from "lucide-react";
 
 import type { NodeView } from "../api/types";
 import { Card } from "./ui/card";
-import { Gauge, gaugeTone, gb, LEVEL_LABEL, LEVEL_TONE } from "./MachineHealth";
+import { Gauge } from "./MachineHealth";
+import { gaugeTone, gb, LEVEL_LABEL, LEVEL_TONE } from "../lib/machine";
 import { cn } from "../lib/utils";
 
 /** Human platform label — `std::env::consts::OS` values the fleet can actually run on. */

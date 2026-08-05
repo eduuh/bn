@@ -92,7 +92,11 @@ export function CostPanel({ windowDays }: { windowDays: number }) {
               tone="blue"
               title="Cache-aware benchmark at public per-model API prices — a benchmark, not a bill"
             />
-            <StatTile label="output tokens" value={fmtTokens(view.totals.output_tokens)} tone="grey" />
+            <StatTile
+              label="output tokens"
+              value={fmtTokens(view.totals.output_tokens)}
+              tone="grey"
+            />
             <StatTile label="sessions" value={String(view.totals.sessions)} tone="grey" />
             <StatTile label="active machines" value={String(view.by_machine.length)} tone="grey" />
           </StatGrid>

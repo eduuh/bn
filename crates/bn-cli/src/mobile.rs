@@ -138,5 +138,3 @@ pub fn run(cfg: &Config, alias: &str) {
     println!("remote: mosh-server + tmux found");
     println!("connect: {}", mobile_command(&host.alias));
 }
-
-

@@ -58,6 +58,10 @@ export function CostChart({
     const GRID = token("--border", "#3c3a36");
     const surface = token("--card", "#242321");
 
+    // uPlot types every builder in `paths` as optional, but `bars` ships in the bundle we depend
+    // on and is not feature-gated. There is no narrowing to do here — this is a gap in uPlot's
+    // .d.ts, not a value that can actually be missing at runtime.
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     const bars = uPlot.paths.bars!({ size: [0.68, 60], align: 0 });
     const series: uPlot.Series[] = [
       {},
@@ -74,7 +78,7 @@ export function CostChart({
           width: 2,
           paths: bars,
           points: { show: false },
-        } as uPlot.Series;
+        };
       }),
     ];
 

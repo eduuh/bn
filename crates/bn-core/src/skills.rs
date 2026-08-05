@@ -1106,5 +1106,3 @@ fn yaml_scalar(s: &str) -> String {
 fn io_err(msg: &str) -> std::io::Error {
     std::io::Error::other(msg.to_string())
 }
-
-

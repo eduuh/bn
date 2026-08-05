@@ -171,5 +171,3 @@ pub fn parse_items(input: &str) -> Vec<FeedItem> {
         .filter_map(|l| serde_json::from_str::<FeedItem>(l).ok())
         .collect()
 }
-
-

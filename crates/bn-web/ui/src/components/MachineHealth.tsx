@@ -2,31 +2,10 @@ import { useQuery } from "@tanstack/react-query";
 import { Activity, AlertTriangle, Cpu, HardDrive, MemoryStick } from "lucide-react";
 
 import { machineQuery } from "../api/client";
-import type { MachineLevel, MachineView } from "../api/types";
+import type { MachineLevel } from "../api/types";
 import { Card } from "./ui/card";
 import { cn } from "../lib/utils";
-
-/** Tailwind tones per saturation level — the dashboard's ok/warn/urgent signal scale. */
-export const LEVEL_TONE: Record<MachineLevel, { text: string; bar: string; badge: string }> = {
-  ok: { text: "text-ok", bar: "bg-ok", badge: "border-ok/30 bg-ok-muted text-ok" },
-  warn: { text: "text-warn", bar: "bg-warn", badge: "border-warn/30 bg-warn-muted text-warn" },
-  critical: {
-    text: "text-urgent",
-    bar: "bg-urgent",
-    badge: "border-urgent/30 bg-urgent-muted text-urgent",
-  },
-};
-
-export const LEVEL_LABEL: Record<MachineLevel, string> = {
-  ok: "healthy",
-  warn: "warming",
-  critical: "saturated",
-};
-
-/** Round MB to a compact GB string (`12.4 GB`). */
-export function gb(mb: number): string {
-  return `${(mb / 1024).toFixed(1)} GB`;
-}
+import { gaugeTone, gb, LEVEL_LABEL, LEVEL_TONE } from "../lib/machine";
 
 /** A labelled 0..1 gauge bar. `frac` null (unknown signal) renders a muted "—". `tone` colours the
  * fill once the value crosses into warn/critical; below that it stays neutral. */
@@ -77,22 +56,12 @@ export function Meter({ frac, tone }: { frac: number | null; tone: MachineLevel 
   );
 }
 
-/** The tone a single metric fraction earns on its own, so its gauge fill matches its severity even
- * when the overall card level is driven by a different signal. Thresholds mirror
- * `bn_core::machine` (load/core .7/1.0, RAM .85/.95, swap .10/.50). */
-export function gaugeTone(frac: number | null, warn: number, crit: number): MachineLevel {
-  if (frac == null) return "ok";
-  if (frac >= crit) return "critical";
-  if (frac >= warn) return "warn";
-  return "ok";
-}
-
 /** Machine-health widget (#525): a compact, live, colour-coded card showing the host the fleet
  * runs on — CPU load, RAM, swap (the real OOM signal), and active agent count — with a glanceable
  * near-saturation warning so the human sees we're close *before* things melt. */
 export function MachineHealth({ className }: { className?: string }) {
   const q = useQuery(machineQuery());
-  const m = q.data as MachineView | undefined;
+  const m = q.data;
 
   if (q.isLoading || !m) {
     return (

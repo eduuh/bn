@@ -987,5 +987,3 @@ fn consider(latest: &mut String, candidate: &str) {
         *latest = candidate.to_string();
     }
 }
-
-

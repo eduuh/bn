@@ -33,5 +33,3 @@ pub fn visible_events(cfg: &Config, events: Vec<Event>) -> Vec<Event> {
         })
         .collect()
 }
-
-

@@ -2123,5 +2123,3 @@ fn agent_dot(state: &str, since: &str) -> String {
     };
     format!("\x1b[{color}m{glyph}\x1b[0m ")
 }
-
-

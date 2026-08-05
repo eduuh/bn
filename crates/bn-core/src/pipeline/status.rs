@@ -220,5 +220,3 @@ fn action_for(phase: Phase, signals: &TaskSignals) -> String {
         Phase::Done => "Task complete".to_string(),
     }
 }
-
-

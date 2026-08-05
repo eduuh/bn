@@ -191,7 +191,11 @@ export function filterQueue(items: WorkItem[], q: string): WorkItem[] {
 }
 
 /** The queue counts the shell badges read off. */
-export function queueCounts(items: WorkItem[]): { blocked: number; running: number; backlog: number } {
+export function queueCounts(items: WorkItem[]): {
+  blocked: number;
+  running: number;
+  backlog: number;
+} {
   return {
     blocked: items.filter((i) => i.lane === "blocked").length,
     running: items.filter((i) => i.lane === "running").length,

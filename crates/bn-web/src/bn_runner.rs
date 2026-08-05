@@ -125,5 +125,3 @@ fn tail(s: &str, max: usize) -> String {
         .unwrap_or(s.len());
     format!("…{}", &s[start..])
 }
-
-

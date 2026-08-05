@@ -944,5 +944,3 @@ pub fn scorecard_data(s: &crate::metrics::Scorecard) -> Value {
 pub fn sync_data(p: &crate::sync::Proposals) -> Value {
     json!({ "proposals": p })
 }
-
-

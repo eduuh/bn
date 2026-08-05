@@ -1,3 +1,7 @@
+# Never suggest an API newer than the toolchain rust-toolchain.toml pins, so a clippy lint can't
+# push the workspace past its own MSRV.
+msrv = "1.96"
+
 # Tests must not mutate process-global env directly: Cargo runs a crate's tests as parallel
 # threads of one process, so an unlocked `env::set_var` in one test bleeds into another mid-flight
 # (order-dependent flakes). Route every mutation through `bn_core::test_support::{EnvGuard, env_lock}`
@@ -5,6 +9,11 @@
 # restores prior values on drop. See issue #358. The only sanctioned raw calls carry an explicit
 # `#[allow(clippy::disallowed_methods)]`: the EnvGuard impl itself, and the production flag
 # propagation in `bn-cli`'s `main.rs`.
+#
+# a055f1c removed the inline `#[cfg(test)]` modules, so today this rule mostly guards the guard:
+# it keeps production code from reaching for raw `set_var`, and keeps `test_support` (still live at
+# crates/bn-core/src/test_support.rs, behind the `test-support` feature) the only sanctioned path
+# for when tests come back.
 disallowed-methods = [
     { path = "std::env::set_var", reason = "use bn_core::test_support::EnvGuard/env_lock in tests (issue #358)" },
     { path = "std::env::remove_var", reason = "use bn_core::test_support::EnvGuard/env_lock in tests (issue #358)" },

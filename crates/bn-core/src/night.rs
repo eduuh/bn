@@ -425,5 +425,3 @@ pub fn report_goals(items: &[NightReportItem]) -> Vec<NightGoal> {
     }
     goals
 }
-
-

@@ -78,5 +78,3 @@ pub fn wrap(cap: MemoryCap, has_systemd_run: bool, inner: &[String]) -> Vec<Stri
         ulimit_v_wrapper(cap, inner)
     }
 }
-
-

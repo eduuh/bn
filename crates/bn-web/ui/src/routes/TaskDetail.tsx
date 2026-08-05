@@ -63,7 +63,7 @@ function DocEditor({ taskId, doc }: { taskId: string; doc: NonNullable<TaskDetai
       setContext("");
       refetch();
     },
-    onError: (e) => pushToast(`Could not add context: ${(e as Error).message}`, "error"),
+    onError: (e) => pushToast(`Could not add context: ${e.message}`, "error"),
   });
 
   const save = useMutation({
@@ -78,11 +78,14 @@ function DocEditor({ taskId, doc }: { taskId: string; doc: NonNullable<TaskDetai
       // A lost race is not something to report and forget: keep the operator's text, pull the
       // version that landed, and show it so they can reconcile and save again.
       if (e instanceof ApiError && e.code === "doc_conflict") {
-        pushToast("Someone else saved first — your text is kept; the latest is shown below", "error");
+        pushToast(
+          "Someone else saved first — your text is kept; the latest is shown below",
+          "error",
+        );
         setConflict(true);
         refetch();
       } else {
-        pushToast(`Could not save: ${(e as Error).message}`, "error");
+        pushToast(`Could not save: ${e.message}`, "error");
       }
     },
   });
@@ -98,7 +101,12 @@ function DocEditor({ taskId, doc }: { taskId: string; doc: NonNullable<TaskDetai
         />
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" disabled={save.isPending} onClick={() => save.mutate()}>
-            {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save
+            {save.isPending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Save className="h-4 w-4" />
+            )}{" "}
+            Save
           </Button>
           <Button
             size="sm"
@@ -160,7 +168,12 @@ function DocEditor({ taskId, doc }: { taskId: string; doc: NonNullable<TaskDetai
             disabled={append.isPending || !context.trim()}
             onClick={() => append.mutate(context.trim())}
           >
-            {append.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} Add context
+            {append.isPending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Plus className="h-4 w-4" />
+            )}{" "}
+            Add context
           </Button>
           <Button
             size="sm"
@@ -229,7 +242,7 @@ export function TaskDetail() {
       {q.isError && !notFound && (
         <Card className="flex items-center gap-2 border-urgent/30 bg-urgent-muted p-4 text-sm text-urgent">
           <AlertTriangle className="h-4 w-4" />
-          {(q.error as Error).message}
+          {q.error.message}
         </Card>
       )}
 

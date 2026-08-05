@@ -396,5 +396,3 @@ pub fn parse_window_rows(out: &str) -> Vec<TmuxWindowRow> {
         })
         .collect()
 }
-
-

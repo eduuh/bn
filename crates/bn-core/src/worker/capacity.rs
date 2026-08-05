@@ -116,5 +116,3 @@ fn read_disk_avail_mb(path: &std::path::Path) -> Option<u64> {
         .then(|| parse_df_avail_mb(&String::from_utf8_lossy(&out.stdout)))
         .flatten()
 }
-
-

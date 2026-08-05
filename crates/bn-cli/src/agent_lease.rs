@@ -72,16 +72,37 @@ pub(crate) fn pane_pid(target: &str) -> Option<u32> {
     .and_then(|(pid, _)| pid.trim().parse().ok())
 }
 
+/// The tmux window id hosting `target` (`session:window`), or `None` when no such window exists.
+///
+/// Enumerates and matches by name rather than asking `display-message -p -t =<target>`, because
+/// **that question cannot express "no such window"**: on an unresolvable target `display-message`
+/// does not fail — it prints the *current* window's id and exits 0. Every caller here feeds the
+/// answer to `kill-window`, so the fallback turns "this agent's window is already gone" into
+/// "kill whatever window is in front of you". `list-panes -t` does error properly, which is why
+/// [`target_is_live`] can keep using it; `display-message` is the odd one out.
 pub(crate) fn window_id_for_target(target: &str) -> Option<String> {
-    crate::proc::tmux_raw(&[
-        "display-message",
-        "-p",
-        "-t",
-        &format!("={target}"),
-        "#{window_id}",
-    ])
-    .map(|id| id.trim().to_string())
-    .filter(|id| !id.is_empty())
+    let rows = crate::proc::tmux_raw(&[
+        "list-windows",
+        "-a",
+        "-F",
+        "#{window_id}\t#{session_name}:#{window_name}",
+    ])?;
+    window_id_from_rows(&rows, target)
+}
+
+/// Exact-match `target` against `#{window_id}\t#{session_name}:#{window_name}` rows. Pure →
+/// unit-testable. Exact, never a prefix: window indices renumber as lanes come and go, so anything
+/// loose resolves a neighbour — and the caller kills what this returns.
+fn window_id_from_rows(rows: &str, target: &str) -> Option<String> {
+    let want = target.trim().trim_start_matches('=');
+    if want.is_empty() {
+        return None;
+    }
+    rows.lines()
+        .filter_map(|line| line.split_once('\t'))
+        .find(|(_, name)| name.trim() == want)
+        .map(|(id, _)| id.trim().to_string())
+        .filter(|id| !id.is_empty())
 }
 
 pub(crate) fn lease_is_live(lease: &AgentLease) -> bool {
@@ -104,12 +125,33 @@ fn reap(leases: &[AgentLease]) -> Result<(), String> {
     Ok(())
 }
 
-fn current_window_id() -> Option<String> {
-    std::env::var_os("TMUX").and_then(|_| {
-        crate::proc::tmux_raw(&["display-message", "-p", "#{window_id}"])
-            .map(|id| id.trim().to_string())
-            .filter(|id| !id.is_empty())
-    })
+/// The window *this process* is running in.
+///
+/// Resolved through `$TMUX_PANE`. A bare `display-message -p` (no `-t`) does **not** answer this
+/// question: with a client attached, tmux resolves the empty target to that client's *current*
+/// window — whichever one the human happens to be looking at — so a command running unattended in
+/// window A reports window B the moment you switch to it. Every caller is a safety gate ("is this
+/// lease ours?", "refuse to reap the window we're standing in"), and there the wrong answer means
+/// killing the wrong window. Falls back to the bare form only outside a pane, where there is no
+/// better answer and no process to protect.
+pub(crate) fn current_window_id() -> Option<String> {
+    std::env::var_os("TMUX")?;
+    let pane = std::env::var("TMUX_PANE")
+        .ok()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
+    crate::proc::tmux_raw(&current_window_argv(pane.as_deref()))
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+}
+
+/// The `display-message` argv [`current_window_id`] asks. Pure → unit-testable, because the whole
+/// correctness of the answer is whether `-t <pane>` is present.
+fn current_window_argv(pane: Option<&str>) -> Vec<&str> {
+    match pane {
+        Some(pane) => vec!["display-message", "-p", "-t", pane, "#{window_id}"],
+        None => vec!["display-message", "-p", "#{window_id}"],
+    }
 }
 
 fn reap_window_ids(window_ids: &[String]) -> Result<(), String> {

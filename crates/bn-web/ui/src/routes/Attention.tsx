@@ -38,8 +38,14 @@ function AttnCard({ item }: { item: AttnItem }) {
   const act = (action: AttnAction, opts?: { until?: string }) => attnAction(item.id, action, opts);
 
   const mut = useMutation({
-    mutationFn: ({ action, opts }: { action: AttnAction; opts?: { until?: string }; verb: string }) =>
-      act(action, opts),
+    mutationFn: ({
+      action,
+      opts,
+    }: {
+      action: AttnAction;
+      opts?: { until?: string };
+      verb: string;
+    }) => act(action, opts),
     onSuccess: (_d, v) => {
       pushToast(`${v.verb} ${item.id}`, "success");
       invalidate();
@@ -68,7 +74,9 @@ function AttnCard({ item }: { item: AttnItem }) {
         <Badge variant={variant} className="uppercase tracking-wide">
           {item.severity}
         </Badge>
-        <span className="min-w-0 flex-1 font-medium leading-tight text-foreground">{item.title}</span>
+        <span className="min-w-0 flex-1 font-medium leading-tight text-foreground">
+          {item.title}
+        </span>
         <span className="shrink-0 font-mono text-xs text-muted-foreground/80">{item.id}</span>
       </div>
 
@@ -115,7 +123,9 @@ function AttnCard({ item }: { item: AttnItem }) {
           size="sm"
           disabled={busy}
           title="hide until tomorrow"
-          onClick={() => mut.mutate({ action: "snooze", opts: { until: tomorrow() }, verb: "Snoozed" })}
+          onClick={() =>
+            mut.mutate({ action: "snooze", opts: { until: tomorrow() }, verb: "Snoozed" })
+          }
         >
           <Clock className="h-4 w-4" /> Snooze
         </Button>

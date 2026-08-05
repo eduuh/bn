@@ -3183,13 +3183,3 @@ pub fn migrate_legacy_state_in(dir: &Path) -> Option<(String, PathBuf)> {
 pub fn migrate_legacy_state() -> Option<(String, PathBuf)> {
     migrate_legacy_state_in(&crate::resolver::state_dir())
 }
-
-
-
-
-
-
-
-
-
-

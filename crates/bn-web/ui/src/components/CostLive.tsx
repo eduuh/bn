@@ -43,7 +43,8 @@ export function CostLive() {
 
           {agents.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              No agents currently running. $ / AIC land once a run finishes and is ingested (bn cost).
+              No agents currently running. $ / AIC land once a run finishes and is ingested (bn
+              cost).
             </p>
           ) : (
             <Card className="-mx-4 overflow-x-auto rounded-none border-x-0 px-4 py-2 sm:mx-0 sm:rounded-lg sm:border-x sm:px-4">

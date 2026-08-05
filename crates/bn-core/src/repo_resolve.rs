@@ -152,5 +152,3 @@ pub fn resolve_repo_name(
         }),
     }
 }
-
-

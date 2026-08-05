@@ -164,5 +164,3 @@ pub fn read_body_section(
     let note = store::read(&note_md)?;
     Ok(crate::render::section_content(&note.body, heading))
 }
-
-

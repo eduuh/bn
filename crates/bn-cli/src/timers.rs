@@ -146,5 +146,3 @@ fn field<'a>(s: &'a str, key: &str) -> Option<&'a str> {
     let end = rest.find(" ;").unwrap_or(rest.len());
     Some(rest[..end].trim())
 }
-
-

@@ -54,9 +54,7 @@ function QueueRow({
       aria-current={selected}
       className={cn(
         "relative flex w-full flex-col gap-0.5 border-l-2 py-2 pl-3 pr-2.5 text-left transition-colors",
-        selected
-          ? "border-l-primary bg-primary/10"
-          : "border-l-transparent hover:bg-accent/50",
+        selected ? "border-l-primary bg-primary/10" : "border-l-transparent hover:bg-accent/50",
       )}
     >
       {/* Tone bar sits inside the row so the selected state can override it with the brand edge. */}

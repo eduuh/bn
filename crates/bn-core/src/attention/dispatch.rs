@@ -155,5 +155,3 @@ pub fn promote_to_backlog(
         backlog_id,
     }
 }
-
-

@@ -3,13 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Check, ChevronsUpDown, FolderGit2 } from "lucide-react";
 import { reposQuery } from "../api/client";
 import { Button } from "./ui/button";
-import {
-  Command,
-  CommandEmpty,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from "./ui/command";
+import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "./ui/command";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
 import { cn } from "../lib/utils";
 
@@ -80,7 +74,11 @@ export function RepoSelect({
       </Button>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent hideClose className="overflow-hidden p-0 sm:max-w-md" aria-label="Pick a repo">
+        <DialogContent
+          hideClose
+          className="overflow-hidden p-0 sm:max-w-md"
+          aria-label="Pick a repo"
+        >
           <DialogTitle className="sr-only">Pick a repo</DialogTitle>
           <Command>
             <CommandInput placeholder="Search repos…" />

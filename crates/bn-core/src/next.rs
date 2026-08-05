@@ -943,5 +943,3 @@ fn stamp_at(epoch_secs: i64) -> String {
         })
         .unwrap_or_else(crate::util::now_stamp)
 }
-
-

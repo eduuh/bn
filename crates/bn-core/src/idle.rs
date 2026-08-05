@@ -25,5 +25,3 @@ pub fn is_active(cfg: &Config, now: i64, idle_after_mins: i64) -> bool {
 pub fn is_idle(cfg: &Config, now: i64, idle_after_mins: i64) -> bool {
     !is_active(cfg, now, idle_after_mins)
 }
-
-

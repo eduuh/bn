@@ -171,5 +171,3 @@ pub fn render_gap(gap: Option<&Gap>) -> String {
         None => "no upcoming events".to_string(),
     }
 }
-
-

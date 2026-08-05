@@ -189,5 +189,3 @@ fn read_cache() -> Option<(i64, Vec<WinTask>)> {
         .collect();
     Some((ts, tasks))
 }
-
-

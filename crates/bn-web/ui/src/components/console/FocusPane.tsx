@@ -5,6 +5,7 @@ import { agentDetailQuery, reviewsQuery } from "../../api/client";
 import { pendingReviewFor } from "../../lib/review";
 import { fmtTokens, timeAgo } from "../../lib/format";
 import { jumpCommand } from "../../lib/board";
+import type { ActionItem } from "../../api/types";
 import type { WorkItem } from "../../lib/console";
 import { AgentActivity } from "../AgentActivity";
 import { SteerPanel } from "../SteerPanel";
@@ -87,10 +88,12 @@ function FocusHeader({
 
 /** A live agent in focus: its session activity, its branch note, and the plan it's paused on — all
  * without leaving the queue. */
-function AgentFocus({ item, now }: { item: WorkItem; now: number }) {
-  const agent = item.agent!;
+function AgentFocus({ agent, now }: { agent: NonNullable<WorkItem["agent"]>; now: number }) {
   const [tab, setTab] = useState("live");
-  const detail = useQuery({ ...agentDetailQuery(agent.sessionId ?? ""), enabled: !!agent.sessionId });
+  const detail = useQuery({
+    ...agentDetailQuery(agent.sessionId ?? ""),
+    enabled: !!agent.sessionId,
+  });
   const reviews = useQuery(reviewsQuery());
   const review = reviews.data
     ? pendingReviewFor(reviews.data.reviews, agent.repo, agent.branch)
@@ -133,7 +136,10 @@ function AgentFocus({ item, now }: { item: WorkItem; now: number }) {
           ))}
 
         {tab === "plan" && review && (
-          <Markdown text={review.plan} className="rounded-lg border border-border bg-muted/30 p-4" />
+          <Markdown
+            text={review.plan}
+            className="rounded-lg border border-border bg-muted/30 p-4"
+          />
         )}
 
         {tab === "note" &&
@@ -166,8 +172,7 @@ function AgentFocus({ item, now }: { item: WorkItem; now: number }) {
  * write-ups and cron failures are all authored as markdown by the agents that file them, so this
  * is the difference between reading a plan and squinting at one.
  */
-function ActionFocus({ item }: { item: WorkItem }) {
-  const action = item.action!;
+function ActionFocus({ item, action }: { item: WorkItem; action: ActionItem }) {
   const reviews = useQuery(reviewsQuery());
   const review =
     action.type === "plan-review" && reviews.data && action.repo && action.branch
@@ -236,6 +241,9 @@ export function FocusPane({
 }) {
   if (!item) return <EmptyFocus blocked={blocked} />;
   // Remount per selection so tab state and the activity poll reset cleanly between agents.
-  if (item.agent) return <AgentFocus key={item.id} item={item} now={now} />;
-  return <ActionFocus key={item.id} item={item} />;
+  // `agent`/`action` are passed down already-narrowed — this is the only place that knows which
+  // kind of row it is, so the panes should not have to re-assert it.
+  if (item.agent) return <AgentFocus key={item.id} agent={item.agent} now={now} />;
+  if (item.action) return <ActionFocus key={item.id} item={item} action={item.action} />;
+  return <EmptyFocus blocked={blocked} />;
 }

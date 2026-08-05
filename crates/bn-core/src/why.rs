@@ -489,5 +489,3 @@ fn todo_matches(text: &str, file: Option<&str>, shas: &[String], pr: Option<u64>
     }
     false
 }
-
-

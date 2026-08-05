@@ -259,5 +259,3 @@ fn humanize_secs(s: i64) -> String {
         format!("{}d", s / 86_400)
     }
 }
-
-

@@ -21,10 +21,12 @@ const STATUS_TONE: Record<ReviewStatus, { variant: BadgeProps["variant"]; bar: s
 
 /** The first non-empty line of a plan — a one-line preview for decided reviews. */
 function planPreview(plan: string): string {
-  return plan
-    .split("\n")
-    .map((l) => l.trim())
-    .find((l) => l.length > 0) ?? "";
+  return (
+    plan
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l.length > 0) ?? ""
+  );
 }
 
 /** One review in the inbox: the plan (full for pending, a preview once decided) plus the inline
@@ -82,7 +84,9 @@ function ReviewCard({ review }: { review: Review }) {
     >
       <span className={cn("absolute inset-y-0 left-0 w-1", tone.bar)} aria-hidden="true" />
       <div className="flex flex-wrap items-center gap-2">
-        <span className="truncate font-mono text-sm font-semibold text-foreground">{review.repo}</span>
+        <span className="truncate font-mono text-sm font-semibold text-foreground">
+          {review.repo}
+        </span>
         <Badge variant={tone.variant}>{review.status}</Badge>
         <span className="flex-1" />
         <span className="shrink-0 font-mono text-xs text-muted-foreground/80">{review.id}</span>
@@ -142,10 +146,20 @@ function ReviewCard({ review }: { review: Review }) {
 }
 
 /** A section header — title + a live count badge. */
-function SectionHead({ title, count, tone }: { title: string; count: number; tone?: BadgeProps["variant"] }) {
+function SectionHead({
+  title,
+  count,
+  tone,
+}: {
+  title: string;
+  count: number;
+  tone?: BadgeProps["variant"];
+}) {
   return (
     <div className="flex items-center gap-2">
-      <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
+      <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        {title}
+      </h3>
       <Badge variant={tone ?? "muted"}>{count}</Badge>
     </div>
   );

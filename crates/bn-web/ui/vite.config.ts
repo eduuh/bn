@@ -37,8 +37,10 @@ export default defineConfig({
     },
   },
   test: {
-    // Unit tests only (`src/**/*.test.ts`). The Playwright E2E specs under `e2e/` are driven by
-    // `npm run e2e` (playwright.config.ts), not vitest — vitest can't host `@playwright/test`.
+    // Unit tests only. There are none right now — a055f1c deleted every `*.test.ts(x)` along with
+    // the Playwright suite, and `npm run test` is `vitest run --passWithNoTests`, so this lane is
+    // a placeholder that goes green vacuously. The first DOM test added will also need
+    // `environment: "jsdom"` here (jsdom and @testing-library are already devDependencies).
     include: ["src/**/*.test.{ts,tsx}"],
   },
 });

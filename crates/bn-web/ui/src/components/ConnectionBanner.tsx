@@ -12,7 +12,9 @@ export function ConnectionBanner({ status }: { status: StreamStatus }) {
     <div
       className={cn(
         "border-b px-4 py-2 text-center text-sm",
-        down ? "border-urgent bg-urgent-muted text-[#ffb4ab]" : "border-warn bg-warn-muted text-warn",
+        down
+          ? "border-urgent bg-urgent-muted text-[#ffb4ab]"
+          : "border-warn bg-warn-muted text-warn",
       )}
       role="status"
       aria-live="polite"

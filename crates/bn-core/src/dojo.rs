@@ -1141,4 +1141,3 @@ fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
         .open(path)?;
     writeln!(f, "{}", serde_json::to_string(value)?)
 }
-

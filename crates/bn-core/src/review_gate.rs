@@ -496,5 +496,3 @@ pub fn reviewer_prompt(repo: &str, number: i64, reviewer_label: &str, required: 
          `bn review-gate record` call is the ONLY write you may make."
     )
 }
-
-

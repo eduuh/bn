@@ -137,5 +137,3 @@ pub fn switches(events: &[Event], now: i64, window_days: i64) -> Switches {
         limit_source: sorted_counts(limit_source),
     }
 }
-
-

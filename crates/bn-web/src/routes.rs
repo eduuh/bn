@@ -208,5 +208,3 @@ fn resolve_asset(path: &str) -> Option<(String, Vec<u8>)> {
     let mime = file.metadata.mimetype().to_string();
     Some((mime, file.data.into_owned()))
 }
-
-

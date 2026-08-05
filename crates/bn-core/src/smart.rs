@@ -334,5 +334,3 @@ pub fn check(
         gaps,
     }
 }
-
-

@@ -373,5 +373,3 @@ pub fn resolve(cfg: &Config, rb: RepoBranch<'_>, stage: Stage, cli: &StageConfig
         },
     )
 }
-
-

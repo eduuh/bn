@@ -30,7 +30,8 @@ const DS_CARD = /^<!--\s*@dsCard\s+([^>]*?)-->/;
 /** `<!-- @tokens clay -->` — which `design/tokens/*.css` block the card renders against. */
 const TOKENS = /<!--\s*@tokens\s+([\w-]+)\s*-->/;
 
-const attrs = (s) => Object.fromEntries([...s.matchAll(/(\w+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));
+const attrs = (s) =>
+  Object.fromEntries([...s.matchAll(/(\w+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));
 
 /** Compile the app's Tailwind over the card sources. Returns the stylesheet as a string. */
 function compileTailwind() {
@@ -38,7 +39,15 @@ function compileTailwind() {
   const out = join(TMP, "ds.css");
   execFileSync(
     join(DESIGN, "..", "node_modules", ".bin", "tailwindcss"),
-    ["-c", join(DESIGN, "tailwind.design.ts"), "-i", join(DESIGN, "input.css"), "-o", out, "--minify"],
+    [
+      "-c",
+      join(DESIGN, "tailwind.design.ts"),
+      "-i",
+      join(DESIGN, "input.css"),
+      "-o",
+      out,
+      "--minify",
+    ],
     { cwd: DESIGN, stdio: ["ignore", "ignore", "inherit"] },
   );
   return readFileSync(out, "utf8");
@@ -79,7 +88,9 @@ function build() {
       .map((f) => [f.replace(/\.css$/, ""), readFileSync(join(DESIGN, "tokens", f), "utf8")]),
   );
 
-  const files = readdirSync(CARDS).filter((f) => f.endsWith(".html")).sort();
+  const files = readdirSync(CARDS)
+    .filter((f) => f.endsWith(".html"))
+    .sort();
   if (!files.length) throw new Error(`no cards found in ${CARDS}`);
 
   for (const file of files) {
@@ -115,7 +126,9 @@ ${body}
 </html>
 `,
     );
-    console.log(`  ${meta.group.padEnd(12)} ${meta.name.padEnd(28)} ${themeName.padEnd(9)} ${file}`);
+    console.log(
+      `  ${meta.group.padEnd(12)} ${meta.name.padEnd(28)} ${themeName.padEnd(9)} ${file}`,
+    );
   }
 
   rmSync(TMP, { recursive: true, force: true });

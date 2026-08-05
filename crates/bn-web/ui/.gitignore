@@ -5,14 +5,3 @@ node_modules/
 dist/
 *.local
 
-# Playwright E2E (runtime server tree + reports); screenshots ARE committed.
-/e2e/.runtime/
-# Live-sweep artefacts are per-run against whatever state the host had at the time. Unlike
-# `/e2e/screenshots/` — deterministic shots of seeded fixtures, committed for design review — these
-# capture the machine's real fleet, notes and agent transcripts. They would churn on every run and
-# would put real session text in git history, so they stay local.
-/e2e-live/.report/
-/e2e-live/screenshots/
-/test-results/
-/playwright-report/
-/blob-report/

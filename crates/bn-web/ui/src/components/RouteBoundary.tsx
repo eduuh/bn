@@ -10,13 +10,13 @@ import { Component, type ReactNode } from "react";
  * reload in front of you.
  */
 export class RouteBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
-  state = { failed: false };
+  override state = { failed: false };
 
   static getDerivedStateFromError() {
     return { failed: true };
   }
 
-  render() {
+  override render() {
     if (!this.state.failed) return this.props.children;
     return (
       <div className="mx-auto max-w-[1060px] px-3 py-8 md:px-6">

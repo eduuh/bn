@@ -3,7 +3,17 @@
 // and map machine states to one-line human labels. Side-effect-free + unit-tested (`fleet.test.ts`)
 // so the mobile Fleet view stays a thin render of these values.
 
-import type { AgentControl, AgentRole, AgentTask, FleetView, LiveAgent, OrchestrateView, PaneState, QueueItem, RunView } from "../api/types";
+import type {
+  AgentControl,
+  AgentRole,
+  AgentTask,
+  FleetView,
+  LiveAgent,
+  OrchestrateView,
+  PaneState,
+  QueueItem,
+  RunView,
+} from "../api/types";
 import { agentForItem, healthTone, nonOrchestratedAgents, paneTone, type ChipTone } from "./board";
 
 /** A unified fleet card viewmodel — one running agent (an in-flight orchestrate item joined to its
@@ -96,7 +106,7 @@ function entryFromItem(item: QueueItem, run: RunView, fleet?: FleetView): FleetE
   const agent = agentForItem(item, run.repo, fleet);
   const target = item.tmux_window
     ? `${item.tmux_session ?? run.repo}:${item.tmux_window}`
-    : agent?.target ?? `${run.repo}:${(item.branch ?? "").replace(/\//g, "-")}`;
+    : (agent?.target ?? `${run.repo}:${(item.branch ?? "").replace(/\//g, "-")}`);
   const needsReview = !!item.waiting_for_review;
   const needs = needsReview || stateNeedsYou(item.last_state);
   return {
@@ -121,7 +131,11 @@ function entryFromItem(item: QueueItem, run: RunView, fleet?: FleetView): FleetE
     toolCalls: agent?.tool_calls,
     updatedAt: item.updated_at,
     needs,
-    needsReason: needsReview ? "Plan awaiting approval" : stateNeedsYou(item.last_state) ? paneStateLabel(item.last_state) : undefined,
+    needsReason: needsReview
+      ? "Plan awaiting approval"
+      : stateNeedsYou(item.last_state)
+        ? paneStateLabel(item.last_state)
+        : undefined,
     reviewId: item.review_id,
     pr: item.pr,
   };
@@ -142,7 +156,7 @@ function entryFromAgent(a: LiveAgent): FleetEntry {
     harness: a.harness,
     role,
     // An orchestrator runs the wave rather than shipping, so read its health as a fleet-tick signal.
-    stateLabel: orchestrator ? orchestratorStateLabel(a) : HEALTH_LABEL[a.health] ?? a.health,
+    stateLabel: orchestrator ? orchestratorStateLabel(a) : (HEALTH_LABEL[a.health] ?? a.health),
     statusLabel: orchestrator ? "orchestrator" : a.health,
     tone: healthTone(a.health),
     outputTokens: a.output_tokens,

@@ -75,7 +75,13 @@ function DailyRow({ g, branches }: { g: DailyGoal; branches: SummaryEntry[] }) {
           )}
           aria-hidden="true"
         >
-          {g.done ? <Check className="h-3.5 w-3.5" /> : g.pct != null ? `${g.pct}%` : <Circle className="h-3 w-3" />}
+          {g.done ? (
+            <Check className="h-3.5 w-3.5" />
+          ) : g.pct != null ? (
+            `${g.pct}%`
+          ) : (
+            <Circle className="h-3 w-3" />
+          )}
         </span>
         <span className={cn("min-w-0 flex-1 text-sm text-foreground", g.done && "line-through")}>
           {g.link ? (
@@ -92,7 +98,10 @@ function DailyRow({ g, branches }: { g: DailyGoal; branches: SummaryEntry[] }) {
           )}
         </span>
         {(g.est != null || g.actual != null) && (
-          <span className="shrink-0 font-mono text-xs text-muted-foreground" title="aimed vs achieved">
+          <span
+            className="shrink-0 font-mono text-xs text-muted-foreground"
+            title="aimed vs achieved"
+          >
             {g.actual ?? "—"} / {g.est ?? "—"}
           </span>
         )}
@@ -113,7 +122,7 @@ function GoalNotesList({ goal }: { goal: DailyGoal }) {
       pushToast("Note disconnected", "success");
       void qc.invalidateQueries({ queryKey: queryKeys.goals });
     },
-    onError: (e) => pushToast(`Could not disconnect: ${(e as Error).message}`, "error"),
+    onError: (e) => pushToast(`Could not disconnect: ${e.message}`, "error"),
   });
 
   const notes = goal.notes ?? [];
@@ -202,11 +211,10 @@ function ConnectNoteDialog({ goal, branches }: { goal: DailyGoal; branches: Summ
       setOpen(false);
       reset();
     },
-    onError: (e) => pushToast(`Could not connect: ${(e as Error).message}`, "error"),
+    onError: (e) => pushToast(`Could not connect: ${e.message}`, "error"),
   });
 
-  const canSubmit =
-    mode === "link" ? selected.includes("/") : text.trim().length > 0;
+  const canSubmit = mode === "link" ? selected.includes("/") : text.trim().length > 0;
 
   // On a file pick, read its text into the attachment (small docs only; the server caps at 100 KB).
   const onFile = async (file: File | undefined) => {
@@ -354,9 +362,7 @@ function QuarterRow({ g }: { g: QuarterGoal }) {
 
 /** An inline empty note within a section (no goals set). */
 function SectionEmpty({ children }: { children: React.ReactNode }) {
-  return (
-    <Card className="px-4 py-6 text-center text-sm text-muted-foreground">{children}</Card>
-  );
+  return <Card className="px-4 py-6 text-center text-sm text-muted-foreground">{children}</Card>;
 }
 
 /**
@@ -395,7 +401,9 @@ export function Goals() {
       {daily && (
         <section className="space-y-3">
           <div className="flex items-center gap-2">
-            <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Today</h3>
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              Today
+            </h3>
             <span className="text-xs text-muted-foreground">
               {daily.date} · {daily.done}/{daily.goals.length} done
             </span>

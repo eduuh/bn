@@ -1180,5 +1180,3 @@ fn claude_progress(path: &Path, cwd: &Path) -> Option<AgentProgress> {
         last_activity_ts,
     })
 }
-
-

@@ -30,7 +30,7 @@ export function useHarnessSwitch(target: string, current?: string, harnesses?: H
       void qc.invalidateQueries({ queryKey: queryKeys.activityAll });
     },
     onError: (e) => {
-      pushToast(`switch failed: ${(e as Error).message}`, "error");
+      pushToast(`switch failed: ${e.message}`, "error");
     },
   });
 
@@ -53,7 +53,7 @@ export function useHarnessSwitch(target: string, current?: string, harnesses?: H
   /** The button/menu-item tooltip for an option, given whether it's the running one. */
   const titleFor = (opt: HarnessOption) =>
     !opt.available
-      ? opt.reason ?? `${opt.name} is unavailable`
+      ? (opt.reason ?? `${opt.name} is unavailable`)
       : opt.name === current
         ? `Running under ${opt.name}`
         : `Relaunch under ${opt.name}`;

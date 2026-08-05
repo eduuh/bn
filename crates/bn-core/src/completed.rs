@@ -254,5 +254,3 @@ pub fn build_completed(src: &CompletedSources, linker: &dyn NoteLinker) -> Vec<C
     out.sort_by(|a, b| b.completed.cmp(&a.completed).then(a.id.cmp(&b.id)));
     out
 }
-
-

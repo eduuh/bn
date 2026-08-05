@@ -72,7 +72,11 @@ export function HarnessMenu({
         aria-expanded={open}
         disabled={pending}
         title={`Running under ${current ?? "an unknown harness"} — switch harness`}
-        className={cn(chipClass, "transition-colors hover:bg-accent hover:text-foreground", pending && "opacity-60")}
+        className={cn(
+          chipClass,
+          "transition-colors hover:bg-accent hover:text-foreground",
+          pending && "opacity-60",
+        )}
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -103,7 +107,9 @@ export function HarnessMenu({
                 title={titleFor(opt)}
                 className={cn(
                   "flex min-h-[2.25rem] w-full items-center gap-2 px-2.5 py-1.5 text-left text-sm transition-colors",
-                  active ? "text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                  active
+                    ? "text-foreground"
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
                   !opt.available && !active && "opacity-60",
                 )}
                 onClick={(e) => {
@@ -119,7 +125,9 @@ export function HarnessMenu({
                   <span className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                 )}
                 {opt.name}
-                {!opt.available && <Ban className="ml-auto h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
+                {!opt.available && (
+                  <Ban className="ml-auto h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                )}
               </button>
             );
           })}

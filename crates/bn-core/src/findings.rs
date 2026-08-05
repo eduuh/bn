@@ -132,5 +132,3 @@ pub fn query(source: Option<&str>, since_date: Option<&str>, limit: usize) -> Ve
     }
     runs
 }
-
-

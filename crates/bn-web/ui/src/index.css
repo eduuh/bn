@@ -76,9 +76,11 @@
 
   /* Roboto, bundled via @fontsource-variable (see `main.tsx`); the system stack stays behind it so
      a cold load renders in something sane before the woff2 lands. */
-  --mono: "Roboto Mono Variable", ui-monospace, SFMono-Regular, "SF Mono", Menlo, "Cascadia Code",
+  --mono:
+    "Roboto Mono Variable", ui-monospace, SFMono-Regular, "SF Mono", Menlo, "Cascadia Code",
     monospace;
-  --sans: "Roboto Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+  --sans:
+    "Roboto Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
     sans-serif;
 }
 
@@ -258,7 +260,10 @@ button {
   font-size: var(--fs-base);
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease, transform 0.05s ease;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    transform 0.05s ease;
   -webkit-tap-highlight-color: transparent;
 }
 .btn:hover:not(:disabled) {
@@ -626,7 +631,11 @@ select:focus {
 
 /* Orchestrators — the always-pinned top tier (#500): the agents running the wave. */
 .orchestrators {
-  background: linear-gradient(180deg, color-mix(in srgb, var(--purple) 14%, transparent), transparent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--purple) 14%, transparent),
+    transparent
+  );
   border: 1px solid color-mix(in srgb, var(--purple) 40%, var(--border));
   border-radius: var(--r3);
   padding: var(--s4);
@@ -667,7 +676,9 @@ select:focus {
   padding: var(--s3) var(--s4);
   color: var(--text);
   box-shadow: var(--shadow-1);
-  transition: border-color 0.12s ease, background 0.12s ease;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease;
 }
 .agent-card:hover {
   text-decoration: none;
@@ -1187,7 +1198,9 @@ details.manage[open] > summary::before {
   font: inherit;
   font-size: var(--fs-sm);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
 }
 .hs-opt:last-child {
   border-right: 0;
@@ -2549,7 +2562,9 @@ details.manage[open] > summary::before {
   overflow-y: auto;
   transform: translateX(-100%);
   visibility: hidden;
-  transition: transform 0.22s ease, visibility 0.22s ease;
+  transition:
+    transform 0.22s ease,
+    visibility 0.22s ease;
 }
 .app.drawer-open .sidebar {
   transform: translateX(0);

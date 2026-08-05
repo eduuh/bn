@@ -339,5 +339,3 @@ pub fn write(
         text: new_text,
     })
 }
-
-

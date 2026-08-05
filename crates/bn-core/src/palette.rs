@@ -535,5 +535,3 @@ fn first_line(text: &str, max: usize) -> String {
         first.to_string()
     }
 }
-
-

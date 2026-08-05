@@ -152,8 +152,7 @@ function DigestPanel({
         Could not load {label}.
       </Card>
     );
-  if (!text || !text.trim())
-    return <p className="py-6 text-sm text-muted-foreground">{empty}</p>;
+  if (!text || !text.trim()) return <p className="py-6 text-sm text-muted-foreground">{empty}</p>;
   return (
     <pre className="overflow-auto whitespace-pre-wrap rounded-md border border-border bg-muted/60 p-4 font-mono text-xs leading-relaxed text-foreground/90">
       {text}
@@ -194,7 +193,10 @@ const CostPanel = lazy(() =>
 export function Insights() {
   const [windowDays, setWindowDays] = useState(30);
   const [params, setParams] = useSearchParams();
-  const tab = TABS.includes(params.get("tab") ?? "") ? params.get("tab")! : "metrics";
+  // Read the param once: `params.get()` twice made the second read need a non-null assertion even
+  // though the first had already proved it.
+  const tabParam = params.get("tab") ?? "";
+  const tab = TABS.includes(tabParam) ? tabParam : "metrics";
   const metrics = useQuery(metricsQuery(windowDays));
   const trend = useQuery(metricsTrendQuery());
   const weekly = useQuery(weeklyQuery());
@@ -259,9 +261,7 @@ export function Insights() {
               Could not load metrics.
             </div>
           )}
-          {metrics.data && (
-            <MetricsPanel view={metrics.data} trend={trend.data?.snapshots ?? []} />
-          )}
+          {metrics.data && <MetricsPanel view={metrics.data} trend={trend.data?.snapshots ?? []} />}
         </TabsContent>
 
         <TabsContent value="cost" className="mt-0 px-4 py-4">

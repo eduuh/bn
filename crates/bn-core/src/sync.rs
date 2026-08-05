@@ -234,5 +234,3 @@ const STOP_WORDS: &[&str] = &[
     "the", "and", "for", "with", "add", "added", "fix", "fixed", "use", "using", "via", "from",
     "into", "out", "all", "new", "now", "not", "this", "that", "than", "then",
 ];
-
-

@@ -43,5 +43,3 @@ pub fn worktree_gh_config_dir(base: &Path, repo: &str, branch: &str) -> PathBuf 
 fn sanitize_segment(s: &str) -> String {
     s.replace(['/', '\\'], "-")
 }
-
-

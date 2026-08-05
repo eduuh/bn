@@ -423,5 +423,3 @@ fn dur(hours: f64) -> String {
         format!("{:.1}d", hours / 24.0)
     }
 }
-
-

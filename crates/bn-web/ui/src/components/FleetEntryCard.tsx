@@ -11,7 +11,7 @@ import { RelaunchButton } from "./RelaunchButton";
 import { NoTaskChip, TaskChip } from "./TaskChip";
 import { Badge } from "./ui/badge";
 import { Card } from "./ui/card";
-import { toneVariant } from "./StateChip";
+import { toneVariant } from "../lib/tone";
 import { cn } from "../lib/utils";
 
 /** The left tone bar colour for a card's state. */
@@ -66,7 +66,9 @@ export function FleetEntryCard({
       />
 
       <div className="flex items-center gap-2">
-        <span className="truncate font-mono text-sm font-semibold text-foreground">{entry.branch}</span>
+        <span className="truncate font-mono text-sm font-semibold text-foreground">
+          {entry.branch}
+        </span>
         {isOrchestrator && (
           <Badge variant="info" className="shrink-0 gap-1">
             ◆ Orchestrator

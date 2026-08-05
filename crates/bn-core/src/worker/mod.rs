@@ -133,5 +133,3 @@ pub fn attempt_state(stdout: &str, attempt_id: &str) -> Option<String> {
         .and_then(|a| a.get("state").and_then(|x| x.as_str()))
         .map(str::to_string)
 }
-
-

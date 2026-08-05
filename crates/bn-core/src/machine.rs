@@ -414,5 +414,3 @@ pub fn swap_used_pct(mem: &MemInfo) -> Option<f64> {
     }
     Some(total.saturating_sub(free) as f64 / total as f64 * 100.0)
 }
-
-

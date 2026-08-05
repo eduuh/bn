@@ -32,7 +32,7 @@ export function RelaunchButton({ target, control }: { target: string; control?: 
       void qc.invalidateQueries({ queryKey: queryKeys.fleet });
       void qc.invalidateQueries({ queryKey: queryKeys.activityAll });
     },
-    onError: (e) => pushToast(`relaunch failed: ${(e as Error).message}`, "error"),
+    onError: (e) => pushToast(`relaunch failed: ${e.message}`, "error"),
   });
 
   return (

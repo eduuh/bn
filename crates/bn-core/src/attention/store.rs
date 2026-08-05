@@ -107,5 +107,3 @@ pub(crate) fn field_str(ev: &Event, key: &str) -> Option<String> {
         .and_then(Value::as_str)
         .map(str::to_string)
 }
-
-

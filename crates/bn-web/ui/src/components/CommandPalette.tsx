@@ -23,6 +23,7 @@ import {
   Microscope,
   Rocket,
   Server,
+  Settings,
   Sparkles,
   SquareTerminal,
   Sun,
@@ -201,6 +202,14 @@ const DESTINATIONS: {
     keywords: "dispatch new run queue daemon",
     exp: "start",
   },
+  // Ungated, like its rail row: the palette is the fastest way back to the screen that owns the
+  // experimental gate, and gating it would mean the flag could lock away its own switch.
+  {
+    to: "/settings",
+    label: "Settings",
+    Icon: Settings,
+    keywords: "preferences experimental flags tabs options config version",
+  },
 ];
 
 /** Destinations matching `q` — label first, then keyword hits, capped so they never bury the data. */
@@ -303,10 +312,15 @@ export function CommandPalette({
                       }}
                       className="gap-3"
                     >
-                      <d.Icon className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                      <d.Icon
+                        className="h-4 w-4 shrink-0 text-muted-foreground"
+                        aria-hidden="true"
+                      />
                       <div className="min-w-0 flex-1">
                         <div className="truncate font-medium text-foreground">{d.label}</div>
-                        <div className="truncate font-mono text-xs text-muted-foreground">{d.to}</div>
+                        <div className="truncate font-mono text-xs text-muted-foreground">
+                          {d.to}
+                        </div>
                       </div>
                       <span className="ml-auto inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
                         <CornerDownLeft className="h-3.5 w-3.5" />
@@ -330,9 +344,7 @@ export function CommandPalette({
                 >
                   {results.map((r) => {
                     const Icon = KIND_ICON[r.type] ?? FileText;
-                    const where = r.repo
-                      ? `${r.repo}${r.branch ? `/${r.branch}` : ""}`
-                      : null;
+                    const where = r.repo ? `${r.repo}${r.branch ? `/${r.branch}` : ""}` : null;
                     const action = verb(r);
                     return (
                       <CommandItem
@@ -341,7 +353,10 @@ export function CommandPalette({
                         onSelect={() => run(r)}
                         className="gap-3"
                       >
-                        <Icon className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                        <Icon
+                          className="h-4 w-4 shrink-0 text-muted-foreground"
+                          aria-hidden="true"
+                        />
                         <div className="min-w-0 flex-1">
                           <div className="truncate font-medium text-foreground">{r.title}</div>
                           <div className="truncate text-xs text-muted-foreground">
@@ -367,9 +382,7 @@ export function CommandPalette({
           </Command>
         </DialogContent>
       </Dialog>
-      {composing && (
-        <StartAgentComposer item={composing} onClose={() => setComposing(null)} />
-      )}
+      {composing && <StartAgentComposer item={composing} onClose={() => setComposing(null)} />}
       <ToastStack />
     </>
   );

@@ -910,5 +910,3 @@ fn raise_consensus_attn(review: &Review, today: &str) -> Option<String> {
         }
     }
 }
-
-

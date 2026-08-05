@@ -85,5 +85,3 @@ pub(crate) fn io<T>(
         |message| eprintln!("{message}"),
     )
 }
-
-

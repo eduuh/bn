@@ -587,5 +587,3 @@ pub fn archive(cfg: &Config, today: &str, now: i64, dry_run: bool) -> RetentionR
 pub fn archive_now(cfg: &Config, dry_run: bool) -> RetentionReport {
     archive(cfg, &util::today(), util::now_epoch_secs(), dry_run)
 }
-
-

@@ -37,7 +37,7 @@ function RerunButton({ job }: { job: string }) {
       void qc.invalidateQueries({ queryKey: queryKeys.cron });
     },
     onError: (e) => {
-      pushToast(`run ${job} failed: ${(e as Error).message}`, "error");
+      pushToast(`run ${job} failed: ${e.message}`, "error");
       // The run still recorded a failed outcome — refresh so its new last-run health shows.
       void qc.invalidateQueries({ queryKey: queryKeys.cron });
     },

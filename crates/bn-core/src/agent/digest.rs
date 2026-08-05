@@ -173,5 +173,3 @@ fn decision_text(s: &AgentSession) -> String {
         s.lines_removed,
     )
 }
-
-

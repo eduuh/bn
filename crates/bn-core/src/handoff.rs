@@ -323,5 +323,3 @@ fn first_line(s: &str) -> &str {
         .find(|l| !l.is_empty())
         .unwrap_or("")
 }
-
-

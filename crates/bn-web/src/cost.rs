@@ -35,5 +35,3 @@ pub fn cost_view(cfg: &Config, window_days: i64, now: i64, _by: &str) -> Value {
     );
     serde_json::to_value(&view).unwrap_or(Value::Null)
 }
-
-

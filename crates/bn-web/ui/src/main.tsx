@@ -34,6 +34,7 @@ const CronDetail = lazyRoute(() => import("./routes/CronDetail"), "CronDetail");
 const Skills = lazyRoute(() => import("./routes/Skills"), "Skills");
 const Research = lazyRoute(() => import("./routes/Research"), "Research");
 const Repos = lazyRoute(() => import("./routes/Repos"), "Repos");
+const Settings = lazyRoute(() => import("./routes/Settings"), "Settings");
 const RepoDetail = lazyRoute(() => import("./routes/RepoDetail"), "RepoDetail");
 // Roboto, self-hosted. The dashboard is embedded in the binary and served on a LAN (often with no
 // route to the internet), so a Google Fonts <link> would silently fall back to system UI. These
@@ -91,6 +92,9 @@ const router = createBrowserRouter([
           { path: "research", element: <Research /> },
           { path: "repos", element: <Repos /> },
           { path: "repos/:repo", element: <RepoDetail /> },
+          // Ungated on purpose: it owns the experimental gate, so it must be reachable from the
+          // bare shell.
+          { path: "settings", element: <Settings /> },
           // Anything else is a stale link or a typo — a real screen, inside the shell.
           { path: "*", element: <NotFound /> },
         ],
@@ -99,7 +103,12 @@ const router = createBrowserRouter([
   },
 ]);
 
-ReactDOM.createRoot(document.getElementById("root")!).render(
+// index.html always ships this div; if it ever stops, say why instead of letting createRoot throw
+// "Target container is not a DOM element" from inside React.
+const rootEl = document.getElementById("root");
+if (!rootEl) throw new Error("bn-web: no #root element in index.html — the SPA cannot mount");
+
+ReactDOM.createRoot(rootEl).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />

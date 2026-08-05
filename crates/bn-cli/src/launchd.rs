@@ -351,10 +351,6 @@ pub(crate) fn web_uninstall() {
     let _ = std::fs::remove_file(web_plist_path());
 }
 
-
-
-
-
 // --- `bn routine watch` managed daemon (#801 amendment) ----------------------
 // The watcher is a long-running daemon (RunAtLoad + KeepAlive), same shape as the orchestrate/web
 // daemons above — and excluded from the cron reconcile (see `registered`) so `bn cron register`
@@ -427,5 +423,3 @@ pub(crate) fn routine_uninstall() {
     let _ = bootout(ROUTINE_LABEL);
     let _ = std::fs::remove_file(routine_plist_path());
 }
-
-

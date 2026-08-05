@@ -18,19 +18,11 @@ import { Textarea } from "./ui/textarea";
  * stops it. Renders nothing when there's no pending review. The agent's own `bn review status`
  * poll picks up the decision — the panel just flips the store.
  */
-export function PlanReviewPanel({
-  repo,
-  branch,
-}: {
-  repo: string;
-  branch: string;
-}) {
+export function PlanReviewPanel({ repo, branch }: { repo: string; branch: string }) {
   const reviews = useQuery(reviewsQuery());
   const qc = useQueryClient();
   const [notes, setNotes] = useState("");
-  const review = reviews.data
-    ? pendingReviewFor(reviews.data.reviews, repo, branch)
-    : undefined;
+  const review = reviews.data ? pendingReviewFor(reviews.data.reviews, repo, branch) : undefined;
 
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: queryKeys.reviews });
@@ -42,8 +34,17 @@ export function PlanReviewPanel({
     pushToast(`${label} failed: ${(e as Error).message}`, "error");
   };
 
+  // The three mutations below are declared before the `!review` early-return, because hooks
+  // cannot be conditional — but they can only ever *fire* from buttons that render after it.
+  // Re-checking here turns that invariant into a rejected promise (surfaced by onError) instead
+  // of a non-null assertion that would throw a bare TypeError if it were ever wrong.
+  const decide = (decision: "approve" | "request_changes" | "reject", notes?: string) => {
+    if (!review) return Promise.reject(new Error("no pending review"));
+    return decideReview(review.id, decision, notes);
+  };
+
   const approveMut = useMutation({
-    mutationFn: () => decideReview(review!.id, "approve"),
+    mutationFn: () => decide("approve"),
     onSuccess: () => {
       pushToast("plan approved — the agent may implement + open the PR", "success");
       invalidate();
@@ -51,7 +52,7 @@ export function PlanReviewPanel({
     onError: (e) => onError(e, "approve"),
   });
   const changesMut = useMutation({
-    mutationFn: () => decideReview(review!.id, "request_changes", notes.trim()),
+    mutationFn: () => decide("request_changes", notes.trim()),
     onSuccess: () => {
       pushToast("changes requested — the agent will revise + re-submit", "success");
       setNotes("");
@@ -60,7 +61,7 @@ export function PlanReviewPanel({
     onError: (e) => onError(e, "request changes"),
   });
   const rejectMut = useMutation({
-    mutationFn: () => decideReview(review!.id, "reject"),
+    mutationFn: () => decide("reject"),
     onSuccess: () => {
       pushToast("plan rejected — the agent stops", "success");
       invalidate();

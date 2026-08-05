@@ -202,5 +202,3 @@ fn task_tier(cfg: &Config, item: &AttnItem) -> AutoVerdict {
 
     AutoVerdict::Eligible
 }
-
-

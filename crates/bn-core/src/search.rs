@@ -160,5 +160,3 @@ fn truncate(s: &str) -> String {
     let cut: String = s.chars().take(SNIPPET_MAX).collect();
     format!("{cut}…")
 }
-
-

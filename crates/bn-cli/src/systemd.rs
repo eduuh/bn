@@ -270,8 +270,6 @@ fn stop_disable_remove(unit: &str) {
     let _ = run_user(&["daemon-reload"]);
 }
 
-
-
 // --- `bn routine watch` managed daemon (#801 amendment) ----------------------
 // The Linux twin of the launchd routine watcher daemon: an enabled `--user` unit with
 // `Restart=on-failure` (crash relaunches, clean stop stays down), coexisting safely with the
@@ -331,5 +329,3 @@ pub(crate) fn routine_uninstall() {
     let _ = std::fs::remove_file(routine_unit_path());
     let _ = run_user(&["daemon-reload"]);
 }
-
-

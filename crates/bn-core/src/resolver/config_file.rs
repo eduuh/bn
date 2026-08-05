@@ -1124,5 +1124,3 @@ impl ConfigFile {
             .or_else(|| self.scout.as_ref().and_then(|s| s.max_findings))
     }
 }
-
-

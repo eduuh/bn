@@ -420,5 +420,3 @@ impl Frontmatter {
         }
     }
 }
-
-

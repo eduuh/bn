@@ -213,5 +213,3 @@ fn urgent_raised_today(source: &str, today: &str) -> usize {
         .filter(|i| i.source == source && i.severity == "urgent" && i.created >= start)
         .count()
 }
-
-

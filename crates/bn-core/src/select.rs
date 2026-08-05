@@ -234,5 +234,3 @@ pub fn select_wave(inputs: &SelectionInputs) -> Selection {
     }
     sel
 }
-
-

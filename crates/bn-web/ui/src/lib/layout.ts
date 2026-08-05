@@ -35,6 +35,7 @@ const EXACT: Record<string, PageWidth> = {
   "/notes": "standard",
 
   // Forms and prose: a wide measure would make these worse, not better.
+  "/settings": "document",
   "/start": "document",
   "/research": "document",
   "/handoff": "document",

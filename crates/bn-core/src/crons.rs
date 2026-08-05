@@ -314,5 +314,3 @@ pub fn status_views(cfg: &Config, ctx: Option<&Resolved>) -> Vec<CronView> {
     }
     views
 }
-
-

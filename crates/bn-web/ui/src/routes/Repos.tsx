@@ -50,7 +50,7 @@ function WarmButton({ repo }: { repo: string }) {
       void qc.invalidateQueries({ queryKey: queryKeys.repos });
     },
     onError: (e) => {
-      pushToast(`warm ${repo} failed: ${(e as Error).message}`, "error");
+      pushToast(`warm ${repo} failed: ${e.message}`, "error");
     },
   });
   return (
@@ -64,7 +64,8 @@ function WarmButton({ repo }: { repo: string }) {
         // Don't let the tap navigate into the repo (the button sits inside the card link).
         e.preventDefault();
         e.stopPropagation();
-        if (window.confirm(`Warm ${repo}'s pool now? Builds every slot (long-running).`)) mut.mutate();
+        if (window.confirm(`Warm ${repo}'s pool now? Builds every slot (long-running).`))
+          mut.mutate();
       }}
     >
       <Flame className="h-3.5 w-3.5" />
@@ -85,7 +86,7 @@ function PoolSizeControl({ repo, pool }: { repo: string; pool: RepoPool }) {
       pushToast(r.message, "success");
       void qc.invalidateQueries({ queryKey: queryKeys.repos });
     },
-    onError: (e) => pushToast(`${repo}: ${(e as Error).message}`, "error"),
+    onError: (e) => pushToast(`${repo}: ${e.message}`, "error"),
   });
   const stop = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -213,7 +214,9 @@ function RepoCard({ repo, now }: { repo: RepoRollup; now: number }) {
     <Card className="p-3 transition-colors hover:border-border/80 hover:bg-accent/40">
       <Link to={`/repos/${encodeURIComponent(repo.repo)}`} className="block">
         <div className="flex items-center gap-2">
-          <span className="truncate font-mono text-sm font-semibold text-foreground">{repo.repo}</span>
+          <span className="truncate font-mono text-sm font-semibold text-foreground">
+            {repo.repo}
+          </span>
           {repo.active_agents > 0 && (
             <Badge variant="ok" className="shrink-0">
               {repo.active_agents} active
@@ -250,8 +253,7 @@ function RepoCard({ repo, now }: { repo: RepoRollup; now: number }) {
  * sibling, so a three-line repo card beside a nine-line one grew a void under its content. The
  * column count climbs with the viewport: at full-bleed, two columns made each card 850px wide to
  * hold four short stats. */
-const GRID =
-  "grid grid-cols-1 items-start gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4";
+const GRID = "grid grid-cols-1 items-start gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4";
 
 export function Repos() {
   const repos = useQuery(reposQuery());

@@ -559,5 +559,3 @@ fn strip_item_sections(body: &str) -> String {
     }
     out.join("\n")
 }
-
-

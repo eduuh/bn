@@ -609,5 +609,3 @@ pub fn scaffold(
         .map_err(|e| format!("write {}: {e}", path.display()))?;
     Ok(path)
 }
-
-

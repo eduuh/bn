@@ -423,5 +423,3 @@ pub fn related_footer(related: &[crate::related::RelatedBranch]) -> String {
     }
     out
 }
-
-

@@ -133,5 +133,3 @@ pub(crate) fn run_prepare_commit_msg(
         let _ = std::fs::write(msg_file, new_msg);
     }
 }
-
-

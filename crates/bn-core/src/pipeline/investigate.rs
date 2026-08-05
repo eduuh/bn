@@ -156,5 +156,3 @@ fn normalized<'a>(items: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     }
     out
 }
-
-

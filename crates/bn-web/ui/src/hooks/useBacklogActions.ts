@@ -7,12 +7,7 @@ import { useRef } from "react";
 import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { queryKeys } from "../api/client";
 import type { OrchestrateView } from "../api/types";
-import {
-  applyQueuedOrder,
-  optimisticItem,
-  patchRun,
-  recount,
-} from "../lib/backlog";
+import { applyQueuedOrder, optimisticItem, patchRun, recount } from "../lib/backlog";
 import {
   apiDispatch,
   apiQueueAdd,
@@ -45,10 +40,7 @@ export interface BacklogActions {
   stopRun: (repo: string) => void;
   startRun: (v: { repo?: string; items: string[]; concurrency?: number }) => void;
   dispatchNow: (v: { repo: string; items: string[]; harness: string; kind: string }) => void;
-  pending: Record<
-    "add" | "remove" | "reorder" | "scale" | "stop" | "start" | "dispatch",
-    boolean
-  >;
+  pending: Record<"add" | "remove" | "reorder" | "scale" | "stop" | "start" | "dispatch", boolean>;
 }
 
 export function useBacklogActions(push: Push): BacklogActions {
@@ -102,7 +94,8 @@ export function useBacklogActions(push: Push): BacklogActions {
       rollback(ctx);
       fail(e, "could not queue items");
     },
-    onSuccess: (_d, v) => push("ok", `Queued ${v.items.length} item${v.items.length === 1 ? "" : "s"}`),
+    onSuccess: (_d, v) =>
+      push("ok", `Queued ${v.items.length} item${v.items.length === 1 ? "" : "s"}`),
     onSettled: reconcile,
   });
 
@@ -161,7 +154,11 @@ export function useBacklogActions(push: Push): BacklogActions {
     onSettled: reconcile,
   });
 
-  const start = useMutation<unknown, unknown, { repo?: string; items: string[]; concurrency?: number }>({
+  const start = useMutation<
+    unknown,
+    unknown,
+    { repo?: string; items: string[]; concurrency?: number }
+  >({
     mutationFn: (v) => apiStart(v),
     onError: (e) => fail(e, "could not start the daemon"),
     onSuccess: (_d, v) =>
@@ -180,9 +177,7 @@ export function useBacklogActions(push: Push): BacklogActions {
           apiDispatch({ repo: v.repo, item, harness: v.harness, kind: v.kind }),
         ),
       );
-      const rejected = results.find((r) => r.status === "rejected") as
-        | PromiseRejectedResult
-        | undefined;
+      const rejected = results.find((r) => r.status === "rejected");
       if (rejected) {
         throw rejected.reason instanceof Error ? rejected.reason : new Error("dispatch failed");
       }

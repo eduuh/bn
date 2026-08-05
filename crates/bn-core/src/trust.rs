@@ -88,5 +88,3 @@ fn split_jsonc_header(text: &str) -> (String, String) {
     let body = lines[body_start..].join("\n");
     (header, body)
 }
-
-

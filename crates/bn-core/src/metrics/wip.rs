@@ -217,5 +217,3 @@ pub fn fragmentation(events: &[Event], today: &str) -> Fragmentation {
         .collect();
     fragmentation_of(today, pairs)
 }
-
-

@@ -77,8 +77,8 @@ export function AgentDetail() {
           <AlertTriangle className="h-8 w-8 text-muted-foreground" />
           <h2 className="text-lg font-semibold">Agent not live</h2>
           <p className="max-w-sm text-sm text-muted-foreground">
-            No live agent with session <code className="font-mono">{id}</code>. It may have
-            finished — see the{" "}
+            No live agent with session <code className="font-mono">{id}</code>. It may have finished
+            — see the{" "}
             <Link to="/fleet" className="text-primary">
               Fleet
             </Link>
