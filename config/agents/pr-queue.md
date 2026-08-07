@@ -1,7 +1,7 @@
 ---
 name: pr-queue
+kind: command
 on_calendar: "*:0/15"
-run: "bn run pr-queue"
 network: true
 description: "bn — fetch the PR review queue from GitHub (review + my own PRs)"
 ---

@@ -120,6 +120,137 @@ pub struct NodeRecord {
     /// The node's lifecycle state; only [`NodeStatus::Ready`] is placement-eligible.
     #[serde(default)]
     pub status: NodeStatus,
+    /// How many agents the **scheduler** may run here at once.
+    ///
+    /// Distinct from `worker::registry::MAX_SLOTS`, which is the node's own admission guard and is
+    /// deliberately 1 for an unmonitored box. This is the control plane's view: a 64 GB machine can
+    /// hold three agents, and without a way to say so the scheduler would leave it mostly idle.
+    /// Defaults to 1 — the pre-queue behaviour.
+    #[serde(default = "one_slot")]
+    pub slots: usize,
+}
+
+/// Serde default for [`NodeRecord::slots`].
+fn one_slot() -> usize {
+    1
+}
+
+/// How long a node may go without a heartbeat before it is no longer trusted, in seconds.
+pub const DEFAULT_HEARTBEAT_TTL_SECS: i64 = 300;
+
+/// Whether `node`'s heartbeat has lapsed as of `now`.
+///
+/// A node that heartbeated an hour ago is not Ready no matter what its record still says, and the
+/// registry has no other way to notice: `last_heartbeat` was written and then never read, so a box
+/// that died kept receiving work until someone looked. A node that has *never* heartbeated
+/// (`last_heartbeat == 0`) is not stale — it is merely unproven, which `NodeStatus::Unknown`
+/// already says, and treating it as stale would mean re-reporting the same fact under a worse name.
+pub fn is_stale(node: &NodeRecord, now: i64, ttl_secs: i64) -> bool {
+    node.last_heartbeat > 0 && now.saturating_sub(node.last_heartbeat) > ttl_secs
+}
+
+/// Fold a `bn worker status --json` payload into `node`.
+///
+/// Pure, and in bn-core rather than the CLI, because what it decides is a policy question: whether
+/// a reachable node is *placeable*. The previous version marked any node that answered at all as
+/// `Ready`, ignored the `PRESSURE` verdict the node had just computed about itself, dropped the
+/// advertised `labels` on the floor — so a remote node's skills could never reach placement — and
+/// never wrote `last_heartbeat`, which is why staleness could not be detected.
+pub fn apply_snapshot(node: &mut NodeRecord, status: Option<&serde_json::Value>, now: i64) {
+    let Some(status) = status else {
+        node.status = NodeStatus::Offline;
+        node.capacity = None;
+        node.active_attempts = 0;
+        return;
+    };
+    node.last_heartbeat = now;
+    if let Some(labels) = status.pointer("/node/labels").and_then(|v| v.as_array()) {
+        // The node's own advertisement wins over the config's, then the operator's declared labels
+        // are merged back so a `[nodes.<id>].labels` entry can still add a tag the box cannot know
+        // about itself (a physical attachment, a network zone).
+        let mut merged: Vec<String> = labels
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+        merged.append(&mut node.labels);
+        merged.sort();
+        merged.dedup();
+        node.labels = merged;
+    }
+    node.capacity = status
+        .get("capacity")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok());
+    node.active_attempts = status
+        .get("attempts")
+        .and_then(serde_json::Value::as_array)
+        .map(|attempts| {
+            attempts
+                .iter()
+                .filter(|a| {
+                    matches!(
+                        a.get("state").and_then(serde_json::Value::as_str),
+                        Some("QUEUED" | "RUNNING")
+                    )
+                })
+                .count()
+        })
+        .unwrap_or_default();
+    // Honour the node's own verdict: a box reporting PRESSURE has told us it is shedding load, and
+    // overriding that with Ready because it answered the phone is how you thrash a struggling
+    // machine.
+    node.status = match node.capacity.map(|c| c.status()) {
+        Some(crate::worker::capacity::NodeStatus::Ready) | None => NodeStatus::Ready,
+        Some(crate::worker::capacity::NodeStatus::Pressure) => NodeStatus::Draining,
+        Some(crate::worker::capacity::NodeStatus::Dead) => NodeStatus::Offline,
+    };
+}
+
+/// The synthesized registry record for the box this process runs on.
+///
+/// The local box has always been an **implicit** placement target with no record, which meant it
+/// advertised no capabilities and could therefore never satisfy a required one. That was harmless
+/// while requirements were exotic hardware tags nobody used; it is fatal once every entry can
+/// require a skill, because on a single-machine setup — i.e. most of them — the registry is empty
+/// and *every* constrained entry would be unplaceable forever.
+///
+/// Synthesizing a record instead makes the local box a first-class registry entry that competes on
+/// its real advertised capabilities, and makes a "no capable node" verdict mean what it says.
+///
+/// Merged **over** any `[nodes.<machine>]` the operator declared, so explicit config still wins on
+/// `owned_repos`, extra labels and the RAM budget.
+pub fn local_record(
+    cfg: &crate::resolver::Config,
+    labels: Vec<String>,
+    worktree_root: &std::path::Path,
+    now: i64,
+) -> NodeRecord {
+    let machine = cfg.machine();
+    let declared = cfg
+        .nodes
+        .iter()
+        .find(|n| n.node_id.eq_ignore_ascii_case(machine));
+    let mut labels = labels;
+    if let Some(declared) = declared {
+        labels.extend(declared.labels.iter().cloned());
+        labels.sort();
+        labels.dedup();
+    }
+    NodeRecord {
+        node_id: machine.to_string(),
+        target: crate::backlog::ExecutionTarget::Local,
+        labels,
+        ram_total_mb: declared.map(|n| n.ram_total_mb).unwrap_or_default(),
+        ram_reserved_mb: declared.map(|n| n.ram_reserved_mb).unwrap_or_default(),
+        owned_repos: declared.map(|n| n.owned_repos.clone()).unwrap_or_default(),
+        capacity: Some(crate::worker::capacity::sample(worktree_root)),
+        active_attempts: 0,
+        last_heartbeat: now,
+        // The box running this code is by definition reachable, so it needs no preflight to be
+        // Ready — unlike a remote node, whose `Ready` must be earned by a successful probe.
+        status: NodeStatus::Ready,
+        slots: declared.map(|n| n.slots).filter(|s| *s > 0).unwrap_or(1),
+    }
 }
 
 /// A `[nodes.<node_id>]` entry from config.toml — the declarative worker list (#729). This is the
@@ -147,6 +278,9 @@ pub struct NodeConfig {
     /// Repositories this node owns. Empty means unrestricted for backward compatibility.
     #[serde(default)]
     pub repos: Vec<String>,
+    /// How many agents the scheduler may run here at once. Defaults to 1.
+    #[serde(default = "one_slot")]
+    pub slots: usize,
 }
 
 impl NodeConfig {
@@ -171,6 +305,7 @@ impl NodeConfig {
             active_attempts: 0,
             last_heartbeat: 0,
             status: NodeStatus::Unknown,
+            slots: self.slots.max(1),
         }
     }
 }

@@ -91,20 +91,8 @@ esac
 # there's no Rust toolchain (e.g. Codespaces) does it fall back to a prebuilt release. Set
 # BN_USE_RELEASE=1 to force the prebuilt path even with cargo present.
 slug="${BN_REPO_SLUG:-eduuh/bn}"
-
-detect_target() {
-  case "$(uname -s)" in
-    Linux)  case "$(uname -m)" in
-              x86_64) echo x86_64-unknown-linux-gnu ;;
-              aarch64|arm64) echo aarch64-unknown-linux-gnu ;;
-              *) return 1 ;; esac ;;
-    Darwin) case "$(uname -m)" in
-              x86_64) echo x86_64-apple-darwin ;;
-              arm64) echo aarch64-apple-darwin ;;
-              *) return 1 ;; esac ;;
-    *) return 1 ;;
-  esac
-}
+# shellcheck source=scripts/install-toolchain.sh
+source "$repo/scripts/install-toolchain.sh"
 
 # Atomically place a binary: copy to a temp in the destination dir, then rename over the target.
 # A rename on the same filesystem is atomic, so a process (e.g. a cron firing mid-install) that
@@ -129,7 +117,7 @@ atomic_install() {
 download_release() {
   local target tmp app archive url bin src
   command -v tar >/dev/null 2>&1 || return 1
-  target=$(detect_target) || return 1
+  target=$(bn_install_detect_target) || return 1
   tmp=$(mktemp -d)
   for app in bn-cli bn-web; do
     archive="${app}-${target}.tar.xz"
@@ -223,11 +211,12 @@ build_web_ui() {
 }
 
 build_from_source() {
-  command -v cargo >/dev/null 2>&1 || {
-    echo "error: no prebuilt binary for this platform and cargo is not installed." >&2
+  bn_install_activate_cargo "$repo" || {
+    echo "error: no prebuilt binary was available and no usable Cargo toolchain was found." >&2
+    echo "       Install Rust with rustup, repair its proxies, or set CARGO_HOME/RUSTUP_HOME." >&2
     exit 1
   }
-  echo "Building Rust bn from source…"
+  echo "Building Rust bn from source with $BN_INSTALL_CARGO_DIR/cargo…"
   # bn-web bakes its dashboard UI in at compile time (build.rs embeds crates/bn-web/ui/dist). Build
   # that UI first when node is available so the from-source binary serves the real dashboard, not
   # the "UI not built" placeholder; build_web_ui is node-optional (no npm → placeholder, server
@@ -250,7 +239,7 @@ build_from_source() {
 # absent; BN_USE_RELEASE=1 forces the prebuilt path (and still builds if the download fails).
 if [ "${BN_USE_RELEASE:-}" = "1" ]; then
   download_release || build_from_source
-elif command -v cargo >/dev/null 2>&1; then
+elif bn_install_activate_cargo "$repo"; then
   build_from_source
 else
   download_release || build_from_source
@@ -297,9 +286,9 @@ fi
 ln -sfn "$repo/config/jobs" "$cfgdir/jobs"
 echo "Linked $cfgdir/jobs -> $repo/config/jobs"
 
-# Self-describing agents (config/agents/<name>.md) live in-repo too; `bn` resolves the shipped
-# tier through this symlink (the agent analogue of the jobs symlink above). Staff/LLM agents are
-# just `.md` files here too — the ones that declare a `gather:` command.
+# Strict self-describing agents (config/agents/<name>.md) live in-repo too; `bn` resolves the
+# shipped tier through this symlink. Every manifest declares command/staff/hosted/specialist;
+# `agent-scheduler` owns their `on_calendar` values, while static instructions stay in Markdown.
 ln -sfn "$repo/config/agents" "$cfgdir/agents"
 echo "Linked $cfgdir/agents -> $repo/config/agents"
 
@@ -482,10 +471,18 @@ if [ "$agents" = "1" ]; then
   install_agent_tools
 fi
 
-# --- register cron timers from the manifest (idempotent) ------------------------
+# --- validate Markdown agents + register cron timers (idempotent) ----------------
+# Catalog errors are migration errors, not an optional integration failure: print the exact
+# manifest path and stop before installing a scheduler that would fail every minute.
+if ! "$bindir/bn" agents validate; then
+  echo "error: invalid Markdown agent catalog; fix the manifest above and re-run install.sh" >&2
+  exit 1
+fi
+
 # Pick up crons.toml additions/changes automatically — no manual `bn cron register` after an
-# install or update. Diffs against what's registered, so it only touches what changed; on a
-# non-systemd host it just reports the plan. Never fatal to the install.
+# install or update. One `agent-scheduler` timer owns every manifest schedule. Diffs against what's
+# registered, so it only touches what changed; on a non-systemd host it just reports the plan.
+# Platform timer installation remains non-fatal; catalog validation above does not.
 "$bindir/bn" cron register || true
 
 echo "Completion: add to ~/.zshrc -> source <(bn completion zsh)"

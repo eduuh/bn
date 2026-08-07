@@ -166,36 +166,9 @@ pub(crate) fn gather_mentor_packet(
 
 // --- dispatch prompt -----------------------------------------------------------------------------
 
-/// The full review dispatch prompt: the pinned skill, the packet inside the untrusted-data frame
-/// ([`staff::frame_packet`], the shared #272 guard), then the four-section output contract with the
-/// exact JSON the harness must return.
-fn strip_frontmatter(text: &str) -> String {
-    if let Some(rest) = text.strip_prefix("---") {
-        if let Some((_, body)) = rest.split_once("---") {
-            return body.trim_start().to_string();
-        }
-    }
-    text.to_string()
-}
-
-fn mentor_skill_body() -> String {
-    strip_frontmatter(include_str!("../../../../config/skills/staff/mentor.md"))
-}
-
-fn mentor_prompt(skill_body: &str, packet_json: &str, today: &str) -> String {
-    format!(
-        "{skill_body}\n\n{framed}\n\n\
-         For EACH pr in the packet, output one review satisfying the four-section contract. Output \
-         EXACTLY one JSON object and nothing else:\n\
-         {{ \"headline\": \"...\", \"reviews\": [ {{ \"repo\": \"owner/repo\", \"number\": 0, \
-         \"stronger_design\": \"the approach a staff engineer might have taken — or 'this was the \
-         right shape' when none genuinely exists (never empty)\", \
-         \"idiom\": \"one concrete technique worth stealing, with a code sketch\", \
-         \"strength\": \"one genuine strength specific to this diff\", \
-         \"theme\": \"a short recurring-theme tag, e.g. error-paths\" }} ] }}\n\
-         Date: {today}. Never post anything anywhere — these are private notes.\n",
-        framed = staff::frame_packet(packet_json),
-    )
+/// The Markdown-defined Mentor instructions followed by the untrusted packet frame.
+fn mentor_prompt(agent_body: &str, packet_json: &str) -> String {
+    format!("{agent_body}\n\n{}", staff::frame_packet(packet_json))
 }
 
 // --- routing (idempotent craft note + dojo card) -------------------------------------------------
@@ -298,7 +271,30 @@ pub(crate) fn run_mentor_pipeline(
         }
     };
 
-    let skill = mentor_skill_body();
+    let catalog = match bn_core::agents::discover(cfg, None) {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            return report_fail(
+                RunStatus::Fail,
+                format!("staff-mentor agent catalog failed: {error}"),
+                0,
+            )
+        }
+    };
+    let agent = match catalog.require("staff-mentor") {
+        Ok(agent) => agent,
+        Err(error) => return report_fail(RunStatus::Fail, error.to_string(), 0),
+    };
+    let agent_body = match agent.render(None) {
+        Ok(body) => body,
+        Err(error) => {
+            return report_fail(
+                RunStatus::Fail,
+                format!("staff-mentor prompt render failed: {error}"),
+                0,
+            )
+        }
+    };
     let packet_json = match packet.to_json() {
         Ok(json) => json,
         Err(e) => {
@@ -309,7 +305,7 @@ pub(crate) fn run_mentor_pipeline(
             )
         }
     };
-    let prompt = mentor_prompt(&skill, &packet_json, today);
+    let prompt = mentor_prompt(&agent_body, &packet_json);
     let output = match dispatch(&prompt) {
         Dispatched::Output(o) => o,
         Dispatched::Failed(status, detail) => {
@@ -477,5 +473,4 @@ pub(crate) fn job_staff_mentor(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
         1
     }
 }
-
 

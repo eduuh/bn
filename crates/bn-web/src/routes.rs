@@ -6,9 +6,11 @@
 //! and the shared [`AppState`].
 
 use crate::actions;
+use crate::agent_control;
 use crate::api;
 use crate::assets;
 use crate::mcp;
+use crate::queue_api;
 use crate::state::AppState;
 use axum::{
     body::Body,
@@ -37,6 +39,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/today/agent", get(api::today_agent))
         .route("/api/agents/{session_id}", get(api::agent_detail))
         .route("/api/agents/{target}/pane", get(api::agent_pane))
+        .route(
+            "/api/agents/{target}/prompt",
+            get(agent_control::agent_prompt),
+        )
+        .route("/api/fleet/prompts", get(agent_control::fleet_prompts))
         .route(
             "/api/agents/{session_id}/activity",
             get(api::agent_activity),
@@ -80,10 +87,19 @@ pub fn router(state: AppState) -> Router {
         .route("/api/findings", get(api::findings))
         .route("/api/suggestions", get(api::suggestions))
         // Live stream (design §2.2) — SSE fed by the shared watcher broadcast.
+        .route("/api/queue", get(queue_api::queue))
+        .route("/api/queue/entries", get(queue_api::queue_entries))
+        .route("/api/queue/events", get(queue_api::queue_events))
+        .route("/api/queue/timeline", get(queue_api::queue_timeline))
         .route("/api/stream", get(api::stream))
         // Writes (design §2.3) — audited per handler. The server no longer gates on a web token
         // (#523); a loopback bind and a trusted LAN are the trust boundary.
         // Native state writes (in-process `orchestrate::mutate`):
+        .route("/api/queue/add", post(queue_api::queue_add))
+        .route("/api/queue/cancel", post(queue_api::queue_cancel))
+        .route("/api/queue/priority", post(queue_api::queue_priority))
+        .route("/api/queue/pause", post(queue_api::queue_pause))
+        .route("/api/queue/resume", post(queue_api::queue_resume))
         .route("/api/orchestrate/queue", post(actions::queue_add))
         .route(
             "/api/orchestrate/queue/reorder",
@@ -105,6 +121,14 @@ pub fn router(state: AppState) -> Router {
             post(actions::agent_relaunch),
         )
         .route("/api/agents/{target}/kill", post(actions::agent_kill))
+        .route(
+            "/api/agents/{target}/answer",
+            post(agent_control::agent_answer),
+        )
+        .route(
+            "/api/agents/{target}/instruct",
+            post(agent_control::agent_instruct),
+        )
         .route("/api/land", post(actions::land))
         // Plan-review gate decision (#349) — native in-process store write:
         .route("/api/reviews/{id}", post(actions::review_decide))

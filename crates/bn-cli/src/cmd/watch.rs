@@ -107,9 +107,10 @@ fn wake_class(
 
 /// `bn watch` — the cheap (no-LLM) wake reactor. Each pass classifies what needs you (fleet
 /// escalations + urgent attention + agent completions), publishes actionable transitions to the
-/// durable wake queue, and fires a desktop toast for new deliveries. Between passes it sleeps on
-/// queue and harness-log filesystem notifications; `interval` is only the bounded fallback needed
-/// for time-based stuck transitions. `--once` retains the cron/manual probe path.
+/// durable wake queue, and fires a desktop toast for new deliveries. Between passes the shared
+/// event loop waits on queue and harness-log filesystem notifications; `interval` is only the
+/// bounded fallback needed for time-based stuck transitions. `--once` retains the cron/manual
+/// probe path.
 pub(crate) fn emit_watch(cfg: &Config, once: bool, interval: u64, stuck: i64, as_json: bool) {
     use bn_core::agent::DEFAULT_IDLE_MINS;
     use std::time::Duration;
@@ -117,17 +118,15 @@ pub(crate) fn emit_watch(cfg: &Config, once: bool, interval: u64, stuck: i64, as
     let queue = bn_core::wake::WakeQueue::default();
     let target = bn_core::wake::WakeTarget::Watch;
     let (claude_root, copilot_root) = bn_core::agent::supervision_roots();
-    let mut watcher = if once {
-        None
-    } else {
-        match crate::wake::WakeWatcher::new(&[claude_root, copilot_root]) {
-            Ok(watcher) => Some(watcher),
-            Err(error) => {
-                eprintln!("bn watch: filesystem notifications unavailable ({error}); polling");
-                None
-            }
-        }
-    };
+    let mut reactor = (!once).then(|| {
+        crate::event_loop::EventLoop::with_wake_queue(
+            "bn watch",
+            vec![crate::event_loop::Watch::file(
+                bn_core::events::log_path(),
+            )],
+            &[claude_root, copilot_root],
+        )
+    });
     loop {
         let now = bn_core::util::now_epoch_secs();
         let mut watching =
@@ -207,13 +206,10 @@ pub(crate) fn emit_watch(cfg: &Config, once: bool, interval: u64, stuck: i64, as
             break;
         }
         let timeout = Duration::from_secs(interval.max(1));
-        if let Some(active) = watcher.as_ref() {
-            if let Err(error) = active.wait_timeout(timeout) {
-                eprintln!("bn watch: filesystem notifications failed ({error}); polling");
-                watcher = None;
-            }
-        } else {
-            std::thread::sleep(timeout);
+        if reactor.as_mut().is_some_and(|reactor| {
+            reactor.wait(timeout) == crate::event_loop::LoopEvent::Shutdown
+        }) {
+            break;
         }
     }
 }
@@ -379,5 +375,3 @@ pub(crate) fn afk_digest(
         println!("  ! {} [{}]", a.title, a.severity);
     }
 }
-
-

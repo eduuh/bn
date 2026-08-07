@@ -910,7 +910,39 @@ fn acquire_slot(
         .find(|(&n, l)| bn_core::agent::normalized_branch(&l.branch) == want && class.owns(n))
     {
         let slot = slot_path(&ctx.pool_dir, n);
-        log_pool_event("pool_get", &ctx.repo, n, branch, Some(true));
+        // A lease can outlive its checkout: the slot dir may have been removed out-of-band (manual
+        // cleanup, a botched prune) while the holder pid is still alive — so `reclaim_stale` leaves
+        // the lease in place. Handing that back as a "warm hit" drops the agent into a missing or
+        // broken directory. Repair the checkout first (the same recreate the pick path does), so an
+        // idempotent hit is always a *live* slot. Still `fresh: false` — the branch's tenancy (and
+        // its note) predates this call; only the checkout was rebuilt.
+        let warm = is_live_slot(&slot);
+        if !warm {
+            let slot_s = slot.to_string_lossy().to_string();
+            let bare_s = ctx.bare.to_string_lossy().to_string();
+            if slot.exists() {
+                eprintln!("{YELLOW}Slot {n} checkout is broken — recreating…{NC}");
+                force_remove_worktree(&bare_s, &slot);
+            } else {
+                eprintln!("{YELLOW}Slot {n} checkout is missing — recreating…{NC}");
+            }
+            if !add_detached_slot(&bare_s, &slot_s) {
+                eprintln!("{RED}Failed to rebuild slot {n} for {}{NC}", ctx.repo);
+                return None;
+            }
+            match class {
+                SlotRole::Worker => {
+                    if !switch_into_slot(&slot_s, &bare_s, branch) {
+                        eprintln!(
+                            "{RED}Failed to switch '{branch}' into rebuilt slot {n} (branch checked out elsewhere?){NC}"
+                        );
+                        return None;
+                    }
+                }
+                SlotRole::Controller => warm_reset(&slot_s, &bare_s),
+            }
+        }
+        log_pool_event("pool_get", &ctx.repo, n, branch, Some(warm));
         return Some(Leased { slot, fresh: false });
     }
 
@@ -1921,18 +1953,14 @@ fn print_action(leases: &Leases, n: u32, class: &SlotClass, action: &Action, exe
 }
 
 /// All repos with a pool configured (for `--all`).
+/// The concrete pooled repos from the config, in file order — the names `pool prune --all` and the
+/// idle warm cron operate on. Delegates to [`bn_core::pool::pooled_repos`], which skips the
+/// `default`/`*` fallback line: that key names the any-repo size, not a real repo, so warming or
+/// pruning it would only resolve to a nonexistent clone.
 fn pooled_repos() -> Vec<String> {
-    let Ok(content) = std::fs::read_to_string(pools_config_path()) else {
-        return Vec::new();
-    };
-    content
-        .lines()
-        .filter_map(|l| {
-            let l = l.split('#').next().unwrap_or("").trim();
-            (!l.is_empty())
-                .then(|| l.split_whitespace().next().map(|s| s.to_string()))
-                .flatten()
-        })
+    bn_core::pool::pooled_repos()
+        .into_iter()
+        .map(|(repo, _)| repo)
         .collect()
 }
 
@@ -2271,14 +2299,19 @@ fn pool_warm(cfg: &Config, repo: Option<String>, here: bool, new: bool) -> bool 
     // Phase 1 — ensure every non-skipped slot has a live checkout. Serial on purpose: `git
     // worktree add` takes the bare repo's lock, so parallel adds would only contend. Never warm a
     // slot that's leased (a running agent owns it), dirty (uncommitted local work), or — under
-    // `--new` — already checked out; those are counted as skipped and left untouched.
+    // `--new` — already holding a *live* checkout; those are counted as skipped and left untouched.
     let mut skipped = 0u32;
     let mut ready: Vec<(u32, PathBuf)> = Vec::new();
     for n in 1..=ctx.size as u32 {
         let slot = slot_path(&ctx.pool_dir, n);
         let slot_s = slot.to_string_lossy().to_string();
         let exists = slot.exists();
-        if new && exists {
+        // `--new` fills only slots that lack a usable checkout, so it must key off *liveness*, not
+        // mere directory presence: a broken stub (dir left by an interrupted `worktree add`, no
+        // `.git`) has no checkout and still needs one. Skipping it on `exists` alone is what let a
+        // background `warm --new` (scheduled by `ensure_spare_slot`) no-op over a broken slot,
+        // leaving the next dispatch to pay a cold create. Fall through to the recreate below.
+        if new && is_live_slot(&slot) {
             eprintln!("{BLUE}[{n}] existing — skipping (--new){NC}");
             skipped += 1;
             continue;
@@ -2532,5 +2565,476 @@ pub(crate) fn job_pool_warm(cfg: &Config, _ctx: Option<&bn_core::resolver::Resol
             }
             i32::from(failed > 0)
         }
+    }
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+
+    fn ev(repo: &str, ts: i64) -> bn_core::events::Event {
+        let mut fields = serde_json::Map::new();
+        fields.insert("repo".to_string(), repo.into());
+        bn_core::events::Event {
+            kind: "pool_warm".to_string(),
+            ts,
+            fields,
+        }
+    }
+
+    // --- last_pool_warm_by_repo ------------------------------------------
+
+    #[test]
+    fn last_warm_keeps_the_freshest_per_repo() {
+        let evs = vec![ev("bn", 100), ev("bn", 300), ev("app", 200), ev("bn", 250)];
+        let m = last_pool_warm_by_repo(&evs);
+        assert_eq!(m.get("bn"), Some(&300));
+        assert_eq!(m.get("app"), Some(&200));
+    }
+
+    #[test]
+    fn last_warm_ignores_other_event_kinds() {
+        let mut other = ev("bn", 999);
+        other.kind = "pool_get".to_string();
+        let m = last_pool_warm_by_repo(&[other]);
+        assert!(m.is_empty());
+    }
+
+    // --- plan_idle_pool_refresh ------------------------------------------
+
+    #[test]
+    fn refresh_skips_when_no_pools() {
+        let plan = plan_idle_pool_refresh(true, &[], &BTreeMap::new(), 1000, 100);
+        assert!(matches!(plan, PoolRefreshPlan::Skip(_)));
+    }
+
+    #[test]
+    fn refresh_skips_when_box_active() {
+        let repos = vec!["bn".to_string()];
+        let plan = plan_idle_pool_refresh(false, &repos, &BTreeMap::new(), 1000, 100);
+        assert!(matches!(plan, PoolRefreshPlan::Skip(_)));
+    }
+
+    #[test]
+    fn refresh_warms_stale_and_never_seen_repos() {
+        let repos = vec!["bn".to_string(), "app".to_string()];
+        let mut last = BTreeMap::new();
+        last.insert("bn".to_string(), 900); // 100s old, == min_age → stale
+                                            // app never warmed → stale
+        let plan = plan_idle_pool_refresh(true, &repos, &last, 1000, 100);
+        assert_eq!(
+            plan,
+            PoolRefreshPlan::Warm(vec!["bn".to_string(), "app".to_string()])
+        );
+    }
+
+    #[test]
+    fn refresh_skips_recently_warmed() {
+        let repos = vec!["bn".to_string()];
+        let mut last = BTreeMap::new();
+        last.insert("bn".to_string(), 950); // only 50s old < 100 min_age
+        let plan = plan_idle_pool_refresh(true, &repos, &last, 1000, 100);
+        assert!(matches!(plan, PoolRefreshPlan::Skip(_)));
+    }
+
+    #[test]
+    fn refresh_dedupes_preserving_order() {
+        let repos = vec!["bn".to_string(), "bn".to_string(), "app".to_string()];
+        let plan = plan_idle_pool_refresh(true, &repos, &BTreeMap::new(), 1000, 100);
+        assert_eq!(
+            plan,
+            PoolRefreshPlan::Warm(vec!["bn".to_string(), "app".to_string()])
+        );
+    }
+
+    // --- prune_decision ---------------------------------------------------
+
+    fn slot(over_size: bool, orphan: bool) -> SlotClass {
+        SlotClass {
+            leased: false,
+            dirty: false,
+            in_use: false,
+            over_size,
+            orphan,
+        }
+    }
+
+    #[test]
+    fn prune_removes_over_size_and_orphan_only() {
+        assert_eq!(prune_decision(slot(true, false)), Action::Remove);
+        assert_eq!(prune_decision(slot(false, true)), Action::Remove);
+        assert_eq!(
+            prune_decision(slot(false, false)),
+            Action::Skip("in-size warm slot")
+        );
+    }
+
+    #[test]
+    fn prune_never_touches_protected_slots() {
+        let mut c = slot(true, false);
+        c.leased = true;
+        assert_eq!(prune_decision(c), Action::Skip("leased"));
+        let mut c = slot(true, false);
+        c.in_use = true;
+        assert_eq!(prune_decision(c), Action::Skip("in use"));
+        let mut c = slot(true, false);
+        c.dirty = true;
+        assert_eq!(prune_decision(c), Action::Skip("uncommitted changes"));
+    }
+
+    // --- destroy_decision -------------------------------------------------
+
+    #[test]
+    fn destroy_skips_protected_without_flags() {
+        let mut c = slot(false, false);
+        c.leased = true;
+        assert_eq!(
+            destroy_decision(c, DestroyFlags::default()),
+            Action::Skip("leased (use --include-leased)")
+        );
+    }
+
+    #[test]
+    fn destroy_opts_in_with_flags() {
+        let mut c = slot(false, false);
+        c.leased = true;
+        c.dirty = true;
+        c.in_use = true;
+        let f = DestroyFlags {
+            include_leased: true,
+            include_dirty: true,
+            include_in_use: true,
+        };
+        assert_eq!(destroy_decision(c, f), Action::Remove);
+    }
+
+    #[test]
+    fn destroy_removes_plain_idle_slot() {
+        assert_eq!(
+            destroy_decision(slot(false, false), DestroyFlags::default()),
+            Action::Remove
+        );
+    }
+
+    // --- fmt_age ----------------------------------------------------------
+
+    #[test]
+    fn fmt_age_units() {
+        assert_eq!(fmt_age(42), "42s");
+        assert_eq!(fmt_age(5 * 60), "5m");
+        assert_eq!(fmt_age(3 * 3600), "3h");
+        assert_eq!(fmt_age(2 * 86_400), "2d");
+        assert_eq!(fmt_age(-5), "0s");
+    }
+}
+
+/// Real-git integration tests for the worktree-creation and warming primitives — the git-touching
+/// core of `pool get`/`pool warm`. Each builds a throwaway bare repo in a tempdir and drives the
+/// actual `git` binary, so a regression in how a slot is created, switched, reset, or torn down is
+/// caught here rather than in a broken pool on someone's box.
+#[cfg(test)]
+mod git_integration_tests {
+    use super::*;
+    use std::process::Command;
+
+    fn git(args: &[&str]) -> bool {
+        Command::new("git")
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    /// Build a one-commit repo on `main` (with a `feat` branch and a committed `.gitignore`) under
+    /// `srcdir`, then bare-clone it to `bare`. Shared by the tempdir and staged-layout setups.
+    fn build_repo_into(srcdir: &Path, bare: &Path) {
+        std::fs::create_dir_all(srcdir).unwrap();
+        let s = srcdir.to_string_lossy().to_string();
+        assert!(git(&["init", "-q", &s]));
+        assert!(git(&["-C", &s, "config", "user.email", "t@t"]));
+        assert!(git(&["-C", &s, "config", "user.name", "t"]));
+        std::fs::write(srcdir.join(".gitignore"), "target/\n").unwrap();
+        std::fs::write(srcdir.join("a.txt"), "hi\n").unwrap();
+        assert!(git(&["-C", &s, "add", "-A"]));
+        assert!(git(&["-C", &s, "commit", "-qm", "init"]));
+        // Normalize the default branch name across git versions.
+        assert!(git(&["-C", &s, "branch", "-M", "main"]));
+        assert!(git(&["-C", &s, "branch", "feat"]));
+        std::fs::create_dir_all(bare.parent().unwrap()).unwrap();
+        assert!(git(&["clone", "-q", "--bare", &s, &bare.to_string_lossy()]));
+    }
+
+    /// A bare clone of a one-commit repo on `main`, with a second branch `feat` and a committed
+    /// `.gitignore` (`target/`). Returns `(tempdir, bare_path_string)`.
+    fn mk_bare() -> (tempfile::TempDir, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("bare.git");
+        build_repo_into(&tmp.path().join("src"), &bare);
+        (tmp, bare.to_string_lossy().to_string())
+    }
+
+    fn head_ref(slot: &Path) -> String {
+        let out = Command::new("git")
+            .args([
+                "-C",
+                &slot.to_string_lossy(),
+                "rev-parse",
+                "--abbrev-ref",
+                "HEAD",
+            ])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn default_base_prefers_main() {
+        let (_tmp, bare) = mk_bare();
+        // A bare clone copies heads (refs/heads/main) but sets up no origin remote, so `main`
+        // resolves and `origin/main` does not — default_base must land on `main`.
+        assert_eq!(default_base(&bare), "main");
+    }
+
+    #[test]
+    fn add_detached_slot_creates_a_live_worktree() {
+        let (tmp, bare) = mk_bare();
+        let slot = tmp.path().join("slot2");
+        assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
+        assert!(is_live_slot(&slot));
+        // Detached at the base — abbrev-ref reads "HEAD".
+        assert_eq!(head_ref(&slot), "HEAD");
+        assert!(slot.join("a.txt").exists());
+    }
+
+    #[test]
+    fn switch_reuses_an_existing_branch() {
+        let (tmp, bare) = mk_bare();
+        let slot = tmp.path().join("slot2");
+        assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
+        assert!(switch_into_slot(&slot.to_string_lossy(), &bare, "feat"));
+        assert_eq!(head_ref(&slot), "feat");
+    }
+
+    #[test]
+    fn switch_creates_a_new_branch_when_absent() {
+        let (tmp, bare) = mk_bare();
+        let slot = tmp.path().join("slot2");
+        assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
+        assert!(switch_into_slot(
+            &slot.to_string_lossy(),
+            &bare,
+            "brand-new"
+        ));
+        assert_eq!(head_ref(&slot), "brand-new");
+    }
+
+    #[test]
+    fn switch_fails_when_branch_checked_out_elsewhere() {
+        let (tmp, bare) = mk_bare();
+        // `feat` is checked out in another worktree; git refuses to check it out a second time.
+        let other = tmp.path().join("other");
+        assert!(git(&[
+            "--git-dir",
+            &bare,
+            "worktree",
+            "add",
+            &other.to_string_lossy(),
+            "feat"
+        ]));
+        let slot = tmp.path().join("slot2");
+        assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
+        assert!(!switch_into_slot(&slot.to_string_lossy(), &bare, "feat"));
+    }
+
+    #[test]
+    fn is_live_slot_rejects_a_bare_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("not-a-worktree");
+        std::fs::create_dir_all(&dir).unwrap();
+        // A plain dir (an interrupted `worktree add` leaves files but no `.git`) is not reusable.
+        assert!(!is_live_slot(&dir));
+        assert!(!is_live_slot(&tmp.path().join("missing")));
+    }
+
+    #[test]
+    fn force_remove_tears_down_a_slot() {
+        let (tmp, bare) = mk_bare();
+        let slot = tmp.path().join("slot2");
+        assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
+        assert!(slot.is_dir());
+        force_remove_worktree(&bare, &slot);
+        assert!(!slot.exists());
+        // The worktree registration is gone too, so the slot can be cleanly recreated.
+        let list = Command::new("git")
+            .args(["--git-dir", &bare, "worktree", "list", "--porcelain"])
+            .output()
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&list.stdout).contains("slot2"));
+    }
+
+    #[test]
+    fn force_remove_recovers_a_broken_checkout() {
+        let (tmp, bare) = mk_bare();
+        let slot = tmp.path().join("slot2");
+        assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
+        // Simulate an interrupted create: drop the `.git` link so it reads as broken.
+        std::fs::remove_file(slot.join(".git")).unwrap();
+        assert!(!is_live_slot(&slot));
+        force_remove_worktree(&bare, &slot);
+        // The recreate path (used by both get and warm) then rebuilds a live slot.
+        assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
+        assert!(is_live_slot(&slot));
+    }
+
+    #[test]
+    fn warm_reset_discards_tracked_but_keeps_ignored_deps() {
+        let (tmp, bare) = mk_bare();
+        let slot = tmp.path().join("slot2");
+        assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
+        assert!(switch_into_slot(&slot.to_string_lossy(), &bare, "feat"));
+        // A tracked edit, an untracked scratch file, and an ignored build artifact.
+        std::fs::write(slot.join("a.txt"), "DIRTY\n").unwrap();
+        std::fs::write(slot.join("untracked.txt"), "scratch\n").unwrap();
+        std::fs::create_dir_all(slot.join("target")).unwrap();
+        std::fs::write(slot.join("target/build-cache"), "expensive\n").unwrap();
+
+        warm_reset(&slot.to_string_lossy(), &bare);
+
+        // Tracked change reverted, untracked scratch cleaned…
+        assert_eq!(std::fs::read_to_string(slot.join("a.txt")).unwrap(), "hi\n");
+        assert!(!slot.join("untracked.txt").exists());
+        // …but the ignored deps/build cache — the entire point of the pool — survive.
+        assert!(slot.join("target/build-cache").exists());
+        // And the slot is detached (ready for the controller / next lease).
+        assert_eq!(head_ref(&slot), "HEAD");
+    }
+
+    /// Regression for the warm-hit-on-a-dead-checkout bug: a lease can outlive its slot dir (removed
+    /// out-of-band while the holder pid is still alive, so `reclaim_stale` keeps the lease). The
+    /// idempotent "warm hit" must rebuild the checkout, never hand back the missing path.
+    #[test]
+    fn acquire_repairs_a_lease_whose_checkout_vanished() {
+        let (tmp, bare) = mk_bare();
+        // Stub occupancy so the slot scans never reach for tmux / the agent registry.
+        TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
+
+        let wt_root = tmp.path().join("wt");
+        let pdir = wt_root.join("bn").join("_pool");
+        std::fs::create_dir_all(&pdir).unwrap();
+
+        // A live lease for slot 2 → "feat", but its checkout was never created (vanished dir).
+        let mut leases = Leases::default();
+        leases.slots.insert(
+            2,
+            Lease {
+                branch: "feat".into(),
+                holder: "me".into(),
+                pid: std::process::id(), // alive → not reclaimed as a dead holder
+                at: now_epoch(),
+                boot_id: String::new(), // unknown boot → liveness falls back to the (alive) pid
+            },
+        );
+        write_leases(&pdir, &leases).unwrap();
+
+        let ctx = PoolCtx {
+            bare: PathBuf::from(&bare),
+            repo: "bn".into(),
+            pool_dir: pdir.clone(),
+            worktree_dir: wt_root,
+            size: 4,
+        };
+
+        let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker)
+            .expect("a vanished checkout must be rebuilt, not surfaced as a dead warm hit");
+        // Same branch's tenancy predates this call, so it is not a fresh lease…
+        assert!(!leased.fresh);
+        // …but the returned slot is now a real, live checkout on the right branch.
+        assert_eq!(leased.slot, slot_path(&pdir, 2));
+        assert!(is_live_slot(&leased.slot));
+        assert_eq!(head_ref(&leased.slot), "feat");
+    }
+
+    /// The happy warm hit is untouched: an existing live checkout for the branch is handed straight
+    /// back (`fresh: false`) without a rebuild.
+    #[test]
+    fn acquire_warm_hit_reuses_a_live_checkout() {
+        let (tmp, bare) = mk_bare();
+        TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
+
+        let wt_root = tmp.path().join("wt");
+        let pdir = wt_root.join("bn").join("_pool");
+        std::fs::create_dir_all(&pdir).unwrap();
+
+        // Pre-build slot 2 as a live checkout on feat, and record its lease.
+        let slot = slot_path(&pdir, 2);
+        assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
+        assert!(switch_into_slot(&slot.to_string_lossy(), &bare, "feat"));
+        let mut leases = Leases::default();
+        leases.slots.insert(
+            2,
+            Lease {
+                branch: "feat".into(),
+                holder: "me".into(),
+                pid: std::process::id(),
+                at: now_epoch(),
+                boot_id: String::new(),
+            },
+        );
+        write_leases(&pdir, &leases).unwrap();
+
+        let ctx = PoolCtx {
+            bare: PathBuf::from(&bare),
+            repo: "bn".into(),
+            pool_dir: pdir,
+            worktree_dir: wt_root,
+            size: 4,
+        };
+        let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker).expect("warm hit");
+        assert!(!leased.fresh);
+        assert_eq!(leased.slot, slot);
+        assert!(is_live_slot(&leased.slot));
+        assert_eq!(head_ref(&leased.slot), "feat");
+    }
+
+    /// Regression for the `--new` warm no-op: `pool_warm(--new)` must rebuild a *broken* stub
+    /// (a dir with no `.git`, left by an interrupted create), not skip it as "existing". The old
+    /// guard keyed off directory presence, so `ensure_spare_slot`'s background `warm --new` left a
+    /// broken slot broken and the next dispatch paid a cold create.
+    #[test]
+    fn pool_warm_new_rebuilds_a_broken_stub() {
+        let _g = bn_core::test_support::env_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // Stage the `$WT_ROOT` layout `wt::layout` expects: `<root>/bare/bn.git`, worktrees under
+        // `<root>/worktree`.
+        let bare = root.join("bare").join("bn.git");
+        build_repo_into(&root.join("bn-src"), &bare);
+
+        // Pool `bn` at size 2 via `$WT_POOLS`.
+        let pools = root.join("pools");
+        std::fs::write(&pools, "bn 2\n").unwrap();
+
+        let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
+        let _wt_pools = bn_core::test_support::EnvGuard::set("WT_POOLS", &pools);
+        let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", root.join("state"));
+        // Never reach for a real tmux/agent registry during the slot scan.
+        TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
+
+        // A broken stub for slot 2: the dir exists but there's no `.git`, so it's not a live
+        // checkout — exactly the interrupted-create state the old `--new` guard skipped.
+        let pool_dir = root.join("worktree").join("bn").join("_pool");
+        std::fs::create_dir_all(pool_dir.join("2")).unwrap();
+        std::fs::write(pool_dir.join("2").join("stray.txt"), "junk\n").unwrap();
+        assert!(!is_live_slot(&pool_dir.join("2")));
+
+        let cfg = bn_core::test_support::config(root);
+        // here = true (stay inline, no tmux window), new = true.
+        assert!(pool_warm(&cfg, Some("bn".to_string()), true, true));
+
+        // The broken stub is now a real, live checkout — the whole point of the fix.
+        assert!(is_live_slot(&pool_dir.join("2")));
     }
 }

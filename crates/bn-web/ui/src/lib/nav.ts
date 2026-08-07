@@ -1,4 +1,6 @@
 import {
+  ListOrdered,
+  ScrollText,
   ArrowLeftRight,
   Bell,
   Clock,
@@ -62,6 +64,24 @@ export const NAV_GROUPS: NavGroup[] = [
         end: true,
         tone: "plain",
         blurb: "The task-first home. Always on — it is the default surface.",
+      },
+      {
+        to: "/queue",
+        label: "Queue",
+        Icon: ListOrdered,
+        tone: "hot",
+        exp: "queue",
+        blurb:
+          "The machine-wide work queue: what is waiting, why each held item is held, what each node can run, and the pause control.",
+      },
+      {
+        to: "/queue/events",
+        label: "Queue events",
+        Icon: ScrollText,
+        tone: "hot",
+        exp: "queue",
+        blurb:
+          "What the dispatcher has been doing: every start, stall, reclaim and completion. The queue page shows what is true now; this shows what happened, which is where a queue's failures actually live.",
       },
       {
         to: "/console",

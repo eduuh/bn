@@ -89,7 +89,7 @@ todo_age_days = 30
 [quarter]
 enabled = false
 review_window_days = 7
-# review_cron = "Sun *-*-* 18:00:00"  # systemd OnCalendar; default weekly
+# Override the shipped schedule with a higher-precedence agents/quarter-review.md manifest.
 # harness = "copilot"                 # default [review].harness, then copilot
 
 [dojo]

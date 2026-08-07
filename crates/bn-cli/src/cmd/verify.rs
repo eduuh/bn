@@ -118,15 +118,80 @@ pub(crate) fn cleanup_snapshot(run_path: &std::path::Path, original: &std::path:
     }
 }
 
+/// How long a build waits for a pool slot before running anyway.
+///
+/// Generous, because a real workspace build is minutes and a queue of three drains well inside
+/// this. Bounded at all, because the alternative to running ungated is not running — and a merge
+/// that never lands is a worse failure than a machine that is briefly too busy. See
+/// [`bn_core::queue::build`] for why this fails open.
+const BUILD_WAIT_MAX_SECS: u64 = 900;
+
+/// How often to re-ask for a slot while waiting. A build is minutes long, so half a second is far
+/// below the noise floor and costs one lock acquisition.
+const BUILD_POLL_MS: u64 = 500;
+
+/// Take a slot from the machine's build pool, waiting for one if every slot is busy.
+///
+/// The choke point for *all* heavy verification: both `bn verify` and the `bn wt merge` pre-land
+/// gate reach a build through this function, so neither has to remember to throttle and neither can
+/// be changed into forgetting. A finishing wave — several agents landing at once, each running a
+/// full build while other agents are mid-turn — is the case this exists for.
+///
+/// Returns `None` when the wait budget ran out, meaning *run anyway*: the caller proceeds exactly as
+/// it did before this pool existed.
+fn build_slot(label: &str, cwd: &std::path::Path) -> Option<bn_core::queue::build::Ticket> {
+    use bn_core::queue::build::{self, Admission};
+    let repo = repo_root(cwd)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let cap = build::observe_slots();
+    let alive = crate::cmd::queue_tick::pid_alive;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(BUILD_WAIT_MAX_SECS);
+    let mut announced = false;
+    loop {
+        match build::try_acquire(label, &repo, cap, bn_core::util::now_epoch_secs(), &alive) {
+            // An unreadable or unwritable pool must not stop a build; that would make a throttle
+            // into a single point of failure for landing anything.
+            Err(_) => return None,
+            Ok(Admission::Granted(t)) => return Some(t),
+            Ok(Admission::Full(held)) => {
+                if !announced {
+                    announced = true;
+                    let who = held
+                        .iter()
+                        .map(|h| format!("{}/{}", h.repo, h.label))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    eprintln!(
+                        "→ waiting for a build slot ({}/{cap} busy: {who})",
+                        held.len()
+                    );
+                }
+                if std::time::Instant::now() >= deadline {
+                    eprintln!(
+                        "→ build slot never freed after {BUILD_WAIT_MAX_SECS}s — running anyway"
+                    );
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(BUILD_POLL_MS));
+            }
+        }
+    }
+}
+
 /// Execute an ordered verification gate, stopping at the first failing step. Job scripts are
 /// snapshotted independently immediately before execution; configured commands run via `sh -c`.
 /// Captured mode echoes child output to stderr so JSON stdout remains clean.
+///
+/// Holds a build-pool slot for the whole run — see [`build_slot`].
 pub(crate) fn run_verify_gate(
     gate: &VerifyGate,
     cwd: &std::path::Path,
     stream: bool,
     cargo_target_dir: Option<&std::path::Path>,
 ) -> Result<i32, String> {
+    let _slot = build_slot(&gate.label(), cwd);
     let home = std::env::var("HOME").unwrap_or_default();
     let path = std::env::var("PATH").unwrap_or_default();
     let aggregate = gate.targets.len() > 1;
@@ -228,7 +293,11 @@ pub(crate) fn run_ui_gate_if_changed(dir: &std::path::Path, stream: bool) -> i32
 /// Execute the ordered [`bn_core::verify_ui::ui_gate_steps`] from `root`, stopping at the first
 /// failure. Kept separate from detection so the decision stays a pure, unit-tested bn-core policy
 /// and this only does the spawn.
+///
+/// Takes its own build slot: `npm ci` + vite + vitest is as heavy as the Rust gate, and it runs
+/// *after* [`run_verify_gate`] has released, so it is a second build rather than a nested one.
 fn run_ui_gate(root: &std::path::Path, stream: bool) -> i32 {
+    let _slot = build_slot("ui", root);
     let home = std::env::var("HOME").unwrap_or_default();
     let path = std::env::var("PATH").unwrap_or_default();
     let full_path = format!("{home}/.local/bin:{home}/.bin:{path}");

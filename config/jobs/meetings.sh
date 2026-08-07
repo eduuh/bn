@@ -30,32 +30,20 @@ command -v jq     >/dev/null 2>&1 || { echo "meetings: jq not found" >&2; exit 0
 today=$(date +%F)
 weekday=$(date +%A)
 
-# 1) Ask workIQ for today's meetings, labelled by importance. It LISTS every meeting (so the feed
-#    shows the whole day) and judges how much each matters — it does not drop any. The script then
-#    decides placement: all → feed, the top important+upcoming one → attention.
-question="List ALL my Outlook calendar meetings for today, $weekday $today — do not omit any. For
-each, give the start time (HH:MM, 24-hour), the subject, the Teams join link if present, and rate
-how important it is for me to attend as one word: critical, high, medium, or low. Use low for
-optional, FYI/broadcast, or recurring meetings where I'm not a required attendee. One line per
-meeting."
+# 1) Ask workIQ for today's meetings, labelled by importance. Markdown owns the query; the script
+#    only supplies runtime date values and routes the result.
+question=$("$bn" skills render meetings-query \
+  --arg "weekday=$weekday" \
+  --arg "date=$today")
 
 wq_timeout="${BN_MEETINGS_WORKIQ_TIMEOUT:-150}"
 
-# 2) Coerce the prose into strict JSON. workiq already judged importance; Copilot only reformats —
-#    it must not invent meetings or re-rank. Emits a JSON array, most-important first.
+# 2) Coerce the prose into strict JSON. workiq already judged importance; Copilot only reformats.
 #    Reliable links: workIQ rarely has a click-to-join URL, but it DOES attach a per-meeting Teams
 #    link as a footnote marker — `[N](https://teams.microsoft.com/l/meeting/details?eventId=…)` —
 #    that opens the meeting in Teams (where you join). The notes/footnotes say which [N] is which
-#    meeting; Copilot reads that mapping and sets joinUrl from it.
-schema='Output ONLY a JSON array (no prose, no code fence), sorted most-important first
-(critical > high > medium > low), each element:
-{"id": "<stable slug from time+subject>", "start": "<HH:MM 24h, or empty>", "subject": "<text>",
- "joinUrl": "<the https://teams.microsoft.com/l/... link associated with THIS meeting, else empty>",
- "importance": "critical|high|medium|low"}.
-Meetings are usually followed by footnote links like [1](https://teams.microsoft.com/l/...),
-[2](...). The text (a notes section) states which footnote number belongs to which meeting — use
-that to attach each meeting its OWN link as joinUrl; never reuse one link for a different meeting
-or invent a URL. Use only meetings present in the text. Empty array if none.'
+#    meeting; the Markdown contract tells Copilot how to preserve that mapping.
+schema=$("$bn" skills render meetings-schema)
 
 meetings_rc=0
 # Bound generously — the footnote URLs are long (~300 chars each), and truncating them would lose
@@ -115,13 +103,10 @@ if [ -n "$top" ]; then
   # 5) MEETING PREP — a short brief for that next meeting, into its own feed source (the feed holds
   #    multi-line content; the attention list is one anchor line). One extra workIQ call, and only
   #    when a meeting is actually coming up. Best-effort: a stall leaves the last prep as-is.
-  prep_q="Prepare me for my meeting \"$subject\"${start:+ at $start} today. In a few short bullets:
-its purpose/agenda, my role or what's expected of me, the most relevant recent email or Teams
-thread, and any document I should skim. Include links where available."
-  prep_schema='Output ONLY a JSON array (no prose, no code fence) of 2-5 short prep bullets, each:
-{"id":"<stable slug>","text":"<one short line>","link":"<URL or empty string>"}.
-Ground every bullet in real context from the data; never invent a fact or URL. Empty array if
-there is nothing useful to say.'
+  prep_q=$("$bn" skills render meeting-prep-query \
+    --arg "subject=$subject" \
+    --arg "start=$start")
+  prep_schema=$("$bn" skills render meeting-prep-schema)
   prep=$(m365_query_json "$wq_timeout" "$prep_q" "$prep_schema" || true)
   if [ -n "$prep" ] && [ "$(printf '%s' "$prep" | jq 'length')" -gt 0 ]; then
     printf '%s' "$prep" | jq -c '.[] | {key:.id, text:.text, url:(.link//"")}' \

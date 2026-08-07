@@ -82,6 +82,15 @@ pub struct Handoff {
     /// Layer 5: the priority queue — do these in order. Defaults to the open todos.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub priority_queue: Vec<String>,
+    /// Standing instructions for this branch (the note's `## Directives`).
+    ///
+    /// The other layers describe *what* to do; these constrain *how*. They ride in the packet
+    /// because a `bn agent relaunch --hard` seeds a fresh session from it — which is precisely the
+    /// moment an instruction given by hand an hour ago would otherwise be lost, since the new
+    /// session starts with none of the context it was said in. `#[serde(default)]` keeps every
+    /// packet written before the layer existed valid.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub directives: Vec<String>,
 }
 
 /// The author-supplied layers — what an agent writing its own handoff fills in. Everything else is
@@ -147,6 +156,12 @@ pub fn compose(note: &Note, written: &str, input: &HandoffInput) -> Handoff {
         },
         open_questions,
         priority_queue,
+        directives: note
+            .front
+            .directives
+            .iter()
+            .map(|d| d.text.clone())
+            .collect(),
     }
 }
 
@@ -224,11 +239,21 @@ pub fn is_empty(h: &Handoff) -> bool {
         && h.decisions.deferred.is_empty()
         && h.open_questions.is_empty()
         && h.priority_queue.is_empty()
+        && h.directives.is_empty()
 }
 
 /// The markdown mirror written to `handoff.md` — the five layers, read-aloud friendly.
 pub fn render_markdown(h: &Handoff) -> String {
     let mut out = format!("# Handoff — {} / {}\n_{}_\n", h.repo, h.branch, h.written);
+
+    // Directives lead. They are constraints on everything below, and a session that reads them
+    // after the task list has already started planning against the wrong rules.
+    if !h.directives.is_empty() {
+        out.push_str("\n## Standing instructions\nFollow these for all work on this branch.\n");
+        for d in &h.directives {
+            out.push_str(&format!("- {d}\n"));
+        }
+    }
 
     out.push_str("\n## State\n");
     match &h.state.goal {
@@ -294,6 +319,11 @@ pub fn render_orientation(h: &Handoff) -> String {
     let mut out = format!("Handoff — {} / {} ({})\n", h.repo, h.branch, h.written);
     if let Some(g) = &h.state.goal {
         out.push_str(&format!("  Goal: {g}\n"));
+    }
+    // Every standing instruction, never a truncated few: a constraint you only half-see is worse
+    // than one you don't see at all, because it reads as the complete set.
+    for d in &h.directives {
+        out.push_str(&format!("  Standing instruction: {d}\n"));
     }
     if !h.narrative.is_empty() {
         out.push_str(&format!("  {}\n", first_line(&h.narrative)));

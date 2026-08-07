@@ -1,9 +1,11 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { ArrowUpRight, Check, CheckCircle2, ClipboardList, Clock, Trash2 } from "lucide-react";
 import { attnQuery, queryKeys } from "../api/client";
 import type { AttnItem } from "../api/types";
 import { attnAction, type AttnAction } from "../api/writes";
-import { pushToast } from "../lib/toast";
+import { useAppMutation } from "../hooks/useAppMutation";
+import { affects } from "../lib/invalidation";
+import { dropAttn, dropActionForAttn } from "../lib/optimistic";
 import { ToastStack } from "../components/ToastStack";
 import { Badge, type BadgeProps } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -24,33 +26,23 @@ const severityOf = (s: string) => SEVERITY[s] ?? { variant: "muted" as const, ba
  * (until tomorrow), Remove (dismiss). Each hits `POST /api/attention/:id` and invalidates the feeds
  * the badge + reviews read from, so a resolved item leaves the list at once. */
 function AttnCard({ item }: { item: AttnItem }) {
-  const qc = useQueryClient();
   const { variant, bar } = severityOf(item.severity);
 
-  const invalidate = () => {
-    void qc.invalidateQueries({ queryKey: queryKeys.attn });
-    void qc.invalidateQueries({ queryKey: queryKeys.reviews });
-    void qc.invalidateQueries({ queryKey: queryKeys.fleet });
-  };
-  const onError = (e: unknown, label: string) => {
-    pushToast(`${label} failed: ${(e as Error).message}`, "error");
-  };
-  const act = (action: AttnAction, opts?: { until?: string }) => attnAction(item.id, action, opts);
-
-  const mut = useMutation({
-    mutationFn: ({
-      action,
-      opts,
-    }: {
-      action: AttnAction;
-      opts?: { until?: string };
-      verb: string;
-    }) => act(action, opts),
-    onSuccess: (_d, v) => {
-      pushToast(`${v.verb} ${item.id}`, "success");
-      invalidate();
+  // Every one of the four verbs resolves the item, so the card leaves the list on the click and
+  // comes back only if the write actually failed.
+  const mut = useAppMutation<
+    unknown,
+    { action: AttnAction; opts?: { until?: string }; verb: string }
+  >({
+    mutationFn: (v) => attnAction(item.id, v.action, v.opts),
+    optimistic: [dropAttn(item.id), dropActionForAttn(item.id)],
+    // The reviews feed is in here because an attention item can *be* a plan-review gate; the fleet
+    // because resolving one can unblock the agent behind it.
+    invalidates: [...affects.attention, queryKeys.reviews, queryKeys.fleet],
+    toast: {
+      success: (_d, v) => `${v.verb} ${item.id}`,
+      error: (e, v) => `${v.verb} failed: ${e.message}`,
     },
-    onError: (e, v) => onError(e, v.verb),
   });
   const busy = mut.isPending;
 

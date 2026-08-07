@@ -44,9 +44,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+mod cost;
 /// The Debt Sentinel (#259) — the deterministic 22:30 estate patrol. Its own module so sibling
 /// staff members stay conflict-free; the roster/cron wiring is a separate minimal append.
 pub mod sentinel;
+pub use cost::{cost_report, AgentCost, CostReport};
 
 /// The outcome of one scheduled staff run. Serialized into run records with kebab-case names
 /// (`ok` / `fail` / `auth` / `rate-limited` / `skipped`) — the taxonomy #271 settled on.
@@ -198,17 +200,24 @@ pub fn kinds_for_sinks(allowed_sinks: &[String]) -> Vec<&'static str> {
 /// A staff agent is a self-describing markdown agent with a deterministic `gather:` command.
 pub type ResolvedAgent = crate::agents::AgentDef;
 
-/// All staff agents for `ctx`, folded by the agent discovery tier and filtered to gather agents.
-pub fn discover(cfg: &Config, ctx: Option<&Resolved>) -> Vec<ResolvedAgent> {
-    crate::agents::discover(cfg, ctx)
+/// All staff agents for `ctx`, folded by the agent discovery tier and filtered to staff agents.
+pub fn discover(
+    cfg: &Config,
+    ctx: Option<&Resolved>,
+) -> Result<Vec<ResolvedAgent>, crate::agents::AgentCatalogError> {
+    Ok(crate::agents::discover(cfg, ctx)?
         .into_iter()
-        .filter(|agent| agent.gather.is_some())
-        .collect()
+        .filter(ResolvedAgent::is_staff)
+        .collect())
 }
 
 /// Find one staff agent by name.
-pub fn find(cfg: &Config, ctx: Option<&Resolved>, name: &str) -> Option<ResolvedAgent> {
-    discover(cfg, ctx).into_iter().find(|a| a.name == name)
+pub fn find(
+    cfg: &Config,
+    ctx: Option<&Resolved>,
+    name: &str,
+) -> Result<Option<ResolvedAgent>, crate::agents::AgentCatalogError> {
+    Ok(discover(cfg, ctx)?.into_iter().find(|a| a.name == name))
 }
 
 /// The attention/source name an agent records as.
@@ -1424,76 +1433,6 @@ pub fn ledger_entries() -> Vec<LedgerEntry> {
             })
         })
         .collect()
-}
-
-/// One agent's line in the [`CostReport`].
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct AgentCost {
-    pub agent: String,
-    pub runs: u64,
-    pub skipped: u64,
-    pub tokens: u64,
-    pub wall_ms: u64,
-}
-
-/// `bn staff cost` rolled up: per-agent spend for a month.
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct CostReport {
-    /// The `YYYY-MM` month this rolls up.
-    pub month: String,
-    pub agents: Vec<AgentCost>,
-    pub total_tokens: u64,
-    pub total_wall_ms: u64,
-}
-
-/// Roll the ledger up for `month` (`YYYY-MM`). Rows sort by tokens descending, then by name.
-pub fn cost_report(cfg: &Config, ctx: Option<&Resolved>, month: &str) -> CostReport {
-    use std::collections::BTreeMap;
-    let roster = discover(cfg, ctx);
-
-    #[derive(Default)]
-    struct Agg {
-        runs: u64,
-        skipped: u64,
-        tokens: u64,
-        wall_ms: u64,
-    }
-    let mut map: BTreeMap<String, Agg> = BTreeMap::new();
-    for agent in &roster {
-        map.entry(agent.name.clone()).or_default();
-    }
-    for e in ledger_entries() {
-        if month_of(&e.date) != month {
-            continue;
-        }
-        let a = map.entry(e.agent.clone()).or_default();
-        if e.status == RunStatus::Skipped {
-            a.skipped = a.skipped.saturating_add(1);
-        } else {
-            a.runs = a.runs.saturating_add(1);
-        }
-        a.tokens = a.tokens.saturating_add(e.tokens);
-        a.wall_ms = a.wall_ms.saturating_add(e.wall_ms);
-    }
-    let mut agents: Vec<AgentCost> = map
-        .into_iter()
-        .map(|(agent, a)| AgentCost {
-            agent,
-            runs: a.runs,
-            skipped: a.skipped,
-            tokens: a.tokens,
-            wall_ms: a.wall_ms,
-        })
-        .collect();
-    agents.sort_by(|x, y| y.tokens.cmp(&x.tokens).then(x.agent.cmp(&y.agent)));
-    let total_tokens = agents.iter().map(|a| a.tokens).sum();
-    let total_wall_ms = agents.iter().map(|a| a.wall_ms).sum();
-    CostReport {
-        month: month.to_string(),
-        agents,
-        total_tokens,
-        total_wall_ms,
-    }
 }
 
 // --- pipeline ------------------------------------------------------------------------------------

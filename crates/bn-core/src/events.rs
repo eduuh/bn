@@ -120,6 +120,31 @@ pub fn log_path() -> PathBuf {
     state_dir().join("events.jsonl")
 }
 
+/// The envelope's own keys, which a payload may not occupy.
+const RESERVED: [&str; 2] = ["kind", "ts"];
+
+/// Move any payload key that would shadow the envelope out of the way.
+///
+/// [`Event`] carries `kind` and `ts` as real fields and `#[serde(flatten)]`s the rest, so a payload
+/// containing `kind` serializes **both** — one JSON object with two `"kind"` keys. Every parser
+/// takes the last, which is the payload's, so the event silently reports itself as something it is
+/// not: a `queue_dispatch` whose payload named the backlog kind read back as `kind: "cron"`, and no
+/// query filtering the log by kind could see it. Nothing errors; the audit trail just quietly is not
+/// there.
+///
+/// Renaming here rather than at the call sites because this is a trap every future producer walks
+/// into: `kind` is the obvious name for a payload field, the collision is invisible in the writer,
+/// and the log stays syntactically valid. The one place that can rule it out for everyone is the
+/// place that owns the envelope.
+fn unshadowed(mut fields: Map<String, Value>) -> Map<String, Value> {
+    for key in RESERVED {
+        if let Some(v) = fields.remove(key) {
+            fields.insert(format!("{key}_field"), v);
+        }
+    }
+    fields
+}
+
 /// Append an event stamped at `ts` (epoch secs) to a specific log file, creating its parent
 /// dir on demand. The location-agnostic primitive: the machine-local cron log writes here via
 /// [`append_at`]; the synced productivity log writes here via [`append_metric_at`].
@@ -132,7 +157,7 @@ pub fn append_event_at(
     let ev = Event {
         kind: kind.to_string(),
         ts,
-        fields,
+        fields: unshadowed(fields),
     };
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -168,7 +193,7 @@ pub fn append_event_at_synced(
     let ev = Event {
         kind: kind.to_string(),
         ts,
-        fields,
+        fields: unshadowed(fields),
     };
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;

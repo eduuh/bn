@@ -784,9 +784,9 @@ pub fn actions_data(
 }
 
 /// `GET /api/agents/catalog` → the triggerable-agent catalog (#557): every agent/job the automation
-/// can fire (declared crons + native jobs + the staff roster), each with the metadata a human needs
-/// to decide whether to re-trigger it (`crate::action_center::build_catalog`). Object-wrapped with a
-/// definitive `count`, so an empty registry is `count: 0`, never a missing field.
+/// can fire (declared crons + native jobs + runnable Markdown agents), each with the metadata a
+/// human needs to decide whether to re-trigger it (`crate::action_center::build_catalog`).
+/// Object-wrapped with a definitive `count`, so an empty registry is `count: 0`, never missing.
 pub fn catalog_data(items: &[crate::action_center::CatalogItem]) -> Value {
     json!({ "count": items.len(), "agents": items })
 }
@@ -944,3 +944,8 @@ pub fn scorecard_data(s: &crate::metrics::Scorecard) -> Value {
 pub fn sync_data(p: &crate::sync::Proposals) -> Value {
     json!({ "proposals": p })
 }
+
+pub mod queue;
+pub use queue::queue_data;
+pub mod tasks;
+pub use tasks::task_ledger_data;

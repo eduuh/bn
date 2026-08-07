@@ -268,16 +268,16 @@ pub fn mcp_extras() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The `quarter-review` cron schedule override, when explicitly configured via
-/// `$BN_QUARTER_REVIEW_CRON` or `[quarter].review_cron`. `None` leaves the manifest's sane weekly
-/// default (`config/crons.toml`) in force. Applied by [`crate::crons::discover`] so the config
-/// controls the schedule across every scheduler backend `bn cron register` generates.
-pub fn quarter_review_cron_override() -> Option<String> {
-    non_empty_env("BN_QUARTER_REVIEW_CRON").or_else(|| {
-        ConfigFile::load()
-            .as_ref()
-            .and_then(|f| f.quarter_review_cron())
-    })
+/// A legacy second schedule authority that must be migrated to an overriding
+/// `agents/quarter-review.md` manifest.
+pub fn quarter_review_cron_override() -> Option<(PathBuf, String)> {
+    if let Some(value) = non_empty_env("BN_QUARTER_REVIEW_CRON") {
+        return Some((PathBuf::from("$BN_QUARTER_REVIEW_CRON"), value));
+    }
+    ConfigFile::load()
+        .as_ref()
+        .and_then(|file| file.quarter_review_cron())
+        .map(|value| (super::config_file_path(), value))
 }
 
 /// Where a job script lives. Jobs resolve branch → repo → global, like PATH.

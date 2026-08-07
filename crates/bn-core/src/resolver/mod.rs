@@ -10,10 +10,12 @@
 
 mod config;
 mod config_file;
+mod config_sections;
 mod context;
 mod dirs;
 mod jobs;
 mod paths;
+mod queue_config;
 mod tools_config;
 mod util;
 
@@ -23,11 +25,12 @@ pub use config::{
 };
 pub use context::{repo_root, resolve, resolve_hint, resolve_target};
 pub use dirs::{
-    agents_dir, bin_dir, bn_home, config_dir, config_file_path, jobs_dir, log_dir,
-    managed_repos_dir, references_dir, state_dir, web_token,
+    agents_dir, approvals_file_path, bin_dir, bn_home, config_dir, config_file_path, jobs_dir,
+    log_dir, managed_repos_dir, references_dir, state_dir, web_token,
 };
 pub use jobs::{
     agent_dirs, job_dirs, job_script, list_jobs, mcp_extras, quarter_review_cron_override,
     JobConfig, JobRef, JobScope,
 };
+pub use queue_config::{dispatcher_alive, QueueConfig, ALL_PRODUCERS, DISPATCHER_TTL_SECS};
 pub use tools_config::ToolsConfig;

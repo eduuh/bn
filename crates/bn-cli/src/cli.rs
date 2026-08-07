@@ -3,6 +3,11 @@
 //! `Cli` parser struct and the dispatch `match`. Glob-re-exported by `main.rs`.
 use crate::*;
 
+mod agent;
+pub(crate) use agent::AgentCmd;
+mod agents_cmd;
+pub(crate) use agents_cmd::AgentsCmd;
+
 // The clap surface is split into flattened group sub-enums purely to bound the per-enum
 // stack frame that clap-derive's generated `augment_subcommands` allocates in unoptimized
 // (debug/test) builds: one frame for the ~100-variant enum crept past libtest's 2 MiB
@@ -748,189 +753,11 @@ pub(crate) enum CmdInsights {
     },
 }
 
-#[derive(Subcommand, Debug)]
-pub(crate) enum CmdFleet {
-    /// Jump to whatever needs you (prefix `j`): an fzf popup stacking live tmux windows that need
-    /// you (waiting / done / blocker badges) over the cross-repo `bn next` queue. ↵ switches to the
-    /// window or opens the link; ctrl-r reloads. Plain list when fzf is absent.
-    Jump {
-        /// Fast-path (prefix Tab): jump straight to the top-ranked window, no picker.
-        #[arg(long)]
-        next: bool,
-        /// Internal: the fzf callback stage a `jump` session re-invokes (list/preview).
-        #[arg(long, hide = true, value_enum)]
-        pick_stage: Option<jump::JumpStage>,
-        /// Internal: the focused row's hidden columns, passed to a `--pick-stage` callback.
-        #[arg(hide = true, allow_hyphen_values = true)]
-        pick_fields: Vec<String>,
-    },
-    /// Project + worktree picker (prefix `C-o`): an fzf popup over your repos (bare + flat clones)
-    /// and live tmux sessions, frecency-sorted, with a git-status preview. ↵ opens the project (a
-    /// bare repo opens a window/worktree sub-picker); type `repo/branch` to create that worktree,
-    /// or paste a git URL to clone it; ctrl-x kills a session. Plain list when fzf is absent.
-    Tat {
-        /// Open this project/worktree directly (`<name>`, `<repo>/<branch>`, or a git URL). Omit
-        /// for the interactive picker. Also carries the hidden `ref` for `--pick-stage`.
-        #[arg(allow_hyphen_values = true)]
-        name: Option<String>,
-        /// Scope the picker to an alternate root. `--root win` targets the Windows-filesystem repos
-        /// (the `tatw` replacement); omit to span the primary root plus the auto-loaded `win` root.
-        #[arg(long)]
-        root: Option<String>,
-        /// Internal: the fzf callback stage a `tat` session re-invokes (list/preview/kill).
-        #[arg(long, hide = true, value_enum)]
-        pick_stage: Option<tat::TatStage>,
-        /// Internal: an extra `--pick-stage` payload (the focused row's `kind~payload`), used by the
-        /// `rmworktree` action bind.
-        #[arg(long, hide = true)]
-        pick_arg: Option<String>,
-    },
-    /// Remote connect (the cross-machine `tat`): an fzf picker over your `~/.ssh/config` hosts
-    /// (enriched by config.toml `[hosts]`), preview shows the remote's live `bn summary`. ↵ or
-    /// `bn connect <alias>` opens `ssh -t` into `tmux new-session -A -s bn` on the target, so a
-    /// dropped pipe re-attaches instead of killing work. Degrades to a plain ssh shell when the
-    /// remote has no tmux, and to a numbered list when fzf is absent. `--window` wraps that
-    /// connection in a local `host:<alias>` tmux session; `--read-only` observes an existing
-    /// remote session without creating one.
-    Connect {
-        /// Host alias to connect to (as named in ~/.ssh/config). Omit for the picker.
-        host: Option<String>,
-        /// Open the remote in a dedicated local `host:<alias>` tmux session. Inside tmux, create
-        /// or switch to that session; outside tmux, attach to it.
-        #[arg(long)]
-        window: bool,
-        /// Attach to the remote `bn` tmux session read-only. If it does not exist, degrade to the
-        /// remote login shell instead of creating it.
-        #[arg(long)]
-        read_only: bool,
-        /// Internal: the fzf callback stage a `connect` session re-invokes (list/preview).
-        #[arg(long, hide = true, value_enum)]
-        pick_stage: Option<connect::ConnectStage>,
-    },
-    /// Print a phone-friendly mosh recipe for a known SSH host (#633 P4). The command connects
-    /// through the host alias from `~/.ssh/config` and attaches to the persistent remote `bn`
-    /// tmux session, so roaming, sleep, and reconnects do not kill the work.
-    Mobile {
-        /// Host alias to connect to (as named in ~/.ssh/config).
-        host: String,
-    },
-    /// commits since the note was last touched, `bn done` for todos a commit closed, and (on a
-    /// MERGED PR) `bn close` + `wt cleanup`. Interactive confirm by default; nothing is written
-    /// without confirm or `--yes`. Silent when already in sync.
-    Sync {
-        /// Apply every proposal without prompting.
-        #[arg(long)]
-        yes: bool,
-    },
-    /// Attention items: hand-, script-, or agent-raised entries on the attention list.
-    /// Bare `bn attn` lists the open set; they also fold into `bn doctor`. Resolve with `ack`
-    /// (done), `remove` (cancelled), or `plan` (promote to a todo); edit with `update`.
-    Attn {
-        #[command(subcommand)]
-        action: Option<AttnCmd>,
-        /// Filter the board to these task types (repeatable or comma-separated): coding |
-        /// planning | critique | review. Untyped legacy items count as `coding`.
-        #[arg(long = "type", value_delimiter = ',')]
-        type_filter: Vec<String>,
-    },
-    /// Focus mode — a declared deep-work block that suppresses + queues non-urgent surfacing.
-    /// `bn focus start 90m` opens a quiet window; while active `bn next` lets only urgent
-    /// signals (failing cron, a true blocker) through and queues the rest. Bare `bn focus`
-    /// shows the active block (same as `status`); `bn focus end` closes it and drains the queue.
-    Focus {
-        #[command(subcommand)]
-        action: Option<FocusCmd>,
-    },
-    /// Desktop-notification policy: what toasted today, what was held back, and why. A toast
-    /// means work has stopped and needs your decision; everything else stays in `bn next`.
-    Notify {
-        #[command(subcommand)]
-        action: Option<NotifyCmd>,
-    },
-    /// AI-agent session telemetry. Bare `bn agent` lists this branch's recent Claude/Copilot
-    /// sessions; `bn agent ingest` folds new sessions into the metrics log (the poller's call).
-    Agent {
-        #[command(subcommand)]
-        action: Option<AgentCmd>,
-    },
-    /// Persistent cross-repo registry of controller and worker agent sessions.
-    Sessions {
-        #[command(subcommand)]
-        action: Option<SessionsCmd>,
-    },
-    /// Resume the latest recorded session for this worktree, or a named session from anywhere.
-    Resume {
-        /// Exact task name, full session id, or unambiguous session-id prefix. Omit to select the
-        /// latest Copilot or Claude session recorded for the current git worktree.
-        name_or_id: Option<String>,
-    },
-    /// The at-a-glance fleet board: every live agent across all worktrees and both harnesses
-    /// (Copilot + Claude), ranked by who needs you, each with a short live preview of its pane —
-    /// so you see what they're all doing without attaching. One-shot. `bn fleet pick` is the
-    /// interactive jump-in (an fzf picker with a live pane preview, orchestrators included).
-    Fleet {
-        /// Interactive picker to jump to an agent — `bn fleet pick` (absent → the read board).
-        #[command(subcommand)]
-        action: Option<FleetCmd>,
-        /// Minutes of quiet before an agent is *idle*.
-        #[arg(long, default_value_t = bn_core::agent::DEFAULT_IDLE_MINS)]
-        idle: i64,
-        /// Minutes of quiet before an agent is flagged *stuck*.
-        #[arg(long, default_value_t = bn_core::agent::DEFAULT_STUCK_MINS)]
-        stuck: i64,
-        /// Fix the usage-limited agents: for every agent sitting at its harness's usage-limit
-        /// prompt, run `bn switch --in-place` to the other harness (handoff written, pane
-        /// respawned) so the work continues instead of waiting for the limit to reset.
-        #[arg(long)]
-        fix: bool,
-        /// Per-run token budget: flag any agent whose cumulative tokens exceed it — spot a
-        /// runaway (e.g. a rebase loop that won't converge) early.
-        #[arg(long)]
-        budget: Option<i64>,
-        /// Show live in-flight token usage by work-class category instead of the fleet board.
-        #[arg(long)]
-        cost: bool,
-        /// Compact one-line-per-agent list — the scannable default (`status · target · harness ·
-        /// tokens`, no pane preview). Already the default; the flag (and its `--compact` /
-        /// `--no-preview` aliases) is here for explicitness and to override a `--preview`.
-        #[arg(long, visible_aliases = ["compact", "no-preview"])]
-        oneline: bool,
-        /// Opt into the multi-line live pane preview beneath each agent (a `tmux capture-pane`
-        /// peek of what it's doing) — the richer, less scannable board. Overridden by `--oneline`.
-        #[arg(long)]
-        preview: bool,
-        /// Narrow-screen reflow (#633): render one compact line per agent that never wraps at
-        /// ~40 cols — a short state badge, the truncated `repo:branch` target, and the token
-        /// burn — so the board stays readable in a phone SSH client. Forces `--oneline`.
-        #[arg(long)]
-        mobile: bool,
-    },
-    /// The night shift — the nightly fleet planner. Picks the top promoted todos (ranked by
-    /// `bn next`), isolates each in its own worktree, dispatches an agent, and leaves you a morning
-    /// review queue of draft PRs. `plan` dry-runs the pick; `run` executes it (what the cron calls);
-    /// `report` is the morning digest; `off`/`on` are the kill switch. Opt-in per repo via
-    /// `[night] repos` and gated by `[night] enabled` + a run window.
-    Night {
-        #[command(subcommand)]
-        action: Option<NightCmd>,
-    },
-    /// The learning dojo (#253) — gamified, spaced-repetition drills derived from your codebase and
-    /// its history: bug mysteries from real `fix:` commits, feature walkthroughs, decision recall,
-    /// and architecture tours. Bare `bn dojo` runs today's session (~a handful of cards) from
-    /// pre-mined material, self-graded Anki-style; your streak, XP and per-repo mastery accrue.
-    /// Degrades to a live architecture tour when no cards are ready. Cards are mined nightly by the
-    /// `dojo-cards` cron. Rotation honors `[dojo] repos`.
-    Dojo {
-        #[command(subcommand)]
-        action: Option<DojoCmd>,
-        /// Limit this session to one repo (overrides the `[dojo] repos` rotation).
-        #[arg(long)]
-        repo: Option<String>,
-        /// Cards to present this session (overrides `[dojo] daily_target`).
-        #[arg(long)]
-        max: Option<usize>,
-    },
-}
+/// The fleet / orchestration command group — see [`crate::cli::fleet_cmd`].
+pub(crate) mod fleet_cmd;
+pub(crate) mod queue_cmd;
+pub(crate) use fleet_cmd::CmdFleet;
+pub(crate) use queue_cmd::QueueCmd;
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum CmdStaff {
@@ -982,9 +809,9 @@ pub(crate) enum CmdStaff {
         action: Option<AfkCmd>,
     },
     /// The wake watcher — a cheap (no-LLM) event reactor. Each pass gathers what needs you (agents
-    /// waiting/blocked/stuck, agent completions, urgent attention), diffs against the last-seen set,
-    /// and fires a desktop toast for anything NEW — so you're pinged the moment it happens instead
-    /// of polling. `--once` is a single pass (for cron); otherwise it loops every `--interval`s.
+    /// Reacts to newly waiting/blocked/stuck agents, completions, and urgent attention with a toast.
+    /// Filesystem events wake it; `--interval` is the fallback for time-based changes, and `--once`
+    /// retains the single-pass cron path.
     Watch {
         /// Single pass then exit (schedule it as a cron), instead of looping.
         #[arg(long)]
@@ -1091,12 +918,9 @@ pub(crate) enum CmdStaff {
         #[command(subcommand)]
         action: Option<SkillsCmd>,
     },
-    /// Review **specialists**: repo-scoped PR-review experts bn compiles and installs as native
-    /// Copilot CLI / Claude Code custom agents, so a running Copilot/Claude session discovers them
-    /// under `/agent` and can delegate to them. A specialist is an `agents/<name>.md` with a
-    /// `repo:` gate whose `references:` docs are mined from real PR review comments. Bare
-    /// `bn agents` lists them; `bn agents install` (re)compiles them into `~/.copilot/agents` +
-    /// `~/.claude/agents`; `bn agents bootstrap <name>` mines its review standards.
+    /// Strict Markdown agent catalog. Bare `bn agents` lists every explicit kind and schedule;
+    /// `validate` checks every visible manifest, `render` resolves a prompt body, and specialist
+    /// show/install/bootstrap commands compile repo-gated reviewers for Copilot CLI / Claude Code.
     Agents {
         #[command(subcommand)]
         action: Option<AgentsCmd>,
@@ -1698,11 +1522,11 @@ pub(crate) enum RoutineCmd {
     /// Compatibility alias for [`RoutineCmd::Tick`] — identical delivery, kept for existing
     /// muscle memory / scripts.
     Notify,
-    /// Foreground deadline-driven reconciliation loop: run the shared tick, then sleep until the
-    /// earliest reminder/start/end/snooze/override deadline (or a bounded reconciliation cap)
-    /// instead of polling. Re-resolves `timezone = "local"`/config on every wake, so suspend/
-    /// resume, clock jumps, DST transitions, and an invalid-then-fixed config are all handled by
-    /// the same reconciliation. Exits cleanly on SIGTERM/Ctrl-C.
+    /// Foreground deadline-driven reconciliation loop: run the shared tick, then wait for schedule
+    /// state/config changes or the earliest reminder/start/end/snooze/override deadline (with a
+    /// bounded reconciliation cap). Re-resolves `timezone = "local"`/config on every wake, so
+    /// suspend/resume, clock jumps, DST transitions, and an invalid-then-fixed config are all
+    /// handled by the same reconciliation. Exits cleanly on SIGTERM/Ctrl-C.
     Watch,
     /// Manage the long-running `bn routine watch` as a machine-managed service (launchd on
     /// macOS, systemd `--user` on Linux) — starts at login/reboot and restarts on crash.
@@ -2918,8 +2742,8 @@ pub(crate) enum TaskCmd {
         dry_run: bool,
     },
     /// Make a task executable: fill in why it matters, the `## Done When` the SMART gate reads,
-    /// an estimate and a day. Prints the agent seed with --dry-run. `--steer` passes your own
-    /// "things to look out for" straight into the seed.
+    /// an estimate and a day. Renders the Markdown agent prompt with --dry-run. `--steer` passes
+    /// your own "things to look out for" into its runtime packet.
     Improve {
         /// Task id (e.g. t42). Omit with --due to take the next task needing work.
         id: Option<String>,
@@ -2929,7 +2753,7 @@ pub(crate) enum TaskCmd {
         /// Take the highest-ranked task that failed the gate, rather than a named one.
         #[arg(long)]
         due: bool,
-        /// Print the seed instead of launching an agent.
+        /// Render the prompt instead of launching an agent.
         #[arg(long)]
         dry_run: bool,
     },
@@ -2939,7 +2763,7 @@ pub(crate) enum TaskCmd {
         /// The day to triage for (default today).
         #[arg(long, value_name = "DATE")]
         day: Option<String>,
-        /// Print the ranking and the seed instead of launching an agent.
+        /// Print the rendered prompt instead of launching an agent.
         #[arg(long)]
         dry_run: bool,
     },
@@ -2990,232 +2814,6 @@ pub(crate) enum AfkCmd {
     End,
     /// Show away status (and a quick count of what needs you). Same as bare `bn afk`.
     Status,
-}
-
-#[derive(Subcommand, Debug)]
-pub(crate) enum AgentCmd {
-    /// Recent agent sessions for a branch (default — same as bare `bn agent`). Resolves the
-    /// current worktree, or pass --repo/--branch to target another.
-    Sessions {
-        #[arg(long)]
-        repo: Option<String>,
-        #[arg(long)]
-        branch: Option<String>,
-    },
-    /// Fold not-yet-seen Claude + Copilot sessions into the metrics log: bn agent ingest.
-    /// Idempotent by session id; called by the `agent-observe` job.
-    Ingest,
-    /// Mine this branch's recorded sessions into proposed note lines — a progress bullet, and
-    /// (for code-changing sessions) a decision stub + follow-up todo — for work that never
-    /// landed in the note. Propose-only, mirroring `bn sync`: `--json` emits and writes nothing;
-    /// otherwise each line is confirmed (or `--yes`-applied). bn agent digest.
-    Digest {
-        #[arg(long)]
-        repo: Option<String>,
-        #[arg(long)]
-        branch: Option<String>,
-        /// Apply every proposed line without prompting.
-        #[arg(long)]
-        yes: bool,
-    },
-    /// Live-agent fleet: every *running* Claude session with its health (active / idle / stuck),
-    /// flagging any idle past `--stuck` minutes. The supervisor pass behind the FLEET cockpit
-    /// panel and `--json`. bn agent supervise.
-    Supervise {
-        /// Minutes of quiet before an agent is *idle*.
-        #[arg(long, default_value_t = bn_core::agent::DEFAULT_IDLE_MINS)]
-        idle: i64,
-        /// Minutes of quiet before an agent is flagged *stuck*.
-        #[arg(long, default_value_t = bn_core::agent::DEFAULT_STUCK_MINS)]
-        stuck: i64,
-    },
-    /// Joined live fleet across BOTH harnesses: every agent seen by its tmux window (@bn_agent
-    /// working/waiting/done) and/or the session-log health (active/idle/stuck), one row per
-    /// repo:branch. The machine-readable "what are all my agents doing" behind the fleet board;
-    /// pairs with `bn fleet`. bn agent live [--json].
-    Live {
-        /// Minutes of quiet before an agent is *idle*.
-        #[arg(long, default_value_t = bn_core::agent::DEFAULT_IDLE_MINS)]
-        idle: i64,
-        /// Minutes of quiet before an agent is flagged *stuck*.
-        #[arg(long, default_value_t = bn_core::agent::DEFAULT_STUCK_MINS)]
-        stuck: i64,
-    },
-    /// Self-schedule a check-in nudge: in `<mins>` minutes, deliver `<note>` to this worktree's
-    /// agent pane (the `schedule_with_note.sh` analogue). Uses a transient systemd `--user` timer
-    /// so it survives the agent going idle. bn agent checkin <mins> "<note>".
-    Checkin {
-        /// Minutes from now to fire the nudge.
-        mins: i64,
-        /// The message to deliver at the check-in.
-        note: String,
-        /// Target tmux window `repo:branch` (default: the current worktree).
-        #[arg(long)]
-        target: Option<String>,
-    },
-    /// Recover an interrupted ship turn: a worktree with commits ahead of base but no PR (its agent
-    /// died before pushing). Dry-run by default (reports candidates); `--yes` pushes the branch and
-    /// opens a PR (`gh pr create --fill`), recording it on the note. Targets the current worktree,
-    /// `--repo/--branch`, or `--all` (sweep every worktree). bn agent recover.
-    Recover {
-        #[arg(long)]
-        repo: Option<String>,
-        #[arg(long)]
-        branch: Option<String>,
-        /// Sweep every worktree, not just one target.
-        #[arg(long)]
-        all: bool,
-        /// Base branch the work forked from (for the commits-ahead check). Default: main.
-        #[arg(long)]
-        base: Option<String>,
-        /// Actually push + open the PR (default: dry-run report).
-        #[arg(long)]
-        yes: bool,
-    },
-    /// Signal completion back to the orchestrator (the agent runs this when it finishes) — the
-    /// event-driven push. Raises a durable, keyed attention item (source `agent`, carrying repo/
-    /// branch/PR link) that surfaces in `bn next` / the orchestrator's attention read, sets the
-    /// window's `@bn_agent done` badge, and records it in the note. `--notify` also fires a desktop
-    /// toast. Run inside the worktree, or target it with --repo/--branch. bn agent done.
-    Done {
-        /// One-line summary of what was accomplished.
-        #[arg(long)]
-        summary: Option<String>,
-        /// PR URL, if one was opened (becomes the attention item's link).
-        #[arg(long)]
-        pr: Option<String>,
-        /// Fire a desktop toast too (the immediate "wake" nudge).
-        #[arg(long)]
-        notify: bool,
-        /// This finding is report-only — a recommendation or "nothing to fix", NOT a code change to
-        /// ship. Marks the note so `bn promote` won't try to ship it (no empty PR). Scouts whose
-        /// finding isn't code-shaped should pass this.
-        #[arg(long)]
-        report_only: bool,
-        /// Report terminal worker failure instead of successful completion.
-        #[arg(long)]
-        failed: bool,
-        #[arg(long)]
-        repo: Option<String>,
-        #[arg(long)]
-        branch: Option<String>,
-    },
-    /// Steer a running agent with a message and get its reply. Default: the reliable `-p --resume`
-    /// channel (harness + session id from the branch note) — works for both harnesses even against a
-    /// live session, and returns the agent's answer. `--keys` instead pastes into the live tmux
-    /// window and submits with a raw CR, verifying the pane took it (visible there; use when the
-    /// agent is idle). `<target>` is `repo:branch`. bn agent send.
-    Send {
-        /// `repo:branch` of the agent (its note holds the recorded session id).
-        target: String,
-        /// The message to send.
-        msg: String,
-        /// Force the visible tmux path (paste + verified raw-CR submit) instead of `-p --resume`.
-        #[arg(long)]
-        keys: bool,
-        /// Fire-and-forget: run the `-p --resume` turn DETACHED (own process group, survives the
-        /// caller exiting) and return immediately, instead of blocking for the whole turn. For long
-        /// ship tasks — the agent reports back with `bn agent done` when finished. Output is logged.
-        #[arg(long)]
-        detach: bool,
-    },
-    /// Kill a running agent: its process tree, its tmux window, its agent lease and its warm pool
-    /// slot (`repo:branch`, the `target` from `bn agent live`). The hard stop the web dashboard's
-    /// kill button and the orchestrator's give-up path call — it genuinely frees the slot, rather
-    /// than closing the window and leaving the harness reparented and running. Idempotent: a target
-    /// with no window is reported as already gone. A slot holding uncommitted work is left leased
-    /// and said so, never reset. bn agent kill <target>.
-    Kill {
-        /// `repo:branch` of the agent — its tmux window name (slashes already dashed).
-        target: String,
-    },
-    /// Kill a running agent and start it again in the SAME worktree — the repair a stuck agent
-    /// actually wants, and what the dashboard's Relaunch button now calls.
-    ///
-    /// Its process tree is reaped (a bare `kill-window` leaves the harness reparented and running),
-    /// then the harness is respawned in the checkout git says the branch is really in — never the
-    /// conventional `<worktree_dir>/<repo>/<branch>`, which is wrong for every pooled slot. By
-    /// default the new session RESUMES the old transcript; `--hard` starts a fresh one seeded from
-    /// the branch note's handoff. The warm pool slot is kept (that is what `kill` frees), and a
-    /// relaunch that could not happen exits non-zero rather than reporting success.
-    /// bn agent relaunch <target> [--hard] [--harness claude|copilot].
-    Relaunch {
-        /// `repo:branch` of the agent — the `target` from `bn agent live`.
-        target: String,
-        /// Start a FRESH session seeded from the branch note's handoff instead of resuming the
-        /// recorded transcript. For an agent whose context is the problem.
-        #[arg(long)]
-        hard: bool,
-        /// Relaunch under a different harness. Implies `--hard`: a Claude transcript is not
-        /// resumable by Copilot. Availability-gated — a disabled harness is an error, not a no-op.
-        #[arg(long)]
-        harness: Option<String>,
-    },
-    /// Capture the last N lines of a running agent's tmux pane (read-only). Powers the web
-    /// dashboard's live-pane view; `<target>` is `repo:branch` (the `target` from `bn agent live`).
-    /// bn agent pane <target> [--lines N].
-    Pane {
-        /// `repo:branch` of the agent — its tmux window name (slashes already dashed).
-        target: String,
-        /// How many trailing pane lines to return (default 40).
-        #[arg(long, default_value_t = 40)]
-        lines: usize,
-        /// Include ANSI/SGR escape sequences (`tmux capture-pane -e`) so a terminal renderer (the
-        /// web dashboard's live terminal) shows the pane's real colours/attributes instead of
-        /// plain text. Off by default — the plain tail stays escape-free.
-        #[arg(long)]
-        ansi: bool,
-    },
-    /// Read a session's transcript as a readable timeline: your prompts, the agent's prose, and
-    /// consecutive tool calls collapsed into one summary row. Powers the web dashboard's agent
-    /// activity feed — unlike `pane`, it works for a session whose tmux window has already closed,
-    /// because the transcript is on disk. `<session>` is the harness session id (the `session_id`
-    /// from `bn agent live`). bn agent activity <session> [--limit N].
-    Activity {
-        /// The harness session id — a Claude transcript or a Copilot session directory.
-        session: String,
-        /// How many trailing timeline entries to return (default 40).
-        #[arg(long, default_value_t = 40)]
-        limit: usize,
-    },
-    /// Claude Code SessionStart hook: point this worktree's auto-memory at a per-worktree
-    /// `.claude/memory` (written idempotently to the gitignored `.claude/settings.local.json`,
-    /// since the checked-in settings ignore `autoMemoryDirectory`), then print `bn handoff read`
-    /// to orient the session. Replaces `scripts/wt-memory.sh`. Best-effort, quiet on no note.
-    MemoryHook,
-    /// Launch an AI coding agent in the current directory, resuming this directory's recorded
-    /// session if one exists, else starting fresh — the single home of the resume-or-fresh rule
-    /// (tmux keybinds, `bn dispatch`, and a plain `cd <wt> && bn agent launch` all behave
-    /// identically). Replaces the `workflow/bin/agent` zsh launcher. Execs the harness (this
-    /// process is replaced), so it never returns on success. bn agent launch [copilot|claude].
-    Launch {
-        /// Harness to launch: `copilot` (default) or `claude`.
-        #[arg(value_name = "HARNESS")]
-        harness: Option<String>,
-        /// Seed the first turn of a FRESH session with this prompt (ignored when resuming).
-        #[arg(long)]
-        seed: Option<String>,
-        /// Read the seed prompt from a file (keeps the launch command short). A missing/unreadable
-        /// file degrades to an unseeded launch rather than erroring.
-        #[arg(long = "seed-file")]
-        seed_file: Option<String>,
-        /// Trusted-repo autonomy: run without approval prompts even when seeded.
-        #[arg(long)]
-        yolo: bool,
-        /// Skip resume-detection and start a FRESH session even if this worktree has a recorded one
-        /// (recovery re-seed, #383).
-        #[arg(long)]
-        fresh: bool,
-        /// Pin the harness session id (so `bn agent send` can steer this exact session via resume).
-        #[arg(long)]
-        session: Option<String>,
-        /// Prefer this exact recorded session before falling back to a fresh launch.
-        #[arg(long, hide = true)]
-        resume_session: Option<String>,
-        /// Extra args passed through to the harness verbatim (everything after `--`).
-        #[arg(last = true)]
-        passthrough: Vec<String>,
-    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -3307,286 +2905,8 @@ pub(crate) enum IssueKindArg {
 }
 
 /// `bn orchestrate` subcommands. Bare `bn orchestrate` (no subcommand, no `--queue`) shows status.
-#[derive(Subcommand, Debug)]
-pub(crate) enum OrchestrateCmd {
-    /// Diagnose orchestrator layout drift and stuck state: repo/jobs anchors, stale locks,
-    /// referenced worktrees, resident runs, queue holds, wedged panes, retries, and saturation.
-    /// Exits nonzero when a warning or error needs attention.
-    Doctor {
-        /// Diagnose only this repo's persisted run (machine-wide anchors and locks are always checked).
-        #[arg(long)]
-        repo: Option<String>,
-    },
-    /// Show runs: bare lists every live run; `--repo` shows one in full (queue / in-flight /
-    /// merged / recovery events). Same as bare `bn orchestrate`.
-    Status {
-        /// Show only this repo's run, in full detail.
-        #[arg(long)]
-        repo: Option<String>,
-        /// Explain the latest dispatch decision with lane capacity, held/skipped candidates, and
-        /// queue wait times.
-        #[arg(long)]
-        why: bool,
-        /// Show only active orchestrator degradations (tmux, daemon fallback, backlog maintenance).
-        #[arg(long, conflicts_with = "why")]
-        degraded: bool,
-    },
-    /// Show structured orchestrator events, newest first. Alias: `events`.
-    #[command(visible_alias = "events")]
-    Logs {
-        /// Show only events for this repo (machine-wide `*` events are included).
-        #[arg(long)]
-        repo: Option<String>,
-        /// Filter by severity.
-        #[arg(long)]
-        level: Option<OrchestrateLogLevelArg>,
-        /// Maximum events to print.
-        #[arg(long, default_value_t = 50)]
-        limit: usize,
-    },
-    /// Live monitoring view (#379): a self-refreshing rollup header (queue depth, in-flight with
-    /// their tmux targets, merged/hr, ETA, cost today) over one row per in-flight agent. `--json`
-    /// emits the enriched contract once and exits; `--plain` prints one static frame (wrap it in
-    /// `watch -n` or pipe it) instead of looping.
-    Watch {
-        /// Watch only this repo's run (default: the only live run, or every run when several).
-        #[arg(long)]
-        repo: Option<String>,
-        /// Refresh cadence in seconds while looping (ignored under `--json`/`--plain`).
-        #[arg(long, default_value_t = 5)]
-        interval: u64,
-        /// Print one static frame and exit instead of self-refreshing — for `watch -n`/pipes.
-        #[arg(long)]
-        plain: bool,
-    },
-    /// The daemon loop entry — supervise → land → dispatch-next until the queue drains. launchd
-    /// invokes this; run it yourself with `--once` for a single pass (cron fallback / manual poke).
-    Run {
-        /// Run exactly one supervision pass and exit, instead of looping.
-        #[arg(long)]
-        once: bool,
-        /// Drive this repo's run (default: the only live run; errors when several are live).
-        #[arg(long)]
-        repo: Option<String>,
-        /// Drive the #455 cross-repo sweep instead — one loop over every configured repo's session.
-        #[arg(long, conflicts_with = "repo")]
-        all_repos: bool,
-    },
-    /// Reconcile durable dispatch claims after a crash: promote claims whose local worktree,
-    /// GitHub run/comment, or worker attempt exists; return definitively unlaunched claims to
-    /// pending; leave unreachable/ambiguous claims reserved.
-    Reconcile {
-        /// Reconcile this repo's run (default: the current/only run).
-        #[arg(long)]
-        repo: Option<String>,
-    },
-    /// Force a wedged local agent lane through a fresh restart while preserving its worktree and
-    /// recoverable work. The lane may be addressed by queue item id or dispatched branch.
-    Reset {
-        /// Queue item id or dispatched branch identifying the lane.
-        lane: String,
-        /// Reset a lane in this repo's run (default: the current/only run).
-        #[arg(long)]
-        repo: Option<String>,
-    },
-    /// Start a standing, session-independent **supervisor** for the repo (#426): a daemon that, with
-    /// nobody at the keyboard, lands every ready PR and recovers dead/stalled standalone `bn dispatch`
-    /// lanes — the fix for the drain stalling when unattended. Keeps standing after the queue drains
-    /// (only `stop` ends it); survives the shell exiting, a crash, and a reboot (launchd RunAtLoad +
-    /// KeepAlive). Idempotent: upgrades a live run in place, else seeds an empty supervisor.
-    /// `--all-repos` (#455) supervises EVERY configured repo in one invocation — one loop that
-    /// sweeps every repo's tmux session, so agents in any repo (not just the current one) get landed.
-    Supervise {
-        /// Supervise this repo (default: the current repo).
-        #[arg(long)]
-        repo: Option<String>,
-        /// Supervise every configured repo in one cross-repo sweep loop (#455).
-        #[arg(long, conflicts_with = "repo")]
-        all_repos: bool,
-        /// Max agents dispatched at once when refilling from the backlog (default 2).
-        #[arg(long, default_value_t = 2)]
-        concurrency: usize,
-        /// Keep owned repos supplied from eligible open issues when backlog + in-flight is low.
-        #[arg(long)]
-        keep_warm: bool,
-        /// Minimum backlog + in-flight depth maintained per owned repo.
-        #[arg(long, requires = "keep_warm")]
-        low_water: Option<usize>,
-        /// Repos this box may feed; comma-delimited or repeatable. Defaults to `[orchestrate].own`.
-        #[arg(long, value_delimiter = ',', requires = "keep_warm")]
-        own: Vec<String>,
-        /// Case-insensitive title substring to exclude; repeatable.
-        #[arg(long, requires = "keep_warm")]
-        exclude_title: Vec<String>,
-        /// Case-insensitive label to exclude; repeatable.
-        #[arg(long, requires = "keep_warm")]
-        exclude_label: Vec<String>,
-        /// Ideation scouts launched when no eligible issues remain (0 disables brainstorming).
-        #[arg(long, requires = "keep_warm")]
-        brainstorm: Option<usize>,
-        /// Run the loop in the foreground (blocking) instead of daemonizing via launchd.
-        #[arg(long)]
-        foreground: bool,
-    },
-    /// Stop a run: mark it stopped (the daemon's next tick exits) and unload its launchd daemon.
-    /// Bare stop targets the only live run (or the current repo's); `--repo` picks one explicitly;
-    /// `--all-repos` stops the #455 cross-repo supervisor (unloads its daemon + ends every run).
-    Stop {
-        /// Stop this repo's run.
-        #[arg(long)]
-        repo: Option<String>,
-        /// Stop the cross-repo supervisor: unload its daemon and end every supervised run (#455).
-        #[arg(long, conflicts_with = "repo")]
-        all_repos: bool,
-    },
-    /// Live-adjust the typed concurrency lanes on a **running** run without stop/re-declare (#385):
-    /// set the coding and/or research lane caps in place. The daemon picks the new caps up on its
-    /// next tick — no restart. E.g. `bn orchestrate scale --coding 5 --research 2`.
-    Scale {
-        /// Scale this repo's run (default: the only live run, or the current repo's).
-        #[arg(long)]
-        repo: Option<String>,
-        /// New coding-lane (ship) cap.
-        #[arg(long)]
-        coding: Option<usize>,
-        /// New research-lane (scout) cap — opens a typed research lane if the run had none.
-        #[arg(long)]
-        research: Option<usize>,
-    },
-    /// Append items to the durable prioritized backlog — any repo, any time, run active or not.
-    /// The daemon pulls the highest-priority pending entries into the run as concurrency slots
-    /// free (within one poll, no restart). Deduped by `(repo, id)`; survives restarts and reboots.
-    Add {
-        /// The work items: issue numbers (`338`), issue/PR URLs, or free text. Deduped by
-        /// `(repo, id)` via the same id-derivation the run queue uses.
-        #[arg(required = true, value_name = "ITEM")]
-        items: Vec<String>,
-        /// Target repo (default: the current repo). Half of the `(repo, id)` dedup key.
-        #[arg(long)]
-        repo: Option<String>,
-        /// Priority — higher is pulled first (default 0). Ties break FIFO by add time.
-        #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
-        priority: i64,
-        /// Work kind: `ship` (open a PR, default) or `scout` (read-only investigation).
-        #[arg(long, value_enum, default_value_t = BacklogKindArg::Ship)]
-        kind: BacklogKindArg,
-        /// A path glob this work is expected to touch (overlap-aware scheduling hint). Repeatable.
-        #[arg(long, value_name = "GLOB")]
-        touches: Vec<String>,
-        /// Where it should run: `auto` (default), `local`, or `remote`.
-        #[arg(long, value_enum, default_value_t = SubstrateArg::Auto)]
-        substrate: SubstrateArg,
-        /// Free-form provenance recorded on each entry (e.g. `triage`, `scout:341`).
-        #[arg(long)]
-        source: Option<String>,
-        /// After appending, ensure a daemon is running for the repo so the backlog starts draining
-        /// (starts an empty run if none is live). Without it, `add` only enqueues.
-        #[arg(long)]
-        start: bool,
-        /// Max agents at once when `--start` seeds a fresh run (default 2).
-        #[arg(long, default_value_t = 2)]
-        concurrency: usize,
-        /// Solo mode (one agent at a time) when `--start` seeds a fresh run.
-        #[arg(long)]
-        solo: bool,
-    },
-    /// Ask the orchestrator a question — the ad-hoc priority lane (#378). Appends a read-only
-    /// `scout` backlog entry at the top priority band, so the daemon dispatches it on the next
-    /// active poll (≤15s) without preempting a running ship: the scout runs the `investigate` skill,
-    /// writes findings to its branch note, and opens **no PR**. The answer routes back — read it
-    /// with `bn orchestrate answers`, `--wait` here, or the notification that links the findings.
-    Ask {
-        /// The question to investigate — free text (joined). E.g. `where is retry backoff handled?`.
-        #[arg(required = true, value_name = "QUESTION")]
-        question: Vec<String>,
-        /// Target repo (default: the current repo). Where the scout investigates.
-        #[arg(long)]
-        repo: Option<String>,
-        /// Block until the answer is harvested, then print it inline (polls the state file the
-        /// daemon writes — no new IPC). Without it, `ask` returns immediately after enqueuing.
-        #[arg(long)]
-        wait: bool,
-    },
-    /// Show the answers routed back from scout/ask items (#378) — the harvested findings for this
-    /// repo's run, newest last. `--id` shows just one item's answer. Reads the state file the daemon
-    /// writes (no new IPC), so it works whether or not the daemon is mid-poll.
-    Answers {
-        /// Show answers for this repo's run (default: the only live run, or the current repo's).
-        #[arg(long)]
-        repo: Option<String>,
-        /// Show only the answer for this item id (the scout/ask id, e.g. a question slug).
-        #[arg(long)]
-        id: Option<String>,
-    },
-    /// Inspect the durable prioritized backlog (#373/#375) — the read view that complements `add`.
-    /// Lists the pending work the daemon pulls from, in pull order (priority desc, then FIFO), so an
-    /// operator who loaded hundreds of items can see queue depth, priorities, kinds, and provenance.
-    /// `--status` filters (default `pending`; `all` includes leased/terminal); `--all-repos` lists
-    /// every repo's backlog; `--limit` caps rows (0 = unlimited); `--json` emits the entries.
-    Backlog {
-        /// List this repo's backlog (default: the current repo). Ignored with `--all-repos`.
-        #[arg(long)]
-        repo: Option<String>,
-        /// List every repo present in the backlog, grouped by repo (#343).
-        #[arg(long, conflicts_with = "repo")]
-        all_repos: bool,
-        /// Which lifecycle states to show (default: only pending — the pullable work).
-        #[arg(long, value_enum, default_value_t = BacklogStatusArg::Pending)]
-        status: BacklogStatusArg,
-        /// Max rows per repo (0 = unlimited). Guards against dumping a 100s-deep backlog.
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-    },
-    /// Build the backlog from a failing check instead of hand-listing issues (#609). Runs `check`
-    /// (a shell command — e.g. `cargo clippy --workspace --all-targets`), parses its failures,
-    /// groups them by file (or `--group-by dir`) into ship work items, and appends each as a
-    /// backlog entry carrying a `touches` glob so the conflict-aware scheduler never co-schedules
-    /// two agents on the same file. `--dry-run` prints the shards without enqueuing; `--start`
-    /// begins draining. Grouping-by-crate/module ≈ `--group-by dir`.
-    QueueFrom {
-        /// The check to run — a shell command whose failures seed the queue. Joined if multi-word.
-        #[arg(required = true, value_name = "CHECK")]
-        check: Vec<String>,
-        /// Target repo (default: the current repo). Half of the `(repo, id)` dedup key.
-        #[arg(long)]
-        repo: Option<String>,
-        /// Shard axis: `file` (default, one lane per file) or `dir` (one per directory ≈ module).
-        #[arg(long, default_value = "file")]
-        group_by: String,
-        /// Priority stamped on every generated item — higher is pulled first (default 0).
-        #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
-        priority: i64,
-        /// Parse and print the shards that would be enqueued, but don't touch the backlog.
-        #[arg(long)]
-        dry_run: bool,
-        /// After appending, ensure a daemon is draining the repo (seeds an empty run if none live).
-        #[arg(long)]
-        start: bool,
-        /// Max agents at once when `--start` seeds a fresh run (default 2).
-        #[arg(long, default_value_t = 2)]
-        concurrency: usize,
-    },
-    /// Split one oversized GitHub issue into independently shippable, conflict-scoped child
-    /// issues, then enqueue only those children. An agent first triages the bundle into repeated
-    /// `--part "TITLE::GLOB[,GLOB]"` specifications; bn rejects overlapping touch scopes, links
-    /// every child to the parent, and carries each scope into the backlog scheduler.
-    Decompose {
-        /// Parent issue number or URL to split.
-        issue: String,
-        /// One independently shippable child as `TITLE::GLOB[,GLOB]`. Repeat at least twice.
-        #[arg(long, required = true, value_name = "TITLE::GLOB[,GLOB]")]
-        part: Vec<String>,
-        /// Target repo (default: the current repo).
-        #[arg(long)]
-        repo: Option<String>,
-        /// Priority stamped on every generated child backlog entry.
-        #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
-        priority: i64,
-        /// Validate and print the decomposition without creating or enqueueing issues.
-        #[arg(long)]
-        dry_run: bool,
-    },
-}
+pub(crate) mod orchestrate_cmd;
+pub(crate) use orchestrate_cmd::OrchestrateCmd;
 
 /// `--status` for `bn orchestrate backlog`, mapped to an optional [`bn_core::backlog::BacklogStatus`]
 /// filter (`All` → no filter). bn-core is clap-free, so the value-enum lives here.
@@ -3743,8 +3063,8 @@ pub(crate) enum CronCmd {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum StaffCmd {
-    /// Run one agent's full pipeline — gather → dispatch → validate → route. This is exactly what
-    /// the `staff-<name>` cron calls: bn staff run <agent>.
+    /// Run one staff-kind agent's full pipeline — gather → dispatch → validate → route. Scheduled
+    /// execution enters through `bn run <name>` and resolves to this same pipeline.
     Run { agent: String },
     /// Dry-run: print the gathered packet and the sinks the agent is allowed to route into, with
     /// no dispatch and nothing landed: bn staff plan <agent>.
@@ -3822,65 +3142,6 @@ pub(crate) enum RefCmd {
     /// already exists (no overwrite).
     Add {
         /// Reference name to create (the file is `references/<name>.md`).
-        name: String,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-pub(crate) enum AgentsCmd {
-    /// List review specialists visible for the current repo (repo-gated) plus global ones.
-    List,
-    /// Preview the compiled native agent for `name` (Copilot `.agent.md` by default).
-    Show {
-        name: String,
-        /// Render the Claude Code variant instead of the Copilot one.
-        #[arg(long)]
-        claude: bool,
-    },
-    /// Scaffold a new specialist source file: bn agents new <name> --repo <r> [--source <ado-repo>].
-    New {
-        name: String,
-        /// Repository this specialist is gated to (its description/instruction gate).
-        #[arg(long, value_name = "REPO")]
-        repo: String,
-        /// One-line description shown to the harness (synthesized from --repo when omitted).
-        #[arg(long = "desc", value_name = "TEXT")]
-        description: Option<String>,
-        /// ADO repo whose merged-PR review comments `bn agents bootstrap` mines.
-        #[arg(long, value_name = "ADO_REPO")]
-        source: Option<String>,
-        /// Tier to scaffold into: global-personal | global-shared (default global-personal).
-        #[arg(long, default_value = "global-personal")]
-        scope: String,
-        /// Replace an existing specialist of the same name in that tier.
-        #[arg(long)]
-        overwrite: bool,
-    },
-    /// (Re)compile the discovered specialists into native Copilot/Claude agent files. Default
-    /// target is a global install (`~/.copilot/agents` + `~/.claude/agents`); idempotent, guarded,
-    /// and prunes stale bn-managed files. Run by `install.sh`.
-    Install {
-        /// Install into the current repo's `.github/agents` + `.claude/agents` instead of globally
-        /// (only specialists gated to this repo).
-        #[arg(long)]
-        repo: bool,
-        /// Restrict to one world: copilot | claude (default both).
-        #[arg(long, value_name = "WORLD")]
-        harness: Option<String>,
-    },
-    /// Remove only bn-managed native agent files (user-authored agents are preserved).
-    Uninstall {
-        /// Uninstall from the current repo's dirs instead of the global ones.
-        #[arg(long)]
-        repo: bool,
-        /// Restrict to one world: copilot | claude (default both).
-        #[arg(long, value_name = "WORLD")]
-        harness: Option<String>,
-    },
-    /// Mine `source_repo`'s 50 most-recent merged PRs for real reviewer comments and (re)write the
-    /// specialist's `references:` review-standards doc, then reinstall. Prints the dispatch plan.
-    Bootstrap {
-        /// Specialist whose review standards to mine.
         name: String,
     },
 }

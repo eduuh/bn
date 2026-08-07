@@ -14,17 +14,18 @@
 //! prompt-template policy, and the default urgency all live here under unit test.
 
 use crate::action_rank;
+use crate::agents::{AgentCatalog, AgentDef, AgentKind};
 use crate::attention::AttnItem;
 use crate::crons::CronView;
 use crate::model::Item;
 use crate::orchestrate::{ItemStatus, QueueItem};
 use crate::plan_review::{Review, ReviewStatus};
 use crate::rollups::SummaryEntry;
-use crate::staff::ResolvedAgent;
 use crate::suggestions::{Suggestion, SuggestionStatus};
 use crate::util;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 /// An in-flight PR with no status change for this long is treated as *stale* and surfaced as an
 /// action (6h). Tuned to catch a PR that's silently wedged on CI/review without flagging one that's
@@ -604,37 +605,51 @@ pub fn cron_activity(crons: &[CronView]) -> Vec<CronActivity> {
 // Triggerable-agent catalog (#557).
 // ---------------------------------------------------------------------------
 
-/// What a [`CatalogItem`] is — a scheduled staff agent or a plain cron/native job. Serialized
-/// kebab-case to match the rest of the web contract.
+/// What a [`CatalogItem`] is — one explicit runnable agent kind or a plain cron/native job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CatalogKind {
-    /// A scheduled staff agent (`config/agents/*.md` roster — Mentor, Debt Sentinel, Scout, Archivist,
-    /// …), triggered as the `staff-<name>` job.
-    StaffAgent,
+    Command,
+    Staff,
+    Hosted,
+    Specialist,
     /// A plain cron job / native job (`crons.toml` schedule + `<job>.sh` script + native registry).
     Cron,
 }
 
+impl CatalogKind {
+    fn from_agent(agent: &AgentDef) -> Self {
+        match agent.kind {
+            AgentKind::Command => Self::Command,
+            AgentKind::Staff => Self::Staff,
+            AgentKind::Hosted => Self::Hosted,
+            AgentKind::Specialist => Self::Specialist,
+        }
+    }
+
+    fn is_agent(self) -> bool {
+        self != Self::Cron
+    }
+}
+
 /// One triggerable agent/job in the Command Center catalog (#557): everything the automation can
 /// fire, with the metadata a human needs to decide *whether* to re-trigger it — what it does, its
-/// cadence, its last-run health, and whether it's declared or on-demand. Staff agents carry extra
-/// roster enrichment (skill / model / harness). Every entry's [`CatalogItem::job`] is exactly what
-/// `POST /api/cron/run {job}` fires.
+/// cadence, its last-run health, and whether it's declared or on-demand. Agent entries carry their
+/// manifest metadata. Every entry's [`CatalogItem::job`] is exactly what `POST /api/cron/run
+/// {job}` fires.
 #[derive(Debug, Clone, Serialize)]
 pub struct CatalogItem {
-    /// The triggerable job name — what the re-trigger POSTs (`staff-<name>` for a staff agent,
-    /// else the plain job name).
+    /// The triggerable identity accepted by `bn run <job>`.
     pub job: String,
-    /// Display name — the staff roster name for a staff agent, else the job name.
+    /// Display name.
     pub name: String,
-    /// Whether this is a staff agent or a plain cron/native job.
+    /// The explicit agent kind, or `cron` for a non-agent job.
     pub kind: CatalogKind,
     /// Tier label (`branch`/`repo`/`global`).
     pub scope: String,
     /// Whether a `[[cron]]`/staff entry declares this job (in the registry, not just run-observed).
     pub declared: bool,
-    /// No declared schedule → the job is only ever fired on demand (or run-observed).
+    /// Whether this entry has neither a calendar nor startup trigger and is manual-only.
     pub on_demand: bool,
     /// The declared `on_calendar` schedule, when declared.
     pub schedule: Option<String>,
@@ -646,6 +661,13 @@ pub struct CatalogItem {
     pub network: bool,
     /// Also fired on the first bn event of the day (`catch_up`).
     pub catch_up: bool,
+    /// Agent only: also fired once when the tmux server starts.
+    pub startup: bool,
+    /// Agent only: queue capture remains enabled.
+    pub queue: bool,
+    /// Agent only: failure retry delay for scheduled attempts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_secs: Option<i64>,
     /// Epoch-seconds of the most recent run, when the job has ever run.
     pub last_run: Option<i64>,
     /// The most recent run's exit code, when the job has ever run.
@@ -656,75 +678,104 @@ pub struct CatalogItem {
     pub runs: usize,
     /// Recorded runs that exited non-zero.
     pub failures: usize,
-    /// Staff agent only: the headless harness override, when set.
+    /// Agent only: the headless harness override, when set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
-    /// Staff agent only: reusable bn skills the agent is equipped with (#568). Empty for a
+    /// Agent only: reusable bn skills the agent is equipped with (#568). Empty for a
     /// non-agent job or an agent that declares none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<String>,
-    /// Staff agent only: MCP servers the agent connects to (#568). Empty for a non-agent job or an
+    /// Agent only: MCP servers the agent connects to (#568). Empty for a non-agent job or an
     /// agent that declares none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcps: Vec<String>,
 }
 
-/// Build the triggerable-agent catalog from the machine cron registry
-/// ([`crate::crons::status_views`]) — which already folds declared crons, backing scripts, native
-/// jobs, and the markdown agent roster into one row per job — enriching each agent row back to its
-/// [`ResolvedAgent`] for the harness metadata. The incoming order
-/// (declared-first, then script-only, then run-only) is preserved, so the catalog reads
-/// registry-first like the cron page. Pure over its inputs.
-pub fn build_catalog(crons: &[CronView], staff: &[ResolvedAgent]) -> Vec<CatalogItem> {
-    crons
+/// Build the triggerable catalog from the cron registry plus the strict Markdown agent catalog.
+/// Existing run/script rows are enriched in place; never-run agents are appended. Specialists are
+/// installable rather than runnable and therefore do not appear.
+pub fn build_catalog(crons: &[CronView], agents: &AgentCatalog) -> Vec<CatalogItem> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+
+    for cron in crons {
+        let agent = agents
+            .find(&cron.job)
+            .filter(|agent| !agent.is_specialist());
+        if let Some(agent) = agent {
+            seen.insert(agent.name.clone());
+            out.push(agent_catalog_item(agent, Some(cron)));
+        } else {
+            out.push(cron_catalog_item(cron));
+        }
+    }
+    for agent in agents
         .iter()
-        .map(|c| {
-            // A staff agent registers as `staff-<name>`; match it back to enrich with roster
-            // metadata. A `staff-`-prefixed job with no matching roster entry (a stale run-only
-            // orphan) stays a plain Cron — the roster is the source of truth for "is an agent".
-            let agent = staff.iter().find(|a| a.name == c.job);
-            let (kind, name, harness, skills, mcps) = match agent {
-                Some(a) => (
-                    CatalogKind::StaffAgent,
-                    a.name.clone(),
-                    a.harness.clone(),
-                    a.skills.clone(),
-                    a.mcps.clone(),
-                ),
-                None => (
-                    CatalogKind::Cron,
-                    c.job.clone(),
-                    None,
-                    Vec::new(),
-                    Vec::new(),
-                ),
-            };
-            CatalogItem {
-                job: c.job.clone(),
-                name,
-                kind,
-                scope: c.scope.clone(),
-                declared: c.declared,
-                on_demand: c.schedule.is_none(),
-                schedule: c.schedule.clone(),
-                description: c.description.clone(),
-                has_script: c.has_script,
-                network: c.network,
-                catch_up: c.catch_up,
-                last_run: c.last_run,
-                last_exit: c.last_exit,
-                ok: c.ok,
-                runs: c.runs,
-                failures: c.failures,
-                harness,
-                skills,
-                mcps,
-            }
-        })
-        .collect()
+        .filter(|agent| !agent.is_specialist() && !seen.contains(&agent.name))
+    {
+        out.push(agent_catalog_item(agent, None));
+    }
+    out
 }
 
-/// The Today tab's split of a triggerable-agent catalog (#575): the staff agents and the plain
+fn cron_catalog_item(cron: &CronView) -> CatalogItem {
+    CatalogItem {
+        job: cron.job.clone(),
+        name: cron.job.clone(),
+        kind: CatalogKind::Cron,
+        scope: cron.scope.clone(),
+        declared: cron.declared,
+        on_demand: cron.schedule.is_none(),
+        schedule: cron.schedule.clone(),
+        description: cron.description.clone(),
+        has_script: cron.has_script,
+        network: cron.network,
+        catch_up: cron.catch_up,
+        startup: false,
+        queue: false,
+        retry_after_secs: None,
+        last_run: cron.last_run,
+        last_exit: cron.last_exit,
+        ok: cron.ok,
+        runs: cron.runs,
+        failures: cron.failures,
+        harness: None,
+        skills: Vec::new(),
+        mcps: Vec::new(),
+    }
+}
+
+fn agent_catalog_item(agent: &AgentDef, cron: Option<&CronView>) -> CatalogItem {
+    CatalogItem {
+        job: agent.name.clone(),
+        name: agent.name.clone(),
+        kind: CatalogKind::from_agent(agent),
+        scope: agent.scope.label().to_string(),
+        declared: true,
+        on_demand: agent.on_calendar.is_none() && !agent.is_startup(),
+        schedule: agent.on_calendar.clone(),
+        description: agent
+            .description
+            .clone()
+            .or_else(|| cron.and_then(|row| row.description.clone())),
+        has_script: cron.is_some_and(|row| row.has_script),
+        network: agent.network,
+        catch_up: false,
+        startup: agent.is_startup(),
+        queue: agent.queue,
+        retry_after_secs: agent.retry_after_secs,
+        last_run: cron.and_then(|row| row.last_run),
+        last_exit: cron.and_then(|row| row.last_exit),
+        ok: cron.and_then(|row| row.ok),
+        runs: cron.map(|row| row.runs).unwrap_or(0),
+        failures: cron.map(|row| row.failures).unwrap_or(0),
+        harness: agent.harness.clone(),
+        skills: agent.skills.clone(),
+        mcps: agent.mcps.clone(),
+    }
+}
+
+/// The Today tab's split of a triggerable-agent catalog (#575): runnable agents and the plain
 /// crons whose schedule *fires on `date`*, each already carrying its last-run health + the `job`
 /// name `POST /api/cron/run` re-fires. `date` is the local day the dashboard is showing.
 #[derive(Debug, Clone, Serialize)]
@@ -732,7 +783,7 @@ pub struct TodayAutomation {
     /// The plain cron/native jobs scheduled to fire today (undeclared/on-demand jobs are excluded —
     /// only ones with a schedule that fires today).
     pub crons: Vec<CatalogItem>,
-    /// The staff agents scheduled to fire today.
+    /// The runnable Markdown agents scheduled to fire today.
     pub agents: Vec<CatalogItem>,
 }
 
@@ -751,26 +802,27 @@ pub fn todays_automation(catalog: &[CatalogItem], date: chrono::NaiveDate) -> To
         if !fires {
             continue;
         }
-        match item.kind {
-            CatalogKind::StaffAgent => agents.push(item.clone()),
-            CatalogKind::Cron => crons.push(item.clone()),
+        if item.kind.is_agent() {
+            agents.push(item.clone());
+        } else {
+            crons.push(item.clone());
         }
     }
     TodayAutomation { crons, agents }
 }
 
-/// Gather the machine cron registry + staff roster, build the triggerable-agent catalog, and split
+/// Gather the machine cron registry + strict agent catalog, build the triggerable catalog, and split
 /// out today's scheduled crons + agents ([`todays_automation`]) — the whole Today-tab fold (#575)
 /// in one call so the web layer needn't reach for `chrono`. Uses the local day
 /// ([`crate::util::today`], honouring `$BN_TODAY`); `ctx = None` gives the machine-wide registry.
 pub fn build_todays_automation(
     cfg: &crate::resolver::Config,
     ctx: Option<&crate::resolver::Resolved>,
-) -> TodayAutomation {
+) -> Result<TodayAutomation, crate::agents::AgentCatalogError> {
     let crons = crate::crons::status_views(cfg, ctx);
-    let staff = crate::staff::discover(cfg, ctx);
-    let catalog = build_catalog(&crons, &staff);
+    let agents = crate::agents::discover(cfg, ctx)?;
+    let catalog = build_catalog(&crons, &agents);
     let date = chrono::NaiveDate::parse_from_str(&crate::util::today(), "%Y-%m-%d")
         .unwrap_or_else(|_| chrono::Local::now().date_naive());
-    todays_automation(&catalog, date)
+    Ok(todays_automation(&catalog, date))
 }

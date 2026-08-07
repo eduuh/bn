@@ -1,7 +1,7 @@
 ---
 name: scout
+kind: staff
 on_calendar: "Sat *-*-* 10:00:00"
-run: "bn run scout"
 network: true
 gather: "bn staff gather scout"
 sinks: ["research"]

@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
@@ -15,14 +15,16 @@ import {
   Sparkles,
 } from "lucide-react";
 
-import { attnQuery, doneTasksQuery, issuesQuery, queryKeys, tasksQuery } from "../api/client";
+import { attnQuery, doneTasksQuery, issuesQuery, tasksQuery } from "../api/client";
 import type { AttnItem, IssueRow, RepoIssues, TaskRow } from "../api/types";
 import { attnAction, createTask, taskAction, taskAgent } from "../api/writes";
+import { useAppMutation } from "../hooks/useAppMutation";
+import { affects } from "../lib/invalidation";
+import { dropAttn, dropActionForAttn, dropTask, patchTask } from "../lib/optimistic";
 import { NewTaskDialog } from "../components/NewTaskDialog";
 import { Empty, Hint, RowsSkeleton, SectionCard } from "../components/SectionCard";
 import { SteerButton } from "../components/SteerButton";
 import { ToastStack } from "../components/ToastStack";
-import { pushToast } from "../lib/toast";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -52,7 +54,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs"
 import { TooltipProvider } from "../components/ui/tooltip";
 import { cn } from "../lib/utils";
 import { Research } from "./Research";
-import { TodayQueue } from "./TodayQueue";
 
 /**
  * Has this task earned the right to be started?
@@ -345,34 +346,28 @@ function TaskCard({
 /** A task that has been triaged: the only kind that offers Start. In the redesign these are the
  * *enhanced* tasks — their doc is past the SMART gate — so the badge reads `enhanced`. */
 function ReadyRow({ task, today, letter }: { task: TaskRow; today: string; letter?: string }) {
-  const qc = useQueryClient();
   const [cancelling, setCancelling] = useState(false);
-  const invalidate = () => {
-    void qc.invalidateQueries({ queryKey: queryKeys.tasks("today") });
-    void qc.invalidateQueries({ queryKey: queryKeys.pipelineStages });
-  };
-  const start = useMutation({
+  const start = useAppMutation({
     mutationFn: () => taskAction(task.id, "wip"),
-    onSuccess: () => {
-      pushToast(`Started ${task.id}`, "success");
-      invalidate();
-    },
+    optimistic: patchTask("today", task.id, { status: "wip" }),
+    invalidates: affects.task,
     // The gate lives on the server, so a refusal can still arrive here — say so plainly rather
-    // than letting the row look broken.
-    onError: (e) => pushToast(`Could not start ${task.id}: ${e.message}`, "error"),
+    // than letting the row look broken. The rollback puts the row back as it was.
+    toast: { success: `Started ${task.id}`, error: `Could not start ${task.id}` },
   });
-  const enhance = useMutation({
+  const enhance = useAppMutation({
     mutationFn: () => taskAgent(task.id, "improve"),
-    onSuccess: () => pushToast(`Enhance agent started on ${task.id} — watch the fleet`, "success"),
-    onError: (e) => pushToast(`Could not enhance: ${e.message}`, "error"),
-  });
-  const cancel = useMutation({
-    mutationFn: (reason: string) => taskAction(task.id, "cancel", reason || undefined),
-    onSuccess: () => {
-      pushToast(`Cancelled ${task.id}`, "success");
-      invalidate();
+    invalidates: affects.agentLaunch,
+    toast: {
+      success: `Enhance agent started on ${task.id} — watch the fleet`,
+      error: "Could not enhance",
     },
-    onError: (e) => pushToast(`Could not cancel: ${e.message}`, "error"),
+  });
+  const cancel = useAppMutation<unknown, string>({
+    mutationFn: (reason) => taskAction(task.id, "cancel", reason || undefined),
+    optimistic: dropTask("today", task.id),
+    invalidates: affects.task,
+    toast: { success: `Cancelled ${task.id}`, error: "Could not cancel" },
   });
 
   return (
@@ -422,21 +417,21 @@ function EnhanceQueueRow({
   today: string;
   letter?: string;
 }) {
-  const qc = useQueryClient();
   const [cancelling, setCancelling] = useState(false);
   const reason = blockedReason(task, today);
-  const enhance = useMutation({
-    mutationFn: (steer: string) => taskAgent(task.id, "improve", steer || undefined),
-    onSuccess: () => pushToast(`Enhance agent started on ${task.id} — watch the fleet`, "success"),
-    onError: (e) => pushToast(`Could not enhance: ${e.message}`, "error"),
-  });
-  const cancel = useMutation({
-    mutationFn: (r: string) => taskAction(task.id, "cancel", r || undefined),
-    onSuccess: () => {
-      pushToast(`Cancelled ${task.id}`, "success");
-      void qc.invalidateQueries({ queryKey: queryKeys.tasks("today") });
+  const enhance = useAppMutation<unknown, string>({
+    mutationFn: (steer) => taskAgent(task.id, "improve", steer || undefined),
+    invalidates: affects.agentLaunch,
+    toast: {
+      success: `Enhance agent started on ${task.id} — watch the fleet`,
+      error: "Could not enhance",
     },
-    onError: (e) => pushToast(`Could not cancel: ${e.message}`, "error"),
+  });
+  const cancel = useAppMutation<unknown, string>({
+    mutationFn: (r) => taskAction(task.id, "cancel", r || undefined),
+    optimistic: dropTask("today", task.id),
+    invalidates: affects.task,
+    toast: { success: `Cancelled ${task.id}`, error: "Could not cancel" },
   });
 
   return (
@@ -495,37 +490,31 @@ function EnhanceQueueRow({
 /** One attention item — a finding that needs a human. Right-click to investigate, enqueue, snooze
  * or dismiss (all real `/api/attention/:id` verbs); the visible button keeps the common one to hand. */
 function AttnRow({ item }: { item: AttnItem }) {
-  const qc = useQueryClient();
-  const invalidate = () => void qc.invalidateQueries({ queryKey: queryKeys.attn });
-  const investigate = useMutation({
+  const investigate = useAppMutation<unknown, string>({
     // Investigation is a task agent too: it enhances the record before anything executes.
-    mutationFn: (steer: string) => taskAgent(item.id, "improve", steer || undefined),
-    onSuccess: () => pushToast(`Investigating ${item.id} — watch the fleet`, "success"),
-    onError: (e) => pushToast(`Could not start: ${e.message}`, "error"),
+    mutationFn: (steer) => taskAgent(item.id, "improve", steer || undefined),
+    invalidates: affects.agentLaunch,
+    toast: { success: `Investigating ${item.id} — watch the fleet`, error: "Could not start" },
   });
-  const plan = useMutation({
+  // Enqueue, snooze and dismiss all take the row off today's list, so it goes on the click.
+  const resolved = [dropAttn(item.id), dropActionForAttn(item.id)];
+  const plan = useAppMutation({
     mutationFn: () => attnAction(item.id, "plan"),
-    onSuccess: () => {
-      pushToast(`Added ${item.id} to the enhance queue`, "success");
-      invalidate();
-    },
-    onError: (e) => pushToast(`Could not enqueue: ${e.message}`, "error"),
+    optimistic: resolved,
+    invalidates: affects.attention,
+    toast: { success: `Added ${item.id} to the enhance queue`, error: "Could not enqueue" },
   });
-  const snooze = useMutation({
+  const snooze = useAppMutation({
     mutationFn: () => attnAction(item.id, "snooze", { until: tomorrow() }),
-    onSuccess: () => {
-      pushToast(`Snoozed ${item.id} 1 day`, "success");
-      invalidate();
-    },
-    onError: (e) => pushToast(`Could not snooze: ${e.message}`, "error"),
+    optimistic: resolved,
+    invalidates: affects.attention,
+    toast: { success: `Snoozed ${item.id} 1 day`, error: "Could not snooze" },
   });
-  const dismiss = useMutation({
+  const dismiss = useAppMutation({
     mutationFn: () => attnAction(item.id, "remove"),
-    onSuccess: () => {
-      pushToast(`Dismissed ${item.id}`, "success");
-      invalidate();
-    },
-    onError: (e) => pushToast(`Could not dismiss: ${e.message}`, "error"),
+    optimistic: resolved,
+    invalidates: affects.attention,
+    toast: { success: `Dismissed ${item.id}`, error: "Could not dismiss" },
   });
   const tone = item.severity === "urgent" ? "urgent" : item.severity === "warn" ? "warn" : "info";
 
@@ -625,17 +614,13 @@ function DoneRow({ t }: { t: TaskRow & { reason?: string | null } }) {
 
 /** One issue — right-click to turn it into a task (into the enhance queue), open it, or copy its #. */
 function IssueLine({ issue, repo }: { issue: IssueRow; repo: string }) {
-  const qc = useQueryClient();
-  const make = useMutation({
+  const make = useAppMutation({
     mutationFn: () => createTask({ title: issue.title, repo }),
-    onSuccess: (r) => {
-      pushToast(
-        `Created ${r.id} from #${issue.number} — the enhance agent will scope it`,
-        "success",
-      );
-      void qc.invalidateQueries({ queryKey: queryKeys.tasks("today") });
+    invalidates: affects.task,
+    toast: {
+      success: (r) => `Created ${r.id} from #${issue.number} — the enhance agent will scope it`,
+      error: "Could not create",
     },
-    onError: (e) => pushToast(`Could not create: ${e.message}`, "error"),
   });
 
   return (
@@ -732,7 +717,6 @@ export function Home() {
   const done = useQuery(doneTasksQuery());
   const attn = useQuery(attnQuery());
   const issues = useQuery(issuesQuery());
-  const qc = useQueryClient();
 
   const [creating, setCreating] = useState(false);
 
@@ -763,19 +747,16 @@ export function Home() {
     return m;
   }, [ready, untriaged]);
 
-  const create = useMutation({
+  const create = useAppMutation({
     mutationFn: createTask,
-    onSuccess: (r) => {
-      pushToast(`Created ${r.id}`, "success");
-      setCreating(false);
-      void qc.invalidateQueries({ queryKey: queryKeys.tasks("today") });
-    },
-    onError: (e) => pushToast(`Could not create: ${e.message}`, "error"),
+    invalidates: affects.task,
+    toast: { success: (r) => `Created ${r.id}`, error: "Could not create" },
+    onSuccess: () => setCreating(false),
   });
-  const triage = useMutation({
+  const triage = useAppMutation({
     mutationFn: () => taskAgent("t0", "triage"),
-    onSuccess: () => pushToast("Triage started — watch the fleet", "success"),
-    onError: (e) => pushToast(`Could not start triage: ${e.message}`, "error"),
+    invalidates: affects.agentLaunch,
+    toast: { success: "Triage started — watch the fleet", error: "Could not start triage" },
   });
 
   const triageButton = (
@@ -833,9 +814,6 @@ export function Home() {
           <TabsList className="h-auto w-full justify-start gap-1 rounded-none border-b border-border bg-transparent p-0">
             <TabsTrigger value="deck" className={tabTrigger}>
               Task deck
-            </TabsTrigger>
-            <TabsTrigger value="queue" className={tabTrigger}>
-              Today's queue
             </TabsTrigger>
             <TabsTrigger value="research" className={tabTrigger}>
               Research
@@ -964,9 +942,6 @@ export function Home() {
             </SectionCard>
           </TabsContent>
 
-          <TabsContent value="queue">
-            <TodayQueue />
-          </TabsContent>
           <TabsContent value="research">
             <Research />
           </TabsContent>

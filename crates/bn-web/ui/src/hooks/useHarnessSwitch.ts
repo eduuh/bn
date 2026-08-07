@@ -1,7 +1,7 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { queryKeys } from "../api/client";
 import type { HarnessOption } from "../api/types";
 import { switchHarness } from "../api/writes";
+import { useAppMutation } from "./useAppMutation";
+import { affects } from "../lib/invalidation";
 import { pushToast } from "../lib/toast";
 
 /** Fallback options when the fleet read hasn't carried availability yet — copilot always usable,
@@ -19,18 +19,14 @@ export const DEFAULT_HARNESSES: HarnessOption[] = [
  * Optimistic toast; the fleet/activity invalidation converges it on the next tick.
  */
 export function useHarnessSwitch(target: string, current?: string, harnesses?: HarnessOption[]) {
-  const qc = useQueryClient();
   const options = harnesses && harnesses.length > 0 ? harnesses : DEFAULT_HARNESSES;
 
-  const mut = useMutation({
-    mutationFn: (harness: string) => switchHarness(target, harness),
-    onSuccess: (_data, harness) => {
-      pushToast(`restarting ${target} under ${harness}…`, "success");
-      void qc.invalidateQueries({ queryKey: queryKeys.fleet });
-      void qc.invalidateQueries({ queryKey: queryKeys.activityAll });
-    },
-    onError: (e) => {
-      pushToast(`switch failed: ${e.message}`, "error");
+  const mut = useAppMutation<unknown, string>({
+    mutationFn: (harness) => switchHarness(target, harness),
+    invalidates: affects.agentSteer,
+    toast: {
+      success: (_d, harness) => `restarting ${target} under ${harness}…`,
+      error: "switch failed",
     },
   });
 

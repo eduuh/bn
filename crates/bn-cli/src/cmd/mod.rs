@@ -4,6 +4,7 @@
 //! thin per-CLI-group dispatch matches that delegate into those handlers.
 
 pub(crate) mod agent;
+pub(crate) mod agent_approve;
 pub(crate) mod agent_relaunch;
 pub(crate) mod agents;
 pub(crate) mod archivist;
@@ -28,6 +29,7 @@ pub(crate) mod focus;
 pub(crate) mod gitio;
 pub(crate) mod insights;
 pub(crate) mod issue;
+pub(crate) mod job_registry;
 pub(crate) mod jobs;
 pub(crate) mod kill_tmux;
 pub(crate) mod killport;
@@ -43,6 +45,12 @@ pub(crate) mod pr_link;
 pub(crate) mod promote;
 pub(crate) mod q_inbox;
 pub(crate) mod quarter;
+pub(crate) mod queue;
+pub(crate) mod queue_install;
+pub(crate) mod queue_log;
+pub(crate) mod queue_producers;
+pub(crate) mod queue_tick;
+pub(crate) mod queue_timeline;
 pub(crate) mod recall;
 pub(crate) mod references;
 pub(crate) mod release;
@@ -53,6 +61,8 @@ pub(crate) mod review_gate;
 pub(crate) mod reviews;
 pub(crate) mod routes;
 pub(crate) mod routine;
+pub(crate) mod seed_context;
+pub(crate) mod self_update_check;
 pub(crate) mod sentinel;
 pub(crate) mod sessions;
 pub(crate) mod setup;

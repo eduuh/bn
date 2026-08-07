@@ -50,7 +50,7 @@ pub enum WorkClass {
     Orchestration,
     /// Dispatched *ship* agents (`bn dispatch` / orchestrated waves) that produce PRs.
     Coding,
-    /// Cron / scheduled work: the #266 staff roster, the night shift (#250), `bn staff run`.
+    /// Cron / scheduled work: Markdown agents, the night shift (#250), and `bn staff run`.
     Scheduled,
     /// Scout / research agents that investigate without shipping.
     Research,

@@ -60,7 +60,10 @@ fn worktree_root() -> std::path::PathBuf {
 
 fn status(json: bool) -> i32 {
     let reg = open_registry(json);
-    let st = match worker::status::build(&reg, &worktree_root()) {
+    // Load config so the node advertises its skills/harnesses, not just os+arch — that
+    // advertisement is the only way a remote node's capabilities reach placement.
+    let cfg = Config::load();
+    let st = match worker::status::build(&reg, &worktree_root(), Some(&cfg)) {
         Ok(st) => st,
         Err(e) => fail_json(json, "worker", "status_failed", &e.to_string()),
     };

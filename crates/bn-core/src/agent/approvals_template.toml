@@ -1,0 +1,51 @@
+# bn — agent auto-approval policy.
+#
+# Which permission dialogs bn may answer on your behalf while you are away, and which it must
+# escalate to you. Read `bn agent prompt <target>` to see exactly what a dialog offers; every
+# decision made from this file is recorded in `<state_dir>/approvals.jsonl`.
+#
+# The rules this file plays by, none of which it can override:
+#   * Nothing is approved unless `enabled = true` AND an allow rule matches. Default: deny.
+#   * A `question-menu` — "which of these three approaches?" — is NEVER auto-answered. Those are
+#     genuine decisions and always come to you.
+#   * Deny beats allow, always, regardless of order.
+#   * Only a lane with a trust contract (an orchestrated `--yolo` ship lane) is eligible at all.
+
+[approve]
+# Master switch. Turn this on only once the rules below say what you mean.
+enabled = false
+
+# Which lanes the policy may act on:
+#   "orchestrated" — only lanes of a running `bn orchestrate` wave  (default, narrowest)
+#   "dispatched"   — those plus agents started by `bn dispatch`
+#   "all"          — every supervised agent, including ones bn never launched
+scope = "orchestrated"
+
+# Clear folder / MCP trust menus automatically. Usually unnecessary: `bn dispatch --yolo`
+# pre-trusts the folder, so the prompt rarely appears.
+trust_menu = false
+
+# --- allow rules -------------------------------------------------------------------------------
+# Each rule matches case-insensitive substrings against the dialog's subject (its tool title and
+# the command under review). `answer` is how far the approval goes:
+#   "session" — take the "don't ask again" option, so the harness stops asking for this class
+#   "once"    — take the plain "Yes"
+#
+# Substrings, not regexes: a rule you can misread is a rule that approves something you didn't mean.
+
+# [[approve.rule]]
+# tools  = ["Read", "Grep", "Glob"]
+# answer = "session"
+
+# [[approve.rule]]
+# commands = ["cargo check", "cargo clippy", "cargo fmt", "npm run lint"]
+# answer   = "session"
+
+# --- deny rules --------------------------------------------------------------------------------
+# Checked first and unconditionally. A subject matching any of these escalates to you even when an
+# allow rule also matches, so a broad allow can never silently re-permit something you denied.
+
+[deny]
+
+# [[deny.rule]]
+# commands = ["rm ", "git push", "gh pr merge", "sudo ", "curl ", "chmod ", "> /dev/"]

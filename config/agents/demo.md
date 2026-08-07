@@ -1,7 +1,7 @@
 ---
 name: demo
+kind: staff
 on_calendar: "*-*-* 06:30:00"
-run: "bn run demo"
 network: false
 gather: "bn staff gather demo"
 sinks: ["attn"]

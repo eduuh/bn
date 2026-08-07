@@ -11,6 +11,7 @@
 //! deliberately worker-LOCAL and non-synced (git stays audit-only), so its DB lives under the
 //! machine-local `~/.bn` tooling root, not the synced notes repo — see [`registry_path`].
 
+pub mod advertise;
 pub mod capacity;
 pub mod registry;
 pub mod spawn;
@@ -85,13 +86,25 @@ pub mod status {
 
     /// Build the status payload from a `reg` and a `worktree_root` (the volume the disk figure is
     /// measured on). Reads the registry and samples capacity; pure aside from those reads.
-    pub fn build(reg: &registry::Registry, worktree_root: &Path) -> registry::Result<WorkerStatus> {
+    ///
+    /// `cfg` is what lets the node advertise its **skills, harnesses and MCP servers** rather than
+    /// just `os:`/`arch:`. Without it a remote node reports nothing a skill requirement could match,
+    /// so skill-aware placement silently only ever works on the box the daemon runs on. `None`
+    /// falls back to the intrinsic labels, for the paths that genuinely have no config.
+    pub fn build(
+        reg: &registry::Registry,
+        worktree_root: &Path,
+        cfg: Option<&crate::resolver::Config>,
+    ) -> registry::Result<WorkerStatus> {
         let cap = capacity::sample(worktree_root);
         Ok(WorkerStatus {
             schema_version: reg.schema_version()?,
             node: NodeInfo {
                 node_id: node_id(),
-                labels: node_labels(),
+                labels: match cfg {
+                    Some(cfg) => super::advertise::advertised_labels(cfg, worktree_root),
+                    None => node_labels(),
+                },
                 status: cap.status(),
             },
             capacity: cap,

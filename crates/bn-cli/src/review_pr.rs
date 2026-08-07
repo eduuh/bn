@@ -122,6 +122,16 @@ pub fn auto_trigger(cfg: &Config) -> i32 {
     let Some(pr) = led.pick_next(&cache.prs, now) else {
         return 0;
     };
+    // Captured: hand the pick to the queue instead of launching. `pick_next` still decides WHICH
+    // pr — its ordering (longest wait, force-push re-trigger, dead-pr filter) is domain knowledge
+    // the backlog's single priority integer cannot express — but the machine decides *when*, which
+    // is how this path finally acquires the RAM/load/cost guards it never had.
+    if crate::cmd::queue_producers::active(cfg, crate::cmd::queue_producers::REVIEW) {
+        let waited = pr.wait_hours(now).unwrap_or(0.0) as i64;
+        return i32::from(!crate::cmd::queue_producers::capture_review(
+            cfg, &pr.repo, pr.number, &pr.url, waited,
+        ));
+    }
     println!("auto-review-trigger: preparing {}#{}", pr.repo, pr.number);
     // Same arguments as `review-pr setup <repo> <number> --unattended`: favourite + lock on,
     // agent launch off (unattended forces it off regardless).

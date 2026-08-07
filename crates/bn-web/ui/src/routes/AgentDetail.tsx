@@ -8,6 +8,7 @@ import { useNow } from "../hooks/useNow";
 import { AgentHeader } from "../components/AgentHeader";
 import { AgentActivity } from "../components/AgentActivity";
 import { SteerPanel } from "../components/SteerPanel";
+import { ApprovalPanel } from "../components/ApprovalPanel";
 import { PlanReviewPanel } from "../components/PlanReviewPanel";
 import { SessionNote } from "../components/SessionNote";
 import { ToastStack } from "../components/ToastStack";
@@ -103,6 +104,10 @@ export function AgentDetail() {
             {/* Read the session, then reply to it — the composer sits directly under the feed it
                 answers, so steering is one continuous motion instead of a hunt across the page. */}
             <div className="space-y-3">
+              {/* Above the feed, not below it: when an agent is blocked, unblocking it is the only
+                  thing you came here to do, and it should not be under a screenful of transcript.
+                  Renders nothing when nothing is pending. */}
+              <ApprovalPanel target={agent.target} />
               <AgentActivity sessionId={agent.session_id} />
               <SteerPanel target={agent.target} control={agent.control} />
             </div>

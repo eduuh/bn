@@ -505,3 +505,276 @@ fn compute_status(cfg: &Config, repo: &str, size: usize) -> PoolStatus {
         slots,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- parse_pool_size --------------------------------------------------
+
+    #[test]
+    fn explicit_repo_size_parses_and_wins_over_default() {
+        let cfg = "default 3\nbn 5\n";
+        assert_eq!(parse_pool_size(cfg, "bn"), Some(5));
+        // A repo not listed falls back to the default.
+        assert_eq!(parse_pool_size(cfg, "other"), Some(3));
+    }
+
+    #[test]
+    fn unlisted_repo_without_default_is_unpooled() {
+        assert_eq!(parse_pool_size("bn 4\n", "other"), None);
+    }
+
+    #[test]
+    fn missing_or_bad_size_clamps_to_floor() {
+        assert_eq!(parse_pool_size("bn\n", "bn"), Some(MIN_POOL_SIZE));
+        assert_eq!(
+            parse_pool_size("bn notanumber\n", "bn"),
+            Some(MIN_POOL_SIZE)
+        );
+        assert_eq!(parse_pool_size("bn 1\n", "bn"), Some(MIN_POOL_SIZE));
+    }
+
+    #[test]
+    fn comments_and_blank_lines_are_ignored() {
+        let cfg = "\n  # a comment\nbn 4  # trailing\n\n";
+        assert_eq!(parse_pool_size(cfg, "bn"), Some(4));
+    }
+
+    #[test]
+    fn star_is_a_default_alias() {
+        assert_eq!(parse_pool_size("* 6\n", "anything"), Some(6));
+    }
+
+    #[test]
+    fn last_default_line_wins() {
+        // default_size is overwritten as lines are scanned; the last one is the effective fallback.
+        assert_eq!(parse_pool_size("default 3\ndefault 7\n", "x"), Some(7));
+    }
+
+    // --- parse_pooled_repos ----------------------------------------------
+
+    #[test]
+    fn pooled_repos_lists_concrete_repos_only() {
+        let cfg = "default 3\nbn 5\n# c\napp 2\n";
+        assert_eq!(
+            parse_pooled_repos(cfg),
+            vec![("bn".to_string(), 5), ("app".to_string(), 2)]
+        );
+    }
+
+    #[test]
+    fn pooled_repos_skips_star_fallback() {
+        assert_eq!(
+            parse_pooled_repos("* 4\nbn 5\n"),
+            vec![("bn".to_string(), 5)]
+        );
+    }
+
+    #[test]
+    fn pooled_repos_clamps_floor() {
+        assert_eq!(parse_pooled_repos("bn 1\n"), vec![("bn".to_string(), 2)]);
+        assert_eq!(parse_pooled_repos("bn\n"), vec![("bn".to_string(), 2)]);
+    }
+
+    // --- edit_pool_size ---------------------------------------------------
+
+    #[test]
+    fn edit_appends_new_entry() {
+        assert_eq!(edit_pool_size("", "bn", Some(4)), "bn 4\n");
+    }
+
+    #[test]
+    fn edit_rewrites_in_place_preserving_order_and_comments() {
+        let cfg = "# header\napp 2\nbn 3\n";
+        assert_eq!(
+            edit_pool_size(cfg, "bn", Some(5)),
+            "# header\napp 2\nbn 5\n"
+        );
+    }
+
+    #[test]
+    fn edit_removes_entry_on_none() {
+        assert_eq!(edit_pool_size("app 2\nbn 3\n", "bn", None), "app 2\n");
+    }
+
+    #[test]
+    fn edit_clamps_size_bounds() {
+        assert_eq!(edit_pool_size("", "bn", Some(1)), "bn 2\n");
+        assert_eq!(
+            edit_pool_size("", "bn", Some(999)),
+            format!("bn {MAX_POOL_SIZE}\n")
+        );
+    }
+
+    #[test]
+    fn edit_does_not_duplicate_when_repo_already_present() {
+        // Even a config with two lines for the repo collapses to one on rewrite.
+        let out = edit_pool_size("bn 2\nbn 9\n", "bn", Some(4));
+        assert_eq!(out.matches("bn ").count(), 1);
+        assert_eq!(out, "bn 4\n");
+    }
+
+    #[test]
+    fn edit_preserves_default_line() {
+        assert_eq!(
+            edit_pool_size("default 3\n", "bn", Some(4)),
+            "default 3\nbn 4\n"
+        );
+    }
+
+    // --- pick_slot / pick_controller_slot --------------------------------
+
+    #[test]
+    fn pick_slot_returns_lowest_free_worker() {
+        let leased = BTreeSet::new();
+        // Slot 1 is the controller's; the lowest worker is 2.
+        assert_eq!(pick_slot(4, &leased), Some(2));
+    }
+
+    #[test]
+    fn pick_slot_skips_leased_and_controller() {
+        let leased: BTreeSet<u32> = [1, 2, 3].into_iter().collect();
+        assert_eq!(pick_slot(4, &leased), Some(4));
+    }
+
+    #[test]
+    fn pick_slot_none_when_full() {
+        let leased: BTreeSet<u32> = [2, 3, 4].into_iter().collect();
+        assert_eq!(pick_slot(4, &leased), None);
+    }
+
+    #[test]
+    fn pick_slot_never_returns_controller_even_if_free() {
+        // Only slot 1 (controller) is nominally in range for size 1 — never a worker.
+        assert_eq!(pick_slot(1, &BTreeSet::new()), None);
+    }
+
+    #[test]
+    fn controller_slot_availability() {
+        assert_eq!(pick_controller_slot(&BTreeSet::new()), Some(1));
+        let leased: BTreeSet<u32> = [1].into_iter().collect();
+        assert_eq!(pick_controller_slot(&leased), None);
+    }
+
+    // --- lease_liveness ---------------------------------------------------
+
+    #[test]
+    fn prior_boot_is_stale_regardless_of_pid() {
+        assert_eq!(
+            lease_liveness(Some("boot-a"), Some("boot-b"), true),
+            LeaseLiveness::StalePriorBoot
+        );
+    }
+
+    #[test]
+    fn same_boot_falls_back_to_pid() {
+        assert_eq!(
+            lease_liveness(Some("boot-a"), Some("boot-a"), true),
+            LeaseLiveness::Live
+        );
+        assert_eq!(
+            lease_liveness(Some("boot-a"), Some("boot-a"), false),
+            LeaseLiveness::DeadThisBoot
+        );
+    }
+
+    #[test]
+    fn unknown_boot_falls_back_to_pid() {
+        assert_eq!(lease_liveness(None, Some("b"), true), LeaseLiveness::Live);
+        assert_eq!(
+            lease_liveness(Some("a"), None, false),
+            LeaseLiveness::DeadThisBoot
+        );
+    }
+
+    // --- ledger_repair ----------------------------------------------------
+
+    #[test]
+    fn ledger_agrees_when_empty_or_matching() {
+        assert_eq!(ledger_repair(None, &[]), LedgerRepair::Agrees);
+        assert_eq!(ledger_repair(Some("feat"), &[]), LedgerRepair::Agrees);
+        assert_eq!(
+            ledger_repair(Some("feat"), &["feat".to_string()]),
+            LedgerRepair::Agrees
+        );
+    }
+
+    #[test]
+    fn ledger_adopts_unleased_occupant() {
+        assert_eq!(
+            ledger_repair(None, &["feat".to_string()]),
+            LedgerRepair::Adopt("feat".to_string())
+        );
+    }
+
+    #[test]
+    fn ledger_adopts_when_lease_names_wrong_tenant() {
+        assert_eq!(
+            ledger_repair(Some("stale"), &["feat".to_string(), "other".to_string()]),
+            LedgerRepair::Adopt("feat".to_string())
+        );
+    }
+
+    // --- dispatch_worktree_mode ------------------------------------------
+
+    #[test]
+    fn dispatch_mode_defaults_to_pool() {
+        assert_eq!(dispatch_worktree_mode(false), WorktreeMode::Pool);
+        assert_eq!(dispatch_worktree_mode(true), WorktreeMode::Cold);
+    }
+
+    // --- compute_status (on-disk pool read) ------------------------------
+
+    #[test]
+    fn compute_status_folds_leases_and_disk_slots() {
+        let _g = crate::test_support::env_lock();
+        // Neutralize $WT_ROOT so `worktree_root` uses cfg.worktree_dir deterministically.
+        let _wt = crate::test_support::EnvGuard::remove("WT_ROOT");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let cfg = crate::test_support::config_with_roots(root, root, root, "testhost");
+
+        // Lay out `<worktree>/bn/_pool/{leases.json, 2, 3}` — slot 2 warm-on-disk, slot 3 absent.
+        let pool_dir = root.join("bn").join("_pool");
+        std::fs::create_dir_all(pool_dir.join("2")).unwrap();
+        let now = crate::util::now_epoch_secs();
+        let leases = format!(
+            r#"{{"slots":{{"2":{{"branch":"feat","holder":"me","at":{}}}}}}}"#,
+            now - 30
+        );
+        std::fs::write(pool_dir.join("leases.json"), leases).unwrap();
+
+        let st = compute_status(&cfg, "bn", 4);
+        assert_eq!(st.total, 4);
+        assert_eq!(st.leased, 1);
+        // Slot 2 is leased (not counted as free-warm); no other slot is on disk.
+        assert_eq!(st.warm, 0);
+        assert_eq!(st.idle, 3); // total - leased
+        assert_eq!(st.slots.len(), 4);
+        let s2 = &st.slots[1];
+        assert!(s2.leased && s2.warm);
+        assert_eq!(s2.branch.as_deref(), Some("feat"));
+        assert!(s2.age_secs.unwrap() >= 30);
+        // A slot with no dir and no lease is idle + cold.
+        let s3 = &st.slots[2];
+        assert!(!s3.leased && !s3.warm && s3.branch.is_none());
+    }
+
+    #[test]
+    fn compute_status_counts_free_warm_slot() {
+        let _g = crate::test_support::env_lock();
+        let _wt = crate::test_support::EnvGuard::remove("WT_ROOT");
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let cfg = crate::test_support::config_with_roots(root, root, root, "testhost");
+        // Slot 2 exists on disk but is unleased → a warm, idle slot ready to lease.
+        std::fs::create_dir_all(root.join("bn").join("_pool").join("2")).unwrap();
+        let st = compute_status(&cfg, "bn", 3);
+        assert_eq!(st.leased, 0);
+        assert_eq!(st.warm, 1);
+        assert_eq!(st.idle, 3);
+        assert!(st.last_warmed_ts.is_some());
+    }
+}

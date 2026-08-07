@@ -8,60 +8,14 @@ use bn_core::plan_review::{
 use serde::Deserialize;
 use std::time::Duration;
 
+mod reviewer;
+use reviewer::{ReviewerKind, ReviewerSpec};
+
 const AGENT_REVIEW_WALL_SECS: u64 = 240;
 
 /// Upper bound on reviewer agents spawned concurrently. A scaled-up panel runs in chunks of this
 /// size so we never fork an unbounded number of headless harnesses at once.
 const REVIEWER_CONCURRENCY: usize = 5;
-
-/// A reviewer specialty. `Generic` is the historical untyped critic; the typed kinds add a
-/// per-kind focus line to the prompt so an on-demand scale-up can bring targeted expertise.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReviewerKind {
-    Generic,
-    RubberDuck,
-    CodeReview,
-}
-
-impl ReviewerKind {
-    fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_lowercase().replace('_', "-").as_str() {
-            "rubber-duck" | "rubberduck" | "duck" => Some(Self::RubberDuck),
-            "code-review" | "codereview" | "code" => Some(Self::CodeReview),
-            _ => None,
-        }
-    }
-
-    /// Identity prefix for reviewer names (`agent-1`, `rubber-duck-1`, `code-review-1`).
-    fn slug(self) -> &'static str {
-        match self {
-            Self::Generic => "agent",
-            Self::RubberDuck => "rubber-duck",
-            Self::CodeReview => "code-review",
-        }
-    }
-
-    /// Optional per-kind focus appended to the reviewer prompt.
-    fn focus(self) -> Option<&'static str> {
-        match self {
-            Self::Generic => None,
-            Self::RubberDuck => Some(
-                "Focus as a rubber-duck: probe the plan's hidden assumptions, logical gaps, and \
-                 unstated preconditions before judging it.",
-            ),
-            Self::CodeReview => Some(
-                "Focus as a code reviewer: judge implementation safety, blast radius, and whether \
-                 the listed files and tests actually cover the change.",
-            ),
-        }
-    }
-}
-
-/// A concrete reviewer to spawn: a stable identity plus its specialty.
-struct ReviewerSpec {
-    reviewer: String,
-    kind: ReviewerKind,
-}
 
 #[derive(Debug, Deserialize)]
 struct AgentReviewReply {
@@ -383,6 +337,7 @@ pub(crate) fn emit_review_vote(id: &str, args: ReviewVoteArgs<'_>, as_json: bool
 }
 
 pub(crate) fn emit_review_agents(
+    cfg: &Config,
     id: &str,
     harness: &str,
     model: Option<&str>,
@@ -421,7 +376,7 @@ pub(crate) fn emit_review_agents(
         (review, specs)
     };
 
-    let runs = run_review_agents(&review, &specs, harness, model);
+    let runs = run_review_agents(cfg, &review, &specs, harness, model);
     if runs.is_empty() {
         if as_json {
             print_full_review_json(&review);
@@ -564,6 +519,7 @@ fn resolve_kinds(add: Option<usize>, kinds: &[String]) -> Result<Vec<ReviewerKin
 }
 
 fn run_review_agents(
+    cfg: &Config,
     review: &Review,
     specs: &[ReviewerSpec],
     harness: &str,
@@ -576,9 +532,10 @@ fn run_review_agents(
         let chunk_runs = std::thread::scope(|scope| {
             let mut handles = Vec::new();
             for spec in chunk {
-                let prompt = agent_review_prompt(review, spec);
-                let command =
-                    crate::cmd::staff::staff_dispatch_command(harness, &prompt, model, None);
+                let command = agent_review_prompt(cfg, review, spec).and_then(|prompt| {
+                    crate::cmd::staff::staff_dispatch_command(harness, &prompt, model, None)
+                        .ok_or_else(|| format!("unknown harness '{harness}' (use: copilot | claude)"))
+                });
                 handles.push((
                     spec.reviewer.clone(),
                     command.map(|command| {
@@ -596,10 +553,8 @@ fn run_review_agents(
                 .into_iter()
                 .map(|(reviewer, handle)| {
                     let reply = match handle {
-                        None => Err(format!(
-                            "unknown harness '{harness}' (use: copilot | claude)"
-                        )),
-                        Some(handle) => match handle.join() {
+                        Err(error) => Err(error),
+                        Ok(handle) => match handle.join() {
                             Err(_) => Err("reviewer process panicked".to_string()),
                             Ok((false, _, combined)) => {
                                 Err(format!("reviewer process failed: {}", combined.trim()))
@@ -616,23 +571,30 @@ fn run_review_agents(
     runs
 }
 
-fn agent_review_prompt(review: &Review, spec: &ReviewerSpec) -> String {
-    let reviewer = &spec.reviewer;
-    let focus = spec
-        .kind
-        .focus()
-        .map(|f| format!("{f} "))
-        .unwrap_or_default();
-    format!(
-        "You are {reviewer}, an independent read-only plan critic. {focus}Inspect the repository as \
-         needed but do not edit files, run destructive commands, read plan-review state, or ask for \
-         peer ballots. Evaluate whether the plan is complete, feasible, safely ordered, and \
-         verifiable. Return exactly one JSON object and no prose or markdown fences using this \
-         schema: \
-         {{\"verdict\":\"approve|reject\",\"confidence\":0-100,\"reasoning\":\"specific rationale\",\
-         \"risks\":[\"concrete unresolved risk\"]}}.\n\nRepository: {}\nBranch: {}\nReview: {}\n\nPlan:\n{}",
-        review.repo, review.branch, review.id, review.plan
-    )
+fn agent_review_prompt(
+    cfg: &Config,
+    review: &Review,
+    spec: &ReviewerSpec,
+) -> Result<String, String> {
+    let base = cfg.worktree_dir.join(&review.repo).join(&review.branch);
+    let base = if base.is_dir() {
+        base
+    } else {
+        std::env::current_dir().unwrap_or_default()
+    };
+    let mut args = serde_json::Map::new();
+    for (name, value) in [
+        ("reviewer", spec.reviewer.clone()),
+        ("lens", spec.kind.lens().to_string()),
+        ("repo", review.repo.clone()),
+        ("branch", review.branch.clone()),
+        ("review_id", review.id.clone()),
+        ("plan", review.plan.clone()),
+    ] {
+        args.insert(name.into(), serde_json::Value::String(value));
+    }
+    bn_core::skills::render_required(cfg, &base, "plan-review-critic", Some(&args))
+        .map_err(|error| error.to_string())
 }
 
 /// Extract the reviewer's final JSON verdict from headless-harness stdout. Headless `copilot -p`
@@ -1036,5 +998,3 @@ pub(crate) fn open_plan_review_popup(attn_id: &str) -> bool {
     }
     true
 }
-
-

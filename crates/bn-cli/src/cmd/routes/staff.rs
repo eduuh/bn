@@ -109,13 +109,18 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
         }
         CmdStaff::Staff { action } => {
             // Staff agents are declared mostly in the global roster tier; a repo/branch tier is
-            // still honored, resolved from the current directory (cron passes its own ctx via the
-            // `bn run staff-<name>` path, so scheduled runs keep their tier regardless).
+            // still honored, resolved from the current directory (`bn run <name>` passes its own
+            // context, so scheduled runs keep their tier regardless).
             let ctx = target_ctx(cfg, None, None);
             match action {
                 None => emit_staff_board(cfg, ctx.as_ref(), json),
                 Some(StaffCmd::Run { agent }) => {
-                    std::process::exit(staff_run_code(cfg, ctx.as_ref(), &agent, json))
+                    std::process::exit(run_job_with_staff_output(
+                        cfg,
+                        ctx.as_ref(),
+                        &agent,
+                        json,
+                    ))
                 }
                 Some(StaffCmd::Plan { agent }) => {
                     std::process::exit(emit_staff_plan(cfg, ctx.as_ref(), &agent, json))
@@ -181,6 +186,20 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
             let base = std::env::current_dir().unwrap_or_default();
             match action {
                 None | Some(AgentsCmd::List) => emit_agents(cfg, &base, json),
+                Some(AgentsCmd::Validate) => emit_agents_validate(cfg, &base, json),
+                Some(AgentsCmd::Render {
+                    name,
+                    args,
+                    args_file,
+                    stdin,
+                }) => emit_agent_render(
+                    cfg,
+                    &base,
+                    &name,
+                    args.as_deref(),
+                    args_file.as_deref(),
+                    stdin,
+                ),
                 Some(AgentsCmd::Show { name, claude }) => {
                     emit_agent_show(cfg, &base, &name, claude, json)
                 }

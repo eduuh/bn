@@ -172,6 +172,10 @@ pub struct Frontmatter {
     pub ask: Vec<Item>,
     #[serde(default)]
     pub done_when: Vec<Item>,
+    /// Standing instructions for this branch (`bn agent instruct`). `#[serde(default)]` keeps every
+    /// note written before the section existed valid — it reads as empty.
+    #[serde(default)]
+    pub directives: Vec<Item>,
 }
 
 fn default_status() -> String {
@@ -286,6 +290,21 @@ define_sections! {
         label: "Done When",
         is_todo: false,
         tracks_done: true,
+    },
+    /// **Standing instructions** for whoever is working this branch — the durable half of
+    /// `bn agent instruct`.
+    ///
+    /// An instruction pasted into a pane lives exactly as long as that session's context. A
+    /// directive recorded here is re-seeded into a `--hard` relaunch (through the handoff packet)
+    /// and into a fresh dispatch, so telling an agent "always run clippy before pushing" survives
+    /// the reset that would otherwise discard it. Not a todo — a directive is a constraint on
+    /// *how* the work is done, never an item that gets ticked off.
+    Directive {
+        keywords: ["directive", "directives", "instruction", "instructions"],
+        id_prefix: 'i',
+        label: "Directives",
+        is_todo: false,
+        tracks_done: false,
     }
 }
 
@@ -371,6 +390,7 @@ impl Note {
             collab: vec![],
             ask: vec![],
             done_when: vec![],
+            directives: vec![],
         };
         let body = format!("# {repo} / {branch}\n\n## Goal\n\n\n## Progress\n");
         Note { front, body }
@@ -404,6 +424,7 @@ impl Frontmatter {
             Section::Collab => &self.collab,
             Section::Ask => &self.ask,
             Section::DoneWhen => &self.done_when,
+            Section::Directive => &self.directives,
         }
     }
 
@@ -417,6 +438,7 @@ impl Frontmatter {
             Section::Collab => &mut self.collab,
             Section::Ask => &mut self.ask,
             Section::DoneWhen => &mut self.done_when,
+            Section::Directive => &mut self.directives,
         }
     }
 }

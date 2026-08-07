@@ -31,6 +31,10 @@ use serde_json::json;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+#[path = "actions/prompts.rs"]
+mod prompts;
+use prompts::repo_orchestrator_goal;
+
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
@@ -59,7 +63,7 @@ impl<S: Send + Sync> FromRequestParts<S> for MaybeAddr {
 // Err is an axum `Response` by design throughout this handler module (the rejection IS the HTTP
 // reply), so the large-Err lint doesn't apply here.
 #[allow(clippy::result_large_err)]
-fn parse_body<T: Default + serde::de::DeserializeOwned>(
+pub(crate) fn parse_body<T: Default + serde::de::DeserializeOwned>(
     cmd: &str,
     bytes: &Bytes,
 ) -> Result<T, Response> {
@@ -208,7 +212,7 @@ async fn run_bn(args: Vec<String>, cwd: Option<PathBuf>) -> RunResult {
 /// declare `BN_WORKER_REPO=<target>` so the CLI's cross-repo-session guard treats the spawn as the
 /// target repo's own session (the server runs from its own worktree, so it would otherwise look
 /// like a stray cross-repo hop and be blocked).
-async fn run_bn_env(
+pub(crate) async fn run_bn_env(
     args: Vec<String>,
     cwd: Option<PathBuf>,
     envs: Vec<(String, String)>,
@@ -231,7 +235,7 @@ async fn run_bn_env(
 
 /// Audit a process write and return its envelope as `200` (the envelope's own `ok` conveys the
 /// command's success/failure, per the "return the underlying Envelope" contract).
-fn respond_process(
+pub(crate) fn respond_process(
     state: &AppState,
     action: &str,
     target: &str,
@@ -254,8 +258,12 @@ pub struct QueueAddBody {
     pub items: Vec<String>,
 }
 
-/// `POST /api/orchestrate/queue {repo?, items:[…]}` — append queued items (deduped by derived id)
-/// to a live run. Takes effect on the next daemon tick with no restart.
+/// `POST /api/orchestrate/queue {repo?, items:[…]}` — enqueue work (deduped by derived id).
+///
+/// Goes through `bn queue add` — the durable backlog — instead of injecting into a live run's
+/// ledger, which bypassed the ranking, the conflict hold and the names-a-task invariant, and
+/// needed a run to already be up. Shelling the CLI (as `POST /api/dispatch` does) keeps the
+/// browser and the terminal on one implementation.
 pub async fn queue_add(
     State(state): State<AppState>,
     MaybeAddr(addr): MaybeAddr,
@@ -279,33 +287,27 @@ pub async fn queue_add(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let path = orchestrate::state_path_for(&repo);
-    let now = bn_core::util::now_epoch_secs();
-    let added_items = items.clone();
-    let result = mutate_blocking(path, move |st| {
-        let added = st.extend(&added_items, now);
-        (added, st.counts())
-    })
-    .await;
-
-    match result {
-        Ok(Some((added, counts))) => {
-            audit::record(&state, "queue-add", &repo, addr, true);
-            Json(Envelope::success(
-                cmd,
-                json!({ "repo": repo, "added": added, "counts": counts }),
-            ))
-            .into_response()
-        }
-        Ok(None) => {
-            audit::record(&state, "queue-add", &repo, addr, false);
-            no_run(cmd, &repo)
-        }
-        Err(e) => {
-            audit::record(&state, "queue-add", &repo, addr, false);
-            unavailable(cmd, &e.to_string())
+    let (mut added, mut failed) = (Vec::new(), Vec::new());
+    for item in &items {
+        // Fixed template; `--` ends option parsing so an item starting with `-` is never a flag.
+        let args = ["queue", "add", "--repo", &repo, "--", item].map(str::to_string);
+        let env = vec![("BN_WORKER_REPO".to_string(), repo.clone())];
+        let result = run_bn_env(args.to_vec(), None, env).await;
+        match result.ok {
+            true => added.push(item.clone()),
+            false => failed.push(json!({ "item": item, "envelope": result.envelope })),
         }
     }
+    let ok = failed.is_empty();
+    audit::record(&state, "queue-add", &repo, addr, ok);
+    if !ok && added.is_empty() {
+        return unavailable(cmd, "could not enqueue any item");
+    }
+    Json(Envelope::success(
+        cmd,
+        json!({ "repo": repo, "added": added, "failed": failed }),
+    ))
+    .into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1076,21 +1078,18 @@ pub async fn repo_orchestrate_start(
         );
     }
 
-    // The seed goal: an explicit brief overrides the default backlog-drain (the orchestrator role
-    // seed otherwise keeps the generic ship framing — see the dispatch-orchestrator memory).
-    let goal = body
+    // An explicit brief overrides the Markdown-owned default backlog-drain goal.
+    let goal = match body
         .goal
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| {
-            format!(
-                "You are the orchestrator for the '{repo}' repo. Supervise a fleet that drains \
-                 this repo's open GitHub issue backlog: pick actionable open issues, dispatch a \
-                 worker per issue (`bn dispatch --repo {repo} --agent --yolo`), monitor them to PR, \
-                 and keep the wave going until the backlog is clear. Write no code yourself and \
-                 open no PR yourself — orchestrate."
-            )
-        });
+    {
+        Some(goal) => goal,
+        None => match repo_orchestrator_goal(&state.cfg, &repo) {
+            Ok(goal) => goal,
+            Err(error) => return server_error(cmd, "prompt_error", &error),
+        },
+    };
 
     // Fixed template — only validated fields are interpolated, each a distinct argv element. `--`
     // ends option parsing so the free-text goal is always the positional item, never a flag.
@@ -1620,13 +1619,14 @@ pub async fn skill_delete(
     let result =
         tokio::task::spawn_blocking(move || -> Result<serde_json::Value, Option<String>> {
             let here = std::path::Path::new(".");
-            let Some(info) = bn_core::skills::effective_info(&cfg, here, &name_call) else {
-                return Err(None);
-            };
+            let info = bn_core::skills::effective_info(&cfg, here, &name_call)
+                .map_err(|error| Some(error.to_string()))?
+                .ok_or(None)?;
             bn_core::skills::delete_skill(std::path::Path::new(&info.path)).map_err(Some)?;
             // A lower tier may now be the effective definition — report it rather than implying the
             // name is gone.
-            let remaining = bn_core::skills::effective_info(&cfg, here, &name_call);
+            let remaining = bn_core::skills::effective_info(&cfg, here, &name_call)
+                .map_err(|error| Some(error.to_string()))?;
             let native = sync_native_skills_summary(&cfg);
             Ok(json!({
                 "skill": info,
@@ -1694,7 +1694,7 @@ pub async fn skill_write(
         return bad_request(cmd, "empty_content", "content is required");
     }
     // Validate before touching the filesystem, so a bad edit is a clean 400 (never a corrupt file).
-    if bn_core::skills::parse_skill(&body.content, &name).is_none() {
+    if bn_core::skills::parse_skill(&body.content, &name).is_err() {
         return bad_request(
             cmd,
             "invalid_content",
@@ -1707,11 +1707,9 @@ pub async fn skill_write(
     // `Err(None)` = no such skill (404); `Err(Some(msg))` = an IO failure on a known path (500).
     let result =
         tokio::task::spawn_blocking(move || -> Result<serde_json::Value, Option<String>> {
-            let Some(info) =
-                bn_core::skills::effective_info(&cfg, std::path::Path::new("."), &name_call)
-            else {
-                return Err(None);
-            };
+            let info = bn_core::skills::effective_info(&cfg, std::path::Path::new("."), &name_call)
+                .map_err(|error| Some(error.to_string()))?
+                .ok_or(None)?;
             bn_core::skills::save_skill(std::path::Path::new(&info.path), &content)
                 .map_err(Some)?;
             let native = sync_native_skills_summary(&cfg);

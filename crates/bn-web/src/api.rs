@@ -26,8 +26,12 @@ use std::sync::Arc;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
 
+#[path = "api/automation.rs"]
+mod automation;
+pub use automation::{agents_catalog, today_agents, today_crons};
+
 /// Trim a query param to `None` when absent or empty, so `?repo=` reads the same as an omitted one.
-fn nonempty(v: Option<String>) -> Option<String> {
+pub(crate) fn nonempty(v: Option<String>) -> Option<String> {
     v.filter(|s| !s.trim().is_empty())
 }
 
@@ -42,7 +46,7 @@ fn not_found(command: &str, message: &str) -> Response {
 
 /// A 400 carrying the standard failure envelope (JSON), for a read whose query params are missing
 /// or malformed before any store is touched.
-fn bad_request(command: &str, code: &str, message: &str) -> Response {
+pub(crate) fn bad_request(command: &str, code: &str, message: &str) -> Response {
     (
         StatusCode::BAD_REQUEST,
         Json(Envelope::failure(command, code, message)),
@@ -767,23 +771,7 @@ pub async fn attn() -> Json<Envelope> {
 // Tasks, issues, pipeline (#1005, EPIC #993) — the read side of the task-first model
 // ---------------------------------------------------------------------------
 
-/// Query params for `GET /api/tasks`.
-#[derive(Debug, Deserialize, Default)]
-pub struct TasksQuery {
-    /// `today` (the default view) or a `YYYY-MM-DD` date.
-    pub day: Option<String>,
-    pub repo: Option<String>,
-    /// Filter on the SMART verdict: `ok`, `fail`, `stuck`, or `unjudged`.
-    pub smart: Option<String>,
-    pub stage: Option<String>,
-    /// `1` to include the whole backlog rather than just what's actionable now.
-    pub all: Option<String>,
-    /// `open` (the default) or `done` — the finished record for a day.
-    ///
-    /// Without this the web UI could not see a completed task at all: every path below reads
-    /// `open_sorted`, so "what did I finish today" had no answer on the wire.
-    pub status: Option<String>,
-}
+pub use crate::task_api::tasks;
 
 /// `GET /api/tasks/:id` — one task, plus everything already joined to it.
 ///
@@ -883,161 +871,6 @@ pub async fn task_detail(State(state): State<AppState>, Path(id): Path<String>) 
         )
             .into_response(),
     }
-}
-
-/// `GET /api/tasks` — the task store (#996), filtered.
-///
-/// Served **natively** from `bn_core::todo` rather than by shelling `bn task --json`: it is a file
-/// read, and `bn_runner` has no timeout, so a subprocess here would put an unbounded call on an
-/// axum worker for no gain.
-///
-/// The default view mirrors the CLI's: `day:` today-or-earlier plus unscheduled work. `?all=1`
-/// widens to the whole backlog. `?day=<date>` pins a specific day, which is what the Today page
-/// and #1004's goal projection read.
-pub async fn tasks(State(state): State<AppState>, Query(q): Query<TasksQuery>) -> Response {
-    let cmd = "tasks";
-    let today = bn_core::util::today();
-    let all = q.all.as_deref().is_some_and(|v| v == "1" || v == "true");
-    let repo = nonempty(q.repo).map(|r| r.to_ascii_lowercase());
-    let smart = nonempty(q.smart).map(|s| s.to_ascii_lowercase());
-    let stage = nonempty(q.stage).map(|s| s.to_ascii_lowercase());
-    let day = nonempty(q.day);
-    let status = nonempty(q.status).map(|s| s.to_ascii_lowercase());
-
-    if let Some(d) = day.as_deref() {
-        if d != "today" && bn_core::util::epoch_day(d).is_none() {
-            return bad_request(cmd, "invalid_day", "day must be `today` or YYYY-MM-DD");
-        }
-    }
-    if let Some(s) = status.as_deref() {
-        if s != "open" && s != "done" {
-            return bad_request(cmd, "invalid_status", "status must be `open` or `done`");
-        }
-    }
-    let day_filter = day.as_deref().map(|d| {
-        if d == "today" {
-            today.clone()
-        } else {
-            d.to_string()
-        }
-    });
-
-    let file = match bn_core::todo::load(&state.cfg.tasks_file()) {
-        Ok(f) => f,
-        // An unreadable store is a real failure, not an empty list — the same honesty rule the
-        // issue cache follows. A caller must be able to tell "no tasks" from "couldn't read".
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(Envelope::failure(
-                    cmd,
-                    "store_unreadable",
-                    format!("could not read the task store: {e}"),
-                )),
-            )
-                .into_response()
-        }
-    };
-
-    // The finished record for a day. Cancelled work is *listed but never conflated* with a real
-    // completion — the store keeps them apart on purpose (`x <date> cancelled:1`, `todo.rs`), so
-    // folding them into one count here would let abandoned work inflate a day's output.
-    if status.as_deref() == Some("done") {
-        let want_day = day_filter.unwrap_or_else(|| today.clone());
-        let mut done = 0usize;
-        let mut cancelled = 0usize;
-        let mut rows: Vec<Value> = Vec::new();
-
-        for t in file.tasks() {
-            if t.completion.as_deref() != Some(want_day.as_str()) {
-                continue;
-            }
-            if repo
-                .as_deref()
-                .is_some_and(|want| !t.meta("repo").is_some_and(|r| r.eq_ignore_ascii_case(want)))
-            {
-                continue;
-            }
-            match t.status(&today) {
-                bn_core::todo::Status::Cancelled => cancelled += 1,
-                bn_core::todo::Status::Done => done += 1,
-                // Not finished on this day — a `completion` with an open status is a malformed
-                // line, and guessing at it would be worse than leaving it out.
-                _ => continue,
-            }
-            let mut row = t.to_json(&today);
-            row["reason"] = json!(t.meta("reason"));
-            rows.push(row);
-        }
-
-        return Json(Envelope::success(
-            cmd,
-            json!({
-                "today": today,
-                "day": want_day,
-                "repo": repo,
-                "status": "done",
-                "count": rows.len(),
-                "done": done,
-                "cancelled": cancelled,
-                "tasks": rows,
-            }),
-        ))
-        .into_response();
-    }
-
-    let rows: Vec<Value> = file
-        .open_sorted(&today, None)
-        .into_iter()
-        .filter(|t| {
-            repo.as_deref()
-                .is_none_or(|want| t.meta("repo").is_some_and(|r| r.eq_ignore_ascii_case(want)))
-        })
-        .filter(|t| {
-            stage.as_deref().is_none_or(|want| {
-                t.meta("stage")
-                    .is_some_and(|s| s.eq_ignore_ascii_case(want))
-            })
-        })
-        .filter(|t| match smart.as_deref() {
-            None => true,
-            // `unjudged` is a first-class state, not a missing value: a pulled task (#1000) has
-            // never been through the gate, which is exactly what the improve queue looks for.
-            Some("unjudged") => t.meta("smart").is_none(),
-            Some(want) => t
-                .meta("smart")
-                .is_some_and(|s| s.eq_ignore_ascii_case(want)),
-        })
-        .filter(|t| match (&day_filter, all) {
-            (Some(d), _) => t.meta("day") == Some(d.as_str()),
-            (None, true) => true,
-            // The bare view: actionable now — dated today or earlier (so overdue work stays
-            // visible), plus everything unscheduled.
-            (None, false) => match t
-                .meta("day")
-                .filter(|d| bn_core::util::epoch_day(d).is_some())
-            {
-                Some(d) => d <= today.as_str(),
-                None => true,
-            },
-        })
-        .map(|t| t.to_json(&today))
-        .collect();
-
-    Json(Envelope::success(
-        cmd,
-        json!({
-            "today": today,
-            "all": all,
-            "day": day_filter,
-            "repo": repo,
-            "smart": smart,
-            "stage": stage,
-            "count": rows.len(),
-            "tasks": rows,
-        }),
-    ))
-    .into_response()
 }
 
 /// `GET /api/issues` — every repo's open issues, each with its own freshness (#999).
@@ -1380,61 +1213,10 @@ pub async fn actions(State(state): State<AppState>) -> Json<Envelope> {
     Json(Envelope::success("actions", data))
 }
 
-/// `GET /api/agents/catalog` — the triggerable-agent catalog (#557): every agent/job the automation
-/// can fire — declared crons (`crons.toml`), backing scripts + native jobs, and the `staff-<name>`
-/// agent roster (`config/agents/*.md`) — folded into one list (`crate::crons::status_views` +
-/// `bn_core::action_center::build_catalog`), each with the metadata the Command Center shows and a
-/// job name the `POST /api/cron/run` re-trigger fires. A read, all in-process `bn-core`; runs on a
-/// blocking thread to keep the async executor free, matching the `actions`/`cron` handlers. `ctx =
-/// None` gives the global-tier registry — the machine view a browser wants.
-pub async fn agents_catalog(State(state): State<AppState>) -> Json<Envelope> {
-    let cfg = state.cfg.clone();
-    let data = tokio::task::spawn_blocking(move || {
-        let crons = bn_core::crons::status_views(&cfg, None);
-        let staff = bn_core::staff::discover(&cfg, None);
-        let items = bn_core::action_center::build_catalog(&crons, &staff);
-        bn_core::payload::catalog_data(&items)
-    })
-    .await
-    .unwrap_or_else(|_| serde_json::json!({ "count": 0, "agents": [] }));
-    Json(Envelope::success("agents-catalog", data))
-}
-
-/// The Today tab's automation split (#575): today's scheduled crons + today's scheduled staff
-/// agents, folded from the machine catalog and filtered to entries whose declared schedule *fires
-/// today* ([`bn_core::action_center::build_todays_automation`]). Both `/api/today/crons` and
-/// `/api/today/agents` share this fold so the two lists stay consistent; each returns the
-/// `catalog_data` shape (a `CatalogItem` list) the Command Center already renders, so the Today UI
-/// reuses the same row + the shared `POST /api/cron/run` trigger. Reads are all in-process
-/// `bn-core`, run on a blocking thread like `agents_catalog`.
-pub async fn today_crons(State(state): State<AppState>) -> Json<Envelope> {
-    let cfg = state.cfg.clone();
-    let data = tokio::task::spawn_blocking(move || {
-        let today = bn_core::action_center::build_todays_automation(&cfg, None);
-        bn_core::payload::catalog_data(&today.crons)
-    })
-    .await
-    .unwrap_or_else(|_| serde_json::json!({ "count": 0, "agents": [] }));
-    Json(Envelope::success("today-crons", data))
-}
-
-/// `GET /api/today/agents` — the scheduled staff agents (`config/agents/*.md` roster) firing today, each
-/// with its last-run health and the `staff-<name>` job the shared `POST /api/cron/run` triggers.
-pub async fn today_agents(State(state): State<AppState>) -> Json<Envelope> {
-    let cfg = state.cfg.clone();
-    let data = tokio::task::spawn_blocking(move || {
-        let today = bn_core::action_center::build_todays_automation(&cfg, None);
-        bn_core::payload::catalog_data(&today.agents)
-    })
-    .await
-    .unwrap_or_else(|_| serde_json::json!({ "count": 0, "agents": [] }));
-    Json(Envelope::success("today-agents", data))
-}
-
 /// `GET /api/today/agent` — Today's **hosted** agent: the record of what bn launched, joined with
 /// the live fleet so the page can tell "bn started one" from "one is alive right now".
 ///
-/// Singular, and deliberately distinct from `/api/today/agents` above (the scheduled staff-agent
+/// Singular, and deliberately distinct from `/api/today/agents` above (the scheduled agent
 /// roster). This is the one session the Today page streams and steers; the payload carries its
 /// `target` and `control` channel, which is exactly what `SteerPanel` needs to decide whether the
 /// composer is live or greyed.
@@ -1520,7 +1302,7 @@ pub async fn search(
         ));
     }
     let cfg = state.cfg.clone();
-    let data = tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         let today = bn_core::util::today();
         let now = bn_core::util::now_epoch_secs();
 
@@ -1587,7 +1369,8 @@ pub async fn search(
                 subtitle: String::new(),
             })
             .collect();
-        let skills = bn_core::skills::discover(&cfg, std::path::Path::new("."));
+        let skills = bn_core::skills::discover(&cfg, std::path::Path::new("."))
+            .map_err(|error| error.to_string())?;
 
         // GitHub issues — best-effort, in the server's cwd repo (empty on any gh failure).
         let issues = bn_core::palette::github_issues(&bn_core::runner::RealRunner, &q, 10);
@@ -1603,11 +1386,18 @@ pub async fn search(
             issues: &issues,
         };
         let results = bn_core::palette::search(&sources, &q);
-        bn_core::payload::palette_data(&q, &results)
+        Ok::<_, String>(bn_core::payload::palette_data(&q, &results))
     })
-    .await
-    .unwrap_or_else(|_| bn_core::payload::palette_data("", &[]));
-    Json(Envelope::success("search", data))
+    .await;
+    match result {
+        Ok(Ok(data)) => Json(Envelope::success("search", data)),
+        Ok(Err(error)) => Json(Envelope::failure("search", "invalid_catalog", error)),
+        Err(error) => Json(Envelope::failure(
+            "search",
+            "task_failed",
+            error.to_string(),
+        )),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1615,16 +1405,20 @@ pub async fn search(
 // ---------------------------------------------------------------------------
 
 /// `GET /api/cron` — the machine-wide cron registry: every declared cron (`crons.toml`) joined
-/// with its last-run health from the event log, plus run-only orphans. A read, all in-process
-/// `bn-core` (no OS-scheduler spawn): the declared schedule + last-run status the design surfaces,
-/// not the launchd/systemd unit inspection (that stays a `bn cron` CLI concern). `ctx = None` gives
-/// the global-tier registry — the machine view a browser wants.
+/// with its last-run health from the event log, plus run-only orphans. Manifest-owned schedules are
+/// nested beneath `agent-scheduler`; malformed agent catalogs return an explicit failure.
 pub async fn cron(State(state): State<AppState>) -> Json<Envelope> {
-    let views = bn_core::crons::status_views(&state.cfg, None);
-    Json(Envelope::success(
-        "cron",
-        bn_core::payload::crons_view_data(&views),
-    ))
+    match bn_core::crons::status_views_with_agents(&state.cfg, None) {
+        Ok(views) => Json(Envelope::success(
+            "cron",
+            bn_core::payload::crons_view_data(&views),
+        )),
+        Err(error) => Json(Envelope::failure(
+            "cron",
+            "invalid_catalog",
+            error.to_string(),
+        )),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1636,19 +1430,36 @@ pub async fn cron(State(state): State<AppState>) -> Json<Envelope> {
 /// definition. Read-only; `PUT /api/skills/{name}` edits the effective file. Resolved from the
 /// server's cwd, so the per-repo tiers appear when bn-web runs inside a repo.
 pub async fn skills(State(state): State<AppState>) -> Json<Envelope> {
-    let skills = bn_core::skills::discover(&state.cfg, std::path::Path::new("."));
-    Json(Envelope::success(
-        "skills",
-        bn_core::payload::skills_data(&skills),
-    ))
+    match bn_core::skills::discover(&state.cfg, std::path::Path::new(".")) {
+        Ok(skills) => Json(Envelope::success(
+            "skills",
+            bn_core::payload::skills_data(&skills),
+        )),
+        Err(error) => Json(Envelope::failure(
+            "skills",
+            "invalid_catalog",
+            error.to_string(),
+        )),
+    }
 }
 
 /// `GET /api/skills/{name}` — one skill's editable source: its effective metadata (tier, path)
 /// plus the raw markdown `content` the editor loads. `404` when no tier defines `name`.
 pub async fn skill_detail(State(state): State<AppState>, Path(name): Path<String>) -> Response {
-    let Some(info) = bn_core::skills::effective_info(&state.cfg, std::path::Path::new("."), &name)
-    else {
-        return not_found("skill", &format!("no skill named '{name}'"));
+    let info = match bn_core::skills::effective_info(&state.cfg, std::path::Path::new("."), &name) {
+        Ok(Some(info)) => info,
+        Ok(None) => return not_found("skill", &format!("no skill named '{name}'")),
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(Envelope::failure(
+                    "skill",
+                    "invalid_catalog",
+                    error.to_string(),
+                )),
+            )
+                .into_response()
+        }
     };
     let content = match std::fs::read_to_string(&info.path) {
         Ok(c) => c,

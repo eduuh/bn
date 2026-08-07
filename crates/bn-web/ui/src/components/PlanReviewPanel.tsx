@@ -1,10 +1,12 @@
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Check, MessageSquare, X } from "lucide-react";
-import { reviewsQuery, queryKeys } from "../api/client";
+import { reviewsQuery } from "../api/client";
 import { pendingReviewFor } from "../lib/review";
 import { decideReview } from "../api/writes";
-import { pushToast } from "../lib/toast";
+import { useAppMutation } from "../hooks/useAppMutation";
+import { affects } from "../lib/invalidation";
+import { setReviewStatus } from "../lib/optimistic";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
@@ -20,53 +22,46 @@ import { Textarea } from "./ui/textarea";
  */
 export function PlanReviewPanel({ repo, branch }: { repo: string; branch: string }) {
   const reviews = useQuery(reviewsQuery());
-  const qc = useQueryClient();
   const [notes, setNotes] = useState("");
   const review = reviews.data ? pendingReviewFor(reviews.data.reviews, repo, branch) : undefined;
 
-  const invalidate = () => {
-    void qc.invalidateQueries({ queryKey: queryKeys.reviews });
-    void qc.invalidateQueries({ queryKey: queryKeys.attn });
-    void qc.invalidateQueries({ queryKey: queryKeys.orchestrate });
-    void qc.invalidateQueries({ queryKey: queryKeys.fleet });
-  };
-  const onError = (e: unknown, label: string) => {
-    pushToast(`${label} failed: ${(e as Error).message}`, "error");
-  };
-
   // The three mutations below are declared before the `!review` early-return, because hooks
   // cannot be conditional — but they can only ever *fire* from buttons that render after it.
-  // Re-checking here turns that invariant into a rejected promise (surfaced by onError) instead
-  // of a non-null assertion that would throw a bare TypeError if it were ever wrong.
+  // Re-checking here turns that invariant into a rejected promise (surfaced by the error toast)
+  // instead of a non-null assertion that would throw a bare TypeError if it were ever wrong.
   const decide = (decision: "approve" | "request_changes" | "reject", notes?: string) => {
     if (!review) return Promise.reject(new Error("no pending review"));
     return decideReview(review.id, decision, notes);
   };
+  // A decided review is no longer pending, so this panel closes itself on the click rather than on
+  // the refetch. `review?.id ?? ""` never matches when there is none — which is also the only case
+  // where `decide` rejects, so the patch and the request agree about doing nothing.
+  const id = review?.id ?? "";
 
-  const approveMut = useMutation({
+  const approveMut = useAppMutation({
     mutationFn: () => decide("approve"),
-    onSuccess: () => {
-      pushToast("plan approved — the agent may implement + open the PR", "success");
-      invalidate();
+    optimistic: setReviewStatus(id, "approved"),
+    invalidates: affects.review,
+    toast: {
+      success: "plan approved — the agent may implement + open the PR",
+      error: "approve failed",
     },
-    onError: (e) => onError(e, "approve"),
   });
-  const changesMut = useMutation({
+  const changesMut = useAppMutation({
     mutationFn: () => decide("request_changes", notes.trim()),
-    onSuccess: () => {
-      pushToast("changes requested — the agent will revise + re-submit", "success");
-      setNotes("");
-      invalidate();
+    optimistic: setReviewStatus(id, "changes-requested"),
+    invalidates: affects.review,
+    toast: {
+      success: "changes requested — the agent will revise + re-submit",
+      error: "request changes failed",
     },
-    onError: (e) => onError(e, "request changes"),
+    onSuccess: () => setNotes(""),
   });
-  const rejectMut = useMutation({
+  const rejectMut = useAppMutation({
     mutationFn: () => decide("reject"),
-    onSuccess: () => {
-      pushToast("plan rejected — the agent stops", "success");
-      invalidate();
-    },
-    onError: (e) => onError(e, "reject"),
+    optimistic: setReviewStatus(id, "rejected"),
+    invalidates: affects.review,
+    toast: { success: "plan rejected — the agent stops", error: "reject failed" },
   });
 
   if (!review) return null;

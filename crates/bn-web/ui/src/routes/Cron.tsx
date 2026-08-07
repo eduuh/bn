@@ -1,13 +1,14 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, CalendarClock, Clock, Loader2, RotateCw, Timer } from "lucide-react";
-import { cronQuery, queryKeys } from "../api/client";
+import { useQuery } from "@tanstack/react-query";
+import { AlertTriangle, Bot, CalendarClock, Clock, Loader2, RotateCw, Timer } from "lucide-react";
+import { cronQuery } from "../api/client";
 import { runCronJob } from "../api/writes";
-import type { CronJob } from "../api/types";
+import type { AgentSchedule, CronJob } from "../api/types";
+import { useAppMutation } from "../hooks/useAppMutation";
+import { affects } from "../lib/invalidation";
 import { useNow } from "../hooks/useNow";
 import { timeAgo } from "../lib/format";
-import { pushToast } from "../lib/toast";
 import { cronNeedsAttention, scheduleLabel, sortCronJobs } from "../lib/cron";
 import { Badge, type BadgeProps } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -19,6 +20,9 @@ import { PageHead } from "../components/PageHead";
 /** The health tone of a job's last run: green when it last exited 0, red when it failed, grey when
  * it has never run (declared/scripted but not yet observed). */
 function healthTone(j: CronJob): { variant: BadgeProps["variant"]; bar: string; label: string } {
+  if (j.agents?.some((agent) => agent.ok === false)) {
+    return { variant: "urgent", bar: "bg-urgent", label: "agent failure" };
+  }
   if (j.last_run == null) return { variant: "muted", bar: "bg-border", label: "never run" };
   return j.ok
     ? { variant: "ok", bar: "bg-ok", label: "ok" }
@@ -26,21 +30,14 @@ function healthTone(j: CronJob): { variant: BadgeProps["variant"]; bar: string; 
 }
 
 /** Re-run control (#538): fire `bn run <job>` — the same code path a scheduled timer runs —
- * confirming first, toasting the outcome, and invalidating the cron query so the refreshed last-run
- * health appears without a reload. */
+ * confirming first, toasting the outcome, and invalidating the schedule surfaces so the refreshed
+ * last-run health appears without a reload. A failed run still recorded an outcome, which is
+ * exactly why the reconcile happens on settle rather than only on success. */
 function RerunButton({ job }: { job: string }) {
-  const qc = useQueryClient();
-  const mut = useMutation({
+  const mut = useAppMutation({
     mutationFn: () => runCronJob(job),
-    onSuccess: () => {
-      pushToast(`Ran ${job}`, "success");
-      void qc.invalidateQueries({ queryKey: queryKeys.cron });
-    },
-    onError: (e) => {
-      pushToast(`run ${job} failed: ${e.message}`, "error");
-      // The run still recorded a failed outcome — refresh so its new last-run health shows.
-      void qc.invalidateQueries({ queryKey: queryKeys.cron });
-    },
+    invalidates: affects.schedule,
+    toast: { success: `Ran ${job}`, error: `run ${job} failed` },
   });
   return (
     <Button
@@ -74,13 +71,53 @@ function Tag({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** One manifest-owned schedule, rendered as a child of the common scheduler rather than a second
+ * top-level cron. */
+function AgentScheduleRow({ agent, now }: { agent: AgentSchedule; now: number }) {
+  const state =
+    agent.retry_at != null
+      ? `retry in ${Math.max(1, Math.ceil((agent.retry_at - now) / 60))}m`
+      : agent.state;
+  return (
+    <div className="rounded-md border border-border bg-background/60 p-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <Bot className="h-4 w-4 text-primary" aria-hidden="true" />
+        <span className="font-mono text-sm font-medium text-foreground">{agent.job}</span>
+        <Badge variant="info">{agent.kind}</Badge>
+        <Badge variant={agent.due ? "warn" : "muted"}>{state}</Badge>
+        {agent.ok === false && <Badge variant="urgent">exit {agent.last_exit ?? "?"}</Badge>}
+        <span className="flex-1" />
+        <RerunButton job={agent.job} />
+      </div>
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        <span className="inline-flex items-center gap-1 font-mono">
+          <CalendarClock className="h-3.5 w-3.5" /> {agent.schedule}
+        </span>
+        {agent.last_run != null ? (
+          <span className="inline-flex items-center gap-1">
+            <Clock className="h-3.5 w-3.5" /> ran {timeAgo(agent.last_run, now)} ago
+          </span>
+        ) : (
+          <span>never run</span>
+        )}
+        <span>{Math.round(agent.retry_after_secs / 60)}m failure backoff</span>
+      </div>
+      {agent.description && (
+        <p className="mt-1.5 text-xs text-foreground/80">{agent.description}</p>
+      )}
+    </div>
+  );
+}
+
 /** One cron job row: what it's declared to do + its last-run health. */
 function CronCard({ job, now }: { job: CronJob; now: number }) {
   const h = healthTone(job);
   const [showLog, setShowLog] = useState(false);
   // A job that recorded failures but whose *last* run was ok has recovered — flag it amber so it
   // still leads the list, without overstating it as currently-broken (that's the red exit chip).
-  const recoveredFailures = job.failures > 0 && job.ok !== false;
+  const recoveredFailures =
+    (job.failures > 0 || (job.agents?.some((agent) => agent.failures > 0) ?? false)) &&
+    h.variant !== "urgent";
   return (
     <Card
       className="relative overflow-hidden p-3 pl-4"
@@ -179,6 +216,17 @@ function CronCard({ job, now }: { job: CronJob; now: number }) {
           {job.has_script && <Tag>script</Tag>}
           {job.network && <Tag>network</Tag>}
           {job.catch_up && <Tag>catch-up</Tag>}
+        </div>
+      )}
+
+      {job.agents && job.agents.length > 0 && (
+        <div className="mt-3 space-y-2 border-l-2 border-primary/30 pl-3">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Managed agent schedules
+          </p>
+          {job.agents.map((agent) => (
+            <AgentScheduleRow key={agent.job} agent={agent} now={now} />
+          ))}
         </div>
       )}
     </Card>

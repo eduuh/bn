@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { ArrowUpRight, Inbox, Plus, Search } from "lucide-react";
-import { attnQuery, orchestrateQuery, queryKeys } from "../api/client";
+import { attnQuery, orchestrateQuery } from "../api/client";
 import type { AttnItem } from "../api/types";
 import { apiDispatch, createTask } from "../api/writes";
-import { pushToast } from "../lib/toast";
+import { useAppMutation } from "../hooks/useAppMutation";
+import { affects } from "../lib/invalidation";
 import { ToastStack } from "../components/ToastStack";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -29,15 +30,13 @@ type Harness = "claude" | "copilot";
  * with the finding's title and repo; the enhance agent then scopes it toward the SMART gate.
  */
 function AskCard({ it }: { it: AttnItem }) {
-  const qc = useQueryClient();
-  const make = useMutation({
+  const make = useAppMutation({
     mutationFn: () => createTask({ title: it.title, repo: it.repo ?? undefined }),
-    onSuccess: (r) => {
-      pushToast(`Created ${r.id} — the enhance agent will scope it`, "success");
-      void qc.invalidateQueries({ queryKey: queryKeys.tasks("today") });
+    invalidates: affects.task,
+    toast: {
+      success: (r) => `Created ${r.id} — the enhance agent will scope it`,
+      error: "Could not create task",
     },
-    onError: (e: unknown) =>
-      pushToast(e instanceof Error ? e.message : "could not create task", "error"),
   });
   return (
     <Card className="space-y-2 p-3">
@@ -108,15 +107,18 @@ export function Research() {
   const q = question.trim();
   const canSubmit = q.length > 0 && repo.trim().length > 0;
 
-  const research = useMutation({
+  // This one navigates straight to /fleet, so reconciling the fleet is the difference between
+  // landing on the new agent and landing on a list that predates it.
+  const research = useAppMutation({
     mutationFn: () => apiDispatch({ repo: repo.trim(), item: q, harness, kind: "scout" }),
+    invalidates: affects.agentLaunch,
+    toast: {
+      success: "Research agent dispatched — findings land on the branch note",
+      error: "Could not start research",
+    },
     onSuccess: () => {
-      pushToast("Research agent dispatched — findings land on the branch note", "success");
       setQuestion("");
       navigate("/fleet");
-    },
-    onError: (e: unknown) => {
-      pushToast(e instanceof Error ? e.message : "could not start research", "error");
     },
   });
 

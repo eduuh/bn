@@ -1,9 +1,8 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { RotateCw } from "lucide-react";
-import { queryKeys } from "../api/client";
 import type { AgentControl } from "../api/types";
 import { relaunchAgent } from "../api/writes";
-import { pushToast } from "../lib/toast";
+import { useAppMutation } from "../hooks/useAppMutation";
+import { affects } from "../lib/invalidation";
 import { cn } from "../lib/utils";
 
 /**
@@ -22,17 +21,12 @@ import { cn } from "../lib/utils";
  * Stops propagation so it works inside the card's navigation link.
  */
 export function RelaunchButton({ target, control }: { target: string; control?: AgentControl }) {
-  const qc = useQueryClient();
   const steerable = control !== "none" && control !== "ambiguous";
 
-  const mut = useMutation({
+  const mut = useAppMutation({
     mutationFn: () => relaunchAgent(target, false),
-    onSuccess: () => {
-      pushToast(`relaunching ${target}…`, "success");
-      void qc.invalidateQueries({ queryKey: queryKeys.fleet });
-      void qc.invalidateQueries({ queryKey: queryKeys.activityAll });
-    },
-    onError: (e) => pushToast(`relaunch failed: ${e.message}`, "error"),
+    invalidates: affects.agentSteer,
+    toast: { success: `relaunching ${target}…`, error: "relaunch failed" },
   });
 
   return (

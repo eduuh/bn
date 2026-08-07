@@ -6,6 +6,7 @@
 //! (a thin bn-cli front-end that resolves and execs this binary).
 
 mod actions;
+mod agent_control;
 mod api;
 mod assets;
 mod audit;
@@ -13,9 +14,11 @@ mod auth;
 mod bn_runner;
 mod cost;
 mod mcp;
+mod queue_api;
 mod repos;
 mod routes;
 mod state;
+mod task_api;
 mod watch;
 
 use bn_core::resolver::Config;

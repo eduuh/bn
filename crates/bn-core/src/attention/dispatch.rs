@@ -144,6 +144,9 @@ pub fn promote_to_backlog(
             task: crate::attention::task_id_of(item)
                 .unwrap_or_default()
                 .to_string(),
+            // A promoted attention item is a plain coding agent with no special demands — the
+            // queue axes stay at their defaults so it is placeable anywhere.
+            ..Default::default()
         };
         BacklogEntry::new(repo, &subject, &spec, now)
     };

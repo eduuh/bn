@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, BookOpen, Loader2, Plus, Save, Trash2, X } from "lucide-react";
 import { queryKeys, skillDetailQuery, skillsQuery } from "../api/client";
 import type { SkillInfo, SkillMutation, SkillNativeSync, SkillScope } from "../api/types";
 import { SKILL_SCOPES } from "../api/types";
 import { createSkill, deleteSkill, saveSkill } from "../api/writes";
+import { useAppMutation } from "../hooks/useAppMutation";
+import { affects } from "../lib/invalidation";
 import { pushToast } from "../lib/toast";
 import { ToastStack } from "../components/ToastStack";
 import { Badge } from "../components/ui/badge";
@@ -53,21 +55,22 @@ function NewSkillForm({
   onDone: (name: string) => void;
   onCancel: () => void;
 }) {
-  const qc = useQueryClient();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [scope, setScope] = useState<SkillScope>("global-personal");
   const [body, setBody] = useState("");
 
-  const create = useMutation({
+  // `reportMutation` rather than a `toast.success`: a 2xx here can still be a *partial* success
+  // (the file was written but the native sync failed), and it picks the tone from the payload.
+  const create = useAppMutation({
     mutationFn: () =>
       createSkill({ name: name.trim(), description: description.trim(), scope, body }),
+    invalidates: affects.skills,
+    toast: { error: "Create failed" },
     onSuccess: (result) => {
       reportMutation(`Created skill “${name.trim()}”`, result);
-      void qc.invalidateQueries({ queryKey: queryKeys.skills });
       onDone(name.trim());
     },
-    onError: (e) => pushToast(`Create failed: ${e.message}`, "error"),
   });
 
   // The server applies the same rules; mirroring them here keeps the button honest.
@@ -161,7 +164,6 @@ function NewSkillForm({
  * is touched (what bn-mcp serves); the content is validated server-side, so a bad edit is rejected,
  * never written. Every write re-syncs the native Claude/Copilot skills. */
 function SkillEditor({ name, onDeleted }: { name: string; onDeleted: () => void }) {
-  const qc = useQueryClient();
   const detail = useQuery(skillDetailQuery(name));
   const [draft, setDraft] = useState("");
   const [dirty, setDirty] = useState(false);
@@ -178,21 +180,23 @@ function SkillEditor({ name, onDeleted }: { name: string; onDeleted: () => void 
   // A different skill selected: drop any half-armed delete so it can't fire on the wrong one.
   useEffect(() => setConfirmingDelete(false), [name]);
 
-  const save = useMutation({
+  const save = useAppMutation({
     mutationFn: () => saveSkill(name, draft),
+    invalidates: [...affects.skills, queryKeys.skill(name)],
+    // Refetching after a failed save would replace the unsaved draft from `detail.data`.
+    invalidateOnError: false,
+    toast: { error: "Save failed" },
     onSuccess: (result) => {
       reportMutation(`Saved skill “${name}”`, result);
       setDirty(false);
-      void qc.invalidateQueries({ queryKey: queryKeys.skill(name) });
-      void qc.invalidateQueries({ queryKey: queryKeys.skills });
-    },
-    onError: (e) => {
-      pushToast(`Save failed: ${e.message}`, "error");
     },
   });
 
-  const remove = useMutation({
+  const remove = useAppMutation({
     mutationFn: () => deleteSkill(name),
+    invalidates: [...affects.skills, queryKeys.skill(name)],
+    invalidateOnError: false,
+    toast: { error: "Delete failed" },
     onSuccess: (result) => {
       // Deleting the effective definition unshadows a lower tier when one exists — say which,
       // rather than implying the name is gone.
@@ -200,14 +204,9 @@ function SkillEditor({ name, onDeleted }: { name: string; onDeleted: () => void 
         ? `now served from ${result.remaining_scope}`
         : "removed from every tier";
       reportMutation(`Deleted skill “${name}” (${fate})`, result);
-      void qc.invalidateQueries({ queryKey: queryKeys.skill(name) });
-      void qc.invalidateQueries({ queryKey: queryKeys.skills });
       onDeleted();
     },
-    onError: (e) => {
-      pushToast(`Delete failed: ${e.message}`, "error");
-      setConfirmingDelete(false);
-    },
+    onError: () => setConfirmingDelete(false),
   });
 
   if (detail.isLoading) {

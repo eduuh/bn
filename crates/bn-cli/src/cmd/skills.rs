@@ -5,7 +5,8 @@ use crate::*;
 /// List skills across all tiers (text or JSON envelope). Shadowed lower-tier definitions are
 /// tagged so it's clear which file bn-mcp actually serves for each name.
 pub(crate) fn emit_skills(cfg: &Config, base: &std::path::Path, json: bool) {
-    let skills = bn_core::skills::discover(cfg, base);
+    let skills = bn_core::skills::discover(cfg, base)
+        .unwrap_or_else(|error| fail(&format!("bn skills: {error}")));
     if json {
         println!(
             "{}",
@@ -31,7 +32,9 @@ pub(crate) fn emit_skills(cfg: &Config, base: &std::path::Path, json: bool) {
 /// Rank skills by relevance to `query` (text or JSON envelope) — the discovery view. Shows the
 /// matching skill's trigger (`when`) and how to invoke it, so the next step is obvious.
 pub(crate) fn emit_skills_find(cfg: &Config, base: &std::path::Path, query: &str, json: bool) {
-    let ranked = bn_core::skills::rank(&bn_core::skills::discover(cfg, base), query);
+    let skills = bn_core::skills::discover(cfg, base)
+        .unwrap_or_else(|error| fail(&format!("bn skills find: {error}")));
+    let ranked = bn_core::skills::rank(&skills, query);
     if json {
         println!(
             "{}",
@@ -99,8 +102,12 @@ pub(crate) fn emit_skill_render(cfg: &Config, base: &std::path::Path, name: &str
     }
 
     match bn_core::skills::load_skill(cfg, base, name) {
-        Some(skill) => print!("{}", skill.render(Some(&map))),
-        None => fail(&format!("bn skills render: no skill named '{name}'")),
+        Ok(Some(skill)) => match skill.render_checked(Some(&map)) {
+            Ok(rendered) => print!("{rendered}"),
+            Err(error) => fail(&format!("bn skills render: {error}")),
+        },
+        Ok(None) => fail(&format!("bn skills render: no skill named '{name}'")),
+        Err(error) => fail(&format!("bn skills render: {error}")),
     }
 }
 
@@ -117,7 +124,8 @@ pub(crate) fn emit_skill_edit(
     let target: std::path::PathBuf = match name {
         Some(name) => {
             // Open the *effective* definition — the one bn-mcp actually serves for this name.
-            let skills = bn_core::skills::discover(cfg, base);
+            let skills = bn_core::skills::discover(cfg, base)
+                .unwrap_or_else(|error| fail(&format!("bn skills edit: {error}")));
             match skills.iter().find(|s| s.effective && s.name == name) {
                 Some(s) => std::path::PathBuf::from(&s.path),
                 None => fail(&format!(

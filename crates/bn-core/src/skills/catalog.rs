@@ -1,0 +1,421 @@
+use super::skill_dirs;
+use crate::resolver::Config;
+use crate::template::{self, ArgumentDef, TemplateError};
+use serde::Deserialize;
+use serde_json::{Map, Value};
+use std::collections::BTreeMap;
+use std::fmt;
+use std::path::{Path, PathBuf};
+
+/// A fully parsed skill: frontmatter metadata plus the renderable Markdown body.
+#[derive(Debug, Clone)]
+pub struct Skill {
+    pub name: String,
+    pub description: String,
+    /// Optional one-line trigger ("when to use this"); appended to the served prompt description.
+    pub when: Option<String>,
+    /// Optional match terms for relevance ranking.
+    pub keywords: Vec<String>,
+    pub arguments: Vec<ArgumentDef>,
+    /// Internal prompts remain runtime-resolvable but are hidden from discovery and installation.
+    pub internal: bool,
+    pub body: String,
+}
+
+impl Skill {
+    /// Compatibility rendering for public skills. Omitted values become empty strings.
+    pub fn render(&self, args: Option<&Map<String, Value>>) -> String {
+        match template::render_compatible(&self.body, &self.arguments, args) {
+            Ok(rendered) => rendered,
+            Err(_) => self.body.clone(),
+        }
+    }
+
+    /// Strict rendering for runtime templates.
+    pub fn render_checked(
+        &self,
+        args: Option<&Map<String, Value>>,
+    ) -> Result<String, TemplateError> {
+        template::render_checked(&self.body, &self.arguments, args)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SkillFront {
+    name: Option<String>,
+    description: String,
+    #[serde(default)]
+    when: Option<String>,
+    #[serde(default)]
+    keywords: Vec<String>,
+    #[serde(default)]
+    arguments: Vec<ArgumentDef>,
+    #[serde(default)]
+    internal: bool,
+}
+
+/// A malformed skill source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkillParseError {
+    MissingFrontmatter,
+    InvalidFrontmatter { message: String },
+    InvalidTemplate { source: TemplateError },
+}
+
+impl fmt::Display for SkillParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingFrontmatter => write!(f, "missing YAML frontmatter"),
+            Self::InvalidFrontmatter { message } => write!(f, "invalid frontmatter: {message}"),
+            Self::InvalidTemplate { source } => write!(f, "invalid template: {source}"),
+        }
+    }
+}
+
+impl std::error::Error for SkillParseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidTemplate { source } => Some(source),
+            Self::MissingFrontmatter | Self::InvalidFrontmatter { .. } => None,
+        }
+    }
+}
+
+/// A path-qualified skill catalog failure.
+#[derive(Debug)]
+pub enum SkillCatalogError {
+    ReadDirectory {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    ReadFile {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    InvalidSkill {
+        path: PathBuf,
+        source: SkillParseError,
+    },
+}
+
+impl SkillCatalogError {
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::ReadDirectory { path, .. }
+            | Self::ReadFile { path, .. }
+            | Self::InvalidSkill { path, .. } => path,
+        }
+    }
+}
+
+impl fmt::Display for SkillCatalogError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ReadDirectory { path, source } => {
+                write!(f, "read skill directory {}: {source}", path.display())
+            }
+            Self::ReadFile { path, source } => {
+                write!(f, "read skill {}: {source}", path.display())
+            }
+            Self::InvalidSkill { path, source } => {
+                write!(f, "{}: {source}", path.display())
+            }
+        }
+    }
+}
+
+impl std::error::Error for SkillCatalogError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ReadDirectory { source, .. } | Self::ReadFile { source, .. } => Some(source),
+            Self::InvalidSkill { source, .. } => Some(source),
+        }
+    }
+}
+
+/// A required runtime prompt could not be loaded or strictly rendered.
+#[derive(Debug)]
+pub enum RuntimeSkillError {
+    Catalog(SkillCatalogError),
+    Missing { name: String },
+    Render { name: String, source: TemplateError },
+}
+
+impl fmt::Display for RuntimeSkillError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Catalog(error) => write!(f, "{error}"),
+            Self::Missing { name } => write!(f, "required prompt '{name}' not found"),
+            Self::Render { name, source } => {
+                write!(f, "render required prompt '{name}': {source}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RuntimeSkillError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Catalog(error) => Some(error),
+            Self::Render { source, .. } => Some(source),
+            Self::Missing { .. } => None,
+        }
+    }
+}
+
+/// Split `---\n<yaml>\n---\n<body>` into a [`Skill`]. `name` falls back to the file stem.
+pub fn parse_skill(text: &str, stem: &str) -> Result<Skill, SkillParseError> {
+    let (yaml, body) =
+        crate::store::split_frontmatter(text).ok_or(SkillParseError::MissingFrontmatter)?;
+    let front: SkillFront =
+        serde_yaml::from_str(yaml).map_err(|error| SkillParseError::InvalidFrontmatter {
+            message: error.to_string(),
+        })?;
+    template::validate(body, &front.arguments)
+        .map_err(|source| SkillParseError::InvalidTemplate { source })?;
+    Ok(Skill {
+        name: front.name.unwrap_or_else(|| stem.to_string()),
+        description: front.description,
+        when: front.when,
+        keywords: front.keywords,
+        arguments: front.arguments,
+        internal: front.internal,
+        body: body.to_string(),
+    })
+}
+
+/// Parse every `*.md` skill in `dir`, paired with its file path. A missing directory is empty.
+pub(super) fn load_skill_files(dir: &Path) -> Result<Vec<(Skill, PathBuf)>, SkillCatalogError> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => {
+            return Err(SkillCatalogError::ReadDirectory {
+                path: dir.to_path_buf(),
+                source,
+            })
+        }
+    };
+    let mut paths = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| SkillCatalogError::ReadDirectory {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) == Some("md") {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+
+    let mut skills = Vec::with_capacity(paths.len());
+    for path in paths {
+        let text =
+            std::fs::read_to_string(&path).map_err(|source| SkillCatalogError::ReadFile {
+                path: path.clone(),
+                source,
+            })?;
+        let stem = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("skill");
+        let skill = parse_skill(&text, stem).map_err(|source| SkillCatalogError::InvalidSkill {
+            path: path.clone(),
+            source,
+        })?;
+        skills.push((skill, path));
+    }
+    Ok(skills)
+}
+
+/// Merge skills from `dirs` low→high precedence. Internal prompts remain in this runtime set.
+pub fn load_skill_set(dirs: &[PathBuf]) -> Result<Vec<Skill>, SkillCatalogError> {
+    let mut by_name = BTreeMap::new();
+    for dir in dirs {
+        for (skill, _) in load_skill_files(dir)? {
+            by_name.insert(skill.name.clone(), skill);
+        }
+    }
+    Ok(by_name.into_values().collect())
+}
+
+/// Resolve the highest-precedence runtime skill named `name`.
+pub fn load_skill(
+    cfg: &Config,
+    base_dir: &Path,
+    name: &str,
+) -> Result<Option<Skill>, SkillCatalogError> {
+    let dirs: Vec<PathBuf> = skill_dirs(cfg, base_dir)
+        .into_iter()
+        .map(|(_, dir)| dir)
+        .collect();
+    Ok(load_skill_set(&dirs)?
+        .into_iter()
+        .find(|skill| skill.name == name))
+}
+
+/// Resolve and strictly render a required public or internal runtime prompt.
+pub fn render_required(
+    cfg: &Config,
+    base_dir: &Path,
+    name: &str,
+    args: Option<&Map<String, Value>>,
+) -> Result<String, RuntimeSkillError> {
+    let skill = load_skill(cfg, base_dir, name).map_err(RuntimeSkillError::Catalog)?;
+    let skill = skill.ok_or_else(|| RuntimeSkillError::Missing {
+        name: name.to_string(),
+    })?;
+    skill
+        .render_checked(args)
+        .map_err(|source| RuntimeSkillError::Render {
+            name: name.to_string(),
+            source,
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn internal_defaults_false_and_checked_render_is_strict() {
+        let skill = parse_skill(
+            "---\ndescription: test\narguments:\n  - name: value\n    required: true\n---\n{{value}}",
+            "test",
+        )
+        .expect("skill parses");
+
+        assert!(!skill.internal);
+        assert!(matches!(
+            skill.render_checked(None),
+            Err(TemplateError::MissingRequiredValue { .. })
+        ));
+        assert_eq!(skill.render(None), "");
+    }
+
+    #[test]
+    fn invalid_template_declarations_fail_parse() {
+        let error = parse_skill(
+            "---\ndescription: test\narguments:\n  - name: bad/name\n---\n",
+            "test",
+        );
+
+        assert!(matches!(
+            error,
+            Err(SkillParseError::InvalidTemplate {
+                source: TemplateError::InvalidArgumentName { .. }
+            })
+        ));
+    }
+
+    #[test]
+    fn runtime_error_names_missing_prompt() {
+        let error = RuntimeSkillError::Missing {
+            name: "internal-test".to_string(),
+        };
+        assert_eq!(
+            error.to_string(),
+            "required prompt 'internal-test' not found"
+        );
+    }
+
+    #[test]
+    fn internal_prompts_load_at_runtime_but_stay_hidden_from_discovery() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp.path().join("public.md"),
+            "---\ndescription: public\n---\nPublic.",
+        )
+        .expect("public prompt");
+        std::fs::write(
+            temp.path().join("internal.md"),
+            "---\ndescription: internal\ninternal: true\n---\nInternal.",
+        )
+        .expect("internal prompt");
+
+        let loaded = load_skill_set(&[temp.path().to_path_buf()]).expect("runtime catalog");
+        assert!(loaded.iter().any(|skill| skill.name == "internal"));
+
+        let discovered = super::super::discover_in(&[(
+            crate::skills::SkillScope::GlobalShared,
+            temp.path().to_path_buf(),
+        )])
+        .expect("public discovery");
+        assert_eq!(
+            discovered
+                .iter()
+                .map(|skill| skill.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["public"]
+        );
+    }
+
+    #[test]
+    fn shipped_prompts_all_strictly_render() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let skills =
+            load_skill_set(&[root.join("config/prompts")]).expect("shipped prompt catalog loads");
+
+        let internal_names: BTreeMap<_, _> = skills
+            .iter()
+            .filter(|skill| skill.internal)
+            .map(|skill| (skill.name.as_str(), ()))
+            .collect();
+        for name in [
+            "attention-completion",
+            "attention-planning",
+            "auto-review-envelope",
+            "curriculum-resource",
+            "dispatch-plan-review-gate",
+            "dispatch-plan-work-bootstrap",
+            "dispatch-scout",
+            "dispatch-ship-interactive",
+            "dispatch-ship-unattended",
+            "dispatch-verify-gate",
+            "m365-commitments-query",
+            "m365-commitments-schema",
+            "m365-email-query",
+            "m365-email-schema",
+            "m365-owed-query",
+            "m365-owed-schema",
+            "m365-teams-query",
+            "m365-teams-schema",
+            "meeting-prep-query",
+            "meeting-prep-schema",
+            "meetings-query",
+            "meetings-schema",
+            "pipeline-critic-envelope",
+            "pipeline-investigate-envelope",
+            "pipeline-plan-envelope",
+            "pipeline-sub-investigator",
+            "plan-review-critic",
+            "repo-orchestrator-goal",
+            "review-gate-critic",
+            "specialist-scaffold",
+        ] {
+            assert!(internal_names.contains_key(name), "missing prompt {name}");
+        }
+
+        for skill in skills {
+            let args: Map<String, Value> = skill
+                .arguments
+                .iter()
+                .map(|argument| {
+                    (
+                        argument.name.clone(),
+                        Value::String(format!("test-{}", argument.name)),
+                    )
+                })
+                .collect();
+            let rendered = skill
+                .render_checked(Some(&args))
+                .unwrap_or_else(|error| panic!("render {}: {error}", skill.name));
+            assert!(
+                !rendered.contains("{{"),
+                "{} left an unresolved placeholder",
+                skill.name
+            );
+        }
+    }
+}

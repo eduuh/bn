@@ -1,7 +1,7 @@
 ---
 name: staff-chief-pm
+kind: staff
 on_calendar: "Mon..Fri *-*-* 16:45:00"
-run: "bn run staff-chief-pm"
 network: false
 description: "bn — the Chief of Staff PM shutdown: what moved, what shipped (the folded-in wrap digest), what to defer, and tomorrow's pre-chosen first task as a scheduled daily goal (opt-in; [chief].enabled)"
 gather: "bn staff gather staff-chief-pm"

@@ -567,18 +567,8 @@ pub fn gather_context(
     }
 }
 
-/// The pinned agent prompt (`prompts/quarter-review.md`), baked in at compile time so the review
-/// has a single source of truth and no runtime file dependency. Frontmatter is stripped.
-pub fn pinned_prompt() -> &'static str {
-    const RAW: &str = include_str!("../../../config/prompts/quarter-review.md");
-    match crate::store::split_frontmatter(RAW) {
-        Some((_, body)) => body.trim_start(),
-        None => RAW,
-    }
-}
-
-/// Build the full prompt: the pinned instruction followed by the read-only packet.
-pub fn build_prompt(ctx: &ReviewContext) -> String {
+/// Build the full prompt from the Markdown-defined agent instructions and the read-only packet.
+pub fn build_prompt(instructions: &str, ctx: &ReviewContext) -> String {
     let mut goals = String::new();
     for g in &ctx.goals {
         goals.push_str(&format!("- {}: {}", g.key, g.text));
@@ -619,7 +609,7 @@ pub fn build_prompt(ctx: &ReviewContext) -> String {
         "{prompt}\n\n--- INPUT ---\n## Quarter {q} (window {ws}..{we})\n\n### Goals\n{goals}\n### \
          Previous reviews (for continuity)\n{prev}\n### Tagged work this window\n{tagged}\n### \
          Ground truth (merged PRs, completed goals, achievements)\n{ground}\n--- END INPUT ---\n",
-        prompt = pinned_prompt(),
+        prompt = instructions,
         q = ctx.quarter,
         ws = ctx.window_start,
         we = ctx.window_end,
@@ -814,7 +804,15 @@ pub fn review(
     }
     let qid = q.front.quarter.clone();
     let ctx = gather_context(cfg, &q, today, window_days, runner);
-    let prompt = build_prompt(&ctx);
+    let catalog = crate::agents::discover(cfg, None)
+        .map_err(|error| StoreError::Parse(format!("quarter-review agent: {error}")))?;
+    let agent = catalog
+        .require("quarter-review")
+        .map_err(|error| StoreError::Parse(error.to_string()))?;
+    let instructions = agent
+        .render(None)
+        .map_err(|error| StoreError::Parse(format!("quarter-review agent: {error}")))?;
+    let prompt = build_prompt(&instructions, &ctx);
     let Some(output) = run_agent(runner, harness.unwrap_or("copilot"), &prompt) else {
         return Ok(ReviewOutcome::Skipped {
             reason: "impact agent unavailable or produced no output".to_string(),

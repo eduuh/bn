@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 
 import { Button } from "./ui/button";
@@ -25,6 +25,8 @@ export function SteerButton({
   busy,
   icon: Icon,
   variant = "secondary",
+  required = false,
+  help,
   onSubmit,
 }: {
   label: string;
@@ -33,12 +35,17 @@ export function SteerButton({
   busy?: boolean;
   icon?: LucideIcon;
   variant?: "default" | "secondary" | "outline" | "ghost";
+  required?: boolean;
+  help?: ReactNode;
   onSubmit: (steer: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [steer, setSteer] = useState("");
+  const fieldId = useId();
+  const canSubmit = !required || steer.trim().length > 0;
 
   const fire = () => {
+    if (!canSubmit) return;
     onSubmit(steer.trim());
     setSteer("");
     setOpen(false);
@@ -53,11 +60,11 @@ export function SteerButton({
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-80 space-y-2">
-        <Label htmlFor="steer" className="text-[11px]">
+        <Label htmlFor={fieldId} className="text-[11px]">
           {label} — things to look out for
         </Label>
         <Textarea
-          id="steer"
+          id={fieldId}
           autoFocus
           rows={3}
           value={steer}
@@ -68,7 +75,7 @@ export function SteerButton({
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              fire();
+              if (canSubmit) fire();
             }
           }}
           className="min-h-[64px] text-[12px]"
@@ -77,12 +84,12 @@ export function SteerButton({
           <Button size="sm" variant="ghost" onClick={() => setOpen(false)}>
             Cancel
           </Button>
-          <Button size="sm" disabled={busy} onClick={fire}>
+          <Button size="sm" disabled={busy || !canSubmit} onClick={fire}>
             {label}
           </Button>
         </div>
         <p className="text-[10.5px] leading-snug text-muted-foreground">
-          Leave it empty to run unsteered.
+          {help ?? "Leave it empty to run unsteered."}
         </p>
       </PopoverContent>
     </Popover>

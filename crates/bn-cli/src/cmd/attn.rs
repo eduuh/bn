@@ -667,41 +667,39 @@ pub(crate) fn pipeline_stage_for_task_type(task_type: &str) -> bn_core::pipeline
     }
 }
 
-/// The agent prompt for a started item: context-first (read the branch note — that's why item
-/// prompts can be one-liners), then the item's own prompt, then the ship-and-report instructions.
-/// Code ships as a draft PR whose URL lands on the item (`done --link`), so the needs-you review
-/// is a diff, not prose; and the report is `bn attn done`, never `ack` — the human gate.
-pub(crate) fn agent_prompt(id: &str, prompt: &str) -> String {
-    format!(
-        "First read this branch's note for context — goal, open todos, decisions: run `bn --cat`.\n\n\
-         Task: {prompt}\n\nWhen the work is complete:\n\
-         - If you changed code: commit with a conventional message, push the branch, and open a \
-         DRAFT pull request (`gh pr create --draft`). Then report with:\n  \
-         bn attn done {id} --link <pr-url> --notes \"<one-line summary>\"\n\
-         - Otherwise report with:\n  bn attn done {id} --notes \"<one-line summary>\"\n\
-         Do NOT run `bn attn ack`, and do NOT merge the PR — a human reviews and closes both.",
-    )
+/// Strictly render the worktree execution/completion envelope for an attention item.
+pub(crate) fn agent_prompt(cfg: &Config, base: &std::path::Path, id: &str, prompt: &str) -> String {
+    let mut args = serde_json::Map::new();
+    args.insert("id".into(), serde_json::Value::String(id.to_string()));
+    args.insert(
+        "prompt".into(),
+        serde_json::Value::String(prompt.to_string()),
+    );
+    bn_core::skills::render_required(cfg, base, "attention-completion", Some(&args))
+        .unwrap_or_else(|error| fail(&format!("bn attn start: {error}")))
 }
 
-fn planning_agent_prompt(item: &bn_core::attention::AttnItem) -> String {
+fn planning_agent_prompt(
+    cfg: &Config,
+    base: &std::path::Path,
+    item: &bn_core::attention::AttnItem,
+) -> String {
     let context = item
         .prompt
         .as_deref()
         .filter(|s| !s.is_empty())
         .or(item.detail.as_deref().filter(|s| !s.is_empty()))
         .unwrap_or(&item.title);
-    format!(
-        "You are scoping repo-less attention item {id}: {title}\n\n\
-         Context: {context}\n\n\
-         This is a planning-only scratch session. Investigate enough to identify the owning \
-         repository and a bounded implementation scope; do not edit product code here. Once the \
-         repository is known, hand the task to the real worktree pipeline with:\n\
-         bn attn dispatch {id} --repo <repo>\n\n\
-         The dispatch command queues the implementation and resolves this planning item. If the \
-         repository cannot be determined, leave the item open and report the missing fact.",
-        id = item.id,
-        title = item.title,
-    )
+    let mut args = serde_json::Map::new();
+    for (name, value) in [
+        ("id", item.id.as_str()),
+        ("title", item.title.as_str()),
+        ("context", context),
+    ] {
+        args.insert(name.into(), serde_json::Value::String(value.to_string()));
+    }
+    bn_core::skills::render_required(cfg, base, "attention-planning", Some(&args))
+        .unwrap_or_else(|error| fail(&format!("bn attn start: {error}")))
 }
 
 fn run_repoless_attn_start(
@@ -738,7 +736,7 @@ fn run_repoless_attn_start(
             wt::orchestrator_session(),
             &win,
             &workspace,
-            &planning_agent_prompt(item),
+            &planning_agent_prompt(cfg, &workspace, item),
             wt::AgentLaunchOpts::new(item.mode() == "auto", item.mode() == "auto"),
         );
     Some(StartOutcome {
@@ -821,7 +819,7 @@ pub(crate) fn run_attn_start_attributed(
                 .and_then(|s| s.to_str())
                 .unwrap_or(branch);
             let auto = item.mode() == "auto";
-            let full = agent_prompt(&item.id, prompt);
+            let full = agent_prompt(cfg, &wt_path, &item.id, prompt);
             let harness = wt::review_harness_name(cfg);
             let can_pin_session = wt::harness_supports_session_id(&harness);
             let sid = work_class
@@ -1175,15 +1173,7 @@ pub(crate) fn emit_attn_dispatch(
                 .map(|_| ())
         }
         PromotionAction::StartNew | PromotionAction::Interrupt => {
-            let spec = bn_core::backlog::AddSpec {
-                kind: out.entry.kind,
-                priority: out.entry.priority,
-                touches: out.entry.touches.clone(),
-                substrate: out.entry.substrate,
-                source: out.entry.source.clone(),
-                controller_id: out.entry.controller_id.clone(),
-                task: out.entry.task.clone(),
-            };
+            let spec = bn_core::backlog::AddSpec::from_entry(&out.entry);
             bn_core::backlog::add(&path, &repo, std::slice::from_ref(&out.subject), &spec, now)
                 .map(|_| ())
         }
@@ -1216,5 +1206,4 @@ pub(crate) fn emit_attn_dispatch(
         );
     }
 }
-
 

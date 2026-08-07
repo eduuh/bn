@@ -140,31 +140,11 @@ fn slug(title: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
-/// Build the attention-agent prompt from the findings packet + cron health lines.
-fn build_prompt(today: &str, findings: &str, health: &[String]) -> String {
-    let health_block = if health.is_empty() {
-        "(none)".to_string()
-    } else {
-        health.join("\n")
-    };
-    format!(
-        "You are the bn attention agent. Review what the local automation (cron jobs) has gathered \
-today ({today}) and produce a single ranked attention list for the user to prioritize.\n\n\
-CRON FINDINGS (JSON: sources[].items[] = {{key,text,url}}):\n{findings}\n\n\
-CRON HEALTH (jobs currently failing):\n{health_block}\n\n\
-Output ONLY a JSON array (no prose, no code fence), most-important first, at most 10 items. Each \
-element: {{\"title\": string (one actionable line), \"severity\": \"info\"|\"warn\"|\"urgent\", \
-\"why\": string (one sentence of rationale), \"link\": string (optional url)}}. Merge duplicates, \
-drop noise, and put genuinely time-sensitive or failing-system items first. If there is nothing \
-worth the user's attention, output []."
-    )
-}
-
 /// `attention-agent` — the periodic LLM cron (#): fold recent cron findings + cron health into a
 /// ranked attention list via a headless copilot run, then raise the items (source
 /// `attention-agent`, `replace=true` so a dropped item is auto-acked). Opt-in via
 /// `[attention_agent].enabled`; a clean no-op when off or when there is nothing to review.
-pub(crate) fn job_attention_agent(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
+pub(crate) fn job_attention_agent(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
     use bn_core::clock::Clock;
     if !resolver::JobConfig::load().attention_agent_enabled {
         println!("attention-agent: disabled — set [attention_agent].enabled to opt in");
@@ -183,9 +163,42 @@ pub(crate) fn job_attention_agent(_cfg: &Config, _ctx: Option<&Resolved>) -> i32
         return 0;
     }
 
+    let health_block = if health.is_empty() {
+        "(none)".to_string()
+    } else {
+        health.join("\n")
+    };
+    let catalog = match bn_core::agents::discover(cfg, ctx) {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            eprintln!("attention-agent: {error}");
+            return 1;
+        }
+    };
+    let agent = match catalog.require("attention-agent") {
+        Ok(agent) => agent,
+        Err(error) => {
+            eprintln!("attention-agent: {error}");
+            return 1;
+        }
+    };
+    let mut args = serde_json::Map::new();
+    args.insert("date".into(), serde_json::Value::String(today.clone()));
+    args.insert("findings".into(), serde_json::Value::String(findings));
+    args.insert(
+        "cron_health".into(),
+        serde_json::Value::String(health_block),
+    );
+    let prompt = match agent.render(Some(&args)) {
+        Ok(prompt) => prompt,
+        Err(error) => {
+            eprintln!("attention-agent: {error}");
+            return 1;
+        }
+    };
+
     // Claude is org-disabled in this environment, so copilot is the default headless harness.
     let harness = "copilot";
-    let prompt = build_prompt(&today, &findings, &health);
     let Some(cmd) = crate::cmd::staff::staff_dispatch_command(harness, &prompt, None, None) else {
         eprintln!("attention-agent: unknown harness '{harness}'");
         return 1;
@@ -236,5 +249,3 @@ pub(crate) fn job_attention_agent(_cfg: &Config, _ctx: Option<&Resolved>) -> i32
         }
     }
 }
-
-

@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, ArrowLeft, Loader2, Pencil, Plus, Save, X } from "lucide-react";
 import { FetchError, queryKeys, taskQuery } from "../api/client";
 import type { TaskAgent, TaskDetailView } from "../api/types";
 import { ApiError, appendTaskDoc, editTaskDoc } from "../api/writes";
-import { pushToast } from "../lib/toast";
+import { useAppMutation } from "../hooks/useAppMutation";
 import { PageHead } from "../components/PageHead";
 import MarkdownBody from "../components/MarkdownBody";
 import { ToastStack } from "../components/ToastStack";
@@ -49,45 +49,38 @@ function AgentLine({ agent }: { agent: TaskAgent }) {
  * box and the version that landed is shown, so nothing a session typed is ever silently discarded.
  */
 function DocEditor({ taskId, doc }: { taskId: string; doc: NonNullable<TaskDetailView["doc"]> }) {
-  const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(doc.body);
   const [context, setContext] = useState("");
   const [conflict, setConflict] = useState(false);
-  const refetch = () => void qc.invalidateQueries({ queryKey: queryKeys.task(taskId) });
+  const docKey = [queryKeys.task(taskId)];
 
-  const append = useMutation({
-    mutationFn: (text: string) => appendTaskDoc(taskId, text),
-    onSuccess: () => {
-      pushToast("Added to Investigation", "success");
-      setContext("");
-      refetch();
-    },
-    onError: (e) => pushToast(`Could not add context: ${e.message}`, "error"),
+  const append = useAppMutation<unknown, string>({
+    mutationFn: (text) => appendTaskDoc(taskId, text),
+    invalidates: docKey,
+    toast: { success: "Added to Investigation", error: "Could not add context" },
+    onSuccess: () => setContext(""),
   });
 
-  const save = useMutation({
+  const isConflict = (e: Error) => e instanceof ApiError && e.code === "doc_conflict";
+
+  const save = useAppMutation({
     mutationFn: () => editTaskDoc(taskId, draft, doc.version),
+    invalidates: docKey,
+    toast: {
+      success: "Saved task.md",
+      // A lost race is not something to report and forget: the operator's text is kept, and the
+      // reconcile on settle pulls the version that landed so they can merge and save again.
+      error: (e) =>
+        isConflict(e)
+          ? "Someone else saved first — your text is kept; the latest is shown below"
+          : `Could not save: ${e.message}`,
+    },
     onSuccess: () => {
-      pushToast("Saved task.md", "success");
       setConflict(false);
       setEditing(false);
-      refetch();
     },
-    onError: (e) => {
-      // A lost race is not something to report and forget: keep the operator's text, pull the
-      // version that landed, and show it so they can reconcile and save again.
-      if (e instanceof ApiError && e.code === "doc_conflict") {
-        pushToast(
-          "Someone else saved first — your text is kept; the latest is shown below",
-          "error",
-        );
-        setConflict(true);
-        refetch();
-      } else {
-        pushToast(`Could not save: ${e.message}`, "error");
-      }
-    },
+    onError: (e) => setConflict(isConflict(e)),
   });
 
   if (editing) {

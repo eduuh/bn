@@ -454,6 +454,7 @@ pub(super) fn orchestrate_decompose(
                 &child.title,
                 &source,
             ),
+            ..Default::default()
         };
         if let Err(error) = backlog::add(&path, &repo, &[child.number.to_string()], &spec, now) {
             return fail("backlog-write", error.to_string());

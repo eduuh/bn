@@ -259,46 +259,29 @@ pub fn mark_stopped(now: i64) -> std::io::Result<bool> {
     Ok(true)
 }
 
-/// The built-in seed, used when no `today-agent` agent file is discoverable. Kept in sync with
-/// `config/agents/today-agent.md` so behaviour degrades rather than disappears.
-fn default_seed(date: &str, packet: &str) -> String {
-    format!(
-        "You are bn's Today agent for {date}. You own the *day*: you keep the plan honest and you \
-route work — you do NOT implement. ABSOLUTE RULES: do not edit, create, or delete code; do not \
-commit, push, or open PRs yourself — dispatch a worker instead. Use ONLY documented `bn` \
-subcommands; if unsure a flag exists, run `bn <command> --help` first. \
-START: run `bn daily` for today's goals and `bn today list` for the open suggestions, then read \
-the findings packet below. \
-LOOP: reconcile the packet against the day's goals; accept what is worth doing (`bn today accept \
-<id>`), dismiss the noise (`bn today dismiss <id>`), and dispatch the accepted work with `bn \
-dispatch \"<task>\" --repo <repo> --agent copilot --yolo` (add `--scout` to investigate first). \
-One suggestion → one worker → one branch. \
-MONITOR: `bn fleet` is the live board; nudge a worker with `bn agent send <target> \"<message>\" \
---detach`. Workers report done themselves — never re-dispatch a finished one. \
-REPORT: after each pass, a few scannable lines — what you started, what is running, and what needs \
-a decision from the user. Then wait; the user steers you from the Today page. \
-\n\nTODAY'S FINDINGS PACKET (JSON: sources[].items[] = {{key,text,url}}):\n{packet}"
-    )
-}
-
 /// The seed prompt Today's agent launches with: the operating brief from the `today-agent` agent
-/// file (`config/agents/today-agent.md`), with `{date}` and `{packet}` substituted, falling back to
-/// [`default_seed`] when no agent file is discoverable.
+/// file (`config/agents/today-agent.md`), rendered with the supplied date and packet.
 ///
 /// The packet is [`gather_packet_json`] — the same deterministic gather the offline fold has always
 /// done. The agent therefore starts already knowing what the crons found, instead of spending its
 /// first turns rediscovering it.
-pub fn build_seed(cfg: &Config, ctx: Option<&Resolved>, date: &str, packet: &str) -> String {
-    if let Some(def) = crate::agents::discover(cfg, ctx)
-        .into_iter()
-        .find(|a| a.name == "today-agent")
-    {
-        let body = def.body.trim();
-        if !body.is_empty() {
-            return body.replace("{date}", date).replace("{packet}", packet);
-        }
-    }
-    default_seed(date, packet)
+pub fn build_seed(
+    cfg: &Config,
+    ctx: Option<&Resolved>,
+    date: &str,
+    packet: &str,
+) -> Result<String, String> {
+    let catalog = crate::agents::discover(cfg, ctx).map_err(|error| error.to_string())?;
+    let def = catalog
+        .require("today-agent")
+        .map_err(|error| error.to_string())?;
+    let mut args = serde_json::Map::new();
+    args.insert("date".into(), serde_json::Value::String(date.to_string()));
+    args.insert(
+        "packet".into(),
+        serde_json::Value::String(packet.to_string()),
+    );
+    def.render(Some(&args)).map_err(|error| error.to_string())
 }
 
 /// The whole truth about Today's agent, as both `bn today agent status` and

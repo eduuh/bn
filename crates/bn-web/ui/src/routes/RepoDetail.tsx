@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -14,8 +14,10 @@ import {
   Rocket,
   Users,
 } from "lucide-react";
-import { actionsQuery, fleetQuery, queryKeys, reposQuery, repoIssuesQuery } from "../api/client";
+import { actionsQuery, fleetQuery, reposQuery, repoIssuesQuery } from "../api/client";
 import { startRepoOrchestrator } from "../api/writes";
+import { useAppMutation } from "../hooks/useAppMutation";
+import { affects } from "../lib/invalidation";
 import type { ActionItem, LiveAgent, RepoIssue, RepoPool, RepoSession } from "../api/types";
 import { useNow } from "../hooks/useNow";
 import { timeAgo, fmtTokens, fmtAic, fmtUsd } from "../lib/format";
@@ -28,7 +30,6 @@ import {
   sessionTone,
   sessionStatusLabel,
 } from "../lib/repos";
-import { pushToast } from "../lib/toast";
 import { CopyButton } from "../components/CopyButton";
 import { StartAgentComposer } from "../components/StartAgentComposer";
 import { toneVariant } from "../lib/tone";
@@ -196,18 +197,13 @@ function issueAction(repo: string, i: RepoIssue): ActionItem {
  * to spin one up. The server rejects a duplicate with a `409`, surfaced as a toast.
  */
 function OrchestratorPanel({ repo, agents }: { repo: string; agents: LiveAgent[] }) {
-  const qc = useQueryClient();
   const running = agents.find(
     (a) => a.repo.toLowerCase() === repo.toLowerCase() && a.role === "orchestrator",
   );
-  const start = useMutation({
+  const start = useAppMutation({
     mutationFn: () => startRepoOrchestrator(repo),
-    onSuccess: () => {
-      pushToast(`Starting an orchestrator for ${repo}…`, "success");
-      void qc.invalidateQueries({ queryKey: queryKeys.fleet });
-      void qc.invalidateQueries({ queryKey: queryKeys.orchestrate });
-    },
-    onError: (e) => pushToast(e instanceof Error ? e.message : "could not start", "error"),
+    invalidates: affects.agentLaunch,
+    toast: { success: `Starting an orchestrator for ${repo}…`, error: "Could not start" },
   });
 
   return (

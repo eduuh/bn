@@ -1,13 +1,20 @@
-// The backlog page's write layer: one react-query mutation per endpoint, each applying the design
-// §4 optimistic rule — patch the `['orchestrate']` cache locally at once, then let the next SSE
-// `orchestrate` frame (or the `onSettled` refetch) reconcile, rolling back on error. Every write
-// reports success / failure through the toast `push`.
+// The backlog page's write layer. Each endpoint is one `useAppMutation`, so these writes now get
+// the same lifecycle as every other button in the dashboard: patch `['orchestrate']` locally at
+// once, let the next SSE `orchestrate` frame (or the reconcile on settle) confirm it, roll back on
+// error, and report through the shared toast store.
+//
+// This file used to hand-roll that lifecycle, and its rollback silently never fired: it decided
+// "is this still my write?" by comparing object identity, but `setQueryData` runs values through
+// react-query's structural sharing and stores a rebuilt object, so the comparison was always false.
+// `useAppMutation` claims its writes by timestamp instead — see the note in that file.
 
 import { useRef } from "react";
-import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { queryKeys } from "../api/client";
 import type { OrchestrateView } from "../api/types";
 import { applyQueuedOrder, optimisticItem, patchRun, recount } from "../lib/backlog";
+import { useAppMutation, optimistic } from "./useAppMutation";
+import { affects } from "../lib/invalidation";
 import {
   apiDispatch,
   apiQueueAdd,
@@ -17,19 +24,23 @@ import {
   apiStart,
   apiStop,
 } from "../api/writes";
-import type { ToastKind } from "./useToasts";
-
-type Push = (kind: ToastKind, text: string) => void;
-interface Ctx {
-  prev?: OrchestrateView;
-  optimistic?: OrchestrateView;
-}
 
 /** Resolve the run an unscoped write targets: the explicit repo, else the sole live run's repo. */
 function soleRepo(qc: QueryClient, explicit?: string): string | undefined {
   if (explicit) return explicit;
   const runs = qc.getQueryData<OrchestrateView>(queryKeys.orchestrate)?.runs ?? [];
   return runs.length === 1 ? runs[0].repo : undefined;
+}
+
+/** Patch one run inside `['orchestrate']`, resolving the target repo from the write's vars. */
+function patchRunOf<TVars>(
+  repoOf: (vars: TVars) => string | undefined,
+  edit: (run: OrchestrateView["runs"][number], vars: TVars) => OrchestrateView["runs"][number],
+) {
+  return optimistic<OrchestrateView, TVars>(queryKeys.orchestrate, (view, vars) => {
+    const repo = repoOf(vars);
+    return repo ? patchRun(view, repo, (run) => edit(run, vars)) : view;
+  });
 }
 
 export interface BacklogActions {
@@ -43,132 +54,87 @@ export interface BacklogActions {
   pending: Record<"add" | "remove" | "reorder" | "scale" | "stop" | "start" | "dispatch", boolean>;
 }
 
-export function useBacklogActions(push: Push): BacklogActions {
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+export function useBacklogActions(): BacklogActions {
   const qc = useQueryClient();
   // Monotonic sequence for optimistic tmp-item ids so a same-second re-add can't collide.
   const seq = useRef(0);
 
-  const fail = (e: unknown, fallback: string) => {
-    push("error", e instanceof Error ? e.message : fallback);
-  };
-
-  /** Snapshot + patch `['orchestrate']` for an optimistic mutation; returns the rollback context. */
-  const beginPatch = async (patch: (v: OrchestrateView) => OrchestrateView): Promise<Ctx> => {
-    await qc.cancelQueries({ queryKey: queryKeys.orchestrate });
-    const prev = qc.getQueryData<OrchestrateView>(queryKeys.orchestrate);
-    let optimistic: OrchestrateView | undefined;
-    if (prev) {
-      optimistic = patch(prev);
-      qc.setQueryData<OrchestrateView>(queryKeys.orchestrate, optimistic);
-    }
-    return { prev, optimistic };
-  };
-  const rollback = (ctx?: Ctx) => {
-    if (!ctx?.prev) return;
-    // Only revert if our optimistic value is still the one in the cache; a newer SSE frame or a
-    // later mutation is fresher truth and must not be clobbered back to the pre-mutation snapshot.
-    if (qc.getQueryData<OrchestrateView>(queryKeys.orchestrate) === ctx.optimistic) {
-      qc.setQueryData(queryKeys.orchestrate, ctx.prev);
-    }
-  };
-  const reconcile = () => {
-    void qc.invalidateQueries({ queryKey: queryKeys.orchestrate });
-  };
-
-  const add = useMutation<unknown, unknown, { repo?: string; items: string[] }, Ctx>({
+  const add = useAppMutation<unknown, { repo?: string; items: string[] }>({
     mutationFn: (v) => apiQueueAdd(v),
-    onMutate: (v) => {
-      const repo = soleRepo(qc, v.repo);
-      if (!repo) return {};
-      const now = Math.floor(Date.now() / 1000);
-      return beginPatch((view) =>
-        patchRun(view, repo, (run) =>
-          recount({
-            ...run,
-            queue: [...run.queue, ...v.items.map((it) => optimisticItem(it, seq.current++, now))],
-          }),
-        ),
-      );
+    optimistic: patchRunOf(
+      (v) => soleRepo(qc, v.repo),
+      (run, v) => {
+        const now = Math.floor(Date.now() / 1000);
+        return recount({
+          ...run,
+          queue: [...run.queue, ...v.items.map((it) => optimisticItem(it, seq.current++, now))],
+        });
+      },
+    ),
+    invalidates: affects.backlog,
+    toast: {
+      success: (_d, v) => `Queued ${plural(v.items.length, "item")}`,
+      error: "Could not queue items",
     },
-    onError: (e, _v, ctx) => {
-      rollback(ctx);
-      fail(e, "could not queue items");
-    },
-    onSuccess: (_d, v) =>
-      push("ok", `Queued ${v.items.length} item${v.items.length === 1 ? "" : "s"}`),
-    onSettled: reconcile,
   });
 
-  const remove = useMutation<unknown, unknown, { repo: string; id: string }, Ctx>({
+  const remove = useAppMutation<unknown, { repo: string; id: string }>({
     mutationFn: (v) => apiQueueRemove(v.id, v.repo),
-    onMutate: (v) =>
-      beginPatch((view) =>
-        patchRun(view, v.repo, (run) =>
-          recount({ ...run, queue: run.queue.filter((i) => i.id !== v.id) }),
-        ),
-      ),
-    onError: (e, _v, ctx) => {
-      rollback(ctx);
-      fail(e, "could not remove item");
-    },
-    onSuccess: () => push("ok", "Removed queued item"),
-    onSettled: reconcile,
+    optimistic: patchRunOf(
+      (v) => v.repo,
+      (run, v) => recount({ ...run, queue: run.queue.filter((i) => i.id !== v.id) }),
+    ),
+    invalidates: affects.backlog,
+    toast: { success: "Removed queued item", error: "Could not remove item" },
   });
 
-  const reorder = useMutation<unknown, unknown, { repo: string; ids: string[] }, Ctx>({
+  const reorder = useAppMutation<unknown, { repo: string; ids: string[] }>({
     mutationFn: (v) => apiQueueReorder(v),
-    onMutate: (v) =>
-      beginPatch((view) =>
-        patchRun(view, v.repo, (run) => ({ ...run, queue: applyQueuedOrder(run.queue, v.ids) })),
-      ),
-    onError: (e, _v, ctx) => {
-      rollback(ctx);
-      fail(e, "could not reorder queue");
-    },
-    onSettled: reconcile,
+    optimistic: patchRunOf(
+      (v) => v.repo,
+      (run, v) => ({ ...run, queue: applyQueuedOrder(run.queue, v.ids) }),
+    ),
+    invalidates: affects.backlog,
+    toast: { error: "Could not reorder queue" },
   });
 
-  const scale = useMutation<unknown, unknown, { repo: string; concurrency: number }, Ctx>({
+  const scale = useAppMutation<unknown, { repo: string; concurrency: number }>({
     mutationFn: (v) => apiScale(v),
-    onMutate: (v) =>
-      beginPatch((view) =>
-        patchRun(view, v.repo, (run) => ({ ...run, concurrency: v.concurrency })),
-      ),
-    onError: (e, _v, ctx) => {
-      rollback(ctx);
-      fail(e, "could not scale");
+    optimistic: patchRunOf(
+      (v) => v.repo,
+      (run, v) => ({ ...run, concurrency: v.concurrency }),
+    ),
+    invalidates: affects.backlog,
+    toast: {
+      success: (_d, v) => `Concurrency → ${v.concurrency}`,
+      error: "Could not scale",
     },
-    onSuccess: (_d, v) => push("ok", `Concurrency → ${v.concurrency}`),
-    onSettled: reconcile,
   });
 
-  const stop = useMutation<unknown, unknown, { repo: string }, Ctx>({
+  const stop = useAppMutation<unknown, { repo: string }>({
     mutationFn: (v) => apiStop(v),
-    onMutate: (v) =>
-      beginPatch((view) => patchRun(view, v.repo, (run) => ({ ...run, stopped: true }))),
-    onError: (e, _v, ctx) => {
-      rollback(ctx);
-      fail(e, "could not stop the daemon");
-    },
-    onSuccess: () => push("ok", "Stopping the daemon"),
-    onSettled: reconcile,
+    optimistic: patchRunOf(
+      (v) => v.repo,
+      (run) => ({ ...run, stopped: true }),
+    ),
+    invalidates: affects.backlog,
+    toast: { success: "Stopping the daemon", error: "Could not stop the daemon" },
   });
 
-  const start = useMutation<
-    unknown,
-    unknown,
-    { repo?: string; items: string[]; concurrency?: number }
-  >({
+  // Starting a run mints the run itself, so there is nothing in the cache to patch yet.
+  const start = useAppMutation<unknown, { repo?: string; items: string[]; concurrency?: number }>({
     mutationFn: (v) => apiStart(v),
-    onError: (e) => fail(e, "could not start the daemon"),
-    onSuccess: (_d, v) =>
-      push("ok", `Started a run with ${v.items.length} item${v.items.length === 1 ? "" : "s"}`),
-    onSettled: reconcile,
+    invalidates: affects.backlog,
+    toast: {
+      success: (_d, v) => `Started a run with ${plural(v.items.length, "item")}`,
+      error: "Could not start the daemon",
+    },
   });
 
-  const dispatch = useMutation<
+  const dispatch = useAppMutation<
     number,
-    unknown,
     { repo: string; items: string[]; harness: string; kind: string }
   >({
     mutationFn: async (v) => {
@@ -183,8 +149,8 @@ export function useBacklogActions(push: Push): BacklogActions {
       }
       return v.items.length;
     },
-    onError: (e) => fail(e, "could not dispatch"),
-    onSuccess: (n) => push("ok", `Dispatched ${n} agent${n === 1 ? "" : "s"}`),
+    invalidates: affects.agentLaunch,
+    toast: { success: (n) => `Dispatched ${plural(n, "agent")}`, error: "Could not dispatch" },
   });
 
   return {

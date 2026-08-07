@@ -390,65 +390,19 @@ fn run_tick(now: i64, json: bool, label: &str) -> i32 {
 
 // ---------------------------------------------------------------------------------------------
 // `bn routine watch` — a foreground, deadline-driven reconciliation loop (#801 amendment
-// invariant 5). Sleeps in short bounded chunks (checking the stop flag between each) rather than
-// one long `sleep`, so SIGTERM/Ctrl-C is responsive; always re-fetches wall-clock `now` before
-// each pass, so suspend/resume and clock jumps are handled by simply re-evaluating from scratch
-// rather than tracking elapsed time.
+// invariant 5). The shared event loop wakes it for schedule-state/config changes, its next
+// deadline, or SIGTERM/Ctrl-C. Each pass re-fetches wall-clock `now`, so suspend/resume and clock
+// jumps are handled by re-evaluating from scratch rather than tracking elapsed time.
 // ---------------------------------------------------------------------------------------------
 
-#[cfg(unix)]
-static STOP_WATCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-#[cfg(unix)]
-extern "C" fn handle_stop_signal(_sig: i32) {
-    STOP_WATCH.store(true, std::sync::atomic::Ordering::SeqCst);
-}
-
-/// Install SIGTERM/SIGINT handlers via a raw `signal(2)` call (no extra crate dependency — same
-/// raw-syscall approach `serve.rs` uses for `setsid`), so `bn routine watch` exits cleanly instead
-/// of being killed mid-transaction.
-#[cfg(unix)]
-#[allow(
-    unsafe_code,
-    reason = "installing process signal handlers requires the Unix signal FFI"
-)]
-fn install_stop_signal_handlers() {
-    extern "C" {
-        fn signal(signum: i32, handler: usize) -> usize;
-    }
-    const SIGINT: i32 = 2;
-    const SIGTERM: i32 = 15;
-    // SAFETY: the handler has C ABI, touches only an atomic, and remains valid for process lifetime.
-    unsafe {
-        signal(SIGINT, handle_stop_signal as *const () as usize);
-        signal(SIGTERM, handle_stop_signal as *const () as usize);
-    }
-}
-#[cfg(not(unix))]
-fn install_stop_signal_handlers() {}
-
-#[cfg(unix)]
-fn stop_requested() -> bool {
-    STOP_WATCH.load(std::sync::atomic::Ordering::SeqCst)
-}
-#[cfg(not(unix))]
-fn stop_requested() -> bool {
-    false
-}
-
-/// Sleep up to `total_secs`, checking the stop flag every 5s so a SIGTERM/Ctrl-C during a long
-/// sleep is honored promptly instead of only at the next wake.
-fn sleep_in_chunks(total_secs: i64) {
-    let mut remaining = total_secs.max(1);
-    while remaining > 0 && !stop_requested() {
-        let chunk = remaining.min(5);
-        std::thread::sleep(std::time::Duration::from_secs(chunk.max(1) as u64));
-        remaining -= chunk;
-    }
-}
-
 fn run_watch(json: bool) -> ! {
-    install_stop_signal_handlers();
+    let mut reactor = crate::event_loop::EventLoop::new(
+        "bn routine watch",
+        vec![
+            crate::event_loop::Watch::file(bn_core::resolver::config_file_path()),
+            crate::event_loop::Watch::file(bn_core::events::log_path()),
+        ],
+    );
     let pid = std::process::id();
     let start = now_epoch();
     if let Err(e) = routine::record_watcher_start(start, pid) {
@@ -460,18 +414,23 @@ fn run_watch(json: bool) -> ! {
         );
     }
 
-    while !stop_requested() {
+    loop {
         let now = now_epoch();
-        match routine::watch_pass(now) {
+        let sleep_secs = match routine::watch_pass(now) {
             Ok(pass) => {
                 render_tick(&pass.tick, json, "routine-watch");
                 let _ = routine::record_watcher_heartbeat(now_epoch(), pid);
-                sleep_in_chunks(pass.sleep_secs);
+                pass.sleep_secs
             }
             Err(e) => {
                 eprintln!("bn routine watch: {e}");
-                sleep_in_chunks(5);
+                5
             }
+        };
+        if reactor.wait(std::time::Duration::from_secs(sleep_secs.max(1) as u64))
+            == crate::event_loop::LoopEvent::Shutdown
+        {
+            break;
         }
     }
 
@@ -612,5 +571,4 @@ pub(crate) fn job_routine_tick(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
 pub(crate) fn job_routine_notify(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
     job_routine_tick(cfg, ctx)
 }
-
 

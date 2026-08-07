@@ -12,7 +12,7 @@
 //!
 //! Everything the agent needs to be *configurable* — an editable prompt, a selectable model /
 //! harness, a daily cron cadence, and on-demand runs via `POST /api/cron/run` — comes for free from
-//! the staff roster ([`crate::staff`]); the roster entry ships in `config/agents/standup.md`.
+//! the Markdown agent catalog; the manifest ships in `config/agents/standup.md`.
 //!
 //! Like the Goals-Alignment agent, the packet build is split so the fold is testable in isolation:
 //! [`build_packet`] is a pure function over already-read viewmodels, and [`gather_packet_json`]

@@ -1,13 +1,15 @@
 import { Link } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, ExternalLink, Flame, Minus, Plus } from "lucide-react";
-import { queryKeys, reposQuery } from "../api/client";
+import { reposQuery } from "../api/client";
 import { setRepoPool, warmRepoPool } from "../api/writes";
 import { MAX_POOL_SIZE, MIN_POOL_SIZE, type RepoPool, type RepoRollup } from "../api/types";
+import { useAppMutation } from "../hooks/useAppMutation";
+import { affects } from "../lib/invalidation";
+import { setRepoPoolSize } from "../lib/optimistic";
 import { useNow } from "../hooks/useNow";
 import { timeAgo, fmtAic } from "../lib/format";
 import { forgeLinks } from "../lib/repos";
-import { pushToast } from "../lib/toast";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -42,16 +44,12 @@ function Tag({
  * the refreshed slot counts appear. Lives inside the card `<Link>`, so the click is stopped from
  * bubbling into a navigation. */
 function WarmButton({ repo }: { repo: string }) {
-  const qc = useQueryClient();
-  const mut = useMutation({
+  // Warming runs detached — the slot counts only move when the server has actually built them, so
+  // there is nothing to patch. The pending label plus the reconcile on settle is the honest story.
+  const mut = useAppMutation({
     mutationFn: () => warmRepoPool(repo),
-    onSuccess: (r) => {
-      pushToast(r.message ?? `Warming ${repo}`, "success");
-      void qc.invalidateQueries({ queryKey: queryKeys.repos });
-    },
-    onError: (e) => {
-      pushToast(`warm ${repo} failed: ${e.message}`, "error");
-    },
+    invalidates: affects.repos,
+    toast: { success: (r) => r.message ?? `Warming ${repo}`, error: `warm ${repo} failed` },
   });
   return (
     <Button
@@ -79,14 +77,11 @@ function WarmButton({ repo }: { repo: string }) {
  * keeps them warm from then on. Sits inside the card `<Link>`, so clicks are stopped from bubbling
  * into a navigation, same as the warm button. */
 function PoolSizeControl({ repo, pool }: { repo: string; pool: RepoPool }) {
-  const qc = useQueryClient();
-  const mut = useMutation({
-    mutationFn: (size: number | null) => setRepoPool(repo, size),
-    onSuccess: (r) => {
-      pushToast(r.message, "success");
-      void qc.invalidateQueries({ queryKey: queryKeys.repos });
-    },
-    onError: (e) => pushToast(`${repo}: ${e.message}`, "error"),
+  const mut = useAppMutation<{ message: string }, number | null>({
+    mutationFn: (size) => setRepoPool(repo, size),
+    optimistic: setRepoPoolSize<number | null>(repo, (size) => size),
+    invalidates: affects.repos,
+    toast: { success: (r) => r.message, error: repo },
   });
   const stop = (e: React.MouseEvent) => {
     e.preventDefault();

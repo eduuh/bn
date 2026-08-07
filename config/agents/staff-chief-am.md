@@ -1,7 +1,7 @@
 ---
 name: staff-chief-am
+kind: staff
 on_calendar: "Mon..Fri *-*-* 05:30:00"
-run: "bn run staff-chief-am"
 network: false
 description: "bn — the Chief of Staff AM brief: synthesize the night shift, next actions, calendar, quarter, inbox, and the standup line into the one morning card + a review goal per night PR (opt-in; [chief].enabled)"
 gather: "bn staff gather staff-chief-am"

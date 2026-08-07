@@ -174,10 +174,11 @@ jobs:
       - name: Build UI (tsc + vite)
         run: npm run build
 
-  # Repo-wide structural gates that need no toolchain at all — seconds, not minutes. Kept separate
-  # from `test` so "you made a file bigger" never hides behind a clippy failure, and vice versa.
+  # Repo-wide structural gates that need no installed Rust toolchain — seconds, not minutes. Kept
+  # separate from `test` so "you made a file bigger" never hides behind a clippy failure, and vice
+  # versa.
   gates:
-    name: gates · file size
+    name: gates · structure
     runs-on: ${{ fromJSON(vars.CI_RUNNER || '["self-hosted","bn-ci"]') }}
     steps:
       - uses: actions/checkout@v4
@@ -190,3 +191,9 @@ jobs:
       # The 1000-line never-grow ratchet. Rules and the grandfathered list: .file-size-baseline
       - name: File-size ratchet
         run: sh scripts/check-file-size.sh
+
+      - name: Prompt-source ownership
+        run: sh scripts/check-prompt-sources.sh
+
+      - name: Installer toolchain discovery
+        run: bash scripts/check-install-toolchain.sh

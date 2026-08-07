@@ -5,10 +5,17 @@
 //! [`crate::resolver::job_dirs`] / [`list_jobs`].
 
 use crate::resolver::{self, Config};
-use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+
+mod catalog;
+
+pub use crate::template::ArgumentDef as SkillArgDef;
+pub use catalog::{
+    load_skill, load_skill_set, parse_skill, render_required, RuntimeSkillError, Skill,
+    SkillCatalogError, SkillParseError,
+};
 
 const MANAGED_MARKER_PREFIX: &str = "<!-- bn-managed-skill: ";
 
@@ -251,23 +258,26 @@ pub fn global_skill_dirs() -> Vec<PathBuf> {
 /// Every skill across all tiers for `base_dir`, sorted by name then ascending scope rank.
 /// `effective` marks the highest-precedence definition per name (what bn-mcp serves); the
 /// others are shadowed.
-pub fn discover(cfg: &Config, base_dir: &Path) -> Vec<SkillInfo> {
+pub fn discover(cfg: &Config, base_dir: &Path) -> Result<Vec<SkillInfo>, SkillCatalogError> {
     discover_in(&skill_dirs(cfg, base_dir))
 }
 
 /// Pure core of [`discover`] over an explicit tier list, so the precedence/effective rules
 /// are unit-testable without touching env vars or a real repo.
-fn discover_in(tiers: &[(SkillScope, PathBuf)]) -> Vec<SkillInfo> {
+fn discover_in(tiers: &[(SkillScope, PathBuf)]) -> Result<Vec<SkillInfo>, SkillCatalogError> {
     let mut found: Vec<SkillInfo> = Vec::new();
     for (scope, dir) in tiers {
-        for (skill, path) in load_skill_files(dir) {
+        for (skill, path) in catalog::load_skill_files(dir)? {
+            if skill.internal {
+                continue;
+            }
             found.push(SkillInfo {
                 name: skill.name,
                 description: skill.description,
                 when: skill.when,
                 keywords: skill.keywords,
                 scope: *scope,
-                path,
+                path: path.display().to_string(),
                 effective: false,
                 score: None,
             });
@@ -291,7 +301,7 @@ fn discover_in(tiers: &[(SkillScope, PathBuf)]) -> Vec<SkillInfo> {
             .cmp(&b.name)
             .then(a.scope.rank().cmp(&b.scope.rank()))
     });
-    found
+    Ok(found)
 }
 
 /// Rank the *effective* skills in `infos` by lexical relevance to `query`, highest first
@@ -358,156 +368,6 @@ fn score_skill(s: &SkillInfo, terms: &[String]) -> u32 {
         }
     }
     score
-}
-
-// ---- Full skill load + render -------------------------------------------------------------
-// The renderable engine shared by `bn skills render` (CLI) and the bn-mcp prompt server. Kept
-// rmcp-free: bn-mcp maps [`SkillArgDef`] onto its own `PromptArgument` in a thin adapter.
-
-/// A fully parsed skill: frontmatter metadata plus the renderable markdown body.
-#[derive(Debug, Clone)]
-pub struct Skill {
-    pub name: String,
-    pub description: String,
-    /// Optional one-line trigger ("when to use this"); appended to the served prompt description.
-    pub when: Option<String>,
-    /// Optional match terms for relevance ranking (`rank`).
-    pub keywords: Vec<String>,
-    pub arguments: Vec<SkillArgDef>,
-    pub body: String,
-}
-
-/// A declared skill argument (fills a `{{name}}` placeholder).
-#[derive(Debug, Clone)]
-pub struct SkillArgDef {
-    pub name: String,
-    pub description: Option<String>,
-    pub required: bool,
-}
-
-#[derive(Deserialize)]
-struct SkillFront {
-    name: Option<String>,
-    description: String,
-    #[serde(default)]
-    when: Option<String>,
-    #[serde(default)]
-    keywords: Vec<String>,
-    #[serde(default)]
-    arguments: Vec<SkillArgFront>,
-}
-
-#[derive(Deserialize)]
-struct SkillArgFront {
-    name: String,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    required: bool,
-}
-
-impl Skill {
-    /// The body with `{{name}}` placeholders substituted from `args`: a provided arg is filled at
-    /// every occurrence, an unfilled placeholder is left blank.
-    pub fn render(&self, args: Option<&Map<String, Value>>) -> String {
-        let mut out = self.body.clone();
-        for arg in &self.arguments {
-            let value = args
-                .and_then(|m| m.get(&arg.name))
-                .map(value_to_string)
-                .unwrap_or_default();
-            out = out.replace(&format!("{{{{{}}}}}", arg.name), &value);
-        }
-        out
-    }
-}
-
-fn value_to_string(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        other => other.to_string(),
-    }
-}
-
-/// Split `---\n<yaml>\n---\n<body>` into a [`Skill`]; `None` when the frontmatter is absent or
-/// invalid (e.g. missing the required `description`). `name` falls back to the file stem.
-pub fn parse_skill(text: &str, stem: &str) -> Option<Skill> {
-    let (yaml, body) = crate::store::split_frontmatter(text)?;
-    let body = body.to_string();
-    let front: SkillFront = serde_yaml::from_str(yaml).ok()?;
-    let arguments = front
-        .arguments
-        .into_iter()
-        .map(|a| SkillArgDef {
-            name: a.name,
-            description: a.description,
-            required: a.required,
-        })
-        .collect();
-    Some(Skill {
-        name: front.name.unwrap_or_else(|| stem.to_string()),
-        description: front.description,
-        when: front.when,
-        keywords: front.keywords,
-        arguments,
-        body,
-    })
-}
-
-/// Parse every `*.md` skill in `dir`, each paired with its file path. Missing dir → empty; an
-/// unparseable file is skipped.
-fn load_skill_files(dir: &Path) -> Vec<(Skill, String)> {
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("md") {
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("skill");
-        if let Some(skill) = parse_skill(&text, stem) {
-            out.push((skill, path.display().to_string()));
-        }
-    }
-    out
-}
-
-/// Merge skills from `dirs` low→high precedence (a later dir overrides an earlier same-named
-/// skill), sorted by name — the effective set bn-mcp serves and `render` resolves against.
-pub fn load_skill_set(dirs: &[PathBuf]) -> Vec<Skill> {
-    merge_skills(dirs.iter().map(|d| {
-        load_skill_files(d)
-            .into_iter()
-            .map(|(s, _)| s)
-            .collect::<Vec<_>>()
-    }))
-}
-
-/// Merge skill lists by `name`, later lists overriding earlier ones. Pure (no IO) so the
-/// precedence rule is unit-testable.
-fn merge_skills(sets: impl IntoIterator<Item = Vec<Skill>>) -> Vec<Skill> {
-    let mut by_name: BTreeMap<String, Skill> = BTreeMap::new();
-    for set in sets {
-        for skill in set {
-            by_name.insert(skill.name.clone(), skill);
-        }
-    }
-    by_name.into_values().collect()
-}
-
-/// The effective (highest-precedence) skill named `name` for `base_dir`, fully parsed and ready
-/// to [`Skill::render`]. `None` if no tier defines it.
-pub fn load_skill(cfg: &Config, base_dir: &Path, name: &str) -> Option<Skill> {
-    let dirs: Vec<PathBuf> = skill_dirs(cfg, base_dir)
-        .into_iter()
-        .map(|(_, d)| d)
-        .collect();
-    load_skill_set(&dirs).into_iter().find(|s| s.name == name)
 }
 
 trait HarnessTarget {
@@ -634,7 +494,11 @@ pub fn install_native_skills(
         })
         .map(|(_, path)| path)
         .collect();
-    let skills = load_skill_set(&tiers);
+    let skills: Vec<Skill> = load_skill_set(&tiers)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|skill| !skill.internal)
+        .collect();
     for skill in &skills {
         validate_native_skill_name(&skill.name)?;
     }
@@ -942,10 +806,14 @@ fn remove_native_skill_file(path: &Path) -> Result<(), String> {
 /// The effective [`SkillInfo`] named `name` for `base_dir` — the metadata row (tier, path,
 /// `effective`) bn-mcp actually serves, so a caller can locate the on-disk file to view or edit it.
 /// `None` if no tier defines `name`.
-pub fn effective_info(cfg: &Config, base_dir: &Path, name: &str) -> Option<SkillInfo> {
-    discover(cfg, base_dir)
+pub fn effective_info(
+    cfg: &Config,
+    base_dir: &Path,
+    name: &str,
+) -> Result<Option<SkillInfo>, SkillCatalogError> {
+    Ok(discover(cfg, base_dir)?
         .into_iter()
-        .find(|s| s.effective && s.name == name)
+        .find(|skill| skill.effective && skill.name == name))
 }
 
 /// Overwrite the skill file at `path` with `content`, but only after `content` parses as a valid
@@ -955,12 +823,7 @@ pub fn effective_info(cfg: &Config, base_dir: &Path, name: &str) -> Option<Skill
 /// [`effective_info`] (never raw caller input), so this validates the *body*, not the location.
 pub fn save_skill(path: &Path, content: &str) -> Result<(), String> {
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("skill");
-    if parse_skill(content, stem).is_none() {
-        return Err(
-            "content is not a valid skill: needs `---` YAML frontmatter with a `description`"
-                .to_string(),
-        );
-    }
+    parse_skill(content, stem).map_err(|error| format!("content is not a valid skill: {error}"))?;
     std::fs::write(path, content).map_err(|e| format!("{}: {e}", path.display()))
 }
 
@@ -1022,6 +885,16 @@ fn write_skill_file(
     if description.is_empty() {
         return Err(io_err("skill description must not be empty"));
     }
+    let template_args: Vec<SkillArgDef> = args
+        .iter()
+        .map(|argument| SkillArgDef {
+            name: argument.name.clone(),
+            description: argument.description.clone(),
+            required: argument.required,
+        })
+        .collect();
+    crate::template::validate(body, &template_args)
+        .map_err(|error| io_err(&format!("invalid skill template: {error}")))?;
 
     let path = dir.join(format!("{name}.md"));
     if path.exists() && !overwrite {

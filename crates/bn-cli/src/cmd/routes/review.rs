@@ -180,6 +180,7 @@ pub(super) fn route(cfg: &Config, action: CmdReview, json: bool) {
                             controller_id: std::env::var("BN_CONTROLLER_ID").ok(),
                             // Filled per item inside `orchestrate_add` (#1001).
                             task: String::new(),
+                            ..Default::default()
                         },
                         start,
                         concurrency,
@@ -326,7 +327,9 @@ pub(super) fn route(cfg: &Config, action: CmdReview, json: bool) {
                     repo,
                     number,
                     reviewer,
-                } => emit_review_gate_prompt(&repo, number, reviewer.as_deref(), required, json),
+                } => {
+                    emit_review_gate_prompt(cfg, &repo, number, reviewer.as_deref(), required, json)
+                }
             }
         }
         CmdReview::Done { query, pct } => {
@@ -490,7 +493,7 @@ pub(super) fn route(cfg: &Config, action: CmdReview, json: bool) {
                 model,
                 add,
                 kind,
-            }) => emit_review_agents(&id, &harness, model.as_deref(), add, &kind, json),
+            }) => emit_review_agents(cfg, &id, &harness, model.as_deref(), add, &kind, json),
             Some(ReviewCmd::Vote {
                 id,
                 reviewer,

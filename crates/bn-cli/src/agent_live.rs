@@ -155,7 +155,7 @@ fn registry_state(status: SessionStatus) -> &'static str {
     match status {
         SessionStatus::Live => "working",
         SessionStatus::Idle => "idle",
-        SessionStatus::Gone => "queued",
+        SessionStatus::Gone => "gone",
         SessionStatus::Done => "done",
         SessionStatus::Failed => "failed",
     }
@@ -286,13 +286,12 @@ fn snapshot_from(
                 .clone()
                 .or_else(|| report_artifacts.get(&worktree).cloned());
             let lane = live_row.filter(|row| row.has_window).map_or_else(
-                || {
-                    let branch = worktree
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or(&session.branch);
-                    key(&session.repo, branch)
-                },
+                // No live window: address it by what the registry records, not by the worktree's
+                // basename. That basename is the branch only when the layout happens to be
+                // `<root>/<repo>/<branch>` — for a pool slot it is the slot number (`bn:1`) and
+                // for a repo checked out at its own path it is the repo name, so the "target" it
+                // produced was one `bn agent send` could never resolve.
+                || key(&session.repo, &session.branch),
                 |row| row.target.clone(),
             );
             FleetSnapshotRow {
@@ -355,7 +354,7 @@ fn board_state_rank(state: &str) -> u8 {
     match state {
         "needs-you" | "blocked" | "needs-decision" | "failed" | "limited" | "stuck" => 0,
         "working" | "active" | "idle" | "starting" => 1,
-        "queued" => 2,
+        "queued" | "gone" => 2,
         "done" => 3,
         _ => 4,
     }
@@ -939,7 +938,7 @@ enum SnapshotGroup {
 
 fn snapshot_group(state: &str) -> SnapshotGroup {
     match state {
-        "queued" | "starting" => SnapshotGroup::Queued,
+        "queued" | "starting" | "gone" => SnapshotGroup::Queued,
         "done" => SnapshotGroup::Done,
         _ => SnapshotGroup::UnderWay,
     }
@@ -956,6 +955,7 @@ fn snapshot_style(state: &str) -> (&'static str, &'static str) {
         "working" | "active" => ("1;32", "working"),
         "idle" => ("33", "idle"),
         "queued" | "starting" => ("36", "queued"),
+        "gone" => ("2", "gone"),
         "done" => ("2", "done"),
         _ => ("2", "unknown"),
     }
@@ -1049,7 +1049,7 @@ pub fn run_board(cfg: &Config, idle: i64, stuck: i64, budget: Option<i64>, previ
     }
     println!("{header}\n");
     render_snapshot_section(&snapshot, SnapshotGroup::UnderWay, "Under Way", preview);
-    render_snapshot_section(&snapshot, SnapshotGroup::Queued, "Queued", preview);
+    render_snapshot_section(&snapshot, SnapshotGroup::Queued, "Not running", preview);
     render_snapshot_section(&snapshot, SnapshotGroup::Done, "Done", preview);
     if !snapshot.remote_runs.is_empty() {
         let hdr = format!(
@@ -1101,7 +1101,7 @@ fn mobile_status(state: &str) -> (&'static str, &'static str) {
         "failed" => ("1;31", "!fail"),
         "working" => ("33", "work "),
         "done" => ("32", "done "),
-        "starting" | "queued" => ("2", "queue"),
+        "starting" | "queued" | "gone" => ("2", "queue"),
         "stuck" => ("31", "stuck"),
         "idle" => ("2", "idle "),
         "active" => ("2", "actv "),
@@ -1743,176 +1743,5 @@ pub fn run_direct_jump(cfg: &Config, idle: i64, stuck: i64, query: &str) {
     }
 }
 
-/// A quick-steer action (#633 P3): steer an agent from a fleet row *without* navigating into its
-/// pane. `Approve1`/`Approve2` answer the common numeric prompt agents block on (command-approval,
-/// folder-trust, usage-limit); `Continue` nudges a paused agent onward; `SendText` prompts for a
-/// free-text steer; `Interrupt` sends Ctrl-C; `Kill` terminates the window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SteerAction {
-    Approve1,
-    Approve2,
-    Continue,
-    SendText,
-    Interrupt,
-    Kill,
-}
-
-/// The steer actions in menu order — approve-first (the most common phone answer), then the rest.
-const STEER_ACTIONS: [SteerAction; 6] = [
-    SteerAction::Approve1,
-    SteerAction::Approve2,
-    SteerAction::Continue,
-    SteerAction::SendText,
-    SteerAction::Interrupt,
-    SteerAction::Kill,
-];
-
-impl SteerAction {
-    /// The single-key accelerator for this action's `display-menu` entry — numeric approvals first
-    /// (fastest one-handed), then mnemonic letters. `q` is avoided (tmux reserves it to cancel).
-    fn key(self) -> char {
-        match self {
-            SteerAction::Approve1 => '1',
-            SteerAction::Approve2 => '2',
-            SteerAction::Continue => 'c',
-            SteerAction::SendText => 's',
-            SteerAction::Interrupt => 'i',
-            SteerAction::Kill => 'k',
-        }
-    }
-
-    /// The plain menu label shown for this action.
-    fn label(self) -> &'static str {
-        match self {
-            SteerAction::Approve1 => "Approve (1)",
-            SteerAction::Approve2 => "Approve (2)",
-            SteerAction::Continue => "Continue",
-            SteerAction::SendText => "Send text…",
-            SteerAction::Interrupt => "Interrupt (C-c)",
-            SteerAction::Kill => "Kill window",
-        }
-    }
-}
-
-/// Resolve a picker row's `window_id` to the exact tmux target the steer commands act on. The
-/// server-global window id (`@N`) is rename- and renumber-proof, so keys never land in a neighbor's
-/// pane; [`tmux_exact_target`](crate::tmux_exact_target) passes ids through untouched and `=`-guards
-/// a bare name. Pure over its input → unit-testable.
-fn steer_target(window_id: &str) -> String {
-    crate::tmux_exact_target(window_id)
-}
-
-/// Assemble the `display-menu` entry command that performs `action` against pane `target` (#633
-/// P3). The three text steers reuse the reliable `bn agent send … --keys` channel (paste + raw-CR
-/// submit + confirm) via a backgrounded `run-shell`, so the menu closes immediately; `SendText`
-/// first prompts with `command-prompt` (`%%` is the typed text). `Interrupt` is a raw `send-keys
-/// C-c`; `Kill` is a `confirm-before`-guarded `kill-window`. `bn` is the shell-quoted path to this
-/// executable. Pure over its inputs → unit-testable without a tmux server.
-fn steer_action_command(action: SteerAction, target: &str, bn: &str) -> String {
-    match action {
-        SteerAction::Approve1 => format!("run-shell -b \"{bn} agent send {target} 1 --keys\""),
-        SteerAction::Approve2 => format!("run-shell -b \"{bn} agent send {target} 2 --keys\""),
-        SteerAction::Continue => {
-            format!("run-shell -b \"{bn} agent send {target} continue --keys\"")
-        }
-        SteerAction::SendText => format!(
-            "command-prompt -p \"steer {target}:\" \"run-shell -b \\\"{bn} agent send {target} '%%' --keys\\\"\""
-        ),
-        SteerAction::Interrupt => format!("send-keys -t {target} C-c"),
-        SteerAction::Kill => {
-            format!("confirm-before -p \"kill {target}? (y/n)\" \"kill-window -t {target}\"")
-        }
-    }
-}
-
-/// Build the `tmux display-menu` argv for the quick-steer actions against `target` (#633 P3): a
-/// titled, centered menu, one entry per [`SteerAction`] with its single-key accelerator and the
-/// command from [`steer_action_command`]. `name` is the row's plain label (for the title). Pure
-/// over its inputs → unit-testable.
-fn steer_menu_args(target: &str, name: &str, bn: &str) -> Vec<String> {
-    let mut args: Vec<String> = vec![
-        "display-menu".into(),
-        "-T".into(),
-        format!("steer · {name}"),
-        "-x".into(),
-        "C".into(),
-        "-y".into(),
-        "C".into(),
-    ];
-    for a in STEER_ACTIONS {
-        args.push(a.label().into());
-        args.push(a.key().to_string());
-        args.push(steer_action_command(a, target, bn));
-    }
-    args
-}
-
-/// Build the `display-menu` argv for the fleet-row picker whose entries open the quick-steer submenu
-/// (#633 P3) instead of jumping into the pane. Reuses [`build_menu_entries`] for the ordered rows +
-/// accelerators (needs-you first), then maps each to a backgrounded `run-shell` that re-invokes `bn
-/// fleet steer <window_id>` — which raises the action submenu for that row. `bn` is the shell-quoted
-/// path to this executable. Pure over its inputs → unit-testable.
-fn steer_row_menu_args(entries: &[MenuEntry], title: &str, bn: &str) -> Vec<String> {
-    let mut args: Vec<String> = vec![
-        "display-menu".into(),
-        "-T".into(),
-        title.into(),
-        "-x".into(),
-        "C".into(),
-        "-y".into(),
-        "C".into(),
-    ];
-    for e in entries {
-        let cmd = format!("run-shell -b \"{bn} fleet steer {}\"", e.window_id);
-        args.push(e.name.clone());
-        args.push(e.key.to_string());
-        args.push(cmd);
-    }
-    args
-}
-
-/// `bn fleet steer` — the quick-steer row picker (#633 P3): a native `display-menu` of the live
-/// fleet (one entry per agent window + orchestrator cockpit, needs-you first), each opening a
-/// single-key action submenu (approve/continue/send/interrupt/kill) that steers the agent *without*
-/// navigating into its pane. The mobile/one-handed counterpart to hand-navigating and typing. Falls
-/// back to the read board when there's no tmux client to raise the menu in.
-pub fn run_steer_menu(cfg: &Config, idle: i64, stuck: i64) {
-    use bn_core::clock::Clock;
-    let now = bn_core::clock::RealClock.now_epoch_secs();
-    let views = collect(cfg, idle, stuck);
-    let rows = build_pick_rows(
-        &views,
-        &read_pick_windows(),
-        now,
-        crate::wt::orchestrator_session(),
-    );
-    if rows.is_empty() {
-        println!("No live agents or orchestrator windows to steer.");
-        return;
-    }
-    if std::env::var_os("TMUX").is_none() {
-        println!("\x1b[2m(no tmux client — attach first; showing the board)\x1b[0m");
-        run_board(cfg, idle, stuck, None, false);
-        return;
-    }
-    let entries = build_menu_entries(&rows);
-    let title = format!("steer · {} · pick an agent", entries.len());
-    let exe = std::env::current_exe().unwrap_or_else(|_| "bn".into());
-    let bn = crate::shq(&exe.display().to_string());
-    crate::proc::tmux_run(&steer_row_menu_args(&entries, &title, &bn));
-}
-
-/// `bn fleet steer <target>` — raise the quick-steer action submenu for one window (#633 P3). The
-/// row picker's entries call this per row; passing a `window_id` (or `repo:branch`) jumps straight
-/// to the action menu (approve/continue/send/interrupt/kill) for that pane. Reuses the same exact
-/// target resolution as the steer commands. Falls back to a note when there's no tmux client.
-pub fn run_steer_target(target: &str) {
-    if std::env::var_os("TMUX").is_none() {
-        println!("bn fleet steer needs a tmux client — attach first.");
-        return;
-    }
-    let resolved = steer_target(target);
-    let exe = std::env::current_exe().unwrap_or_else(|_| "bn".into());
-    let bn = crate::shq(&exe.display().to_string());
-    crate::proc::tmux_run(&steer_menu_args(&resolved, target, &bn));
-}
+mod steer_menu;
+pub(crate) use steer_menu::{run_steer_menu, run_steer_target};

@@ -226,7 +226,12 @@ pub fn advise(inputs: &AdviseInputs) -> Vec<Advice> {
                     (None, 0, r)
                 }
             };
-            let score = align_score + pressure + c.priority;
+            // Saturating, not wrapping: a priority near i64::MAX plus any goal alignment would
+            // overflow — panicking in debug and, far worse, WRAPPING in release, which sorts the
+            // highest-priority item last. Saturation costs nothing and removes the class.
+            let score = align_score
+                .saturating_add(pressure)
+                .saturating_add(c.priority);
             Advice {
                 id: c.id.clone(),
                 repo: c.repo.clone(),
@@ -267,4 +272,27 @@ fn attn_clause(repo: &str, attention: &[AttnSignal]) -> String {
         .map(|a| a.severity.as_str())
         .unwrap_or("info");
     format!("; {sev} attention open in {repo}")
+}
+
+/// The open quarter goals with their latest-review status — the strategic weights [`advise`] ranks
+/// candidates by.
+///
+/// Read-only and best-effort: a missing or unparseable quarter yields no goals, and ranking then
+/// falls back to priority plus attention pressure. It never *creates* a quarter file, which matters
+/// because this is read on a hot dispatch tick.
+pub fn open_quarter_goals(cfg: &crate::resolver::Config, today: &str) -> Vec<GoalContext> {
+    let Some(qid) = crate::quarter::quarter_id(today) else {
+        return Vec::new();
+    };
+    match crate::quarter::read_quarter(cfg, &qid) {
+        Ok(Some(q)) => q
+            .open()
+            .map(|g| GoalContext {
+                key: g.key.clone(),
+                text: g.text.clone(),
+                status: q.status_of(&g.key).to_string(),
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
 }

@@ -13,10 +13,10 @@ not build features here; you rigorously test and critique the PR/diff, then eith
 send concrete findings back to the `execute` stage to fix. The discipline is **read → try to break
 → evidence, not vibes**.
 
-1. **Ground on the change only.** Call `bn_cat` for the done-when criteria and the recorded PR.
-   Take the PR ({{pr}}) if given, otherwise the note's PR. Read the diff cold (`gh pr diff`,
-   `gh pr view`) — resist any assumption about intent that the diff itself doesn't show. State in
-   one line what this change claims to do.
+1. **Ground on the change only.** The launcher appends a plan-free runtime packet containing the
+   done-when criteria, PR, and exact diff. Use that packet as the review contract. `bn_cat` may be
+   used only for the critic lane's plan-free state. Read the diff cold and resist any assumption
+   about intent that the diff itself doesn't show. State in one line what the change claims to do.
 
 2. **Check it against the contract.** For each `done-when` criterion, decide whether the change
    actually satisfies it, with evidence (`path:line`, a command, a test). A criterion you can't

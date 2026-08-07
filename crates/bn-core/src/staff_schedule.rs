@@ -241,11 +241,8 @@ pub fn fires_today(on_calendar: &str) -> bool {
 }
 
 /// The clock slots (`hour`, `minute`, `second`) a spec fires at within any day it fires on.
-/// Covers the full `OnCalendar` subset the cron/agent manifests use: the sub-daily minute repeat
-/// (`*:M/N`), plain and hour-stepped daily times (`*-*-* HH:MM:SS`, `*-*-* H/S:MM:SS`, with an
-/// optional weekday prefix that [`fires_on`] resolves separately), and the `daily`/`hourly`
-/// keywords. `None` for a shape without an enumerable within-day clock (e.g. `minutely`, or a
-/// spec this subset does not model), so [`previous_occurrence`] simply reports no slot.
+/// Covers the full `OnCalendar` subset the cron/agent manifests use: comma lists, ranges, stepped
+/// fields, optional weekday/date prefixes, and the `daily`/`hourly`/`minutely` keywords.
 ///
 /// This is the single within-day enumerator shared with [`fires_on`]'s date/weekday parser — the
 /// "due" check in [`crate::agents`] composes the two rather than re-parsing `OnCalendar`.
@@ -257,64 +254,173 @@ fn day_slots(on_calendar: &str) -> Option<Vec<(u32, u32, u32)>> {
     match spec.to_ascii_lowercase().as_str() {
         "daily" => return Some(vec![(0, 0, 0)]),
         "hourly" => return Some((0..24).map(|h| (h, 0, 0)).collect()),
+        "minutely" => {
+            return Some(
+                (0..24)
+                    .flat_map(|hour| (0..60).map(move |minute| (hour, minute, 0)))
+                    .collect(),
+            )
+        }
         _ => {}
     }
-    // Sub-daily minute repeat `*:M/N` — fires at minutes M, M+N, … (< 60) of every hour.
-    if let Some((start, step)) = spec.strip_prefix("*:").and_then(|r| r.split_once('/')) {
-        let start: u32 = start.parse().ok()?;
-        let step: u32 = step.parse().ok().filter(|s| *s > 0)?;
-        if start > 59 {
-            return None;
-        }
-        let mut slots = Vec::new();
-        for h in 0..24 {
-            let mut m = start;
-            while m < 60 {
-                slots.push((h, m, 0));
-                m += step;
-            }
-        }
-        return Some(slots);
-    }
-    // Otherwise a `[WEEKDAY] [*-*-*] HH[/S]:MM[:SS]` form — the time is the last whitespace token,
-    // the weekday/date part is handled by `fires_on` for day eligibility.
+
+    // Validate the day/date prefix here even though `fires_on` evaluates it later, so catalog
+    // validation rejects malformed schedules before the common scheduler starts.
     let rest = if spec.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
-        spec.split_once(char::is_whitespace)
-            .map(|(_, t)| t.trim())?
+        let (weekdays, rest) = spec.split_once(char::is_whitespace)?;
+        parse_weekdays(weekdays)?;
+        rest.trim()
     } else {
         spec
     };
-    let time_tok = rest.split_whitespace().last()?;
-    if !time_tok.contains(':') {
-        return None;
-    }
+
+    let tokens: Vec<&str> = rest.split_whitespace().collect();
+    let time_tok = match tokens.as_slice() {
+        [time] => *time,
+        [date, time] if valid_date_spec(date) => *time,
+        _ => return None,
+    };
     let mut parts = time_tok.split(':');
     let hour_field = parts.next()?;
-    let minute: u32 = parts.next()?.parse().ok()?;
-    let second: u32 = match parts.next() {
-        Some(s) => s.parse().ok()?,
-        None => 0,
-    };
-    if parts.next().is_some() || minute > 59 || second > 59 {
+    let minute_field = parts.next()?;
+    let second_field = parts.next().unwrap_or("0");
+    if parts.next().is_some() {
         return None;
     }
-    let hours: Vec<u32> = if let Some((base, step)) = hour_field.split_once('/') {
-        let step: u32 = step.parse().ok().filter(|s| *s > 0)?;
-        let start: u32 = if base == "*" || base.is_empty() {
-            0
-        } else {
-            base.parse().ok()?
+    let hours = expand_calendar_field(hour_field, 23)?;
+    let minutes = expand_calendar_field(minute_field, 59)?;
+    let seconds = expand_calendar_field(second_field, 59)?;
+    let mut slots = Vec::new();
+    for hour in hours {
+        for minute in &minutes {
+            for second in &seconds {
+                slots.push((hour, *minute, *second));
+            }
+        }
+    }
+    slots.sort_unstable();
+    slots.dedup();
+    Some(slots)
+}
+
+/// Whether an `OnCalendar` string is in the enumerable subset the common agent scheduler supports.
+pub fn calendar_supported(on_calendar: &str) -> bool {
+    day_slots(on_calendar).is_some()
+}
+
+fn expand_calendar_field(spec: &str, max: u32) -> Option<Vec<u32>> {
+    if !calendar_field_valid(spec, max) {
+        return None;
+    }
+    let mut values = Vec::new();
+    for term in spec.split(',') {
+        let (base, step) = match term.split_once('/') {
+            Some((base, step)) => (base, step.parse::<u32>().ok()?),
+            None => (term, 1),
         };
-        (start..24).step_by(step as usize).collect()
-    } else if hour_field == "*" {
-        (0..24).collect()
-    } else {
-        vec![hour_field.parse().ok()?]
-    };
-    if hours.iter().any(|h| *h > 23) {
-        return None;
+        let (start, end) = if base == "*" {
+            (0, max)
+        } else if let Some((start, end)) = base.split_once("..") {
+            (start.parse::<u32>().ok()?, end.parse::<u32>().ok()?)
+        } else {
+            let start = base.parse::<u32>().ok()?;
+            (start, if term.contains('/') { max } else { start })
+        };
+        values.extend((start..=end).step_by(step as usize));
     }
-    Some(hours.into_iter().map(|h| (h, minute, second)).collect())
+    values.sort_unstable();
+    values.dedup();
+    Some(values)
+}
+
+fn valid_date_spec(spec: &str) -> bool {
+    let fields: Vec<&str> = spec.split('-').collect();
+    matches!(
+        fields.as_slice(),
+        [year, month, day]
+            if calendar_field_valid(year, 9999)
+                && calendar_field_valid(month, 12)
+                && calendar_field_valid(day, 31)
+    )
+}
+
+fn calendar_field_valid(spec: &str, max: u32) -> bool {
+    !spec.is_empty()
+        && spec.split(',').all(|term| {
+            if term.is_empty() {
+                return false;
+            }
+            let (base, step) = match term.split_once('/') {
+                Some((base, step)) => match step.parse::<u32>() {
+                    Ok(step) if step > 0 => (base, Some(step)),
+                    _ => return false,
+                },
+                None => (term, None),
+            };
+            if base == "*" {
+                return true;
+            }
+            let (start, end) = match base.split_once("..") {
+                Some((start, end)) => match (start.parse::<u32>(), end.parse::<u32>()) {
+                    (Ok(start), Ok(end)) => (start, end),
+                    _ => return false,
+                },
+                None => match base.parse::<u32>() {
+                    Ok(value) => (value, if step.is_some() { max } else { value }),
+                    Err(_) => return false,
+                },
+            };
+            start <= end && end <= max
+        })
+}
+
+/// The local-epoch instants `on_calendar` fires at on `date`, ascending and deduped.
+///
+/// Composes the two halves that already exist: [`fires_on`] decides whether the day is eligible
+/// (weekday and concrete-date restrictions), [`day_slots`] enumerates the within-day clock.
+///
+/// Empty when the spec does not fire that day **or** has no enumerable clock (`minutely`, shapes
+/// this subset does not model). A timeline then shows such a job as unscheduled rather than
+/// inventing a time for it — the difference between a schedule you can trust and one you cannot.
+pub fn slots_on(on_calendar: &str, date: chrono::NaiveDate) -> Vec<i64> {
+    if !fires_on(on_calendar, date) {
+        return Vec::new();
+    }
+    let Some(slots) = day_slots(on_calendar) else {
+        return Vec::new();
+    };
+    let mut out: Vec<i64> = slots
+        .iter()
+        .filter_map(|(h, m, sec)| {
+            match Local.with_ymd_and_hms(date.year(), date.month(), date.day(), *h, *m, *sec) {
+                chrono::LocalResult::Single(dt) | chrono::LocalResult::Ambiguous(dt, _) => {
+                    Some(dt.timestamp())
+                }
+                chrono::LocalResult::None => None,
+            }
+        })
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// The next instant `on_calendar` fires at **after** `now`, searching today and the next 8 days.
+///
+/// A scheduled job's own next firing is its natural deadline: once tomorrow's 09:00 digest is due,
+/// running yesterday's is worse than not running it, because the fresh one supersedes it. `None`
+/// when the spec has no enumerable clock or nothing fires within the window.
+pub fn next_occurrence(on_calendar: &str, now: i64) -> Option<i64> {
+    let today = chrono::DateTime::from_timestamp(now, 0)?
+        .with_timezone(&Local)
+        .date_naive();
+    for ahead in 0..=8 {
+        let date = today.checked_add_signed(chrono::Duration::days(ahead))?;
+        if let Some(at) = slots_on(on_calendar, date).into_iter().find(|t| *t > now) {
+            return Some(at);
+        }
+    }
+    None
 }
 
 /// The most recent instant the `OnCalendar` spec `on_calendar` fired at or before `now` (epoch
@@ -511,5 +617,40 @@ pub fn health_label(last: Option<&LastRun>, missed: bool) -> &'static str {
             RunStatus::RateLimited => "rate-limited",
             RunStatus::Skipped => "skipped",
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn common_scheduler_accepts_manifest_schedule_shapes() {
+        for schedule in [
+            "*:0/15",
+            "*-*-* 0/2:00:00",
+            "Mon..Fri *-*-* 08,11,14,17:00:00",
+            "Mon..Fri *-*-* 08..18/2:00:00",
+            "Sun *-*-* 18:00:00",
+            "daily",
+            "hourly",
+            "minutely",
+        ] {
+            assert!(calendar_supported(schedule), "{schedule}");
+        }
+    }
+
+    #[test]
+    fn common_scheduler_rejects_malformed_schedules() {
+        for schedule in [
+            "",
+            "sometimes",
+            "*:0/0",
+            "*-*-* 25:00:00",
+            "Mon..Nope *-*-* 08:00:00",
+            "Mon *-*-* 18..08:00:00",
+        ] {
+            assert!(!calendar_supported(schedule), "{schedule}");
+        }
     }
 }

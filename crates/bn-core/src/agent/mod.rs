@@ -18,20 +18,26 @@
 //! so callers keep using `agent::ingest`, `agent::supervise`, … as before.
 
 mod activity;
+mod approval;
 mod channel;
 mod digest;
 mod lease;
 mod parse;
+mod prompt;
 mod registry;
 mod session;
+mod stuck;
 mod supervise;
 mod switch;
 
 pub use activity::*;
+pub use approval::*;
 pub use channel::*;
 pub use digest::*;
 pub use lease::*;
+pub use prompt::*;
 pub use registry::*;
 pub use session::*;
+pub use stuck::*;
 pub use supervise::*;
 pub use switch::*;

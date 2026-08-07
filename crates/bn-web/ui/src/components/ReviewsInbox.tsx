@@ -1,10 +1,12 @@
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, Check, Inbox, Pencil, X } from "lucide-react";
-import { queryKeys, reviewsQuery } from "../api/client";
+import { reviewsQuery } from "../api/client";
 import type { Review, ReviewStatus } from "../api/types";
 import { decideReview } from "../api/writes";
-import { pushToast } from "../lib/toast";
+import { useAppMutation } from "../hooks/useAppMutation";
+import { affects } from "../lib/invalidation";
+import { setReviewStatus } from "../lib/optimistic";
 import { Badge, type BadgeProps } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
@@ -33,45 +35,36 @@ function planPreview(plan: string): string {
  * Approve / Request-changes / Reject controls. Each decision hits `POST /api/reviews/:id` (the
  * audited native store write) and invalidates the feeds so the agent's unblocked state shows. */
 function ReviewCard({ review }: { review: Review }) {
-  const qc = useQueryClient();
   const [notes, setNotes] = useState("");
   const pending = review.status === "pending";
   const tone = STATUS_TONE[review.status] ?? { variant: "muted" as const, bar: "bg-border" };
 
-  const invalidate = () => {
-    void qc.invalidateQueries({ queryKey: queryKeys.reviews });
-    void qc.invalidateQueries({ queryKey: queryKeys.attn });
-    void qc.invalidateQueries({ queryKey: queryKeys.orchestrate });
-    void qc.invalidateQueries({ queryKey: queryKeys.fleet });
-  };
-  const onError = (e: unknown, label: string) => {
-    pushToast(`${label} failed: ${(e as Error).message}`, "error");
-  };
-
-  const approveMut = useMutation({
+  // The badge and the controls both key off `status`, so patching it flips the whole card at once —
+  // the decision reads as taken the moment you click it.
+  const approveMut = useAppMutation({
     mutationFn: () => decideReview(review.id, "approve"),
-    onSuccess: () => {
-      pushToast("Plan approved — the agent may implement + open the PR", "success");
-      invalidate();
+    optimistic: setReviewStatus(review.id, "approved"),
+    invalidates: affects.review,
+    toast: {
+      success: "Plan approved — the agent may implement + open the PR",
+      error: "approve failed",
     },
-    onError: (e) => onError(e, "approve"),
   });
-  const changesMut = useMutation({
+  const changesMut = useAppMutation({
     mutationFn: () => decideReview(review.id, "request_changes", notes.trim()),
-    onSuccess: () => {
-      pushToast("Changes requested — the agent will revise + re-submit", "success");
-      setNotes("");
-      invalidate();
+    optimistic: setReviewStatus(review.id, "changes-requested"),
+    invalidates: affects.review,
+    toast: {
+      success: "Changes requested — the agent will revise + re-submit",
+      error: "request changes failed",
     },
-    onError: (e) => onError(e, "request changes"),
+    onSuccess: () => setNotes(""),
   });
-  const rejectMut = useMutation({
+  const rejectMut = useAppMutation({
     mutationFn: () => decideReview(review.id, "reject"),
-    onSuccess: () => {
-      pushToast("Plan rejected — the agent stops", "success");
-      invalidate();
-    },
-    onError: (e) => onError(e, "reject"),
+    optimistic: setReviewStatus(review.id, "rejected"),
+    invalidates: affects.review,
+    toast: { success: "Plan rejected — the agent stops", error: "reject failed" },
   });
 
   const busy = approveMut.isPending || changesMut.isPending || rejectMut.isPending;

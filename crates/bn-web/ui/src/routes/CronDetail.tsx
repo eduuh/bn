@@ -1,8 +1,9 @@
 import { Link, useParams } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArrowLeft,
+  Bot,
   CalendarClock,
   Clock,
   ExternalLink,
@@ -14,9 +15,10 @@ import {
 import { cronQuery, findingsQuery, queryKeys } from "../api/client";
 import { runCronJob } from "../api/writes";
 import type { CronJob } from "../api/types";
+import { useAppMutation } from "../hooks/useAppMutation";
+import { affects } from "../lib/invalidation";
 import { useNow } from "../hooks/useNow";
 import { timeAgo } from "../lib/format";
-import { pushToast } from "../lib/toast";
 import { scheduleLabel } from "../lib/cron";
 import { Badge, type BadgeProps } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -27,6 +29,9 @@ import { cn } from "../lib/utils";
 /** The health tone of a job's last run: green when it last exited 0, red when it failed, grey when
  * it has never run. Mirrors the list card's tone so the two views agree. */
 function healthTone(j: CronJob): { variant: BadgeProps["variant"]; bar: string; label: string } {
+  if (j.agents?.some((agent) => agent.ok === false)) {
+    return { variant: "urgent", bar: "bg-urgent", label: "agent failure" };
+  }
   if (j.last_run == null) return { variant: "muted", bar: "bg-border", label: "never run" };
   return j.ok
     ? { variant: "ok", bar: "bg-ok", label: "ok" }
@@ -46,19 +51,10 @@ function Tag({ children }: { children: React.ReactNode }) {
  * confirming first, toasting the outcome, and invalidating the cron + findings queries so the
  * refreshed last-run health and any newly-stored findings appear without a reload. */
 function RunNowButton({ job }: { job: string }) {
-  const qc = useQueryClient();
-  const mut = useMutation({
+  const mut = useAppMutation({
     mutationFn: () => runCronJob(job),
-    onSuccess: () => {
-      pushToast(`Ran ${job}`, "success");
-      void qc.invalidateQueries({ queryKey: queryKeys.cron });
-      void qc.invalidateQueries({ queryKey: queryKeys.findings(job) });
-    },
-    onError: (e) => {
-      pushToast(`run ${job} failed: ${e.message}`, "error");
-      void qc.invalidateQueries({ queryKey: queryKeys.cron });
-      void qc.invalidateQueries({ queryKey: queryKeys.findings(job) });
-    },
+    invalidates: [...affects.schedule, queryKeys.findings(job)],
+    toast: { success: `Ran ${job}`, error: `run ${job} failed` },
   });
   return (
     <Button
@@ -189,6 +185,38 @@ export function CronDetail() {
               </div>
             )}
           </Card>
+
+          {job.agents && job.agents.length > 0 && (
+            <section className="space-y-3">
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                  Managed agent schedules
+                </h3>
+                <Badge variant="muted">{job.agents.length}</Badge>
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {job.agents.map((agent) => (
+                  <Card key={agent.job} className="space-y-2 p-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Bot className="h-4 w-4 text-primary" aria-hidden="true" />
+                      <span className="font-mono text-sm font-medium">{agent.job}</span>
+                      <Badge variant="info">{agent.kind}</Badge>
+                      <Badge variant={agent.due ? "warn" : "muted"}>{agent.state}</Badge>
+                      {agent.ok === false && (
+                        <Badge variant="urgent">exit {agent.last_exit ?? "?"}</Badge>
+                      )}
+                      <span className="flex-1" />
+                      <RunNowButton job={agent.job} />
+                    </div>
+                    <p className="font-mono text-xs text-muted-foreground">{agent.schedule}</p>
+                    {agent.description && (
+                      <p className="text-xs text-foreground/80">{agent.description}</p>
+                    )}
+                  </Card>
+                ))}
+              </div>
+            </section>
+          )}
 
           {job.ok === false && (
             <Card className="border-urgent/30 bg-urgent-muted p-4 text-sm text-urgent">

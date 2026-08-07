@@ -37,10 +37,11 @@ export default defineConfig({
     },
   },
   test: {
-    // Unit tests only. There are none right now — a055f1c deleted every `*.test.ts(x)` along with
-    // the Playwright suite, and `npm run test` is `vitest run --passWithNoTests`, so this lane is
-    // a placeholder that goes green vacuously. The first DOM test added will also need
-    // `environment: "jsdom"` here (jsdom and @testing-library are already devDependencies).
+    // Unit tests. a055f1c had deleted every `*.test.ts(x)` along with the Playwright suite, leaving
+    // this lane green vacuously; it is live again as of the `useAppMutation` write layer, whose
+    // rollback-vs-SSE race is the kind of thing that only stays correct if something checks.
+    // jsdom because react-query's hooks need a DOM to render into.
+    environment: "jsdom",
     include: ["src/**/*.test.{ts,tsx}"],
   },
 });

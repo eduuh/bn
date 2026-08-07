@@ -10,6 +10,7 @@
 //! requirement. It composes with (never bypasses) the #376 conflict-aware holding.
 
 use crate::backlog::{ExecutionTarget, Substrate};
+use crate::capability::node_satisfies;
 use crate::hosts::{NodeRecord, NodeStatus};
 
 use crate::orchestrate::{conflicts, OrchestrateState, QueueItem, WorkClass};
@@ -324,26 +325,6 @@ pub fn target_eligible(target: &ExecutionTarget, nodes: &[NodeRecord]) -> bool {
     }
 }
 
-/// Whether `node` advertises every required capability and none of the excluded capabilities
-/// (#728). Labels are matched case-insensitively so config spelling cannot weaken a hard policy.
-fn node_satisfies(node: &NodeRecord, required: &[String], excluded: &[String]) -> bool {
-    if (!required.is_empty() || !excluded.is_empty())
-        && node.target == ExecutionTarget::GitHubRunner
-    {
-        return false;
-    }
-    required.iter().all(|cap| {
-        node.labels
-            .iter()
-            .any(|label| label.eq_ignore_ascii_case(cap))
-    }) && excluded.iter().all(|cap| {
-        !node
-            .labels
-            .iter()
-            .any(|label| label.eq_ignore_ascii_case(cap))
-    })
-}
-
 fn repo_matches(configured: &str, repo: &str) -> bool {
     configured.eq_ignore_ascii_case(repo)
         || configured.rsplit(['/', '\\']).next().is_some_and(|name| {
@@ -359,11 +340,11 @@ pub fn repo_owned(owned_repos: &[String], repo: &str) -> bool {
     owned_repos.is_empty() || owned_repos.iter().any(|owned| repo_matches(owned, repo))
 }
 
-fn node_owns_repo(node: &NodeRecord, repo: &str) -> bool {
+pub(crate) fn node_owns_repo(node: &NodeRecord, repo: &str) -> bool {
     repo_owned(&node.owned_repos, repo)
 }
 
-fn node_resources_allow(node: &NodeRecord, caps: &Caps) -> bool {
+pub(crate) fn node_resources_allow(node: &NodeRecord, caps: &Caps) -> bool {
     let Some(capacity) = node.capacity else {
         return true;
     };
@@ -385,7 +366,7 @@ fn node_resources_allow(node: &NodeRecord, caps: &Caps) -> bool {
 pub fn worker_eligible(node: &NodeRecord, item: &QueueItem, caps: &Caps) -> bool {
     matches!(node.target, ExecutionTarget::SshHost(_))
         && node.status == NodeStatus::Ready
-        && node.active_attempts == 0
+        && node.active_attempts < node.slots.max(1)
         && node_satisfies(
             node,
             &item.required_capabilities,
@@ -401,208 +382,9 @@ pub fn bind_allows_worker_handoff(bind: Option<Bind>) -> bool {
     !matches!(bind, Some(Bind::Tokens | Bind::Cost))
 }
 
-fn missing_required(node: &NodeRecord, required: &[String]) -> Vec<String> {
-    required
-        .iter()
-        .filter(|cap| {
-            !node
-                .labels
-                .iter()
-                .any(|label| label.eq_ignore_ascii_case(cap))
-        })
-        .cloned()
-        .collect()
-}
-
-fn matching_excluded(node: &NodeRecord, excluded: &[String]) -> Vec<String> {
-    excluded
-        .iter()
-        .filter(|cap| {
-            node.labels
-                .iter()
-                .any(|label| label.eq_ignore_ascii_case(cap))
-        })
-        .cloned()
-        .collect()
-}
-
-fn no_capable_node_reason(required: &[String], excluded: &[String]) -> String {
-    match (required.is_empty(), excluded.is_empty()) {
-        (false, true) => format!(
-            "no READY node satisfies required capability: {}",
-            required.join(", ")
-        ),
-        (true, false) => format!(
-            "no READY node avoids excluded capability: {}",
-            excluded.join(", ")
-        ),
-        (false, false) => format!(
-            "no READY node satisfies required capability: {} while avoiding: {}",
-            required.join(", "),
-            excluded.join(", ")
-        ),
-        (true, true) => "no READY node available".to_string(),
-    }
-}
-
-/// The outcome of resolving where a local/auto item lands (#729).
-#[derive(Debug, Clone, PartialEq)]
-pub enum Placement {
-    /// Dispatch the item on this concrete execution target.
-    Place(ExecutionTarget),
-    /// No eligible node this pass — the item stays pending (no slot consumed). The string is the
-    /// operator-facing reason surfaced on the status line (fail-loud, per #728).
-    Unplaced(String),
-}
-
-/// Resolve which node a local/auto `item` lands on (#729), applying the hard capability filter
-/// (#728) then first-fit selection among eligible READY nodes. Pure over the item + the run's node
-/// registry, so the whole placement policy is unit-testable:
-///
-///   - **Empty registry** (pre-#729 / no `[nodes]` configured) ⇒ `Place(Local)` for an unconstrained
-///     repo; a repo with required/excluded capabilities stays `Unplaced` because the implicit box
-///     advertises no capabilities (fail-closed).
-///   - **Explicit [`ExecutionTarget::SshHost`]** ⇒ eligible only when the registry holds that node
-///     [`NodeStatus::Ready`] *and* it satisfies the repo's required capabilities; else `Unplaced`
-///     with the reason (a not-Ready or capability-missing host holds the item — never downgraded).
-///   - **[`ExecutionTarget::GitHubRunner`]** ⇒ `Place` only for unconstrained repos; a constrained
-///     repo stays `Unplaced` because the runner advertises no capability tags.
-///   - **[`ExecutionTarget::Local`]/auto with a non-empty registry** ⇒ first-fit: the first READY
-///     node (registry order, sorted by `node_id` for determinism) that satisfies the repo's
-///     required capabilities; its own `target` is returned. If none matches, a **cap-free** repo
-///     still falls back to the implicit local box (`Place(Local)` — the pre-#729 invariant that a
-///     `Local` item never waits on the registry), while a repo *with* required capabilities stays
-///     `Unplaced` with a reason (e.g. `no READY node satisfies capability: mt5-bridge`), since the
-///     unlabelled implicit box can't satisfy them.
-pub fn place(item: &QueueItem, nodes: &[NodeRecord], caps: &Caps) -> Placement {
-    place_with_load(item, nodes, caps, None, &HashMap::new())
-}
-
-fn place_with_load(
-    item: &QueueItem,
-    nodes: &[NodeRecord],
-    caps: &Caps,
-    local_bind: Option<Bind>,
-    planned_workers: &HashMap<String, usize>,
-) -> Placement {
-    let required = &item.required_capabilities;
-    let excluded = &item.excluded_capabilities;
-    match &item.target {
-        ExecutionTarget::GitHubRunner if required.is_empty() && excluded.is_empty() => {
-            Placement::Place(ExecutionTarget::GitHubRunner)
-        }
-        ExecutionTarget::GitHubRunner => Placement::Unplaced(
-            "github-runner advertises no capabilities for this repo policy".to_string(),
-        ),
-        ExecutionTarget::SshHost(alias) => {
-            if !bind_allows_worker_handoff(local_bind) {
-                return Placement::Unplaced(
-                    local_bind
-                        .map(|bind| bind.reason().to_string())
-                        .unwrap_or_else(|| "worker handoff is blocked".to_string()),
-                );
-            }
-            // Resolve the named ssh alias to a node by either its stable id (the #717 convention,
-            // where node_id == alias) or its declared target (#729, where a node like `fedora-box`
-            // is reached via `ssh:fedora`), so both naming styles address the same worker.
-            let want = ExecutionTarget::SshHost(alias.clone());
-            match nodes
-                .iter()
-                .find(|n| &n.node_id == alias || n.target == want)
-            {
-                Some(n) if n.status != NodeStatus::Ready => {
-                    Placement::Unplaced(format!("node '{alias}' is {:?}, not Ready", n.status))
-                }
-                Some(n) if !node_owns_repo(n, &item.repo) => {
-                    Placement::Unplaced(format!("node '{alias}' does not own repo '{}'", item.repo))
-                }
-                Some(n) if !missing_required(n, required).is_empty() => {
-                    Placement::Unplaced(format!(
-                        "node '{alias}' lacks required capability: {}",
-                        missing_required(n, required).join(", ")
-                    ))
-                }
-                Some(n) if !matching_excluded(n, excluded).is_empty() => {
-                    Placement::Unplaced(format!(
-                        "node '{alias}' has excluded capability: {}",
-                        matching_excluded(n, excluded).join(", ")
-                    ))
-                }
-                Some(n) if !node_resources_allow(n, caps) => {
-                    Placement::Unplaced(format!("node '{alias}' is blocked by resource guards"))
-                }
-                Some(n)
-                    if n.active_attempts
-                        + planned_workers.get(&n.node_id).copied().unwrap_or_default()
-                        > 0 =>
-                {
-                    Placement::Unplaced(format!("node '{alias}' has no idle worker slot"))
-                }
-                Some(n) => Placement::Place(if n.target.is_local() {
-                    want
-                } else {
-                    n.target.clone()
-                }),
-                None => Placement::Unplaced(format!("no node '{alias}' in registry")),
-            }
-        }
-        ExecutionTarget::Local => {
-            if nodes.is_empty() {
-                return if caps.local_owned
-                    && local_bind.is_none()
-                    && required.is_empty()
-                    && excluded.is_empty()
-                {
-                    Placement::Place(ExecutionTarget::Local)
-                } else {
-                    Placement::Unplaced(no_capable_node_reason(required, excluded))
-                };
-            }
-            let mut candidates: Vec<&NodeRecord> = nodes
-                .iter()
-                .filter(|n| {
-                    (n.target.is_local()
-                        && n.status == NodeStatus::Ready
-                        && node_satisfies(n, required, excluded)
-                        && node_owns_repo(n, &item.repo)
-                        && node_resources_allow(n, caps)
-                        || bind_allows_worker_handoff(local_bind) && worker_eligible(n, item, caps))
-                        && (n.target.is_local()
-                            || planned_workers.get(&n.node_id).copied().unwrap_or_default() == 0)
-                        && match (&n.target, local_bind) {
-                            (ExecutionTarget::Local, None) => caps.local_owned,
-                            (ExecutionTarget::Local, Some(_)) => false,
-                            _ => true,
-                        }
-                })
-                .collect();
-            candidates.sort_by_key(|n| {
-                (
-                    usize::from(!n.target.is_local()),
-                    n.active_attempts
-                        + planned_workers.get(&n.node_id).copied().unwrap_or_default(),
-                    n.node_id.as_str(),
-                )
-            });
-            match candidates.first() {
-                Some(n) => Placement::Place(n.target.clone()),
-                // No registered node matched. For a cap-free repo the daemon's own box is always an
-                // implicit, always-available fallback (the pre-#729 invariant a `Local` item never
-                // waits for the registry). For a repo with required capabilities the implicit box
-                // carries no labels, so it can't satisfy them — the item stays pending with a
-                // reason rather than dispatching to a doomed node (fail-loud, #728).
-                None if caps.local_owned
-                    && local_bind.is_none()
-                    && required.is_empty()
-                    && excluded.is_empty() =>
-                {
-                    Placement::Place(ExecutionTarget::Local)
-                }
-                None => Placement::Unplaced(no_capable_node_reason(required, excluded)),
-            }
-        }
-    }
-}
+/// Placement moved to [`crate::queue::place`] — re-exported so every existing
+/// `scheduler::{Placement, place, place_with_load}` path still resolves.
+pub use crate::queue::place::{place, place_with_load, Placement};
 
 /// The dispatch plan for one pass (#377): the queue indices to dispatch **locally**, those to fan
 /// out to a **remote** runner (occupying no local slot), and the binding cap that stopped local

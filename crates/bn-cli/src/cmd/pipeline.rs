@@ -15,12 +15,17 @@
 
 use crate::*;
 use bn_core::pipeline::investigate::{
-    next_after_investigation, plan_seed, sub_investigator_seed, InvestigationNext,
+    next_after_investigation, plan_packet, InvestigationNext,
 };
 use bn_core::pipeline::stage::{self, BoardEntry, Stage};
-use bn_core::pipeline::status::{infer, PhaseStatus, PipelineView, PlanReview, TaskSignals};
+use bn_core::pipeline::status::{infer, PipelineView, PlanReview, TaskSignals};
 use bn_core::plan_review::{Review, ReviewStatus};
 use bn_core::rollups::BranchNote;
+
+mod status_render;
+use status_render::{render_pipeline, render_pipeline_list, terminal_width};
+mod target;
+use target::{current_stage, resolve_target};
 
 pub(crate) fn emit_pipeline(
     cfg: &Config,
@@ -191,135 +196,6 @@ fn latest_verify_passed(body: &str) -> bool {
         .rev()
         .find(|line| line.contains("verify ") && (line.contains("PASS") || line.contains("FAIL")))
         .is_some_and(|line| line.contains("PASS"))
-}
-
-fn terminal_width() -> usize {
-    std::env::var("COLUMNS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|width| *width >= 20)
-        .unwrap_or(100)
-}
-
-fn render_pipeline(view: &PipelineView, width: usize) -> String {
-    if width < 72 {
-        render_narrow(view, width)
-    } else {
-        render_wide(view)
-    }
-}
-
-fn render_wide(view: &PipelineView) -> String {
-    let tracker = view
-        .phases
-        .iter()
-        .map(|phase| format!("{} {}", status_glyph(phase.status), phase.id.label()))
-        .collect::<Vec<_>>()
-        .join(" ───→ ");
-    let mut out = format!(
-        "{}/{}\n{tracker}\n▶ {}",
-        view.repo, view.branch, view.action
-    );
-    if let Some(goal) = &view.goal {
-        out.push_str(&format!("\n  {goal}"));
-    }
-    out
-}
-
-fn render_narrow(view: &PipelineView, width: usize) -> String {
-    let mut lines = vec![format!("{}/{}", view.repo, view.branch)];
-    lines.extend(
-        view.phases
-            .iter()
-            .map(|phase| format!("{} {}", status_glyph(phase.status), phase.id.label())),
-    );
-    lines.extend(wrap_line("▶ ", &view.action, width));
-    if let Some(goal) = &view.goal {
-        lines.extend(wrap_line("  ", goal, width));
-    }
-    lines.join("\n")
-}
-
-fn render_pipeline_list(views: &[PipelineView]) -> String {
-    if views.is_empty() {
-        return "No active tasks.".to_string();
-    }
-    views
-        .iter()
-        .map(|view| {
-            format!(
-                "{} {:<9} {}/{} — {}",
-                status_glyph(PhaseStatus::Active),
-                view.phase.label(),
-                view.repo,
-                view.branch,
-                view.action
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn wrap_line(prefix: &str, text: &str, width: usize) -> Vec<String> {
-    let continuation = " ".repeat(prefix.chars().count());
-    let mut lines = Vec::new();
-    let mut current = prefix.to_string();
-    for word in text.split_whitespace() {
-        let separator = usize::from(current.chars().count() > prefix.chars().count());
-        if current.chars().count() + separator + word.chars().count() > width
-            && current.chars().count() > prefix.chars().count()
-        {
-            lines.push(current);
-            current = continuation.clone();
-        }
-        if current.chars().count() > prefix.chars().count() {
-            current.push(' ');
-        }
-        current.push_str(word);
-    }
-    if current.chars().count() > prefix.chars().count() || lines.is_empty() {
-        lines.push(current);
-    }
-    lines
-}
-
-fn status_glyph(status: PhaseStatus) -> &'static str {
-    match status {
-        PhaseStatus::Done => "✓",
-        PhaseStatus::Active => "▶",
-        PhaseStatus::Pending => "·",
-    }
-}
-
-/// Resolve the `(repo, branch)` a subcommand targets: explicit `--repo`/`--branch` win, else the
-/// current worktree's resolved context. Fails with guidance when neither is available.
-fn resolve_target(ctx: Option<&Resolved>, repo: Option<&str>, branch: Option<&str>) -> Resolved {
-    let repo = repo
-        .map(str::to_string)
-        .or_else(|| ctx.map(|c| c.repo.clone()));
-    let branch = branch
-        .map(bn_core::plan_review::sanitize_branch)
-        .or_else(|| ctx.map(|c| c.branch.clone()));
-    match (repo, branch) {
-        (Some(repo), Some(branch)) => Resolved { repo, branch },
-        _ => {
-            fail("bn pipeline: no repo/branch — run inside a worktree, or pass --repo and --branch")
-        }
-    }
-}
-
-fn current_stage(cfg: &Config, ctx: &Resolved) -> (Stage, bool) {
-    let note = bn_core::store::read(&cfg.note_file(ctx)).unwrap_or_else(|e| {
-        fail(&format!(
-            "bn pipeline: cannot read note for {}/{}: {e}",
-            ctx.repo, ctx.branch
-        ))
-    });
-    let recorded = note.front.stage.is_some() || stage::current(&ctx.repo, &ctx.branch).is_some();
-    (
-        stage::current_for_note(&note).unwrap_or(Stage::DEFAULT),
-        recorded,
-    )
 }
 
 /// `bn pipeline status` — the current stage + transition history for the target worktree.
@@ -511,6 +387,28 @@ fn launch_sub_investigator(
     if !parent_wt.is_dir() {
         return false;
     }
+    let mut prompt_args = serde_json::Map::new();
+    for (name, value) in [
+        ("goal", goal),
+        ("question", question),
+        ("repo", ctx.repo.as_str()),
+        ("branch", ctx.branch.as_str()),
+        ("token", token),
+    ] {
+        prompt_args.insert(name.into(), serde_json::Value::String(value.to_string()));
+    }
+    let seed = match bn_core::skills::render_required(
+        cfg,
+        &parent_wt,
+        "pipeline-sub-investigator",
+        Some(&prompt_args),
+    ) {
+        Ok(seed) => seed,
+        Err(error) => {
+            eprintln!("bn pipeline investigate: {error}");
+            return false;
+        }
+    };
     let Some(head) = crate::git::git_capture(&["rev-parse", "HEAD"], Some(&parent_wt), true) else {
         return false;
     };
@@ -535,15 +433,6 @@ fn launch_sub_investigator(
     ]) {
         return false;
     }
-    let mut seed = sub_investigator_seed(goal, question);
-    seed.push_str(&format!(
-        "\nSubmit the answer to the parent task with:\n\
-         `bn pipeline investigate contribute --repo {} --branch {} --token {} \
-         --finding \"<evidence-backed finding>\"`\n\
-         Repeat `--finding` for multiple findings. If a person is required, use `--blocked \
-         \"<specific input needed>\"` instead. Do not edit source files.\n",
-        ctx.repo, ctx.branch, token
-    ));
     let sid = gen_uuid();
     let seed_file = wt::prompt_to_file("investigate-sub", &ctx.repo, token, &seed);
     let mut cmd = match seed_file {
@@ -634,15 +523,24 @@ fn launch_plan_agent(
     let sid = gen_uuid();
     let window = plan_window_name(&ctx.branch, &sid);
     let tmux_target = format!("{}:{window}", ctx.repo);
-    let mut seed = plan_seed(goal, findings);
-    if let Some(skill) = bn_core::skills::load_skill(cfg, &wt_path, "plan") {
-        let mut args = serde_json::Map::new();
-        args.insert("topic".into(), serde_json::Value::String(goal.to_string()));
-        seed.push_str(&format!(
-            "\n\n--- WORKFLOW: plan ---\n{}\n--- END WORKFLOW ---\n",
-            skill.render(Some(&args))
-        ));
-    }
+    let mut plan_args = serde_json::Map::new();
+    plan_args.insert("topic".into(), serde_json::Value::String(goal.to_string()));
+    let workflow = bn_core::skills::render_required(cfg, &wt_path, "plan", Some(&plan_args))
+        .unwrap_or_else(|error| fail(&format!("bn pipeline plan: {error}")));
+    let packet = plan_packet(goal, findings);
+    let mut envelope_args = serde_json::Map::new();
+    envelope_args.insert(
+        "workflow_body".into(),
+        serde_json::Value::String(workflow),
+    );
+    envelope_args.insert("packet".into(), serde_json::Value::String(packet));
+    let mut seed = bn_core::skills::render_required(
+        cfg,
+        &wt_path,
+        "pipeline-plan-envelope",
+        Some(&envelope_args),
+    )
+    .unwrap_or_else(|error| fail(&format!("bn pipeline plan: {error}")));
     if let Ok(note) = bn_core::store::read(&cfg.note_file(ctx)) {
         let plan_gate = note
             .front
@@ -655,14 +553,21 @@ fn launch_plan_agent(
             .iter()
             .any(|item| item.text.starts_with("gate: run `bn verify`"));
         if plan_gate {
-            seed.push_str(&plan_gate_seed(
-                &ctx.repo,
-                &ctx.branch,
-                &sid,
-                verify,
-                cfg.dispatch_plan_reviewers,
-                cfg.dispatch_plan_review_quorum,
-            ));
+            seed.push_str(
+                &plan_gate_seed(
+                cfg,
+                &wt_path,
+                PlanGateContext {
+                    repo: &ctx.repo,
+                    branch: &ctx.branch,
+                    sid: &sid,
+                    verify,
+                    reviewers: cfg.dispatch_plan_reviewers,
+                    quorum: cfg.dispatch_plan_review_quorum,
+                },
+                )
+                .unwrap_or_else(|error| fail(&format!("bn pipeline plan: {error}"))),
+            );
         }
     }
     let Some(seed_file) = wt::prompt_to_file("pipeline-plan", &ctx.repo, &ctx.branch, &seed) else {
@@ -1102,5 +1007,3 @@ pub(crate) fn emit_pipeline_badge(cfg: &Config, path: Option<String>) {
 fn fmt_ts(ts: i64) -> String {
     bn_core::util::fmt_local_short(ts)
 }
-
-

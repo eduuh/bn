@@ -16,6 +16,7 @@ mod cli;
 mod cmd;
 mod connect;
 mod cron_gen;
+mod event_loop;
 mod gh;
 mod git;
 mod hooks;
@@ -35,7 +36,6 @@ mod tat;
 mod timers;
 mod toast;
 mod version;
-mod wake;
 mod winsched;
 #[rustfmt::skip]
 mod wt;
@@ -71,6 +71,7 @@ pub(crate) use cmd::focus::*;
 pub(crate) use cmd::gitio::*;
 pub(crate) use cmd::insights::*;
 pub(crate) use cmd::issue::*;
+pub(crate) use cmd::job_registry::*;
 pub(crate) use cmd::jobs::*;
 pub(crate) use cmd::kill_tmux::*;
 pub(crate) use cmd::killport::*;
@@ -202,6 +203,14 @@ fn main() {
     // `bn run`), so it never recurses.
     if !matches!(&cli.command, Some(Command::Staff(CmdStaff::Run { .. }))) {
         maybe_fire_catchup(&cfg);
+        // The queue is on by default, so its dispatcher has to be too — a queue nothing drains
+        // silently stops the machine. One stat in the common case; see `queue_install`.
+        //
+        // Skipped for `bn queue` itself: its fallback path can run a tick, and a tick triggered by
+        // the command that was about to tick is one tick too many.
+        if !matches!(&cli.command, Some(Command::Fleet(CmdFleet::Queue { .. }))) {
+            cmd::queue_install::ensure(&cfg);
+        }
     }
 
     if cli.eduuhexperiment {

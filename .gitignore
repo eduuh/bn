@@ -17,3 +17,4 @@ crates/bn-web/ui/dist/
 
 # Lavish/bn session artifacts — generated planning documents; the branch note is the record.
 .bn-artifacts/
+.lavish/

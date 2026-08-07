@@ -494,18 +494,24 @@ fn parse_resource_reply(raw: &str) -> Option<Resource> {
     })
 }
 
-/// Build a harness-backed resource finder: a short, tightly-scoped headless dispatch asking for the
-/// one best resource on the topic as strict JSON. Best-effort — any spawn/parse failure or empty
-/// reply yields `None`, and the caller falls back to the deterministic self-study resource.
-fn harness_resource_finder(_cfg: &Config) -> Box<ResourceFinder<'static>> {
+/// Build a harness-backed resource finder from the strict internal Markdown prompt. Harness or
+/// parse failures remain best-effort and fall back to the deterministic self-study resource.
+fn harness_resource_finder(cfg: &Config) -> Box<ResourceFinder<'static>> {
+    let cfg = cfg.clone();
+    let base = std::env::current_dir().unwrap_or_default();
     Box::new(move |chosen: &ChosenTopic| {
-        let prompt = format!(
-            "Find the single best learning resource for the topic \"{}\" ({}). It must be one \
-             article, paper, or documentation chapter readable in under two hours. Reply with \
-             ONLY a JSON object and nothing else: {{\"title\":\"...\",\"url\":\"...\",\
-             \"summary\":\"one sentence\",\"fallback\":\"a second option or null\"}}.",
-            chosen.topic, chosen.why
+        let mut args = serde_json::Map::new();
+        args.insert(
+            "topic".into(),
+            serde_json::Value::String(chosen.topic.clone()),
         );
+        args.insert(
+            "why".into(),
+            serde_json::Value::String(chosen.why.clone()),
+        );
+        let prompt =
+            bn_core::skills::render_required(&cfg, &base, "curriculum-resource", Some(&args))
+                .unwrap_or_else(|error| fail(&format!("bn curriculum: {error}")));
         let cmd = staff_dispatch_command("copilot", &prompt, None, None)?;
         let (ok, stdout, _combined) =
             dispatch_capture(cmd, Some(std::time::Duration::from_secs(240)));
@@ -515,5 +521,4 @@ fn harness_resource_finder(_cfg: &Config) -> Box<ResourceFinder<'static>> {
         parse_resource_reply(&stdout)
     })
 }
-
 

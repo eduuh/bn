@@ -60,15 +60,8 @@ route_attn() {
 }
 
 # ── 1) Urgent emails ─────────────────────────────────────────────────────────────────────────────
-email_q="Look at my Outlook inbox for today. List unread or recent emails that genuinely need a
-reply or action from me — skip newsletters, notifications, FYI/CC-only, and automated mail. For
-each give the sender, the subject, a one-line gist, and whether it is high-stakes (my manager or
-skip-level wrote it, there is a deadline today, or it is a direct question to me). Include a link
-to open the message if available."
-email_schema='Output ONLY a JSON array (no prose, no code fence), most-urgent first, each element:
-{"id":"<stable slug from sender+subject>","title":"<sender> — <subject> (<≤6-word gist>)",
- "link":"<URL to open the message, else empty>","urgent":<true only if clearly high-stakes>}.
-Only emails that need a reply/action from me; never invent one. Empty array if none.'
+email_q=$("$bn" skills render m365-email-query)
+email_schema=$("$bn" skills render m365-email-schema)
 emails=$(ask_json "$email_q" "$email_schema")
 if [ -n "$emails" ] && [ "$(printf '%s' "$emails" | jq 'length')" -gt 0 ]; then
   printf '%s' "$emails" | jq -c '.[] | {key:.id, text:.title, url:(.link//"")}' | "$bn" feed ingest email
@@ -80,14 +73,8 @@ else
 fi
 
 # ── 2) Teams @-mentions / DMs awaiting a reply ───────────────────────────────────────────────────
-teams_q="Look at my Microsoft Teams for today. List chats or channel messages where I'm @-mentioned
-or asked a direct question and haven't replied. Skip ones I've already answered and pure FYI posts.
-For each give who, where (chat or channel), a one-line gist, whether it's high-stakes (manager, or
-someone clearly blocked on me), and a link to open it if available."
-teams_schema='Output ONLY a JSON array (no prose, no code fence), most-urgent first, each element:
-{"id":"<stable slug from who+gist>","title":"<who> (<where>): <≤8-word gist>",
- "link":"<URL to open it, else empty>","urgent":<true only if clearly high-stakes>}.
-Only messages awaiting my reply; never invent one. Empty array if none.'
+teams_q=$("$bn" skills render m365-teams-query)
+teams_schema=$("$bn" skills render m365-teams-schema)
 mentions=$(ask_json "$teams_q" "$teams_schema")
 if [ -n "$mentions" ] && [ "$(printf '%s' "$mentions" | jq 'length')" -gt 0 ]; then
   printf '%s' "$mentions" | jq -c '.[] | {key:.id, text:.title, url:(.link//"")}' | "$bn" feed ingest teams
@@ -99,12 +86,8 @@ else
 fi
 
 # ── 3) Today's commitments / action items → daily goals ──────────────────────────────────────────
-commit_q="From my recent Outlook email and Teams, what did I commit to do, or get asked to do, that
-is due today or has no date but is clearly mine to action? Keep each to a short imperative task.
-Skip things already done. Include a link to the source message if available."
-commit_schema='Output ONLY a JSON array (no prose, no code fence), each element:
-{"text":"<short imperative task>","link":"<source URL, else empty>"}.
-Only real commitments/asks of mine; never invent one. Empty array if none.'
+commit_q=$("$bn" skills render m365-commitments-query)
+commit_schema=$("$bn" skills render m365-commitments-schema)
 commitments=$(ask_json "$commit_q" "$commit_schema")
 if [ -n "$commitments" ] && [ "$(printf '%s' "$commitments" | jq 'length')" -gt 0 ]; then
   # Dedup against whatever text is already on today's list (recursive text scan = shape-agnostic).
@@ -127,12 +110,8 @@ else
 fi
 
 # ── 4) Dropped balls — I owe a reply (glance only, never attention) ───────────────────────────────
-owe_q="List email or Teams threads where I'm the one expected to respond and I haven't in about two
-days or more — replies I owe people. For each give who's waiting, the subject/topic, roughly how
-many days it's been waiting, and a link if available."
-owe_schema='Output ONLY a JSON array (no prose, no code fence), longest-waiting first, each element:
-{"id":"<stable slug from who+topic>","who":"<name>","topic":"<text>","days":<integer>,
- "link":"<URL, else empty>"}. Only threads genuinely awaiting my reply. Empty array if none.'
+owe_q=$("$bn" skills render m365-owed-query)
+owe_schema=$("$bn" skills render m365-owed-schema)
 owe=$(ask_json "$owe_q" "$owe_schema")
 if [ -n "$owe" ] && [ "$(printf '%s' "$owe" | jq 'length')" -gt 0 ]; then
   printf '%s' "$owe" \

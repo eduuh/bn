@@ -32,7 +32,7 @@ use std::time::{Duration, UNIX_EPOCH};
 /// fanning out to many subscribers is a refcount bump, not a per-client string clone.
 #[derive(Debug, Clone)]
 pub struct StreamFrame {
-    /// The SSE `event:` name — `fleet | orchestrate | log | attn | bearings`.
+    /// The SSE `event:` name — `fleet | orchestrate | queue | log | attn | bearings`.
     pub event: &'static str,
     /// The SSE `data:` line — a single-line JSON value.
     pub data: String,
@@ -61,6 +61,8 @@ async fn run(state: AppState) {
     let mut last_orch: u64 = 0;
     let mut last_attn: u64 = 0;
     let mut last_bearings: u64 = 0;
+    let mut last_queue: u64 = 0;
+    let mut last_queue_inputs: u64 = 0;
 
     let mut ticker = tokio::time::interval(period);
     loop {
@@ -68,6 +70,26 @@ async fn run(state: AppState) {
         // Nobody listening → keep advancing the log offset (so a late connector isn't hit with a
         // backlog burst) but skip the heavier fleet/orchestrate/attn sampling entirely.
         let listening = state.tx.receiver_count() > 0;
+
+        // Event-log tail first, and *before* any sampling: the queue announces everything it does
+        // through this log, so a new `queue_*` line is the signal that the queue moved. Runs every
+        // pass so the offset stays current; frames go out only when a client is attached.
+        let mut queue_acted = false;
+        if let Ok((new_events, new_offset)) = tail_events(&log_path, log_offset) {
+            log_offset = new_offset;
+            for ev in &new_events {
+                if ev.kind.starts_with("queue_") {
+                    queue_acted = true;
+                }
+            }
+            if listening {
+                for ev in new_events {
+                    if let Ok(data) = serde_json::to_string(&ev) {
+                        let _ = state.tx.send(StreamFrame::arc("log", data));
+                    }
+                }
+            }
+        }
 
         if listening {
             let fleet = agent::supervise(&cfg, agent::DEFAULT_IDLE_MINS, agent::DEFAULT_STUCK_MINS);
@@ -83,6 +105,26 @@ async fn run(state: AppState) {
             let data = payload::attn_list_data(&items).to_string();
             emit_on_change(&state, "attn", data, &mut last_attn);
 
+            // The queue viewmodel — sampled only when something says the queue moved.
+            //
+            // It used to be rebuilt every pass and then discarded if the hash matched, which made
+            // the *cost* unconditional even though the frame was not: `Snapshot::capture` reads the
+            // backlog and calls `agent::supervise`, which shells out to tmux. Paying that on a timer
+            // to usually learn nothing is the opposite of event-driven.
+            //
+            // Two triggers, because neither covers the other. A `queue_*` event means the dispatcher
+            // acted. A change to the backlog or the last decision means something else did — `bn
+            // queue add`, a cancel, a reprioritize — none of which write an event but all of which
+            // change what the page shows.
+            let sig = queue_inputs_sig();
+            if queue_acted || sig != last_queue_inputs {
+                last_queue_inputs = sig;
+                let data = payload::queue_data(&cfg, bn_core::util::now_epoch_secs()).to_string();
+                // The hash gate stays as the second filter: a trigger says "look again", this says
+                // "and it really is different", so a no-op pass never wakes a browser.
+                emit_on_change(&state, "queue", data, &mut last_queue);
+            }
+
             let sig = orchestrate_mtime_sig();
             if sig != last_orch {
                 last_orch = sig;
@@ -90,19 +132,6 @@ async fn run(state: AppState) {
                     "orchestrate",
                     orchestrate_runs_json(None).to_string(),
                 ));
-            }
-        }
-
-        // Event-log tail runs every tick so the offset stays current; frames go out only when a
-        // client is attached.
-        if let Ok((new_events, new_offset)) = tail_events(&log_path, log_offset) {
-            log_offset = new_offset;
-            if listening {
-                for ev in new_events {
-                    if let Ok(data) = serde_json::to_string(&ev) {
-                        let _ = state.tx.send(StreamFrame::arc("log", data));
-                    }
-                }
             }
         }
     }
@@ -166,6 +195,32 @@ pub fn orchestrate_runs_json(repo: Option<&str>) -> serde_json::Value {
 
 /// A hash over every run file's `(path, mtime)` — changes iff a run file is added, removed, or
 /// rewritten, which is exactly when the orchestrate viewmodel needs re-emitting.
+/// A cheap fingerprint of the files the queue writes — two `stat`s, no parsing.
+///
+/// The point is to answer "is it worth sampling the queue at all" without doing the sampling. The
+/// backlog covers add / lease / resolve / cancel / reprioritize; the decision file covers every
+/// dispatcher pass, including the ones that start nothing and so write no event.
+fn queue_inputs_sig() -> u64 {
+    let mut h = DefaultHasher::new();
+    for p in [
+        bn_core::backlog::backlog_path(),
+        bn_core::resolver::state_dir().join("queue-decision.json"),
+    ] {
+        let meta = std::fs::metadata(&p).ok();
+        let secs = meta
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        // Length as well as mtime: two writes inside one second are common under a busy tick, and
+        // a second-resolution clock alone would miss the later one.
+        secs.hash(&mut h);
+        meta.map(|m| m.len()).unwrap_or(0).hash(&mut h);
+    }
+    h.finish()
+}
+
 fn orchestrate_mtime_sig() -> u64 {
     let mut h = DefaultHasher::new();
     for p in orchestrate::run_paths() {

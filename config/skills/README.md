@@ -8,6 +8,11 @@ Invocable workflows (the slash-command style entries served as MCP prompts by
 `bn serve`) live in [`config/prompts/`](../prompts/), structured like
 [`config/agents/`](../agents/).
 
+Runtime-only launch envelopes live in that same prompt catalog with `internal: true`. Rust loads
+them strictly by name, but MCP discovery and native skill installation hide them. This keeps
+dispatch, pipeline, critic, attention, curriculum, specialist, and review instructions
+Markdown-owned without exposing implementation fragments as user-invocable workflows.
+
 Reference skills are meant to be made available to a harness (Copilot CLI /
 Claude Code) natively and then mentioned inside a prompt body, e.g.
 "use the `stow` skill". They are not wired into the MCP prompt surface.

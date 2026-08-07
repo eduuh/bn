@@ -297,6 +297,7 @@ pub(crate) fn emit_review_gate_list(required: usize, as_json: bool) {
 /// seed. An orchestrator (or human) dispatches an independent reviewer agent with exactly this
 /// prompt, whose context provably excludes the implementer's reasoning.
 pub(crate) fn emit_review_gate_prompt(
+    cfg: &Config,
     repo: &str,
     number: i64,
     reviewer: Option<&str>,
@@ -305,7 +306,19 @@ pub(crate) fn emit_review_gate_prompt(
 ) {
     let timer = bn_core::log::enabled().then(bn_core::log::Timer::start);
     let label = reviewer.unwrap_or("rev1");
-    let prompt = review_gate::reviewer_prompt(repo, number, label, required);
+    let base = std::env::current_dir().unwrap_or_default();
+    let mut args = serde_json::Map::new();
+    for (name, value) in [
+        ("reviewer", label.to_string()),
+        ("required", required.to_string()),
+        ("repo", repo.to_string()),
+        ("number", number.to_string()),
+    ] {
+        args.insert(name.into(), serde_json::Value::String(value));
+    }
+    let prompt =
+        bn_core::skills::render_required(cfg, &base, "review-gate-critic", Some(&args))
+            .unwrap_or_else(|error| fail(&format!("bn review-gate prompt: {error}")));
     if as_json {
         println!(
             "{}",

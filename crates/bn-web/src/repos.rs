@@ -377,3 +377,167 @@ fn file_mtime(path: &std::path::Path) -> i64 {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cost_row(key: &str, aic: f64, usd: f64) -> bn_core::cost::CostRow {
+        bn_core::cost::CostRow {
+            key: key.to_string(),
+            sessions: 1,
+            input_tokens: 0,
+            cache_read_tokens: 0,
+            output_tokens: 0,
+            aic: Some(aic),
+            cost_usd: Some(usd),
+        }
+    }
+
+    fn session(repo: &str, branch: &str) -> Session {
+        Session {
+            repo: repo.to_string(),
+            branch: branch.to_string(),
+            ..Session::default()
+        }
+    }
+
+    #[test]
+    fn repo_name_strips_host_and_git_suffix() {
+        assert_eq!(repo_name("git@github.com:eduuh/bn.git"), "bn");
+        assert_eq!(repo_name("https://github.com/eduuh/BN.git"), "bn");
+        assert_eq!(repo_name("bn"), "bn");
+    }
+
+    #[test]
+    fn note_key_flattens_slashes() {
+        assert_eq!(note_key("dispatch/web-495"), "dispatch-web-495");
+    }
+
+    #[test]
+    fn assemble_gives_every_managed_and_cloned_repo_a_card() {
+        let cost = CostView::default();
+        let pools = BTreeMap::new();
+        let links = BTreeMap::new();
+        let v = assemble(
+            &["managed".to_string()],
+            &["cloned".to_string()],
+            vec![],
+            &cost,
+            &pools,
+            &links,
+        );
+        let repos = v.get("repos").and_then(Value::as_array).unwrap();
+        let names: Vec<&str> = repos
+            .iter()
+            .filter_map(|r| r.get("repo").and_then(Value::as_str))
+            .collect();
+        assert!(names.contains(&"managed"));
+        assert!(names.contains(&"cloned"));
+        // The `managed` flag is set only for managed repos.
+        let managed_card = repos.iter().find(|r| r["repo"] == "managed").unwrap();
+        assert_eq!(managed_card["managed"], serde_json::json!(true));
+        let cloned_card = repos.iter().find(|r| r["repo"] == "cloned").unwrap();
+        assert_eq!(cloned_card["managed"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn assemble_merges_seeds_by_repo_branch_and_attaches_cost() {
+        let cost = CostView {
+            by_repo: vec![cost_row("bn", 1.5, 2.0)],
+            ..CostView::default()
+        };
+        let seeds = vec![session("bn", "feat"), session("bn", "feat")];
+        let v = assemble(&[], &[], seeds, &cost, &BTreeMap::new(), &BTreeMap::new());
+        let card = v["repos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["repo"] == "bn")
+            .unwrap();
+        // Two seeds on the same (repo, branch) collapse to one session.
+        assert_eq!(card["session_count"], serde_json::json!(1));
+        assert_eq!(card["aic"], serde_json::json!(1.5));
+        assert_eq!(card["cost_usd"], serde_json::json!(2.0));
+    }
+
+    #[test]
+    fn assemble_attaches_pool_json_or_disabled() {
+        let mut pools = BTreeMap::new();
+        pools.insert(
+            "bn".to_string(),
+            serde_json::json!({ "enabled": true, "total": 4 }),
+        );
+        let v = assemble(
+            &["bn".to_string(), "app".to_string()],
+            &[],
+            vec![],
+            &CostView::default(),
+            &pools,
+            &BTreeMap::new(),
+        );
+        let repos = v["repos"].as_array().unwrap();
+        let bn = repos.iter().find(|r| r["repo"] == "bn").unwrap();
+        assert_eq!(bn["pool"]["enabled"], serde_json::json!(true));
+        assert_eq!(bn["pool"]["total"], serde_json::json!(4));
+        // A repo with no pool entry gets the disabled shape, never a missing field.
+        let app = repos.iter().find(|r| r["repo"] == "app").unwrap();
+        assert_eq!(app["pool"]["enabled"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn assemble_known_excludes_today() {
+        let seeds = vec![session(bn_core::today_agent::TODAY_REPO, "2026-08-06")];
+        let v = assemble(
+            &["bn".to_string()],
+            &[],
+            seeds,
+            &CostView::default(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        let known: Vec<&str> = v["known"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(known.contains(&"bn"));
+        assert!(!known.contains(&bn_core::today_agent::TODAY_REPO));
+    }
+
+    #[test]
+    fn assemble_sorts_in_flight_repo_ahead_of_idle() {
+        let idle = session("aaa", "x"); // alphabetically first, but no activity
+        let mut hot = session("zzz", "y");
+        hot.in_flight = true;
+        hot.last_activity_ts = 9_999;
+        let v = assemble(
+            &[],
+            &[],
+            vec![idle, hot],
+            &CostView::default(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        let repos = v["repos"].as_array().unwrap();
+        // Most-recently-active repo leads despite the alphabetical tiebreak.
+        assert_eq!(repos[0]["repo"], serde_json::json!("zzz"));
+    }
+
+    #[test]
+    fn session_merge_prefers_in_flight_status_and_max_counts() {
+        let mut base = session("bn", "feat");
+        base.status = Some("planning".to_string());
+        base.open_todos = 3;
+        let mut live = session("bn", "feat");
+        live.status = Some("running".to_string());
+        live.in_flight = true;
+        live.open_todos = 1;
+        base.merge(live);
+        // A live seed's state wins; numeric fields take the max.
+        assert_eq!(base.status.as_deref(), Some("running"));
+        assert_eq!(base.open_todos, 3);
+        assert!(base.in_flight);
+    }
+}

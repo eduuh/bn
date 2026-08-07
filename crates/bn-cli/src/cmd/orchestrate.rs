@@ -20,7 +20,7 @@ use bn_core::backlog::{self, AddSpec, BacklogKind, BacklogStatus, Substrate};
 use bn_core::events::EventLevel;
 use bn_core::orchestrate::{
     self, Backoff, ExternalState, HistoryRecord, ItemStatus, Liveness, OrchestrateState,
-    PaneObservation, PaneState, QueueEntrySpec, RelaunchDecision, RelaunchKind, SupervisorAction,
+    PaneObservation, PaneState, RelaunchDecision, RelaunchKind, SupervisorAction,
     WorkClass,
 };
 use bn_core::runner::CommandRunner;
@@ -1568,10 +1568,10 @@ pub(crate) fn orchestrate_queue_from(
             kind: backlog::BacklogKind::Ship,
             priority,
             touches: item.touches.clone(),
-            substrate: Substrate::Auto,
             source: source.clone(),
             controller_id: std::env::var("BN_CONTROLLER_ID").ok(),
             task: crate::cmd::task::task_for_enqueue(cfg, &repo, &item.title, &source),
+            ..Default::default()
         };
         let added = match backlog::add(&path, &repo, std::slice::from_ref(&item.title), &spec, now)
         {
@@ -1671,12 +1671,12 @@ pub(crate) fn orchestrate_ask(
         kind: backlog::BacklogKind::Scout,
         priority: ASK_PRIORITY,
         touches: Vec::new(),
-        substrate: Substrate::Auto,
         source: "ask".to_string(),
         controller_id: std::env::var("BN_CONTROLLER_ID").ok(),
         // Every enqueue names a task (#1001) — minted here so the ergonomic one-command path
         // still works while leaving a durable record behind it.
         task: crate::cmd::task::task_for_enqueue(cfg, &repo, question, "ask"),
+        ..Default::default()
     };
     let path = backlog::backlog_path();
     if let Err(e) = backlog::add(&path, &repo, &[question.to_string()], &spec, now) {
@@ -2718,19 +2718,13 @@ pub(crate) fn orchestrate_run(
         })
     };
 
-    let mut wake_watcher = if once {
-        None
-    } else {
-        match crate::wake::WakeWatcher::new(&[]) {
-            Ok(watcher) => Some(watcher),
-            Err(error) => {
-                eprintln!(
-                    "bn orchestrate: filesystem notifications unavailable ({error}); polling"
-                );
-                None
-            }
-        }
-    };
+    let mut reactor = (!once).then(|| {
+        crate::event_loop::EventLoop::with_wake_queue(
+            "bn orchestrate",
+            vec![crate::event_loop::Watch::file(backlog::backlog_path())],
+            &[],
+        )
+    });
     loop {
         // Refresh the owner lease so a co-daemon sees a live heartbeat (only the persistent daemon
         // holds the guard; a `once` pass leaves the lease to its owning all-repos loop).
@@ -2825,7 +2819,7 @@ pub(crate) fn orchestrate_run(
         // and stranding it. A *resident* run never exits on drain: a supervisor (#426) keeps watching
         // for future standalone lanes + green PRs, and a self-feeder (#368) stays alive to pull the
         // next appended batch from the durable backlog — so a multi-wave backlog completes with zero
-        // scheduled prompts. Either idle-polls on instead (only `stop` ends it). This mirrors the
+        // scheduled prompts. Either waits on reactor events instead (only `stop` ends it). This mirrors the
         // pure `OrchestrateState::run_complete`, but takes `drained`/`resident` from the merged
         // on-disk state so a web edit racing the tick (#392) is respected.
         if drained && backlog_pending == 0 && !resident {
@@ -2881,14 +2875,11 @@ pub(crate) fn orchestrate_run(
             let ids = pending.iter().map(|wake| wake.event_id.clone()).collect();
             let _ = queue.acknowledge(&target, &ids);
         }
-        if let Some(watcher) = wake_watcher.as_ref() {
-            if let Err(error) = watcher.wait_timeout(std::time::Duration::from_secs(nap)) {
-                eprintln!("bn orchestrate: filesystem notifications failed ({error}); polling");
-                wake_watcher = None;
-                std::thread::sleep(std::time::Duration::from_secs(nap));
-            }
-        } else {
-            std::thread::sleep(std::time::Duration::from_secs(nap));
+        if reactor.as_mut().is_some_and(|reactor| {
+            reactor.wait(std::time::Duration::from_secs(nap))
+                == crate::event_loop::LoopEvent::Shutdown
+        }) {
+            return;
         }
     }
 }
@@ -2901,7 +2892,7 @@ pub(crate) fn orchestrate_run(
 /// that just grew a live agent lane ([`bn_core::crossrepo::repos_with_live_agents`]), then run one
 /// existing per-repo supervise pass ([`orchestrate_run`] with `once`) for every supervised repo —
 /// so land / recover / reconcile fire across *all* sessions in a single sweep. `once` runs exactly
-/// one sweep (cron fallback / manual poke); otherwise it idle-polls until every repo is stopped.
+/// one sweep (cron fallback / manual poke); otherwise it reacts until every repo is stopped.
 fn orchestrate_run_all(cfg: &Config, once: bool, json: bool) {
     ensure_migrated(false);
     // Single-controller guard: this sweep claims an owner lease per repo it drives (below), so a
@@ -2921,19 +2912,13 @@ fn orchestrate_run_all(cfg: &Config, once: bool, json: bool) {
     let _all_owner_guard = AllOwnerGuard {
         me: me_owner(bn_core::util::now_epoch_secs()),
     };
-    let mut wake_watcher = if once {
-        None
-    } else {
-        match crate::wake::WakeWatcher::new(&[]) {
-            Ok(watcher) => Some(watcher),
-            Err(error) => {
-                eprintln!(
-                    "bn orchestrate: filesystem notifications unavailable ({error}); polling"
-                );
-                None
-            }
-        }
-    };
+    let mut reactor = (!once).then(|| {
+        crate::event_loop::EventLoop::with_wake_queue(
+            "bn orchestrate",
+            vec![crate::event_loop::Watch::file(backlog::backlog_path())],
+            &[],
+        )
+    });
     loop {
         let now = bn_core::util::now_epoch_secs();
         // Adopt any *newly cloned* repo that has grown a live agent session into a resident
@@ -2998,14 +2983,11 @@ fn orchestrate_run_all(cfg: &Config, once: bool, json: bool) {
                 let _ = queue.acknowledge(&target, &ids);
             }
         }
-        if let Some(watcher) = wake_watcher.as_ref() {
-            if let Err(error) = watcher.wait_timeout(std::time::Duration::from_secs(nap)) {
-                eprintln!("bn orchestrate: filesystem notifications failed ({error}); polling");
-                wake_watcher = None;
-                std::thread::sleep(std::time::Duration::from_secs(nap));
-            }
-        } else {
-            std::thread::sleep(std::time::Duration::from_secs(nap));
+        if reactor.as_mut().is_some_and(|reactor| {
+            reactor.wait(std::time::Duration::from_secs(nap))
+                == crate::event_loop::LoopEvent::Shutdown
+        }) {
+            return;
         }
     }
 }
@@ -3067,273 +3049,20 @@ struct BacklogSkip {
 }
 
 fn refill_from_backlog(cfg: &Config, run_path: &Path, repo: &str, now: i64) -> RefillResult {
-    let Some(mut st) = OrchestrateState::load(run_path) else {
-        return RefillResult::default();
-    };
-    if st.stopped {
-        return RefillResult::default();
-    }
-    refresh_node_registry(cfg, &mut st);
-    refresh_repo_placement_policies(cfg, &mut st);
-    let caps = build_caps(cfg, &st);
-    let policy = cfg.repo_placement_policy(repo);
-    let probe_item = orchestrate::QueueItem {
-        repo: repo.to_string(),
-        required_capabilities: policy.requires,
-        excluded_capabilities: policy.excludes,
-        ..orchestrate::QueueItem::default()
-    };
-    let worker_slots = st
-        .nodes
-        .iter()
-        .filter(|node| {
-            bn_core::scheduler::worker_eligible(node, &probe_item, &caps)
-                && !st.queue.iter().any(|item| {
-                    item.occupies_dispatch_slot()
-                        && item.node.as_deref().is_some_and(|placed| {
-                            placed == node.node_id
-                                || node.target
-                                    == bn_core::backlog::ExecutionTarget::SshHost(
-                                        placed.to_string(),
-                                    )
-                        })
-                })
-        })
-        .count();
-    let local_in_flight = st.local_node_in_flight();
-    let queued = st
-        .queue
-        .iter()
-        .filter(|item| item.is_dispatchable())
-        .count();
-    let available_slots = st
-        .total_local_cap()
-        .saturating_sub(local_in_flight)
-        .saturating_add(worker_slots);
-    let capacity = available_slots.saturating_sub(queued);
-    if capacity == 0 {
-        return RefillResult::default(); // the dispatch pass explains the full working set
-    }
-
-    // Read the candidate pool before observing resource guards: an empty backlog is the reason
-    // when there is nothing to admit, regardless of current machine pressure.
-    let bl = backlog::load(&backlog::backlog_path());
-    let pending = bl.pending_for(repo);
-    if pending.is_empty() {
-        return RefillResult {
-            reason: Some("backlog empty".to_string()),
-            skipped: Vec::new(),
-        };
-    }
-
-    // #668: resource preflight — don't lease *new* backlog work onto a box under RAM/swap/load (or
-    // budget) pressure. A resource pause HOLDs the whole pull: the items stay pending in the durable
-    // backlog (the deferred queue) and are pulled on a later tick once pressure clears — the same
-    // defer/drain loop the dispatch-side `admit()` gate uses, so *both* work-admitting sites respect
-    // capacity, not just dispatch. Resource guards are machine-wide (independent of in-flight), so we
-    // probe the coding lane at 0 in-flight and act only on a real pause (never plain local-cap).
-    let obs = observe_resources(cfg, &st, now);
-    if let Some(bind) = bn_core::scheduler::admit(&caps, &obs, WorkClass::Coding, 0) {
-        if bind.is_pause()
-            && (worker_slots == 0 || !bn_core::scheduler::bind_allows_worker_handoff(Some(bind)))
-        {
-            log_event(
-                "orchestrate_backlog_hold",
-                &[
-                    ("repo", repo),
-                    ("cap", bind.label()),
-                    ("reason", bind.reason()),
-                ],
-            );
-            return RefillResult {
-                reason: Some(bind.reason().to_string()),
-                skipped: Vec::new(),
-            };
-        }
-    }
-
-    // The candidate pool: this repo's pending backlog entries (`bn next`), carrying their #376
-    // touches + #385 kind. An id already tracked in the run (in-flight or queued for the same
-    // (repo, id)) would only duplicate a lane that can't cleanly merge beside it, so it's marked
-    // not-mergeable — the don't-start-what-can't-merge guard (defense-in-depth over extend's dedup).
-    let in_run: std::collections::HashSet<&str> = st
-        .queue
-        .iter()
-        .filter(|q| q.repo == repo)
-        .map(|q| q.id.as_str())
-        .collect();
-    let candidates: Vec<bn_core::select::SelectCandidate> = pending
-        .iter()
-        .map(|e| bn_core::select::SelectCandidate {
-            id: e.id.clone(),
-            repo: e.repo.clone(),
-            title: e.item.clone(),
-            kind: e.kind,
-            priority: e.priority,
-            goal: None,
-            touches: e.touches.clone(),
-            mergeable: !in_run.contains(e.id.as_str()),
-        })
-        .collect();
-
-    // The strategic signals advise ranks by: the open quarter goals (read-only — never create one on
-    // a hot tick) + open attention pressure. Best-effort: absent/unreadable degrades to empty, so the
-    // rank falls back to priority + attention exactly as before goals existed.
-    let today = bn_core::util::date_of(now);
-    let goals = open_quarter_goals(cfg, &today);
-    let attention: Vec<bn_core::advise::AttnSignal> = bn_core::attention::open_items(&today)
-        .into_iter()
-        .map(|a| bn_core::advise::AttnSignal {
-            repo: a.repo,
-            severity: a.severity,
-        })
-        .collect();
-
-    // The #376 conflict map: the touch-sets of everything already committed to the run (in-flight +
-    // queued), so a newly-selected item that would overlap is held rather than leased into a clash.
-    let inflight_touches: Vec<Vec<String>> = st
-        .queue
-        .iter()
-        .filter(|q| !q.status.is_terminal())
-        .map(|q| q.touches.clone())
-        .collect();
-
-    let selection = bn_core::select::select_wave(&bn_core::select::SelectionInputs {
-        goals: &goals,
-        candidates: &candidates,
-        attention: &attention,
-        capacity,
-        inflight_touches: &inflight_touches,
-    });
-    let skipped = selection
-        .skipped
-        .iter()
-        .map(|candidate| BacklogSkip {
-            id: candidate.id.clone(),
-            item: candidate.title.clone(),
-            reason: format!("backlog selection: {}", candidate.reason.label()),
-        })
-        .collect::<Vec<_>>();
-    if selection.wave.is_empty() {
-        let reason = if selection.skipped_for(bn_core::select::SkipReason::Conflict) > 0 {
-            "backlog candidates held by in-flight conflicts"
-        } else if selection.skipped_for(bn_core::select::SkipReason::CantMerge) > 0 {
-            "backlog candidates are already in this run"
-        } else {
-            "no backlog candidate was eligible"
-        };
-        return RefillResult {
-            reason: Some(reason.to_string()),
-            skipped,
-        };
-    }
-
-    // Lease exactly the chosen ids — in wave (advise-rank) order, so the run queue preserves the
-    // selection priority the scheduler then dispatches in — and extend the run with them.
-    let ids: Vec<String> = selection.wave.iter().map(|c| c.id.clone()).collect();
-    let leased = match backlog::lease_selected(&backlog::backlog_path(), repo, &ids, now) {
-        Ok(leased) => leased,
-        Err(e) => {
-            return RefillResult {
-                reason: Some(format!("backlog lease failed: {e}")),
-                skipped,
-            };
-        }
-    };
-    if leased.is_empty() {
-        return RefillResult {
-            reason: Some("backlog lease produced no work".to_string()),
-            skipped,
-        };
-    }
-    // #385: carry each entry's kind → its typed concurrency lane (ship ⇒ coding, scout ⇒ research)
-    // so the scheduler caps it in the right lane.
-    let items: Vec<QueueEntrySpec> = leased
-        .iter()
-        .map(|e| {
-            (
-                e.item.clone(),
-                e.touches.clone(),
-                e.substrate,
-                WorkClass::from_kind(e.kind),
-                e.controller_id.clone(),
-            )
-        })
-        .collect();
-    match orchestrate::mutate(run_path, |disk| disk.extend_with_entries(&items, now)) {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return RefillResult {
-                reason: Some(release_failed_backlog_lease(
-                    repo,
-                    &leased,
-                    now,
-                    "run disappeared while extending leased backlog work",
-                )),
-                skipped,
-            };
-        }
-        Err(e) => {
-            return RefillResult {
-                reason: Some(release_failed_backlog_lease(
-                    repo,
-                    &leased,
-                    now,
-                    &format!("run update failed after backlog lease: {e}"),
-                )),
-                skipped,
-            };
-        }
-    }
-    log_event(
-        "orchestrate_backlog_lease",
-        &[
-            ("repo", repo),
-            ("leased", &leased.len().to_string()),
-            ("skipped", &selection.skipped.len().to_string()),
-        ],
-    );
+    // Admission moved to `bn queue tick` (#queue, stage 6).
+    //
+    // There were two dispatchers deciding what may start, each with its own capacity arithmetic and
+    // its own idea of what was in flight — kept apart only by a kind partition. That partition was
+    // a migration device, not a design. The tick is now the single admission authority for every
+    // kind; this run keeps everything it is actually better at, which is most of the job: landing
+    // PRs, reconciling terminal outcomes, relaunching wedged lanes, supervising panes.
+    //
+    // Work the tick dispatches is absorbed into this run by `adopt_lanes` on the next pass, so a
+    // tick-started agent gets the same lifecycle as one this run started itself.
+    let _ = (cfg, run_path, repo, now);
     RefillResult {
-        reason: None,
-        skipped,
-    }
-}
-
-fn release_failed_backlog_lease(
-    repo: &str,
-    leased: &[bn_core::backlog::BacklogEntry],
-    now: i64,
-    reason: &str,
-) -> String {
-    let ids: Vec<&str> = leased.iter().map(|entry| entry.id.as_str()).collect();
-    match backlog::release_many(&backlog::backlog_path(), repo, &ids, now) {
-        Ok(released) if released == ids.len() => reason.to_string(),
-        Ok(released) => format!(
-            "{reason}; only {released}/{} backlog leases returned to pending",
-            ids.len()
-        ),
-        Err(e) => format!("{reason}; backlog lease release failed: {e}"),
-    }
-}
-
-/// The open quarter goals with their latest-review status — the strategic weights the #459 selection
-/// loop ranks candidates by. Read-only + best-effort: a missing/unparseable quarter yields no goals
-/// (selection then falls back to priority + attention), and it never *creates* a quarter file on a
-/// hot tick the way `ensure_current` would.
-fn open_quarter_goals(cfg: &Config, today: &str) -> Vec<bn_core::advise::GoalContext> {
-    let Some(qid) = bn_core::quarter::quarter_id(today) else {
-        return Vec::new();
-    };
-    match bn_core::quarter::read_quarter(cfg, &qid) {
-        Ok(Some(q)) => q
-            .open()
-            .map(|g| bn_core::advise::GoalContext {
-                key: g.key.clone(),
-                text: g.text.clone(),
-                status: q.status_of(&g.key).to_string(),
-            })
-            .collect(),
-        _ => Vec::new(),
+        reason: Some("admission is owned by `bn queue tick`".to_string()),
+        skipped: Vec::new(),
     }
 }
 
@@ -4322,12 +4051,17 @@ fn execute_action(
             );
         }
         SupervisorAction::AnswerCommandApproval => {
-            let option = command_approval_is_trusted_ship(st, id)
-                .then(|| orchestrate::command_approval_option(&obs.tail))
-                .flatten();
-            if let Some(option) = option {
-                // Orchestrated ship lanes are dispatched with --yolo. Pick the explicit
-                // session-scoped allow option, never the one-shot approval or an arbitrary answer.
+            // The whole policy — which requests may be cleared unattended, and the audit trail of
+            // what was — lives in `cmd::agent_approve`. It parses the dialog rather than pattern-
+            // matching the tail, so the option it picks is one the harness actually offered.
+            let decided = crate::cmd::agent_approve::decide_for_tail(
+                &target,
+                &obs.tail,
+                &obs.plane_a,
+                bn_core::agent::LaneKind::Orchestrated,
+                crate::cmd::agent_approve::is_trusted_ship(st, id),
+            );
+            if let Some((option, why)) = decided {
                 let option = option.to_string();
                 crate::proc::tmux_run(&["send-keys", "-t", &format!("={target}"), &option]);
                 crate::proc::tmux_run(&["send-keys", "-t", &format!("={target}"), "Enter"]);
@@ -4335,12 +4069,12 @@ fn execute_action(
                     id,
                     state,
                     action,
-                    &format!("allowed command for this trusted ship session ({option}, Enter)"),
+                    &format!("auto-approved ({option}, Enter): {why}"),
                     now,
                 );
                 log_event(
                     "orchestrate_command_approval",
-                    &[("repo", &repo), ("branch", branch), ("answer", "session")],
+                    &[("repo", &repo), ("branch", branch), ("answer", &why)],
                 );
             } else {
                 // Blocking: only a human can grant this. `execute_action` runs on every supervise
@@ -4395,15 +4129,6 @@ fn execute_action(
             switch_limited_lane(st, id, branch, now);
         }
     }
-}
-
-/// Only coding/ship items carry orchestrate's `--yolo` trust contract. Research/scout lanes are
-/// intentionally non-yolo, so their command approvals remain operator decisions.
-fn command_approval_is_trusted_ship(st: &OrchestrateState, id: &str) -> bool {
-    st.queue
-        .iter()
-        .find(|item| item.id == id)
-        .is_some_and(|item| item.command_approvals_trusted && !item.is_scout())
 }
 
 /// How long to wait after a usage-limit harness switch before the same lane may be switched again
@@ -5316,32 +5041,9 @@ fn apply_worker_snapshot(
     node: &mut bn_core::hosts::NodeRecord,
     status: Option<&serde_json::Value>,
 ) {
-    let Some(status) = status else {
-        node.status = bn_core::hosts::NodeStatus::Offline;
-        node.capacity = None;
-        node.active_attempts = 0;
-        return;
-    };
-    node.status = bn_core::hosts::NodeStatus::Ready;
-    node.capacity = status
-        .get("capacity")
-        .cloned()
-        .and_then(|value| serde_json::from_value(value).ok());
-    node.active_attempts = status
-        .get("attempts")
-        .and_then(serde_json::Value::as_array)
-        .map(|attempts| {
-            attempts
-                .iter()
-                .filter(|attempt| {
-                    matches!(
-                        attempt.get("state").and_then(serde_json::Value::as_str),
-                        Some("QUEUED" | "RUNNING")
-                    )
-                })
-                .count()
-        })
-        .unwrap_or_default();
+    // The fold is policy — whether a reachable node is placeable — so it lives in bn-core where it
+    // is pure and one implementation. See `hosts::apply_snapshot` for what this used to get wrong.
+    bn_core::hosts::apply_snapshot(node, status, bn_core::util::now_epoch_secs());
 }
 
 
@@ -6194,7 +5896,8 @@ fn resolve_runs(repo: Option<&str>) -> Vec<(PathBuf, OrchestrateState)> {
 /// Live monitoring view: a rollup header (queue depth, in-flight, merged/hr, ETA, cost today) over
 /// one row per in-flight agent with its jumpable tmux `session:window`. `--json` emits the enriched
 /// contract once (identical shape to `status --json`); `--plain` prints one static frame (for
-/// `watch -n`/pipes); otherwise it self-refreshes every `interval`s until interrupted.
+/// `watch -n`/pipes); otherwise it refreshes on state changes, with `interval` as the deadline for
+/// time-derived fields, until interrupted.
 pub(crate) fn orchestrate_watch(
     cfg: &Config,
     repo: Option<&str>,
@@ -6218,13 +5921,23 @@ pub(crate) fn orchestrate_watch(
         );
         return;
     }
-    // Self-refresh: clear + home the cursor, paint the frame, sleep. Ctrl-C exits.
+    let mut reactor = crate::event_loop::EventLoop::new(
+        "bn orchestrate watch",
+        vec![crate::event_loop::Watch::directory(
+            bn_core::resolver::state_dir(),
+        )],
+    );
+    // Self-refresh: clear + home the cursor, paint the frame, then wait for state or time to move.
     loop {
         let frame = watch_frame(cfg, repo, bn_core::util::now_epoch_secs());
         print!("\x1b[2J\x1b[H{frame}");
         use std::io::Write;
         let _ = std::io::stdout().flush();
-        std::thread::sleep(std::time::Duration::from_secs(interval.max(1)));
+        if reactor.wait(std::time::Duration::from_secs(interval.max(1)))
+            == crate::event_loop::LoopEvent::Shutdown
+        {
+            return;
+        }
     }
 }
 
@@ -7439,4 +7152,3 @@ fn record_degradation(
         states.insert(key, active);
     }
 }
-

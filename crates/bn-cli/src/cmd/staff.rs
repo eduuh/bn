@@ -132,8 +132,9 @@ pub(crate) fn run_gather(gather: &str) -> Result<String, String> {
     }
 }
 
-/// `bn staff run <agent>` and the `staff-<name>` cron. The deterministic half — resolve the agent
-/// across roster tiers, gather the packet, load the pinned skill — runs here; validate + route
+/// `bn staff run <agent>` and the unified `bn run <name>` agent path. The deterministic half —
+/// resolve the agent across roster tiers, gather the packet, load the pinned skill — runs here;
+/// validate + route
 /// live in [`bn_core::staff::run_pipeline`], which gets the real headless dispatch injected as a
 /// closure (classified via the #271 taxonomy so auth/rate-limited runs record distinctly and don't
 /// page). Returns a process exit code: 0 on a landed or idempotently re-run card, 1 on any failure
@@ -146,17 +147,32 @@ pub(crate) fn staff_run_code(
 ) -> i32 {
     use bn_core::staff;
     let today = today();
-    let Some(agent) = staff::find(cfg, ctx, name) else {
-        let msg = format!("bn staff: no gather agent '{name}' in config/agents");
-        if as_json {
-            println!(
-                "{}",
-                serde_json::json!({"agent": name, "ok": false, "error": msg})
-            );
-        } else {
-            eprintln!("{msg}");
+    let agent = match staff::find(cfg, ctx, name) {
+        Ok(Some(agent)) => agent,
+        Ok(None) => {
+            let msg = format!("bn staff: no gather agent '{name}' in config/agents");
+            if as_json {
+                println!(
+                    "{}",
+                    serde_json::json!({"agent": name, "ok": false, "error": msg})
+                );
+            } else {
+                eprintln!("{msg}");
+            }
+            return 1;
         }
-        return 1;
+        Err(error) => {
+            let msg = format!("bn staff: invalid agent catalog: {error}");
+            if as_json {
+                println!(
+                    "{}",
+                    serde_json::json!({"agent": name, "ok": false, "error": msg})
+                );
+            } else {
+                eprintln!("{msg}");
+            }
+            return 1;
+        }
     };
     let entry = &agent;
 
@@ -276,16 +292,23 @@ pub(crate) fn emit_staff_plan(
     as_json: bool,
 ) -> i32 {
     use bn_core::staff;
-    let Some(agent) = staff::find(cfg, ctx, name) else {
-        if as_json {
-            println!(
-                "{}",
-                serde_json::json!({"agent": name, "ok": false, "error": "no such agent"})
-            );
-        } else {
-            eprintln!("bn staff: no gather agent '{name}' in config/agents");
+    let agent = match staff::find(cfg, ctx, name) {
+        Ok(Some(agent)) => agent,
+        Ok(None) => {
+            if as_json {
+                println!(
+                    "{}",
+                    serde_json::json!({"agent": name, "ok": false, "error": "no such agent"})
+                );
+            } else {
+                eprintln!("bn staff: no gather agent '{name}' in config/agents");
+            }
+            return 1;
         }
-        return 1;
+        Err(error) => {
+            eprintln!("bn staff: invalid agent catalog: {error}");
+            return 1;
+        }
     };
     let entry = &agent;
     let packet = run_gather(entry.gather.as_deref().expect("staff agent has gather"));
@@ -427,7 +450,8 @@ pub(crate) fn emit_staff_gather(cfg: &Config, agent: &str) -> i32 {
 /// rate-limited.
 pub(crate) fn emit_staff_board(cfg: &Config, ctx: Option<&Resolved>, as_json: bool) {
     use bn_core::{staff, staff_schedule};
-    let agents = staff::discover(cfg, ctx);
+    let agents = staff::discover(cfg, ctx)
+        .unwrap_or_else(|error| fail(&format!("bn staff: invalid agent catalog: {error}")));
     let last = staff::last_runs();
     let unread: std::collections::HashSet<String> = staff::list_cards(cfg)
         .into_iter()
@@ -646,7 +670,8 @@ pub(crate) fn emit_staff_cost(
     let month = month
         .map(str::to_string)
         .unwrap_or_else(|| staff::month_of(&today()).to_string());
-    let report = staff::cost_report(cfg, ctx, &month);
+    let report = staff::cost_report(cfg, ctx, &month)
+        .unwrap_or_else(|error| fail(&format!("bn staff cost: invalid agent catalog: {error}")));
 
     if as_json {
         println!("{}", serde_json::to_string(&report).unwrap_or_default());
@@ -776,5 +801,3 @@ pub(crate) fn emit_staff_archive(cfg: &Config, dry_run: bool, as_json: bool) {
 
     println!("  exempt: chronicles + retro transcripts (kept forever)");
 }
-
-

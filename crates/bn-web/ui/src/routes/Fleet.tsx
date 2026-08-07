@@ -6,18 +6,19 @@ import { fleetQuery, orchestrateQuery } from "../api/client";
 import type { Counts } from "../api/types";
 import { fleetEntries, needsYou, orchestrators } from "../lib/fleet";
 import { useNow } from "../hooks/useNow";
-import { useToasts } from "../hooks/useToasts";
 import { useBacklogActions } from "../hooks/useBacklogActions";
 import { FleetEntryCard } from "../components/FleetEntryCard";
 import { FleetRow } from "../components/FleetRow";
 import { NodeStrip } from "../components/NodeStrip";
+import { PendingApprovals } from "../components/PendingApprovals";
 import { PaneRule, Section } from "../components/ui/pane";
 import { AgentActivity } from "../components/AgentActivity";
 import { SteerPanel } from "../components/SteerPanel";
+import { ApprovalPanel } from "../components/ApprovalPanel";
 import { LanesPanel } from "../components/backlog/LanesPanel";
 import { QueuePanel } from "../components/backlog/QueuePanel";
 import { RecoveryFeed } from "../components/RecoveryFeed";
-import { Toasts } from "../components/backlog/Toasts";
+import { ToastStack } from "../components/ToastStack";
 import { Button } from "../components/ui/button";
 import { Skeleton } from "../components/ui/skeleton";
 import { cn } from "../lib/utils";
@@ -50,8 +51,7 @@ export function Fleet() {
   const orch = useQuery(orchestrateQuery());
   const fleet = useQuery(fleetQuery());
   const now = useNow();
-  const { toasts, push, dismiss } = useToasts();
-  const actions = useBacklogActions(push);
+  const actions = useBacklogActions();
 
   const entries = fleetEntries(orch.data, fleet.data);
   const orchestratorEntries = orchestrators(entries);
@@ -110,6 +110,9 @@ export function Fleet() {
           className="flex min-h-0 flex-col overflow-y-auto border-border lg:border-r"
         >
           <NodeStrip />
+          {/* Above every tier: an agent blocked on a dialog is the only thing on this board
+              that is waiting on *you*, and it should be answerable without opening it. */}
+          <PendingApprovals />
 
           {loading && (
             <div className="space-y-2 px-3.5 py-3">
@@ -263,6 +266,9 @@ export function Fleet() {
                 </div>
               </div>
               <div className="space-y-3 px-3.5 py-3">
+                {/* If this agent is blocked, the thing you came to do is unblock it — so its
+                    dialog leads, above the transcript. Renders nothing otherwise. */}
+                <ApprovalPanel target={selected.target} />
                 <AgentActivity sessionId={selected.sessionId} />
                 <SteerPanel target={selected.target} />
               </div>
@@ -280,7 +286,7 @@ export function Fleet() {
         </section>
       </div>
 
-      <Toasts toasts={toasts} onDismiss={dismiss} />
+      <ToastStack />
     </div>
   );
 }

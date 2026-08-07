@@ -18,6 +18,8 @@ import {
   GraduationCap,
   HardDrive,
   LineChart,
+  ListOrdered,
+  ScrollText,
   ListTodo,
   type LucideIcon,
   Microscope,
@@ -95,6 +97,20 @@ const DESTINATIONS: {
   exp?: string;
 }[] = [
   { to: "/", label: "Console", Icon: SquareTerminal, keywords: "home queue index start work" },
+  {
+    to: "/queue",
+    label: "Queue",
+    Icon: ListOrdered,
+    keywords: "work backlog pending pause dispatch tick capacity skills",
+    exp: "queue",
+  },
+  {
+    to: "/queue/events",
+    label: "Queue events",
+    Icon: ScrollText,
+    keywords: "queue log history dispatch failed reclaimed expired audit",
+    exp: "queue",
+  },
   {
     to: "/fleet",
     label: "Fleet",

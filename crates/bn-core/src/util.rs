@@ -119,6 +119,29 @@ pub fn clock_hm(ts: i64) -> String {
         .unwrap_or_default()
 }
 
+/// The epoch of the next occurrence of local wall-clock `h:m` strictly after `now` — the inverse
+/// of [`clock_hm`], for reading a `--until 18:00` style argument.
+///
+/// Rolls to tomorrow when that time has already passed today, because "until 09:00" typed at
+/// midnight means the coming 09:00; resolving it to one already past would make the window expire
+/// the instant it was created. `None` for an out-of-range time or a local clock gap (the
+/// spring-forward hour, which genuinely does not exist).
+pub fn epoch_at_local_hm(now: i64, h: u32, m: u32) -> Option<i64> {
+    use chrono::TimeZone;
+    let today = chrono::DateTime::from_timestamp(now, 0)?
+        .with_timezone(&chrono::Local)
+        .date_naive();
+    for day in [today, today.succ_opt()?] {
+        let naive = day.and_hms_opt(h, m, 0)?;
+        if let Some(dt) = chrono::Local.from_local_datetime(&naive).earliest() {
+            if dt.timestamp() > now {
+                return Some(dt.timestamp());
+            }
+        }
+    }
+    None
+}
+
 /// The ISO-8601 week label (`YYYY-Www`, e.g. `2026-W26`) for a `YYYY-MM-DD` date — the
 /// filename stem the weekly-insights snapshot accumulates under so history sorts and never
 /// collides. Uses the ISO week-year (which can differ from the calendar year in late

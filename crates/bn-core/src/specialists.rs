@@ -332,16 +332,21 @@ pub fn resolve_refs(spec: &AgentDef) -> Vec<ResolvedRef> {
 
 /// The specialists that should be materialized for `scope`: every discovered `is_specialist()`
 /// agent for a global install; only those gated to the current repo for a repo-scoped install.
-fn desired_specialists(cfg: &Config, ctx: Option<&Resolved>, scope: NativeScope) -> Vec<AgentDef> {
+fn desired_specialists(
+    cfg: &Config,
+    ctx: Option<&Resolved>,
+    scope: NativeScope,
+) -> Result<Vec<AgentDef>, String> {
     let repo = ctx.map(|c| c.repo.as_str());
-    crate::agents::discover(cfg, ctx)
+    Ok(crate::agents::discover(cfg, ctx)
+        .map_err(|error| error.to_string())?
         .into_iter()
         .filter(|a| a.is_specialist())
         .filter(|a| match scope {
             NativeScope::Global => true,
             NativeScope::Repo => a.repo.as_deref() == repo,
         })
-        .collect()
+        .collect())
 }
 
 /// Materialize the discovered specialists as native custom agents for the requested harnesses.
@@ -364,7 +369,7 @@ pub fn install_native_agents(
         NativeScope::Global => base_dir.to_path_buf(),
     };
 
-    let specialists = desired_specialists(cfg, ctx, scope);
+    let specialists = desired_specialists(cfg, ctx, scope)?;
     for spec in &specialists {
         validate_specialist_name(&spec.name)?;
     }
@@ -588,6 +593,7 @@ pub fn scaffold(
 
     let mut front = String::from("---\n");
     front.push_str(&format!("name: {name}\n"));
+    front.push_str("kind: specialist\n");
     front.push_str(&format!("repo: {}\n", yaml_scalar(repo)));
     front.push_str(&format!("description: {}\n", yaml_scalar(&desc)));
     if let Some(src) = source_repo.filter(|s| !s.trim().is_empty()) {
@@ -598,13 +604,11 @@ pub fn scaffold(
     front.push_str("worlds: [copilot, claude]\n");
     front.push_str("tools: [read, search, execute]\n");
     front.push_str("---\n");
-    let body = format!(
-        "You are a pull-request reviewer for the `{repo}` repository.\n\nReview the diff against \
-         the standards below (mined from real reviewer comments on merged PRs) and flag concrete, \
-         actionable issues — correctness, API misuse, missing tests, and the team's recurring \
-         nits. Prefer the existing `auto-review-pr` workflow to fetch and post the review. Be \
-         specific and cite the standard you are applying.\n"
-    );
+    let mut args = serde_json::Map::new();
+    args.insert("repo".into(), serde_json::Value::String(repo.to_string()));
+    let base = std::env::current_dir().unwrap_or_default();
+    let body = crate::skills::render_required(cfg, &base, "specialist-scaffold", Some(&args))
+        .map_err(|error| error.to_string())?;
     std::fs::write(&path, format!("{front}{body}"))
         .map_err(|e| format!("write {}: {e}", path.display()))?;
     Ok(path)

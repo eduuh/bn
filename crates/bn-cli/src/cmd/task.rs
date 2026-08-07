@@ -738,31 +738,56 @@ fn triage_allowed_here(cfg: &Config) -> bool {
     }
 }
 
-/// Launch a fresh-context agent on `seed`, or print the seed when `dry_run`.
-///
-/// Returns whether an agent was actually launched. Deliberately thin: what the agent is *told*
-/// lives in `bn_core::task_agents` where it is unit-tested, and this only carries it across.
-fn run_task_agent(label: &str, seed: &str, dry_run: bool, as_json: bool) -> bool {
+struct TaskAgentRun {
+    prompt: String,
+    launched: bool,
+    output: String,
+}
+
+/// Strictly render a task agent and run its configured headless harness unless this is a dry run.
+fn run_task_agent(cfg: &Config, label: &str, packet: &str, dry_run: bool) -> TaskAgentRun {
+    let ctx = target_ctx(cfg, None, None);
+    let catalog = bn_core::agents::discover(cfg, ctx.as_ref())
+        .unwrap_or_else(|error| fail(&format!("bn task {label}: {error}")));
+    let agent = catalog
+        .require(label)
+        .unwrap_or_else(|error| fail(&format!("bn task {label}: {error}")));
+    let mut args = serde_json::Map::new();
+    args.insert(
+        "packet".into(),
+        serde_json::Value::String(packet.to_string()),
+    );
+    let prompt = agent
+        .render(Some(&args))
+        .unwrap_or_else(|error| fail(&format!("bn task {label}: {error}")));
     if dry_run {
-        if as_json {
-            let data = serde_json::json!({ "agent": label, "seed": seed, "launched": false });
-            println!("{}", Envelope::success("task_agent", data).to_json());
-        } else {
-            println!("{seed}");
-        }
-        return false;
+        return TaskAgentRun {
+            prompt,
+            launched: false,
+            output: String::new(),
+        };
     }
-    let dir = bn_core::resolver::state_dir().join("seeds");
-    if std::fs::create_dir_all(&dir).is_err() {
-        fail("bn task: could not create the seed dir");
+
+    let harness = agent.harness.as_deref().unwrap_or("copilot");
+    let Some(cmd) =
+        crate::cmd::staff::staff_dispatch_command(harness, &prompt, agent.model.as_deref(), None)
+    else {
+        fail(&format!(
+            "bn task {label}: unknown harness '{harness}' (use copilot | claude)"
+        ));
+    };
+    let (success, output, combined) = crate::cmd::staff::dispatch_capture(cmd, None);
+    if !success {
+        fail(&format!(
+            "bn task {label}: harness failed: {}",
+            bn_core::staff::failure_detail(&combined)
+        ));
     }
-    let path = dir.join(format!("{label}-{}.md", bn_core::util::now_epoch_secs()));
-    if std::fs::write(&path, seed).is_err() {
-        fail(&format!("bn task: could not write {}", path.display()));
+    TaskAgentRun {
+        prompt,
+        launched: true,
+        output,
     }
-    println!("Seed written to {}", path.display());
-    println!("Launch it with your harness, e.g.:  claude --seed-file {}", path.display());
-    true
 }
 
 /// `bn task improve <id>` — make one task executable.
@@ -805,7 +830,7 @@ pub(crate) fn emit_task_improve(
     };
 
     let task_id = task.id().unwrap_or("?").to_string();
-    // Re-judge now so the seed names the *current* gaps rather than a stale stamp.
+    // Re-judge now so the packet names the *current* gaps rather than a stale stamp.
     let known = bn_core::issues::known_repos(cfg).into_iter().collect();
     let doc = bn_core::task_doc::read(cfg, &task);
     let verdict = bn_core::smart::check(&task, doc.as_ref(), &known, &today);
@@ -814,18 +839,27 @@ pub(crate) fn emit_task_improve(
         return;
     }
 
-    let seed = bn_core::task_agents::improve_seed(&task, Some(&verdict), steer);
-    if as_json && !dry_run {
+    let packet = bn_core::task_agents::improve_packet(&task, Some(&verdict), steer);
+    if !dry_run && !as_json {
+        println!("Improving {task_id} — fails on: {}", verdict.codes().join(", "));
+    }
+    let run = run_task_agent(cfg, "task-improve", &packet, dry_run);
+    if as_json {
         let data = serde_json::json!({
-            "id": task_id, "gaps": verdict.codes(), "seed": seed,
+            "id": task_id,
+            "gaps": verdict.codes(),
+            "prompt": run.prompt,
+            "launched": run.launched,
+            "output": run.output,
         });
         println!("{}", Envelope::success("task_improve", data).to_json());
         return;
     }
-    if !dry_run {
-        println!("Improving {task_id} — fails on: {}", verdict.codes().join(", "));
+    if dry_run {
+        println!("{}", run.prompt);
+    } else if !run.output.trim().is_empty() {
+        println!("{}", run.output.trim());
     }
-    run_task_agent("task-improve", &seed, dry_run, as_json);
 }
 
 /// `bn task triage` — decide what is doable today.
@@ -849,35 +883,45 @@ pub(crate) fn emit_task_triage(cfg: &Config, day: Option<&str>, dry_run: bool, a
         return;
     }
     let ranked = bn_core::task_agents::rank(&open, &day);
-    let seed = bn_core::task_agents::triage_seed(&ranked, &day, None);
-
-    if as_json {
-        let shortlist: Vec<serde_json::Value> = ranked
-            .iter()
-            .take(bn_core::task_agents::TRIAGE_WINDOW)
-            .map(|t| {
-                serde_json::json!({
-                    "id": t.id(),
-                    "summary": t.summary(),
-                    "score": bn_core::task_agents::pre_score(t, &day),
-                })
+    let packet = bn_core::task_agents::triage_packet(&ranked, &day, None);
+    let shortlist: Vec<serde_json::Value> = ranked
+        .iter()
+        .take(bn_core::task_agents::TRIAGE_WINDOW)
+        .map(|t| {
+            serde_json::json!({
+                "id": t.id(),
+                "summary": t.summary(),
+                "score": bn_core::task_agents::pre_score(t, &day),
             })
-            .collect();
-        let data = serde_json::json!({ "day": day, "shortlist": shortlist, "seed": seed });
-        println!("{}", Envelope::success("task_triage", data).to_json());
-        return;
-    }
+        })
+        .collect();
 
-    println!("Ranked shortlist for {day} ({} open):", open.len());
-    for t in ranked.iter().take(bn_core::task_agents::TRIAGE_WINDOW) {
-        println!(
-            "  {:>5}  {}  {}",
-            bn_core::task_agents::pre_score(t, &day),
-            t.id().unwrap_or("?"),
-            t.summary()
-        );
+    if !as_json && !dry_run {
+        println!("Ranked shortlist for {day} ({} open):", open.len());
+        for t in ranked.iter().take(bn_core::task_agents::TRIAGE_WINDOW) {
+            println!(
+                "  {:>5}  {}  {}",
+                bn_core::task_agents::pre_score(t, &day),
+                t.id().unwrap_or("?"),
+                t.summary()
+            );
+        }
     }
-    run_task_agent("task-triage", &seed, dry_run, as_json);
+    let run = run_task_agent(cfg, "task-triage", &packet, dry_run);
+    if as_json {
+        let data = serde_json::json!({
+            "day": day,
+            "shortlist": shortlist,
+            "prompt": run.prompt,
+            "launched": run.launched,
+            "output": run.output,
+        });
+        println!("{}", Envelope::success("task_triage", data).to_json());
+    } else if dry_run {
+        println!("{}", run.prompt);
+    } else if !run.output.trim().is_empty() {
+        println!("{}", run.output.trim());
+    }
 }
 
 /// The task id governing `subject` in `repo`, minting one if nothing covers it yet (#1001).
@@ -926,5 +970,3 @@ pub(crate) fn task_for_enqueue(cfg: &Config, repo: &str, subject: &str, src: &st
     }
     id
 }
-
-

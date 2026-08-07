@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { RotateCw, Send, Skull } from "lucide-react";
-import { queryKeys } from "../api/client";
+import { promptQuery } from "../api/prompt";
 import type { AgentControl } from "../api/types";
 import { killAgent, relaunchAgent, sendMessage } from "../api/writes";
-import { pushToast } from "../lib/toast";
+import { useAppMutation } from "../hooks/useAppMutation";
+import { affects } from "../lib/invalidation";
 import { Button } from "./ui/button";
 import { Card } from "./ui/card";
 import { Textarea } from "./ui/textarea";
@@ -13,7 +14,6 @@ import { Textarea } from "./ui/textarea";
  * kill buttons → the write-layer endpoints. Results surface as toasts, and every write invalidates
  * the fleet + pane so the effect shows without a reload. */
 export function SteerPanel({ target, control }: { target: string; control?: AgentControl }) {
-  const qc = useQueryClient();
   const [message, setMessage] = useState("");
 
   // bn drives agents through a recorded session (`--resume`) or a live tmux window (send-keys), and
@@ -24,41 +24,38 @@ export function SteerPanel({ target, control }: { target: string; control?: Agen
   // locking the panel against a stale binary.
   const steerable = control !== "none" && control !== "ambiguous";
 
-  const invalidate = () => {
-    void qc.invalidateQueries({ queryKey: queryKeys.fleet });
-    void qc.invalidateQueries({ queryKey: queryKeys.activityAll });
-  };
-  const onError = (e: unknown, label: string) => {
-    pushToast(`${label} failed: ${(e as Error).message}`, "error");
-  };
+  // An agent parked on a numbered menu cannot be steered with prose: the message would be typed
+  // into the prompt rather than read, and a stray character can register as a menu selection
+  // nobody chose. `bn agent send` refuses this case for the same reason, so the two surfaces
+  // agree — the answer is a button in the approval panel, not a sentence here.
+  const { data: pending } = useQuery(promptQuery(target));
+  const blocked = !!pending;
 
-  const sendMut = useMutation({
+  // No optimistic patch on these three: what changes is the agent's own progress, which only the
+  // server can report. The honest feedback is the pending button plus the toast, and the reconcile
+  // on settle then pulls the real state — including when the write failed.
+  const sendMut = useAppMutation({
     mutationFn: () => sendMessage(target, message.trim()),
-    onSuccess: () => {
-      pushToast("message sent", "success");
-      setMessage("");
-      invalidate();
-    },
-    onError: (e) => onError(e, "send"),
+    invalidates: affects.agentSteer,
+    toast: { success: "message sent", error: "send failed" },
+    onSuccess: () => setMessage(""),
   });
-  const relaunchMut = useMutation({
-    mutationFn: (hard: boolean) => relaunchAgent(target, hard),
-    onSuccess: (_data, hard) => {
-      pushToast(hard ? "hard relaunch triggered" : "relaunch triggered", "success");
-      invalidate();
+  const relaunchMut = useAppMutation<unknown, boolean>({
+    mutationFn: (hard) => relaunchAgent(target, hard),
+    invalidates: affects.agentSteer,
+    toast: {
+      success: (_d, hard) => (hard ? "hard relaunch triggered" : "relaunch triggered"),
+      error: "relaunch failed",
     },
-    onError: (e) => onError(e, "relaunch"),
   });
-  const killMut = useMutation({
+  const killMut = useAppMutation({
     mutationFn: () => killAgent(target),
-    onSuccess: () => {
-      pushToast("agent killed", "success");
-      invalidate();
-    },
-    onError: (e) => onError(e, "kill"),
+    invalidates: affects.agentSteer,
+    toast: { success: "agent killed", error: "kill failed" },
   });
 
   const busy = sendMut.isPending || relaunchMut.isPending || killMut.isPending || !steerable;
+  const canCompose = steerable && !blocked;
 
   return (
     <Card className="space-y-3 p-4">
@@ -89,6 +86,17 @@ export function SteerPanel({ target, control }: { target: string; control?: Agen
         </p>
       )}
 
+      {blocked && (
+        <p
+          role="status"
+          className="rounded-md border border-amber-500/40 bg-amber-500/5 px-2.5 py-2 text-xs text-muted-foreground"
+        >
+          <span className="font-medium text-foreground">This agent is waiting on a dialog.</span> A
+          message typed here would land in the prompt instead of being read. Answer it with the
+          buttons above, then steer.
+        </p>
+      )}
+
       <form
         className="space-y-3"
         onSubmit={(e) => {
@@ -100,11 +108,13 @@ export function SteerPanel({ target, control }: { target: string; control?: Agen
           className="min-h-[5rem] font-mono text-[13px] leading-relaxed"
           value={message}
           onChange={(e) => setMessage(e.target.value)}
-          disabled={!steerable}
+          disabled={!canCompose}
           placeholder={
-            steerable
-              ? "Message the agent (⌘/Ctrl+Enter to send)…"
-              : "Not steerable from here — no window or recorded session"
+            blocked
+              ? "Answer the dialog above first"
+              : steerable
+                ? "Message the agent (⌘/Ctrl+Enter to send)…"
+                : "Not steerable from here — no window or recorded session"
           }
           rows={3}
           onKeyDown={(e) => {
@@ -112,7 +122,7 @@ export function SteerPanel({ target, control }: { target: string; control?: Agen
           }}
         />
         <div className="flex flex-wrap gap-2">
-          <Button type="submit" size="sm" disabled={busy || !message.trim()}>
+          <Button type="submit" size="sm" disabled={busy || blocked || !message.trim()}>
             <Send className="h-4 w-4" /> Send
           </Button>
           <Button

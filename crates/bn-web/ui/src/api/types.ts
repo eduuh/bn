@@ -797,36 +797,7 @@ export interface ReviewsView {
 
 // --- Cron registry (GET /api/cron .data; #483) ---
 
-/** One cron job's whole-picture status — `bn_core::crons::CronView`. Declared schedule + flags
- * joined with last-run health from the event log; run-only orphans carry no `schedule`. */
-export interface CronJob {
-  job: string;
-  scope: string;
-  /** Whether a `[[cron]]` entry declares this job (in the registry, not just run-observed). */
-  declared: boolean;
-  /** The declared `on_calendar` spec, when declared. */
-  schedule?: string | null;
-  description?: string | null;
-  network: boolean;
-  catch_up: boolean;
-  has_script: boolean;
-  script_path?: string | null;
-  /** Epoch-seconds of the most recent recorded run, when it has ever run. */
-  last_run?: number | null;
-  last_exit?: number | null;
-  ok?: boolean | null;
-  runs: number;
-  failures: number;
-  /** The last run's captured output tail — present only when that run *failed* (`ok === false`),
-   * so the UI can show *why* without a shell. Bounded to the persisted 15-line tail. */
-  last_output?: string | null;
-}
-
-/** GET /api/cron .data — the machine-wide cron registry (`payload::crons_view_data`). */
-export interface CronView {
-  count: number;
-  jobs: CronJob[];
-}
+export type { AgentSchedule, CronJob, CronView } from "./cron-types";
 
 // --- Cron findings (GET /api/findings .data; #576) ---
 
@@ -932,34 +903,37 @@ export interface TodayAgentView {
 
 // --- Triggerable-agent catalog (GET /api/agents/catalog .data; #557) ---
 
-/** What a catalog entry is — `bn_core::action_center::CatalogKind`, kebab-cased. A scheduled staff
- * agent (`agents.toml` roster) or a plain cron/native job. */
-export type CatalogKind = "staff-agent" | "cron";
+/** The manifest's explicit runnable agent kind, or a plain cron/native job. */
+export type CatalogKind = "command" | "staff" | "hosted" | "specialist" | "cron";
 
 /** One triggerable agent/job — `bn_core::action_center::CatalogItem` (#557). Everything the
- * automation can fire (declared crons + native jobs + the staff roster), with the metadata a human
- * needs to decide whether to re-trigger it. `job` is exactly what `POST /api/cron/run {job}` fires;
- * `skill`/`model`/`harness` are staff-agent-only enrichment. */
+ * automation can fire (declared crons + native jobs + the Markdown agent roster), with the
+ * metadata needed to decide whether to re-trigger it. `job` is exactly what
+ * `POST /api/cron/run {job}` fires;
+ * specialists are install-only and are not emitted by this triggerable catalog. */
 export interface CatalogItem {
   job: string;
   name: string;
   kind: CatalogKind;
   scope: string;
   declared: boolean;
-  /** No declared schedule → the job is only ever fired on demand (or run-observed). */
+  /** Neither a calendar nor startup trigger is declared. */
   on_demand: boolean;
   schedule?: string | null;
   description?: string | null;
   has_script: boolean;
   network: boolean;
   catch_up: boolean;
+  startup: boolean;
+  queue: boolean;
+  retry_after_secs?: number | null;
   last_run?: number | null;
   last_exit?: number | null;
   ok?: boolean | null;
   runs: number;
   failures: number;
-  skill?: string | null;
-  model?: string | null;
+  skills?: string[];
+  mcps?: string[];
   harness?: string | null;
 }
 

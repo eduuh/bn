@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -24,10 +24,11 @@ import {
   completedQuery,
   fleetQuery,
   orchestrateQuery,
-  queryKeys,
   reviewsQuery,
 } from "../api/client";
 import { runCronJob } from "../api/writes";
+import { useAppMutation } from "../hooks/useAppMutation";
+import { affects } from "../lib/invalidation";
 import type {
   ActionItem,
   ActionKind,
@@ -39,7 +40,6 @@ import type {
 import { fleetEntries } from "../lib/fleet";
 import { useNow } from "../hooks/useNow";
 import { timeAgo } from "../lib/format";
-import { pushToast } from "../lib/toast";
 import { StartAgentComposer } from "../components/StartAgentComposer";
 import { ReviewsInbox } from "../components/ReviewsInbox";
 import { ToastStack } from "../components/ToastStack";
@@ -228,17 +228,10 @@ const CATALOG_CAP = 8;
  * catalog + action list (its cron-activity feed) + cron registry so refreshed last-run health
  * appears without a reload. */
 function TriggerButton({ job }: { job: string }) {
-  const qc = useQueryClient();
-  const mut = useMutation({
+  const mut = useAppMutation({
     mutationFn: () => runCronJob(job),
-    onSuccess: () => pushToast(`Ran ${job}`, "success"),
-    onError: (e) => pushToast(`run ${job} failed: ${e.message}`, "error"),
-    // Either way the run recorded an outcome — refresh so its new last-run health shows.
-    onSettled: () => {
-      void qc.invalidateQueries({ queryKey: queryKeys.catalog });
-      void qc.invalidateQueries({ queryKey: queryKeys.actions });
-      void qc.invalidateQueries({ queryKey: queryKeys.cron });
-    },
+    invalidates: affects.schedule,
+    toast: { success: `Ran ${job}`, error: `run ${job} failed` },
   });
   return (
     <Button
@@ -315,24 +308,24 @@ function ActivityRow({ item, now }: { item: CronActivity; now: number }) {
   );
 }
 
-/** One triggerable agent/job in the catalog — what it is (staff agent vs cron), its cadence + last
+/** One triggerable agent/job in the catalog — its explicit agent kind (or cron), cadence + last
  * run, its metadata behind a detail toggle, and a re-trigger button. */
 function CatalogRow({ item, now }: { item: CatalogItem; now: number }) {
   const [open, setOpen] = useState(false);
-  const staff = item.kind === "staff-agent";
+  const agent = item.kind !== "cron";
   const failed = item.ok === false;
   const bar = failed ? "bg-urgent" : item.last_run != null ? "bg-ok" : "bg-border";
   return (
     <Card className="relative overflow-hidden p-3 pl-4">
       <span className={cn("absolute inset-y-0 left-0 w-1", bar)} aria-hidden="true" />
       <div className="flex flex-wrap items-center gap-2">
-        {staff ? (
+        {agent ? (
           <Bot className="h-4 w-4 text-primary" aria-hidden="true" />
         ) : (
           <CalendarClock className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
         )}
         <span className="truncate font-mono text-sm font-medium text-foreground">{item.name}</span>
-        <Badge variant={staff ? "info" : "muted"}>{staff ? "agent" : "cron"}</Badge>
+        <Badge variant={agent ? "info" : "muted"}>{item.kind}</Badge>
         {failed && <Badge variant="urgent">exit {item.last_exit ?? "?"}</Badge>}
         <span className="flex-1" />
         <TriggerButton job={item.job} />
@@ -353,7 +346,7 @@ function CatalogRow({ item, now }: { item: CatalogItem; now: number }) {
           </span>
         )}
         {item.last_run == null && <span>never run</span>}
-        {(item.description != null || staff) && (
+        {(item.description != null || agent) && (
           <button type="button" className="text-primary" onClick={() => setOpen((v) => !v)}>
             {open ? "hide detail" : "detail"}
           </button>
@@ -366,20 +359,33 @@ function CatalogRow({ item, now }: { item: CatalogItem; now: number }) {
             <span>
               scope <span className="font-mono text-foreground/80">{item.scope}</span>
             </span>
-            {staff && item.skill && (
+            {/* `skills`/`mcps`, not the `skill`/`model` this read until #queue — fields the server
+                has never emitted, so this detail row silently rendered nothing. */}
+            {agent && item.skills && item.skills.length > 0 && (
               <span>
-                skill <span className="font-mono text-foreground/80">{item.skill}</span>
+                skills{" "}
+                <span className="font-mono text-foreground/80">{item.skills.join(", ")}</span>
               </span>
             )}
-            {staff && item.model && (
+            {agent && item.mcps && item.mcps.length > 0 && (
               <span>
-                model <span className="font-mono text-foreground/80">{item.model}</span>
+                mcp <span className="font-mono text-foreground/80">{item.mcps.join(", ")}</span>
               </span>
             )}
-            {staff && item.harness && (
+            {agent && item.harness && (
               <span>
                 harness <span className="font-mono text-foreground/80">{item.harness}</span>
               </span>
+            )}
+            {agent && (
+              <span>
+                queue{" "}
+                <span className="font-mono text-foreground/80">{item.queue ? "yes" : "no"}</span>
+              </span>
+            )}
+            {agent && item.startup && <span>startup trigger</span>}
+            {agent && item.retry_after_secs != null && (
+              <span>{Math.round(item.retry_after_secs / 60)}m failure backoff</span>
             )}
             <span>
               {item.runs} run{item.runs === 1 ? "" : "s"}

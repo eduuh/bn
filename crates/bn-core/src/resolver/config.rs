@@ -3,6 +3,7 @@
 
 use super::config_file::ConfigFile;
 use super::dirs::config_dir;
+use super::queue_config::QueueConfig;
 use super::util::{
     home, non_empty_env, parse_weekday, parse_work_repos, read_hostname, split_list,
 };
@@ -263,6 +264,8 @@ pub struct Config {
     /// Empty by default ⇒ the orchestrate scheduler places every lane `Local` (single-node
     /// behavior). Config-file only; there is no env override for a whole table.
     pub nodes: Vec<crate::hosts::NodeRecord>,
+    /// `[queue]` — the machine-wide work queue's policy (#queue).
+    pub queue: QueueConfig,
     /// `[calib] s|m|l`: the coarse t-shirt-size estimate durations (`--est S|M|L`), so sizing —
     /// and `bn next --fit` — works before you have real per-item duration estimates. Defaults
     /// `s=30m m=90m l=3h`; see [`crate::calib::CoarseSizes`].
@@ -414,6 +417,7 @@ impl Default for Config {
             orchestrate_brainstorm_count: crate::orchestrate::DEFAULT_KEEP_WARM_BRAINSTORM_COUNT,
             orchestrate_brainstorm_interval_secs:
                 crate::orchestrate::DEFAULT_KEEP_WARM_BRAINSTORM_INTERVAL_SECS,
+            queue: QueueConfig::default(),
             orchestrate_min_free_ram_mb: None,
             orchestrate_max_loadavg: None,
             orchestrate_max_swap_pct: None,
@@ -785,6 +789,7 @@ impl Config {
         // `[orchestrate]` resource/budget caps (#377): env override wins, then config.toml; an
         // unparseable / blank env is ignored (falls through to file, then off), so a stray value
         // never silently disables a guard. All default off — an unconfigured run is unchanged.
+        let queue = QueueConfig::load(file);
         let orchestrate_min_free_ram_mb = non_empty_env("BN_ORCH_MIN_FREE_RAM_MB")
             .and_then(|v| v.trim().parse::<u64>().ok())
             .or_else(|| file.and_then(|f| f.orchestrate_min_free_ram_mb()));
@@ -852,6 +857,7 @@ impl Config {
             orchestrate_exclude_labels,
             orchestrate_brainstorm_count,
             orchestrate_brainstorm_interval_secs,
+            queue,
             orchestrate_min_free_ram_mb,
             orchestrate_max_loadavg,
             orchestrate_max_swap_pct,

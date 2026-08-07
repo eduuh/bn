@@ -408,3 +408,37 @@ export function appendTaskDoc(id: string, text: string, section?: string): Promi
 export function editTaskDoc(id: string, body: string, ifMatch: string): Promise<TaskDocResult> {
   return request("PUT", `/api/tasks/${encodeURIComponent(id)}/doc`, { body, if_match: ifMatch });
 }
+
+/** Stop the dispatcher starting new work. Running agents finish — this pauses admission only. */
+export function queuePause(scope: string, reason?: string): Promise<unknown> {
+  return request("POST", "/api/queue/pause", { scope, reason });
+}
+
+/** Enqueue work. Priority is first-class rather than advanced: "run this next" is the request
+ * people actually have, and without it the only way to jump the order was to re-add the item and
+ * know that a re-add raises. */
+export function queueAdd(body: {
+  item: string;
+  repo?: string;
+  kind?: string;
+  priority?: number;
+  job?: string;
+  skill?: string;
+}): Promise<unknown> {
+  return request("POST", "/api/queue/add", body);
+}
+
+/** Take pending work back out. Pending only — a leased entry has an executor running. */
+export function queueCancel(repo: string, id: string): Promise<unknown> {
+  return request("POST", "/api/queue/cancel", { repo, id });
+}
+
+/** Move queued work up or down the order — sets the priority exactly, in either direction. */
+export function queuePriority(repo: string, id: string, priority: number): Promise<unknown> {
+  return request("POST", "/api/queue/priority", { repo, id, priority });
+}
+
+/** Lift a pause. */
+export function queueResume(scope: string): Promise<unknown> {
+  return request("POST", "/api/queue/resume", { scope });
+}

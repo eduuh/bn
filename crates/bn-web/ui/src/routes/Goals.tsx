@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import {
   AlertTriangle,
@@ -12,7 +12,10 @@ import {
   Target,
   Trash2,
 } from "lucide-react";
-import { goalsQuery, notesQuery, queryKeys } from "../api/client";
+import { goalsQuery, notesQuery } from "../api/client";
+import { useAppMutation } from "../hooks/useAppMutation";
+import { affects } from "../lib/invalidation";
+import { setDailyGoals } from "../lib/optimistic";
 import type { DailyGoal, GoalNote, QuarterGoal, SummaryEntry } from "../api/types";
 import { connectGoalNote, disconnectGoalNote } from "../api/writes";
 import { Badge, type BadgeProps } from "../components/ui/badge";
@@ -39,7 +42,6 @@ import {
 import { Skeleton } from "../components/ui/skeleton";
 import { Textarea } from "../components/ui/textarea";
 import { ToastStack } from "../components/ToastStack";
-import { pushToast } from "../lib/toast";
 import { cn } from "../lib/utils";
 import { PageHead } from "../components/PageHead";
 
@@ -115,14 +117,17 @@ function DailyRow({ g, branches }: { g: DailyGoal; branches: SummaryEntry[] }) {
 /** The connected notes hanging off a goal (#564): a linked branch note jumps to the Notes view; an
  * attached text note shows its title/snippet. Each carries a remove (disconnect) control. */
 function GoalNotesList({ goal }: { goal: DailyGoal }) {
-  const qc = useQueryClient();
-  const remove = useMutation({
-    mutationFn: (noteId: string) => disconnectGoalNote(goal.id, noteId),
-    onSuccess: () => {
-      pushToast("Note disconnected", "success");
-      void qc.invalidateQueries({ queryKey: queryKeys.goals });
-    },
-    onError: (e) => pushToast(`Could not disconnect: ${e.message}`, "error"),
+  const remove = useAppMutation<unknown, string>({
+    mutationFn: (noteId) => disconnectGoalNote(goal.id, noteId),
+    // Drop the note row out of its goal straight away — the list is right under the cursor.
+    optimistic: setDailyGoals<string>((daily, noteId) => ({
+      ...daily,
+      goals: daily.goals.map((g) =>
+        g.id === goal.id ? { ...g, notes: (g.notes ?? []).filter((n) => n.id !== noteId) } : g,
+      ),
+    })),
+    invalidates: affects.goals,
+    toast: { success: "Note disconnected", error: "Could not disconnect" },
   });
 
   const notes = goal.notes ?? [];
@@ -183,7 +188,6 @@ function NoteBody({ note }: { note: GoalNote }) {
  * attach free-text / uploaded content. On success it invalidates the goals query so the note
  * renders immediately. */
 function ConnectNoteDialog({ goal, branches }: { goal: DailyGoal; branches: SummaryEntry[] }) {
-  const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"link" | "text">("link");
   const [selected, setSelected] = useState<string>("");
@@ -197,7 +201,9 @@ function ConnectNoteDialog({ goal, branches }: { goal: DailyGoal; branches: Summ
     setText("");
   };
 
-  const connect = useMutation({
+  // No optimistic patch: the server mints the note's id, so there is nothing honest to draw until
+  // it answers. Closing the dialog on success is the feedback.
+  const connect = useAppMutation({
     mutationFn: () => {
       if (mode === "link") {
         const [repo, branch] = selected.split("/", 2);
@@ -205,13 +211,12 @@ function ConnectNoteDialog({ goal, branches }: { goal: DailyGoal; branches: Summ
       }
       return connectGoalNote(goal.id, { text, title: title || undefined });
     },
+    invalidates: affects.goals,
+    toast: { success: "Note connected", error: "Could not connect" },
     onSuccess: () => {
-      pushToast("Note connected", "success");
-      void qc.invalidateQueries({ queryKey: queryKeys.goals });
       setOpen(false);
       reset();
     },
-    onError: (e) => pushToast(`Could not connect: ${e.message}`, "error"),
   });
 
   const canSubmit = mode === "link" ? selected.includes("/") : text.trim().length > 0;

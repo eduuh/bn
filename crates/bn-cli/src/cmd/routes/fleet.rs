@@ -39,6 +39,7 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
                 connect::run(cfg, host.as_deref(), window, read_only)
             }
         }
+        CmdFleet::Queue { action } => cmd::queue::route(cfg, action, json),
         CmdFleet::Mobile { host } => mobile::run(cfg, &host),
         CmdFleet::Notify { action } => match action {
             None | Some(NotifyCmd::Status) => cmd::notify::emit_notify_status(cfg, json),
@@ -150,8 +151,16 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
                 target,
                 msg,
                 keys,
+                channel,
                 detach,
-            }) => emit_agent_send(cfg, &target, &msg, keys, detach, json),
+            }) => emit_agent_send(
+                cfg,
+                &target,
+                &msg,
+                crate::cmd::agent::SteerChannel::parse(channel.as_deref(), keys),
+                detach,
+                json,
+            ),
             Some(AgentCmd::Done {
                 summary,
                 pr,
@@ -192,6 +201,53 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
             Some(AgentCmd::Activity { session, limit }) => {
                 emit_agent_activity(&session, limit, json)
             }
+            Some(AgentCmd::Approvals {
+                init,
+                sweep,
+                dry_run,
+                limit,
+            }) => {
+                if sweep {
+                    crate::cmd::agent_approve::sweep(cfg, dry_run, json);
+                } else {
+                    crate::cmd::agent_approve::emit_approvals(cfg, init, limit, json);
+                }
+            }
+            Some(AgentCmd::Prompt { target, lines }) => {
+                crate::cmd::agent::emit_prompt(cfg, &target, lines, json)
+            }
+            Some(AgentCmd::Answer {
+                target,
+                option,
+                approve,
+                approve_session,
+                reject,
+                expect,
+            }) => crate::cmd::agent::emit_answer(
+                cfg,
+                &target,
+                option,
+                approve,
+                approve_session,
+                reject,
+                expect,
+                json,
+            ),
+            Some(AgentCmd::Instruct {
+                target,
+                text,
+                no_send,
+                list,
+                drop,
+            }) => crate::cmd::agent::emit_instruct(
+                cfg,
+                &target,
+                &text.join(" "),
+                no_send,
+                list,
+                drop.as_deref(),
+                json,
+            ),
             None | Some(AgentCmd::Sessions { .. }) => {
                 let (repo, branch) = match action {
                     Some(AgentCmd::Sessions { repo, branch }) => (repo, branch),
@@ -276,7 +332,7 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
                 None => agent_live::run_menu_jump(cfg, idle, stuck),
             },
             Some(FleetCmd::Steer { target }) => match target {
-                Some(t) => agent_live::run_steer_target(&t),
+                Some(t) => agent_live::run_steer_target(cfg, &t),
                 None => agent_live::run_steer_menu(cfg, idle, stuck),
             },
             Some(FleetCmd::Reap {

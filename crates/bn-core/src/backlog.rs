@@ -17,292 +17,17 @@
 
 use crate::orchestrate::derive_id;
 use crate::store::FileLock;
-use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
-/// What kind of work a backlog entry represents. Serialized kebab-case for the status surface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum BacklogKind {
-    /// A change that opens and lands a PR — the default.
-    #[default]
-    Ship,
-    /// A read-only investigation that produces findings, not a merge (#348 scout).
-    Scout,
-}
+/// The work-kind taxonomy, plus the executor and requirement axes that travel with it, now live in
+/// [`crate::queue::kind`] — re-exported here so every existing `backlog::BacklogKind` path (and the
+/// serde shape of a stored line) is unchanged.
+pub use crate::queue::kind::{BacklogKind, ExecSpec, Requirements};
 
-impl BacklogKind {
-    pub fn label(self) -> &'static str {
-        match self {
-            BacklogKind::Ship => "ship",
-            BacklogKind::Scout => "scout",
-        }
-    }
-
-    /// Parse a kebab-case label back to a kind (`None` for anything unrecognized).
-    pub fn parse(s: &str) -> Option<BacklogKind> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "ship" => Some(BacklogKind::Ship),
-            "scout" => Some(BacklogKind::Scout),
-            _ => None,
-        }
-    }
-}
-
-/// Where an entry should run — the substrate hint the selection brain (#348) later honors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum Substrate {
-    /// Let the scheduler decide — the default.
-    #[default]
-    Auto,
-    /// Prefer a local worktree + agent.
-    Local,
-    /// Prefer a remote/cloud runner.
-    Remote,
-}
-
-impl Substrate {
-    pub fn label(self) -> &'static str {
-        match self {
-            Substrate::Auto => "auto",
-            Substrate::Local => "local",
-            Substrate::Remote => "remote",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Substrate> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "auto" => Some(Substrate::Auto),
-            "local" => Some(Substrate::Local),
-            "remote" => Some(Substrate::Remote),
-            _ => None,
-        }
-    }
-}
-
-/// **Where — on which physical node — an item executes** (#717, M1 foundation). This is a
-/// *separate axis* from [`Substrate`] and must not be conflated with it: `Substrate` chooses
-/// *how* an item runs (a local worktree+agent vs. a GitHub-hosted fan-out that occupies no local
-/// slot), whereas `ExecutionTarget` chooses *the node* a locally-substrated item lands on — the
-/// implicit local box, or a chosen SSH-reachable worker. Making execution location first-class
-/// lets dispatch target a picked node instead of always the box the daemon runs on.
-///
-/// Orthogonality: a `Substrate::Remote` item is GitHub fan-out and ignores this axis; a
-/// `Substrate::Local`/`Auto` item is placed by the scheduler among `{Local, SshHost(..)}` (the
-/// [`GitHubRunner`](ExecutionTarget::GitHubRunner) variant names the cloud runner for later
-/// slices and is treated as always-eligible by the pure placement filter). Defaults to `Local`,
-/// so a pre-#717 run's state — which carries no target — reads as the implicit local box.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum ExecutionTarget {
-    /// The implicit local box the daemon runs on — the default and pre-#717 behavior.
-    #[default]
-    Local,
-    /// A chosen SSH-reachable worker node, addressed by its `~/.ssh/config` alias / node id.
-    SshHost(String),
-    /// A GitHub-hosted runner (the cloud-execution target named for later M1 slices).
-    GitHubRunner,
-}
-
-impl ExecutionTarget {
-    /// The kebab-case label for status surfaces: `local`, `ssh:<alias>`, or `github-runner`.
-    pub fn label(&self) -> String {
-        match self {
-            ExecutionTarget::Local => "local".to_string(),
-            ExecutionTarget::SshHost(alias) => format!("ssh:{alias}"),
-            ExecutionTarget::GitHubRunner => "github-runner".to_string(),
-        }
-    }
-
-    /// Whether this is the default implicit-local-box target — the serde skip predicate, so a
-    /// `Local` item omits the `target` key entirely (keeping pre-#717 state files byte-identical).
-    pub fn is_local(&self) -> bool {
-        matches!(self, ExecutionTarget::Local)
-    }
-
-    /// Parse a label back to a target (`None` for anything unrecognized). Accepts `local`,
-    /// `ssh:<alias>` (alias must be non-empty), and `github-runner`.
-    pub fn parse(s: &str) -> Option<ExecutionTarget> {
-        let s = s.trim();
-        match s.to_ascii_lowercase().as_str() {
-            "local" => Some(ExecutionTarget::Local),
-            "github-runner" => Some(ExecutionTarget::GitHubRunner),
-            _ => s
-                .strip_prefix("ssh:")
-                .map(str::trim)
-                .filter(|a| !a.is_empty())
-                .map(|a| ExecutionTarget::SshHost(a.to_string())),
-        }
-    }
-}
-
-/// The lifecycle of a backlog entry: pending → leased → done|failed. Distinct from the run state's
-/// [`crate::orchestrate::ItemStatus`] — `leased` means "handed to a run", which then owns the
-/// dispatch → merge lifecycle and reconciles the terminal outcome back here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum BacklogStatus {
-    /// Available to be pulled into a run — the default and the only pullable state.
-    #[default]
-    Pending,
-    /// Pulled into a run (extended onto the run state's queue) — not pullable again.
-    Leased,
-    /// Terminal success — the leased run item merged. Dropped by [`compact`].
-    Done,
-    /// Terminal failure — the leased run item failed. Dropped by [`compact`].
-    Failed,
-}
-
-impl BacklogStatus {
-    pub fn label(self) -> &'static str {
-        match self {
-            BacklogStatus::Pending => "pending",
-            BacklogStatus::Leased => "leased",
-            BacklogStatus::Done => "done",
-            BacklogStatus::Failed => "failed",
-        }
-    }
-
-    /// Whether this entry has reached a terminal state (done or failed) and can be compacted away.
-    pub fn is_terminal(self) -> bool {
-        matches!(self, BacklogStatus::Done | BacklogStatus::Failed)
-    }
-
-    /// Whether this entry still occupies the backlog as live work — pending or leased. Used for
-    /// dedup: re-adding a `(repo, id)` that is already active is a no-op.
-    pub fn is_active(self) -> bool {
-        matches!(self, BacklogStatus::Pending | BacklogStatus::Leased)
-    }
-}
-
-/// One durable backlog entry, keyed `(repo, id)`. `id` is [`derive_id`] of `item` (issue number,
-/// issue/PR url, or a slug), so the same subject declared two ways dedups to one entry.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct BacklogEntry {
-    /// Stable id within `repo` — [`derive_id`] of `item`.
-    pub id: String,
-    /// The repo this work targets. Half of the `(repo, id)` key (#343 multi-repo).
-    pub repo: String,
-    /// The raw dispatch subject as declared (`338`, a url, or free text).
-    pub item: String,
-    #[serde(default)]
-    pub kind: BacklogKind,
-    /// Higher is pulled first; ties break FIFO by `added_at` then `id`. Signed so a de-prioritized
-    /// item can sit below the default-`0` floor.
-    #[serde(default)]
-    pub priority: i64,
-    /// Path globs this work is expected to touch — the overlap-aware scheduling hint #348 uses.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub touches: Vec<String>,
-    #[serde(default)]
-    pub substrate: Substrate,
-    /// Epoch secs when first added — the FIFO tiebreak and the "added N ago" clock.
-    #[serde(default)]
-    pub added_at: i64,
-    /// Free-form provenance (e.g. `"triage"`, `"scout:341"`). Empty when unset.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub source: String,
-    /// The task this work came from (#1001) — the id of a line in the global store.
-    ///
-    /// **The invariant that makes "work only ever starts from a task" checkable.** Without it,
-    /// `bn orchestrate add` could inject work with no durable record, so the promise was a
-    /// convention rather than something a test could assert.
-    ///
-    /// Empty only on entries that predate #1001; those are grandfathered read-only and reported by
-    /// `bn doctor` rather than deleted, so an in-flight run is never orphaned by the upgrade.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub task: String,
-    /// Controller-agent ownership for work routed through `bn orchestrate`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub controller_id: Option<String>,
-    #[serde(default)]
-    pub status: BacklogStatus,
-    /// Epoch secs of the last status change (lease / terminal reconcile).
-    #[serde(default)]
-    pub updated_at: i64,
-}
-
-/// The mutable fields carried on a fresh `add` (everything not derived from `item`/clock). Lets the
-/// CLI declare one set of options and stamp it onto every item in a batch.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct AddSpec {
-    pub kind: BacklogKind,
-    pub priority: i64,
-    pub touches: Vec<String>,
-    pub substrate: Substrate,
-    pub source: String,
-    pub controller_id: Option<String>,
-    /// The task this work comes from (#1001). Required by [`BacklogEntry::checked`]; the
-    /// unchecked [`BacklogEntry::new`] leaves it empty for the migration path only.
-    pub task: String,
-}
-
-impl BacklogEntry {
-    /// Build a fresh pending entry for `item` in `repo`, stamping the [`AddSpec`] options and clock.
-    pub fn new(repo: &str, item: &str, spec: &AddSpec, now: i64) -> BacklogEntry {
-        BacklogEntry {
-            id: derive_id(item),
-            repo: repo.to_string(),
-            item: item.to_string(),
-            kind: spec.kind,
-            priority: spec.priority,
-            touches: spec.touches.clone(),
-            substrate: spec.substrate,
-            added_at: now,
-            source: spec.source.clone(),
-            controller_id: spec.controller_id.clone(),
-            task: spec.task.clone(),
-            status: BacklogStatus::Pending,
-            updated_at: now,
-        }
-    }
-
-    /// Build a pending entry, **refusing one that names no task** (#1001).
-    ///
-    /// This is the enforcement point for "work only ever starts from a task". `new` stays
-    /// unchecked so the migration and the tests that predate the invariant still compile, but
-    /// every production enqueue goes through here — see [`Backlog::untasked`] for how the
-    /// grandfathered entries are surfaced rather than silently accepted.
-    pub fn checked(
-        repo: &str,
-        item: &str,
-        spec: &AddSpec,
-        now: i64,
-    ) -> Result<BacklogEntry, UntaskedEnqueue> {
-        if spec.task.trim().is_empty() {
-            return Err(UntaskedEnqueue {
-                repo: repo.to_string(),
-                item: item.to_string(),
-            });
-        }
-        Ok(BacklogEntry::new(repo, item, spec, now))
-    }
-}
-
-/// An attempt to enqueue work that no task governs (#1001).
-///
-/// A typed error rather than a panic or a silent accept: the caller's right move is usually to
-/// mint the task and retry, which `bn orchestrate add` does automatically.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UntaskedEnqueue {
-    pub repo: String,
-    pub item: String,
-}
-
-impl std::fmt::Display for UntaskedEnqueue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "refusing to queue work with no task: {} in {} — mint one with `bn task add` first",
-            self.item, self.repo
-        )
-    }
-}
-
-impl std::error::Error for UntaskedEnqueue {}
+pub mod entry;
+pub use entry::*;
 
 impl Backlog {
     /// Live entries that name no task — the pre-#1001 grandfathers.
@@ -325,6 +50,9 @@ impl Backlog {
 /// appends the decision back out.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Backlog {
+    /// Lines the fold could not parse — entries that are, in effect, lost. Surfaced rather than
+    /// swallowed; see [`Backlog::from_lines`].
+    pub unreadable: usize,
     entries: Vec<BacklogEntry>,
 }
 
@@ -332,6 +60,7 @@ impl Backlog {
     /// An empty backlog.
     pub fn new() -> Backlog {
         Backlog {
+            unreadable: 0,
             entries: Vec::new(),
         }
     }
@@ -346,8 +75,14 @@ impl Backlog {
             if line.is_empty() {
                 continue;
             }
-            if let Ok(entry) = serde_json::from_str::<BacklogEntry>(line) {
-                bl.apply(entry);
+            match serde_json::from_str::<BacklogEntry>(line) {
+                Ok(entry) => bl.apply(entry),
+                // A line we cannot read is an entry that has vanished — a torn append, a
+                // hand-edit, or a newer schema under an older binary. Skipping is right (one bad
+                // line must not take the store down) but skipping *silently* means work disappears
+                // with no signal at all, which for a queue is the failure that matters. Counted
+                // here so `bn queue status` can say so.
+                Err(_) => bl.unreadable += 1,
             }
         }
         bl
@@ -587,6 +322,74 @@ impl Backlog {
     /// a re-flagged attention item bumps its queued work up instead of stacking a duplicate, but a
     /// no-op (equal/lower band, absent, or terminal entry) appends nothing. Returns the updated
     /// entry to append, or `None`.
+    /// Carry a later deadline onto an active entry — the coalescing half of
+    /// [`crate::backlog::Recurrence`]. Extends only: `None`, a terminal entry, or a deadline that
+    /// is not strictly later is a no-op, so a steady state writes nothing.
+    pub fn set_deadline(
+        &mut self,
+        repo: &str,
+        id: &str,
+        not_after: i64,
+        now: i64,
+    ) -> Option<BacklogEntry> {
+        let e = self
+            .entries
+            .iter_mut()
+            .find(|e| e.repo == repo && e.id == id)?;
+        if !e.status.is_active() || e.not_after.is_none_or(|cur| not_after <= cur) {
+            return None;
+        }
+        e.not_after = Some(not_after);
+        e.updated_at = now;
+        Some(e.clone())
+    }
+
+    /// Take an entry back out of the queue.
+    ///
+    /// **Pending only.** A `Leased` entry has an executor — an agent in a worktree, a job mid-run —
+    /// and flipping its row to cancelled would not stop any of that; it would only make the queue
+    /// stop describing something that is still happening, which is worse than not offering the
+    /// verb. Stopping live work is `bn agent kill`, and the reaper returns the lease afterwards.
+    ///
+    /// `None` when the entry is absent or not pending, so the caller can say which.
+    pub fn cancel(&mut self, repo: &str, id: &str, now: i64) -> Option<BacklogEntry> {
+        let e = self
+            .entries
+            .iter_mut()
+            .find(|e| e.repo == repo && e.id == id)?;
+        if e.status != BacklogStatus::Pending {
+            return None;
+        }
+        e.status = BacklogStatus::Cancelled;
+        e.updated_at = now;
+        Some(e.clone())
+    }
+
+    /// Set an active entry's priority to exactly `priority` — up **or** down.
+    ///
+    /// Distinct from [`Backlog::reprioritize`], which only ever raises: that one exists for a
+    /// producer re-declaring work it wants sooner, where a lower number means "no change", not
+    /// "demote". A person moving something down the queue is saying the opposite, and needs a verb
+    /// that believes them.
+    pub fn set_priority(
+        &mut self,
+        repo: &str,
+        id: &str,
+        priority: i64,
+        now: i64,
+    ) -> Option<BacklogEntry> {
+        let e = self
+            .entries
+            .iter_mut()
+            .find(|e| e.repo == repo && e.id == id)?;
+        if !e.status.is_active() || e.priority == priority {
+            return None;
+        }
+        e.priority = priority;
+        e.updated_at = now;
+        Some(e.clone())
+    }
+
     pub fn reprioritize(
         &mut self,
         repo: &str,
@@ -766,6 +569,61 @@ pub fn mark_leased(
     }
 }
 
+/// Cancel a pending `(repo, id)` entry, appending one line — the disk wrapper over
+/// [`Backlog::cancel`]. Returns whether a line was written; `false` means it was absent or not
+/// pending (already running, already finished), which the caller should report rather than swallow.
+pub fn cancel(path: &Path, repo: &str, id: &str, now: i64) -> std::io::Result<bool> {
+    let _lock = FileLock::acquire_required(path)?;
+    let mut bl = load(path);
+    match bl.cancel(repo, id, now) {
+        Some(entry) => {
+            append_line(path, &entry)?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// Set an active `(repo, id)` entry's priority exactly, appending one line — the disk wrapper over
+/// [`Backlog::set_priority`]. A no-op when the entry is absent, terminal, or already there.
+pub fn set_priority(
+    path: &Path,
+    repo: &str,
+    id: &str,
+    priority: i64,
+    now: i64,
+) -> std::io::Result<bool> {
+    let _lock = FileLock::acquire_required(path)?;
+    let mut bl = load(path);
+    match bl.set_priority(repo, id, priority, now) {
+        Some(entry) => {
+            append_line(path, &entry)?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// Extend an active `(repo, id)` entry's deadline, appending one line — the disk wrapper over
+/// [`Backlog::set_deadline`]. A no-op (no append) when the deadline is not strictly later.
+pub fn set_deadline(
+    path: &Path,
+    repo: &str,
+    id: &str,
+    not_after: i64,
+    now: i64,
+) -> std::io::Result<bool> {
+    let _lock = FileLock::acquire_required(path)?;
+    let mut bl = load(path);
+    match bl.set_deadline(repo, id, not_after, now) {
+        Some(entry) => {
+            append_line(path, &entry)?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
 /// Reprioritize an active `(repo, id)` backlog entry to `priority`, appending one line — the disk
 /// wrapper over [`Backlog::reprioritize`]. A no-op (no append) when the entry is absent, terminal,
 /// or the new priority isn't a strict raise. Returns whether a line was written.
@@ -868,4 +726,26 @@ pub fn compact_if_needed(path: &Path) -> std::io::Result<bool> {
     } else {
         Ok(false)
     }
+}
+
+/// Record which machine holds a lease.
+///
+/// Separate from [`lease_selected`] because leasing is the *claim* and assignment is the *holder*:
+/// a lease with no holder cannot be told apart from a healthy one when a box dies, which is how a
+/// crashed machine's work becomes permanently invisible.
+pub fn assign(path: &Path, repo: &str, id: &str, machine: &str, now: i64) -> std::io::Result<bool> {
+    let _lock = FileLock::acquire_required(path)?;
+    let bl = load(path);
+    let Some(entry) = bl
+        .entries()
+        .iter()
+        .find(|e| e.repo == repo && e.id == id && e.status.is_active())
+    else {
+        return Ok(false);
+    };
+    let mut updated = entry.clone();
+    updated.assigned_to = Some(machine.to_string());
+    updated.updated_at = now;
+    append_line(path, &updated)?;
+    Ok(true)
 }

@@ -17,6 +17,9 @@ use crate::util::idle_days_since;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+mod staff_health;
+use staff_health::staff_findings;
+
 /// Default staleness threshold (days) for flagging an untouched note — the `bn doctor --stale-days`
 /// default, shared so the `stale-branches` findings gatherer ([`crate::findings_gather`]) and the
 /// CLI can't drift apart.
@@ -624,41 +627,10 @@ fn cron_findings() -> Vec<Finding> {
         .collect()
 }
 
-/// Staff agents whose most recent scheduled run is missed (#273) — a dead brief with no ledger row
-/// at or after its slot. Read-only: it joins the declared roster schedule with the run ledger and
-/// raises nothing, so it "flags once" by construction (recomputed each invocation, and it clears
-/// the moment a run of any status lands). Empty when no staff agents are declared, keeping the
-/// common no-staff path free. Global-tier roster only — staff agents are declared globally.
-fn staff_findings(cfg: &Config) -> Vec<Finding> {
-    let agents = crate::staff::discover(cfg, None);
-    if agents.is_empty() {
-        return Vec::new();
-    }
-    let last = crate::staff::last_runs();
-    let now = crate::util::now_epoch_secs();
-    crate::staff_schedule::missed_runs(
-        &agents,
-        &last,
-        now,
-        crate::staff_schedule::DEFAULT_MISS_GRACE_SECS,
-    )
-    .into_iter()
-    .map(|m| {
-        Finding::Staff(StaffFinding {
-            agent: m.agent,
-            on_calendar: m.on_calendar,
-            scheduled: m.scheduled,
-            last_run: m.last_run,
-            overdue_secs: now.saturating_sub(m.scheduled),
-        })
-    })
-    .collect()
-}
-
 /// The staff-staleness finding (#270). Flags the whole agent staff when it hasn't produced a card
 /// anywhere in the person-scoped, synced feed for more than [`crate::staff::STALE_STAFF_DAYS`] —
 /// the failover signal that the single home machine is down. Reads only the offline feed, so it
-/// fires identically on every box. Distinct from [`staff_findings`] (#273, a *single* agent's
+/// fires identically on every box. Distinct from [`staff_health::staff_findings`] (#273, a *single* agent's
 /// missed slot): this is the *whole* staff going quiet across machines. Silent when the staff has
 /// never run (nothing to be stale about) or ran recently enough; at most one finding.
 fn stale_staff_findings(cfg: &Config, today: &str) -> Vec<Finding> {

@@ -246,21 +246,6 @@ fn launch_review_pane(cfg: &Config, repo: &str, branch: &str, number: i64, wt_pa
     .is_some()
 }
 
-/// A compact "check against these references" clause for the review prompt (#623): the coding
-/// standards by name, with a hint to run `bn ref <name>` for each one's full text — so a review
-/// checks the diff against your standards. Empty string when no references exist (nothing to add).
-fn review_references_clause() -> String {
-    let names = bn_core::references::names();
-    if names.is_empty() {
-        return String::new();
-    }
-    format!(
-        "Also check the diff against my coding-standards references — run `bn ref <name>` for the \
-         full text of each and flag any violations: {}. ",
-        names.join(", ")
-    )
-}
-
 /// Decide whether PR `<repo>#<number>` is *your own* (`mine`) and recover its url, from the cached
 /// review queue. Ownership is computed **here, in the trusted launcher** — never inferred from PR
 /// content — so the strictly-read-only guarantee for other authors' PRs can't be flipped by a
@@ -284,29 +269,32 @@ fn is_mine(author: Option<&str>, me: Option<&str>) -> bool {
     }
 }
 
-/// The shipped `auto-review-pr` pipeline skill: resolved first from the review worktree (a repo-local
-/// override wins), then from the global shipped/personal skill dirs — the PR's own repo usually
-/// doesn't carry bn's prompt, so the global anchor is the reliable source. `None` when it can't be
-/// found; the caller then falls back to [`inline_review_prompt`], so a review still works even before
-/// the prompt set is installed.
-fn load_review_skill(cfg: &Config, wt_path: &std::path::Path) -> Option<bn_core::skills::Skill> {
-    bn_core::skills::load_skill(cfg, wt_path, "auto-review-pr").or_else(|| {
+/// Resolve the shipped `auto-review-pr` pipeline skill, honoring a review-repo override first.
+fn load_review_skill(
+    cfg: &Config,
+    wt_path: &std::path::Path,
+) -> Result<Option<bn_core::skills::Skill>, String> {
+    if let Some(skill) =
+        bn_core::skills::load_skill(cfg, wt_path, "auto-review-pr").map_err(|e| e.to_string())?
+    {
+        return Ok(Some(skill));
+    }
+    Ok(
         bn_core::skills::load_skill_set(&bn_core::skills::global_skill_dirs())
+            .map_err(|e| e.to_string())?
             .into_iter()
-            .find(|s| s.name == "auto-review-pr")
-    })
+            .find(|skill| skill.name == "auto-review-pr"),
+    )
 }
 
 /// Build the review agent's seed: the rendered `auto-review-pr` workflow (the single source of truth
-/// for the review process) wrapped with the worktree operating context and the MCP→CLI tool map, or
-/// the inline fallback when the skill isn't installed. Ownership (`mine`) is baked into the render
-/// args + the stage-tracker flag, so the agent inherits the fix-vs-read-only decision from the
-/// trusted launcher rather than deciding it from PR content.
+/// for the review process) wrapped with the worktree operating context and the MCP→CLI tool map.
+/// Ownership (`mine`) is baked into the render args + the stage-tracker flag.
 fn review_seed_prompt(cfg: &Config, repo: &str, number: i64, wt_path: &std::path::Path) -> String {
     let (mine, url) = review_pr_ownership(repo, number);
-    let Some(skill) = load_review_skill(cfg, wt_path) else {
-        return inline_review_prompt(repo, number);
-    };
+    let skill = load_review_skill(cfg, wt_path)
+        .unwrap_or_else(|error| crate::fail(&format!("bn review: {error}")))
+        .unwrap_or_else(|| crate::fail("bn review: required prompt 'auto-review-pr' not found"));
     let stage_flag = if mine { " --mine" } else { "" };
     let mut args = serde_json::Map::new();
     args.insert("repo".into(), serde_json::Value::String(repo.to_string()));
@@ -323,41 +311,16 @@ fn review_seed_prompt(cfg: &Config, repo: &str, number: i64, wt_path: &std::path
         "stage_flag".into(),
         serde_json::Value::String(stage_flag.to_string()),
     );
-    let body = skill.render(Some(&args));
-    format!(
-        "You're in a fresh, sparse review worktree for a pull request you were dispatched to review. \
-         Follow bn's `auto-review-pr` workflow below — it is your process for this task. The workflow \
-         references bn's MCP tools; without them use the CLI: `bn_cat` -> `bn --cat`, `bn_add` -> \
-         `bn add <section> <text>`.\n\n--- WORKFLOW: auto-review-pr ---\n{body}\n--- END WORKFLOW ---\n"
-    )
-}
-
-/// The inline review prompt used when the `auto-review-pr` skill can't be loaded (e.g. before the
-/// prompt set is installed on a box). Kept as a self-contained fallback so a review still works; the
-/// skill is the source of truth when present. Read-only framing, since the fallback can't know
-/// ownership — the safe default is to never write to the PR.
-fn inline_review_prompt(repo: &str, number: i64) -> String {
-    let refs_clause = review_references_clause();
-    format!(
-        "Review PR {number} ({repo}), checked out in this worktree. \
-         This is a SPARSE checkout - only the PR changed paths are materialized; read any other \
-         file from the object store with: git show HEAD:<path> (or git show origin/main:<path>). \
-         This is a STRICTLY READ-ONLY review of a pull request. NEVER edit, stage, \
-         commit, or push files, and NEVER comment on, approve, or vote on the PR. \
-         Diff against main: git diff origin/main...HEAD. \
-         Fan out the pr-review-toolkit subagents in parallel over the changed files \
-         (code-reviewer, silent-failure-hunter, type-design-analyzer, pr-test-analyzer); \
-         if they are unavailable, review inline. \
-         {refs_clause}\
-         Synthesize one clear recommendation, approve or reject, with concrete reasons. \
-         Record the verdict with: bn review-pr record {repo} {number} VERDICT --sha SHA --notes NOTES, \
-         where VERDICT is approve or reject, SHA is the output of git rev-parse HEAD, and NOTES is a \
-         substantive summary of your findings and the reason. This one command persists the full \
-         judgement to the branch note folder (review.md / review2.md ...) AND the attention queue - \
-         use --notes - to pipe a long multi-line write-up. It is the ONLY write you should make; \
-         NEVER write to the PR or its branch. \
-         Present the recommendation to me here."
-    )
+    let body = skill
+        .render_checked(Some(&args))
+        .unwrap_or_else(|error| crate::fail(&format!("bn review: {error}")));
+    let mut envelope_args = serde_json::Map::new();
+    envelope_args.insert(
+        "workflow_body".into(),
+        serde_json::Value::String(body),
+    );
+    bn_core::skills::render_required(cfg, wt_path, "auto-review-envelope", Some(&envelope_args))
+        .unwrap_or_else(|error| crate::fail(&format!("bn review: {error}")))
 }
 
 /// The autonomy boundary for a review. A review agent runs **yolo** (tools auto-approved, no
@@ -373,8 +336,8 @@ fn review_autonomy(mine: bool) -> bool {
 }
 
 /// Launch the PR-review agent in the worktree's tmux window, seeded with the `auto-review-pr`
-/// workflow so the user can watch and drive it. The seed is built by [`review_seed_prompt`] (skill
-/// render, or the inline fallback), and the mechanical delivery is the shared
+/// workflow so the user can watch and drive it. The seed is built by [`review_seed_prompt`], and
+/// the mechanical delivery is the shared
 /// [`launch_agent_in_window`].
 pub(crate) fn launch_review_agent(cfg: &Config, repo: &str, win_branch: &str, number: i64) {
     let wt_path = review_worktree_path(cfg, repo, win_branch);
@@ -811,4 +774,3 @@ pub(crate) fn refresh_review_branch(cfg: &Config, repo: &str, branch: &str) -> O
         &format!("refs/remotes/origin/{branch}"),
     ])
 }
-

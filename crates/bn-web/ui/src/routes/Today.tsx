@@ -1,18 +1,6 @@
 import type { ReactNode } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  Bot,
-  CalendarClock,
-  Check,
-  ChevronRight,
-  Circle,
-  Clock,
-  Loader2,
-  RotateCw,
-  Sparkles,
-  Timer,
-  X,
-} from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { Bot, Check, ChevronRight, Circle, Loader2, RotateCw, Sparkles, X } from "lucide-react";
 
 import {
   costQuery,
@@ -21,30 +9,24 @@ import {
   queryKeys,
   suggestionsQuery,
   todayAgentQuery,
-  todayAgentsQuery,
-  todayCronsQuery,
   wrapQuery,
 } from "../api/client";
-import {
-  runCronJob,
-  runTodayAgent,
-  setSuggestionStatus,
-  startTodayAgent,
-  stopTodayAgent,
-} from "../api/writes";
-import type { CatalogItem, DailyGoal, QuarterGoal, Suggestion } from "../api/types";
+import { runTodayAgent, setSuggestionStatus, startTodayAgent, stopTodayAgent } from "../api/writes";
+import { useAppMutation } from "../hooks/useAppMutation";
+import { affects } from "../lib/invalidation";
+import { dropSuggestion } from "../lib/optimistic";
+import type { DailyGoal, QuarterGoal, Suggestion } from "../api/types";
 import { AgentActivity } from "../components/AgentActivity";
 import { ConfirmButton } from "../components/ConfirmButton";
-import { Empty, Hint, LoadError, SectionCard } from "../components/SectionCard";
+import { Empty, Hint, SectionCard } from "../components/SectionCard";
+import { QueueAddForm } from "../components/QueueAddForm";
 import { SteerPanel } from "../components/SteerPanel";
 import { StatGrid, StatTile } from "../components/StatTile";
-import { fmtAic, fmtUsd, timeAgo } from "../lib/format";
-import { pushToast } from "../lib/toast";
+import { fmtAic, fmtUsd } from "../lib/format";
 import { Badge, type BadgeProps } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Progress } from "../components/ui/progress";
-import { ScrollArea } from "../components/ui/scroll-area";
 import { Separator } from "../components/ui/separator";
 import { Skeleton } from "../components/ui/skeleton";
 import { TooltipProvider } from "../components/ui/tooltip";
@@ -183,200 +165,6 @@ function SuggestionRow({
   );
 }
 
-/** Fire a today cron/agent on demand (#575): `bn run <job>` via `POST /api/cron/run` — the same
- * code path a scheduled timer runs, and the *shared* trigger primitive the Command Center catalog
- * uses. Confirms first, toasts the outcome, and invalidates the today lists (+ the catalog / cron /
- * action feeds) so the row's refreshed last-run health appears without a reload. */
-function TriggerButton({ job, label }: { job: string; label: string }) {
-  const qc = useQueryClient();
-  const mut = useMutation({
-    mutationFn: () => runCronJob(job),
-    onSuccess: () => pushToast(`Ran ${job}`, "success"),
-    onError: (e) => pushToast(`run ${job} failed: ${e.message}`, "error"),
-    onSettled: () => {
-      void qc.invalidateQueries({ queryKey: queryKeys.todayCrons });
-      void qc.invalidateQueries({ queryKey: queryKeys.todayAgents });
-      void qc.invalidateQueries({ queryKey: queryKeys.catalog });
-      void qc.invalidateQueries({ queryKey: queryKeys.cron });
-      void qc.invalidateQueries({ queryKey: queryKeys.actions });
-    },
-  });
-
-  return (
-    <ConfirmButton
-      variant="secondary"
-      size="sm"
-      disabled={mut.isPending}
-      title={`${label} ${job} now?`}
-      description={
-        <>
-          Fires <code className="font-mono text-foreground">bn run {job}</code> — the same code path
-          the scheduled timer runs.
-        </>
-      }
-      confirmLabel={`${label} it`}
-      onConfirm={() => mut.mutate()}
-    >
-      {mut.isPending ? (
-        <>
-          <Loader2 className="animate-spin" /> running…
-        </>
-      ) : (
-        <>
-          <RotateCw /> {label}
-        </>
-      )}
-    </ConfirmButton>
-  );
-}
-
-/** One today-automation row (#575) — a scheduled cron or staff agent firing today: its icon +
- * name, its declared cadence, its last-run health, and the shared run-now/trigger control. */
-function AutomationRow({ item, now, label }: { item: CatalogItem; now: number; label: string }) {
-  const staff = item.kind === "staff-agent";
-  const failed = item.ok === false;
-  const bar = failed ? "bg-urgent" : item.last_run != null ? "bg-ok" : "bg-border";
-  return (
-    <li>
-      {/* The health rail survives the move to cards: it is the one thing that lets you scan twenty
-          of these for the broken one without reading a word. */}
-      <Card className="relative overflow-hidden border-border bg-muted py-2 pl-3.5 pr-2 shadow-sm transition-colors hover:border-input hover:bg-accent">
-        <span className={cn("absolute inset-y-0 left-0 w-0.5", bar)} aria-hidden="true" />
-        <div className="flex flex-wrap items-center gap-2">
-          {staff ? (
-            <Bot className="h-4 w-4 text-primary" aria-hidden="true" />
-          ) : (
-            <CalendarClock className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-          )}
-          <span className="truncate font-mono text-sm font-medium text-foreground">
-            {item.name}
-          </span>
-          {item.last_run != null && (
-            <Hint
-              label={
-                failed
-                  ? `Last run exited ${item.last_exit ?? "?"} — it did not succeed.`
-                  : "Last run succeeded."
-              }
-            >
-              <Badge variant={failed ? "urgent" : "ok"}>
-                {failed ? `exit ${item.last_exit ?? "?"}` : "ok"}
-              </Badge>
-            </Hint>
-          )}
-          <span className="flex-1" />
-          <TriggerButton job={item.job} label={label} />
-        </div>
-        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-          {item.schedule ? (
-            <Hint label="Declared schedule">
-              <span className="inline-flex items-center gap-1 font-mono">
-                <CalendarClock className="h-3.5 w-3.5" /> {item.schedule}
-              </span>
-            </Hint>
-          ) : (
-            <Hint label="No declared schedule — this only ever fires on demand.">
-              <span className="inline-flex items-center gap-1">
-                <Timer className="h-3.5 w-3.5" /> on demand
-              </span>
-            </Hint>
-          )}
-          {item.last_run != null ? (
-            <Hint label="When it last ran">
-              <span className="inline-flex items-center gap-1">
-                <Clock className="h-3.5 w-3.5" /> ran {timeAgo(item.last_run, now)} ago
-              </span>
-            </Hint>
-          ) : (
-            <span>never run</span>
-          )}
-          {item.runs > 0 && (
-            <span>
-              {item.runs} run{item.runs === 1 ? "" : "s"}
-              {item.failures > 0 && <span className="text-urgent"> · {item.failures} failed</span>}
-            </span>
-          )}
-          {item.description && <span className="truncate">{item.description}</span>}
-        </div>
-      </Card>
-    </li>
-  );
-}
-
-/** One automation list — today's crons or today's staff agents. Both are empty-tolerant (a quiet
- * day, or a weekend with no weekday crons) and a failed fetch is said in the urgent tone rather
- * than rendered as an empty list, because "we could not ask" is not "nothing is scheduled". */
-function AutomationSection({
-  title,
-  items,
-  isLoading,
-  isError,
-  now,
-  label,
-  empty,
-  errorText,
-}: {
-  title: string;
-  items: CatalogItem[];
-  isLoading: boolean;
-  isError: boolean;
-  now: number;
-  label: string;
-  empty: string;
-  errorText: string;
-}) {
-  return (
-    <SectionCard title={title} count={isLoading ? undefined : String(items.length)}>
-      {isLoading ? (
-        <Skeleton className="h-16 w-full" />
-      ) : isError ? (
-        <LoadError>{errorText}</LoadError>
-      ) : items.length === 0 ? (
-        <Empty>{empty}</Empty>
-      ) : (
-        <ul className="space-y-2">
-          {items.map((item) => (
-            <AutomationRow key={item.job} item={item} now={now} label={label} />
-          ))}
-        </ul>
-      )}
-    </SectionCard>
-  );
-}
-
-/** Today's scheduled automation (#575) — the crons + staff agents whose schedule fires today, each
- * with its last-run status and a run-now/trigger control (the shared `bn run <job>` path). */
-function TodayAutomation() {
-  const crons = useQuery(todayCronsQuery());
-  const agents = useQuery(todayAgentsQuery());
-  const now = Math.floor(Date.now() / 1000);
-
-  return (
-    <>
-      <AutomationSection
-        title="Today's crons"
-        items={crons.data?.agents ?? []}
-        isLoading={crons.isLoading}
-        isError={crons.isError}
-        now={now}
-        label="run"
-        empty="No crons scheduled to fire today."
-        errorText="Could not load today's crons."
-      />
-      <AutomationSection
-        title="Today's agents"
-        items={agents.data?.agents ?? []}
-        isLoading={agents.isLoading}
-        isError={agents.isError}
-        now={now}
-        label="trigger"
-        empty="No agents scheduled to run today."
-        errorText="Could not load today's agents."
-      />
-    </>
-  );
-}
-
 /**
  * Today's agent, hosted right here.
  *
@@ -395,32 +183,23 @@ function TodayAutomation() {
  * than from the record's own status field.
  */
 function TodayAgentCard() {
-  const qc = useQueryClient();
   const agent = useQuery(todayAgentQuery());
   const view = agent.data;
   const record = view?.agent ?? null;
   const running = view?.running ?? false;
 
-  const invalidate = () => {
-    void qc.invalidateQueries({ queryKey: queryKeys.todayAgent });
-    void qc.invalidateQueries({ queryKey: queryKeys.fleet });
-  };
-
-  const start = useMutation({
+  const start = useAppMutation({
     mutationFn: () => startTodayAgent(),
-    onSuccess: () => {
-      pushToast("Today's agent starting — it lands in the tmux `planning` session", "success");
-      invalidate();
+    invalidates: affects.todayAgent,
+    toast: {
+      success: "Today's agent starting — it lands in the tmux `planning` session",
+      error: "Could not start Today's agent",
     },
-    onError: (e) => pushToast(`Could not start Today's agent: ${e.message}`, "error"),
   });
-  const stop = useMutation({
+  const stop = useAppMutation({
     mutationFn: () => stopTodayAgent(),
-    onSuccess: () => {
-      pushToast("Today's agent stopped", "success");
-      invalidate();
-    },
-    onError: (e) => pushToast(`Could not stop Today's agent: ${e.message}`, "error"),
+    invalidates: affects.todayAgent,
+    toast: { success: "Today's agent stopped", error: "Could not stop Today's agent" },
   });
 
   const busy = start.isPending || stop.isPending;
@@ -524,35 +303,32 @@ function TodayAgentCard() {
  * A manual Run trigger fires `POST /api/today/run`; each proposal can be accepted or dismissed.
  * Shows the open (suggested) list, refreshing the query after every write. */
 function SuggestedTasks() {
-  const qc = useQueryClient();
   const suggestions = useQuery(suggestionsQuery("suggested"));
   const open = suggestions.data?.suggestions ?? [];
+  const suggested = [queryKeys.suggestions("suggested")];
 
-  const invalidate = () =>
-    void qc.invalidateQueries({ queryKey: queryKeys.suggestions("suggested") });
-
-  const runMut = useMutation({
+  const runMut = useAppMutation({
     mutationFn: () => runTodayAgent(),
-    onSuccess: (r) => {
-      pushToast(
+    invalidates: suggested,
+    toast: {
+      success: (r) =>
         r.report.added > 0
           ? `Today's agent: ${r.report.added} new suggestion${r.report.added === 1 ? "" : "s"}`
           : "Today's agent: no new suggestions",
-        "success",
-      );
-      invalidate();
+      error: "Today's agent failed",
     },
-    onError: (e) => pushToast(`Today's agent failed: ${e.message}`, "error"),
   });
 
-  const reviewMut = useMutation({
-    mutationFn: ({ id, status }: { id: string; status: "accepted" | "dismissed" }) =>
-      setSuggestionStatus(id, status),
-    onSuccess: (r) => {
-      pushToast(`Suggestion ${r.status}`, "success");
-      invalidate();
-    },
-    onError: (e) => pushToast(`Review failed: ${e.message}`, "error"),
+  // Accepting or dismissing moves the suggestion off the open list either way, so the row goes on
+  // the click — this is a triage queue, and it should empty as fast as you can read it.
+  const reviewMut = useAppMutation<
+    { status: string },
+    { id: string; status: "accepted" | "dismissed" }
+  >({
+    mutationFn: (v) => setSuggestionStatus(v.id, v.status),
+    optimistic: dropSuggestion<{ id: string; status: "accepted" | "dismissed" }>((v) => v.id),
+    invalidates: affects.task,
+    toast: { success: (r) => `Suggestion ${r.status}`, error: "Review failed" },
   });
 
   return (
@@ -607,8 +383,8 @@ function SuggestedTasks() {
   );
 }
 
-/** One scrolling column of the digest. The cards stack with gaps inside it, and the column scrolls
- * independently of its siblings — so reading the day's agent never scrolls the day's goals away. */
+/** One semantic section of the day. Sections now share a single page scroll instead of competing
+ * for width and hiding related work behind independent scroll positions. */
 function Column({
   label,
   className,
@@ -619,21 +395,15 @@ function Column({
   children: ReactNode;
 }) {
   return (
-    <ScrollArea aria-label={label} className={cn("h-full border-border", className)}>
-      <div className="space-y-3 p-3">{children}</div>
-    </ScrollArea>
+    <section aria-label={label} className={cn("space-y-3", className)}>
+      {children}
+    </section>
   );
 }
 
 /**
- * `/today` — the Today view (#490, Epic #488 Mission Control). A personal *aimed vs achieved*
- * digest: today's daily goals (with their quarter alignment) and the quarter's goals on the left;
- * the proposals and automation to act on in the middle; the agent working the day — and the day's
- * numbers — on the right. Read-only where it can be: `/api/goals` + `/api/wrap` (+ today's cost).
- *
- * Built from the same card language as `/` (#1006): `SectionCard` bands, rows that are `Card`s,
- * `ConfirmButton`/`AlertDialog` in place of `window.confirm`, `Tooltip` in place of native `title`
- * attributes (which a phone can never show), and `ScrollArea` for the three independent columns.
+ * `/today` — the planning surface for admitting work, reviewing proposals, aligning the day, and
+ * watching the hosted Today agent. The full-width stack keeps those decisions in one reading flow.
  */
 export function Today() {
   const goals = useQuery(goalsQuery());
@@ -678,7 +448,7 @@ export function Today() {
 
   return (
     <TooltipProvider delayDuration={250}>
-      <div className="flex h-full min-h-0 flex-col">
+      <div className="h-full overflow-y-auto">
         {/* The day's identity on one baseline with its date, flush to the top rule — the console's
             header treatment, rather than a document title floating above a stack of cards. */}
         <header className="flex flex-none items-baseline gap-3 border-b border-border px-4 py-2.5">
@@ -701,7 +471,7 @@ export function Today() {
             real values (0 PRs → 11 PRs, etc). OR across the queries, never AND (#544). */}
         {loading ? (
           <div
-            className="grid min-h-0 flex-1 grid-cols-1 gap-3 p-3 lg:grid-cols-[20rem_minmax(0,1fr)]"
+            className="mx-auto grid w-full max-w-6xl grid-cols-1 gap-3 p-3 sm:grid-cols-2"
             aria-hidden="true"
           >
             {[0, 1].map((i) => (
@@ -712,23 +482,20 @@ export function Today() {
             ))}
           </div>
         ) : (
-          /* Three columns on a wide screen: the day's intent, the work to act on, and the agent
-             working it. Below 1181px the agent column folds *under* the centre column rather than
-             disappearing (same element, re-placed), and on a phone the whole thing is one stack. */
-          <div
-            className={cn(
-              "grid min-h-0 flex-1 grid-cols-1",
-              // 20rem + 22rem is what the `wide` breakpoint (1181px) was sized against — see the
-              // screen's definition in tailwind.config. Widening these without moving the
-              // breakpoint starves the centre column at exactly the width that unlocks it.
-              "lg:grid-cols-[20rem_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)_auto]",
-              "wide:grid-cols-[20rem_minmax(0,1fr)_22rem] wide:grid-rows-1",
-            )}
-          >
-            <Column
-              label="the day"
-              className="lg:col-start-1 lg:row-span-2 lg:row-start-1 lg:border-r wide:row-span-1"
+          <div className="mx-auto flex w-full max-w-6xl flex-col gap-3 p-3 pb-8">
+            <SectionCard
+              eyebrow="admit"
+              title="Plan today’s work"
+              count="durable machine queue"
+              tone="ready"
             >
+              <p className="mb-3 text-sm text-muted-foreground">
+                Queue a concrete outcome here; Queue remains the place to operate and inspect it.
+              </p>
+              <QueueAddForm />
+            </SectionCard>
+
+            <Column label="the day" className="order-2">
               <SectionCard
                 eyebrow="Intent"
                 title="Aimed today"
@@ -853,12 +620,8 @@ export function Today() {
               </SectionCard>
             </Column>
 
-            <Column
-              label="proposals and open work"
-              className="lg:col-start-2 lg:row-start-1 lg:border-r"
-            >
+            <Column label="proposals and open work" className="order-1">
               <SuggestedTasks />
-              <TodayAutomation />
               {openTodos.length > 0 && (
                 <SectionCard title="Open todos" count="across branch notes · rolling forward">
                   <ul className="space-y-2">
@@ -887,16 +650,12 @@ export function Today() {
               )}
             </Column>
 
-            <Column
-              label="today's agent"
-              className="border-t lg:col-start-2 lg:row-start-2 wide:col-start-3 wide:row-start-1 wide:border-t-0"
-            >
+            <Column label="today's agent" className="order-3">
               <TodayAgentCard />
 
-              {/* The day's numbers sit with the agent that moved them, not in a banner overhead.
-                  `overflow-hidden` so the tile grid's 1px rules stop at the card's radius. */}
+              {/* `overflow-hidden` keeps the tile grid's 1px rules inside the card radius. */}
               <Card className="overflow-hidden">
-                <StatGrid cols={2}>
+                <StatGrid cols={4}>
                   <StatTile
                     label="goals done"
                     value={`${doneCount}/${totalGoals}`}

@@ -145,6 +145,40 @@ shipped one. `<root>/jobs` sits at the notes-root level (sibling to `<machine>/`
 machine-agnostic and syncs across your machines like the notes; use `[jobs.only_on]` for
 per-machine differences.
 
+## Markdown agents
+
+`config/agents/*.md` is the declarative source of truth for agents. Every manifest must have YAML
+frontmatter with an explicit `kind`:
+
+| Kind | Contract |
+|---|---|
+| `command` | Runs a same-name native/script job or an explicit `run:` command. `gather:` is forbidden. |
+| `staff` | Has a non-empty Markdown body, deterministic `gather:`, and at least one allowed `sinks:` entry. |
+| `hosted` | Has a non-empty Markdown body consumed by its launcher. |
+| `specialist` | Has a non-empty body plus `repo:` and compiles into a native reviewer; it cannot run or be scheduled. |
+
+Runnable kinds may declare `on_calendar`, `retry_after` (default `15m` when scheduled),
+`trigger: startup`, `network`, `queue`, and strict body `arguments`. Static role instructions and
+output contracts belong in the Markdown body; Rust keeps deterministic gathering, validation,
+security framing, routing, state, and structured-output parsing.
+
+Agent resolution is first-match-wins by name:
+
+1. branch note `agents/`
+2. repo main-note `agents/`
+3. personal overlay `agents/`
+4. private work-notes `agents/`
+5. private personal-notes `agents/`
+6. shipped `config/agents/`
+
+Overrides replace the whole manifest; they are not partial merges. To change a shipped prompt or
+schedule, copy that agent into a higher-precedence tier with the same `name` and edit the copy.
+For example, override `quarter-review` this way; the old `[quarter].review_cron` /
+`BN_QUARTER_REVIEW_CRON` setting is rejected so two schedule authorities cannot coexist.
+
+Use `bn agents validate` after editing a manifest, `bn agents` to inspect effective kinds and
+schedules, and `bn agents render <name> --args '{"key":"value"}'` to diagnose strict templates.
+
 ## Scheduling
 
 ### Cadence ticks
@@ -156,13 +190,15 @@ three **tick** crons — one timer each — that fan out to their cluster in ord
 |---|---|---|
 | `tick-5m` | `*:0/5` | `tools-reconcile`, `notify`, `routine-tick`, `attention-sync` |
 | `tick-10m` | `*:0/10` | `auto-review-trigger`, `attention-auto-trigger`, `agent-supervise` |
-| `tick-15m` | `*:0/15` | `auto-review-poll`, `cron-health`, `info-gather` |
+| `tick-15m` | `*:0/15` | `auto-review-poll`, `cron-health` |
+
+`agent-scheduler` runs every minute and owns every `on_calendar` declared in
+`config/agents/*.md`; agent schedules do not belong in `crons.toml`.
 
 Each child still runs through the normal `bn run` path, so it records its **own** `cron_run`
-event — `bn cron` and `bn doctor` show the same per-job rows and per-job failure counts as
-before, and each child keeps its own `[jobs.only_on]` host gate. A failing child never blocks its
-siblings, and the tick itself stays green: the child already reported its own failure, so failing
-the tick too would only obscure which job actually broke.
+event. `bn cron` nests each schedule and its due/retry state beneath `agent-scheduler`; `bn doctor`
+still sees each child's own failure history. A failing child never blocks its siblings, and the
+scheduler records its own catalog/loop health separately.
 
 Children have no `[[cron]]` entry of their own (that would schedule them twice) but remain
 runnable by hand — `bn run notify` works exactly as before. A tick's `persistent` / `network`
@@ -192,9 +228,11 @@ job** inside the now-always-up instance. Two installers recreate the whole thing
        sh config/jobs/systemd/install.sh
 
    This is a thin bootstrap: it finds the installed `bn` and runs **`bn cron register`**, the
-   single source of truth on every platform. `bn cron register` reads `config/crons.toml` (+ any
-   per-repo `crons.toml`) and generates + `daemon-reload`s + `enable --now`s a `.service`/`.timer`
-   into `~/.config/systemd/user/` for **every** declared job — not a hand-maintained subset — each
+   single source of truth on every platform. `bn cron register` strictly validates the Markdown
+   agent catalog, then reads `config/crons.toml` (+ any per-repo `crons.toml`) and generates +
+   `daemon-reload`s + `enable --now`s a `.service`/`.timer` into
+   `~/.config/systemd/user/` for **every** declared cron — including the one common
+   `agent-scheduler`, never one timer per agent — each
    `Persistent=true` so a run missed while WSL was down catches up on next boot, then prunes any
    `bn-*` timer no longer in the manifest. (`daily-rollover` fires ~05:00 — carry unfinished daily
    goals forward and drain due follow-ups. `notify` fires every 5 min — push an OS toast for each

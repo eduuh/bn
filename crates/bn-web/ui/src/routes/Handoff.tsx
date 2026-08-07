@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { handoffQuery, notesQuery, queryKeys } from "../api/client";
 import type { HandoffView as HandoffData, SummaryEntry } from "../api/types";
 import { saveHandoff } from "../api/writes";
-import { pushToast } from "../lib/toast";
+import { useAppMutation } from "../hooks/useAppMutation";
 import { ToastStack } from "../components/ToastStack";
 import { Markdown } from "../components/Markdown";
 import { Badge } from "../components/ui/badge";
@@ -133,7 +133,6 @@ export function Handoff() {
 
 /** The read + edit pane for one branch's handoff packet. */
 function HandoffPane({ entry }: { entry: SummaryEntry }) {
-  const qc = useQueryClient();
   const handoff = useQuery(handoffQuery(entry.repo, entry.branch));
 
   const [narrative, setNarrative] = useState("");
@@ -154,8 +153,8 @@ function HandoffPane({ entry }: { entry: SummaryEntry }) {
     }
   }, [handoff.data]);
 
-  const save = useMutation({
-    mutationFn: (): Promise<HandoffData> =>
+  const save = useAppMutation<HandoffData>({
+    mutationFn: () =>
       saveHandoff({
         repo: entry.repo,
         branch: entry.branch,
@@ -164,14 +163,11 @@ function HandoffPane({ entry }: { entry: SummaryEntry }) {
         questions: lines(questions),
         priority_queue: lines(priority),
       }),
-    onSuccess: () => {
-      pushToast(`Saved handoff for ${entry.repo}/${entry.branch}`, "success");
-      setDirty(false);
-      void qc.invalidateQueries({ queryKey: queryKeys.handoff(entry.repo, entry.branch) });
-    },
-    onError: (e) => {
-      pushToast(`Save failed: ${e.message}`, "error");
-    },
+    invalidates: [queryKeys.handoff(entry.repo, entry.branch)],
+    // A failed save must leave the operator's unsaved packet in the textareas.
+    invalidateOnError: false,
+    toast: { success: `Saved handoff for ${entry.repo}/${entry.branch}`, error: "Save failed" },
+    onSuccess: () => setDirty(false),
   });
 
   const onEdit = (setter: (v: string) => void) => (v: string) => {

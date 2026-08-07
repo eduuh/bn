@@ -1,7 +1,7 @@
 //! `bn critic` — the fresh-context critic stage (#649 Phase 3, per design r17 §1).
 //!
 //! `bn critic dispatch` cuts a **fresh worktree off the PR head** with a **plan-free note**
-//! and launches a `--fresh` critic lane seeded (via [`bn_core::pipeline::critic::critic_seed`])
+//! and launches a `--fresh` critic lane seeded (via [`bn_core::pipeline::critic::critic_packet`])
 //! with ONLY the diff + done-when criteria + PR url — so the critic starts with zero prior
 //! turns and cannot read the approved plan. `bn critic verdict` drives the loop-back: PASS →
 //! shippable; FAIL → a `task_type="critique"` attention item + re-enter execution, bounded by
@@ -12,7 +12,7 @@
 
 use crate::*;
 use bn_core::pipeline::critic::{
-    critic_seed, critique_title, next_after_verdict, parse_iteration, CriticNext, Verdict,
+    critic_packet, critique_title, next_after_verdict, parse_iteration, CriticNext, Verdict,
 };
 
 /// The attention-item key for a branch's critique findings — one live record per lane, refreshed
@@ -178,15 +178,38 @@ pub(crate) fn run_critic_dispatch(
     );
 
     // Launch the FRESH critic lane: brand-new harness session (zero prior turns), seeded with ONLY
-    // the diff + done-when + pr via the leak-proof builder. No plan, no execution transcript, no
-    // execution session id is forwarded. The CLI appends the concrete verdict commands (keyed to
-    // the EXECUTION lane) so the critic reports back unambiguously.
-    let mut seed = critic_seed(&diff, &done_when, pr);
-    seed.push_str(&format!(
-        "\nRun exactly one of these from this worktree when done:\n  \
-         PASS: bn critic verdict --repo {repo} --branch {branch} --pass\n  \
-         FAIL: bn critic verdict --repo {repo} --branch {branch} --fail --findings-file <path>\n"
-    ));
+    // the diff + done-when + pr via the leak-proof packet builder. No plan, execution transcript,
+    // or execution session id is forwarded.
+    let mut workflow_args = serde_json::Map::new();
+    workflow_args.insert(
+        "pr".into(),
+        serde_json::Value::String(pr.unwrap_or("").to_string()),
+    );
+    let workflow =
+        bn_core::skills::render_required(cfg, &wt_path, "critique-fresh", Some(&workflow_args))
+            .unwrap_or_else(|error| fail(&format!("bn critic: {error}")));
+    let packet = critic_packet(&diff, &done_when, pr);
+    let verdict_commands = format!(
+        "PASS: `bn critic verdict --repo {repo} --branch {branch} --pass`\n\
+         FAIL: `bn critic verdict --repo {repo} --branch {branch} --fail --findings-file <path>`"
+    );
+    let mut envelope_args = serde_json::Map::new();
+    envelope_args.insert(
+        "workflow_body".into(),
+        serde_json::Value::String(workflow),
+    );
+    envelope_args.insert("packet".into(), serde_json::Value::String(packet));
+    envelope_args.insert(
+        "verdict_commands".into(),
+        serde_json::Value::String(verdict_commands),
+    );
+    let seed = bn_core::skills::render_required(
+        cfg,
+        &wt_path,
+        "pipeline-critic-envelope",
+        Some(&envelope_args),
+    )
+    .unwrap_or_else(|error| fail(&format!("bn critic: {error}")));
     let mut agent_launched = false;
     if !no_tmux {
         let _ = apply_folder_trust(&wt_path.to_string_lossy(), agent_kind);

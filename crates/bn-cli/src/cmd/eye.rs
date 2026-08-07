@@ -49,54 +49,19 @@ fn print_summary(summary: &eye::Summary) {
     }
 }
 
-fn strip_frontmatter(text: &str) -> String {
-    if let Some(rest) = text.strip_prefix("---") {
-        if let Some((_, body)) = rest.split_once("---") {
-            return body.trim_start().to_string();
-        }
-    }
-    text.to_string()
-}
-
-fn eye_prompt() -> String {
-    let text = include_str!("../../../../config/skills/staff/eye.md");
-    strip_frontmatter(text)
-}
-
-fn eye_agent(mode: &str) -> staff::ResolvedAgent {
-    let (name, schedule) = if mode == "weekly" {
-        (eye::AGENT_WEEKLY, "Sun *-*-* 09:00:00")
-    } else {
-        (eye::AGENT_DAILY, "*-*-* 19:30:00")
-    };
-    staff::ResolvedAgent {
-        name: name.into(),
-        on_calendar: Some(schedule.into()),
-        run: format!("bn run {name}"),
-        network: false,
-        triggers: Vec::new(),
-        description: Some("Keratoconus protective-behaviour coach".into()),
-        gather: Some(format!("bn eye gather {mode}")),
-        sinks: vec!["attn".into()],
-        skills: Vec::new(),
-        mcps: Vec::new(),
-        link_domains: Vec::new(),
-        harness: Some("copilot".into()),
-        repo: None,
-        references: Vec::new(),
-        source_repo: None,
-        worlds: Vec::new(),
-        tools: Vec::new(),
-        model: None,
-        body: eye_prompt(),
-        scope: bn_core::resolver::JobScope::Global,
-        path: std::path::PathBuf::from("config/skills/staff/eye.md"),
-    }
-}
-
 fn run_eye_staff(cfg: &Config, mode: &str, date: &str, json: bool) -> i32 {
-    let entry = eye_agent(mode);
-    match staff::home_gate(cfg, &entry) {
+    let name = if mode == "weekly" {
+        eye::AGENT_WEEKLY
+    } else {
+        eye::AGENT_DAILY
+    };
+    let ctx = target_ctx(cfg, None, None);
+    let catalog = bn_core::agents::discover(cfg, ctx.as_ref())
+        .unwrap_or_else(|error| fail(&format!("bn eye run: {error}")));
+    let entry = catalog
+        .require(name)
+        .unwrap_or_else(|error| fail(&format!("bn eye run: {error}")));
+    match staff::home_gate(cfg, entry) {
         staff::HomeGate::RunsHere => {}
         staff::HomeGate::NotHome { home } => {
             println!("eye {mode}: skipped — staff home is {home}");
@@ -104,15 +69,17 @@ fn run_eye_staff(cfg: &Config, mode: &str, date: &str, json: bool) -> i32 {
         }
     }
     let packet = packet_json(cfg, mode, date);
+    let harness = entry.harness.as_deref().unwrap_or("copilot");
     let report = staff::run_pipeline(
         cfg,
-        &entry,
+        entry,
         packet,
         |prompt| {
-            let Some(cmd) = staff_dispatch_command("copilot", prompt, None, None) else {
+            let Some(cmd) = staff_dispatch_command(harness, prompt, entry.model.as_deref(), None)
+            else {
                 return staff::Dispatched::Failed(
                     staff::RunStatus::Fail,
-                    "unknown harness 'copilot'".into(),
+                    format!("unknown harness '{harness}'"),
                 );
             };
             let (success, stdout, combined) = dispatch_capture(cmd, None);

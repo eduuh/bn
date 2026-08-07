@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowUpRight, Rocket, Plus, Zap } from "lucide-react";
 import type { ActionItem, Urgency } from "../api/types";
 import { apiDispatch, apiQueueAdd } from "../api/writes";
-import { queryKeys } from "../api/client";
-import { pushToast } from "../lib/toast";
+import { useAppMutation } from "../hooks/useAppMutation";
+import { affects } from "../lib/invalidation";
+import { dropAction } from "../lib/optimistic";
 import {
   Dialog,
   DialogContent,
@@ -69,20 +69,13 @@ function Segment({
  * stays editable (some items — a goal, a global attention item — carry none, so the owner picks).
  */
 export function StartAgentComposer({ item, onClose }: { item: ActionItem; onClose: () => void }) {
-  const qc = useQueryClient();
   const [urgency, setUrgency] = useState<Urgency>(item.default_urgency);
   const [prompt, setPrompt] = useState(item.suggested_prompt);
   const [repo, setRepo] = useState(payloadStr(item, "repo") || item.repo || "");
   const [harness, setHarness] = useState<Harness>("claude");
   const [kind, setKind] = useState<Kind>(item.type === "goal" ? "scout" : "ship");
 
-  const invalidate = () => {
-    void qc.invalidateQueries({ queryKey: queryKeys.actions });
-    void qc.invalidateQueries({ queryKey: queryKeys.fleet });
-    void qc.invalidateQueries({ queryKey: queryKeys.orchestrate });
-  };
-
-  const start = useMutation({
+  const start = useAppMutation({
     mutationFn: async () => {
       const body = prompt.trim();
       const r = repo.trim();
@@ -92,15 +85,14 @@ export function StartAgentComposer({ item, onClose }: { item: ActionItem; onClos
         await apiQueueAdd({ repo: r || undefined, items: [body] });
       }
     },
-    onSuccess: () => {
-      pushToast(
-        urgency === "urgent" ? "Dispatched an agent" : "Queued for the next tick",
-        "success",
-      );
-      invalidate();
-      onClose();
+    // Acting on the row resolves it, so it leaves the command centre with the composer.
+    optimistic: dropAction(item.id),
+    invalidates: affects.agentLaunch,
+    toast: {
+      success: urgency === "urgent" ? "Dispatched an agent" : "Queued for the next tick",
+      error: "Could not start",
     },
-    onError: (e) => pushToast(e instanceof Error ? e.message : "could not start", "error"),
+    onSuccess: onClose,
   });
 
   const needsRepo = urgency === "urgent";

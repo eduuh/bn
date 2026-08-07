@@ -103,53 +103,22 @@ pub(crate) fn append_inherited_worker_event(
 
 /// Build the controller seed prompt.
 ///
-/// Prefers the discoverable `controller` agent definition (branch → repo → global
-/// `config/agents/controller.md`) so operators can tune controller behavior — especially
-/// how it communicates with workers and remote peers — without a rebuild. Falls back to a
-/// built-in default when no such agent file is present. The `{controller_id}` token is
-/// substituted in both paths.
-fn controller_seed(cfg: &Config, ctx: Option<&Resolved>, controller_id: &str) -> String {
-    if let Some(def) = bn_core::agents::discover(cfg, ctx)
-        .into_iter()
-        .find(|a| a.name == "controller")
-    {
-        let body = def.body.trim();
-        if !body.is_empty() {
-            return body.replace("{controller_id}", controller_id);
-        }
-    }
-    default_controller_seed(controller_id)
-}
-
-/// Built-in controller seed used when no `controller` agent file is discoverable. Kept in
-/// sync with `config/agents/controller.md` so behavior degrades gracefully without it.
-fn default_controller_seed(controller_id: &str) -> String {
-    format!(
-        "You are bn controller {controller_id}. You ONLY coordinate and NEVER implement. \
-ABSOLUTE RULES: do not edit, create, or delete code; do not run formatters, tests, or builds; \
-do not commit, push, open PRs, or land changes yourself — if a request needs code changed, \
-dispatch a worker. Use ONLY documented `bn` subcommands; never invent commands or flags — if \
-unsure, run `bn <command> --help` first. Reach other machines (peers) ONLY via `bn dispatch \
---host <alias>` or `bn connect <alias>`; never hand-roll ssh/scp/rsync/git-push to a peer. \
-Every worker command must retain the inherited BN_CONTROLLER_ID={controller_id}. \
-REQUEST LOOP (one at a time): run `bn control lease --id {controller_id} --json`; coordinate \
-that request without implementing it; then run `bn control complete --id {controller_id} \
---request-id <id>` (add `--failed` only when coordination cannot proceed). Lease again until the \
-queue is empty; when nudged about a new request, resume the loop. \
-DISPATCH: local worker → `bn dispatch \"<task>\" --repo <repo> --agent copilot --yolo` (add \
-`--scout` to investigate, `--verify` to gate done on build/test); on a peer → `bn dispatch \
-\"<task>\" --host <alias> --repo <repo> --agent copilot` where <alias> is an ssh host registered \
-under config.toml [hosts]. One request → one worker → one worktree → one branch. With [nodes] set \
-and [orchestrate].remote_overflow = true, `bn orchestrate` fans work out to peers automatically. \
-Run `bn connect` (no arg) to list known hosts. \
-MONITOR & STEER: `bn control status --id {controller_id}` for your queue/lanes; `bn fleet` for the \
-live board (working / waiting / stuck); workers report done via `bn agent done` (surfaces as a \
-review item — don't re-dispatch a finished worker); nudge a running worker with `bn agent send \
-<target> \"<message>\" --detach`; watch a peer worker with `bn connect <alias>`. \
-REPORT: after each pass, give the user a few scannable lines — what you started (repo/branch + \
-goal, local vs peer), what's running, and what needs them. If a peer isn't set up, surface that \
-instead of guessing aliases."
-    )
+/// Load and strictly render the Markdown-defined controller operating brief.
+fn controller_seed(
+    cfg: &Config,
+    ctx: Option<&Resolved>,
+    controller_id: &str,
+) -> Result<String, String> {
+    let catalog = bn_core::agents::discover(cfg, ctx).map_err(|error| error.to_string())?;
+    let def = catalog
+        .require("controller")
+        .map_err(|error| error.to_string())?;
+    let mut args = serde_json::Map::new();
+    args.insert(
+        "controller_id".into(),
+        serde_json::Value::String(controller_id.to_string()),
+    );
+    def.render(Some(&args)).map_err(|error| error.to_string())
 }
 
 fn control_target(window_name: &str) -> String {
@@ -396,7 +365,8 @@ fn start_controller(
         .unwrap_or_else(|_| std::path::PathBuf::from("bn"))
         .to_string_lossy()
         .into_owned();
-    let seed = controller_seed(cfg, resolved.as_ref(), &id);
+    let seed = controller_seed(cfg, resolved.as_ref(), &id)
+        .unwrap_or_else(|error| fail(&format!("bn control start: {error}")));
     let cmd = format!(
         "{} control watch --id {} & exec env BN_CONTROLLER_ID={} {} agent launch {} --fresh --yolo --session {} --seed {}",
         wt::shell_single_quote(&exe),
@@ -510,19 +480,21 @@ fn start_controller(
 }
 
 fn watch_controller(id: String) {
-    let mut event_watcher = match crate::wake::WakeWatcher::new(&[]) {
-        Ok(watcher) => Some(watcher),
-        Err(error) => {
-            eprintln!("bn control watch: filesystem notifications unavailable ({error}); polling");
-            None
-        }
-    };
+    let mut reactor = crate::event_loop::EventLoop::with_wake_queue(
+        "bn control watch",
+        vec![crate::event_loop::Watch::file(controller::registry_path())],
+        &[],
+    );
     loop {
         let registry = match controller::load_registry(&controller::registry_path()) {
             Ok(registry) => registry,
             Err(error) => {
                 eprintln!("bn control watch: read controllers: {error}");
-                std::thread::sleep(CONTROLLER_EVENT_POLL_INTERVAL);
+                if reactor.wait(CONTROLLER_EVENT_POLL_INTERVAL)
+                    == crate::event_loop::LoopEvent::Shutdown
+                {
+                    return;
+                }
                 continue;
             }
         };
@@ -533,7 +505,11 @@ fn watch_controller(id: String) {
             return;
         }
         if record.status == ControllerStatus::Starting {
-            std::thread::sleep(CONTROLLER_EVENT_POLL_INTERVAL);
+            if reactor.wait(CONTROLLER_EVENT_POLL_INTERVAL)
+                == crate::event_loop::LoopEvent::Shutdown
+            {
+                return;
+            }
             continue;
         }
         if !controller_alive(&record.target) {
@@ -556,15 +532,10 @@ fn watch_controller(id: String) {
             }
         };
         if pending.is_empty() {
-            if let Some(watcher) = event_watcher.as_ref() {
-                if let Err(error) = watcher.wait_timeout(CONTROLLER_EVENT_POLL_INTERVAL) {
-                    eprintln!(
-                        "bn control watch: filesystem notifications failed ({error}); polling"
-                    );
-                    event_watcher = None;
-                }
-            } else {
-                std::thread::sleep(CONTROLLER_EVENT_POLL_INTERVAL);
+            if reactor.wait(CONTROLLER_EVENT_POLL_INTERVAL)
+                == crate::event_loop::LoopEvent::Shutdown
+            {
+                return;
             }
             continue;
         }
@@ -950,5 +921,3 @@ pub(crate) fn emit_control(cfg: &Config, action: ControlCmd, json: bool) {
         ControlCmd::TurnEndGuard { id } => turn_end_guard(cfg, id),
     }
 }
-
-

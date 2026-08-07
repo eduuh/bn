@@ -90,6 +90,21 @@ pub fn config_file_path() -> PathBuf {
     config_dir().join("config.toml")
 }
 
+/// Path to `approvals.toml` — the agent auto-approve policy (`bn agent answer`'s unattended half).
+/// `$BN_APPROVALS` wins, else `<config_dir>/approvals.toml`.
+///
+/// Deliberately its own document rather than an `[approve]` block in `config.toml`: it is a
+/// security-sensitive allowlist that decides which commands an agent may run without a human, it is
+/// list-shaped and edited far more often than the scalar settings around it, and keeping it
+/// separate means "what may bn approve on my behalf?" is answered by one file you can read top to
+/// bottom. Same person-scoped, own-file pattern as `references/` and `jobs/`.
+pub fn approvals_file_path() -> PathBuf {
+    if let Some(p) = non_empty_env("BN_APPROVALS") {
+        return PathBuf::from(p);
+    }
+    config_dir().join("approvals.toml")
+}
+
 /// The state directory for append-only logs (the event log) and caches. `$BN_STATE_DIR` wins
 /// (tests, explicit override); otherwise it resolves to `<personal_root>/<machine>/state`
 /// inside the synced notes repo via [`Config::state_dir`]. Machine-scoped so it syncs across

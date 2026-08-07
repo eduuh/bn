@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Minus, Plus, Rocket } from "lucide-react";
 import { fleetQuery, orchestrateQuery } from "../api/client";
 import { apiDispatch, apiQueueAdd, apiStart } from "../api/writes";
 import { parseItems } from "../lib/backlog";
+import { useAppMutation } from "../hooks/useAppMutation";
+import { affects } from "../lib/invalidation";
 import {
   defaultRepo as computeDefaultRepo,
   harnessAvailable,
@@ -12,7 +14,6 @@ import {
   runningHarness,
   type Harness,
 } from "../lib/start";
-import { pushToast } from "../lib/toast";
 import { ToastStack } from "../components/ToastStack";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -174,33 +175,34 @@ export function Start() {
   const needsRepo = mode === "dispatch";
   const canSubmit = items.length > 0 && !badItem && (!needsRepo || repo.trim().length > 0);
 
-  const onError = (e: unknown) => {
-    pushToast(e instanceof Error ? e.message : "could not start", "error");
-  };
-  const onStarted = (n: number, verb: string) => {
-    pushToast(`${verb} ${n} agent${n === 1 ? "" : "s"} — watch the fleet`, "success");
+  const started = (n: number, verb: string) =>
+    `${verb} ${n} agent${n === 1 ? "" : "s"} — watch the fleet`;
+  // All three land on /fleet, so the fleet has to be reconciled or you arrive at a list that
+  // predates what you just launched.
+  const onStarted = () => {
     setText("");
     navigate("/fleet");
   };
+  const launch = { invalidates: affects.agentLaunch, onSuccess: onStarted };
 
-  const dispatchMut = useMutation({
+  const dispatchMut = useAppMutation({
     mutationFn: async () => {
       const r = repo.trim();
       await Promise.all(items.map((item) => apiDispatch({ repo: r, item, harness, kind })));
       return items.length;
     },
-    onSuccess: (n) => onStarted(n, "Dispatched"),
-    onError,
+    ...launch,
+    toast: { success: (n: number) => started(n, "Dispatched"), error: "Could not start" },
   });
-  const queueMut = useMutation({
+  const queueMut = useAppMutation({
     mutationFn: () => apiQueueAdd({ repo: repo.trim() || undefined, items }),
-    onSuccess: () => onStarted(items.length, "Queued"),
-    onError,
+    ...launch,
+    toast: { success: started(items.length, "Queued"), error: "Could not start" },
   });
-  const daemonMut = useMutation({
+  const daemonMut = useAppMutation({
     mutationFn: () => apiStart({ repo: repo.trim() || undefined, items, concurrency }),
-    onSuccess: () => onStarted(items.length, "Started a run of"),
-    onError,
+    ...launch,
+    toast: { success: started(items.length, "Started a run of"), error: "Could not start" },
   });
 
   const busy = dispatchMut.isPending || queueMut.isPending || daemonMut.isPending;

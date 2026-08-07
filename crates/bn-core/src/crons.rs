@@ -141,15 +141,6 @@ pub fn discover(cfg: &Config, ctx: Option<&Resolved>) -> Vec<ResolvedCron> {
             Err(e) => eprintln!("bn: skipping malformed cron manifest {e}"),
         }
     }
-    // Let `[quarter].review_cron` / `$BN_QUARTER_REVIEW_CRON` steer the quarter-review schedule
-    // across every backend `bn cron register` generates, keeping config the single knob.
-    if let Some(sched) = crate::resolver::quarter_review_cron_override() {
-        for rc in out.iter_mut() {
-            if rc.entry.job == "quarter-review" {
-                rc.entry.on_calendar = sched.clone();
-            }
-        }
-    }
     out
 }
 
@@ -232,6 +223,48 @@ pub struct CronView {
     /// captured no output. Populated by [`status_views`] from the event log, not [`fold_cron_views`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_output: Option<String>,
+    /// Scheduled Markdown agents owned by this cron. Populated only on the `agent-scheduler` row
+    /// by [`status_views_with_agents`], so agent schedules stay nested beneath their one OS timer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<AgentScheduleView>,
+}
+
+/// One scheduled Markdown agent nested beneath the common `agent-scheduler` status row.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentScheduleView {
+    /// The stable identity accepted by `bn run <job>`.
+    pub job: String,
+    /// The manifest's explicit execution kind.
+    pub kind: crate::agents::AgentKind,
+    /// Tier label (`branch`/`repo`/`global`) of the effective manifest.
+    pub scope: String,
+    /// The manifest-owned `on_calendar` schedule.
+    pub schedule: String,
+    /// One-line manifest description.
+    pub description: Option<String>,
+    /// Whether the agent may use the network.
+    pub network: bool,
+    /// Whether queue capture is enabled for this agent.
+    pub queue: bool,
+    /// Whether the agent also declares `trigger: startup`.
+    pub startup: bool,
+    /// Failure retry delay declared by the manifest (scheduled default: 15 minutes).
+    pub retry_after_secs: i64,
+    /// Whether the scheduler would launch this agent at the supplied status-view time.
+    pub due: bool,
+    /// Next retry instant after a failed attempt, when still in backoff.
+    pub retry_at: Option<i64>,
+    /// Compact scheduler state: `due`, `retry`, or `idle`.
+    pub state: String,
+    /// Most recent recorded attempt.
+    pub last_run: Option<i64>,
+    pub last_exit: Option<i32>,
+    pub ok: Option<bool>,
+    pub runs: usize,
+    pub failures: usize,
+    /// Captured output tail from the latest failed attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_output: Option<String>,
 }
 
 /// Fold the three cron data sources into one row per job — the pure core of [`status_views`], so
@@ -289,6 +322,59 @@ pub fn fold_cron_views(
                 runs: run.map(|r| r.runs).unwrap_or(0),
                 failures: run.map(|r| r.failures).unwrap_or(0),
                 last_output: None,
+                agents: Vec::new(),
+            }
+        })
+        .collect()
+}
+
+/// Build the nested schedule rows for every scheduled, runnable Markdown agent.
+pub fn agent_schedule_views(
+    catalog: &crate::agents::AgentCatalog,
+    runs: &[CronJobStatus],
+    now: i64,
+) -> Vec<AgentScheduleView> {
+    catalog
+        .iter()
+        .filter(|agent| agent.is_cron() && !agent.is_specialist())
+        .map(|agent| {
+            let last = crate::events::last_run(&agent.name);
+            let status = runs.iter().find(|run| run.job == agent.name);
+            let due = agent.due(last.as_ref(), now);
+            let retry_at = agent
+                .retry_at(last.as_ref())
+                .filter(|retry_at| *retry_at > now);
+            let state = if due {
+                "due"
+            } else if retry_at.is_some() {
+                "retry"
+            } else {
+                "idle"
+            };
+            AgentScheduleView {
+                job: agent.name.clone(),
+                kind: agent.kind,
+                scope: agent.scope.label().to_string(),
+                schedule: agent.on_calendar.clone().unwrap_or_default(),
+                description: agent.description.clone(),
+                network: agent.network,
+                queue: agent.queue,
+                startup: agent.is_startup(),
+                retry_after_secs: agent
+                    .retry_after_secs
+                    .unwrap_or(crate::agents::DEFAULT_RETRY_AFTER_SECS),
+                due,
+                retry_at,
+                state: state.to_string(),
+                last_run: status.map(|run| run.last_run),
+                last_exit: status.map(|run| run.last_exit),
+                ok: status.map(|run| run.ok),
+                runs: status.map(|run| run.runs).unwrap_or(0),
+                failures: status.map(|run| run.failures).unwrap_or(0),
+                last_output: last
+                    .filter(|run| run.exit_code != 0)
+                    .map(|run| run.output_tail.trim().to_string())
+                    .filter(|tail| !tail.is_empty()),
             }
         })
         .collect()
@@ -313,4 +399,107 @@ pub fn status_views(cfg: &Config, ctx: Option<&Resolved>) -> Vec<CronView> {
         }
     }
     views
+}
+
+/// The machine cron registry with every manifest-owned agent schedule nested beneath the single
+/// `agent-scheduler` row. Strict agent discovery is part of this view: a malformed manifest fails
+/// the caller instead of silently dropping its schedule.
+pub fn status_views_with_agents(
+    cfg: &Config,
+    ctx: Option<&Resolved>,
+) -> Result<Vec<CronView>, crate::agents::AgentCatalogError> {
+    let catalog = crate::agents::discover(cfg, ctx)?;
+    let runs = cron_status();
+    let children = agent_schedule_views(&catalog, &runs, crate::util::now_epoch_secs());
+    Ok(nest_agent_schedules(status_views(cfg, ctx), children))
+}
+
+fn nest_agent_schedules(
+    mut views: Vec<CronView>,
+    children: Vec<AgentScheduleView>,
+) -> Vec<CronView> {
+    let child_names: std::collections::HashSet<&str> =
+        children.iter().map(|agent| agent.job.as_str()).collect();
+    views.retain(|view| !child_names.contains(view.job.as_str()));
+    if let Some(scheduler) = views.iter_mut().find(|view| view.job == "agent-scheduler") {
+        scheduler.agents = children;
+    }
+    views
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cron(job: &str) -> CronView {
+        CronView {
+            job: job.to_string(),
+            scope: "global".to_string(),
+            class: None,
+            declared: true,
+            schedule: None,
+            description: None,
+            network: false,
+            catch_up: false,
+            has_script: false,
+            script_path: None,
+            last_run: None,
+            last_exit: None,
+            ok: None,
+            runs: 0,
+            failures: 0,
+            last_output: None,
+            agents: Vec::new(),
+        }
+    }
+
+    fn agent(job: &str) -> AgentScheduleView {
+        AgentScheduleView {
+            job: job.to_string(),
+            kind: crate::agents::AgentKind::Command,
+            scope: "global".to_string(),
+            schedule: "daily".to_string(),
+            description: None,
+            network: false,
+            queue: false,
+            startup: false,
+            retry_after_secs: crate::agents::DEFAULT_RETRY_AFTER_SECS,
+            due: false,
+            retry_at: None,
+            state: "idle".to_string(),
+            last_run: None,
+            last_exit: None,
+            ok: None,
+            runs: 0,
+            failures: 0,
+            last_output: None,
+        }
+    }
+
+    #[test]
+    fn scheduled_agents_are_nested_without_flat_duplicates() {
+        let views = vec![
+            cron("agent-scheduler"),
+            cron("alpha"),
+            cron("plain-cron"),
+            cron("beta"),
+        ];
+        let nested = nest_agent_schedules(views, vec![agent("alpha"), agent("beta")]);
+
+        assert_eq!(
+            nested
+                .iter()
+                .map(|view| view.job.as_str())
+                .collect::<Vec<_>>(),
+            vec!["agent-scheduler", "plain-cron"]
+        );
+        assert_eq!(
+            nested[0]
+                .agents
+                .iter()
+                .map(|agent| agent.job.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "beta"]
+        );
+    }
 }

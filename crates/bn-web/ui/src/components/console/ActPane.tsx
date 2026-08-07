@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, Plus, Rocket } from "lucide-react";
-import { queryKeys } from "../../api/client";
 import { apiDispatch, apiQueueAdd, attnAction } from "../../api/writes";
-import { pushToast } from "../../lib/toast";
+import { useAppMutation } from "../../hooks/useAppMutation";
+import { affects } from "../../lib/invalidation";
+import { dropAttn, dropAction, dropActionForAttn } from "../../lib/optimistic";
 import type { ActionItem } from "../../api/types";
 import type { WorkItem } from "../../lib/console";
 import { PlanReviewPanel } from "../PlanReviewPanel";
@@ -28,16 +28,12 @@ function payloadStr(item: WorkItem, key: string): string {
 // `action` is passed in rather than read off `item` again: only `ActPane` knows the row has one,
 // and threading it through keeps that narrowing instead of re-asserting it here.
 function DispatchPanel({ item, action }: { item: WorkItem; action: ActionItem }) {
-  const qc = useQueryClient();
   const [prompt, setPrompt] = useState(action.suggested_prompt);
   const [repo, setRepo] = useState(payloadStr(item, "repo") || action.repo || "");
-  const invalidate = () => {
-    void qc.invalidateQueries({ queryKey: queryKeys.actions });
-    void qc.invalidateQueries({ queryKey: queryKeys.fleet });
-    void qc.invalidateQueries({ queryKey: queryKeys.orchestrate });
-  };
 
-  const dispatch = useMutation({
+  // Sending the agent resolves the row that suggested it, so the action leaves the centre at once
+  // rather than lingering until the next poll.
+  const dispatch = useAppMutation({
     mutationFn: () =>
       apiDispatch({
         repo: repo.trim(),
@@ -45,20 +41,16 @@ function DispatchPanel({ item, action }: { item: WorkItem; action: ActionItem })
         harness: "claude",
         kind: action.type === "goal" ? "scout" : "ship",
       }),
-    onSuccess: () => {
-      pushToast("Dispatched an agent", "success");
-      invalidate();
-    },
-    onError: (e) => pushToast(e instanceof Error ? e.message : "could not dispatch", "error"),
+    optimistic: dropAction(action.id),
+    invalidates: affects.agentLaunch,
+    toast: { success: "Dispatched an agent", error: "Could not dispatch" },
   });
 
-  const queue = useMutation({
+  const queue = useAppMutation({
     mutationFn: () => apiQueueAdd({ repo: repo.trim() || undefined, items: [prompt.trim()] }),
-    onSuccess: () => {
-      pushToast("Queued for the next tick", "success");
-      invalidate();
-    },
-    onError: (e) => pushToast(e instanceof Error ? e.message : "could not queue", "error"),
+    optimistic: dropAction(action.id),
+    invalidates: affects.agentLaunch,
+    toast: { success: "Queued for the next tick", error: "Could not queue" },
   });
 
   const busy = dispatch.isPending || queue.isPending;
@@ -123,18 +115,14 @@ function DispatchPanel({ item, action }: { item: WorkItem; action: ActionItem })
 /** Resolve an attention item in place — ack it, or push it onto the branch note's todo list. An
  * attention row that just needs acknowledging never warranted spawning an agent. */
 function AttnPanel({ id }: { id: string }) {
-  const qc = useQueryClient();
-  const invalidate = () => {
-    void qc.invalidateQueries({ queryKey: queryKeys.actions });
-    void qc.invalidateQueries({ queryKey: queryKeys.attn });
-  };
-  const act = useMutation({
-    mutationFn: (verb: "ack" | "plan") => attnAction(id, verb),
-    onSuccess: (_d, verb) => {
-      pushToast(verb === "ack" ? "Acknowledged" : "Added to the branch note", "success");
-      invalidate();
+  const act = useAppMutation<unknown, "ack" | "plan">({
+    mutationFn: (verb) => attnAction(id, verb),
+    optimistic: [dropAttn(id), dropActionForAttn(id)],
+    invalidates: affects.attention,
+    toast: {
+      success: (_d, verb) => (verb === "ack" ? "Acknowledged" : "Added to the branch note"),
+      error: "Could not resolve",
     },
-    onError: (e) => pushToast(e instanceof Error ? e.message : "failed", "error"),
   });
 
   return (

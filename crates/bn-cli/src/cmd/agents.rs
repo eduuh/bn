@@ -1,10 +1,11 @@
-//! `bn agents` command family — list / show / new / install / uninstall / bootstrap review
-//! specialists (repo-scoped PR reviewers compiled to native Copilot/Claude custom agents).
-//! Mirrors [`crate::cmd::skills`]; the compiler + guarded installer live in
-//! [`bn_core::specialists`].
+//! `bn agents` command family — strict catalog validation/rendering plus review-specialist
+//! list/show/new/install/uninstall/bootstrap commands.
 
 use crate::*;
 use bn_core::skills::{NativeHarness, NativeScope};
+use serde_json::{Map, Value};
+use std::io::Read;
+use std::path::Path;
 
 /// Parse a `--harness` filter into the native worlds to act on (default: both).
 fn parse_harnesses(harness: Option<&str>) -> Result<Vec<NativeHarness>, String> {
@@ -20,46 +21,155 @@ fn parse_harnesses(harness: Option<&str>) -> Result<Vec<NativeHarness>, String> 
 
 /// The discovered review specialists visible for `base` (repo-gated tiers folded in).
 fn discover_specialists(cfg: &Config, base: &std::path::Path) -> Vec<bn_core::agents::AgentDef> {
-    let ctx = bn_core::resolver::resolve(cfg, base).ok();
-    bn_core::agents::discover(cfg, ctx.as_ref())
+    discover_catalog(cfg, base)
         .into_iter()
         .filter(|a| a.is_specialist())
         .collect()
 }
 
-/// List review specialists across every tier visible here (text or JSON envelope).
-pub(crate) fn emit_agents(cfg: &Config, base: &std::path::Path, json: bool) {
-    let specialists = discover_specialists(cfg, base);
+fn discover_catalog(cfg: &Config, base: &Path) -> bn_core::agents::AgentCatalog {
+    let ctx = bn_core::resolver::resolve(cfg, base).ok();
+    bn_core::agents::discover(cfg, ctx.as_ref())
+        .unwrap_or_else(|error| fail(&format!("bn agents: {error}")))
+}
+
+/// Strictly load every effective agent manifest visible from `base`.
+pub(crate) fn emit_agents_validate(cfg: &Config, base: &Path, json: bool) {
+    let catalog = discover_catalog(cfg, base);
     if json {
-        let data: Vec<_> = specialists
+        let agents: Vec<_> = catalog
             .iter()
-            .map(|a| {
+            .map(|agent| {
                 serde_json::json!({
-                    "name": a.name,
-                    "repo": a.repo,
-                    "description": a.description,
-                    "source_repo": a.source_repo,
-                    "references": a.references,
-                    "scope": format!("{:?}", a.scope),
+                    "name": agent.name,
+                    "kind": agent.kind,
+                    "path": agent.path,
                 })
             })
             .collect();
         println!(
             "{}",
-            Envelope::success("agents", serde_json::json!({ "specialists": data })).to_json()
+            Envelope::success(
+                "agents_validate",
+                serde_json::json!({
+                    "valid": true,
+                    "count": agents.len(),
+                    "agents": agents,
+                }),
+            )
+            .to_json()
         );
-        return;
+    } else {
+        println!("Validated {} agent manifest(s)", catalog.iter().count());
     }
-    if specialists.is_empty() {
+}
+
+/// Render one effective agent body to stdout. Output stays raw so shell jobs can capture it.
+pub(crate) fn emit_agent_render(
+    cfg: &Config,
+    base: &Path,
+    name: &str,
+    args_json: Option<&str>,
+    args_file: Option<&Path>,
+    stdin: bool,
+) {
+    let values = read_argument_map(args_json, args_file, stdin)
+        .unwrap_or_else(|error| fail(&format!("bn agents render: {error}")));
+    let catalog = discover_catalog(cfg, base);
+    let agent = catalog
+        .require(name)
+        .unwrap_or_else(|error| fail(&format!("bn agents render: {error}")));
+    let rendered = agent
+        .render(Some(&values))
+        .unwrap_or_else(|error| fail(&format!("bn agents render: {error}")));
+    print!("{rendered}");
+}
+
+fn read_argument_map(
+    args_json: Option<&str>,
+    args_file: Option<&Path>,
+    stdin: bool,
+) -> Result<Map<String, Value>, String> {
+    let text = match (args_json, args_file, stdin) {
+        (Some(text), None, false) => Some(text.to_string()),
+        (None, Some(path), false) if path != Path::new("-") => Some(
+            std::fs::read_to_string(path)
+                .map_err(|error| format!("cannot read '{}': {error}", path.display()))?,
+        ),
+        (None, Some(_), false) | (None, None, true) => {
+            let mut text = String::new();
+            std::io::stdin()
+                .read_to_string(&mut text)
+                .map_err(|error| format!("cannot read stdin: {error}"))?;
+            Some(text)
+        }
+        (None, None, false) => None,
+        _ => return Err("choose only one of --args, --args-file, or --stdin".to_string()),
+    };
+    match text {
+        Some(text) => parse_argument_map(&text),
+        None => Ok(Map::new()),
+    }
+}
+
+fn parse_argument_map(text: &str) -> Result<Map<String, Value>, String> {
+    match serde_json::from_str::<Value>(text) {
+        Ok(Value::Object(values)) => Ok(values),
+        Ok(_) => Err("argument input must be a JSON object".to_string()),
+        Err(error) => Err(format!("invalid argument JSON: {error}")),
+    }
+}
+
+/// List every effective Markdown agent across the tiers visible here.
+pub(crate) fn emit_agents(cfg: &Config, base: &std::path::Path, json: bool) {
+    let catalog = discover_catalog(cfg, base);
+    if json {
+        let data: Vec<_> = catalog
+            .iter()
+            .map(|a| {
+                serde_json::json!({
+                    "name": a.name,
+                    "kind": a.kind,
+                    "schedule": a.on_calendar,
+                    "retry_after_secs": a.retry_after_secs,
+                    "startup": a.is_startup(),
+                    "queue": a.queue,
+                    "network": a.network,
+                    "repo": a.repo,
+                    "description": a.description,
+                    "source_repo": a.source_repo,
+                    "references": a.references,
+                    "scope": a.scope.label(),
+                    "path": a.path,
+                })
+            })
+            .collect();
         println!(
-            "No review specialists found. Create one with `bn agents new <name> --repo <repo>`."
+            "{}",
+            Envelope::success("agents", serde_json::json!({ "agents": data })).to_json()
         );
         return;
     }
-    for a in &specialists {
-        let repo = a.repo.as_deref().unwrap_or("-");
+    if catalog.is_empty() {
+        println!("No Markdown agents found.");
+        return;
+    }
+    println!("{:<28} {:<11} {:<27} DESCRIPTION", "NAME", "KIND", "SCHEDULE");
+    for a in &catalog {
+        let schedule = a.on_calendar.as_deref().unwrap_or_else(|| {
+            if a.is_startup() {
+                "startup"
+            } else {
+                "on demand"
+            }
+        });
         let desc = a.description.as_deref().unwrap_or("");
-        println!("{:<32} {:<12} {desc}", a.name, repo);
+        println!(
+            "{:<28} {:<11} {:<27} {desc}",
+            a.name,
+            a.kind.label(),
+            schedule
+        );
     }
 }
 
@@ -305,4 +415,24 @@ pub(crate) fn emit_agent_bootstrap(cfg: &Config, base: &std::path::Path, name: &
     println!("Deploy the mining agent (a separate dispatched agent), then reinstall:");
     println!("  {dispatch}");
     println!("  bn agents install");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn argument_map_requires_json_object() {
+        assert_eq!(
+            parse_argument_map(r#"{"date":"2026-08-07","count":3}"#)
+                .expect("object")
+                .len(),
+            2
+        );
+        assert_eq!(
+            parse_argument_map(r#"["not","a","map"]"#),
+            Err("argument input must be a JSON object".to_string())
+        );
+        assert!(parse_argument_map("{").is_err());
+    }
 }

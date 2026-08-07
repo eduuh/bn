@@ -1,5 +1,5 @@
-// A tiny, provider-free toast store. Pages subscribe with `useToasts` and fire `pushToast` from
-// mutation callbacks (design §4(c): "reflect results via … toasts"). Module-level so any component
+// A tiny, provider-free toast store. A single `<ToastStack>` renders it and any component can
+// fire `pushToast` — most writes do so through `useAppMutation`, which speaks it for them.
 // can raise one without threading a context; a single `<ToastStack>` per page renders them.
 
 export type ToastTone = "success" | "error" | "info";

@@ -120,8 +120,9 @@ impl BnServer {
     /// Every effective skill, freshly merged from `skill_dirs` (higher tiers override lower ones
     /// by name, so each prompt appears once). Re-read per call, so a newly authored skill shows up
     /// without restarting the server.
-    fn skills(&self) -> Vec<Skill> {
+    fn skills(&self) -> Result<Vec<Skill>, ErrorData> {
         load_skill_set(&self.skill_dirs)
+            .map_err(|error| ErrorData::internal_error(error.to_string(), None))
     }
 
     /// Resolve this call's branch-note context from its [`Scope`], failing closed when the scope
@@ -375,7 +376,7 @@ impl ServerHandler for BnServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListPromptsResult, ErrorData> {
         let prompts = self
-            .skills()
+            .skills()?
             .iter()
             .map(crate::prompts::to_prompt)
             .collect();
@@ -387,7 +388,7 @@ impl ServerHandler for BnServer {
         request: GetPromptRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<GetPromptResult, ErrorData> {
-        let skills = self.skills();
+        let skills = self.skills()?;
         let skill = skills
             .iter()
             .find(|s| s.name == request.name)

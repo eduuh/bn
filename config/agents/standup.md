@@ -1,7 +1,7 @@
 ---
 name: standup
+kind: staff
 on_calendar: "Mon..Fri *-*-* 08:30:00"
-run: "bn run standup"
 network: false
 gather: "bn staff gather standup"
 sinks: ["attn", "note"]

@@ -6,10 +6,16 @@
 //! (`bn cron`) rather than from a parked terminal.
 use crate::*;
 
-fn run_builtin_job(cfg: &Config, ctx: Option<&Resolved>, job: &str) -> Option<i32> {
-    if bn_core::staff::find(cfg, ctx, job).is_some() {
+fn run_builtin_job(
+    cfg: &Config,
+    ctx: Option<&Resolved>,
+    job: &str,
+    agent: Option<&bn_core::agents::AgentDef>,
+    staff_json: bool,
+) -> Option<i32> {
+    if agent.is_some_and(bn_core::agents::AgentDef::is_staff) {
         return Some(run_native_job(cfg, ctx, job, |cfg, ctx| {
-            staff_run_code(cfg, ctx, job, false)
+            staff_run_code(cfg, ctx, job, staff_json)
         }));
     }
     if let Some(f) = native_job(job) {
@@ -18,12 +24,11 @@ fn run_builtin_job(cfg: &Config, ctx: Option<&Resolved>, job: &str) -> Option<i3
     None
 }
 
-fn run_script(script: &std::path::Path, job_path: &str) -> (i32, String) {
-    match std::process::Command::new("/bin/sh")
-        .arg(script)
-        .env("PATH", job_path)
-        .output()
-    {
+fn capture_command(
+    mut command: std::process::Command,
+    launch_target: &str,
+) -> (i32, String) {
+    match command.output() {
         Ok(out) => {
             use std::io::Write;
             let _ = std::io::stdout().write_all(&out.stdout);
@@ -33,10 +38,41 @@ fn run_script(script: &std::path::Path, job_path: &str) -> (i32, String) {
             (out.status.code().unwrap_or(-1), tail_lines(&combined, 15))
         }
         Err(e) => {
-            eprintln!("bn run: failed to launch {}: {e}", script.display());
+            eprintln!("bn run: failed to launch {launch_target}: {e}");
             (127, e.to_string())
         }
     }
+}
+
+fn job_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let path = std::env::var("PATH").unwrap_or_default();
+    format!("{home}/.local/bin:{home}/.bin:{path}")
+}
+
+fn run_script(script: &std::path::Path) -> (i32, String) {
+    if cfg!(windows) {
+        let error = "job scripts are unix-only (sh); not supported on native Windows";
+        eprintln!("bn run: {error}");
+        return (2, error.to_string());
+    }
+    let mut command = std::process::Command::new("/bin/sh");
+    command.arg(script).env("PATH", job_path());
+    capture_command(command, &script.display().to_string())
+}
+
+fn run_custom_command(command_text: &str) -> (i32, String) {
+    if cfg!(windows) {
+        let error = "custom agent commands are unix-only (sh); not supported on native Windows";
+        eprintln!("bn run: {error}");
+        return (2, error.to_string());
+    }
+    let mut command = std::process::Command::new("/bin/sh");
+    command
+        .arg("-c")
+        .arg(command_text)
+        .env("PATH", job_path());
+    capture_command(command, "custom agent command")
 }
 
 fn cron_event_target(
@@ -51,23 +87,17 @@ fn cron_event_target(
     }
 }
 
-/// Run a native, staff, or shell cron job **in this process** and record its outcome. Output goes
-/// to this process's stdout/stderr and the tail is persisted to the event log; nothing is ever
-/// dispatched into tmux.
-pub(crate) fn run_job(cfg: &Config, ctx: Option<&Resolved>, job: &str) -> i32 {
+/// Apply the common host gate, running marker, timer, output tail, and `cron_run` ledger around one
+/// resolved execution. Every native, staff, script, and custom agent command passes through here
+/// exactly once.
+pub(crate) fn run_recorded_job(
+    cfg: &Config,
+    ctx: Option<&Resolved>,
+    job: &str,
+    scope: resolver::JobScope,
+    execute: impl FnOnce() -> (i32, String),
+) -> i32 {
     use std::time::Instant;
-
-    if let Some(code) = run_builtin_job(cfg, ctx, job) {
-        return code;
-    }
-    if cfg!(windows) {
-        eprintln!("bn run: job scripts are unix-only (sh); not supported on native Windows");
-        return 2;
-    }
-    let Some((scope, script)) = resolver::job_script(cfg, ctx, job) else {
-        eprintln!("bn run: no job script '{job}' (looked branch → repo → global)");
-        return 2;
-    };
 
     if !cfg.job_allowed_here(job) {
         println!(
@@ -80,11 +110,7 @@ pub(crate) fn run_job(cfg: &Config, ctx: Option<&Resolved>, job: &str) -> i32 {
     let start = today_epoch();
     let t0 = Instant::now();
     let _running = bn_core::events::running_marker(job);
-    let home = std::env::var("HOME").unwrap_or_default();
-    let path = std::env::var("PATH").unwrap_or_default();
-    let job_path = format!("{home}/.local/bin:{home}/.bin:{path}");
-
-    let (code, tail) = run_script(&script, &job_path);
+    let (code, tail) = execute();
     let duration_ms = t0.elapsed().as_millis() as i64;
     let (repo, branch) = cron_event_target(ctx, scope);
     let _ = bn_core::events::log_cron_run(
@@ -100,120 +126,87 @@ pub(crate) fn run_job(cfg: &Config, ctx: Option<&Resolved>, job: &str) -> i32 {
     code
 }
 
+/// Run a named agent or ordinary job **in this process**. Agent manifests are resolved first:
+/// specialists are refused, explicit `run:` commands use the common wrapper, and absent `run:`
+/// resolves the same-name staff/native/script implementation without recursive `bn` spawning.
+pub(crate) fn run_job(cfg: &Config, ctx: Option<&Resolved>, job: &str) -> i32 {
+    run_job_with_staff_output(cfg, ctx, job, false)
+}
+
+pub(crate) fn run_job_with_staff_output(
+    cfg: &Config,
+    ctx: Option<&Resolved>,
+    job: &str,
+    staff_json: bool,
+) -> i32 {
+    // The scheduler must be able to record its own catalog-load failure. Resolving it through the
+    // catalog first would return before the common wrapper could write the failing scheduler row.
+    if job == "agent-scheduler" {
+        if let Some(queued) = crate::cmd::queue_producers::maybe_capture_job(cfg, ctx, job) {
+            return i32::from(!queued);
+        }
+        return run_builtin_job(cfg, ctx, job, None, staff_json).unwrap_or(2);
+    }
+
+    let catalog = match bn_core::agents::discover(cfg, ctx) {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            eprintln!("bn run: invalid agent catalog: {error}");
+            return 2;
+        }
+    };
+    let agent = catalog.find(job).cloned();
+    if let Some(agent) = agent.as_ref() {
+        if let Err(error) = agent.ensure_runnable() {
+            eprintln!("bn run: {error}");
+            return 2;
+        }
+    }
+
+    // Captured agents retain their identity and re-enter this exact resolver when dequeued.
+    let queued = match agent.as_ref() {
+        Some(agent) => crate::cmd::queue_producers::maybe_capture_agent(cfg, ctx, agent),
+        None => crate::cmd::queue_producers::maybe_capture_job(cfg, ctx, job),
+    };
+    if let Some(queued) = queued {
+        return i32::from(!queued);
+    }
+
+    if let Some((agent, command)) = agent
+        .as_ref()
+        .and_then(|agent| agent.run.as_deref().map(|command| (agent, command)))
+    {
+        return run_recorded_job(cfg, ctx, job, agent.scope, || {
+            run_custom_command(command)
+        });
+    }
+    if let Some(code) = run_builtin_job(cfg, ctx, job, agent.as_ref(), staff_json) {
+        return code;
+    }
+    let Some((scope, script)) = resolver::job_script(cfg, ctx, job) else {
+        if agent.is_some() {
+            eprintln!(
+                "bn run: agent '{job}' has no custom `run:` and no same-name staff, native, or script job"
+            );
+        } else {
+            eprintln!("bn run: no job or agent '{job}' (looked branch → repo → global)");
+        }
+        return 2;
+    };
+    run_recorded_job(cfg, ctx, job, scope, || run_script(&script))
+}
+
 /// Single-quote a string for safe embedding inside a shell command.
 pub(crate) fn shq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Run one self-describing agent's `run:` command **headlessly**, in this process. The single run
-/// path shared by the `info-gather` cron (filter = due) and `bn startup` (filter = startup): both
-/// execute the agent's own command (defaulting to `bn run <name>`, so the existing native / staff
-/// / script gather runs unchanged) and let its output go to this process's stdout/stderr. This is
-/// the whole "drop a file → it runs" contract.
-///
-/// Returns true when the agent ran — or was intentionally skipped because it is scheduled and not
-/// due at `now` (the shared schedule gate), or because a prior run of the same job is still in
-/// flight (the running-marker guard) — and false when the command could not be launched.
-pub(crate) fn run_agent(agent: &bn_core::agents::AgentDef) -> bool {
-    if cfg!(windows) {
-        eprintln!("bn: agent runs are unix-only (sh); not supported on native Windows");
-        return false;
-    }
-    // Honor the agent's schedule here, at the single choke point every launch path funnels
-    // through, so `bn startup` (and any future caller) can never fire a scheduled agent
-    // off-calendar — only when `AgentDef::due` says a slot has passed. Unscheduled startup-class
-    // agents (no `on_calendar`) stay launchable, so boot-time firing is unaffected. The
-    // `info-gather` cron's `due_agents()` pre-filter still selects the roster; this is the shared
-    // guarantee for the startup path (and belt-and-suspenders for the cron).
-    let now = bn_core::util::now_epoch_secs();
-    if !agent.launchable(bn_core::events::last_run(&agent.name).as_ref(), now) {
-        return true;
-    }
-    // Don't stomp a still-running gather — a run slower than its interval, or a catch-up racing
-    // the tick, would otherwise be started twice concurrently.
-    if bn_core::events::running_jobs().contains(&agent.name) {
-        return true;
-    }
-    match std::process::Command::new("/bin/sh")
-        .arg("-c")
-        .arg(&agent.run)
-        .status()
-    {
-        Ok(_) => true,
-        Err(e) => {
-            eprintln!("bn: failed to run agent '{}': {e}", agent.name);
-            false
-        }
-    }
-}
-
-/// The names of every cron agent whose schedule is DUE at `now` (never run / last failed / a slot
-/// has passed since the last success). Pure selection over the discovered roster + event log, so
-/// the `info-gather` dispatcher and its tests share one filter.
-pub(crate) fn due_agents(
-    cfg: &Config,
-    ctx: Option<&Resolved>,
-    now: i64,
-) -> Vec<bn_core::agents::AgentDef> {
-    bn_core::agents::discover(cfg, ctx)
-        .into_iter()
-        .filter(|a| a.is_cron())
-        .filter(|a| a.due(bn_core::events::last_run(&a.name).as_ref(), now))
-        .collect()
-}
-
-/// `info-gather` — the single cron that replaces the ten per-info timers. It loads the
-/// self-describing agents and runs every DUE one in turn (`bn run <agent.name>` by default, so
-/// each gather's existing implementation is preserved). Headless like every other cron: results
-/// land in the event log, not in a parked tmux window.
-pub(crate) fn job_info_gather(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
-    let now = bn_core::util::now_epoch_secs();
-    for agent in due_agents(cfg, ctx, now) {
-        run_agent(&agent);
-    }
-    0
-}
-
-/// The tmux server PID (`tmux display-message -p '#{pid}'`) — the stable boot key for the startup
-/// dedup. `None` when no server is running (or tmux is absent), in which case there was no boot to
-/// respond to and `bn startup` is a no-op. This is the only thing `bn startup` asks tmux for: the
-/// agents it fires run headlessly, in-process.
-fn tmux_server_pid() -> Option<String> {
-    proc::tmux(&["display-message", "-p", "#{pid}"])
-}
-
-/// Claim the once-per-boot startup fire for tmux server `pid` under `state_dir`: true the first
-/// time (writing the per-PID sentinel), false on every later call for the same PID. A fresh PID
-/// (reboot, `tmux kill-server`) claims again. Modeled on the once-per-day catch-up sentinel
-/// (`maybe_fire_catchup`), keyed on PID instead of date. Pure over the passed dir, so the
-/// same-PID-skip / new-PID-fire behavior is unit-testable without tmux.
-pub(crate) fn claim_startup(state_dir: &std::path::Path, pid: &str) -> bool {
-    let sentinel = state_dir.join(format!("startup-{pid}"));
-    if sentinel.exists() {
-        return false;
-    }
-    let _ = std::fs::create_dir_all(state_dir);
-    // Fail closed: a read-only/missing state dir means no claim, so we never risk a double-fire.
-    std::fs::write(&sentinel, b"").is_ok()
-}
-
-/// `bn startup` — fire every `trigger: startup` agent once when the tmux server boots. Deduped on
-/// the tmux SERVER PID so re-sourcing `tmux.conf` (config is sourced once at server create, but a
-/// manual `tmux source-file` could repeat) never double-fires within a server, while a fresh
-/// server fires again. The one boot signal is a `run-shell -b` line in `tmux.conf`.
-pub(crate) fn emit_startup(cfg: &Config, ctx: Option<&Resolved>) {
-    let Some(pid) = tmux_server_pid() else {
-        return;
-    };
-    if !claim_startup(&resolver::state_dir(), &pid) {
-        return;
-    }
-    for agent in bn_core::agents::discover(cfg, ctx) {
-        if agent.is_startup() {
-            run_agent(&agent);
-        }
-    }
-}
+#[path = "cron/scheduler.rs"]
+mod scheduler;
+pub(crate) use scheduler::*;
+#[path = "cron/drift.rs"]
+mod drift;
+pub(crate) use drift::cron_drift;
 
 /// Health of the WSL keepalive Windows task (the one running `ensure-tmux`). `None` when it's
 /// fine — or when we're not on WSL, where the warning is irrelevant. `Some(reason)` when it's
@@ -240,48 +233,18 @@ pub(crate) fn emit_cron_running() {
     }
 }
 
-/// `bn cron` (no subcommand): the unified view. Every job that's scheduled (a systemd `--user`
-/// timer or a Windows Task Scheduler task) *or* exists as a script, joined with its last-run
-/// health. Schedulers reference jobs by name (`bn run <job>`), so rows are keyed by job name;
-/// scheduled jobs lead, and each shows which scheduler drives it.
-/// Declared (and allowed-on-this-host) cron jobs with no registered timer/task — pure set
-/// difference, so it's testable without touching systemd. The IO lives in [`cron_drift`].
-pub(crate) fn unregistered_jobs(
-    declared: &[String],
-    registered: &std::collections::HashSet<String>,
-) -> Vec<String> {
-    declared
-        .iter()
-        .filter(|j| !registered.contains(*j))
-        .cloned()
-        .collect()
-}
-
-/// The "fresh machine" drift: crons the manifest declares (and that are allowed to run here) but
-/// which have no systemd timer / Windows task registered — so they silently never fire. The
-/// manifest ships with the repo, but the timers are materialized per-machine by `bn cron register`
-/// (run by install.sh); a built-but-not-installed box has the definitions and zero timers. Empty
-/// when every declared+allowed job has a unit.
-pub(crate) fn cron_drift(cfg: &Config, ctx: Option<&Resolved>) -> Vec<String> {
-    let registered: std::collections::HashSet<String> = timers::registered()
-        .into_iter()
-        .map(|t| t.job)
-        .chain(winsched::registered().into_iter().map(|w| w.job))
-        .collect();
-    let declared: Vec<String> = bn_core::crons::discover(cfg, ctx)
-        .into_iter()
-        .filter(|rc| cfg.job_allowed_here(&rc.entry.job))
-        .map(|rc| rc.entry.job)
-        .collect();
-    unregistered_jobs(&declared, &registered)
-}
-
 pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json: bool) {
     let scripts = resolver::list_jobs(cfg, ctx);
     let runs = bn_core::events::cron_status();
     let registered = timers::registered();
     let wintasks = winsched::registered();
     let now = bn_core::util::now_epoch_secs();
+    let catalog = bn_core::agents::discover(cfg, ctx)
+        .unwrap_or_else(|error| fail(&format!("bn cron: {error}")));
+    let agent_views = bn_core::crons::agent_schedule_views(&catalog, &runs, now);
+    let scheduled_agents: std::collections::HashSet<&str> =
+        agent_views.iter().map(|agent| agent.job.as_str()).collect();
+    let declared = bn_core::crons::discover(cfg, ctx);
 
     // Job-name universe, scheduled first → scripted → run-only orphans (insertion order kept).
     let mut names: Vec<String> = Vec::new();
@@ -290,6 +253,9 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
             names.push(n.to_string());
         }
     };
+    for cron in &declared {
+        add(&cron.entry.job, &mut names);
+    }
     for t in &registered {
         add(&t.job, &mut names);
     }
@@ -302,13 +268,13 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
     for r in &runs {
         add(&r.job, &mut names);
     }
+    names.retain(|name| !scheduled_agents.contains(name.as_str()));
 
     let timer = |name: &str| registered.iter().find(|t| t.job == name);
     let wintask = |name: &str| wintasks.iter().find(|w| w.job == name);
     let script = |name: &str| scripts.iter().find(|s| s.name == name);
     // Declared crons drive the class tag (info vs housekeeping) — a job with no `[[cron]]` entry
     // (script-only or run-only orphan) carries no class.
-    let declared = bn_core::crons::discover(cfg, ctx);
     let class = |name: &str| {
         declared
             .iter()
@@ -318,9 +284,13 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
     // cron_status is most-recent-first, so the first match is the latest run for this job.
     let run = |name: &str| runs.iter().find(|r| r.job == name);
     let scope = |name: &str| {
-        script(name)
+        declared
+            .iter()
+            .find(|cron| cron.entry.job == name)
+            .map(|cron| cron.scope.label())
+            .or_else(|| script(name)
             .map(|s| s.scope.label())
-            .or_else(|| run(name).map(|r| r.scope.as_str()))
+            .or_else(|| run(name).map(|r| r.scope.as_str())))
             .unwrap_or("?")
     };
 
@@ -331,6 +301,11 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
                 let t = timer(name);
                 let w = wintask(name);
                 let r = run(name);
+                let agents: &[bn_core::crons::AgentScheduleView] = if name == "agent-scheduler" {
+                    &agent_views
+                } else {
+                    &[]
+                };
                 // systemd timer wins over a Windows task if somehow both schedule a job.
                 let (scheduler, next_run) = match (t, w) {
                     (Some(t), _) => (Some("systemd"), t.next_epoch),
@@ -341,13 +316,16 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
                     "job": name,
                     "scope": scope(name),
                     "class": class(name).map(|c| c.label()),
-                    "native": native_job(name).is_some() || name.starts_with("staff-"),
+                    "native": native_job(name).is_some() || catalog.find(name).is_some(),
                     "has_script": script(name).is_some(),
                     "script_path": script(name).map(|s| s.path.clone()),
                     "scheduled": scheduler.is_some(),
                     "scheduler": scheduler,
                     "next_run": next_run,
-                    "schedule": t.and_then(|t| t.schedule.clone()),
+                    "schedule": declared.iter()
+                        .find(|cron| cron.entry.job == *name)
+                        .map(|cron| cron.entry.on_calendar.clone())
+                        .or_else(|| t.and_then(|timer| timer.schedule.clone())),
                     "timer_unit": t.map(|t| t.timer_unit.clone()),
                     "task_name": w.map(|w| w.task_name.clone()),
                     "win_state": w.map(|w| w.state.clone()),
@@ -357,6 +335,7 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
                     "ok": r.map(|r| r.ok),
                     "runs": r.map(|r| r.runs),
                     "failures": r.map(|r| r.failures),
+                    "agents": agents,
                 })
             })
             .collect();
@@ -399,14 +378,6 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
             "⚠ WSL keepalive task (ensure-tmux) is {why} — systemd timers may not fire. Re-run jobs/windows/install.ps1."
         );
     }
-    // The self-describing agents driven by the single `info-gather` cron. Listed as indented
-    // sub-rows under that cron so the dashboard still shows the ten info gathers (their per-timer
-    // rows are gone) with each one's schedule, placement, and due state. Review specialists
-    // (agents with `repo:` set) never run on a cron, so they're excluded from this cron view.
-    let agents: Vec<_> = bn_core::agents::discover(cfg, ctx)
-        .into_iter()
-        .filter(|a| !a.is_specialist())
-        .collect();
     for name in &names {
         // systemd timer wins over a Windows task if somehow both schedule a job.
         let schedule = if let Some(t) = timer(name) {
@@ -433,7 +404,7 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
         };
         let orphan = if (timer(name).is_some() || wintask(name).is_some()) && script(name).is_none()
         {
-            if native_job(name).is_some() || name.starts_with("staff-") {
+            if native_job(name).is_some() || catalog.find(name).is_some() {
                 "  (native handler)"
             } else {
                 "  (no script — `bn run` would fail)"
@@ -465,18 +436,19 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
         };
         println!("{:<24} {last}", "");
 
-        // Under the single info-gather cron, list the agents it runs: each one's schedule and
-        // whether it is due right now — the ten info gathers that used to be their own timer rows.
-        if name == "info-gather" && !agents.is_empty() {
-            for a in &agents {
-                let last = bn_core::events::last_run(&a.name);
-                let sched = a.on_calendar.as_deref().unwrap_or("startup-only");
-                let state = if a.due(last.as_ref(), now) {
-                    "due"
-                } else {
-                    "idle"
-                };
-                println!("  ├ {:<14} {} · {}", a.name, sched, state);
+        if name == "agent-scheduler" && !agent_views.is_empty() {
+            for a in &agent_views {
+                let state = a
+                    .retry_at
+                    .map(|retry_at| format!("retry {}", until(retry_at - now)))
+                    .unwrap_or_else(|| a.state.clone());
+                println!(
+                    "  ├ {:<20} {:<8} {} · {}",
+                    a.job,
+                    a.kind.label(),
+                    a.schedule,
+                    state
+                );
             }
         }
     }
@@ -617,6 +589,9 @@ pub(crate) fn emit_cron_register(
     dry_run: bool,
     as_json: bool,
 ) {
+    bn_core::agents::discover(cfg, ctx)
+        .unwrap_or_else(|error| fail(&format!("bn cron register: {error}")));
+
     // Prefer the bindir-independent stable anchor (`<config_dir>/bn`, which install.sh keeps
     // pointed at the live binary) so the systemd units survive a bindir move; fall back to the
     // resolved bin dir. Both are absolute, as ExecStart requires.
@@ -1061,3 +1036,7 @@ pub(crate) fn until(secs: i64) -> String {
         ago(secs)
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "cron/tests.rs"]
+mod tests;

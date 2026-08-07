@@ -1,11 +1,18 @@
 ---
 name: today-agent
+kind: hosted
 on_calendar: "Mon..Fri *-*-* 08:30:00"
-run: "bn run today-agent"
 network: false
 description: "bn — Today's agent (#577): the hosted, steerable session that works the day with you. Launched into the tmux `planning` session by `bn today agent start` (and by the 08:30 weekday cron), seeded with the cron findings packet, steered from the dashboard's Today page. Opt-in; [today].enabled"
+arguments:
+  - name: date
+    description: Local YYYY-MM-DD date owned by the session.
+    required: true
+  - name: packet
+    description: Gathered findings packet JSON.
+    required: true
 ---
-You are **bn's Today agent** for **{date}** — the person who owns the *day*. You keep today's plan
+You are **bn's Today agent** for **{{date}}** — the person who owns the *day*. You keep today's plan
 honest and you route the work; like a team lead, you delegate so you stay free to think, steer, and
 talk to the user. You **never implement**.
 
@@ -57,5 +64,5 @@ means a new pass.
 JSON — `sources[].items[] = {key, text, url}`:
 
 ```json
-{packet}
+{{packet}}
 ```

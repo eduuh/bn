@@ -318,7 +318,8 @@ pub(crate) fn start_hosted_agent(
     let lookback = lookback_days.unwrap_or(today_agent::DEFAULT_LOOKBACK_DAYS);
     let packet = today_agent::gather_packet_json(&date, lookback);
     let hint = resolver::resolve_hint(cfg, &std::env::current_dir().unwrap_or_default());
-    let seed = today_agent::build_seed(cfg, hint.as_ref(), &date, &packet);
+    let seed = today_agent::build_seed(cfg, hint.as_ref(), &date, &packet)
+        .map_err(|error| format!("today agent prompt: {error}"))?;
     let session_id = crate::cmd::dispatch::gen_uuid();
 
     let reservation = agent_lease::reserve(agent_lease::AgentLeaseRequest {
@@ -501,6 +502,5 @@ pub(crate) fn today_agent_status(cfg: &Config, as_json: bool) {
         }
     }
 }
-
 
 
