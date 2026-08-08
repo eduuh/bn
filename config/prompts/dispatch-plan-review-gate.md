@@ -8,15 +8,17 @@ arguments:
   - { name: session_id, description: Dispatch session id., required: true }
   - { name: reviewers, description: Required independent reviewer count., required: true }
   - { name: quorum, description: Required approval quorum., required: true }
+  - { name: plan_file, description: Markdown plan file to submit., required: true }
   - { name: verification_requirement, description: Optional post-approval verification clause., required: false }
 ---
 === PLAN-REVIEW GATE - READ THIS LAST; IT OVERRIDES EARLIER PR STEPS ===
 
 Before implementing anything or running `gh pr create`, register the plan and wait for approval:
 
-1. Investigate, then write the plan as Markdown with the approach, touched files, and risks.
+1. Investigate, then write the plan as Markdown with the approach, touched files, and risks in:
+   `{{plan_file}}`
 2. Submit it and pause:
-   `bn review submit --repo {{repo}} --branch {{branch}} --session {{session_id}} --reviewers {{reviewers}} --quorum {{quorum}} --plan-file plan.md [--label ...] [--path ...]`
+   `bn review submit --repo {{repo}} --branch {{branch}} --session {{session_id}} --reviewers {{reviewers}} --quorum {{quorum}} --plan-file {{plan_file}} [--label ...] [--path ...]`
    Include every source label and planned touched path so sensitive-plan checks cannot be bypassed.
 3. Run `bn review agents <id>` to fan the plan out to exactly {{reviewers}} fresh, independent,
    read-only critics.

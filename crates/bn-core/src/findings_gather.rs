@@ -278,9 +278,15 @@ fn gather_my_prs(_cfg: &Config) -> GatherOut {
 
 /// `cron-health` — crons in a chronic-failure state, from the same watchdog signal `cron-health`
 /// raises to attention. Reads the rolled-up cron status; records nothing when all crons are green.
-fn gather_cron_health(_cfg: &Config) -> GatherOut {
+fn gather_cron_health(cfg: &Config) -> GatherOut {
     let runs = crate::events::cron_status();
-    let alerting = crons::alerting_crons(&runs, crons::ALERT_MIN_FAILURES);
+    let live = crons::LiveJobs::discover(cfg, None);
+    let alerting = crons::alerting_crons(
+        &runs,
+        crons::ALERT_MIN_FAILURES,
+        &live,
+        crate::util::now_epoch_secs(),
+    );
     let items = alerting.iter().map(|s| cron_item(s)).collect();
     GatherOut::new(items, raw_of(&alerting))
 }

@@ -7,9 +7,10 @@
 //! already-extracted rows, so the merge / rollup / sort is unit-tested without touching disk.
 
 use bn_core::cost::{self, CostFilter, CostView};
-use bn_core::resolver::Config;
+use bn_core::resolver::{Config, JobScope, Resolved};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 const POOL_MIN_READY: usize = 1;
 
@@ -221,7 +222,12 @@ pub fn repos_view(cfg: &Config) -> Value {
         .map(|st| (st.repo.to_ascii_lowercase(), pool_json(st)))
         .collect();
 
-    assemble(&managed, &cloned, seeds, &cv, &pools, &links)
+    let setup: BTreeMap<String, Value> = cloned
+        .iter()
+        .map(|repo| (repo.clone(), setup_json(cfg, repo)))
+        .collect();
+
+    assemble(&managed, &cloned, seeds, &cv, &pools, &links, &setup)
 }
 
 /// The per-repo pool view attached to a repo rollup (#497): pooling-enabled, configured size, the
@@ -321,6 +327,7 @@ fn assemble(
     cost: &CostView,
     pools: &BTreeMap<String, Value>,
     links: &BTreeMap<String, Value>,
+    setup: &BTreeMap<String, Value>,
 ) -> Value {
     // Cost lookup keyed by note-canonical (lowercased) repo.
     let cost_by_repo: BTreeMap<String, (Option<f64>, Option<f64>)> = cost
@@ -394,6 +401,7 @@ fn assemble(
                 "aic": aic,
                 "cost_usd": cost_usd,
                 "pool": pools.get(&repo).cloned().unwrap_or_else(pool_disabled),
+                "setup": setup.get(&repo).cloned().unwrap_or_else(|| setup_unknown(&repo)),
                 // `null` for a repo with no clone here or an origin we can't parse — the UI renders
                 // no link rather than a guessed one.
                 "links": links.get(&repo).cloned().unwrap_or(Value::Null),
@@ -438,6 +446,122 @@ fn assemble(
     known.sort();
 
     json!({ "repos": rollups, "known": known, "pool_policy": pool_policy_json() })
+}
+
+fn scope_label(scope: JobScope) -> &'static str {
+    match scope {
+        JobScope::Branch => "branch",
+        JobScope::Repo => "repo",
+        JobScope::Global => "global",
+    }
+}
+
+fn repo_main(repo: &str) -> Resolved {
+    Resolved {
+        repo: repo.to_ascii_lowercase(),
+        branch: "main".to_string(),
+    }
+}
+
+fn repo_script_path(cfg: &Config, repo: &str, name: &str) -> PathBuf {
+    cfg.note_dir(&repo_main(repo))
+        .join("jobs")
+        .join(format!("{name}.sh"))
+}
+
+fn is_scaffold_build(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    text.contains("Fill in your repo's install/build")
+        && text.contains("bn wt pool warm")
+        && text.lines().any(|line| line.trim() == "true")
+}
+
+fn conventional_script_json(cfg: &Config, ctx: &Resolved, name: &str) -> Value {
+    let repo_path = repo_script_path(cfg, &ctx.repo, name);
+    let resolved = bn_core::resolver::job_script(cfg, Some(ctx), name);
+    let (scope, path) = match resolved {
+        Some((scope, path)) => (Some(scope), Some(path)),
+        None => (None, None),
+    };
+    let inherited = scope.is_some_and(|s| s != JobScope::Repo);
+    let missing = scope.is_none();
+    json!({
+        "name": name,
+        "exists": path.is_some(),
+        "scope": scope.map(scope_label),
+        "path": path.as_ref().map(|p| p.display().to_string()),
+        "repo_path": repo_path.display().to_string(),
+        "repo_owned": scope == Some(JobScope::Repo),
+        "inherited": inherited,
+        "editable": true,
+        "needs_setup": missing || (name == "build" && path.as_deref().is_some_and(is_scaffold_build)),
+        "scaffold": name == "build" && path.as_deref().is_some_and(is_scaffold_build),
+    })
+}
+
+pub(crate) fn setup_json(cfg: &Config, repo: &str) -> Value {
+    let ctx = repo_main(repo);
+    let conventional = ["build", "test", "lint"];
+    let scripts: Vec<Value> = conventional
+        .iter()
+        .map(|name| conventional_script_json(cfg, &ctx, name))
+        .collect();
+    let mut reasons = Vec::new();
+    for script in &scripts {
+        let name = script.get("name").and_then(Value::as_str).unwrap_or("");
+        if script
+            .get("scaffold")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            reasons.push(format!("{name} script is still the scaffold"));
+        } else if !script
+            .get("exists")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            && name == "build"
+        {
+            reasons.push("missing build script".to_string());
+        }
+    }
+    let verify_command = cfg.repo_verify(repo).map(str::to_string);
+    let verify_jobs = scripts
+        .iter()
+        .filter(|s| s.get("exists").and_then(Value::as_bool).unwrap_or(false))
+        .filter_map(|s| s.get("name").and_then(Value::as_str).map(str::to_string))
+        .collect::<Vec<_>>();
+    let verify_mode = if verify_command.is_some() {
+        "command"
+    } else if verify_jobs.is_empty() {
+        reasons
+            .push("no verify gate (no repo verify command or build/test/lint scripts)".to_string());
+        "missing"
+    } else {
+        "scripts"
+    };
+    json!({
+        "status": if reasons.is_empty() { "ready" } else { "needs-setup" },
+        "needs_setup": !reasons.is_empty(),
+        "reasons": reasons,
+        "scripts": scripts,
+        "verify": {
+            "mode": verify_mode,
+            "command": verify_command,
+            "jobs": verify_jobs,
+        },
+    })
+}
+
+fn setup_unknown(repo: &str) -> Value {
+    json!({
+        "status": "unknown",
+        "needs_setup": true,
+        "reasons": [format!("repo {repo} has no local setup scan")],
+        "scripts": [],
+        "verify": { "mode": "missing", "command": null, "jobs": [] },
+    })
 }
 
 /// The note file's modified time as epoch-seconds — the best last-activity signal a note carries
@@ -499,6 +623,7 @@ mod tests {
             &cost,
             &pools,
             &links,
+            &BTreeMap::new(),
         );
         let repos = v.get("repos").and_then(Value::as_array).unwrap();
         let names: Vec<&str> = repos
@@ -524,6 +649,7 @@ mod tests {
             &["bn".to_string()],
             seeds,
             &cost,
+            &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
         );
@@ -565,6 +691,7 @@ mod tests {
             vec![],
             &CostView::default(),
             &pools,
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
         let repos = v["repos"].as_array().unwrap();
@@ -633,6 +760,29 @@ mod tests {
     }
 
     #[test]
+    fn assemble_attaches_setup_json_or_unknown() {
+        let mut setup = BTreeMap::new();
+        setup.insert(
+            "bn".to_string(),
+            serde_json::json!({ "status": "ready", "needs_setup": false }),
+        );
+        let v = assemble(
+            &[],
+            &["bn".to_string(), "app".to_string()],
+            vec![],
+            &CostView::default(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &setup,
+        );
+        let repos = v["repos"].as_array().unwrap();
+        let bn = repos.iter().find(|r| r["repo"] == "bn").unwrap();
+        assert_eq!(bn["setup"]["status"], serde_json::json!("ready"));
+        let app = repos.iter().find(|r| r["repo"] == "app").unwrap();
+        assert_eq!(app["setup"]["status"], serde_json::json!("unknown"));
+    }
+
+    #[test]
     fn assemble_known_excludes_today() {
         let seeds = vec![session(bn_core::today_agent::TODAY_REPO, "2026-08-06")];
         let v = assemble(
@@ -646,6 +796,7 @@ mod tests {
             ],
             seeds,
             &CostView::default(),
+            &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
         );
@@ -677,6 +828,7 @@ mod tests {
             &CostView::default(),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            &BTreeMap::new(),
         );
         let repos: Vec<&str> = v["repos"]
             .as_array()
@@ -699,6 +851,7 @@ mod tests {
             &[],
             vec![idle, hot],
             &CostView::default(),
+            &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
         );

@@ -10,6 +10,7 @@ import { AgentActivity } from "../components/AgentActivity";
 import { SteerPanel } from "../components/SteerPanel";
 import { ApprovalPanel } from "../components/ApprovalPanel";
 import { PlanReviewPanel } from "../components/PlanReviewPanel";
+import { PlanSummaryCard } from "../components/PlanArtifacts";
 import { SessionNote } from "../components/SessionNote";
 import { ToastStack } from "../components/ToastStack";
 import { Button } from "../components/ui/button";
@@ -91,6 +92,7 @@ export function AgentDetail() {
       {detail.data && agent && (
         <>
           <AgentHeader detail={detail.data} now={now} harnesses={detail.data.harnesses} />
+          <PlanSummaryCard repo={agent.repo} branch={agent.branch} />
           {/* The aside is only a column when it has something in it. `PlanReviewPanel` renders
               nothing unless the agent is paused for approval — which is the uncommon case — so a
               hardcoded `22rem` track left the feed ending 370px short of its own header on every

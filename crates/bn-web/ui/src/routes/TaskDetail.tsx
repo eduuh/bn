@@ -9,10 +9,12 @@ import { useAppMutation } from "../hooks/useAppMutation";
 import { PageHead } from "../components/PageHead";
 import MarkdownBody from "../components/MarkdownBody";
 import { ToastStack } from "../components/ToastStack";
+import { BnFileBrowser, PlanMarkdownViewer, PlanSummaryCard } from "../components/PlanArtifacts";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Textarea } from "../components/ui/textarea";
 
 /** The health tone for the agent chip — the same scale the fleet board uses. */
@@ -293,7 +295,7 @@ export function TaskDetail() {
           {q.data?.note && task.repo && task.branch && (
             <section className="space-y-2">
               <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                Branch note
+                Branch bn files
               </h3>
               <Link
                 to={`/notes?repo=${encodeURIComponent(task.repo)}&branch=${encodeURIComponent(task.branch)}`}
@@ -301,6 +303,19 @@ export function TaskDetail() {
               >
                 {task.repo}/{task.branch}
               </Link>
+              <PlanSummaryCard repo={task.repo} branch={task.branch} />
+              <Tabs defaultValue="plan">
+                <TabsList>
+                  <TabsTrigger value="plan">Plan</TabsTrigger>
+                  <TabsTrigger value="files">Files</TabsTrigger>
+                </TabsList>
+                <TabsContent value="plan">
+                  <PlanMarkdownViewer repo={task.repo} branch={task.branch} />
+                </TabsContent>
+                <TabsContent value="files">
+                  <BnFileBrowser repo={task.repo} branch={task.branch} />
+                </TabsContent>
+              </Tabs>
             </section>
           )}
         </>

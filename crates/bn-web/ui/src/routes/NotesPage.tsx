@@ -5,6 +5,7 @@ import { AlertTriangle } from "lucide-react";
 import { notesQuery, noteDetailQuery } from "../api/client";
 import type { SummaryEntry } from "../api/types";
 import { LearningsFeed } from "../components/LearningsFeed";
+import { BnFileBrowser, PlanMarkdownViewer, PlanSummaryCard } from "../components/PlanArtifacts";
 import { ToastStack } from "../components/ToastStack";
 import { Badge } from "../components/ui/badge";
 import { Card } from "../components/ui/card";
@@ -148,77 +149,98 @@ function NoteView({ entry }: { entry: SummaryEntry }) {
   const note = useQuery(noteDetailQuery(entry.repo, entry.branch));
 
   return (
-    <Card className="space-y-4 p-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <h3 className="font-mono text-sm font-semibold text-foreground">
-          {entry.repo} / {entry.branch}
-        </h3>
-        {entry.status && <Badge variant="muted">{entry.status}</Badge>}
-      </div>
-
-      {note.data?.goal && (
-        <p className="flex flex-wrap items-baseline gap-2 text-sm text-foreground">
-          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Goal
-          </span>
-          {note.data.goal}
-        </p>
-      )}
-
-      {(entry.blockers.length > 0 || entry.todos.length > 0) && (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          {entry.blockers.length > 0 && (
-            <div className="space-y-2">
-              <h4 className="text-sm font-semibold text-foreground">Blockers</h4>
-              <ul className="space-y-1 text-sm text-urgent">
-                {entry.blockers.map((x) => (
-                  <li key={x.id} className="flex items-start gap-2">
-                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                    <span className="min-w-0 flex-1">{x.text}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {entry.todos.length > 0 && (
-            <div className="space-y-2">
-              <h4 className="text-sm font-semibold text-foreground">Open todos</h4>
-              <ul className="space-y-1 text-sm">
-                {entry.todos.map((x) => (
-                  <li key={x.id} className="flex items-start gap-2">
-                    <input
-                      type="checkbox"
-                      disabled
-                      readOnly
-                      className="mt-1 h-3.5 w-3.5 shrink-0 accent-primary"
-                    />
-                    <span className="min-w-0 flex-1 text-foreground/90">{x.text}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+    <div className="space-y-4">
+      <Card className="space-y-4 p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="font-mono text-sm font-semibold text-foreground">
+            {entry.repo} / {entry.branch}
+          </h3>
+          {entry.status && <Badge variant="muted">{entry.status}</Badge>}
         </div>
-      )}
 
-      {note.isLoading && (
-        <div className="space-y-2" aria-hidden="true">
-          <Skeleton className="h-4 w-2/3" />
-          <Skeleton className="h-4 w-1/2" />
-          <Skeleton className="h-24 w-full" />
-        </div>
-      )}
-      {note.isError && (
-        <Card className="flex items-center gap-2 border-urgent/30 bg-urgent-muted p-3 text-sm text-urgent">
-          <AlertTriangle className="h-4 w-4" />
-          Could not load note.
-        </Card>
-      )}
-      {note.data?.body && (
-        <pre className="overflow-auto rounded-md border border-border bg-muted/40 p-3 font-mono text-xs leading-relaxed text-foreground/90">
-          {note.data.body}
-        </pre>
-      )}
-    </Card>
+        {note.data?.goal && (
+          <p className="flex flex-wrap items-baseline gap-2 text-sm text-foreground">
+            <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Goal
+            </span>
+            {note.data.goal}
+          </p>
+        )}
+      </Card>
+
+      <PlanSummaryCard repo={entry.repo} branch={entry.branch} />
+
+      <Tabs defaultValue="plan">
+        <TabsList>
+          <TabsTrigger value="plan">Plan</TabsTrigger>
+          <TabsTrigger value="files">Files</TabsTrigger>
+          <TabsTrigger value="note">Note</TabsTrigger>
+        </TabsList>
+        <TabsContent value="plan">
+          <PlanMarkdownViewer repo={entry.repo} branch={entry.branch} />
+        </TabsContent>
+        <TabsContent value="files">
+          <BnFileBrowser repo={entry.repo} branch={entry.branch} />
+        </TabsContent>
+        <TabsContent value="note">
+          <Card className="space-y-4 p-4">
+            {(entry.blockers.length > 0 || entry.todos.length > 0) && (
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                {entry.blockers.length > 0 && (
+                  <div className="space-y-2">
+                    <h4 className="text-sm font-semibold text-foreground">Blockers</h4>
+                    <ul className="space-y-1 text-sm text-urgent">
+                      {entry.blockers.map((x) => (
+                        <li key={x.id} className="flex items-start gap-2">
+                          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                          <span className="min-w-0 flex-1">{x.text}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {entry.todos.length > 0 && (
+                  <div className="space-y-2">
+                    <h4 className="text-sm font-semibold text-foreground">Open todos</h4>
+                    <ul className="space-y-1 text-sm">
+                      {entry.todos.map((x) => (
+                        <li key={x.id} className="flex items-start gap-2">
+                          <input
+                            type="checkbox"
+                            disabled
+                            readOnly
+                            className="mt-1 h-3.5 w-3.5 shrink-0 accent-primary"
+                          />
+                          <span className="min-w-0 flex-1 text-foreground/90">{x.text}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {note.isLoading && (
+              <div className="space-y-2" aria-hidden="true">
+                <Skeleton className="h-4 w-2/3" />
+                <Skeleton className="h-4 w-1/2" />
+                <Skeleton className="h-24 w-full" />
+              </div>
+            )}
+            {note.isError && (
+              <Card className="flex items-center gap-2 border-urgent/30 bg-urgent-muted p-3 text-sm text-urgent">
+                <AlertTriangle className="h-4 w-4" />
+                Could not load note.
+              </Card>
+            )}
+            {note.data?.body && (
+              <pre className="overflow-auto rounded-md border border-border bg-muted/40 p-3 font-mono text-xs leading-relaxed text-foreground/90">
+                {note.data.body}
+              </pre>
+            )}
+          </Card>
+        </TabsContent>
+      </Tabs>
+    </div>
   );
 }

@@ -45,7 +45,12 @@ export const affects = {
   ] as QueryKey[],
 
   /** An agent was started, queued or dispatched. */
-  agentLaunch: [queryKeys.fleet, queryKeys.orchestrate, queryKeys.actions] as QueryKey[],
+  agentLaunch: [
+    queryKeys.fleet,
+    queryKeys.orchestrate,
+    queryKeys.actions,
+    queryKeys.repos,
+  ] as QueryKey[],
 
   /** A live agent was steered, relaunched, stopped, or had its harness switched — its own timeline
    * moves as well as its fleet row. */

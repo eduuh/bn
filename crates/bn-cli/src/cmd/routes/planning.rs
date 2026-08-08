@@ -2,6 +2,7 @@ use crate::*;
 
 pub(super) fn route(cfg: &Config, action: CmdPlanning, json: bool) {
     match action {
+        CmdPlanning::Plan { action } => crate::cmd::plan::emit_plan(cfg, action, json),
         CmdPlanning::Files => {
             let ctx = resolve_or_exit(cfg);
             emit_files(commands::list_files(cfg, &ctx), json);

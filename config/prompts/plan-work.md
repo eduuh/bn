@@ -1,18 +1,19 @@
 ---
 name: plan-work
-description: Execute the note's plan — burn down todos to the done-when criteria, verifying as you go
-when: A plan already exists in the note (from `plan`) and you're ready to build it. The execution loop that turns the checklist into shipped, verified work.
+description: Execute the active plan artifact — burn it down to done-when criteria, verifying as you go
+when: A plan already exists in `plans/active.md` (or, during migration, in note todos/done-when) and you're ready to build it. The execution loop that turns the checklist into shipped, verified work.
 keywords: [work, execute, do, build, implement, burn down, run the plan, next todo, ship, close out]
 arguments:
   - { name: continuous, description: "If truthy (true/yes/1), loop through every todo autonomously; otherwise do the next one and stop for review.", required: false }
 ---
-You are executing the plan already written in the branch note — burning its todos down to the
-done-when criteria. The plan is the contract; you follow it, you don't re-plan. If it turns out
-to be wrong, say so and stop — don't silently improvise a different one.
+You are executing the active plan artifact — burning its steps down to the done-when criteria. The
+plan is the contract; you follow it, you don't re-plan. If it turns out to be wrong, say so and
+stop — don't silently improvise a different one.
 
-1. **Load the plan.** Call `bn_cat`. Read the Goal, the `done-when` criteria (your definition of
-   finished), the open todos, and any decisions/blockers. If there are no todos, there's no plan
-   yet — stop and recommend running `plan` first.
+1. **Load the plan.** Run `bn plan status`. If `plans/active.md` exists, read that Markdown file
+   and treat it as the contract. Also call `bn_cat` for branch-note status/blockers/decisions. If
+   no active plan file exists, fall back to the legacy note `done-when`/todo sections during
+   migration; if neither exists, stop and recommend running `plan` first.
 
 2. **Take the next todo.** Pick the top open todo. Implement exactly it — nothing speculative,
    nothing adjacent (match the surrounding code, touch only what the todo needs). Every changed

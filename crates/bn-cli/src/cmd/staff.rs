@@ -142,6 +142,10 @@ pub(crate) fn run_gather(gather: &str) -> Result<String, String> {
 /// closure (classified via the #271 taxonomy so auth/rate-limited runs record distinctly and don't
 /// page). Returns a process exit code: 0 on a landed or idempotently re-run card, 1 on any failure
 /// (already logged as a `staff_run` event, and — for a genuine `fail` — a warn attention item).
+///
+/// The human-readable outcome is emitted by [`report_staff_run`], which routes through
+/// [`native_job_line`] so the same text lands in the `cron_run` tail for `bn cron show` /
+/// `bn cron failures`. Don't replace those with bare `println!`/`eprintln!`.
 pub(crate) fn staff_run_code(
     cfg: &Config,
     ctx: Option<&Resolved>,
@@ -160,7 +164,7 @@ pub(crate) fn staff_run_code(
                     serde_json::json!({"agent": name, "ok": false, "error": msg})
                 );
             } else {
-                eprintln!("{msg}");
+                native_job_line(&msg, true);
             }
             return 1;
         }
@@ -172,7 +176,7 @@ pub(crate) fn staff_run_code(
                     serde_json::json!({"agent": name, "ok": false, "error": msg})
                 );
             } else {
-                eprintln!("{msg}");
+                native_job_line(&msg, true);
             }
             return 1;
         }
@@ -193,14 +197,19 @@ pub(crate) fn staff_run_code(
                     serde_json::json!({"agent": name, "ok": true, "skipped": "not-home", "home": home})
                 );
             } else if loud {
-                eprintln!(
-                    "bn staff: this machine is not the staff home (home = {home}) — '{name}' and every staff run no-op here."
+                native_job_line(
+                    &format!("bn staff: this machine is not the staff home (home = {home}) — '{name}' and every staff run no-op here."),
+                    true,
                 );
-                eprintln!(
-                    "  set [staff].home to this machine (or $BN_STAFF_HOME) to re-home the staff."
+                native_job_line(
+                    "  set [staff].home to this machine (or $BN_STAFF_HOME) to re-home the staff.",
+                    true,
                 );
             } else {
-                println!("staff {name}: skipped — not the staff home ({home})");
+                native_job_line(
+                    &format!("staff {name}: skipped — not the staff home ({home})"),
+                    false,
+                );
             }
             return 0;
         }
@@ -244,44 +253,76 @@ pub(crate) fn staff_run_code(
 
     if as_json {
         println!("{}", serde_json::to_string(&report).unwrap_or_default());
-    } else if report.status == staff::RunStatus::Skipped {
-        // A policy skip — budget shed or backpressure self-throttle (#269). Both ride `note` with
-        // the one-line reason to surface *once*; a silent throttle repeat carries no note, so the
-        // agent degrades toward silence rather than repeating its pause notice.
-        if let Some(note) = &report.note {
-            println!("staff {name}: {note}");
-        }
-    } else if report.ok {
-        if report.rerun {
-            println!(
-                "staff {name}: card for {today} already existed — refreshed, items not re-routed"
-            );
-        } else {
-            let r = &report.routed;
-            println!(
-                "staff {name}: card landed → attn {} · daily {} · note {} · research {} · dojo {}",
-                r.attn, r.daily, r.note, r.research, r.dojo
-            );
-        }
-        println!(
-            "  cost: ~{} tokens · {}",
-            report.tokens,
-            fmt_wall_ms(report.wall_ms)
-        );
-        if let Some(p) = &report.card_path {
-            println!("  {}", p.display());
-        }
     } else {
-        eprintln!(
-            "staff {name}: {} [{}]",
-            report.error.as_deref().unwrap_or("failed"),
-            report.status.as_str()
-        );
+        report_staff_run(name, &today, &report);
     }
     if report.ok || report.status == staff::RunStatus::Skipped {
         0
     } else {
         1
+    }
+}
+
+/// The human-readable outcome of one staff run.
+///
+/// Every line goes through [`native_job_line`] rather than `println!`/`eprintln!`, which is what
+/// puts the text in the `cron_run` event tail as well as on the terminal. Under `bn run <agent>`
+/// this function executes inside [`crate::cmd::jobs::run_native_job`]'s closure, and that closure
+/// builds its tail *solely* from the `native_job_line` buffer — so a bare `eprintln!` here reaches
+/// a terminal nobody is watching and records an empty tail. That is not hypothetical: `scout`
+/// failed 28 consecutive scheduled runs on a `bn: command not found` gather while
+/// `bn cron failures` displayed exit 1 and nothing else, and the cause was only recoverable by
+/// grepping the sibling `staff_run` row out of the raw event log.
+fn report_staff_run(name: &str, today: &str, report: &bn_core::staff::RunReport) {
+    use bn_core::staff;
+
+    if report.status == staff::RunStatus::Skipped {
+        // A policy skip — budget shed or backpressure self-throttle (#269). Both ride `note` with
+        // the one-line reason to surface *once*; a silent throttle repeat carries no note, so the
+        // agent degrades toward silence rather than repeating its pause notice.
+        if let Some(note) = &report.note {
+            native_job_line(&format!("staff {name}: {note}"), false);
+        }
+        return;
+    }
+    if !report.ok {
+        native_job_line(
+            &format!(
+                "staff {name}: {} [{}]",
+                report.error.as_deref().unwrap_or("failed"),
+                report.status.as_str()
+            ),
+            true,
+        );
+        return;
+    }
+    if report.rerun {
+        native_job_line(
+            &format!(
+                "staff {name}: card for {today} already existed — refreshed, items not re-routed"
+            ),
+            false,
+        );
+    } else {
+        let r = &report.routed;
+        native_job_line(
+            &format!(
+                "staff {name}: card landed → attn {} · daily {} · note {} · research {} · dojo {}",
+                r.attn, r.daily, r.note, r.research, r.dojo
+            ),
+            false,
+        );
+    }
+    native_job_line(
+        &format!(
+            "  cost: ~{} tokens · {}",
+            report.tokens,
+            fmt_wall_ms(report.wall_ms)
+        ),
+        false,
+    );
+    if let Some(p) = &report.card_path {
+        native_job_line(&format!("  {}", p.display()), false);
     }
 }
 
@@ -824,6 +865,91 @@ mod tests {
         let observed = run_gather("printf %s \"$PATH\"").expect("gather echoes PATH");
         assert_eq!(observed.split(':').next(), Some(exe_dir.as_str()));
         assert_eq!(observed, crate::cmd::cron::job_path());
+    }
+
+    /// Run `f` and return exactly the text it emitted through `native_job_line` — the same buffer
+    /// `run_native_job` turns into the `cron_run` event tail. Lets these tests assert what a
+    /// scheduled run *would* record without standing up a real cron run. The buffer is
+    /// thread-local, so tests running in parallel do not see each other's output.
+    fn captured_tail(f: impl FnOnce()) -> String {
+        crate::cmd::jobs::reset_native_job_output();
+        f();
+        crate::cmd::jobs::take_native_job_output()
+    }
+
+    fn run_report(status: bn_core::staff::RunStatus, error: Option<&str>) -> bn_core::staff::RunReport {
+        bn_core::staff::RunReport {
+            agent: "scout".to_string(),
+            ok: status == bn_core::staff::RunStatus::Ok,
+            status,
+            error: error.map(str::to_string),
+            card_path: None,
+            routed: bn_core::staff::RouteSummary::default(),
+            rerun: false,
+            tokens: 0,
+            wall_ms: 0,
+            note: None,
+            silent: false,
+        }
+    }
+
+    /// The regression that made `scout`'s 28 consecutive failures unreadable: the run reported its
+    /// cause to stderr only, so `run_native_job` recorded an empty tail and `bn cron failures`
+    /// showed exit 1 with no reason. The failure text must reach the `native_job_line` buffer.
+    #[test]
+    fn a_failed_staff_run_records_its_cause_in_the_cron_tail() {
+        let report = run_report(
+            bn_core::staff::RunStatus::Fail,
+            Some("gather failed: gather `bn staff gather scout` exited 127: bn: command not found"),
+        );
+        let tail = captured_tail(|| {
+            report_staff_run("scout", "2026-08-08", &report);
+        });
+        assert!(
+            tail.contains("exited 127") && tail.contains("bn: command not found"),
+            "the gather failure must be recoverable from the cron tail alone, got: {tail:?}"
+        );
+        assert!(tail.contains("[fail]"), "{tail:?}");
+    }
+
+    /// A failure with no error string still has to leave a row worth reading.
+    #[test]
+    fn a_failed_staff_run_with_no_detail_still_records_its_status() {
+        let report = run_report(bn_core::staff::RunStatus::Auth, None);
+        let tail = captured_tail(|| {
+            report_staff_run("scout", "2026-08-08", &report);
+        });
+        assert!(tail.contains("staff scout: failed [auth]"), "{tail:?}");
+    }
+
+    /// A green run's tail is what `bn cron show <agent>` prints, so the landed-card summary has to
+    /// be captured too — not just the failure path.
+    #[test]
+    fn a_landed_staff_run_records_its_summary_in_the_cron_tail() {
+        let report = run_report(bn_core::staff::RunStatus::Ok, None);
+        let tail = captured_tail(|| {
+            report_staff_run("scout", "2026-08-08", &report);
+        });
+        assert!(tail.contains("staff scout: card landed"), "{tail:?}");
+        assert!(tail.contains("cost: ~0 tokens"), "{tail:?}");
+    }
+
+    /// A policy skip carries its one-line reason; a silent throttle repeat (`note: None`) stays
+    /// silent, so the tail must be empty rather than carrying a manufactured line.
+    #[test]
+    fn a_skipped_staff_run_records_only_its_note() {
+        let mut report = run_report(bn_core::staff::RunStatus::Skipped, None);
+        report.note = Some("pausing — 3 unread cards".to_string());
+        let tail = captured_tail(|| {
+            report_staff_run("scout", "2026-08-08", &report);
+        });
+        assert!(tail.contains("pausing — 3 unread cards"), "{tail:?}");
+
+        report.note = None;
+        let silent = captured_tail(|| {
+            report_staff_run("scout", "2026-08-08", &report);
+        });
+        assert!(silent.is_empty(), "{silent:?}");
     }
 
     #[test]

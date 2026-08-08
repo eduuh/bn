@@ -30,6 +30,54 @@ impl Config {
         self.note_dir(ctx).join("note.md")
     }
 
+    /// `<note_dir>/plans` — branch-scoped plan artifacts. The directory is durable bn state,
+    /// not repo worktree state, so plan files follow the branch note across machines.
+    pub fn plan_dir(&self, ctx: &Resolved) -> PathBuf {
+        self.note_dir(ctx).join("plans")
+    }
+
+    /// `<note_dir>/plans/active.md` — the approved/current execution contract.
+    pub fn active_plan_file(&self, ctx: &Resolved) -> PathBuf {
+        self.plan_dir(ctx).join("active.md")
+    }
+
+    /// `<note_dir>/plans/agents` — per-agent draft plans keyed by session id.
+    pub fn agent_plan_dir(&self, ctx: &Resolved) -> PathBuf {
+        self.plan_dir(ctx).join("agents")
+    }
+
+    /// `<note_dir>/plans/agents/<session-id>.md` — one agent's draft plan.
+    pub fn agent_plan_file(&self, ctx: &Resolved, session_id: &str) -> PathBuf {
+        let safe = session_id
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>();
+        self.agent_plan_dir(ctx).join(format!(
+            "{}.md",
+            if safe.is_empty() { "agent" } else { &safe }
+        ))
+    }
+
+    /// Convert an absolute artifact path under this note dir to a portable note-relative path.
+    pub fn note_relative_path(&self, ctx: &Resolved, path: &Path) -> Option<String> {
+        let note_dir = self.note_dir(ctx);
+        path.strip_prefix(&note_dir)
+            .ok()
+            .map(|p| p.to_path_buf())
+            .or_else(|| {
+                let path = std::fs::canonicalize(path).ok()?;
+                let note_dir = std::fs::canonicalize(note_dir).ok()?;
+                path.strip_prefix(note_dir).ok().map(|p| p.to_path_buf())
+            })
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+    }
+
     /// `<personal_root>/tasks.txt` — **the** task store (#995): one file holding every task, for
     /// every repo, on every machine.
     ///

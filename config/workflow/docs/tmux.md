@@ -188,6 +188,32 @@ Only the project-specific keys worth memorising — see `~/.config/nvim/lua/plug
 |-----|--------|
 | `<leader>nn` | Open `note.md` for current branch (or jump back via alternate buffer if already on it). |
 
+## Plan artifacts
+
+Plan mode stores Markdown plans in the bn note directory, not in the repo worktree:
+
+```
+<note-dir>/plans/active.md
+<note-dir>/plans/agents/<session-id>.md
+```
+
+The branch note stays as an index/status file. The plan body lives in Markdown artifacts.
+
+| Command | Action |
+|---------|--------|
+| `bn plan init` | Create `plans/active.md` and `plans/agents/`. |
+| `bn plan status` | Show active plan path, status, and agent drafts. |
+| `bn plan path --active` | Print/create the active plan path. |
+| `bn plan path --agent <session-id>` | Print/create one agent draft plan. |
+| `bn plan open` | Open `plans/active.md` in `$EDITOR` (`nvim` by default). |
+| `bn plan promote <draft-or-session>` | Promote a draft to `plans/active.md`. |
+| `bn plan migrate` | Convert legacy note todo/done-when sections into `plans/active.md`. |
+
+Plan-mode agent launches start the agent first, then split the same tmux window vertically and open
+the bn-owned plan `.md` beside the running agent. That keeps the worktree for code and the bn
+system for planning artifacts, and it keeps the same plan usable across machines through
+note-relative paths.
+
 ## Quickfix
 
 | Key | Action |

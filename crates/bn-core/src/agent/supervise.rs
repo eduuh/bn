@@ -118,6 +118,16 @@ pub struct LiveAgent {
     /// fleet JSON without the field valid — it reads as [`AgentRole::Worker`].
     #[serde(default)]
     pub role: AgentRole,
+    /// Launch-path work class, when bn launched or adopted this session. This is distinct from
+    /// [`role`]: role says whether an agent supervises the fleet, while work class says what kind
+    /// of work the session is doing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_class: Option<WorkClass>,
+    /// Readable task/workflow name recorded at launch (`bn dispatch --name`, controller name, etc.).
+    /// Fleet consumers use this for workflow-specific chips such as repo setup without guessing
+    /// from branch names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_name: Option<String>,
     pub turns: i64,
     pub tool_calls: i64,
     /// Cumulative tokens burned so far in the *live* session. `output_tokens` is the headline
@@ -237,7 +247,8 @@ pub fn supervise(cfg: &Config, idle_mins: i64, stuck_mins: i64) -> Fleet {
     // Stamp each agent's #500 role from the machine's launch-path work-class attribution — the same
     // bn-owned record `bn dispatch` writes and ingest reads. Kept out of the offline testable core
     // so [`supervise_from`] stays a pure filesystem read.
-    stamp_roles(&mut fleet.agents, &crate::cost::attribution_map());
+    let launches = crate::cost::launch_records();
+    stamp_launch_metadata(&mut fleet.agents, &launches);
     // #545: fold in a pending "starting…" entry for every just-dispatched agent that has a launch
     // record but no transcript yet, so a freshly-dispatched (or startup-stalled) agent is visible
     // in the fleet for ANY client — not just the one that clicked. Deduped against the live and
@@ -249,7 +260,7 @@ pub fn supervise(cfg: &Config, idle_mins: i64, stuck_mins: i64) -> Fleet {
         .collect();
     let finished_ids = finished_session_ids(cfg);
     let pending = pending_agents(
-        &crate::cost::launch_records(),
+        &launches,
         &live_ids,
         &finished_ids,
         now,
@@ -260,7 +271,7 @@ pub fn supervise(cfg: &Config, idle_mins: i64, stuck_mins: i64) -> Fleet {
         agents.extend(pending);
         agents.sort_by_key(|a| std::cmp::Reverse(a.last_activity_ts));
         fleet = Fleet::from_agents(agents);
-        stamp_roles(&mut fleet.agents, &crate::cost::attribution_map());
+        stamp_launch_metadata(&mut fleet.agents, &launches);
     }
     // Last, so it covers the pending entries folded in above too: can bn actually write to each of
     // these, or is it only watching? Kept out of `supervise_from` for the same reason as roles —
@@ -388,6 +399,8 @@ fn pending_agents(
                 idle_secs: age,
                 health: AgentHealth::Starting,
                 role: AgentRole::Worker,
+                work_class: Some(l.work_class),
+                task_name: (!l.task_name.is_empty()).then(|| l.task_name.clone()),
                 turns: 0,
                 tool_calls: 0,
                 input_tokens: 0,
@@ -401,13 +414,24 @@ fn pending_agents(
         .collect()
 }
 
-/// Stamp each live agent's [`AgentRole`] from the launch-path attribution map (`session_id →`
-/// [`WorkClass`], keyed on the harness session id `bn dispatch` pins). Pure over the map so it is
-/// unit-testable; agents with no attribution keep their default [`AgentRole::Worker`].
-fn stamp_roles(agents: &mut [LiveAgent], attribution: &BTreeMap<String, WorkClass>) {
+/// Stamp each live agent with launch-path metadata, keyed on the harness session id `bn dispatch`
+/// pins. Latest launch record wins, matching [`crate::cost::launch_records`]' chronological feed.
+fn stamp_launch_metadata(agents: &mut [LiveAgent], launches: &[LaunchRecord]) {
+    let mut by_session: BTreeMap<String, &LaunchRecord> = BTreeMap::new();
+    for launch in launches {
+        by_session.insert(
+            crate::cost::canonical_session_id(&launch.session_id),
+            launch,
+        );
+    }
     for a in agents.iter_mut() {
-        if let Some(wc) = attribution.get(&crate::cost::canonical_session_id(&a.session_id)) {
-            a.role = AgentRole::from_work_class(*wc);
+        let Some(launch) = by_session.get(&crate::cost::canonical_session_id(&a.session_id)) else {
+            continue;
+        };
+        a.role = AgentRole::from_work_class(launch.work_class);
+        a.work_class = Some(launch.work_class);
+        if !launch.task_name.is_empty() {
+            a.task_name = Some(launch.task_name.clone());
         }
     }
 }
@@ -650,6 +674,8 @@ fn parse_live_claude(
         idle_secs,
         health: AgentHealth::from_idle(idle_secs, idle_mins, stuck_mins),
         role: AgentRole::default(),
+        work_class: None,
+        task_name: None,
         turns,
         tool_calls: tools,
         input_tokens: input,
@@ -747,6 +773,8 @@ fn parse_live_copilot(
         idle_secs,
         health: AgentHealth::from_idle(idle_secs, idle_mins, stuck_mins),
         role: AgentRole::default(),
+        work_class: None,
+        task_name: None,
         turns: count("assistant.turn_start"),
         tool_calls: count("tool.execution_start"),
         input_tokens: 0,

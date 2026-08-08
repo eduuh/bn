@@ -94,6 +94,9 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
                 Some(CronCmd::Show { job }) => emit_cron_show(&job, json),
                 Some(CronCmd::Failures { limit }) => emit_cron_failures(limit, json),
                 Some(CronCmd::Unregister { job }) => emit_cron_unregister(&job, json),
+                Some(CronCmd::Retire { job, reason }) => {
+                    emit_cron_retire(cfg, ctx.as_ref(), &job, &reason.join(" "), json)
+                }
                 Some(CronCmd::Register { dry_run }) => {
                     emit_cron_register(cfg, ctx.as_ref(), dry_run, json)
                 }

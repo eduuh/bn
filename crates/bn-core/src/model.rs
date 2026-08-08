@@ -172,10 +172,39 @@ pub struct Frontmatter {
     pub ask: Vec<Item>,
     #[serde(default)]
     pub done_when: Vec<Item>,
+    /// Plan artifacts that live beside this branch note (`plans/active.md`,
+    /// `plans/agents/<session>.md`). Paths are note-relative so the same note works across
+    /// machines with different notes roots.
+    #[serde(default, skip_serializing_if = "PlanMetadata::is_empty")]
+    pub plan: PlanMetadata,
     /// Standing instructions for this branch (`bn agent instruct`). `#[serde(default)]` keeps every
     /// note written before the section existed valid — it reads as empty.
     #[serde(default)]
     pub directives: Vec<Item>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PlanMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drafts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated: Option<String>,
+}
+
+impl PlanMetadata {
+    pub fn is_empty(&self) -> bool {
+        self.active.is_none()
+            && self.drafts.is_empty()
+            && self.status.is_none()
+            && self.selected.is_none()
+            && self.updated.is_none()
+    }
 }
 
 fn default_status() -> String {
@@ -390,6 +419,7 @@ impl Note {
             collab: vec![],
             ask: vec![],
             done_when: vec![],
+            plan: PlanMetadata::default(),
             directives: vec![],
         };
         let body = format!("# {repo} / {branch}\n\n## Goal\n\n\n## Progress\n");

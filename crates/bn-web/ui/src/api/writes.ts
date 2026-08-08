@@ -318,6 +318,35 @@ export function startRepoOrchestrator(
   return post(`/api/repos/${encodeURIComponent(repo)}/orchestrate`, body ?? {});
 }
 
+/** `POST /api/repos/:repo/setup-agent {harness?}` — start a guarded Fleet-visible repo setup
+ * agent that writes/updates bn setup scripts for the repo. */
+export function startRepoSetupAgent(repo: string, body?: { harness?: string }): Promise<unknown> {
+  return post(`/api/repos/${encodeURIComponent(repo)}/setup-agent`, body ?? {});
+}
+
+/** `POST /api/repos/setup-agents {harness?}` — scan for repos that need setup and start one
+ * Fleet-visible setup agent for each, skipping repos that already have one live. */
+export function startNeededRepoSetupAgents(body?: { harness?: string }): Promise<{
+  started: string[];
+  skipped: { repo: string; reason: string }[];
+  failed: unknown[];
+}> {
+  return post("/api/repos/setup-agents", body ?? {});
+}
+
+/** `PUT /api/repos/:repo/scripts/:name {content}` — save a repo-main job script. */
+export function saveRepoScript(
+  repo: string,
+  name: string,
+  content: string,
+): Promise<{ repo: string; name: string; path: string }> {
+  return request(
+    "PUT",
+    `/api/repos/${encodeURIComponent(repo)}/scripts/${encodeURIComponent(name)}`,
+    { content },
+  );
+}
+
 // --- Plan-review gate (#349) — the human's decision on a paused agent's plan ---
 
 import type { Review } from "./types";
@@ -333,6 +362,13 @@ export function decideReview(
   notes?: string,
 ): Promise<{ review: Review }> {
   return post(`/api/reviews/${encodeURIComponent(id)}`, { action, notes });
+}
+
+/** `POST /api/notes/:repo/:branch/plan/promote {draft}` — make a draft the active plan. */
+export function promotePlanDraft(repo: string, branch: string, draft: string): Promise<unknown> {
+  return post(`/api/notes/${encodeURIComponent(repo)}/${encodeURIComponent(branch)}/plan/promote`, {
+    draft,
+  });
 }
 
 // --- Task writes (#1006), split by latency ---------------------------------------------------

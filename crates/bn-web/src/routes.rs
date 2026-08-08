@@ -58,7 +58,14 @@ pub fn router(state: AppState) -> Router {
         .route("/api/brag", get(api::brag))
         .route("/api/repos", get(api::repos))
         .route("/api/repos/{repo}/issues", get(api::repo_issues))
+        .route(
+            "/api/repos/{repo}/scripts/{name}",
+            get(api::repo_script).put(actions::repo_script_write),
+        )
         .route("/api/notes", get(api::notes))
+        .route("/api/notes/{repo}/{branch}/plan", get(api::note_plan))
+        .route("/api/notes/{repo}/{branch}/files", get(api::note_files))
+        .route("/api/notes/{repo}/{branch}/file", get(api::note_file))
         .route("/api/notes/{repo}/{branch}", get(api::note_detail))
         .route(
             "/api/handoff",
@@ -113,6 +120,14 @@ pub fn router(state: AppState) -> Router {
             "/api/repos/{repo}/orchestrate",
             post(actions::repo_orchestrate_start),
         )
+        .route(
+            "/api/repos/setup-agents",
+            post(actions::repo_setup_agents_start),
+        )
+        .route(
+            "/api/repos/{repo}/setup-agent",
+            post(actions::repo_setup_agent_start),
+        )
         // Process writes (subprocess `bn --json` via the runner):
         .route("/api/dispatch", post(actions::dispatch))
         .route("/api/agents/{target}/send", post(actions::agent_send))
@@ -132,6 +147,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/land", post(actions::land))
         // Plan-review gate decision (#349) — native in-process store write:
         .route("/api/reviews/{id}", post(actions::review_decide))
+        .route(
+            "/api/notes/{repo}/{branch}/plan/promote",
+            post(actions::plan_promote),
+        )
         // Cron re-run (#538) — fire a job on demand via the same `bn run <job>` code path a timer
         // uses; returns the runner's envelope (exit + captured output tail).
         .route("/api/cron/run", post(actions::cron_run))

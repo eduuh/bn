@@ -6,11 +6,11 @@ thread_local! {
     static NATIVE_JOB_OUTPUT: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
-fn reset_native_job_output() {
+pub(crate) fn reset_native_job_output() {
     NATIVE_JOB_OUTPUT.with(|output| output.borrow_mut().clear());
 }
 
-fn take_native_job_output() -> String {
+pub(crate) fn take_native_job_output() -> String {
     NATIVE_JOB_OUTPUT.with(|output| std::mem::take(&mut *output.borrow_mut()))
 }
 

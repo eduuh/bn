@@ -40,6 +40,7 @@ pub(crate) mod night;
 pub(crate) mod notify;
 pub(crate) mod orchestrate;
 pub(crate) mod pipeline;
+pub(crate) mod plan;
 pub(crate) mod plan_review;
 pub(crate) mod pr_link;
 pub(crate) mod promote;

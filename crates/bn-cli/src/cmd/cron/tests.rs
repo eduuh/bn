@@ -159,8 +159,12 @@ fn scheduler_enqueues_due_agents_and_queue_tick_runs_them() {
         ..Default::default()
     };
 
-    // A real dispatcher pass is what makes queue capture active for producers.
-    assert_eq!(crate::cmd::queue_tick::job_queue_tick(&cfg, None), 0);
+    std::fs::create_dir_all(&state).expect("state dir");
+    std::fs::write(
+        state.join("queue-daemon.heartbeat"),
+        bn_core::util::now_epoch_secs().to_string(),
+    )
+    .expect("queue heartbeat");
 
     assert_eq!(run_job(&cfg, None, "agent-scheduler"), 0);
     assert_eq!(run_events("agent-scheduler").len(), 1);
@@ -219,9 +223,14 @@ fn cron_health_creates_repair_task_and_queues_agent() {
     let temp = tempfile::tempdir().expect("tempdir");
     let state = temp.path().join("state");
     let personal = temp.path().join("personal");
+    let jobs = temp.path().join("jobs");
     let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", &state);
-    let _jobs = bn_core::test_support::EnvGuard::set("BN_JOBS_DIR", temp.path().join("jobs"));
+    let _jobs = bn_core::test_support::EnvGuard::set("BN_JOBS_DIR", &jobs);
     let _agents = bn_core::test_support::EnvGuard::set("BN_AGENTS_DIR", temp.path().join("agents"));
+    // The cron must actually resolve, or it reads as retired rather than broken and the watchdog
+    // deliberately withholds the repair agent — see `cron_health_withholds_repair_agent_...`.
+    std::fs::create_dir_all(&jobs).expect("jobs dir");
+    std::fs::write(jobs.join("broken-cron.sh"), "#!/bin/sh\nexit 7\n").expect("job script");
     let cfg = Config {
         personal_root: personal,
         work_root: temp.path().join("work"),
@@ -275,6 +284,134 @@ fn cron_health_creates_repair_task_and_queues_agent() {
             .filter(|task| task.meta("key") == Some("cron-repair:broken-cron"))
             .count(),
         1
+    );
+}
+
+/// A cron that no longer resolves still earns its attention row, but must not keep dispatching
+/// autonomous repair agents: the repair prompt tells them to reproduce with `bn run <job>`, which
+/// cannot resolve, so each one can only burn a worktree to report the same nothing. This is the
+/// `task-improve` loop that ran every 15 minutes after the job was renamed to `task-enhance`.
+#[test]
+fn cron_health_withholds_repair_agent_for_a_cron_that_no_longer_resolves() {
+    let _lock = bn_core::test_support::env_lock();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", temp.path().join("state"));
+    let _jobs = bn_core::test_support::EnvGuard::set("BN_JOBS_DIR", temp.path().join("jobs"));
+    let _agents = bn_core::test_support::EnvGuard::set("BN_AGENTS_DIR", temp.path().join("agents"));
+    let cfg = Config {
+        personal_root: temp.path().join("personal"),
+        work_root: temp.path().join("work"),
+        hostname: "test-host".to_string(),
+        ..Default::default()
+    };
+    let now = bn_core::util::now_epoch_secs();
+    for i in 0..3 {
+        bn_core::events::log_cron_run(
+            "renamed-away",
+            "global",
+            None,
+            None,
+            now - (3 - i) * 60,
+            3,
+            127,
+            "/bin/sh: bn: command not found",
+        )
+        .expect("cron event");
+    }
+
+    assert_eq!(crate::cmd::attn_agent::job_cron_health(&cfg, None), 0);
+
+    let tasks = bn_core::todo::load(&cfg.tasks_file()).expect("tasks");
+    assert!(
+        tasks
+            .tasks()
+            .any(|task| task.meta("key") == Some("cron-repair:renamed-away")),
+        "an unresolvable cron is still worth a person's attention"
+    );
+    let backlog = bn_core::backlog::load(&bn_core::backlog::backlog_path());
+    assert!(
+        !backlog
+            .entries()
+            .iter()
+            .any(|entry| entry.item.contains("renamed-away")),
+        "but no autonomous agent should be dispatched at a job that cannot be run"
+    );
+}
+
+/// End-to-end for `bn cron retire`: the tombstone reaches the watchdog through the real event log,
+/// so a retired name stops being raised on the very next run rather than in a fortnight.
+#[test]
+fn retiring_a_cron_silences_the_watchdog_immediately() {
+    let _lock = bn_core::test_support::env_lock();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", temp.path().join("state"));
+    let _jobs = bn_core::test_support::EnvGuard::set("BN_JOBS_DIR", temp.path().join("jobs"));
+    let _agents = bn_core::test_support::EnvGuard::set("BN_AGENTS_DIR", temp.path().join("agents"));
+    let cfg = Config {
+        personal_root: temp.path().join("personal"),
+        work_root: temp.path().join("work"),
+        hostname: "test-host".to_string(),
+        ..Default::default()
+    };
+    let now = bn_core::util::now_epoch_secs();
+    for i in 0..3 {
+        bn_core::events::log_cron_run(
+            "gone-for-good",
+            "global",
+            None,
+            None,
+            now - (3 - i) * 60,
+            3,
+            127,
+            "/bin/sh: bn: command not found",
+        )
+        .expect("cron event");
+    }
+
+    // Failing minutes ago, so only the tombstone can retire it this soon.
+    let runs = bn_core::events::cron_status();
+    let before = bn_core::crons::LiveJobs::discover(&cfg, None);
+    assert_eq!(
+        bn_core::crons::alerting_crons(&runs, bn_core::crons::ALERT_MIN_FAILURES, &before, now)
+            .len(),
+        1
+    );
+
+    bn_core::events::retire_cron("gone-for-good", Some("renamed")).expect("tombstone");
+
+    let after = bn_core::crons::LiveJobs::discover(&cfg, None);
+    assert!(
+        bn_core::crons::alerting_crons(&runs, bn_core::crons::ALERT_MIN_FAILURES, &after, now)
+            .is_empty(),
+        "a retired cron must stop being raised at once"
+    );
+}
+
+/// `bn run <name>` used to enqueue any name at all, so a typo or a renamed job printed
+/// "queued …" and exited 0, then died exit 2 inside the queue executor where nobody saw it.
+#[test]
+fn running_an_unresolvable_job_fails_fast_instead_of_queueing_it() {
+    let _lock = bn_core::test_support::env_lock();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", temp.path().join("state"));
+    let _jobs = bn_core::test_support::EnvGuard::set("BN_JOBS_DIR", temp.path().join("jobs"));
+    let _agents = bn_core::test_support::EnvGuard::set("BN_AGENTS_DIR", temp.path().join("agents"));
+    let cfg = Config {
+        personal_root: temp.path().join("personal"),
+        work_root: temp.path().join("work"),
+        hostname: "test-host".to_string(),
+        ..Default::default()
+    };
+
+    assert_eq!(super::run_job(&cfg, None, "task-improve"), 2);
+
+    let backlog = bn_core::backlog::load(&bn_core::backlog::backlog_path());
+    assert!(
+        !backlog
+            .entries()
+            .iter()
+            .any(|entry| entry.item.contains("task-improve")),
+        "an unresolvable job must not reach the queue at all"
     );
 }
 

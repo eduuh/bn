@@ -46,6 +46,7 @@ import type {
   GoalsView,
   WrapView,
   ReposView,
+  RepoScriptView,
   RepoIssuesView,
   SearchView,
   MetricsView,
@@ -55,6 +56,7 @@ import type {
   BragView,
   HealthView,
 } from "./types";
+import type { NoteFileView, NoteFilesView, NotePlanView } from "./plan-types";
 
 /** Fetch a bn read endpoint and return its envelope `data`, throwing on a transport/api failure. */
 /** A failed read. Carries the HTTP status so a caller can tell "no such thing" (404) from "the
@@ -118,6 +120,14 @@ export const queryKeys = {
   notes: ["notes"] as const,
   /** One full note, keyed by repo + note-key branch. */
   note: (repo: string, branch: string) => ["note", repo, branch] as const,
+  /** One branch note's plan artifact status. */
+  notePlan: (repo: string, branch: string) => ["note", repo, branch, "plan"] as const,
+  /** One branch note's bn-owned artifact directory listing. */
+  noteFiles: (repo: string, branch: string, path: string) =>
+    ["note", repo, branch, "files", path] as const,
+  /** One branch note's bn-owned artifact file content. */
+  noteFile: (repo: string, branch: string, path: string) =>
+    ["note", repo, branch, "file", path] as const,
   /** One branch's handoff resume packet, keyed by repo + note-key branch (#509). */
   handoff: (repo: string, branch: string) => ["handoff", repo, branch] as const,
   /** The task store, keyed by the filter in play (#996). */
@@ -177,6 +187,8 @@ export const queryKeys = {
   repos: ["repos"] as const,
   /** One repo's open GitHub issues (#556), keyed by repo name. */
   repoIssues: (repo: string) => ["repo-issues", repo] as const,
+  /** One repo's effective/setup script source. */
+  repoScript: (repo: string, name: string) => ["repo-script", repo, name] as const,
   /** The command-palette search result set (#565), keyed by the trimmed query. */
   search: (q: string) => ["search", q] as const,
   /** The learnings feed, keyed by its filter. */
@@ -310,6 +322,37 @@ export function noteDetailQuery(repo: string, branch: string) {
       fetchEnvelope<NoteDetail>(
         `/api/notes/${encodeURIComponent(repo)}/${encodeURIComponent(branch)}`,
       ),
+  };
+}
+
+export function notePlanQuery(repo: string, branch: string) {
+  return {
+    queryKey: queryKeys.notePlan(repo, branch),
+    queryFn: () =>
+      fetchEnvelope<NotePlanView>(
+        `/api/notes/${encodeURIComponent(repo)}/${encodeURIComponent(branch)}/plan`,
+      ),
+  };
+}
+
+export function noteFilesQuery(repo: string, branch: string, path = "") {
+  return {
+    queryKey: queryKeys.noteFiles(repo, branch, path),
+    queryFn: () =>
+      fetchEnvelope<NoteFilesView>(
+        `/api/notes/${encodeURIComponent(repo)}/${encodeURIComponent(branch)}/files?path=${encodeURIComponent(path)}`,
+      ),
+  };
+}
+
+export function noteFileQuery(repo: string, branch: string, path: string) {
+  return {
+    queryKey: queryKeys.noteFile(repo, branch, path),
+    queryFn: () =>
+      fetchEnvelope<NoteFileView>(
+        `/api/notes/${encodeURIComponent(repo)}/${encodeURIComponent(branch)}/file?path=${encodeURIComponent(path)}`,
+      ),
+    enabled: !!path,
   };
 }
 
@@ -555,6 +598,17 @@ export function reposQuery() {
     queryKey: queryKeys.repos,
     queryFn: () => fetchEnvelope<ReposView>("/api/repos"),
     refetchInterval: 30_000,
+  };
+}
+
+export function repoScriptQuery(repo: string, name: string) {
+  return {
+    queryKey: queryKeys.repoScript(repo, name),
+    queryFn: () =>
+      fetchEnvelope<RepoScriptView>(
+        `/api/repos/${encodeURIComponent(repo)}/scripts/${encodeURIComponent(name)}`,
+      ),
+    enabled: repo.length > 0 && name.length > 0,
   };
 }
 

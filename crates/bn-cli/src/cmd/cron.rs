@@ -24,66 +24,6 @@ fn run_builtin_job(
     None
 }
 
-fn capture_command(
-    mut command: std::process::Command,
-    launch_target: &str,
-) -> (i32, String) {
-    match command.output() {
-        Ok(out) => {
-            use std::io::Write;
-            let _ = std::io::stdout().write_all(&out.stdout);
-            let _ = std::io::stderr().write_all(&out.stderr);
-            let mut combined = String::from_utf8_lossy(&out.stderr).into_owned();
-            combined.push_str(&String::from_utf8_lossy(&out.stdout));
-            (out.status.code().unwrap_or(-1), tail_lines(&combined, 15))
-        }
-        Err(e) => {
-            eprintln!("bn run: failed to launch {launch_target}: {e}");
-            (127, e.to_string())
-        }
-    }
-}
-
-pub(crate) fn job_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let path = std::env::var("PATH").unwrap_or_default();
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
-        .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    [exe_dir, format!("{home}/.local/bin"), format!("{home}/.bin"), path]
-        .into_iter()
-        .filter(|entry| !entry.is_empty())
-        .collect::<Vec<_>>()
-        .join(":")
-}
-
-fn run_script(script: &std::path::Path) -> (i32, String) {
-    if cfg!(windows) {
-        let error = "job scripts are unix-only (sh); not supported on native Windows";
-        eprintln!("bn run: {error}");
-        return (2, error.to_string());
-    }
-    let mut command = std::process::Command::new("/bin/sh");
-    command.arg(script).env("PATH", job_path());
-    capture_command(command, &script.display().to_string())
-}
-
-fn run_custom_command(command_text: &str) -> (i32, String) {
-    if cfg!(windows) {
-        let error = "custom agent commands are unix-only (sh); not supported on native Windows";
-        eprintln!("bn run: {error}");
-        return (2, error.to_string());
-    }
-    let mut command = std::process::Command::new("/bin/sh");
-    command
-        .arg("-c")
-        .arg(command_text)
-        .env("PATH", job_path());
-    capture_command(command, "custom agent command")
-}
-
 fn cron_event_target(
     ctx: Option<&Resolved>,
     scope: resolver::JobScope,
@@ -135,6 +75,12 @@ pub(crate) fn run_recorded_job(
     code
 }
 
+/// The refusal for a `bn run <name>` that resolves to nothing. Shared by the pre-capture guard and
+/// the post-builtin fallback so the two wordings cannot drift apart.
+fn no_such_job(job: &str) -> String {
+    format!("bn run: no job or agent '{job}' (looked branch → repo → global)")
+}
+
 /// Run a named agent or ordinary job **in this process**. Agent manifests are resolved first:
 /// specialists are refused, explicit `run:` commands use the common wrapper, and absent `run:`
 /// resolves the same-name staff/native/script implementation without recursive `bn` spawning.
@@ -172,6 +118,16 @@ pub(crate) fn run_job_with_staff_output(
         }
     }
 
+    // Resolve *before* capturing. A name nothing backs used to be enqueued regardless, and only
+    // died exit 2 later inside the queue executor where the diagnostic reached nobody — so
+    // `bn run task-improve` printed "queued machine/run-task-improve" and exited 0 for a job that
+    // had been renamed away. Refuse here, while a person is still watching the terminal.
+    let script = resolver::job_script(cfg, ctx, job);
+    if agent.is_none() && native_job(job).is_none() && script.is_none() {
+        eprintln!("{}", no_such_job(job));
+        return 2;
+    }
+
     // Captured agents retain their identity and re-enter this exact resolver when dequeued.
     let queued = match agent.as_ref() {
         Some(agent) => crate::cmd::queue_producers::maybe_capture_agent(cfg, ctx, agent),
@@ -192,13 +148,13 @@ pub(crate) fn run_job_with_staff_output(
     if let Some(code) = run_builtin_job(cfg, ctx, job, agent.as_ref(), staff_json) {
         return code;
     }
-    let Some((scope, script)) = resolver::job_script(cfg, ctx, job) else {
+    let Some((scope, script)) = script else {
         if agent.is_some() {
             eprintln!(
                 "bn run: agent '{job}' has no custom `run:` and no same-name staff, native, or script job"
             );
         } else {
-            eprintln!("bn run: no job or agent '{job}' (looked branch → repo → global)");
+            eprintln!("{}", no_such_job(job));
         }
         return 2;
     };
@@ -209,6 +165,15 @@ pub(crate) fn run_job_with_staff_output(
 pub(crate) fn shq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
+
+#[path = "cron/retire.rs"]
+mod retire;
+pub(crate) use retire::{emit_cron_retire, emit_cron_unregister};
+
+#[path = "cron/exec.rs"]
+mod exec;
+pub(crate) use exec::job_path;
+use exec::{run_custom_command, run_script};
 
 #[path = "cron/scheduler.rs"]
 mod scheduler;
@@ -882,90 +847,6 @@ pub(crate) fn emit_cron_register(
     }
     for e in &errors {
         eprintln!("error: {e}");
-    }
-}
-
-pub(crate) fn emit_cron_unregister(job: &str, as_json: bool) {
-    let Some(timer) = timers::registered().into_iter().find(|t| t.job == job) else {
-        // No systemd timer. A launchd agent (macOS) unloads + deletes here directly.
-        if let Some(agent) = launchd::registered().into_iter().find(|a| a.job == job) {
-            match launchd::bootout(&agent.label) {
-                Ok(()) => {
-                    let _ = std::fs::remove_file(&agent.path);
-                    if as_json {
-                        println!(
-                            "{}",
-                            Envelope::success(
-                                "cron_unregister",
-                                serde_json::json!({
-                                    "job": job,
-                                    "unregistered": true,
-                                    "launchd_label": agent.label,
-                                }),
-                            )
-                            .to_json()
-                        );
-                    } else {
-                        println!(
-                            "Unregistered {} ({job}) — unloaded and removed",
-                            agent.label
-                        );
-                    }
-                }
-                Err(e) => fail(&format!("bn cron unregister: {e}")),
-            }
-            return;
-        }
-        // If a Windows task drives it, unregistering lives on the Windows side.
-        let win = winsched::registered().into_iter().find(|w| w.job == job);
-        if as_json {
-            println!(
-                "{}",
-                Envelope::success(
-                    "cron_unregister",
-                    serde_json::json!({
-                        "job": job,
-                        "unregistered": false,
-                        "windows_task": win.map(|w| w.task_name),
-                    }),
-                )
-                .to_json()
-            );
-        } else if let Some(w) = win {
-            println!(
-                "'{job}' is scheduled via Windows Task Scheduler (task '{}').\n\
-                 Disable it from Windows: schtasks.exe /Change /TN \"{}\" /DISABLE",
-                w.task_name, w.task_name
-            );
-        } else {
-            println!("No registered timer for '{job}' — `bn cron` lists what's scheduled");
-        }
-        return;
-    };
-
-    match timers::unregister(&timer.timer_unit) {
-        Ok(()) => {
-            if as_json {
-                println!(
-                    "{}",
-                    Envelope::success(
-                        "cron_unregister",
-                        serde_json::json!({
-                            "job": job,
-                            "unregistered": true,
-                            "timer_unit": timer.timer_unit,
-                        }),
-                    )
-                    .to_json()
-                );
-            } else {
-                println!(
-                    "Unregistered {} ({job}) — stopped and disabled",
-                    timer.timer_unit
-                );
-            }
-        }
-        Err(e) => fail(&format!("bn cron unregister: {e}")),
     }
 }
 

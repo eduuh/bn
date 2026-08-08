@@ -6,6 +6,8 @@ import { prHref, prLabel } from "../lib/board";
 import { Age, FleetCounters } from "./FleetMeta";
 import { HarnessMenu } from "./HarnessMenu";
 import { TaskChip } from "./TaskChip";
+import { PlanStatusBadge } from "./PlanArtifacts";
+import { Badge } from "./ui/badge";
 import { cn } from "../lib/utils";
 
 /** The left tone dot for a row's state — the same scale as the card's tone bar. */
@@ -71,6 +73,11 @@ export function FleetRow({
       <span className="min-w-0 flex-1 truncate font-mono text-sm text-foreground">
         {entry.branch}
       </span>
+      {entry.workType === "setup" && (
+        <Badge variant="info" className="shrink-0">
+          setup
+        </Badge>
+      )}
 
       {/* Fixed-width columns, not a right-packed pile: each field lands at the same x on every row,
           so the list reads down a column instead of forcing a re-scan per line. `sm:contents` keeps
@@ -85,6 +92,9 @@ export function FleetRow({
             density; the card variant says "no task" instead. */}
           <span className="flex w-40 shrink-0 justify-start">
             {entry.task && <TaskChip task={entry.task} className="max-w-full" />}
+          </span>
+          <span className="flex w-28 shrink-0 justify-start">
+            {entry.plan && <PlanStatusBadge status={entry.plan.status} />}
           </span>
           <span className="w-24 shrink-0 truncate text-right text-xs text-muted-foreground">
             {entry.stateLabel}

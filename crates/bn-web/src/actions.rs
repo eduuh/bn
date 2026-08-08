@@ -31,9 +31,19 @@ use serde_json::json;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+#[path = "actions/plan.rs"]
+mod plan;
 #[path = "actions/prompts.rs"]
 mod prompts;
-use prompts::repo_orchestrator_goal;
+#[path = "actions/repo_setup.rs"]
+mod repo_setup;
+#[path = "actions/reviews.rs"]
+mod reviews;
+pub use plan::plan_promote;
+pub use repo_setup::{
+    repo_orchestrate_start, repo_script_write, repo_setup_agent_start, repo_setup_agents_start,
+};
+pub use reviews::review_decide;
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -81,7 +91,7 @@ pub(crate) fn parse_body<T: Default + serde::de::DeserializeOwned>(
 /// A `400` carrying the standard failure envelope — for input the handler rejects before touching
 /// any state or subprocess.
 /// A 500 carrying the standard failure envelope — a write that reached the store and failed there.
-fn server_error(command: &str, code: &str, msg: &str) -> Response {
+pub(crate) fn server_error(command: &str, code: &str, msg: &str) -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(Envelope::failure(command, code, msg)),
@@ -89,7 +99,7 @@ fn server_error(command: &str, code: &str, msg: &str) -> Response {
         .into_response()
 }
 
-fn bad_request(command: &str, code: &str, msg: &str) -> Response {
+pub(crate) fn bad_request(command: &str, code: &str, msg: &str) -> Response {
     (
         StatusCode::BAD_REQUEST,
         Json(Envelope::failure(command, code, msg)),
@@ -1012,212 +1022,12 @@ pub async fn orchestrate_start(
     respond_process(&state, "start", &target, addr, result)
 }
 
-#[derive(Debug, Default, Deserialize)]
-pub struct RepoOrchestrateBody {
-    /// The orchestrator's goal (what backlog to drain / how). Defaults to a repo-issue-draining
-    /// brief when omitted, so the one-click button needs no input.
-    #[serde(default)]
-    pub goal: Option<String>,
-    /// Launch harness — `copilot` (default) or `claude`.
-    #[serde(default)]
-    pub harness: Option<String>,
-}
-
-/// `POST /api/repos/{repo}/orchestrate {goal?, harness?}` (#556) — start a **main-branch**
-/// orchestrator agent for one repo: the long-lived #500/#541 supervisor that spins up + supervises
-/// a fleet to drain the repo's open-issue backlog. Shells out to `bn dispatch --orchestrator --repo
-/// <repo> --yolo` (the orchestrator role model), which pins the agent to the shared planning
-/// cockpit and attributes its run as orchestration work.
-///
-/// **Guarded / idempotent**: if a live orchestrator agent already targets this repo, the start is a
-/// `409` no-op (never a second supervisor for the same repo). The guard reads the live fleet — the
-/// same source the dashboard's Orchestrators tier renders — so what the UI shows and what this
-/// rejects on are one truth.
-pub async fn repo_orchestrate_start(
-    State(state): State<AppState>,
-    MaybeAddr(addr): MaybeAddr,
-    Path(repo): Path<String>,
-    raw: Bytes,
-) -> Response {
-    let cmd = "repo-orchestrate";
-    let repo = repo.trim().to_string();
-    if !valid_repo(&repo) {
-        return bad_request(cmd, "invalid_repo", "repo has invalid characters");
-    }
-    let body: RepoOrchestrateBody = match parse_body(cmd, &raw) {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
-    let Some(harness) = normalize_harness(body.harness.as_deref()) else {
-        return bad_request(cmd, "invalid_harness", "harness must be claude or copilot");
-    };
-
-    // Guard: never start a second orchestrator for a repo that already has a live one. Read the
-    // live fleet (the same supervise pass the dashboard's Orchestrators tier renders from).
-    let cfg = state.cfg.clone();
-    let repo_key = repo.to_ascii_lowercase();
-    let already = tokio::task::spawn_blocking(move || {
-        let fleet = bn_core::agent::supervise(
-            &cfg,
-            bn_core::agent::DEFAULT_IDLE_MINS,
-            bn_core::agent::DEFAULT_STUCK_MINS,
-        );
-        fleet.agents.iter().any(|a| {
-            a.repo.eq_ignore_ascii_case(&repo_key)
-                && a.role == bn_core::agent::AgentRole::Orchestrator
-        })
-    })
-    .await
-    .unwrap_or(false);
-    if already {
-        return conflict(
-            cmd,
-            "already_running",
-            &format!("an orchestrator is already running for '{repo}'"),
-        );
-    }
-
-    // An explicit brief overrides the Markdown-owned default backlog-drain goal.
-    let goal = match body
-        .goal
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-    {
-        Some(goal) => goal,
-        None => match repo_orchestrator_goal(&state.cfg, &repo) {
-            Ok(goal) => goal,
-            Err(error) => return server_error(cmd, "prompt_error", &error),
-        },
-    };
-
-    // Fixed template — only validated fields are interpolated, each a distinct argv element. `--`
-    // ends option parsing so the free-text goal is always the positional item, never a flag.
-    let args = vec![
-        "dispatch".to_string(),
-        "--repo".to_string(),
-        repo.clone(),
-        "--orchestrator".to_string(),
-        "--agent".to_string(),
-        harness.to_string(),
-        "--yolo".to_string(),
-        "--".to_string(),
-        goal,
-    ];
-    // Declare the target as this dispatch's session (cross-repo-session guard exemption); the
-    // orchestrator itself runs in the target repo, so its own re-dispatches stay in-session too.
-    let result = run_bn_env(
-        args,
-        None,
-        vec![("BN_WORKER_REPO".to_string(), repo.clone())],
-    )
-    .await;
-    respond_process(&state, "repo-orchestrate", &repo, addr, result)
-}
-
 // ---------------------------------------------------------------------------
 // Plan-reviews (#349)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Default, Deserialize)]
-pub struct ReviewDecisionBody {
-    /// `approve` | `request_changes` | `reject` (hyphen spellings also accepted).
-    #[serde(default)]
-    pub action: String,
-    /// Reviewer notes — required for `request_changes`, sent back to the agent.
-    #[serde(default)]
-    pub notes: Option<String>,
-}
-
-/// `POST /api/reviews/:id {action, notes?}` — the human's plan-review decision from the dashboard
-/// (#349). A native in-process write over `bn_core::plan_review::decide` (locked read-modify-write,
-/// like the orchestrate queue mutations), authed by the token middleware and audited as a
-/// `web_action`. `approve` unblocks the paused agent, `request_changes` sends the notes back,
-/// `reject` stops it. The agent's own `bn review status` poll picks up the decision.
-pub async fn review_decide(
-    State(state): State<AppState>,
-    MaybeAddr(addr): MaybeAddr,
-    Path(id): Path<String>,
-    raw: Bytes,
-) -> Response {
-    let cmd = "review-decide";
-    let body: ReviewDecisionBody = match parse_body(cmd, &raw) {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
-    let id = id.trim().to_string();
-    // Review ids are `r<N>` — a tight allowlist keeps a bogus path segment out of the store lookup.
-    if id.is_empty() || id.len() > 32 || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
-        return bad_request(
-            cmd,
-            "invalid_id",
-            "review id must be alphanumeric (e.g. r1)",
-        );
-    }
-    let Some(decision) = bn_core::plan_review::Decision::parse(&body.action) else {
-        return bad_request(
-            cmd,
-            "invalid_action",
-            "action must be approve | request_changes | reject",
-        );
-    };
-    let notes = body
-        .notes
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    let now = bn_core::util::now_epoch_secs();
-    let action_label = format!(
-        "review-{}",
-        body.action.trim().to_lowercase().replace('_', "-")
-    );
-
-    let id_for_call = id.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        bn_core::plan_review::decide(&id_for_call, decision, notes.as_deref(), now)
-    })
-    .await;
-
-    match result {
-        Ok(Ok(review)) => {
-            audit::record(&state, &action_label, &id, addr, true);
-            Json(Envelope::success(
-                cmd,
-                bn_core::payload::plan_review_data(&review),
-            ))
-            .into_response()
-        }
-        Ok(Err(e)) => {
-            use bn_core::plan_review::DecideError;
-            audit::record(&state, &action_label, &id, addr, false);
-            match e {
-                DecideError::NotFound(_) => not_found_json(cmd, &e.to_string()),
-                DecideError::MissingNotes => bad_request(cmd, "missing_notes", &e.to_string()),
-                DecideError::EmptyPlan => bad_request(cmd, "empty_plan", &e.to_string()),
-                // Already decided / awaiting the agent's revision — a conflict, not a bad request.
-                DecideError::NotPending { .. } => (
-                    StatusCode::CONFLICT,
-                    Json(Envelope::failure(cmd, "not_pending", e.to_string())),
-                )
-                    .into_response(),
-                DecideError::Io(_) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(Envelope::failure(cmd, "io", e.to_string())),
-                )
-                    .into_response(),
-            }
-        }
-        Err(e) => {
-            audit::record(&state, &action_label, &id, addr, false);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(Envelope::failure(cmd, "join_error", e.to_string())),
-            )
-                .into_response()
-        }
-    }
-}
-
 /// A `404` carrying the standard failure envelope — for a plan-review id that matches no record.
-fn not_found_json(cmd: &str, msg: &str) -> Response {
+pub(crate) fn not_found_json(cmd: &str, msg: &str) -> Response {
     (
         StatusCode::NOT_FOUND,
         Json(Envelope::failure(cmd, "not_found", msg)),

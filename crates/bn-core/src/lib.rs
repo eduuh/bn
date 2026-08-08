@@ -79,6 +79,7 @@ pub mod orchestrate;
 pub mod palette;
 pub mod payload;
 pub mod pipeline;
+pub mod plan;
 pub mod plan_review;
 pub mod pool;
 pub mod pr_observe;

@@ -723,6 +723,7 @@ pub(crate) fn plan_gate_seed(
         ("session_id", ctx.sid.to_string()),
         ("reviewers", ctx.reviewers.to_string()),
         ("quorum", ctx.quorum.to_string()),
+        ("plan_file", ctx.plan_file.unwrap_or("plan.md").to_string()),
         ("verification_requirement", verification_requirement),
     ] {
         args.insert(name.into(), serde_json::Value::String(value));
@@ -744,6 +745,7 @@ pub(crate) struct PlanGateContext<'a> {
     pub(crate) verify: bool,
     pub(crate) reviewers: usize,
     pub(crate) quorum: usize,
+    pub(crate) plan_file: Option<&'a str>,
 }
 
 fn append_plan_gate(
@@ -1845,6 +1847,18 @@ pub(crate) fn run_dispatch(
             // Pin a session id so `bn agent send` can steer this exact agent via `-p --resume`, and
             // record it after this launch wins the per-worktree lease.
             let sid = gen_uuid();
+            let plan_path = if plan_gate && !pipeline_investigate {
+                Some(bn_core::plan::init_agent(cfg, &target, &sid).unwrap_or_else(|error| {
+                    fail_json(
+                        json,
+                        "dispatch",
+                        "plan-file",
+                        &format!("bn dispatch: cannot create plan draft: {error}"),
+                    )
+                }))
+            } else {
+                None
+            };
             // Attribute this run's work-class (#381) so `bn cost` categorizes it once the harness
             // session is ingested, and (#500) so the live fleet stamps its role. A scout is
             // research; an `--orchestrator` monitor is orchestration (which the dashboard pins as a
@@ -1884,10 +1898,19 @@ pub(crate) fn run_dispatch(
             };
             // Fold the coding-standards references (#623) and the branch's standing directives
             // (`bn agent instruct`) into the seed. See `seed_context::section`.
-            let seed = format!(
+            let mut seed = format!(
                 "{seed}{}",
                 super::seed_context::section(cfg, &repo, &branch, scout, refs)
             );
+            if let Some(path) = &plan_path {
+                seed.push_str(&format!(
+                    "\n\n## Plan artifact\n\nWrite the proposed plan Markdown directly to this bn-owned draft file, not to branch-note todo/done-when items:\n\n```text\n{}\n```\n\nWhen submitting for plan review, submit this exact file.\n",
+                    path.display()
+                ));
+            }
+            let plan_file_s = plan_path
+                .as_ref()
+                .map(|path| path.display().to_string());
             // Append the concrete plan-review-gate protocol (#349) last, so it's the authoritative
             // final instruction: register a plan, poll, and don't ship until approved.
             let seed = append_plan_gate(
@@ -1903,6 +1926,7 @@ pub(crate) fn run_dispatch(
                     verify,
                     reviewers: cfg.dispatch_plan_reviewers,
                     quorum: cfg.dispatch_plan_review_quorum,
+                    plan_file: plan_file_s.as_deref(),
                 },
             )
             .unwrap_or_else(|error| {
@@ -2165,6 +2189,10 @@ pub(crate) fn run_dispatch(
             } else {
                 agent_lease::mark_window(reservation.lease());
                 reservation.commit();
+                if let Some(path) = &plan_path {
+                    let split_session = launch_session.unwrap_or(&repo);
+                    let _ = wt::open_plan_split(split_session, &window_name, path);
+                }
             }
             tmux_opened = agent_launched;
             if agent_launched {

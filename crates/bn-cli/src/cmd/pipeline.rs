@@ -23,6 +23,8 @@ use bn_core::plan_review::{Review, ReviewStatus};
 use bn_core::rollups::BranchNote;
 
 mod status_render;
+mod plan_agent;
+use plan_agent::append_plan_gate_seed;
 use status_render::{render_pipeline, render_pipeline_list, terminal_width};
 mod target;
 use target::{current_stage, resolve_target};
@@ -523,6 +525,8 @@ fn launch_plan_agent(
     let sid = gen_uuid();
     let window = plan_window_name(&ctx.branch, &sid);
     let tmux_target = format!("{}:{window}", ctx.repo);
+    let plan_path = bn_core::plan::init_agent(cfg, ctx, &sid)
+        .unwrap_or_else(|error| fail(&format!("bn pipeline plan: cannot create plan draft: {error}")));
     let mut plan_args = serde_json::Map::new();
     plan_args.insert("topic".into(), serde_json::Value::String(goal.to_string()));
     let workflow = bn_core::skills::render_required(cfg, &wt_path, "plan", Some(&plan_args))
@@ -541,34 +545,13 @@ fn launch_plan_agent(
         Some(&envelope_args),
     )
     .unwrap_or_else(|error| fail(&format!("bn pipeline plan: {error}")));
+    seed.push_str(&format!(
+        "\n\n## Plan artifact\n\nWrite the plan Markdown directly to this bn-owned draft file, not to branch-note todo/done-when items:\n\n```text\n{}\n```\n\nKeep `note.md` as an index/status file only.\n",
+        plan_path.display()
+    ));
+    let plan_path_s = plan_path.display().to_string();
     if let Ok(note) = bn_core::store::read(&cfg.note_file(ctx)) {
-        let plan_gate = note
-            .front
-            .decisions
-            .iter()
-            .any(|item| item.text.starts_with("gate: plan-review"));
-        let verify = note
-            .front
-            .decisions
-            .iter()
-            .any(|item| item.text.starts_with("gate: run `bn verify`"));
-        if plan_gate {
-            seed.push_str(
-                &plan_gate_seed(
-                cfg,
-                &wt_path,
-                PlanGateContext {
-                    repo: &ctx.repo,
-                    branch: &ctx.branch,
-                    sid: &sid,
-                    verify,
-                    reviewers: cfg.dispatch_plan_reviewers,
-                    quorum: cfg.dispatch_plan_review_quorum,
-                },
-                )
-                .unwrap_or_else(|error| fail(&format!("bn pipeline plan: {error}"))),
-            );
-        }
+        append_plan_gate_seed(cfg, ctx, &wt_path, &sid, &plan_path_s, &note, &mut seed);
     }
     let Some(seed_file) = wt::prompt_to_file("pipeline-plan", &ctx.repo, &ctx.branch, &seed) else {
         return false;
@@ -628,6 +611,7 @@ fn launch_plan_agent(
     } else {
         agent_lease::mark_window(reservation.lease());
         reservation.commit();
+        let _ = wt::open_plan_split(&ctx.repo, &window, &plan_path);
     }
     launched
 }

@@ -74,6 +74,11 @@ export function FleetEntryCard({
             ◆ Orchestrator
           </Badge>
         )}
+        {entry.workType === "setup" && (
+          <Badge variant="info" className="shrink-0">
+            Repo setup
+          </Badge>
+        )}
         <Badge variant={toneVariant(entry.tone)} className="shrink-0">
           {entry.statusLabel}
         </Badge>

@@ -1,20 +1,22 @@
 ---
 name: execute
 description: Pipeline EXECUTE stage — burn the approved plan down to its done-when criteria and open a PR, verifying as you go
-when: A pipeline's Execute stage is dispatched after its plan was approved — the reviewed plan already exists in the note and it's time to build it, verify it, and open a PR. The `plan-work` loop specialized for the pipeline.
+when: A pipeline's Execute stage is dispatched after its plan was approved — the reviewed plan already exists in `plans/active.md` (or legacy note sections during migration) and it's time to build it, verify it, and open a PR. The `plan-work` loop specialized for the pipeline.
 keywords: [execute, execute stage, pipeline execute, build the plan, burn down, plan-work, ship, open a pr, verify, done-when]
 arguments:
   - { name: continuous, description: "If truthy (true/yes/1), loop through every todo autonomously; otherwise do the next todo and stop.", required: false }
 ---
 You are the **Execute** stage of the task pipeline (issue #649): burn the **already-approved**
-plan in the branch note down to its done-when criteria, then open a PR. The plan is the contract —
-you follow it, you don't re-plan. This is the `plan-work` loop as the pipeline's build stage: it
+active plan artifact down to its done-when criteria, then open a PR. The plan is the contract — you
+follow it, you don't re-plan. This is the `plan-work` loop as the pipeline's build stage: it
 inherits the approved plan's context and produces a verified change plus a PR the `critique` stage
 reads. If the plan turns out to be wrong, say so and stop — don't silently improvise a new one.
 
-1. **Load the approved plan.** Call `bn_cat`. Read the Goal, the `done-when` criteria (your
-   definition of finished), the open todos, and any decisions/blockers. If there are no todos,
-   there's no plan yet — stop and recommend the `plan-investigate` stage first.
+1. **Load the approved plan.** Run `bn plan status`. If `plans/active.md` exists, read that
+   Markdown file and treat it as the contract. Also call `bn_cat` for branch-note
+   status/blockers/decisions. If no active plan file exists, fall back to the legacy note
+   `done-when`/todo sections during migration; if neither exists, stop and recommend the
+   `plan-investigate` stage first.
 
 2. **Take the next todo.** Pick the top open todo and implement exactly it — nothing speculative,
    nothing adjacent. Match the surrounding code; touch only what the todo needs. Every changed line

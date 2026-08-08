@@ -192,8 +192,7 @@ pub(crate) fn run_verify_gate(
     cargo_target_dir: Option<&std::path::Path>,
 ) -> Result<i32, String> {
     let _slot = build_slot(&gate.label(), cwd);
-    let home = std::env::var("HOME").unwrap_or_default();
-    let path = std::env::var("PATH").unwrap_or_default();
+    let gate_path = crate::cmd::cron::job_path();
     let aggregate = gate.targets.len() > 1;
 
     for target in &gate.targets {
@@ -215,8 +214,7 @@ pub(crate) fn run_verify_gate(
                 Some((run_path, script.clone()))
             }
         };
-        cmd.current_dir(cwd)
-            .env("PATH", format!("{home}/.local/bin:{home}/.bin:{path}"));
+        cmd.current_dir(cwd).env("PATH", &gate_path);
         if let Some(target_dir) = cargo_target_dir {
             cmd.env("CARGO_TARGET_DIR", target_dir);
         }
@@ -298,9 +296,7 @@ pub(crate) fn run_ui_gate_if_changed(dir: &std::path::Path, stream: bool) -> i32
 /// *after* [`run_verify_gate`] has released, so it is a second build rather than a nested one.
 fn run_ui_gate(root: &std::path::Path, stream: bool) -> i32 {
     let _slot = build_slot("ui", root);
-    let home = std::env::var("HOME").unwrap_or_default();
-    let path = std::env::var("PATH").unwrap_or_default();
-    let full_path = format!("{home}/.local/bin:{home}/.bin:{path}");
+    let full_path = crate::cmd::cron::job_path();
     eprintln!("→ bn-web UI gate (crates/bn-web/ui changed): npm ci → build → vitest [#505]");
     for step in bn_core::verify_ui::ui_gate_steps() {
         eprintln!("  $ npm {}", step.args.join(" "));
@@ -399,4 +395,41 @@ pub(crate) fn emit_verify(cfg: &Config, job: Option<String>, as_json: bool, skip
         println!("verify {job_name}: FAIL ✗ (recorded to note)");
     }
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A verify gate runs the user's own script, which routinely shells out to `bn`. It must get
+    /// the same PATH every other job process gets — the one whose leading entry is bn's own
+    /// directory. Re-deriving `~/.local/bin:~/.bin:$PATH` here is what left staff gathers exiting
+    /// 127 under the scheduler, so assert the shared prelude rather than an equivalent-looking
+    /// string.
+    #[test]
+    fn the_verify_gate_runs_under_the_shared_job_path() {
+        let _lock = bn_core::test_support::env_lock();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", temp.path().join("state"));
+        let observed = temp.path().join("path.txt");
+        let gate = VerifyGate {
+            targets: vec![VerifyTarget::Command {
+                label: "echo-path".to_string(),
+                cmd: format!("printf %s \"$PATH\" > {}", observed.display()),
+            }],
+        };
+
+        let code = run_verify_gate(&gate, temp.path(), false, None).expect("gate runs");
+
+        assert_eq!(code, 0, "the echo-path gate should succeed");
+        let path = std::fs::read_to_string(&observed).expect("gate wrote its PATH");
+        assert_eq!(path, crate::cmd::cron::job_path());
+        let exe_dir = std::env::current_exe()
+            .expect("current exe")
+            .parent()
+            .expect("exe dir")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(path.split(':').next(), Some(exe_dir.as_str()));
+    }
 }

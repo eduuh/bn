@@ -9,10 +9,16 @@ use bn_core::queue::kind::ExecSpec;
 
 /// A short text summary of the crons currently in a chronic-failure state — the health half of the
 /// attention agent's packet, and the watchdog's raise set.
-fn failing_cron_lines() -> Vec<String> {
+fn failing_cron_lines(cfg: &Config, ctx: Option<&Resolved>) -> Vec<String> {
     let runs = bn_core::events::cron_status();
-    bn_core::crons::alerting_crons(&runs, bn_core::crons::ALERT_MIN_FAILURES)
-        .iter()
+    let live = bn_core::crons::LiveJobs::discover(cfg, ctx);
+    bn_core::crons::alerting_crons(
+        &runs,
+        bn_core::crons::ALERT_MIN_FAILURES,
+        &live,
+        bn_core::util::now_epoch_secs(),
+    )
+    .iter()
         .map(|s| {
             format!(
                 "cron '{}' is failing — {}/{} runs failed (last exit {})",
@@ -118,11 +124,18 @@ fn enqueue_repair_agent(
 /// item for every cron in a chronic-failure state (see [`bn_core::crons::alerting_crons`]) with the
 /// job name as the dedupe key, and — via `replace=true` — auto-acks the alert for any cron that has
 /// since recovered. It also mints one keyed repair task and queues one autonomous repair agent per
-/// failing cron, so the captured error turns into work instead of only a dashboard row.
-pub(crate) fn job_cron_health(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
+/// failing cron, so the captured error turns into work instead of only a dashboard row — except
+/// for a cron nothing can resolve, where the repair prompt's `bn run <job>` has nothing to run.
+pub(crate) fn job_cron_health(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
     use bn_core::clock::Clock;
     let runs = bn_core::events::cron_status();
-    let alerting = bn_core::crons::alerting_crons(&runs, bn_core::crons::ALERT_MIN_FAILURES);
+    let live = bn_core::crons::LiveJobs::discover(cfg, ctx);
+    let alerting = bn_core::crons::alerting_crons(
+        &runs,
+        bn_core::crons::ALERT_MIN_FAILURES,
+        &live,
+        bn_core::util::now_epoch_secs(),
+    );
     let details: Vec<_> = alerting
         .iter()
         .filter_map(|status| bn_core::events::last_run(&status.job).map(|detail| (*status, detail)))
@@ -155,6 +168,13 @@ pub(crate) fn job_cron_health(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
         match ensure_repair_task(cfg, status, Some(output_tail), &today) {
             Some(task_id) => {
                 repair_tasks += 1;
+                // An unresolvable job is still worth a person's attention row, but dispatching an
+                // autonomous agent at it only burns a worktree: the prompt tells that agent to
+                // reproduce with `bn run <job>`, which cannot resolve, so it can only ever report
+                // the same nothing. Retirement (the horizon) clears the row; this stops the spend.
+                if !live.contains(&status.job) {
+                    continue;
+                }
                 match enqueue_repair_agent(status, &task_id, Some(output_tail)) {
                     Ok(added) => queued_repairs += added,
                     Err(error) => repair_errors.push(format!("{}: {error}", status.job)),
@@ -275,7 +295,7 @@ pub(crate) fn job_attention_agent(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
         &today,
         bn_core::today_agent::DEFAULT_LOOKBACK_DAYS,
     );
-    let health = failing_cron_lines();
+    let health = failing_cron_lines(cfg, ctx);
 
     // Guardrail: never spend a model call on an empty packet.
     if findings_packet_empty(&findings) && health.is_empty() {

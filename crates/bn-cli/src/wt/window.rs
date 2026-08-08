@@ -445,6 +445,30 @@ pub(crate) fn open_worktree_window_cmd_named_quiet(
     )
 }
 
+/// Open a note-owned plan artifact beside an existing agent window. This is intentionally a split,
+/// not a popup: plan mode wants the Markdown plan visible while the agent keeps running.
+pub(crate) fn open_plan_split(session: &str, window_name: &str, plan_path: &Path) -> bool {
+    let target = format!("={session}:{window_name}");
+    let Some(dir) = plan_path.parent() else {
+        return false;
+    };
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
+    let cmd = format!(
+        "exec {} {}",
+        crate::wt::shq(&editor),
+        crate::wt::shq(&plan_path.display().to_string())
+    );
+    tmux_run(&[
+        "split-window",
+        "-h",
+        "-t",
+        &target,
+        "-c",
+        &dir.display().to_string(),
+        &cmd,
+    ])
+}
+
 #[allow(clippy::too_many_arguments)]
 fn open_worktree_window_cmd_impl(
     repo: &str,

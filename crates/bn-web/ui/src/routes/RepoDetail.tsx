@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -9,16 +9,32 @@ import {
   CircleDot,
   DollarSign,
   ExternalLink,
+  FileCode,
   Flame,
   GitFork,
   Rocket,
   Users,
+  Wrench,
 } from "lucide-react";
-import { actionsQuery, fleetQuery, reposQuery, repoIssuesQuery } from "../api/client";
-import { startRepoOrchestrator } from "../api/writes";
+import {
+  actionsQuery,
+  fleetQuery,
+  queryKeys,
+  reposQuery,
+  repoIssuesQuery,
+  repoScriptQuery,
+} from "../api/client";
+import { saveRepoScript, startRepoOrchestrator, startRepoSetupAgent } from "../api/writes";
 import { useAppMutation } from "../hooks/useAppMutation";
 import { affects } from "../lib/invalidation";
-import type { ActionItem, LiveAgent, RepoIssue, RepoPool, RepoSession } from "../api/types";
+import type {
+  ActionItem,
+  LiveAgent,
+  RepoIssue,
+  RepoPool,
+  RepoSession,
+  RepoSetup,
+} from "../api/types";
 import { useNow } from "../hooks/useNow";
 import { timeAgo, fmtTokens, fmtAic, fmtUsd } from "../lib/format";
 import { prHref, prLabel, jumpCommand } from "../lib/board";
@@ -251,6 +267,148 @@ function OrchestratorPanel({ repo, agents }: { repo: string; agents: LiveAgent[]
         </Card>
       )}
     </section>
+  );
+}
+
+function SetupPanel({
+  repo,
+  setup,
+  agents,
+}: {
+  repo: string;
+  setup: RepoSetup;
+  agents: LiveAgent[];
+}) {
+  const [scriptName, setScriptName] = useState(setup.scripts[0]?.name ?? "build");
+  const running = agents.find(
+    (a) =>
+      a.repo.toLowerCase() === repo.toLowerCase() &&
+      (a.task_name === "repo-setup" || a.task_name?.startsWith("repo-setup:")),
+  );
+  const start = useAppMutation({
+    mutationFn: () => startRepoSetupAgent(repo),
+    invalidates: affects.agentLaunch,
+    toast: { success: `Starting repo setup for ${repo}…`, error: "Could not start setup" },
+  });
+  const tone = setup.needs_setup ? "warn" : "ok";
+
+  return (
+    <section className="space-y-3">
+      <SectionHead icon={Wrench} title="Repo setup" />
+      <Card className="space-y-3 p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant={tone}>{setup.status}</Badge>
+          <span className="text-sm text-muted-foreground">
+            bn build / verify scripts for this repo
+          </span>
+          <span className="flex-1" />
+          {running ? (
+            <>
+              <Button asChild variant="secondary" size="sm">
+                <Link to="/fleet">Watch in Fleet</Link>
+              </Button>
+              <Button asChild size="sm">
+                <Link to={`/agents/${encodeURIComponent(running.session_id)}`}>
+                  Open setup agent
+                </Link>
+              </Button>
+            </>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              disabled={start.isPending}
+              onClick={() => {
+                if (window.confirm(`Start a repo setup agent for ${repo}?`)) start.mutate();
+              }}
+            >
+              <Rocket className="h-4 w-4" /> {start.isPending ? "starting…" : "Start setup agent"}
+            </Button>
+          )}
+        </div>
+
+        {setup.reasons.length > 0 && (
+          <ul className="space-y-1 text-sm text-muted-foreground">
+            {setup.reasons.map((reason) => (
+              <li key={reason}>• {reason}</li>
+            ))}
+          </ul>
+        )}
+
+        <div className="grid gap-2 sm:grid-cols-3">
+          {setup.scripts.map((script) => (
+            <button
+              key={script.name}
+              type="button"
+              onClick={() => setScriptName(script.name)}
+              className={cn(
+                "rounded-md border border-border bg-muted/30 p-2 text-left transition-colors hover:bg-accent/40",
+                scriptName === script.name && "border-primary/50 bg-accent/40",
+              )}
+            >
+              <div className="flex items-center gap-1.5">
+                <FileCode className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="font-mono text-xs font-semibold">{script.name}</span>
+                <span className="flex-1" />
+                <Badge variant={script.needs_setup ? "warn" : "muted"}>
+                  {script.scope ?? "missing"}
+                </Badge>
+              </div>
+              <div
+                className="mt-1 truncate text-xs text-muted-foreground"
+                title={script.path ?? script.repo_path}
+              >
+                {script.path ?? "not defined"}
+              </div>
+            </button>
+          ))}
+        </div>
+
+        <RepoScriptEditor repo={repo} name={scriptName} />
+
+        <div className="text-xs text-muted-foreground">
+          verify:{" "}
+          {setup.verify.mode === "command"
+            ? setup.verify.command
+            : setup.verify.jobs.length > 0
+              ? setup.verify.jobs.join(" + ")
+              : "missing"}
+        </div>
+      </Card>
+    </section>
+  );
+}
+
+function RepoScriptEditor({ repo, name }: { repo: string; name: string }) {
+  const script = useQuery(repoScriptQuery(repo, name));
+  const [content, setContent] = useState("");
+  useEffect(() => {
+    setContent(script.data?.content ?? "#!/bin/sh\nset -eu\n\n");
+  }, [script.data?.content, name]);
+  const save = useAppMutation({
+    mutationFn: () => saveRepoScript(repo, name, content),
+    invalidates: [queryKeys.repoScript(repo, name), queryKeys.repos],
+    toast: { success: `Saved ${name}.sh`, error: `Could not save ${name}.sh` },
+  });
+  return (
+    <div className="space-y-2 rounded-md border border-border bg-muted/20 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-mono text-xs font-semibold">{name}.sh</span>
+        {script.data?.scope && <Badge variant="muted">{script.data.scope}</Badge>}
+        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+          saves to {script.data?.repo_path ?? "repo jobs directory"}
+        </span>
+        <Button type="button" size="sm" disabled={save.isPending} onClick={() => save.mutate()}>
+          {save.isPending ? "saving…" : "Save"}
+        </Button>
+      </div>
+      <textarea
+        value={content}
+        onChange={(e) => setContent(e.target.value)}
+        spellCheck={false}
+        className="min-h-48 w-full resize-y rounded-md border border-border bg-background p-2 font-mono text-xs outline-none focus:ring-2 focus:ring-ring"
+      />
+    </div>
   );
 }
 
@@ -507,6 +665,8 @@ export function RepoDetail() {
               ))}
             </div>
           </header>
+
+          <SetupPanel repo={rollup.repo} setup={rollup.setup} agents={agents} />
 
           <OrchestratorPanel repo={rollup.repo} agents={agents} />
 

@@ -480,6 +480,44 @@ pub fn last_run(job: &str) -> Option<CronRunDetail> {
         .map(|e| run_detail(&e))
 }
 
+/// The event kind that tombstones a cron name — see [`retire_cron`].
+pub const CRON_RETIRED: &str = "cron_retired";
+
+/// Record that `job` is gone on purpose, not broken.
+///
+/// The event log is otherwise append-only history with no way to say "this name will never run
+/// again", so a renamed or deleted cron's failures sit there looking like an ongoing outage. This
+/// is the explicit tombstone: an operator asserting the name is retired, stamped so the assertion
+/// can be dated and undone by the job simply running again.
+pub fn retire_cron(job: &str, reason: Option<&str>) -> std::io::Result<()> {
+    let mut fields = Map::new();
+    fields.insert("job".into(), json!(job));
+    if let Some(reason) = reason.map(str::trim).filter(|r| !r.is_empty()) {
+        fields.insert("reason".into(), json!(reason));
+    }
+    append(CRON_RETIRED, fields)
+}
+
+/// When each tombstoned job was retired (latest tombstone per name).
+///
+/// A tombstone is an assertion about the past, so it is not permanent: a name that runs *after* it
+/// was retired is live again, and callers compare against the run timestamp rather than treating
+/// membership as final. That way reviving a job needs no un-retire command — running it is enough.
+pub fn retired_crons() -> HashMap<String, i64> {
+    let mut out: HashMap<String, i64> = HashMap::new();
+    for ev in read_all() {
+        if ev.kind != CRON_RETIRED {
+            continue;
+        }
+        let Some(job) = field_str(&ev, "job") else {
+            continue;
+        };
+        let at = out.entry(job).or_insert(ev.ts);
+        *at = (*at).max(ev.ts);
+    }
+    out
+}
+
 /// The most recent failed (`exit_code != 0`) cron runs, newest first, capped at `limit`. Backs
 /// `bn cron failures` — the detail behind the failure counts in `bn cron status`.
 pub fn recent_failures(limit: usize) -> Vec<CronRunDetail> {

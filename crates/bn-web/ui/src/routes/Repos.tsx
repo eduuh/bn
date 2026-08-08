@@ -1,8 +1,13 @@
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, ExternalLink, Flame, Minus, Plus } from "lucide-react";
+import { ChevronRight, ExternalLink, Flame, Minus, Plus, Wrench } from "lucide-react";
 import { reposQuery } from "../api/client";
-import { setRepoPool, warmRepoPool } from "../api/writes";
+import {
+  setRepoPool,
+  startNeededRepoSetupAgents,
+  startRepoSetupAgent,
+  warmRepoPool,
+} from "../api/writes";
 import { MAX_POOL_SIZE, MIN_POOL_SIZE, type RepoPool, type RepoRollup } from "../api/types";
 import { useAppMutation } from "../hooks/useAppMutation";
 import { affects } from "../lib/invalidation";
@@ -92,6 +97,63 @@ function WarmButton({ repo }: { repo: string }) {
     >
       <Flame className="h-3.5 w-3.5" />
       {mut.isPending ? "queueing…" : "queue warm"}
+    </Button>
+  );
+}
+
+function SetupButton({ repo }: { repo: string }) {
+  const mut = useAppMutation({
+    mutationFn: () => startRepoSetupAgent(repo),
+    invalidates: affects.agentLaunch,
+    toast: { success: `Starting repo setup for ${repo}…`, error: `Could not start ${repo} setup` },
+  });
+  return (
+    <Button
+      type="button"
+      variant="secondary"
+      size="sm"
+      disabled={mut.isPending}
+      title={`Start ${repo}'s setup agent`}
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (window.confirm(`Start a repo setup agent for ${repo}?`)) mut.mutate();
+      }}
+    >
+      <Wrench className="h-3.5 w-3.5" />
+      {mut.isPending ? "starting…" : "setup"}
+    </Button>
+  );
+}
+
+function SetupAllButton({ count }: { count: number }) {
+  const mut = useAppMutation({
+    mutationFn: () => startNeededRepoSetupAgents(),
+    invalidates: affects.agentLaunch,
+    toast: {
+      success: (r) => {
+        const started = Array.isArray((r as { started?: unknown[] }).started)
+          ? (r as { started: unknown[] }).started.length
+          : 0;
+        return started > 0 ? `Started setup for ${started} repos` : "No new setup agents needed";
+      },
+      error: "Could not start repo setup agents",
+    },
+  });
+  if (count === 0) return null;
+  return (
+    <Button
+      type="button"
+      variant="secondary"
+      size="sm"
+      disabled={mut.isPending}
+      title="Start setup agents for every repo currently marked needs setup"
+      onClick={() => {
+        if (window.confirm(`Start setup agents for ${count} repos that need setup?`)) mut.mutate();
+      }}
+    >
+      <Wrench className="h-3.5 w-3.5" />
+      {mut.isPending ? "starting…" : `setup needed (${count})`}
     </Button>
   );
 }
@@ -192,10 +254,10 @@ function PoolStrip({ repo, pool, now }: { repo: string; pool: PolicyRepoPool; no
     <div className="mt-2 flex flex-wrap items-center gap-1.5">
       <Badge
         variant={pool.ready > 0 ? "ok" : "muted"}
-        title="idle warm worker slots ready to lease"
+        title="idle warm slots ready out of configured pool size"
       >
         <Flame className="h-3 w-3" />
-        {pool.ready}/{Math.max(pool.total - 1, 0)} ready
+        {pool.ready}/{pool.total} ready
       </Badge>
       <Tag title="pool-warm is queued automatically on enable, resize, and lease top-up">
         auto queue
@@ -295,6 +357,7 @@ function RepoCard({ repo, now }: { repo: PolicyRepoRollup; now: number }) {
           <Tag>{plural(repo.session_count, "session")}</Tag>
           {repo.open_prs > 0 && <Tag>{plural(repo.open_prs, "PR")}</Tag>}
           {repo.managed && <Tag>managed</Tag>}
+          {repo.setup?.needs_setup && <Tag className="text-warn">needs setup</Tag>}
           {repo.aic != null && <Tag>{fmtAic(repo.aic)} AIC</Tag>}
           {repo.last_activity_ts > 0 && (
             <Tag className="text-muted-foreground/70">{timeAgo(repo.last_activity_ts, now)}</Tag>
@@ -302,6 +365,11 @@ function RepoCard({ repo, now }: { repo: PolicyRepoRollup; now: number }) {
         </div>
       </Link>
       <ForgeLinkRow links={repo.links} />
+      {repo.setup?.needs_setup && (
+        <div className="mt-2 flex justify-end">
+          <SetupButton repo={repo.repo} />
+        </div>
+      )}
       <PoolStrip repo={repo.repo} pool={repo.pool} now={now} />
     </Card>
   );
@@ -326,16 +394,22 @@ export function Repos() {
   const data = repos.data as PolicyReposView | undefined;
   const list = data?.repos ?? [];
   const poolPolicy = data?.pool_policy ?? list[0]?.pool.policy;
+  const setupNeeded = list.filter((repo) => repo.setup?.needs_setup).length;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex flex-none items-baseline gap-3 border-b border-border px-4 py-2.5">
-        <h1 className="font-display text-lg font-semibold tracking-tight text-foreground">Repos</h1>
-        <span className="font-mono text-[11px] tabular-nums text-muted-foreground/70">
-          {repos.isLoading
-            ? "loading…"
-            : `${list.length} repo${list.length === 1 ? "" : "s"} · live`}
-        </span>
+      <header className="flex flex-none items-center gap-3 border-b border-border px-4 py-2.5">
+        <div className="flex min-w-0 flex-1 items-baseline gap-3">
+          <h1 className="font-display text-lg font-semibold tracking-tight text-foreground">
+            Repos
+          </h1>
+          <span className="font-mono text-[11px] tabular-nums text-muted-foreground/70">
+            {repos.isLoading
+              ? "loading…"
+              : `${list.length} repo${list.length === 1 ? "" : "s"} · live`}
+          </span>
+        </div>
+        <SetupAllButton count={setupNeeded} />
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">

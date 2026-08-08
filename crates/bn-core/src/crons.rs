@@ -169,13 +169,110 @@ pub fn job_class(cfg: &Config, ctx: Option<&Resolved>, job: &str) -> CronClass {
 /// transient failures stay quiet, a job that keeps failing does not.
 pub const ALERT_MIN_FAILURES: usize = 3;
 
+/// How long a job that nothing declares may stay silent before the watchdog treats it as retired
+/// rather than broken.
+///
+/// Deliberately longer than the slowest cadence bn ships (weekly), because the recency half of
+/// [`LiveJobs::is_retired`] is what covers natively-implemented jobs: those live in the binary's
+/// dispatch table, not in any manifest [`LiveJobs`] can read, so the only evidence that one is
+/// still scheduled is that it keeps running. A two-week silence clears every real cadence.
+pub const RETIREMENT_HORIZON_SECS: i64 = 14 * 24 * 60 * 60;
+
+const _: () = assert!(
+    RETIREMENT_HORIZON_SECS > 7 * 24 * 60 * 60,
+    "the horizon must clear the slowest shipped cadence (weekly), or a failing weekly cron would \
+     be mistaken for a deleted one and silently stop alerting"
+);
+
+/// The job names this machine can still resolve — every source `bn run` looks in that is written
+/// down somewhere: declared `[[cron]]` entries, agent manifests, and `<job>.sh` scripts — plus any
+/// explicit tombstones ([`crate::events::retire_cron`]).
+///
+/// Native jobs are absent from the live set by construction (their names are a table in the CLI
+/// binary, not data), which is why membership alone never decides retirement — see
+/// [`LiveJobs::is_retired`].
+pub struct LiveJobs {
+    live: std::collections::HashSet<String>,
+    /// Job → when it was tombstoned. Compared against the run timestamp, never used as a final
+    /// verdict, so a revived name needs no un-retire step.
+    retired_at: std::collections::HashMap<String, i64>,
+}
+
+impl LiveJobs {
+    /// Fold the three manifest-backed job sources across the same tiers `bn run` resolves through,
+    /// and read the tombstone log. An unreadable agent catalog is not fatal here: a watchdog that
+    /// went silent because one manifest failed to parse would hide exactly the failures it exists
+    /// to surface, so a broken catalog yields the other two sources and leaves the recency clause
+    /// to do the rest.
+    pub fn discover(cfg: &Config, ctx: Option<&Resolved>) -> Self {
+        let declared = discover(cfg, ctx).into_iter().map(|rc| rc.entry.job);
+        let scripts = list_jobs(cfg, ctx).into_iter().map(|j| j.name);
+        let agents = crate::agents::discover(cfg, ctx)
+            .map(|catalog| catalog.iter().map(|a| a.name.clone()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        Self {
+            live: declared.chain(scripts).chain(agents).collect(),
+            retired_at: crate::events::retired_crons(),
+        }
+    }
+
+    /// Build from an explicit name set — the unit-test seam, so retirement logic is testable
+    /// without a filesystem tier layout or an event log.
+    pub fn from_names<I, S>(names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            live: names.into_iter().map(Into::into).collect(),
+            retired_at: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Add an explicit tombstone, as [`crate::events::retire_cron`] would have. Test seam.
+    pub fn with_tombstone(mut self, job: impl Into<String>, at: i64) -> Self {
+        self.retired_at.insert(job.into(), at);
+        self
+    }
+
+    pub fn contains(&self, job: &str) -> bool {
+        self.live.contains(job)
+    }
+
+    /// Whether `status` describes a job that no longer exists rather than one that is broken.
+    ///
+    /// Two independent routes, because retirement has two sources of truth. The operator can say so
+    /// outright — a tombstone retires the name at once, and only a run *after* it was written
+    /// revives it, so reviving a job needs nothing but running it. Failing that, the watchdog has
+    /// to infer it, and inference needs both clauses: a job bn can still resolve is never retired
+    /// no matter how long it has been quiet, and a job that is still running is never retired no
+    /// matter what does or does not declare it. Both directions fail toward alerting.
+    pub fn is_retired(&self, status: &CronJobStatus, now: i64) -> bool {
+        if let Some(&at) = self.retired_at.get(&status.job) {
+            return status.last_run <= at;
+        }
+        !self.contains(&status.job) && now.saturating_sub(status.last_run) > RETIREMENT_HORIZON_SECS
+    }
+}
+
 /// The chronic cron failures a watchdog should raise: jobs whose *latest* run failed AND which have
 /// accumulated at least `min_failures` total failures (so a `tools-reconcile` that fails every tick
-/// can't rot silently, but a one-off blip stays quiet). Pure over the folded `cron_status` rows so
-/// it's unit-testable without the event log. Preserves input order (most-recent-run first).
-pub fn alerting_crons(runs: &[CronJobStatus], min_failures: usize) -> Vec<&CronJobStatus> {
+/// can't rot silently, but a one-off blip stays quiet), minus the jobs that no longer exist at all
+/// ([`LiveJobs::is_retired`]). Pure over the folded `cron_status` rows so it's unit-testable
+/// without the event log. Preserves input order (most-recent-run first).
+///
+/// `live` is a parameter rather than something this resolves itself so the filter cannot be
+/// forgotten at a call site: every watchdog that raises on cron health has to answer the
+/// does-this-still-exist question to call it.
+pub fn alerting_crons<'a>(
+    runs: &'a [CronJobStatus],
+    min_failures: usize,
+    live: &LiveJobs,
+    now: i64,
+) -> Vec<&'a CronJobStatus> {
     runs.iter()
         .filter(|r| !r.ok && r.failures >= min_failures)
+        .filter(|r| !live.is_retired(r, now))
         .collect()
 }
 
@@ -451,6 +548,102 @@ mod tests {
             last_output: None,
             agents: Vec::new(),
         }
+    }
+
+    /// A chronically-failing status row: latest run failed, enough failures to alert.
+    fn failing(job: &str, last_run: i64) -> CronJobStatus {
+        CronJobStatus {
+            job: job.to_string(),
+            scope: "global".to_string(),
+            repo: None,
+            branch: None,
+            last_run,
+            last_exit: 127,
+            last_duration_ms: 3,
+            ok: false,
+            runs: 7,
+            failures: 7,
+        }
+    }
+
+    const NOW: i64 = 1_800_000_000;
+
+    #[test]
+    fn a_job_that_still_resolves_is_never_retired_however_long_it_has_been_quiet() {
+        let live = LiveJobs::from_names(["quarter-review"]);
+        // A year of silence: a declared job is still a job, so this is "broken", not "gone".
+        let stale = failing("quarter-review", NOW - 365 * 24 * 60 * 60);
+        assert!(!live.is_retired(&stale, NOW));
+        assert_eq!(
+            alerting_crons(&[stale], ALERT_MIN_FAILURES, &live, NOW).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_job_nothing_declares_still_alerts_while_it_keeps_running() {
+        // The native-job case: nothing on disk names `cron-health`, so only its own recency shows
+        // it is still scheduled. Suppressing it here would mute a real, ongoing failure.
+        let live = LiveJobs::from_names::<[&str; 0], &str>([]);
+        let recent = failing("cron-health", NOW - 15 * 60);
+        assert!(!live.is_retired(&recent, NOW));
+        assert_eq!(
+            alerting_crons(&[recent], ALERT_MIN_FAILURES, &live, NOW).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_renamed_job_retires_once_it_is_both_unresolvable_and_silent() {
+        // `task-improve` after the rename to `task-enhance`: its 7/7 failures are frozen in the
+        // event log and it will never run again, so the watchdog must stop raising it.
+        let live = LiveJobs::from_names(["task-enhance"]);
+        let renamed = failing("task-improve", NOW - RETIREMENT_HORIZON_SECS - 1);
+        assert!(live.is_retired(&renamed, NOW));
+        assert!(alerting_crons(&[renamed], ALERT_MIN_FAILURES, &live, NOW).is_empty());
+    }
+
+    #[test]
+    fn retirement_waits_out_the_full_horizon() {
+        // Exactly at the boundary the job is not yet retired — the horizon has to be *exceeded*,
+        // so a weekly cron that fails is never mistaken for a deleted one.
+        let live = LiveJobs::from_names(["task-enhance"]);
+        let at_boundary = failing("task-improve", NOW - RETIREMENT_HORIZON_SECS);
+        assert!(!live.is_retired(&at_boundary, NOW));
+    }
+
+    #[test]
+    fn a_tombstone_retires_a_job_at_once_without_waiting_for_the_horizon() {
+        // The whole point of the explicit form: `task-improve` failed minutes ago, so the recency
+        // clause alone would keep it alerting for a fortnight.
+        let live = LiveJobs::from_names(["task-enhance"]).with_tombstone("task-improve", NOW - 60);
+        let recent = failing("task-improve", NOW - 120);
+        assert!(live.is_retired(&recent, NOW));
+        assert!(alerting_crons(&[recent], ALERT_MIN_FAILURES, &live, NOW).is_empty());
+    }
+
+    #[test]
+    fn running_again_after_a_tombstone_revives_the_job() {
+        // A tombstone is a claim about the past, so a later run overrides it — reviving a name
+        // costs nothing but running it, and a tombstone aimed at the wrong job self-heals on its
+        // next cadence rather than muting it forever.
+        let live = LiveJobs::from_names::<[&str; 0], &str>([]).with_tombstone("revived", NOW - 600);
+        let ran_since = failing("revived", NOW - 60);
+        assert!(!live.is_retired(&ran_since, NOW));
+        assert_eq!(
+            alerting_crons(&[ran_since], ALERT_MIN_FAILURES, &live, NOW).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_healthy_or_barely_failing_cron_never_alerts() {
+        let live = LiveJobs::from_names(["alpha", "beta"]);
+        let mut healthy = failing("alpha", NOW - 60);
+        healthy.ok = true;
+        let mut blip = failing("beta", NOW - 60);
+        blip.failures = ALERT_MIN_FAILURES - 1;
+        assert!(alerting_crons(&[healthy, blip], ALERT_MIN_FAILURES, &live, NOW).is_empty());
     }
 
     fn agent(job: &str) -> AgentScheduleView {

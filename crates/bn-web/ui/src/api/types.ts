@@ -1,6 +1,5 @@
 // Typed viewmodels for the bn-web read API. Every shape here mirrors a `bn-core` payload builder
-// exactly (design §3), so the SSE frames (raw viewmodel) and the REST `Envelope.data` (same
-// viewmodel) share one contract and later pages (#391/#393/#394) inherit correct types.
+// exactly (design §3), so SSE frames and REST envelopes share one contract.
 
 /** The standard bn JSON envelope wrapping every REST response (`bn_core::render::Envelope`). */
 export interface Envelope<T> {
@@ -39,6 +38,10 @@ export interface LiveAgent {
   health: AgentHealth;
   /** Worker vs orchestrator (#500); defaults to `worker` when absent. */
   role?: AgentRole;
+  /** Launch-path work class, when bn launched or adopted this session. */
+  work_class?: WorkClass | null;
+  /** Readable task/workflow name recorded at launch (`bn dispatch --name`, controller name, etc.). */
+  task_name?: string | null;
   turns: number;
   tool_calls: number;
   input_tokens: number;
@@ -57,6 +60,7 @@ export interface LiveAgent {
    * absent on older servers. An agent with no task is a normal state, not an error.
    */
   task?: AgentTask;
+  plan?: import("./plan-types").AgentPlanSummary;
 }
 
 /** `bn_core::agent::AgentTask` — enough of a task to recognize it and link to it. */
@@ -452,122 +456,23 @@ export interface HandoffView {
 
 // --- Repos (GET /api/repos .data) — multi-repo navigation (#495) ---
 
-/** One session (branch) within a repo — a branch note joined to its live agent / dispatch, merged
- * server-side by (repo, note-key branch) — `crate::repos::Session`. */
-export interface RepoSession {
-  repo: string;
-  branch: string;
-  /** The note status (`open`/`closed`/…) or an in-flight orchestrate pane-state; `null` if unknown. */
-  status: string | null;
-  /** PR URL or bare number from the note / dispatched item; `null` when none. */
-  pr: string | null;
-  open_todos: number;
-  blockers: number;
-  /** The checked-out worktree dir, or `null` for a note-only branch. */
-  worktree: string | null;
-  /** The `note.md` path, or `null` for an agent/dispatch with no note yet. */
-  path: string | null;
-  last_activity_ts: number;
-  /** Live-agent session id when a running session backs this branch — enables the detail link. */
-  session_id: string | null;
-  health: AgentHealth | null;
-  /** `repo:branch` tmux target, for the copy-jump on a non-live card. */
-  target: string | null;
-  output_tokens: number;
-  /** A live agent or in-flight dispatch backs this branch (vs. a note-only "recent" session). */
-  in_flight: boolean;
-}
-
-/** A repo's warm-worktree pool state (#497) — the `bn wt pool` shape surfaced on the rollup. Always
- * present; a repo with no pool configured has `enabled:false` and zeroed counts. */
-export interface RepoPool {
-  /** The repo is opted into pooling (`~/.config/wt/pools`). */
-  enabled: boolean;
-  /** Configured slot count (the pool size). */
-  total: number;
-  /** Idle slots warm on disk (a live checkout ready to lease). */
-  warm: number;
-  /** Slots currently leased to a branch. */
-  leased: number;
-  /** Idle slots (`total - leased`) — warm plus not-yet-created. */
-  idle: number;
-  /** Best-effort last-warmed epoch-seconds (newest slot-dir mtime); `null` when no slot exists yet. */
-  last_warmed_ts: number | null;
-  /** Each configured slot's own state — empty for an un-pooled repo. */
-  slots: RepoPoolSlot[];
-}
-
-/** One warm-pool slot, 1-indexed to match its on-disk `_pool/<n>` dir. */
-export interface RepoPoolSlot {
-  n: number;
-  /** Held by a branch (present in the pool's lease store). */
-  leased: boolean;
-  /** The checkout exists on disk — ready to lease without a cold create. */
-  warm: boolean;
-  /** The leased branch, when leased. */
-  branch: string | null;
-  /** The lease holder's recorded `USER`, when leased. */
-  holder: string | null;
-  /** Lease age in seconds, when leased. */
-  age_secs: number | null;
-  /** The slot dir's mtime (epoch secs) — a best-effort "last warmed"; null when not on disk yet. */
-  warmed_ts: number | null;
-}
-
-/** The largest pool a repo may be given — mirrors `bn_core::pool::MAX_POOL_SIZE`. */
-export const MAX_POOL_SIZE = 16;
-
-/** The smallest usable pool — mirrors `bn_core::pool::MIN_POOL_SIZE`. Slot 1 is the controller's
- * reserved slot, so a size of 1 is a pool with no worker; the server refuses it. Shrinking below
- * this unpools the repo rather than being a no-op the writer would silently clamp back up. */
-export const MIN_POOL_SIZE = 2;
-
-/** One repo's rollup — the card in the Repos list — `crate::repos::assemble`. */
-/** The forges whose web layout bn knows. `unknown` still carries a code URL — the remote parsed, its
- * issue / PR paths just aren't ones we can name. */
-export type Forge = "github" | "azure-devops" | "gitlab" | "unknown";
-
-/** Where a repo lives in a browser, derived server-side from its clone's `origin` remote. `issues` /
- * `pulls` are null on a forge whose layout is unknown — bn renders no link rather than a broken one. */
-export interface ForgeLinks {
-  forge: Forge;
-  /** The repo's code page — the one link every recognized remote yields. */
-  repo: string;
-  /** Issues (GitHub / GitLab) or the project's work items (Azure DevOps). */
-  issues: string | null;
-  /** Pull requests, or merge requests on GitLab. */
-  pulls: string | null;
-}
-
-export interface RepoRollup {
-  repo: string;
-  /** In the managed-repos config (`bn managed-repos`). */
-  managed: boolean;
-  active_agents: number;
-  open_prs: number;
-  session_count: number;
-  last_activity_ts: number;
-  /** AIC (real Copilot bill) over the trailing 30d; `null` = no Copilot runs. */
-  aic: number | null;
-  /** $ (API-equiv benchmark) over the trailing 30d; `null` = nothing priceable. */
-  cost_usd: number | null;
-  /** The repo's warm-worktree pool state (#497). */
-  pool: RepoPool;
-  /** Browsable forge pages from the clone's `origin`; `null` when there is no clone on this machine
-   * or its remote doesn't parse. */
-  links: ForgeLinks | null;
-  sessions: RepoSession[];
-}
-
-/** GET /api/repos .data — the local repo inventory: repos with a local bare clone, checked-out
- * worktree, or live/in-flight agent, each with its per-repo rollup + session list. A
- * cloned-but-never-worked-in repo is a 0-session card. */
-export interface ReposView {
-  repos: RepoRollup[];
-  /** Every locally-known repo, alphabetical. The option source for every repo picker, derived from
-   * the same rollups above so a dropdown can never offer a repo the board doesn't know about. */
-  known: string[];
-}
+export {
+  MAX_POOL_SIZE,
+  MIN_POOL_SIZE,
+  type Forge,
+  type ForgeLinks,
+  type RepoPool,
+  type RepoPoolSlot,
+  type RepoRollup,
+  type RepoScriptView,
+  type RepoSession,
+  type RepoSetup,
+  type RepoSetupScript,
+  type RepoSetupStatus,
+  type RepoSetupVerify,
+  type RepoVerifyMode,
+  type ReposView,
+} from "./repo-types";
 
 /** One open GitHub issue for a repo — `bn_core::palette::IssueHit` (#556). */
 export interface RepoIssue {

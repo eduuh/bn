@@ -401,6 +401,11 @@ pub(crate) enum CmdReview {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum CmdPlanning {
+    /// Manage branch-scoped plan artifacts under the bn note directory.
+    Plan {
+        #[command(subcommand)]
+        action: Option<PlanCmd>,
+    },
     /// List investigation files alongside the current note.
     Files,
     /// Active branch notes with their on-disk worktree dirs (JSON for the nvim picker;
@@ -468,6 +473,29 @@ pub(crate) enum CmdPlanning {
         #[arg(long, hide = true)]
         cron: bool,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum PlanCmd {
+    /// Create the plan artifact directories and active plan file.
+    Init,
+    /// Print a plan artifact path.
+    Path {
+        /// Print the active plan path (default).
+        #[arg(long)]
+        active: bool,
+        /// Print/create this agent session's draft plan path.
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// Open the active plan in $EDITOR.
+    Open,
+    /// Show plan artifact status for the current branch.
+    Status,
+    /// Promote a draft relative path or session id to plans/active.md.
+    Promote { draft: String },
+    /// Create plans/active.md from legacy note sections when no plan file exists.
+    Migrate,
 }
 
 #[derive(Subcommand, Debug)]
@@ -728,8 +756,10 @@ pub(crate) enum CmdInsights {
 }
 
 /// The fleet / orchestration command group — see [`crate::cli::fleet_cmd`].
+pub(crate) mod cron_cmd;
 pub(crate) mod fleet_cmd;
 pub(crate) mod queue_cmd;
+pub(crate) use cron_cmd::CronCmd;
 pub(crate) use fleet_cmd::CmdFleet;
 pub(crate) use queue_cmd::QueueCmd;
 
@@ -2985,37 +3015,6 @@ pub(crate) enum HandoffCmd {
         #[arg(long)]
         branch: Option<String>,
     },
-}
-
-#[derive(Subcommand, Debug)]
-pub(crate) enum CronCmd {
-    /// Per-job: next scheduled run + last-run status. Same as bare `bn cron`.
-    Status,
-    /// Show a job's last run — exit, when, duration, and its captured output (including the
-    /// error tail of a failed run): bn cron show <job>.
-    Show { job: String },
-    /// Recent failed runs with their error output: bn cron failures [--limit N].
-    Failures {
-        /// Max failures to show (newest first).
-        #[arg(long, default_value_t = 10)]
-        limit: usize,
-    },
-    /// Stop and unregister the systemd timer driving a job: bn cron unregister <job>.
-    Unregister { job: String },
-    /// Generate + install platform timers from the cron manifests (crons.toml), idempotently:
-    /// adds new timers, updates changed schedules, and removes bn timers no longer present in any
-    /// manifest. The data-driven replacement for hand-editing jobs/systemd/install.sh.
-    Register {
-        /// Print the add/update/remove plan without touching anything.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Compact badge of jobs running right now, for the tmux bar: bn cron running.
-    /// Prints nothing when idle (keeps the bar clean).
-    Running,
-    /// Internal: refresh the Windows-task cache (spawned detached by the dashboard).
-    #[command(hide = true)]
-    RefreshWindows,
 }
 
 #[derive(Subcommand, Debug)]

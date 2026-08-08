@@ -14,6 +14,7 @@ import type {
   QueueItem,
   RunView,
 } from "../api/types";
+import type { AgentPlanSummary } from "../api/plan-types";
 import { agentForItem, healthTone, nonOrchestratedAgents, paneTone, type ChipTone } from "./board";
 
 /** A unified fleet card viewmodel — one running agent (an in-flight orchestrate item joined to its
@@ -29,6 +30,8 @@ export interface FleetEntry {
   harness?: string;
   /** Fleet role (#500) — orchestrators pin to their own top tier; defaults to `worker`. */
   role: AgentRole;
+  /** Workflow type inferred from launch metadata. */
+  workType?: "setup";
   /** One-line human state ("Working", "Waiting: trust prompt", …). */
   stateLabel: string;
   /** Short status chip text. */
@@ -49,6 +52,14 @@ export interface FleetEntry {
   control?: AgentControl;
   /** The task this agent is working on, when one is bound to its worktree. */
   task?: AgentTask;
+  plan?: AgentPlanSummary;
+}
+
+function workTypeFor(a?: LiveAgent): FleetEntry["workType"] {
+  if (!a?.task_name) return undefined;
+  return a.task_name === "repo-setup" || a.task_name.startsWith("repo-setup:")
+    ? "setup"
+    : undefined;
 }
 
 /** Human one-liner for a #340 pane state. */
@@ -119,10 +130,12 @@ function entryFromItem(item: QueueItem, run: RunView, fleet?: FleetView): FleetE
     // Carried from the live agent, not the queue item: the binding lives on the worktree, and the
     // queue item has no idea which task it came from.
     task: agent?.task,
+    plan: agent?.plan,
     harness: item.harness ?? agent?.harness,
     // An orchestrate queue item is always a ship (worker) agent; the orchestrator is the daemon
     // driving the wave, surfaced separately as a live agent below.
     role: "worker",
+    workType: workTypeFor(agent),
     stateLabel: needsReview ? "Waiting: plan review" : paneStateLabel(item.last_state),
     statusLabel: needsReview ? "review" : item.last_state ? item.last_state : "in-flight",
     tone: needsReview ? "amber" : paneTone(item.last_state),
@@ -153,8 +166,10 @@ function entryFromAgent(a: LiveAgent): FleetEntry {
     sessionId: a.session_id,
     control: a.control,
     task: a.task,
+    plan: a.plan,
     harness: a.harness,
     role,
+    workType: workTypeFor(a),
     // An orchestrator runs the wave rather than shipping, so read its health as a fleet-tick signal.
     stateLabel: orchestrator ? orchestratorStateLabel(a) : (HEALTH_LABEL[a.health] ?? a.health),
     statusLabel: orchestrator ? "orchestrator" : a.health,

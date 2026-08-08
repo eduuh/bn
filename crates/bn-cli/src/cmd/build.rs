@@ -36,14 +36,12 @@ pub(crate) fn run_build_cmd(
         );
         return 2;
     };
-    // PATH-prepend like the cron runner so tools the script shells out to (yarn, gh, …) resolve
+    // The cron runner's PATH, so tools the script shells out to (yarn, gh, `bn` itself) resolve
     // under a non-login shell.
-    let home = std::env::var("HOME").unwrap_or_default();
-    let path = std::env::var("PATH").unwrap_or_default();
     match std::process::Command::new("/bin/sh")
         .arg(&script)
         .current_dir(&cwd)
-        .env("PATH", format!("{home}/.local/bin:{home}/.bin:{path}"))
+        .env("PATH", crate::cmd::cron::job_path())
         .status()
     {
         Ok(s) => s.code().unwrap_or(1),
