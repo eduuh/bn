@@ -1,4 +1,4 @@
-//! Host registry for native SSH (`bn connect`, `bn dispatch --host`). `~/.ssh/config` is the
+//! Host registry for native SSH (`bn connect`). `~/.ssh/config` is the
 //! source of truth for connection details; the config.toml `[hosts]` table only adds what ssh
 //! config can't express (where worktrees live on that box, the default agent harness, whether
 //! `bn` is installed there). Resolution: enumerate `Host` stanzas (wildcards and `Match` blocks
@@ -30,8 +30,7 @@ pub struct Host {
     pub user: Option<String>,
     /// `Port` from the stanza, if set and numeric.
     pub port: Option<u16>,
-    /// Whether the alias has a `[hosts.<alias>]` entry — the trust registration
-    /// `bn dispatch --host` requires.
+    /// Whether the alias has a `[hosts.<alias>]` entry — the trust registration for managed peers.
     pub registered: bool,
     pub extra: HostExtra,
 }

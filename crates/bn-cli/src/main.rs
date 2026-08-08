@@ -40,6 +40,7 @@ mod winsched;
 #[rustfmt::skip]
 mod wt;
 mod wt_pool;
+mod wt_pool_refresh;
 
 // The clap command surface (the `Command` enum + every `*Cmd` subcommand enum) lives in `cli`;
 // glob-re-export it so `main()` and the `Cli` parser struct see the variants by bare name.
@@ -88,7 +89,6 @@ pub(crate) use cmd::quarter::*;
 pub(crate) use cmd::recall::*;
 pub(crate) use cmd::references::*;
 pub(crate) use cmd::release::*;
-pub(crate) use cmd::remote::*;
 pub(crate) use cmd::retro::*;
 pub(crate) use cmd::review_gate::*;
 pub(crate) use cmd::reviews::*;

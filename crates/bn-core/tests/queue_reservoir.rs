@@ -4,7 +4,7 @@
 //! and only becomes a backlog entry once it has passed the SMART gate, so a payload built from the
 //! backlog alone reported `0 pending` on a machine with thousands of tasks waiting. These tests pin
 //! the classification, because the whole value of the section is that its four numbers mean four
-//! different things: waiting on the improve agent, waiting on capacity, waiting on a retry, and
+//! different things: waiting on the enhance agent, waiting on capacity, waiting on a retry, and
 //! waiting on a person.
 use bn_core::payload::queue::reservoir_of;
 use bn_core::todo::TodoFile;

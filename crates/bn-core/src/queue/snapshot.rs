@@ -13,8 +13,7 @@ use crate::advise::{AttnSignal, GoalContext};
 use crate::backlog::{self, BacklogEntry, BacklogStatus};
 use crate::hosts::NodeRecord;
 use crate::queue::kind::{BacklogKind, WorkClass};
-use crate::queue::pause::PauseState;
-use crate::queue::tick::{InFlight, KindCaps, TickInputs};
+use crate::queue::tick::{InFlight, KindCaps, Presence, TickInputs};
 use crate::resolver::Config;
 use crate::scheduler::{Caps, Observed};
 use std::collections::BTreeMap;
@@ -34,10 +33,10 @@ pub struct Snapshot {
     pub kinds: Vec<BacklogKind>,
     pub goals: Vec<GoalContext>,
     pub attention: Vec<AttnSignal>,
-    pub pauses: PauseState,
     /// Inline express items one pass may run — configurable, so a slow box can lower it.
     pub max_express: usize,
     pub windows: Vec<crate::queue::window::PriorityWindow>,
+    pub presence: Presence,
 }
 
 impl Snapshot {
@@ -61,6 +60,7 @@ impl Snapshot {
                 kind_caps.insert(kind, *n);
             }
         }
+        let windows = cfg.queue.windows.clone();
         Snapshot {
             now,
             machine: cfg.machine().to_string(),
@@ -93,9 +93,14 @@ impl Snapshot {
                     severity: item.severity,
                 })
                 .collect(),
-            pauses: PauseState::load(now),
             max_express: cfg.queue.express_per_tick(),
-            windows: cfg.queue.windows.clone(),
+            presence: Presence {
+                idle: crate::idle::is_idle(cfg, now, cfg.queue.opportunistic_idle_mins),
+                away_window: windows
+                    .iter()
+                    .any(|w| w.mode == crate::queue::window::WindowMode::Away && w.is_open(now)),
+            },
+            windows,
             pending,
             entries,
         }
@@ -106,7 +111,6 @@ impl Snapshot {
         TickInputs {
             now: self.now,
             machine: &self.machine,
-            pause: &self.pauses,
             pending: &self.pending,
             in_flight: &self.in_flight,
             nodes: &self.nodes,
@@ -118,6 +122,7 @@ impl Snapshot {
             attention: &self.attention,
             max_express: self.max_express,
             windows: &self.windows,
+            presence: self.presence,
         }
     }
 

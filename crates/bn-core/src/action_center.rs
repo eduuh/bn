@@ -247,6 +247,15 @@ script, find the root cause, and land a fix so the next scheduled run is green."
     if let Some(path) = job.script_path.as_deref() {
         s.push_str(&format!("\n\nScript: {path}"));
     }
+    if let Some(output) = job
+        .last_output
+        .as_deref()
+        .map(str::trim)
+        .filter(|output| !output.is_empty())
+    {
+        s.push_str("\n\nLatest captured output:\n");
+        s.push_str(output);
+    }
     s
 }
 

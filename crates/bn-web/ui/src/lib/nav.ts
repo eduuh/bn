@@ -20,7 +20,7 @@ import {
 
 /**
  * The shell's destinations, in nav order — the one list that says which screens exist, what they
- * are called, and which `?experimental=` key reveals each one.
+ * are called, and which `?experimental=` key reveals optional ones.
  *
  * It lives here rather than inside [`Rail`] because two surfaces now need it and they must not
  * disagree: the rail renders it as navigation, and `/settings` renders it as a list of switches.
@@ -39,7 +39,7 @@ export interface NavItem {
   /** Count-pill tone. `hot` is the one that means *a human is blocked*; everything else is
    * neutral, because a rail where four things glow red is a rail with no signal in it. */
   tone?: "hot" | "plain";
-  /** The `?experimental=` key that reveals this tab. Absent means ungated — only Today, for now. */
+  /** The `?experimental=` key that reveals this tab. Absent means ungated/default. */
   exp?: string;
   /** One line for the settings page: what this screen is, for someone deciding whether to show it.
    * The rail never renders it. */
@@ -111,8 +111,8 @@ export const NAV_GROUPS: NavGroup[] = [
         label: "Cron",
         Icon: Clock,
         tone: "hot",
-        exp: "cron",
-        blurb: "The scheduled-job registry and the health of each job's last run.",
+        blurb:
+          "The default automation surface: scheduled Markdown agents, cron jobs, and the health of each job's last run.",
       },
       {
         to: "/attention",
@@ -199,8 +199,8 @@ export const NAV_GROUPS: NavGroup[] = [
 ];
 
 /** Only the groups that hold at least one gated tab, with only those tabs — what `/settings`
- * renders as switches. Ungated destinations (Today) have nothing to decide, so they are omitted
- * rather than shown as a switch that cannot move. */
+ * renders as switches. Ungated destinations (Today, Cron) have nothing to decide, so they are
+ * omitted rather than shown as a switch that cannot move. */
 export const EXPERIMENTAL_GROUPS: NavGroup[] = NAV_GROUPS.map((g) => ({
   ...g,
   items: g.items.filter((i) => i.exp),

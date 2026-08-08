@@ -52,6 +52,8 @@ pub struct QueueConfig {
     pub agent_lease_ttl_secs: Option<i64>,
     /// Seconds headless work may hold a lease. `None` uses the built-in TTL.
     pub express_lease_ttl_secs: Option<i64>,
+    /// Idle minutes after which opportunistic work may run outside an explicit away window.
+    pub opportunistic_idle_mins: i64,
     /// Times of day when some work is preferred — see [`crate::queue::window`].
     pub windows: Vec<crate::queue::window::PriorityWindow>,
 }
@@ -72,8 +74,12 @@ impl QueueConfig {
     /// Assembled here rather than inline in `Config::load` so the table's growth — every producer
     /// the queue absorbs adds a key — costs lines in the file that owns it.
     pub(super) fn load(file: Option<&super::config_file::ConfigFile>) -> QueueConfig {
-        let (express_per_tick, agent_lease_ttl_secs, express_lease_ttl_secs) =
-            file.map(|f| f.queue_nums()).unwrap_or_default();
+        let (
+            express_per_tick,
+            agent_lease_ttl_secs,
+            express_lease_ttl_secs,
+            opportunistic_idle_mins,
+        ) = file.map(|f| f.queue_nums()).unwrap_or_default();
         QueueConfig {
             capture: file.and_then(|f| f.queue_capture()),
             coding: super::util::non_empty_env("BN_QUEUE_CODING")
@@ -86,6 +92,7 @@ impl QueueConfig {
             express_per_tick,
             agent_lease_ttl_secs,
             express_lease_ttl_secs,
+            opportunistic_idle_mins: opportunistic_idle_mins.filter(|n| *n >= 0).unwrap_or(10),
             kind_caps: file.map(|f| f.queue_kind_caps()).unwrap_or_default(),
             windows: file.map(|f| f.queue_windows()).unwrap_or_default(),
         }
@@ -114,7 +121,8 @@ impl QueueConfig {
     /// stopped, capturing every producer would quietly halt all scheduled work — the worst possible
     /// failure, because everything looks fine and nothing runs.
     ///
-    /// So capture requires evidence: a tick recorded a decision within [`DISPATCHER_TTL_SECS`].
+    /// So capture requires evidence: the resident dispatcher heartbeat is fresh within
+    /// [`DISPATCHER_TTL_SECS`].
     /// No evidence means the producer launches inline, exactly as it did before the queue existed.
     /// This also gives clean progressive enablement — a fresh machine behaves classically until the
     /// tick is registered, then starts queueing on its own.
@@ -162,16 +170,14 @@ impl QueueConfig {
     }
 }
 
-/// Whether a queue tick has run recently enough to trust it will drain what producers enqueue.
+/// Whether the resident dispatcher is alive enough to trust it will drain what producers enqueue.
 ///
-/// Reads the decision the tick writes on **every** pass, including the ones that start nothing —
-/// which is exactly why it writes them: a dispatcher with nothing to do still has to prove it is
-/// there.
+/// This intentionally reads the daemon heartbeat, not the latest decision. The decision is written
+/// by every tick, including inline fallback ticks; treating it as liveness lets the fallback mask a
+/// dead resident daemon.
 pub fn dispatcher_alive(now: i64) -> bool {
-    crate::queue::decision::QueueDecision::read().is_some_and(|d| {
-        // A `--dry-run` pass writes a decision too, and it proves nothing: it deliberately starts
-        // nothing and takes no lease. Counting it as evidence would let someone inspecting the
-        // queue accidentally convince every producer that work was being drained when it was not.
-        !d.dry_run && now.saturating_sub(d.at) <= DISPATCHER_TTL_SECS
-    })
+    std::fs::read_to_string(crate::resolver::state_dir().join("queue-daemon.heartbeat"))
+        .ok()
+        .and_then(|raw| raw.trim().parse::<i64>().ok())
+        .is_some_and(|beat| now.saturating_sub(beat) <= DISPATCHER_TTL_SECS)
 }

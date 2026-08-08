@@ -53,7 +53,9 @@ fn staff_harness_supports_session_id(harness: &str) -> bool {
 /// `wall`. Returns `(exit_success, stdout, combined)` where `combined` is stderr+stdout for
 /// [`bn_core::staff::classify_run`]. Reader threads drain both pipes so a chatty harness can't
 /// wedge on a full pipe buffer; a blown budget or a spawn error is a non-success carrying the
-/// reason in `combined`.
+/// reason in `combined`. The harness binary is resolved through the cron runner's PATH prelude for
+/// the same reason `run_gather` needs it: under the queue executor the inherited PATH carries
+/// neither `~/.local/bin` (where `claude` installs) nor bn's own bin dir.
 pub(crate) fn dispatch_capture(
     mut cmd: std::process::Command,
     wall: Option<std::time::Duration>,
@@ -63,7 +65,8 @@ pub(crate) fn dispatch_capture(
     use std::time::Instant;
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .env("PATH", crate::cmd::cron::job_path());
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return (false, String::new(), format!("spawn failed: {e}")),
@@ -109,17 +112,17 @@ pub(crate) fn dispatch_capture(
 }
 
 /// Run an agent's `gather` command, returning its stdout as the packet (or a reason on failure).
-/// Runs through `/bin/sh -c` with the same PATH prelude the cron runner uses, so a built-in
-/// gatherer (`bn staff gather <agent>`) and user scripts alike resolve `bn`, `gh`, etc. under a
-/// non-login scheduler shell.
+/// Runs through `/bin/sh -c` with the same PATH prelude the cron runner uses
+/// ([`crate::cmd::cron::job_path`]), so a built-in gatherer (`bn staff gather <agent>`) and user
+/// scripts alike resolve `bn`, `gh`, etc. under a non-login scheduler shell. The prelude's leading
+/// entry is this executable's own directory — on a stock install that is the *only* place `bn`
+/// exists, so a hand-rolled `~/.local/bin:~/.bin:$PATH` would leave every gather exiting 127 under
+/// the queue executor.
 pub(crate) fn run_gather(gather: &str) -> Result<String, String> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let path = std::env::var("PATH").unwrap_or_default();
-    let job_path = format!("{home}/.local/bin:{home}/.bin:{path}");
     match std::process::Command::new("/bin/sh")
         .arg("-c")
         .arg(gather)
-        .env("PATH", &job_path)
+        .env("PATH", crate::cmd::cron::job_path())
         .output()
     {
         Ok(out) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
@@ -800,4 +803,33 @@ pub(crate) fn emit_staff_archive(cfg: &Config, dry_run: bool, as_json: bool) {
     }
 
     println!("  exempt: chronicles + retro transcripts (kept forever)");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A staff gather runs under the queue executor, whose PATH carries neither `~/.local/bin` nor
+    /// bn's own bin dir. Leading the subshell PATH with this executable's directory is what keeps
+    /// `bn staff gather <agent>` from exiting 127 there, so assert the prelude rather than a
+    /// hand-rolled equivalent.
+    #[test]
+    fn gather_subshell_path_leads_with_the_executable_directory() {
+        let exe_dir = std::env::current_exe()
+            .expect("current exe")
+            .parent()
+            .expect("exe dir")
+            .to_string_lossy()
+            .into_owned();
+        let observed = run_gather("printf %s \"$PATH\"").expect("gather echoes PATH");
+        assert_eq!(observed.split(':').next(), Some(exe_dir.as_str()));
+        assert_eq!(observed, crate::cmd::cron::job_path());
+    }
+
+    #[test]
+    fn gather_failure_carries_the_exit_code_and_stderr() {
+        let err = run_gather("echo boom >&2; exit 127").expect_err("non-zero gather fails");
+        assert!(err.contains("exited 127"), "{err}");
+        assert!(err.contains("boom"), "{err}");
+    }
 }

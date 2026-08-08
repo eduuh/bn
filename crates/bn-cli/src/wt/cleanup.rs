@@ -240,6 +240,11 @@ pub(crate) fn cleanup_one(
     worktree_dir: &Path,
     force: bool,
 ) -> Result<(), ()> {
+    if let Some(slot) = crate::wt_pool::pool_slot_root(wt_path) {
+        return crate::wt_pool::return_slot(cfg, &slot, force)
+            .then_some(())
+            .ok_or(());
+    }
     cleanup_one_with_policy(cfg, wt_path, worktree_dir, force, CleanupPolicy::Strict)
 }
 
@@ -834,5 +839,4 @@ fn merged_tip_reclaimable(
 fn should_refuse_dirty(force: bool, changes: usize) -> bool {
     !force && changes > 0
 }
-
 

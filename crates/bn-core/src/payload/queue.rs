@@ -14,16 +14,14 @@ pub fn queue_data(cfg: &crate::resolver::Config, now: i64) -> Value {
     let snap = crate::queue::snapshot::Snapshot::capture(cfg, now);
     serde_json::json!({
         "now": now,
-        "paused": snap.pauses.is_paused(),
-        "fully_paused": snap.pauses.is_fully_paused(),
-        "pauses": snap.pauses.pauses,
+        "accepting": true,
         "pending": snap.pending.len(),
         "kinds": BacklogKind::ALL.iter().map(|k| serde_json::json!({
             "kind": k.label(),
             "lane": WorkClass::from_kind(*k).label(),
             "pending": snap.pending.iter().filter(|e| e.kind == *k).count(),
         })).collect::<Vec<_>>(),
-        "entries": snap.pending,
+        "entries": snap.pending.iter().map(entry_data).collect::<Vec<_>>(),
         "nodes": snap.nodes.iter().map(|n| node_data(n, now)).collect::<Vec<_>>(),
         // The state of the machine itself — what the page is *for*.
         //
@@ -51,6 +49,13 @@ pub fn queue_data(cfg: &crate::resolver::Config, now: i64) -> Value {
                 "held": crate::queue::build::holders_live(now),
             },
             "windows": crate::queue::window::open(&cfg.queue.windows, now),
+            "presence": {
+                "idle": crate::idle::is_idle(cfg, now, cfg.queue.opportunistic_idle_mins),
+                "away_window": cfg.queue.windows.iter().any(|w| {
+                    w.mode == crate::queue::window::WindowMode::Away && w.is_open(now)
+                }),
+                "opportunistic_idle_mins": cfg.queue.opportunistic_idle_mins,
+            },
         },
         "decision": crate::queue::decision::QueueDecision::read(),
         // The reservoir the backlog draws from — the half of the queue this payload never carried.
@@ -60,6 +65,23 @@ pub fn queue_data(cfg: &crate::resolver::Config, now: i64) -> Value {
         // much work is waiting: `keep-warm` tops the store up, `bn task pull` mints, and none of it
         // is visible until something dispatches. That is the gap that made this page read as broken.
         "reservoir": reservoir(cfg, now),
+    })
+}
+
+/// One queue entry with its derived operator-facing class.
+pub fn entry_data(entry: &crate::backlog::BacklogEntry) -> Value {
+    serde_json::json!({
+        "entry": entry,
+        "class": class_data(&crate::queue::classify::classify(entry)),
+    })
+}
+
+fn class_data(class: &crate::queue::classify::QueueClass) -> Value {
+    serde_json::json!({
+        "mode": class.mode.label(),
+        "subtype": class.subtype.label(),
+        "autonomous": class.mode.is_autonomous(),
+        "opportunistic": class.mode == crate::queue::classify::QueueMode::Opportunistic,
     })
 }
 
@@ -134,7 +156,7 @@ pub fn reservoir_of(file: &crate::todo::TodoFile, today: &str) -> Value {
         "needs_scoping": needs_scoping,
         "ready": ready,
         "failed": failed,
-        // Waiting on a person: the improve agent has given up on these.
+        // Waiting on a person: the enhance agent has given up on these.
         "stuck": stuck,
         "total": needs_scoping + ready + failed + stuck,
     })

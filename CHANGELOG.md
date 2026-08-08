@@ -29,7 +29,7 @@ by `scripts/release-pr.py`; the `v{version}` tag is pushed by `release-plz relea
 - **agents**: make every tmux-hosted agent steerable, and record hand-typed launches (#1032)
 - **web**: task-first home, latency-split task writes, pipeline drawing (#1006) (#1027)
 - **orchestrate**: supersede keep-warm; require task:<id> on every backlog entry (#1001) (#1026)
-- **agents**: task-improve and task-triage as self-describing agents (#1002) (#1025)
+- **agents**: task-enhance and task-triage as self-describing agents (#1002) (#1025)
 - **web**: skill CRUD from the dashboard, synced to Claude and Copilot (#1024)
 - **security**: trust tier for autonomously-executed tasks (#1003) (#1023)
 - **web**: task, issue and pipeline read APIs (#1005) (#1021)

@@ -60,8 +60,9 @@ session, or leave a window parked behind it, because it never touches tmux at al
 Read a run's result from the event log rather than from a terminal:
 
 - `bn cron` — every scheduled job with its last-run health (ok/FAIL, duration, run + failure counts).
-- `bn cron running` — a compact badge of what's executing right now (this is what the tmux status
-  bar segment calls).
+- `bn queue badge` — the tmux status-bar signal for foreground queue attention, failures, or a
+  stale dispatcher. Healthy routine cron/autonomous work stays quiet; inspect it with
+  `bn queue timeline`.
 - `bn run <job>` by hand — the job's output goes straight to your stdout.
 
 The `class` field on a `[[cron]]` entry (`info` / `housekeeping`) is a descriptive dashboard label

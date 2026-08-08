@@ -559,13 +559,13 @@ export interface RepoRollup {
   sessions: RepoSession[];
 }
 
-/** GET /api/repos .data — every repo bn knows (cloned on this machine, managed, or noted), each with
- * its per-repo rollup + session list. A cloned-but-never-worked-in repo is a 0-session card. */
+/** GET /api/repos .data — the local repo inventory: repos with a local bare clone, checked-out
+ * worktree, or live/in-flight agent, each with its per-repo rollup + session list. A
+ * cloned-but-never-worked-in repo is a 0-session card. */
 export interface ReposView {
   repos: RepoRollup[];
-  /** Every repo bn can work in, alphabetical — managed repos, local bare clones, and anything
-   * with a branch note. The option source for every repo picker, derived from the same rollups
-   * above so a dropdown can never offer a repo the board doesn't know about. */
+  /** Every locally-known repo, alphabetical. The option source for every repo picker, derived from
+   * the same rollups above so a dropdown can never offer a repo the board doesn't know about. */
   known: string[];
 }
 

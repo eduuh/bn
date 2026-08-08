@@ -253,57 +253,6 @@ pub fn admit(
     None
 }
 
-/// The local gate state that determines whether an item may use remote execution (#697).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RemoteGateState {
-    /// The local admission bind, if a resource, budget, or concurrency cap blocked the item.
-    pub bind: Option<Bind>,
-    /// Whether conflict-aware scheduling held the item behind overlapping work.
-    pub held: bool,
-    /// Whether this run opted into remote overflow for `auto` items.
-    pub overflow_enabled: bool,
-    /// Whether the run requires the local-only plan-review handshake.
-    pub plan_gated: bool,
-    /// Whether the item id identifies an issue/PR that the remote runner can be seeded from.
-    pub issue_linked: bool,
-}
-
-/// Which execution path remote admission selects for an item (#697).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RemoteAdmission {
-    Local,
-    /// Fan out remotely, surfacing the local bind for overflowed `auto` work when present.
-    Remote(Option<Bind>),
-}
-
-/// Decide whether an item uses the local placement path or a remote runner (#697).
-///
-/// Explicit `remote` work always fans out because the user selected that substrate. `auto` work
-/// only overflows when local admission is bound, no conflict hold applies, overflow is enabled,
-/// and the item can run without the local plan-review handshake. `local` work never fans out.
-/// Pure over the substrate and captured gate state so every remote path is unit-testable here.
-pub fn admit_remote(substrate: Substrate, gate: RemoteGateState) -> RemoteAdmission {
-    match substrate {
-        Substrate::Remote => RemoteAdmission::Remote(None),
-        Substrate::Auto
-            if gate.overflow_enabled
-                && gate.bind.is_some()
-                && !gate.held
-                && !gate.plan_gated
-                && gate.issue_linked =>
-        {
-            RemoteAdmission::Remote(gate.bind)
-        }
-        Substrate::Local | Substrate::Auto => RemoteAdmission::Local,
-    }
-}
-
-/// An id is issue-linked when it's a bare number — [`crate::orchestrate::derive_id`] returns the
-/// issue/PR number for `#N` / `N` / a GitHub issue-or-PR URL, while free text becomes a word slug.
-fn is_issue_linked(id: &str) -> bool {
-    !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())
-}
-
 /// The **hard eligibility filter** for placing a local/auto item on its chosen [`ExecutionTarget`]
 /// (#717) — the first gate the generalized [`pick`] applies before a candidate can be dispatched.
 /// Pure over the item's target + the run's node registry, so placement policy is unit-testable:
@@ -386,14 +335,13 @@ pub fn bind_allows_worker_handoff(bind: Option<Bind>) -> bool {
 /// `scheduler::{Placement, place, place_with_load}` path still resolves.
 pub use crate::queue::place::{place, place_with_load, Placement};
 
-/// The dispatch plan for one pass (#377): the queue indices to dispatch **locally**, those to fan
-/// out to a **remote** runner (occupying no local slot), and the binding cap that stopped local
-/// dispatch (for the status line + pause event). Indices point into `st.queue`.
+/// The dispatch plan for one pass: the queue indices to dispatch locally and the binding cap that
+/// stopped local dispatch (for the status line + pause event). Indices point into `st.queue`.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Plan {
     /// Queue indices to dispatch into a local worktree + agent, in order.
     pub local: Vec<usize>,
-    /// Queue indices to fan out to a remote runner — these occupy no local slot.
+    /// Deprecated GitHub-hosted fanout lane. Remote dispatch is unsupported, so this stays empty.
     pub remote: Vec<usize>,
     /// **Where each locally-dispatched item lands** (#717) — one `(queue index, target)` pair per
     /// entry in [`local`](Plan::local), in the same order, naming the node the scheduler placed it
@@ -422,12 +370,10 @@ impl Plan {
     }
 }
 
-/// Decide this pass's dispatch plan (#377) — the pure elastic-concurrency + remote fan-out policy.
+/// Decide this pass's dispatch plan — the pure elastic-concurrency policy.
 ///
 /// Walks the queued items in their leased priority order and, composing with the #376
 /// conflict-aware holding:
-///   - [`admit_remote`] selects the local or remote path for every substrate from the same captured
-///     gate state;
 ///   - an item on the local path fills a slot when [`admit`] allows **and** it doesn't conflict with
 ///     an already-in-flight-or-just-picked touch-set; otherwise it stays pending.
 ///
@@ -514,29 +460,9 @@ pub fn pick(st: &OrchestrateState, caps: &Caps, obs: &Observed) -> Plan {
         let reserve = usize::from(reserve_active && !typed && class == WorkClass::Coding);
         let bind = admit(caps, obs, class, in_flight_for_class + reserve);
         let held = !item.touches.is_empty() && conflicts(&item.touches, &inflight_touches);
-        let remote = admit_remote(
-            item.substrate,
-            RemoteGateState {
-                bind,
-                held,
-                overflow_enabled: caps.remote_overflow,
-                plan_gated: caps.plan_gated,
-                issue_linked: is_issue_linked(&item.id),
-            },
-        );
         if item.substrate == Substrate::Remote {
-            if !item.required_capabilities.is_empty() || !item.excluded_capabilities.is_empty() {
-                plan.unplaced.push((
-                    idx,
-                    "github-runner advertises no capabilities for this repo policy".to_string(),
-                ));
-                continue;
-            }
-            plan.remote.push(idx);
-            // A remote PR still touches files, so feed its touches into the overlap prediction:
-            // a later local candidate that would collide with it at land time is held (#376),
-            // rather than co-scheduled into a wasted rebase.
-            inflight_touches.push(item.touches.clone());
+            plan.unplaced
+                .push((idx, "remote dispatch is unsupported".to_string()));
             continue;
         }
         if !held {
@@ -548,24 +474,6 @@ pub fn pick(st: &OrchestrateState, caps: &Caps, obs: &Observed) -> Plan {
             let target = match place_with_load(item, &st.nodes, caps, bind, &planned_workers) {
                 Placement::Place(t) => t,
                 Placement::Unplaced(reason) => {
-                    if let RemoteAdmission::Remote(remote_bind) = remote {
-                        if !item.required_capabilities.is_empty()
-                            || !item.excluded_capabilities.is_empty()
-                        {
-                            plan.unplaced.push((
-                                idx,
-                                "github-runner advertises no capabilities for this repo policy"
-                                    .to_string(),
-                            ));
-                            continue;
-                        }
-                        if let Some(bind) = remote_bind {
-                            plan.bind.get_or_insert(bind);
-                        }
-                        plan.remote.push(idx);
-                        inflight_touches.push(item.touches.clone());
-                        continue;
-                    }
                     plan.unplaced.push((idx, reason));
                     if let Some(b) = bind {
                         plan.bind.get_or_insert(b);

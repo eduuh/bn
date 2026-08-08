@@ -472,10 +472,8 @@ pub struct QueueItem {
     pub held_by: Option<String>,
     /// Where this item runs (#377): carried from its durable [`crate::backlog::BacklogEntry::substrate`]
     /// when leased. `Local`/`Auto` dispatch into a local worktree + agent (counting against the
-    /// resource-aware local concurrency cap); `Remote` fans out to a GitHub-hosted runner via
-    /// `bn dispatch --remote` and occupies **no** local slot (supervised by PR/issue reconcile, not
-    /// the tmux pane machine). `Auto` items may *also* fan out to remote when local is full and the
-    /// item is [`crate::scheduler::remote_eligible`]. Defaults to `Auto` on a pre-#377 run's state.
+    /// resource-aware local concurrency cap). `Remote` is retained only for legacy state and is not
+    /// placed by the scheduler. Defaults to `Auto` on a pre-#377 run's state.
     #[serde(default)]
     pub substrate: Substrate,
     /// **Which node this item executes on** (#717) — a *separate axis* from [`substrate`]: substrate
@@ -989,8 +987,8 @@ pub struct Counts {
     pub merged: usize,
     pub failed: usize,
     pub total: usize,
-    /// Of `in_flight`, how many are on a **remote** runner (#377) — dispatched via
-    /// `bn dispatch --remote`, occupying no local slot. `in_flight - remote` are the local agents.
+    /// Of `in_flight`, how many are historical **remote** runner records (#377), occupying no local
+    /// slot. `in_flight - remote` are the local agents.
     #[serde(default)]
     pub remote: usize,
 }
@@ -1568,8 +1566,8 @@ impl OrchestrateState {
             .count()
     }
 
-    /// How many items are in flight on a **remote** runner (#377) — dispatched via
-    /// `bn dispatch --remote`, supervised by PR/issue reconcile rather than the tmux pane machine.
+    /// How many items are in flight on a historical **remote** runner (#377), supervised by PR/issue
+    /// reconcile rather than the tmux pane machine.
     pub fn remote_in_flight(&self) -> usize {
         self.queue
             .iter()

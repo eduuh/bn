@@ -2235,7 +2235,7 @@ fn observe_github_claim(item: &orchestrate::QueueItem, now: i64) -> ClaimEvidenc
             "-R",
             &slug,
             "--workflow",
-            crate::cmd::dispatch::REMOTE_WORKFLOW,
+            "claude-dispatch.yml",
             "--limit",
             "100",
             "--json",
@@ -4348,7 +4348,6 @@ fn relaunch_to_resume(
 #[derive(Clone, Copy)]
 enum ClaimRoute<'a> {
     Local(&'a str),
-    Remote,
     Worker(&'a str),
 }
 
@@ -4357,12 +4356,6 @@ fn apply_claim_route(item: &mut orchestrate::QueueItem, route: ClaimRoute<'_>) {
         ClaimRoute::Local(branch) => {
             item.branch = Some(branch.to_string());
             item.claimed_remote = false;
-            item.node = None;
-            item.worker_state = None;
-        }
-        ClaimRoute::Remote => {
-            item.branch = None;
-            item.claimed_remote = true;
             item.node = None;
             item.worker_state = None;
         }
@@ -4454,31 +4447,6 @@ fn persist_local_dispatch(
         Err(e) => {
             eprintln!(
                 "bn orchestrate: launched {id} but could not finalize its dispatch claim: {e}"
-            );
-        }
-    }
-}
-
-fn persist_remote_dispatch(run_path: &Path, st: &mut OrchestrateState, idx: usize, now: i64) {
-    let repo = st.queue[idx].repo.clone();
-    let id = st.queue[idx].id.clone();
-    let saved = orchestrate::mutate(run_path, |disk| {
-        let Some(disk_idx) = disk
-            .queue
-            .iter()
-            .position(|item| item.repo == repo && item.id == id)
-        else {
-            return false;
-        };
-        disk.mark_dispatched_remote(disk_idx, now);
-        true
-    });
-    match saved {
-        Ok(Some(true)) => st.mark_dispatched_remote(idx, now),
-        Ok(_) => {}
-        Err(e) => {
-            eprintln!(
-                "bn orchestrate: launched remote {id} but could not finalize its dispatch claim: {e}"
             );
         }
     }
@@ -4693,18 +4661,6 @@ fn fill_dispatch_slots(
                 "orchestrate_unplaced",
                 &[("repo", &st.repo), ("item", &it.item), ("reason", reason)],
             );
-        }
-    }
-
-    // #377: fan out the remote-substrate / overflow items via `bn dispatch --remote` — a
-    // GitHub-hosted run that occupies no local slot and is reconciled by its PR/issue completion.
-    for idx in plan.remote {
-        attempted += 1;
-        if persist_dispatch_claim(run_path, st, idx, ClaimRoute::Remote, false, now).is_none() {
-            continue;
-        }
-        if dispatch_remote_item(run_path, st, idx, now) {
-            launched += 1;
         }
     }
 
@@ -4953,49 +4909,6 @@ fn no_dispatch_reason(
         return Some("backlog empty".to_string());
     }
     Some("no dispatchable candidates".to_string())
-}
-
-/// Fan out the queue item at `idx` to a GitHub-hosted runner (#377): trigger `bn dispatch --remote
-/// --issue <id>` in a child process (isolated — a failure never takes down the daemon), and on
-/// success mark it dispatched-remote (no local slot; reconciled by PR/issue completion). A trigger
-/// failure is ambiguous (GitHub may have accepted before the response was lost), so the claim stays
-/// reserved until reconciliation observes the stable token or the visibility grace expires.
-fn dispatch_remote_item(run_path: &Path, st: &mut OrchestrateState, idx: usize, now: i64) -> bool {
-    let item = st.queue[idx].item.clone();
-    let id = st.queue[idx].id.clone();
-    let request_id = st.queue[idx].request_id.clone().unwrap_or_default();
-    let attempt_id = st.queue[idx].attempt_id.clone().unwrap_or_default();
-    if sh_dispatch_remote(&st.repo, &id, &item, &request_id, &attempt_id) {
-        persist_remote_dispatch(run_path, st, idx, now);
-        st.record_recovery(
-            &id,
-            PaneState::Working,
-            SupervisorAction::Leave,
-            "dispatched remote (github-hosted)",
-            now,
-        );
-        log_event(
-            "orchestrate_dispatch_remote",
-            &[("repo", &st.repo), ("item", &item), ("id", &id)],
-        );
-        return true;
-    }
-    st.record_recovery(
-        &id,
-        PaneState::Dead,
-        SupervisorAction::RelaunchToResume,
-        "remote dispatch outcome unknown — reconciling stable attempt",
-        now,
-    );
-    log_event(
-        "orchestrate_dispatch_remote_unknown",
-        &[
-            ("repo", &st.repo),
-            ("item", &item),
-            ("attempt_id", &attempt_id),
-        ],
-    );
-    false
 }
 
 // ===========================================================================
@@ -6635,42 +6548,6 @@ fn sh_dispatch(
         .and_then(|b| b.as_str())
         .map(|s| s.to_string())
         .or_else(|| branch.map(|s| s.to_string()))
-}
-
-/// Fan out an item to a GitHub-hosted runner (#377) via `bn dispatch --remote` (#281). An
-/// issue-linked item (numeric `id`) uses the issue path (`--issue <id>`): it posts an `@claude`
-/// comment on the issue, framing the issue's own title/body as the task — and reconciles cleanly via
-/// [`reconcile_remote`] when that issue closes. A free-text explicit-remote item uses the free-text
-/// seed path (its user-authored subject as the `prompt`). Run as an isolated child (like
-/// [`sh_dispatch`]) so a `fail()`/exit inside the remote path can never take down the daemon.
-/// Returns whether the trigger succeeded; a failure (workflow not installed, gh unauthed) leaves
-/// the item for the caller to back off. No local worktree/slot is created.
-fn sh_dispatch_remote(
-    repo: &str,
-    id: &str,
-    item: &str,
-    request_id: &str,
-    attempt_id: &str,
-) -> bool {
-    let issue_linked = !id.is_empty() && id.chars().all(|c| c.is_ascii_digit());
-    let token = format!("bn dispatch request {request_id} attempt {attempt_id}");
-    let prompt = if issue_linked {
-        format!("Please pick up this issue: propose a plan, implement it, and open a PR. {token}")
-    } else if item.trim().is_empty() {
-        token
-    } else {
-        format!("{item}\n\n{token}")
-    };
-    let args: Vec<&str> = if issue_linked {
-        vec![
-            "dispatch", "--remote", "--issue", id, "--repo", repo, "--json", &prompt,
-        ]
-    } else {
-        vec![
-            "dispatch", "--remote", &prompt, "--repo", repo, "--corr", attempt_id, "--json",
-        ]
-    };
-    run_bn(&args, None).0
 }
 
 /// Dispatch the placed item at `idx` onto a remote SSH worker `alias` (#729) via the #718-style

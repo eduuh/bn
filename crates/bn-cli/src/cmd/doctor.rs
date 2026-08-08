@@ -75,26 +75,12 @@ pub(crate) fn emit_doctor(cfg: &Config, stale_days: i64, brief: bool, as_json: b
     // Machine-level cron drift (global tier): declared-but-unregistered jobs. A fresh box has the
     // manifest and zero timers — surface it here so SessionStart/`bn doctor` flags it unprompted.
     let drift = cron_drift(cfg, None);
-    // Remote-dispatch readiness (#280): only outside --brief (it makes a `gh` call) and only when
-    // we're inside a repo. `doctor_remote_readiness` returns `None` unless the repo is configured
-    // (the workflow is scaffolded), so this is a no-op filesystem check in repos not using it.
-    let remote = if brief {
-        None
-    } else {
-        root.as_deref().and_then(doctor_remote_readiness)
-    };
     if as_json {
         let mut data = payload::doctor_data(&findings);
         if let (Some(obj), Some(report)) = (data.as_object_mut(), &agent_leases) {
             obj.insert(
                 "agent_leases".into(),
                 serde_json::to_value(report).unwrap_or(serde_json::Value::Null),
-            );
-        }
-        if let (Some(obj), Some(r)) = (data.as_object_mut(), &remote) {
-            obj.insert(
-                "remote_dispatch".into(),
-                serde_json::to_value(r).unwrap_or(serde_json::Value::Null),
             );
         }
         if let Some(obj) = data.as_object_mut() {
@@ -150,16 +136,6 @@ pub(crate) fn emit_doctor(cfg: &Config, stale_days: i64, brief: bool, as_json: b
         );
         println!("  {}", drift.join(", "));
     }
-    // Nag only when this repo is half-configured for remote dispatch: workflow scaffolded but the
-    // API-key secret missing (a dispatch here would fail auth). Unconfigured repos stay silent.
-    let remote_misconfigured = remote.as_ref().is_some_and(|r| r.is_misconfigured());
-    if remote_misconfigured {
-        println!(
-            "⚠ remote dispatch: {} secret not set — run `gh secret set {}`",
-            bn_core::remote::SECRET_NAME,
-            bn_core::remote::SECRET_NAME
-        );
-    }
     if !lease_violations.is_empty() {
         println!(
             "⚠ {} agent lease(s) break the main↔control invariant — run `bn control stop` / reap the offender:",
@@ -173,7 +149,7 @@ pub(crate) fn emit_doctor(cfg: &Config, stale_days: i64, brief: bool, as_json: b
         let lease_clear = agent_leases
             .as_ref()
             .is_none_or(|report| report.conflicts == 0 && report.errors.is_empty());
-        if drift.is_empty() && !remote_misconfigured && lease_clear && lease_violations.is_empty() {
+        if drift.is_empty() && lease_clear && lease_violations.is_empty() {
             println!("All clear — nothing needs attention");
         }
         return;

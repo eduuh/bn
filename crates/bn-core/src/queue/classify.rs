@@ -1,0 +1,112 @@
+use crate::backlog::{BacklogEntry, ClassOverride, ExecSpec};
+
+/// Whether a queue entry is user-led foreground work or autonomous machine work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueMode {
+    /// Work a person normally wants to watch or review.
+    Foreground,
+    /// Work that can run without input.
+    Autonomous,
+    /// Autonomous work that should stay at the resource floor.
+    Opportunistic,
+}
+
+impl QueueMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            QueueMode::Foreground => "foreground",
+            QueueMode::Autonomous => "autonomous",
+            QueueMode::Opportunistic => "opportunistic",
+        }
+    }
+
+    pub fn is_autonomous(self) -> bool {
+        matches!(self, QueueMode::Autonomous | QueueMode::Opportunistic)
+    }
+}
+
+/// The kind of autonomous/background work, for filtering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueSubtype {
+    Foreground,
+    Cron,
+    Warming,
+    Recovery,
+    Maintenance,
+}
+
+impl QueueSubtype {
+    pub fn label(self) -> &'static str {
+        match self {
+            QueueSubtype::Foreground => "foreground",
+            QueueSubtype::Cron => "cron",
+            QueueSubtype::Warming => "warming",
+            QueueSubtype::Recovery => "recovery",
+            QueueSubtype::Maintenance => "maintenance",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueueClass {
+    pub mode: QueueMode,
+    pub subtype: QueueSubtype,
+}
+
+/// Derive the queue class from durable entry data.
+pub fn classify(entry: &BacklogEntry) -> QueueClass {
+    if let Some(override_class) = entry.class_override {
+        return match override_class {
+            ClassOverride::Foreground => QueueClass {
+                mode: QueueMode::Foreground,
+                subtype: QueueSubtype::Foreground,
+            },
+            ClassOverride::Autonomous => QueueClass {
+                mode: QueueMode::Autonomous,
+                subtype: QueueSubtype::Maintenance,
+            },
+            ClassOverride::Opportunistic => QueueClass {
+                mode: QueueMode::Opportunistic,
+                subtype: QueueSubtype::Maintenance,
+            },
+        };
+    }
+    if entry.recovery {
+        return QueueClass {
+            mode: QueueMode::Autonomous,
+            subtype: QueueSubtype::Recovery,
+        };
+    }
+    if is_warming(entry) {
+        return QueueClass {
+            mode: QueueMode::Opportunistic,
+            subtype: QueueSubtype::Warming,
+        };
+    }
+    if entry.source.starts_with("cron:") || entry.kind == crate::queue::kind::BacklogKind::Cron {
+        return QueueClass {
+            mode: QueueMode::Autonomous,
+            subtype: QueueSubtype::Cron,
+        };
+    }
+    if matches!(entry.exec, ExecSpec::Job { .. } | ExecSpec::Shell { .. }) {
+        return QueueClass {
+            mode: QueueMode::Autonomous,
+            subtype: QueueSubtype::Maintenance,
+        };
+    }
+    QueueClass {
+        mode: QueueMode::Foreground,
+        subtype: QueueSubtype::Foreground,
+    }
+}
+
+fn is_warming(entry: &BacklogEntry) -> bool {
+    entry.source == "cron:pool-warm"
+        || entry.source == "cron:keep-warm"
+        || entry.item.to_ascii_lowercase().contains("warm")
+        || matches!(
+            &entry.exec,
+            ExecSpec::Job { job, .. } if job == "pool-warm" || job == "keep-warm"
+        )
+}

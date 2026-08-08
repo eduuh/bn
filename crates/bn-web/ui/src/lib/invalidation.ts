@@ -54,7 +54,7 @@ export const affects = {
   /** An orchestrate run's own backlog or concurrency changed (the per-repo queue on Fleet). */
   backlog: [queryKeys.orchestrate, queryKeys.fleet] as QueryKey[],
 
-  /** The machine-wide dispatcher queue was paused, resumed, or had an entry added, reprioritized
+  /** The machine-wide dispatcher queue had an entry added, cancelled, reprioritized
    * or cancelled. The timeline is a different root key but the same underlying queue, so it goes
    * stale on exactly the same events. */
   queue: [QUEUE_ALL, QUEUE_TIMELINE_ALL] as QueryKey[],
@@ -83,6 +83,10 @@ export const affects = {
 
   /** A repo was registered, removed or re-scanned. */
   repos: [queryKeys.repos] as QueryKey[],
+
+  /** Pool config or warm scheduling changed. Pool work is a queue entry first, then repo state once
+   * the warm completes. */
+  pool: [queryKeys.repos, QUEUE_ALL, QUEUE_TIMELINE_ALL] as QueryKey[],
 
   /** A skill was created or edited. Pair with `queryKeys.skill(name)` for the open editor. */
   skills: [queryKeys.skills] as QueryKey[],

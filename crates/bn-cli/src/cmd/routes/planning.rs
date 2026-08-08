@@ -95,12 +95,12 @@ pub(super) fn route(cfg: &Config, action: CmdPlanning, json: bool) {
                 emit_task_import(cfg, &path, repo.as_deref(), json)
             }
             Some(TaskCmd::Doc { id, open }) => emit_task_doc(cfg, &id, open, json),
-            Some(TaskCmd::Improve {
+            Some(TaskCmd::Enhance {
                 id,
                 steer,
                 due,
                 dry_run,
-            }) => emit_task_improve(cfg, id.as_deref(), steer.as_deref(), due, dry_run, json),
+            }) => emit_task_enhance(cfg, id.as_deref(), steer.as_deref(), due, dry_run, json),
             Some(TaskCmd::Triage { day, dry_run }) => {
                 emit_task_triage(cfg, day.as_deref(), dry_run, json)
             }

@@ -282,27 +282,24 @@ export function setSuggestionStatus(
   return post(`/api/suggestions/${encodeURIComponent(id)}`, { status });
 }
 
-// --- Warm-worktree pool (#497) — pre-build a repo's pool slots from the dashboard ---
+// --- Warm-worktree pool (#497) — schedule repo pool builds from the dashboard ---
 
-/** The `POST /api/repos/:repo/pool/warm` ack: the warm was *started* (it runs long, in the
- * background), carrying the detached process id and a human message. */
+/** The `POST /api/repos/:repo/pool/warm` ack: the warm was queued as a heavy `pool-warm` job. */
 export interface WarmPoolResult {
-  repo: string;
-  status: string;
-  pid: number;
-  message: string;
+  added: number;
+  entries: unknown[];
 }
 
-/** `POST /api/repos/:repo/pool/warm` — trigger `bn wt pool warm --repo <repo>` for a pooled repo.
- * Warming is long-running, so the server spawns it detached and returns immediately; a `400`
- * (invalid or unpooled repo) throws `ApiError`. */
+/** `POST /api/repos/:repo/pool/warm` — enqueue `pool-warm` for a pooled repo. Warming is
+ * long-running, so the machine-wide queue admits it as heavy work instead of the server spawning an
+ * uncapped detached build; a `400` (invalid or unpooled repo) throws `ApiError`. */
 export function warmRepoPool(repo: string): Promise<WarmPoolResult> {
   return post<WarmPoolResult>(`/api/repos/${encodeURIComponent(repo)}/pool/warm`);
 }
 
 /** `POST /api/repos/:repo/pool {size?}` — pool a repo at `size` slots, or stop pooling it with
- * `size: null`. Writes the pools config the idle `pool-warm` cron reads, so enabling here is all it
- * takes for the pool to be kept warm from then on. Slots are not built by this call. */
+ * `size: null`. Enabling/resizing writes the pools config and queues `pool-warm` so new slots are
+ * built under queue capacity rather than on the request path. */
 export function setRepoPool(
   repo: string,
   size: number | null,
@@ -376,14 +373,14 @@ export function taskAction(
   return post(`/api/tasks/${encodeURIComponent(id)}`, { action, value });
 }
 
-/** `POST /api/tasks/:id/agent {agent, steer?}` — launch the improve or triage agent.
+/** `POST /api/tasks/:id/agent {agent, steer?}` — launch the enhance or triage agent.
  *
  * Returns as soon as the process is spawned, **not** when the agent finishes: these take minutes,
  * and holding the request open would tie up a server worker with no progress and no way to cancel.
  * Watch `/api/fleet` for what happens next. */
 export function taskAgent(
   id: string,
-  agent: "improve" | "triage",
+  agent: "enhance" | "improve" | "triage",
   steer?: string,
 ): Promise<{ id: string; agent: string; started: boolean; watch: string }> {
   return post(`/api/tasks/${encodeURIComponent(id)}/agent`, { agent, steer });
@@ -407,11 +404,6 @@ export function appendTaskDoc(id: string, text: string, section?: string): Promi
  * refused, not lost, so the caller keeps the operator's text and reloads to show what landed. */
 export function editTaskDoc(id: string, body: string, ifMatch: string): Promise<TaskDocResult> {
   return request("PUT", `/api/tasks/${encodeURIComponent(id)}/doc`, { body, if_match: ifMatch });
-}
-
-/** Stop the dispatcher starting new work. Running agents finish — this pauses admission only. */
-export function queuePause(scope: string, reason?: string): Promise<unknown> {
-  return request("POST", "/api/queue/pause", { scope, reason });
 }
 
 /** Enqueue work. Priority is first-class rather than advanced: "run this next" is the request
@@ -438,7 +430,10 @@ export function queuePriority(repo: string, id: string, priority: number): Promi
   return request("POST", "/api/queue/priority", { repo, id, priority });
 }
 
-/** Lift a pause. */
-export function queueResume(scope: string): Promise<unknown> {
-  return request("POST", "/api/queue/resume", { scope });
+export function queueSnooze(repo: string, id: string, forDuration: string): Promise<unknown> {
+  return request("POST", "/api/queue/snooze", { repo, id, for: forDuration });
+}
+
+export function queueClass(repo: string, id: string, klass: string): Promise<unknown> {
+  return request("POST", "/api/queue/class", { repo, id, class: klass });
 }

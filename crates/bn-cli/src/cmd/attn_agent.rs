@@ -3,7 +3,9 @@
 //! attention list. Both raise into the same attention store via `ingest(..., replace=true)`, so a
 //! recovered cron's / dropped item's alert is auto-acked on the next run.
 use crate::*;
+use bn_core::backlog::{self, AddSpec, BacklogKind, Recurrence};
 use bn_core::attention::{ingest, IngestItem};
+use bn_core::queue::kind::ExecSpec;
 
 /// A short text summary of the crons currently in a chronic-failure state — the health half of the
 /// attention agent's packet, and the watchdog's raise set.
@@ -20,14 +22,111 @@ fn failing_cron_lines() -> Vec<String> {
         .collect()
 }
 
+fn repair_prompt(status: &bn_core::events::CronJobStatus, output_tail: Option<&str>) -> String {
+    let mut prompt = format!(
+        "Fix failing cron job '{}'. It has failed {}/{} recorded runs and the latest exit code was {}. \
+Reproduce it with `bn run {}`, inspect the cron/job implementation, and land a fix so the next run is green.",
+        status.job, status.failures, status.runs, status.last_exit, status.job
+    );
+    if let Some(tail) = output_tail.map(str::trim).filter(|tail| !tail.is_empty()) {
+        prompt.push_str("\n\nLatest captured output:\n");
+        prompt.push_str(tail);
+    }
+    prompt
+}
+
+fn repair_task_text(status: &bn_core::events::CronJobStatus, output_tail: Option<&str>) -> String {
+    let mut text = format!(
+        "Fix failing cron {} repo:bn cron:{} failures:{} exit:{}",
+        status.job, status.job, status.failures, status.last_exit
+    );
+    if let Some(tail) = output_tail.map(str::trim).filter(|tail| !tail.is_empty()) {
+        let one_line = tail.lines().next().unwrap_or(tail).trim();
+        if !one_line.is_empty() {
+            text.push_str(" error:");
+            text.push_str(&bn_core::todo::neutralize_meta(one_line));
+        }
+    }
+    text
+}
+
+fn ensure_repair_task(
+    cfg: &Config,
+    status: &bn_core::events::CronJobStatus,
+    output_tail: Option<&str>,
+    today: &str,
+) -> Option<String> {
+    let path = cfg.tasks_file();
+    let _lock = bn_core::todo::lock(&path);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut file = bn_core::todo::load(&path).ok()?;
+    let key = format!("cron-repair:{}", status.job);
+    if let Some(existing) = file
+        .tasks()
+        .find(|task| task.is_open(today) && task.meta("key") == Some(key.as_str()))
+        .and_then(|task| task.id())
+    {
+        return Some(existing.to_string());
+    }
+
+    let id = file.next_id();
+    let mut task = bn_core::todo::Task::new_todo(
+        &id,
+        &repair_task_text(status, output_tail),
+        Some('A'),
+        "",
+        "cron-health",
+        today,
+    );
+    task.set_meta_raw("repo", "bn");
+    task.set_meta_raw("key", &key);
+    task.set_meta_raw("cron", &status.job);
+    file.push_task(task);
+    bn_core::todo::save(&path, &file).ok()?;
+    Some(id)
+}
+
+fn enqueue_repair_agent(
+    status: &bn_core::events::CronJobStatus,
+    task_id: &str,
+    output_tail: Option<&str>,
+) -> Result<usize, String> {
+    let prompt = repair_prompt(status, output_tail);
+    let spec = AddSpec {
+        kind: BacklogKind::Ship,
+        priority: 4,
+        recurrence: Recurrence::Coalesce,
+        source: "cron-health".to_string(),
+        task: task_id.to_string(),
+        exec: ExecSpec::Agent,
+        ..Default::default()
+    };
+    let added = backlog::add(
+        &backlog::backlog_path(),
+        "bn",
+        std::slice::from_ref(&prompt),
+        &spec,
+        bn_core::util::now_epoch_secs(),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(added.len())
+}
+
 /// `cron-health` — the deterministic failing-cron watchdog (no LLM). Raises an urgent attention
 /// item for every cron in a chronic-failure state (see [`bn_core::crons::alerting_crons`]) with the
 /// job name as the dedupe key, and — via `replace=true` — auto-acks the alert for any cron that has
-/// since recovered. This is what turns a silent 539/540-failure cron into something `notify` toasts.
-pub(crate) fn job_cron_health(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
+/// since recovered. It also mints one keyed repair task and queues one autonomous repair agent per
+/// failing cron, so the captured error turns into work instead of only a dashboard row.
+pub(crate) fn job_cron_health(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     use bn_core::clock::Clock;
     let runs = bn_core::events::cron_status();
     let alerting = bn_core::crons::alerting_crons(&runs, bn_core::crons::ALERT_MIN_FAILURES);
+    let details: Vec<_> = alerting
+        .iter()
+        .filter_map(|status| bn_core::events::last_run(&status.job).map(|detail| (*status, detail)))
+        .collect();
     let items: Vec<IngestItem> = alerting
         .iter()
         .map(|s| IngestItem {
@@ -48,12 +147,33 @@ pub(crate) fn job_cron_health(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
         .collect();
     let n = items.len();
     let today = bn_core::clock::RealClock.today();
+    let mut repair_tasks = 0usize;
+    let mut queued_repairs = 0usize;
+    let mut repair_errors = Vec::new();
+    for (status, detail) in &details {
+        let output_tail = detail.output_tail.trim();
+        match ensure_repair_task(cfg, status, Some(output_tail), &today) {
+            Some(task_id) => {
+                repair_tasks += 1;
+                match enqueue_repair_agent(status, &task_id, Some(output_tail)) {
+                    Ok(added) => queued_repairs += added,
+                    Err(error) => repair_errors.push(format!("{}: {error}", status.job)),
+                }
+            }
+            None => repair_errors.push(format!("{}: could not write repair task", status.job)),
+        }
+    }
     match ingest(&items, "cron-health", "warn", true, &today) {
         Ok(_) => {
             if n == 0 {
                 println!("cron-health: all crons healthy");
             } else {
-                println!("cron-health: {n} failing cron(s) raised/refreshed");
+                println!(
+                    "cron-health: {n} failing cron(s) raised/refreshed; {repair_tasks} repair task(s), {queued_repairs} queued agent(s)"
+                );
+                for error in repair_errors {
+                    eprintln!("cron-health repair: {error}");
+                }
             }
             0
         }

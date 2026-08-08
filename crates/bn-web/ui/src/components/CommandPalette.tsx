@@ -130,7 +130,6 @@ const DESTINATIONS: {
     label: "Cron",
     Icon: Clock,
     keywords: "jobs schedule timers automation runs",
-    exp: "cron",
   },
   {
     to: "/attention",

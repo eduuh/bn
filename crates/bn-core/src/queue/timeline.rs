@@ -15,8 +15,8 @@
 //! alongside its clock estimate, and is drawn hollow. An entry that does not fit the horizon is
 //! counted, never drawn — a projection crammed against the right edge reads as a promise.
 use crate::backlog::BacklogEntry;
+use crate::queue::classify::{self, QueueClass, QueueMode, QueueSubtype};
 use crate::queue::kind::{BacklogKind, WorkClass};
-use crate::queue::pause::Pause;
 use crate::queue::tick::{plan_tick, InFlight, TickInputs};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -63,10 +63,9 @@ pub struct Projected {
 /// Replay the tick forward to project when each pending entry would start.
 ///
 /// Each round runs the real policy, marks what it started as in-flight for that item's estimated
-/// duration, then advances the simulated clock to the earliest completion so the next round sees
-/// the freed capacity. Bounded by `horizon_secs` and by rounds, so a permanently-unplaceable entry
-/// (no capable node) ends the loop rather than spinning: if a round starts nothing, nothing later
-/// will either.
+/// duration, then advances the simulated clock to the earliest completion or snooze expiry so the
+/// next round sees the freed capacity / newly-eligible work. Bounded by `horizon_secs` and by
+/// rounds, so a permanently-unplaceable entry (no capable node) ends the loop rather than spinning.
 pub fn project(inputs: &TickInputs, est: &KindDurations, horizon_secs: i64) -> Vec<Projected> {
     let mut out: Vec<Projected> = Vec::new();
     let mut remaining: Vec<BacklogEntry> = inputs.pending.to_vec();
@@ -128,14 +127,25 @@ pub fn project(inputs: &TickInputs, est: &KindDurations, horizon_secs: i64) -> V
         if remaining.is_empty() {
             break;
         }
-        // Advance to the next moment capacity frees up. No future release means nothing later can
-        // start either, so stop rather than spin.
-        let Some(next) = busy
+        // Advance to the next moment capacity frees up or a snoozed task becomes eligible. No
+        // future release/expiry means nothing later can start either, so stop rather than spin.
+        let next_release = busy
             .iter()
             .map(|(_, ends)| *ends)
             .filter(|t| *t > clock)
-            .min()
-        else {
+            .min();
+        let next_unsnooze = remaining
+            .iter()
+            .filter_map(|e| e.not_before)
+            .filter(|t| *t > clock)
+            .min();
+        let next = match (next_release, next_unsnooze) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
+        let Some(next) = next else {
             break;
         };
         clock = next;
@@ -168,8 +178,6 @@ pub struct Timeline {
     /// Server-truth "now", so the client draws the current-time rule from it rather than from a
     /// browser clock that may be minutes off.
     pub now: i64,
-    /// Active pauses — the banner. Empty when the queue is running.
-    pub pauses: Vec<Pause>,
     /// The bands, in draw order.
     pub bands: Vec<Band>,
     /// Per-hour occupancy, 24 entries — the density strip a narrow layout degrades to.
@@ -232,9 +240,10 @@ pub struct Mark {
     pub note: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
-    /// Whether a pause currently blocks this mark — drawn struck through.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub blocked: bool,
+    pub mode: String,
+    pub subtype: String,
+    pub autonomous: bool,
+    pub opportunistic: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -255,17 +264,22 @@ pub struct TimelineInputs<'a> {
     pub date: &'a str,
     /// Declared crons and Markdown agents with `on_calendar` — the Scheduled band's source.
     pub catalog: &'a [(String, Option<String>)],
+    /// All backlog entries, including leased and terminal rows, for classifying running marks.
+    pub entries: &'a [BacklogEntry],
     pub pending: &'a [BacklogEntry],
     pub in_flight: &'a [InFlight],
     pub done_today: &'a [BacklogEntry],
-    pub pauses: &'a [Pause],
     pub projection: &'a [Projected],
+    /// `foreground`, `autonomous`, `opportunistic`, `cron`, `warming`, `recovery`, or
+    /// `maintenance`. Empty/unknown means no filter.
+    pub class_filter: Option<&'a str>,
 }
 
 /// Fold the day into bands.
 pub fn build(inputs: &TimelineInputs) -> Timeline {
     let date = parse_date(inputs.date).unwrap_or_else(|| local_date(inputs.now));
     let (start, end) = day_bounds(date);
+    let class_filter = normalize_class_filter(inputs.class_filter);
     let mut bands = Vec::new();
 
     bands.push(Band {
@@ -274,7 +288,19 @@ pub fn build(inputs: &TimelineInputs) -> Timeline {
         marks: inputs
             .in_flight
             .iter()
-            .map(|f| Mark {
+            .filter_map(|f| {
+                let class = inputs
+                    .entries
+                    .iter()
+                    .find(|e| e.repo == f.repo && e.id == f.id)
+                    .map(classify::classify)
+                    .unwrap_or_else(|| class_for_kind(f.kind));
+                if !class_matches(class, class_filter) {
+                    return None;
+                }
+                Some((f, class))
+            })
+            .map(|(f, class)| Mark {
                 key: format!("{}/{}", f.repo, f.id),
                 label: f.id.clone(),
                 kind: f.kind.label().to_string(),
@@ -285,7 +311,10 @@ pub fn build(inputs: &TimelineInputs) -> Timeline {
                 projected: false,
                 note: "running now".to_string(),
                 node: f.node.clone(),
-                blocked: false,
+                mode: class.mode.label().to_string(),
+                subtype: class.subtype.label().to_string(),
+                autonomous: class.mode.is_autonomous(),
+                opportunistic: class.mode == QueueMode::Opportunistic,
             })
             .collect(),
     });
@@ -309,6 +338,15 @@ pub fn build(inputs: &TimelineInputs) -> Timeline {
                 let spec = schedule.clone().unwrap_or_default();
                 crate::staff_schedule::slots_on(&spec, date)
                     .into_iter()
+                    .filter(|_| {
+                        class_matches(
+                            QueueClass {
+                                mode: QueueMode::Autonomous,
+                                subtype: QueueSubtype::Cron,
+                            },
+                            class_filter,
+                        )
+                    })
                     .map(move |at| Mark {
                         key: job.clone(),
                         label: job.clone(),
@@ -320,7 +358,10 @@ pub fn build(inputs: &TimelineInputs) -> Timeline {
                         projected: false,
                         note: spec.clone(),
                         node: None,
-                        blocked: false,
+                        mode: QueueMode::Autonomous.label().to_string(),
+                        subtype: QueueSubtype::Cron.label().to_string(),
+                        autonomous: true,
+                        opportunistic: false,
                     })
                     .collect::<Vec<_>>()
             })
@@ -337,6 +378,16 @@ pub fn build(inputs: &TimelineInputs) -> Timeline {
                 .iter()
                 .find(|e| e.repo == p.repo && e.id == p.id)?;
             Some(Mark {
+                mode: {
+                    let class = classify::classify(entry);
+                    class.mode.label().to_string()
+                },
+                subtype: {
+                    let class = classify::classify(entry);
+                    class.subtype.label().to_string()
+                },
+                autonomous: classify::classify(entry).mode.is_autonomous(),
+                opportunistic: classify::classify(entry).mode == QueueMode::Opportunistic,
                 key: format!("{}/{}", p.repo, p.id),
                 label: entry.item.clone(),
                 kind: entry.kind.label().to_string(),
@@ -347,9 +398,9 @@ pub fn build(inputs: &TimelineInputs) -> Timeline {
                 projected: true,
                 note: format!("wave {} — {}", p.wave, p.note),
                 node: p.node.clone(),
-                blocked: blocked_by(inputs.pauses, entry),
             })
         })
+        .filter(|m| mark_matches(m, class_filter))
         .collect();
     bands.push(Band {
         id: BandId::Projected,
@@ -363,7 +414,12 @@ pub fn build(inputs: &TimelineInputs) -> Timeline {
         marks: inputs
             .done_today
             .iter()
+            .filter(|e| class_matches(classify::classify(e), class_filter))
             .map(|e| Mark {
+                mode: classify::classify(e).mode.label().to_string(),
+                subtype: classify::classify(e).subtype.label().to_string(),
+                autonomous: classify::classify(e).mode.is_autonomous(),
+                opportunistic: classify::classify(e).mode == QueueMode::Opportunistic,
                 key: format!("{}/{}", e.repo, e.id),
                 label: e.item.clone(),
                 kind: e.kind.label().to_string(),
@@ -374,7 +430,6 @@ pub fn build(inputs: &TimelineInputs) -> Timeline {
                 projected: false,
                 note: "finished".to_string(),
                 node: e.assigned_to.clone(),
-                blocked: false,
             })
             .collect(),
     });
@@ -384,19 +439,55 @@ pub fn build(inputs: &TimelineInputs) -> Timeline {
         start,
         end,
         now: inputs.now,
-        pauses: inputs.pauses.to_vec(),
         load: hour_load(&bands, start),
-        beyond: inputs.projection.iter().filter(|p| p.at.is_none()).count(),
+        beyond: inputs
+            .projection
+            .iter()
+            .filter(|p| p.at.is_none())
+            .filter(|p| {
+                inputs
+                    .pending
+                    .iter()
+                    .find(|e| e.repo == p.repo && e.id == p.id)
+                    .is_some_and(|e| class_matches(classify::classify(e), class_filter))
+            })
+            .count(),
         bands,
     }
 }
 
-/// Whether a pause currently covers this entry.
-fn blocked_by(pauses: &[Pause], entry: &BacklogEntry) -> bool {
-    let lane = WorkClass::from_kind(entry.kind);
-    pauses
-        .iter()
-        .any(|p| p.scope.covers(&entry.repo, entry.kind, lane, None))
+fn class_for_kind(kind: BacklogKind) -> QueueClass {
+    if kind == BacklogKind::Cron {
+        return QueueClass {
+            mode: QueueMode::Autonomous,
+            subtype: QueueSubtype::Cron,
+        };
+    }
+    QueueClass {
+        mode: QueueMode::Foreground,
+        subtype: QueueSubtype::Foreground,
+    }
+}
+
+fn normalize_class_filter(filter: Option<&str>) -> Option<&str> {
+    match filter
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "all")
+    {
+        Some(
+            raw @ ("foreground" | "autonomous" | "opportunistic" | "cron" | "warming" | "recovery"
+            | "maintenance"),
+        ) => Some(raw),
+        _ => None,
+    }
+}
+
+fn class_matches(class: QueueClass, filter: Option<&str>) -> bool {
+    filter.is_none_or(|want| class.mode.label() == want || class.subtype.label() == want)
+}
+
+fn mark_matches(mark: &Mark, filter: Option<&str>) -> bool {
+    filter.is_none_or(|want| mark.mode == want || mark.subtype == want)
 }
 
 /// Parse a `YYYY-MM-DD` local date.
@@ -456,6 +547,7 @@ pub fn build_live(
     cfg: &crate::resolver::Config,
     date: &str,
     now: i64,
+    class_filter: Option<&str>,
 ) -> Result<Timeline, crate::agents::AgentCatalogError> {
     let snap = crate::queue::snapshot::Snapshot::capture(cfg, now);
     let projection = project(&snap.inputs(), &KindDurations::default(), 12 * 3600);
@@ -470,10 +562,11 @@ pub fn build_live(
         now,
         date,
         catalog: &catalog,
+        entries: &snap.entries,
         pending: &snap.pending,
         in_flight: &snap.in_flight,
         done_today: &snap.done_on(date),
-        pauses: &snap.pauses.pauses,
         projection: &projection,
+        class_filter,
     }))
 }

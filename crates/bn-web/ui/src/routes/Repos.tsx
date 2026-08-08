@@ -16,6 +16,29 @@ import { Card } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
 import { cn } from "../lib/utils";
 
+type RepoPoolPolicy = {
+  capacity: "hard";
+  min_ready: number;
+  controller_slot: number;
+  warming: "queued-heavy";
+  auto_queue: "enable-resize-lease-top-up";
+  leases: "active-work";
+  reservations: "not-supported";
+  stale_recovery: "clean-dead-only";
+  rules: string[];
+};
+
+type PolicyRepoPool = RepoPool & {
+  ready: number;
+  worker_idle: number;
+  needs_top_up: boolean;
+  full: boolean;
+  policy: RepoPoolPolicy;
+};
+
+type PolicyRepoRollup = RepoRollup & { pool: PolicyRepoPool };
+type PolicyReposView = { repos: PolicyRepoRollup[]; pool_policy?: RepoPoolPolicy };
+
 /** A small metadata tag on a card's meta row. */
 function Tag({
   children,
@@ -39,17 +62,16 @@ function Tag({
   );
 }
 
-/** Warm-pool trigger (#497): fire `bn wt pool warm --repo <repo>` — long-running, so the server
- * kicks it off detached and acks "started"; we toast the outcome and invalidate the repos query so
- * the refreshed slot counts appear. Lives inside the card `<Link>`, so the click is stopped from
- * bubbling into a navigation. */
+/** Warm-pool trigger (#497): queue the repo's heavy `pool-warm` job instead of starting an uncapped
+ * detached build. Lives inside the card `<Link>`, so the click is stopped from bubbling into a
+ * navigation. */
 function WarmButton({ repo }: { repo: string }) {
-  // Warming runs detached — the slot counts only move when the server has actually built them, so
-  // there is nothing to patch. The pending label plus the reconcile on settle is the honest story.
+  // The slot counts move only once the queue has admitted and completed the warm, so there is
+  // nothing honest to patch optimistically.
   const mut = useAppMutation({
     mutationFn: () => warmRepoPool(repo),
-    invalidates: affects.repos,
-    toast: { success: (r) => r.message ?? `Warming ${repo}`, error: `warm ${repo} failed` },
+    invalidates: affects.pool,
+    toast: { success: `Queued pool warm for ${repo}`, error: `Could not queue ${repo} pool warm` },
   });
   return (
     <Button
@@ -57,30 +79,32 @@ function WarmButton({ repo }: { repo: string }) {
       variant="secondary"
       size="sm"
       disabled={mut.isPending}
-      title={`Pre-build ${repo}'s pool slots (\`bn wt pool warm\`)`}
+      title={`Queue ${repo}'s pool warm job`}
       onClick={(e) => {
         // Don't let the tap navigate into the repo (the button sits inside the card link).
         e.preventDefault();
         e.stopPropagation();
-        if (window.confirm(`Warm ${repo}'s pool now? Builds every slot (long-running).`))
+        if (
+          window.confirm(`Queue a pool warm for ${repo}? Builds slots when the queue has capacity.`)
+        )
           mut.mutate();
       }}
     >
       <Flame className="h-3.5 w-3.5" />
-      {mut.isPending ? "warming…" : "warm pool"}
+      {mut.isPending ? "queueing…" : "queue warm"}
     </Button>
   );
 }
 
 /** Turn pooling on / off / resize for a repo. Enabling writes the pools config the idle `pool-warm`
- * cron reads, so one click is the whole setup — the cron builds the slots on its next idle pass and
- * keeps them warm from then on. Sits inside the card `<Link>`, so clicks are stopped from bubbling
- * into a navigation, same as the warm button. */
+ * cron reads and queues an immediate pool warm, so one click is the whole setup without building on
+ * the request path. Sits inside the card `<Link>`, so clicks are stopped from bubbling into a
+ * navigation, same as the warm button. */
 function PoolSizeControl({ repo, pool }: { repo: string; pool: RepoPool }) {
   const mut = useAppMutation<{ message: string }, number | null>({
     mutationFn: (size) => setRepoPool(repo, size),
     optimistic: setRepoPoolSize<number | null>(repo, (size) => size),
-    invalidates: affects.repos,
+    invalidates: affects.pool,
     toast: { success: (r) => r.message, error: repo },
   });
   const stop = (e: React.MouseEvent) => {
@@ -94,7 +118,7 @@ function PoolSizeControl({ repo, pool }: { repo: string; pool: RepoPool }) {
         variant="secondary"
         size="sm"
         disabled={mut.isPending}
-        title={`Pool ${repo} at ${MIN_POOL_SIZE} slots — the idle pool-warm cron keeps them warm`}
+        title={`Pool ${repo} at ${MIN_POOL_SIZE} slots and queue its first warm`}
         onClick={(e) => {
           stop(e);
           mut.mutate(MIN_POOL_SIZE);
@@ -142,11 +166,19 @@ function PoolSizeControl({ repo, pool }: { repo: string; pool: RepoPool }) {
   );
 }
 
+function poolNeedsTopUp(pool: PolicyRepoPool) {
+  return pool.enabled && pool.needs_top_up;
+}
+
+function poolIsFull(pool: PolicyRepoPool) {
+  return pool.enabled && pool.full;
+}
+
 /** The warm-pool strip (#497): a compact warm / leased / total indicator, a resize control and a
  * Warm button for a pooled repo; for an un-pooled one, the button that pools it. "pooling off" used
  * to be a dead badge — the config it reflects was hand-edited only, so a machine that had never
  * touched `~/.config/wt/pools` showed that state on every card with no way out of it. */
-function PoolStrip({ repo, pool, now }: { repo: string; pool: RepoPool; now: number }) {
+function PoolStrip({ repo, pool, now }: { repo: string; pool: PolicyRepoPool; now: number }) {
   if (!pool.enabled) {
     return (
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -158,10 +190,22 @@ function PoolStrip({ repo, pool, now }: { repo: string; pool: RepoPool; now: num
   }
   return (
     <div className="mt-2 flex flex-wrap items-center gap-1.5">
-      <Badge variant={pool.warm > 0 ? "ok" : "muted"} title="warm idle slots ready to lease">
+      <Badge
+        variant={pool.ready > 0 ? "ok" : "muted"}
+        title="idle warm worker slots ready to lease"
+      >
         <Flame className="h-3 w-3" />
-        {pool.warm}/{pool.total} warm
+        {pool.ready}/{Math.max(pool.total - 1, 0)} ready
       </Badge>
+      <Tag title="pool-warm is queued automatically on enable, resize, and lease top-up">
+        auto queue
+      </Tag>
+      {poolNeedsTopUp(pool) && (
+        <Tag className="bg-warn-muted text-warn" title="below min-ready; pool-warm should top up">
+          top-up pending
+        </Tag>
+      )}
+      {poolIsFull(pool) && <Tag title="all worker capacity is leased">full</Tag>}
       {pool.leased > 0 && <Tag>{pool.leased} leased</Tag>}
       {pool.last_warmed_ts != null && (
         <Tag title="last warmed">warmed {timeAgo(pool.last_warmed_ts, now)}</Tag>
@@ -170,6 +214,33 @@ function PoolStrip({ repo, pool, now }: { repo: string; pool: RepoPool; now: num
       <PoolSizeControl repo={repo} pool={pool} />
       <WarmButton repo={repo} />
     </div>
+  );
+}
+
+function PoolPolicyCard({ policy, repos }: { policy: RepoPoolPolicy; repos: PolicyRepoRollup[] }) {
+  const pooled = repos.filter((r) => r.pool.enabled).length;
+  const topUp = repos.filter((r) => poolNeedsTopUp(r.pool)).length;
+  const full = repos.filter((r) => poolIsFull(r.pool)).length;
+  return (
+    <Card className="mb-3 space-y-2 p-3">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="font-display text-sm font-semibold text-foreground">Warm-pool policy</span>
+        <Tag>hard capacity</Tag>
+        <Tag>min ready {policy.min_ready}</Tag>
+        <Tag>auto queue</Tag>
+        <span className="flex-1" />
+        <Tag>{pooled} pooled</Tag>
+        {topUp > 0 && <Tag className="bg-warn-muted text-warn">{topUp} need top-up</Tag>}
+        {full > 0 && <Tag>{full} full</Tag>}
+      </div>
+      <div className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-2 xl:grid-cols-3">
+        {policy.rules.map((rule) => (
+          <div key={rule} className="rounded-md bg-muted/60 px-2 py-1">
+            {rule}
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 
@@ -203,7 +274,7 @@ function ForgeLinkRow({ links }: { links: RepoRollup["links"] }) {
  * 30d AIC · last activity) · its forge links · a warm-pool strip (#497). Taps through to the repo's
  * session list. Reuses the Fleet card surface so the Repos board scans like the rest of the
  * dashboard. */
-function RepoCard({ repo, now }: { repo: RepoRollup; now: number }) {
+function RepoCard({ repo, now }: { repo: PolicyRepoRollup; now: number }) {
   const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
   return (
     <Card className="p-3 transition-colors hover:border-border/80 hover:bg-accent/40">
@@ -237,12 +308,11 @@ function RepoCard({ repo, now }: { repo: RepoRollup; now: number }) {
 }
 
 /**
- * `/repos` — the multi-repo navigation layer (#495, Epic #488). Every repo bn knows (its bare clones
- * on this machine + managed-repos config + branch-note store + live fleet + orchestrate runs), each
- * a card with a per-repo rollup: active agents, sessions, open PRs, cost, and last activity. A repo
- * bn has cloned but never worked in is a 0-session card at the bottom, not a missing one. Drilling
- * into a card opens that repo's session list (`/repos/:repo`). Hydrated from `/api/repos`, patched
- * by the fallback poll.
+ * `/repos` — the local repo inventory (#495, Epic #488). Cards represent repos with local evidence:
+ * a bare clone, a checked-out worktree, or a live/in-flight agent. Notes, managed config, and cost
+ * data decorate those cards but do not create them. A repo bn has cloned but never worked in is a
+ * 0-session card at the bottom, not a missing one. Drilling into a card opens that repo's session
+ * list (`/repos/:repo`). Hydrated from `/api/repos`, patched by the fallback poll.
  */
 /** The repo grid. `items-start` because grid cells otherwise stretch to their row's tallest
  * sibling, so a three-line repo card beside a nine-line one grew a void under its content. The
@@ -253,7 +323,9 @@ const GRID = "grid grid-cols-1 items-start gap-3 sm:grid-cols-2 xl:grid-cols-3 2
 export function Repos() {
   const repos = useQuery(reposQuery());
   const now = useNow();
-  const list = repos.data?.repos ?? [];
+  const data = repos.data as PolicyReposView | undefined;
+  const list = data?.repos ?? [];
+  const poolPolicy = data?.pool_policy ?? list[0]?.pool.policy;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -295,11 +367,14 @@ export function Repos() {
         )}
 
         {list.length > 0 && (
-          <div className={GRID}>
-            {list.map((r) => (
-              <RepoCard key={r.repo} repo={r} now={now} />
-            ))}
-          </div>
+          <>
+            {poolPolicy && <PoolPolicyCard policy={poolPolicy} repos={list} />}
+            <div className={GRID}>
+              {list.map((r) => (
+                <RepoCard key={r.repo} repo={r} now={now} />
+              ))}
+            </div>
+          </>
         )}
       </div>
     </div>

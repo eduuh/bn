@@ -3,8 +3,8 @@
 //! Its own module rather than more lines in `api.rs`/`actions.rs`: those two are already the
 //! largest files in the crate, and the queue's surface will keep growing as the epic lands.
 //!
-//! Reads fold `bn-core` directly; writes shell the CLI, so the browser and the terminal go through
-//! one implementation of what a pause scope means instead of two.
+//! Reads fold `bn-core` directly; writes shell the CLI, so the browser and terminal go through one
+//! implementation of each queue mutation.
 use crate::actions::{parse_body, respond_process, run_bn_env, MaybeAddr};
 use crate::state::AppState;
 use axum::body::Bytes;
@@ -14,8 +14,8 @@ use axum::Json;
 use bn_core::render::Envelope;
 use serde::Deserialize;
 
-/// `GET /api/queue` — the machine-wide queue: pauses in force, pending work by kind and lane, and
-/// what each node offers. The read behind "why is nothing running".
+/// `GET /api/queue` — the machine-wide queue: pending work by kind and lane, and what each node
+/// offers. The read behind "why is nothing running".
 pub async fn queue(State(state): State<AppState>) -> Json<Envelope> {
     let cfg = state.cfg.clone();
     let data = tokio::task::spawn_blocking(move || {
@@ -115,7 +115,8 @@ pub async fn queue_timeline(
             .date
             .filter(|d| bn_core::queue::timeline::parse_date(d).is_some())
             .unwrap_or_else(|| bn_core::util::local_date_of(now));
-        bn_core::queue::timeline::build_live(&cfg, &date, now).map_err(|error| error.to_string())
+        bn_core::queue::timeline::build_live(&cfg, &date, now, q.class.as_deref())
+            .map_err(|error| error.to_string())
     })
     .await;
     match result {
@@ -144,22 +145,10 @@ pub async fn queue_timeline(
 pub struct QueueTimelineQuery {
     #[serde(default)]
     pub date: Option<String>,
+    #[serde(default, rename = "class")]
+    pub class: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
-pub struct QueuePauseBody {
-    #[serde(default)]
-    pub scope: Option<String>,
-    #[serde(default)]
-    pub reason: Option<String>,
-    #[serde(default)]
-    pub until: Option<String>,
-}
-
-/// `POST /api/queue/pause {scope?, reason?, until?}` — stop the dispatcher starting new work.
-///
-/// Shells `bn queue pause` so the browser and the terminal write the same events through the same
-/// validation, rather than the dashboard growing its own idea of what a scope string means.
 /// `GET /api/queue/entries` — every backlog entry, filterable, not just what is waiting.
 ///
 /// Separate from `/api/queue` on purpose. That payload rides the SSE frame to every connected
@@ -175,12 +164,14 @@ pub async fn queue_entries(Query(q): Query<QueueEntriesQuery>) -> Json<Envelope>
         let want = q.status.as_deref().filter(|s| !s.is_empty() && *s != "all");
         let repo = q.repo.as_deref().filter(|r| !r.is_empty());
         let kind = q.kind.as_deref().filter(|k| !k.is_empty());
+        let class = q.class.as_deref().filter(|c| !c.is_empty() && *c != "all");
         let mut rows: Vec<_> = bl
             .entries()
             .iter()
             .filter(|e| want.is_none_or(|s| e.status.label() == s))
             .filter(|e| repo.is_none_or(|r| e.repo.eq_ignore_ascii_case(r)))
             .filter(|e| kind.is_none_or(|k| e.kind.label() == k))
+            .filter(|e| class.is_none_or(|c| queue_class_matches(e, c)))
             .cloned()
             .collect();
         // Most recently touched first: for anything terminal that is the order you care about, and
@@ -214,7 +205,13 @@ pub struct QueueEntriesQuery {
     pub status: Option<String>,
     pub repo: Option<String>,
     pub kind: Option<String>,
+    pub class: Option<String>,
     pub limit: Option<usize>,
+}
+
+fn queue_class_matches(entry: &bn_core::backlog::BacklogEntry, want: &str) -> bool {
+    let class = bn_core::queue::classify::classify(entry);
+    class.mode.label() == want || class.subtype.label() == want
 }
 
 /// `POST /api/queue/add` — enqueue work from the dashboard.
@@ -302,6 +299,53 @@ pub async fn queue_priority(
     respond_process(&state, cmd, "queue", addr, result)
 }
 
+/// `POST /api/queue/snooze` — defer one pending task without pausing the queue.
+pub async fn queue_snooze(
+    State(state): State<AppState>,
+    MaybeAddr(addr): MaybeAddr,
+    raw: Bytes,
+) -> Response {
+    let cmd = "queue-snooze";
+    let body: QueueSnoozeBody = match parse_body(cmd, &raw) {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    let args = vec![
+        "queue".to_string(),
+        "snooze".to_string(),
+        body.id,
+        "--for".to_string(),
+        body.for_duration,
+        "--repo".to_string(),
+        body.repo,
+    ];
+    let result = run_bn_env(args, None, Vec::new()).await;
+    respond_process(&state, cmd, "queue", addr, result)
+}
+
+/// `POST /api/queue/class` — override one pending task's derived class.
+pub async fn queue_class(
+    State(state): State<AppState>,
+    MaybeAddr(addr): MaybeAddr,
+    raw: Bytes,
+) -> Response {
+    let cmd = "queue-class";
+    let body: QueueClassBody = match parse_body(cmd, &raw) {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    let args = vec![
+        "queue".to_string(),
+        "class".to_string(),
+        body.id,
+        body.class,
+        "--repo".to_string(),
+        body.repo,
+    ];
+    let result = run_bn_env(args, None, Vec::new()).await;
+    respond_process(&state, cmd, "queue", addr, result)
+}
+
 /// Body for [`queue_add`].
 #[derive(Debug, Default, Deserialize)]
 pub struct QueueAddBody {
@@ -328,49 +372,17 @@ pub struct QueuePriorityBody {
     pub priority: i64,
 }
 
-pub async fn queue_pause(
-    State(state): State<AppState>,
-    MaybeAddr(addr): MaybeAddr,
-    raw: Bytes,
-) -> Response {
-    let cmd = "queue-pause";
-    let body: QueuePauseBody = match parse_body(cmd, &raw) {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
-    let mut args = vec![
-        "queue".to_string(),
-        "pause".to_string(),
-        "--scope".to_string(),
-        body.scope.unwrap_or_else(|| "all".to_string()),
-    ];
-    if let Some(reason) = body.reason.filter(|r| !r.trim().is_empty()) {
-        args.extend(["--reason".to_string(), reason]);
-    }
-    if let Some(until) = body.until.filter(|u| !u.trim().is_empty()) {
-        args.extend(["--until".to_string(), until]);
-    }
-    let result = run_bn_env(args, None, Vec::new()).await;
-    respond_process(&state, cmd, "queue", addr, result)
+#[derive(Debug, Default, Deserialize)]
+pub struct QueueSnoozeBody {
+    pub repo: String,
+    pub id: String,
+    #[serde(rename = "for")]
+    pub for_duration: String,
 }
 
-/// `POST /api/queue/resume {scope?}` — lift a pause.
-pub async fn queue_resume(
-    State(state): State<AppState>,
-    MaybeAddr(addr): MaybeAddr,
-    raw: Bytes,
-) -> Response {
-    let cmd = "queue-resume";
-    let body: QueuePauseBody = match parse_body(cmd, &raw) {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
-    let args = vec![
-        "queue".to_string(),
-        "resume".to_string(),
-        "--scope".to_string(),
-        body.scope.unwrap_or_else(|| "all".to_string()),
-    ];
-    let result = run_bn_env(args, None, Vec::new()).await;
-    respond_process(&state, cmd, "queue", addr, result)
+#[derive(Debug, Default, Deserialize)]
+pub struct QueueClassBody {
+    pub repo: String,
+    pub id: String,
+    pub class: String,
 }

@@ -2,11 +2,12 @@
 //!
 //! The durable store itself is [`crate::backlog`] — this module owns the *policy* around it:
 //! where an entry can run ([`place`]), and (as the queue lands) what kind of work it is, what it
-//! needs from a node, whether the queue is paused, and what the dispatcher decided.
+//! needs from a node, and what the dispatcher decided.
 //!
 //! Split from [`crate::scheduler`], which keeps the admission arithmetic (does the machine have
 //! room at all?) while this module answers placement (which box, and is it capable?).
 pub mod build;
+pub mod classify;
 pub mod decision;
 pub mod enqueue;
 pub mod jobs;

@@ -39,6 +39,10 @@ use prompts::repo_orchestrator_goal;
 // Shared helpers
 // ---------------------------------------------------------------------------
 
+fn sh_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
 /// The caller's socket address, or `None`. An infallible extractor: it reads the `ConnectInfo`
 /// (present in production via `into_make_service_with_connect_info`, absent under a bare test
 /// `oneshot`) from the request extensions and never rejects — so a handler can audit `remote_addr`
@@ -798,11 +802,29 @@ pub async fn cron_run(
     respond_process(&state, "cron-run", &job, addr, result)
 }
 
-/// `POST /api/repos/{repo}/pool/warm` → `bn wt pool warm --repo <repo>` (#497): pre-build every slot
-/// of a repo's warm worktree pool from the dashboard. Warming is LONG-RUNNING (a checkout + the
-/// repo's `build.sh` per slot), so the request must NOT block on it — the command is spawned detached
-/// (nulled stdio, reaped in the background) and the handler returns a "warming started" ack
-/// immediately. Open per #526 (loopback/LAN trust boundary), like the cron-run handler.
+fn pool_warm_queue_args(repo: &str) -> Vec<String> {
+    vec![
+        "queue".to_string(),
+        "add".to_string(),
+        format!("Warm pool for {repo}"),
+        "--repo".to_string(),
+        "machine".to_string(),
+        "--kind".to_string(),
+        "cron".to_string(),
+        "--job".to_string(),
+        "pool-warm".to_string(),
+        "--job-repo".to_string(),
+        repo.to_string(),
+        "--job-branch".to_string(),
+        "main".to_string(),
+    ]
+}
+
+/// `POST /api/repos/{repo}/pool/warm` → enqueue `pool-warm` for this repo (#497): pre-build every
+/// slot of a repo's warm worktree pool from the dashboard. Warming is LONG-RUNNING (a checkout +
+/// the repo's `build.sh` per slot), so the request schedules it through the machine-wide queue
+/// rather than spawning an uncapped detached build. The dispatcher admits the heavy job when the box
+/// has capacity and records it in the queue timeline.
 pub async fn repo_pool_warm(
     State(state): State<AppState>,
     MaybeAddr(addr): MaybeAddr,
@@ -814,8 +836,8 @@ pub async fn repo_pool_warm(
         return bad_request(cmd, "invalid_repo", "repo has invalid characters");
     }
     // Only a repo actually in the pools config can be warmed (warming is what materializes its
-    // slots), so reject an unpooled/unknown repo up front — otherwise the detached spawn would
-    // silently no-op (the CLI just prints "not pooled" and exits). Read via the shared bn-core pool.
+    // slots), so reject an unpooled/unknown repo up front rather than enqueueing a job that will
+    // later no-op. Read via the shared bn-core pool.
     if bn_core::pool::pool_size(&repo).is_none() {
         return bad_request(
             cmd,
@@ -823,43 +845,7 @@ pub async fn repo_pool_warm(
             "repo is not pooled — add it to the pools config first",
         );
     }
-    // `--repo=<value>` is a single unambiguous argv element (a value beginning with `-` can't be
-    // mistaken for a flag), passed straight to `Command` — no shell, mirroring the runner doctrine.
-    let repo_arg = format!("--repo={repo}");
-    let spawned = tokio::task::spawn_blocking(move || {
-        bn_runner::spawn_detached(&["wt", "pool", "warm", &repo_arg])
-    })
-    .await;
-    let result = match spawned {
-        Ok(Ok(pid)) => RunResult {
-            ok: true,
-            envelope: json!({
-                "ok": true,
-                "command": cmd,
-                "data": {
-                    "repo": repo,
-                    "status": "started",
-                    "pid": pid,
-                    "message": format!("warming pool for {repo} (running in the background)"),
-                },
-                "error": null,
-            }),
-        },
-        Ok(Err(e)) => RunResult {
-            ok: false,
-            envelope: json!({
-                "ok": false, "command": cmd, "data": null,
-                "error": { "code": "spawn_failed", "message": format!("failed to start warm: {e}") },
-            }),
-        },
-        Err(e) => RunResult {
-            ok: false,
-            envelope: json!({
-                "ok": false, "command": cmd, "data": null,
-                "error": { "code": "join_error", "message": e.to_string() },
-            }),
-        },
-    };
+    let result = run_bn(pool_warm_queue_args(&repo), None).await;
     respond_process(&state, "repo-pool-warm", &repo, addr, result)
 }
 
@@ -877,8 +863,9 @@ pub struct PoolSetBody {
 ///
 /// Writes the config in-process through `bn_core::pool` (the same edit `bn wt pool set` performs)
 /// rather than spawning the CLI — it's a small atomic file rewrite, not a long job, so the response
-/// can report the real outcome instead of an ack. Slots are not built here; the idle `pool-warm`
-/// cron picks the repo up, or the warm button builds them now.
+/// can report the real outcome instead of an ack. When pooling is enabled/resized, the handler also
+/// schedules the repo's `pool-warm` heavy job so the queue builds the new slots under the machine's
+/// normal capacity rules.
 pub async fn repo_pool_set(
     State(state): State<AppState>,
     MaybeAddr(addr): MaybeAddr,
@@ -922,22 +909,34 @@ pub async fn repo_pool_set(
         .map_err(|e| e.to_string())
         .and_then(|r| r.map_err(|e| e.to_string()));
     let result = match wrote {
-        Ok(()) => RunResult {
-            ok: true,
-            envelope: json!({
-                "ok": true,
-                "command": cmd,
-                "data": {
-                    "repo": repo,
-                    "size": size,
-                    "message": match size {
-                        Some(n) => format!("pooling {repo} at {n} slot(s)"),
-                        None => format!("stopped pooling {repo}"),
+        Ok(()) => {
+            let queued = if size.is_some() {
+                Some(run_bn(pool_warm_queue_args(&repo), None).await)
+            } else {
+                None
+            };
+            if let Some(result) = queued {
+                if !result.ok {
+                    return respond_process(&state, "repo-pool-set", &repo, addr, result);
+                }
+            }
+            RunResult {
+                ok: true,
+                envelope: json!({
+                    "ok": true,
+                    "command": cmd,
+                    "data": {
+                        "repo": repo,
+                        "size": size,
+                        "message": match size {
+                            Some(n) => format!("pooling {repo} at {n} slot(s); queued pool warm"),
+                            None => format!("stopped pooling {repo}"),
+                        },
                     },
-                },
-                "error": null,
-            }),
-        },
+                    "error": null,
+                }),
+            }
+        }
         Err(e) => RunResult {
             ok: false,
             envelope: json!({
@@ -2660,7 +2659,7 @@ pub async fn task_doc_edit(
 /// `POST /api/tasks/{id}/agent` — launch a task agent and return immediately.
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct TaskAgentBody {
-    /// `improve` or `triage`.
+    /// `enhance` (or legacy `improve`) or `triage`.
     pub agent: String,
     /// The operator's "things to look out for", passed into the seed.
     pub steer: Option<String>,
@@ -2681,44 +2680,56 @@ pub async fn task_agent(
     if id.is_empty() || id.len() > 32 || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
         return bad_request(cmd, "invalid_id", "task id must be alphanumeric (e.g. t42)");
     }
-    let agent = body.agent.trim().to_ascii_lowercase();
-    if !matches!(agent.as_str(), "improve" | "triage") {
-        return bad_request(cmd, "invalid_agent", "agent must be improve | triage");
+    let requested_agent = body.agent.trim().to_ascii_lowercase();
+    if !matches!(requested_agent.as_str(), "enhance" | "improve" | "triage") {
+        return bad_request(
+            cmd,
+            "invalid_agent",
+            "agent must be enhance | improve | triage",
+        );
     }
+    let agent = if requested_agent == "improve" {
+        "enhance".to_string()
+    } else {
+        requested_agent
+    };
 
-    // Built as argv, never a shell string — the steer text is operator input and must not be
-    // interpretable as anything but one argument.
-    let mut args: Vec<String> = vec!["task".into(), agent.clone()];
-    if agent == "improve" {
-        args.push(id.clone());
+    let shell = if agent == "enhance" {
+        let mut parts = vec![
+            "bn".to_string(),
+            "task".to_string(),
+            "enhance".to_string(),
+            sh_quote(&id),
+        ];
         if let Some(steer) = body
             .steer
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            args.push("--steer".into());
-            args.push(steer.to_string());
+            parts.push("--steer".to_string());
+            parts.push(sh_quote(steer));
         }
-    }
-    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-
-    // Detached: an LLM agent runs for minutes, and holding an axum worker for that would block a
-    // pooled thread with no progress and no way to cancel. The client watches the fleet instead.
-    let spawned = bn_runner::spawn_detached(&argv);
-    audit::record(&state, &format!("task-{agent}"), &id, addr, spawned.is_ok());
-    match spawned {
-        Ok(pid) => Json(Envelope::success(
-            cmd,
-            json!({
-                "id": id,
-                "agent": agent,
-                "started": true,
-                "pid": pid,
-                "watch": "/api/fleet",
-            }),
-        ))
-        .into_response(),
-        Err(e) => server_error(cmd, "spawn_failed", &e.to_string()),
-    }
+        parts.join(" ")
+    } else {
+        "bn task triage".to_string()
+    };
+    let result = run_bn(
+        vec![
+            "queue".into(),
+            "add".into(),
+            format!("task {agent} {id}"),
+            "--repo".into(),
+            "machine".into(),
+            "--kind".into(),
+            "cron".into(),
+            "--priority".into(),
+            "25".into(),
+            "--shell".into(),
+            shell,
+        ],
+        None,
+    )
+    .await;
+    respond_process(&state, &format!("task-{agent}"), &id, addr, result)
 }

@@ -3,12 +3,12 @@
 //! Vague tasks are the main cause of wasted autonomous runs. An agent handed "improve the
 //! dashboard" burns a worktree, a model budget and an hour producing something nobody asked for.
 //! So a task must be **S**pecific, **M**easurable, **A**chievable, **R**elevant and **T**ime-bound
-//! before it may enter execution, and failing the bar routes it to the improve agent rather than
+//! before it may enter execution, and failing the bar routes it to the enhance agent rather than
 //! to an executor.
 //!
 //! # Codes, not prose
 //!
-//! Every gap carries a stable [`SmartGap::code`]. Routing switches on the code — the improve agent
+//! Every gap carries a stable [`SmartGap::code`]. Routing switches on the code — the enhance agent
 //! needs a machine-readable reason, and matching on a human sentence would break the moment
 //! someone improves the wording.
 //!
@@ -72,7 +72,7 @@ pub struct SmartVerdict {
 }
 
 impl SmartVerdict {
-    /// Whether any gap needs a person rather than the improve agent.
+    /// Whether any gap needs a person rather than the enhance agent.
     pub fn needs_human(&self) -> bool {
         self.gaps.iter().any(|g| g.human_only)
     }
@@ -267,7 +267,7 @@ pub fn check(
     }
 
     // A blocked task is not un-scoped, it is waiting — no agent can fix that, so it goes to a
-    // person rather than looping through the improve agent until the backstop gives up.
+    // person rather than looping through the enhance agent until the backstop gives up.
     if doc
         .and_then(|d| d.section("Blockers"))
         .is_some_and(|b| !b.trim().is_empty())

@@ -790,8 +790,8 @@ fn run_task_agent(cfg: &Config, label: &str, packet: &str, dry_run: bool) -> Tas
     }
 }
 
-/// `bn task improve <id>` — make one task executable.
-pub(crate) fn emit_task_improve(
+/// `bn task enhance <id>` — make one task executable.
+pub(crate) fn emit_task_enhance(
     cfg: &Config,
     id: Option<&str>,
     steer: Option<&str>,
@@ -808,7 +808,7 @@ pub(crate) fn emit_task_improve(
             .tasks()
             .find(|t| t.id() == Some(id))
             .cloned()
-            .unwrap_or_else(|| fail(&format!("bn task improve: no task {id}"))),
+            .unwrap_or_else(|| fail(&format!("bn task enhance: no task {id}"))),
         // `--due` picks the work the gate actually rejected, highest-ranked first — the queue the
         // idle loop drains. A `stuck` task is excluded: three agents already failed at it, so it
         // is waiting on a person, not on another attempt.
@@ -826,7 +826,7 @@ pub(crate) fn emit_task_improve(
                 }
             }
         }
-        (None, false) => fail("bn task improve: pass a task id, or --due for the next one"),
+        (None, false) => fail("bn task enhance: pass a task id, or --due for the next one"),
     };
 
     let task_id = task.id().unwrap_or("?").to_string();
@@ -843,7 +843,7 @@ pub(crate) fn emit_task_improve(
     if !dry_run && !as_json {
         println!("Improving {task_id} — fails on: {}", verdict.codes().join(", "));
     }
-    let run = run_task_agent(cfg, "task-improve", &packet, dry_run);
+    let run = run_task_agent(cfg, "task-enhance", &packet, dry_run);
     if as_json {
         let data = serde_json::json!({
             "id": task_id,
@@ -852,7 +852,7 @@ pub(crate) fn emit_task_improve(
             "launched": run.launched,
             "output": run.output,
         });
-        println!("{}", Envelope::success("task_improve", data).to_json());
+        println!("{}", Envelope::success("task_enhance", data).to_json());
         return;
     }
     if dry_run {

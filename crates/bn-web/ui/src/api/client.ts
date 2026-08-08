@@ -156,10 +156,11 @@ export const queryKeys = {
   queueEvents: (since: string, kind: string, repo: string) =>
     ["queue", "events", since, kind, repo] as const,
   /** Every backlog entry (#queue), keyed by its filters. */
-  queueEntries: (status: string, repo: string, kind: string) =>
-    ["queue", "entries", status, repo, kind] as const,
-  /** The day timeline (#queue), keyed by the date it renders. */
-  queueTimeline: (date?: string) => ["queue-timeline", date ?? "today"] as const,
+  queueEntries: (status: string, repo: string, kind: string, klass: string) =>
+    ["queue", "entries", status, repo, kind, klass] as const,
+  /** The day timeline (#queue), keyed by the date and class it renders. */
+  queueTimeline: (date?: string, klass?: string) =>
+    ["queue-timeline", date ?? "today", klass ?? ""] as const,
   /** Today's scheduled Markdown agents (#575). */
   todayAgents: ["today-agents"] as const,
   /** Today's one *hosted* agent — the live session the Today page streams and steers. */
@@ -428,7 +429,7 @@ export function todayCronsQuery() {
   };
 }
 
-/** The machine-wide work queue (#queue): pauses, pending by kind, nodes, and the last tick's
+/** The machine-wide work queue (#queue): pending by kind, nodes, and the last tick's
  * decision. Live via the `queue` SSE frame; the interval is the fallback. */
 export function queueQuery() {
   return {
@@ -461,13 +462,19 @@ export function queueEventsQuery(opts: { since: string; kind: string; repo: stri
  *
  * Separate from `queueQuery`, which carries only the pending set because it rides the SSE frame to
  * every browser on every change. History is asked for far less often than it would be pushed. */
-export function queueEntriesQuery(opts: { status: string; repo: string; kind: string }) {
+export function queueEntriesQuery(opts: {
+  status: string;
+  repo: string;
+  kind: string;
+  class?: string;
+}) {
   const params = new URLSearchParams();
   if (opts.status) params.set("status", opts.status);
   if (opts.repo) params.set("repo", opts.repo);
   if (opts.kind) params.set("kind", opts.kind);
+  if (opts.class) params.set("class", opts.class);
   return {
-    queryKey: queryKeys.queueEntries(opts.status, opts.repo, opts.kind),
+    queryKey: queryKeys.queueEntries(opts.status, opts.repo, opts.kind, opts.class ?? ""),
     queryFn: () => fetchEnvelope<QueueEntriesView>(`/api/queue/entries?${params.toString()}`),
     refetchInterval: 60_000,
   };
@@ -476,13 +483,15 @@ export function queueEntriesQuery(opts: { status: string; repo: string; kind: st
 /** The day timeline (#queue) — running / scheduled / projected / done, on one hour axis. The
  * projection replays the dispatcher forward, so it changes as capacity does; a minute is well
  * inside the resolution of a 20-minute mark. */
-export function queueTimelineQuery(date?: string) {
+export function queueTimelineQuery(date?: string, klass?: string) {
+  const params = new URLSearchParams();
+  if (date) params.set("date", date);
+  if (klass) params.set("class", klass);
+  const qs = params.toString();
   return {
-    queryKey: queryKeys.queueTimeline(date),
+    queryKey: queryKeys.queueTimeline(date, klass),
     queryFn: () =>
-      fetchEnvelope<QueueTimelineView>(
-        date ? `/api/queue/timeline?date=${encodeURIComponent(date)}` : "/api/queue/timeline",
-      ),
+      fetchEnvelope<QueueTimelineView>(qs ? `/api/queue/timeline?${qs}` : "/api/queue/timeline"),
     refetchInterval: 60_000,
   };
 }
@@ -538,9 +547,9 @@ export function goalsQuery() {
   };
 }
 
-/** The multi-repo navigation rollup (#495): every repo bn knows + its per-repo rollup and session
- * list. A fold over Notes / Fleet / Orchestrate / Cost, so a slow fallback poll is plenty (the SSE
- * `fleet`/`orchestrate` frames keep the underlying live data fresh on the Fleet surface). */
+/** The local repo inventory (#495): local repos plus their per-repo rollup and session list. A fold
+ * over local clone state / Notes / Fleet / Orchestrate / Cost, so a slow fallback poll is plenty
+ * (the SSE `fleet`/`orchestrate` frames keep the underlying live data fresh on the Fleet surface). */
 export function reposQuery() {
   return {
     queryKey: queryKeys.repos,

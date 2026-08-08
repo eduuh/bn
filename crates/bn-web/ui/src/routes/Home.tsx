@@ -63,7 +63,7 @@ import { Research } from "./Research";
  * exists so the operator is told *why* before clicking, not to decide whether it is allowed.
  *
  * Both halves are required, because two different agents contribute one each: `triage` picks what
- * is doable today and stamps `day:`, `enhance` (the improve agent) makes the task SMART and records
+ * is doable today and stamps `day:`, `enhance` makes the task SMART and records
  * `smart:`. A future `day:` is deliberately not startable — it was triaged for another day.
  */
 function isTriaged(task: TaskRow, today: string): boolean {
@@ -356,7 +356,7 @@ function ReadyRow({ task, today, letter }: { task: TaskRow; today: string; lette
     toast: { success: `Started ${task.id}`, error: `Could not start ${task.id}` },
   });
   const enhance = useAppMutation({
-    mutationFn: () => taskAgent(task.id, "improve"),
+    mutationFn: () => taskAgent(task.id, "enhance"),
     invalidates: affects.agentLaunch,
     toast: {
       success: `Enhance agent started on ${task.id} — watch the fleet`,
@@ -407,7 +407,7 @@ function ReadyRow({ task, today, letter }: { task: TaskRow; today: string; lette
 
 /** A task in the **enhance queue** — not yet triaged. Start is present but disabled: an absent
  * button would read as "this task cannot be started ever", when the truth is "not yet, and here is
- * what to do". `Enhance` runs the improve agent that scopes it toward the SMART gate. */
+ * what to do". `Enhance` scopes it toward the SMART gate. */
 function EnhanceQueueRow({
   task,
   today,
@@ -420,7 +420,7 @@ function EnhanceQueueRow({
   const [cancelling, setCancelling] = useState(false);
   const reason = blockedReason(task, today);
   const enhance = useAppMutation<unknown, string>({
-    mutationFn: (steer) => taskAgent(task.id, "improve", steer || undefined),
+    mutationFn: (steer) => taskAgent(task.id, "enhance", steer || undefined),
     invalidates: affects.agentLaunch,
     toast: {
       success: `Enhance agent started on ${task.id} — watch the fleet`,
@@ -492,7 +492,7 @@ function EnhanceQueueRow({
 function AttnRow({ item }: { item: AttnItem }) {
   const investigate = useAppMutation<unknown, string>({
     // Investigation is a task agent too: it enhances the record before anything executes.
-    mutationFn: (steer) => taskAgent(item.id, "improve", steer || undefined),
+    mutationFn: (steer) => taskAgent(item.id, "enhance", steer || undefined),
     invalidates: affects.agentLaunch,
     toast: { success: `Investigating ${item.id} — watch the fleet`, error: "Could not start" },
   });
@@ -700,7 +700,7 @@ function RepoIssueGroup({ repo }: { repo: RepoIssues }) {
  * `/` — the task-first home (#1006, EPIC #993), reorganised as **the task lifecycle** (#1033) and
  * given the deck redesign: each task is a card carrying its work-order letter, its provenance
  * (`src`) and doc, and a right-click menu of the real transitions out of its state. The untriaged
- * pile is the **enhance queue** — where the improve agent scopes work toward the SMART gate — so
+ * pile is the **enhance queue** — where the enhance agent scopes work toward the SMART gate — so
  * everything in *Ready to start* is already enhanced.
  *
  * Start appears only on triaged work, which the server enforces independently (409 `not_triaged`),

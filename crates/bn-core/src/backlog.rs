@@ -390,6 +390,46 @@ impl Backlog {
         Some(e.clone())
     }
 
+    /// Snooze a pending entry until `not_before`.
+    pub fn snooze(
+        &mut self,
+        repo: &str,
+        id: &str,
+        not_before: i64,
+        now: i64,
+    ) -> Option<BacklogEntry> {
+        let e = self
+            .entries
+            .iter_mut()
+            .find(|e| e.repo == repo && e.id == id)?;
+        if e.status != BacklogStatus::Pending || e.not_before == Some(not_before) {
+            return None;
+        }
+        e.not_before = Some(not_before);
+        e.updated_at = now;
+        Some(e.clone())
+    }
+
+    /// Override a pending entry's derived queue class.
+    pub fn set_class_override(
+        &mut self,
+        repo: &str,
+        id: &str,
+        class_override: Option<ClassOverride>,
+        now: i64,
+    ) -> Option<BacklogEntry> {
+        let e = self
+            .entries
+            .iter_mut()
+            .find(|e| e.repo == repo && e.id == id)?;
+        if e.status != BacklogStatus::Pending || e.class_override == class_override {
+            return None;
+        }
+        e.class_override = class_override;
+        e.updated_at = now;
+        Some(e.clone())
+    }
+
     pub fn reprioritize(
         &mut self,
         repo: &str,
@@ -596,6 +636,44 @@ pub fn set_priority(
     let _lock = FileLock::acquire_required(path)?;
     let mut bl = load(path);
     match bl.set_priority(repo, id, priority, now) {
+        Some(entry) => {
+            append_line(path, &entry)?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// Snooze a pending `(repo, id)` entry until `not_before`.
+pub fn snooze(
+    path: &Path,
+    repo: &str,
+    id: &str,
+    not_before: i64,
+    now: i64,
+) -> std::io::Result<bool> {
+    let _lock = FileLock::acquire_required(path)?;
+    let mut bl = load(path);
+    match bl.snooze(repo, id, not_before, now) {
+        Some(entry) => {
+            append_line(path, &entry)?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// Set or clear a pending `(repo, id)` entry's class override.
+pub fn set_class_override(
+    path: &Path,
+    repo: &str,
+    id: &str,
+    class_override: Option<ClassOverride>,
+    now: i64,
+) -> std::io::Result<bool> {
+    let _lock = FileLock::acquire_required(path)?;
+    let mut bl = load(path);
+    match bl.set_class_override(repo, id, class_override, now) {
         Some(entry) => {
             append_line(path, &entry)?;
             Ok(true)

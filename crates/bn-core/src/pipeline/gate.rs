@@ -13,7 +13,7 @@
 //!
 //! Stamps the verdict onto the task (`smart:fail`, `smart_at:`, `smart_tries:`) and raises one
 //! idempotent attention item keyed `attn:smart:<task-id>` carrying the gap codes and their fixes.
-//! The improve agent (#1002) picks that up, rewrites the context doc, and the next transition
+//! The enhance agent (#1002) picks that up, rewrites the context doc, and the next transition
 //! re-checks.
 //!
 //! # The backstop
@@ -28,7 +28,7 @@ use crate::resolver::Config;
 use crate::smart::{self, SmartVerdict};
 use crate::todo::Task;
 
-/// How many times the improve agent may try before a task is handed to a person.
+/// How many times the enhance agent may try before a task is handed to a person.
 pub const MAX_IMPROVE_TRIES: i64 = 3;
 
 /// Meta keys the gate writes onto a task.
@@ -76,9 +76,9 @@ impl GateDecision {
                 "{task_id} is not ready to execute ({}){}",
                 verdict.codes().join(", "),
                 if *stuck {
-                    " — needs you; the improve agent has given up".to_string()
+                    " — needs you; the enhance agent has given up".to_string()
                 } else {
-                    format!(" — improve attempt {tries}/{MAX_IMPROVE_TRIES} queued")
+                    format!(" — enhance attempt {tries}/{MAX_IMPROVE_TRIES} queued")
                 }
             )),
             _ => None,
@@ -93,7 +93,7 @@ impl GateDecision {
 /// is both simpler and stricter than gating one specific edge.
 ///
 /// This is the *machine* gate — it asks whether the task is well-formed enough to work on, and a
-/// refusal is handed to the improve agent, not to a person. The human's per-stage `hold` policy is
+/// refusal is handed to the enhance agent, not to a person. The human's per-stage `hold` policy is
 /// a separate question asked after this one; see [`super::stage::transition`] for the ordering.
 pub fn is_smart_gated(stage: Stage) -> bool {
     stage == Stage::Investigate
@@ -228,7 +228,7 @@ fn record_refusal(
     // A bn-authored prompt that points at the durable record, following `promote_todo`'s
     // discipline — the agent reads the task and its doc rather than being handed their contents.
     let prompt = format!(
-        "Run `bn task improve {id}`. It failed the SMART gate on: {}. \
+        "Run `bn task enhance {id}`. It failed the SMART gate on: {}. \
          Read the task and its context doc, close each gap, then re-check.",
         verdict.codes().join(", ")
     );
@@ -236,7 +236,7 @@ fn record_refusal(
     let key = format!("attn:smart:{id}");
 
     // `add_new` refreshes a keyed item's title/severity/detail in place — but **not its `mode`**.
-    // So a task that was raised as `auto` (fixable by the improve agent) and has now gone `stuck`
+    // So a task that was raised as `auto` (fixable by the enhance agent) and has now gone `stuck`
     // would keep its auto flag and stay eligible for unattended pickup: the loop would keep
     // grabbing a task nobody can fix. Retire the old record first so the replacement is genuinely
     // manual. Terminal removal also frees the key, which is what lets the fresh add through.
@@ -260,7 +260,7 @@ fn record_refusal(
         link: None,
         key: Some(&key),
         detail: Some(&detail),
-        // A stuck task waits for a person; a fixable one is fair game for the improve agent.
+        // A stuck task waits for a person; a fixable one is fair game for the enhance agent.
         mode: Some(if stuck { "manual" } else { "auto" }),
         prompt: Some(&prompt),
         task_type: Some("planning"),

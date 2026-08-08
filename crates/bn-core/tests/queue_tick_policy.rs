@@ -7,8 +7,8 @@
 use bn_core::backlog::{AddSpec, BacklogEntry, ExecutionTarget};
 use bn_core::hosts::{NodeRecord, NodeStatus};
 use bn_core::queue::kind::{BacklogKind, ExecSpec};
-use bn_core::queue::pause::{Pause, PauseScope, PauseState};
-use bn_core::queue::tick::{plan_tick, DeferReason, KindCaps, TickInputs, TickPlan};
+use bn_core::queue::pause::PauseState;
+use bn_core::queue::tick::{plan_tick, DeferReason, KindCaps, Presence, TickInputs, TickPlan};
 use bn_core::scheduler::{Caps, Observed};
 
 const NOW: i64 = 1_000_000;
@@ -65,6 +65,21 @@ fn shell(id: &str, priority: i64) -> BacklogEntry {
     )
 }
 
+fn heavy_job(id: &str, priority: i64) -> BacklogEntry {
+    let mut e = pending(
+        id,
+        BacklogKind::Cron,
+        priority,
+        ExecSpec::Job {
+            job: "pool-warm".to_string(),
+            repo: None,
+            branch: None,
+        },
+    );
+    e.heavy = true;
+    e
+}
+
 fn agent(id: &str, priority: i64) -> BacklogEntry {
     pending(id, BacklogKind::Ship, priority, ExecSpec::Agent)
 }
@@ -73,11 +88,11 @@ fn agent(id: &str, priority: i64) -> BacklogEntry {
 struct Fixture {
     pending: Vec<BacklogEntry>,
     nodes: Vec<NodeRecord>,
-    pause: PauseState,
     caps: Caps,
     kind_caps: KindCaps,
     observed: Observed,
     max_express: usize,
+    presence: Presence,
 }
 
 impl Default for Fixture {
@@ -85,11 +100,14 @@ impl Default for Fixture {
         Fixture {
             pending: Vec::new(),
             nodes: vec![local_node()],
-            pause: PauseState::default(),
             caps: caps(4, Some(2)),
             kind_caps: KindCaps(Default::default()),
             observed: Observed::default(),
             max_express: 20,
+            presence: Presence {
+                idle: true,
+                away_window: false,
+            },
         }
     }
 }
@@ -99,7 +117,6 @@ impl Fixture {
         plan_tick(&TickInputs {
             now: NOW,
             machine: "testbox",
-            pause: &self.pause,
             pending: &self.pending,
             in_flight: &[],
             nodes: &self.nodes,
@@ -111,6 +128,7 @@ impl Fixture {
             attention: &[],
             max_express: self.max_express,
             windows: &[],
+            presence: self.presence,
         })
     }
 }
@@ -204,6 +222,31 @@ fn express_still_runs_the_highest_priority_first() {
     assert!(started(&f.plan()).contains(&"winner".to_string()));
 }
 
+#[test]
+fn heavy_background_work_uses_spare_lane_capacity_last() {
+    // Pool warming is autonomous maintenance: it should happen when capacity exists, but never
+    // jump ahead of ordinary queued work and never bypass the lane cap as express cron work does.
+    let f = Fixture {
+        pending: vec![
+            heavy_job("warm", bn_core::queue::jobs::HEAVY_PRIORITY),
+            pending(
+                "research",
+                BacklogKind::Research,
+                bn_core::queue::jobs::CRON_PRIORITY,
+                ExecSpec::Agent,
+            ),
+        ],
+        caps: caps(1, Some(1)),
+        ..Default::default()
+    };
+    let plan = f.plan();
+    assert_eq!(started(&plan), vec!["research"]);
+    assert!(matches!(
+        reason_for(&plan, "warm"),
+        Some(DeferReason::Capacity(_))
+    ));
+}
+
 // ---------------------------------------------------------------------------- capacity
 
 #[test]
@@ -259,101 +302,15 @@ fn a_per_kind_ceiling_binds_inside_a_lane_that_still_has_room() {
 // ---------------------------------------------------------------------------- pause
 
 #[test]
-fn a_pause_defers_rather_than_looking_like_capacity() {
-    // Gating late is the failure mode: an operator who paused the queue must not be told the
-    // machine is full.
-    let f = Fixture {
-        pending: vec![agent("held", 10)],
-        pause: PauseState {
-            pauses: vec![Pause {
-                scope: PauseScope::All,
-                since: NOW - 10,
-                reason: "testing".to_string(),
-                until: None,
-            }],
-        },
-        ..Default::default()
-    };
-    let plan = f.plan();
-    assert!(started(&plan).is_empty());
-    assert!(matches!(
-        reason_for(&plan, "held"),
-        Some(DeferReason::Paused(_))
-    ));
-}
-
-#[test]
-fn recovery_work_runs_through_a_pause() {
-    // You pause when the machine is unhappy, which is exactly when the passes that fix it matter.
-    let mut recovery = shell("supervise", 50);
-    recovery.recovery = true;
-    let f = Fixture {
-        pending: vec![recovery, shell("ordinary", 50)],
-        pause: PauseState {
-            pauses: vec![Pause {
-                scope: PauseScope::All,
-                since: NOW - 10,
-                reason: "machine unhappy".to_string(),
-                until: None,
-            }],
-        },
-        ..Default::default()
-    };
-    let plan = f.plan();
-    assert_eq!(started(&plan), vec!["supervise"]);
-    assert!(matches!(
-        reason_for(&plan, "ordinary"),
-        Some(DeferReason::Paused(_))
-    ));
-}
-
-#[test]
-fn a_scoped_pause_only_stops_what_it_names() {
-    let f = Fixture {
-        pending: vec![agent("ship-work", 10), shell("cron-work", 10)],
-        pause: PauseState {
-            pauses: vec![Pause {
-                scope: PauseScope::Kind {
-                    kind: BacklogKind::Ship,
-                },
-                since: NOW - 10,
-                reason: String::new(),
-                until: None,
-            }],
-        },
-        ..Default::default()
-    };
-    let plan = f.plan();
-    assert_eq!(started(&plan), vec!["cron-work"]);
-    assert!(matches!(
-        reason_for(&plan, "ship-work"),
-        Some(DeferReason::Paused(_))
-    ));
-}
-
-#[test]
-fn an_expired_pause_no_longer_blocks() {
-    // Expiry is folded on READ rather than by a timer, so a machine that slept past it wakes up
-    // running. That means it has to be exercised through `fold` — a hand-built `PauseState` has
-    // not been through the step that drops it.
+fn an_expired_pause_is_not_in_historical_state() {
     let events = vec![pause_event(NOW - 100, "all", Some(NOW - 1))];
-    let f = Fixture {
-        pending: vec![shell("work", 10)],
-        pause: PauseState::fold(&events, NOW),
-        ..Default::default()
-    };
-    assert_eq!(started(&f.plan()), vec!["work"]);
+    assert!(!PauseState::fold(&events, NOW).is_paused());
 }
 
 #[test]
-fn a_pause_that_has_not_expired_still_blocks() {
+fn an_unexpired_historical_pause_still_folds_open() {
     let events = vec![pause_event(NOW - 100, "all", Some(NOW + 60))];
-    let f = Fixture {
-        pending: vec![shell("work", 10)],
-        pause: PauseState::fold(&events, NOW),
-        ..Default::default()
-    };
-    assert!(started(&f.plan()).is_empty());
+    assert!(PauseState::fold(&events, NOW).is_paused());
 }
 
 #[test]

@@ -40,7 +40,12 @@ pub const SOURCE_TASK: &str = "task";
 
 /// Prompt openers bn itself writes for task-derived items. A prompt that does not begin with one
 /// of these was not composed by us, so it cannot be trusted to be instruction-free.
-pub const BN_TASK_PROMPT_PREFIXES: [&str; 2] = ["Run `bn task improve ", "Run `bn task "];
+pub const BN_TASK_PROMPT_PREFIXES: [&str; 3] = [
+    "Run `bn task enhance ",
+    // Legacy prompt text from before enhance became the canonical task agent name.
+    "Run `bn task improve ",
+    "Run `bn task ",
+];
 
 /// Why an item may not run unattended. Stable strings — callers log and test on these.
 pub type Denial = &'static str;

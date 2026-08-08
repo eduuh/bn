@@ -21,7 +21,7 @@ import { Skeleton } from "./ui/skeleton";
  * promises, and from the outside those two are indistinguishable.
  *
  * The states are ordered by distance from executable rather than by size, because that ordering is
- * the diagnosis: a reservoir that is all `needs scoping` waits on the improve agent, one that is
+ * the diagnosis: a reservoir that is all `needs scoping` waits on the enhance agent, one that is
  * all `ready` waits on capacity, and one that is all `needs you` waits on a person. Three unrelated
  * problems that a single "waiting" number cannot tell apart.
  */
@@ -34,7 +34,7 @@ const STATES = [
     field: "needs_scoping",
     label: "needs scoping",
     tone: "amber",
-    hint: "No SMART verdict yet — the gate sends these to the improve agent before anything may execute them.",
+    hint: "No SMART verdict yet — the gate sends these to the enhance agent before anything may execute them.",
   },
   {
     key: "ok",
@@ -48,7 +48,7 @@ const STATES = [
     field: "failed",
     label: "improving",
     tone: "blue",
-    hint: "Refused by the gate; the improve agent is still retrying.",
+    hint: "Refused by the gate; the enhance agent is still retrying.",
   },
   {
     key: "stuck",

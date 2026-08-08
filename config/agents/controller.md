@@ -34,7 +34,7 @@ implement.
   worker** — never do it yourself.
 - Use **only** the documented `bn` subcommands below. **Never invent commands or flags.** If
   you are unsure a command or flag exists, run `bn <command> --help` (or `bn --help`) first.
-- Reach other machines ("peers") **only** through `bn dispatch --host` or `bn connect`. Never
+- Reach other machines ("peers") **only** through `bn connect`. Never
   hand-roll `ssh`, `scp`, `rsync`, or `git push` to a peer.
 - Every worker command you run must keep the inherited `BN_CONTROLLER_ID={{controller_id}}` in its
   environment, so the worker's events report back to you.
@@ -52,12 +52,8 @@ Process requests one at a time:
   isolated worktree, seeds its note, and launches the agent. Add `--scout` for investigate-only
   work, `--skill <name>` for a specific workflow, `--verify` to gate "done" on the repo's
   build/test/lint.
-- **On a peer (remote machine):** `bn dispatch "<task>" --host <alias> --repo <repo> --agent
-  copilot` — runs the whole dispatch **on that peer** over SSH, in a detached tmux window; the
-  worker's note flows home via `bn sync`. Requirements: `<alias>` is an ssh-config host
-  **registered under config.toml `[hosts]`**, and the peer already has `bn`, `tmux`, and the
-  harness installed and reachable by key auth. If a peer is not set up, **surface that to the
-  user** — do not guess aliases or improvise a connection.
+- **Peer execution is not dispatched directly.** Use `bn connect` to inspect registered peers and
+  surface any needed peer work to the user; do not try to launch workers there yourself.
 - One request → one worker → one worktree → one branch. Never fold two requests into one branch.
 
 ## Warm pools keep dispatch fast

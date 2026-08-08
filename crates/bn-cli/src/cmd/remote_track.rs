@@ -1,12 +1,12 @@
-//! Remote-run tracking (#282) — surface `bn dispatch --remote` runs in `bn status` / `bn fleet`.
+//! Legacy remote-run tracking (#282) — surface historical remote runs in `bn status` / `bn fleet`.
 //!
-//! `bn dispatch --remote` records a triggered GitHub Actions run as a `remote-run:` line in the
-//! branch note (the durable record). This module reads those lines back, reconciles the still-open
-//! ones against live `gh` (state + linked PR) via [`bn_core::remote::reconcile_remote_run`], maps
-//! the outcome onto the #271 taxonomy, and renders them alongside local tmux agents. On `bn status`
-//! it also persists a run's terminal state + PR URL into the note (so a run that finished while the
-//! machine was off is reconciled on the next render) and emits one `remote_run` ledger event tagged
-//! `backend=remote` for the economics view (#267/#381) — a column only, no cost math here.
+//! Older builds recorded a triggered GitHub Actions run as a `remote-run:` line in the branch note
+//! (the durable record). This module reads those lines back, reconciles the still-open ones against
+//! live `gh` (state + linked PR) via [`bn_core::remote::reconcile_remote_run`], maps the outcome onto
+//! the #271 taxonomy, and renders them alongside local tmux agents. On `bn status` it also persists
+//! a run's terminal state + PR URL into the note (so a run that finished while the machine was off
+//! is reconciled on the next render) and emits one `remote_run` ledger event tagged `backend=remote`
+//! for the economics view (#267/#381) — a column only, no cost math here.
 //!
 //! The note-record format + parsing live here (one source of truth); the taxonomy mapping and the
 //! `gh` reconcile live in `bn_core::remote` behind the `CommandRunner` seam so both are unit-tested.
@@ -24,6 +24,46 @@ use std::time::Duration;
 
 /// The collab-section prefix marking a triggered remote-run record.
 const RECORD_PREFIX: &str = "remote-run: ";
+const LEGACY_REMOTE_WORKFLOW: &str = "claude-dispatch.yml";
+
+fn parse_run_rows(stdout: &str) -> Vec<(u64, String)> {
+    stdout
+        .lines()
+        .filter_map(|l| {
+            let (id, name) = l.split_once('\t')?;
+            let id = id.trim().parse::<u64>().ok()?;
+            Some((id, name.trim().to_string()))
+        })
+        .collect()
+}
+
+fn run_matching_corr(rows: &[(u64, String)], corr: &str) -> Option<u64> {
+    if corr.is_empty() {
+        return None;
+    }
+    rows.iter()
+        .find(|(_, name)| name.contains(corr))
+        .map(|(id, _)| *id)
+}
+
+fn run_list_args(slug: &str) -> Vec<String> {
+    vec![
+        "run".into(),
+        "list".into(),
+        "--workflow".into(),
+        LEGACY_REMOTE_WORKFLOW.into(),
+        "-R".into(),
+        slug.into(),
+        "--event".into(),
+        "workflow_dispatch".into(),
+        "-L".into(),
+        "30".into(),
+        "--json".into(),
+        "databaseId,name".into(),
+        "-q".into(),
+        ".[] | [.databaseId, .name] | @tsv".into(),
+    ]
+}
 
 /// One parsed `remote-run:` branch-note record — the durable half of a remote dispatch. `run_id`
 /// is `None` while a just-triggered run hasn't surfaced yet (recorded as `pending`); `corr` is the
@@ -506,5 +546,3 @@ pub(crate) fn render_line(v: &RemoteRunView) -> String {
     };
     format!("  {mark} gh  run {id}  {}{pr}{seed}", v.slug)
 }
-
-

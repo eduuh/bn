@@ -54,7 +54,6 @@ pub(crate) mod queue_timeline;
 pub(crate) mod recall;
 pub(crate) mod references;
 pub(crate) mod release;
-pub(crate) mod remote;
 pub(crate) mod remote_track;
 pub(crate) mod retro;
 pub(crate) mod review_gate;

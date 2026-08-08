@@ -246,10 +246,9 @@ pub struct Config {
     /// managed root ([`managed_repos_dir`]). The refresh-all job clones any missing one and
     /// fetches/fast-forwards the rest. Empty by default. Backs the dotfiles-on-a-new-machine flow.
     pub managed_repos: Vec<String>,
-    /// `[hosts.<alias>]`: per-host enrichment of `~/.ssh/config` for `bn connect` /
-    /// `bn dispatch --host` — what ssh config can't express (remote worktree root, default agent
-    /// harness, whether bn is installed there). Registration here is the trust opt-in remote
-    /// dispatch requires. Empty by default.
+    /// `[hosts.<alias>]`: per-host enrichment of `~/.ssh/config` for `bn connect` — what ssh config
+    /// can't express (remote worktree root, default agent harness, whether bn is installed there).
+    /// Empty by default.
     pub hosts: HashMap<String, crate::hosts::HostExtra>,
     /// `[repo.<name>]`: per-repo verify, pipeline, and node-capability placement policy. Empty by
     /// default; see [`repo_verify`](Config::repo_verify) and

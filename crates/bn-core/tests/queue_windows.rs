@@ -10,7 +10,6 @@
 //! do not depend on the machine's timezone.
 use bn_core::backlog::{AddSpec, BacklogEntry, BacklogKind, ExecSpec, ExecutionTarget};
 use bn_core::hosts::{NodeRecord, NodeStatus};
-use bn_core::queue::pause::PauseState;
 use bn_core::queue::tick::{plan_tick, KindCaps, TickInputs};
 use bn_core::queue::window::{self, PriorityWindow};
 use bn_core::scheduler::{Caps, Observed};
@@ -34,6 +33,7 @@ fn window(name: &str, boost: i64, matches: &[&str]) -> PriorityWindow {
         secs: HALF_HOUR,
         boost,
         matches: matches.iter().map(|s| s.to_string()).collect(),
+        mode: Default::default(),
     }
 }
 
@@ -183,13 +183,11 @@ fn plan_order(pending: &[BacklogEntry], windows: &[PriorityWindow], now: i64) ->
         remote_overflow: false,
         local_owned: true,
     };
-    let pause = PauseState::default();
     let observed = Observed::default();
     let kind_caps = KindCaps(Default::default());
     let plan = plan_tick(&TickInputs {
         now,
         machine: "testbox",
-        pause: &pause,
         pending,
         in_flight: &[],
         nodes: &[node],
@@ -201,6 +199,10 @@ fn plan_order(pending: &[BacklogEntry], windows: &[PriorityWindow], now: i64) ->
         attention: &[],
         max_express: 20,
         windows,
+        presence: bn_core::queue::tick::Presence {
+            idle: true,
+            away_window: false,
+        },
     });
     plan.start.iter().map(|d| d.id.clone()).collect()
 }

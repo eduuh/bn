@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, Bot, CalendarClock, Clock, Loader2, RotateCw, Timer } from "lucide-react";
@@ -12,8 +12,17 @@ import { timeAgo } from "../lib/format";
 import { cronNeedsAttention, scheduleLabel, sortCronJobs } from "../lib/cron";
 import { Badge, type BadgeProps } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
-import { Card } from "../components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Input } from "../components/ui/input";
 import { Skeleton } from "../components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../components/ui/table";
 import { cn } from "../lib/utils";
 import { PageHead } from "../components/PageHead";
 
@@ -27,6 +36,28 @@ function healthTone(j: CronJob): { variant: BadgeProps["variant"]; bar: string; 
   return j.ok
     ? { variant: "ok", bar: "bg-ok", label: "ok" }
     : { variant: "urgent", bar: "bg-urgent", label: `exit ${j.last_exit}` };
+}
+
+function agentStateVariant(agent: AgentSchedule): BadgeProps["variant"] {
+  if (agent.ok === false) return "urgent";
+  if (agent.due) return "warn";
+  return "muted";
+}
+
+function agentStateLabel(agent: AgentSchedule, now: number): string {
+  if (agent.retry_at != null) {
+    return `retry in ${Math.max(1, Math.ceil((agent.retry_at - now) / 60))}m`;
+  }
+  return agent.state;
+}
+
+function sortAgentSchedules(agents: AgentSchedule[]): AgentSchedule[] {
+  const rank = (agent: AgentSchedule) =>
+    agent.ok === false ? 0 : agent.due ? 1 : agent.retry_at != null ? 2 : 3;
+  const lastRun = (agent: AgentSchedule) => agent.last_run ?? 0;
+  return [...agents].sort(
+    (a, b) => rank(a) - rank(b) || lastRun(b) - lastRun(a) || a.job.localeCompare(b.job),
+  );
 }
 
 /** Re-run control (#538): fire `bn run <job>` — the same code path a scheduled timer runs —
@@ -74,10 +105,7 @@ function Tag({ children }: { children: React.ReactNode }) {
 /** One manifest-owned schedule, rendered as a child of the common scheduler rather than a second
  * top-level cron. */
 function AgentScheduleRow({ agent, now }: { agent: AgentSchedule; now: number }) {
-  const state =
-    agent.retry_at != null
-      ? `retry in ${Math.max(1, Math.ceil((agent.retry_at - now) / 60))}m`
-      : agent.state;
+  const state = agentStateLabel(agent, now);
   return (
     <div className="rounded-md border border-border bg-background/60 p-2.5">
       <div className="flex flex-wrap items-center gap-2">
@@ -106,6 +134,124 @@ function AgentScheduleRow({ agent, now }: { agent: AgentSchedule; now: number })
         <p className="mt-1.5 text-xs text-foreground/80">{agent.description}</p>
       )}
     </div>
+  );
+}
+
+/** Manifest-owned Markdown agents get their own above-the-fold schedule strip, even though they
+ * are still nested under `agent-scheduler` below for the raw cron registry view. */
+function AgentSchedulesSection({ agents, now }: { agents: AgentSchedule[]; now: number }) {
+  const [query, setQuery] = useState("");
+  const sorted = useMemo(() => sortAgentSchedules(agents), [agents]);
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return sorted;
+    return sorted.filter((agent) =>
+      [
+        agent.job,
+        agent.kind,
+        agent.scope,
+        agent.schedule,
+        agent.description ?? "",
+        agentStateLabel(agent, now),
+        agent.queue ? "queue" : "",
+        agent.ok === false ? "failed" : "",
+        agent.due ? "due" : "",
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(needle),
+    );
+  }, [now, query, sorted]);
+  if (agents.length === 0) return null;
+  const due = agents.filter((agent) => agent.due).length;
+  const failing = agents.filter((agent) => agent.ok === false).length;
+  return (
+    <Card>
+      <CardHeader className="gap-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-1">
+            <CardTitle>Agent schedules</CardTitle>
+            <CardDescription>
+              {agents.length} Markdown agent{agents.length === 1 ? "" : "s"} managed by
+              agent-scheduler
+              {due > 0 ? ` · ${due} due` : ""}
+              {failing > 0 ? ` · ${failing} failing` : ""}
+            </CardDescription>
+          </div>
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Filter agents, schedules, state…"
+            className="w-full sm:w-72"
+            aria-label="Filter scheduled agents"
+          />
+        </div>
+      </CardHeader>
+      <CardContent className="p-0">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Agent</TableHead>
+              <TableHead>State</TableHead>
+              <TableHead>Schedule</TableHead>
+              <TableHead>Last run</TableHead>
+              <TableHead>Queue</TableHead>
+              <TableHead className="text-right">Action</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {filtered.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
+                  No scheduled agents match this filter.
+                </TableCell>
+              </TableRow>
+            ) : (
+              filtered.map((agent) => (
+                <TableRow key={agent.job}>
+                  <TableCell>
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono font-medium text-foreground">{agent.job}</span>
+                        <Badge variant="info">{agent.kind}</Badge>
+                        {agent.ok === false && (
+                          <Badge variant="urgent">exit {agent.last_exit ?? "?"}</Badge>
+                        )}
+                      </div>
+                      {agent.description && (
+                        <p className="max-w-xl text-xs text-muted-foreground">
+                          {agent.description}
+                        </p>
+                      )}
+                      {agent.ok === false && agent.last_output && (
+                        <pre className="mt-2 max-h-36 max-w-xl overflow-auto rounded-md border border-urgent/30 bg-urgent-muted p-2 font-mono text-xs text-urgent">
+                          {agent.last_output}
+                        </pre>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={agentStateVariant(agent)}>{agentStateLabel(agent, now)}</Badge>
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">{agent.schedule}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {agent.last_run != null ? `${timeAgo(agent.last_run, now)} ago` : "never"}
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={agent.queue ? "ok" : "muted"}>
+                      {agent.queue ? "queued" : "direct"}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <RerunButton job={agent.job} />
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -257,6 +403,7 @@ export function Cron() {
   const now = useNow();
   const cron = useQuery(cronQuery());
   const jobs = cron.data?.jobs ?? [];
+  const agentSchedules = jobs.flatMap((job) => job.agents ?? []);
   // Failing/at-risk first (currently-failing, then recovered-with-past-failures), then most-recently
   // -run, then declared-but-idle.
   const sorted = sortCronJobs(jobs);
@@ -292,6 +439,10 @@ export function Cron() {
             No declared crons or recorded runs on this machine yet.
           </p>
         </Card>
+      )}
+
+      {!cron.isLoading && !cron.isError && (
+        <AgentSchedulesSection agents={agentSchedules} now={now} />
       )}
 
       {/* `items-start`: grid cells stretch to their row's tallest sibling by default, so a

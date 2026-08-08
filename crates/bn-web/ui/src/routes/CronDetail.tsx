@@ -212,6 +212,11 @@ export function CronDetail() {
                     {agent.description && (
                       <p className="text-xs text-foreground/80">{agent.description}</p>
                     )}
+                    {agent.ok === false && agent.last_output && (
+                      <pre className="max-h-40 overflow-auto rounded-md border border-urgent/30 bg-urgent-muted p-2 font-mono text-xs text-urgent">
+                        {agent.last_output}
+                      </pre>
+                    )}
                   </Card>
                 ))}
               </div>

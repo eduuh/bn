@@ -107,84 +107,11 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
             pool: _,
             attach,
             refs,
-            host,
-            remote,
-            issue,
-            corr,
         } => {
             // Dispatch works from anywhere: cwd need not be a repo. Resolve the cwd's context
             // best-effort (for todo-id resolution / closing the source todo) — `run_dispatch`
             // requires it only when no `--repo` is given, and then emits a `--repo` nudge.
             let ctx = resolver::resolve(cfg, &std::env::current_dir().unwrap_or_default()).ok();
-            if remote || issue.is_some() {
-                // GitHub-hosted dispatch (#281): the free-text seed triggers `claude-dispatch.yml`,
-                // or `--issue N` posts an `@claude` comment. No local worktree/agent — warn if any
-                // worktree-local flag was set so it's not silently ignored.
-                if no_tmux
-                    || agent.is_some()
-                    || scout
-                    || orchestrator
-                    || skill.is_some()
-                    || verify
-                    || yolo
-                    || plan
-                    || fresh
-                    || keep_project_mcps
-                    || no_pool
-                    || branch.is_some()
-                {
-                    eprintln!(
-                        "bn dispatch: --remote runs a GitHub-hosted agent — ignoring worktree-local \
-                         flags (--agent/--yolo/--plan/--fresh/--scout/--orchestrator/--skill/--verify/\
-                         --branch/--no-tmux/--keep-project-mcps/--no-pool)"
-                    );
-                }
-                run_remote_dispatch(
-                    cfg,
-                    ctx.as_ref(),
-                    repo.as_deref(),
-                    base.as_deref(),
-                    &item.join(" "),
-                    issue,
-                    corr.as_deref(),
-                    json,
-                    &bn_core::runner::RealRunner,
-                );
-                return;
-            }
-            if let Some(alias) = host {
-                // Remote dispatch: everything happens on the target. Validate --agent locally so
-                // a typo fails before any ssh round-trip; the target repo is --repo, else the
-                // cwd's repo name (repo names are shared across machines by convention).
-                if no_tmux {
-                    fail(
-                        "bn dispatch: --no-tmux makes no sense with --host — the remote agent lives in a detached tmux window",
-                    );
-                }
-                let agent_kind = agent.as_deref().map(|a| {
-                    normalize_agent(a).unwrap_or_else(|| {
-                        fail(&format!(
-                            "bn dispatch: unknown --agent '{a}' (use: copilot | claude)"
-                        ))
-                    })
-                });
-                let repo_name = repo.or_else(|| ctx.as_ref().map(|c| c.repo.clone()));
-                connect::dispatch_remote(
-                    cfg,
-                    &alias,
-                    repo_name.as_deref(),
-                    &item.join(" "),
-                    base.as_deref(),
-                    branch.as_deref(),
-                    name.as_deref(),
-                    agent_kind,
-                    scout,
-                    skill.as_deref(),
-                    verify,
-                    json,
-                );
-                return;
-            }
             // Captured (#queue): a typed `bn dispatch` enqueues like everything else, so one
             // dispatcher decides what the machine runs and when. `--on-pool-full fail` and
             // `$BN_DISPATCH_NOW` both mean "I want this now" and keep the direct path.

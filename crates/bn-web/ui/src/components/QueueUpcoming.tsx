@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Clock } from "lucide-react";
 
@@ -23,6 +23,17 @@ import { cn } from "../lib/utils";
  * on.
  */
 
+const CLASSES = [
+  "all",
+  "foreground",
+  "autonomous",
+  "opportunistic",
+  "cron",
+  "warming",
+  "recovery",
+  "maintenance",
+] as const;
+
 function clock(at: number): string {
   return new Date(at * 1000).toLocaleTimeString(undefined, {
     hour: "2-digit",
@@ -41,7 +52,8 @@ function until(at: number, now: number): string {
 }
 
 export function QueueUpcoming() {
-  const timeline = useQuery(queueTimelineQuery());
+  const [klass, setKlass] = useState<string>("all");
+  const timeline = useQuery(queueTimelineQuery(undefined, klass === "all" ? "" : klass));
   const view = timeline.data;
 
   const rows = useMemo(() => {
@@ -69,6 +81,24 @@ export function QueueUpcoming() {
       title="Still to come"
       count={timeline.isLoading ? undefined : String(rows.length)}
     >
+      <div className="mb-3 flex flex-wrap gap-1" role="group" aria-label="Timeline class">
+        {CLASSES.map((c) => (
+          <button
+            key={c}
+            type="button"
+            className={cn(
+              "rounded-full border px-2 py-0.5 text-xs transition",
+              klass === c
+                ? "border-primary bg-primary text-primary-foreground"
+                : "border-border bg-secondary text-secondary-foreground hover:bg-secondary/80",
+            )}
+            aria-pressed={klass === c}
+            onClick={() => setKlass(c)}
+          >
+            {c}
+          </button>
+        ))}
+      </div>
       {timeline.isLoading ? (
         <Skeleton className="h-12 w-full" />
       ) : rows.length === 0 ? (

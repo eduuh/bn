@@ -1,18 +1,10 @@
-import { useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import {
-  ArrowRight,
-  Check,
-  ExternalLink,
-  MessageSquareText,
-  NotebookText,
-  Pause,
-  Play,
-} from "lucide-react";
+import { ArrowRight, Check, ExternalLink, MessageSquareText, NotebookText } from "lucide-react";
 import { Link } from "react-router-dom";
 
-import { completedQuery, fleetQuery, queryKeys, queueQuery, reviewsQuery } from "../api/client";
-import { decideReview, queuePause, queueResume, sendMessage } from "../api/writes";
+import { completedQuery, fleetQuery, queueQuery, reviewsQuery } from "../api/client";
+import { decideReview, sendMessage } from "../api/writes";
 import type { QueueDeferredRow, QueueNodeRow, QueueView } from "../api/queue-types";
 import type { CompletedItem, FleetView, LiveAgent, Review } from "../api/types";
 import { QueueControls } from "../components/QueueControls";
@@ -23,8 +15,7 @@ import { Empty, LoadError, RowsSkeleton, SectionCard } from "../components/Secti
 import { SteerButton } from "../components/SteerButton";
 import { Badge, type BadgeProps } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
-import { Card } from "../components/ui/card";
-import { useAppMutation, optimistic } from "../hooks/useAppMutation";
+import { useAppMutation } from "../hooks/useAppMutation";
 import { affects } from "../lib/invalidation";
 import { setReviewStatus } from "../lib/optimistic";
 import { sanitizeBranch } from "../lib/board";
@@ -127,7 +118,7 @@ function OperationsOverview({
         <Metric
           label="dispatcher"
           value={machine?.dispatcher_alive ? "online" : "offline"}
-          detail={data.paused ? "admission paused" : "accepting work"}
+          detail={data.accepting ? "accepting work" : "not accepting work"}
           tone={machine?.dispatcher_alive ? "text-ok" : "text-urgent"}
         />
         <Metric
@@ -631,7 +622,7 @@ function Deferred({
               key={`${row.repo}/${row.id}`}
               className="flex flex-wrap items-baseline gap-x-2 gap-y-1 py-2 text-sm"
             >
-              <Badge variant={row.reason === "paused" ? "warn" : "muted"}>{row.reason}</Badge>
+              <Badge variant="muted">{row.reason}</Badge>
               <span className="font-mono text-xs text-muted-foreground">
                 {row.repo}/{row.id}
               </span>
@@ -668,38 +659,8 @@ export function Queue() {
   const fleet = useQuery(fleetQuery());
   const reviews = useQuery(reviewsQuery());
   const completed = useQuery(completedQuery());
-  const [reason, setReason] = useState("");
-
-  const setFullyPaused = <V,>(fullyPaused: boolean) =>
-    optimistic<QueueView, V>(queryKeys.queue, (view) => {
-      const pauses = fullyPaused
-        ? view.pauses
-        : view.pauses.filter((pause) => pause.scope.scope !== "all");
-      return {
-        ...view,
-        paused: fullyPaused || pauses.length > 0,
-        fully_paused: fullyPaused,
-        pauses,
-      };
-    });
-
-  const pause = useAppMutation<unknown, { scope: string; reason?: string }>({
-    mutationFn: (body) => queuePause(body.scope, body.reason),
-    optimistic: setFullyPaused<{ scope: string; reason?: string }>(true),
-    invalidates: affects.queue,
-    toast: { success: "Queue paused", error: "Could not pause" },
-  });
-  const resume = useAppMutation<unknown, { scope: string }>({
-    mutationFn: (body) => queueResume(body.scope),
-    optimistic: setFullyPaused<{ scope: string }>(false),
-    invalidates: affects.queue,
-    toast: { success: "Queue resumed", error: "Could not resume" },
-  });
-
   const data = queue.data;
   const agents = fleet.data?.agents ?? [];
-  const fullyPaused = data?.fully_paused ?? false;
-  const pauseBusy = pause.isPending || resume.isPending;
   const now = data?.now ?? Math.floor(Date.now() / 1000);
 
   return (
@@ -721,51 +682,10 @@ export function Queue() {
               <ArrowRight />
             </Link>
           </Button>
-          {!fullyPaused ? (
-            <input
-              value={reason}
-              onChange={(event) => setReason(event.target.value)}
-              placeholder="why pause? (optional)"
-              aria-label="Pause reason"
-              className="h-8 w-52 rounded-md border border-border bg-background px-2 text-sm"
-            />
-          ) : null}
-          <Button
-            size="sm"
-            variant={fullyPaused ? "default" : "secondary"}
-            disabled={pauseBusy}
-            onClick={() =>
-              fullyPaused
-                ? resume.mutate({ scope: "all" })
-                : pause.mutate({ scope: "all", reason: reason.trim() || undefined })
-            }
-          >
-            {fullyPaused ? <Play /> : <Pause />}
-            {fullyPaused ? "Resume" : "Pause"}
-          </Button>
         </div>
       </header>
 
       <OperationsOverview data={data} fleet={fleet.data} error={queue.isError} />
-
-      {data?.paused ? (
-        <Card className="border-warn/40 bg-warn/5 p-3 text-sm">
-          <p className="font-medium text-warn">
-            {data.fully_paused
-              ? "The dispatcher is not starting new work."
-              : "Some queue scopes are paused."}
-          </p>
-          {data.pauses.map((entry, index) => (
-            <p key={`${entry.scope.scope}:${index}`} className="text-muted-foreground">
-              {entry.reason ? `“${entry.reason}”` : "No reason given"}
-              {entry.until ? ` · until ${new Date(entry.until * 1000).toLocaleTimeString()}` : ""}
-            </p>
-          ))}
-          <p className="text-muted-foreground">
-            Running agents finish normally; a pause only stops new admission.
-          </p>
-        </Card>
-      ) : null}
 
       <ActiveAgents agents={agents} now={now} loading={fleet.isLoading} error={fleet.isError} />
       <QueueUpcoming />

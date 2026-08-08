@@ -367,6 +367,8 @@ pub(super) struct QueueSection {
     pub(super) agent_lease_ttl_secs: Option<i64>,
     /// Seconds headless work may hold a lease. Express work resolves in-tick, so this is short.
     pub(super) express_lease_ttl_secs: Option<i64>,
+    /// Idle minutes after which opportunistic work may run outside an explicit away window.
+    pub(super) opportunistic_idle_mins: Option<i64>,
     /// `[[queue.windows]]` — times of day when some work is preferred.
     pub(super) windows: Option<Vec<WindowSection>>,
 }
@@ -381,4 +383,5 @@ pub(super) struct WindowSection {
     pub(super) fore: Option<String>,
     pub(super) boost: Option<i64>,
     pub(super) matches: Option<Vec<String>>,
+    pub(super) mode: Option<String>,
 }

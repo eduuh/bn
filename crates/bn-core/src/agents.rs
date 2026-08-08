@@ -185,6 +185,9 @@ pub enum AgentCatalogError {
         path: PathBuf,
         value: String,
     },
+    NonMarkdownAgent {
+        path: PathBuf,
+    },
     ReadDirectory {
         path: PathBuf,
         source: std::io::Error,
@@ -203,6 +206,7 @@ impl AgentCatalogError {
     pub fn path(&self) -> &Path {
         match self {
             Self::LegacyScheduleOverride { path, .. }
+            | Self::NonMarkdownAgent { path }
             | Self::ReadDirectory { path, .. }
             | Self::ReadFile { path, .. }
             | Self::InvalidAgent { path, .. } => path,
@@ -216,6 +220,11 @@ impl fmt::Display for AgentCatalogError {
             Self::LegacyScheduleOverride { path, value } => write!(
                 f,
                 "{} still sets the legacy quarter-review schedule '{value}'; remove it and override config/agents/quarter-review.md in a higher-precedence agents/ tier",
+                path.display()
+            ),
+            Self::NonMarkdownAgent { path } => write!(
+                f,
+                "{} is in an agents/ directory but is not a Markdown .md manifest",
                 path.display()
             ),
             Self::ReadDirectory { path, source } => {
@@ -232,7 +241,7 @@ impl fmt::Display for AgentCatalogError {
 impl std::error::Error for AgentCatalogError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::LegacyScheduleOverride { .. } => None,
+            Self::LegacyScheduleOverride { .. } | Self::NonMarkdownAgent { .. } => None,
             Self::ReadDirectory { source, .. } | Self::ReadFile { source, .. } => Some(source),
             Self::InvalidAgent { source, .. } => Some(source),
         }
@@ -777,8 +786,20 @@ fn load_agent_files(dir: &Path, scope: JobScope) -> Result<Vec<AgentDef>, AgentC
             source,
         })?;
         let path = entry.path();
+        if entry
+            .file_type()
+            .map_err(|source| AgentCatalogError::ReadDirectory {
+                path: dir.to_path_buf(),
+                source,
+            })?
+            .is_dir()
+        {
+            continue;
+        }
         if path.extension().and_then(|extension| extension.to_str()) == Some("md") {
             paths.push(path);
+        } else {
+            return Err(AgentCatalogError::NonMarkdownAgent { path });
         }
     }
     paths.sort();

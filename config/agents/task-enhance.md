@@ -1,17 +1,17 @@
 ---
-name: task-improve
+name: task-enhance
 kind: command
 on_calendar: "*-*-* 0/1:00:00"
-run: "bn task improve --due"
+run: "bn task enhance --due"
 harness: copilot
 network: true
-description: "bn — task improve: make the highest-ranked unscoped task SMART (why, done-when, estimate, day) so the gate will admit it"
+description: "bn — task enhance: make the highest-ranked unscoped task SMART (why, done-when, estimate, day) so the gate will admit it"
 arguments:
   - name: packet
     description: Safe task summary, current SMART gaps, and optional operator steering.
     required: true
 ---
-You are the **TASK-IMPROVE** stage of an autonomous pipeline. Make exactly one task executable by
+You are the **TASK-ENHANCE** stage of an autonomous pipeline. Make exactly one task executable by
 an agent that will have no other context. Do not implement the task, edit product source, or open a
 pull request.
 

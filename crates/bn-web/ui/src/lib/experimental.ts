@@ -1,17 +1,16 @@
 import { useSyncExternalStore } from "react";
 
 /**
- * The experimental gate: everything but the task-first home is hidden until `?experimental` names
- * it.
+ * The experimental gate: optional surfaces stay hidden until `?experimental` names them.
  *
  * The dashboard grew fifteen destinations faster than any of them got tested end to end, so the
- * default surface is one screen — `/` — and the rest are opt-in *individually*, so a tab can come
- * back the moment it is trusted instead of waiting for the whole set:
+ * default surface is a small trusted set — Today + Cron — and the rest are opt-in *individually*,
+ * so a tab can come back the moment it is trusted instead of waiting for the whole set:
  *
  *     /?experimental=fleet        Today + Fleet
- *     /?experimental=fleet,cron   Today + Fleet + Cron
+ *     /?experimental=fleet,queue  Today + Cron + Fleet + Queue
  *     /?experimental=1            everything
- *     /?experimental=0            back to Today alone
+ *     /?experimental=0            back to default tabs
  *
  * This is a *nav* gate, not a router gate: the routes still exist and still render, so bookmarks,
  * deep links and the `/cost` → `/insights?tab=cost` style redirects all keep working. What changes
@@ -50,8 +49,6 @@ const ALIASES: Record<string, string> = {
   money: "cost",
   spend: "cost",
   machines: "nodes",
-  jobs: "cron",
-  schedule: "cron",
 };
 
 function canonical(key: string): string {

@@ -15,7 +15,7 @@
 //!
 //! # Deliberately not executable yet
 //!
-//! A pulled task carries no `smart:` verdict, so the gate (#998) routes it to the improve agent
+//! A pulled task carries no `smart:` verdict, so the gate (#998) routes it to the enhance agent
 //! before any executor can see it. That is the design, not an oversight: an issue title is not an
 //! acceptance criterion, and a task nobody has scoped will waste a worktree.
 //!

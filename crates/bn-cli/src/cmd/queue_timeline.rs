@@ -10,7 +10,7 @@ use crate::*;
 use bn_core::queue::timeline::{self, BandId, Timeline};
 
 /// `bn queue timeline` — render today (or `--date`).
-pub(crate) fn emit_timeline(cfg: &Config, date: Option<&str>, json: bool) {
+pub(crate) fn emit_timeline(cfg: &Config, date: Option<&str>, class_filter: Option<&str>, json: bool) {
     use bn_core::clock::Clock;
     let now = bn_core::clock::RealClock.now_epoch_secs();
     let date = match date {
@@ -20,7 +20,7 @@ pub(crate) fn emit_timeline(cfg: &Config, date: Option<&str>, json: bool) {
         Some(raw) => raw.trim().to_string(),
         None => bn_core::util::local_date_of(now),
     };
-    let tl = timeline::build_live(cfg, &date, now)
+    let tl = timeline::build_live(cfg, &date, now, class_filter)
         .unwrap_or_else(|error| fail(&format!("bn queue timeline: invalid agent catalog: {error}")));
     if json {
         println!(
@@ -50,16 +50,6 @@ fn render(tl: &Timeline, width: usize) -> String {
     let per = 24 / cols; // hours per column
     let mut out = String::new();
     out.push_str(&format!("\u{f073} {} — queue timeline\n", tl.date));
-    if !tl.pauses.is_empty() {
-        for p in &tl.pauses {
-            let why = if p.reason.is_empty() {
-                String::new()
-            } else {
-                format!(" — {}", p.reason)
-            };
-            out.push_str(&format!("\u{f05e} paused: {}{why}\n", p.scope.key()));
-        }
-    }
     out.push('\n');
     out.push_str(&axis(cols, per));
     for band in &tl.bands {
@@ -69,7 +59,7 @@ fn render(tl: &Timeline, width: usize) -> String {
         out.push_str(&row(band.label.as_str(), &lanes(tl, band.id, cols, per)));
     }
     out.push('\n');
-    out.push_str(&format!("  now {} \u{00b7} \u{25b0} running  \u{25c6} scheduled  \u{25c7} projected  \u{2717} blocked\n", bn_core::util::clock_hm(tl.now)));
+    out.push_str(&format!("  now {} \u{00b7} \u{25b0} running  \u{25c6} scheduled  \u{25c7} projected\n", bn_core::util::clock_hm(tl.now)));
     if tl.beyond > 0 {
         out.push_str(&format!(
             "  {} entr{} beyond the horizon at projected throughput\n",
@@ -115,14 +105,11 @@ fn lanes(tl: &Timeline, band: BandId, cols: usize, per: usize) -> Vec<char> {
     for mark in &b.marks {
         let hour = ((mark.at - tl.start) / 3600).clamp(0, 23) as usize;
         let col = (hour / per).min(cols - 1);
-        // A blocked mark outranks everything: the reason it is not moving is the thing to see.
-        cells[col] = match (mark.blocked, band, cells[col]) {
-            (true, _, _) => '✗',
-            (_, _, '✗') => '✗',
-            (_, BandId::Running, _) => '▰',
-            (_, BandId::Scheduled, _) => '◆',
-            (_, BandId::Projected, _) => '◇',
-            (_, BandId::Done, _) => '·',
+        cells[col] = match (band, cells[col]) {
+            (BandId::Running, _) => '▰',
+            (BandId::Scheduled, _) => '◆',
+            (BandId::Projected, _) => '◇',
+            (BandId::Done, _) => '·',
         };
     }
     cells

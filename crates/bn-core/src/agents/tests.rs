@@ -163,12 +163,39 @@ fn precedence_is_first_tier_wins() {
 }
 
 #[test]
+fn agent_directories_reject_non_markdown_files() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        temp.path().join("demo.toml"),
+        "name = \"demo\"\nkind = \"command\"\n",
+    )
+    .expect("legacy agent fixture");
+
+    let error =
+        discover_in(&[(JobScope::Global, temp.path().to_path_buf())]).expect_err("not markdown");
+
+    assert!(matches!(error, AgentCatalogError::NonMarkdownAgent { .. }));
+    assert!(error.to_string().contains("not a Markdown .md manifest"));
+}
+
+#[test]
 fn shipped_agent_catalog_is_valid() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .join("config")
         .join("agents");
+    for entry in std::fs::read_dir(&dir).expect("shipped agents dir") {
+        let entry = entry.expect("shipped agent entry");
+        if entry.file_type().expect("shipped agent type").is_file() {
+            assert_eq!(
+                entry.path().extension().and_then(|ext| ext.to_str()),
+                Some("md"),
+                "{} is not a Markdown manifest",
+                entry.path().display()
+            );
+        }
+    }
     let catalog = discover_in(&[(JobScope::Global, dir)]).expect("shipped catalog");
 
     assert!(!catalog.is_empty());
@@ -199,7 +226,7 @@ fn shipped_agent_catalog_is_valid() {
     for (name, contract) in [
         ("attention-agent", "Output only a JSON array"),
         ("quarter-review", "PER-GOAL"),
-        ("task-improve", "Do not implement"),
+        ("task-enhance", "Do not implement"),
         ("task-triage", "Do not implement"),
         ("today-agent", "bn today list"),
         ("controller", "Keep the user in the loop"),
@@ -254,6 +281,10 @@ fn triggerable_catalog_keeps_runnable_kinds_and_excludes_specialists() {
     for (name, body) in [
         ("command", "---\nname: command\nkind: command\n---\n"),
         (
+            "scheduled",
+            "---\nname: scheduled\nkind: command\non_calendar: daily\n---\n",
+        ),
+        (
             "staff",
             "---\nname: staff\nkind: staff\ngather: \"bn gather\"\nsinks: [attn]\n---\nBrief.",
         ),
@@ -278,6 +309,18 @@ fn triggerable_catalog_keeps_runnable_kinds_and_excludes_specialists() {
         item.name == "hosted" && item.kind == crate::action_center::CatalogKind::Hosted
     }));
     assert!(!items.iter().any(|item| item.name == "specialist"));
+
+    let scheduled = items
+        .iter()
+        .find(|item| item.name == "scheduled")
+        .expect("scheduled agent is triggerable");
+    assert_eq!(scheduled.schedule.as_deref(), Some("daily"));
+    assert!(!scheduled.on_demand);
+
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 8, 7).expect("valid test date");
+    let todays = crate::action_center::todays_automation(&items, today);
+    assert!(todays.agents.iter().any(|item| item.name == "scheduled"));
+    assert!(!todays.agents.iter().any(|item| item.name == "specialist"));
 }
 
 #[test]

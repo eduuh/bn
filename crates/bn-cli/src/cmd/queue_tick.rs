@@ -278,25 +278,12 @@ enum TickOutcome {
 
 /// One pass, under the machine lock.
 fn tick_once(cfg: &Config, now: i64, dry_run: bool) -> TickOutcome {
-
     let _guard = match TickLock::try_acquire() {
         Ok(g) => g,
         Err(denied) => {
-            let reason = match &denied {
-                LockDenied::Held => "locked".to_string(),
-                LockDenied::Unusable(e) => {
-                    eprintln!("bn queue tick: cannot take the machine lock — {e}");
-                    format!("lock-unusable: {e}")
-                }
-            };
-            let _ = bn_core::events::append_at(
-                "queue_tick_skipped",
-                now,
-                serde_json::Map::from_iter([(
-                    "reason".to_string(),
-                    serde_json::Value::String(reason),
-                )]),
-            );
+            if let LockDenied::Unusable(e) = &denied {
+                eprintln!("bn queue tick: cannot take the machine lock — {e}");
+            }
             return TickOutcome::Skipped;
         }
     };
@@ -305,17 +292,17 @@ fn tick_once(cfg: &Config, now: i64, dry_run: bool) -> TickOutcome {
     // core), then take the shared snapshot every queue surface reads.
     let _ = observe_nodes(cfg, now);
     reclaim_stale_leases(cfg, now);
+    if !dry_run {
+        maybe_enqueue_spare_work(cfg, now);
+    }
     let snapshot = bn_core::queue::snapshot::Snapshot::capture(cfg, now);
     let inputs = snapshot.inputs();
     let plan = plan_tick(&inputs);
     let decision = QueueDecision::build(&inputs, &plan, dry_run);
-    // Read the prior verdict before overwriting it — `log_pass` records a pass whose verdict
-    // *changed*, which needs both.
-    let previous = QueueDecision::read();
     let _ = decision.write();
 
     if !dry_run {
-        log_pass(&decision, previous.as_ref(), now);
+        log_pass(&decision, now);
         // Declare the dispatcher's extent. Inside it no producer captures, so `realize` may call
         // ordinary entry points — `run_job`, `bn dispatch` — without re-queueing what it just
         // dequeued. See `queue_producers::Dispatching`.
@@ -323,6 +310,40 @@ fn tick_once(cfg: &Config, now: i64, dry_run: bool) -> TickOutcome {
         realize(cfg, &plan, now);
     }
     TickOutcome::Ran(Box::new(decision))
+}
+
+/// Queue autonomous maintenance only when it has real work to do.
+///
+/// The queue already protects the machine once the item exists: `pool-warm` is classified as heavy
+/// and priority -50, so it only runs after person-facing and routine work and it consumes a lane
+/// slot rather than hiding inside the tick. This hook supplies the missing piece: it is no longer
+/// purely calendar-driven. Every dispatcher pass may top up background work, but only when the pool
+/// planner says a stale warm pool exists.
+fn maybe_enqueue_spare_work(cfg: &Config, now: i64) {
+    if !cfg.job_allowed_here("pool-warm") {
+        return;
+    }
+    if !crate::wt_pool::pool_refresh_due(cfg, now) {
+        return;
+    }
+    let repo = cfg.queue_home_repo();
+    if bn_core::backlog::load(&bn_core::backlog::backlog_path()).is_active(
+        &repo,
+        &bn_core::orchestrate::derive_id("run pool-warm"),
+    ) {
+        return;
+    }
+    let _ = crate::cmd::queue_producers::capture_job(
+        cfg,
+        "pool-warm",
+        bn_core::queue::kind::ExecSpec::Job {
+            job: "pool-warm".to_string(),
+            repo: None,
+            branch: None,
+        },
+        bn_core::queue::kind::Requirements::default(),
+        None,
+    );
 }
 
 /// Record a dispatcher pass in the event log — but only a pass worth remembering.
@@ -335,23 +356,12 @@ fn tick_once(cfg: &Config, now: i64, dry_run: bool) -> TickOutcome {
 /// thousands of identical `nothing to do` lines a day, burying the handful that matter under their
 /// own volume — a log nobody can read is not observability. A pass is recorded when it:
 ///
-///   * **acted** — started something, so the log carries every dispatch this machine made; or
-///   * **changed what is blocking it** — the queue became held, or stopped being held. That edge is
-///     the whole story of a stall: when it began, on what, and when it cleared.
+///   * **acted** — started something, so the log carries every dispatch this machine made.
 ///
-/// The second test is deliberately about the *bind*, not the outcome. Comparing outcomes looked
-/// equivalent and was not: a queue that starts one cron and goes quiet flips `started → empty` every
-/// time, so every dispatch was trailed by a `nothing queued` line saying only that the work it just
-/// logged had finished. Half the log was that. Going idle is not news; being stuck is.
-fn log_pass(decision: &QueueDecision, previous: Option<&QueueDecision>, now: i64) {
-    let blocking_changed = previous.is_none_or(|p| p.bind != decision.bind);
-    if decision.started == 0 && !blocking_changed {
-        return;
-    }
-    // Nothing started and nothing waiting is the definition of no news — whatever the bind field
-    // says. An empty queue reports `bind: empty`, which is not a stall, so testing the bind for
-    // absence was not enough: the emptiness itself has to be the test.
-    if decision.started == 0 && decision.pending == 0 {
+/// Held, skipped and empty passes stay in `queue-decision.json`, not the event log. The decision
+/// file answers "why not now"; history is for work that actually moved.
+fn log_pass(decision: &QueueDecision, now: i64) {
+    if decision.started == 0 {
         return;
     }
     let mut f = serde_json::Map::new();
@@ -595,6 +605,7 @@ fn spawn_heavy(d: &Dispatch, cmd: &str) -> Executed {
     match std::process::Command::new("/bin/sh")
         .arg("-lc")
         .arg(&wrapped)
+        .env("PATH", crate::cmd::cron::job_path())
         .stdin(std::process::Stdio::null())
         // Detached output: heavy work is minutes of build noise, and the dispatcher's own log is
         // not where it belongs. `bn queue why` and the event log carry the outcome.
@@ -676,6 +687,7 @@ fn run_shell(cmd: &str) -> Result<i32, String> {
     std::process::Command::new("/bin/sh")
         .arg("-c")
         .arg(cmd)
+        .env("PATH", crate::cmd::cron::job_path())
         .status()
         // The real code, not just success/failure: `exit 3` should read as `exit 3` in the log.
         // A signal death has no code; 1 is the conventional stand-in and is still non-zero.
@@ -813,7 +825,6 @@ fn print_decision(d: &QueueDecision) {
     let dry = if d.dry_run { " (dry run)" } else { "" };
     match d.outcome.as_str() {
         "started" => println!("\u{f0e7} started {}{dry}", d.started),
-        "paused" => println!("\u{f05e} started nothing — queue paused{dry}"),
         "empty" => println!("nothing pending{dry}"),
         _ => println!("\u{f017} started nothing — {} pending{dry}", d.pending),
     }

@@ -7,7 +7,7 @@ use crate::*;
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum QueueCmd {
-    /// The machine-wide picture: pauses in force, pending work by kind and lane, and every node
+    /// The machine-wide picture: pending work by kind and lane, and every node
     /// with the skills and harnesses it advertises. The answer to "why is nothing running".
     Status {
         /// Restrict the pending breakdown to one repo.
@@ -23,6 +23,10 @@ pub(crate) enum QueueCmd {
         /// Only this repo.
         #[arg(long)]
         repo: Option<String>,
+        /// Only this class (`foreground`, `autonomous`, `opportunistic`, `cron`, `warming`,
+        /// `recovery`, `maintenance`).
+        #[arg(long = "class")]
+        class_filter: Option<String>,
         /// Only this lifecycle state (default: pending).
         #[arg(long, default_value = "pending")]
         status: String,
@@ -61,26 +65,26 @@ pub(crate) enum QueueCmd {
         #[arg(long)]
         repo: Option<String>,
     },
-    /// Stop the dispatcher from starting new work. Running agents finish normally — this pauses
-    /// admission, not execution.
-    Pause {
-        /// What to pause: `all` (the default), or `kind:<k>` / `lane:<l>` / `node:<id>` /
-        /// `repo:<r>` to stop one axis without stopping the machine.
-        #[arg(long, default_value = "all")]
-        scope: String,
-        /// Why — shown on the status line, the timeline banner, and every entry it holds.
-        #[arg(long, default_value = "")]
-        reason: String,
-        /// Auto-resume after this long (`90m`, `2h`, `1d`) or at this clock time (`18:00`).
-        /// Expiry is evaluated on read, so a machine that slept past it wakes up running.
+    /// Snooze one pending task until later, without pausing the queue.
+    Snooze {
+        /// The entry id.
+        id: String,
+        /// Duration from now (`30m`, `2h`, `1d`).
+        #[arg(long = "for")]
+        for_duration: String,
+        /// Its repo (default: the current repo).
         #[arg(long)]
-        until: Option<String>,
+        repo: Option<String>,
     },
-    /// Lift a pause.
-    Resume {
-        /// Which pause to lift — the same scope form `pause` takes.
-        #[arg(long, default_value = "all")]
-        scope: String,
+    /// Override one pending task's derived queue class.
+    Class {
+        /// The entry id.
+        id: String,
+        /// `foreground`/`watched`, `autonomous`, `opportunistic`/`away`, or `clear`.
+        class: String,
+        /// Its repo (default: the current repo).
+        #[arg(long)]
+        repo: Option<String>,
     },
     /// Run one dispatcher pass: start what there is capacity and a capable node for, and record
     /// why everything else stayed put.
@@ -98,6 +102,8 @@ pub(crate) enum QueueCmd {
     },
     /// Why the last tick did what it did — the persisted decision, verbatim.
     Why,
+    /// Compact tmux/status-bar signal: quiet when only healthy autonomous work is happening.
+    Badge,
     /// What the dispatcher has been doing: every start, stall, reclaim and completion, newest last.
     ///
     /// `why` answers "why is nothing running right now". This answers "what happened while I was
@@ -123,6 +129,10 @@ pub(crate) enum QueueCmd {
         /// The day to render (default: today).
         #[arg(long)]
         date: Option<String>,
+        /// Only this class (`foreground`, `autonomous`, `opportunistic`, `cron`, `warming`,
+        /// `recovery`, `maintenance`).
+        #[arg(long = "class")]
+        class_filter: Option<String>,
     },
     /// Resolve a queue entry — the callback heavy work makes when it finishes.
     ///
@@ -168,6 +178,12 @@ pub(crate) struct AddCmd {
     /// Run a native bn job headlessly instead of launching an agent.
     #[arg(long, conflicts_with_all = ["skill", "shell"])]
     pub(crate) job: Option<String>,
+    /// Repo context for `--job` when the job needs a target repo.
+    #[arg(long, requires = "job")]
+    pub(crate) job_repo: Option<String>,
+    /// Branch context for `--job` when the job needs a target branch.
+    #[arg(long, requires = "job")]
+    pub(crate) job_branch: Option<String>,
     /// Run a shell command headlessly instead of launching an agent.
     #[arg(long, conflicts_with_all = ["skill", "job"])]
     pub(crate) shell: Option<String>,

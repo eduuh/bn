@@ -72,8 +72,7 @@ pub(crate) enum CmdIntake {
     /// its goal, and open a window on it in the repo's tmux session. The execution end of `bn next`
     /// — what to do → doing it. Target another repo with `--repo <name>` (works outside any repo).
     Dispatch {
-        /// A todo id (e.g. t3), an issue/PR URL, or free text describing the work. Optional with
-        /// `--issue N --remote` (the issue itself is the task); required otherwise.
+        /// A todo id (e.g. t3), an issue/PR URL, or free text describing the work.
         item: Vec<String>,
         /// Readable task name used by the session registry and tmux window.
         #[arg(long)]
@@ -182,38 +181,13 @@ pub(crate) enum CmdIntake {
         /// takes over the current terminal, and the moment it exits any leased `--pool` slot is
         /// handed straight back. Powers the `claude`/`copilot` shell wrappers (`bn shell-init`) —
         /// an interactive, throwaway investigation. Requires `--agent`; local-only (no tmux window,
-        /// agent-lease, or controller event), so it conflicts with `--no-tmux`/`--host`/`--remote`/
-        /// `--orchestrator`.
+        /// agent-lease, or controller event), so it conflicts with `--no-tmux`/`--orchestrator`.
         #[arg(
             long,
             requires = "agent",
-            conflicts_with_all = ["no_tmux", "host", "remote", "orchestrator"]
+            conflicts_with_all = ["no_tmux", "orchestrator"]
         )]
         attach: bool,
-        /// Dispatch on a remote machine: an ssh-config Host alias registered under config.toml
-        /// `[hosts]`. Runs `bn dispatch <task> --agent --yolo` ON the target — worktree, note, and
-        /// agent all created there, in a detached tmux window; the note flows home via `bn sync`.
-        /// Watch it with `bn connect <alias>`. Requires --repo (or a cwd inside one).
-        #[arg(long)]
-        host: Option<String>,
-        /// Dispatch to a GitHub-hosted agent instead of a local/remote worktree: triggers the
-        /// `claude-dispatch.yml` workflow with the free-text seed as its `prompt` (an owner/collab
-        /// `gh workflow run`), captures the run-id, and records it in the branch note. Prints the
-        /// run url + a `gh run watch` hint. Requires `gh` authed and the workflow installed
-        /// (`bn remote init`). The free-text seed is user-authored — never pass a gathered issue/PR
-        /// title here; use `--issue N` for issue-linked work.
-        #[arg(long, conflicts_with = "host")]
-        remote: bool,
-        /// With `--remote`: post the seed as an `@claude` comment on issue N (the issue-linked path)
-        /// instead of triggering the workflow. The issue's own title/body is the task context, read
-        /// natively by the agent and framed as untrusted input; any free-text `item` is appended as
-        /// a user-authored instruction.
-        #[arg(long, requires = "remote")]
-        issue: Option<u64>,
-        /// Stable correlation token for an idempotent remote replay. Internal orchestrator plumbing:
-        /// the workflow echoes it into the run name; issue dispatch embeds it in the comment body.
-        #[arg(long, requires = "remote", hide = true)]
-        corr: Option<String>,
     },
     /// Promote a scout worktree to a ship: record the flip in the branch note and tell the agent it
     /// may now implement (and open a PR). Run inside the scout's worktree, or target it with
@@ -940,13 +914,6 @@ pub(crate) enum CmdShellUi {
     /// Scaffold ~/.config/bn/config.toml (if absent) and regenerate the legacy plaintext
     /// file (work-repos) config loading still falls back to, from the loaded config.
     Setup,
-    /// Remote GitHub agent dispatch (#280): scaffold the `claude-dispatch.yml` workflow into the
-    /// current repo and verify the `ANTHROPIC_API_KEY` secret. The repo-side setup that lets a
-    /// later `bn dispatch --remote` (#281) hand a task to a Claude agent running in GitHub Actions.
-    Remote {
-        #[command(subcommand)]
-        action: RemoteCmd,
-    },
     /// One-line status badge for the tmux status bar (replaces branch-note-status.sh).
     /// Resolves from the given path (tmux passes #{pane_current_path}) or cwd; prints
     /// nothing when there's no note or it's closed.
@@ -2123,14 +2090,6 @@ pub(crate) enum TodayAgentCmd {
 }
 
 #[derive(Subcommand, Debug)]
-pub(crate) enum RemoteCmd {
-    /// Scaffold `.github/workflows/claude-dispatch.yml` into the current repo and verify the
-    /// `ANTHROPIC_API_KEY` secret. Idempotent (rewrites the bn-managed workflow on drift); prints
-    /// the `gh secret set` instruction when the API key isn't set yet.
-    Init,
-}
-
-#[derive(Subcommand, Debug)]
 pub(crate) enum GapCmd {
     /// Replace the meetings cache from JSON on stdin — the `meetings` cron's write path. Accepts a
     /// JSON array or JSONL (one `{"start","title","url"}` object per line), so it drops straight
@@ -2732,7 +2691,7 @@ pub(crate) enum TaskCmd {
     /// Refill the task list from the GitHub-issue reservoir, bounded by a low-water mark: it tops
     /// each repo back up to N actionable tasks and no further, so the store stays readable.
     /// Idempotent — an issue already pulled is never minted twice. Pulled tasks carry no `smart:`
-    /// verdict, so the gate routes them to the improve agent before anything executes them.
+    /// verdict, so the gate routes them to the enhance agent before anything executes them.
     Pull {
         /// Tasks to keep actionable per repo (the low-water mark).
         #[arg(long, short = 'n', default_value_t = bn_core::orchestrate::DEFAULT_KEEP_WARM_LOW_WATER)]
@@ -2744,7 +2703,8 @@ pub(crate) enum TaskCmd {
     /// Make a task executable: fill in why it matters, the `## Done When` the SMART gate reads,
     /// an estimate and a day. Renders the Markdown agent prompt with --dry-run. `--steer` passes
     /// your own "things to look out for" into its runtime packet.
-    Improve {
+    #[command(visible_alias = "improve")]
+    Enhance {
         /// Task id (e.g. t42). Omit with --due to take the next task needing work.
         id: Option<String>,
         /// Things to look out for, passed to the agent verbatim.
@@ -2982,8 +2942,6 @@ pub(crate) enum SubstrateArg {
     Auto,
     /// Prefer a local worktree + agent.
     Local,
-    /// Prefer a remote/cloud runner.
-    Remote,
 }
 
 impl SubstrateArg {
@@ -2991,7 +2949,6 @@ impl SubstrateArg {
         match self {
             SubstrateArg::Auto => bn_core::backlog::Substrate::Auto,
             SubstrateArg::Local => bn_core::backlog::Substrate::Local,
-            SubstrateArg::Remote => bn_core::backlog::Substrate::Remote,
         }
     }
 }

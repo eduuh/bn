@@ -44,10 +44,19 @@ fn capture_command(
     }
 }
 
-fn job_path() -> String {
+pub(crate) fn job_path() -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     let path = std::env::var("PATH").unwrap_or_default();
-    format!("{home}/.local/bin:{home}/.bin:{path}")
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    [exe_dir, format!("{home}/.local/bin"), format!("{home}/.bin"), path]
+        .into_iter()
+        .filter(|entry| !entry.is_empty())
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 fn run_script(script: &std::path::Path) -> (i32, String) {

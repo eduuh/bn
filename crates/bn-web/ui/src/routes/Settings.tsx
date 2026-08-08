@@ -13,7 +13,7 @@ import { cn } from "../lib/utils";
 /**
  * `/settings` — the preferences this browser holds, and the vitals of the server it is talking to.
  *
- * It exists mainly for the experimental gate. Every destination but Today is hidden until
+ * It exists mainly for the experimental gate. Optional destinations are hidden until
  * `?experimental=` names it (see `lib/experimental`), which meant the only way to reveal one was to
  * already know the flag existed, know the key, and hand-edit the query string — and the only way to
  * see what was currently on was to hover the `exp` chip in the topbar. Here the same set is a list
@@ -59,15 +59,15 @@ export function Settings() {
           <div className="min-w-0 flex-1">
             <h3 className="font-semibold leading-none tracking-tight">Experimental surfaces</h3>
             <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-              bn ships more screens than have been tested end to end, so the shell shows one by
-              default — Today — and the rest are opt-in one at a time. Turning a tab on puts it back
-              in the rail and the ⌘K palette; the route itself always works, so a bookmark or a deep
-              link resolves either way.
+              bn ships more screens than have been tested end to end, so the shell defaults to Today
+              + Cron and keeps the rest opt-in one at a time. Turning a tab on puts it back in the
+              rail and the ⌘K palette; the route itself always works, so a bookmark or a deep link
+              resolves either way.
             </p>
             <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
               This is a per-browser preference, not a server setting. It sticks across reloads, and{" "}
               <code className="rounded bg-muted px-1 py-px font-mono text-[12px]">
-                ?experimental=fleet,cron
+                ?experimental=fleet,queue
               </code>{" "}
               still overrides it from any URL.
             </p>
@@ -90,7 +90,7 @@ export function Settings() {
             disabled={enabledCount === 0 && extras.length === 0}
           >
             <RotateCcw />
-            Back to Today only
+            Back to defaults
           </Button>
           {extras.length > 0 && (
             <span className="font-mono text-[11.5px] text-muted-foreground">

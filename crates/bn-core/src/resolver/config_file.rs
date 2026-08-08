@@ -55,7 +55,7 @@ pub(super) struct ConfigFile {
     orchestrate: Option<OrchestrateSection>,
     /// `[queue]`: the machine-wide work queue — which producers enqueue, and its ceilings.
     queue: Option<QueueSection>,
-    /// `[hosts.<alias>]`: ssh-host enrichment for `bn connect` / `bn dispatch --host`. Keyed by
+    /// `[hosts.<alias>]`: ssh-host enrichment for `bn connect`. Keyed by
     /// the ssh-config `Host` alias; connection details stay in `~/.ssh/config`.
     pub(super) hosts: Option<HashMap<String, crate::hosts::HostExtra>>,
     /// `[nodes.<node_id>]` (#729): the declarative multi-node worker list — each node's execution
@@ -93,12 +93,13 @@ impl ConfigFile {
     }
 
     /// `[queue]` numeric knobs: the express budget and the two lease TTLs.
-    pub(super) fn queue_nums(&self) -> (Option<usize>, Option<i64>, Option<i64>) {
+    pub(super) fn queue_nums(&self) -> (Option<usize>, Option<i64>, Option<i64>, Option<i64>) {
         let q = self.queue.as_ref();
         (
             q.and_then(|q| q.express_per_tick),
             q.and_then(|q| q.agent_lease_ttl_secs),
             q.and_then(|q| q.express_lease_ttl_secs),
+            q.and_then(|q| q.opportunistic_idle_mins),
         )
     }
 
@@ -125,6 +126,11 @@ impl ConfigFile {
                     secs,
                     boost: w.boost.unwrap_or(100),
                     matches: w.matches.unwrap_or_else(|| vec!["*".to_string()]),
+                    mode: w
+                        .mode
+                        .as_deref()
+                        .and_then(crate::queue::window::WindowMode::parse)
+                        .unwrap_or_default(),
                 })
             })
             .collect()

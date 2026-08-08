@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 
-import type { QueuePauseScope, QueueTimelineView, TimelineMark } from "../api/queue-types";
+import type { QueueTimelineView, TimelineMark } from "../api/queue-types";
 import { cn } from "../lib/utils";
 
 /**
@@ -14,10 +14,10 @@ import { cn } from "../lib/utils";
  *
  * Bands stay as grouping because "running" and "merely projected" are different claims:
  *
- *   Running    — alive now, a span from its start to the current time
- *   Scheduled  — cron and Markdown agents at their declared `on_calendar` slots
- *   Projected  — queued work with no clock, placed by replaying the dispatcher forward
- *   Done       — finished today
+ *   Running   — alive now, a span from its start to the current time
+ *   Scheduled — cron and Markdown agents at their declared `on_calendar` slots
+ *   Projected — queued work with no clock, placed by replaying the dispatcher forward
+ *   Done      — finished today
  *
  * **Inline SVG, no chart library** — the dashboard ships inside the bn binary and is served over a
  * LAN that often has no route to the internet, so a CDN import fails silently.
@@ -48,19 +48,9 @@ export function QueueTimeline({ view }: { view: QueueTimelineView }) {
 
   const height = TOP + rows.length * ROW + 12;
   const nowX = minutesInto(view.now, view.start);
-  const paused = view.pauses.length > 0;
 
   return (
     <section aria-label="queue timeline" className="space-y-2">
-      {paused && (
-        <p className="text-sm text-warn">
-          {view.pauses.length === 1
-            ? `Paused: ${scopeLabel(view.pauses[0].scope)}`
-            : `${view.pauses.length} scopes paused`}
-          {view.pauses[0]?.reason ? ` — ${view.pauses[0].reason}` : ""}
-        </p>
-      )}
-
       <div className="overflow-x-auto">
         <svg
           viewBox={`${-GUTTER} 0 ${1440 + GUTTER + 16} ${height}`}
@@ -252,18 +242,8 @@ function MarkRow({
         stroke="currentColor"
         strokeWidth={mark.projected ? 2 : 0}
         strokeDasharray={mark.projected ? "6 4" : undefined}
-        opacity={mark.blocked ? 0.45 : recurring ? 0.4 : 1}
+        opacity={recurring ? 0.4 : 1}
       />
-      {mark.blocked && (
-        <line
-          x1={x}
-          x2={x + w}
-          y1={y + ROW / 2}
-          y2={y + ROW / 2}
-          stroke="currentColor"
-          strokeWidth={2}
-        />
-      )}
     </g>
   );
 }
@@ -271,24 +251,6 @@ function MarkRow({
 /** Minutes from the window start — the x coordinate, since the viewBox is one unit per minute. */
 function minutesInto(ts: number, start: number): number {
   return Math.max(0, Math.min(1440, Math.round((ts - start) / 60)));
-}
-
-/** `all`, or `kind:cron` / `lane:coding` / `node:fedora-box` / `repo:bn`. */
-function scopeLabel(scope: QueuePauseScope): string {
-  switch (scope.scope) {
-    case "all":
-      return "all";
-    case "kind":
-      return `kind:${scope.kind}`;
-    case "lane":
-      return `lane:${scope.lane}`;
-    case "node":
-      return `node:${scope.node_id}`;
-    case "repo":
-      return `repo:${scope.repo}`;
-    default:
-      return "all";
-  }
 }
 
 /**

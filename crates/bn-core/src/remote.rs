@@ -1,28 +1,24 @@
-//! Remote GitHub agent dispatch — readiness detection (#280).
+//! Legacy remote-run tracking helpers.
 //!
-//! The repo-side half of remote dispatch is a `claude-dispatch.yml` workflow plus an
-//! `ANTHROPIC_API_KEY` secret. This module answers "is a repo wired for it?" for both
-//! `bn remote init` (which scaffolds the workflow, then reports what's still missing) and
-//! `bn doctor` (which nags only when a repo is *half*-configured). The `gh secret list` probe
-//! goes through the injectable [`CommandRunner`] seam so the whole thing is unit-testable with a
-//! [`FakeRunner`] — no network, no real `gh`.
-//!
-//! The `bn dispatch --remote` trigger itself lives in #281; this module only detects readiness.
+//! Remote/GitHub-hosted dispatch is no longer a supported launch path. This module remains only to
+//! read and reconcile historical `remote-run:` note records so status/fleet views can render old
+//! runs without losing their terminal state. The `gh` probes go through the injectable
+//! [`CommandRunner`] seam so the behavior is unit-testable with a [`FakeRunner`] — no network, no
+//! real `gh`.
 
 use crate::runner::CommandRunner;
 use crate::staff::{classify_run, RunStatus};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Repo-relative path of the scaffolded dispatch workflow — the single artifact whose presence
-/// marks a repo as "configured for remote dispatch".
+/// Historical repo-relative path of the old dispatch workflow.
 pub const WORKFLOW_REL_PATH: &str = ".github/workflows/claude-dispatch.yml";
 
-/// The API-key secret the workflow authenticates Claude with (`gh secret set ANTHROPIC_API_KEY`).
+/// Historical API-key secret used by the old workflow.
 pub const SECRET_NAME: &str = "ANTHROPIC_API_KEY";
 
-/// A repo's readiness for remote Claude dispatch: is the workflow scaffolded, and is the API-key
-/// secret set? Both must hold before `bn dispatch --remote` (#281) can fire.
+/// A repo's historical remote-run wiring state: is the old workflow present, and is the API-key
+/// secret set?
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct RemoteReadiness {
     /// `.github/workflows/claude-dispatch.yml` exists in the repo.
@@ -41,8 +37,7 @@ impl RemoteReadiness {
         self.workflow_present && self.secret_checked && self.secret_set
     }
 
-    /// Configured at all — the workflow is scaffolded. `bn doctor` only considers a repo's
-    /// readiness once it's configured; an absent workflow is "not using this feature", not a fault.
+    /// Configured at all — the old workflow is scaffolded. Kept for legacy status/doctor callers.
     pub fn is_configured(&self) -> bool {
         self.workflow_present
     }
@@ -130,10 +125,10 @@ pub fn readiness(runner: &dyn CommandRunner, repo_root: &Path) -> RemoteReadines
 
 // ── Remote-run tracking (#282) ─────────────────────────────────────────────────────────────────
 //
-// `bn dispatch --remote` records a triggered GitHub Actions run in the branch note. This half
-// tracks it: classify the run's outcome onto the #271 run-status taxonomy and reconcile a recorded
-// run against live `gh` (its state + the draft PR it opened) so `bn status` / `bn fleet` surface a
-// remote run alongside local tmux agents. The failure→taxonomy table is the #279 spike's
+// Older builds recorded triggered GitHub Actions runs in the branch note. This half tracks those
+// legacy records: classify the run's outcome onto the #271 run-status taxonomy and reconcile a
+// recorded run against live `gh` (its state + the draft PR it opened) so `bn status` / `bn fleet`
+// surface a historical remote run alongside local tmux agents. The failure→taxonomy table is the #279 spike's
 // (branch note `remote-gh-spike.md`); all `gh` access routes through the [`CommandRunner`] seam.
 
 /// A GitHub Actions run as `gh run view --json status,conclusion` reports it. `status` is the run

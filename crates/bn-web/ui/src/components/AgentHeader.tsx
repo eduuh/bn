@@ -1,8 +1,9 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { ChevronDown } from "lucide-react";
 import type { AgentDetailView, HarnessOption } from "../api/types";
 import { healthTone, jumpCommand } from "../lib/board";
-import { fmtTokens, timeAgo } from "../lib/format";
+import { fmtInputCache, fmtTokens, timeAgo } from "../lib/format";
 import { CopyButton } from "./CopyButton";
 import { HarnessMenu } from "./HarnessMenu";
 import { toneVariant } from "../lib/tone";
@@ -30,6 +31,33 @@ function Tag({
     >
       {children}
     </span>
+  );
+}
+
+/** A labelled fact in the run-context strip. Values truncate, but keep the full value in `title`. */
+function Fact({
+  label,
+  value,
+  title,
+  children,
+}: {
+  label: string;
+  value?: string | number | null;
+  title?: string;
+  children?: React.ReactNode;
+}) {
+  const body = children ?? (value == null || value === "" ? "—" : value);
+  const stringTitle =
+    title ?? (typeof body === "string" || typeof body === "number" ? String(body) : undefined);
+  return (
+    <div className="min-w-0 rounded-md border border-border/70 bg-muted/25 px-2.5 py-2">
+      <div className="text-[0.65rem] font-semibold uppercase tracking-wide text-muted-foreground/80">
+        {label}
+      </div>
+      <div className="mt-1 min-w-0 truncate text-sm text-foreground" title={stringTitle}>
+        {body}
+      </div>
+    </div>
   );
 }
 
@@ -62,9 +90,13 @@ export function AgentHeader({
 }) {
   const { agent, latest_session, last_request } = detail;
   const [showRequest, setShowRequest] = useState(false);
+  const inTokens = agent.input_tokens || latest_session?.input_tokens || 0;
+  const cacheTokens = agent.cache_read_tokens || latest_session?.cache_read_tokens || 0;
   const outTokens = agent.output_tokens || latest_session?.output_tokens || 0;
   const turns = agent.turns || latest_session?.turns || 0;
+  const toolCalls = agent.tool_calls || latest_session?.tool_calls || 0;
   const tone = healthTone(agent.health);
+  const tmuxTarget = agent.tmux_target ?? agent.target;
 
   return (
     // Not `overflow-hidden`: the harness menu has to escape the header, so the tone bar rounds
@@ -89,8 +121,13 @@ export function AgentHeader({
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
+        <Tag title="input tokens, with cached reads in parentheses">
+          {fmtInputCache(inTokens, cacheTokens)} in
+        </Tag>
         <Tag title="live output tokens">{fmtTokens(outTokens)} out tok</Tag>
         <Tag title="assistant turns">{turns} turns</Tag>
+        <Tag title="tool calls">{toolCalls} tools</Tag>
+        <Tag title="agent idle time">{Math.round(agent.idle_secs)}s idle</Tag>
         <Tag title="last activity" className="text-muted-foreground/70">
           {timeAgo(agent.last_activity_ts, now)}
         </Tag>
@@ -103,7 +140,38 @@ export function AgentHeader({
         <span className="truncate font-mono text-xs text-muted-foreground" title="session id">
           {agent.session_id}
         </span>
-        <CopyButton text={jumpCommand(agent.target)} label={`⧉ ${agent.target}`} />
+        <CopyButton text={jumpCommand(tmuxTarget)} label={`⧉ ${tmuxTarget}`} />
+      </div>
+
+      <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        <Fact label="Task">
+          {agent.task ? (
+            <Link
+              to={`/tasks/${agent.task.id}`}
+              className="block truncate text-primary hover:underline"
+              title={`${agent.task.id} · ${agent.task.summary}`}
+            >
+              <span className="font-mono">{agent.task.id}</span>
+              <span className="text-muted-foreground"> · </span>
+              {agent.task.summary}
+            </Link>
+          ) : (
+            <span className="text-muted-foreground">unbound</span>
+          )}
+        </Fact>
+        <Fact label="Worktree" title={agent.worktree}>
+          {agent.worktree ? (
+            <span className="font-mono text-xs">{agent.worktree}</span>
+          ) : (
+            <span className="text-muted-foreground">not recorded</span>
+          )}
+        </Fact>
+        <Fact label="Tmux target" title={tmuxTarget}>
+          <span className="font-mono text-xs">{tmuxTarget}</span>
+        </Fact>
+        <Fact label="Control">
+          <span className="capitalize">{agent.control ?? "legacy"}</span>
+        </Fact>
       </div>
 
       {last_request && (

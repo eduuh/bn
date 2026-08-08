@@ -12,13 +12,12 @@ import { cn } from "../lib/utils";
  *
  * Every form that starts work needs a repo, and each one used to be a free-text `<input>` with a
  * `<datalist>` built from whatever happened to be in the current fleet or daemon runs. Two problems
- * with that: the options were a *subset* of the repos bn can actually work in (a managed repo with
- * no live agent never appeared), and a typo went straight through to `bn dispatch`, which then
- * failed somewhere far from where the mistake was made.
+ * with that: the options were a *subset* of the local repos bn could see, and a typo went straight
+ * through to `bn dispatch`, which then failed somewhere far from where the mistake was made.
  *
- * So: one component, one option source — `GET /api/repos`'s `known`, the union of managed repos,
- * local bare clones, and anything with a branch note — and no free text. Searchable because the
- * list is not short, and a dropdown you have to scroll is worse than the input it replaced.
+ * So: one component, one option source — `GET /api/repos`'s `known`, the same local repo inventory
+ * rendered by the Repos board — and no free text. Searchable because the list is not short, and a
+ * dropdown you have to scroll is worse than the input it replaced.
  *
  * Built on `cmdk` + `Dialog` (the same construction as the command palette) rather than a popover:
  * both are already dependencies, and a modal list behaves correctly inside the dialogs half these

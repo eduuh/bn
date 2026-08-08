@@ -3,7 +3,7 @@ import { useState } from "react";
 import { ChevronDown, ChevronUp, X } from "lucide-react";
 
 import { queueEntriesQuery } from "../api/client";
-import { queueCancel, queuePriority } from "../api/writes";
+import { queueCancel, queueClass, queuePriority, queueSnooze } from "../api/writes";
 import { useAppMutation } from "../hooks/useAppMutation";
 import { affects } from "../lib/invalidation";
 import type { QueueEntry } from "../api/queue-types";
@@ -27,6 +27,17 @@ const STEP = 10;
 /** The states an entry can be in, in lifecycle order. `all` first because it is the default. */
 const STATUSES = ["all", "pending", "leased", "done", "failed", "cancelled"] as const;
 
+const CLASSES = [
+  "all",
+  "foreground",
+  "autonomous",
+  "opportunistic",
+  "cron",
+  "warming",
+  "recovery",
+  "maintenance",
+] as const;
+
 /** Status → badge tone. Cancelled reads as neither success nor failure, because it is neither. */
 const STATUS_TONE: Record<string, "secondary" | "destructive"> = {
   failed: "destructive",
@@ -47,7 +58,27 @@ function EntryRow({ entry }: { entry: QueueEntry }) {
     invalidates: affects.queue,
     toast: { success: `Cancelled ${entry.id}`, error: "Could not cancel" },
   });
-  const busy = bump.isPending || cancel.isPending;
+  const snooze = useAppMutation({
+    mutationFn: () => queueSnooze(entry.repo, entry.id, "30m"),
+    invalidates: affects.queue,
+    toast: { success: `Snoozed ${entry.id}`, error: "Could not snooze" },
+  });
+  const markAway = useAppMutation({
+    mutationFn: () => queueClass(entry.repo, entry.id, "opportunistic"),
+    invalidates: affects.queue,
+    toast: { success: `${entry.id} marked opportunistic`, error: "Could not change class" },
+  });
+  const markWatched = useAppMutation({
+    mutationFn: () => queueClass(entry.repo, entry.id, "foreground"),
+    invalidates: affects.queue,
+    toast: { success: `${entry.id} marked foreground`, error: "Could not change class" },
+  });
+  const busy =
+    bump.isPending ||
+    cancel.isPending ||
+    snooze.isPending ||
+    markAway.isPending ||
+    markWatched.isPending;
   // Only pending work can be moved or taken back out. A leased entry has an executor running, and
   // a terminal one is over — offering controls that the CLI would refuse would be a button that
   // lies, so the row simply shows what state it reached instead.
@@ -92,6 +123,15 @@ function EntryRow({ entry }: { entry: QueueEntry }) {
           >
             <ChevronDown />
           </Button>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => snooze.mutate()}>
+            30m
+          </Button>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => markWatched.mutate()}>
+            watch
+          </Button>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => markAway.mutate()}>
+            away
+          </Button>
           {/* Confirmed, because cancelling is the one control here that loses something: the entry
             is terminal afterwards and the producer that queued it may not queue it again. */}
           <ConfirmButton
@@ -118,9 +158,15 @@ function EntryRow({ entry }: { entry: QueueEntry }) {
 
 export function QueueControls() {
   const [status, setStatus] = useState<string>("pending");
+  const [klass, setKlass] = useState<string>("all");
   const [repo, setRepo] = useState<string>("");
   const list = useQuery(
-    queueEntriesQuery({ status: status === "all" ? "" : status, repo, kind: "" }),
+    queueEntriesQuery({
+      status: status === "all" ? "" : status,
+      repo,
+      kind: "",
+      class: klass === "all" ? "" : klass,
+    }),
   );
 
   const rows = list.data?.entries ?? [];
@@ -152,6 +198,19 @@ export function QueueControls() {
               </Button>
             );
           })}
+        </div>
+        <div className="flex flex-wrap gap-1" role="group" aria-label="Class">
+          {CLASSES.map((c) => (
+            <Button
+              key={c}
+              size="sm"
+              variant={klass === c ? "default" : "secondary"}
+              aria-pressed={klass === c}
+              onClick={() => setKlass(c)}
+            >
+              {c}
+            </Button>
+          ))}
         </div>
         <Input
           value={repo}

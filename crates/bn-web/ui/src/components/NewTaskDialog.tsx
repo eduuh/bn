@@ -22,7 +22,7 @@ import { RepoSelect } from "./RepoSelect";
  * durable record first, and an agent picks it up afterwards.
  *
  * Only the title is required. Everything else is what the SMART gate (#998) will ask for anyway —
- * offering the fields here saves a round trip through the improve agent, but a bare title is a
+ * offering the fields here saves a round trip through the enhance agent, but a bare title is a
  * legitimate capture: better a rough task written down than a good one lost while you look up the
  * estimate.
  */
@@ -64,7 +64,7 @@ export function NewTaskDialog({
           <DialogDescription>
             Only the title is required. A task needs a repo, an estimate, a date and a{" "}
             <code className="font-mono">## Done When</code> before an agent may execute it — the
-            improve agent fills in whatever you leave out.
+            enhance agent fills in whatever you leave out.
           </DialogDescription>
         </DialogHeader>
 

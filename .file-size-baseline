@@ -30,7 +30,7 @@
 7154	crates/bn-cli/src/cmd/orchestrate.rs
 1009	crates/bn-cli/src/cmd/pipeline.rs
 2125	crates/bn-cli/src/tat.rs
-3040	crates/bn-cli/src/wt_pool.rs
+2903	crates/bn-cli/src/wt_pool.rs
 1358	crates/bn-cli/src/wt/merge.rs
 1452	crates/bn-core/src/daily.rs
 1143	crates/bn-core/src/dojo.rs

@@ -12,7 +12,8 @@
 //!
 //! Layout: slots live at `<root>/worktree/<repo>/_pool/<n>` beside the normal branch worktrees,
 //! and lease state in `<root>/worktree/<repo>/_pool/leases.json`. The `_pool` dir is excluded from
-//! every `wt` sweep (cleanup/prune/status/go) so the pool is never torn down by housekeeping.
+//! every broad `wt` sweep (cleanup/prune/status/go) so the pool is never torn down by housekeeping;
+//! a direct `wt cleanup` from inside a slot is treated as `wt pool return`.
 
 use crate::wt;
 use bn_core::resolver::Config;
@@ -243,6 +244,11 @@ fn find_slot_root(start: &Path) -> Option<PathBuf> {
                 .unwrap_or(false)
         })
         .map(|p| p.to_path_buf())
+}
+
+/// The enclosing `_pool/<n>` slot for a path, if the path is inside one.
+pub(crate) fn pool_slot_root(start: &Path) -> Option<PathBuf> {
+    find_slot_root(start)
 }
 
 // --- git helpers -----------------------------------------------------------
@@ -1275,10 +1281,9 @@ fn ensure_spare_slot(ctx: &PoolCtx) -> SpareSlot {
     SpareSlot::Warming(n)
 }
 
-/// Kick off `bn wt pool warm --repo <repo> --new --here` detached, so building a slot's checkout
-/// and deps never blocks the dispatch that revealed the need. `--new` touches only slots with no
-/// checkout yet, so a warm racing a live agent can't disturb it. Output is discarded: this is a
-/// background top-up, and its failure is not the caller's problem.
+/// Queue a repo-scoped `pool-warm` job, so building a slot's checkout and deps never blocks the
+/// dispatch that revealed the need and still goes through the machine-wide heavy-work caps. Output
+/// is discarded: this is a best-effort top-up, and its failure is not the caller's problem.
 fn schedule_warm(repo: &str) {
     // Never under `cargo test`: `current_exe()` there is the *test binary*, so spawning it with
     // `wt pool warm` argv would re-run the test suite as a subprocess. The Phase-8 integration
@@ -1300,11 +1305,25 @@ fn schedule_warm(repo: &str) {
         })
         .unwrap_or_else(|| std::path::PathBuf::from("bn"));
     let mut cmd = std::process::Command::new(exe);
-    cmd.args(["wt", "pool", "warm", "--repo", repo, "--new", "--here"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    // A spawn failure just means no background warm — the next lease still creates the slot cold.
+    cmd.args([
+        "queue",
+        "add",
+        &format!("Warm pool for {repo}"),
+        "--repo",
+        "machine",
+        "--kind",
+        "cron",
+        "--job",
+        "pool-warm",
+        "--job-repo",
+        repo,
+        "--job-branch",
+        "main",
+    ])
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null());
+    // A spawn failure just means no queued warm — the next lease still creates the slot cold.
     let _ = cmd.spawn();
 }
 
@@ -1392,8 +1411,7 @@ fn finish_get(ctx: &PoolCtx, slot: &Path, branch: &str, path_only: bool, no_tmux
 }
 
 fn pool_return(cfg: &Config, target: Option<String>, force: bool) -> bool {
-    let (bare_dir, worktree_dir) = wt::layout(cfg);
-
+    let (_, worktree_dir) = wt::layout(cfg);
     let slot = match target {
         Some(t) if Path::new(&t).is_absolute() => PathBuf::from(t),
         Some(t) if t.chars().all(|c| c.is_ascii_digit()) => {
@@ -1416,8 +1434,14 @@ fn pool_return(cfg: &Config, target: Option<String>, force: bool) -> bool {
             }
         },
     };
+    return_slot(cfg, &slot, force)
+}
 
-    let Some((repo, n, pdir)) = slot_parts(&slot) else {
+/// Reset and release a concrete pool slot path using the same guardrails as `wt pool return`.
+pub(crate) fn return_slot(cfg: &Config, slot: &Path, force: bool) -> bool {
+    let (bare_dir, _) = wt::layout(cfg);
+
+    let Some((repo, n, pdir)) = slot_parts(slot) else {
         eprintln!("{RED}Not a pool slot: {}{NC}", slot.display());
         return false;
     };
@@ -1432,7 +1456,7 @@ fn pool_return(cfg: &Config, target: Option<String>, force: bool) -> bool {
     // A slot with a live agent in it is not yours to reset, whatever the ledger says. `--force`
     // is the eviction valve, and it evicts only an occupant that is *provably done* — see
     // [`evict_occupant`].
-    if let Some(occupant) = slot_occupants(&slot).into_iter().next() {
+    if let Some(occupant) = slot_occupants(slot).into_iter().next() {
         if !force {
             eprintln!(
                 "{RED}Slot {n} ({repo}) is in use by a live {}.{NC} Steer or stop it first, or \
@@ -1441,7 +1465,7 @@ fn pool_return(cfg: &Config, target: Option<String>, force: bool) -> bool {
             );
             return false;
         }
-        if !evict_occupant(cfg, &slot, &occupant, n, &repo) {
+        if !evict_occupant(cfg, slot, &occupant, n, &repo) {
             return false;
         }
     }
@@ -1484,7 +1508,7 @@ fn evict_occupant(
     n: u32,
     repo: &str,
 ) -> bool {
-    use bn_core::fleet_gc::{classify, Disposition, ReapPolicy};
+    use bn_core::fleet_gc::{classify, Disposition, PrStatus, ReapPolicy};
 
     let mut observation = crate::reap::observe_agent(
         cfg,
@@ -1496,7 +1520,39 @@ fn evict_occupant(
     // The controller slot is `bn control`'s, and the orchestrator guard is the one gate
     // `fleet_gc` never lets anything override.
     observation.is_orchestrator = n == bn_core::agent::CONTROLLER_POOL_SLOT;
-    if let Disposition::Keep { reason } = classify(&observation, &ReapPolicy::default()) {
+
+    // A registered agent can leave behind a live tmux window after its session is gone. If its PR
+    // landed/closed and the checkout is clean, `pool return --force` may reap that stale window even
+    // when the pane classifier still reads it as "working" from leftover terminal output.
+    let registered = occupant.session_id.is_some();
+    let stale_pr = matches!(observation.pr, PrStatus::Merged | PrStatus::Closed);
+    if registered && stale_pr && observation.has_uncommitted {
+        eprintln!(
+            "{RED}Slot {n} ({repo}) belongs to a finished {} but has uncommitted work — left leased.{NC}\n  \
+             Commit/stash it, or inspect and discard deliberately with `wt pool return {n} --force` \
+             after closing the stale window.",
+            occupant.describe()
+        );
+        return false;
+    }
+    let session_live = occupant.session_id.as_ref().is_some_and(|session_id| {
+        bn_core::agent::supervise(
+            cfg,
+            bn_core::agent::DEFAULT_IDLE_MINS,
+            bn_core::agent::DEFAULT_STUCK_MINS,
+        )
+        .agents
+        .iter()
+        .any(|agent| agent.session_id == *session_id)
+    });
+    let stale_registered_window =
+        registered && !session_live && stale_pr && !observation.is_orchestrator;
+    let policy = ReapPolicy {
+        force: stale_registered_window,
+        ..ReapPolicy::default()
+    };
+
+    if let Disposition::Keep { reason } = classify(&observation, &policy) {
         eprintln!(
             "{RED}Slot {n} ({repo}) is held by a live {} that is still needed ({}).{NC}\n  \
              Force returns a slot whose agent has finished — its PR merged or closed, or it went \
@@ -1957,7 +2013,7 @@ fn print_action(leases: &Leases, n: u32, class: &SlotClass, action: &Action, exe
 /// idle warm cron operate on. Delegates to [`bn_core::pool::pooled_repos`], which skips the
 /// `default`/`*` fallback line: that key names the any-repo size, not a real repo, so warming or
 /// pruning it would only resolve to a nonexistent clone.
-fn pooled_repos() -> Vec<String> {
+pub(crate) fn pooled_repos() -> Vec<String> {
     bn_core::pool::pooled_repos()
         .into_iter()
         .map(|(repo, _)| repo)
@@ -2309,8 +2365,8 @@ fn pool_warm(cfg: &Config, repo: Option<String>, here: bool, new: bool) -> bool 
         // `--new` fills only slots that lack a usable checkout, so it must key off *liveness*, not
         // mere directory presence: a broken stub (dir left by an interrupted `worktree add`, no
         // `.git`) has no checkout and still needs one. Skipping it on `exists` alone is what let a
-        // background `warm --new` (scheduled by `ensure_spare_slot`) no-op over a broken slot,
-        // leaving the next dispatch to pay a cold create. Fall through to the recreate below.
+        // `warm --new` no-op over a broken slot, leaving the next dispatch to pay a cold create.
+        // Fall through to the recreate below.
         if new && is_live_slot(&slot) {
             eprintln!("{BLUE}[{n}] existing — skipping (--new){NC}");
             skipped += 1;
@@ -2463,93 +2519,37 @@ fn fmt_age(secs: i64) -> String {
     }
 }
 
-/// How long the box must have been quiet before an idle-time pool refresh runs — a warm rebuilds
-/// slots, so we never do it on top of active work. A short lull (the "device idle" intent), not a
-/// full night, so refreshes land in the gaps between sessions.
-const POOL_REFRESH_IDLE_MINS: i64 = 20;
-
-/// Don't re-warm a repo whose slots were refreshed within this window, even across a long idle
-/// stretch — bounds an all-day-idle box to a few builds per repo instead of one every tick.
-const POOL_REFRESH_MIN_AGE_SECS: i64 = 4 * 3600;
-
-/// What an idle-time pool refresh should do this tick.
-#[derive(Debug, PartialEq, Eq)]
-enum PoolRefreshPlan {
-    /// Nothing to warm (box active, no pools, or all fresh) — the reason is logged, not an error.
-    Skip(String),
-    /// Warm these repos (de-duped, config order preserved).
-    Warm(Vec<String>),
-}
-
-/// Freshest `pool_warm` timestamp per repo from the machine-local event log — pools are per-box,
-/// so we fold local events only. Feeds the staleness guard that skips recently-refreshed repos.
-fn last_pool_warm_by_repo(evs: &[bn_core::events::Event]) -> BTreeMap<String, i64> {
-    let mut m = BTreeMap::new();
-    for e in evs.iter().filter(|e| e.kind == "pool_warm") {
-        if let Some(repo) = e.fields.get("repo").and_then(|v| v.as_str()) {
-            let slot = m.entry(repo.to_string()).or_insert(e.ts);
-            if e.ts > *slot {
-                *slot = e.ts;
-            }
-        }
-    }
-    m
-}
-
-/// Decide which pooled repos to warm on an idle tick: none when the box is busy (never build over
-/// active work) or nothing is pooled, else every repo not refreshed within `min_age` seconds.
-/// De-dupes while preserving config order. Pure so the gating is unit-tested without a real pool.
-fn plan_idle_pool_refresh(
-    idle: bool,
-    repos: &[String],
-    last_warm: &BTreeMap<String, i64>,
-    now: i64,
-    min_age: i64,
-) -> PoolRefreshPlan {
-    if repos.is_empty() {
-        return PoolRefreshPlan::Skip("no pooled repos configured".into());
-    }
-    if !idle {
-        return PoolRefreshPlan::Skip("box is active — deferring pool refresh".into());
-    }
-    let mut targets = Vec::new();
-    let mut seen = BTreeSet::new();
-    for r in repos {
-        if !seen.insert(r.as_str()) {
-            continue;
-        }
-        let stale = last_warm.get(r).is_none_or(|ts| now - *ts >= min_age);
-        if stale {
-            targets.push(r.clone());
-        }
-    }
-    if targets.is_empty() {
-        return PoolRefreshPlan::Skip("all pools refreshed recently".into());
-    }
-    PoolRefreshPlan::Warm(targets)
+/// Whether an idle-time pool refresh has real work to do right now.
+///
+/// This is the cheap predicate the queue tick uses before enqueueing opportunistic warm work. The
+/// expensive build still runs through [`job_pool_warm`], which re-checks the same gate before doing
+/// anything; this only keeps the queue from filling with "wake up and skip" entries.
+pub(crate) fn pool_refresh_due(cfg: &Config, now: i64) -> bool {
+    matches!(
+        crate::wt_pool_refresh::plan_pool_refresh(cfg, now),
+        crate::wt_pool_refresh::PoolRefreshPlan::Warm(_)
+    )
 }
 
 /// `pool-warm` cron — refresh every repo's warm-slot pool while the device is idle, so a leased
 /// dispatch always lands on a ready checkout. Off-peak by schedule and idle-gated at runtime (never
 /// builds on top of active work), with a per-repo staleness guard so a long idle stretch re-warms
-/// each repo at most every few hours. Each repo's warm records a `pool_warm` event, so `bn metrics`
-/// shows when the pools were last refreshed (the "record when we refresh pools" ask).
-pub(crate) fn job_pool_warm(cfg: &Config, _ctx: Option<&bn_core::resolver::Resolved>) -> i32 {
+/// each repo at most every few hours. When queued with `bn run pool-warm --repo <repo>`, the context
+/// scopes the refresh to that one repo so the Repos page can schedule a pool build without turning
+/// it into an all-pools sweep. Each repo's warm records a `pool_warm` event, so `bn metrics` shows
+/// when the pools were last refreshed (the "record when we refresh pools" ask).
+pub(crate) fn job_pool_warm(cfg: &Config, ctx: Option<&bn_core::resolver::Resolved>) -> i32 {
+    if let Some(ctx) = ctx {
+        println!("pool-warm: refreshing {} pool", ctx.repo);
+        return i32::from(!pool_warm(cfg, Some(ctx.repo.clone()), true, false));
+    }
     let now = bn_core::util::now_epoch_secs();
-    let repos = pooled_repos();
-    let last_warm = last_pool_warm_by_repo(&bn_core::events::read_all());
-    match plan_idle_pool_refresh(
-        bn_core::idle::is_idle(cfg, now, POOL_REFRESH_IDLE_MINS),
-        &repos,
-        &last_warm,
-        now,
-        POOL_REFRESH_MIN_AGE_SECS,
-    ) {
-        PoolRefreshPlan::Skip(why) => {
+    match crate::wt_pool_refresh::plan_pool_refresh(cfg, now) {
+        crate::wt_pool_refresh::PoolRefreshPlan::Skip(why) => {
             println!("pool-warm: {why}");
             0
         }
-        PoolRefreshPlan::Warm(targets) => {
+        crate::wt_pool_refresh::PoolRefreshPlan::Warm(targets) => {
             println!(
                 "pool-warm: refreshing {} pool(s): {}",
                 targets.len(),
@@ -2569,164 +2569,7 @@ pub(crate) fn job_pool_warm(cfg: &Config, _ctx: Option<&bn_core::resolver::Resol
 }
 
 #[cfg(test)]
-mod pool_tests {
-    use super::*;
-
-    fn ev(repo: &str, ts: i64) -> bn_core::events::Event {
-        let mut fields = serde_json::Map::new();
-        fields.insert("repo".to_string(), repo.into());
-        bn_core::events::Event {
-            kind: "pool_warm".to_string(),
-            ts,
-            fields,
-        }
-    }
-
-    // --- last_pool_warm_by_repo ------------------------------------------
-
-    #[test]
-    fn last_warm_keeps_the_freshest_per_repo() {
-        let evs = vec![ev("bn", 100), ev("bn", 300), ev("app", 200), ev("bn", 250)];
-        let m = last_pool_warm_by_repo(&evs);
-        assert_eq!(m.get("bn"), Some(&300));
-        assert_eq!(m.get("app"), Some(&200));
-    }
-
-    #[test]
-    fn last_warm_ignores_other_event_kinds() {
-        let mut other = ev("bn", 999);
-        other.kind = "pool_get".to_string();
-        let m = last_pool_warm_by_repo(&[other]);
-        assert!(m.is_empty());
-    }
-
-    // --- plan_idle_pool_refresh ------------------------------------------
-
-    #[test]
-    fn refresh_skips_when_no_pools() {
-        let plan = plan_idle_pool_refresh(true, &[], &BTreeMap::new(), 1000, 100);
-        assert!(matches!(plan, PoolRefreshPlan::Skip(_)));
-    }
-
-    #[test]
-    fn refresh_skips_when_box_active() {
-        let repos = vec!["bn".to_string()];
-        let plan = plan_idle_pool_refresh(false, &repos, &BTreeMap::new(), 1000, 100);
-        assert!(matches!(plan, PoolRefreshPlan::Skip(_)));
-    }
-
-    #[test]
-    fn refresh_warms_stale_and_never_seen_repos() {
-        let repos = vec!["bn".to_string(), "app".to_string()];
-        let mut last = BTreeMap::new();
-        last.insert("bn".to_string(), 900); // 100s old, == min_age → stale
-                                            // app never warmed → stale
-        let plan = plan_idle_pool_refresh(true, &repos, &last, 1000, 100);
-        assert_eq!(
-            plan,
-            PoolRefreshPlan::Warm(vec!["bn".to_string(), "app".to_string()])
-        );
-    }
-
-    #[test]
-    fn refresh_skips_recently_warmed() {
-        let repos = vec!["bn".to_string()];
-        let mut last = BTreeMap::new();
-        last.insert("bn".to_string(), 950); // only 50s old < 100 min_age
-        let plan = plan_idle_pool_refresh(true, &repos, &last, 1000, 100);
-        assert!(matches!(plan, PoolRefreshPlan::Skip(_)));
-    }
-
-    #[test]
-    fn refresh_dedupes_preserving_order() {
-        let repos = vec!["bn".to_string(), "bn".to_string(), "app".to_string()];
-        let plan = plan_idle_pool_refresh(true, &repos, &BTreeMap::new(), 1000, 100);
-        assert_eq!(
-            plan,
-            PoolRefreshPlan::Warm(vec!["bn".to_string(), "app".to_string()])
-        );
-    }
-
-    // --- prune_decision ---------------------------------------------------
-
-    fn slot(over_size: bool, orphan: bool) -> SlotClass {
-        SlotClass {
-            leased: false,
-            dirty: false,
-            in_use: false,
-            over_size,
-            orphan,
-        }
-    }
-
-    #[test]
-    fn prune_removes_over_size_and_orphan_only() {
-        assert_eq!(prune_decision(slot(true, false)), Action::Remove);
-        assert_eq!(prune_decision(slot(false, true)), Action::Remove);
-        assert_eq!(
-            prune_decision(slot(false, false)),
-            Action::Skip("in-size warm slot")
-        );
-    }
-
-    #[test]
-    fn prune_never_touches_protected_slots() {
-        let mut c = slot(true, false);
-        c.leased = true;
-        assert_eq!(prune_decision(c), Action::Skip("leased"));
-        let mut c = slot(true, false);
-        c.in_use = true;
-        assert_eq!(prune_decision(c), Action::Skip("in use"));
-        let mut c = slot(true, false);
-        c.dirty = true;
-        assert_eq!(prune_decision(c), Action::Skip("uncommitted changes"));
-    }
-
-    // --- destroy_decision -------------------------------------------------
-
-    #[test]
-    fn destroy_skips_protected_without_flags() {
-        let mut c = slot(false, false);
-        c.leased = true;
-        assert_eq!(
-            destroy_decision(c, DestroyFlags::default()),
-            Action::Skip("leased (use --include-leased)")
-        );
-    }
-
-    #[test]
-    fn destroy_opts_in_with_flags() {
-        let mut c = slot(false, false);
-        c.leased = true;
-        c.dirty = true;
-        c.in_use = true;
-        let f = DestroyFlags {
-            include_leased: true,
-            include_dirty: true,
-            include_in_use: true,
-        };
-        assert_eq!(destroy_decision(c, f), Action::Remove);
-    }
-
-    #[test]
-    fn destroy_removes_plain_idle_slot() {
-        assert_eq!(
-            destroy_decision(slot(false, false), DestroyFlags::default()),
-            Action::Remove
-        );
-    }
-
-    // --- fmt_age ----------------------------------------------------------
-
-    #[test]
-    fn fmt_age_units() {
-        assert_eq!(fmt_age(42), "42s");
-        assert_eq!(fmt_age(5 * 60), "5m");
-        assert_eq!(fmt_age(3 * 3600), "3h");
-        assert_eq!(fmt_age(2 * 86_400), "2d");
-        assert_eq!(fmt_age(-5), "0s");
-    }
-}
+mod pool_tests;
 
 /// Real-git integration tests for the worktree-creation and warming primitives — the git-touching
 /// core of `pool get`/`pool warm`. Each builds a throwaway bare repo in a tempdir and drives the
@@ -2911,6 +2754,59 @@ mod git_integration_tests {
         assert_eq!(head_ref(&slot), "HEAD");
     }
 
+    #[test]
+    fn wt_cleanup_inside_pool_slot_returns_the_slot() {
+        let _g = bn_core::test_support::env_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let bare = root.join("bare").join("bn.git");
+        build_repo_into(&root.join("bn-src"), &bare);
+
+        let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
+        let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", root.join("state"));
+        TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
+
+        let pdir = root.join("worktree").join("bn").join("_pool");
+        let slot = pdir.join("2");
+        std::fs::create_dir_all(&pdir).unwrap();
+        assert!(git(&[
+            "--git-dir",
+            &bare.to_string_lossy(),
+            "worktree",
+            "add",
+            "-q",
+            &slot.to_string_lossy(),
+            "main"
+        ]));
+        assert!(switch_into_slot(
+            &slot.to_string_lossy(),
+            &bare.to_string_lossy(),
+            "feat"
+        ));
+        let nested = slot.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let mut leases = Leases::default();
+        leases.slots.insert(
+            2,
+            Lease {
+                branch: "feat".into(),
+                holder: "test".into(),
+                pid: std::process::id(),
+                at: now_epoch(),
+                boot_id: String::new(),
+            },
+        );
+        write_leases(&pdir, &leases).unwrap();
+
+        let cfg = bn_core::test_support::config(root);
+        assert!(crate::wt::cleanup_one(&cfg, &nested, &root.join("worktree"), false).is_ok());
+
+        assert!(slot.is_dir(), "cleanup should keep the warm slot checkout");
+        assert!(read_leases(&pdir).slots.is_empty());
+        assert_eq!(head_ref(&slot), "HEAD");
+    }
+
     /// Regression for the warm-hit-on-a-dead-checkout bug: a lease can outlive its slot dir (removed
     /// out-of-band while the holder pid is still alive, so `reclaim_stale` keeps the lease). The
     /// idempotent "warm hit" must rebuild the checkout, never hand back the missing path.
@@ -3000,8 +2896,8 @@ mod git_integration_tests {
 
     /// Regression for the `--new` warm no-op: `pool_warm(--new)` must rebuild a *broken* stub
     /// (a dir with no `.git`, left by an interrupted create), not skip it as "existing". The old
-    /// guard keyed off directory presence, so `ensure_spare_slot`'s background `warm --new` left a
-    /// broken slot broken and the next dispatch paid a cold create.
+    /// guard keyed off directory presence, so `warm --new` left a broken slot broken and the next
+    /// dispatch paid a cold create.
     #[test]
     fn pool_warm_new_rebuilds_a_broken_stub() {
         let _g = bn_core::test_support::env_lock();

@@ -77,15 +77,6 @@ pub fn run_env(args: &[&str], cwd: Option<&Path>, envs: &[(&str, &str)]) -> RunR
     }
 }
 
-/// Spawn `bn <args>` detached — fire-and-forget for a LONG-RUNNING command whose completion the HTTP
-/// request must NOT block on (e.g. `wt pool warm`, which cuts a checkout + runs `build.sh` per slot).
-/// Stdio is nulled and the child is reaped in a background thread, so the process runs to completion
-/// independently while the handler returns a "started" ack. Returns the child's pid once launched,
-/// or an error if the spawn itself fails.
-pub fn spawn_detached(args: &[&str]) -> std::io::Result<u32> {
-    bn_core::bn_subprocess::spawn_detached(args)
-}
-
 /// Build a stand-in `{ok, command, data, error}` envelope for a command that emitted none (e.g.
 /// `wt merge --all`, which is human-only), from its exit status and output tail.
 fn synthesize_envelope(ok: bool, command: &str, stdout: &str, stderr: &str) -> Value {

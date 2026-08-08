@@ -495,12 +495,11 @@ pub async fn brag(State(state): State<AppState>, Query(q): Query<InsightsQuery>)
 // Repos (multi-repo navigation, #495)
 // ---------------------------------------------------------------------------
 
-/// `GET /api/repos` — the multi-repo navigation rollup: every repo bn knows (its bare clones on this
-/// machine, the managed-repos config, the branch-note store, the live fleet, the orchestrate runs),
-/// each with a per-repo rollup (active agents, open PRs, session count, last activity, cost) and
-/// its drill-in session list. Delegates to [`crate::repos::repos_view`], which reuses the same
-/// Notes / Fleet / Cost rollups the other reads build from, so the Repos surface is one contract
-/// with the rest of the dashboard.
+/// `GET /api/repos` — the local repo inventory: repos with local clone/worktree/live-agent evidence,
+/// each with a per-repo rollup (active agents, open PRs, session count, last activity, cost) and its
+/// drill-in session list. Delegates to [`crate::repos::repos_view`], which reuses the same Notes /
+/// Fleet / Cost rollups the other reads build from, so the Repos surface is one contract with the
+/// rest of the dashboard.
 pub async fn repos(State(state): State<AppState>) -> Json<Envelope> {
     Json(Envelope::success(
         "repos",

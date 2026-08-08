@@ -1,6 +1,6 @@
 //! The dispatcher's decision, as a pure function.
 //!
-//! One pass of the tick: given a snapshot of the queue, the machine, the nodes and the pauses,
+//! One pass of the tick: given a snapshot of the queue, the machine and the nodes,
 //! decide what to start. Nothing here reads the clock, the disk or the network — the CLI samples
 //! the world, calls [`plan_tick`], and *realizes* the intent.
 //!
@@ -18,7 +18,6 @@ use crate::backlog::ExecutionTarget;
 use crate::capability;
 use crate::hosts::NodeRecord;
 use crate::queue::kind::{BacklogKind, ExecSpec, WorkClass};
-use crate::queue::pause::{Pause, PauseScope, PauseState};
 use crate::queue::place::{place_req, Placement};
 use crate::scheduler::{admit, Bind, Caps, Observed};
 use crate::select::{select_wave, SelectCandidate, SelectionInputs, SkipReason};
@@ -31,8 +30,6 @@ pub struct TickInputs<'a> {
     pub now: i64,
     /// The machine this tick runs on — the `assigned_to` value stamped on every lease it takes.
     pub machine: &'a str,
-    /// The pauses in force, already folded.
-    pub pause: &'a PauseState,
     /// Every PENDING entry, machine-wide, any repo, any kind.
     ///
     /// Deliberately unordered on input: ranking is part of the policy under test, not a
@@ -72,6 +69,22 @@ pub struct TickInputs<'a> {
     pub max_express: usize,
     /// Times of day when some work is preferred — see [`crate::queue::window`].
     pub windows: &'a [crate::queue::window::PriorityWindow],
+    /// Current presence/away state for opportunistic admission.
+    pub presence: Presence,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Presence {
+    /// The user has been idle long enough for opportunistic work.
+    pub idle: bool,
+    /// An explicit away/off-peak window is open.
+    pub away_window: bool,
+}
+
+impl Presence {
+    pub fn allows_opportunistic(self) -> bool {
+        self.idle || self.away_window
+    }
 }
 
 /// Express items one tick may run. Enough that a normal cron backlog drains in a pass or two,
@@ -164,11 +177,9 @@ pub struct Deferred {
 }
 
 /// Why one entry stayed pending. The middle three mirror [`SkipReason`] so the two policies report
-/// the same vocabulary; the rest are the placement, kind-cap and pause reasons.
+/// the same vocabulary; the rest are the placement and kind-cap reasons.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeferReason {
-    /// A pause covers this entry — carries the scope that blocked it.
-    Paused(PauseScope),
     /// A resource / budget / lane guard bound.
     Capacity(Bind),
     /// The per-kind ceiling is full while the lane still has room.
@@ -186,13 +197,16 @@ pub enum DeferReason {
     /// Its moment has passed — see [`crate::backlog::BacklogEntry::not_after`]. Not a deferral so
     /// much as an abandonment: the tick resolves it rather than carrying it forward.
     Expired,
+    /// This specific task is snoozed until a future time.
+    Snoozed,
+    /// Opportunistic work is waiting for idle/away time.
+    AwaitingAway,
 }
 
 impl DeferReason {
     /// The kebab-case label for the decision file and the status surface.
     pub fn label(&self) -> &'static str {
         match self {
-            DeferReason::Paused(_) => "paused",
             DeferReason::Capacity(_) => "capacity",
             DeferReason::KindCap => "kind-cap",
             DeferReason::Conflict => "conflict",
@@ -201,18 +215,17 @@ impl DeferReason {
             DeferReason::NotMyKind => "not-my-kind",
             DeferReason::ExpressBudget => "express-budget",
             DeferReason::Expired => "expired",
+            DeferReason::Snoozed => "snoozed",
+            DeferReason::AwaitingAway => "awaiting-away",
         }
     }
 }
 
 /// Why the tick started nothing more this pass.
 ///
-/// Ordered most-global first, and it is the **first** applicable one — so "paused" is never hidden
-/// behind "at local concurrency cap", which is the failure mode that makes an operator go looking
-/// for a resource problem that is not there.
+/// Ordered most-global first, and it is the **first** applicable one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TickBind {
-    Paused(PauseScope),
     Capacity(Bind),
     NoCapableNode,
     /// Nothing was pending in the allowed kind set.
@@ -222,7 +235,6 @@ pub enum TickBind {
 impl TickBind {
     pub fn label(&self) -> String {
         match self {
-            TickBind::Paused(scope) => format!("paused:{}", scope.key()),
             TickBind::Capacity(bind) => bind.label().to_string(),
             TickBind::NoCapableNode => "no-capable-node".to_string(),
             TickBind::Empty => "empty".to_string(),
@@ -253,8 +265,8 @@ pub struct KindOccupancy {
 ///
 /// Order is deliberate, and each step is the reason surface for the entries it drops:
 ///
-///   1. **Kind partition**, then **pause** — a covered entry never reaches ranking, so a pause
-///      reads as `paused` rather than as whatever cap it would have hit later.
+///   1. **Kind partition**, then deadline — work owned by another dispatcher is ignored, and
+///      work whose moment passed is resolved rather than run late.
 ///   2. **Rank** — delegated to [`select_wave`] with unbounded capacity, so the strategic order,
 ///      the conflict hold and the can't-merge filter are the *same* implementation the orchestrate
 ///      tick already uses. Capacity is applied here instead, because this tick's notion of
@@ -268,14 +280,12 @@ pub struct KindOccupancy {
 pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
     let mut plan = TickPlan::default();
 
-    // 1. Partition by kind, then by deadline, then by pause. Each produces a record rather than a
-    //    silent drop.
+    // 1. Partition by kind, then by deadline. Expiry produces a record rather than a silent drop.
     let mut claimable: Vec<&BacklogEntry> = Vec::new();
     for entry in inputs.pending {
-        let lane = WorkClass::from_kind(entry.kind);
         // Time-sensitive work that has missed its moment is abandoned before anything else looks
         // at it. Running it late is the failure being prevented, so ranking it would be beside the
-        // point — and a pause must not be reported for something that was never going to run.
+        // point.
         if entry.not_after.is_some_and(|t| inputs.now > t) {
             plan.expired.push(defer(
                 entry,
@@ -284,30 +294,34 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
             ));
             continue;
         }
+        if let Some(not_before) = entry.not_before {
+            if inputs.now < not_before {
+                plan.deferred.push(defer(
+                    entry,
+                    DeferReason::Snoozed,
+                    format!("snoozed until {not_before}"),
+                ));
+                continue;
+            }
+        }
+        if crate::queue::classify::classify(entry).mode
+            == crate::queue::classify::QueueMode::Opportunistic
+            && !inputs.presence.idle
+            && !crate::queue::window::allows_opportunistic(entry, inputs.windows, inputs.now)
+        {
+            plan.deferred.push(defer(
+                entry,
+                DeferReason::AwaitingAway,
+                "waiting for idle time or an away window".to_string(),
+            ));
+            continue;
+        }
         if let Some(kinds) = inputs.kinds {
             if !kinds.contains(&entry.kind) {
                 continue; // Another dispatcher owns it; not this tick's business to report on.
             }
         }
-        // Recovery work is never paused. A pause is a statement about *new work*; the passes that
-        // recover stuck agents and free dead leases are what make the paused state recoverable.
-        // Deferring them here would mean `bn queue pause`, typed because the machine was unhappy,
-        // silently switched off the machinery that fixes it.
-        let gate = (!entry.recovery)
-            .then(|| {
-                inputs
-                    .pause
-                    .blocks(&entry.repo, entry.kind, lane, entry.assigned_to.as_deref())
-            })
-            .flatten();
-        match gate {
-            Some(pause) => plan.deferred.push(defer(
-                entry,
-                DeferReason::Paused(pause.scope.clone()),
-                pause_detail(pause),
-            )),
-            None => claimable.push(entry),
-        }
+        claimable.push(entry);
     }
 
     // 2. Rank, with capacity left unbounded so ranking and admission stay separable.
@@ -458,16 +472,6 @@ fn headline_bind(
     claimable: &[&BacklogEntry],
     plan: &TickPlan,
 ) -> Option<TickBind> {
-    if !plan.deferred.is_empty() {
-        if let Some(DeferReason::Paused(scope)) = plan
-            .deferred
-            .iter()
-            .map(|d| &d.reason)
-            .find(|r| matches!(r, DeferReason::Paused(_)))
-        {
-            return Some(TickBind::Paused(scope.clone()));
-        }
-    }
     if claimable.is_empty() && plan.deferred.is_empty() {
         return Some(TickBind::Empty);
     }
@@ -573,13 +577,6 @@ fn defer(entry: &BacklogEntry, reason: DeferReason, detail: String) -> Deferred 
         reason,
         detail,
         waiting_since: entry.added_at,
-    }
-}
-
-fn pause_detail(pause: &Pause) -> String {
-    match pause.reason.is_empty() {
-        true => format!("paused: {}", pause.scope.key()),
-        false => format!("paused: {} — {}", pause.scope.key(), pause.reason),
     }
 }
 

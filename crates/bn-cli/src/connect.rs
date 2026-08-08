@@ -1,7 +1,6 @@
-//! Native SSH: `bn connect` (the cross-machine `tat`) and the remote half of
-//! `bn dispatch --host`. Hosts come from `~/.ssh/config` enriched by config.toml `[hosts]`
-//! (see `bn_core::hosts`); this module owns the interactive picker, the tmux-backed attach,
-//! and the precondition-checked remote dispatch.
+//! Native SSH: `bn connect` (the cross-machine `tat`). Hosts come from `~/.ssh/config` enriched by
+//! config.toml `[hosts]` (see `bn_core::hosts`); this module owns the interactive picker and the
+//! tmux-backed attach.
 //!
 //! Mirrors the self-referencing `tat` shape: the same binary renders the fzf row list and the
 //! preview panel via a hidden `--pick-stage`, and degrades to a numbered list when fzf is absent.
@@ -27,18 +26,6 @@ pub enum ConnectStage {
 /// PATH often misses the user bin dirs (`~/.cargo/bin`, homebrew), so extend it explicitly.
 const REMOTE_PATH: &str = "export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:$HOME/.bin:/opt/homebrew/bin:/usr/local/bin:$PATH\";";
 
-/// One non-interactive SSH policy for remote dispatch probing and execution.
-const DISPATCH_SSH_OPTIONS: &[&str] = &[
-    "-o",
-    "BatchMode=yes",
-    "-o",
-    "ConnectTimeout=5",
-    "-o",
-    "ServerAliveInterval=15",
-    "-o",
-    "ServerAliveCountMax=3",
-];
-
 /// Short non-interactive policy for the live picker preview.
 const PREVIEW_SSH_OPTIONS: &[&str] = &[
     "-o",
@@ -63,8 +50,6 @@ const INTERACTIVE_SSH_OPTIONS: &[&str] = &[
 ];
 
 const PREVIEW_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
-const DISPATCH_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
-const REMOTE_DISPATCH_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The remote session every `bn connect` attaches to. `new-session -A` re-attaches an existing
 /// `bn` session, so a dropped pipe resumes work instead of killing it.
@@ -73,12 +58,6 @@ const REMOTE_TMUX_SESSION: &str = "bn";
 fn ssh_command(options: &[&str]) -> Command {
     let mut command = Command::new("ssh");
     command.args(options);
-    command
-}
-
-fn dispatch_ssh(alias: &str) -> Command {
-    let mut command = ssh_command(DISPATCH_SSH_OPTIONS);
-    command.arg(alias);
     command
 }
 
@@ -101,20 +80,6 @@ struct SshRun {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
     timed_out: bool,
-}
-
-enum DispatchSshError {
-    Spawn(std::io::Error),
-    Run(SshRun),
-}
-
-impl std::fmt::Display for DispatchSshError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Spawn(error) => write!(f, "failed to run ssh: {error}"),
-            Self::Run(run) => write!(f, "{}", ssh_failure("ssh failed", run)),
-        }
-    }
 }
 
 fn wait_for_ssh(
@@ -273,46 +238,6 @@ fn run_ssh_with_timeout(
     })
 }
 
-fn ssh_connect_failure_is_transient(run: &SshRun) -> bool {
-    if run.timed_out || run.status.code() != Some(255) {
-        return false;
-    }
-    let stderr = String::from_utf8_lossy(&run.stderr).to_lowercase();
-    [
-        "connection refused",
-        "connection timed out",
-        "operation timed out",
-        "no route to host",
-        "network is unreachable",
-        "could not resolve hostname",
-        "temporary failure in name resolution",
-    ]
-    .iter()
-    .any(|reason| stderr.contains(reason))
-}
-
-fn run_dispatch_ssh_with_retry(
-    label: &str,
-    mut command: impl FnMut() -> Command,
-    timeout: Duration,
-    stream_output: bool,
-) -> Result<SshRun, DispatchSshError> {
-    crate::retry::run(
-        label,
-        || match run_ssh_with_timeout(command(), timeout, stream_output) {
-            Ok(run) if run.status.success() => Ok(run),
-            Ok(run) => Err(DispatchSshError::Run(run)),
-            Err(error) => Err(DispatchSshError::Spawn(error)),
-        },
-        |error| match error {
-            DispatchSshError::Spawn(error) => crate::retry::io_error_is_transient(error),
-            DispatchSshError::Run(run) => ssh_connect_failure_is_transient(run),
-        },
-        std::thread::sleep,
-        |message| eprintln!("{message}"),
-    )
-}
-
 fn ssh_failure(context: &str, run: &SshRun) -> String {
     let status = if run.timed_out {
         "command timed out".to_string()
@@ -439,9 +364,7 @@ fn preview(cfg: &Config, alias: &str) {
         println!("harness:   {harness}");
     }
     if !h.registered {
-        println!(
-            "\x1b[2mnot in [hosts] — connect works; dispatch --host needs registration\x1b[0m"
-        );
+        println!("\x1b[2mnot in [hosts] — connect still works\x1b[0m");
     }
     println!();
     // Live probe. BatchMode keeps a password prompt from wedging the preview pane; a short
@@ -702,166 +625,5 @@ fn attach_window(alias: &str, read_only: bool) {
         crate::fail(&format!(
             "bn connect: failed to switch to local tmux session '{session}'"
         ));
-    }
-}
-
-/// The remote half of `bn dispatch --host <alias>`: precondition-check the target over ssh
-/// (bn, tmux, and the harness present — clear failures), then run
-/// `bn dispatch <task> --repo <repo> --agent <harness> --yolo` **on the target**. The remote
-/// dispatch creates the worktree, seeds the note (machine-scoped to the target — it flows home
-/// via `bn sync`), and launches the agent in a detached tmux window there.
-///
-/// Security: the seed is the user's own command-line text, so `--yolo` carries the same trust
-/// as an interactive launch — and registration under `[hosts]` is the per-host opt-in this
-/// requires. An item that resolves to an external URL on the target is defused by the remote
-/// dispatch itself (its yolo-blocked-external rule runs where the seed is built).
-#[allow(clippy::too_many_arguments)]
-pub fn dispatch_remote(
-    cfg: &Config,
-    alias: &str,
-    repo: Option<&str>,
-    item: &str,
-    base: Option<&str>,
-    branch: Option<&str>,
-    name: Option<&str>,
-    agent: Option<&str>,
-    scout: bool,
-    skill: Option<&str>,
-    verify: bool,
-    json: bool,
-) {
-    if item.trim().is_empty() {
-        crate::fail("bn dispatch: empty item");
-    }
-    let all = load_hosts(cfg);
-    let Some(host) = all.iter().find(|h| h.alias == alias) else {
-        let known: Vec<&str> = all.iter().map(|h| h.alias.as_str()).collect();
-        crate::fail(&format!(
-            "bn dispatch: no ssh-config Host '{alias}' — known hosts: {}",
-            if known.is_empty() {
-                "(none)".to_string()
-            } else {
-                known.join(", ")
-            }
-        ));
-    };
-    // Trust gate: remote dispatch runs the agent unattended (--yolo on the target), so it needs
-    // the explicit per-host opt-in that `[hosts]` registration is.
-    if !host.registered {
-        crate::fail(&format!(
-            "bn dispatch: '{alias}' is not registered under [hosts] in config.toml — remote \
-             dispatch runs the agent unattended, so opt in with a [hosts.{alias}] entry"
-        ));
-    }
-    if host.extra.bn == Some(false) {
-        crate::fail(&format!(
-            "bn dispatch: [hosts.{alias}] says bn is not installed there (bn = false) — install \
-             bn on the target, then flip the flag"
-        ));
-    }
-    let Some(repo) = repo else {
-        crate::fail(
-            "bn dispatch: --host needs a target repo — pass --repo <name> (or run from inside one)",
-        );
-    };
-    // Harness: explicit --agent wins, else the host's configured default, else copilot.
-    let harness = match agent {
-        Some(a) => a.to_string(),
-        None => match host.extra.harness.as_deref() {
-            Some(h) => crate::normalize_agent(h)
-                .unwrap_or_else(|| {
-                    crate::fail(&format!(
-                        "bn dispatch: [hosts.{alias}] has unknown harness '{h}' (use: copilot | claude)"
-                    ))
-                })
-                .to_string(),
-            None => "copilot".to_string(),
-        },
-    };
-
-    // Preconditions in one round-trip: bn, tmux (the detached window lives in it), and the
-    // harness CLI must exist on the target. BatchMode so a password prompt fails fast instead
-    // of wedging a non-interactive dispatch.
-    let probe_cmd = format!(
-        "{REMOTE_PATH} for b in bn tmux {harness}; do command -v \"$b\" >/dev/null 2>&1 || echo \"MISSING:$b\"; done"
-    );
-    let probe = run_dispatch_ssh_with_retry(
-        &format!("bn dispatch: ssh probe to '{alias}'"),
-        || {
-            let mut command = dispatch_ssh(alias);
-            command.arg(&probe_cmd);
-            command
-        },
-        DISPATCH_PROBE_TIMEOUT,
-        false,
-    )
-    .unwrap_or_else(|error| match error {
-        DispatchSshError::Spawn(error) => {
-            crate::fail(&format!("bn dispatch: failed to run ssh: {error}"))
-        }
-        DispatchSshError::Run(run) => crate::fail(&format!(
-            "{}\n{}",
-            ssh_failure(
-                &format!("bn dispatch: ssh to '{alias}' failed — is it reachable with key auth?"),
-                &run,
-            ),
-            ssh_next_steps(alias)
-        )),
-    });
-    let missing: Vec<String> = String::from_utf8_lossy(&probe.stdout)
-        .lines()
-        .filter_map(|l| l.strip_prefix("MISSING:").map(str::to_string))
-        .collect();
-    if !missing.is_empty() {
-        crate::fail(&format!(
-            "bn dispatch: '{alias}' is missing on PATH: {} — install before dispatching there",
-            missing.join(", ")
-        ));
-    }
-
-    // Run the dispatch on the target. --repo makes it cwd-independent; the remote's own
-    // dispatch does the rest (worktree, note seed, detached tmux window, agent launch).
-    let args = crate::cmd::dispatch::DispatchInvocation::new(item, repo, &harness)
-        .base(base)
-        .branch(branch)
-        .name(name)
-        .scout(scout)
-        .skill(skill)
-        .verify(verify)
-        .yolo(true)
-        .json(json)
-        .args();
-    let remote = format!(
-        "{REMOTE_PATH} bn {}",
-        args.iter()
-            .map(|arg| crate::shq(arg))
-            .collect::<Vec<_>>()
-            .join(" ")
-    );
-    run_dispatch_ssh_with_retry(
-        &format!("bn dispatch: remote launch on '{alias}'"),
-        || {
-            let mut command = dispatch_ssh(alias);
-            command.arg(&remote);
-            command
-        },
-        REMOTE_DISPATCH_TIMEOUT,
-        true,
-    )
-    .unwrap_or_else(|error| match error {
-        DispatchSshError::Spawn(error) => {
-            crate::fail(&format!("bn dispatch: failed to run ssh: {error}"))
-        }
-        DispatchSshError::Run(run) => crate::fail(&format!(
-            "{}\n{}",
-            ssh_failure(
-                &format!("bn dispatch: remote dispatch on '{alias}' failed"),
-                &run,
-            ),
-            ssh_next_steps(alias)
-        )),
-    });
-    if !json {
-        println!("  watch it: bn connect {alias}");
     }
 }

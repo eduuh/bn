@@ -209,6 +209,12 @@ pub struct BacklogEntry {
     /// Estimated wall-clock seconds, for the timeline's projection. `0` = use the per-kind default.
     #[serde(default, skip_serializing_if = "is_zero_i64")]
     pub est_secs: i64,
+    /// Epoch secs before which this work should not start.
+    ///
+    /// This is the task-level replacement for queue-wide pause: one entry can be snoozed without
+    /// stopping the dispatcher or unrelated work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_before: Option<i64>,
     /// Epoch secs after which this work is pointless and should be dropped rather than started.
     ///
     /// Time-sensitive work loses its meaning when it slips: a 09:00 digest run at 14:00 is worse
@@ -249,6 +255,37 @@ pub struct BacklogEntry {
     /// So weight is declared. Heavy work is admitted like an agent and spawned like one.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub heavy: bool,
+    /// Manual classification override when durable fields are not enough.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class_override: Option<ClassOverride>,
+}
+
+/// Manual queue class override on an entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClassOverride {
+    Foreground,
+    Autonomous,
+    Opportunistic,
+}
+
+impl ClassOverride {
+    pub fn parse(s: &str) -> Option<ClassOverride> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "foreground" | "watched" => Some(ClassOverride::Foreground),
+            "autonomous" | "auto" => Some(ClassOverride::Autonomous),
+            "opportunistic" | "away" => Some(ClassOverride::Opportunistic),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ClassOverride::Foreground => "foreground",
+            ClassOverride::Autonomous => "autonomous",
+            ClassOverride::Opportunistic => "opportunistic",
+        }
+    }
 }
 
 /// Serde skip predicate for an unset [`BacklogEntry::est_secs`], so an entry that carries no
@@ -336,10 +373,14 @@ pub struct AddSpec {
     pub est_secs: i64,
     /// Epoch secs after which the work is pointless — see [`BacklogEntry::not_after`].
     pub not_after: Option<i64>,
+    /// Epoch secs before which this work should not start — see [`BacklogEntry::not_before`].
+    pub not_before: Option<i64>,
     /// Machine-health work, exempt from pause — see [`BacklogEntry::recovery`].
     pub recovery: bool,
     /// Costs like an agent though it launches none — see [`BacklogEntry::heavy`].
     pub heavy: bool,
+    /// Manual classification override — see [`BacklogEntry::class_override`].
+    pub class_override: Option<ClassOverride>,
 }
 
 impl BacklogEntry {
@@ -373,8 +414,10 @@ impl AddSpec {
             requires: entry.requires.clone(),
             est_secs: entry.est_secs,
             not_after: entry.not_after,
+            not_before: entry.not_before,
             recovery: entry.recovery,
             heavy: entry.heavy,
+            class_override: entry.class_override,
         }
     }
 }
@@ -421,10 +464,12 @@ impl BacklogEntry {
             requires,
             assigned_to: None,
             est_secs: spec.est_secs,
+            not_before: spec.not_before,
             not_after: spec.not_after,
             recurrence: spec.recurrence,
             recovery: spec.recovery,
             heavy: spec.heavy,
+            class_override: spec.class_override,
         }
     }
 

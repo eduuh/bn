@@ -5,7 +5,6 @@
 //! be answerable from disk without re-deriving anything, because by the time someone asks, the
 //! conditions that caused it have usually changed. A dispatcher that only records its successes
 //! makes its silences unexplainable.
-use crate::queue::pause::Pause;
 use crate::queue::tick::{TickInputs, TickPlan};
 use crate::resolver;
 use serde::{Deserialize, Serialize};
@@ -21,13 +20,13 @@ pub fn decision_path() -> PathBuf {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueueDecision {
     pub at: i64,
-    /// `started` | `held` | `paused` | `empty`.
+    /// `started` | `held` | `empty`.
     pub outcome: String,
-    /// The bind label — `paused:<scope>` / `ram` / `swap` / `load` / `tokens` / `cost` /
-    /// `local-cap` / `no-capable-node` / `empty`.
+    /// The bind label — `ram` / `swap` / `load` / `tokens` / `cost` / `local-cap` /
+    /// `no-capable-node` / `empty`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bind: Option<String>,
-    /// One human line: `paused — release freeze until 18:00`, `free RAM below the guard`.
+    /// One human line: `free RAM below the guard`, `no READY node satisfies capability: x`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     /// Whether this pass was a dry run — so a `--dry-run` experiment can never be mistaken for the
@@ -40,8 +39,6 @@ pub struct QueueDecision {
     pub kinds: Vec<KindRow>,
     pub deferred: Vec<DeferredRow>,
     pub dispatched: Vec<DispatchRow>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub pauses: Vec<Pause>,
     /// One row per node with what it offers — so `no-capable-node` is *actionable*
     /// ("fedora-box is Ready but serves no skill:auto-review-pr") rather than merely true.
     pub nodes: Vec<NodeRow>,
@@ -107,15 +104,8 @@ pub struct NodeRow {
 impl QueueDecision {
     /// Build the record for a completed (or dry-run) pass.
     pub fn build(inputs: &TickInputs, plan: &TickPlan, dry_run: bool) -> QueueDecision {
-        // `paused` means a pause is *why* nothing started — read from the bind, not from whether
-        // any pause exists. A `kind:cron` pause while the coding lane is full is a capacity hold
-        // that happens to coexist with a pause, and calling it "paused" sends the reader to lift a
-        // pause that was never the problem. It also contradicts the deferred rows, which correctly
-        // said `capacity`.
         let outcome = if !plan.start.is_empty() {
             "started"
-        } else if matches!(plan.bind, Some(crate::queue::tick::TickBind::Paused(_))) {
-            "paused"
         } else if inputs.pending.is_empty() {
             "empty"
         } else {
@@ -184,7 +174,6 @@ impl QueueDecision {
                     rationale: d.rationale.clone(),
                 })
                 .collect(),
-            pauses: inputs.pause.pauses.clone(),
             nodes: inputs
                 .nodes
                 .iter()

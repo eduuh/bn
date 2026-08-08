@@ -98,8 +98,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/queue/add", post(queue_api::queue_add))
         .route("/api/queue/cancel", post(queue_api::queue_cancel))
         .route("/api/queue/priority", post(queue_api::queue_priority))
-        .route("/api/queue/pause", post(queue_api::queue_pause))
-        .route("/api/queue/resume", post(queue_api::queue_resume))
+        .route("/api/queue/snooze", post(queue_api::queue_snooze))
+        .route("/api/queue/class", post(queue_api::queue_class))
         .route("/api/orchestrate/queue", post(actions::queue_add))
         .route(
             "/api/orchestrate/queue/reorder",
@@ -141,8 +141,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/suggestions/{id}", post(actions::suggestion_status))
         .route("/api/today/agent/start", post(actions::today_agent_start))
         .route("/api/today/agent/stop", post(actions::today_agent_stop))
-        // Warm-worktree pool (#497) — trigger `bn wt pool warm --repo <repo>` for a pooled repo.
-        // Long-running, so the handler spawns it detached and returns a "started" ack (non-blocking).
+        // Warm-worktree pool (#497) — schedule the heavy `pool-warm` job for a pooled repo.
+        // Long-running, so it goes through the machine-wide queue instead of an uncapped spawn.
         .route("/api/repos/{repo}/pool/warm", post(actions::repo_pool_warm))
         .route("/api/repos/{repo}/pool", post(actions::repo_pool_set))
         // Goal-note connect/disconnect (#564) — native in-process daily-goal writes:

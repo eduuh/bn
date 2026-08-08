@@ -3,7 +3,6 @@ use crate::*;
 pub(super) fn route(cfg: &Config, action: CmdShellUi, json: bool) {
     match action {
         CmdShellUi::Setup => emit_setup(cfg, json),
-        CmdShellUi::Remote { action } => emit_remote(action, json),
         CmdShellUi::TmuxStatus { path } => emit_tmux_status(cfg, path),
         CmdShellUi::TmuxMcp { action } => match action {
             TmuxMcpCmd::Ensure => emit_tmux_mcp_ensure(cfg),

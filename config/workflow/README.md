@@ -153,6 +153,13 @@ they don't need you. It's produced entirely by `bn attn badge` from `#(...)` in
 `status-format` (the native window tally — once `bn tmux-attn-count` — was folded into it),
 and it's the ambient nudge toward the attention cockpit.
 
+### Queue badge
+
+The status bar also calls `bn queue badge`, a compact queue-health signal. It stays empty when the
+queue is healthy and only routine cron/autonomous work is running, and appears for foreground work,
+recent queue failures, dispatcher staleness, or task-level blocks that need attention. Use
+`bn queue timeline` for the full cron/autonomous/foreground history and projection.
+
 ### Attention picker (`prefix j`)
 
 The count tells you *something* needs you; `prefix j` takes you *there*. `bn jump` opens an

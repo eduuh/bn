@@ -15,7 +15,13 @@ use crate::backlog::AddSpec;
 /// Distinct from [`RECOVERY_JOBS`]: those go through the queue and are merely exempt from pause.
 /// These cannot be queued at all, because queueing them is circular — the thing that drains the
 /// queue would be waiting in it.
-pub const NEVER_CAPTURE: &[&str] = &["queue-tick", "tick-5m", "tick-10m", "tick-15m"];
+pub const NEVER_CAPTURE: &[&str] = &[
+    "queue-tick",
+    "agent-scheduler",
+    "tick-5m",
+    "tick-10m",
+    "tick-15m",
+];
 
 /// The jobs that keep the machine recoverable.
 ///

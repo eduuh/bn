@@ -1,18 +1,17 @@
 //! `GET /api/repos` — the multi-repo navigation rollup (#495).
 //!
-//! The Repos view groups the fleet by repo: every repo bn knows (the bare clones it manages on this
-//! machine, the managed-repos config, the branch-note store, the live fleet, and the orchestrate
-//! runs), each with a per-repo rollup — active agents, open PRs, recent sessions (branches with
-//! notes / dispatches), last activity, and cost (`by_repo` from the #381 fold) — plus a drill-in
-//! session list. A read; all in-process
-//! `bn-core`, reusing the same rollups the Fleet / Notes / Cost surfaces read so the shapes stay
-//! one contract. The heavy lifting is a pure [`assemble`] over already-extracted rows, so the
-//! merge / rollup / sort is unit-tested without touching disk.
+//! The Repos view groups local repo state: repos with a bare clone on this machine, a checked-out
+//! worktree, or a live/in-flight agent. Branch notes, managed-repos config, and cost data decorate
+//! those cards but do not create repo cards by themselves — `/repos` is an inventory of local repos,
+//! not every note namespace bn has ever seen. The heavy lifting is a pure [`assemble`] over
+//! already-extracted rows, so the merge / rollup / sort is unit-tested without touching disk.
 
 use bn_core::cost::{self, CostFilter, CostView};
 use bn_core::resolver::Config;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+
+const POOL_MIN_READY: usize = 1;
 
 /// tmux window / note-key form of a branch (worktree layout replaces `/` with `-`), so a dispatched
 /// `dispatch/web-495` item and its `dispatch-web-495` note collapse onto one session.
@@ -27,6 +26,12 @@ fn repo_name(url: &str) -> String {
     base.strip_suffix(".git")
         .unwrap_or(base)
         .to_ascii_lowercase()
+}
+
+/// Synthetic targets are steerable agent addresses, not work repos. They may have notes/fleet rows
+/// so their owning page can render state, but the Repos board should list only repos bn can work in.
+fn is_synthetic_repo(repo: &str) -> bool {
+    repo == bn_core::today_agent::TODAY_REPO
 }
 
 /// One session (branch) within a repo — a branch note, a live agent, and/or a dispatched orchestrate
@@ -187,10 +192,10 @@ pub fn repos_view(cfg: &Config) -> Value {
 
     let managed: Vec<String> = cfg.managed_repos.iter().map(|u| repo_name(u)).collect();
 
-    // 4b) The repos bn actually manages on this machine: one `<repo>.git` bare clone each. Notes,
+    // 4b) The repos bn actually has cloned on this machine: one `<repo>.git` bare clone each. Notes,
     //     agents and runs only ever mention a repo you've *worked* in, so without this a freshly
-    //     cloned repo — or one whose notes all closed — had no card at all. Work-only machines keep
-    //     personal clones off the board, matching the note walk's own visibility rule.
+    //     cloned repo — or one whose notes all closed — had no card at all. Managed config alone is
+    //     not local state: it can mark a cloned repo as managed, but it cannot mint a card.
     let clone_dirs = bn_core::lifecycle::cloned_repo_dirs(cfg);
     let cloned: Vec<String> = clone_dirs
         .keys()
@@ -227,13 +232,31 @@ pub fn repos_view(cfg: &Config) -> Value {
 /// half-leased pool — *which* branch is holding a slot. The list is bounded by the configured size
 /// (at most `MAX_POOL_SIZE`) and only pooled repos have one, so this stays a small payload.
 fn pool_json(st: &bn_core::pool::PoolStatus) -> Value {
+    let controller = bn_core::agent::CONTROLLER_POOL_SLOT;
+    let ready = st
+        .slots
+        .iter()
+        .filter(|s| s.n != controller && !s.leased && s.warm)
+        .count();
+    let worker_idle = st
+        .slots
+        .iter()
+        .filter(|s| s.n != controller && !s.leased)
+        .count();
+    let full = worker_idle == 0;
+    let needs_top_up = ready < POOL_MIN_READY && worker_idle > ready;
     json!({
         "enabled": st.enabled,
         "total": st.total,
         "warm": st.warm,
         "leased": st.leased,
         "idle": st.idle,
+        "ready": ready,
+        "worker_idle": worker_idle,
+        "needs_top_up": needs_top_up,
+        "full": full,
         "last_warmed_ts": st.last_warmed_ts,
+        "policy": pool_policy_json(),
         "slots": st.slots.iter().map(|s| json!({
             "n": s.n,
             "leased": s.leased,
@@ -248,15 +271,49 @@ fn pool_json(st: &bn_core::pool::PoolStatus) -> Value {
 
 /// The pool view for a repo with no pool configured — pooling disabled, no slots.
 fn pool_disabled() -> Value {
-    json!({ "enabled": false, "total": 0, "warm": 0, "leased": 0, "idle": 0, "last_warmed_ts": null, "slots": [] })
+    json!({
+        "enabled": false,
+        "total": 0,
+        "warm": 0,
+        "leased": 0,
+        "idle": 0,
+        "ready": 0,
+        "worker_idle": 0,
+        "needs_top_up": false,
+        "full": false,
+        "last_warmed_ts": null,
+        "policy": pool_policy_json(),
+        "slots": []
+    })
+}
+
+fn pool_policy_json() -> Value {
+    json!({
+        "capacity": "hard",
+        "min_ready": POOL_MIN_READY,
+        "controller_slot": bn_core::agent::CONTROLLER_POOL_SLOT,
+        "warming": "queued-heavy",
+        "auto_queue": "enable-resize-lease-top-up",
+        "leases": "active-work",
+        "reservations": "not-supported",
+        "stale_recovery": "clean-dead-only",
+        "rules": [
+            "Pool size is hard capacity: bn never creates slots beyond the configured total.",
+            "Keep at least one idle warm worker slot when the pool has spare capacity.",
+            "Enabling, resizing, and leasing the last ready slot queue pool-warm automatically.",
+            "Manual queue warm uses the same heavy pool-warm job, so the machine queue controls admission.",
+            "Leased means active work owns the slot; warmth is an idle-slot state, not a fake lease.",
+            "Clean dead or prior-boot leases may be recovered; dirty or live slots stay leased.",
+        ],
+    })
 }
 
 /// Fold the raw session seeds into `{ repos: [RepoRollup, …] }` — pure, so the whole merge / rollup
-/// / sort is testable with hand-built rows. Repos come from the seeds, the managed set, *and* the
-/// bare clones on this machine — a repo with no sessions yet still gets a card, so the board lists
-/// everything bn can work in rather than only what it has already worked in. Repos sort by
-/// last-activity desc (then active-agent count, then name), which sinks the never-touched clones to
-/// the bottom; sessions within a repo sort in-flight-first, then most-recent.
+/// / sort is testable with hand-built rows. Repos come from local evidence: bare clones, checked-out
+/// worktrees, and live/in-flight agents. Notes and managed config attach to those repos but cannot
+/// create cards alone. Repos sort by last-activity desc (then active-agent count, then name), which
+/// sinks the never-touched clones to the bottom; sessions within a repo sort in-flight-first, then
+/// most-recent.
 fn assemble(
     managed: &[String],
     cloned: &[String],
@@ -275,6 +332,9 @@ fn assemble(
     // Merge seeds by (repo, note-key branch).
     let mut merged: BTreeMap<(String, String), Session> = BTreeMap::new();
     for s in seeds {
+        if is_synthetic_repo(&s.repo) {
+            continue;
+        }
         let key = (s.repo.clone(), s.branch.clone());
         merged
             .entry(key)
@@ -284,11 +344,25 @@ fn assemble(
 
     // Group sessions by repo.
     let mut by_repo: BTreeMap<String, Vec<Session>> = BTreeMap::new();
+    let real_repos: std::collections::BTreeSet<String> = cloned
+        .iter()
+        .filter(|r| !is_synthetic_repo(r))
+        .cloned()
+        .chain(
+            merged
+                .values()
+                .filter(|s| s.in_flight || s.worktree.is_some())
+                .map(|s| s.repo.clone()),
+        )
+        .collect();
     for (_, s) in merged {
+        if !real_repos.contains(&s.repo) {
+            continue;
+        }
         by_repo.entry(s.repo.clone()).or_default().push(s);
     }
     // Every managed repo and every locally cloned repo gets a card even with zero sessions.
-    for r in managed.iter().chain(cloned) {
+    for r in &real_repos {
         by_repo.entry(r.clone()).or_default();
     }
 
@@ -353,9 +427,8 @@ fn assemble(
     // board doesn't know about, or vice versa. Sorted by name rather than by activity: a picker is
     // scanned alphabetically, while the cards above are ranked by what's hot.
     //
-    // Synthetic repos are excluded: Today's agent is addressed as `today:<date>` so it has a real
-    // steering target, which gives it a branch note and therefore a rollup — but you cannot
-    // dispatch work *into* `today`, so offering it in a picker would only invite a failed dispatch.
+    // Synthetic repos are excluded from rollups above, but keep the picker defensive in case a new
+    // synthetic target is added before the rollup filter learns about it.
     let mut known: Vec<String> = rollups
         .iter()
         .filter_map(|r| r.get("repo").and_then(Value::as_str))
@@ -364,7 +437,7 @@ fn assemble(
         .collect();
     known.sort();
 
-    json!({ "repos": rollups, "known": known })
+    json!({ "repos": rollups, "known": known, "pool_policy": pool_policy_json() })
 }
 
 /// The note file's modified time as epoch-seconds — the best last-activity signal a note carries
@@ -415,12 +488,12 @@ mod tests {
     }
 
     #[test]
-    fn assemble_gives_every_managed_and_cloned_repo_a_card() {
+    fn assemble_gives_local_clones_cards_and_uses_managed_as_metadata() {
         let cost = CostView::default();
         let pools = BTreeMap::new();
         let links = BTreeMap::new();
         let v = assemble(
-            &["managed".to_string()],
+            &["managed".to_string(), "cloned".to_string()],
             &["cloned".to_string()],
             vec![],
             &cost,
@@ -432,13 +505,11 @@ mod tests {
             .iter()
             .filter_map(|r| r.get("repo").and_then(Value::as_str))
             .collect();
-        assert!(names.contains(&"managed"));
         assert!(names.contains(&"cloned"));
-        // The `managed` flag is set only for managed repos.
-        let managed_card = repos.iter().find(|r| r["repo"] == "managed").unwrap();
-        assert_eq!(managed_card["managed"], serde_json::json!(true));
+        assert!(!names.contains(&"managed"));
+        // The `managed` flag is metadata on a local repo, not a separate repo source.
         let cloned_card = repos.iter().find(|r| r["repo"] == "cloned").unwrap();
-        assert_eq!(cloned_card["managed"], serde_json::json!(false));
+        assert_eq!(cloned_card["managed"], serde_json::json!(true));
     }
 
     #[test]
@@ -448,7 +519,14 @@ mod tests {
             ..CostView::default()
         };
         let seeds = vec![session("bn", "feat"), session("bn", "feat")];
-        let v = assemble(&[], &[], seeds, &cost, &BTreeMap::new(), &BTreeMap::new());
+        let v = assemble(
+            &[],
+            &["bn".to_string()],
+            seeds,
+            &cost,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
         let card = v["repos"]
             .as_array()
             .unwrap()
@@ -466,11 +544,24 @@ mod tests {
         let mut pools = BTreeMap::new();
         pools.insert(
             "bn".to_string(),
-            serde_json::json!({ "enabled": true, "total": 4 }),
+            serde_json::json!({
+                "enabled": true,
+                "total": 4,
+                "warm": 1,
+                "leased": 1,
+                "idle": 3,
+                "ready": 1,
+                "worker_idle": 2,
+                "needs_top_up": false,
+                "full": false,
+                "last_warmed_ts": null,
+                "policy": pool_policy_json(),
+                "slots": [],
+            }),
         );
         let v = assemble(
+            &["bn".to_string()],
             &["bn".to_string(), "app".to_string()],
-            &[],
             vec![],
             &CostView::default(),
             &pools,
@@ -480,30 +571,121 @@ mod tests {
         let bn = repos.iter().find(|r| r["repo"] == "bn").unwrap();
         assert_eq!(bn["pool"]["enabled"], serde_json::json!(true));
         assert_eq!(bn["pool"]["total"], serde_json::json!(4));
+        assert_eq!(bn["pool"]["policy"]["min_ready"], serde_json::json!(1));
+        assert_eq!(
+            bn["pool"]["policy"]["auto_queue"],
+            serde_json::json!("enable-resize-lease-top-up")
+        );
         // A repo with no pool entry gets the disabled shape, never a missing field.
         let app = repos.iter().find(|r| r["repo"] == "app").unwrap();
         assert_eq!(app["pool"]["enabled"], serde_json::json!(false));
+        assert_eq!(app["pool"]["needs_top_up"], serde_json::json!(false));
+        assert_eq!(app["pool"]["policy"]["capacity"], serde_json::json!("hard"));
+        assert_eq!(v["pool_policy"]["min_ready"], serde_json::json!(1));
+    }
+
+    #[test]
+    fn pool_json_reports_worker_policy_state() {
+        let st = bn_core::pool::PoolStatus {
+            repo: "bn".to_string(),
+            enabled: true,
+            total: 3,
+            leased: 1,
+            warm: 1,
+            idle: 2,
+            last_warmed_ts: None,
+            slots: vec![
+                bn_core::pool::PoolSlot {
+                    n: bn_core::agent::CONTROLLER_POOL_SLOT,
+                    leased: false,
+                    warm: true,
+                    branch: None,
+                    holder: None,
+                    age_secs: None,
+                    warmed_ts: None,
+                },
+                bn_core::pool::PoolSlot {
+                    n: 2,
+                    leased: true,
+                    warm: true,
+                    branch: Some("feat".to_string()),
+                    holder: Some("agent".to_string()),
+                    age_secs: Some(5),
+                    warmed_ts: None,
+                },
+                bn_core::pool::PoolSlot {
+                    n: 3,
+                    leased: false,
+                    warm: false,
+                    branch: None,
+                    holder: None,
+                    age_secs: None,
+                    warmed_ts: None,
+                },
+            ],
+        };
+        let v = pool_json(&st);
+        // The controller slot is warm, but it does not count as a ready worker.
+        assert_eq!(v["ready"], serde_json::json!(0));
+        assert_eq!(v["worker_idle"], serde_json::json!(1));
+        assert_eq!(v["needs_top_up"], serde_json::json!(true));
+        assert_eq!(v["full"], serde_json::json!(false));
     }
 
     #[test]
     fn assemble_known_excludes_today() {
         let seeds = vec![session(bn_core::today_agent::TODAY_REPO, "2026-08-06")];
         let v = assemble(
-            &["bn".to_string()],
-            &[],
+            &[
+                "bn".to_string(),
+                bn_core::today_agent::TODAY_REPO.to_string(),
+            ],
+            &[
+                "bn".to_string(),
+                bn_core::today_agent::TODAY_REPO.to_string(),
+            ],
             seeds,
             &CostView::default(),
             &BTreeMap::new(),
             &BTreeMap::new(),
         );
+        let repos: Vec<&str> = v["repos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r.get("repo").and_then(Value::as_str))
+            .collect();
         let known: Vec<&str> = v["known"]
             .as_array()
             .unwrap()
             .iter()
             .filter_map(Value::as_str)
             .collect();
+        assert!(repos.contains(&"bn"));
+        assert!(!repos.contains(&bn_core::today_agent::TODAY_REPO));
         assert!(known.contains(&"bn"));
         assert!(!known.contains(&bn_core::today_agent::TODAY_REPO));
+    }
+
+    #[test]
+    fn assemble_excludes_note_only_pseudo_repos() {
+        let seeds = vec![session("repo", "master"), session("bn", "main")];
+        let v = assemble(
+            &[],
+            &["bn".to_string()],
+            seeds,
+            &CostView::default(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        let repos: Vec<&str> = v["repos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r.get("repo").and_then(Value::as_str))
+            .collect();
+        assert!(repos.contains(&"bn"));
+        assert!(!repos.contains(&"repo"));
     }
 
     #[test]

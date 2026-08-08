@@ -26,7 +26,10 @@ export interface TimelineMark {
   projected: boolean;
   note: string;
   node?: string;
-  blocked?: boolean;
+  mode: "foreground" | "autonomous" | "opportunistic";
+  subtype: "foreground" | "cron" | "warming" | "recovery" | "maintenance";
+  autonomous: boolean;
+  opportunistic: boolean;
 }
 
 export interface TimelineBand {
@@ -42,31 +45,11 @@ export interface TimelineHourLoad {
   projected: number;
 }
 
-/**
- * A pause scope, as `PauseScope` serializes it: internally tagged on `scope`, with the axis value
- * beside it. A discriminated union rather than an index signature, so narrowing the tag actually
- * tells the compiler which field carries the value.
- */
-export type QueuePauseScope =
-  | { scope: "all" }
-  | { scope: "kind"; kind: string }
-  | { scope: "lane"; lane: string }
-  | { scope: "node"; node_id: string }
-  | { scope: "repo"; repo: string };
-
-export interface QueuePause {
-  scope: QueuePauseScope;
-  since: number;
-  reason?: string;
-  until?: number;
-}
-
 export interface QueueTimelineView {
   date: string;
   start: number;
   end: number;
   now: number;
-  pauses: QueuePause[];
   bands: TimelineBand[];
   load: TimelineHourLoad[];
   /** Pending entries that do not fit the day at projected throughput — counted, never drawn. */
@@ -78,7 +61,7 @@ export interface QueueDeferredRow {
   repo: string;
   id: string;
   kind: string;
-  /** `paused` | `capacity` | `kind-cap` | `conflict` | `cant-merge` | `no-capable-node`. */
+  /** `capacity` | `kind-cap` | `conflict` | `cant-merge` | `no-capable-node`. */
   reason: string;
   detail?: string;
   waiting_since: number;
@@ -137,7 +120,23 @@ export interface QueueEntry {
   status: string;
   added_at: number;
   updated_at: number;
+  not_before?: number;
+  not_after?: number;
+  class_override?: "foreground" | "autonomous" | "opportunistic";
   exec?: { run?: string; job?: string; skill?: string; cmd?: string };
+}
+
+export interface QueueEntryClass {
+  mode: "foreground" | "autonomous" | "opportunistic";
+  subtype: "foreground" | "cron" | "warming" | "recovery" | "maintenance";
+  autonomous: boolean;
+  opportunistic: boolean;
+}
+
+/** One live queue entry plus its derived class for filtering. */
+export interface QueueEntryView {
+  entry: QueueEntry;
+  class: QueueEntryClass;
 }
 
 /** A lane's ceiling and how much of it is in use. */
@@ -156,18 +155,21 @@ export interface QueueMachine {
   /** How the lane caps were derived, so a surprising number is answerable. */
   lanes_why: string;
   builds: { cap: number; held: Array<{ id: string; label: string; repo: string; since: number }> };
-  windows: Array<{ name: string; boost: number; matches: string[] }>;
+  windows: Array<{ name: string; boost: number; matches: string[]; mode?: string }>;
+  presence?: {
+    idle: boolean;
+    away_window: boolean;
+    opportunistic_idle_mins: number;
+  };
 }
 
 /** `GET /api/queue` .data — the machine-wide queue. */
 export interface QueueView {
   now: number;
-  paused: boolean;
-  fully_paused: boolean;
-  pauses: QueuePause[];
+  accepting: boolean;
   pending: number;
   kinds: Array<{ kind: string; lane: string; pending: number }>;
-  entries: QueueEntry[];
+  entries: QueueEntryView[];
   machine?: QueueMachine;
   nodes: QueueNodeRow[];
   decision?: QueueDecision | null;
@@ -186,7 +188,7 @@ export interface QueueReservoir {
   needs_scoping: number;
   /** `smart:ok` — gated and eligible to be dispatched. */
   ready: number;
-  /** `smart:fail` — the improve agent is still retrying. */
+  /** `smart:fail` — the enhance agent is still retrying. */
   failed: number;
   /** `smart:stuck` — out of retries, waiting on a person. */
   stuck: number;
