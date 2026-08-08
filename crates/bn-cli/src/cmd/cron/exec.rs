@@ -80,3 +80,51 @@ pub(crate) fn run_custom_command(command_text: &str) -> (i32, String) {
     command.arg("-c").arg(command_text).env("PATH", job_path());
     capture_command(command, "custom agent command")
 }
+
+/// Run a user-supplied shell command under [`job_path`] and return `(exited_zero, stdout + stderr)`
+/// in full — for callers that *parse* the output rather than log it, so neither the 15-line tail nor
+/// the stream echo of [`capture_command`] fits. `bn orchestrate queue-from --check` is the caller:
+/// it turns the check's diagnostics into queued work, and a failing check is its normal case.
+///
+/// Lives here, beside the other user-script launchers, because the PATH is the load-bearing part:
+/// a check that shells out to `bn` exits 127 with `/bin/sh: bn: command not found` under any caller
+/// that is a scheduler shell rather than a login shell, exactly as staff gathers once did.
+pub(crate) fn capture_user_command(command_text: &str) -> std::io::Result<(bool, String)> {
+    let output = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(command_text)
+        .env("PATH", job_path())
+        .output()?;
+    let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
+    combined.push('\n');
+    combined.push_str(&String::from_utf8_lossy(&output.stderr));
+    Ok((output.status.success(), combined))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A parsed user command is still a user script that commonly calls `bn`, so it must get the
+    /// same PATH every other job process gets. Asserting the shared prelude (rather than an
+    /// equivalent-looking string) is what keeps this from drifting back into the
+    /// `/bin/sh: bn: command not found` 127 that silenced scheduled staff gathers.
+    #[test]
+    fn a_captured_user_command_runs_under_the_shared_job_path() {
+        let (ok, combined) =
+            capture_user_command("printf %s \"$PATH\"").expect("the command echoes its PATH");
+
+        assert!(ok, "the echo-path command should exit 0");
+        assert_eq!(combined.trim_end(), job_path());
+    }
+
+    /// A failing command still has to hand its diagnostics back — the caller parses them out of the
+    /// combined streams, and a non-zero exit is the normal case for a lint sweep.
+    #[test]
+    fn a_failing_captured_command_returns_its_stderr() {
+        let (ok, combined) = capture_user_command("echo boom >&2; exit 1").expect("command runs");
+
+        assert!(!ok, "a command exiting 1 is not ok");
+        assert!(combined.contains("boom"), "{combined:?}");
+    }
+}

@@ -1470,18 +1470,10 @@ pub(crate) fn orchestrate_queue_from(
     if !json {
         println!("orchestrate: running check — {check}");
     }
-    let output = match std::process::Command::new("/bin/sh")
-        .arg("-c")
-        .arg(check)
-        .output()
-    {
-        Ok(o) => o,
+    let (check_ok, combined) = match crate::cmd::cron::capture_user_command(check) {
+        Ok(pair) => pair,
         Err(e) => return fail("check-spawn", format!("failed to run check: {e}")),
     };
-    let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
-    combined.push('\n');
-    combined.push_str(&String::from_utf8_lossy(&output.stderr));
-    let check_ok = output.status.success();
 
     let items = build_queue(check, &combined, group_by);
     if items.is_empty() {
@@ -2586,7 +2578,8 @@ pub(crate) fn orchestrate_reset(
 // --- single-controller owner lease (prevents two daemons double-driving one repo) -------------
 
 use bn_core::orchestrate::{
-    clear_owner, may_claim_owner, read_owner, write_owner, ControllerOwner, OWNER_LEASE_TTL_SECS,
+    clear_owner, may_claim_owner, owner_liveness, read_owner, write_owner, ControllerOwner,
+    OWNER_LEASE_TTL_SECS,
 };
 
 /// This process's controller identity, heartbeated `now`.
@@ -2598,19 +2591,13 @@ fn me_owner(now: i64) -> ControllerOwner {
     }
 }
 
-/// Same-host pid liveness for an owner (`Some(true|false)`); `None` when the owner is on another
-/// host and thus can only age out by heartbeat TTL. Linux `/proc/<pid>` is the fleet's probe.
-fn owner_liveness(owner: &ControllerOwner, me: &ControllerOwner) -> Option<bool> {
-    if owner.host != me.host {
-        return None;
-    }
-    Some(std::path::Path::new(&format!("/proc/{}", owner.pid)).exists())
-}
-
 /// Whether `me` may drive `repo` right now — fail-open arbitration over the recorded owner lease.
+/// The rule lives in `bn_core::orchestrate::owner`; this supplies the process probe it needs.
 fn may_drive_repo(repo: &str, me: &ControllerOwner, now: i64) -> bool {
     let existing = read_owner(repo);
-    let alive = existing.as_ref().and_then(|o| owner_liveness(o, me));
+    let alive = existing
+        .as_ref()
+        .and_then(|o| owner_liveness(o, me, crate::cmd::queue_tick::pid_alive));
     may_claim_owner(existing.as_ref(), me, alive, now, OWNER_LEASE_TTL_SECS)
 }
 

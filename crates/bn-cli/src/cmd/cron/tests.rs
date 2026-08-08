@@ -480,3 +480,60 @@ fn capture_tests_are_hermetic_against_an_inherited_dispatch_extent() {
         "and must restore it, so one test cannot disarm the next"
     );
 }
+
+/// `--now` is the escape hatch `bn run` never had.
+///
+/// Capture is on and the dispatcher is alive, so this job would normally be queued — the same
+/// state in which `bn run self-update` prints "queued …" and exits 0 while you wait for a result
+/// that is not coming. `--now` must run it here and leave nothing in the queue for a dispatcher to
+/// reconcile against a job that already ran.
+#[test]
+fn run_now_executes_in_place_instead_of_queueing() {
+    let _lock = bn_core::test_support::env_lock();
+    let _outside = bn_core::test_support::outside_a_dispatch();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let agents = temp.path().join("agents");
+    let state = temp.path().join("state");
+    std::fs::create_dir_all(&agents).expect("agents dir");
+    std::fs::create_dir_all(&state).expect("state dir");
+    std::fs::write(
+        agents.join("now-agent.md"),
+        "---\nname: now-agent\nkind: command\non_calendar: minutely\nrun: \"printf 'ran-inline\\\\n'\"\n---\n",
+    )
+    .expect("agent");
+
+    let _agents = bn_core::test_support::EnvGuard::set("BN_AGENTS_DIR", &agents);
+    let _jobs = bn_core::test_support::EnvGuard::set("BN_JOBS_DIR", temp.path().join("jobs"));
+    let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", &state);
+    // A live dispatcher is what makes capture active; without it the producer declines anyway and
+    // the test would pass for the wrong reason.
+    std::fs::write(
+        state.join("queue-daemon.heartbeat"),
+        bn_core::util::now_epoch_secs().to_string(),
+    )
+    .expect("heartbeat");
+    let cfg = Config {
+        personal_root: temp.path().join("personal"),
+        work_root: temp.path().join("work"),
+        hostname: "test-host".to_string(),
+        ..Default::default()
+    };
+
+    // Baseline: without --now this exact job is captured, not run.
+    assert_eq!(super::run_job(&cfg, None, "now-agent"), 0);
+    assert!(
+        run_events("now-agent").is_empty(),
+        "precondition: capture is active here, so the plain path must queue"
+    );
+
+    assert_eq!(super::run_job_now(&cfg, None, "now-agent", true), 0);
+    let runs = run_events("now-agent");
+    assert_eq!(runs.len(), 1, "--now must actually run the job");
+    assert_eq!(
+        runs[0]
+            .fields
+            .get("output_tail")
+            .and_then(serde_json::Value::as_str),
+        Some("ran-inline")
+    );
+}

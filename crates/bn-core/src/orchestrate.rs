@@ -17,7 +17,9 @@ use crate::hosts::NodeRecord;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+mod owner;
 mod pane;
+pub use owner::*;
 use pane::has_bare_prompt;
 pub use pane::*;
 
@@ -677,53 +679,6 @@ impl QueueItem {
 /// a `dispatch/352` branch lives in window `dispatch-352`. Pure — the navigation half of #372.
 pub fn tmux_window_name(branch: &str) -> String {
     branch.replace('/', "-")
-}
-
-/// A controller's identity for single-owner arbitration of a repo's run. Two concurrent daemons for
-/// one repo (e.g. `run --all-repos` and `run --repo bn`) both adopt the same tmux lanes and
-/// double-count in-flight, pinning the cap so the backlog stops pulling. The owner lease lets a
-/// second controller detect a live first owner and defer, so exactly one loop drives a repo.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ControllerOwner {
-    /// The driving process id.
-    pub pid: u32,
-    /// The host the process runs on (owners on other hosts can't be pid-probed, so they age out by
-    /// [`OWNER_LEASE_TTL_SECS`] instead).
-    pub host: String,
-    /// Unix-epoch seconds of the last heartbeat; refreshed every tick by the owning loop.
-    pub heartbeat: i64,
-}
-
-/// How long an owner lease stays authoritative without a heartbeat refresh. Comfortably above the
-/// idle poll cadence (45s) so a healthy owner mid-idle-tick is never mistaken for abandoned, yet
-/// short enough that a crashed owner on another host frees the repo within a couple of minutes.
-pub const OWNER_LEASE_TTL_SECS: i64 = 120;
-
-/// Whether `me` may claim (drive) a repo's run, given the recorded `existing` owner (if any),
-/// whether that owner's process is still alive (`Some(true|false)` for a same-host pid probe,
-/// `None` when unknowable — a different host or an unreadable record), and `now`.
-///
-/// **Fail-open**: yield *only* to an owner that is unambiguously live and different — a fresh
-/// heartbeat within [`OWNER_LEASE_TTL_SECS`] and (when probeable) an alive pid. A crashed, stale, or
-/// same-identity owner, or any uncertainty, resolves to "claim", so a transient glitch can never
-/// leave a repo driverless.
-pub fn may_claim_owner(
-    existing: Option<&ControllerOwner>,
-    me: &ControllerOwner,
-    owner_alive: Option<bool>,
-    now: i64,
-    ttl: i64,
-) -> bool {
-    let Some(cur) = existing else {
-        return true; // unowned
-    };
-    if cur.pid == me.pid && cur.host == me.host {
-        return true; // our own lease (re-entrant refresh)
-    }
-    if owner_alive == Some(false) {
-        return true; // same-host owner whose process is gone
-    }
-    now.saturating_sub(cur.heartbeat) >= ttl // stale heartbeat ⇒ abandoned
 }
 
 /// A recovery / lifecycle event recorded on the state for `bn orchestrate status` — the audit trail

@@ -85,7 +85,22 @@ fn no_such_job(job: &str) -> String {
 /// specialists are refused, explicit `run:` commands use the common wrapper, and absent `run:`
 /// resolves the same-name staff/native/script implementation without recursive `bn` spawning.
 pub(crate) fn run_job(cfg: &Config, ctx: Option<&Resolved>, job: &str) -> i32 {
-    run_job_with_staff_output(cfg, ctx, job, false)
+    run_job_inner(cfg, ctx, job, false, false)
+}
+
+/// `bn run <job> [--now]`. `now` runs the job in this process instead of queueing it.
+///
+/// The escape hatch `bn run` never had. `bn dispatch` has two — `--on-pool-full fail` and
+/// `$BN_DISPATCH_NOW` — but a job could only be forced inline by setting the dispatcher's own
+/// `BN_IN_QUEUE_TICK`, which was never a user-facing knob and stopped working once that marker
+/// began naming a live dispatcher rather than asserting a boolean. So a person waiting on a result
+/// had nothing to reach for.
+///
+/// Deliberately a separate flag rather than reusing the extent marker: this says *I want the
+/// result now*, which is a statement about the caller. Claiming to be a dispatcher would also
+/// silence the capture of everything the job goes on to spawn.
+pub(crate) fn run_job_now(cfg: &Config, ctx: Option<&Resolved>, job: &str, now: bool) -> i32 {
+    run_job_inner(cfg, ctx, job, false, now)
 }
 
 pub(crate) fn run_job_with_staff_output(
@@ -94,10 +109,22 @@ pub(crate) fn run_job_with_staff_output(
     job: &str,
     staff_json: bool,
 ) -> i32 {
+    run_job_inner(cfg, ctx, job, staff_json, false)
+}
+
+fn run_job_inner(
+    cfg: &Config,
+    ctx: Option<&Resolved>,
+    job: &str,
+    staff_json: bool,
+    now: bool,
+) -> i32 {
     // The scheduler must be able to record its own catalog-load failure. Resolving it through the
     // catalog first would return before the common wrapper could write the failing scheduler row.
     if job == "agent-scheduler" {
-        if let Some(queued) = crate::cmd::queue_producers::maybe_capture_job(cfg, ctx, job) {
+        if let Some(queued) =
+            (!now).then(|| crate::cmd::queue_producers::maybe_capture_job(cfg, ctx, job)).flatten()
+        {
             return i32::from(!queued);
         }
         return run_builtin_job(cfg, ctx, job, None, staff_json).unwrap_or(2);
@@ -129,7 +156,10 @@ pub(crate) fn run_job_with_staff_output(
     }
 
     // Captured agents retain their identity and re-enter this exact resolver when dequeued.
+    // `--now` skips the producer entirely rather than suppressing it downstream, so the queue never
+    // sees an entry it would have to reconcile against a job that already ran here.
     let queued = match agent.as_ref() {
+        _ if now => None,
         Some(agent) => crate::cmd::queue_producers::maybe_capture_agent(cfg, ctx, agent),
         None => crate::cmd::queue_producers::maybe_capture_job(cfg, ctx, job),
     };
@@ -172,7 +202,7 @@ pub(crate) use retire::{emit_cron_retire, emit_cron_unregister};
 
 #[path = "cron/exec.rs"]
 mod exec;
-pub(crate) use exec::job_path;
+pub(crate) use exec::{capture_user_command, job_path};
 use exec::{run_custom_command, run_script};
 
 #[path = "cron/scheduler.rs"]

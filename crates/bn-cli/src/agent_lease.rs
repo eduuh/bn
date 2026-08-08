@@ -197,12 +197,19 @@ fn remove_dead_launch_target(target: &str) -> Result<(), String> {
 /// and the agent moved in.
 pub(crate) fn mark_window(lease: &AgentLease) {
     let target = format!("={}", lease.tmux_target);
+    // `@bn_agent_since` is read by the tmux status row, the jump picker, the attention list and
+    // `agent_live` to answer "how long has this agent been going?" — and nothing wrote it, so every
+    // one of them was reading an empty string. tmux has no per-window creation time to fall back
+    // on (`#{window_created}` is not a tmux variable and renders empty), so the lease's own
+    // acquisition time is the only honest source.
+    let since = lease.acquired_at.to_string();
     for (option, value) in [
         ("@bn_session_id", lease.session_id.as_str()),
         ("@bn_agent_kind", lease.kind.label()),
         ("@bn_repo", lease.key.repo.as_str()),
         ("@bn_branch", lease.key.branch.as_str()),
         ("@bn_worktree", lease.key.worktree.as_str()),
+        ("@bn_agent_since", since.as_str()),
     ] {
         let _ = crate::proc::tmux_run(&["set-window-option", "-t", &target, option, value]);
     }
@@ -350,11 +357,11 @@ pub(crate) fn live_agents_in(worktree: &Path) -> Vec<Occupant> {
 /// read straight off tmux rather than the process table so it needs no `/proc` (which does not
 /// exist on macOS, where the pool's old in-use check therefore always answered "idle").
 fn harness_panes_in(worktree: &Path) -> Vec<Occupant> {
-    let format = "#{session_name}:#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{window_created}\t#{pane_dead}";
+    let format = "#{session_name}:#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{@bn_agent_since}\t#{pane_dead}";
     let Some(output) = crate::proc::tmux_raw(&["list-panes", "-a", "-F", format]) else {
         return Vec::new();
     };
-    parse_harness_panes(&output, worktree)
+    parse_harness_panes(&output, worktree, bn_core::util::now_epoch_secs())
 }
 
 /// Whether *any* live tmux pane is sitting in `worktree` — an agent, a build, or just a shell
@@ -375,9 +382,30 @@ pub(crate) fn any_live_pane_in(worktree: &Path) -> bool {
     })
 }
 
+/// Read an `@bn_agent_since` stamp, falling back to `now` when it is absent or unparseable.
+///
+/// **Never the epoch.** This defaulted to `0`, and the field it read was `#{window_created}` — not
+/// a tmux format variable at all, so it rendered empty for *every* window and every observed agent
+/// was stamped "acquired in 1970". That silently disabled the thing the timestamp exists for: the
+/// [`AGENT_LEASE_STARTING_GRACE_SECS`] window in which a just-reserved lease is authoritative
+/// before its tmux window appears. `now - 0` is never under thirty seconds, so a starting agent had
+/// no grace at all, and the zero propagated into the pool ledger through `adopt_occupied_slots`
+/// (a slot reading `age=20673d`, which is `now - 0`).
+///
+/// `now` is the conservative default: an agent whose start we cannot read is treated as having
+/// *just* started, so it keeps its grace rather than presenting as infinitely old.
+///
+/// [`AGENT_LEASE_STARTING_GRACE_SECS`]: bn_core::agent::AGENT_LEASE_STARTING_GRACE_SECS
+fn stamped_since(field: &str, now: i64) -> i64 {
+    match field.trim().parse::<i64>() {
+        Ok(ts) if ts > 0 => ts,
+        _ => now,
+    }
+}
+
 /// The pure half of [`harness_panes_in`], so the "is this pane an agent in this checkout?" rule is
 /// testable without a tmux server.
-fn parse_harness_panes(output: &str, worktree: &Path) -> Vec<Occupant> {
+fn parse_harness_panes(output: &str, worktree: &Path, now: i64) -> Vec<Occupant> {
     output
         .lines()
         .filter_map(|line| {
@@ -401,7 +429,7 @@ fn parse_harness_panes(output: &str, worktree: &Path) -> Vec<Occupant> {
                 session_id: None,
                 tmux_target: fields[0].to_string(),
                 kind: harness.to_string(),
-                since: fields[3].parse().unwrap_or(0),
+                since: stamped_since(fields[3], now),
             })
         })
         .collect()
@@ -509,14 +537,14 @@ struct ObservedAgentWindow {
 }
 
 fn observed_agent_windows() -> Vec<ObservedAgentWindow> {
-    let format = "#{window_id}\t#{session_name}:#{window_name}\t#{@bn_repo}\t#{@bn_branch}\t#{@bn_worktree}\t#{pane_current_path}\t#{@bn_agent}\t#{@bn_session_id}\t#{@bn_agent_kind}\t#{window_created}\t#{pane_dead}";
+    let format = "#{window_id}\t#{session_name}:#{window_name}\t#{@bn_repo}\t#{@bn_branch}\t#{@bn_worktree}\t#{pane_current_path}\t#{@bn_agent}\t#{@bn_session_id}\t#{@bn_agent_kind}\t#{@bn_agent_since}\t#{pane_dead}";
     let Some(output) = crate::proc::tmux_raw(&["list-windows", "-a", "-F", format]) else {
         return Vec::new();
     };
-    parse_observed_agent_windows(&output)
+    parse_observed_agent_windows(&output, bn_core::util::now_epoch_secs())
 }
 
-fn parse_observed_agent_windows(output: &str) -> Vec<ObservedAgentWindow> {
+fn parse_observed_agent_windows(output: &str, now: i64) -> Vec<ObservedAgentWindow> {
     output
         .lines()
         .filter_map(|line| {
@@ -562,10 +590,10 @@ fn parse_observed_agent_windows(output: &str) -> Vec<ObservedAgentWindow> {
                         _ => AgentLeaseKind::Dispatch,
                     },
                     tmux_target: target.to_string(),
-                    acquired_at: fields[9].parse().unwrap_or(0),
+                    acquired_at: stamped_since(fields[9], now),
                 },
                 window_id: window_id.to_string(),
-                created_at: fields[9].parse().unwrap_or(0),
+                created_at: stamped_since(fields[9], now),
             })
         })
         .collect()
@@ -738,4 +766,61 @@ pub(crate) fn reconcile() -> AgentLeaseReconcileReport {
         }
     }
     report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NOW: i64 = 1_700_000_000;
+
+    #[test]
+    fn a_missing_stamp_reads_as_now_not_the_epoch() {
+        // The regression: `#{window_created}` is not a tmux variable, so this field arrived empty
+        // for every window and every agent was stamped "acquired in 1970" — which is never within
+        // the starting grace, so a launching agent had none.
+        assert_eq!(stamped_since("", NOW), NOW);
+        assert_eq!(stamped_since("   ", NOW), NOW);
+        assert_eq!(stamped_since("not-a-number", NOW), NOW);
+        // A zero on disk is the old bug's own output; treat it as unknown rather than the epoch.
+        assert_eq!(stamped_since("0", NOW), NOW);
+    }
+
+    #[test]
+    fn a_real_stamp_is_kept() {
+        assert_eq!(stamped_since("1699999000", NOW), 1_699_999_000);
+    }
+
+    #[test]
+    fn an_observed_window_keeps_its_grace_when_unstamped() {
+        // Nine tab-separated fields then the stamp and pane_dead: an agent window bn marked before
+        // `@bn_agent_since` was written carries no stamp at all.
+        let row = "@7\tbn:feat\tbn\tfeat\t/wt/bn/feat\t/wt/bn/feat\tworking\ts-1\tdispatch\t\t0";
+        let observed = parse_observed_agent_windows(row, NOW);
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].lease.acquired_at, NOW);
+        assert_eq!(observed[0].created_at, NOW);
+        // The point of the fix: it lands inside the starting grace, so a lease reserved moments
+        // ago is authoritative until its window is observable.
+        assert!(
+            NOW - observed[0].lease.acquired_at < bn_core::agent::AGENT_LEASE_STARTING_GRACE_SECS
+        );
+    }
+
+    #[test]
+    fn a_stamped_window_reports_its_real_age() {
+        let row = "@7\tbn:feat\tbn\tfeat\t/wt/bn/feat\t/wt/bn/feat\tworking\ts-1\tdispatch\t1699999000\t0";
+        let observed = parse_observed_agent_windows(row, NOW);
+        assert_eq!(observed[0].lease.acquired_at, 1_699_999_000);
+    }
+
+    #[test]
+    fn an_unstamped_harness_pane_is_not_ancient() {
+        // This zero is what `adopt_occupied_slots` copied into the pool ledger as the lease's `at`,
+        // producing a slot that reported an age of 20673 days.
+        let row = "bn:feat\t/wt/bn/feat\tclaude\t\t0";
+        let panes = parse_harness_panes(row, Path::new("/wt/bn/feat"), NOW);
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes[0].since, NOW);
+    }
 }
