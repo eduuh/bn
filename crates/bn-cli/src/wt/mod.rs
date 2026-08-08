@@ -26,6 +26,7 @@ use std::time::Duration;
 
 mod add;
 mod cleanup;
+mod close;
 mod common;
 mod list;
 mod merge;
@@ -35,6 +36,7 @@ mod window;
 
 pub(crate) use add::*;
 pub(crate) use cleanup::*;
+pub(crate) use close::*;
 pub(crate) use common::*;
 pub(crate) use list::*;
 pub(crate) use merge::*;
@@ -110,6 +112,27 @@ pub enum WtCmd {
     },
     /// Prune stale worktree references (current repo, or all repos when outside one).
     Prune,
+    /// Close **this worktree** — the `prefix x` binding. Hands a pool slot's lease back, or runs
+    /// `cleanup`'s gates for a conventional worktree, and takes the worktree's tmux window with it.
+    ///
+    /// Never closes a tmux session: a worktree owning its session's last window leaves that window
+    /// respawned as a bare shell instead. Never prints on the happy path (tmux's `run-shell` would
+    /// surface stdout as a popup) — outcomes go to `display-message`.
+    Close {
+        /// Exit 0 iff closing needs a confirm prompt (uncommitted or unpushed work). Decides
+        /// nothing and tears down nothing — the binding's `if-shell` test.
+        #[arg(long)]
+        check: bool,
+        /// Pane to close when the path isn't a worktree we reclaim; tmux passes `#{pane_id}`.
+        #[arg(long)]
+        pane: Option<String>,
+        /// Worktree to close; tmux passes `#{pane_current_path}`. Default: the current directory.
+        #[arg(long)]
+        path: Option<String>,
+        /// The confirm prompt was answered yes — discard uncommitted changes in a pool slot.
+        #[arg(long)]
+        confirmed: bool,
+    },
     /// Verify a worktree's PR is merged, then remove it, delete its branch, close its note,
     /// and kill its tmux window(s). Default target: the current worktree.
     Cleanup {
@@ -376,6 +399,12 @@ pub fn run_code(cfg: &Config, action: WtCmd) -> i32 {
             no_tmux,
         } => cmd_remote(cfg, target, all, no_tmux),
         WtCmd::Prune => cmd_prune(cfg),
+        WtCmd::Close {
+            check,
+            pane,
+            path,
+            confirmed,
+        } => cmd_close(cfg, check, pane, path, confirmed),
         WtCmd::Cleanup {
             all,
             force,

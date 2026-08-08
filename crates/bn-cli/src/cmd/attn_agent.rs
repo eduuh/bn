@@ -94,6 +94,73 @@ fn ensure_repair_task(
     Some(id)
 }
 
+/// Fold out the repair work for crons that are no longer alerting — the symmetric other half of
+/// [`ensure_repair_task`], and the reason a recovered cron stops costing anything.
+///
+/// The attention row auto-acks itself, because [`ingest`] runs with `replace=true`. The repair
+/// *task* and the queued repair *agent* have no such mechanism: without this, `scout` recovering
+/// leaves `Fix failing cron scout` open in the task list forever, and any still-pending repair
+/// agent goes on to burn a worktree reproducing a job that is already green.
+///
+/// `alerting` is the raise set this pass computed, so "recovered" and "retired" collapse into one
+/// condition: a `cron-repair:<job>` task whose job the watchdog is no longer raising has nothing
+/// left to do. The task is [`cancel`](bn_core::todo::Task::cancel)led rather than completed — no
+/// one did the work, the cron stopped failing — which keeps it out of completion metrics. Only
+/// `Pending` queue entries are withdrawn; [`backlog::cancel`] leaves a leased agent alone, since a
+/// row flipped to cancelled under a live worktree would only misdescribe what is still running.
+///
+/// Returns `(tasks_closed, agents_withdrawn)`.
+fn close_recovered_repairs(
+    cfg: &Config,
+    alerting: &[&bn_core::events::CronJobStatus],
+    today: &str,
+) -> (usize, usize) {
+    let raising: std::collections::HashSet<&str> =
+        alerting.iter().map(|status| status.job.as_str()).collect();
+    let path = cfg.tasks_file();
+    let recovered: Vec<String> = {
+        let _lock = bn_core::todo::lock(&path);
+        let Ok(mut file) = bn_core::todo::load(&path) else {
+            return (0, 0);
+        };
+        let stale: Vec<String> = file
+            .tasks()
+            .filter(|task| task.is_open(today))
+            .filter(|task| {
+                task.meta("key")
+                    .and_then(|key| key.strip_prefix("cron-repair:"))
+                    .is_some_and(|job| !raising.contains(job))
+            })
+            .filter_map(|task| task.id().map(str::to_string))
+            .collect();
+        for id in &stale {
+            file.cancel(id, today, Some("cron-recovered"));
+        }
+        if !stale.is_empty() && bn_core::todo::save(&path, &file).is_err() {
+            return (0, 0);
+        }
+        stale
+    };
+    if recovered.is_empty() {
+        return (0, 0);
+    }
+
+    let backlog_path = backlog::backlog_path();
+    let now = bn_core::util::now_epoch_secs();
+    let pending: Vec<(String, String)> = backlog::load(&backlog_path)
+        .entries()
+        .iter()
+        .filter(|entry| entry.status == backlog::BacklogStatus::Pending)
+        .filter(|entry| recovered.contains(&entry.task))
+        .map(|entry| (entry.repo.clone(), entry.id.clone()))
+        .collect();
+    let withdrawn = pending
+        .iter()
+        .filter(|(repo, id)| backlog::cancel(&backlog_path, repo, id, now).unwrap_or(false))
+        .count();
+    (recovered.len(), withdrawn)
+}
+
 fn enqueue_repair_agent(
     status: &bn_core::events::CronJobStatus,
     task_id: &str,
@@ -160,6 +227,7 @@ pub(crate) fn job_cron_health(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
         .collect();
     let n = items.len();
     let today = bn_core::clock::RealClock.today();
+    let (closed_repairs, withdrawn_repairs) = close_recovered_repairs(cfg, &alerting, &today);
     let mut repair_tasks = 0usize;
     let mut queued_repairs = 0usize;
     let mut repair_errors = Vec::new();
@@ -194,6 +262,11 @@ pub(crate) fn job_cron_health(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
                 for error in repair_errors {
                     eprintln!("cron-health repair: {error}");
                 }
+            }
+            if closed_repairs > 0 {
+                println!(
+                    "cron-health: {closed_repairs} repair task(s) closed on recovery, {withdrawn_repairs} queued agent(s) withdrawn"
+                );
             }
             0
         }

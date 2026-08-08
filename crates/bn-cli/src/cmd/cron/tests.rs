@@ -290,6 +290,85 @@ fn cron_health_creates_repair_task_and_queues_agent() {
     );
 }
 
+/// The recovery half of the repair loop: once the cron goes green, the watchdog must fold out the
+/// work it minted. The attention row auto-acks via `replace=true`, but the repair task and the
+/// queued repair agent used to have no such path — which is how `scout` ended up green while
+/// `Fix failing cron scout` stayed open and a repair agent was still queued to reproduce it.
+#[test]
+fn cron_health_closes_the_repair_task_and_withdraws_the_agent_once_the_cron_recovers() {
+    let _lock = bn_core::test_support::env_lock();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let jobs = temp.path().join("jobs");
+    let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", temp.path().join("state"));
+    let _jobs = bn_core::test_support::EnvGuard::set("BN_JOBS_DIR", &jobs);
+    let _agents = bn_core::test_support::EnvGuard::set("BN_AGENTS_DIR", temp.path().join("agents"));
+    std::fs::create_dir_all(&jobs).expect("jobs dir");
+    std::fs::write(jobs.join("flaky-cron.sh"), "#!/bin/sh\nexit 7\n").expect("job script");
+    let cfg = Config {
+        personal_root: temp.path().join("personal"),
+        work_root: temp.path().join("work"),
+        hostname: "test-host".to_string(),
+        ..Default::default()
+    };
+    let now = bn_core::util::now_epoch_secs();
+    for i in 0..3 {
+        bn_core::events::log_cron_run(
+            "flaky-cron",
+            "global",
+            None,
+            None,
+            now - (4 - i) * 60,
+            10,
+            7,
+            "/bin/sh: bn: command not found",
+        )
+        .expect("cron event");
+    }
+    assert_eq!(crate::cmd::attn_agent::job_cron_health(&cfg, None), 0);
+
+    let today = bn_core::clock::Clock::today(&bn_core::clock::RealClock);
+    let tasks = bn_core::todo::load(&cfg.tasks_file()).expect("tasks");
+    let repair = tasks
+        .tasks()
+        .find(|task| task.meta("key") == Some("cron-repair:flaky-cron"))
+        .expect("repair task");
+    assert!(repair.is_open(&today), "the repair task starts open");
+    let task_id = repair.id().expect("task id").to_string();
+    assert!(
+        bn_core::backlog::load(&bn_core::backlog::backlog_path())
+            .entries()
+            .iter()
+            .any(|entry| entry.task == task_id
+                && entry.status == bn_core::backlog::BacklogStatus::Pending),
+        "a repair agent is queued while the cron is failing"
+    );
+
+    // The cron recovers — exactly what the PATH-prelude fix did to `scout`.
+    bn_core::events::log_cron_run("flaky-cron", "global", None, None, now, 10, 0, "")
+        .expect("green run");
+    assert_eq!(crate::cmd::attn_agent::job_cron_health(&cfg, None), 0);
+
+    let tasks = bn_core::todo::load(&cfg.tasks_file()).expect("tasks after recovery");
+    let repair = tasks
+        .tasks()
+        .find(|task| task.meta("key") == Some("cron-repair:flaky-cron"))
+        .expect("repair task still recorded");
+    assert!(!repair.is_open(&today), "a recovered cron closes its repair task");
+    assert_eq!(
+        repair.meta("reason"),
+        Some("cron-recovered"),
+        "closed as cancelled-because-recovered, not as work someone completed"
+    );
+    assert!(
+        !bn_core::backlog::load(&bn_core::backlog::backlog_path())
+            .entries()
+            .iter()
+            .any(|entry| entry.task == task_id
+                && entry.status == bn_core::backlog::BacklogStatus::Pending),
+        "and withdraws the queued agent instead of letting it burn a worktree on a green job"
+    );
+}
+
 /// A cron that no longer resolves still earns its attention row, but must not keep dispatching
 /// autonomous repair agents: the repair prompt tells them to reproduce with `bn run <job>`, which
 /// cannot resolve, so each one can only burn a worktree to report the same nothing. This is the

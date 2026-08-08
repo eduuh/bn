@@ -587,6 +587,90 @@ pub(crate) fn tmux_windows_for(path: &Path, branch: &str) -> Vec<String> {
     wins.into_iter().collect()
 }
 
+/// What to do with a window we are closing. tmux destroys a session the moment its last window
+/// goes, so reclaiming one worktree must never be the thing that closes your session: the last
+/// window is respawned as a bare shell somewhere safe instead of being killed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum WindowDisposition {
+    Kill,
+    RespawnLast { cwd: PathBuf },
+}
+
+/// The disposition for one window, given whether it is the only window left in its session.
+/// Pure so the "never kill a session" rule is testable without a tmux server.
+pub(crate) fn dispose(window_is_last_in_session: bool, fallback: &Path) -> WindowDisposition {
+    if window_is_last_in_session {
+        WindowDisposition::RespawnLast {
+            cwd: fallback.to_path_buf(),
+        }
+    } else {
+        WindowDisposition::Kill
+    }
+}
+
+/// Where a respawned last window should land: the repo's `main` worktree (the session's home, and
+/// what `prefix o` opens for a non-bare session), else the worktree root, else `$HOME`. The first
+/// existing directory wins — respawning into the worktree we just removed would fail.
+pub(crate) fn respawn_fallback(worktree_dir: &Path, repo: &str) -> PathBuf {
+    let main = worktree_dir.join(repo).join("main");
+    if main.is_dir() {
+        return main;
+    }
+    if worktree_dir.is_dir() {
+        return worktree_dir.to_path_buf();
+    }
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/"))
+}
+
+/// Whether `win` is the only window left in its session — i.e. killing it would take the session
+/// down with it.
+///
+/// Unanswerable means **yes**. The two failure modes are not symmetric: guessing "not last" and
+/// being wrong destroys a session, while guessing "last" and being wrong leaves one stray shell
+/// window. And when tmux can't answer because the server is gone, both branches are no-ops anyway.
+fn is_last_window_in_session(win: &str) -> bool {
+    let Some(session) = tmux(&["display-message", "-p", "-t", win, "#{session_name}"]) else {
+        return true;
+    };
+    let Some(list) = tmux(&["list-windows", "-t", &format!("={session}"), "-F", "#{window_id}"])
+    else {
+        return true;
+    };
+    list.lines().filter(|l| !l.trim().is_empty()).count() <= 1
+}
+
+/// Close one window: kill it, or — when it is its session's last — respawn it as a bare shell in
+/// `fallback` so the session survives. `-k` kills the existing pane's command first.
+fn close_window(win: &str, fallback: &Path) {
+    match dispose(is_last_window_in_session(win), fallback) {
+        WindowDisposition::Kill => {
+            let _ = tmux_run(&["kill-window", "-t", win]);
+        }
+        WindowDisposition::RespawnLast { cwd } => {
+            let _ = tmux_run(&[
+                "respawn-window",
+                "-k",
+                "-t",
+                win,
+                "-c",
+                &cwd.to_string_lossy(),
+            ]);
+            // The window no longer belongs to the worktree — drop the decorations that would
+            // otherwise keep it looking like a live branch in the status line and the pickers.
+            for opt in ["@bn_repo", "@bn_branch", "@bn_worktree", "@bn_agent"] {
+                let _ = tmux_run(&["set-window-option", "-t", win, "-u", opt]);
+            }
+            let name = cwd
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "shell".to_string());
+            let _ = tmux_run(&["rename-window", "-t", win, &name]);
+        }
+    }
+}
+
 /// Kill the worktree's tmux windows. When invoked from inside tmux, the window we're sitting in is
 /// killed LAST (it ends this shell) so the rest of cleanup completes first.
 ///
@@ -595,7 +679,23 @@ pub(crate) fn tmux_windows_for(path: &Path, branch: &str) -> Vec<String> {
 /// reparented and alive, so cleanup would leave a straggler burning CPU. The current window (our
 /// own shell) is only killed — never tree-killed — so an interactive `bn close` from inside the
 /// worktree doesn't shoot its own shell out mid-cleanup.
+///
+/// A window that is the last one in its session is respawned rather than killed — see [`dispose`].
+/// Reclaiming a worktree is never allowed to destroy a session.
 pub(crate) fn kill_tmux_windows(wins: &[String], cwd_inside: bool) {
+    kill_tmux_windows_into(wins, cwd_inside, &default_respawn_fallback());
+}
+
+/// The fallback used when callers don't know the repo layout — the worktree root from config if it
+/// resolves, else `$HOME`.
+fn default_respawn_fallback() -> PathBuf {
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/"))
+}
+
+/// [`kill_tmux_windows`] with an explicit landing spot for a respawned last window.
+pub(crate) fn kill_tmux_windows_into(wins: &[String], cwd_inside: bool, fallback: &Path) {
     if wins.is_empty() {
         return;
     }
@@ -610,14 +710,67 @@ pub(crate) fn kill_tmux_windows(wins: &[String], cwd_inside: bool) {
         if cur.as_deref() == Some(win) {
             current_matched = true;
         } else {
-            let _ = tmux_run(&["kill-window", "-t", win]);
+            close_window(win, fallback);
         }
     }
     if current_matched {
         if let Some(cur) = cur {
-            let _ = tmux_run(&["kill-window", "-t", &cur]);
+            close_window(&cur, fallback);
         }
     } else if cwd_inside {
         println!("{YELLOW}Note: your shell is now in a removed directory — cd elsewhere{NC}");
+    }
+}
+
+#[cfg(test)]
+mod session_guard_tests {
+    use super::*;
+
+    #[test]
+    fn a_window_with_siblings_is_killed() {
+        assert_eq!(
+            dispose(false, Path::new("/tmp")),
+            WindowDisposition::Kill,
+            "a session that keeps other windows loses nothing by a kill"
+        );
+    }
+
+    #[test]
+    fn the_last_window_in_a_session_is_never_killed() {
+        // The guarantee: reclaiming a worktree must never be the thing that closes your session.
+        assert_eq!(
+            dispose(true, Path::new("/tmp/wt/bn/main")),
+            WindowDisposition::RespawnLast {
+                cwd: PathBuf::from("/tmp/wt/bn/main")
+            }
+        );
+    }
+
+    #[test]
+    fn fallback_prefers_the_repos_main_worktree() {
+        let tmp = std::env::temp_dir().join(format!("bn-respawn-{}", std::process::id()));
+        let main = tmp.join("bn").join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        assert_eq!(respawn_fallback(&tmp, "bn"), main);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn fallback_drops_to_the_worktree_root_when_main_is_gone() {
+        let tmp = std::env::temp_dir().join(format!("bn-respawn-nomain-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert_eq!(respawn_fallback(&tmp, "bn"), tmp);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn fallback_never_returns_a_missing_directory() {
+        let missing = PathBuf::from("/definitely/not/here");
+        let picked = respawn_fallback(&missing, "bn");
+        assert!(
+            picked.is_dir(),
+            "respawning into a directory that doesn't exist would fail: {}",
+            picked.display()
+        );
     }
 }

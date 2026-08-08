@@ -49,7 +49,9 @@ The left pill shows the session name and **flips to reverse-video `PREFIX`** the
 | Key | Action |
 |-----|--------|
 | `o` | **Go to or create worktree.** fzf list of existing worktrees, **most recently active first** with `main` last — so the default row is where you were actually working. Select one → opens as window. Type a new name + Enter → creates worktree from latest `main`, opens as window. |
-| `X` | Remove current window's worktree + kill the window. Refuses `main`/`master`. Prompts for `--force` if dirty. |
+| `x` | **Close this worktree.** Hands its pool lease back (or runs `bn wt cleanup`'s gates for a conventional worktree), then drops its window. Prompts first if the branch has uncommitted or unpushed work. Refuses `main`/`master` and the controller slot — on those, and on any non-worktree pane, it is just a pane close. **Never closes a session:** a worktree owning its session's last window leaves that window respawned as a bare shell. |
+| `X` | Kill this window and all its panes. Leaves the worktree and its lease alone — `x` is the integrated close. |
+| `D` | Pick any worktree to remove it + kill its window (the picker sibling of `x`). |
 
 In a non-bare session, `o` just opens/selects a `main` window at the repo path.
 
@@ -129,7 +131,7 @@ Selecting either ensures a local session named after the repo and opens/focuses 
 | `←` `↓` `↑` `→` | Navigate between panes. |
 | `S-←` `S-↓` `S-↑` `S-→` | Resize current pane by 5 cells. |
 | `z` | Toggle zoom (fullscreen current pane). |
-| `q` | Kill pane (with confirm). |
+| `q` | Kill pane (with confirm). Leaves the worktree and its pool lease alone — `x` is the integrated close. |
 
 ## Popups
 

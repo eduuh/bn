@@ -465,7 +465,8 @@ pub(crate) fn emit_tmux_help() {
     hdr("Worktrees (windows)");
     row("o", "open worktree window (create from main if new)");
     row("W", "always open a NEW worktree window");
-    row("X", "remove this window's worktree");
+    row("x", "close this worktree — return its lease, drop its window");
+    row("X", "kill this window (all panes); the worktree stays");
     row("D", "pick any worktree to delete");
 
     hdr("Agent cockpit");
@@ -515,7 +516,7 @@ pub(crate) fn emit_tmux_help() {
         &format!("navigate    {D}S-arrows{N} resize    {D}z{N} zoom"),
     );
     row("! / @", "break-pane / join-pane");
-    row("q", "kill pane");
+    row("q", "kill pane (worktree + lease untouched — x is the close)");
 
     hdr("Tools & popups");
     row("e", &format!("floating nvim (toggle)    {D}g{N} lazygit"));
