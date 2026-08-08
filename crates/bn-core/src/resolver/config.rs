@@ -5,7 +5,7 @@ use super::config_file::ConfigFile;
 use super::dirs::config_dir;
 use super::queue_config::QueueConfig;
 use super::util::{
-    home, non_empty_env, parse_weekday, parse_work_repos, read_hostname, split_list,
+    home, non_empty_env, parse_weekday, parse_work_repos, split_list, stable_machine,
 };
 use crate::pipeline::stage::Stage;
 use std::collections::HashMap;
@@ -503,9 +503,11 @@ impl Config {
             parse_work_repos(&config_dir().join("work-repos"))
         };
 
+        // `$BN_HOSTNAME` and the config key stay authoritative; absent both, the pinned identity
+        // answers rather than the live hostname, which on macOS is not stable across networks.
         let hostname = non_empty_env("BN_HOSTNAME")
             .or_else(|| file.and_then(|f| f.hostname()))
-            .unwrap_or_else(read_hostname);
+            .unwrap_or_else(stable_machine);
 
         let job_only_on = file.map(|f| f.job_only_on()).unwrap_or_default();
 

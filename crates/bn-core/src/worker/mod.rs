@@ -37,7 +37,9 @@ pub fn registry_path() -> PathBuf {
 /// intrinsic OS/arch capabilities plus any operator-declared extras from `$BN_WORKER_LABELS`
 /// (comma-separated), so a scheduler (#720) can placement-match on them.
 pub fn node_id() -> String {
-    gethostname::gethostname().to_string_lossy().into_owned()
+    // The same pinned identity the state dir uses, not the live hostname: a node that renames
+    // itself mid-run reappears to the scheduler as a second, idle machine.
+    crate::resolver::Config::load().machine().to_string()
 }
 
 /// The node's capability labels: `os:<x>`, `arch:<y>`, then any `$BN_WORKER_LABELS` extras

@@ -90,6 +90,20 @@ pub fn config_file_path() -> PathBuf {
     config_dir().join("config.toml")
 }
 
+/// Path to the pinned machine identity — one line naming this host, written once and reused
+/// forever after. `$BN_MACHINE_FILE` wins, else `<config_dir>/machine`.
+///
+/// Its own file rather than a `config.toml` key because bn *writes* it: `config.toml` is a document
+/// a person owns and hand-edits, and rewriting it behind their back to record a detail they never
+/// set would be a surprise. The `hostname` key still overrides this when someone does want to say
+/// it explicitly.
+pub fn machine_file_path() -> PathBuf {
+    if let Some(p) = non_empty_env("BN_MACHINE_FILE") {
+        return PathBuf::from(p);
+    }
+    config_dir().join("machine")
+}
+
 /// Path to `approvals.toml` — the agent auto-approve policy (`bn agent answer`'s unattended half).
 /// `$BN_APPROVALS` wins, else `<config_dir>/approvals.toml`.
 ///

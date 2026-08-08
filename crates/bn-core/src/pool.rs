@@ -266,6 +266,42 @@ pub fn ledger_repair(lease: Option<&str>, occupants: &[String]) -> LedgerRepair 
     }
 }
 
+/// The facts gathered about one leased slot, for the "has this lease been abandoned?" decision.
+/// The caller does the tmux/git I/O and hands the result to [`lease_abandoned`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LeaseFacts {
+    /// The recorded holder pid is still alive.
+    pub holder_alive: bool,
+    /// Seconds since the lease was taken.
+    pub age_secs: i64,
+    /// A live agent — or any live pane — is sitting in the checkout.
+    pub occupied: bool,
+    /// The checkout has uncommitted work.
+    pub dirty: bool,
+}
+
+/// Whether a lease is *provably* abandoned, so its slot can go back to warm-idle.
+///
+/// A lease is durable until `return` on purpose, so this demands proof rather than a guess: nobody
+/// is in the checkout, there is no uncommitted work to lose, and the lease is either held by a dead
+/// process or old enough that an agent would long since have shown up.
+///
+/// That last clause is the load-bearing one. `holder_alive` is a much weaker signal than it looks:
+/// the recorded holder is the *caller's* parent, which for a dispatch is the tmux server (a popup
+/// command's parent) or the operator's shell — processes that outlive every agent they launch.
+/// Gating reclamation on the pid alone therefore frees nothing in normal use: leases accumulate
+/// until the pool reads full and every dispatch spills into a cold worktree instead of leasing a
+/// warm slot, which is exactly [`LeaseLiveness`]'s blind spot.
+///
+/// `grace_secs` must comfortably cover the gap between a dispatch taking a slot and its agent
+/// appearing in tmux — a lease younger than that is not yet evidence of anything.
+pub fn lease_abandoned(facts: LeaseFacts, grace_secs: i64) -> bool {
+    if facts.occupied || facts.dirty {
+        return false;
+    }
+    !facts.holder_alive || facts.age_secs > grace_secs
+}
+
 /// Whether a `bn dispatch` should lease a warm pool slot or cut a cold worktree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorktreeMode {
@@ -714,6 +750,46 @@ mod tests {
             ledger_repair(Some("stale"), &["feat".to_string(), "other".to_string()]),
             LedgerRepair::Adopt("feat".to_string())
         );
+    }
+
+    // --- lease_abandoned --------------------------------------------------
+
+    const GRACE: i64 = 5 * 60;
+
+    fn facts(holder_alive: bool, age_secs: i64) -> LeaseFacts {
+        LeaseFacts {
+            holder_alive,
+            age_secs,
+            occupied: false,
+            dirty: false,
+        }
+    }
+
+    #[test]
+    fn dead_holder_is_abandoned_immediately() {
+        assert!(lease_abandoned(facts(false, 0), GRACE));
+    }
+
+    #[test]
+    fn immortal_holder_is_abandoned_once_past_grace() {
+        // The regression this exists for: a tmux server / login shell holder never dies, so the pid
+        // check alone would pin the slot forever and the pool would read full for good.
+        assert!(!lease_abandoned(facts(true, GRACE), GRACE));
+        assert!(lease_abandoned(facts(true, GRACE + 1), GRACE));
+    }
+
+    #[test]
+    fn occupied_or_dirty_slot_is_never_abandoned() {
+        let occupied = LeaseFacts {
+            occupied: true,
+            ..facts(false, 10 * GRACE)
+        };
+        assert!(!lease_abandoned(occupied, GRACE));
+        let dirty = LeaseFacts {
+            dirty: true,
+            ..facts(false, 10 * GRACE)
+        };
+        assert!(!lease_abandoned(dirty, GRACE));
     }
 
     // --- dispatch_worktree_mode ------------------------------------------

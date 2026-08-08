@@ -292,6 +292,11 @@ fn tick_once(cfg: &Config, now: i64, dry_run: bool) -> TickOutcome {
     // core), then take the shared snapshot every queue surface reads.
     let _ = observe_nodes(cfg, now);
     reclaim_stale_leases(cfg, now);
+    // The same reclaim, one level down: a backlog lease points at an executor, a pool lease points
+    // at a warm checkout, and both outlive whatever they were tracking. Pool slots are the capacity
+    // `realize` spends further down this pass, so the ledger has to be honest *here* — a stale one
+    // reads as "pool full" and every dispatch below spills into a cold worktree.
+    crate::wt_pool::reclaim::reconcile_pools(cfg, now);
     if !dry_run {
         maybe_enqueue_spare_work(cfg, now);
     }

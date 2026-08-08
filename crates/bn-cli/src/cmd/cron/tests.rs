@@ -152,6 +152,9 @@ fn scheduler_enqueues_due_agents_and_queue_tick_runs_them() {
     let _agents = bn_core::test_support::EnvGuard::set("BN_AGENTS_DIR", &agents);
     let _jobs = bn_core::test_support::EnvGuard::set("BN_JOBS_DIR", temp.path().join("jobs"));
     let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", &state);
+    // This test asserts the agent is *queued* rather than run, which is exactly what an inherited
+    // dispatch extent turns off — see `outside_a_dispatch` for why that leaks into agent sessions.
+    let _outside = bn_core::test_support::outside_a_dispatch();
     let cfg = Config {
         personal_root: temp.path().join("personal"),
         work_root: temp.path().join("work"),
@@ -452,4 +455,28 @@ fn scheduler_catalog_failure_is_recorded_on_the_scheduler_row() {
         .get("output_tail")
         .and_then(serde_json::Value::as_str)
         .is_some_and(|tail| tail.contains("missing required agent kind")));
+}
+
+/// The guard has to actually neutralize an inherited extent, not merely be present.
+///
+/// This is the property that matters for autonomous agents: they run with `BN_IN_QUEUE_TICK` set
+/// for their whole session, so a suite that only passes in a clean shell is a suite that always
+/// fails for them. Setting the variable here reproduces the agent's environment exactly.
+#[test]
+fn capture_tests_are_hermetic_against_an_inherited_dispatch_extent() {
+    let _lock = bn_core::test_support::env_lock();
+    let _inherited = bn_core::test_support::EnvGuard::set("BN_IN_QUEUE_TICK", "1");
+    assert!(std::env::var_os("BN_IN_QUEUE_TICK").is_some());
+
+    let outside = bn_core::test_support::outside_a_dispatch();
+    assert!(
+        std::env::var_os("BN_IN_QUEUE_TICK").is_none(),
+        "the guard must clear the ambient extent, or capture assertions test the shell"
+    );
+
+    drop(outside);
+    assert!(
+        std::env::var_os("BN_IN_QUEUE_TICK").is_some(),
+        "and must restore it, so one test cannot disarm the next"
+    );
 }

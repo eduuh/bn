@@ -10,6 +10,7 @@ pub mod build;
 pub mod classify;
 pub mod decision;
 pub mod enqueue;
+pub mod extent;
 pub mod jobs;
 pub mod kind;
 pub mod log;

@@ -17,6 +17,12 @@ description = "bn — wake reactor and sole owner of attention toasts: ONE batch
 #   bn wt reap      — remove finished/clean scout worktrees
 #   bn run fleet-reap — GC orphaned agent process trees + dead tmux windows
 # Do NOT re-add these as [[cron]] entries.
+#
+# The pool-slot ledger is NOT this kind of reclamation and is reconciled automatically, at the head
+# of every `queue-tick` pass: it deletes no branch, removes no worktree and kills no session. It
+# only makes each warm pool's `leases.json` agree with who is actually in its slots — otherwise a
+# lease outlives every agent that ever held it (the recorded holder is a tmux server or login shell
+# that never exits), the pool reads full, and `bn dispatch` silently spills into cold worktrees.
 
 # --- cadence ticks --------------------------------------------------------------
 # Housekeeping jobs share cadence timers where that reduces timer churn. Each tick runs its

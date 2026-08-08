@@ -329,6 +329,12 @@ fn switch_into_slot(slot_s: &str, bare_s: &str, branch: &str) -> bool {
 /// then drop untracked files — but NEVER `-x`/`-X`, so ignored deps/build cache survive. This
 /// no-`-x` rule is the whole point of the pool.
 fn warm_reset(slot_s: &str, bare_s: &str) {
+    // A lease can outlive its checkout (manual cleanup, a botched prune). There is nothing to reset
+    // then, and running git against a missing directory only prints `fatal: cannot change to …` over
+    // the caller's output — the lease still gets dropped by whoever called us.
+    if !Path::new(slot_s).is_dir() {
+        return;
+    }
     let base = default_base(bare_s);
     let _ = git_quiet(&[
         "-C",
@@ -504,94 +510,11 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// How aggressively [`reclaim_stale`] frees abandoned slots.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ReclaimScope {
-    /// Only leases from a *prior boot* (holder provably dead — WSL shutdown / host reboot). Safe to
-    /// run on every access, so the pool self-heals the moment anything touches it after a restart.
-    PriorBootOnly,
-    /// Any dead-holder lease — prior-boot *or* a same-boot lease whose pid is gone. The last-resort
-    /// sweep when the pool is otherwise full, honoring the durable-lease policy for a live boot
-    /// (a same-boot lease is only reclaimed here, not pre-emptively).
-    AnyDeadHolder,
-}
-
-/// What a [`reclaim_stale`] pass freed, split by cause so callers can report the WSL/reboot
-/// recovery (`prior_boot`) apart from an ordinary dead-holder reclaim (`this_boot`).
-#[derive(Debug, Default, Clone)]
-struct ReclaimReport {
-    /// Slots reclaimed because their lease predated the current boot (a restart recovery).
-    prior_boot: Vec<u32>,
-    /// Slots reclaimed because a same-boot holder pid had died.
-    this_boot: Vec<u32>,
-}
-
-impl ReclaimReport {
-    fn changed(&self) -> bool {
-        !self.prior_boot.is_empty() || !self.this_boot.is_empty()
-    }
-}
-
-/// Drop leases whose holder is gone, resetting each reclaimed slot to warm-idle, and persist the
-/// lease store when anything changed. A slot is reclaimed only when its holder is gone (per `scope`
-/// and the boot-aware [`bn_core::pool::lease_liveness`]) AND nothing is running in it AND it has no
-/// uncommitted work to lose — a dirty abandoned slot is left leased (`return --force` frees it).
-/// Each prior-boot reclaim logs a `pool_recover` event so `pool metrics` can show restart recoveries.
-fn reclaim_stale(ctx: &PoolCtx, leases: &mut Leases, scope: ReclaimScope) -> ReclaimReport {
-    use bn_core::pool::LeaseLiveness;
-    let bare_s = ctx.bare.to_string_lossy().to_string();
-    let current_boot = current_boot_id();
-    let mut report = ReclaimReport::default();
-
-    let candidates: Vec<(u32, bool)> = leases
-        .slots
-        .iter()
-        .filter_map(|(n, l)| {
-            let slot = slot_path(&ctx.pool_dir, *n);
-            let liveness = bn_core::pool::lease_liveness(
-                boot_opt(&l.boot_id),
-                current_boot.as_deref(),
-                pid_alive(l.pid),
-            );
-            let prior_boot = matches!(liveness, LeaseLiveness::StalePriorBoot);
-            let dead_holder = match scope {
-                ReclaimScope::PriorBootOnly => prior_boot,
-                ReclaimScope::AnyDeadHolder => !matches!(liveness, LeaseLiveness::Live),
-            };
-            // Never clobber a live agent, a live process's cwd, or uncommitted work — even for a
-            // prior-boot lease: the working tree survives a reboot, so a dirty slot is preserved
-            // and surfaced by `pool metrics` (commit or `return --force`) rather than silently
-            // discarded. The occupancy check is the load-bearing one off Linux, where
-            // `any_proc_in` cannot see anything.
-            let reclaimable = dead_holder
-                && slot_occupants(&slot).is_empty()
-                && !any_proc_in(&slot)
-                && wt::dirty_count(&slot.to_string_lossy()) == 0;
-            reclaimable.then_some((*n, prior_boot))
-        })
-        .collect();
-
-    for (n, prior_boot) in candidates {
-        let slot = slot_path(&ctx.pool_dir, n);
-        let branch = leases
-            .slots
-            .get(&n)
-            .map(|l| l.branch.clone())
-            .unwrap_or_default();
-        warm_reset(&slot.to_string_lossy(), &bare_s);
-        leases.slots.remove(&n);
-        if prior_boot {
-            log_pool_event("pool_recover", &ctx.repo, n, &branch, None);
-            report.prior_boot.push(n);
-        } else {
-            report.this_boot.push(n);
-        }
-    }
-    if report.changed() {
-        let _ = write_leases(&ctx.pool_dir, leases);
-    }
-    report
-}
+pub(crate) mod reclaim;
+use reclaim::{
+    leaked_lease_candidates, reclaim_leaked_leases, reclaim_stale, ReclaimReport, ReclaimScope,
+    LEAKED_LEASE_GRACE_SECS,
+};
 
 // --- removal classification (pure, unit-tested) ----------------------------
 
@@ -963,6 +886,17 @@ fn acquire_slot(
     };
     let mut n = pick(&leases);
     if n.is_none() && reclaim_stale(ctx, &mut leases, ReclaimScope::AnyDeadHolder).changed() {
+        n = pick(&leases);
+    }
+    // Still nothing. The sweep above only frees a slot whose *holder pid* has died, and a dispatch's
+    // recorded holder is the caller's parent — a tmux server (every popup command's parent) or a
+    // login shell, neither of which ever exits. So a slot whose agent is long gone stays leased
+    // forever, the pool reads full, and every later dispatch spills into a cold `worktree/<repo>/…`
+    // checkout instead of the warm slot that is sitting right there, idle. Before declaring the pool
+    // full, run the same leaked-lease sweep `wt pool prune` does: it asks who is actually in the
+    // checkout rather than trusting the pid, and only frees a slot nobody occupies, with nothing
+    // uncommitted in it, whose lease is past the startup grace.
+    if n.is_none() && !reclaim_leaked_leases(ctx, &mut leases, now_epoch(), false).is_empty() {
         n = pick(&leases);
     }
     let Some(n) = n else {
@@ -1645,22 +1579,44 @@ fn pool_status(cfg: &Config, repo: Option<String>) -> bool {
         };
         match leases.slots.get(&n) {
             Some(l) => {
-                // A same-boot lease whose holder pid has died is abandoned — flag it so a stuck
-                // slot is visible even though the durable-lease policy leaves it for `prune`/reuse.
-                // A slot with a live agent is never abandoned, whatever the recorded pid says.
-                let alive = !agents.is_empty()
-                    || matches!(
-                        bn_core::pool::lease_liveness(
-                            boot_opt(&l.boot_id),
-                            current_boot.as_deref(),
-                            pid_alive(l.pid),
-                        ),
-                        bn_core::pool::LeaseLiveness::Live
-                    );
-                let flag = if alive {
-                    ""
+                // Flag a stuck slot so it is visible even though the durable-lease policy leaves it
+                // for `prune`/reuse. Two ways a lease stops meaning anything: its holder pid died,
+                // or nobody ever turned up in the checkout and the lease has aged out — the common
+                // case, since the recorded holder (a tmux server, a login shell) usually outlives
+                // every agent it launched. A slot with a live agent is never abandoned, whatever
+                // the recorded pid says.
+                // Boot-scoped liveness folded in, so a lease from before a reboot reads as dead even
+                // if its recycled pid now looks alive.
+                let holder_dead = !matches!(
+                    bn_core::pool::lease_liveness(
+                        boot_opt(&l.boot_id),
+                        current_boot.as_deref(),
+                        pid_alive(l.pid),
+                    ),
+                    bn_core::pool::LeaseLiveness::Live
+                );
+                let dirty = wt::dirty_count(&slot_path(&ctx.pool_dir, n).to_string_lossy());
+                let facts = bn_core::pool::LeaseFacts {
+                    holder_alive: !holder_dead,
+                    ..reclaim::lease_facts(&ctx, n, l, now)
+                };
+                // Say what actually frees the slot: a dirty abandoned slot is deliberately *not*
+                // reclaimable, so pointing at `prune` there promises something it will refuse to do.
+                let flag = if bn_core::pool::lease_abandoned(facts, LEAKED_LEASE_GRACE_SECS) {
+                    "  (nobody home — reclaimable)".to_string()
+                } else if bn_core::pool::lease_abandoned(
+                    bn_core::pool::LeaseFacts {
+                        dirty: false,
+                        ..facts
+                    },
+                    LEAKED_LEASE_GRACE_SECS,
+                ) {
+                    format!(
+                        "  (nobody home, {dirty} uncommitted change(s) — `wt pool return {n} \
+                         --force` frees it)"
+                    )
                 } else {
-                    "  (holder gone — `wt pool prune` reclaims it)"
+                    String::new()
                 };
                 println!(
                     "  {YELLOW}[{n}] leased{NC}{role}  {}  holder={} age={}{flag}{occupancy}{crowded}",
@@ -2045,60 +2001,6 @@ fn pool_prune(cfg: &Config, repo: Option<String>, yes: bool, all: bool, verbose:
     ok
 }
 
-/// How long a lease with nobody in its slot is given before it counts as leaked. Long enough to
-/// cover the gap between `bn dispatch` taking a slot and its agent appearing in tmux; short enough
-/// that a day's work doesn't silently fill the pool. Same grace the fleet GC gives a quiet agent.
-const LEAKED_LEASE_GRACE_SECS: i64 = bn_core::fleet_gc::DEFAULT_MIN_IDLE_SECS;
-
-/// Hand back leases nobody is using — the sweep for slots that were never returned.
-///
-/// A lease is durable until `return` on purpose, so this needs proof of abandonment, not a guess:
-/// no live agent in the slot, nothing else sitting in the directory either, no uncommitted work to
-/// lose, and either a dead holder or a lease old enough that an agent would long since have shown
-/// up. The last clause is what makes this work at all on macOS, where the recorded holder is
-/// typically a shell that outlives every agent it launches, so "holder alive" never means the slot
-/// is in use.
-///
-/// The checkout is kept — reclaiming returns a slot to *warm idle*, it does not destroy it.
-fn leaked_lease_candidates(ctx: &PoolCtx, leases: &Leases, now: i64) -> Vec<u32> {
-    leases
-        .slots
-        .iter()
-        .filter(|(n, lease)| {
-            let slot = slot_path(&ctx.pool_dir, **n);
-            let abandoned = !pid_alive(lease.pid) || now - lease.at > LEAKED_LEASE_GRACE_SECS;
-            abandoned
-                && slot_occupants(&slot).is_empty()
-                && !crate::agent_lease::any_live_pane_in(&slot)
-                && !any_proc_in(&slot)
-                && wt::dirty_count(&slot.to_string_lossy()) == 0
-        })
-        .map(|(n, _)| *n)
-        .collect()
-}
-
-fn reclaim_leaked_leases(ctx: &PoolCtx, leases: &mut Leases, now: i64) -> Vec<u32> {
-    let bare_s = ctx.bare.to_string_lossy().to_string();
-    let leaked = leaked_lease_candidates(ctx, leases, now);
-
-    for n in &leaked {
-        let slot = slot_path(&ctx.pool_dir, *n);
-        let branch = leases
-            .slots
-            .get(n)
-            .map(|l| l.branch.clone())
-            .unwrap_or_default();
-        warm_reset(&slot.to_string_lossy(), &bare_s);
-        leases.slots.remove(n);
-        log_pool_event("pool_return", &ctx.repo, *n, &branch, None);
-        println!("  {GREEN}[{n}] reclaimed leaked lease ({branch}){NC}");
-    }
-    if !leaked.is_empty() {
-        let _ = write_leases(&ctx.pool_dir, leases);
-    }
-    leaked
-}
-
 fn prune_one(ctx: &PoolCtx, yes: bool, verbose: bool) {
     let mut leases = read_leases(&ctx.pool_dir);
     println!(
@@ -2109,7 +2011,7 @@ fn prune_one(ctx: &PoolCtx, yes: bool, verbose: bool) {
     // does — so the removal pass below classifies against reality rather than a stale record.
     adopt_occupied_slots(ctx, &mut leases);
     let leaked = if yes {
-        reclaim_leaked_leases(ctx, &mut leases, now_epoch())
+        reclaim_leaked_leases(ctx, &mut leases, now_epoch(), true)
     } else {
         let candidates = leaked_lease_candidates(ctx, &leases, now_epoch());
         for n in &candidates {
@@ -2576,361 +2478,4 @@ mod pool_tests;
 /// actual `git` binary, so a regression in how a slot is created, switched, reset, or torn down is
 /// caught here rather than in a broken pool on someone's box.
 #[cfg(test)]
-mod git_integration_tests {
-    use super::*;
-    use std::process::Command;
-
-    fn git(args: &[&str]) -> bool {
-        Command::new("git")
-            .args(args)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-
-    /// Build a one-commit repo on `main` (with a `feat` branch and a committed `.gitignore`) under
-    /// `srcdir`, then bare-clone it to `bare`. Shared by the tempdir and staged-layout setups.
-    fn build_repo_into(srcdir: &Path, bare: &Path) {
-        std::fs::create_dir_all(srcdir).unwrap();
-        let s = srcdir.to_string_lossy().to_string();
-        assert!(git(&["init", "-q", &s]));
-        assert!(git(&["-C", &s, "config", "user.email", "t@t"]));
-        assert!(git(&["-C", &s, "config", "user.name", "t"]));
-        std::fs::write(srcdir.join(".gitignore"), "target/\n").unwrap();
-        std::fs::write(srcdir.join("a.txt"), "hi\n").unwrap();
-        assert!(git(&["-C", &s, "add", "-A"]));
-        assert!(git(&["-C", &s, "commit", "-qm", "init"]));
-        // Normalize the default branch name across git versions.
-        assert!(git(&["-C", &s, "branch", "-M", "main"]));
-        assert!(git(&["-C", &s, "branch", "feat"]));
-        std::fs::create_dir_all(bare.parent().unwrap()).unwrap();
-        assert!(git(&["clone", "-q", "--bare", &s, &bare.to_string_lossy()]));
-    }
-
-    /// A bare clone of a one-commit repo on `main`, with a second branch `feat` and a committed
-    /// `.gitignore` (`target/`). Returns `(tempdir, bare_path_string)`.
-    fn mk_bare() -> (tempfile::TempDir, String) {
-        let tmp = tempfile::tempdir().unwrap();
-        let bare = tmp.path().join("bare.git");
-        build_repo_into(&tmp.path().join("src"), &bare);
-        (tmp, bare.to_string_lossy().to_string())
-    }
-
-    fn head_ref(slot: &Path) -> String {
-        let out = Command::new("git")
-            .args([
-                "-C",
-                &slot.to_string_lossy(),
-                "rev-parse",
-                "--abbrev-ref",
-                "HEAD",
-            ])
-            .output()
-            .unwrap();
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    }
-
-    #[test]
-    fn default_base_prefers_main() {
-        let (_tmp, bare) = mk_bare();
-        // A bare clone copies heads (refs/heads/main) but sets up no origin remote, so `main`
-        // resolves and `origin/main` does not — default_base must land on `main`.
-        assert_eq!(default_base(&bare), "main");
-    }
-
-    #[test]
-    fn add_detached_slot_creates_a_live_worktree() {
-        let (tmp, bare) = mk_bare();
-        let slot = tmp.path().join("slot2");
-        assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
-        assert!(is_live_slot(&slot));
-        // Detached at the base — abbrev-ref reads "HEAD".
-        assert_eq!(head_ref(&slot), "HEAD");
-        assert!(slot.join("a.txt").exists());
-    }
-
-    #[test]
-    fn switch_reuses_an_existing_branch() {
-        let (tmp, bare) = mk_bare();
-        let slot = tmp.path().join("slot2");
-        assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
-        assert!(switch_into_slot(&slot.to_string_lossy(), &bare, "feat"));
-        assert_eq!(head_ref(&slot), "feat");
-    }
-
-    #[test]
-    fn switch_creates_a_new_branch_when_absent() {
-        let (tmp, bare) = mk_bare();
-        let slot = tmp.path().join("slot2");
-        assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
-        assert!(switch_into_slot(
-            &slot.to_string_lossy(),
-            &bare,
-            "brand-new"
-        ));
-        assert_eq!(head_ref(&slot), "brand-new");
-    }
-
-    #[test]
-    fn switch_fails_when_branch_checked_out_elsewhere() {
-        let (tmp, bare) = mk_bare();
-        // `feat` is checked out in another worktree; git refuses to check it out a second time.
-        let other = tmp.path().join("other");
-        assert!(git(&[
-            "--git-dir",
-            &bare,
-            "worktree",
-            "add",
-            &other.to_string_lossy(),
-            "feat"
-        ]));
-        let slot = tmp.path().join("slot2");
-        assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
-        assert!(!switch_into_slot(&slot.to_string_lossy(), &bare, "feat"));
-    }
-
-    #[test]
-    fn is_live_slot_rejects_a_bare_directory() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("not-a-worktree");
-        std::fs::create_dir_all(&dir).unwrap();
-        // A plain dir (an interrupted `worktree add` leaves files but no `.git`) is not reusable.
-        assert!(!is_live_slot(&dir));
-        assert!(!is_live_slot(&tmp.path().join("missing")));
-    }
-
-    #[test]
-    fn force_remove_tears_down_a_slot() {
-        let (tmp, bare) = mk_bare();
-        let slot = tmp.path().join("slot2");
-        assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
-        assert!(slot.is_dir());
-        force_remove_worktree(&bare, &slot);
-        assert!(!slot.exists());
-        // The worktree registration is gone too, so the slot can be cleanly recreated.
-        let list = Command::new("git")
-            .args(["--git-dir", &bare, "worktree", "list", "--porcelain"])
-            .output()
-            .unwrap();
-        assert!(!String::from_utf8_lossy(&list.stdout).contains("slot2"));
-    }
-
-    #[test]
-    fn force_remove_recovers_a_broken_checkout() {
-        let (tmp, bare) = mk_bare();
-        let slot = tmp.path().join("slot2");
-        assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
-        // Simulate an interrupted create: drop the `.git` link so it reads as broken.
-        std::fs::remove_file(slot.join(".git")).unwrap();
-        assert!(!is_live_slot(&slot));
-        force_remove_worktree(&bare, &slot);
-        // The recreate path (used by both get and warm) then rebuilds a live slot.
-        assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
-        assert!(is_live_slot(&slot));
-    }
-
-    #[test]
-    fn warm_reset_discards_tracked_but_keeps_ignored_deps() {
-        let (tmp, bare) = mk_bare();
-        let slot = tmp.path().join("slot2");
-        assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
-        assert!(switch_into_slot(&slot.to_string_lossy(), &bare, "feat"));
-        // A tracked edit, an untracked scratch file, and an ignored build artifact.
-        std::fs::write(slot.join("a.txt"), "DIRTY\n").unwrap();
-        std::fs::write(slot.join("untracked.txt"), "scratch\n").unwrap();
-        std::fs::create_dir_all(slot.join("target")).unwrap();
-        std::fs::write(slot.join("target/build-cache"), "expensive\n").unwrap();
-
-        warm_reset(&slot.to_string_lossy(), &bare);
-
-        // Tracked change reverted, untracked scratch cleaned…
-        assert_eq!(std::fs::read_to_string(slot.join("a.txt")).unwrap(), "hi\n");
-        assert!(!slot.join("untracked.txt").exists());
-        // …but the ignored deps/build cache — the entire point of the pool — survive.
-        assert!(slot.join("target/build-cache").exists());
-        // And the slot is detached (ready for the controller / next lease).
-        assert_eq!(head_ref(&slot), "HEAD");
-    }
-
-    #[test]
-    fn wt_cleanup_inside_pool_slot_returns_the_slot() {
-        let _g = bn_core::test_support::env_lock();
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        let bare = root.join("bare").join("bn.git");
-        build_repo_into(&root.join("bn-src"), &bare);
-
-        let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
-        let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", root.join("state"));
-        TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
-
-        let pdir = root.join("worktree").join("bn").join("_pool");
-        let slot = pdir.join("2");
-        std::fs::create_dir_all(&pdir).unwrap();
-        assert!(git(&[
-            "--git-dir",
-            &bare.to_string_lossy(),
-            "worktree",
-            "add",
-            "-q",
-            &slot.to_string_lossy(),
-            "main"
-        ]));
-        assert!(switch_into_slot(
-            &slot.to_string_lossy(),
-            &bare.to_string_lossy(),
-            "feat"
-        ));
-        let nested = slot.join("nested");
-        std::fs::create_dir_all(&nested).unwrap();
-
-        let mut leases = Leases::default();
-        leases.slots.insert(
-            2,
-            Lease {
-                branch: "feat".into(),
-                holder: "test".into(),
-                pid: std::process::id(),
-                at: now_epoch(),
-                boot_id: String::new(),
-            },
-        );
-        write_leases(&pdir, &leases).unwrap();
-
-        let cfg = bn_core::test_support::config(root);
-        assert!(crate::wt::cleanup_one(&cfg, &nested, &root.join("worktree"), false).is_ok());
-
-        assert!(slot.is_dir(), "cleanup should keep the warm slot checkout");
-        assert!(read_leases(&pdir).slots.is_empty());
-        assert_eq!(head_ref(&slot), "HEAD");
-    }
-
-    /// Regression for the warm-hit-on-a-dead-checkout bug: a lease can outlive its slot dir (removed
-    /// out-of-band while the holder pid is still alive, so `reclaim_stale` keeps the lease). The
-    /// idempotent "warm hit" must rebuild the checkout, never hand back the missing path.
-    #[test]
-    fn acquire_repairs_a_lease_whose_checkout_vanished() {
-        let (tmp, bare) = mk_bare();
-        // Stub occupancy so the slot scans never reach for tmux / the agent registry.
-        TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
-
-        let wt_root = tmp.path().join("wt");
-        let pdir = wt_root.join("bn").join("_pool");
-        std::fs::create_dir_all(&pdir).unwrap();
-
-        // A live lease for slot 2 → "feat", but its checkout was never created (vanished dir).
-        let mut leases = Leases::default();
-        leases.slots.insert(
-            2,
-            Lease {
-                branch: "feat".into(),
-                holder: "me".into(),
-                pid: std::process::id(), // alive → not reclaimed as a dead holder
-                at: now_epoch(),
-                boot_id: String::new(), // unknown boot → liveness falls back to the (alive) pid
-            },
-        );
-        write_leases(&pdir, &leases).unwrap();
-
-        let ctx = PoolCtx {
-            bare: PathBuf::from(&bare),
-            repo: "bn".into(),
-            pool_dir: pdir.clone(),
-            worktree_dir: wt_root,
-            size: 4,
-        };
-
-        let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker)
-            .expect("a vanished checkout must be rebuilt, not surfaced as a dead warm hit");
-        // Same branch's tenancy predates this call, so it is not a fresh lease…
-        assert!(!leased.fresh);
-        // …but the returned slot is now a real, live checkout on the right branch.
-        assert_eq!(leased.slot, slot_path(&pdir, 2));
-        assert!(is_live_slot(&leased.slot));
-        assert_eq!(head_ref(&leased.slot), "feat");
-    }
-
-    /// The happy warm hit is untouched: an existing live checkout for the branch is handed straight
-    /// back (`fresh: false`) without a rebuild.
-    #[test]
-    fn acquire_warm_hit_reuses_a_live_checkout() {
-        let (tmp, bare) = mk_bare();
-        TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
-
-        let wt_root = tmp.path().join("wt");
-        let pdir = wt_root.join("bn").join("_pool");
-        std::fs::create_dir_all(&pdir).unwrap();
-
-        // Pre-build slot 2 as a live checkout on feat, and record its lease.
-        let slot = slot_path(&pdir, 2);
-        assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
-        assert!(switch_into_slot(&slot.to_string_lossy(), &bare, "feat"));
-        let mut leases = Leases::default();
-        leases.slots.insert(
-            2,
-            Lease {
-                branch: "feat".into(),
-                holder: "me".into(),
-                pid: std::process::id(),
-                at: now_epoch(),
-                boot_id: String::new(),
-            },
-        );
-        write_leases(&pdir, &leases).unwrap();
-
-        let ctx = PoolCtx {
-            bare: PathBuf::from(&bare),
-            repo: "bn".into(),
-            pool_dir: pdir,
-            worktree_dir: wt_root,
-            size: 4,
-        };
-        let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker).expect("warm hit");
-        assert!(!leased.fresh);
-        assert_eq!(leased.slot, slot);
-        assert!(is_live_slot(&leased.slot));
-        assert_eq!(head_ref(&leased.slot), "feat");
-    }
-
-    /// Regression for the `--new` warm no-op: `pool_warm(--new)` must rebuild a *broken* stub
-    /// (a dir with no `.git`, left by an interrupted create), not skip it as "existing". The old
-    /// guard keyed off directory presence, so `warm --new` left a broken slot broken and the next
-    /// dispatch paid a cold create.
-    #[test]
-    fn pool_warm_new_rebuilds_a_broken_stub() {
-        let _g = bn_core::test_support::env_lock();
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-
-        // Stage the `$WT_ROOT` layout `wt::layout` expects: `<root>/bare/bn.git`, worktrees under
-        // `<root>/worktree`.
-        let bare = root.join("bare").join("bn.git");
-        build_repo_into(&root.join("bn-src"), &bare);
-
-        // Pool `bn` at size 2 via `$WT_POOLS`.
-        let pools = root.join("pools");
-        std::fs::write(&pools, "bn 2\n").unwrap();
-
-        let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
-        let _wt_pools = bn_core::test_support::EnvGuard::set("WT_POOLS", &pools);
-        let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", root.join("state"));
-        // Never reach for a real tmux/agent registry during the slot scan.
-        TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
-
-        // A broken stub for slot 2: the dir exists but there's no `.git`, so it's not a live
-        // checkout — exactly the interrupted-create state the old `--new` guard skipped.
-        let pool_dir = root.join("worktree").join("bn").join("_pool");
-        std::fs::create_dir_all(pool_dir.join("2")).unwrap();
-        std::fs::write(pool_dir.join("2").join("stray.txt"), "junk\n").unwrap();
-        assert!(!is_live_slot(&pool_dir.join("2")));
-
-        let cfg = bn_core::test_support::config(root);
-        // here = true (stay inline, no tmux window), new = true.
-        assert!(pool_warm(&cfg, Some("bn".to_string()), true, true));
-
-        // The broken stub is now a real, live checkout — the whole point of the fix.
-        assert!(is_live_slot(&pool_dir.join("2")));
-    }
-}
+mod git_integration_tests;

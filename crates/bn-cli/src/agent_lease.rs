@@ -216,6 +216,29 @@ pub(crate) fn release(session_id: &str) -> Result<bool, String> {
         .map_err(|error| format!("agent lease release: {error}"))
 }
 
+/// Drop the lease(s) *this very window* holds on `worktree`, so a stage handoff can lease it next.
+/// Returns how many were released.
+///
+/// A pipeline handoff is issued **by** the agent being handed off from, running inside the window
+/// that already holds the worktree's lease — so the successor's launch would always refuse itself
+/// under one-agent-per-worktree. Calling the handoff is that agent declaring it is done, which
+/// makes dropping its own lease the accurate record rather than a workaround.
+///
+/// Deliberately not [`reserve`] with `replace: true`: replacement *reaps* the replaced window, and
+/// the window being replaced here is the caller's own. Only leases matching the current window are
+/// touched, so an agent working in any other window keeps its lease and still blocks the launch.
+pub(crate) fn release_own(worktree: &Path) -> usize {
+    let Some(here) = current_window_id() else {
+        return 0; // outside tmux there is no "own window" to identify — leave the registry alone
+    };
+    live_agents_in(worktree)
+        .into_iter()
+        .filter(|occupant| window_id_for_target(&occupant.tmux_target).as_ref() == Some(&here))
+        .filter_map(|occupant| occupant.session_id)
+        .filter(|session_id| release(session_id).unwrap_or(false))
+        .count()
+}
+
 /// A live agent found working in a checkout — the answer to "is this worktree in use?".
 ///
 /// Deliberately not an [`AgentLease`]: the third source below finds agents that never took one, and

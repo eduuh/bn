@@ -20,6 +20,13 @@ use std::process::Command;
 pub fn tmux_command<S: AsRef<OsStr>>(args: &[S]) -> Command {
     let mut cmd = Command::new("tmux");
     cmd.args(args);
+    // Never hand the dispatcher's extent marker to tmux. A `tmux` invocation that starts the server
+    // gives it *this* environment, and the server then hands it to every pane of every window it
+    // will ever create — so one dispatch that happened to start tmux would convince every later
+    // producer, in every shell on the machine, that it was already inside a dispatch and must not
+    // enqueue. The extent belongs to a process tree, not to a terminal multiplexer that outlives
+    // all of them. See [`crate::queue::extent`].
+    cmd.env_remove(crate::queue::extent::DISPATCH_EXTENT_ENV);
     cmd
 }
 

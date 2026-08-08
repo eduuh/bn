@@ -377,6 +377,22 @@ fn pipeline_copilot_command(session_id: &str, seed_file: &std::path::Path) -> St
     )
 }
 
+/// Where the task being staged is actually checked out, for the two launchers that have to hand a
+/// real cwd to a fresh agent.
+///
+/// `<worktree_dir>/<repo>/<branch>` is only the convention, and a *dispatched* task — the common
+/// case for a pipeline stage — lives in a warm pool slot (`_pool/<n>`) that the convention can
+/// never name. Reconstructing the path therefore made both handoffs silently no-op for every
+/// pooled task: the launcher's `is_dir()` guard failed, and the caller reported "not launched"
+/// with a success exit. Ask git first (it knows any location) and keep the conventional layout
+/// only as the last resort for a repo git cannot enumerate.
+fn stage_worktree(cfg: &Config, ctx: &Resolved) -> Option<std::path::PathBuf> {
+    bn_core::lifecycle::worktree_path(cfg, &ctx.repo, &ctx.branch).or_else(|| {
+        Some(cfg.worktree_dir.join(&ctx.repo).join(&ctx.branch))
+            .filter(|p: &std::path::PathBuf| p.is_dir())
+    })
+}
+
 fn launch_sub_investigator(
     cfg: &Config,
     ctx: &Resolved,
@@ -385,10 +401,9 @@ fn launch_sub_investigator(
     question: &str,
     quiet: bool,
 ) -> bool {
-    let parent_wt = cfg.worktree_dir.join(&ctx.repo).join(&ctx.branch);
-    if !parent_wt.is_dir() {
+    let Some(parent_wt) = stage_worktree(cfg, ctx) else {
         return false;
-    }
+    };
     let mut prompt_args = serde_json::Map::new();
     for (name, value) in [
         ("goal", goal),
@@ -518,10 +533,9 @@ fn launch_plan_agent(
     findings: &[String],
     quiet: bool,
 ) -> bool {
-    let wt_path = cfg.worktree_dir.join(&ctx.repo).join(&ctx.branch);
-    if !wt_path.is_dir() {
+    let Some(wt_path) = stage_worktree(cfg, ctx) else {
         return false;
-    }
+    };
     let sid = gen_uuid();
     let window = plan_window_name(&ctx.branch, &sid);
     let tmux_target = format!("{}:{window}", ctx.repo);
@@ -560,6 +574,16 @@ fn launch_plan_agent(
     cmd.push_str(&copilot_mcp_disable_suffix(
         &bn_core::mcp::copilot_project_servers(&wt_path),
     ));
+    // The investigator issues this handoff from inside the window already holding the worktree's
+    // dispatch lease, so the plan launch would otherwise refuse *itself* — `investigate finish` is
+    // that agent saying it is done, so its lease goes with it. `Ours` means this window is the
+    // checkout's sole occupant; a live agent in any other window still refuses below.
+    if matches!(
+        agent_lease::worktree_holder(&wt_path),
+        agent_lease::WorktreeHolder::Ours
+    ) {
+        agent_lease::release_own(&wt_path);
+    }
     let reservation = match agent_lease::reserve(agent_lease::AgentLeaseRequest {
         repo: &ctx.repo,
         branch: &ctx.branch,

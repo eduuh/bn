@@ -83,6 +83,12 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
             let ctx = target_ctx(cfg, repo, branch);
             std::process::exit(run_job(cfg, ctx.as_ref(), &job));
         }
+        CmdStaff::Machine { action } => match action {
+            MachineCmd::List => crate::cmd::machine::emit_machine_list(cfg, json),
+            MachineCmd::Merge { from, dry_run } => {
+                crate::cmd::machine::emit_machine_merge(cfg, &from, dry_run, json)
+            }
+        },
         CmdStaff::Cron {
             action,
             repo,

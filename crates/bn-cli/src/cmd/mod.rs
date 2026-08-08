@@ -18,6 +18,7 @@ pub(crate) mod core_cmds;
 pub(crate) mod cost;
 pub(crate) mod critic;
 pub(crate) mod cron;
+pub(crate) mod machine;
 pub(crate) mod curriculum;
 pub(crate) mod daily;
 pub(crate) mod dispatch;

@@ -37,6 +37,14 @@ use bn_core::queue::kind::{ExecSpec, Requirements};
 ///
 /// Two scopes, because the dispatcher's work spans processes: an atomic for in-process calls, and
 /// an environment variable that child `bn` invocations inherit.
+///
+/// The environment half must be read as *"which dispatch?"* rather than *"was there one?"*, because
+/// inheritance has no end: the agent a dispatch launches keeps its copy for hours, and a `tmux`
+/// server started during a dispatch hands its copy to every pane it ever creates. A bare flag
+/// therefore decays from "we are inside a dispatch" into "this machine has run one", after which
+/// every producer silently stops enqueueing — the exact failure this type exists to prevent. So the
+/// marker carries the dispatcher's pid and is honoured only while that process lives; see
+/// [`bn_core::queue::extent`].
 pub(crate) struct Dispatching;
 
 /// Set for the dynamic extent of a dispatch. Not a lock — a single-threaded truth about *what this
@@ -44,21 +52,21 @@ pub(crate) struct Dispatching;
 static IN_DISPATCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The env twin of [`IN_DISPATCH`], for the `bn` processes a dispatch spawns.
-const IN_DISPATCH_ENV: &str = "BN_IN_QUEUE_TICK";
+const IN_DISPATCH_ENV: &str = bn_core::queue::extent::DISPATCH_EXTENT_ENV;
 
 impl Dispatching {
     /// Enter the dispatcher's extent.
     pub(crate) fn begin() -> Dispatching {
         IN_DISPATCH.store(true, std::sync::atomic::Ordering::Relaxed);
         #[allow(clippy::disallowed_methods)] // production child-process propagation, not test env
-        std::env::set_var(IN_DISPATCH_ENV, "1");
+        std::env::set_var(IN_DISPATCH_ENV, bn_core::queue::extent::extent_marker());
         Dispatching
     }
 
-    /// Whether we are inside one — in this process or an ancestor.
+    /// Whether we are inside one — in this process, or in an ancestor that is *still running*.
     fn active() -> bool {
         IN_DISPATCH.load(std::sync::atomic::Ordering::Relaxed)
-            || std::env::var_os(IN_DISPATCH_ENV).is_some()
+            || bn_core::queue::extent::in_dispatch_extent()
     }
 }
 

@@ -867,6 +867,27 @@ mod tests {
         assert_eq!(observed, crate::cmd::cron::job_path());
     }
 
+    /// The dispatch half of the same prelude: a headless harness spawn inherits the queue
+    /// executor's PATH, so `claude` (in `~/.local/bin`) and `bn` (in its own bin dir) are both
+    /// unreachable without it. Asserted as an exact match rather than a prefix, because a
+    /// hand-rolled `~/.local/bin:~/.bin:$PATH` that merely happened to lead with the exe dir is
+    /// exactly the regression this pins — it is what left every `goals-align` gather at exit 127.
+    #[test]
+    fn dispatch_capture_runs_the_child_under_the_job_path_prelude() {
+        let exe_dir = std::env::current_exe()
+            .expect("current exe")
+            .parent()
+            .expect("exe dir")
+            .to_string_lossy()
+            .into_owned();
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args(["-c", "printf %s \"$PATH\""]);
+        let (ok, stdout, combined) = dispatch_capture(cmd, None);
+        assert!(ok, "the echo child should exit 0: {combined}");
+        assert_eq!(stdout.split(':').next(), Some(exe_dir.as_str()));
+        assert_eq!(stdout, crate::cmd::cron::job_path());
+    }
+
     /// Run `f` and return exactly the text it emitted through `native_job_line` — the same buffer
     /// `run_native_job` turns into the `cron_run` event tail. Lets these tests assert what a
     /// scheduled run *would* record without standing up a real cron run. The buffer is

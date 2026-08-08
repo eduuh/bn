@@ -485,3 +485,57 @@ fn prune_empty_dir(dir: Option<&std::path::Path>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pool case is why [`worktree_path`] exists: a dispatched branch lives in `_pool/<n>`,
+    /// a path no `<worktree_dir>/<repo>/<branch>` reconstruction can produce. The mapping is keyed
+    /// by the *dashed* branch so it matches the note/worktree-dir key callers already hold.
+    #[test]
+    fn a_pooled_branch_maps_to_its_slot_not_its_conventional_path() {
+        let porcelain = "\
+worktree /home/u/projects/worktree/bn/_pool/7
+HEAD abc123
+branch refs/heads/dispatch/fix-a-thing
+
+worktree /home/u/projects/worktree/bn/main
+HEAD def456
+branch refs/heads/main
+";
+        let map = worktree_paths_from_porcelain(porcelain);
+        assert_eq!(
+            map.get("dispatch-fix-a-thing").map(PathBuf::as_path),
+            Some(Path::new("/home/u/projects/worktree/bn/_pool/7"))
+        );
+        assert_eq!(
+            map.get("main").map(PathBuf::as_path),
+            Some(Path::new("/home/u/projects/worktree/bn/main"))
+        );
+    }
+
+    /// The bare's own entry and a detached-HEAD worktree carry no `branch` line, so the pending
+    /// path must be dropped rather than attached to whatever block comes next.
+    #[test]
+    fn blocks_without_a_branch_line_are_skipped() {
+        let porcelain = "\
+worktree /home/u/projects/bare/bn.git
+bare
+
+worktree /home/u/projects/worktree/bn/detached
+HEAD abc123
+detached
+
+worktree /home/u/projects/worktree/bn/main
+HEAD def456
+branch refs/heads/main
+";
+        let map = worktree_paths_from_porcelain(porcelain);
+        assert_eq!(map.len(), 1);
+        assert_eq!(
+            map.get("main").map(PathBuf::as_path),
+            Some(Path::new("/home/u/projects/worktree/bn/main"))
+        );
+    }
+}
