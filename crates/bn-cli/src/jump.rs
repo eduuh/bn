@@ -14,6 +14,7 @@
 
 use bn_core::next::{Action, ActionKind};
 use bn_core::resolver::Config;
+use std::io::Write;
 use std::process::{Command, Stdio};
 
 use crate::proc::{tmux, tmux_raw, tmux_run};
@@ -25,6 +26,9 @@ pub enum JumpStage {
     List,
     /// Render the detail panel for the focused row.
     Preview,
+    /// Emit the `--session` picker's row list (its `ctrl-r` reload feed), so badges that changed
+    /// while the popup was open refresh in place.
+    SessionList,
 }
 
 /// fzf field separator. Field 1 is the colored display; 2..=4 are the hidden lookup columns.
@@ -330,6 +334,13 @@ pub fn stage(cfg: &Config, stage: JumpStage, fields: &[String]) {
             let f = |i: usize| fields.get(i).map(String::as_str).unwrap_or("");
             preview(f(0), f(1), f(2), f(3));
         }
+        JumpStage::SessionList => {
+            use bn_core::clock::Clock;
+            let now = bn_core::clock::RealClock.now_epoch_secs();
+            for w in session_rows(now) {
+                println!("{}", w.line());
+            }
+        }
     }
 }
 
@@ -411,4 +422,364 @@ fn goto(wid: &str) {
         let _ = tmux_run(&["switch-client", "-t", &sess]);
     }
     let _ = tmux_run(&["select-window", "-t", wid]);
+}
+
+// ---- bn jump --session : the this-session window picker (prefix `) -------------------------------
+//
+// The third member of the jump family, scoped where the other two are not: `prefix Tab` jumps to
+// whatever needs you next, `prefix f` spans every agent window on the server, and this one lists
+// *every* window of the session you are in — worktrees with nothing flagged included — because
+// "switch to the branch I was on" is navigation, not triage. Windows carry the same badges the tab
+// bar draws (`@bn_blockers` / `@bn_todos` / `@bn_agent`), so the picker reads like the bar it
+// replaces, with a live pane preview the bar can't show.
+//
+// Row order is what makes a bare Enter useful: the window you came from first (so ↵ toggles back),
+// then the rest in tab order, then the window you are already on — Enter can never be a no-op.
+
+/// Field layout of the `--session` picker's `list-windows -F` read, kept beside [`session_win`]
+/// which indexes it.
+const SESSION_FMT: &str = "#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{window_last_flag}\t#{window_panes}\t#{@bn_agent}\t#{@bn_done}\t#{@bn_todos}\t#{@bn_blockers}\t#{@bn_agent_since}";
+
+/// One window of the current session as the picker sees it, before the sort columns are dropped.
+#[derive(Debug, Clone, PartialEq)]
+struct SessWin {
+    /// Sort tier: 0 the last-used window · 1 every other window · 2 the current one.
+    tier: u8,
+    /// `window_index`, the tab-bar order within a tier.
+    index: i64,
+    display: String,
+    window_id: String,
+}
+
+impl SessWin {
+    /// `display \t window_id` — the line fed to fzf; `{2}` is the preview/jump handle.
+    fn line(&self) -> String {
+        format!("{}{TAB}{}", self.display, self.window_id)
+    }
+}
+
+/// The state badge for a session row, mirroring the tab bar's precedence: a live `@bn_agent` state
+/// wins over `@bn_done` (the `bind m` silence-watch fallback). Empty when the window has nothing to
+/// report — most of them, so a quiet session reads as a plain list of branches.
+fn sess_state(agent: &str, done: &str, since: &str, now: i64) -> String {
+    let d = dur(since, now);
+    let age = if d.is_empty() {
+        String::new()
+    } else {
+        format!(" \x1b[2m{d}\x1b[0m")
+    };
+    match agent {
+        "waiting" => format!("\x1b[1;33m{} needs you\x1b[0m{age}", bn_core::glyph::BELL),
+        "working" => format!("\x1b[2m{} working{age}\x1b[0m", bn_core::glyph::GEAR),
+        "done" => format!("\x1b[32m{} done\x1b[0m{age}", bn_core::glyph::CHECK),
+        // `@bn_done` is the watch-fallback tick; it carries no timestamp of its own.
+        _ if !done.is_empty() => format!("\x1b[32m{} done\x1b[0m", bn_core::glyph::CHECK),
+        _ => String::new(),
+    }
+}
+
+/// The note badges the tab bar carries: open blockers (red) then open todos (dim), each omitted
+/// when its window option is unset — the same lazily-written `@bn_blockers` / `@bn_todos` values
+/// `bn tmux sync` stamps.
+fn sess_badges(todos: &str, blockers: &str) -> String {
+    let mut s = String::new();
+    if !blockers.is_empty() {
+        s.push_str(&format!(
+            "  \x1b[31m{} {blockers}\x1b[0m",
+            bn_core::glyph::BAN
+        ));
+    }
+    if !todos.is_empty() {
+        s.push_str(&format!(
+            "  \x1b[2m{} {todos}\x1b[0m",
+            bn_core::glyph::TASKS
+        ));
+    }
+    s
+}
+
+/// Classify one `list-windows` row into a [`SessWin`], or `None` for an unusable row. Pure over its
+/// columns — the tmux read and the sort live in [`session_rows`].
+fn session_win(cols: &[&str], now: i64) -> Option<SessWin> {
+    let g = |i: usize| cols.get(i).copied().unwrap_or("");
+    let (wid, idx, name, active, last, panes) = (g(0), g(1), g(2), g(3), g(4), g(5));
+    let (agent, done, todos, blockers, since) = (g(6), g(7), g(8), g(9), g(10));
+    if wid.is_empty() {
+        return None;
+    }
+    // The marker column answers "where am I / where was I" without reading the tab bar.
+    let (tier, mark) = if active == "1" {
+        (2, "\x1b[2m\u{25cf}\x1b[0m") // ● you are here
+    } else if last == "1" {
+        (0, "\x1b[36m\u{21a9}\x1b[0m") // ↩ the window you came from
+    } else {
+        (1, " ")
+    };
+    // Only worth saying when it's true; a single-pane window is the norm.
+    let split = match panes.parse::<i64>() {
+        Ok(n) if n > 1 => format!("  \x1b[2m{n} panes\x1b[0m"),
+        _ => String::new(),
+    };
+    let state = sess_state(agent, done, since, now);
+    // A quiet window contributes no state, badges or split, so trim the separators they would have
+    // been introduced by rather than leaving the row padded out with trailing blanks.
+    let display = format!(
+        "{mark} \x1b[2m{idx:>2}\x1b[0m \x1b[1m{name:<22}\x1b[0m {state}{}{split}",
+        sess_badges(todos, blockers)
+    )
+    .trim_end()
+    .to_string();
+    Some(SessWin {
+        tier,
+        index: idx.parse().unwrap_or(i64::MAX),
+        display,
+        window_id: wid.to_string(),
+    })
+}
+
+/// Every window of the *current* session, ordered last-used → tab order → current. `list-windows`
+/// without `-t` resolves the session the same way [`run`]'s `display-message` does, so this reads
+/// the invoking client's session even from inside a `display-popup`.
+fn session_rows(now: i64) -> Vec<SessWin> {
+    let Some(out) = tmux_raw(&["list-windows", "-F", SESSION_FMT]) else {
+        return Vec::new();
+    };
+    let mut wins: Vec<SessWin> = out
+        .lines()
+        .filter_map(|l| session_win(&l.split(TAB).collect::<Vec<_>>(), now))
+        .collect();
+    wins.sort_by_key(|w| (w.tier, w.index));
+    wins
+}
+
+/// `bn jump --session` — the interactive fzf picker over this session's windows. Enter jumps to the
+/// highlighted window; ctrl-r re-reads the badges. Degrades to a plain list when fzf is absent.
+pub fn session() {
+    use bn_core::clock::Clock;
+    let now = bn_core::clock::RealClock.now_epoch_secs();
+    let rows = session_rows(now);
+    if rows.is_empty() {
+        println!("no windows here — is this a tmux session?");
+        crate::picker::hold();
+        return;
+    }
+
+    let exe = std::env::current_exe().unwrap_or_else(|_| "bn".into());
+    let bn = crate::shq(&exe.display().to_string());
+    let header = format!(
+        "this session · {} window(s) · ↵ jump · ctrl-r reload",
+        rows.len()
+    );
+
+    // {2}=window_id. The preview reuses the `window` branch of the shared preview stage (a live
+    // capture of the window's active pane). Enter accepts the row and closes; we jump below, once
+    // fzf has torn down, so `select-window` lands in the real client and not in the popup.
+    let child = Command::new("fzf")
+        .arg("--ansi")
+        .arg("--reverse")
+        .arg("--with-nth=1")
+        .arg("--delimiter=\t")
+        .arg(format!(
+            "--preview={bn} jump --pick-stage preview window {{2}}"
+        ))
+        .arg("--preview-window=right:55%:wrap")
+        .arg(format!(
+            "--bind=ctrl-r:reload({bn} jump --pick-stage session-list)"
+        ))
+        .arg(format!("--header={header}"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn();
+
+    let mut child = match child {
+        Ok(c) => c,
+        Err(_) => {
+            // No fzf on PATH — degrade to the plain list (display column only), then hold.
+            for w in &rows {
+                println!("{}", w.display);
+            }
+            crate::picker::hold();
+            return;
+        }
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        // One line per window in a single session, so a synchronous write then read of the
+        // selection can't deadlock: fzf drains stdin at load and only writes stdout on close.
+        let body = rows
+            .iter()
+            .map(SessWin::line)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let _ = stdin.write_all(body.as_bytes());
+    }
+
+    let Ok(out) = child.wait_with_output() else {
+        return;
+    };
+    let sel = String::from_utf8_lossy(&out.stdout);
+    let wid = sel
+        .trim_end_matches('\n')
+        .split(TAB)
+        .nth(1)
+        .unwrap_or_default();
+    if wid.is_empty() {
+        return; // cancelled (Esc / ctrl-c) — nothing selected.
+    }
+    goto(wid);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NOW: i64 = 1_700_000_000;
+
+    /// One `list-windows` row in [`SESSION_FMT`] order, so a test names only the columns it cares
+    /// about and leaves the rest empty — which is what tmux emits for an unset `@bn_*` option.
+    #[derive(Default)]
+    struct R<'a> {
+        wid: &'a str,
+        idx: &'a str,
+        name: &'a str,
+        active: &'a str,
+        last: &'a str,
+        panes: &'a str,
+    }
+
+    impl R<'_> {
+        fn win(&self, now: i64) -> Option<SessWin> {
+            session_win(
+                &[
+                    self.wid,
+                    self.idx,
+                    self.name,
+                    self.active,
+                    self.last,
+                    self.panes,
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                ],
+                now,
+            )
+        }
+    }
+
+    #[test]
+    fn every_window_is_listed_even_with_nothing_flagged() {
+        // The whole point of the session scope: unlike `bn jump`'s needs-you list, a quiet
+        // worktree window still shows up, because switching to it is the job.
+        let w = R {
+            wid: "@4",
+            idx: "3",
+            name: "feat-auth",
+            panes: "1",
+            ..Default::default()
+        }
+        .win(NOW)
+        .expect("a quiet window is still a row");
+        assert_eq!(w.window_id, "@4");
+        assert!(w.display.contains("feat-auth"));
+    }
+
+    #[test]
+    fn a_row_with_no_window_id_is_dropped() {
+        assert!(R {
+            idx: "3",
+            name: "x",
+            panes: "1",
+            ..Default::default()
+        }
+        .win(NOW)
+        .is_none());
+    }
+
+    #[test]
+    fn order_is_last_used_then_tab_order_then_current() {
+        // What makes a bare Enter useful: it toggles back to where you came from, and can never
+        // land on the window you are already looking at.
+        let mut wins: Vec<SessWin> = [
+            R {
+                wid: "@1",
+                idx: "1",
+                name: "main",
+                panes: "1",
+                ..Default::default()
+            },
+            R {
+                wid: "@2",
+                idx: "2",
+                name: "here",
+                active: "1",
+                panes: "1",
+                ..Default::default()
+            },
+            R {
+                wid: "@3",
+                idx: "3",
+                name: "prev",
+                last: "1",
+                panes: "1",
+                ..Default::default()
+            },
+            R {
+                wid: "@4",
+                idx: "4",
+                name: "other",
+                panes: "1",
+                ..Default::default()
+            },
+        ]
+        .iter()
+        .filter_map(|r| r.win(NOW))
+        .collect();
+        wins.sort_by_key(|w| (w.tier, w.index));
+        let ids: Vec<&str> = wins.iter().map(|w| w.window_id.as_str()).collect();
+        assert_eq!(ids, ["@3", "@1", "@4", "@2"]);
+    }
+
+    #[test]
+    fn a_live_agent_state_outranks_the_silence_watch_tick() {
+        // Same precedence the tab bar draws: @bn_agent over @bn_done.
+        let s = sess_state("waiting", "✓", &(NOW - 90).to_string(), NOW);
+        assert!(s.contains("needs you"), "{s}");
+        assert!(s.contains("1m"), "the wait should carry its age: {s}");
+        assert!(sess_state("", "✓", "", NOW).contains("done"));
+        assert!(sess_state("", "", "", NOW).is_empty());
+    }
+
+    #[test]
+    fn note_badges_appear_only_when_set() {
+        assert!(sess_badges("", "").is_empty());
+        assert!(sess_badges("3", "").contains(bn_core::glyph::TASKS));
+        assert!(!sess_badges("3", "").contains(bn_core::glyph::BAN));
+        let both = sess_badges("3", "1");
+        // Blockers lead, as in the tab bar. Compare the glyph positions, not the digits — the
+        // colour escapes (`\x1b[31m`) contain digits of their own.
+        assert!(
+            both.find(bn_core::glyph::BAN) < both.find(bn_core::glyph::TASKS),
+            "{both:?}"
+        );
+    }
+
+    #[test]
+    fn a_split_window_says_so_and_a_single_pane_stays_quiet() {
+        let row = |panes| {
+            R {
+                wid: "@1",
+                idx: "1",
+                name: "w",
+                panes,
+                ..Default::default()
+            }
+            .win(NOW)
+            .unwrap()
+            .display
+        };
+        assert!(row("3").contains("3 panes"), "{}", row("3"));
+        assert!(!row("1").contains("panes"), "{}", row("1"));
+    }
 }

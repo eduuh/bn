@@ -229,7 +229,9 @@ fn record_refusal(
     // discipline — the agent reads the task and its doc rather than being handed their contents.
     let prompt = format!(
         "Run `bn task enhance {id}`. It failed the SMART gate on: {}. \
-         Read the task and its context doc, close each gap, then re-check.",
+         Read the task and its context doc — including whatever the operator captured under \
+         `## Context` and `## Links`, and any files `bn task attach {id}` resolves — then close \
+         each gap and re-check.",
         verdict.codes().join(", ")
     );
 

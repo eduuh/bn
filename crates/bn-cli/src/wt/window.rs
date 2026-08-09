@@ -577,14 +577,31 @@ pub(crate) fn tmux_windows_for(path: &Path, branch: &str) -> Vec<String> {
                 _ => line.split_once(' ').map(|(id, name)| (id, name, "")),
             };
             if let Some((id, name, recorded_branch)) = parsed {
-                let last = name.split_whitespace().last().unwrap_or(name);
-                if name == branch || last == branch || recorded_branch == branch {
+                if window_matches_branch(name, recorded_branch, branch) {
                     wins.insert(id.to_string());
                 }
             }
         }
     }
     wins.into_iter().collect()
+}
+
+/// Whether a window belongs to `branch` — by its name (which may carry a status badge in front of
+/// the branch) or by the `@bn_branch` option [`open_worktree_window_cmd_impl`] stamps.
+///
+/// **An empty `branch` matches nothing.** This is the load-bearing case: a detached checkout reports
+/// no branch name — a warm-idle pool slot is detached by `warm_reset`, and so is any worktree whose
+/// branch was deleted underneath it — while `#{@bn_branch}` expands to the empty string for every
+/// window that was never stamped (anything opened with `prefix w`, `split-window`, a plain
+/// `new-window`). Comparing those two makes one detached worktree "own" every undecorated window on
+/// the server, and since [`tmux_windows_for`] lists windows with `-a`, the teardown that follows
+/// spans sessions. A path with no branch is identified by its pane cwds alone.
+pub(crate) fn window_matches_branch(name: &str, recorded_branch: &str, branch: &str) -> bool {
+    if branch.is_empty() {
+        return false;
+    }
+    let last = name.split_whitespace().last().unwrap_or(name);
+    name == branch || last == branch || recorded_branch == branch
 }
 
 /// What to do with a window we are closing. tmux destroys a session the moment its last window
@@ -719,6 +736,42 @@ pub(crate) fn kill_tmux_windows_into(wins: &[String], cwd_inside: bool, fallback
         }
     } else if cwd_inside {
         println!("{YELLOW}Note: your shell is now in a removed directory — cd elsewhere{NC}");
+    }
+}
+
+#[cfg(test)]
+mod window_match_tests {
+    use super::*;
+
+    #[test]
+    fn a_window_is_matched_by_name_or_by_its_stamped_branch() {
+        assert!(window_matches_branch("feat-auth", "", "feat-auth"));
+        assert!(window_matches_branch("shell", "feat-auth", "feat-auth"));
+        // The status line prefixes a badge; the branch is the last field.
+        assert!(window_matches_branch("● feat-auth", "", "feat-auth"));
+    }
+
+    #[test]
+    fn an_unrelated_window_is_left_alone() {
+        assert!(!window_matches_branch("notes", "other-branch", "feat-auth"));
+    }
+
+    #[test]
+    fn a_detached_worktree_claims_no_window_by_name() {
+        // The bug this pins: `branch` is empty for a detached checkout (a warm-idle pool slot, or a
+        // branch deleted underneath one), and `#{@bn_branch}` is empty for every window bn never
+        // stamped. Matching empty-to-empty made one `prefix x` select — and tear down — every plain
+        // window on the server, across sessions.
+        assert!(!window_matches_branch("shell", "", ""));
+        assert!(!window_matches_branch("nvim", "", ""));
+        assert!(
+            !window_matches_branch("", "", ""),
+            "an unnamed window is not a branch match either"
+        );
+        assert!(
+            !window_matches_branch("feat-auth", "feat-auth", ""),
+            "a stamped window belongs to its own branch, not to a detached one"
+        );
     }
 }
 

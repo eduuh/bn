@@ -19,6 +19,8 @@ mod repos;
 mod routes;
 mod state;
 mod task_api;
+mod task_attach_api;
+mod task_writes;
 mod watch;
 
 use bn_core::resolver::Config;

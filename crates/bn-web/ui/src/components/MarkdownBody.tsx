@@ -131,29 +131,47 @@ function heading(Tag: "h1" | "h2" | "h3" | "h4") {
   };
 }
 
+/**
+ * Turn a markdown image source into something the browser can actually fetch.
+ *
+ * A task doc refers to its attachments by bare name (`![shot.png](shot.png)`) because a name is the
+ * only identifier that survives the doc syncing to another machine and moving on pickup — see
+ * `bn_core::task_attach`. That is right for the document and useless to an `<img>`, which would
+ * resolve it against the current page. A document that knows where its assets are served from
+ * passes a resolver; everything else renders sources verbatim.
+ */
+export type AssetResolver = (src: string) => string;
+
 /** Links open safely in a new tab; fenced blocks get highlighting and the copy affordance;
  * headings get linkable slugs; images are constrained so a wide asset can't blow out the column. */
-const BLOCK_COMPONENTS: Components = {
-  a: ({ href, children }) => (
-    <a href={href} target="_blank" rel="noreferrer noopener">
-      {children}
-    </a>
-  ),
-  pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-  h1: heading("h1"),
-  h2: heading("h2"),
-  h3: heading("h3"),
-  h4: heading("h4"),
-  img: ({ src, alt, title }) => (
-    <img
-      src={typeof src === "string" ? src : undefined}
-      alt={alt ?? ""}
-      title={title}
-      loading="lazy"
-      className="my-2 h-auto max-w-full rounded-md border border-border"
-    />
-  ),
-};
+function blockComponents(resolveAsset?: AssetResolver): Components {
+  return {
+    a: ({ href, children }) => (
+      <a href={href} target="_blank" rel="noreferrer noopener">
+        {children}
+      </a>
+    ),
+    pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+    h1: heading("h1"),
+    h2: heading("h2"),
+    h3: heading("h3"),
+    h4: heading("h4"),
+    img: ({ src, alt, title }) => {
+      const raw = typeof src === "string" ? src : undefined;
+      return (
+        <img
+          src={raw && resolveAsset ? resolveAsset(raw) : raw}
+          alt={alt ?? ""}
+          title={title}
+          loading="lazy"
+          className="my-2 h-auto max-w-full rounded-md border border-border"
+        />
+      );
+    },
+  };
+}
+
+const BLOCK_COMPONENTS: Components = blockComponents();
 
 /** Same, but the block `<p>` is unwrapped so text flows inline inside a list bullet or a table cell. */
 const INLINE_COMPONENTS: Components = {
@@ -161,12 +179,25 @@ const INLINE_COMPONENTS: Components = {
   p: ({ children }) => <>{children}</>,
 };
 
-export default function MarkdownBody({ text, inline = false }: { text: string; inline?: boolean }) {
+export default function MarkdownBody({
+  text,
+  inline = false,
+  resolveAsset,
+}: {
+  text: string;
+  inline?: boolean;
+  resolveAsset?: AssetResolver;
+}) {
+  const components = useMemo(() => {
+    if (!resolveAsset) return inline ? INLINE_COMPONENTS : BLOCK_COMPONENTS;
+    const block = blockComponents(resolveAsset);
+    return inline
+      ? { ...block, p: ({ children }: { children?: React.ReactNode }) => <>{children}</> }
+      : block;
+  }, [inline, resolveAsset]);
+
   return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      components={inline ? INLINE_COMPONENTS : BLOCK_COMPONENTS}
-    >
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
       {text}
     </ReactMarkdown>
   );

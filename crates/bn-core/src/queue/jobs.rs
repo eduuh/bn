@@ -49,10 +49,14 @@ pub const RECOVERY_JOBS: &[&str] = &[
 /// operator set throttled agents and nothing else. The heaviest workload on the machine was the one
 /// with no admission control, free to starve the agents the caps existed to protect.
 ///
+/// `nightly-release` is the same shape and then some: a release build of three crates plus the
+/// whole workspace test suite before it may upload anything. Inline, that is the dispatcher parked
+/// for the length of a cold `cargo test --workspace`.
+///
 /// Marked heavy, so they are admitted like an agent and spawned like one rather than running inline
 /// in the tick — where minutes of build would hold the dispatcher and make every pass behind it
 /// skip on the lock.
-pub const HEAVY_JOBS: &[&str] = &["pool-warm", "keep-warm"];
+pub const HEAVY_JOBS: &[&str] = &["pool-warm", "keep-warm", "nightly-release"];
 
 /// Where recovery work sits in the ordering.
 ///

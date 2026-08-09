@@ -17,6 +17,9 @@
     "lint:fix": "eslint . --fix"
   },
   "dependencies": {
+    "@blocknote/ariakit": "^0.53.0",
+    "@blocknote/core": "^0.53.0",
+    "@blocknote/react": "^0.53.0",
     "@fontsource-variable/roboto": "^5.3.0",
     "@fontsource-variable/roboto-mono": "^5.3.0",
     "@radix-ui/react-alert-dialog": "^1.1.23",

@@ -8,7 +8,16 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 
 /** The kinds `bn queue add --kind` accepts. Mirrors `BacklogKind::ALL`. */
-const KINDS = ["ship", "scout", "investigate", "research", "enhance", "review-pr", "cron"];
+const KINDS = [
+  "ship",
+  "scout",
+  "investigate",
+  "research",
+  "enhance",
+  "review-pr",
+  "cron",
+  "cleanup",
+];
 
 /** Admit one piece of planned work to the durable machine queue. */
 export function QueueAddForm() {

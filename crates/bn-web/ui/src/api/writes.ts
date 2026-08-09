@@ -377,17 +377,84 @@ export function promotePlanDraft(repo: string, branch: string, draft: string): P
 // an LLM agent that runs for minutes, so the server spawns it detached and answers immediately —
 // the caller watches the fleet rather than holding a request open.
 
+/** A URL recorded with a task — where the work came from. */
+export interface TaskLink {
+  url: string;
+  title?: string;
+}
+
+/** One file recorded with a task. `data` is base64, with or without the `data:` prefix a
+ * `FileReader` produces — the server strips either. */
+export interface TaskAttachmentUpload {
+  name: string;
+  data: string;
+}
+
 export interface TaskCreate {
   title: string;
   repo?: string;
   day?: string;
   est?: string;
   priority?: string;
+  /** Markdown prose captured with the task. */
+  body?: string;
+  links?: TaskLink[];
+  attachments?: TaskAttachmentUpload[];
+  /** Provenance — an issue URL, say. */
+  src?: string;
 }
 
-/** `POST /api/tasks` — create a task. Returns its new id. */
-export function createTask(body: TaskCreate): Promise<{ id: string }> {
+/** What a create actually recorded.
+ *
+ * `warnings` is non-empty when the task landed but some of its context did not — the store write
+ * is deliberately the only part that can fail the whole call, so this is how the operator learns
+ * that a screenshot was rejected without also losing the task. */
+export interface TaskCreated {
+  id: string;
+  attachments: string[];
+  warnings: string[];
+}
+
+/** `POST /api/tasks` — create a task and everything captured with it, in one request. */
+export function createTask(body: TaskCreate): Promise<TaskCreated> {
   return post("/api/tasks", body);
+}
+
+/** One stored attachment as `GET /api/tasks/:id/attach` reports it. */
+export interface TaskAttachment {
+  name: string;
+  size: number;
+  human_size: string;
+  mime: string;
+  is_image: boolean;
+}
+
+/** `GET /api/tasks/:id/attach` — what is attached, without the bytes. */
+export function taskAttachments(
+  id: string,
+): Promise<{ id: string; count: number; attachments: TaskAttachment[] }> {
+  return request("GET", `/api/tasks/${encodeURIComponent(id)}/attach`);
+}
+
+/** `POST /api/tasks/:id/attach` — add files to a task that already exists. */
+export function addTaskAttachments(
+  id: string,
+  attachments: TaskAttachmentUpload[],
+): Promise<{ id: string; attachments: string[] }> {
+  return post(`/api/tasks/${encodeURIComponent(id)}/attach`, { attachments });
+}
+
+/** `DELETE /api/tasks/:id/attach/:name` — drop one file and re-sync the doc's manifest. */
+export function deleteTaskAttachment(
+  id: string,
+  name: string,
+): Promise<{ id: string; removed: boolean }> {
+  return del(`/api/tasks/${encodeURIComponent(id)}/attach/${encodeURIComponent(name)}`);
+}
+
+/** The URL that serves one attachment's bytes — for an `<img src>` or a download link. */
+export function taskAttachmentUrl(id: string, name: string): string {
+  return `/api/tasks/${encodeURIComponent(id)}/attach/${encodeURIComponent(name)}`;
 }
 
 /** The fast mutations `POST /api/tasks/:id` accepts. */

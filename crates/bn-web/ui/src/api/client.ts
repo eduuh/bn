@@ -134,6 +134,9 @@ export const queryKeys = {
   tasks: (scope: string) => ["tasks", scope] as const,
   /** One task, by id — the `/tasks/:id` detail page. */
   task: (id: string) => ["task", id] as const,
+  /** One task's attachments. Separate from the detail key: a directory scan should not run on
+   * every poll of a view that refreshes on the fleet's cadence. */
+  taskAttachments: (id: string) => ["task", id, "attachments"] as const,
   /** Every repo's open issues, with per-repo freshness (#999). */
   issues: ["issues"] as const,
   /** The nine-stage pipeline board (#746 / #1005). */

@@ -4,6 +4,7 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
     match action {
         CmdFleet::Jump {
             next,
+            session,
             pick_stage,
             pick_fields,
         } => {
@@ -11,6 +12,8 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
                 jump::stage(cfg, s, &pick_fields)
             } else if next {
                 jump::next()
+            } else if session {
+                jump::session()
             } else {
                 jump::run(cfg)
             }
@@ -283,16 +286,37 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
                 resume_registered_session(cfg, Some(&name_or_id), json, "sessions_resume")
             }
         },
-        CmdFleet::Resume { name_or_id } => resume_registered_session(
-            cfg,
-            name_or_id.as_deref(),
-            json,
-            if name_or_id.is_some() {
-                "sessions_resume"
-            } else {
-                "resume"
-            },
-        ),
+        CmdFleet::Resume {
+            all,
+            dry_run,
+            yes,
+            slots,
+            name_or_id,
+        } => {
+            if all {
+                // Crash recovery. Bare `bn resume` and `bn resume <id>` fall through unchanged —
+                // the same keystroke must not print a table one day and launch an agent the next.
+                return crate::cmd::resume_fleet::emit_resume_fleet(
+                    cfg,
+                    &crate::cmd::resume_fleet::ResumeFleetOpts {
+                        dry_run,
+                        yes,
+                        slots,
+                    },
+                    json,
+                );
+            }
+            resume_registered_session(
+                cfg,
+                name_or_id.as_deref(),
+                json,
+                if name_or_id.is_some() {
+                    "sessions_resume"
+                } else {
+                    "resume"
+                },
+            )
+        }
         CmdFleet::Fleet {
             action,
             idle,

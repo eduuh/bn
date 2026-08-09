@@ -153,7 +153,7 @@ pub(crate) fn list_worktree_paths(bare_dir: &Path, bare: Option<&Path>) -> Vec<S
     out
 }
 
-pub(crate) fn cmd_remove(cfg: &Config, worktree: Option<String>) -> bool {
+pub(crate) fn cmd_remove(cfg: &Config, worktree: Option<String>, force: bool) -> bool {
     let (bare_dir, worktree_dir) = layout(cfg);
     let current_bare = find_bare_repo(&cwd());
     let worktree = match worktree {
@@ -175,35 +175,20 @@ pub(crate) fn cmd_remove(cfg: &Config, worktree: Option<String>) -> bool {
         eprintln!("{RED}Error: Worktree not found: {}{NC}", wt_path.display());
         return false;
     }
-    println!("{YELLOW}Removing worktree: {}{NC}", wt_path.display());
-    let bare = match find_bare_repo(&wt_path) {
-        Some(b) => b,
-        None => {
-            eprintln!("{RED}Error: Could not find bare repo for worktree{NC}");
-            return false;
-        }
-    };
-    // Find the worktree's tmux window(s) BEFORE removal, while their pane cwds still resolve, so we
-    // can kill them after — `remove` is the interactive `prefix D` path, which (as the retired
-    // tmux-wt-kill.sh did) should leave no orphan window behind. Killed last via kill_tmux_windows
-    // if we're sitting in one of them.
-    let branch = wt_branch_name(&wt_path.to_string_lossy());
-    let cwd_inside = cwd().starts_with(&wt_path);
-    let wins = tmux_windows_for(&wt_path, &branch);
-    if !run_git(&[
-        "--git-dir",
-        &bare.to_string_lossy(),
-        "worktree",
-        "remove",
-        &wt_path.to_string_lossy(),
-    ]) {
+    if find_bare_repo(&wt_path).is_none() {
+        eprintln!("{RED}Error: Could not find bare repo for worktree{NC}");
         return false;
     }
-    rmdir_if_empty_repo(&wt_path, &worktree_dir);
-    println!("{GREEN}Removed worktree{NC}");
-    let _ = bn_core::lifecycle::prune(cfg);
-    kill_tmux_windows(&wins, cwd_inside);
-    true
+    println!("{YELLOW}Removing worktree: {}{NC}", wt_path.display());
+    // Straight through the one reclaim path — see [`crate::wt::reclaim`]. This used to run its own
+    // `git worktree remove`, which skipped every gate the other paths apply: it could remove a
+    // `_pool/<n>` slot out from under a live lease (leaving the ledger holding a slot that no longer
+    // exists, so the pool ran permanently one short), and it left the branch note open. A picker is
+    // no reason to reclaim a worktree differently from every other caller.
+    //
+    // `cleanup_one` kills the worktree's windows itself, under the session guard, so this no longer
+    // captures them up front.
+    cleanup_one(cfg, &target_root(&wt_path), &worktree_dir, force).is_ok()
 }
 
 pub(crate) fn cmd_go(cfg: &Config, worktree: Option<String>) -> bool {

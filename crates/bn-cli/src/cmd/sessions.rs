@@ -153,6 +153,37 @@ fn launch_session_window(launch: &WindowLaunch<'_>, json: bool) -> Result<(), St
     Ok(())
 }
 
+/// Open a window running `command` in `worktree`, taking the agent lease for it.
+///
+/// The create half of `bn resume --all`'s restore, exposed so the crash path reuses the exact
+/// launch this command already performs rather than reimplementing harness startup. Deliberately
+/// *not* a split of `agent_relaunch`: this is the branch that has never killed a process, so
+/// sharing it cannot leak a teardown into a recovery path.
+pub(crate) fn launch_resume_window(
+    repo: &str,
+    branch: &str,
+    task_name: &str,
+    worktree: &std::path::Path,
+    command: &str,
+    session_id: &str,
+    harness: &str,
+) -> Result<(), String> {
+    launch_session_window(
+        &WindowLaunch {
+            repo,
+            branch,
+            task_name,
+            window_scope: branch,
+            worktree,
+            command,
+            session_id,
+            harness,
+            session_override: None,
+        },
+        false,
+    )
+}
+
 fn launch_recorded_session(row: &bn_core::agent::SessionRecord, json: bool, command_tag: &str) {
     let worktree = std::path::PathBuf::from(&row.worktree);
     if !worktree.is_dir() {

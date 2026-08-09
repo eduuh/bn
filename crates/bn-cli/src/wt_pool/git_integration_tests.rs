@@ -550,3 +550,97 @@ fn reconcile_pools_adopts_occupied_and_returns_empty_slots() {
         "a slot a live agent holds must be adopted, not left reading as idle"
     );
 }
+
+/// The one reclaim path has to be safe to run twice, because it now runs from a queue entry that
+/// can be re-filed while an earlier reclaim (or `wt pool return`, or the reaper) is already in
+/// flight. An unleased slot is the goal state, so it reports success rather than "refused" — a
+/// cleanup log that reports failure for work that is already done is a log nobody reads.
+#[test]
+fn cleaning_an_already_free_slot_succeeds_instead_of_reporting_a_refusal() {
+    let _g = bn_core::test_support::env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let bare = root.join("bare").join("bn.git");
+    build_repo_into(&root.join("bn-src"), &bare);
+
+    let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
+    let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", root.join("state"));
+    TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
+
+    let pdir = root.join("worktree").join("bn").join("_pool");
+    let slot = pdir.join("2");
+    std::fs::create_dir_all(&pdir).unwrap();
+    assert!(git(&[
+        "--git-dir",
+        &bare.to_string_lossy(),
+        "worktree",
+        "add",
+        "-q",
+        &slot.to_string_lossy(),
+        "main"
+    ]));
+    // No lease written at all — the slot is warm and free.
+    assert!(read_leases(&pdir).slots.is_empty());
+
+    let cfg = bn_core::test_support::config(root);
+    assert!(
+        crate::wt::cleanup_one(&cfg, &slot, &root.join("worktree"), false).is_ok(),
+        "an already-free slot needs no reclaiming; that is success"
+    );
+    assert!(slot.is_dir(), "and the warm checkout is left alone");
+
+    // The human-facing surface keeps its stricter contract: `wt pool return` on an unleased slot
+    // still refuses and still points at --force. One core, two deliberate reports.
+    assert!(!crate::wt_pool::return_slot(&cfg, &slot, false));
+}
+
+/// `--force` on an occupied-but-unleased slot must still be the eviction valve, not a bypass: the
+/// unified core checks occupancy for every caller, so forcing past a *missing lease* cannot also
+/// force past a live agent that `evict_occupant` refuses to evict.
+#[test]
+fn forcing_an_unleased_slot_still_refuses_a_live_occupant() {
+    let _g = bn_core::test_support::env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let bare = root.join("bare").join("bn.git");
+    build_repo_into(&root.join("bn-src"), &bare);
+
+    let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
+    let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", root.join("state"));
+
+    let pdir = root.join("worktree").join("bn").join("_pool");
+    let slot = pdir.join("2");
+    std::fs::create_dir_all(&pdir).unwrap();
+    assert!(git(&[
+        "--git-dir",
+        &bare.to_string_lossy(),
+        "worktree",
+        "add",
+        "-q",
+        &slot.to_string_lossy(),
+        "main"
+    ]));
+
+    // A live occupant with no session id — nothing can prove it finished, so it is never evictable.
+    let mut occupants = BTreeMap::new();
+    occupants.insert(
+        slot.clone(),
+        vec![crate::agent_lease::Occupant {
+            repo: Some("bn".to_string()),
+            branch: None,
+            // No session id: nothing on the machine can prove this agent finished, so
+            // `fleet_gc::classify` never calls it evictable.
+            session_id: None,
+            tmux_target: "bn:2".to_string(),
+            kind: "claude".to_string(),
+            since: 0,
+        }],
+    );
+    TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(occupants));
+
+    let cfg = bn_core::test_support::config(root);
+    assert!(matches!(
+        crate::wt_pool::release_slot(&cfg, &slot, true),
+        SlotRelease::Occupied { .. }
+    ));
+}

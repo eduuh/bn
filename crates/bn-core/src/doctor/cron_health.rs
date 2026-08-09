@@ -59,6 +59,7 @@ fn raises_here(job: &events::CronJobStatus, live: &LiveJobs, now: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support;
 
     const NOW: i64 = 1_800_000_000;
 
@@ -118,54 +119,13 @@ mod tests {
             LiveJobs::from_names::<[&str; 0], &str>([]).with_tombstone("task-improve", NOW - 600);
         assert!(raises_here(&failing("task-improve", NOW - 60), &live, NOW));
     }
-}
-use super::{CronFinding, Finding};
-use crate::events;
-use crate::resolver::Config;
 
-/// Cron jobs whose latest run failed, newest-failed first (the event log already sorts
-/// `cron_status` most-recent-run first).
-///
-/// Routed through [`crate::crons::alerting_crons`] so a retired name — renamed, deleted, or
-/// tombstoned by `bn cron retire` — stops reading as a live outage here too. `bn doctor` raises
-/// cron health at URGENT, so skipping that filter left a job nothing on the machine could even
-/// resolve pinned to the top of `bn next` forever.
-///
-/// Threshold of 1 rather than [`crate::crons::ALERT_MIN_FAILURES`]: this is the local
-/// what's-broken-right-now list, deliberately more sensitive than the periodic watchdog that
-/// escalates into the attention store, so a first failure is still worth showing the operator.
-///
-/// Discovery runs with no branch context — `doctor`'s repo argument carries a root and a name but
-/// no branch, so there is no [`crate::resolver::Resolved`] to hand it — which means only the global
-/// tier backs the live set. A repo-tier cron is therefore judged by the tombstone clause and the
-/// 14-day recency horizon alone, the same fallback [`crate::crons::LiveJobs::is_retired`] already
-/// relies on for natively-implemented jobs.
-pub(super) fn cron_findings(cfg: &Config) -> Vec<Finding> {
-    let runs = events::cron_status();
-    let live = crate::crons::LiveJobs::discover(cfg, None);
-    crate::crons::alerting_crons(&runs, 1, &live, crate::util::now_epoch_secs())
-        .into_iter()
-        .map(|j| {
-            Finding::Cron(CronFinding {
-                job: j.job.clone(),
-                repo: j.repo.clone(),
-                branch: j.branch.clone(),
-                failures: j.failures,
-                last_run: j.last_run,
-            })
-        })
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_support;
-
-    /// The regression this module exists for: `bn doctor` raises cron health at URGENT, so it has
-    /// to answer the does-this-still-exist question like every other cron watchdog. It once
-    /// filtered on `!ok` alone, which pinned `task-improve` — renamed to `task-enhance`, resolvable
-    /// by nothing on the machine — to the top of `bn next` as BREAKING with no way to clear it.
+    /// The end-to-end half of [`raises_here`]'s unit tests: `bn doctor` raises cron health at
+    /// URGENT, so it has to answer the does-this-still-exist question like every other cron
+    /// watchdog. It once filtered on `!ok` alone, which pinned `task-improve` — renamed to
+    /// `task-enhance`, resolvable by nothing on the machine — to the top of `bn next` as BREAKING
+    /// with no way to clear it. This drives the real event log rather than a fixture, so it also
+    /// covers the fold that reads it.
     #[test]
     fn a_tombstoned_job_stops_being_a_doctor_finding_while_a_live_one_keeps_alerting() {
         let root = tempfile::tempdir().expect("create test notes directory");

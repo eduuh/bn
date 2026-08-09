@@ -258,6 +258,7 @@ pub(crate) fn emit_task_add(
     priority: Option<char>,
     due: Option<&str>,
     src: &str,
+    capture: &crate::cmd::task_capture::Capture,
     as_json: bool,
 ) {
     if text.trim().is_empty() {
@@ -305,6 +306,8 @@ pub(crate) fn emit_task_add(
     // Read back before the task is handed to the file below — the append and the save paths both
     // consume it, and the JSON envelope reports where it landed.
     let stamped_repo = task.meta("repo").map(str::to_string);
+    // Kept for the capture pass below: `task` itself is consumed by whichever persist path runs.
+    let captured_task = task.clone();
     if raw == file.render() {
         // File is already normalized (unique ids, canonical form) — keep the concurrency-safe
         // append: a parallel add concatenates instead of clobbering, and no line is reflowed.
@@ -323,11 +326,24 @@ pub(crate) fn emit_task_add(
             let _ = bn_core::todo::ensure_union_merge(root);
         }
     }
+    // Only once the line is durable: a capture that fails must cost context, never the task.
+    let (stored, problems) = if capture.is_empty() {
+        (Vec::new(), Vec::new())
+    } else {
+        crate::cmd::task_capture::record(cfg, &captured_task, capture)
+    };
     if as_json {
-        let data = serde_json::json!({ "id": id, "repo": stamped_repo, "branch": branch });
+        let data = serde_json::json!({
+            "id": id,
+            "repo": stamped_repo,
+            "branch": branch,
+            "attachments": stored,
+            "warnings": problems,
+        });
         println!("{}", Envelope::success("task_add", data).to_json());
     } else {
         println!("Added {id}");
+        crate::cmd::task_capture::report(&stored, &problems);
     }
 }
 
@@ -839,7 +855,8 @@ pub(crate) fn emit_task_enhance(
         return;
     }
 
-    let packet = bn_core::task_agents::improve_packet(&task, Some(&verdict), steer);
+    let captured = bn_core::task_agents::CapturedContext::read(cfg, &task);
+    let packet = bn_core::task_agents::improve_packet(&task, Some(&verdict), steer, &captured);
     if !dry_run && !as_json {
         println!("Improving {task_id} — fails on: {}", verdict.codes().join(", "));
     }

@@ -234,6 +234,12 @@ pub(crate) fn commits_ahead(wt: &Path) -> u32 {
 
 /// Clean a single worktree: verify the PR, close the note, remove the worktree + branch, and
 /// kill its tmux window(s).
+///
+/// **The one reclaim path.** `prefix x` (via the queued `cleanup` entry), `prefix D`, `bn wt
+/// cleanup`, `bn close`, `wt merge` and the reaper all arrive here, and the two shapes of worktree
+/// fork exactly once: a `_pool/<n>` slot hands its *lease* back and keeps its checkout (warm-reset
+/// for the next tenant), while a conventional worktree is removed outright behind the merged-PR /
+/// clean-tree gates. Nothing else in the codebase may remove a worktree or drop a lease.
 pub(crate) fn cleanup_one(
     cfg: &Config,
     wt_path: &Path,
@@ -241,9 +247,19 @@ pub(crate) fn cleanup_one(
     force: bool,
 ) -> Result<(), ()> {
     if let Some(slot) = crate::wt_pool::pool_slot_root(wt_path) {
-        return crate::wt_pool::return_slot(cfg, &slot, force)
-            .then_some(())
-            .ok_or(());
+        let outcome = crate::wt_pool::release_slot(cfg, &slot, force);
+        if let Some(msg) = outcome.message() {
+            println!("{msg}");
+        }
+        // A slot that is already free needed no reclaiming — that is the goal state, not a failure.
+        // The distinction matters because this runs from a queue entry: collapsing "already free"
+        // into "refused" would log a failed cleanup every time a slot came back by another route
+        // first, and a log that cries wolf is one nobody reads.
+        return match outcome {
+            crate::wt_pool::SlotRelease::Returned { .. }
+            | crate::wt_pool::SlotRelease::NotLeased { .. } => Ok(()),
+            _ => Err(()),
+        };
     }
     cleanup_one_with_policy(cfg, wt_path, worktree_dir, force, CleanupPolicy::Strict)
 }

@@ -1,15 +1,30 @@
 //! `bn wt close` — the `prefix x` action: close **this worktree**.
 //!
-//! One keystroke that hands a pool slot's lease back (or runs the normal `wt cleanup` gates for a
-//! conventional worktree) and takes the worktree's tmux window with it. Two invariants shape
-//! everything here:
+//! The keystroke is split in two, and the split is the design:
+//!
+//! * **Now** — drop the worktree's tmux window. This is all a human is waiting for, and it is a
+//!   handful of tmux calls.
+//! * **Later** — reclaim the worktree: hand a pool slot's lease back, or run the normal `wt cleanup`
+//!   gates for a conventional one. That half is *not* keystroke-sized — a warm reset re-checks-out
+//!   the tree, and the cleanup gates make a `gh pr view` round-trip — so it is filed on the machine
+//!   queue as a [`BacklogKind::Cleanup`] entry and runs when the machine has a moment. `bn wt close
+//!   --reclaim` is the deferred half, and the queued command is exactly that.
+//!
+//! Deferring also dissolves an ordering constraint the inline version had to fight. Slot occupancy
+//! is derived from live tmux windows, so releasing a lease before the window is gone is refused as
+//! "slot in use" — the inline version therefore polled tmux for the window to be reaped, on the
+//! keystroke path. Queued, the window has been gone for as long as the queue took to get here.
+//!
+//! Three invariants shape everything below:
 //!
 //! 1. **It never closes a session.** tmux destroys a session when its last window goes, so the
 //!    teardown routes through [`super::window::kill_tmux_windows_into`], which respawns a last
 //!    window instead of killing it.
 //! 2. **It never prints on the happy path.** tmux's `run-shell` surfaces a command's stdout in a
 //!    popup view window, so a chatty command would flash a pane of text on every keypress. Outcomes
-//!    are reported with `display-message` instead — the `jump.rs` pattern.
+//!    are reported with `display-message` instead — the `jump.rs` pattern. `--reclaim` is the
+//!    exception: it runs headless under the queue, whose log wants stdout.
+//! 3. **It never blocks on work a human is not waiting for.** See the split above.
 //!
 //! The decision is a pure function ([`close_plan`]) over facts gathered up front, because the
 //! pane's cwd is the only thing that identifies the worktree and it must be read *before* anything
@@ -161,22 +176,6 @@ fn close_pane(pane: &str, fallback: &Path) {
     }
 }
 
-/// Wait for tmux to finish reaping `wins`, bounded. This is what makes the lease release honest:
-/// occupancy is derived from live tmux windows and panes, and an unregistered harness pane can only
-/// be cleared by actually dying — so we release *after* the windows are gone, not before.
-fn await_windows_gone(wins: &[String]) {
-    for _ in 0..20 {
-        let Some(live) = tmux(&["list-windows", "-a", "-F", "#{window_id}"]) else {
-            return;
-        };
-        let live: Vec<&str> = live.lines().map(str::trim).collect();
-        if !wins.iter().any(|w| live.contains(&w.as_str())) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
 /// `bn wt close` — see the module docs. Returns the CLI's exit semantics; with `--check` the return
 /// value *is* the answer ("does this need a prompt?"), and nothing is torn down.
 pub(crate) fn cmd_close(
@@ -185,6 +184,7 @@ pub(crate) fn cmd_close(
     pane: Option<String>,
     path: Option<String>,
     confirmed: bool,
+    reclaim: bool,
 ) -> bool {
     let wt_path = path.map(PathBuf::from).unwrap_or_else(cwd);
     let facts = probe(&wt_path, confirmed);
@@ -197,7 +197,11 @@ pub(crate) fn cmd_close(
     let repo = find_bare_repo(&wt_path)
         .map(|b| repo_name(&b))
         .unwrap_or_default();
+    if reclaim {
+        return cmd_reclaim(cfg, &wt_path, &worktree_dir, &repo, &facts, plan);
+    }
     let fallback = respawn_fallback(&worktree_dir, &repo);
+    let label = label_for(&wt_path, &facts.branch);
 
     match plan {
         ClosePlan::KillPaneOnly(_) => {
@@ -218,43 +222,69 @@ pub(crate) fn cmd_close(
             ));
             false
         }
-        ClosePlan::ReleaseSlot { slot, discard } => {
-            let slot_root = crate::wt_pool::pool_slot_root(&wt_path).unwrap_or(wt_path.clone());
-            let wins = tmux_windows_for(&slot_root, &facts.branch);
+        // Both reclaimable plans do the same two things here, in this order: take the window now,
+        // file the expensive half for later. Which reclaim it turns out to be is re-decided when
+        // the queue runs it, by the same `close_plan`.
+        ClosePlan::ReleaseSlot { .. } | ClosePlan::CleanupWorktree => {
+            let root = target_root(&wt_path);
+            let wins = tmux_windows_for(&root, &facts.branch);
             kill_tmux_windows_into(&wins, false, &fallback);
-            await_windows_gone(&wins);
-            if discard {
-                // The human confirmed discarding the dirty files in a reusable slot.
-                let ok = crate::wt_pool::return_slot(cfg, &slot_root, true);
-                flash(&if ok {
-                    format!("returned pool slot {slot} ({repo}) — discarded uncommitted changes")
-                } else {
-                    format!("pool slot {slot} ({repo}) could not be returned")
-                });
-                return ok;
-            }
-            let outcome = crate::wt_pool::release_dispatch_slot(cfg, &slot_root, None);
-            if let Some(msg) = outcome.message() {
-                flash(&msg);
-            }
-            matches!(
-                outcome,
-                crate::wt_pool::SlotRelease::Returned { .. }
-                    | crate::wt_pool::SlotRelease::NotLeased { .. }
-            )
+            flash(&reclaim::defer(cfg, &repo, &label, &root, confirmed));
+            true
         }
-        ClosePlan::CleanupWorktree => {
-            // `cleanup_one` kills the worktree's windows itself, under the same session guard.
-            match cleanup_one(cfg, &wt_path, &worktree_dir, false) {
+    }
+}
+
+/// `bn wt close --reclaim` — the deferred half, and what the queued `cleanup` entry runs.
+///
+/// Touches no tmux (the window went with the keystroke) and queues nothing (it *is* the queued
+/// work). Unlike the keystroke path it prints: it runs headless under the dispatcher, whose log is
+/// the only place its outcome can be read.
+fn cmd_reclaim(
+    cfg: &Config,
+    wt_path: &Path,
+    worktree_dir: &Path,
+    repo: &str,
+    facts: &CloseFacts,
+    plan: ClosePlan,
+) -> bool {
+    // What the human's "y" actually authorised. Only a confirmed *pool slot* discards anything —
+    // outside one a confirmation buys no extra power, so cleanup runs under its own gates. This is
+    // [`close_plan`]'s asymmetry, read off the plan rather than re-derived.
+    let force = matches!(plan, ClosePlan::ReleaseSlot { discard: true, .. });
+    match plan {
+        ClosePlan::KillPaneOnly(why) => {
+            println!("nothing to reclaim at {} — {why}", wt_path.display());
+            true
+        }
+        // Work appeared after the window closed. Never discard it on a decision the human made
+        // about a different tree; leave the worktree alone and say so.
+        ClosePlan::Confirm {
+            branch,
+            dirty,
+            unpushed,
+        } => {
+            println!(
+                "{branch}: {dirty} uncommitted, {unpushed} unpushed since it was closed — \
+                 left alone; `bn wt close --reclaim --confirmed --path {}` to reclaim it anyway",
+                wt_path.display()
+            );
+            false
+        }
+        // Both reclaimable plans are the same call. `cleanup_one` is the one reclaim path — it
+        // routes a pool slot to its lease hand-back and a conventional worktree to the gates — so
+        // `prefix x` does not get a private copy of either. The only thing this branch still decides
+        // is what the human's confirmation bought, and `close_plan` has already worked that out:
+        // discarding a reusable slot's files, and nothing whatsoever outside one.
+        ClosePlan::ReleaseSlot { .. } | ClosePlan::CleanupWorktree => {
+            let label = label_for(wt_path, &facts.branch);
+            match cleanup_one(cfg, &target_root(wt_path), worktree_dir, force) {
                 Ok(()) => {
-                    flash(&format!("closed {repo}/{}", facts.branch));
+                    println!("reclaimed {repo}/{label}");
                     true
                 }
                 Err(()) => {
-                    flash(&format!(
-                        "{}: not reclaimable — see `bn wt cleanup` (or `bn doctor`)",
-                        facts.branch
-                    ));
+                    println!("{repo}/{label}: not reclaimable — see `bn wt cleanup` (or `bn doctor`)");
                     false
                 }
             }

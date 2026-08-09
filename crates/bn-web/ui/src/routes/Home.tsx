@@ -19,6 +19,7 @@ import { attnQuery, doneTasksQuery, issuesQuery, tasksQuery } from "../api/clien
 import type { AttnItem, IssueRow, RepoIssues, TaskRow } from "../api/types";
 import { attnAction, createTask, taskAction, taskAgent } from "../api/writes";
 import { useAppMutation } from "../hooks/useAppMutation";
+import { clearDraft } from "../lib/capture";
 import { affects } from "../lib/invalidation";
 import { dropAttn, dropActionForAttn, dropTask, patchTask } from "../lib/optimistic";
 import { NewTaskDialog } from "../components/NewTaskDialog";
@@ -747,11 +748,29 @@ export function Home() {
     return m;
   }, [ready, untriaged]);
 
+  // Bumped only when a create is confirmed. It is the dialog's `key`, so a success remounts it
+  // blank while a *failure* leaves it mounted with everything the operator typed still in it —
+  // the form has no server-side copy to recover from, so it must not clear on hope.
+  const [captured, setCaptured] = useState(0);
   const create = useAppMutation({
     mutationFn: createTask,
     invalidates: affects.task,
-    toast: { success: (r) => `Created ${r.id}`, error: "Could not create" },
-    onSuccess: () => setCreating(false),
+    toast: {
+      // A create can succeed while some of its context does not — an oversized screenshot, say.
+      // Saying so is the difference between a known gap and a silent one.
+      success: (r) =>
+        r.warnings.length
+          ? `Created ${r.id}, but ${r.warnings[0]}`
+          : r.attachments.length
+            ? `Created ${r.id} with ${r.attachments.length} file(s)`
+            : `Created ${r.id}`,
+      error: "Could not create — your draft is still in the form",
+    },
+    onSuccess: () => {
+      clearDraft();
+      setCaptured((n) => n + 1);
+      setCreating(false);
+    },
   });
   const triage = useAppMutation({
     mutationFn: () => taskAgent("t0", "triage"),
@@ -948,6 +967,7 @@ export function Home() {
         </Tabs>
 
         <NewTaskDialog
+          key={captured}
           open={creating}
           busy={create.isPending}
           onOpenChange={setCreating}

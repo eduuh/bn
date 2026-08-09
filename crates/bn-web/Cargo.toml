@@ -47,6 +47,8 @@ rust-embed = { version = "8", features = [
     "mime-guess",
 ] }
 rand = "0.8"
+# Task attachments arrive base64-encoded inside the JSON create/upload body (see `task_writes`).
+base64.workspace = true
 # Resolves `$HOME` for the native Claude/Copilot skill roots a skill CRUD write syncs into.
 dirs.workspace = true
 

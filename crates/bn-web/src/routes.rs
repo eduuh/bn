@@ -12,9 +12,10 @@ use crate::assets;
 use crate::mcp;
 use crate::queue_api;
 use crate::state::AppState;
+use crate::task_writes;
 use axum::{
     body::Body,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{header, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{delete, get, post, put},
@@ -174,10 +175,28 @@ pub fn router(state: AppState) -> Router {
         .route("/api/attention/{id}", post(actions::attn_action))
         // Task writes (#1006), split by latency: the first two are file writes answered inline;
         // the third launches an LLM agent and returns a handle rather than holding a worker.
-        .route("/api/tasks", post(actions::task_create))
+        // Create carries the whole capture — prose, links and pasted files in one body — so it
+        // needs a limit above axum's 2 MB default. The override is per-route: every other endpoint
+        // takes a small JSON object and should keep rejecting anything that isn't one.
+        .route(
+            "/api/tasks",
+            post(actions::task_create).layer(DefaultBodyLimit::max(task_writes::ATTACH_BODY_LIMIT)),
+        )
         .route("/api/tasks/{id}", post(actions::task_action))
         .route("/api/tasks/{id}/doc", put(actions::task_doc_edit))
         .route("/api/tasks/{id}/doc/append", post(actions::task_doc_append))
+        // Attachments on an existing task: add (bounded like create), fetch the bytes so the
+        // dashboard can render a screenshot, and drop one.
+        .route(
+            "/api/tasks/{id}/attach",
+            get(actions::task_attach_list)
+                .post(actions::task_attach_add)
+                .layer(DefaultBodyLimit::max(task_writes::ATTACH_BODY_LIMIT)),
+        )
+        .route(
+            "/api/tasks/{id}/attach/{name}",
+            get(actions::task_attach_get).delete(actions::task_attach_delete),
+        )
         .route("/api/tasks/{id}/agent", post(actions::task_agent))
         // Skill CRUD (#483) — native validated file writes of the effective skill, each followed
         // by a Claude/Copilot native-skill sync so the harnesses never serve a stale copy:

@@ -265,4 +265,5 @@ const KIND_TONE: Record<string, string> = {
   research: "text-warn",
   scout: "text-warn",
   cron: "text-muted-foreground",
+  cleanup: "text-muted-foreground",
 };

@@ -65,6 +65,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
 schemars = "1"
 anyhow = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
+# Decodes the task attachments the dashboard inlines into its create/upload requests, so a capture
+# and its files land in one atomic call. Already in the tree transitively; named here so the
+# version is the workspace's decision.
+base64 = "0.22"
 
 # Optimize from-source installs (`cargo build --release`, Codespaces, BN_BUILD_FROM_SOURCE):
 # fat LTO + single codegen unit for a tight, fast-starting CLI; strip symbols and abort on

@@ -30,6 +30,7 @@ mod close;
 mod common;
 mod list;
 mod merge;
+mod reclaim;
 mod remote;
 mod review;
 mod window;
@@ -40,6 +41,7 @@ pub(crate) use close::*;
 pub(crate) use common::*;
 pub(crate) use list::*;
 pub(crate) use merge::*;
+pub(crate) use reclaim::*;
 pub(crate) use remote::*;
 pub(crate) use review::*;
 pub(crate) use window::*;
@@ -88,9 +90,19 @@ pub enum WtCmd {
     /// List worktrees for the current repo (or all repos when outside one).
     #[command(visible_alias = "ls")]
     List,
-    /// Remove a worktree (interactive picker if none given).
+    /// Remove a worktree (interactive picker if none given) — the `prefix D` path.
+    ///
+    /// The same reclaim `cleanup` runs, just with a picker in front: it hands a pool slot's lease
+    /// back, closes the branch note, and applies the merged-PR / clean-tree gates. `--force` is the
+    /// deliberate override, exactly as it is for `cleanup`.
     #[command(visible_alias = "rm")]
-    Remove { worktree: Option<String> },
+    Remove {
+        worktree: Option<String>,
+        /// Remove even when no PR exists or the PR is not yet merged (also forces removal of a
+        /// worktree with uncommitted changes).
+        #[arg(long)]
+        force: bool,
+    },
     /// Print a worktree's path for the shell wrapper to cd into (interactive picker if none given).
     Go { worktree: Option<String> },
     /// Fetch all remotes for the current repo's bare clone.
@@ -112,8 +124,9 @@ pub enum WtCmd {
     },
     /// Prune stale worktree references (current repo, or all repos when outside one).
     Prune,
-    /// Close **this worktree** — the `prefix x` binding. Hands a pool slot's lease back, or runs
-    /// `cleanup`'s gates for a conventional worktree, and takes the worktree's tmux window with it.
+    /// Close **this worktree** — the `prefix x` binding. Drops the worktree's tmux window now and
+    /// files the reclaim (hand a pool slot's lease back, or run `cleanup`'s gates) on the machine
+    /// queue as a `cleanup` entry, for a moment the machine has to spare.
     ///
     /// Never closes a tmux session: a worktree owning its session's last window leaves that window
     /// respawned as a bare shell instead. Never prints on the happy path (tmux's `run-shell` would
@@ -132,6 +145,11 @@ pub enum WtCmd {
         /// The confirm prompt was answered yes — discard uncommitted changes in a pool slot.
         #[arg(long)]
         confirmed: bool,
+        /// Do the deferred half now: reclaim the (already window-less) worktree without touching
+        /// tmux and without queueing anything. This is what the queued `cleanup` entry runs; run it
+        /// by hand to reclaim a worktree immediately instead of waiting for the tick.
+        #[arg(long)]
+        reclaim: bool,
     },
     /// Verify a worktree's PR is merged, then remove it, delete its branch, close its note,
     /// and kill its tmux window(s). Default target: the current worktree.
@@ -390,7 +408,7 @@ pub fn run_code(cfg: &Config, action: WtCmd) -> i32 {
             no_tmux,
         } => cmd_open(cfg, branch, new, no_tmux),
         WtCmd::List => cmd_list(cfg),
-        WtCmd::Remove { worktree } => cmd_remove(cfg, worktree),
+        WtCmd::Remove { worktree, force } => cmd_remove(cfg, worktree, force),
         WtCmd::Go { worktree } => cmd_go(cfg, worktree),
         WtCmd::Fetch => cmd_fetch(cfg),
         WtCmd::Remote {
@@ -404,7 +422,8 @@ pub fn run_code(cfg: &Config, action: WtCmd) -> i32 {
             pane,
             path,
             confirmed,
-        } => cmd_close(cfg, check, pane, path, confirmed),
+            reclaim,
+        } => cmd_close(cfg, check, pane, path, confirmed, reclaim),
         WtCmd::Cleanup {
             all,
             force,

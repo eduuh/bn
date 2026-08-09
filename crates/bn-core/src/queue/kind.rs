@@ -52,6 +52,15 @@ pub enum BacklogKind {
     /// any native job that opts into the queue. Which one it is stays in `BacklogEntry::source`
     /// (`cron:<job>` / `staff:<name>`), so the kind does not have to enumerate the roster.
     Cron,
+    /// Housekeeping that reclaims a resource rather than producing one: handing a pool slot's lease
+    /// back, removing a merged worktree, resetting a checkout.
+    ///
+    /// It is a kind of its own because it is the work you defer. `prefix x` closes the window on the
+    /// keystroke and files the reclaim here, so the expensive half — a warm reset, a `gh pr view`, a
+    /// `git worktree remove` — waits for a moment the machine has to spare instead of freezing tmux
+    /// while you watch. Distinct from [`Cron`](BacklogKind::Cron): nothing schedules it, a human
+    /// action does.
+    Cleanup,
 }
 
 impl BacklogKind {
@@ -65,6 +74,7 @@ impl BacklogKind {
             BacklogKind::Enhance => "enhance",
             BacklogKind::ReviewPr => "review-pr",
             BacklogKind::Cron => "cron",
+            BacklogKind::Cleanup => "cleanup",
         }
     }
 
@@ -78,6 +88,7 @@ impl BacklogKind {
             "enhance" => Some(BacklogKind::Enhance),
             "review-pr" => Some(BacklogKind::ReviewPr),
             "cron" => Some(BacklogKind::Cron),
+            "cleanup" => Some(BacklogKind::Cleanup),
             _ => None,
         }
     }
@@ -86,7 +97,7 @@ impl BacklogKind {
     ///
     /// The single list every surface iterates, so adding a kind cannot be silently forgotten by one
     /// of them. Ordered coding-lane-first because that is how the day reads.
-    pub const ALL: [BacklogKind; 7] = [
+    pub const ALL: [BacklogKind; 8] = [
         BacklogKind::Ship,
         BacklogKind::Enhance,
         BacklogKind::ReviewPr,
@@ -94,6 +105,7 @@ impl BacklogKind {
         BacklogKind::Research,
         BacklogKind::Scout,
         BacklogKind::Cron,
+        BacklogKind::Cleanup,
     ];
 
     /// The executor to use when an entry declares none — so `bn queue add --kind investigate 412`
@@ -274,7 +286,11 @@ impl WorkClass {
             BacklogKind::Scout
             | BacklogKind::Investigate
             | BacklogKind::Research
-            | BacklogKind::Cron => WorkClass::Research,
+            | BacklogKind::Cron
+            // Cleanup is realized as a headless shell/job, so `is_express` runs it inline and it
+            // never actually charges a lane — but the mapping is exhaustive, and if one ever did
+            // need a slot it is the cheap read-only pool that should pay, not the coding one.
+            | BacklogKind::Cleanup => WorkClass::Research,
         }
     }
 

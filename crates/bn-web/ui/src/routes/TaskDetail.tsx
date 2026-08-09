@@ -1,13 +1,16 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, ArrowLeft, Loader2, Pencil, Plus, Save, X } from "lucide-react";
 import { FetchError, queryKeys, taskQuery } from "../api/client";
 import type { TaskAgent, TaskDetailView } from "../api/types";
-import { ApiError, appendTaskDoc, editTaskDoc } from "../api/writes";
+import { addTaskAttachments, ApiError, appendTaskDoc, editTaskDoc } from "../api/writes";
 import { useAppMutation } from "../hooks/useAppMutation";
 import { PageHead } from "../components/PageHead";
 import MarkdownBody from "../components/MarkdownBody";
+import { TaskAttachments } from "../components/TaskAttachments";
+import type { PendingFile } from "../lib/capture";
+import { attachmentResolver, fileToPending, MAX_FILE_BYTES, toUploads } from "../lib/capture";
 import { ToastStack } from "../components/ToastStack";
 import { BnFileBrowser, PlanMarkdownViewer, PlanSummaryCard } from "../components/PlanArtifacts";
 import { Badge } from "../components/ui/badge";
@@ -55,7 +58,42 @@ function DocEditor({ taskId, doc }: { taskId: string; doc: NonNullable<TaskDetai
   const [draft, setDraft] = useState(doc.body);
   const [context, setContext] = useState("");
   const [conflict, setConflict] = useState(false);
+  const editorRef = useRef<HTMLTextAreaElement>(null);
   const docKey = [queryKeys.task(taskId)];
+
+  /**
+   * Paste or drop a file straight into the document.
+   *
+   * The upload has to finish before the text can be written, because the server is what settles
+   * the stored name — a second `image.png` becomes `image-2.png`, and a reference written from the
+   * name the browser guessed would point at the wrong file. So: upload, then insert the name the
+   * server actually used, at the cursor.
+   */
+  const attach = useAppMutation<{ attachments: string[] }, PendingFile[]>({
+    mutationFn: (pending) => addTaskAttachments(taskId, toUploads(pending)),
+    invalidates: [queryKeys.taskAttachments(taskId), queryKeys.task(taskId)],
+    toast: { error: "Could not attach" },
+    onSuccess: (result) => {
+      const markdown = result.attachments.map((name) => `![${name}](${name})`).join("\n");
+      const box = editorRef.current;
+      // Insert at the caret when the editor has one, else append — a drop can land without focus.
+      const at = box?.selectionStart ?? draft.length;
+      setDraft((prev) => `${prev.slice(0, at)}\n${markdown}\n${prev.slice(at)}`);
+    },
+  });
+
+  const takeFiles = async (files: File[]) => {
+    const ok = files.filter((f) => f.size <= MAX_FILE_BYTES);
+    if (!ok.length) return;
+    const taken = new Set<string>();
+    const pending: PendingFile[] = [];
+    for (const file of ok) {
+      const read = await fileToPending(file, taken);
+      taken.add(read.name);
+      pending.push(read);
+    }
+    attach.mutate(pending);
+  };
 
   const append = useAppMutation<unknown, string>({
     mutationFn: (text) => appendTaskDoc(taskId, text),
@@ -89,11 +127,30 @@ function DocEditor({ taskId, doc }: { taskId: string; doc: NonNullable<TaskDetai
     return (
       <Card className="space-y-2 p-3">
         <Textarea
+          ref={editorRef}
           className="min-h-[24rem] font-mono text-[13px] leading-relaxed"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           spellCheck={false}
+          onPaste={(e) => {
+            const pasted = Array.from(e.clipboardData.files);
+            if (!pasted.length) return;
+            e.preventDefault();
+            void takeFiles(pasted);
+          }}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            const dropped = Array.from(e.dataTransfer.files);
+            if (!dropped.length) return;
+            e.preventDefault();
+            void takeFiles(dropped);
+          }}
         />
+        <p className="text-[11px] text-muted-foreground">
+          {attach.isPending
+            ? "attaching…"
+            : "Paste or drop a screenshot to attach it and reference it here."}
+        </p>
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" disabled={save.isPending} onClick={() => save.mutate()}>
             {save.isPending ? (
@@ -147,7 +204,10 @@ function DocEditor({ taskId, doc }: { taskId: string; doc: NonNullable<TaskDetai
   return (
     <div className="space-y-3">
       <Card className="p-4">
-        <MarkdownBody text={doc.body} />
+        {/* Attachments are referred to by bare name in the doc (see `bn_core::task_attach`), so
+            the preview has to point them at this task's attachment endpoint or every pasted
+            screenshot renders as a broken image. */}
+        <MarkdownBody text={doc.body} resolveAsset={attachmentResolver(taskId)} />
       </Card>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
         <Textarea
@@ -291,6 +351,13 @@ export function TaskDetail() {
               <DocEditor taskId={task.id} doc={q.data.doc} />
             </section>
           )}
+
+          <section className="space-y-2">
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              Attachments
+            </h3>
+            <TaskAttachments taskId={task.id} />
+          </section>
 
           {q.data?.note && task.repo && task.branch && (
             <section className="space-y-2">

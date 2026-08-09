@@ -382,6 +382,28 @@ pub(crate) fn any_live_pane_in(worktree: &Path) -> bool {
     })
 }
 
+/// The exact `session:window` of the first live pane sitting in `worktree`, if any.
+///
+/// [`any_live_pane_in`] answers "is anyone in here?"; this answers "*where* are they", which is
+/// what a crash restore needs. After a reboot tmux-continuum has already rebuilt the windows in
+/// their old working directories (`@continuum-restore 'on'`), but the harness is not in resurrect's
+/// process whitelist, so each one comes back as a plain shell. Restoring into that pane keeps the
+/// window — and the scrollback continuum saved — instead of opening a second window per branch and
+/// then needing to close one, which is the operation that must never touch a session.
+pub(crate) fn live_pane_target_in(worktree: &Path) -> Option<String> {
+    let format = "#{pane_current_path}\t#{pane_dead}\t#{session_name}:#{window_index}";
+    crate::proc::tmux_raw(&["list-panes", "-a", "-F", format]).and_then(|output| {
+        output.lines().find_map(|line| {
+            let mut parts = line.split('\t');
+            let cwd = parts.next()?;
+            let dead = parts.next()?;
+            let target = parts.next()?;
+            (dead.trim() == "0" && Path::new(cwd).starts_with(worktree))
+                .then(|| target.trim().to_string())
+        })
+    })
+}
+
 /// Read an `@bn_agent_since` stamp, falling back to `now` when it is absent or unparseable.
 ///
 /// **Never the epoch.** This defaulted to `0`, and the field it read was `#{window_created}` — not

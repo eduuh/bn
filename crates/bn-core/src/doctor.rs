@@ -21,7 +21,6 @@ mod cron_health;
 mod staff_health;
 use cron_health::cron_findings;
 pub use cron_health::CronFinding;
-use cron_health::cron_findings;
 use staff_health::staff_findings;
 
 // The precomputed snapshot, split out to keep this file under the 1000-line ratchet. Re-exported

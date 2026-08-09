@@ -277,6 +277,7 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
  "bn-core",
  "bn-mcp",
  "dirs",

@@ -143,6 +143,19 @@ pub fn read(cfg: &Config, task: &Task) -> Option<TaskDoc> {
     Some(TaskDoc { path, text })
 }
 
+/// The heading holding what the operator wrote when they recorded the task.
+///
+/// Deliberately **not** `## Why`: [`why`] is the SMART gate's escape hatch for a title that opens
+/// with a vague verb, so routing freeform capture text there would let anything with a paste in it
+/// past the gate. Context is what the operator knows; Why is the argument that it matters.
+pub const CONTEXT_HEADING: &str = "Context";
+
+/// The heading holding URLs captured with the task.
+pub const LINKS_HEADING: &str = "Links";
+
+/// The heading holding the manifest of files captured with the task.
+pub const ATTACHMENTS_HEADING: &str = "Attachments";
+
 /// The starting document for a task: frontmatter linking it back, then the four sections the
 /// pipeline fills in.
 ///
@@ -161,6 +174,7 @@ pub fn template(task: &Task) -> String {
     }
     out.push_str("---\n\n");
     out.push_str(&format!("# {}\n\n", task.summary()));
+    out.push_str(&format!("## {CONTEXT_HEADING}\n\n\n"));
     out.push_str("## Why\n\n\n");
     out.push_str("## Done When\n- [ ]\n\n");
     out.push_str("## Investigation\n\n\n");
@@ -189,6 +203,177 @@ pub fn ensure(cfg: &Config, task: &Task) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
+/// A URL captured with a task, with the label to show for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Link {
+    pub url: String,
+    /// The human label. Falls back to the URL itself when empty.
+    pub title: String,
+}
+
+impl Link {
+    /// Render as a markdown list item, with both fields escaped so neither can break out of the
+    /// link syntax and become document structure.
+    fn to_bullet(&self) -> String {
+        let title = escape_inline(if self.title.trim().is_empty() {
+            &self.url
+        } else {
+            &self.title
+        });
+        // Parentheses in a URL would close the link target early; angle brackets are markdown's
+        // own answer to that and need no other escaping.
+        format!("- [{title}](<{}>)", self.url.replace(['<', '>'], ""))
+    }
+}
+
+/// Only the characters that would turn a label into link/emphasis syntax.
+fn escape_inline(text: &str) -> String {
+    text.replace('\\', r"\\")
+        .replace('[', r"\[")
+        .replace(']', r"\]")
+        .trim()
+        .to_string()
+}
+
+/// Push captured prose down below the document's own structure.
+///
+/// The doc's headings are load-bearing — [`crate::store::section_bullets`] finds `## Done When`
+/// anywhere in the file, so a paste containing one would hand the SMART gate acceptance criteria
+/// nobody wrote. Demoting every ATX heading in captured text to `####` keeps the paste readable
+/// while making it structurally inert. Fenced code is left alone: a `#` in a shell snippet is a
+/// comment, not a heading.
+pub fn demote_headings(text: &str) -> String {
+    crate::markdown::scan(text)
+        .map(|(line, code)| {
+            if code || !line.trim_start().starts_with('#') {
+                return line.to_string();
+            }
+            let trimmed = line.trim_start();
+            let hashes = trimmed.chars().take_while(|c| *c == '#').count();
+            // `#hashtag` is not a heading — ATX requires a space after the run.
+            if hashes > 6 || !trimmed[hashes..].starts_with(' ') {
+                return line.to_string();
+            }
+            format!("#### {}", trimmed[hashes..].trim_start())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Replace the body of `## heading` with `body`, creating the section at the end when absent and
+/// removing it entirely when `body` is empty.
+///
+/// The removal case is what keeps a regenerated manifest honest: a task whose last attachment was
+/// deleted should have no `## Attachments` section, not an empty one implying files exist.
+fn replace_under(text: &str, heading: &str, body: &str) -> String {
+    let want = format!("## {heading}");
+    let scanned: Vec<(String, bool)> = crate::markdown::scan(text)
+        .map(|(l, c)| (l.to_string(), c))
+        .collect();
+    let body = body.trim_end();
+    let Some(start) = scanned.iter().position(|(l, c)| !c && l.trim_end() == want) else {
+        if body.is_empty() {
+            return text.to_string();
+        }
+        let mut out = text.trim_end().to_string();
+        out.push_str(&format!("\n\n## {heading}\n\n{body}\n"));
+        return out;
+    };
+    let mut end = scanned.len();
+    for (j, (line, code)) in scanned.iter().enumerate().skip(start + 1) {
+        if !*code && line.starts_with("## ") {
+            end = j;
+            break;
+        }
+    }
+    let mut out: Vec<String> = scanned[..start].iter().map(|(l, _)| l.clone()).collect();
+    if !body.is_empty() {
+        out.push(want);
+        out.push(String::new());
+        out.extend(body.lines().map(str::to_string));
+        out.push(String::new());
+    }
+    out.extend(scanned[end..].iter().map(|(l, _)| l.clone()));
+    let mut joined = out.join("\n");
+    while joined.contains("\n\n\n") {
+        joined = joined.replace("\n\n\n", "\n\n");
+    }
+    if text.ends_with('\n') && !joined.ends_with('\n') {
+        joined.push('\n');
+    }
+    joined
+}
+
+/// Write the operator's captured prose and links into the task's doc, creating it if needed.
+///
+/// Called at capture time, so the context a task was recorded with is durable from the moment it
+/// exists rather than from whenever someone remembers to open the doc.
+pub fn capture(
+    cfg: &Config,
+    task: &Task,
+    body: Option<&str>,
+    links: &[Link],
+) -> Result<TaskDoc, DocError> {
+    let path = doc_path(cfg, task).ok_or(DocError::NoPath)?;
+    let _lock = crate::todo::lock(&path);
+    let mut text = std::fs::read_to_string(&path).unwrap_or_else(|_| template(task));
+    if let Some(body) = body.map(str::trim).filter(|b| !b.is_empty()) {
+        text = replace_under(&text, CONTEXT_HEADING, &demote_headings(body));
+    }
+    if !links.is_empty() {
+        let rendered = links
+            .iter()
+            .map(Link::to_bullet)
+            .collect::<Vec<_>>()
+            .join("\n");
+        text = replace_under(&text, LINKS_HEADING, &rendered);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(DocError::Io)?;
+    }
+    std::fs::write(&path, &text).map_err(DocError::Io)?;
+    Ok(TaskDoc { path, text })
+}
+
+/// Regenerate the `## Attachments` manifest from what is actually on disk.
+///
+/// The manifest lists **names, not paths** — a path is a property of the machine that wrote it,
+/// and this document syncs to every other machine and moves on pickup. The line telling the reader
+/// how to resolve those names is part of the manifest, because the agent reading this doc is the
+/// one that needs it.
+pub fn sync_attachments(cfg: &Config, task: &Task) -> Result<TaskDoc, DocError> {
+    let id = task.id().unwrap_or("?").to_string();
+    let files = crate::task_attach::list(cfg, task);
+    let body = if files.is_empty() {
+        String::new()
+    } else {
+        let mut out = format!(
+            "Captured with this task. Run `bn task attach {id}` for their paths on this machine.\n\n"
+        );
+        for file in &files {
+            out.push_str(&format!(
+                "- `{}` — {}, {}\n",
+                file.name,
+                file.mime,
+                file.human_size()
+            ));
+        }
+        out
+    };
+    let path = doc_path(cfg, task).ok_or(DocError::NoPath)?;
+    let _lock = crate::todo::lock(&path);
+    let current = std::fs::read_to_string(&path).unwrap_or_else(|_| template(task));
+    let updated = replace_under(&current, ATTACHMENTS_HEADING, &body);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(DocError::Io)?;
+    }
+    std::fs::write(&path, &updated).map_err(DocError::Io)?;
+    Ok(TaskDoc {
+        path,
+        text: updated,
+    })
+}
+
 /// Copy a staged context doc next to its branch note — the pickup step.
 ///
 /// A **copy**, deliberately: [`doc_path`] then prefers the note-dir version, while any reference
@@ -203,13 +388,18 @@ pub fn adopt_into_note(cfg: &Config, task: &Task) -> std::io::Result<Option<Path
         return Ok(None);
     }
     let target = note_copy_path(cfg, repo, branch);
-    if target.exists() {
-        return Ok(Some(target));
-    }
     let Some(name) = doc_name(task) else {
         return Ok(None);
     };
     let staged = staging_path(cfg, &name);
+    if target.exists() {
+        // The doc is already here, but its files may not be — an earlier pickup predating
+        // attachments, or a doc an agent created before anything was attached to the staged one.
+        if staged.exists() {
+            crate::task_attach::adopt_beside(&staged, &target)?;
+        }
+        return Ok(Some(target));
+    }
     if !staged.exists() {
         return Ok(None);
     }
@@ -217,6 +407,9 @@ pub fn adopt_into_note(cfg: &Config, task: &Task) -> std::io::Result<Option<Path
         std::fs::create_dir_all(parent)?;
     }
     std::fs::copy(&staged, &target)?;
+    // The doc's manifest names files relative to wherever the doc is, so the files have to make
+    // the same move — otherwise a picked-up task documents attachments nothing can resolve.
+    crate::task_attach::adopt_beside(&staged, &target)?;
     Ok(Some(target))
 }
 
@@ -244,6 +437,18 @@ pub enum DocError {
     Conflict(String),
     /// The write itself failed.
     Io(std::io::Error),
+}
+
+impl std::fmt::Display for DocError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoPath => write!(f, "task has no id or doc: to derive a context doc from"),
+            Self::Conflict(landed) => {
+                write!(f, "the doc changed under this write (now {landed})")
+            }
+            Self::Io(e) => write!(f, "{e}"),
+        }
+    }
 }
 
 /// Insert `addition` at the end of the `## heading` section, creating the section at the end when
@@ -338,4 +543,155 @@ pub fn write(
         path,
         text: new_text,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task(id: &str) -> Task {
+        crate::todo::Task::new_todo(id, "fix the reconnect storm", None, "", "web", "2026-08-09")
+    }
+
+    fn cfg(root: &std::path::Path) -> Config {
+        Config {
+            personal_root: root.to_path_buf(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_pasted_done_when_cannot_become_the_gates_criteria() {
+        let pasted = "The reporter wrote:\n\n## Done When\n- [ ] ship it\n\nEnd of paste.";
+        let demoted = demote_headings(pasted);
+        // The section parser matches a whole line, so what matters is that no *line* is the
+        // heading any more — `#### Done When` still contains it as a substring.
+        assert!(!demoted.lines().any(|l| l.trim_end() == "## Done When"));
+        assert!(demoted.contains("#### Done When"));
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let cfg = cfg(root.path());
+        let task = task("t1");
+        capture(&cfg, &task, Some(pasted), &[]).expect("capture");
+        let doc = read(&cfg, &task).expect("doc");
+        assert!(
+            doc.done_when().is_empty(),
+            "a paste must not smuggle acceptance criteria past the SMART gate"
+        );
+    }
+
+    #[test]
+    fn demotion_leaves_code_fences_and_hashtags_alone() {
+        let text = "```sh\n# not a heading\n```\n#hashtag\n### real heading";
+        let out = demote_headings(text);
+        assert!(out.contains("# not a heading"), "{out}");
+        assert!(out.contains("#hashtag"), "{out}");
+        assert!(out.contains("#### real heading"), "{out}");
+    }
+
+    #[test]
+    fn capture_writes_context_and_links_without_touching_why() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cfg = cfg(root.path());
+        let task = task("t2");
+        let links = vec![
+            Link {
+                url: "https://github.com/o/r/issues/7".into(),
+                title: "the issue".into(),
+            },
+            Link {
+                url: "https://example.com/a(b)".into(),
+                title: String::new(),
+            },
+        ];
+        capture(&cfg, &task, Some("Repros on flaky LAN only."), &links).expect("capture");
+
+        let doc = read(&cfg, &task).expect("doc");
+        assert_eq!(
+            doc.section(CONTEXT_HEADING).as_deref(),
+            Some("Repros on flaky LAN only.")
+        );
+        assert!(doc.why().is_none(), "Why stays the gate's own escape hatch");
+        let rendered = doc.section(LINKS_HEADING).expect("links");
+        assert!(rendered.contains("[the issue](<https://github.com/o/r/issues/7>)"));
+        // A URL with parentheses stays inside its angle-bracket target.
+        assert!(
+            rendered.contains("(<https://example.com/a(b)>)"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn a_link_label_cannot_break_out_of_its_own_syntax() {
+        let bullet = Link {
+            url: "https://example.com".into(),
+            title: "](javascript:alert(1)) [pwned".into(),
+        }
+        .to_bullet();
+        // Both brackets are escaped, so the only `]` markdown can close the label on is the one
+        // this function wrote — the target stays `<https://example.com>` and the injected
+        // `(javascript:…)` is inert label text.
+        assert_eq!(
+            bullet,
+            r"- [\](javascript:alert(1)) \[pwned](<https://example.com>)"
+        );
+        assert!(bullet.ends_with("](<https://example.com>)"));
+    }
+
+    #[test]
+    fn capture_is_re_runnable_and_replaces_rather_than_appends() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cfg = cfg(root.path());
+        let task = task("t3");
+        capture(&cfg, &task, Some("first"), &[]).expect("capture");
+        capture(&cfg, &task, Some("second"), &[]).expect("recapture");
+        let doc = read(&cfg, &task).expect("doc");
+        assert_eq!(doc.section(CONTEXT_HEADING).as_deref(), Some("second"));
+        assert_eq!(doc.text.matches("## Context").count(), 1);
+    }
+
+    #[test]
+    fn the_manifest_tracks_disk_and_disappears_when_the_last_file_goes() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cfg = cfg(root.path());
+        let task = task("t4");
+        ensure(&cfg, &task).expect("ensure");
+
+        crate::task_attach::save(&cfg, &task, "shot.png", &[0u8; 2048]).expect("save");
+        let doc = sync_attachments(&cfg, &task).expect("sync");
+        assert!(
+            doc.text.contains("- `shot.png` — image/png, 2 KB"),
+            "{}",
+            doc.text
+        );
+        // Names, never paths: the doc syncs to machines where this path does not exist.
+        assert!(!doc.text.contains(root.path().to_str().expect("utf8")));
+        assert!(doc.text.contains("bn task attach t4"));
+
+        crate::task_attach::remove(&cfg, &task, "shot.png").expect("remove");
+        let doc = sync_attachments(&cfg, &task).expect("resync");
+        assert!(
+            !doc.text.contains("## Attachments"),
+            "an empty manifest implies files that are not there"
+        );
+    }
+
+    #[test]
+    fn pickup_moves_the_files_with_the_doc() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let cfg = cfg(root.path());
+        let mut task = task("t5");
+        ensure(&cfg, &task).expect("ensure");
+        crate::task_attach::save(&cfg, &task, "trace.log", b"boom").expect("save");
+
+        task.set_meta_raw("repo", "atlas");
+        task.set_meta_raw("branch", "fix-sse");
+        let landed = adopt_into_note(&cfg, &task).expect("adopt").expect("path");
+
+        assert!(landed.ends_with("task.md"));
+        let files = crate::task_attach::list(&cfg, &task);
+        assert_eq!(files.len(), 1, "attachments must resolve after pickup");
+        assert_eq!(files[0].name, "trace.log");
+        assert!(files[0].path.starts_with(landed.parent().expect("parent")));
+    }
 }

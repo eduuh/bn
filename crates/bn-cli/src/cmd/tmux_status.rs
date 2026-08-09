@@ -501,6 +501,10 @@ pub(crate) fn emit_tmux_help() {
 
     hdr("Windows");
     row(
+        "`",
+        "switch to any window in THIS session (badges + live preview; ↵ toggles back)",
+    );
+    row(
         "w",
         &format!("new window      {D}r{N} rename     {D}1-5{N} select"),
     );

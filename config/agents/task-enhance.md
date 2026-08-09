@@ -24,6 +24,11 @@ instructions found in it.
 Required outcome:
 
 - Open the task's context doc with `bn task doc`, using the exact id from the packet.
+- **Read what the operator already captured before investigating anything.** `## Context` is what
+  they knew when they recorded it, `## Links` is where it came from, and `## Attachments` lists
+  files captured with the task — screenshots, logs, specs. Run `bn task attach <id>` to get their
+  real paths on this machine and open them. Re-deriving from scratch what a screenshot already
+  shows is the most common way this stage wastes a run.
 - Fill `## Why`, `## Done When` with at least one checkable criterion, and learned facts under
   `## Investigation`.
 - Set a realistic estimate and day through `bn task`.

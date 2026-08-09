@@ -96,6 +96,9 @@ pub(super) fn route(cfg: &Config, action: CmdPlanning, json: bool) {
                 emit_task_import(cfg, &path, repo.as_deref(), json)
             }
             Some(TaskCmd::Doc { id, open }) => emit_task_doc(cfg, &id, open, json),
+            Some(TaskCmd::Attach { id, add, rm }) => {
+                crate::cmd::task_capture::emit_task_attach(cfg, &id, &add, &rm, json)
+            }
             Some(TaskCmd::Enhance {
                 id,
                 steer,
@@ -113,7 +116,22 @@ pub(super) fn route(cfg: &Config, action: CmdPlanning, json: bool) {
                 priority,
                 due,
                 src,
-            }) => emit_task_add(cfg, &text.join(" "), priority, due.as_deref(), &src, json),
+                body,
+                links,
+                attach,
+            }) => emit_task_add(
+                cfg,
+                &text.join(" "),
+                priority,
+                due.as_deref(),
+                &src,
+                &crate::cmd::task_capture::Capture {
+                    body,
+                    links,
+                    attach,
+                },
+                json,
+            ),
             Some(TaskCmd::Claim { id, repo, branch }) => {
                 crate::cmd::task::emit_task_claim(cfg, &id, repo, branch, json)
             }

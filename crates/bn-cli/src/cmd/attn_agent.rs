@@ -7,6 +7,11 @@ use bn_core::backlog::{self, AddSpec, BacklogKind, Recurrence};
 use bn_core::attention::{ingest, IngestItem};
 use bn_core::queue::kind::ExecSpec;
 
+/// The source stamped on everything the watchdog mints — the attention row, the repair task, and
+/// the queued repair agent. Shared because [`close_recovered_repairs`] matches backlog entries on
+/// it: a literal that drifted on one side would silently stop the sweep finding its own work.
+const REPAIR_SOURCE: &str = "cron-health";
+
 /// A short text summary of the crons currently in a chronic-failure state — the health half of the
 /// attention agent's packet, and the watchdog's raise set.
 fn failing_cron_lines(cfg: &Config, ctx: Option<&Resolved>) -> Vec<String> {
@@ -83,7 +88,7 @@ fn ensure_repair_task(
         &repair_task_text(status, output_tail),
         Some('A'),
         "",
-        "cron-health",
+        REPAIR_SOURCE,
         today,
     );
     task.set_meta_raw("repo", "bn");
@@ -109,6 +114,15 @@ fn ensure_repair_task(
 /// `Pending` queue entries are withdrawn; [`backlog::cancel`] leaves a leased agent alone, since a
 /// row flipped to cancelled under a live worktree would only misdescribe what is still running.
 ///
+/// The withdrawal set is derived from the *backlog*, not from the tasks cancelled on this pass,
+/// and that distinction is the whole bug it fixes. Keying it to this pass's cancellations made the
+/// sweep one-shot: an entry that happened to be `Leased` at that moment was skipped, and because
+/// its task was cancelled in the same breath it never appeared in a later pass's set either. The
+/// entry then outlived every mechanism meant to reap it — released back to `Pending`, dispatched,
+/// leased, released, forever. `task-improve` rode that loop through four dispatches after its cron
+/// was tombstoned. Re-deriving from the store each pass makes the sweep idempotent, so an entry
+/// caught mid-lease is simply withdrawn the next time it comes to rest.
+///
 /// Returns `(tasks_closed, agents_withdrawn)`.
 fn close_recovered_repairs(
     cfg: &Config,
@@ -118,7 +132,9 @@ fn close_recovered_repairs(
     let raising: std::collections::HashSet<&str> =
         alerting.iter().map(|status| status.job.as_str()).collect();
     let path = cfg.tasks_file();
-    let recovered: Vec<String> = {
+    // Cancelled repair tasks stay in the map: an entry withdrawn on a later pass still has to
+    // resolve its job, and by then its task is exactly the one an earlier pass closed.
+    let (closed, repair_jobs) = {
         let _lock = bn_core::todo::lock(&path);
         let Ok(mut file) = bn_core::todo::load(&path) else {
             return (0, 0);
@@ -139,26 +155,35 @@ fn close_recovered_repairs(
         if !stale.is_empty() && bn_core::todo::save(&path, &file).is_err() {
             return (0, 0);
         }
-        stale
+        let jobs: std::collections::HashMap<String, String> = file
+            .tasks()
+            .filter_map(|task| {
+                let job = task.meta("key")?.strip_prefix("cron-repair:")?;
+                Some((task.id()?.to_string(), job.to_string()))
+            })
+            .collect();
+        (stale.len(), jobs)
     };
-    if recovered.is_empty() {
-        return (0, 0);
-    }
 
     let backlog_path = backlog::backlog_path();
     let now = bn_core::util::now_epoch_secs();
-    let pending: Vec<(String, String)> = backlog::load(&backlog_path)
+    let withdrawable: Vec<(String, String)> = backlog::load(&backlog_path)
         .entries()
         .iter()
         .filter(|entry| entry.status == backlog::BacklogStatus::Pending)
-        .filter(|entry| recovered.contains(&entry.task))
+        .filter(|entry| entry.source == REPAIR_SOURCE)
+        .filter(|entry| {
+            repair_jobs
+                .get(&entry.task)
+                .is_some_and(|job| !raising.contains(job.as_str()))
+        })
         .map(|entry| (entry.repo.clone(), entry.id.clone()))
         .collect();
-    let withdrawn = pending
+    let withdrawn = withdrawable
         .iter()
         .filter(|(repo, id)| backlog::cancel(&backlog_path, repo, id, now).unwrap_or(false))
         .count();
-    (recovered.len(), withdrawn)
+    (closed, withdrawn)
 }
 
 fn enqueue_repair_agent(
@@ -171,7 +196,7 @@ fn enqueue_repair_agent(
         kind: BacklogKind::Ship,
         priority: 4,
         recurrence: Recurrence::Coalesce,
-        source: "cron-health".to_string(),
+        source: REPAIR_SOURCE.to_string(),
         task: task_id.to_string(),
         exec: ExecSpec::Agent,
         ..Default::default()
@@ -251,7 +276,7 @@ pub(crate) fn job_cron_health(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
             None => repair_errors.push(format!("{}: could not write repair task", status.job)),
         }
     }
-    match ingest(&items, "cron-health", "warn", true, &today) {
+    match ingest(&items, REPAIR_SOURCE, "warn", true, &today) {
         Ok(_) => {
             if n == 0 {
                 println!("cron-health: all crons healthy");
@@ -460,5 +485,99 @@ pub(crate) fn job_attention_agent(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
             eprintln!("attention-agent: {e}");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bn_core::test_support;
+
+    fn failing(job: &str) -> bn_core::events::CronJobStatus {
+        bn_core::events::CronJobStatus {
+            job: job.to_string(),
+            scope: "global".to_string(),
+            repo: None,
+            branch: None,
+            last_run: bn_core::util::now_epoch_secs(),
+            ok: false,
+            last_exit: 127,
+            runs: 7,
+            failures: 7,
+            last_duration_ms: 4,
+        }
+    }
+
+    /// The four-dispatch loop, in miniature.
+    ///
+    /// `task-improve` was renamed away and tombstoned, so the watchdog stopped raising it — but its
+    /// queued repair agent happened to be *leased* on the pass that cancelled its task. The old
+    /// sweep drew its withdrawal set from that pass's cancellations, so the leased entry was
+    /// skipped once and then never reconsidered: its task was already closed, so no later pass
+    /// could rediscover it. The entry cycled leased → pending → dispatched forever.
+    ///
+    /// Asserting the *second* pass is the whole point. A sweep that only withdraws on the
+    /// transition pass leaves the entry pending here, and this fails.
+    #[test]
+    fn a_repair_agent_leased_when_its_cron_retires_is_withdrawn_on_a_later_pass() {
+        let root = tempfile::tempdir().expect("create test notes directory");
+        test_support::with_testhost_state_and_notes_dir(root.path(), || {
+            let cfg = test_support::config(root.path());
+            let today = "2026-08-09";
+            let status = failing("renamed-away");
+
+            let task_id = ensure_repair_task(&cfg, &status, Some("bn: command not found"), today)
+                .expect("mint the repair task");
+            enqueue_repair_agent(&status, &task_id, None).expect("queue the repair agent");
+
+            let backlog_path = backlog::backlog_path();
+            let now = bn_core::util::now_epoch_secs();
+            let leased = backlog::lease(&backlog_path, "bn", 1, now).expect("lease the entry");
+            let entry_id = leased.first().expect("one entry was queued").id.clone();
+
+            // Pass 1: the cron is no longer raising. The task closes; the leased entry is left
+            // alone on purpose, because cancelling a row under a live worktree would misdescribe
+            // work that is still running.
+            let (closed, withdrawn) = close_recovered_repairs(&cfg, &[], today);
+            assert_eq!(closed, 1, "the repair task should be cancelled");
+            assert_eq!(withdrawn, 0, "a leased entry is not withdrawn mid-flight");
+
+            // The dispatch ends and the entry comes to rest.
+            backlog::release_many(&backlog_path, "bn", &[entry_id.as_str()], now)
+                .expect("release the lease");
+
+            // Pass 2: nothing was cancelled this pass, and the task is long closed. The entry must
+            // still be reaped — that is the regression.
+            let (closed, withdrawn) = close_recovered_repairs(&cfg, &[], today);
+            assert_eq!(closed, 0, "the task was already closed on pass 1");
+            assert_eq!(withdrawn, 1, "the released entry must be withdrawn, not re-dispatched");
+
+            let status = backlog::load(&backlog_path)
+                .get("bn", &entry_id)
+                .map(|entry| entry.status)
+                .expect("the entry is still on record");
+            assert_eq!(status, backlog::BacklogStatus::Cancelled, "{status:?}");
+        });
+    }
+
+    /// The other direction, so the sweep cannot be "fixed" by withdrawing everything: a cron that
+    /// is still failing keeps its repair task and its queued agent.
+    #[test]
+    fn a_still_failing_cron_keeps_its_repair_task_and_queued_agent() {
+        let root = tempfile::tempdir().expect("create test notes directory");
+        test_support::with_testhost_state_and_notes_dir(root.path(), || {
+            let cfg = test_support::config(root.path());
+            let today = "2026-08-09";
+            let status = failing("still-broken");
+
+            let task_id =
+                ensure_repair_task(&cfg, &status, None, today).expect("mint the repair task");
+            enqueue_repair_agent(&status, &task_id, None).expect("queue the repair agent");
+
+            let (closed, withdrawn) = close_recovered_repairs(&cfg, &[&status], today);
+
+            assert_eq!(closed, 0, "a still-failing cron keeps its repair task");
+            assert_eq!(withdrawn, 0, "and keeps its queued repair agent");
+        });
     }
 }

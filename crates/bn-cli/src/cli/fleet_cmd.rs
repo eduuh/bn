@@ -19,6 +19,13 @@ pub(crate) enum CmdFleet {
         /// Fast-path (prefix Tab): jump straight to the top-ranked window, no picker.
         #[arg(long)]
         next: bool,
+        /// Switch scope (prefix `` ` ``): an fzf picker over **every** window of the session you
+        /// are in — quiet worktrees included — rather than only what needs you. Rows carry the tab
+        /// bar's badges (blockers · todos · agent state) plus a live pane preview, ordered
+        /// last-used first so a bare ↵ toggles back to the window you came from. The
+        /// session-scoped sibling of `bn fleet pick` (every session).
+        #[arg(long)]
+        session: bool,
         /// Internal: the fzf callback stage a `jump` session re-invokes (list/preview).
         #[arg(long, hide = true, value_enum)]
         pick_stage: Option<jump::JumpStage>,
@@ -121,7 +128,25 @@ pub(crate) enum CmdFleet {
         action: Option<SessionsCmd>,
     },
     /// Resume the latest recorded session for this worktree, or a named session from anywhere.
+    ///
+    /// `--all` switches to crash recovery: instead of one session, it reconstructs everything that
+    /// was running when the machine last went down and offers it back.
     Resume {
+        /// Rebuild the work that was running before this machine last went down. Shows each
+        /// branch, worktree, agent session and window, and restores the ones you confirm. Reads
+        /// only this machine's state — a laptop cannot restore another laptop's tmux layout.
+        #[arg(long, conflicts_with = "name_or_id")]
+        all: bool,
+        /// Print the restore plan and change nothing.
+        #[arg(long, requires = "all", conflicts_with = "yes")]
+        dry_run: bool,
+        /// Restore every listed row without prompting.
+        #[arg(long, requires = "all")]
+        yes: bool,
+        /// Restore only these pool slots (repeatable). A plain `bn resume 2` stays a session query,
+        /// so the slot filter needs its own flag.
+        #[arg(long = "slot", value_name = "N", requires = "all")]
+        slots: Vec<u32>,
         /// Exact task name, full session id, or unambiguous session-id prefix. Omit to select the
         /// latest Copilot or Claude session recorded for the current git worktree.
         name_or_id: Option<String>,

@@ -49,9 +49,9 @@ The left pill shows the session name and **flips to reverse-video `PREFIX`** the
 | Key | Action |
 |-----|--------|
 | `o` | **Go to or create worktree.** fzf list of existing worktrees, **most recently active first** with `main` last — so the default row is where you were actually working. Select one → opens as window. Type a new name + Enter → creates worktree from latest `main`, opens as window. |
-| `x` | **Close this worktree.** Hands its pool lease back (or runs `bn wt cleanup`'s gates for a conventional worktree), then drops its window. Prompts first if the branch has uncommitted or unpushed work. Refuses `main`/`master` and the controller slot — on those, and on any non-worktree pane, it is just a pane close. **Never closes a session:** a worktree owning its session's last window leaves that window respawned as a bare shell. |
+| `x` | **Close this worktree.** Drops its window immediately and files the reclaim — hand the pool lease back, or run `bn wt cleanup`'s gates for a conventional worktree — on the machine queue as a `cleanup` entry, which runs when the machine has a moment (`bn queue list --class maintenance`). Prompts first if the branch has uncommitted or unpushed work. Refuses `main`/`master` and the controller slot — on those, and on any non-worktree pane, it is just a pane close. **Never closes a session:** a worktree owning its session's last window leaves that window respawned as a bare shell. The expensive half is deferred on purpose: a warm reset re-checks-out the tree and the cleanup gates make a `gh pr view` round-trip, neither of which a keystroke should wait on. `bn wt close --reclaim` runs it now instead. |
 | `X` | Kill this window and all its panes. Leaves the worktree and its lease alone — `x` is the integrated close. |
-| `D` | Pick any worktree to remove it + kill its window (the picker sibling of `x`). |
+| `D` | Pick any worktree to reclaim it + kill its window — the picker sibling of `x`, and the same reclaim: a pool slot hands its lease back, a conventional worktree goes through the merged-PR / clean-tree gates and has its note closed. It runs inline (it is already a popup, so nothing blocks), and refuses rather than forcing; `bn wt remove --force` is the override. |
 
 In a non-bare session, `o` just opens/selects a `main` window at the repo path.
 
@@ -117,10 +117,20 @@ Selecting either ensures a local session named after the repo and opens/focuses 
 | Key | Action |
 |-----|--------|
 | `w` | New window (same cwd). |
+| `` ` `` | **Switch to any window in this session.** fzf over every window of the session you're in — quiet worktrees included, each with its tab badges (blockers · todos · agent state) and a live pane preview. Ordered **last-used first**, so a bare `↵` toggles back to the window you came from and never lands on the one you're already on. `ctrl-r` re-reads the badges. Type a few letters of the branch instead of counting tabs — this is what `1`–`5` can't do once a session holds more than five worktrees. |
 | `r` | Rename window. |
 | `1`–`5` | Jump to window 1–5. |
 | `[` / `]` | Previous / next window. |
 | `<` / `>` | Swap window left / right. |
+
+The three jump keys differ by **scope**, not by mechanism:
+
+| Key | Scope | Shows |
+|-----|-------|-------|
+| `` ` `` | this session | *every* window — navigation |
+| `Tab` | all sessions | the single top-ranked window needing you, no popup |
+| `f` | all sessions | every live agent window + the orchestrator cockpit |
+| `j` / `C-a` | all repos | the attention queue (cron failures, raised items, stale notes) |
 
 ## Panes
 
