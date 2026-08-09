@@ -8,7 +8,8 @@ arguments:
 ---
 You are starting a work session on the current branch.
 
-1. Call `bn_status` and `bn_cat` to load the branch note.
+1. Call `bn_context` to orient — goal, open todos, blockers, and PR in one call. Reach for
+   `bn_cat` only if you need the full note body.
 2. Summarize the open todos and any blockers in 1–2 lines.
 3. If a focus was given ({{focus}}), prioritize todos matching it; otherwise propose
    what to work on next from the open todos.
@@ -17,4 +18,4 @@ You are starting a work session on the current branch.
 
 Keep it short. Then, as you work, record new work with `bn_add` and close todos with `bn_done`
 *the moment each one is actually done* — not batched at the end. Those timestamps feed
-`bn_metrics` (close-out lag, flow time, WIP), so honest, in-the-moment tracking keeps them real.
+`bn metrics` (close-out lag, flow time, WIP), so honest, in-the-moment tracking keeps them real.

@@ -477,6 +477,73 @@ fn pool_warm_new_rebuilds_a_broken_stub() {
     assert!(is_live_slot(&pool_dir.join("2")));
 }
 
+/// Regression for the `pool-warm` cron failing on a pool `bn dispatch` created implicitly.
+///
+/// `bn dispatch` pools *every* repo with a bn-managed bare clone, registered in `~/.config/wt/pools`
+/// or not, and then queues `pool-warm --repo <that repo>` to fill the slot. The cron resolved
+/// through [`resolve_pool`], which refuses an unregistered repo — so the warm died exit 1 on a pool
+/// sitting right there on disk, and re-queued itself on the next dispatch. Here `nvim` has a bare
+/// clone and a pools file that names only `bn`: the cron must warm it and exit 0.
+#[test]
+fn cron_warms_a_pool_dispatch_created_for_an_unregistered_repo() {
+    let _g = bn_core::test_support::env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+
+    let bare = root.join("bare").join("nvim.git");
+    build_repo_into(&root.join("nvim-src"), &bare);
+
+    // The config knows about `bn` only — `nvim` is pooled by dispatch alone, at the default size.
+    let pools = root.join("pools");
+    std::fs::write(&pools, "bn 2\n").unwrap();
+    assert!(bn_core::pool::pool_size("nvim").is_none());
+
+    let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
+    let _wt_pools = bn_core::test_support::EnvGuard::set("WT_POOLS", &pools);
+    let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", root.join("state"));
+    TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
+
+    let cfg = bn_core::test_support::config(root);
+    let ctx = bn_core::resolver::Resolved {
+        repo: "nvim".to_string(),
+        branch: "main".to_string(),
+    };
+    assert_eq!(super::job_pool_warm(&cfg, Some(&ctx)), 0);
+
+    // Not just a green exit — the slots the next dispatch leases are actually there.
+    let pool_dir = root.join("worktree").join("nvim").join("_pool");
+    for n in 2..=bn_core::pool::DEFAULT_DISPATCH_POOL_SIZE as u32 {
+        assert!(
+            is_live_slot(&slot_path(&pool_dir, n)),
+            "slot {n} should hold a live checkout"
+        );
+    }
+}
+
+/// The other half of [`cron_warms_a_pool_dispatch_created_for_an_unregistered_repo`]: a queued warm
+/// can outlive the clone it named. That is a stale queue entry, not a broken cron, so it reports a
+/// skip and exits 0 rather than paging as a cron failure.
+#[test]
+fn cron_warm_skips_a_repo_with_no_bare_clone() {
+    let _g = bn_core::test_support::env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("bare")).unwrap();
+
+    let pools = root.join("pools");
+    std::fs::write(&pools, "bn 2\n").unwrap();
+    let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
+    let _wt_pools = bn_core::test_support::EnvGuard::set("WT_POOLS", &pools);
+    let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", root.join("state"));
+
+    let cfg = bn_core::test_support::config(root);
+    let ctx = bn_core::resolver::Resolved {
+        repo: "long-gone".to_string(),
+        branch: "main".to_string(),
+    };
+    assert_eq!(super::job_pool_warm(&cfg, Some(&ctx)), 0);
+}
+
 /// The queue tick's pool reconcile must make a pool's ledger match its slots without a dispatch
 /// having to trip over the drift first: adopt the slot a live agent holds unnamed, and hand back
 /// the one whose lease outlived everybody.

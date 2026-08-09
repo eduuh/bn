@@ -21,6 +21,7 @@ mod state;
 mod task_api;
 mod task_attach_api;
 mod task_writes;
+mod view_cache;
 mod watch;
 
 use bn_core::resolver::Config;

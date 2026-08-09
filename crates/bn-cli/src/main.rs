@@ -314,3 +314,50 @@ pub(crate) fn fail_json(json: bool, command: &str, code: &str, msg: &str) -> ! {
     }
     std::process::exit(1);
 }
+
+#[cfg(test)]
+mod prompt_command_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// Every backtick-quoted `bn <sub>` command in the shipped prompts and agent definitions must
+    /// name a real first-level clap subcommand. This is the guardrail that catches phantom or
+    /// removed commands frozen into instruction text (the class of bug behind `bn dispatch
+    /// --host`, `sprint-setup`, and the `bn_next`-style tool names).
+    #[test]
+    fn shipped_prompts_reference_only_real_subcommands() {
+        let cmd = Cli::command();
+        let mut names: Vec<String> = Vec::new();
+        for sub in cmd.get_subcommands() {
+            names.push(sub.get_name().to_string());
+            names.extend(sub.get_all_aliases().map(str::to_string));
+        }
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for dir in [root.join("config/prompts"), root.join("config/agents")] {
+            for entry in std::fs::read_dir(&dir).expect("config dir listing") {
+                let path = entry.expect("dir entry").path();
+                if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).expect("prompt readable");
+                for span in text.split('`').skip(1).step_by(2) {
+                    let Some(rest) = span.strip_prefix("bn ") else {
+                        continue;
+                    };
+                    let Some(first) = rest.split_whitespace().next() else {
+                        continue;
+                    };
+                    // Flags (`bn --cat`) and placeholders (`bn <command>`) aren't subcommands.
+                    if first.starts_with('-') || first.starts_with('<') || first.starts_with('{') {
+                        continue;
+                    }
+                    assert!(
+                        names.iter().any(|n| n == first),
+                        "{}: `bn {first} …` names an unknown subcommand",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+}

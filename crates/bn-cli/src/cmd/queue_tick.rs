@@ -11,10 +11,10 @@
 mod event_fields;
 
 use crate::*;
-use event_fields::{dispatch_fields, finish_fields, launch_failure_fields};
 use bn_core::backlog::{self, BacklogKind};
 use bn_core::queue::decision::QueueDecision;
 use bn_core::queue::tick::{plan_tick, Dispatch, TickPlan};
+use event_fields::{dispatch_fields, finish_fields, launch_failure_fields};
 use std::path::PathBuf;
 
 /// The lock that makes "one tick per machine" true regardless of which driver started it.
@@ -45,8 +45,11 @@ pub(crate) fn emit_tick(cfg: &Config, dry_run: bool, json: bool) {
             if json {
                 println!(
                     "{}",
-                    Envelope::success("queue-tick", serde_json::to_value(&decision).unwrap_or_default())
-                        .to_json()
+                    Envelope::success(
+                        "queue-tick",
+                        serde_json::to_value(&decision).unwrap_or_default()
+                    )
+                    .to_json()
                 );
             } else {
                 print_decision(&decision);
@@ -105,8 +108,7 @@ pub(crate) fn emit_run(cfg: &Config, interval: u64) {
     if let Some(path) = executable_path() {
         watches.push(crate::event_loop::Watch::file(path));
     }
-    let mut reactor =
-        crate::event_loop::EventLoop::with_wake_queue("bn queue", watches, &[]);
+    let mut reactor = crate::event_loop::EventLoop::with_wake_queue("bn queue", watches, &[]);
     println!(
         "queue dispatcher running — event-driven, {BUSY_SECS}s busy / {idle}s idle fallback · ctrl-c to stop"
     );
@@ -131,7 +133,9 @@ pub(crate) fn emit_run(cfg: &Config, interval: u64) {
             exe_seen = current;
             let successor = crate::cmd::queue_install::dispatcher_bin();
             if crate::cmd::queue_install::can_dispatch(&successor) {
-                println!("queue dispatcher: binary changed — exiting for the supervisor to restart");
+                println!(
+                    "queue dispatcher: binary changed — exiting for the supervisor to restart"
+                );
                 return;
             }
             eprintln!(
@@ -155,7 +159,10 @@ pub(crate) fn emit_run(cfg: &Config, interval: u64) {
         let mut wait = idle;
         if let TickOutcome::Ran(decision) = tick_once(&cfg, now, false) {
             if decision.started > 0 {
-                println!("started {} · {} pending", decision.started, decision.pending);
+                println!(
+                    "started {} · {} pending",
+                    decision.started, decision.pending
+                );
             }
             // Come back immediately while there is anything left to consider. "Started something"
             // is not the test — an entry held on capacity is also a reason to look again soon,
@@ -234,7 +241,9 @@ fn cap_own_log() {
         // The supervisor holds this fd in append mode, so truncating underneath it is safe: the
         // next write lands at the new end rather than leaving a sparse hole.
         if std::fs::File::create(&path).is_ok() {
-            println!("queue dispatcher: truncated its own log (>4MB; the event log keeps the record)");
+            println!(
+                "queue dispatcher: truncated its own log (>4MB; the event log keeps the record)"
+            );
         }
     }
 }
@@ -332,10 +341,9 @@ fn maybe_enqueue_spare_work(cfg: &Config, now: i64) {
         return;
     }
     let repo = cfg.queue_home_repo();
-    if bn_core::backlog::load(&bn_core::backlog::backlog_path()).is_active(
-        &repo,
-        &bn_core::orchestrate::derive_id("run pool-warm"),
-    ) {
+    if bn_core::backlog::load(&bn_core::backlog::backlog_path())
+        .is_active(&repo, &bn_core::orchestrate::derive_id("run pool-warm"))
+    {
         return;
     }
     let _ = crate::cmd::queue_producers::capture_job(
@@ -411,13 +419,18 @@ fn reclaim_stale_leases(cfg: &Config, now: i64) {
     // something died — silence here would hide a machine that keeps losing its executors.
     let mut by_repo: std::collections::BTreeMap<String, Vec<String>> = Default::default();
     for e in stale {
-        by_repo.entry(e.repo.clone()).or_default().push(e.id.clone());
+        by_repo
+            .entry(e.repo.clone())
+            .or_default()
+            .push(e.id.clone());
     }
     for (repo, ids) in by_repo {
         let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
         match backlog::release_many(&path, &repo, &refs, now) {
             Ok(n) if n > 0 => {
-                eprintln!("bn queue tick: reclaimed {n} stale lease(s) in {repo} — their executor died");
+                eprintln!(
+                    "bn queue tick: reclaimed {n} stale lease(s) in {repo} — their executor died"
+                );
                 let mut f = serde_json::Map::new();
                 f.insert("repo".to_string(), serde_json::Value::String(repo));
                 f.insert("count".to_string(), serde_json::Value::from(n));
@@ -445,7 +458,10 @@ fn realize(cfg: &Config, plan: &TickPlan, now: i64) {
                 e.repo, e.id, e.detail
             );
             let mut f = serde_json::Map::new();
-            f.insert("repo".to_string(), serde_json::Value::String(e.repo.clone()));
+            f.insert(
+                "repo".to_string(),
+                serde_json::Value::String(e.repo.clone()),
+            );
             f.insert("id".to_string(), serde_json::Value::String(e.id.clone()));
             f.insert(
                 "work_kind".to_string(),
@@ -481,12 +497,9 @@ fn realize(cfg: &Config, plan: &TickPlan, now: i64) {
         // Record WHICH machine holds it. `status: leased` only says someone took it; without the
         // holder, a crashed box's leases cannot be told apart from a healthy one's.
         let _ = backlog::assign(&path, &d.repo, &d.id, cfg.machine(), now);
-        let _ = bn_core::events::append_at(
-            "queue_dispatch",
-            now,
-            dispatch_fields(d, cfg.machine()),
-        );
-        let outcome = execute(cfg, d);
+        let _ =
+            bn_core::events::append_at("queue_dispatch", now, dispatch_fields(d, cfg.machine()));
+        let outcome = execute(cfg, d, now);
         let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
         match outcome {
             // An agent launch hands off to a long-running harness; the entry stays leased until the
@@ -537,7 +550,7 @@ enum Executed {
 }
 
 /// Run one planned dispatch according to its executor.
-fn execute(cfg: &Config, d: &Dispatch) -> Executed {
+fn execute(cfg: &Config, d: &Dispatch, now: i64) -> Executed {
     match &d.exec {
         // Heavy work is spawned, never run inline — a minutes-long build inside the tick would
         // hold the dispatcher for minutes and make every pass behind it skip on the lock.
@@ -563,21 +576,21 @@ fn execute(cfg: &Config, d: &Dispatch) -> Executed {
             Ok(code) => Executed::Finished { code },
             Err(e) => Executed::Failed(e),
         },
-        bn_core::queue::kind::ExecSpec::Agent => launch_agent(d, None),
+        bn_core::queue::kind::ExecSpec::Agent => launch_agent(d, None, now),
         bn_core::queue::kind::ExecSpec::Skill { skill, arg } => {
-            launch_agent(d, Some((skill.as_str(), arg.as_deref())))
+            launch_agent(d, Some((skill.as_str(), arg.as_deref())), now)
         }
     }
 }
 
 /// Launch a worktree agent by re-entering `bn dispatch` — the one launcher, rather than a second
 /// copy of the worktree/lease/tmux sequence that would drift from it.
-fn launch_agent(d: &Dispatch, skill: Option<(&str, Option<&str>)>) -> Executed {
+fn launch_agent(d: &Dispatch, skill: Option<(&str, Option<&str>)>, now: i64) -> Executed {
     let item = match skill.and_then(|(_, arg)| arg) {
         Some(arg) => arg.to_string(),
         None => d.item.clone(),
     };
-    let harness = d.harness.clone().unwrap_or_else(|| "claude".to_string());
+    let harness = dispatch_harness(d, now);
     let mut inv = crate::cmd::dispatch::DispatchInvocation::new(&item, &d.repo, &harness);
     if let Some((name, _)) = skill {
         inv = inv.skill(Some(name));
@@ -595,6 +608,15 @@ fn launch_agent(d: &Dispatch, skill: Option<(&str, Option<&str>)>) -> Executed {
         Ok(st) if st.success() => Executed::Launched,
         Ok(st) => Executed::Failed(format!("bn dispatch exited {}", st.code().unwrap_or(-1))),
         Err(e) => Executed::Failed(e.to_string()),
+    }
+}
+
+fn dispatch_harness(d: &Dispatch, now: i64) -> String {
+    if crate::cmd::dispatch::policy::dispatch_copilot_only_window_open(now) {
+        "copilot".to_string()
+    } else {
+        // Keep the resolver's documented default: absent [orchestrate].agent means Copilot.
+        d.harness.clone().unwrap_or_else(|| "copilot".to_string())
     }
 }
 
@@ -835,7 +857,14 @@ fn print_decision(d: &QueueDecision) {
     }
     if let Some(bind) = &d.bind {
         let why = d.reason.as_deref().unwrap_or("");
-        println!("  bind: {bind}{}", if why.is_empty() { String::new() } else { format!(" — {why}") });
+        println!(
+            "  bind: {bind}{}",
+            if why.is_empty() {
+                String::new()
+            } else {
+                format!(" — {why}")
+            }
+        );
     }
     for row in &d.dispatched {
         println!(

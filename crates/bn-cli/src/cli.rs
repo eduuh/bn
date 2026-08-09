@@ -1899,9 +1899,10 @@ pub(crate) enum ReviewGateCmd {
         /// `approve` | `block` (aliases `reject`/`lgtm`…).
         #[arg(long)]
         verdict: String,
-        /// The head sha reviewed (`git rev-parse HEAD`). Required — approvals are pinned to it.
+        /// The head sha reviewed — approvals are pinned to it. Defaults to the current
+        /// worktree's HEAD (the checkout the reviewer just read).
         #[arg(long)]
-        sha: String,
+        sha: Option<String>,
         /// A substantive summary of the review.
         #[arg(long)]
         summary: Option<String>,
@@ -2886,7 +2887,7 @@ pub(crate) enum SkillsCmd {
     },
     /// Render a skill's prompt body to stdout (headless — no MCP server needed), with
     /// `{{name}}` placeholders filled from repeatable `--arg key=value`. For cron/scripts:
-    /// `prompt=$(bn skills render notes-commit)`.
+    /// `prompt=$(bn skills render m365-email-query)`.
     Render {
         name: String,
         /// Fill a `{{key}}` placeholder: repeatable, e.g. `--arg branch=main`.

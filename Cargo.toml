@@ -4,7 +4,7 @@ members = ["crates/bn-core", "crates/bn-cli", "crates/bn-mcp", "crates/bn-web"]
 
 [workspace.package]
 edition = "2021"
-version = "0.4.0"
+version = "0.5.0"
 license = "MIT"
 repository = "https://github.com/eduuh/bn"
 
@@ -44,8 +44,8 @@ install-path = "CARGO_HOME"
 install-updater = false
 
 [workspace.dependencies]
-bn-core = { path = "crates/bn-core", version = "0.4.0" }
-bn-mcp = { path = "crates/bn-mcp", version = "0.4.0" }
+bn-core = { path = "crates/bn-core", version = "0.5.0" }
+bn-mcp = { path = "crates/bn-mcp", version = "0.5.0" }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 serde_json = "1"

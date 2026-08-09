@@ -203,12 +203,17 @@ pub(crate) fn launch_plan_agent(
     let workflow = bn_core::skills::render_required(cfg, &wt_path, "plan", Some(&plan_args))
         .unwrap_or_else(|error| fail(&format!("bn pipeline plan: {error}")));
     let packet = plan_packet(goal, findings);
+    let plan_path_s = plan_path.display().to_string();
     let mut envelope_args = serde_json::Map::new();
     envelope_args.insert(
         "workflow_body".into(),
         serde_json::Value::String(workflow),
     );
     envelope_args.insert("packet".into(), serde_json::Value::String(packet));
+    envelope_args.insert(
+        "plan_file".into(),
+        serde_json::Value::String(plan_path_s.clone()),
+    );
     let mut seed = bn_core::skills::render_required(
         cfg,
         &wt_path,
@@ -216,11 +221,6 @@ pub(crate) fn launch_plan_agent(
         Some(&envelope_args),
     )
     .unwrap_or_else(|error| fail(&format!("bn pipeline plan: {error}")));
-    seed.push_str(&format!(
-        "\n\n## Plan artifact\n\nWrite the plan Markdown directly to this bn-owned draft file, not to branch-note todo/done-when items:\n\n```text\n{}\n```\n\nKeep `note.md` as an index/status file only.\n",
-        plan_path.display()
-    ));
-    let plan_path_s = plan_path.display().to_string();
     if let Ok(note) = bn_core::store::read(&cfg.note_file(ctx)) {
         append_plan_gate_seed(cfg, ctx, &wt_path, &sid, &plan_path_s, &note, &mut seed);
     }

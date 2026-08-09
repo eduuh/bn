@@ -16,4 +16,3 @@ most useful misses without shaming. Always include the packet's red-flag clinic 
 
 If `summary.review_due` is true, emit exactly one `attn` item with `warn` severity telling the user
 to arrange the due corneal topography/ophthalmology review. Otherwise emit no attention item.
-Never emit goals, todos, research, note appends, links, or public-facing actions.

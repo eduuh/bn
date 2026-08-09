@@ -34,7 +34,5 @@ fixing, stop — that belongs to a later stage.
 5. **Hand off.** When the task is scoped and findings are recorded, run `bn pipeline investigate
    finish`. This advances the branch to `plan` and launches a fresh planner seeded with these
    findings. Report the finding count and stop; do not plan or implement in this context.
-
-If scouting this exposed a gap in *this* skill — a step that didn't fit, a missing move — capture
-it with `bn reflect "skill:investigate — <what to change>"` (via the harness). `evolve-skills` folds
-those reflections back into this file.
+   (Steps 4–5 are the pipeline handoff — an ad-hoc scout envelope will tell you to skip them and
+   report instead.)

@@ -295,7 +295,15 @@ fn review_seed_prompt(cfg: &Config, repo: &str, number: i64, wt_path: &std::path
     let skill = load_review_skill(cfg, wt_path)
         .unwrap_or_else(|error| crate::fail(&format!("bn review: {error}")))
         .unwrap_or_else(|| crate::fail("bn review: required prompt 'auto-review-pr' not found"));
-    let stage_flag = if mine { " --mine" } else { "" };
+    // The host is decided here, in the trusted launcher, from the cached PR url — so the agent
+    // never spends a turn on `git remote -v` discovery (and can't be steered to the wrong CLI).
+    let host = if url.contains("github.com") {
+        "GitHub"
+    } else if url.contains("dev.azure.com") || url.contains("visualstudio.com") {
+        "Azure DevOps"
+    } else {
+        "unknown"
+    };
     let mut args = serde_json::Map::new();
     args.insert("repo".into(), serde_json::Value::String(repo.to_string()));
     args.insert(
@@ -307,18 +315,18 @@ fn review_seed_prompt(cfg: &Config, repo: &str, number: i64, wt_path: &std::path
         "mine".into(),
         serde_json::Value::String(if mine { "yes" } else { "no" }.to_string()),
     );
-    args.insert(
-        "stage_flag".into(),
-        serde_json::Value::String(stage_flag.to_string()),
-    );
+    args.insert("host".into(), serde_json::Value::String(host.to_string()));
     let body = skill
         .render_checked(Some(&args))
+        .unwrap_or_else(|error| crate::fail(&format!("bn review: {error}")));
+    let cli_map = bn_core::skills::render_required(cfg, wt_path, "dispatch-cli-map", None)
         .unwrap_or_else(|error| crate::fail(&format!("bn review: {error}")));
     let mut envelope_args = serde_json::Map::new();
     envelope_args.insert(
         "workflow_body".into(),
         serde_json::Value::String(body),
     );
+    envelope_args.insert("cli_map".into(), serde_json::Value::String(cli_map));
     bn_core::skills::render_required(cfg, wt_path, "auto-review-envelope", Some(&envelope_args))
         .unwrap_or_else(|error| crate::fail(&format!("bn review: {error}")))
 }

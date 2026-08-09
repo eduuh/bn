@@ -39,7 +39,3 @@ you made.
 7. **Report.** One line: *root cause → fix → verify PASS*. Then the repro, the cause, what changed,
    and any follow-up filed. If it's a symptom of something deeper, `bn_add todo` the real fix
    rather than pretending the patch closed it.
-
-If the flow itself misfired — a step out of order, a missing move — capture it with
-`bn reflect "skill:debug — <what to change>"` (via the harness). `evolve-skills` folds those
-reflections back into this file.

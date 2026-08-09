@@ -14,10 +14,11 @@ report every item with the action you *would* take, but execute nothing and leav
 untouched. Otherwise execute the auto-class items as below. When in doubt, prefer the queue:
 it is always safe to leave an item for the user, never safe to act on a misread one.
 
-1. **Load the queue.** Call `bn_next` (the JSON form). Each action is
+1. **Load the queue.** Run `bn next --json` in the shell. Each action is
    `{kind, title, detail, link?, priority, age}`, ranked most-pressing first. `kind` is one of
-   `wip`, `cron`, `attn`, `review`, `pr`, `goal`, `blocked`. Read it; don't re-fetch anything
-   over the network — the queue is already the distilled, offline signal.
+   `wip`, `cron`, `attn`, `review`, `pr`, `goal`, `blocked`, `meeting`, `email`, `mention`.
+   Read it; don't re-fetch anything over the network — the queue is already the distilled,
+   offline signal.
 
 2. **Classify each item — auto vs. judgment.** Go by `kind`:
 
@@ -30,6 +31,8 @@ it is always safe to leave an item for the user, never safe to act on a misread 
    | `goal` (today's open daily goal) | **judgment** | the user's plan; never silently complete it. |
    | `blocked` (a note with open blockers) | **judgment** | unblocking needs the missing thing, which is by definition not yours to supply. |
    | `wip` (the focus guard) | **judgment** | a forward-looking nudge to *land* work, not a task to execute. |
+   | `meeting` / `email` / `mention` | **judgment** | showing up, replying, and responding to being named are the user's; you can only surface them. |
+   | any other kind | **judgment** | an unrecognized kind is by definition not safely mechanical. |
 
 3. **Refine the `attn` items by reading the title.** An attn `title`/`detail` that is a pure
    mechanical chore — "rebase eduuh/bn#N", "reformat X", "re-run Y", "nudge reviewer on #N" —
@@ -46,8 +49,8 @@ it is always safe to leave an item for the user, never safe to act on a misread 
    - **Re-push** the branch when a rebase or fmt changed it.
    After each, note the outcome (succeeded / skipped-because-conflict / no-op). Never merge,
    approve, close, force-push over others' work, or touch `main` — those are out of scope here,
-   full stop. If `attn`/`cron` items have an id, `bn_attn_ack` one **only** once its mechanical
-   action genuinely completed; never ack a judgment item.
+   full stop. If `attn`/`cron` items have an id, `bn attn ack <id>` one **only** once its
+   mechanical action genuinely completed; never ack a judgment item.
 
 5. **Report.** Lead with a one-line tally: *N items — X auto-executed, Y left for you*
    (in dry-run: *would auto-execute X, leave Y*). Then two short groups:

@@ -605,16 +605,18 @@ pub fn build_prompt(instructions: &str, ctx: &ReviewContext) -> String {
         s
     };
 
-    format!(
-        "{prompt}\n\n--- INPUT ---\n## Quarter {q} (window {ws}..{we})\n\n### Goals\n{goals}\n### \
+    // The input rides in the shared untrusted frame (crate::staff::frame_packet), matching the
+    // staff/mentor/task paths, so goal titles and PR text are read as data, never instructions.
+    let input = format!(
+        "## Quarter {q} (window {ws}..{we})\n\n### Goals\n{goals}\n### \
          Previous reviews (for continuity)\n{prev}\n### Tagged work this window\n{tagged}\n### \
-         Ground truth (merged PRs, completed goals, achievements)\n{ground}\n--- END INPUT ---\n",
-        prompt = instructions,
+         Ground truth (merged PRs, completed goals, achievements)\n{ground}",
         q = ctx.quarter,
         ws = ctx.window_start,
         we = ctx.window_end,
         ground = ctx.ground_truth,
-    )
+    );
+    format!("{instructions}\n\n{}\n", crate::staff::frame_packet(&input))
 }
 
 /// Normalise a status token: lowercase, spaces/underscores → `-`. Returns the canonical status

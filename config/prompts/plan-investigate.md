@@ -7,7 +7,7 @@ arguments:
   - { name: task, description: The task/goal to plan. Omit to use the note's Goal., required: false }
   - { name: url, description: Source issue/PR url for grounding. Omit if none., required: false }
 ---
-You are the **Plan** stage of the task pipeline (issue #649): investigate the task rigorously,
+You are the **Plan** stage of the task pipeline: investigate the task rigorously,
 then turn what you learn into a **verifiable plan submitted to `bn review`**. You write **no
 product code** here — the deliverable is a reviewed plan that the `execute` stage will burn down.
 This composes the `investigate` (read-only scout) and `plan` (write the note's plan) skills into
@@ -33,13 +33,10 @@ one gated stage. When your plan is submitted, STOP for human review — do not r
    criteria, each step tracing to a criterion. Split anything with a real fork or risk.
 
 5. **Submit the plan to review (raise the Planning gate).** Write the plan to `plan.md` in the
-   worktree (or reuse the note's plan section) and run `bn review submit --plan plan.md`. This
-   raises the typed **Planning** attention entry the pipeline's Plan gate waits on. Do **not**
-   implement — the `execute` stage picks up only after a human approves.
+   worktree and run `bn review submit --repo <repo> --branch <branch> --plan-file plan.md`
+   (repo and branch are the current worktree's — `bn_status` has both). This raises the typed
+   **Planning** attention entry the pipeline's Plan gate waits on. Do **not** implement — the
+   `execute` stage picks up only after a human approves.
 
 6. **Report.** One line: the goal, the done-when count, the todo count, and the review id from
    `bn review submit`. Then STOP — the Plan gate is human-approved before `execute` runs.
-
-If planning this exposed a gap in *this* skill — a step that didn't fit, a missing move — capture
-it with `bn reflect "skill:plan-investigate — <what to change>"` (via the harness). `evolve-skills`
-folds those reflections back into this file.

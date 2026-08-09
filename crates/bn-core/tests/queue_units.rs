@@ -46,6 +46,18 @@ fn lanes_are_capped_however_large_the_machine() {
 }
 
 #[test]
+fn the_explanation_states_the_arithmetic_in_the_order_it_happens() {
+    // The reserve comes off before the division; a sentence that divides first reads as false
+    // arithmetic ("16 ÷ 2 = 6") and undermines the number it is there to justify.
+    let (coding, _, why) = capacity::derive(16384, 10);
+    assert_eq!(
+        why,
+        "(16 GB RAM − 4 GB reserved) ÷ 2 GB/agent = 6; 10 cores ÷ 2 = 5; the lower wins"
+    );
+    assert_eq!(coding, 5, "the sentence's smaller bound is the lane cap");
+}
+
+#[test]
 fn research_is_half_of_coding_but_never_zero() {
     for (ram, cores) in [(16384, 10), (32768, 16), (8192, 8), (4096, 2)] {
         let (c, r, _) = capacity::derive(ram, cores);

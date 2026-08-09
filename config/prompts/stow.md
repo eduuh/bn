@@ -37,9 +37,9 @@ You are stowing the current session so it is safe to reset, compact, or hand off
    Stow routes knowledge into bn; it does not invent a parallel store or publish externally.
 
 5. **Leave a cold-start packet.** Call `bn_handoff_write` after the writes, using the remaining
-   open todos as the priority queue and including any deferred decisions or open questions. Read
-   it back with `bn_handoff_read` and confirm that a fresh session can identify the goal, current
-   state, and next action without this conversation.
+   open todos as the priority queue and including any deferred decisions or open questions. Write
+   it so a fresh session can identify the goal, current state, and next action without this
+   conversation.
 
 6. **Report honestly.** State what was stowed and which bn surfaces received it, what remains
    uncaptured (and why), and whether the session is safe to reset. It is safe only when every

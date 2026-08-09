@@ -367,11 +367,14 @@ mod tests {
             "attention-planning",
             "auto-review-envelope",
             "curriculum-resource",
+            "dispatch-autonomy-interactive",
+            "dispatch-autonomy-unattended",
+            "dispatch-cli-map",
+            "dispatch-completion",
             "dispatch-plan-review-gate",
             "dispatch-plan-work-bootstrap",
             "dispatch-scout",
-            "dispatch-ship-interactive",
-            "dispatch-ship-unattended",
+            "dispatch-ship",
             "dispatch-verify-gate",
             "m365-commitments-query",
             "m365-commitments-schema",
@@ -416,6 +419,80 @@ mod tests {
                 "{} left an unresolved placeholder",
                 skill.name
             );
+        }
+    }
+
+    /// Every declared template argument must be referenced by its body — a declared-but-unused
+    /// argument is dead plumbing that the strict renderer tolerates silently (it was how the
+    /// dead `auto-review-pr.url` and `critique-fresh.pr` args survived unnoticed).
+    #[test]
+    fn shipped_prompt_arguments_are_all_referenced() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let skills =
+            load_skill_set(&[root.join("config/prompts")]).expect("shipped prompt catalog loads");
+        for skill in skills {
+            for argument in &skill.arguments {
+                let placeholder = format!("{{{{{}}}}}", argument.name);
+                assert!(
+                    skill.body.contains(&placeholder),
+                    "{} declares argument '{}' but its body never references {placeholder}",
+                    skill.name,
+                    argument.name
+                );
+            }
+        }
+    }
+
+    /// Every `bn_<name>` token in a shipped prompt must be a real bn MCP tool. The MCP surface is
+    /// exactly the ten current-branch tools served by bn-mcp; anything else (`bn_next`,
+    /// `bn_metrics`, …) is a CLI command and must be written `bn <sub>` — prompts instructing a
+    /// phantom tool fail on every run.
+    #[test]
+    fn shipped_prompts_reference_only_real_mcp_tools() {
+        const MCP_TOOLS: &[&str] = &[
+            "bn_add",
+            "bn_done",
+            "bn_pr",
+            "bn_goal",
+            "bn_cat",
+            "bn_context",
+            "bn_status",
+            "bn_sync",
+            "bn_handoff_write",
+            "bn_handoff_read",
+        ];
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dirs = [root.join("config/prompts"), root.join("config/agents")];
+        for dir in dirs {
+            for entry in std::fs::read_dir(&dir).expect("config dir listing") {
+                let path = entry.expect("dir entry").path();
+                if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).expect("prompt readable");
+                let bytes = text.as_bytes();
+                let mut i = 0;
+                while let Some(pos) = text[i..].find("bn_") {
+                    let start = i + pos;
+                    // Only a token boundary counts (skip e.g. `_bn_prompt` shell vars).
+                    let preceded = start > 0
+                        && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_');
+                    let end = text[start..]
+                        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                        .map(|off| start + off)
+                        .unwrap_or(text.len());
+                    let token = &text[start..end];
+                    if !preceded && token != "bn_" {
+                        assert!(
+                            MCP_TOOLS.contains(&token),
+                            "{} references '{token}', which is not one of the bn MCP tools — \
+                             CLI commands must be written `bn <sub>`",
+                            path.display()
+                        );
+                    }
+                    i = end;
+                }
+            }
         }
     }
 }

@@ -294,7 +294,17 @@ pub(super) fn route(cfg: &Config, action: CmdReview, json: bool) {
                     url,
                     branch,
                     findings,
-                } => emit_review_gate_record(
+                } => {
+                    // Default to the reviewer worktree's HEAD — the checkout just read — so the
+                    // critic prompt needn't splice a `$(git rev-parse HEAD)` subshell.
+                    let sha = sha.unwrap_or_else(|| {
+                        crate::git::git_capture(&["rev-parse", "HEAD"], None, false)
+                            .map(|s| s.trim().to_string())
+                            .unwrap_or_else(|| {
+                                fail("bn review-gate record: --sha not given and `git rev-parse HEAD` failed (not in a git worktree?)")
+                            })
+                    });
+                    emit_review_gate_record(
                     &repo,
                     number,
                     &reviewer,
@@ -306,7 +316,8 @@ pub(super) fn route(cfg: &Config, action: CmdReview, json: bool) {
                     &findings,
                     required,
                     json,
-                ),
+                )
+                }
                 ReviewGateCmd::Resolve {
                     repo,
                     number,

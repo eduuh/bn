@@ -180,14 +180,8 @@ pub(crate) fn run_critic_dispatch(
     // Launch the FRESH critic lane: brand-new harness session (zero prior turns), seeded with ONLY
     // the diff + done-when + pr via the leak-proof packet builder. No plan, execution transcript,
     // or execution session id is forwarded.
-    let mut workflow_args = serde_json::Map::new();
-    workflow_args.insert(
-        "pr".into(),
-        serde_json::Value::String(pr.unwrap_or("").to_string()),
-    );
-    let workflow =
-        bn_core::skills::render_required(cfg, &wt_path, "critique-fresh", Some(&workflow_args))
-            .unwrap_or_else(|error| fail(&format!("bn critic: {error}")));
+    let workflow = bn_core::skills::render_required(cfg, &wt_path, "critique-fresh", None)
+        .unwrap_or_else(|error| fail(&format!("bn critic: {error}")));
     let packet = critic_packet(&diff, &done_when, pr);
     let verdict_commands = format!(
         "PASS: `bn critic verdict --repo {repo} --branch {branch} --pass`\n\

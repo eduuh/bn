@@ -21,16 +21,11 @@ import { Card } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
 import { cn } from "../lib/utils";
 
+/** What the pool payload still carries. The prose rules and the board-level policy card they fed
+ * are gone; `min_ready` stays because the optimistic pool update recomputes `needs_top_up` from it
+ * (see `lib/optimistic`). */
 type RepoPoolPolicy = {
-  capacity: "hard";
   min_ready: number;
-  controller_slot: number;
-  warming: "queued-heavy";
-  auto_queue: "enable-resize-lease-top-up";
-  leases: "active-work";
-  reservations: "not-supported";
-  stale_recovery: "clean-dead-only";
-  rules: string[];
 };
 
 type PolicyRepoPool = RepoPool & {
@@ -42,7 +37,7 @@ type PolicyRepoPool = RepoPool & {
 };
 
 type PolicyRepoRollup = RepoRollup & { pool: PolicyRepoPool };
-type PolicyReposView = { repos: PolicyRepoRollup[]; pool_policy?: RepoPoolPolicy };
+type PolicyReposView = { repos: PolicyRepoRollup[] };
 
 /** A small metadata tag on a card's meta row. */
 function Tag({
@@ -279,33 +274,6 @@ function PoolStrip({ repo, pool, now }: { repo: string; pool: PolicyRepoPool; no
   );
 }
 
-function PoolPolicyCard({ policy, repos }: { policy: RepoPoolPolicy; repos: PolicyRepoRollup[] }) {
-  const pooled = repos.filter((r) => r.pool.enabled).length;
-  const topUp = repos.filter((r) => poolNeedsTopUp(r.pool)).length;
-  const full = repos.filter((r) => poolIsFull(r.pool)).length;
-  return (
-    <Card className="mb-3 space-y-2 p-3">
-      <div className="flex flex-wrap items-center gap-1.5">
-        <span className="font-display text-sm font-semibold text-foreground">Warm-pool policy</span>
-        <Tag>hard capacity</Tag>
-        <Tag>min ready {policy.min_ready}</Tag>
-        <Tag>auto queue</Tag>
-        <span className="flex-1" />
-        <Tag>{pooled} pooled</Tag>
-        {topUp > 0 && <Tag className="bg-warn-muted text-warn">{topUp} need top-up</Tag>}
-        {full > 0 && <Tag>{full} full</Tag>}
-      </div>
-      <div className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-2 xl:grid-cols-3">
-        {policy.rules.map((rule) => (
-          <div key={rule} className="rounded-md bg-muted/60 px-2 py-1">
-            {rule}
-          </div>
-        ))}
-      </div>
-    </Card>
-  );
-}
-
 /** The repo's forge pages — code, issues, PRs — derived server-side from the clone's `origin`.
  * Renders nothing for a repo with no clone here or an unparseable remote, and only the links that
  * forge actually has. Deliberately *outside* the card's `<Link>`: an anchor inside an anchor is
@@ -393,7 +361,6 @@ export function Repos() {
   const now = useNow();
   const data = repos.data as PolicyReposView | undefined;
   const list = data?.repos ?? [];
-  const poolPolicy = data?.pool_policy ?? list[0]?.pool.policy;
   const setupNeeded = list.filter((repo) => repo.setup?.needs_setup).length;
 
   return (
@@ -441,14 +408,11 @@ export function Repos() {
         )}
 
         {list.length > 0 && (
-          <>
-            {poolPolicy && <PoolPolicyCard policy={poolPolicy} repos={list} />}
-            <div className={GRID}>
-              {list.map((r) => (
-                <RepoCard key={r.repo} repo={r} now={now} />
-              ))}
-            </div>
-          </>
+          <div className={GRID}>
+            {list.map((r) => (
+              <RepoCard key={r.repo} repo={r} now={now} />
+            ))}
+          </div>
         )}
       </div>
     </div>

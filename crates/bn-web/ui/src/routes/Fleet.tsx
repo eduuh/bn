@@ -3,10 +3,8 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, Loader2, Plus, ServerCrash } from "lucide-react";
 import { fleetQuery, orchestrateQuery } from "../api/client";
-import type { Counts } from "../api/types";
 import { fleetEntries, needsYou, orchestrators } from "../lib/fleet";
 import { useNow } from "../hooks/useNow";
-import { useBacklogActions } from "../hooks/useBacklogActions";
 import { FleetEntryCard } from "../components/FleetEntryCard";
 import { FleetRow } from "../components/FleetRow";
 import { NodeStrip } from "../components/NodeStrip";
@@ -15,31 +13,11 @@ import { PaneRule, Section } from "../components/ui/pane";
 import { AgentActivity } from "../components/AgentActivity";
 import { SteerPanel } from "../components/SteerPanel";
 import { ApprovalPanel } from "../components/ApprovalPanel";
-import { LanesPanel } from "../components/backlog/LanesPanel";
-import { QueuePanel } from "../components/backlog/QueuePanel";
 import { RecoveryFeed } from "../components/RecoveryFeed";
+import { RunControl } from "../components/RunControls";
 import { ToastStack } from "../components/ToastStack";
 import { Button } from "../components/ui/button";
 import { Skeleton } from "../components/ui/skeleton";
-import { cn } from "../lib/utils";
-
-/** The per-run count strip (queued · in-flight · merged · failed). */
-function MiniCounts({ counts }: { counts: Counts }) {
-  const stat = (n: number, label: string, tone?: string) => (
-    <span className="inline-flex items-baseline gap-1">
-      <b className={cn("tabular-nums text-foreground", tone)}>{n}</b>
-      <span className="text-muted-foreground">{label}</span>
-    </span>
-  );
-  return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-      {stat(counts.queued, "queued")}
-      {stat(counts.in_flight, "in-flight")}
-      {stat(counts.merged, "merged", counts.merged > 0 ? "text-ok" : undefined)}
-      {counts.failed > 0 && stat(counts.failed, "failed", "text-urgent")}
-    </div>
-  );
-}
 
 /**
  * `/fleet` — the Fleet (design §479, job 1: *Glance*). Who needs you (stuck / plan-waiting agents
@@ -51,7 +29,6 @@ export function Fleet() {
   const orch = useQuery(orchestrateQuery());
   const fleet = useQuery(fleetQuery());
   const now = useNow();
-  const actions = useBacklogActions();
 
   const entries = fleetEntries(orch.data, fleet.data);
   const orchestratorEntries = orchestrators(entries);
@@ -66,11 +43,6 @@ export function Fleet() {
   // fast-resolving empty query must not drop us into the "0 running / no agents" empty state (#544).
   const loading = orch.isLoading || fleet.isLoading;
   const nothing = !loading && entries.length === 0 && runs.length === 0 && starting === 0;
-  const manageBusy =
-    actions.pending.scale ||
-    actions.pending.stop ||
-    actions.pending.reorder ||
-    actions.pending.remove;
 
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
@@ -223,22 +195,7 @@ export function Fleet() {
             <div key={run.repo}>
               <PaneRule />
               <Section label={run.repo} meta="run">
-                <MiniCounts counts={run.counts} />
-                <details className="manage mt-2">
-                  <summary>Manage run</summary>
-                  <LanesPanel
-                    run={run}
-                    busy={manageBusy}
-                    onScale={(c) => actions.setConcurrency(run.repo, c)}
-                    onStop={() => actions.stopRun(run.repo)}
-                  />
-                  <QueuePanel
-                    run={run}
-                    busy={manageBusy}
-                    onReorder={(ids) => actions.reorderQueue(run.repo, ids)}
-                    onRemove={(id) => actions.removeItem(run.repo, id)}
-                  />
-                </details>
+                <RunControl repo={run.repo} />
               </Section>
             </div>
           ))}

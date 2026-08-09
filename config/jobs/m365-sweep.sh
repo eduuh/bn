@@ -42,15 +42,17 @@ clear_source() {
     | while IFS= read -r _id; do [ -n "$_id" ] && "$bn" attn ack "$_id" >/dev/null 2>&1 || true; done
 }
 
-# route_attn <source> — read a JSON array on stdin of {key,title,link,urgent} and raise one
-# attention item per element. `urgent:true` → severity urgent (toasts); else warn (silent).
+# route_attn <source> — read a JSON array on stdin of {id,title,link,urgent} (the shape the
+# m365-*-schema prompts produce) and raise one attention item per element. `urgent:true` →
+# severity urgent (toasts); else warn (silent). The `id` becomes the stable --key so re-runs
+# dedup instead of stacking duplicates.
 route_attn() {
   _src=$1
   jq -c '.[]' | while IFS= read -r _it; do
     _title=$(printf '%s' "$_it" | jq -r '.title // empty')
     [ -z "$_title" ] && continue
     _link=$(printf '%s' "$_it" | jq -r '.link // ""')
-    _key=$(printf '%s'  "$_it" | jq -r '.key // empty')
+    _key=$(printf '%s'  "$_it" | jq -r '.id // empty')
     _sev=$(printf '%s'  "$_it" | jq -r 'if (.urgent // false) then "urgent" else "warn" end')
     # `|| true`: a failed add must not abort the run — this loop is the last stage of the caller's
     # pipe, so under `set -e` its exit status would propagate and kill the remaining sections.

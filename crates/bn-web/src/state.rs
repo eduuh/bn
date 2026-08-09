@@ -5,6 +5,7 @@
 //! single [`crate::watch`] task broadcasts frames on `tx`; each `GET /api/stream` client subscribes
 //! its own receiver, so N browsers share ONE set of file reads (design §2.2).
 
+use crate::view_cache::ViewCache;
 use crate::watch::StreamFrame;
 use bn_core::resolver::Config;
 use std::sync::Arc;
@@ -25,6 +26,9 @@ pub struct AppState {
     pub started_at: i64,
     /// SSE fan-out: the watcher sends [`StreamFrame`]s here; `/api/stream` clients subscribe.
     pub tx: broadcast::Sender<Arc<StreamFrame>>,
+    /// Short-TTL cache for the expensive read-only views, so the shell's ten-read page load stops
+    /// recomputing what it computed seconds ago (see [`crate::view_cache`]).
+    pub views: ViewCache,
 }
 
 impl AppState {
@@ -35,6 +39,7 @@ impl AppState {
             cfg: Arc::new(cfg),
             started_at: bn_core::util::now_epoch_secs(),
             tx,
+            views: ViewCache::new(),
         }
     }
 }

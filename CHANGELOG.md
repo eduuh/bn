@@ -3,6 +3,75 @@
 All notable changes to this project are documented here. Generated from conventional commits
 by `scripts/release-pr.py`; the `v{version}` tag is pushed by `release-plz release` on merge.
 
+## [0.5.0] - 2026-08-09
+
+### Features
+
+- **cron**: publish main's binaries to a rolling nightly release (#1115)
+- **resume**: recover the work that was running when the machine died (#1114)
+- **task**: attach by pasting into the doc editor, and cover the capture chain end to end (#1113)
+- **task**: capture prose, links and files with a new task and hand them to the agent (#1111)
+- **tmux**: switch to any window in this session on prefix ` (#1112)
+- **tmux**: close a worktree and release its lease on prefix x (#1105)
+- **run**: add `bn run <job> --now` to bypass the queue (#1096)
+- **machine**: add `bn machine list` / `bn machine merge` to repair split state (#1090)
+- **cron**: add `bn cron retire` to tombstone a job that is gone (#1086)
+- add bn-native plan artifacts
+- **web**: show pool warming policy
+- **web**: make repos local inventory
+- **queue**: make operations event-driven and observable (#1072)
+- make agents markdown-authoritative (#1071)
+- **web**: unify dashboard mutation handling (#1070)
+- **queue**: one machine-wide priority queue, one dispatcher, one timeline (#1066)
+- **agents**: read the dialog an agent is blocked on, answer it verifiably, and make instructions stick (#1068)
+- **web**: rebuild the task deck and Today on the shadcn kit (#1063)
+- **web**: add a settings page that makes the experimental gate switchable (#1062)
+- **web**: show only the Today tab until ?experimental says otherwise (#1059)
+- **tasks**: read & edit task.md from the browser (append + version-guarded edit) (#1057)
+- **web**: redesign the Today page — tabbed deck, queue & research (#1055)
+- **pool**: warm every slot by running bn build itself (#1056)
+
+### Bug Fixes
+
+- **pool**: warm dispatch-created pools instead of failing the cron (#1118)
+- **tmux**: prefix x killed every window and froze tmux — defer the reclaim, and make it the only one (#1110)
+- **cron**: stop a retired cron's repair agent re-dispatching forever (#1109)
+- **doctor**: honour cron retirement so a renamed job stops reading as broken (#1108)
+- **doctor**: split the attention cache back under the ratchet limit (#1107)
+- **doctor**: stop a retired cron from alerting forever (#1104)
+- **cron-health**: close a cron's repair task once it recovers (#1103)
+- **orchestrate**: run the queue-from check under the shared job PATH (#1101)
+- **agent**: stamp agent start time, so every reader stops seeing 1970 (#1100)
+- **pipeline**: split cmd/pipeline.rs back under the ratchet limit (#1099)
+- **pipeline**: split the board/badge views back under the 1000-line ratchet (#1098)
+- **orchestrate**: probe controller liveness portably so one loop drives a repo (#1097)
+- **pipeline**: let the investigate→plan handoff find its worktree and lease (#1095)
+- **queue**: scope the dispatcher's extent to the dispatch, not the machine (#1092)
+- **pool**: reclaim leases nobody is under so dispatch stops spilling cold (#1089)
+- **resolver**: pin the machine identity so state cannot split (#1088)
+- **staff**: record a staff run's outcome in the cron event tail (#1082)
+- **cron**: stop retired crons from alerting and dispatching forever (#1084)
+- satisfy plan artifact CI gates
+- **staff**: resolve gather and dispatch through the cron PATH prelude
+- **pool**: return stale merged slot windows
+- **wt**: return pool slots from cleanup
+- **pool**: harden warm-slot creation and enumeration, add test coverage (#1067)
+- **install**: restore UI deps when the lockfile moves, not just when they are missing (#1065)
+- **commit-notes**: stop committing empty scaffolds and state-churn-only noise (#1061)
+- **agents**: stop tmux window lookups resolving to the window you're looking at (#1051)
+- **pool**: never lease a slot an agent is already working in (#1060)
+
+### Performance
+
+- **web**: cache the dashboard's expensive reads, and consolidate the rail (#1120)
+
+### Refactor
+
+- **pool**: split warming out of wt_pool.rs (#1119)
+- **doctor**: split the cron lane out under the file-size ratchet (#1106)
+- **cron**: home the parsed user-command launcher beside job_path (#1102)
+- **path**: route the verify and build gates through job_path (#1085)
+
 ## [0.4.0] - 2026-08-04
 
 ### Features

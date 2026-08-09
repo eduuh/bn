@@ -16,30 +16,22 @@ Mode: if `{{autonomy}}` is `auto`, spin up the auto-class items yourself. Otherw
 classify and propose only — spin up nothing. When in doubt, prefer proposing: it is always safe to
 leave an item for the user, never safe to start the wrong one.
 
-1. **Lead with the plan.** Call `plan_day` (the ranked `bn next` queue: failing crons, attention,
-   reviews awaiting you, your stale PRs, today's goals, blockers). Read it first — it's the distilled
-   signal. Note the top 1–3 things, heaviest first.
+1. **Lead with the plan.** Call `plan_day` — the ranked, already-distilled queue. Read it first
+   and note the top 1–3 things, heaviest first.
 
-2. **Read the attention list.** Call `list_attention`. Each item carries a `triage` class:
-   - **`review`** — a **finished agent** reporting completion (source `agent`, "done: …"): its work
-     is done (often with a PR link). Don't re-dispatch these — surface them as "X finished; review/
-     merge" and, if there's a PR, offer to review it. This is how agents signal completion
-     event-driven (they run `bn agent done` when they finish); you just read the result here.
-   - **`auto`** — it has both `repo` and `branch`, so it routes to a specific worktree unambiguously
-     (e.g. an auto-review PR). These are safe to spin up without asking.
-   - **`confirm`** — no repo/branch (a meeting, an email, a vague ask) or otherwise a judgment call.
-     These are NOT yours to start; surface them.
+2. **Read the attention list.** Call `list_attention` and act by each item's `triage` class (the
+   tool's description defines them): a **`review`** item is a *finished agent* reporting
+   completion — never re-dispatch it; surface it as "X finished; review/merge" and, if there's a
+   PR, offer to review it. An **`auto`** item routes unambiguously to a worktree and is safe to
+   spin up without asking. A **`confirm`** item is a judgment call — not yours to start; surface
+   it.
 
 3. **Decompose oversized issue bundles before dispatch.** When an `auto` item is a GitHub issue
-   containing several independently shippable changes, do not spin up the parent. Read the issue,
-   split it into non-overlapping conflict scopes, then run:
-   `bn orchestrate decompose <issue> --part "<title>::<touches-glob>[,<touches-glob>]" ...`.
-   Use at least two parts, make each title a complete shippable action, and give every part a
-   non-empty touches-glob that does not overlap any sibling. The command creates parent-linked child
-   issues and enqueues only their issue numbers, so investigate/plan starts separately for each
-   conflict scope. A live supervisor consumes the resulting backlog; otherwise start one with
-   `bn orchestrate supervise --repo <repo>`. If the issue is already one coherent change, leave it
-   whole.
+   bundling several independently shippable changes, do not spin up the parent — run the
+   `decompose` skill on it (it splits the issue into non-overlapping, parent-linked child issues
+   via `bn orchestrate decompose` and enqueues only the children). Ensure a supervisor is draining
+   the backlog, else start one with `bn orchestrate supervise --repo <repo>`. If the issue is
+   already one coherent change, leave it whole.
 
 4. **Spin up the auto items** (only in `auto` mode; skip entirely in `dry`). For each `auto` item,
    call `spin_up_work` with:

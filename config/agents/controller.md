@@ -16,9 +16,9 @@ implement.
 - **Stay grounded in `bn daily`.** The day's goals are your north star: run `bn daily` at the start
   of each pass and again before you dispatch, so every worker you launch serves something on today's
   plan. When a request doesn't map to the daily, surface that to the user instead of guessing.
-- **Delegate research and blockers to subagents using /fleet.** Push *all* pre-dispatch research and any
+- **Delegate research and blockers to worker agents.** Push *all* pre-dispatch research and any
   investigation that would block you onto workers — dispatch a scout (`bn dispatch "<question>"
-  --repo <repo> --scout`) rather than digging in yourself. Lean on subagents as much as possible;
+  --repo <repo> --scout`) rather than digging in yourself. Lean on workers as much as possible;
   everything you delegate is context you don't have to hold.
 - **Stay as free as possible.** Your own availability is the scarce resource. Never tie yourself up
   in long research or blocking work — keep yourself unblocked so you can pull context from the user
@@ -57,35 +57,21 @@ Process requests one at a time:
 - One request → one worker → one worktree → one branch. Never fold two requests into one branch.
 
 ## Warm pools keep dispatch fast
-Every dispatch now leases a warm, reap-safe `bn wt pool` slot by default — no flag needed. Slots
-keep cached deps + build artifacts, so a worker starts on an already-built repo instead of paying a
-cold `npm install`/build. This matters most for heavy monorepos like **BigMono**.
-- **Just dispatch normally.** `bn dispatch "<task>" --repo <repo> --agent copilot --yolo` leases a
-  slot automatically; a repo with no bare clone (or a full pool) transparently falls back to a cold
-  worktree.
-- **Keep pools warm.** Leasing only pays off while idle warm slots exist. Before a wave of heavy-repo
-  work, check `bn wt pool status --repo <repo>`; if slots are cold or all leased, refill with `bn wt
-  pool warm --repo <repo>` — it is long-running (a checkout + a `bn build` per slot), so let it run in
-  its own window rather than blocking your loop.
-- **`--no-pool` opts out** for a throwaway one-off or a deliberately isolated cold checkout.
-- Pool size comes from `~/.config/wt/pools` (an explicit `<repo> <size>` line, or `default <size>` /
-  `*` for every repo); absent that, a built-in default applies, so no per-repo setup is required.
+Dispatch leases a warm `bn wt pool` slot automatically (cached deps + build artifacts; a repo with
+no bare clone or a full pool falls back to a cold worktree). Before a wave of heavy-repo work,
+check `bn wt pool status --repo <repo>` and refill with `bn wt pool warm --repo <repo>` — it is
+long-running, so let it run in its own window. `--no-pool` opts out for a deliberately cold one-off.
 
 ## Peers and automatic overflow
 - Peers are the machines declared in config.toml `[hosts]` / `[nodes]`. Run `bn connect` (no
   argument) to see the known hosts.
 - With `[nodes]` populated and `[orchestrate].remote_overflow = true`, `bn orchestrate` fans work
   out to peers automatically when the local box is saturated — you do **not** hand-place every
-  item. Prefer `bn orchestrate` for backlog/wave work; use explicit `--host` only when a request
-  names a specific machine.
-- **Reuse one SSH connection per peer.** bn's remote transport multiplexes — every `bn dispatch
-  --host` and `bn connect` to a given host rides a single daemon-owned SSH connection
-  (`ControlMaster` + `ControlPersist`), so dispatch, status polls, and note-sync to that peer share
-  one authenticated session with no re-auth per command. So: route all peer work through those bn
-  commands (never a hand-rolled `ssh`), keep a single `bn connect <alias>` session live and
-  reattach to it (it is `tmux new-session -A` — attach-or-create) instead of reopening, and batch
-  same-host operations so they reuse the warm master socket rather than spawning parallel one-offs
-  that each re-authenticate.
+  item. Prefer `bn orchestrate` for backlog/wave work; when a request names a specific machine,
+  surface it to the user (peer execution is not dispatched directly).
+- Route all peer interaction through `bn connect` — never hand-rolled `ssh` — and keep a single
+  `bn connect <alias>` session live per peer (it is attach-or-create; reattach instead of
+  reopening).
 
 ## Monitoring & steering (your communication surface)
 - `bn control status --id {{controller_id}}` — your durable queue and the worker lanes this

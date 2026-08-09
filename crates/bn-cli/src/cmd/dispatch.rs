@@ -1,6 +1,10 @@
 //! `bn dispatch` — fork a worktree for a todo and launch an agent in it.
 use crate::*;
 
+pub(crate) mod policy;
+use policy as dp;
+pub(crate) use policy::{effective_launch_harness, normalize_agent};
+
 /// Canonical argv builder for agent-bearing `bn dispatch` invocations.
 ///
 /// Orchestrator and SSH-host callers deliberately execute dispatch in a child process, but they
@@ -174,21 +178,6 @@ pub(crate) fn slugify(s: &str) -> String {
     }
     let capped: String = out.chars().take(40).collect();
     capped.trim_matches('-').to_string()
-}
-
-/// Pick the first unoccupied dispatch branch, preserving the unsuffixed name for the common case.
-/// Collisions use a stable counter so two same-slug goals never intentionally target one checkout.
-pub(crate) fn unique_dispatch_branch(base: &str, mut occupied: impl FnMut(&str) -> bool) -> String {
-    if !occupied(base) {
-        return base.to_string();
-    }
-    for suffix in 2_u64.. {
-        let candidate = format!("{base}-{suffix}");
-        if !occupied(&candidate) {
-            return candidate;
-        }
-    }
-    unreachable!("u64 dispatch branch suffixes exhausted")
 }
 
 fn dispatch_branch_occupied(
@@ -678,10 +667,7 @@ pub(crate) fn plan_gate_enabled(explicit: bool, configured: bool, yolo: bool, sc
     !scout && (explicit || configured || yolo)
 }
 
-fn render_workflow_body(
-    skill: &bn_core::skills::Skill,
-    title: &str,
-) -> Result<String, String> {
+fn render_workflow_body(skill: &bn_core::skills::Skill, title: &str) -> Result<String, String> {
     let mut args = serde_json::Map::new();
     for argument in &skill.arguments {
         let value = match argument.name.as_str() {
@@ -728,14 +714,9 @@ pub(crate) fn plan_gate_seed(
     ] {
         args.insert(name.into(), serde_json::Value::String(value));
     }
-    bn_core::skills::render_required(
-        cfg,
-        base_dir,
-        "dispatch-plan-review-gate",
-        Some(&args),
-    )
-    .map(|rendered| format!("\n\n{rendered}"))
-    .map_err(|error| error.to_string())
+    bn_core::skills::render_required(cfg, base_dir, "dispatch-plan-review-gate", Some(&args))
+        .map(|rendered| format!("\n\n{rendered}"))
+        .map_err(|error| error.to_string())
 }
 
 pub(crate) struct PlanGateContext<'a> {
@@ -757,10 +738,7 @@ fn append_plan_gate(
     ctx: PlanGateContext<'_>,
 ) -> Result<String, String> {
     if plan_gate && !entering_investigate {
-        Ok(format!(
-            "{seed}{}",
-            plan_gate_seed(cfg, base_dir, ctx)?
-        ))
+        Ok(format!("{seed}{}", plan_gate_seed(cfg, base_dir, ctx)?))
     } else {
         Ok(seed)
     }
@@ -792,6 +770,10 @@ struct SkillSeedContext<'a> {
     scout: bool,
     yolo: bool,
     verify: bool,
+    /// A plan-review gate will be appended to this seed. The gate then owns the plan file and
+    /// the completion protocol, so the envelope suppresses its bootstrap/verification/completion
+    /// blocks instead of issuing a second, contradicting copy.
+    plan_gate: bool,
 }
 
 fn skill_seed_prompt(
@@ -802,47 +784,74 @@ fn skill_seed_prompt(
 ) -> Result<String, String> {
     let body = render_workflow_body(skill, ctx.title)?;
     let name = &skill.name;
-    let bootstrap = if !ctx.scout && name == "plan-work" {
+    let cli_map = bn_core::skills::render_required(cfg, base_dir, "dispatch-cli-map", None)
+        .map_err(|error| error.to_string())?;
+    let bootstrap = if !ctx.scout && name == "plan-work" && !ctx.plan_gate {
         bn_core::skills::render_required(cfg, base_dir, "dispatch-plan-work-bootstrap", None)
             .map_err(|error| error.to_string())?
     } else {
         String::new()
     };
-    let verification = if ctx.verify && !ctx.scout {
-        bn_core::skills::render_required(cfg, base_dir, "dispatch-verify-gate", None)
-            .map_err(|error| error.to_string())?
-    } else {
-        String::new()
-    };
+    // The verify gate renders at most once per seed: the plan-review gate carries it when one is
+    // appended, and `plan-work`/`execute` already gate step 6 on `bn verify` (rebase re-run
+    // included), so only other workflows need the explicit clause.
+    let verification =
+        if ctx.verify && !ctx.scout && !ctx.plan_gate && name != "plan-work" && name != "execute" {
+            bn_core::skills::render_required(cfg, base_dir, "dispatch-verify-gate", None)
+                .map_err(|error| error.to_string())?
+        } else {
+            String::new()
+        };
     let mut args = serde_json::Map::new();
     for (key, value) in [
         ("goal", ctx.title.to_string()),
         (
             "source",
-            ctx.url
-                .unwrap_or("(none; use the branch note)")
-                .to_string(),
+            ctx.url.unwrap_or("(none; use the branch note)").to_string(),
         ),
         ("workflow_name", name.to_string()),
         ("workflow_body", body),
+        ("cli_map", cli_map),
     ] {
         args.insert(key.into(), serde_json::Value::String(value));
     }
-    if !ctx.scout {
-        args.insert("bootstrap".into(), serde_json::Value::String(bootstrap));
-        args.insert(
-            "verification".into(),
-            serde_json::Value::String(verification),
-        );
+    if ctx.scout {
+        return bn_core::skills::render_required(cfg, base_dir, "dispatch-scout", Some(&args))
+            .map_err(|error| error.to_string());
     }
-    let prompt_name = if ctx.scout {
-        "dispatch-scout"
-    } else if ctx.yolo {
-        "dispatch-ship-unattended"
+    let autonomy_name = if ctx.yolo {
+        "dispatch-autonomy-unattended"
     } else {
-        "dispatch-ship-interactive"
+        "dispatch-autonomy-interactive"
     };
-    bn_core::skills::render_required(cfg, base_dir, prompt_name, Some(&args))
+    let autonomy = bn_core::skills::render_required(cfg, base_dir, autonomy_name, None)
+        .map_err(|error| error.to_string())?;
+    // With a plan gate appended, the gate's approved-branch is the completion protocol; an empty
+    // slot here keeps the seed to a single copy.
+    let completion = if ctx.plan_gate {
+        String::new()
+    } else {
+        let mut completion_args = serde_json::Map::new();
+        completion_args.insert(
+            "workflow_name".into(),
+            serde_json::Value::String(name.to_string()),
+        );
+        bn_core::skills::render_required(
+            cfg,
+            base_dir,
+            "dispatch-completion",
+            Some(&completion_args),
+        )
+        .map_err(|error| error.to_string())?
+    };
+    args.insert("autonomy".into(), serde_json::Value::String(autonomy));
+    args.insert("bootstrap".into(), serde_json::Value::String(bootstrap));
+    args.insert(
+        "verification".into(),
+        serde_json::Value::String(verification),
+    );
+    args.insert("completion".into(), serde_json::Value::String(completion));
+    bn_core::skills::render_required(cfg, base_dir, "dispatch-ship", Some(&args))
         .map_err(|error| error.to_string())
 }
 
@@ -854,6 +863,8 @@ fn pipeline_investigate_seed(
     skill: &bn_core::skills::Skill,
 ) -> Result<String, String> {
     let body = render_workflow_body(skill, title)?;
+    let cli_map = bn_core::skills::render_required(cfg, base_dir, "dispatch-cli-map", None)
+        .map_err(|error| error.to_string())?;
     let mut args = serde_json::Map::new();
     args.insert("goal".into(), serde_json::Value::String(title.to_string()));
     args.insert(
@@ -861,13 +872,9 @@ fn pipeline_investigate_seed(
         serde_json::Value::String(url.unwrap_or("(none; use the branch note)").to_string()),
     );
     args.insert("workflow_body".into(), serde_json::Value::String(body));
-    bn_core::skills::render_required(
-        cfg,
-        base_dir,
-        "pipeline-investigate-envelope",
-        Some(&args),
-    )
-    .map_err(|error| error.to_string())
+    args.insert("cli_map".into(), serde_json::Value::String(cli_map));
+    bn_core::skills::render_required(cfg, base_dir, "pipeline-investigate-envelope", Some(&args))
+        .map_err(|error| error.to_string())
 }
 
 /// The references section folded into a dispatched ship agent's seed (#623): the selected coding
@@ -914,16 +921,6 @@ pub(crate) fn references_section(refs: &[String]) -> Option<String> {
          changes against them — run `bn ref <name>` for the full text of each: {}.",
         names.join(", ")
     ))
-}
-
-/// the common aliases so `--agent claudecode` and `--agent cc` both mean Claude Code, and `--agent`
-/// alone (clap's `default_missing_value`) means copilot. `None` → unknown value (caller errors).
-pub(crate) fn normalize_agent(value: &str) -> Option<&'static str> {
-    match value.trim().to_lowercase().as_str() {
-        "" | "copilot" | "gh" | "github" => Some("copilot"),
-        "claude" | "claudecode" | "claude-code" | "cc" => Some("claude"),
-        _ => None,
-    }
 }
 
 /// A fresh lowercase UUID (via `uuidgen`, universal on macOS/Linux) to pin an agent's session id so
@@ -1220,20 +1217,6 @@ fn dispatch_pipeline_stage(scout: bool, skill: Option<&str>) -> bn_core::pipelin
     }
 }
 
-/// The harness a dispatch actually launches. Precedence: an explicit `--agent` pin wins; else the
-/// launch stage's configured harness; else copilot. The machine capability gate
-/// ([`bn_core::harness::resolve_dispatch_harness`]) then degrades an unavailable harness (e.g.
-/// Claude org-disabled) to copilot, carrying the reason so the caller can surface the downgrade.
-/// Pure given `cfg` — the precedence is the load-bearing new logic, kept unit-testable. Shared with
-/// `bn critic`, which applies the same precedence for its Critique launch stage.
-pub(crate) fn effective_launch_harness(
-    cfg: &Config,
-    pinned: Option<&str>,
-    stage_harness: Option<&str>,
-) -> bn_core::harness::DispatchHarness {
-    bn_core::harness::resolve_dispatch_harness(cfg, pinned.or(stage_harness))
-}
-
 /// Orchestrate `bn dispatch`: resolve the target repo (an explicit `--repo` name from anywhere, else
 /// the cwd's), resolve the item, create a worktree off `base` for it, seed that branch's note (goal
 /// = the item, plus a source link), run the post-create hook, mark the source todo done, and open a
@@ -1366,7 +1349,7 @@ pub(crate) fn run_dispatch(
         .map(str::trim)
         .filter(|a| !a.eq_ignore_ascii_case("auto"))
         .map(|a| {
-            normalize_agent(a).unwrap_or_else(|| {
+            dp::normalize_agent(a).unwrap_or_else(|| {
                 fail_json(
                     json,
                     "dispatch",
@@ -1453,7 +1436,7 @@ pub(crate) fn run_dispatch(
             .map(str::trim)
             .filter(|h| !h.is_empty())
             .map(|h| {
-                normalize_agent(h).unwrap_or_else(|| {
+                dp::normalize_agent(h).unwrap_or_else(|| {
                     fail_json(
                         json,
                         "dispatch",
@@ -1465,7 +1448,7 @@ pub(crate) fn run_dispatch(
                     )
                 })
             });
-        let resolved = effective_launch_harness(cfg, pinned_harness, stage_harness);
+        let resolved = dp::effective_launch_harness(cfg, pinned_harness, stage_harness);
         if let Some((from, reason)) = &resolved.fallback_from {
             if !json {
                 eprintln!(
@@ -1507,13 +1490,24 @@ pub(crate) fn run_dispatch(
 
     let branch = match branch {
         Some(branch) => branch,
-        None => {
-            let slug = slugify(&title);
-            let desired = format!("dispatch/{}", if slug.is_empty() { "work" } else { &slug });
-            unique_dispatch_branch(&desired, |candidate| {
-                dispatch_branch_occupied(&bare, &cfg.worktree_dir, &repo, candidate)
-            })
-        }
+        None => match dp::choose_implicit_dispatch_branch(
+            &title,
+            fresh,
+            agent_kind.is_some(),
+            |candidate| dispatch_branch_occupied(&bare, &cfg.worktree_dir, &repo, candidate),
+        ) {
+            dp::DispatchBranchChoice::Use(branch) => branch,
+            dp::DispatchBranchChoice::AlreadyActive(branch) => fail_json(
+                json,
+                "dispatch",
+                "dispatch-already-active",
+                &format!(
+                    "bn dispatch: '{branch}' is already active for this item; not creating a \
+                     duplicate suffix branch. Use --fresh to recover, or --branch for separate \
+                     same-title work."
+                ),
+            ),
+        },
     };
     // Never dispatch an agent onto the repo's main/master branch — that would run (and later reap)
     // the primary worktree. Mirrors the guards in reap.rs and wt/cleanup.rs.
@@ -1675,28 +1669,26 @@ pub(crate) fn run_dispatch(
         } else {
             dispatch_skill_name(skill, scout)
         };
-        let found = bn_core::skills::load_skill(cfg, &wt_path, name)
-            .unwrap_or_else(|error| {
-                fail_json(
-                    json,
-                    "dispatch",
-                    "invalid-skill-catalog",
-                    &format!("bn dispatch: {error}"),
-                )
-            });
+        let found = bn_core::skills::load_skill(cfg, &wt_path, name).unwrap_or_else(|error| {
+            fail_json(
+                json,
+                "dispatch",
+                "invalid-skill-catalog",
+                &format!("bn dispatch: {error}"),
+            )
+        });
         let found = if found.is_some() {
             found
         } else {
             std::env::current_dir().ok().and_then(|dir| {
-                bn_core::skills::load_skill(cfg, &dir, name)
-                    .unwrap_or_else(|error| {
-                        fail_json(
-                            json,
-                            "dispatch",
-                            "invalid-skill-catalog",
-                            &format!("bn dispatch: {error}"),
-                        )
-                    })
+                bn_core::skills::load_skill(cfg, &dir, name).unwrap_or_else(|error| {
+                    fail_json(
+                        json,
+                        "dispatch",
+                        "invalid-skill-catalog",
+                        &format!("bn dispatch: {error}"),
+                    )
+                })
             })
         };
         if found.is_none() {
@@ -1848,14 +1840,16 @@ pub(crate) fn run_dispatch(
             // record it after this launch wins the per-worktree lease.
             let sid = gen_uuid();
             let plan_path = if plan_gate && !pipeline_investigate {
-                Some(bn_core::plan::init_agent(cfg, &target, &sid).unwrap_or_else(|error| {
-                    fail_json(
-                        json,
-                        "dispatch",
-                        "plan-file",
-                        &format!("bn dispatch: cannot create plan draft: {error}"),
-                    )
-                }))
+                Some(
+                    bn_core::plan::init_agent(cfg, &target, &sid).unwrap_or_else(|error| {
+                        fail_json(
+                            json,
+                            "dispatch",
+                            "plan-file",
+                            &format!("bn dispatch: cannot create plan draft: {error}"),
+                        )
+                    }),
+                )
             } else {
                 None
             };
@@ -1877,7 +1871,12 @@ pub(crate) fn run_dispatch(
             let seed = if pipeline_investigate {
                 pipeline_investigate_seed(cfg, &wt_path, &title, url.as_deref(), workflow)
                     .unwrap_or_else(|error| {
-                        fail_json(json, "dispatch", "prompt-render", &format!("bn dispatch: {error}"))
+                        fail_json(
+                            json,
+                            "dispatch",
+                            "prompt-render",
+                            &format!("bn dispatch: {error}"),
+                        )
                     })
             } else {
                 skill_seed_prompt(
@@ -1889,28 +1888,28 @@ pub(crate) fn run_dispatch(
                         scout,
                         yolo,
                         verify,
+                        plan_gate: plan_gate && !pipeline_investigate,
                     },
                     workflow,
                 )
                 .unwrap_or_else(|error| {
-                    fail_json(json, "dispatch", "prompt-render", &format!("bn dispatch: {error}"))
+                    fail_json(
+                        json,
+                        "dispatch",
+                        "prompt-render",
+                        &format!("bn dispatch: {error}"),
+                    )
                 })
             };
             // Fold the coding-standards references (#623) and the branch's standing directives
             // (`bn agent instruct`) into the seed. See `seed_context::section`.
-            let mut seed = format!(
+            let seed = format!(
                 "{seed}{}",
                 super::seed_context::section(cfg, &repo, &branch, scout, refs)
             );
-            if let Some(path) = &plan_path {
-                seed.push_str(&format!(
-                    "\n\n## Plan artifact\n\nWrite the proposed plan Markdown directly to this bn-owned draft file, not to branch-note todo/done-when items:\n\n```text\n{}\n```\n\nWhen submitting for plan review, submit this exact file.\n",
-                    path.display()
-                ));
-            }
-            let plan_file_s = plan_path
-                .as_ref()
-                .map(|path| path.display().to_string());
+            // No separate "## Plan artifact" section: the plan-review gate's step 1 names the
+            // bn-owned draft file and forbids note-item decomposition itself.
+            let plan_file_s = plan_path.as_ref().map(|path| path.display().to_string());
             // Append the concrete plan-review-gate protocol (#349) last, so it's the authoritative
             // final instruction: register a plan, poll, and don't ship until approved.
             let seed = append_plan_gate(

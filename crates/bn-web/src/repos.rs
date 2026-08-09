@@ -293,25 +293,16 @@ fn pool_disabled() -> Value {
     })
 }
 
+/// The pool policy each repo card still needs.
+///
+/// This used to carry the whole policy as data — eight descriptive keys plus six sentences of
+/// prose rules — so the board could render a "Warm-pool policy" explainer card above the repos.
+/// That card is gone, and with it the only reader of the prose. What remains is the one field the
+/// UI *computes* with: `min_ready`, which the optimistic pool update needs to recompute
+/// `needs_top_up` locally after a resize. The rest was documentation shipped down the wire on
+/// every 30s poll, once per repo.
 fn pool_policy_json() -> Value {
-    json!({
-        "capacity": "hard",
-        "min_ready": POOL_MIN_READY,
-        "controller_slot": bn_core::agent::CONTROLLER_POOL_SLOT,
-        "warming": "queued-heavy",
-        "auto_queue": "enable-resize-lease-top-up",
-        "leases": "active-work",
-        "reservations": "not-supported",
-        "stale_recovery": "clean-dead-only",
-        "rules": [
-            "Pool size is hard capacity: bn never creates slots beyond the configured total.",
-            "Keep at least one idle warm worker slot when the pool has spare capacity.",
-            "Enabling, resizing, and leasing the last ready slot queue pool-warm automatically.",
-            "Manual queue warm uses the same heavy pool-warm job, so the machine queue controls admission.",
-            "Leased means active work owns the slot; warmth is an idle-slot state, not a fake lease.",
-            "Clean dead or prior-boot leases may be recovered; dirty or live slots stay leased.",
-        ],
-    })
+    json!({ "min_ready": POOL_MIN_READY })
 }
 
 /// Fold the raw session seeds into `{ repos: [RepoRollup, …] }` — pure, so the whole merge / rollup
@@ -445,7 +436,7 @@ fn assemble(
         .collect();
     known.sort();
 
-    json!({ "repos": rollups, "known": known, "pool_policy": pool_policy_json() })
+    json!({ "repos": rollups, "known": known })
 }
 
 fn scope_label(scope: JobScope) -> &'static str {
@@ -699,16 +690,14 @@ mod tests {
         assert_eq!(bn["pool"]["enabled"], serde_json::json!(true));
         assert_eq!(bn["pool"]["total"], serde_json::json!(4));
         assert_eq!(bn["pool"]["policy"]["min_ready"], serde_json::json!(1));
-        assert_eq!(
-            bn["pool"]["policy"]["auto_queue"],
-            serde_json::json!("enable-resize-lease-top-up")
-        );
         // A repo with no pool entry gets the disabled shape, never a missing field.
         let app = repos.iter().find(|r| r["repo"] == "app").unwrap();
         assert_eq!(app["pool"]["enabled"], serde_json::json!(false));
         assert_eq!(app["pool"]["needs_top_up"], serde_json::json!(false));
-        assert_eq!(app["pool"]["policy"]["capacity"], serde_json::json!("hard"));
-        assert_eq!(v["pool_policy"]["min_ready"], serde_json::json!(1));
+        assert_eq!(app["pool"]["policy"]["min_ready"], serde_json::json!(1));
+        // The board-level policy block and its prose rules are gone — nothing renders them.
+        assert!(v.get("pool_policy").is_none());
+        assert!(bn["pool"]["policy"].get("rules").is_none());
     }
 
     #[test]

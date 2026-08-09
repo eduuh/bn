@@ -122,6 +122,16 @@ pub enum BacklogStatus {
 }
 
 impl BacklogStatus {
+    /// Every status, in lifecycle order, so a caller can enumerate or validate the label set
+    /// instead of hardcoding its own copy (`bn-web` validates `?status=` against this).
+    pub const ALL: [BacklogStatus; 5] = [
+        BacklogStatus::Pending,
+        BacklogStatus::Leased,
+        BacklogStatus::Done,
+        BacklogStatus::Failed,
+        BacklogStatus::Cancelled,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             BacklogStatus::Pending => "pending",

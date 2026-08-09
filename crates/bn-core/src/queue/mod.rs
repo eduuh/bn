@@ -108,14 +108,19 @@ pub mod capacity {
 
     /// Both lanes, plus the sentence explaining how they were reached — so a surprising number is
     /// answerable rather than mysterious.
+    ///
+    /// The sentence states the operations in the order they happen: the reserve comes off the RAM
+    /// *before* the division, and the lower of the two bounds is the answer. Saying "16 GB ÷ 2
+    /// GB/agent (less 4 GB reserved) = 6" instead — as this did — reads as arithmetic that does not
+    /// compute, which makes the explanation less trustworthy than the number it was explaining.
     pub fn derive(ram_total_mb: u64, cores: usize) -> (usize, usize, String) {
         let by_ram = ram_total_mb.saturating_sub(RESERVED_RAM_MB) / AGENT_RAM_MB;
         let by_cpu = cores / CORES_PER_AGENT;
         let why = format!(
-            "{} GB RAM ÷ {} GB/agent (less {} GB reserved) = {by_ram}; {cores} cores ÷ {} = {by_cpu}",
+            "({} GB RAM − {} GB reserved) ÷ {} GB/agent = {by_ram}; {cores} cores ÷ {} = {by_cpu}; the lower wins",
             ram_total_mb / 1024,
-            AGENT_RAM_MB / 1024,
             RESERVED_RAM_MB / 1024,
+            AGENT_RAM_MB / 1024,
             CORES_PER_AGENT,
         );
         (

@@ -7,12 +7,113 @@
 //! implementation of each queue mutation.
 use crate::actions::{parse_body, respond_process, run_bn_env, MaybeAddr};
 use crate::state::AppState;
+use crate::view_cache::Bounded;
 use axum::body::Bytes;
 use axum::extract::{Query, State};
 use axum::response::Response;
 use axum::Json;
 use bn_core::render::Envelope;
 use serde::Deserialize;
+use std::sync::Arc;
+
+/// How many past days of timeline stay cacheable.
+///
+/// The cache key space has to be finite, and `?date=` is a free string. Rather than cache every
+/// date anyone ever asks for — which is how a cache with no eviction becomes a leak — only the
+/// window people actually browse is cached; older dates are computed and served uncached. A week
+/// covers "what happened yesterday / on Monday" and caps this view at 8 × 10 keys.
+const CACHEABLE_DAYS: i64 = 7;
+
+/// Whether `class` is a real queue class rather than an arbitrary string.
+///
+/// Validated against `bn-core`'s own label sets, not a copy of them, so a class added to the enum
+/// becomes cacheable here without anyone remembering to update a list.
+fn known_class(class: &str) -> bool {
+    use bn_core::queue::classify::{QueueMode, QueueSubtype};
+    QueueMode::ALL.iter().any(|m| m.label() == class)
+        || QueueSubtype::ALL.iter().any(|s| s.label() == class)
+}
+
+/// Whether `status` is a real backlog status.
+fn known_status(status: &str) -> bool {
+    bn_core::backlog::BacklogStatus::ALL
+        .iter()
+        .any(|s| s.label() == status)
+}
+
+/// The cache key for a timeline request, or `None` when the request falls outside the allowlist and
+/// must be served uncached.
+///
+/// `date` is already normalized to the resolved day by the caller; `class` is the raw query value,
+/// where empty means "no filter".
+fn timeline_key(date: &str, class: &str, today: &str) -> Option<Bounded> {
+    if !class.is_empty() && !known_class(class) {
+        return None;
+    }
+    if date != today && !within_recent_days(date, today, CACHEABLE_DAYS) {
+        return None;
+    }
+    Some(Bounded::new(&[date, class]))
+}
+
+/// Whether `date` is within `days` before `today`. Both are `YYYY-MM-DD`; anything unparseable is
+/// outside the window by definition.
+fn within_recent_days(date: &str, today: &str, days: i64) -> bool {
+    let (Some(d), Some(t)) = (
+        bn_core::queue::timeline::parse_date(date),
+        bn_core::queue::timeline::parse_date(today),
+    ) else {
+        return false;
+    };
+    let delta = t.signed_duration_since(d).num_days();
+    (0..=days).contains(&delta)
+}
+
+/// The cache key for a backlog listing, or `None` for the uncacheable shapes.
+///
+/// Three parameters are refused rather than keyed. `repo` is free text — the one value here a
+/// caller could use to mint unlimited keys. `limit` is clamped to 1..=2000 downstream, so keying on
+/// it would multiply the space by two thousand for a parameter the dashboard never sends. `kind` is
+/// likewise unused by the UI. Each is still *served*, just computed fresh.
+///
+/// `all` normalizes to the empty string because the handler already treats them identically; left
+/// alone they would be two keys for one answer.
+fn entries_key(
+    status: &str,
+    repo: &str,
+    kind: &str,
+    class: &str,
+    limit: Option<usize>,
+) -> Option<Bounded> {
+    if !repo.is_empty() || !kind.is_empty() || limit.is_some() {
+        return None;
+    }
+    let status = if status == "all" { "" } else { status };
+    let class = if class == "all" { "" } else { class };
+    if !status.is_empty() && !known_status(status) {
+        return None;
+    }
+    if !class.is_empty() && !known_class(class) {
+        return None;
+    }
+    Some(Bounded::new(&[status, class]))
+}
+
+/// Drop every cached view a backlog write can change.
+///
+/// One helper rather than five copies of the same two lines: "which views does this write touch"
+/// is exactly the question that gets answered inconsistently once it is asked at five call sites,
+/// and the failure mode — a cancelled entry that keeps rendering — looks like the write failing.
+async fn invalidate_queue_views(state: &AppState) {
+    state
+        .views
+        .invalidate(crate::view_cache::QUEUE_ENTRIES)
+        .await;
+    state
+        .views
+        .invalidate(crate::view_cache::QUEUE_TIMELINE)
+        .await;
+}
 
 /// `GET /api/queue` — the machine-wide queue: pending work by kind and lane, and what each node
 /// offers. The read behind "why is nothing running".
@@ -108,35 +209,62 @@ pub async fn queue_timeline(
     State(state): State<AppState>,
     Query(q): Query<QueueTimelineQuery>,
 ) -> Json<Envelope> {
+    let now = bn_core::util::now_epoch_secs();
+    let today = bn_core::util::local_date_of(now);
+    let date = q
+        .date
+        .filter(|d| bn_core::queue::timeline::parse_date(d).is_some())
+        .unwrap_or_else(|| today.clone());
+    let class = q.class.unwrap_or_default();
+
     let cfg = state.cfg.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let now = bn_core::util::now_epoch_secs();
-        let date = q
-            .date
-            .filter(|d| bn_core::queue::timeline::parse_date(d).is_some())
-            .unwrap_or_else(|| bn_core::util::local_date_of(now));
-        bn_core::queue::timeline::build_live(&cfg, &date, now, q.class.as_deref())
-            .map_err(|error| error.to_string())
-    })
-    .await;
-    match result {
-        Ok(Ok(timeline)) => match serde_json::to_value(timeline) {
-            Ok(data) => Json(Envelope::success("queue-timeline", data)),
-            Err(error) => Json(Envelope::failure(
-                "queue-timeline",
-                "serialize_failed",
-                error.to_string(),
-            )),
-        },
-        Ok(Err(error)) => Json(Envelope::failure(
-            "queue-timeline",
-            "invalid_catalog",
-            error,
-        )),
-        Err(error) => Json(Envelope::failure(
-            "queue-timeline",
+    let (key_date, key_class) = (date.clone(), class.clone());
+    let build = move || {
+        let outcome = bn_core::queue::timeline::build_live(
+            &cfg,
+            &key_date,
+            now,
+            Some(key_class.as_str()).filter(|c| !c.is_empty()),
+        )
+        .map_err(|error| error.to_string())
+        .and_then(|t| serde_json::to_value(t).map_err(|e| e.to_string()));
+        match outcome {
+            Ok(data) => serde_json::json!({ "ok": data }),
+            Err(error) => serde_json::json!({ "err": error }),
+        }
+    };
+
+    // Outside the allowlist (an old date, an unknown class) the answer is still correct — it is
+    // just computed every time rather than becoming a permanent cache entry.
+    let view = match timeline_key(&date, &class, &today) {
+        Some(key) => {
+            state
+                .views
+                .get_or_compute_with(crate::view_cache::QUEUE_TIMELINE, &key, build)
+                .await
+        }
+        None => tokio::task::spawn_blocking(build).await.ok().map(Arc::new),
+    };
+
+    let cmd = "queue-timeline";
+    let Some(view) = view.as_deref() else {
+        return Json(Envelope::failure(
+            cmd,
             "task_failed",
-            error.to_string(),
+            "timeline build failed",
+        ));
+    };
+    match (view.get("ok"), view.get("err")) {
+        (Some(data), _) => Json(Envelope::success(cmd, data.clone())),
+        (None, Some(err)) => Json(Envelope::failure(
+            cmd,
+            "invalid_catalog",
+            err.as_str().unwrap_or("invalid timeline").to_string(),
+        )),
+        (None, None) => Json(Envelope::failure(
+            cmd,
+            "task_failed",
+            "timeline build failed",
         )),
     }
 }
@@ -158,8 +286,19 @@ pub struct QueueTimelineQuery {
 ///
 /// Folded by `backlog::load`, so an entry appears once in its current state rather than once per
 /// line ever written about it.
-pub async fn queue_entries(Query(q): Query<QueueEntriesQuery>) -> Json<Envelope> {
-    let data = tokio::task::spawn_blocking(move || {
+pub async fn queue_entries(
+    State(state): State<AppState>,
+    Query(q): Query<QueueEntriesQuery>,
+) -> Json<Envelope> {
+    let key = entries_key(
+        q.status.as_deref().unwrap_or_default(),
+        q.repo.as_deref().unwrap_or_default(),
+        q.kind.as_deref().unwrap_or_default(),
+        q.class.as_deref().unwrap_or_default(),
+        q.limit,
+    );
+
+    let build = move || {
         let bl = bn_core::backlog::load(&bn_core::backlog::backlog_path());
         let want = q.status.as_deref().filter(|s| !s.is_empty() && *s != "all");
         let repo = q.repo.as_deref().filter(|r| !r.is_empty());
@@ -192,9 +331,20 @@ pub async fn queue_entries(Query(q): Query<QueueEntriesQuery>) -> Json<Envelope>
             "counts": counts,
             "unreadable": bl.unreadable,
         })
-    })
-    .await
-    .unwrap_or_else(|_| serde_json::json!({ "entries": [], "total": 0, "counts": {} }));
+    };
+
+    let view = match key {
+        Some(key) => {
+            state
+                .views
+                .get_or_compute_with(crate::view_cache::QUEUE_ENTRIES, &key, build)
+                .await
+        }
+        None => tokio::task::spawn_blocking(build).await.ok().map(Arc::new),
+    };
+    let data = view
+        .map(|d| (*d).clone())
+        .unwrap_or_else(|| serde_json::json!({ "entries": [], "total": 0, "counts": {} }));
     Json(Envelope::success("queue-entries", data))
 }
 
@@ -251,6 +401,7 @@ pub async fn queue_add(
         args.extend(["--skill".to_string(), skill]);
     }
     let result = run_bn_env(args, None, Vec::new()).await;
+    invalidate_queue_views(&state).await;
     respond_process(&state, cmd, "queue", addr, result)
 }
 
@@ -273,6 +424,7 @@ pub async fn queue_cancel(
         body.repo,
     ];
     let result = run_bn_env(args, None, Vec::new()).await;
+    invalidate_queue_views(&state).await;
     respond_process(&state, cmd, "queue", addr, result)
 }
 
@@ -296,6 +448,7 @@ pub async fn queue_priority(
         body.repo,
     ];
     let result = run_bn_env(args, None, Vec::new()).await;
+    invalidate_queue_views(&state).await;
     respond_process(&state, cmd, "queue", addr, result)
 }
 
@@ -320,6 +473,7 @@ pub async fn queue_snooze(
         body.repo,
     ];
     let result = run_bn_env(args, None, Vec::new()).await;
+    invalidate_queue_views(&state).await;
     respond_process(&state, cmd, "queue", addr, result)
 }
 
@@ -343,6 +497,7 @@ pub async fn queue_class(
         body.repo,
     ];
     let result = run_bn_env(args, None, Vec::new()).await;
+    invalidate_queue_views(&state).await;
     respond_process(&state, cmd, "queue", addr, result)
 }
 
@@ -385,4 +540,96 @@ pub struct QueueClassBody {
     pub repo: String,
     pub id: String,
     pub class: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The cache never evicts, so "the key space is finite" is not a nicety — it is the property
+    // that stops a query string from growing the process without bound. These tests are where that
+    // claim is actually checked.
+
+    #[test]
+    fn a_timeline_key_covers_today_and_the_recent_week() {
+        let today = "2026-08-09";
+        assert!(timeline_key(today, "", today).is_some());
+        assert!(
+            timeline_key("2026-08-02", "", today).is_some(),
+            "7 days back"
+        );
+        assert!(timeline_key(today, "cron", today).is_some());
+    }
+
+    #[test]
+    fn a_timeline_key_refuses_everything_outside_the_window() {
+        let today = "2026-08-09";
+        // An old date, a future date, and an unparseable one are all served — just not cached.
+        assert!(
+            timeline_key("2026-08-01", "", today).is_none(),
+            "8 days back"
+        );
+        assert!(timeline_key("1998-01-01", "", today).is_none());
+        assert!(timeline_key("2026-08-10", "", today).is_none(), "tomorrow");
+        assert!(timeline_key("not-a-date", "", today).is_none());
+        // An unknown class is the other way in, and is refused the same way.
+        assert!(timeline_key(today, "'; DROP TABLE", today).is_none());
+        assert!(timeline_key(today, "nonsense", today).is_none());
+    }
+
+    #[test]
+    fn a_thousand_hostile_dates_mint_no_keys() {
+        // The shape of the attack the bound exists for: many distinct values, one per request.
+        let today = "2026-08-09";
+        let minted = (0..1000)
+            .filter(|i| timeline_key(&format!("attacker-{i}"), "", today).is_some())
+            .count();
+        assert_eq!(minted, 0);
+    }
+
+    #[test]
+    fn an_entries_key_covers_the_filters_the_dashboard_actually_sends() {
+        assert!(
+            entries_key("", "", "", "", None).is_some(),
+            "the default view"
+        );
+        assert!(entries_key("pending", "", "", "", None).is_some());
+        assert!(entries_key("done", "", "", "cron", None).is_some());
+    }
+
+    #[test]
+    fn an_entries_key_refuses_the_unbounded_parameters() {
+        // A repo filter is free text, and `limit` spans 1..=2000 — both would blow the key space.
+        assert!(entries_key("", "bn", "", "", None).is_none());
+        assert!(entries_key("", "", "", "", Some(50)).is_none());
+        assert!(entries_key("", "", "agent", "", None).is_none());
+        assert!(entries_key("not-a-status", "", "", "", None).is_none());
+        assert!(entries_key("", "", "", "not-a-class", None).is_none());
+    }
+
+    #[test]
+    fn all_and_empty_are_one_key_not_two() {
+        // The handler treats them identically, so keying them apart would cache one answer twice.
+        assert_eq!(
+            entries_key("all", "", "", "all", None),
+            entries_key("", "", "", "", None)
+        );
+    }
+
+    #[test]
+    fn the_known_sets_track_bn_core_rather_than_a_local_copy() {
+        // Every label bn-core defines is accepted; that is what keeps this from drifting when a
+        // variant is added to either enum.
+        for mode in bn_core::queue::classify::QueueMode::ALL {
+            assert!(known_class(mode.label()), "mode {}", mode.label());
+        }
+        for sub in bn_core::queue::classify::QueueSubtype::ALL {
+            assert!(known_class(sub.label()), "subtype {}", sub.label());
+        }
+        for status in bn_core::backlog::BacklogStatus::ALL {
+            assert!(known_status(status.label()), "status {}", status.label());
+        }
+        assert!(!known_class(""));
+        assert!(!known_status(""));
+    }
 }

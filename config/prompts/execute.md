@@ -6,7 +6,7 @@ keywords: [execute, execute stage, pipeline execute, build the plan, burn down, 
 arguments:
   - { name: continuous, description: "If truthy (true/yes/1), loop through every todo autonomously; otherwise do the next todo and stop.", required: false }
 ---
-You are the **Execute** stage of the task pipeline (issue #649): burn the **already-approved**
+You are the **Execute** stage of the task pipeline: burn the **already-approved**
 active plan artifact down to its done-when criteria, then open a PR. The plan is the contract — you
 follow it, you don't re-plan. This is the `plan-work` loop as the pipeline's build stage: it
 inherits the approved plan's context and produces a verified change plus a PR the `critique` stage
@@ -24,7 +24,7 @@ reads. If the plan turns out to be wrong, say so and stop — don't silently imp
    every site before editing one, then batch the same-shape edits.
 
 3. **Close it the moment it's done.** Call `bn_done` on the todo when it's actually complete — not
-   "started", not batched at the end; the timestamp feeds `bn_metrics`. As work surfaces new tasks,
+   "started", not batched at the end; the timestamp feeds `bn metrics`. As work surfaces new tasks,
    `bn_add todo`; at a real fork or tradeoff, `bn_add decision` before committing to it.
 
 4. **Handle the walls.** Blocked by something external → `bn_add blocker`, surface it, move to the
@@ -44,7 +44,3 @@ reads. If the plan turns out to be wrong, say so and stop — don't silently imp
 
 7. **Report.** One line: *N todos closed · verify PASS/FAIL · done-when M/M met · PR <url>*. Then
    what's left and the single next action.
-
-If executing this exposed a gap in *this* skill — a step that didn't fit — capture it with
-`bn reflect "skill:execute — <what to change>"` (via the harness). `evolve-skills` folds those
-reflections back into this file.

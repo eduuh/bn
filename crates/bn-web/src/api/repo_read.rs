@@ -9,11 +9,32 @@ use bn_core::render::Envelope;
 use serde_json::json;
 
 /// `GET /api/repos` — the local repo inventory: repos with local clone/worktree/live-agent evidence.
-pub async fn repos(State(state): State<AppState>) -> Json<Envelope> {
-    Json(Envelope::success(
-        "repos",
-        crate::repos::repos_view(&state.cfg),
-    ))
+///
+/// Behind the [`crate::view_cache`] TTL: the view walks every note, supervises the live fleet and
+/// folds 30 days of cost on each call, which is far too much to redo for every remount of a board
+/// whose contents move on the order of minutes. Pool writes invalidate it explicitly, so the window
+/// never delays the effect of a click.
+pub async fn repos(State(state): State<AppState>) -> Response {
+    let cfg = state.cfg.clone();
+    let view = state
+        .views
+        .get_or_compute(crate::view_cache::REPOS, move || {
+            crate::repos::repos_view(&cfg)
+        })
+        .await;
+
+    match view {
+        Some(data) => Json(Envelope::success("repos", (*data).clone())).into_response(),
+        None => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(Envelope::failure(
+                "repos",
+                "view_panicked",
+                "building the repo inventory failed",
+            )),
+        )
+            .into_response(),
+    }
 }
 
 /// `GET /api/repos/{repo}/issues` — one repo's open GitHub issues (#556), backed by the #999 cache.

@@ -3,7 +3,13 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, Check, ExternalLink, MessageSquareText, NotebookText } from "lucide-react";
 import { Link } from "react-router-dom";
 
-import { completedQuery, fleetQuery, queueQuery, reviewsQuery } from "../api/client";
+import {
+  completedQuery,
+  fleetQuery,
+  orchestrateQuery,
+  queueQuery,
+  reviewsQuery,
+} from "../api/client";
 import { decideReview, sendMessage } from "../api/writes";
 import type { QueueDeferredRow, QueueNodeRow, QueueView } from "../api/queue-types";
 import type { CompletedItem, FleetView, LiveAgent, Review } from "../api/types";
@@ -11,8 +17,11 @@ import { QueueControls } from "../components/QueueControls";
 import { QueueReservoir } from "../components/QueueReservoir";
 import { QueueUpcoming } from "../components/QueueUpcoming";
 import { QueueWorkLedger } from "../components/QueueWorkLedger";
+import { RecoveryFeed } from "../components/RecoveryFeed";
+import { RunControls } from "../components/RunControls";
 import { Empty, LoadError, RowsSkeleton, SectionCard } from "../components/SectionCard";
 import { SteerButton } from "../components/SteerButton";
+import { ToastStack } from "../components/ToastStack";
 import { Badge, type BadgeProps } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { useAppMutation } from "../hooks/useAppMutation";
@@ -699,6 +708,13 @@ export function Queue() {
       />
       <ClusterCapacity nodes={data?.nodes ?? []} loading={queue.isLoading} error={queue.isError} />
       <QueueReservoir reservoir={data?.reservoir} />
+
+      {/* Run-level steering, moved here from `/fleet` (#: Fleet consolidation). It sits directly
+          above the entry-level controls because that is the order the questions come in: how many
+          of these should run at once, then which of them should run at all. Renders nothing when
+          no orchestrate run is live, so the page is unchanged on a quiet machine. */}
+      <RunSteering />
+
       <QueueControls />
       <Deferred
         rows={data?.decision?.deferred ?? []}
@@ -712,7 +728,26 @@ export function Queue() {
         loading={completed.isLoading}
         error={completed.isError}
       />
+      <RecoveryFeed />
       <QueueWorkLedger />
+      {/* The run controls and the recovery feed both write, and both report through the shared
+          toast store — which needs a stack mounted on the page to render into. */}
+      <ToastStack />
     </div>
+  );
+}
+
+/** The per-run controls in the page's card idiom. `RunControls` renders nothing without a live run,
+ * so the card is only built when there is something to steer. */
+function RunSteering() {
+  const orch = useQuery(orchestrateQuery());
+  const runs = orch.data?.runs ?? [];
+  if (runs.length === 0) return null;
+  return (
+    <SectionCard eyebrow="orchestrate" title="Runs" count={String(runs.length)}>
+      <div className="py-3">
+        <RunControls />
+      </div>
+    </SectionCard>
   );
 }

@@ -15,4 +15,3 @@ urge-response protocol in `body_md`, and always include the packet's red-flag cl
 
 If `summary.review_due` is true, emit exactly one `attn` item with `warn` severity telling the user
 to arrange the due corneal topography/ophthalmology review. Otherwise emit no attention item.
-Never emit goals, todos, research, note appends, links, or public-facing actions.

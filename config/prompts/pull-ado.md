@@ -10,35 +10,21 @@ arguments:
 You are pulling the user's assigned Azure DevOps work items into a branch note's backlog.
 This is PULL-ONLY: read from ADO, write into bn. Never write back to ADO.
 
-1. **Target note.** The destination is the `main` note of `{{repo}}` (the repo's backlog).
-   If `{{repo}}` is empty, call `bn_status` to learn the current repo and use that. All
-   writes go to `repo=<that repo>`, `branch=main`.
+The mechanics are scripted. Run, via the harness:
 
-2. **Query ADO for assigned, open work items.** Use the `az` CLI via Bash:
-   - If `{{iteration}}` is an explicit iteration path, filter on it. If it's a numeric id or
-     ADO URL, first read that item's `System.IterationPath` (`az boards work-item show
-     --id <id> -o json`, parse with `json.loads(..., strict=False)`) and filter on that. If
-     empty, query all assigned open items.
-   - ```bash
-     az boards query --wiql "SELECT [System.Id],[System.Title],[System.State],[System.WorkItemType] FROM WorkItems WHERE [System.AssignedTo] = @Me AND [System.State] NOT IN ('Closed','Resolved','Removed','Done')<ITERATION> ORDER BY [System.State]" -o json
-     ```
-     where `<ITERATION>` is ` AND [System.IterationPath] = '<path>'` when one was resolved,
-     else empty. Parse with `strict=False` (ADO JSON may carry control characters).
+```bash
+config/scripts/pull-ado.sh
+```
 
-3. **Write each item as an idempotent todo.** For every returned item, call `bn_add` with:
-   - `section: "todo"`, `repo: <target repo>`, `branch: "main"`
-   - `text: "[#<id>] <title>"`
-   - `if_absent: "[#<id>]"`  ← the dedup key; a second pull of the same item is skipped,
-     even if its title changed or the todo was already completed.
+(path relative to the bn repo checkout — locate it there if you're dispatched elsewhere).
+Pass `--repo {{repo}}` if a repo was given, and `--iteration {{iteration}}` if an iteration
+was given; the script defaults to the current repo and all assigned open items. It queries
+ADO for your assigned open work items and writes each into the repo's `main` note as an
+idempotent `[#<id>] <title>` todo (`--if-absent "[#<id>]"` dedups re-pulls and keeps
+completed todos from being resurrected).
 
-   The CLI equivalent (if you prefer Bash) is:
-   ```bash
-   bn add --repo <repo> --branch main todo "[#<id>] <title>" --if-absent "[#<id>]"
-   ```
+Then report in 1–3 lines: relay the script's tally — items pulled, new vs. already-present,
+the target note (`<repo>/main`) — and list the new ids. If the script fails, report its
+stderr verbatim and stop; do not fall back to hand-running `az` queries.
 
-4. **Report.** Summarize in 1–3 lines: how many items were pulled, how many were new vs.
-   already-present (skipped), and the target note (`<repo>/main`). List the new ids.
-
-Do not create worktrees, branches, or tmux windows — that's `sprint-setup`'s job. This
-skill only refreshes the backlog. Closed/Resolved/Removed items are filtered out by the
-query, and `if_absent` keeps completed pulls from being resurrected.
+Do not create worktrees, branches, or tmux windows — this skill only refreshes the backlog.

@@ -8,8 +8,11 @@
 
 # bn_prompt_json <schema> [bytes] — read an answer from stdin and echo a compact JSON array.
 # Returns nonzero when neither the Copilot-normalized response nor the raw input is a JSON array.
+# The array/no-fence/empty-when-none contract is appended here ONCE, so the per-source schema
+# prompts (m365-*-schema.md etc.) carry only their element shape and inclusion rules.
 bn_prompt_json() {
-  _bn_prompt_json_schema=$1
+  _bn_prompt_json_schema="$1
+Output ONLY a JSON array — no prose, no code fence. Never invent an item; return [] when there are none."
   _bn_prompt_json_bytes=${2:-16000}
   _bn_prompt_json_answer=$(cat)
 

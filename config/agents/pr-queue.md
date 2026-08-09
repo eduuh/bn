@@ -5,9 +5,4 @@ on_calendar: "*:0/15"
 network: true
 description: "bn — fetch the PR review queue from GitHub (review + my own PRs)"
 ---
-# pr-queue
-
-Fetches the GitHub PR review queue every 15 minutes — the PRs waiting on your review plus
-your own open PRs — and refreshes the queue surface. Runs `bn run pr-queue`, whose existing
-native implementation does the GitHub fetch; this agent only carries its schedule and its
-description.
+Implemented by the native `pr-queue` job in bn (run as `bn run pr-queue`).

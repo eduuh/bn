@@ -30,6 +30,36 @@ function ConnDot({ status }: { status: StreamStatus }) {
   );
 }
 
+/**
+ * The CPU reading's label and hover text.
+ *
+ * This vital sits next to `ram`, which really is a used-of-total fraction, and it used to be
+ * rendered the same way — `cpu 7.9/10` — so the slash read as "7.9 out of a maximum of 10" and the
+ * number looked like a percentage-ish score. It is not: the numerator is the 1-minute load average
+ * and the denominator is a core count, and load is unbounded. The moment the machine is genuinely
+ * oversubscribed the display says something like `120/10`, which under the fraction reading is
+ * nonsense rather than the alarm it actually is.
+ *
+ * So the denominator carries a unit (`10c`, not `10`) and the label says `load`, not `cpu` — both
+ * signalling that this is a rate against capacity rather than a share of it. The multiplier, which
+ * is the number you actually decide on, goes in the hover: the meter is clamped at 100%, so past
+ * saturation the bar is pinned full and cannot tell you whether you are at 1.1× or 12×.
+ */
+function cpuTitle(cpu: { load1: number | null; cores: number; load_per_core: number | null }) {
+  if (cpu.load1 == null) {
+    return "1-minute load average — unavailable on this host";
+  }
+  const perCore = cpu.load_per_core;
+  const ratio = perCore == null ? null : `${perCore.toFixed(2)}× per core`;
+  const verdict = perCore == null ? null : perCore >= 1 ? "over capacity" : "within capacity";
+  return [
+    `1-minute load average ${cpu.load1.toFixed(2)} across ${cpu.cores} cores`,
+    ratio && verdict ? `${ratio} — ${verdict}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 /** One topbar reading: a label, an optional meter, and a mono value. */
 function Vital({
   label,
@@ -101,10 +131,10 @@ export function TopBar({
 
         {m && (
           <>
-            <Vital label="cpu" title="CPU load per core" className="hidden sm:flex">
+            <Vital label="load" title={cpuTitle(m.cpu)} className="hidden sm:flex">
               <Meter frac={m.cpu.load_per_core} tone={gaugeTone(m.cpu.load_per_core, 0.7, 1.0)} />
               <span>
-                {m.cpu.load1 == null ? "—" : m.cpu.load1.toFixed(1)}/{m.cpu.cores}
+                {m.cpu.load1 == null ? "—" : m.cpu.load1.toFixed(1)}/{m.cpu.cores}c
               </span>
             </Vital>
             <Vital label="ram" title="RAM used" className="hidden sm:flex">

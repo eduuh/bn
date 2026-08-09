@@ -13,7 +13,8 @@ stop — don't silently improvise a different one.
 1. **Load the plan.** Run `bn plan status`. If `plans/active.md` exists, read that Markdown file
    and treat it as the contract. Also call `bn_cat` for branch-note status/blockers/decisions. If
    no active plan file exists, fall back to the legacy note `done-when`/todo sections during
-   migration; if neither exists, stop and recommend running `plan` first.
+   migration; if neither exists, stop and recommend running `plan` first — unless this seed's
+   bootstrap told you to write the plan yourself, in which case do that.
 
 2. **Take the next todo.** Pick the top open todo. Implement exactly it — nothing speculative,
    nothing adjacent (match the surrounding code, touch only what the todo needs). Every changed
@@ -24,7 +25,7 @@ stop — don't silently improvise a different one.
    worklist.
 
 3. **Close it the moment it's done.** Call `bn_done` on that todo *when it's actually complete* —
-   not "started", not batched at the end. The timestamp feeds `bn_metrics`, so honesty keeps the
+   not "started", not batched at the end. The timestamp feeds `bn metrics`, so honesty keeps the
    numbers real. As work surfaces new tasks, `bn_add todo`; if you hit a real fork or tradeoff not
    already decided, `bn_add decision` before you commit to it.
 
@@ -48,7 +49,3 @@ stop — don't silently improvise a different one.
    outcome back. Then report one line: *N todos closed · verify PASS/FAIL · done-when M/M met*,
    followed by what's left and the single next action. When it's genuinely all green, say so
    plainly, then `wrap-session`.
-
-If the loop itself felt wrong — a step that didn't fit how you actually work, a missing move —
-capture it with `bn reflect "skill:plan-work — <what to change>"` (via the harness). `evolve-skills`
-folds those reflections back into this file so the next run is sharper.

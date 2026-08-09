@@ -33,11 +33,17 @@ mod repo_read;
 #[path = "api/repo_scripts.rs"]
 mod repo_scripts;
 pub use automation::{agents_catalog, today_agents, today_crons};
+#[path = "api/feeds.rs"]
+mod feeds;
 #[path = "api/note_files.rs"]
 mod note_files;
+#[path = "api/shell_read.rs"]
+mod shell_read;
+pub use feeds::{actions, completed};
 pub use note_files::*;
 pub use repo_read::{repo_issues, repos};
 pub use repo_scripts::repo_script;
+pub use shell_read::{attn, cron, fleet, machine, nodes};
 
 pub(crate) fn nonempty(v: Option<String>) -> Option<String> {
     v.filter(|s| !s.trim().is_empty())
@@ -78,58 +84,6 @@ pub async fn bearings(State(state): State<AppState>) -> Json<Envelope> {
         "bearings",
         watch::bearings_data(&snapshot),
     ))
-}
-
-/// `GET /api/fleet` — the live agent fleet + health counts (design §2.1), plus the machine's
-/// harness availability (#501) so the dashboard's per-agent switcher can render each option
-/// usable/disabled without a second read.
-pub async fn fleet(State(state): State<AppState>) -> Json<Envelope> {
-    let fleet = bn_core::agent::supervise(
-        &state.cfg,
-        bn_core::agent::DEFAULT_IDLE_MINS,
-        bn_core::agent::DEFAULT_STUCK_MINS,
-    );
-    let mut data = bn_core::payload::agent_fleet_data(&fleet);
-    enrich_fleet_plans(&state.cfg, &mut data);
-    data["harnesses"] = json!(bn_core::harness::availability(&state.cfg));
-    Json(Envelope::success("fleet", data))
-}
-
-/// `GET /api/machine` (#525) — a cheap, cross-platform snapshot of the host the fleet runs on:
-/// CPU load (1/5/15 + cores + a normalized per-core gauge), RAM (free/used/total + swap-used, the
-/// real OOM signal), the live active-agent count, and a derived green/amber/red saturation state.
-/// Surfaces "near saturation" *before* the machine melts (this session it saturated twice), and
-/// shares thresholds with #503 dispatch backpressure.
-pub async fn machine(State(state): State<AppState>) -> Json<Envelope> {
-    let snapshot = bn_core::machine::sample();
-    let fleet = bn_core::agent::supervise(
-        &state.cfg,
-        bn_core::agent::DEFAULT_IDLE_MINS,
-        bn_core::agent::DEFAULT_STUCK_MINS,
-    );
-    let data = bn_core::payload::machine_health_data(&snapshot, fleet.agents.len());
-    Json(Envelope::success("machine", data))
-}
-
-/// `GET /api/nodes` — the fleet's machines as a *list*. Today that is exactly one entry — the
-/// local host — but the shape is a list from day one so registered remote nodes can join without
-/// a UI contract change: each entry is the `/api/machine` snapshot plus identity (`host`,
-/// `platform`, `arch`), a reachability `status`, and a `local` marker for the node running this
-/// server. Remote entries will carry `status: "unreachable"` when their heartbeat lapses.
-pub async fn nodes(State(state): State<AppState>) -> Json<Envelope> {
-    let snapshot = bn_core::machine::sample();
-    let fleet = bn_core::agent::supervise(
-        &state.cfg,
-        bn_core::agent::DEFAULT_IDLE_MINS,
-        bn_core::agent::DEFAULT_STUCK_MINS,
-    );
-    let mut node = bn_core::payload::machine_health_data(&snapshot, fleet.agents.len());
-    node["host"] = json!(state.cfg.hostname);
-    node["platform"] = json!(std::env::consts::OS);
-    node["arch"] = json!(std::env::consts::ARCH);
-    node["status"] = json!("online");
-    node["local"] = json!(true);
-    Json(Envelope::success("nodes", json!({ "nodes": [node] })))
 }
 
 /// `GET /api/agents/{session_id}` — one live agent's detail: the fleet entry plus its most-recent
@@ -697,15 +651,6 @@ pub async fn wrap(State(state): State<AppState>) -> Json<Envelope> {
 // Attention
 // ---------------------------------------------------------------------------
 
-/// `GET /api/attn` — open attention items for today (includes future plan-review requests).
-pub async fn attn() -> Json<Envelope> {
-    let items = bn_core::attention::open_items(&bn_core::util::today());
-    Json(Envelope::success(
-        "attn",
-        bn_core::payload::attn_list_data(&items),
-    ))
-}
-
 // ---------------------------------------------------------------------------
 // Tasks, issues, pipeline (#1005, EPIC #993) — the read side of the task-first model
 // ---------------------------------------------------------------------------
@@ -1098,60 +1043,6 @@ pub async fn pipeline_status(
     .into_response()
 }
 
-// ---------------------------------------------------------------------------
-// Action center (#522) — the unified actionable-items list
-// ---------------------------------------------------------------------------
-
-/// `GET /api/actions` — the action-centric command center's heart: every actionable signal bn
-/// tracks, folded into one ranked list (`bn_core::action_center::build_actions`). Aggregates open
-/// attention items, pending plan-reviews, failing crons, open note todos + blockers, stale in-flight
-/// PRs, and today's open goals. Each item carries an editable **suggested prompt** (a per-type
-/// template) and a **default urgency**, so the dashboard can one-click *Start agent* (dispatch or
-/// queue) from any row with a real starting-point instruction pre-filled.
-///
-/// A pure fold over already-read viewmodels — the reads shell git/gh (`wrap` doesn't; these don't
-/// either) or hit the store, all cheap in-process `bn-core` calls, so it runs on a blocking thread
-/// to keep the async executor free.
-pub async fn actions(State(state): State<AppState>) -> Json<Envelope> {
-    let cfg = state.cfg.clone();
-    let data = tokio::task::spawn_blocking(move || {
-        let today = bn_core::util::today();
-        let attn = bn_core::attention::open_items(&today);
-        let reviews = bn_core::plan_review::list();
-        let crons = bn_core::crons::status_views(&cfg, None);
-        let notes = bn_core::rollups::summary(&cfg);
-        let goals = bn_core::daily::read(&cfg.daily_file(&today))
-            .map(|d| d.front.goals)
-            .unwrap_or_default();
-        // Every orchestrate queue item across live runs — the stale-PR source.
-        let queue: Vec<bn_core::orchestrate::QueueItem> = bn_core::orchestrate::run_paths()
-            .into_iter()
-            .filter_map(|p| bn_core::orchestrate::OrchestrateState::load(&p))
-            .flat_map(|st| st.queue.into_iter())
-            .collect();
-        // Accepted Today's-agent suggestions promoted into the action feed (#578).
-        let suggestions =
-            bn_core::suggestions::list(Some(bn_core::suggestions::SuggestionStatus::Accepted), 0);
-
-        let sources = bn_core::action_center::ActionSources {
-            attn: &attn,
-            reviews: &reviews,
-            crons: &crons,
-            notes: &notes,
-            goals: &goals,
-            queue: &queue,
-            suggestions: &suggestions,
-            now: bn_core::util::now_epoch_secs(),
-        };
-        let actions = bn_core::action_center::build_actions(&sources);
-        let cron_activity = bn_core::action_center::cron_activity(&crons);
-        bn_core::payload::actions_data(&actions, &cron_activity)
-    })
-    .await
-    .unwrap_or_else(|_| serde_json::json!({ "count": 0, "actions": [] }));
-    Json(Envelope::success("actions", data))
-}
-
 /// `GET /api/today/agent` — Today's **hosted** agent: the record of what bn launched, joined with
 /// the live fleet so the page can tell "bn started one" from "one is alive right now".
 ///
@@ -1168,47 +1059,6 @@ pub async fn today_agent(State(state): State<AppState>) -> Json<Envelope> {
         .await
         .unwrap_or_else(|_| json!({ "running": false, "agent": Value::Null }));
     Json(Envelope::success("today-agent", data))
-}
-
-/// `GET /api/completed` — the Command Center's **Completed** tab (#561): the counterpart to the
-/// actionable list. Folds every *finished* signal bn tracks — closed branch-note todos (`bn done`),
-/// achieved daily goals, resolved attention items, and landed/merged orchestrate work — into one
-/// most-recent-first history (`bn_core::completed::build_completed`). Each item carries its branch
-/// note's **local path** + **remote URL** (via `bn_core::rollups::FsNoteLinker`, which shells git),
-/// so a finished item is traceable back to its full context from anywhere.
-///
-/// Like `actions`, a fold over already-read viewmodels plus a git-shelling linker, so it runs on a
-/// blocking thread to keep the async executor free.
-pub async fn completed(State(state): State<AppState>) -> Json<Envelope> {
-    let cfg = state.cfg.clone();
-    let data = tokio::task::spawn_blocking(move || {
-        let today = bn_core::util::today();
-        let todos = bn_core::rollups::completed_todos(&cfg);
-        let goals = bn_core::daily::read(&cfg.daily_file(&today))
-            .map(|d| d.front.goals)
-            .unwrap_or_default();
-        // Resolved attention — the completion pushes (`bn agent done`) awaiting review.
-        let attn = bn_core::attention::completed_items(&today);
-        // Landed/merged orchestrate work across every live run.
-        let merged: Vec<bn_core::orchestrate::QueueItem> = bn_core::orchestrate::run_paths()
-            .into_iter()
-            .filter_map(|p| bn_core::orchestrate::OrchestrateState::load(&p))
-            .flat_map(|st| st.queue.into_iter())
-            .collect();
-
-        let sources = bn_core::completed::CompletedSources {
-            todos: &todos,
-            goals: &goals,
-            attn: &attn,
-            merged: &merged,
-        };
-        let linker = bn_core::rollups::FsNoteLinker::new(&cfg, &bn_core::runner::RealRunner);
-        let items = bn_core::completed::build_completed(&sources, &linker);
-        bn_core::payload::completed_data(&items)
-    })
-    .await
-    .unwrap_or_else(|_| serde_json::json!({ "count": 0, "completed": [] }));
-    Json(Envelope::success("completed", data))
 }
 
 // ---------------------------------------------------------------------------
@@ -1334,27 +1184,6 @@ pub async fn search(
         Err(error) => Json(Envelope::failure(
             "search",
             "task_failed",
-            error.to_string(),
-        )),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Cron registry (#483)
-// ---------------------------------------------------------------------------
-
-/// `GET /api/cron` — the machine-wide cron registry: every declared cron (`crons.toml`) joined
-/// with its last-run health from the event log, plus run-only orphans. Manifest-owned schedules are
-/// nested beneath `agent-scheduler`; malformed agent catalogs return an explicit failure.
-pub async fn cron(State(state): State<AppState>) -> Json<Envelope> {
-    match bn_core::crons::status_views_with_agents(&state.cfg, None) {
-        Ok(views) => Json(Envelope::success(
-            "cron",
-            bn_core::payload::crons_view_data(&views),
-        )),
-        Err(error) => Json(Envelope::failure(
-            "cron",
-            "invalid_catalog",
             error.to_string(),
         )),
     }

@@ -12,7 +12,7 @@
 //! The review reasoning itself (fan-out subagents → reference check → verdict) lives in the
 //! `auto-review-pr` skill (`config/prompts/auto-review-pr.md`) the spawned agent runs; this command
 //! is the plumbing around it, and `stage` is the per-step visual that skill repaints as it walks
-//! the pipeline (`get-pr → lease → lint → review → test → fix → verdict`).
+//! the pipeline (`get-pr → lint → review → test → fix → verdict`).
 
 use bn_core::autoreview::{self, Stage};
 use bn_core::resolver::Config;
@@ -98,7 +98,7 @@ pub enum ReviewPrCmd {
     /// (small fixes pushed to your own PR); omit it for a strictly read-only review of another
     /// author's PR.
     Stage {
-        /// The stage now starting: get-pr | lease | lint | review | test | fix | verdict.
+        /// The stage now starting: get-pr | lint | review | test | fix | verdict.
         stage: String,
         /// This is your own PR — include the fix+push stage in the tracker.
         #[arg(long)]
@@ -741,7 +741,6 @@ fn worktree_head(cfg: &Config, repo: &str, branch: &str) -> Option<String> {
 /// filters `fix` out unless `mine`.
 const REVIEW_STAGES: &[(&str, &str)] = &[
     ("get-pr", "read the diff, state what it claims"),
-    ("lease", "worktree checked out on the PR branch"),
     ("lint", "format / lint gate"),
     (
         "review",

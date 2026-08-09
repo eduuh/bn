@@ -16,9 +16,9 @@
 # Best-effort and non-destructive: if workiq is absent/unauthenticated or yields nothing, the
 # feed and attention list are left as-is rather than cleared. workiq lives only on the work
 # laptop, so this is a clean no-op elsewhere — pair with `[jobs.only_on] meetings = ["<laptop>"]`
-# to keep the timer off other machines too. Triggered by `bn run meetings`; scheduled at 07:00 +
-# 14:50 in crons.toml, and re-fired on the first bn event of the day via `bn run meetings
-# --if-stale`.
+# to keep the timer off other machines too. Triggered by `bn run meetings`; scheduled by the
+# meetings agent manifest (config/agents/meetings.md, weekdays 14:50), and re-fired on the first
+# bn event of the day via `bn run meetings --if-stale`.
 set -eu
 
 bn="${BN:-$HOME/.config/bn/bn}"

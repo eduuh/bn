@@ -1,6 +1,5 @@
 import {
   ListOrdered,
-  ScrollText,
   ArrowLeftRight,
   Bell,
   Clock,
@@ -9,7 +8,6 @@ import {
   HardDrive,
   LineChart,
   Microscope,
-  Server,
   SquareTerminal,
   Sun,
   Target,
@@ -75,29 +73,12 @@ export const NAV_GROUPS: NavGroup[] = [
           "The machine-wide work queue: what is waiting, why each held item is held, what each node can run, and the pause control.",
       },
       {
-        to: "/queue/events",
-        label: "Queue events",
-        Icon: ScrollText,
-        tone: "hot",
-        exp: "queue",
-        blurb:
-          "What the dispatcher has been doing: every start, stall, reclaim and completion. The queue page shows what is true now; this shows what happened, which is where a queue's failures actually live.",
-      },
-      {
         to: "/console",
         label: "Console",
         Icon: SquareTerminal,
         tone: "hot",
         exp: "console",
         blurb: "The dense three-pane operator view: focus, queue and act.",
-      },
-      {
-        to: "/fleet",
-        label: "Fleet",
-        Icon: Server,
-        tone: "hot",
-        exp: "fleet",
-        blurb: "Every live agent, its health, and the controls to steer or relaunch it.",
       },
       {
         to: "/nodes",

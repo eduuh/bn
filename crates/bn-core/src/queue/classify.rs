@@ -12,6 +12,15 @@ pub enum QueueMode {
 }
 
 impl QueueMode {
+    /// Every mode, so a caller can enumerate or *validate* the label set rather than keeping its
+    /// own copy of it. `bn-web` uses this to decide whether a `?class=` from a query string is a
+    /// real class — which is what bounds its cache's key space.
+    pub const ALL: [QueueMode; 3] = [
+        QueueMode::Foreground,
+        QueueMode::Autonomous,
+        QueueMode::Opportunistic,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             QueueMode::Foreground => "foreground",
@@ -36,6 +45,15 @@ pub enum QueueSubtype {
 }
 
 impl QueueSubtype {
+    /// Every subtype — the companion to [`QueueMode::ALL`]; `?class=` matches against either set.
+    pub const ALL: [QueueSubtype; 5] = [
+        QueueSubtype::Foreground,
+        QueueSubtype::Cron,
+        QueueSubtype::Warming,
+        QueueSubtype::Recovery,
+        QueueSubtype::Maintenance,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             QueueSubtype::Foreground => "foreground",
