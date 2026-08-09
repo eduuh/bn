@@ -325,12 +325,19 @@ fn emit_status(cfg: &Config, repo: Option<&str>, now: i64, json: bool) {
         .filter(|e| e.status == BacklogStatus::Pending)
         .filter(|e| repo.is_none_or(|r| e.repo.eq_ignore_ascii_case(r)))
         .collect();
+    let active: Vec<&BacklogEntry> = backlog
+        .entries()
+        .iter()
+        .filter(|e| e.status == BacklogStatus::Leased)
+        .filter(|e| repo.is_none_or(|r| e.repo.eq_ignore_ascii_case(r)))
+        .collect();
     let nodes = node_rows(cfg);
 
     if json {
         println!(
             "{}",
-            Envelope::success("queue-status", status_json(cfg, &pending, &nodes, now)).to_json()
+            Envelope::success("queue-status", status_json(cfg, &pending, &active, &nodes, now))
+                .to_json()
         );
         return;
     }
@@ -344,6 +351,7 @@ fn emit_status(cfg: &Config, repo: Option<&str>, now: i64, json: bool) {
         );
     }
     print_dispatcher(cfg, now);
+    print_active(&active, now);
     print_pending(&pending);
     print_nodes(&nodes);
 }
@@ -435,6 +443,7 @@ fn print_builds(now: i64) {
 fn status_json(
     cfg: &Config,
     pending: &[&BacklogEntry],
+    active: &[&BacklogEntry],
     nodes: &[NodeRow],
     now: i64,
 ) -> serde_json::Value {
@@ -452,6 +461,11 @@ fn status_json(
             "kind": k.label(),
             "lane": WorkClass::from_kind(*k).label(),
             "pending": pending.iter().filter(|e| e.kind == *k).count(),
+        })).collect::<Vec<_>>(),
+        "active": active.iter().map(|e| serde_json::json!({
+            "entry": e,
+            "class": class_json(e),
+            "age_secs": now.saturating_sub(e.updated_at),
         })).collect::<Vec<_>>(),
         "lanes": WorkClass::ALL.iter().map(|lane| serde_json::json!({
             "lane": lane.label(),
@@ -474,6 +488,27 @@ fn status_json(
             "opportunistic_idle_mins": cfg.queue.opportunistic_idle_mins,
         },
     })
+}
+
+fn print_active(active: &[&BacklogEntry], now: i64) {
+    println!();
+    if active.is_empty() {
+        println!("\u{f04b} nothing running from the queue");
+        return;
+    }
+    println!("\u{f04b} {} running", active.len());
+    for e in active {
+        let node = e.assigned_to.as_deref().unwrap_or("local");
+        println!(
+            "  {:<13} {:<8} {:<8} {:<18} {:>5}  {}",
+            class_label(e),
+            e.exec.label(),
+            node,
+            format!("{}/{}", truncate(&e.repo, 8), truncate(&e.id, 9)),
+            fmt_secs(now.saturating_sub(e.updated_at)),
+            truncate(&e.item, 44),
+        );
+    }
 }
 
 fn print_pending(pending: &[&BacklogEntry]) {
@@ -682,31 +717,32 @@ fn emit_list(
         }
     }
 
-    fn class_matches(entry: &BacklogEntry, want: &str) -> bool {
-        want.is_empty()
-            || {
-                let class = bn_core::queue::classify::classify(entry);
-                class.mode.label() == want || class.subtype.label() == want
-            }
-    }
+}
 
-    fn class_label(entry: &BacklogEntry) -> &'static str {
-        let class = bn_core::queue::classify::classify(entry);
-        if class.subtype.label() != "foreground" {
-            return class.subtype.label();
+fn class_matches(entry: &BacklogEntry, want: &str) -> bool {
+    want.is_empty()
+        || {
+            let class = bn_core::queue::classify::classify(entry);
+            class.mode.label() == want || class.subtype.label() == want
         }
-        class.mode.label()
-    }
+}
 
-    fn class_json(entry: &BacklogEntry) -> serde_json::Value {
-        let class = bn_core::queue::classify::classify(entry);
-        serde_json::json!({
-            "mode": class.mode.label(),
-            "subtype": class.subtype.label(),
-            "autonomous": class.mode.is_autonomous(),
-            "opportunistic": class.mode == bn_core::queue::classify::QueueMode::Opportunistic,
-        })
+fn class_label(entry: &BacklogEntry) -> &'static str {
+    let class = bn_core::queue::classify::classify(entry);
+    if class.subtype.label() != "foreground" {
+        return class.subtype.label();
     }
+    class.mode.label()
+}
+
+fn class_json(entry: &BacklogEntry) -> serde_json::Value {
+    let class = bn_core::queue::classify::classify(entry);
+    serde_json::json!({
+        "mode": class.mode.label(),
+        "subtype": class.subtype.label(),
+        "autonomous": class.mode.is_autonomous(),
+        "opportunistic": class.mode == bn_core::queue::classify::QueueMode::Opportunistic,
+    })
 }
 
 /// The requirements suffix on a list row — empty when the entry runs anywhere, so an

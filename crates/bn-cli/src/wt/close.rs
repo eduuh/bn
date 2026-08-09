@@ -46,6 +46,10 @@ pub(crate) struct CloseFacts {
     pub dirty: usize,
     /// Commits not yet on the upstream (or, with no upstream, ahead of the default branch).
     pub unpushed: u32,
+    /// A live agent working in the checkout (its one-line description), if any. A clean tree is
+    /// not the same thing as an idle worktree: an agent mid-turn — or a human typing a prompt
+    /// into one — has nothing uncommitted yet, and closing on that basis kills it silently.
+    pub occupant: Option<String>,
     /// The tmux confirm prompt came back "y".
     pub confirmed: bool,
 }
@@ -56,11 +60,14 @@ pub(crate) enum ClosePlan {
     /// Not ours to reclaim — behave like tmux's built-in and just close the pane. The key is never
     /// worse than the binding it replaced.
     KillPaneOnly(&'static str),
-    /// Uncommitted or unpushed work: ask before anything is removed.
+    /// Uncommitted or unpushed work, or a live agent in the checkout: ask before anything is
+    /// removed.
     Confirm {
         branch: String,
         dirty: usize,
         unpushed: u32,
+        /// The live agent the close would kill, if that is what triggered the prompt.
+        occupant: Option<String>,
     },
     /// A pool slot: hand the lease back and warm-reset the checkout. `discard` is set only when the
     /// human confirmed throwing away uncommitted work in a *reusable* slot — no branch is deleted.
@@ -90,11 +97,16 @@ pub(crate) fn close_plan(f: &CloseFacts) -> ClosePlan {
         // a quieter way around it.
         return ClosePlan::KillPaneOnly("controller slot");
     }
-    if (f.dirty > 0 || f.unpushed > 0) && !f.confirmed {
+    // A live agent counts as work in flight exactly like dirty files do. This is the gate that was
+    // missing when `prefix x` killed an agent mid-prompt: its tree was clean, so the close ran on
+    // the keystroke, took every window in the slot with it, and the queued reclaim reset the
+    // checkout seconds later.
+    if (f.dirty > 0 || f.unpushed > 0 || f.occupant.is_some()) && !f.confirmed {
         return ClosePlan::Confirm {
             branch: f.branch.clone(),
             dirty: f.dirty,
             unpushed: f.unpushed,
+            occupant: f.occupant.clone(),
         };
     }
     match f.slot {
@@ -144,6 +156,14 @@ fn probe(path: &Path, confirmed: bool) -> CloseFacts {
         branch,
         dirty: dirty_count(&wt_root.to_string_lossy()),
         unpushed: unpushed_count(&wt_root),
+        // The same occupancy oracle the pool's lease paths read, asked *before* any window is
+        // torn down — afterwards there is nothing left to observe. Also re-asked when the queued
+        // reclaim runs, where it guards against the slot having been re-leased to a new live
+        // agent between the keystroke and the queue getting here.
+        occupant: crate::agent_lease::live_agents_in(&wt_root)
+            .into_iter()
+            .next()
+            .map(|o| o.describe()),
         confirmed,
     }
 }
@@ -216,10 +236,16 @@ pub(crate) fn cmd_close(
             branch,
             dirty,
             unpushed,
+            occupant,
         } => {
-            flash(&format!(
-                "{branch}: {dirty} uncommitted, {unpushed} unpushed — `bn wt close --confirmed` to close anyway"
-            ));
+            flash(&match occupant {
+                Some(who) => format!(
+                    "{branch}: a live {who} is working here — `bn wt close --confirmed` to close anyway"
+                ),
+                None => format!(
+                    "{branch}: {dirty} uncommitted, {unpushed} unpushed — `bn wt close --confirmed` to close anyway"
+                ),
+            });
             false
         }
         // Both reclaimable plans do the same two things here, in this order: take the window now,
@@ -257,18 +283,28 @@ fn cmd_reclaim(
             println!("nothing to reclaim at {} — {why}", wt_path.display());
             true
         }
-        // Work appeared after the window closed. Never discard it on a decision the human made
-        // about a different tree; leave the worktree alone and say so.
+        // Work — or a live agent — appeared after the window closed. Never discard either on a
+        // decision the human made about a different tree; leave the worktree alone and say so.
+        // The occupant case is the enqueue-to-run race: the slot was free when the keystroke
+        // filed this entry, and has since been re-leased to a new agent.
         ClosePlan::Confirm {
             branch,
             dirty,
             unpushed,
+            occupant,
         } => {
-            println!(
-                "{branch}: {dirty} uncommitted, {unpushed} unpushed since it was closed — \
-                 left alone; `bn wt close --reclaim --confirmed --path {}` to reclaim it anyway",
-                wt_path.display()
-            );
+            match occupant {
+                Some(who) => println!(
+                    "{branch}: a live {who} is working here now — left alone; \
+                     `bn wt close --reclaim --confirmed --path {}` to reclaim it anyway",
+                    wt_path.display()
+                ),
+                None => println!(
+                    "{branch}: {dirty} uncommitted, {unpushed} unpushed since it was closed — \
+                     left alone; `bn wt close --reclaim --confirmed --path {}` to reclaim it anyway",
+                    wt_path.display()
+                ),
+            }
             false
         }
         // Both reclaimable plans are the same call. `cleanup_one` is the one reclaim path — it

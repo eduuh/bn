@@ -164,6 +164,10 @@ pub fn router(state: AppState) -> Router {
         // Warm-worktree pool (#497) — schedule the heavy `pool-warm` job for a pooled repo.
         // Long-running, so it goes through the machine-wide queue instead of an uncapped spawn.
         .route("/api/repos/{repo}/pool/warm", post(actions::repo_pool_warm))
+        .route(
+            "/api/repos/{repo}/pool/schedule",
+            post(actions::repo_pool_schedule_set),
+        )
         .route("/api/repos/{repo}/pool", post(actions::repo_pool_set))
         // Goal-note connect/disconnect (#564) — native in-process daily-goal writes:
         .route("/api/goals/{id}/notes", post(actions::goal_note_connect))

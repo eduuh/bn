@@ -26,7 +26,19 @@ export interface RepoPool {
   leased: number;
   idle: number;
   last_warmed_ts: number | null;
+  policy: RepoPoolPolicy;
   slots: RepoPoolSlot[];
+}
+
+export interface RepoPoolPolicy {
+  min_ready: number;
+  warm_windows: RepoPoolWarmWindow[];
+}
+
+export interface RepoPoolWarmWindow {
+  name: string;
+  at: string;
+  fore: string;
 }
 
 /** One warm-pool slot, 1-indexed to match its on-disk `_pool/<n>` dir. */

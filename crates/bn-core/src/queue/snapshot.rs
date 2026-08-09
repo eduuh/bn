@@ -152,6 +152,7 @@ fn in_flight(cfg: &Config, entries: &[BacklogEntry], now: i64) -> Vec<InFlight> 
             id: e.id.clone(),
             kind: e.kind,
             work_class: WorkClass::from_kind(e.kind),
+            heavy: e.heavy,
             node: e.assigned_to.clone(),
             touches: e.touches.clone(),
             started_at: e.updated_at,
@@ -171,6 +172,7 @@ fn in_flight(cfg: &Config, entries: &[BacklogEntry], now: i64) -> Vec<InFlight> 
             // conservative read: under-counting is what over-commits the machine.
             kind: BacklogKind::Ship,
             work_class: WorkClass::Coding,
+            heavy: false,
             node: None,
             touches: Vec::new(),
             started_at: agent.last_activity_ts.min(now),

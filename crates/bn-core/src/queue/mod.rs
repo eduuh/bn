@@ -180,8 +180,8 @@ pub mod reap {
     ///      contains nothing matching it. That is a fact, so it is reclaimed at once rather than
     ///      after a timeout; waiting an hour to retry work whose executor is demonstrably absent
     ///      helps nobody. A short grace covers the window between leasing and the agent appearing.
-    ///   2. **Past its TTL** — the backstop, for everything the liveness check cannot see (headless
-    ///      work, an agent on another node).
+    ///   2. **Past its TTL** — the backstop, for everything the liveness check cannot see (heavy
+    ///      headless work, ordinary headless work, an agent on another node).
     ///
     /// Pure, so the rule is inspectable rather than a background behaviour people discover.
     pub fn stale<'a>(
@@ -196,8 +196,9 @@ pub mod reap {
             .filter(|e| {
                 let age = now.saturating_sub(e.updated_at);
                 let worktree = e.exec.needs_worktree();
+                let long_lived = worktree || e.heavy;
                 let provably_gone = worktree && age > START_GRACE_SECS && !is_live(e, live);
-                provably_gone || age > ttl(worktree)
+                provably_gone || age > ttl(long_lived)
             })
             .collect()
     }

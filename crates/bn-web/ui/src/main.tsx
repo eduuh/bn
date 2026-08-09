@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom";
 import { App } from "./App";
 import { Home } from "./routes/Home";
+import { Research } from "./routes/Research";
 import { lazyRoute, prefetchRoutes } from "./lib/lazyRoute";
 // The 404 and the two error boundaries stay in the entry chunk on purpose. They are the screens
 // that render when something has already gone wrong — including a chunk that failed to load — so
@@ -34,7 +35,6 @@ const Goals = lazyRoute(() => import("./routes/Goals"), "Goals");
 const Cron = lazyRoute(() => import("./routes/Cron"), "Cron");
 const CronDetail = lazyRoute(() => import("./routes/CronDetail"), "CronDetail");
 const Skills = lazyRoute(() => import("./routes/Skills"), "Skills");
-const Research = lazyRoute(() => import("./routes/Research"), "Research");
 const Repos = lazyRoute(() => import("./routes/Repos"), "Repos");
 const Settings = lazyRoute(() => import("./routes/Settings"), "Settings");
 const RepoDetail = lazyRoute(() => import("./routes/RepoDetail"), "RepoDetail");

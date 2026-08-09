@@ -444,7 +444,14 @@ fn parse_harness_panes(output: &str, worktree: &Path, now: i64) -> Vec<Occupant>
             let command = fields[2].trim();
             let harness = bn_core::harness::KNOWN_HARNESSES
                 .iter()
-                .find(|known| **known == command)?;
+                .find(|known| **known == command)
+                .copied()
+                // Claude Code sets its process title to its bare version number, so
+                // `#{pane_current_command}` reads "2.1.226", never "claude" — an exact-name
+                // match alone leaves every such pane invisible to occupancy, which is how a
+                // slot with a live agent typing in it got warm-reset. Nothing else titles a
+                // foreground process as a dotted version, so the shape is the identity.
+                .or_else(|| bare_version(command).then_some("claude"))?;
             Some(Occupant {
                 repo: None,
                 branch: None,
@@ -455,6 +462,17 @@ fn parse_harness_panes(output: &str, worktree: &Path, now: i64) -> Vec<Occupant>
             })
         })
         .collect()
+}
+
+/// Whether `s` is a bare dotted version number (`2.1.226`) — the process title Claude Code runs
+/// under. At least two numeric parts, so a plain integer (a pid-named tool, a bare `2`) never
+/// matches.
+fn bare_version(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('.').collect();
+    parts.len() >= 2
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Who holds `worktree` right now, from the perspective of a launch about to happen in it.
@@ -844,5 +862,24 @@ mod tests {
         let panes = parse_harness_panes(row, Path::new("/wt/bn/feat"), NOW);
         assert_eq!(panes.len(), 1);
         assert_eq!(panes[0].since, NOW);
+    }
+
+    #[test]
+    fn a_version_titled_claude_pane_is_an_occupant() {
+        // Claude Code's process title is its bare version, so the command column never says
+        // "claude". The regression: every such pane was invisible to occupancy, and a slot with a
+        // live agent typing in it was warm-reset underneath it.
+        let row = "bn:feat\t/wt/bn/feat\t2.1.226\t\t0";
+        let panes = parse_harness_panes(row, Path::new("/wt/bn/feat"), NOW);
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes[0].kind, "claude");
+        // Non-version commands stay invisible: a build tool or shell is not an agent.
+        for cmd in ["zsh", "node", "2", "gh", "1.2.x", "..", "2..3"] {
+            let row = format!("bn:feat\t/wt/bn/feat\t{cmd}\t\t0");
+            assert!(
+                parse_harness_panes(&row, Path::new("/wt/bn/feat"), NOW).is_empty(),
+                "{cmd} must not read as a harness"
+            );
+        }
     }
 }

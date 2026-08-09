@@ -108,6 +108,7 @@ pub fn project(inputs: &TickInputs, est: &KindDurations, horizon_secs: i64) -> V
                     id: d.id.clone(),
                     kind: d.kind,
                     work_class: d.work_class,
+                    heavy: d.heavy,
                     node: Some(d.target.label()),
                     touches: entry.touches.clone(),
                     started_at: clock,

@@ -12,6 +12,7 @@ fn facts() -> CloseFacts {
         branch: "feat-auth".to_string(),
         dirty: 0,
         unpushed: 0,
+        occupant: None,
         confirmed: false,
     }
 }
@@ -74,7 +75,8 @@ fn a_dirty_slot_asks_first_then_discards() {
         ClosePlan::Confirm {
             branch: "feat-auth".to_string(),
             dirty: 2,
-            unpushed: 0
+            unpushed: 0,
+            occupant: None,
         }
     );
     let confirmed = CloseFacts {
@@ -116,6 +118,34 @@ fn confirming_a_conventional_worktree_never_forces() {
         ..facts()
     };
     assert_eq!(close_plan(&f), ClosePlan::CleanupWorktree);
+}
+
+#[test]
+fn a_slot_with_a_live_agent_asks_even_when_clean() {
+    // The kill this pins: an agent mid-prompt has a clean tree, so the dirty/unpushed gates said
+    // nothing and `prefix x` took its windows on the keystroke. A live occupant is work in flight.
+    let occupied = CloseFacts {
+        slot: Some(4),
+        occupant: Some("claude agent 46ea27bd in bn:claude-priority-list".to_string()),
+        ..facts()
+    };
+    assert!(
+        matches!(close_plan(&occupied), ClosePlan::Confirm { occupant: Some(_), .. }),
+        "closing over a live agent must prompt, never kill silently"
+    );
+    assert!(needs_confirm(&close_plan(&occupied)));
+    // Confirmed, it proceeds — the human saw the agent named in the prompt and said yes.
+    let confirmed = CloseFacts {
+        confirmed: true,
+        ..occupied
+    };
+    assert_eq!(
+        close_plan(&confirmed),
+        ClosePlan::ReleaseSlot {
+            slot: 4,
+            discard: true
+        }
+    );
 }
 
 #[test]

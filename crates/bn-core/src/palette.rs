@@ -185,10 +185,7 @@ fn rank(query: &str, terms: &[String], fields: &[(&str, i64)], kind: ResultKind)
             .filter(|(t, _)| t.contains(term))
             .map(|(_, w)| *w)
             .max();
-        match best {
-            Some(w) => score += w,
-            None => return None, // a term matched nothing — not a result
-        }
+        score += best?; // a term matched nothing — not a result
     }
 
     // Whole-query bonuses, measured on the title (the first field, by convention).

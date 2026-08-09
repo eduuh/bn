@@ -2,6 +2,28 @@ import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
+function manualChunks(id: string) {
+  if (!id.includes("/node_modules/")) return undefined;
+  if (id.includes("/@blocknote/") || id.includes("/prosemirror-") || id.includes("/@tiptap/")) {
+    return "editor";
+  }
+  if (
+    id.includes("/react-markdown/") ||
+    id.includes("/remark-") ||
+    id.includes("/micromark") ||
+    id.includes("/unified/") ||
+    id.includes("/vfile") ||
+    id.includes("/mdast-") ||
+    id.includes("/hast-") ||
+    id.includes("/unist-")
+  ) {
+    return "markdown";
+  }
+  if (id.includes("/highlight.js/")) return "highlight";
+  if (id.includes("/uplot/")) return "charts";
+  return undefined;
+}
+
 // Absolute base ("/") so built asset URLs are `/assets/...` regardless of the SPA route the shell
 // was served at — bn-web embeds `dist/` and serves it from the root via rust-embed.
 export default defineConfig({
@@ -25,14 +47,13 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+    // The only large chunk left is the lazy-loaded BlockNote editor. Splitting its mutually
+    // dependent packages creates Rollup chunk cycles, so keep it together and keep the warning
+    // threshold just above that intentional async payload.
+    chunkSizeWarningLimit: 1_100,
     rollupOptions: {
       output: {
-        // The framework never changes between dashboard builds while app code changes every
-        // release, so keeping React/router/query in their own chunk means a rebuild only
-        // invalidates the app chunk in the browser (and in the service worker's cache).
-        manualChunks: {
-          vendor: ["react", "react-dom", "react-router-dom", "@tanstack/react-query"],
-        },
+        manualChunks,
       },
     },
   },

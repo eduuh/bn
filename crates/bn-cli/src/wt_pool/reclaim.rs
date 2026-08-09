@@ -198,7 +198,19 @@ pub(crate) fn reconcile_pools(cfg: &Config, now: i64) {
         // Claim first, hand back second: a slot whose live agent the ledger never named must be
         // adopted before the sweep looks at it, or it reads as an unleased stranger.
         let adopted = adopt_occupied_slots(&ctx, &mut leases);
-        let freed = reclaim_leaked_leases(&ctx, &mut leases, now, false);
+        // Unlease only when the pool actually needs the capacity. While a free worker slot
+        // remains, a leaked lease costs nothing — dispatch will simply pick the free slot — and
+        // sweeping it eagerly is how a live occupant every probe failed to recognize gets its
+        // checkout warm-reset underneath it. When the pool *is* full, the acquisition path
+        // (`acquire_slot`) already runs this same sweep itself at the moment it comes up empty,
+        // so a full pool still self-heals in the pass that needs the slot; this tick-head sweep
+        // only clears the backlog-visible drift in that same full-pool state.
+        let leased: BTreeSet<u32> = leases.slots.keys().copied().collect();
+        let freed = if bn_core::pool::pick_slot(ctx.size, &leased).is_some() {
+            Vec::new()
+        } else {
+            reclaim_leaked_leases(&ctx, &mut leases, now, false)
+        };
         // Reported, not silent: a slot coming back means something ended without saying so, and a
         // machine that keeps leaking them is worth noticing.
         if !adopted.is_empty() {

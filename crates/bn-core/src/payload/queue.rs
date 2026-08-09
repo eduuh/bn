@@ -22,6 +22,10 @@ pub fn queue_data(cfg: &crate::resolver::Config, now: i64) -> Value {
             "pending": snap.pending.iter().filter(|e| e.kind == *k).count(),
         })).collect::<Vec<_>>(),
         "entries": snap.pending.iter().map(entry_data).collect::<Vec<_>>(),
+        "active": snap.entries.iter()
+            .filter(|e| e.status == crate::backlog::BacklogStatus::Leased)
+            .map(entry_data)
+            .collect::<Vec<_>>(),
         "nodes": snap.nodes.iter().map(|n| node_data(n, now)).collect::<Vec<_>>(),
         // The state of the machine itself — what the page is *for*.
         //

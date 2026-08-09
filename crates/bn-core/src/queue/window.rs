@@ -15,6 +15,11 @@
 use crate::backlog::BacklogEntry;
 use crate::queue::classify::{self, QueueMode};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
+
+pub const POOL_WARM_LUNCH: &str = "pool-warm-lunch";
+pub const POOL_WARM_AFTER_WORK: &str = "pool-warm-after-work";
+const POOL_WARM_MATCH: &str = "source:cron:pool-warm";
 
 /// A recurring span during which some work is preferred.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,4 +139,170 @@ pub fn allows_opportunistic(entry: &BacklogEntry, windows: &[PriorityWindow], no
     windows
         .iter()
         .any(|w| w.mode == WindowMode::Away && w.is_open(now) && w.applies_to(entry))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PoolWarmWindow {
+    pub name: String,
+    pub at: String,
+    pub fore: String,
+}
+
+pub fn pool_warm_windows(windows: &[PriorityWindow]) -> Vec<PoolWarmWindow> {
+    windows
+        .iter()
+        .filter(|w| w.mode == WindowMode::Away && w.matches.iter().any(|m| m == POOL_WARM_MATCH))
+        .map(|w| PoolWarmWindow {
+            name: w.name.clone(),
+            at: w.at.clone(),
+            fore: format_duration(w.secs),
+        })
+        .collect()
+}
+
+pub fn default_pool_warm_priority_windows() -> Vec<PriorityWindow> {
+    vec![
+        priority_window_from_pool(PoolWarmWindow {
+            name: POOL_WARM_LUNCH.to_string(),
+            at: "Mon..Fri *-*-* 12:30:00".to_string(),
+            fore: "90m".to_string(),
+        }),
+        priority_window_from_pool(PoolWarmWindow {
+            name: POOL_WARM_AFTER_WORK.to_string(),
+            at: "Mon..Fri *-*-* 17:30:00".to_string(),
+            fore: "2h".to_string(),
+        }),
+    ]
+}
+
+fn priority_window_from_pool(win: PoolWarmWindow) -> PriorityWindow {
+    PriorityWindow {
+        name: win.name,
+        at: win.at,
+        secs: crate::focus::parse_duration(&win.fore).unwrap_or(90 * 60),
+        boost: 100,
+        matches: vec![POOL_WARM_MATCH.to_string()],
+        mode: WindowMode::Away,
+    }
+}
+
+pub fn read_pool_warm_windows(
+    config_path: &Path,
+    fallback: &[PriorityWindow],
+) -> Vec<PoolWarmWindow> {
+    std::fs::read_to_string(config_path)
+        .ok()
+        .map(|text| pool_warm_windows_from_config(&text))
+        .filter(|wins| !wins.is_empty())
+        .unwrap_or_else(|| pool_warm_windows(fallback))
+}
+
+pub fn write_pool_warm_windows(
+    config_path: &Path,
+    windows: &[PoolWarmWindow],
+) -> std::io::Result<()> {
+    let current = std::fs::read_to_string(config_path).unwrap_or_default();
+    let next = edit_pool_warm_windows(&current, windows);
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    crate::store::write_atomic(config_path, next.as_bytes())
+}
+
+fn pool_warm_windows_from_config(text: &str) -> Vec<PoolWarmWindow> {
+    let mut out = Vec::new();
+    let mut lines = text.lines().peekable();
+    while let Some(line) = lines.next() {
+        if line.trim() != "[[queue.windows]]" {
+            continue;
+        }
+        let mut block = Vec::new();
+        while let Some(next) = lines.peek() {
+            if next.trim_start().starts_with("[[") || next.trim_start().starts_with('[') {
+                break;
+            }
+            block.push(lines.next().unwrap_or_default());
+        }
+        let Some(name) = string_value(&block, "name") else {
+            continue;
+        };
+        if !matches!(
+            Some(name.as_str()),
+            Some(POOL_WARM_LUNCH) | Some(POOL_WARM_AFTER_WORK)
+        ) {
+            continue;
+        }
+        let Some(at) = string_value(&block, "at") else {
+            continue;
+        };
+        let fore = string_value(&block, "fore").unwrap_or_else(|| "1h".to_string());
+        out.push(PoolWarmWindow { name, at, fore });
+    }
+    out
+}
+
+pub fn edit_pool_warm_windows(content: &str, windows: &[PoolWarmWindow]) -> String {
+    let mut out = Vec::new();
+    let mut lines = content.lines().peekable();
+    while let Some(line) = lines.next() {
+        if line.trim() != "[[queue.windows]]" {
+            out.push(line.to_string());
+            continue;
+        }
+        let mut block = vec![line.to_string()];
+        while let Some(next) = lines.peek() {
+            if next.trim_start().starts_with("[[") || next.trim_start().starts_with('[') {
+                break;
+            }
+            block.push(lines.next().unwrap_or_default().to_string());
+        }
+        let remove = string_value(
+            &block.iter().map(String::as_str).collect::<Vec<_>>(),
+            "name",
+        )
+        .is_some_and(|name| name == POOL_WARM_LUNCH || name == POOL_WARM_AFTER_WORK);
+        if !remove {
+            out.extend(block);
+        }
+    }
+    while out.last().is_some_and(|line| line.trim().is_empty()) {
+        out.pop();
+    }
+    for win in windows {
+        out.push(String::new());
+        out.push("[[queue.windows]]".to_string());
+        out.push(format!("name = \"{}\"", escape_toml(&win.name)));
+        out.push(format!("at = \"{}\"", escape_toml(&win.at)));
+        out.push(format!("fore = \"{}\"", escape_toml(&win.fore)));
+        out.push("mode = \"away\"".to_string());
+        out.push("boost = 100".to_string());
+        out.push("matches = [\"source:cron:pool-warm\"]".to_string());
+    }
+    let mut text = out.join("\n");
+    text.push('\n');
+    text
+}
+
+fn string_value(lines: &[&str], key: &str) -> Option<String> {
+    let prefix = format!("{key} = ");
+    lines.iter().find_map(|line| {
+        let raw = line.trim().strip_prefix(&prefix)?.trim();
+        raw.strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .map(|s| s.replace("\\\"", "\""))
+    })
+}
+
+fn escape_toml(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn format_duration(secs: i64) -> String {
+    if secs % 3600 == 0 {
+        format!("{}h", secs / 3600)
+    } else if secs % 60 == 0 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{secs}s")
+    }
 }

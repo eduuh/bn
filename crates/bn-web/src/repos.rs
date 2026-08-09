@@ -219,7 +219,7 @@ pub fn repos_view(cfg: &Config) -> Value {
     //    to match the rollup's note-canonical repo casing.
     let pools: BTreeMap<String, Value> = bn_core::pool::all_pool_status(cfg)
         .iter()
-        .map(|st| (st.repo.to_ascii_lowercase(), pool_json(st)))
+        .map(|st| (st.repo.to_ascii_lowercase(), pool_json(cfg, st)))
         .collect();
 
     let setup: BTreeMap<String, Value> = cloned
@@ -227,7 +227,18 @@ pub fn repos_view(cfg: &Config) -> Value {
         .map(|repo| (repo.clone(), setup_json(cfg, repo)))
         .collect();
 
-    assemble(&managed, &cloned, seeds, &cv, &pools, &links, &setup)
+    assemble(
+        cfg,
+        &managed,
+        &cloned,
+        seeds,
+        &cv,
+        RepoLookups {
+            pools: &pools,
+            links: &links,
+            setup: &setup,
+        },
+    )
 }
 
 /// The per-repo pool view attached to a repo rollup (#497): pooling-enabled, configured size, the
@@ -237,7 +248,7 @@ pub fn repos_view(cfg: &Config) -> Value {
 /// Slots ride along because the counts alone can't answer the question you actually have about a
 /// half-leased pool — *which* branch is holding a slot. The list is bounded by the configured size
 /// (at most `MAX_POOL_SIZE`) and only pooled repos have one, so this stays a small payload.
-fn pool_json(st: &bn_core::pool::PoolStatus) -> Value {
+fn pool_json(cfg: &Config, st: &bn_core::pool::PoolStatus) -> Value {
     let controller = bn_core::agent::CONTROLLER_POOL_SLOT;
     let ready = st
         .slots
@@ -262,7 +273,7 @@ fn pool_json(st: &bn_core::pool::PoolStatus) -> Value {
         "needs_top_up": needs_top_up,
         "full": full,
         "last_warmed_ts": st.last_warmed_ts,
-        "policy": pool_policy_json(),
+        "policy": pool_policy_json(cfg),
         "slots": st.slots.iter().map(|s| json!({
             "n": s.n,
             "leased": s.leased,
@@ -276,7 +287,7 @@ fn pool_json(st: &bn_core::pool::PoolStatus) -> Value {
 }
 
 /// The pool view for a repo with no pool configured — pooling disabled, no slots.
-fn pool_disabled() -> Value {
+fn pool_disabled(cfg: &Config) -> Value {
     json!({
         "enabled": false,
         "total": 0,
@@ -288,7 +299,7 @@ fn pool_disabled() -> Value {
         "needs_top_up": false,
         "full": false,
         "last_warmed_ts": null,
-        "policy": pool_policy_json(),
+        "policy": pool_policy_json(cfg),
         "slots": []
     })
 }
@@ -301,8 +312,20 @@ fn pool_disabled() -> Value {
 /// UI *computes* with: `min_ready`, which the optimistic pool update needs to recompute
 /// `needs_top_up` locally after a resize. The rest was documentation shipped down the wire on
 /// every 30s poll, once per repo.
-fn pool_policy_json() -> Value {
-    json!({ "min_ready": POOL_MIN_READY })
+fn pool_policy_json(cfg: &Config) -> Value {
+    json!({
+        "min_ready": POOL_MIN_READY,
+        "warm_windows": bn_core::queue::window::read_pool_warm_windows(
+            &bn_core::resolver::config_file_path(),
+            &cfg.queue.windows,
+        ),
+    })
+}
+
+struct RepoLookups<'a> {
+    pools: &'a BTreeMap<String, Value>,
+    links: &'a BTreeMap<String, Value>,
+    setup: &'a BTreeMap<String, Value>,
 }
 
 /// Fold the raw session seeds into `{ repos: [RepoRollup, …] }` — pure, so the whole merge / rollup
@@ -312,13 +335,12 @@ fn pool_policy_json() -> Value {
 /// sinks the never-touched clones to the bottom; sessions within a repo sort in-flight-first, then
 /// most-recent.
 fn assemble(
+    cfg: &Config,
     managed: &[String],
     cloned: &[String],
     seeds: Vec<Session>,
     cost: &CostView,
-    pools: &BTreeMap<String, Value>,
-    links: &BTreeMap<String, Value>,
-    setup: &BTreeMap<String, Value>,
+    lookups: RepoLookups<'_>,
 ) -> Value {
     // Cost lookup keyed by note-canonical (lowercased) repo.
     let cost_by_repo: BTreeMap<String, (Option<f64>, Option<f64>)> = cost
@@ -391,11 +413,19 @@ fn assemble(
                 "last_activity_ts": last_activity_ts,
                 "aic": aic,
                 "cost_usd": cost_usd,
-                "pool": pools.get(&repo).cloned().unwrap_or_else(pool_disabled),
-                "setup": setup.get(&repo).cloned().unwrap_or_else(|| setup_unknown(&repo)),
+                "pool": lookups
+                    .pools
+                    .get(&repo)
+                    .cloned()
+                    .unwrap_or_else(|| pool_disabled(cfg)),
+                "setup": lookups
+                    .setup
+                    .get(&repo)
+                    .cloned()
+                    .unwrap_or_else(|| setup_unknown(&repo)),
                 // `null` for a repo with no clone here or an origin we can't parse — the UI renders
                 // no link rather than a guessed one.
-                "links": links.get(&repo).cloned().unwrap_or(Value::Null),
+                "links": lookups.links.get(&repo).cloned().unwrap_or(Value::Null),
                 "sessions": sessions.iter().map(Session::to_json).collect::<Vec<_>>(),
             })
         })
@@ -590,6 +620,22 @@ mod tests {
         }
     }
 
+    fn cfg() -> Config {
+        Config::load()
+    }
+
+    fn lookups<'a>(
+        pools: &'a BTreeMap<String, Value>,
+        links: &'a BTreeMap<String, Value>,
+        setup: &'a BTreeMap<String, Value>,
+    ) -> RepoLookups<'a> {
+        RepoLookups {
+            pools,
+            links,
+            setup,
+        }
+    }
+
     #[test]
     fn repo_name_strips_host_and_git_suffix() {
         assert_eq!(repo_name("git@github.com:eduuh/bn.git"), "bn");
@@ -607,14 +653,14 @@ mod tests {
         let cost = CostView::default();
         let pools = BTreeMap::new();
         let links = BTreeMap::new();
+        let cfg = cfg();
         let v = assemble(
+            &cfg,
             &["managed".to_string(), "cloned".to_string()],
             &["cloned".to_string()],
             vec![],
             &cost,
-            &pools,
-            &links,
-            &BTreeMap::new(),
+            lookups(&pools, &links, &BTreeMap::new()),
         );
         let repos = v.get("repos").and_then(Value::as_array).unwrap();
         let names: Vec<&str> = repos
@@ -635,14 +681,14 @@ mod tests {
             ..CostView::default()
         };
         let seeds = vec![session("bn", "feat"), session("bn", "feat")];
+        let cfg = cfg();
         let v = assemble(
+            &cfg,
             &[],
             &["bn".to_string()],
             seeds,
             &cost,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
+            lookups(&BTreeMap::new(), &BTreeMap::new(), &BTreeMap::new()),
         );
         let card = v["repos"]
             .as_array()
@@ -672,18 +718,18 @@ mod tests {
                 "needs_top_up": false,
                 "full": false,
                 "last_warmed_ts": null,
-                "policy": pool_policy_json(),
+                "policy": pool_policy_json(&cfg()),
                 "slots": [],
             }),
         );
+        let cfg = cfg();
         let v = assemble(
+            &cfg,
             &["bn".to_string()],
             &["bn".to_string(), "app".to_string()],
             vec![],
             &CostView::default(),
-            &pools,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
+            lookups(&pools, &BTreeMap::new(), &BTreeMap::new()),
         );
         let repos = v["repos"].as_array().unwrap();
         let bn = repos.iter().find(|r| r["repo"] == "bn").unwrap();
@@ -740,7 +786,8 @@ mod tests {
                 },
             ],
         };
-        let v = pool_json(&st);
+        let cfg = cfg();
+        let v = pool_json(&cfg, &st);
         // The controller slot is warm, but it does not count as a ready worker.
         assert_eq!(v["ready"], serde_json::json!(0));
         assert_eq!(v["worker_idle"], serde_json::json!(1));
@@ -755,14 +802,14 @@ mod tests {
             "bn".to_string(),
             serde_json::json!({ "status": "ready", "needs_setup": false }),
         );
+        let cfg = cfg();
         let v = assemble(
+            &cfg,
             &[],
             &["bn".to_string(), "app".to_string()],
             vec![],
             &CostView::default(),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            &setup,
+            lookups(&BTreeMap::new(), &BTreeMap::new(), &setup),
         );
         let repos = v["repos"].as_array().unwrap();
         let bn = repos.iter().find(|r| r["repo"] == "bn").unwrap();
@@ -774,7 +821,9 @@ mod tests {
     #[test]
     fn assemble_known_excludes_today() {
         let seeds = vec![session(bn_core::today_agent::TODAY_REPO, "2026-08-06")];
+        let cfg = cfg();
         let v = assemble(
+            &cfg,
             &[
                 "bn".to_string(),
                 bn_core::today_agent::TODAY_REPO.to_string(),
@@ -785,9 +834,7 @@ mod tests {
             ],
             seeds,
             &CostView::default(),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
+            lookups(&BTreeMap::new(), &BTreeMap::new(), &BTreeMap::new()),
         );
         let repos: Vec<&str> = v["repos"]
             .as_array()
@@ -810,14 +857,14 @@ mod tests {
     #[test]
     fn assemble_excludes_note_only_pseudo_repos() {
         let seeds = vec![session("repo", "master"), session("bn", "main")];
+        let cfg = cfg();
         let v = assemble(
+            &cfg,
             &[],
             &["bn".to_string()],
             seeds,
             &CostView::default(),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
+            lookups(&BTreeMap::new(), &BTreeMap::new(), &BTreeMap::new()),
         );
         let repos: Vec<&str> = v["repos"]
             .as_array()
@@ -835,14 +882,14 @@ mod tests {
         let mut hot = session("zzz", "y");
         hot.in_flight = true;
         hot.last_activity_ts = 9_999;
+        let cfg = cfg();
         let v = assemble(
+            &cfg,
             &[],
             &[],
             vec![idle, hot],
             &CostView::default(),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
+            lookups(&BTreeMap::new(), &BTreeMap::new(), &BTreeMap::new()),
         );
         let repos = v["repos"].as_array().unwrap();
         // Most-recently-active repo leads despite the alphabetical tiebreak.

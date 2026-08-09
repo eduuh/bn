@@ -99,6 +99,9 @@ pub struct InFlight {
     pub id: String,
     pub kind: BacklogKind,
     pub work_class: WorkClass,
+    /// Costs like an agent though it launches none. Heavy jobs are admitted one at a time because
+    /// they are build-like CPU/disk work, not ordinary headless crons.
+    pub heavy: bool,
     /// The node it landed on. `None` = the implicit local box.
     pub node: Option<String>,
     pub touches: Vec<String>,
@@ -375,6 +378,7 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
     // 3–5. Walk in rank order, applying the caps and placement each entry actually faces.
     let mut lane_used: BTreeMap<WorkClass, usize> = BTreeMap::new();
     let mut kind_used: BTreeMap<BacklogKind, usize> = BTreeMap::new();
+    let mut heavy_used = inputs.in_flight.iter().filter(|f| f.heavy).count();
     for f in inputs.in_flight {
         *lane_used.entry(f.work_class).or_default() += 1;
         *kind_used.entry(f.kind).or_default() += 1;
@@ -387,6 +391,15 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
             continue;
         };
         let lane = WorkClass::from_kind(entry.kind);
+
+        if entry.heavy && heavy_used > 0 {
+            plan.deferred.push(defer(
+                entry,
+                DeferReason::Capacity(Bind::LocalCap),
+                "another heavy queue job is already running".to_string(),
+            ));
+            continue;
+        }
 
         // Per-kind ceiling first: it is the narrower statement, so reporting it is more useful
         // than reporting the lane the entry would also have fitted in.
@@ -414,6 +427,9 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
             }
             express_used += 1;
             *kind_used.entry(entry.kind).or_default() += 1;
+            if entry.heavy {
+                heavy_used += 1;
+            }
             plan.start.push(dispatch(
                 entry,
                 lane,

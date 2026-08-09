@@ -61,6 +61,7 @@ mkdir -p "$bindir" "$cfgdir"
 # never clobber a real legacy dir (that needs an explicit migration).
 if [ "$layout" = "home" ] && [ "$cfgdir" != "$legacy_cfg" ]; then
   if [ ! -e "$legacy_cfg" ] || [ -L "$legacy_cfg" ]; then
+    mkdir -p "$(dirname "$legacy_cfg")"
     ln -sfn "$cfgdir" "$legacy_cfg"
     echo "Linked $legacy_cfg -> $cfgdir (compat alias)"
   else
@@ -210,12 +211,33 @@ build_web_ui() {
   echo "Built the bn-web dashboard UI ($ui/dist)."
 }
 
+kill_cargo_lock_holders() {
+  local lock="$1" pids="" pid
+  [ "${BN_INSTALL_KILL_CARGO_LOCK_HOLDER:-0}" = "1" ] || return 0
+  [ -e "$lock" ] || return 0
+  if command -v lsof >/dev/null 2>&1; then
+    pids=$(lsof -t "$lock" 2>/dev/null | sort -u || true)
+  elif command -v fuser >/dev/null 2>&1; then
+    pids=$(fuser "$lock" 2>/dev/null | tr ' ' '\n' | sort -u || true)
+  fi
+  [ -n "$pids" ] || return 0
+  echo "install: terminating Cargo process(es) holding $lock: $(echo "$pids" | tr '\n' ' ')" >&2
+  for pid in $pids; do
+    [ "$pid" != "$$" ] && kill "$pid" 2>/dev/null || true
+  done
+  sleep 2
+  for pid in $pids; do
+    [ "$pid" != "$$" ] && kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+  done
+}
+
 build_from_source() {
   bn_install_activate_cargo "$repo" || {
     echo "error: no prebuilt binary was available and no usable Cargo toolchain was found." >&2
     echo "       Install Rust with rustup, repair its proxies, or set CARGO_HOME/RUSTUP_HOME." >&2
     exit 1
   }
+  local target_dir="${BN_INSTALL_TARGET_DIR:-$repo/target/bn-install}"
   echo "Building Rust bn from source with $BN_INSTALL_CARGO_DIR/cargo…"
   # bn-web bakes its dashboard UI in at compile time (build.rs embeds crates/bn-web/ui/dist). Build
   # that UI first when node is available so the from-source binary serves the real dashboard, not
@@ -226,13 +248,19 @@ build_from_source() {
   # launcher `bn mcp serve`, which execs the sibling `bn-mcp`. Omitting it left that launcher
   # dead ("could not exec bn-mcp") and silently cost Claude Code / Copilot every bn tool and
   # session-safe skill prompt — a failure only visible inside the client, never from `bn` itself.
-  ( cd "$repo" && cargo build --release -p bn-cli -p bn-web -p bn-mcp )
+  # Install builds use their own target dir so self-update/nightly-release/dev builds do not block
+  # each other on Cargo's shared `target/.cargo-lock`. If that install target is wedged by a dead
+  # prior install, opt in to clearing it with BN_INSTALL_KILL_CARGO_LOCK_HOLDER=1.
+  mkdir -p "$target_dir"
+  kill_cargo_lock_holders "$target_dir/.cargo-lock"
+  kill_cargo_lock_holders "$target_dir/release/.cargo-lock"
+  ( cd "$repo" && CARGO_TARGET_DIR="$target_dir" cargo build --release -p bn-cli -p bn-web -p bn-mcp )
   # Copy, don't symlink: a symlink into target/release breaks on `cargo clean`,
   # silently bricking the live `bn`. Re-run install.sh after rebuilding to refresh.
-  atomic_install "$repo/target/release/bn" "$bindir/bn"
-  atomic_install "$repo/target/release/bn-web" "$bindir/bn-web"
-  atomic_install "$repo/target/release/bn-mcp" "$bindir/bn-mcp"
-  echo "Installed $bindir/bn (copy of $repo/target/release/bn; re-run after rebuilds)"
+  atomic_install "$target_dir/release/bn" "$bindir/bn"
+  atomic_install "$target_dir/release/bn-web" "$bindir/bn-web"
+  atomic_install "$target_dir/release/bn-mcp" "$bindir/bn-mcp"
+  echo "Installed $bindir/bn (copy of $target_dir/release/bn; re-run after rebuilds)"
 }
 
 # Build from this checkout by default. Fall back to a prebuilt release only when cargo is

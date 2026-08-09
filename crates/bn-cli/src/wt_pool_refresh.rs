@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 const POOL_REFRESH_IDLE_MINS: i64 = 20;
 
 /// Don't re-warm a repo whose slots were refreshed within this window.
-const POOL_REFRESH_MIN_AGE_SECS: i64 = 4 * 3600;
+const POOL_REFRESH_MIN_AGE_SECS: i64 = 24 * 3600;
 
 /// Minimum gap between opportunistic warm attempts.
 const POOL_REFRESH_ATTEMPT_MIN_AGE_SECS: i64 = 30 * 60;
@@ -38,9 +38,6 @@ pub(crate) fn plan_pool_refresh(cfg: &Config, now: i64) -> PoolRefreshPlan {
 }
 
 fn pool_refresh_allowed(cfg: &Config, now: i64) -> bool {
-    if bn_core::idle::is_idle(cfg, now, POOL_REFRESH_IDLE_MINS) {
-        return true;
-    }
     let mut spec = bn_core::backlog::AddSpec {
         kind: bn_core::backlog::BacklogKind::Cron,
         priority: -50,
@@ -56,6 +53,7 @@ fn pool_refresh_allowed(cfg: &Config, now: i64) -> bool {
     let entry =
         bn_core::backlog::BacklogEntry::new(&cfg.queue_home_repo(), "run pool-warm", &spec, now);
     bn_core::queue::window::allows_opportunistic(&entry, &cfg.queue.windows, now)
+        && bn_core::idle::is_idle(cfg, now, POOL_REFRESH_IDLE_MINS)
 }
 
 /// Freshest `pool_warm` timestamp per repo from the machine-local event log.
@@ -95,6 +93,7 @@ fn plan_idle_pool_refresh(
         let stale = last_warm.get(r).is_none_or(|ts| now - *ts >= min_age);
         if stale {
             targets.push(r.clone());
+            break;
         }
     }
     if targets.is_empty() {
@@ -149,9 +148,6 @@ mod tests {
     fn duplicate_repos_are_deduped() {
         let repos = vec!["bn".to_string(), "bn".to_string(), "other".to_string()];
         let plan = plan_idle_pool_refresh(true, &repos, &BTreeMap::new(), 1000, 100);
-        assert_eq!(
-            plan,
-            PoolRefreshPlan::Warm(vec!["bn".to_string(), "other".to_string()])
-        );
+        assert_eq!(plan, PoolRefreshPlan::Warm(vec!["bn".to_string()]));
     }
 }

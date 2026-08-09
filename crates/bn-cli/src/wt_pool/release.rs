@@ -166,6 +166,20 @@ fn release_slot_core(cfg: &Config, worktree: &Path, policy: ReleasePolicy) -> Sl
             };
         }
     }
+    // The occupant probe above only sees agents it can *name* — registered leases, stamped
+    // windows, harness-titled panes. A live pane it couldn't classify (a shell someone left open,
+    // a harness whose process title none of the probes match) still means a warm reset would pull
+    // the checkout out from under someone. Same cwd-based rule the leaked-lease sweep's
+    // `lease_facts` already applies, and like there it is the load-bearing check off Linux, where
+    // no `/proc` scan can answer. Not consulted under `--force`: the human aiming `wt pool return
+    // --force` at a slot is standing somewhere, possibly in it.
+    if !policy.force && crate::agent_lease::any_live_pane_in(worktree) {
+        return SlotRelease::Occupied {
+            repo,
+            slot: n,
+            holder: "tmux pane rooted in the slot".to_string(),
+        };
+    }
     if !policy.force {
         let dirty = wt::dirty_count(&worktree.to_string_lossy());
         if dirty > 0 {

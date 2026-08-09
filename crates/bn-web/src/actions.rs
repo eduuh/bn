@@ -39,7 +39,7 @@ mod prompts;
 mod repo_pool;
 #[path = "actions/repo_setup.rs"]
 mod repo_setup;
-pub use repo_pool::{repo_pool_set, repo_pool_warm};
+pub use repo_pool::{repo_pool_schedule_set, repo_pool_set, repo_pool_warm};
 #[path = "actions/reviews.rs"]
 mod reviews;
 pub use plan::plan_promote;

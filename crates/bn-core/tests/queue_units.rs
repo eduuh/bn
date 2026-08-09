@@ -273,6 +273,12 @@ fn leased(id: &str, exec: ExecSpec, updated_at: i64) -> BacklogEntry {
     e
 }
 
+fn leased_heavy(id: &str, exec: ExecSpec, updated_at: i64) -> BacklogEntry {
+    let mut e = leased(id, exec, updated_at);
+    e.heavy = true;
+    e
+}
+
 #[test]
 fn a_dispatched_branch_contains_the_entry_id_rather_than_equalling_it() {
     // The bug: matching on equality never matched anything, which quietly reduced the reaper to a
@@ -343,6 +349,36 @@ fn headless_work_is_reclaimed_on_the_ttl_alone() {
     assert!(reap::stale(&entries, &[], now, ttl).is_empty());
     let past = 1000 + reap::EXPRESS_LEASE_TTL_SECS + 1;
     assert_eq!(reap::stale(&entries, &[], past, ttl).len(), 1);
+}
+
+#[test]
+fn heavy_headless_work_uses_the_long_running_ttl() {
+    // Heavy jobs are spawned headlessly, so the agent liveness set cannot see them. They still run
+    // for minutes like agents; using the short express TTL requeues the same build while it is
+    // still waiting on Cargo's lock, and the duplicate nightly run kills the first tmux session.
+    let entries = vec![leased_heavy(
+        "nightly-release",
+        ExecSpec::Job {
+            job: "nightly-release".into(),
+            repo: None,
+            branch: None,
+        },
+        1000,
+    )];
+    let ttl = |long_lived: bool| {
+        if long_lived {
+            reap::AGENT_LEASE_TTL_SECS
+        } else {
+            reap::EXPRESS_LEASE_TTL_SECS
+        }
+    };
+    let after_express = 1000 + reap::EXPRESS_LEASE_TTL_SECS + 1;
+    assert!(
+        reap::stale(&entries, &[], after_express, ttl).is_empty(),
+        "heavy work must not be reclaimed on the express TTL"
+    );
+    let past_long_running = 1000 + reap::AGENT_LEASE_TTL_SECS + 1;
+    assert_eq!(reap::stale(&entries, &[], past_long_running, ttl).len(), 1);
 }
 
 #[test]

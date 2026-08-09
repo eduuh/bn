@@ -307,6 +307,13 @@ export function setRepoPool(
   return post(`/api/repos/${encodeURIComponent(repo)}/pool`, { size });
 }
 
+export function setRepoPoolSchedule(
+  repo: string,
+  body: { lunch_time: string; after_work_time: string; duration_mins: number },
+): Promise<unknown> {
+  return post(`/api/repos/${encodeURIComponent(repo)}/pool/schedule`, body);
+}
+
 /** `POST /api/repos/:repo/orchestrate {goal?, harness?}` (#556) — start a guarded main-branch
  * orchestrator for the repo: the long-lived supervisor that drains the repo's open-issue backlog.
  * Idempotent — a `409` (an orchestrator already runs for this repo) throws `ApiError` with code
