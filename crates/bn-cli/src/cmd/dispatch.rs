@@ -8,7 +8,10 @@ pub(crate) mod invocation;
 pub(crate) mod policy;
 pub(crate) use invocation::DispatchInvocation;
 use policy as dp;
-pub(crate) use policy::{effective_launch_harness, normalize_agent};
+pub(crate) use policy::{
+    effective_launch_harness, normalize_agent, plan_gate_enabled, routes_to_pipeline_investigate,
+    PlanGate,
+};
 
 /// Whether `s` looks like a todo id: `t` followed by digits (t3, t12).
 pub(crate) fn is_dispatch_todo_id(s: &str) -> bool {
@@ -560,10 +563,6 @@ pub(crate) fn run_post_create_hook(
     }
 }
 
-pub(crate) fn plan_gate_enabled(explicit: bool, configured: bool, yolo: bool, scout: bool) -> bool {
-    !scout && (explicit || configured || yolo)
-}
-
 fn render_workflow_body(skill: &bn_core::skills::Skill, title: &str) -> Result<String, String> {
     let mut args = serde_json::Map::new();
     for argument in &skill.arguments {
@@ -1074,40 +1073,6 @@ fn pin_worktree_gh_account(repo: &str, branch: &str) -> Option<std::path::PathBu
     dir.join("hosts.yml").is_file().then_some(dir)
 }
 
-/// Build the harness pass-through for a resolved pipeline model. The single leading `--` ends the
-/// launcher's own options; model/effort flags and any Copilot MCP suppressions then reach the
-/// harness directly. Every value is shell-quoted for the tmux command line.
-pub(crate) fn agent_model_suffix(
-    agent_kind: &str,
-    model: &bn_core::resolver::PipelineModel,
-    disabled_mcps: &[String],
-) -> String {
-    let mut suffix = String::from(" --");
-    // Only pin `--model` when the configured id is one this harness actually accepts; otherwise
-    // omit it and let the harness fall back to its own default. bn stores dotted catalog ids
-    // (e.g. claude-opus-4.8) that Claude Code rejects, which parked every dispatched claude agent
-    // on "model does not exist" (bn#963). Copilot accepts the dotted ids, so it is unaffected.
-    if let Some(model_id) =
-        bn_core::mcp::Harness::parse(agent_kind).and_then(|harness| harness.model_arg(&model.model))
-    {
-        suffix.push_str(" --model ");
-        suffix.push_str(&shq(model_id));
-    }
-    suffix.push(' ');
-    suffix.push_str(if agent_kind == "claude" {
-        "--effort"
-    } else {
-        "--reasoning-effort"
-    });
-    suffix.push(' ');
-    suffix.push_str(&shq(&model.effort));
-    for name in disabled_mcps {
-        suffix.push_str(" --disable-mcp-server ");
-        suffix.push_str(&shq(name));
-    }
-    suffix
-}
-
 fn dispatch_pipeline_stage(scout: bool, skill: Option<&str>) -> bn_core::pipeline::stage::Stage {
     use bn_core::pipeline::stage::Stage;
 
@@ -1193,16 +1158,6 @@ fn cross_repo_session_block(
     }
 }
 
-/// The seed-routing predicate: a skill-less non-scout agent dispatch enters the task pipeline at
-/// its Investigate stage; a scout seeds the scout envelope; an explicit `--skill X` lane (queue
-/// skill lanes, the critic's execute re-dispatch) runs that skill under the ship envelope —
-/// autonomy stance, verify gate, completion protocol, optional plan gate. Pure so the
-/// seed-assembly tests can pin the routing table: without the `skill` arm every non-scout agent
-/// dispatch took the investigate envelope, leaving the whole ship-envelope path unreachable.
-fn routes_to_pipeline_investigate(has_agent: bool, scout: bool, skill: Option<&str>) -> bool {
-    has_agent && !scout && skill.is_none()
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_dispatch(
     cfg: &Config,
@@ -1219,7 +1174,7 @@ pub(crate) fn run_dispatch(
     skill: Option<&str>,
     verify: bool,
     yolo: bool,
-    plan: bool,
+    plan: PlanGate,
     fresh: bool,
     keep_project_mcps: bool,
     no_pool: bool,
@@ -1894,7 +1849,7 @@ pub(crate) fn run_dispatch(
             };
             // `stage`/`model` were resolved up front (with the harness); reuse them here. The
             // suffix builder ignores `model.harness` — it only emits `--model`/`--effort`.
-            cmd.push_str(&agent_model_suffix(kind, &model, &suppressed));
+            cmd.push_str(&crate::cmd::launch_flags::agent_model_suffix(kind, &model, &suppressed));
             suppressed_mcps = suppressed;
             // #456: pin this worktree to its own GH_CONFIG_DIR so the agent's `gh auth switch`
             // (e.g. work → personal to reach a private repo) is scoped here and can't flip a

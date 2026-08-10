@@ -81,6 +81,10 @@ function ActionRow({ item, onStart }: { item: ActionItem; onStart: (i: ActionIte
   const { variant, bar } = severityOf(item.severity);
   const where = item.repo ? `${item.repo}${item.branch ? `/${item.branch}` : ""}` : null;
   const urgent = item.default_urgency === "urgent";
+  // An empty `suggested_prompt` is the fold saying "there is nothing to start here" — currently only
+  // an accepted suggestion whose work is already queued. Keyed on the prompt rather than on the
+  // item type so any future kind that reports rather than asks gets the same treatment for free.
+  const startable = item.suggested_prompt.trim().length > 0;
 
   return (
     <Card
@@ -131,16 +135,25 @@ function ActionRow({ item, onStart }: { item: ActionItem; onStart: (i: ActionIte
           )}
         </div>
         <div className="shrink-0">
-          <Button
-            variant={urgent ? "default" : "secondary"}
-            size="sm"
-            onClick={() => onStart(item)}
-            title="open the composer pre-filled with a suggested prompt"
-            aria-label={`Start agent — ${item.title}`}
-          >
-            {urgent ? <Zap className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
-            Start agent
-          </Button>
+          {startable ? (
+            <Button
+              variant={urgent ? "default" : "secondary"}
+              size="sm"
+              onClick={() => onStart(item)}
+              title="open the composer pre-filled with a suggested prompt"
+              aria-label={`Start agent — ${item.title}`}
+            >
+              {urgent ? <Zap className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+              Start agent
+            </Button>
+          ) : (
+            /* Already in flight. The row still belongs here — it is part of the day — but offering
+               to start it again is how the same work gets launched twice. */
+            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+              in flight
+            </span>
+          )}
         </div>
       </div>
     </Card>

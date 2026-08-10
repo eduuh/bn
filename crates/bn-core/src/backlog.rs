@@ -124,6 +124,37 @@ impl Backlog {
         self.get(repo, id).is_some_and(|e| e.status.is_active())
     }
 
+    /// The active entry a given producer's `source` last put here, if one is still in flight.
+    ///
+    /// The `(repo, id)` dedup in [`crate::queue::enqueue`] cannot answer this on its own: a producer
+    /// that enqueues *different* subjects for the same upstream thing — Today accepting a suggestion
+    /// queues either the work or the pass that makes it placeable — derives a different id each time,
+    /// so the two would coexist. Asking by source is asking the question that actually matters: is
+    /// anything already in flight for this proposal?
+    ///
+    /// Repo-agnostic, deliberately: the placement pass is booked against the home repo and the work
+    /// it unblocks against a real one, so scoping this to a repo would miss the entry it exists to
+    /// find. Sources are producer-namespaced (`today:<id>`, `cron:<job>`, `review:<repo>#<n>`), which
+    /// is what keeps that safe.
+    pub fn active_for_source(&self, source: &str) -> Option<&BacklogEntry> {
+        self.entries
+            .iter()
+            .find(|e| e.source == source && e.status.is_active())
+    }
+
+    /// The most recently updated entry a `source` produced, whatever its status.
+    ///
+    /// For *reporting* rather than deciding: what became of this proposal, including after its work
+    /// resolved. One source can own several entries over a proposal's life — the pass that resolved
+    /// its placement, then the work itself — so "the" entry is only well-defined as the newest, and
+    /// only [`active_for_source`](Self::active_for_source) answers "is anything in flight".
+    pub fn for_source(&self, source: &str) -> Option<&BacklogEntry> {
+        self.entries
+            .iter()
+            .filter(|e| e.source == source)
+            .max_by_key(|e| e.updated_at)
+    }
+
     /// The pending entries for `repo`, highest priority first. Ordering is the pure pull policy:
     /// priority descending, then `added_at` ascending (FIFO within a priority band), then `id`
     /// ascending for a total, deterministic order.

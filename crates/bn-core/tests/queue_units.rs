@@ -484,6 +484,7 @@ fn setup_entry() -> BacklogEntry {
             branch: Some("repo-setup".to_string()),
             name: Some("repo-setup".to_string()),
             yolo: true,
+            no_plan_review: true,
         },
         ..Default::default()
     };
@@ -500,6 +501,9 @@ fn a_queued_agent_keeps_the_identity_it_was_declared_with() {
     assert_eq!(entry.agent.branch.as_deref(), Some("repo-setup"));
     assert_eq!(entry.agent.name.as_deref(), Some("repo-setup"));
     assert!(entry.agent.yolo);
+    // Losing this one reinstates a plan-review gate the caller declined, and the agent then waits
+    // on a review nobody expected — the same class of silent-drop failure as the three above.
+    assert!(entry.agent.no_plan_review);
 }
 
 #[test]
@@ -590,6 +594,7 @@ fn every_axis_set() -> BacklogEntry {
             branch: Some("repo-setup".to_string()),
             name: Some("repo-setup".to_string()),
             yolo: true,
+            no_plan_review: true,
         },
     };
     BacklogEntry::new("nvim", "set up nvim", &spec, 1000)

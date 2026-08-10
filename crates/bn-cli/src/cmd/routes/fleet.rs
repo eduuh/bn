@@ -43,6 +43,11 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
             }
         }
         CmdFleet::Queue { action } => cmd::queue::route(cfg, action, json),
+        CmdFleet::Harness { action } => match action {
+            crate::cli::fleet_cmd::HarnessCmd::Models { harness } => {
+                cmd::harness_models::emit_harness_models(harness.as_deref(), json)
+            }
+        },
         CmdFleet::Mobile { host } => mobile::run(cfg, &host),
         CmdFleet::Notify { action } => match action {
             None | Some(NotifyCmd::Status) => cmd::notify::emit_notify_status(cfg, json),
@@ -191,6 +196,18 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
                 yes,
             }) => emit_agent_recover(cfg, repo, branch, all, base.as_deref(), yes, json),
             Some(AgentCmd::Kill { target }) => emit_agent_kill(cfg, &target, json),
+            Some(AgentCmd::KillRepo { repo }) => emit_repo_kill(cfg, &repo, json),
+            Some(AgentCmd::RelaunchRepo {
+                repo,
+                hard,
+                harness,
+            }) => crate::cmd::agent_relaunch::emit_repo(
+                cfg,
+                &repo,
+                hard,
+                harness.as_deref(),
+                json,
+            ),
             Some(AgentCmd::Relaunch {
                 target,
                 hard,

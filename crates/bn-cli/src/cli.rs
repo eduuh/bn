@@ -3,12 +3,20 @@
 //! `Cli` parser struct and the dispatch `match`. Glob-re-exported by `main.rs`.
 use crate::*;
 
+/// `bn dispatch`'s own value enums. Split out under the never-grow ratchet: this file is the clap
+/// declaration for every command, so the arguments of any one of them are the first thing that can
+/// live elsewhere without splitting a command's flags away from the command.
+mod dispatch_args;
+pub(crate) use dispatch_args::OnPoolFull;
+
 mod agent;
 pub(crate) use agent::AgentCmd;
 mod agents_cmd;
 pub(crate) use agents_cmd::AgentsCmd;
 mod task;
 pub(crate) use task::TaskCmd;
+mod today;
+pub(crate) use today::{TodayAgentCmd, TodayCmd};
 
 // The clap surface is split into flattened group sub-enums purely to bound the per-enum
 // stack frame that clap-derive's generated `augment_subcommands` allocates in unoptimized
@@ -130,6 +138,14 @@ pub(crate) enum CmdIntake {
         /// also uses this gate so trusted autonomy cannot bypass sensitive-plan review.
         #[arg(long)]
         plan: bool,
+        /// Suppress the plan-review gate for this dispatch, including the one `--yolo` and
+        /// `[dispatch].plan_review` would otherwise raise. For self-contained mechanical work whose
+        /// whole job is already stated in the prompt — repo setup is the built-in case — where a
+        /// plan to review adds a round trip and reviews nothing anyone would change. Refused with
+        /// `--plan`: asking for the gate and its opposite in one command is a mistake, not a
+        /// preference.
+        #[arg(long = "no-plan-review", conflicts_with = "plan")]
+        no_plan_review: bool,
         /// Attach specific references (coding standards, see `bn ref`) to the agent's seed, so it
         /// writes code to your standards — repeatable (`--ref javascript --ref commit-style`) or
         /// comma-separated. Omit to attach ALL references by default; pass `--ref -` (or an empty
@@ -1996,60 +2012,6 @@ pub(crate) enum FindingsCmd {
 }
 
 #[derive(Subcommand, Debug)]
-pub(crate) enum TodayCmd {
-    /// Run Today's agent now (the manual trigger): gather the latest cron findings → synthesize
-    /// suggested tasks → merge them into the reviewable store. Idempotent. `--json` emits the run
-    /// report + current suggestions.
-    Run {
-        /// Days of findings to look back over (default 7).
-        #[arg(long)]
-        lookback_days: Option<i64>,
-        /// Cap on suggestions synthesized per source's latest run (default 5).
-        #[arg(long)]
-        per_source: Option<usize>,
-    },
-    /// List suggested tasks, newest-first. Filter with `--status suggested|accepted|dismissed`.
-    List {
-        #[arg(long)]
-        status: Option<String>,
-        /// Most-recent-N cap (default 20, 0 = uncapped).
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-    },
-    /// Mark a suggestion accepted (you intend to act on it; promotion to a work item is #578).
-    Accept { id: String },
-    /// Dismiss a suggestion — it stays recorded so the agent never re-proposes it.
-    Dismiss { id: String },
-    /// Start, stop, or inspect Today's **hosted** agent — a live harness session in the tmux
-    /// `planning` session, seeded with today's findings packet and steerable from the dashboard's
-    /// Today page (or `bn agent send today:<date> "..."`).
-    Agent {
-        #[command(subcommand)]
-        action: TodayAgentCmd,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-pub(crate) enum TodayAgentCmd {
-    /// Launch Today's agent into the `planning` tmux session. Idempotent: a live agent for today
-    /// is reported, not duplicated. The session is leased and its id recorded, so it is steerable
-    /// (`bn agent send today:<date>`) the moment it comes up.
-    Start {
-        /// Harness to launch: copilot or claude. Omit to use the configured default
-        /// (`[harness].default` / `$BN_HARNESS`).
-        #[arg(long)]
-        harness: Option<String>,
-        /// Days of findings to seed the packet with (default 7).
-        #[arg(long)]
-        lookback_days: Option<i64>,
-    },
-    /// Stop Today's agent: close its tmux window and release its lease.
-    Stop,
-    /// Show the recorded agent joined with its live state (health, control channel).
-    Status,
-}
-
-#[derive(Subcommand, Debug)]
 pub(crate) enum GapCmd {
     /// Replace the meetings cache from JSON on stdin — the `meetings` cron's write path. Accepts a
     /// JSON array or JSONL (one `{"start","title","url"}` object per line), so it drops straight
@@ -2679,22 +2641,6 @@ pub(crate) enum IssueCmd {
         #[arg(long)]
         allow_duplicate: bool,
     },
-}
-
-/// What `bn dispatch` does when every warm pool slot is already leased.
-///
-/// The old behaviour was `Cold`, unconditionally and silently: a full pool meant a brand-new
-/// worktree directory, every time, forever, with nothing to reclaim them. Queueing is the honest
-/// default — capacity is finite, so work waits for a slot rather than growing the disk.
-#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub(crate) enum OnPoolFull {
-    /// Schedule the item on the repo's orchestrate run and start nothing now.
-    #[default]
-    Queue,
-    /// Cut a cold worktree anyway.
-    Cold,
-    /// Report `pool_full` and do nothing.
-    Fail,
 }
 
 /// The problem kind for `bn issue file`, each mapping to a canonical label.

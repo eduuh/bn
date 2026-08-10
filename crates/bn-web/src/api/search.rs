@@ -61,6 +61,7 @@ pub async fn search(
                 goals: &goals,
                 queue: &queue,
                 suggestions: &[],
+                backlog: None,
                 now,
             });
 

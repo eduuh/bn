@@ -6,6 +6,14 @@ use crate::*;
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum CmdFleet {
+    /// What each agent harness serves — the model ids and reasoning-effort levels it accepts.
+    /// Discovered from the harness itself (Copilot enumerates them in its shell completion) and
+    /// cached for a day, so a pipeline stage is never configured with a model that will be silently
+    /// dropped at launch. Falls back to the aliases bn validates when a harness offers no list.
+    Harness {
+        #[command(subcommand)]
+        action: HarnessCmd,
+    },
     /// The machine-wide work queue: every agent waiting to run, what it needs, and whether the
     /// dispatcher is paused. `bn orchestrate` drives one repo's run; this is the whole machine.
     Queue {
@@ -216,5 +224,15 @@ pub(crate) enum CmdFleet {
         /// Cards to present this session (overrides `[dojo] daily_target`).
         #[arg(long)]
         max: Option<usize>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum HarnessCmd {
+    /// List the models and effort levels each harness accepts.
+    Models {
+        /// Only this harness (copilot | claude). Omit for all of them.
+        #[arg(long)]
+        harness: Option<String>,
     },
 }

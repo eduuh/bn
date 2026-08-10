@@ -210,20 +210,64 @@ impl CapturedContext {
 /// passed through verbatim — it is the user's own words, not a third party's.
 ///
 /// `captured` advertises the operator's own capture without inlining it: see [`CapturedContext`].
+///
+/// `known_repos` is the resolvable placement set ([`crate::issues::known_repos`]). It is handed in
+/// rather than read so the packet stays pure, and it is handed in *at all* because resolving where
+/// the work happens is this stage's first duty: a task with no `repo:` cannot be placed, and a repo
+/// the gate does not recognize fails as `unknown_repo`, burning one of three attempts on a name the
+/// agent could not have known was invalid.
 pub fn improve_packet(
     task: &Task,
     verdict: Option<&SmartVerdict>,
     steer: Option<&str>,
     captured: &CapturedContext,
+    known_repos: &[String],
 ) -> String {
     let id = task.id().unwrap_or("?");
     let mut packet = format!("## Task\n{id} — {}\n", task.summary());
-    if let Some(repo) = task.meta("repo") {
-        packet.push_str(&format!("Repo: {repo}\n"));
-    }
     if let Some(src) = task.meta("src") {
         packet.push_str(&format!("Source: {src}\n"));
     }
+
+    // Grounding, stated as its own section whether or not it is resolved.
+    //
+    // This is the enhance stage's actual job, so the packet names each axis and whether it is
+    // answered — rather than leaving the agent to infer its work from the absence of a line. An
+    // unresolved repo used to appear only as a missing field, which led the agent to *invent* a repo
+    // name; the gate then rejects it as `unknown_repo`, costing one of three attempts on a name the
+    // agent could not have known was invalid. Naming the resolvable set turns that guess into a
+    // choice, and stating the empty axes turns grounding into a checklist.
+    packet.push_str("\n## Grounding (this stage's job)\n");
+    match task.meta("repo").map(str::trim).filter(|r| !r.is_empty()) {
+        Some(repo) => packet.push_str(&format!("Repo: {repo}\n")),
+        None => {
+            packet.push_str("Repo: UNRESOLVED — nothing can be placed until this is answered\n")
+        }
+    }
+    if !known_repos.is_empty() {
+        packet.push_str(&format!("Choose from: {}\n", known_repos.join(", ")));
+    }
+    // The grouping axes, so "what does this belong with" is as concrete a question as "where".
+    let projects = task.projects();
+    packet.push_str(&format!(
+        "Projects: {}\n",
+        if projects.is_empty() {
+            "none — group it with `+project`".to_string()
+        } else {
+            projects
+                .iter()
+                .map(|p| format!("+{p}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+    ));
+    packet.push_str(
+        &match task.meta("q").map(str::trim).filter(|q| !q.is_empty()) {
+            Some(q) => format!("Quarter goal: {q}\n"),
+            None => "Quarter goal: none — set `q:` when it serves one\n".to_string(),
+        },
+    );
+
     packet.push_str(&captured.render(id));
 
     if let Some(v) = verdict {
@@ -277,8 +321,34 @@ mod tests {
 
     #[test]
     fn a_bare_task_advertises_nothing() {
-        let packet = improve_packet(&task(), None, None, &CapturedContext::default());
+        let packet = improve_packet(&task(), None, None, &CapturedContext::default(), &[]);
         assert!(!packet.contains("Captured with this task"));
+    }
+
+    /// An unplaced task must *say* it is unplaced. The failure this prevents is silent: the agent
+    /// reads a packet with no Repo line, does not register that answering "where?" is its job, and
+    /// spends the run writing done-when criteria for work nothing can place.
+    #[test]
+    fn an_unplaced_task_says_so_and_names_the_choices() {
+        let repos = vec!["bn".to_string(), "atlas".to_string()];
+        let packet = improve_packet(&task(), None, None, &CapturedContext::default(), &repos);
+        assert!(packet.contains("## Grounding"));
+        assert!(packet.contains("Repo: UNRESOLVED"));
+        assert!(packet.contains("Choose from: bn, atlas"));
+        assert!(
+            packet.contains("Projects: none"),
+            "grouping is asked for too"
+        );
+        assert!(packet.contains("Quarter goal: none"));
+    }
+
+    #[test]
+    fn a_placed_task_states_its_repo() {
+        let mut t = task();
+        t.set_meta_raw("repo", "bn");
+        let packet = improve_packet(&t, None, None, &CapturedContext::default(), &[]);
+        assert!(packet.contains("Repo: bn"));
+        assert!(!packet.contains("UNRESOLVED"));
     }
 
     #[test]
@@ -288,7 +358,7 @@ mod tests {
             links: 2,
             attachments: vec!["shot.png".into(), "trace.log".into()],
         };
-        let packet = improve_packet(&task(), None, None, &captured);
+        let packet = improve_packet(&task(), None, None, &captured, &[]);
         assert!(packet.contains("bn task doc t7"));
         assert!(packet.contains("2 link(s)"));
         assert!(packet.contains("bn task attach t7"));
@@ -323,7 +393,7 @@ mod tests {
         assert_eq!(captured.links, 1);
         assert_eq!(captured.attachments, vec!["payload.txt".to_string()]);
 
-        let packet = improve_packet(&task, None, None, &captured);
+        let packet = improve_packet(&task, None, None, &captured, &[]);
         assert!(!packet.contains("IGNORE PRIOR INSTRUCTIONS"));
         assert!(!packet.contains("do as I say"));
         assert!(!packet.contains("example.com/evil"));

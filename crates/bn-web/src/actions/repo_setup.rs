@@ -76,21 +76,6 @@ fn setup_agent_repos(cfg: &bn_core::resolver::Config) -> BTreeSet<String> {
     live.into_iter().chain(queued).collect()
 }
 
-/// Whether `bn dispatch` put this setup agent in the queue instead of starting it.
-///
-/// A captured dispatch is a success — the work is durably filed and the tick will start it — but it
-/// is emphatically not a launch, and reporting it as one is how the dashboard came to say "starting
-/// an agent…" for ten repos whose agents were sitting in the backlog. The envelope says which
-/// happened; this reads it rather than assuming.
-fn was_queued(result: &RunResult) -> bool {
-    result
-        .envelope
-        .get("data")
-        .and_then(|data| data.get("dispatched"))
-        .and_then(serde_json::Value::as_bool)
-        .is_some_and(|dispatched| !dispatched)
-}
-
 async fn launch_repo_setup_agent(
     cfg: &bn_core::resolver::Config,
     repo: &str,
@@ -120,6 +105,21 @@ async fn launch_repo_setup_agent(
         SETUP_TASK_NAME.to_string(),
         "--agent".to_string(),
         harness.to_string(),
+        // Both flags exist to keep this ONE window doing ONE thing.
+        //
+        // Without `--skill`, a non-scout agent dispatch is routed into the task pipeline's
+        // Investigate stage (`routes_to_pipeline_investigate`). The setup agent then spent its
+        // window investigating rather than writing scripts, and on finishing handed off to a
+        // *second* window — `repo-setup-plan-<sid>` on the same worktree — before anything had been
+        // set up. `plan-work` is the ship envelope: write the plan, burn it down, here.
+        //
+        // And `--yolo` alone raises the plan-review gate, so the agent would propose a plan and wait
+        // for approval. Repo setup is self-contained mechanical work whose whole job is already
+        // stated in the seed — detect the build system, write the scripts, run `bn verify` — so the
+        // review round trip reviews nothing anyone would change.
+        "--skill".to_string(),
+        "plan-work".to_string(),
+        "--no-plan-review".to_string(),
         "--yolo".to_string(),
         "--".to_string(),
         goal,
@@ -248,68 +248,6 @@ pub async fn repo_setup_agent_start(
 
     let result = launch_repo_setup_agent(&state.cfg, &repo, harness).await;
     respond_process(&state, "repo-setup-agent", &repo, addr, result)
-}
-
-/// `POST /api/repos/setup-agents {harness?}` — scan local repos, detect the ones whose setup rollup
-/// says they need setup, and start one normal Fleet-visible setup agent for each.
-pub async fn repo_setup_agents_start(
-    State(state): State<AppState>,
-    MaybeAddr(addr): MaybeAddr,
-    raw: Bytes,
-) -> Response {
-    let cmd = "repo-setup-agents";
-    let body: RepoSetupAgentBody = match parse_body(cmd, &raw) {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
-    let Some(harness) = normalize_harness(body.harness.as_deref()) else {
-        return bad_request(cmd, "invalid_harness", "harness must be claude or copilot");
-    };
-
-    let cfg = state.cfg.clone();
-    let (repos, live_setup) = tokio::task::spawn_blocking(move || {
-        let mut repos: Vec<String> = bn_core::lifecycle::cloned_repos(&cfg)
-            .into_iter()
-            .filter(|repo| cfg.is_visible_repo(repo))
-            .filter(|repo| {
-                crate::repos::setup_json(&cfg, repo)
-                    .get("needs_setup")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(true)
-            })
-            .collect();
-        repos.sort();
-        repos.dedup();
-        (repos, setup_agent_repos(&cfg))
-    })
-    .await
-    .unwrap_or_default();
-
-    let mut started = Vec::new();
-    let mut queued = Vec::new();
-    let mut skipped = Vec::new();
-    let mut failed = Vec::new();
-    for repo in repos {
-        if live_setup.contains(&repo.to_ascii_lowercase()) {
-            skipped.push(json!({ "repo": repo, "reason": "already-running" }));
-            continue;
-        }
-        let result = launch_repo_setup_agent(&state.cfg, &repo, harness).await;
-        if !result.ok {
-            failed.push(json!({ "repo": repo, "envelope": result.envelope }));
-        } else if was_queued(&result) {
-            queued.push(repo);
-        } else {
-            started.push(repo);
-        }
-    }
-    let ok = failed.is_empty();
-    audit::record(&state, "repo-setup-agents", "needed", addr, ok);
-    Json(Envelope::success(
-        cmd,
-        json!({ "started": started, "queued": queued, "skipped": skipped, "failed": failed }),
-    ))
-    .into_response()
 }
 
 #[derive(Debug, Default, Deserialize)]

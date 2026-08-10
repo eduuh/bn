@@ -61,12 +61,19 @@ pub(super) fn route(cfg: &Config, action: CmdInsights, json: bool) {
                 per_source,
             }) => today_run(lookback_days, per_source, json),
             Some(TodayCmd::List { status, limit }) => today_list(status.as_deref(), limit, json),
-            Some(TodayCmd::Accept { id }) => {
-                today_set_status(&id, bn_core::suggestions::SuggestionStatus::Accepted, json)
-            }
-            Some(TodayCmd::Dismiss { id }) => {
-                today_set_status(&id, bn_core::suggestions::SuggestionStatus::Dismissed, json)
-            }
+            Some(TodayCmd::Accept { id }) => today_set_status(
+                cfg,
+                &id,
+                bn_core::suggestions::SuggestionStatus::Accepted,
+                json,
+            ),
+            Some(TodayCmd::Dismiss { id }) => today_set_status(
+                cfg,
+                &id,
+                bn_core::suggestions::SuggestionStatus::Dismissed,
+                json,
+            ),
+            Some(TodayCmd::Sync) => today_sync(cfg, json),
             Some(TodayCmd::Agent { action }) => match action {
                 TodayAgentCmd::Start {
                     harness,

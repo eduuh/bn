@@ -10,12 +10,13 @@
 //! that ordering is what makes an agent addressable: the lease and the window's `@bn_session_id`
 //! stamp are tiers 1 and 2 of the join in [`bn_core::agent::channel`], and without them the Steer
 //! panel is grey no matter how alive the session is.
+use crate::cmd::queue_producers;
 use crate::*;
 use bn_core::suggestions::{self, Suggestion, SuggestionStatus};
 use bn_core::today_agent::{self, AgentRecord, AgentStatus};
 
 /// Serialize a suggestion for the `--json` surfaces (matches the web `/api/suggestions` shape).
-fn suggestion_json(s: &Suggestion) -> serde_json::Value {
+fn suggestion_json(s: &Suggestion, bl: &bn_core::backlog::Backlog) -> serde_json::Value {
     serde_json::json!({
         "id": s.id,
         "title": s.title,
@@ -25,13 +26,30 @@ fn suggestion_json(s: &Suggestion) -> serde_json::Value {
         "url": s.url,
         "created_at": s.created_at,
         "status": s.status.as_str(),
+        "task": s.task,
+        "queue": suggestions::queue_view(s, bl),
     })
 }
 
-fn print_suggestion(s: &Suggestion) {
+fn print_suggestion(s: &Suggestion, bl: &bn_core::backlog::Backlog) {
     println!("  [{}] {}  ({})", s.status.as_str(), s.title, s.id);
     if !s.rationale.is_empty() {
         println!("      {}", s.rationale);
+    }
+    // What Today fed the queue, and what became of it — the half that makes the loop legible rather
+    // than a proposal list that never visibly turns into anything.
+    match suggestions::queue_view(s, bl) {
+        // The suggestion's own status wins the glyph: a shipped proposal reads as done even while its
+        // entry is still being resolved in the queue, because the work it stood for has landed.
+        Some(q) if q.live && s.status != SuggestionStatus::Done => println!(
+            "      → {}/{} · {} · {}",
+            q.repo, q.entry, q.kind, q.status
+        ),
+        Some(q) => println!("      ✓ {}/{} · {}", q.repo, q.entry, q.status),
+        None if s.status == SuggestionStatus::Accepted => {
+            println!("      → not queued yet — `bn today sync`")
+        }
+        None => {}
     }
     if !s.url.is_empty() {
         println!("      ↗ {}", s.url);
@@ -50,6 +68,7 @@ pub(crate) fn today_run(lookback_days: Option<i64>, per_source: Option<usize>, a
         }
     };
     let open = suggestions::list(Some(SuggestionStatus::Suggested), 0);
+    let bl = bn_core::backlog::load(&bn_core::backlog::backlog_path());
     if as_json {
         println!(
             "{}",
@@ -57,7 +76,7 @@ pub(crate) fn today_run(lookback_days: Option<i64>, per_source: Option<usize>, a
                 "today",
                 serde_json::json!({
                     "report": report,
-                    "suggestions": open.iter().map(suggestion_json).collect::<Vec<_>>(),
+                    "suggestions": open.iter().map(|s| suggestion_json(s, &bl)).collect::<Vec<_>>(),
                 })
             )
             .to_json()
@@ -79,7 +98,7 @@ pub(crate) fn today_run(lookback_days: Option<i64>, per_source: Option<usize>, a
     }
     println!("\nSuggested tasks ({} open):", open.len());
     for s in &open {
-        print_suggestion(s);
+        print_suggestion(s, &bl);
     }
 }
 
@@ -92,12 +111,13 @@ pub(crate) fn today_list(status: Option<&str>, limit: usize, as_json: bool) {
                 as_json,
                 "today",
                 "bad_status",
-                &format!("bn today list: unknown status '{s}' (use suggested|accepted|dismissed)"),
+                &format!("bn today list: unknown status '{s}' (use suggested|accepted|dismissed|done)"),
             ),
         },
         None => None,
     };
     let items = suggestions::list(filter, limit);
+    let bl = bn_core::backlog::load(&bn_core::backlog::backlog_path());
     if as_json {
         println!(
             "{}",
@@ -105,7 +125,7 @@ pub(crate) fn today_list(status: Option<&str>, limit: usize, as_json: bool) {
                 "today-list",
                 serde_json::json!({
                     "count": items.len(),
-                    "suggestions": items.iter().map(suggestion_json).collect::<Vec<_>>(),
+                    "suggestions": items.iter().map(|s| suggestion_json(s, &bl)).collect::<Vec<_>>(),
                 })
             )
             .to_json()
@@ -117,7 +137,49 @@ pub(crate) fn today_list(status: Option<&str>, limit: usize, as_json: bool) {
         return;
     }
     for s in &items {
-        print_suggestion(s);
+        print_suggestion(s, &bl);
+    }
+}
+
+/// `bn today sync` — reconcile every accepted suggestion against the queue.
+///
+/// The step that makes the enhance→work hand-off need no callback. An accepted suggestion whose
+/// placement pass has since stamped a `repo:` is now admissible, so the sweep queues the real work;
+/// one accepted while no dispatcher was running gets queued the first time one is. Both are the same
+/// operation as an accept, which is why this simply re-runs it: idempotence is what lets a sweep be
+/// the recovery mechanism rather than a second code path that can disagree with the first.
+pub(crate) fn today_sync(cfg: &Config, as_json: bool) {
+    let accepted = suggestions::list(Some(SuggestionStatus::Accepted), 0);
+    let mut queued = Vec::new();
+    for s in &accepted {
+        if let Some(q) = accept_into_queue(cfg, &s.id, as_json) {
+            queued.push(serde_json::json!({
+                "id": s.id,
+                "task": q.task_id,
+                "repo": q.repo,
+                "entry": q.entry_id,
+                "kind": q.kind,
+            }));
+        }
+    }
+    if as_json {
+        println!(
+            "{}",
+            Envelope::success(
+                "today-sync",
+                serde_json::json!({ "accepted": accepted.len(), "queued": queued })
+            )
+            .to_json()
+        );
+    } else if accepted.is_empty() {
+        println!("Nothing accepted — `bn today accept <id>` is what feeds the queue.");
+    } else {
+        println!(
+            "Reconciled {} accepted suggestion{}: {} in flight.",
+            accepted.len(),
+            if accepted.len() == 1 { "" } else { "s" },
+            queued.len()
+        );
     }
 }
 
@@ -133,6 +195,9 @@ pub(crate) fn job_today_agent(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
         println!("today-agent: Today's agent disabled — set [today].enabled to opt in");
         return 0;
     }
+    // Reconcile before starting anything. Yesterday's accepted-but-unqueued work is the day's oldest
+    // debt, and an agent that opens by re-proposing work it already accepted is worse than useless.
+    today_sync(cfg, false);
     match start_hosted_agent(cfg, None, None) {
         Ok(outcome) => {
             println!("today-agent: {}", outcome.message);
@@ -167,22 +232,17 @@ fn job_today_offline() -> i32 {
 }
 
 /// `bn today accept|dismiss <id>` — move one suggestion in its review lifecycle.
-pub(crate) fn today_set_status(id: &str, status: SuggestionStatus, as_json: bool) {
+///
+/// Accepting is not a bookkeeping change: it is the moment a proposal becomes work, so it is also
+/// the moment the work enters the queue. See [`accept_into_queue`].
+pub(crate) fn today_set_status(
+    cfg: &Config,
+    id: &str,
+    status: SuggestionStatus,
+    as_json: bool,
+) {
     match suggestions::set_status(id, status) {
-        Ok(true) => {
-            if as_json {
-                println!(
-                    "{}",
-                    Envelope::success(
-                        "today-status",
-                        serde_json::json!({ "id": id, "status": status.as_str() })
-                    )
-                    .to_json()
-                );
-            } else {
-                println!("suggestion {id}: {}", status.as_str());
-            }
-        }
+        Ok(true) => {}
         Ok(false) => fail_json(
             as_json,
             "today",
@@ -191,6 +251,165 @@ pub(crate) fn today_set_status(id: &str, status: SuggestionStatus, as_json: bool
         ),
         Err(e) => fail_json(as_json, "today", "write_failed", &format!("bn today: {e}")),
     }
+    // The status is written first and unconditionally. The owner's decision is the durable thing;
+    // whether the machine could act on it right now is not, and losing "I said yes to this" because
+    // the queue was unreachable would be the worse failure.
+    let queued = match status {
+        SuggestionStatus::Accepted => accept_into_queue(cfg, id, as_json),
+        _ => None,
+    };
+    if as_json {
+        println!(
+            "{}",
+            Envelope::success(
+                "today-status",
+                serde_json::json!({
+                    "id": id,
+                    "status": status.as_str(),
+                    "task": queued.as_ref().map(|q| q.task_id.clone()),
+                    "queued_repo": queued.as_ref().map(|q| q.repo.clone()),
+                    "queued_id": queued.as_ref().map(|q| q.entry_id.clone()),
+                    "queued_kind": queued.as_ref().map(|q| q.kind),
+                })
+            )
+            .to_json()
+        );
+    } else if status != SuggestionStatus::Accepted {
+        // Accept reports itself — it has a task and a queue destination to name, and every path
+        // through it says what happened. Printing a bare status line as well would repeat it.
+        println!("suggestion {id}: {}", status.as_str());
+    }
+}
+
+/// What an accept put into the queue.
+pub(crate) struct QueuedSuggestion {
+    pub(crate) task_id: String,
+    pub(crate) repo: String,
+    pub(crate) entry_id: String,
+    /// `work` when the task passed the gate, `enhance` when this entry resolves its placement first.
+    pub(crate) kind: &'static str,
+}
+
+/// Feed an accepted suggestion to the queue: mint its governing task, judge it, and enqueue either
+/// the work or the pass that will make the work placeable.
+///
+/// Returns `None` when nothing was queued — the suggestion is still accepted, and the reconcile
+/// sweep ([`today_sync`]) will pick it up once whatever blocked it clears. Three things block it:
+/// no live dispatcher, a task the gate handed to a person, and a failed write.
+pub(crate) fn accept_into_queue(
+    cfg: &Config,
+    id: &str,
+    as_json: bool,
+) -> Option<QueuedSuggestion> {
+    let suggestion = suggestions::get(id)?;
+    // The repo the finding points at, when it points at a known one. `None` is not a failure: it is
+    // the input that makes the gate say `no_repo` and routes this to the enhance agent below.
+    let known = bn_core::issues::known_repos(cfg).into_iter().collect();
+    let repo = bn_core::suggestions::repo_from_url(&suggestion.url, &known);
+    let task_id = crate::cmd::task_mint::task_for_suggestion(cfg, &suggestion, repo.as_deref());
+    if task_id.is_empty() {
+        if !as_json {
+            eprintln!("bn today accept: could not record a task for {id}");
+        }
+        return None;
+    }
+    let _ = suggestions::link_task(id, &task_id);
+
+    if !queue_producers::active_with_fallback(
+        cfg,
+        queue_producers::TODAY,
+        "leaving it accepted but unqueued",
+    ) {
+        if !as_json {
+            println!("suggestion {id}: accepted · task {task_id}");
+            println!("  not queued — no live dispatcher. `bn today sync` once one is running.");
+        }
+        return None;
+    }
+
+    // Already in flight? Ask the **backlog**, by source — not the cached `queued_id` on the
+    // suggestion, which a crash between the enqueue and the link would have left empty. This is the
+    // check that makes a second accept a no-op instead of a duplicate, and it also stops the work
+    // being queued alongside the placement pass that is still resolving where it goes.
+    let source = suggestion.queue_source();
+    if let Some(live) = bn_core::backlog::load(&bn_core::backlog::backlog_path())
+        .active_for_source(&source)
+        .cloned()
+    {
+        let _ = suggestions::link_queued(
+            id,
+            &live.repo,
+            &live.id,
+            bn_core::util::now_epoch_secs(),
+        );
+        if !as_json {
+            println!("suggestion {id}: accepted · task {task_id}");
+            println!(
+                "  already queued {}/{} ({})",
+                live.repo,
+                live.id,
+                live.status.label()
+            );
+        }
+        return Some(QueuedSuggestion {
+            task_id,
+            repo: live.repo,
+            entry_id: live.id,
+            kind: if live.kind == bn_core::backlog::BacklogKind::Enhance {
+                "enhance"
+            } else {
+                "work"
+            },
+        });
+    }
+
+    // Judge through the shared gate body, so an accept stamps `smart:`, counts its tries, and hits
+    // the three-strike backstop exactly as a worktree transition does.
+    let task = crate::cmd::task_mint::load_task(cfg, &task_id)?;
+    let decision = bn_core::pipeline::gate::judge(cfg, &task, &today());
+    // Read the placement off the **task**, never off the URL that minted it. An earlier enhance pass
+    // records `repo:` there, and that is the whole point of the pass — deciding from the URL would
+    // find nothing, re-queue the enhance, and loop forever on a task that is already placed.
+    let placed = task.meta("repo").map(str::trim).filter(|r| !r.is_empty());
+    if matches!(
+        decision,
+        bn_core::pipeline::gate::GateDecision::Refused { stuck: true, .. }
+    ) {
+        // Waiting on a person: the gate has already raised the attention item, so queueing another
+        // enhance attempt would only burn a lane against a task three agents have failed at.
+        if !as_json {
+            println!("suggestion {id}: accepted · task {task_id}");
+            if let Some(line) = decision.refusal_line() {
+                println!("  {line}");
+            }
+        }
+        return None;
+    }
+    let plan = match (decision.admits(), placed) {
+        (true, Some(repo)) => queue_producers::TodayPlan::Work {
+            repo,
+            task_id: &task_id,
+            kind: bn_core::backlog::BacklogKind::Ship,
+        },
+        // Not ready, or ready but unplaced. Either way the next thing to run is the pass that
+        // resolves where the work happens.
+        _ => queue_producers::TodayPlan::Enhance { task_id: &task_id },
+    };
+    let kind = match plan {
+        queue_producers::TodayPlan::Work { .. } => "work",
+        queue_producers::TodayPlan::Enhance { .. } => "enhance",
+    };
+    if !as_json {
+        println!("suggestion {id}: accepted · task {task_id}");
+    }
+    let (repo, entry_id) = queue_producers::capture_today(cfg, &suggestion, &plan)?;
+    let _ = suggestions::link_queued(id, &repo, &entry_id, bn_core::util::now_epoch_secs());
+    Some(QueuedSuggestion {
+        task_id,
+        repo,
+        entry_id,
+        kind,
+    })
 }
 
 // ---------------------------------------------------------------------------

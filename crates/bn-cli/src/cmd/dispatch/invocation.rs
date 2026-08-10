@@ -19,6 +19,7 @@ pub(crate) struct DispatchInvocation<'a> {
     scout: bool,
     verify: bool,
     yolo: bool,
+    no_plan_review: bool,
     fresh: bool,
     json: bool,
 }
@@ -35,6 +36,7 @@ impl<'a> DispatchInvocation<'a> {
             scout: false,
             verify: false,
             yolo: false,
+            no_plan_review: false,
             fresh: false,
             json: false,
         }
@@ -69,6 +71,12 @@ impl<'a> DispatchInvocation<'a> {
 
     pub(crate) fn yolo(mut self, yolo: bool) -> Self {
         self.yolo = yolo;
+        self
+    }
+
+    /// Decline the plan-review gate — the stance a queued entry recorded, replayed verbatim.
+    pub(crate) fn no_plan_review(mut self, no_plan_review: bool) -> Self {
+        self.no_plan_review = no_plan_review;
         self
     }
 
@@ -109,6 +117,9 @@ impl<'a> DispatchInvocation<'a> {
         if self.yolo {
             args.push("--yolo".to_string());
         }
+        if self.no_plan_review {
+            args.push("--no-plan-review".to_string());
+        }
         if self.fresh {
             args.push("--fresh".to_string());
         }
@@ -146,11 +157,15 @@ mod invocation_tests {
             DispatchInvocation::new("set up nvim", "nvim", "copilot")
                 .branch(Some("repo-setup"))
                 .name(Some("repo-setup"))
-                .yolo(true),
+                .yolo(true)
+                .no_plan_review(true),
         );
         assert_eq!(flag_value(&args, "--branch"), Some("repo-setup"));
         assert_eq!(flag_value(&args, "--name"), Some("repo-setup"));
         assert!(args.iter().any(|a| a == "--yolo"));
+        // A queued entry that declined the gate must be relaunched having declined it: rebuilding
+        // the command without this is how the tick would quietly reinstate a plan review.
+        assert!(args.iter().any(|a| a == "--no-plan-review"));
     }
 
     #[test]
@@ -161,5 +176,6 @@ mod invocation_tests {
         assert_eq!(flag_value(&args, "--branch"), None);
         assert_eq!(flag_value(&args, "--name"), None);
         assert!(!args.iter().any(|a| a == "--yolo"));
+        assert!(!args.iter().any(|a| a == "--no-plan-review"));
     }
 }

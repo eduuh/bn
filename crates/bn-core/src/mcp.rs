@@ -269,6 +269,38 @@ impl Harness {
         }
     }
 
+    /// The reasoning-effort value to hand this harness, or `None` when it accepts no such level —
+    /// the counterpart to [`model_arg`](Self::model_arg), and for the same reason.
+    ///
+    /// Effort used to be interpolated raw into the launch command, so a value neither CLI understood
+    /// (a typo, or a Copilot-only tier pinned on a Claude stage) reached the harness and **failed the
+    /// launch**. Model has been guarded since bn#963; effort never was. Dropping an unusable level is
+    /// strictly better: the agent still boots, at the harness's own default.
+    ///
+    /// The two sets differ, so the difference has to live somewhere: **Claude Code** takes
+    /// `low|medium|high|xhigh|max`; **Copilot** takes those plus `none|minimal`. Verified against
+    /// `claude --help` / `copilot --help` rather than assumed.
+    pub fn effort_arg(self, effort: &str) -> Option<&str> {
+        let trimmed = effort.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        let shared = matches!(lower.as_str(), "low" | "medium" | "high" | "xhigh" | "max");
+        let accepted = match self {
+            Harness::Claude => shared,
+            // A superset: Copilot additionally accepts turning reasoning off entirely.
+            Harness::Copilot => shared || matches!(lower.as_str(), "none" | "minimal"),
+        };
+        accepted.then_some(trimmed)
+    }
+
+    /// Every effort level this harness accepts, lowest first — the picker's options, and the list an
+    /// error message quotes when it refuses one.
+    pub fn efforts(self) -> &'static [&'static str] {
+        match self {
+            Harness::Claude => &["low", "medium", "high", "xhigh", "max"],
+            Harness::Copilot => &["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        }
+    }
+
     /// The per-harness "yolo" bypass flags that skip the interactive tool/path approval prompts, so
     /// an unattended/dispatched agent runs without blocking on a permission picker. Single source of
     /// truth: every launch site (interactive, `-p --resume` steer, staff run, review lane) equips
@@ -637,4 +669,76 @@ fn write_instructions(path: &Path) -> Result<WrittenFile, String> {
         path: path.to_path_buf(),
         action,
     })
+}
+
+#[cfg(test)]
+mod harness_arg_tests {
+    //! The two launch-argument guards. Both exist because an id or level the harness rejects used to
+    //! reach the CLI, and a launch that dies on "model does not exist" looks like a bn bug from every
+    //! angle except the command line nobody printed.
+    use super::Harness;
+
+    #[test]
+    fn both_harnesses_take_the_shared_effort_levels() {
+        for level in ["low", "medium", "high", "xhigh", "max"] {
+            assert_eq!(Harness::Claude.effort_arg(level), Some(level));
+            assert_eq!(Harness::Copilot.effort_arg(level), Some(level));
+        }
+    }
+
+    /// The asymmetry that motivates the guard: pinning a Copilot-only tier on a Claude stage is an
+    /// easy mistake, and unguarded it took the whole launch down.
+    #[test]
+    fn only_copilot_can_turn_reasoning_down_to_nothing() {
+        for level in ["none", "minimal"] {
+            assert_eq!(Harness::Copilot.effort_arg(level), Some(level));
+            assert_eq!(Harness::Claude.effort_arg(level), None);
+        }
+    }
+
+    #[test]
+    fn an_unknown_level_is_dropped_rather_than_passed_on() {
+        for level in ["", "  ", "insane", "very-high", "9"] {
+            assert_eq!(Harness::Claude.effort_arg(level), None, "claude: {level:?}");
+            assert_eq!(
+                Harness::Copilot.effort_arg(level),
+                None,
+                "copilot: {level:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn effort_is_matched_case_insensitively_but_returned_verbatim() {
+        // Config is hand-edited, so `High` must work; the harness gets what the operator wrote.
+        assert_eq!(Harness::Claude.effort_arg("  High  "), Some("High"));
+    }
+
+    #[test]
+    fn every_advertised_level_is_one_the_guard_accepts() {
+        // The picker's list and the guard cannot disagree, or the UI offers a level that is silently
+        // dropped at launch — which is the failure mode with an extra step, not a fix for it.
+        for harness in [Harness::Claude, Harness::Copilot] {
+            for level in harness.efforts() {
+                assert_eq!(harness.effort_arg(level), Some(*level));
+            }
+        }
+    }
+
+    /// bn's canonical dotted ids are the ones Claude Code cannot parse — the trap `set-stage` has to
+    /// catch, since here it merely degrades to the harness default.
+    #[test]
+    fn claude_rejects_bns_dotted_ids_and_takes_the_dashed_form() {
+        assert_eq!(Harness::Claude.model_arg("claude-opus-4.8"), None);
+        assert_eq!(
+            Harness::Claude.model_arg("claude-opus-4-8"),
+            Some("claude-opus-4-8")
+        );
+        assert_eq!(Harness::Claude.model_arg("fable"), Some("fable"));
+        // Copilot is a multi-model gateway, so the dotted id is correct there.
+        assert_eq!(
+            Harness::Copilot.model_arg("claude-opus-4.8"),
+            Some("claude-opus-4.8")
+        );
+    }
 }

@@ -734,29 +734,13 @@ export interface FindingsView {
 
 // --- Today's agent suggestions (Today's agent, #577) ---
 
-/** Where a suggested task sits in its review lifecycle — `bn_core::suggestions::SuggestionStatus`. */
-export type SuggestionStatus = "suggested" | "accepted" | "dismissed";
-
-/** One proposed task synthesized from the cron findings — `bn_core::suggestions::Suggestion`
- * (#577): what to do (`title`), why (`rationale`), and where it came from (`source` + `source_key`,
- * plus an optional `url` to the finding). `id` is deterministic on `source`+`source_key`. */
-export interface Suggestion {
-  id: string;
-  title: string;
-  rationale: string;
-  source: string;
-  source_key: string;
-  url: string;
-  /** Epoch-seconds this suggestion was first created. */
-  created_at: number;
-  status: SuggestionStatus;
-}
-
-/** GET /api/suggestions .data — Today's agent's suggested tasks, newest-first (`api::suggestions`). */
-export interface SuggestionsView {
-  count: number;
-  suggestions: Suggestion[];
-}
+export type {
+  Suggestion,
+  SuggestionQueue,
+  SuggestionStatus,
+  SuggestionsView,
+} from "./suggestion-types";
+import type { Suggestion } from "./suggestion-types";
 
 /** What one Today's-agent run did — `bn_core::today_agent::RunReport` (#577). */
 export interface TodayRunReport {

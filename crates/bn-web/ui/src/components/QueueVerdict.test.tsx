@@ -34,6 +34,7 @@ const NODE: QueueNodeRow = {
 function machine(overrides: Partial<QueueMachine> = {}): QueueMachine {
   return {
     dispatcher_alive: true,
+    dispatcher_pass_age_secs: 4,
     captured: [],
     lanes: [
       { lane: "coding", cap: 5, used: 2 },
@@ -193,6 +194,31 @@ describe("QueueVerdict", () => {
     render(<QueueVerdict data={dead} loading={false} error={false} />);
 
     expect(screen.getByText("The dispatcher is offline")).toBeTruthy();
+  });
+
+  it("tells a wedged dispatcher apart from a dead one", () => {
+    // The daemon heartbeats from its own thread, so a process blocked inside a launch reports
+    // alive forever. Only the age of the last completed pass distinguishes the two, and the
+    // difference is what the reader does next: restart it, or go find what it is stuck on.
+    const wedged = stalled({
+      machine: machine({ dispatcher_alive: true, dispatcher_pass_age_secs: 1_500 }),
+    });
+    render(<QueueVerdict data={wedged} loading={false} error={false} />);
+
+    expect(screen.getByText("The dispatcher is stuck")).toBeTruthy();
+    expect(screen.getByText(/no pass has finished in 25m/)).toBeTruthy();
+  });
+
+  it("does not call a dispatcher that has never recorded a pass wedged", () => {
+    // A freshly started daemon, or one from before passes were stamped, has null here — which is
+    // an absence of evidence, not evidence of a stall.
+    const fresh = stalled({
+      machine: machine({ dispatcher_alive: true, dispatcher_pass_age_secs: null }),
+    });
+    render(<QueueVerdict data={fresh} loading={false} error={false} />);
+
+    expect(screen.queryByText("The dispatcher is stuck")).toBeNull();
+    expect(screen.getByText("online")).toBeTruthy();
   });
 
   it("separates an empty queue from a blocked one", () => {

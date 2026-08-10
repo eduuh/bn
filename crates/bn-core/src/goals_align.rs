@@ -223,6 +223,7 @@ pub fn gather_packet_json(cfg: &Config, today: &str) -> String {
         goals: &daily_goals,
         queue: &queue,
         suggestions: &[],
+        backlog: None,
         now: crate::util::now_epoch_secs(),
     };
     let activities = crate::action_center::build_actions(&sources);

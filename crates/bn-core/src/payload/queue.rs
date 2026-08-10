@@ -14,7 +14,16 @@ pub fn queue_data(cfg: &crate::resolver::Config, now: i64) -> Value {
     let snap = crate::queue::snapshot::Snapshot::capture(cfg, now);
     serde_json::json!({
         "now": now,
-        "accepting": true,
+        // Read, not asserted. This was hardcoded `true` while `queue::pause` sat wired to nothing,
+        // so the dashboard could never say a repo was draining — and the UI's "resume with
+        // `bn queue pause --clear`" hint pointed at a command that did not exist.
+        "accepting": !snap.pauses.is_fully_paused(),
+        "pauses": snap.pauses.pauses.iter().map(|p| serde_json::json!({
+            "scope": p.scope.key(),
+            "since": p.since,
+            "reason": p.reason,
+            "until": p.until,
+        })).collect::<Vec<_>>(),
         "pending": snap.pending.len(),
         "kinds": BacklogKind::ALL.iter().map(|k| serde_json::json!({
             "kind": k.label(),
@@ -36,6 +45,10 @@ pub fn queue_data(cfg: &crate::resolver::Config, now: i64) -> Value {
         // else, so the terminal could answer the question and the dashboard could not.
         "machine": {
             "dispatcher_alive": crate::resolver::dispatcher_alive(now),
+            // Alive and getting somewhere are different facts. A dispatcher blocked on a hung child
+            // keeps heartbeating (the heartbeat is a timer thread, by design) — this is what makes
+            // that visible instead of leaving the page to report a healthy daemon and no work.
+            "dispatcher_pass_age_secs": crate::resolver::dispatcher_pass_age(now),
             "captured": crate::resolver::ALL_PRODUCERS.iter()
                 .filter(|p| cfg.queue.captures(p))
                 .collect::<Vec<_>>(),

@@ -53,6 +53,16 @@ const REASON_TONE: Record<string, BadgeProps["variant"]> = {
   snoozed: "muted",
 };
 
+/** Seconds a pass may go unfinished before the dispatcher is wedged rather than quiet. Mirrors
+ *  `DISPATCHER_STALL_SECS` in `bn_core::resolver::queue_config`. */
+const STALL_SECS = 300;
+
+/** A live dispatcher that has stopped finishing passes. `null` — no pass ever recorded — is not a
+ *  stall: it is a dispatcher that has only just started, or one from before this was tracked. */
+function isStalled(passAge: number | null | undefined): boolean {
+  return typeof passAge === "number" && passAge > STALL_SECS;
+}
+
 /** One gate the tick consults, and whether it is currently open. `blocking` is what gets the
  *  attention tone — an open gate is context, a closed one is the answer. */
 interface Gate {
@@ -83,13 +93,19 @@ function readGates(data: QueueView): Gate[] {
   const gates: Gate[] = [];
   const machine = data.machine;
 
+  // Two failures wear one label here, and telling them apart is the difference between "start the
+  // daemon" and "find what it is stuck on". `dispatcher_alive` comes from a heartbeat thread, so a
+  // live process that has stopped completing passes reports online — `stalled` is that case.
+  const stalled = isStalled(machine?.dispatcher_pass_age_secs);
   gates.push({
     label: "dispatcher",
-    state: machine?.dispatcher_alive ? "online" : "offline",
-    detail: machine?.dispatcher_alive
-      ? undefined
-      : "no tick is running, so nothing will start on its own",
-    blocking: !machine?.dispatcher_alive,
+    state: !machine?.dispatcher_alive ? "offline" : stalled ? "stalled" : "online",
+    detail: !machine?.dispatcher_alive
+      ? "no tick is running, so nothing will start on its own"
+      : stalled
+        ? `alive, but no pass has finished in ${Math.round((machine?.dispatcher_pass_age_secs ?? 0) / 60)}m — it is blocked on something it started`
+        : undefined,
+    blocking: !machine?.dispatcher_alive || stalled,
   });
 
   gates.push({
@@ -158,6 +174,14 @@ function readVerdict(
       headline: "The dispatcher is offline",
       sub: "Queued work will not start until it is running again.",
       state: "offline",
+      tone: "urgent",
+    };
+  }
+  if (isStalled(data.machine?.dispatcher_pass_age_secs)) {
+    return {
+      headline: "The dispatcher is stuck",
+      sub: "The process is alive but no pass has completed — it is blocked inside a launch, not idle.",
+      state: "stalled",
       tone: "urgent",
     };
   }

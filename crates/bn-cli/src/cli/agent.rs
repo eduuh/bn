@@ -152,6 +152,38 @@ pub(crate) enum AgentCmd {
         /// `repo:branch` of the agent — its tmux window name (slashes already dashed).
         target: String,
     },
+    /// Force-kill a repo's WHOLE tmux session — every agent under it at once (session is repo,
+    /// window is branch). The last-resort valve for a session that is wedged as a whole; to stop one
+    /// stuck agent use `bn agent kill <repo>:<branch>` instead.
+    ///
+    /// Each window goes down the same path `kill` uses, so leases are released and warm pool slots
+    /// are handed back rather than left leased to windows that no longer exist. Worktrees are left
+    /// on disk and a slot holding uncommitted changes stays leased — what a force kill discards is
+    /// the agents' in-flight context, not their files. Idempotent: a repo with no live session is
+    /// reported as already gone. bn agent kill-repo <repo>.
+    KillRepo {
+        /// The repo whose tmux session to kill — a bare repo name, not `repo:branch`.
+        repo: String,
+    },
+    /// Restart EVERY agent in a repo, each in the worktree it was already in — the repair a wedged
+    /// repo usually wants, where `kill-repo` only stops the work.
+    ///
+    /// Runs one `bn agent relaunch` per live agent, sequentially: respawning a repo's harnesses at
+    /// once spikes RAM on a box already struggling enough to need this. The unit is a live fleet
+    /// agent, so plain shell windows in the session are left alone. One agent failing does not stop
+    /// the rest, and the outcome is reported per target.
+    /// bn agent relaunch-repo <repo> [--hard] [--harness claude|copilot].
+    RelaunchRepo {
+        /// The repo whose agents to restart — a bare repo name, not `repo:branch`.
+        repo: String,
+        /// Start FRESH sessions seeded from each branch note's handoff instead of resuming the
+        /// recorded transcripts. For a repo whose agents' context is the problem.
+        #[arg(long)]
+        hard: bool,
+        /// Relaunch every agent under a different harness. Implies `--hard`.
+        #[arg(long)]
+        harness: Option<String>,
+    },
     /// Kill a running agent and start it again in the SAME worktree — the repair a stuck agent
     /// actually wants, and what the dashboard's Relaunch button now calls.
     ///

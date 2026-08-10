@@ -4,7 +4,6 @@ import { ChevronRight, ExternalLink, Flame, Minus, Plus, Wrench } from "lucide-r
 import { reposQuery } from "../api/client";
 import {
   setRepoPool,
-  startNeededRepoSetupAgents,
   startRepoSetupAgent,
   warmRepoPool,
   type RepoSetupAgentResult,
@@ -134,40 +133,21 @@ function setupOutcome(result: RepoSetupAgentResult, repo: string): string {
     : `Starting repo setup for ${repo}…`;
 }
 
-function SetupAllButton({ count }: { count: number }) {
-  const mut = useAppMutation({
-    mutationFn: () => startNeededRepoSetupAgents(),
-    invalidates: affects.agentLaunch,
-    toast: {
-      success: (r) => {
-        const res = r as { started?: unknown[]; queued?: unknown[] };
-        const started = Array.isArray(res.started) ? res.started.length : 0;
-        const queued = Array.isArray(res.queued) ? res.queued.length : 0;
-        const parts = [];
-        if (started > 0) parts.push(`started setup for ${started} repos`);
-        if (queued > 0) parts.push(`queued ${queued} for the next tick`);
-        return parts.length > 0
-          ? parts.join(", ").replace(/^./, (c) => c.toUpperCase())
-          : "No new setup agents needed";
-      },
-      error: "Could not start repo setup agents",
-    },
-  });
+/** How many repos still need setup — stated, not actionable in bulk.
+ *
+ * There used to be a button here that started a setup agent for every one of them. One click could
+ * put ten agents in the queue, which is a lot of machine to commit from a header, and the per-repo
+ * button on the repo page is the same work with the blast radius a person can actually judge. */
+function SetupNeededCount({ count }: { count: number }) {
   if (count === 0) return null;
   return (
-    <Button
-      type="button"
-      variant="secondary"
-      size="sm"
-      disabled={mut.isPending}
-      title="Start setup agents for every repo currently marked needs setup"
-      onClick={() => {
-        if (window.confirm(`Start setup agents for ${count} repos that need setup?`)) mut.mutate();
-      }}
+    <span
+      className="flex items-center gap-1.5 font-mono text-[11px] tabular-nums text-muted-foreground/70"
+      title="Repos whose bn build/verify scripts are missing — open one to start its setup agent"
     >
       <Wrench className="h-3.5 w-3.5" />
-      {mut.isPending ? "starting…" : `setup needed (${count})`}
-    </Button>
+      {count} need setup
+    </span>
   );
 }
 
@@ -394,7 +374,7 @@ export function Repos() {
               : `${list.length} repo${list.length === 1 ? "" : "s"} · live`}
           </span>
         </div>
-        <SetupAllButton count={setupNeeded} />
+        <SetupNeededCount count={setupNeeded} />
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">

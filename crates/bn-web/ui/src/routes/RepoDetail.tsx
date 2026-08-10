@@ -51,6 +51,8 @@ import {
   sessionTone,
   sessionStatusLabel,
 } from "../lib/repos";
+import { RepoControls } from "../components/RepoControls";
+import { SectionHead } from "../components/SectionHead";
 import { CopyButton } from "../components/CopyButton";
 import { StartAgentComposer } from "../components/StartAgentComposer";
 import { toneVariant } from "../lib/tone";
@@ -84,26 +86,6 @@ function Tag({ children, className }: { children: React.ReactNode; className?: s
 }
 
 /** A section header — an icon, a title, and a live count badge. */
-function SectionHead({
-  icon: Icon,
-  title,
-  count,
-}: {
-  icon: React.ComponentType<{ className?: string }>;
-  title: string;
-  count?: number;
-}) {
-  return (
-    <div className="flex items-center gap-2">
-      <Icon className="h-4 w-4 text-muted-foreground" />
-      <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        {title}
-      </h3>
-      {count != null && <Badge variant="muted">{count}</Badge>}
-    </div>
-  );
-}
-
 /** One session card in the drill-in list: status chip · branch · a meta strip (tokens · todos ·
  * blockers · PR · age). A live session taps through to its agent detail (`/agents/:id`); a note-only
  * branch stays a static glance card with a copy-to-jump tmux target — mirroring the Fleet card. */
@@ -791,6 +773,8 @@ export function RepoDetail() {
           <CrossRepoPanel repo={rollup.repo} />
 
           {rollup.sessions.length === 0 && <Empty>No sessions in this repo yet.</Empty>}
+
+          <RepoControls repo={rollup.repo} live={rollup.active_agents} />
         </>
       )}
 

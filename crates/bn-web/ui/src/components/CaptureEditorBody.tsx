@@ -72,7 +72,25 @@ export default function CaptureEditorBody({
     [onFiles],
   );
 
-  const editor = useCreateBlockNote({ schema, uploadFile }, [schema]);
+  /**
+   * The other half of `uploadFile`: turning `attachment:<name>` back into something an `<img>` can
+   * actually load.
+   *
+   * `attachment:` is not a scheme any browser knows, so the image block that a pasted screenshot
+   * produces rendered as a broken image — the file was captured correctly and stored correctly,
+   * and the operator could not see the thing they had just pasted. BlockNote's `resolveFileUrl`
+   * exists for exactly this ("implementing custom protocols / schemes"): the document keeps the
+   * stable name, and display resolves it against the bytes we are already holding.
+   */
+  const resolveFileUrl = useCallback((url: string) => {
+    if (!url.startsWith(ATTACHMENT_SCHEME)) return Promise.resolve(url);
+    const name = url.slice(ATTACHMENT_SCHEME.length);
+    // The bytes are already in memory, so this resolves immediately — the promise is only here
+    // because the hook is shaped for the authenticated-URL case, where it would be a fetch.
+    return Promise.resolve(pending.current.find((f) => f.name === name)?.dataUrl ?? url);
+  }, []);
+
+  const editor = useCreateBlockNote({ schema, uploadFile, resolveFileUrl }, [schema]);
 
   // Seed from the restored draft exactly once. Re-running this on every `initialMarkdown` change
   // would fight the operator's typing, since the markdown this emits comes back as that prop.
@@ -94,8 +112,11 @@ export default function CaptureEditorBody({
       <BlockNoteView
         editor={editor}
         onChange={emit}
-        // The dashboard owns the page theme; `theme` here only picks BlockNote's own token set.
-        theme="light"
+        // The dashboard is dark-only (`tailwind.css` puts the dark palette straight in `:root`),
+        // so the light token set rendered a white sheet of paper in the middle of a dark dialog.
+        // `dark` is only half the fix: BlockNote's own dark grey is not this app's warm charcoal,
+        // so `tailwind.css` remaps the `--bn-colors-*` tokens onto the design system's.
+        theme="dark"
         slashMenu={false}
         data-capture-editor
       >

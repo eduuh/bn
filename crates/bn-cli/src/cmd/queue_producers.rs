@@ -85,6 +85,16 @@ impl Drop for Dispatching {
 /// agent — everything looking fine while nothing runs. The fallback is the pre-queue behaviour,
 /// announced once so a silently-degraded machine is still a legible one.
 pub(crate) fn active(cfg: &Config, producer: &str) -> bool {
+    active_with_fallback(cfg, producer, "running it directly")
+}
+
+/// [`active`], naming what happens when the queue is configured but not draining.
+///
+/// Most producers fall back to launching the work themselves, which is what the default phrase says.
+/// A producer whose fallback is something else has to say so: telling an operator their accepted
+/// suggestion is "running directly" when it is in fact sitting unqueued describes the opposite of
+/// what happened, and the whole point of the warning is that a degraded machine stays legible.
+pub(crate) fn active_with_fallback(cfg: &Config, producer: &str, fallback: &str) -> bool {
     // Inside a dispatch, never. The decision to queue this work has already been made — by the
     // dispatcher, which is why it is executing it.
     if Dispatching::active() {
@@ -95,19 +105,19 @@ pub(crate) fn active(cfg: &Config, producer: &str) -> bool {
         return true;
     }
     if cfg.queue.captures(producer) {
-        warn_dispatcher_down(producer);
+        warn_dispatcher_down(producer, fallback);
     }
     false
 }
 
 /// Say once per process that the queue is configured but not draining. Silence here would be the
 /// whole failure mode: work quietly launching direct while the operator believes it is queued.
-fn warn_dispatcher_down(producer: &str) {
+fn warn_dispatcher_down(producer: &str, fallback: &str) {
     use std::sync::atomic::{AtomicBool, Ordering};
     static SAID: AtomicBool = AtomicBool::new(false);
     if !SAID.swap(true, Ordering::Relaxed) {
         eprintln!(
-            "bn: '{producer}' would queue, but no tick has run in {}m — running it directly. \
+            "bn: '{producer}' would queue, but no tick has run in {}m — {fallback}. \
              Register the dispatcher with `bn cron register` (see `bn queue status`).",
             bn_core::resolver::DISPATCHER_TTL_SECS / 60
         );
@@ -120,6 +130,105 @@ pub(crate) const ATTN: &str = "attn";
 pub(crate) const STAFF: &str = "staff";
 pub(crate) const CRON: &str = "cron";
 pub(crate) const DISPATCH: &str = "dispatch";
+pub(crate) const TODAY: &str = "today";
+
+/// Where an accepted suggestion's work sits against everything else in the queue.
+///
+/// Above the cron floor (negative) and above an attention `warn`, because a person reviewed this and
+/// said yes. Below a typed `bn dispatch` (100), because Today's agent proposing work and a person
+/// asking for it *right now* are not the same claim on the machine.
+pub(crate) const TODAY_PRIORITY: i64 = 80;
+
+/// What accepting a suggestion should put into the queue.
+///
+/// Two outcomes, never a refusal. A suggestion whose task the SMART gate admits queues the work; one
+/// it rejects queues the pass that will make it admissible. That is what makes "Today feeds the
+/// queue" unconditional — the alternative, demanding a `--repo` from whoever accepted it, hands the
+/// work back to a person for exactly the suggestions Today exists to handle.
+#[derive(Debug, Clone)]
+pub(crate) enum TodayPlan<'a> {
+    /// The task passed the gate: run the work itself, in `repo`.
+    Work {
+        repo: &'a str,
+        task_id: &'a str,
+        kind: BacklogKind,
+    },
+    /// The task failed an agent-closeable gap: resolve **where the work happens** first.
+    ///
+    /// Booked against the home repo rather than a real one, because the repo is precisely what this
+    /// pass is for. It is headless (`needs_worktree()` is false), so it costs no lane slot, no pool
+    /// slot and no placement — a placement-resolution pass that itself needed a placement would be
+    /// a circular requirement.
+    Enhance { task_id: &'a str },
+}
+
+/// Enqueue an accepted suggestion's work — or the enhance pass that will make it placeable.
+///
+/// Returns the `(repo, entry_id)` the suggestion should cache, or `None` when the write failed. The
+/// caller must not treat that cache as authoritative: the entry is findable by its
+/// `source: today:<id>` regardless, which is what keeps a crash between enqueue and link from
+/// queueing the same work twice.
+pub(crate) fn capture_today(
+    cfg: &Config,
+    suggestion: &bn_core::suggestions::Suggestion,
+    plan: &TodayPlan<'_>,
+) -> Option<(String, String)> {
+    let now = bn_core::util::now_epoch_secs();
+    let source = suggestion.queue_source();
+    let (repo, subject, spec) = match plan {
+        TodayPlan::Work {
+            repo,
+            task_id,
+            kind,
+        } => (
+            repo.to_string(),
+            suggestion.title.clone(),
+            AddSpec {
+                kind: *kind,
+                priority: TODAY_PRIORITY,
+                source,
+                task: task_id.to_string(),
+                exec: ExecSpec::Agent,
+                ..Default::default()
+            },
+        ),
+        TodayPlan::Enhance { task_id } => (
+            cfg.queue_home_repo(),
+            format!("resolve where {task_id} happens — {}", suggestion.title),
+            AddSpec {
+                kind: BacklogKind::Enhance,
+                // One notch above the work it unblocks: nothing downstream can be placed until this
+                // has run, so letting the work it gates overtake it would only waste a lane.
+                priority: TODAY_PRIORITY + 1,
+                source,
+                task: task_id.to_string(),
+                // `Shell` rather than `Job`, because this pass must land on *this* task and the
+                // `task-enhance` job takes `--due` (whichever task ranks highest). Catalog
+                // validation is not lost: `bn task enhance <id>` renders the agent through
+                // `agents::discover` itself.
+                exec: ExecSpec::Shell {
+                    cmd: format!("bn task enhance {task_id}"),
+                },
+                ..Default::default()
+            },
+        ),
+    };
+    match enqueue(&backlog::backlog_path(), &repo, &subject, &spec, now) {
+        Ok(e) => {
+            let id = e.entry().id.clone();
+            if e.is_new() {
+                println!("  queued {repo}/{id} · {} · priority {}", spec.kind.label(), spec.priority);
+            } else {
+                println!("  already queued {repo}/{id} ({})", e.label());
+            }
+            Some((repo, id))
+        }
+        Err(err) => {
+            eprintln!("bn today accept: could not queue {repo} — {err}");
+            None
+        }
+    }
+}
 
 /// Enqueue a PR review instead of launching one.
 ///
@@ -131,7 +240,7 @@ pub(crate) fn capture_review(cfg: &Config, repo: &str, number: i64, url: &str, w
         kind: BacklogKind::ReviewPr,
         priority: waited_hours.max(0),
         source: format!("review:{repo}#{number}"),
-        task: crate::cmd::task::task_for_enqueue(cfg, repo, url, "review"),
+        task: crate::cmd::task_mint::task_for_enqueue(cfg, repo, url, "review"),
         exec: ExecSpec::Skill {
             skill: "auto-review-pr".to_string(),
             arg: Some(url.to_string()),
@@ -192,7 +301,7 @@ pub(crate) fn capture_job(
         // recovery, which has to outrank a backlog of routine crons to be worth exempting at all.
         priority: bn_core::queue::jobs::priority_for(name),
         source: format!("cron:{name}"),
-        task: crate::cmd::task::task_for_enqueue(cfg, &repo, &subject, "cron"),
+        task: crate::cmd::task_mint::task_for_enqueue(cfg, &repo, &subject, "cron"),
         exec,
         requires,
         // A scheduled job keeps its time inside the queue: past this it is dropped rather than run
@@ -340,6 +449,9 @@ pub(crate) struct DispatchRequest<'a> {
     pub branch: Option<&'a str>,
     pub name: Option<&'a str>,
     pub yolo: bool,
+    /// Declining the plan-review gate — durable on the entry, so a captured dispatch is launched
+    /// with the same stance the caller asked for.
+    pub no_plan_review: bool,
     /// Flags whose meaning is "do this to the worktree as you cut it". The queue cuts the worktree
     /// later, from the entry alone, so these have nowhere durable to live yet.
     pub fresh: bool,
@@ -423,7 +535,7 @@ pub(crate) fn capture_dispatch(cfg: &Config, req: &DispatchRequest<'_>, json: bo
         // interrupt, which is the one thing that should still cut ahead of a human's own request.
         priority: 100,
         source: "dispatch".to_string(),
-        task: crate::cmd::task::task_for_enqueue(cfg, &repo, item, "dispatch"),
+        task: crate::cmd::task_mint::task_for_enqueue(cfg, &repo, item, "dispatch"),
         exec,
         requires: Requirements {
             harness: harness.map(|h| vec![h.to_string()]).unwrap_or_default(),
@@ -435,6 +547,7 @@ pub(crate) fn capture_dispatch(cfg: &Config, req: &DispatchRequest<'_>, json: bo
             branch: req.branch.map(str::to_string),
             name: req.name.map(str::to_string),
             yolo: req.yolo,
+            no_plan_review: req.no_plan_review,
         },
         ..Default::default()
     };
@@ -537,6 +650,7 @@ mod capture_tests {
             branch: None,
             name: None,
             yolo: false,
+            no_plan_review: false,
             fresh: false,
             verify: false,
             plan: false,
@@ -550,12 +664,15 @@ mod capture_tests {
             branch: Some("repo-setup"),
             name: Some("repo-setup"),
             yolo: true,
+            // The repo-setup lane's stance: autonomous, and explicitly not behind the plan-review
+            // gate. Both are durable on the entry, so neither is a reason to skip the queue.
+            no_plan_review: true,
             harness: Some("copilot"),
             ..req()
         };
         assert!(
             r.unsupported().is_empty(),
-            "branch, name and yolo are durable — capture must still happen"
+            "branch, name, yolo and no-plan-review are durable — capture must still happen"
         );
     }
 

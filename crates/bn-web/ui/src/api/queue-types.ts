@@ -168,6 +168,13 @@ export interface QueueLane {
 export interface QueueMachine {
   /** False means producers are launching directly and every count below is beside the point. */
   dispatcher_alive: boolean;
+  /**
+   * Seconds since a dispatcher pass last *completed*, or null if none ever has. Separate from
+   * `dispatcher_alive` because the daemon heartbeats from its own thread: a process wedged on a
+   * hung launch stays alive here and goes stale there, which is the difference between "the
+   * dispatcher is down" and "the dispatcher is stuck on something".
+   */
+  dispatcher_pass_age_secs: number | null;
   captured: string[];
   lanes: QueueLane[];
   /** How the lane caps were derived, so a surprising number is answerable. */
@@ -182,9 +189,23 @@ export interface QueueMachine {
 }
 
 /** `GET /api/queue` .data — the machine-wide queue. */
+/** One pause in force, as `bn_core::queue::pause::Pause` records it. `scope` is the stable key —
+ *  `all`, `kind:cron`, `lane:coding`, `node:<id>`, `repo:<name>` — which is also what
+ *  `bn queue resume --scope` takes. */
+export interface QueuePause {
+  scope: string;
+  since: number;
+  reason?: string;
+  until?: number | null;
+}
+
 export interface QueueView {
   now: number;
+  /** Whether the machine is admitting work at all. False only for a machine-wide (`all`) pause —
+   *  a repo drain leaves this true, and shows up in `pauses` instead. */
   accepting: boolean;
+  /** Every pause in force. A repo is draining when this carries `repo:<name>`. */
+  pauses?: QueuePause[];
   pending: number;
   kinds: Array<{ kind: string; lane: string; pending: number }>;
   entries: QueueEntryView[];

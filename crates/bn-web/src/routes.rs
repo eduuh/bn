@@ -127,12 +127,20 @@ pub fn router(state: AppState) -> Router {
             post(actions::repo_orchestrate_start),
         )
         .route(
-            "/api/repos/setup-agents",
-            post(actions::repo_setup_agents_start),
-        )
-        .route(
             "/api/repos/{repo}/setup-agent",
             post(actions::repo_setup_agent_start),
+        )
+        // Force-kill a repo's whole tmux session (last resort — `kill` one agent first).
+        .route(
+            "/api/repos/{repo}/kill-session",
+            post(actions::repo_session_kill),
+        )
+        // Drain a repo: hold new work, let in-flight agents finish. Nothing is killed.
+        .route("/api/repos/{repo}/drain", post(actions::repo_drain))
+        // Restart every agent in a repo in place — the repair a wedged session usually wants.
+        .route(
+            "/api/repos/{repo}/relaunch-session",
+            post(actions::repo_session_relaunch),
         )
         // Process writes (subprocess `bn --json` via the runner):
         .route("/api/dispatch", post(actions::dispatch))

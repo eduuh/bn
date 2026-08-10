@@ -185,6 +185,7 @@ fn plan_order(pending: &[BacklogEntry], windows: &[PriorityWindow], now: i64) ->
     };
     let observed = Observed::default();
     let kind_caps = KindCaps(Default::default());
+    let pauses = bn_core::queue::pause::PauseState::default();
     let plan = plan_tick(&TickInputs {
         now,
         machine: "testbox",
@@ -197,6 +198,7 @@ fn plan_order(pending: &[BacklogEntry], windows: &[PriorityWindow], now: i64) ->
         kinds: None,
         goals: &[],
         attention: &[],
+        pauses: &pauses,
         max_express: 20,
         windows,
         presence: bn_core::queue::tick::Presence {

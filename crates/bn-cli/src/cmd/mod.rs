@@ -4,6 +4,10 @@
 //! thin per-CLI-group dispatch matches that delegate into those handlers.
 
 pub(crate) mod agent;
+pub(crate) mod close_out;
+pub(crate) mod harness_models;
+pub(crate) mod launch_flags;
+pub(crate) mod task_mint;
 pub(crate) mod agent_approve;
 pub(crate) mod agent_relaunch;
 pub(crate) mod agents;
@@ -50,6 +54,7 @@ pub(crate) mod quarter;
 pub(crate) mod queue;
 pub(crate) mod queue_install;
 pub(crate) mod queue_log;
+pub(crate) mod queue_pause;
 pub(crate) mod queue_producers;
 pub(crate) mod queue_tick;
 pub(crate) mod queue_timeline;

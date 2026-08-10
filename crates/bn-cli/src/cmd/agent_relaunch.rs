@@ -393,3 +393,130 @@ fn seed_for_fresh(cfg: &Config, plan: &RelaunchPlan) -> Option<String> {
 }
 
 
+
+/// `bn agent relaunch-repo <repo> [--hard] [--harness <h>]` — restart every agent in a repo.
+///
+/// The repair a wedged repo usually wants. `bn agent kill-repo` stops the work; this stops it and
+/// starts it again in the same worktrees, so the answer to "the whole session is stuck" does not
+/// have to be "lose it and re-dispatch by hand".
+///
+/// Re-enters `bn agent relaunch` once per agent rather than looping the kill/lease/respawn sequence
+/// inline — the same choice the queue tick makes when it re-enters `bn dispatch`. That sequence has
+/// exactly one correct implementation and a second copy of it would drift; re-entering costs a
+/// process per agent and cannot.
+///
+/// **Sequential on purpose.** Respawning a repo's harnesses at once spikes RAM on the box that is
+/// already struggling enough to need this command, and a relaunch that OOMs half the fleet is a
+/// worse outcome than one that takes a few seconds longer.
+///
+/// The unit is a *live fleet agent*, not a tmux window: relaunching needs a `repo:branch` identity
+/// to respawn under, which a plain shell window in the session does not have. Those are left alone
+/// — `kill-repo` is the command that takes everything down.
+///
+/// One agent failing does not stop the rest, and the envelope reports per-target outcomes: a
+/// partial relaunch is a real state the operator has to be able to see, not something to average
+/// into a single boolean.
+pub(crate) fn emit_repo(cfg: &Config, repo: &str, hard: bool, harness: Option<&str>, as_json: bool) {
+    let repo = repo.trim();
+    if repo.is_empty() || repo.contains(':') {
+        let msg = format!("invalid repo '{repo}' (expected a bare repo name, not repo:branch)");
+        if as_json {
+            println!(
+                "{}",
+                Envelope::failure("agent_relaunch_repo", "invalid_repo", &msg).to_json()
+            );
+        } else {
+            eprintln!("bn agent relaunch-repo: {msg}");
+        }
+        return;
+    }
+
+    let fleet = bn_core::agent::supervise(
+        cfg,
+        bn_core::agent::DEFAULT_IDLE_MINS,
+        bn_core::agent::DEFAULT_STUCK_MINS,
+    );
+    let targets: Vec<String> = fleet
+        .agents
+        .iter()
+        .filter(|a| a.repo.eq_ignore_ascii_case(repo))
+        .map(|a| a.target.clone())
+        .collect();
+
+    let Ok(exe) = std::env::current_exe() else {
+        let msg = "cannot resolve the bn executable".to_string();
+        if as_json {
+            println!(
+                "{}",
+                Envelope::failure("agent_relaunch_repo", "no_executable", &msg).to_json()
+            );
+        } else {
+            eprintln!("bn agent relaunch-repo: {msg}");
+        }
+        return;
+    };
+
+    let mut relaunched = Vec::new();
+    let mut failed = Vec::new();
+    for target in &targets {
+        let mut args = vec!["agent".to_string(), "relaunch".to_string(), target.clone()];
+        if hard {
+            args.push("--hard".to_string());
+        }
+        if let Some(h) = harness {
+            args.extend(["--harness".to_string(), h.to_string()]);
+        }
+        // `--json` so a child failure is a typed code rather than prose this has to parse.
+        args.push("--json".to_string());
+        match std::process::Command::new(&exe).args(&args).output() {
+            Ok(out) if out.status.success() => relaunched.push(target.clone()),
+            Ok(out) => failed.push(serde_json::json!({
+                "target": target,
+                "error": String::from_utf8_lossy(&out.stderr).trim(),
+                "envelope": serde_json::from_slice::<serde_json::Value>(&out.stdout)
+                    .unwrap_or(serde_json::Value::Null),
+            })),
+            Err(e) => failed.push(serde_json::json!({
+                "target": target,
+                "error": e.to_string(),
+            })),
+        }
+    }
+
+    let ok = failed.is_empty();
+    if as_json {
+        let data = serde_json::json!({
+            "repo": repo,
+            "relaunched": relaunched,
+            "failed": failed,
+        });
+        let envelope = bn_core::render::Envelope {
+            ok,
+            command: "agent_relaunch_repo".to_string(),
+            data,
+            error: (!ok).then(|| bn_core::render::EnvelopeError {
+                code: "relaunch_failed".to_string(),
+                message: format!("{} agent(s) did not restart", failed.len()),
+            }),
+        };
+        println!("{}", envelope.to_json());
+        return;
+    }
+    if targets.is_empty() {
+        println!("bn agent relaunch-repo: {repo} — no live agents to relaunch");
+        return;
+    }
+    println!(
+        "bn agent relaunch-repo: {repo} — {}/{} agent(s) restarted{}",
+        relaunched.len(),
+        targets.len(),
+        if ok { " ✓" } else { "" }
+    );
+    for failure in &failed {
+        eprintln!(
+            "bn agent relaunch-repo: {} — {}",
+            failure.get("target").and_then(|t| t.as_str()).unwrap_or("?"),
+            failure.get("error").and_then(|e| e.as_str()).unwrap_or(""),
+        );
+    }
+}

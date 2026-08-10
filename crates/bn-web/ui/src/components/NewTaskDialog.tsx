@@ -16,6 +16,7 @@ import {
   saveDraft,
   toUploads,
 } from "../lib/capture";
+import { loadPendingFiles, savePendingFiles } from "../lib/captureFiles";
 import { Button } from "./ui/button";
 import {
   Dialog,
@@ -48,9 +49,10 @@ const CaptureEditorBody = lazy(() => import("./CaptureEditorBody"));
  * This form used to blank every field the instant it called `onSubmit`, before knowing whether the
  * create had succeeded. A rejected estimate or a dropped connection therefore left the dialog open
  * and empty, and what the operator had typed was gone. Now the draft is cleared **only** on a
- * confirmed success, and it is mirrored into `localStorage` on the way, so a reload or a closed tab
- * does not take it either. Everything below follows from that: the richer the capture gets, the
- * more expensive losing it is.
+ * confirmed success, and it is mirrored out of memory on the way — the text into `localStorage`,
+ * the file bytes into IndexedDB ([`captureFiles`](../lib/captureFiles.ts)) — so a reload or a
+ * closed tab does not take it either. Everything below follows from that: the richer the capture
+ * gets, the more expensive losing it is.
  */
 export function NewTaskDialog({
   open,
@@ -64,8 +66,8 @@ export function NewTaskDialog({
   onSubmit: (body: TaskCreate) => void;
 }) {
   const [draft, setDraft] = useState<CaptureDraft>(() => loadDraft());
-  // File bytes live only here: they are too big for `localStorage` (see `saveDraft`), and a file
-  // is the one part of a capture that can be reproduced by dragging it in again.
+  // File bytes are too big for `localStorage` (see `saveDraft`), so they are mirrored into
+  // IndexedDB instead — asynchronously, which is why they start empty and arrive below.
   const [files, setFiles] = useState<PendingFile[]>([]);
   const [linkDraft, setLinkDraft] = useState("");
   const [fileError, setFileError] = useState<string | null>(null);
@@ -84,6 +86,30 @@ export function NewTaskDialog({
   // it was created. A ref is the only copy that is always up to date.
   const filesRef = useRef<PendingFile[]>(files);
   filesRef.current = files;
+
+  // Read the cached bytes back before mirroring anything out, so the empty initial state cannot
+  // overwrite a real cache in the window before the read lands. Anything pasted while the read is
+  // in flight is kept: the restored files go *behind* it rather than replacing the list.
+  const restored = useRef(false);
+  useEffect(() => {
+    let live = true;
+    void loadPendingFiles().then((cached) => {
+      if (!live) return;
+      if (cached.length) {
+        const taken = new Set(filesRef.current.map((f) => f.name));
+        setFiles([...cached.filter((f) => !taken.has(f.name)), ...filesRef.current]);
+      }
+      restored.current = true;
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!restored.current) return;
+    void savePendingFiles(files);
+  }, [files]);
 
   const addFiles = useCallback(async (incoming: File[]) => {
     const tooBig = incoming.find((f) => f.size > MAX_FILE_BYTES);
@@ -118,9 +144,20 @@ export function NewTaskDialog({
     setLinkDraft("");
   }, []);
 
-  /** Paste is the fast path: a screenshot becomes an attachment, a copied URL becomes a link. */
+  /**
+   * Paste is the fast path: a screenshot becomes an attachment, a copied URL becomes a link.
+   *
+   * This is on the dialog, not the editor, so a paste anywhere in the form is caught — including
+   * with the cursor in the title field, which is where it usually is. The cost of catching
+   * everything is that it also sees the pastes the editor has *already* handled: BlockNote's
+   * ProseMirror plugin calls `preventDefault` and routes files through `uploadFile`, but it does
+   * not stop propagation, so the event still bubbles up to here. Without the `defaultPrevented`
+   * check a screenshot pasted into the editor was stored twice — once as the image block, once
+   * again as `image-2.png` — and both copies were uploaded.
+   */
   const onPaste = useCallback(
     (e: React.ClipboardEvent) => {
+      if (e.defaultPrevented) return;
       const pasted = Array.from(e.clipboardData.files);
       if (pasted.length) {
         e.preventDefault();
@@ -160,7 +197,10 @@ export function NewTaskDialog({
         className="max-w-2xl"
         onPaste={onPaste}
         onDragOver={(e) => e.preventDefault()}
+        // Same bubbling story as `onPaste`: a file dropped *on the editor* is already BlockNote's,
+        // and re-adding it here would store it twice.
         onDrop={(e) => {
+          if (e.defaultPrevented) return;
           const dropped = Array.from(e.dataTransfer.files);
           if (!dropped.length) return;
           e.preventDefault();
@@ -170,10 +210,8 @@ export function NewTaskDialog({
         <DialogHeader>
           <DialogTitle>New task</DialogTitle>
           <DialogDescription>
-            Only the title is required. Everything else you paste, drop or write here is recorded in
-            the task&apos;s context doc and read by the agent that picks it up. A task needs a repo,
-            an estimate, a date and a <code className="font-mono">## Done When</code> before an
-            agent may execute it — the enhance agent fills in whatever you leave out.
+            A title is enough. Anything else you write, paste or drop lands in the task&apos;s
+            context doc — the enhance agent fills in the rest before an agent may execute it.
           </DialogDescription>
         </DialogHeader>
 
@@ -197,7 +235,7 @@ export function NewTaskDialog({
 
           <div className="space-y-1.5">
             <Label className="text-[11px]">
-              Everything you already know{" "}
+              Context{" "}
               <span className="font-normal text-muted-foreground">
                 — paste screenshots and logs straight in
               </span>
@@ -262,9 +300,7 @@ export function NewTaskDialog({
           <div className="space-y-1.5">
             <Label htmlFor="task-link" className="text-[11px]">
               Links{" "}
-              <span className="font-normal text-muted-foreground">
-                — the issue, the thread, the doc
-              </span>
+              <span className="font-normal text-muted-foreground">— the issue, the thread</span>
             </Label>
             <div className="flex gap-2">
               <Input
@@ -372,7 +408,7 @@ export function NewTaskDialog({
             variant="ghost"
             onClick={() => fileInput.current?.click()}
           >
-            <Paperclip /> Attach files
+            <Paperclip /> Attach
           </Button>
           <div className="flex gap-2">
             <Button variant="secondary" size="sm" onClick={() => onOpenChange(false)}>

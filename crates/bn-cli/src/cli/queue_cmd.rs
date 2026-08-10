@@ -101,6 +101,34 @@ pub(crate) enum QueueCmd {
         interval: u64,
     },
     /// Why the last tick did what it did — the persisted decision, verbatim.
+    /// Hold new work without stopping what is running — the drain.
+    ///
+    /// A pause gates **admission, not execution**: leases already taken finish normally, so
+    /// `--scope repo:<name>` empties a repo out rather than killing it. Recovery work
+    /// (`agent-supervise`, `fleet-reap`, `agent-observe`, `wt-cleanup`) is never held — pausing
+    /// because the machine is unhappy must not switch off the passes that fix it.
+    ///
+    /// Scopes: `all`, `kind:<k>`, `lane:coding|research`, `node:<id>`, `repo:<name>`. Several
+    /// coexist, so one noisy repo can be drained without touching anything else.
+    /// bn queue pause --scope repo:bn [--reason "..."] [--for 2h].
+    Pause {
+        /// What to hold: `all`, `kind:<k>`, `lane:<l>`, `node:<id>`, or `repo:<name>`.
+        #[arg(long, default_value = "all")]
+        scope: String,
+        /// Why — shown wherever the pause is reported, so a stall is never anonymous.
+        #[arg(long, default_value = "")]
+        reason: String,
+        /// Auto-resume after this long (e.g. `90m`, `2h`). Omit to hold until resumed.
+        #[arg(long = "for", value_name = "DURATION")]
+        for_: Option<String>,
+    },
+    /// Lift the pause on a scope and start admitting its work again.
+    /// bn queue resume --scope repo:bn.
+    Resume {
+        /// The scope to lift, in the same form `pause` took.
+        #[arg(long, default_value = "all")]
+        scope: String,
+    },
     Why,
     /// Compact tmux/status-bar signal: quiet when only healthy autonomous work is happening.
     Badge,

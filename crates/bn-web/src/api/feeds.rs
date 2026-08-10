@@ -52,11 +52,14 @@ pub async fn actions(State(state): State<AppState>) -> Json<Envelope> {
                 .filter_map(|p| bn_core::orchestrate::OrchestrateState::load(&p))
                 .flat_map(|st| st.queue.into_iter())
                 .collect();
-            // Accepted Today's-agent suggestions promoted into the action feed (#578).
+            // Accepted Today's-agent suggestions promoted into the action feed (#578) — joined
+            // against the work queue, so one whose work is already in flight reports that state
+            // instead of offering to start it a second time.
             let suggestions = bn_core::suggestions::list(
                 Some(bn_core::suggestions::SuggestionStatus::Accepted),
                 0,
             );
+            let backlog = bn_core::backlog::load(&bn_core::backlog::backlog_path());
 
             let sources = bn_core::action_center::ActionSources {
                 attn: &attn,
@@ -66,6 +69,7 @@ pub async fn actions(State(state): State<AppState>) -> Json<Envelope> {
                 goals: &goals,
                 queue: &queue,
                 suggestions: &suggestions,
+                backlog: Some(&backlog),
                 now: bn_core::util::now_epoch_secs(),
             };
             let actions = bn_core::action_center::build_actions(&sources);

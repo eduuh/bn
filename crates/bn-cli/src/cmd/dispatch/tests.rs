@@ -65,6 +65,28 @@ fn routing_table() {
     assert!(!routes_to_pipeline_investigate(false, false, None));
 }
 
+/// The plan-review gate's decision table.
+///
+/// `--yolo` raising the gate is the rule that surprises people, so it is pinned here rather than
+/// left to the one call site: trusted autonomy buys freedom from approval prompts, not freedom from
+/// plan review. `Off` is the only thing that overrides it — which is what lets the repo-setup lane
+/// run as one window with no review round trip.
+#[test]
+fn plan_gate_decision_table() {
+    // Auto: config and yolo decide.
+    assert!(!plan_gate_enabled(PlanGate::Auto, false, false, false));
+    assert!(plan_gate_enabled(PlanGate::Auto, true, false, false));
+    assert!(plan_gate_enabled(PlanGate::Auto, false, true, false));
+    // Force wins over an unconfigured default.
+    assert!(plan_gate_enabled(PlanGate::Force, false, false, false));
+    // Off wins over both config and yolo — the whole reason it is not just another bool.
+    assert!(!plan_gate_enabled(PlanGate::Off, true, true, false));
+    // A scout ships nothing, so there is never a plan to review, whatever was asked for.
+    for request in [PlanGate::Auto, PlanGate::Force, PlanGate::Off] {
+        assert!(!plan_gate_enabled(request, true, true, true));
+    }
+}
+
 #[test]
 fn scout_seed_uses_scout_envelope_with_report_only_completion() {
     let s = seed(true, false, false, false, "investigate");

@@ -59,7 +59,7 @@ pub struct QueueConfig {
 }
 
 /// Every producer that can be routed through the queue — and, absent config, is.
-pub const ALL_PRODUCERS: [&str; 5] = ["review", "attn", "staff", "cron", "dispatch"];
+pub const ALL_PRODUCERS: [&str; 6] = ["review", "attn", "staff", "cron", "dispatch", "today"];
 
 /// How long after a tick the queue still counts as having a live dispatcher.
 ///
@@ -179,8 +179,44 @@ impl QueueConfig {
 /// by every tick, including inline fallback ticks; treating it as liveness lets the fallback mask a
 /// dead resident daemon.
 pub fn dispatcher_alive(now: i64) -> bool {
-    std::fs::read_to_string(crate::resolver::state_dir().join("queue-daemon.heartbeat"))
+    dispatcher_heartbeat_age(now).is_some_and(|age| age <= DISPATCHER_TTL_SECS)
+}
+
+/// The resident dispatcher's liveness file — written by a timer thread inside `bn queue run`.
+pub fn dispatcher_heartbeat_path() -> std::path::PathBuf {
+    crate::resolver::state_dir().join("queue-daemon.heartbeat")
+}
+
+/// The stamp written when a dispatcher pass *completes*, as opposed to when the process last drew
+/// breath. The two are separate files because they answer different questions, and conflating them
+/// is what made a wedged dispatcher indistinguishable from a dead one.
+pub fn dispatcher_pass_path() -> std::path::PathBuf {
+    crate::resolver::state_dir().join("queue-daemon.pass")
+}
+
+/// Seconds since the resident dispatcher last said it was alive, or `None` if it never has.
+pub fn dispatcher_heartbeat_age(now: i64) -> Option<i64> {
+    read_stamp(&dispatcher_heartbeat_path()).map(|beat| now.saturating_sub(beat))
+}
+
+/// Seconds since a dispatcher pass last ran to completion, or `None` if none ever has.
+///
+/// The companion to [`dispatcher_alive`], and the reason the heartbeat could move to its own
+/// thread without creating a new blind spot. A heartbeat proves the process exists; only this
+/// proves it is still *getting anywhere*. A dispatcher whose pass is blocked on a hung child now
+/// reports `alive` with a stale pass — which is the truth, and points at the stuck work rather than
+/// at a daemon that is running fine.
+pub fn dispatcher_pass_age(now: i64) -> Option<i64> {
+    read_stamp(&dispatcher_pass_path()).map(|at| now.saturating_sub(at))
+}
+
+/// How long a pass may go unfinished before the dispatcher counts as wedged rather than merely
+/// quiet. Generously above the idle interval (15s) and the busy floor (3s): a healthy loop stamps
+/// this several times a minute even with nothing to do.
+pub const DISPATCHER_STALL_SECS: i64 = 300;
+
+fn read_stamp(path: &std::path::Path) -> Option<i64> {
+    std::fs::read_to_string(path)
         .ok()
         .and_then(|raw| raw.trim().parse::<i64>().ok())
-        .is_some_and(|beat| now.saturating_sub(beat) <= DISPATCHER_TTL_SECS)
 }

@@ -47,6 +47,9 @@ pub use repo_read::{repo_issues, repos};
 pub use repo_scripts::repo_script;
 pub use search_api::search;
 pub use shell_read::{attn, cron, fleet, machine, nodes};
+#[path = "api/suggestions.rs"]
+mod suggestions_api;
+pub use suggestions_api::suggestions;
 
 pub(crate) fn nonempty(v: Option<String>) -> Option<String> {
     v.filter(|s| !s.trim().is_empty())
@@ -1194,30 +1197,6 @@ pub async fn findings(Query(q): Query<FindingsQuery>) -> Json<Envelope> {
     Json(Envelope::success(
         "findings",
         json!({ "count": runs.len(), "runs": runs }),
-    ))
-}
-
-// ---------------------------------------------------------------------------
-// Suggestions (Today's agent, #577)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-pub struct SuggestionsQuery {
-    /// Restrict to one status: `suggested` | `accepted` | `dismissed` (else all).
-    pub status: Option<String>,
-    /// Most-recent-N cap (default 50, 0 = uncapped).
-    pub limit: Option<usize>,
-}
-
-/// `GET /api/suggestions?status=&limit=` — Today's agent's suggested tasks, newest-first. Each
-/// carries its source finding + rationale, so the Today page can render a reviewable proposal list.
-pub async fn suggestions(Query(q): Query<SuggestionsQuery>) -> Json<Envelope> {
-    let limit = q.limit.unwrap_or(50);
-    let status = nonempty(q.status).and_then(|s| bn_core::suggestions::SuggestionStatus::parse(&s));
-    let items = bn_core::suggestions::list(status, limit);
-    Json(Envelope::success(
-        "suggestions",
-        json!({ "count": items.len(), "suggestions": items }),
     ))
 }
 

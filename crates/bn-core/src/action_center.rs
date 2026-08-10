@@ -150,8 +150,19 @@ pub struct ActionSources<'a> {
     /// Every orchestrate queue item across live runs (flattened) — the stale-PR source.
     pub queue: &'a [QueueItem],
     /// Today's agent suggestions (`suggestions::read`/`list`) — only the **accepted** ones become
-    /// actions (#578); `Suggested`/`Dismissed` are skipped by the fold.
+    /// actions; `Suggested`/`Dismissed`/`Done` are skipped by the fold.
     pub suggestions: &'a [Suggestion],
+    /// The work queue, for joining an accepted suggestion against what it produced.
+    ///
+    /// An accepted suggestion whose work is already in flight must not offer to start it again —
+    /// that CTA is how the same work got launched twice. The join has to be against the queue rather
+    /// than against the suggestion's own cached `queued_id`, because the cache cannot tell a live
+    /// entry from one that was cancelled or dropped, and a suggestion whose entry is gone *should*
+    /// get its CTA back.
+    ///
+    /// `None` for callers that pass no suggestions and so have nothing to join — cheaper than making
+    /// every one of them load a backlog it will not read.
+    pub backlog: Option<&'a crate::backlog::Backlog>,
     /// The current epoch-seconds clock.
     pub now: i64,
 }
@@ -489,34 +500,59 @@ pub fn build_actions(src: &ActionSources) -> Vec<ActionItem> {
         });
     }
 
-    // Accepted suggestions (Today's agent, #578) --------------------------
-    // The owner approved these on Today; promote each into an actionable item with the shared
-    // Start-agent CTA. Only `Accepted` ones cross over — `Suggested` stay in review, `Dismissed`
-    // never resurface.
+    // Accepted suggestions (Today's agent) --------------------------------
+    //
+    // Accepting a suggestion is what queues its work, so the row's job changes depending on whether
+    // that work is in flight. Offering "start an agent" for something already running is how the
+    // same work gets launched twice — and it is also simply wrong as a report of the day: the owner
+    // already decided, and the machine already acted.
+    //
+    // Only `Accepted` ones cross over: `Suggested` stay in review, `Dismissed` never resurface, and
+    // `Done` has shipped.
     for s in src.suggestions {
         if s.status != SuggestionStatus::Accepted {
             continue;
         }
+        let live = src
+            .backlog
+            .and_then(|bl| bl.active_for_source(&s.queue_source()));
+        let detail = match (live, s.rationale.trim()) {
+            // In flight: say where it is, since that is the only new information about it.
+            (Some(entry), _) => Some(format!(
+                "queued {}/{} · {} · {}",
+                entry.repo,
+                entry.id,
+                entry.kind.label(),
+                entry.status.label()
+            )),
+            (None, "") => None,
+            (None, rationale) => Some(rationale.to_string()),
+        };
         out.push(ActionItem {
             id: format!("suggestion:{}", s.id),
             kind: ActionKind::Suggestion,
             title: one_line(&s.title, 90),
             source: format!("suggestion · {}", s.source),
             severity: action_rank::INFO_SEVERITY.to_string(),
-            repo: None,
+            repo: live.map(|e| e.repo.clone()),
             branch: None,
             link: if s.url.trim().is_empty() {
                 None
             } else {
                 Some(s.url.clone())
             },
-            detail: if s.rationale.trim().is_empty() {
-                None
+            detail,
+            payload: json!({ "suggestion_id": s.id, "queued_id": live.map(|e| e.id.clone()) }),
+            // No prompt while the work is in flight. An empty `suggested_prompt` is the contract for
+            // "there is nothing to start here": the row renders its state instead of a CTA, and the
+            // composer's own guard (`prompt.trim().length > 0`) refuses to start an empty one even if
+            // it is reached another way. Expressed as the absence of a prompt rather than as a
+            // suggestion-specific flag, so any later kind that reports rather than asks inherits it.
+            suggested_prompt: if live.is_some() {
+                String::new()
             } else {
-                Some(s.rationale.clone())
+                prompt_suggestion(s)
             },
-            payload: json!({ "suggestion_id": s.id }),
-            suggested_prompt: prompt_suggestion(s),
             default_urgency: Urgency::Queued,
             created: s.created_at,
             stale: false,

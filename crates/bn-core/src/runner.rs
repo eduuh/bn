@@ -68,7 +68,14 @@ pub struct RealRunner;
 impl CommandRunner for RealRunner {
     fn run(&self, program: &str, args: &[&str]) -> CommandOutput {
         let timer = crate::log::enabled().then(crate::log::Timer::start);
-        let out = match std::process::Command::new(program).args(args).output() {
+        let mut command = std::process::Command::new(program);
+        command.args(args);
+        // A captured read has nowhere to show a prompt and no deadline of its own, so an unbounded
+        // `git fetch` here hangs its caller silently. See [`crate::gitnet`].
+        if program == "git" {
+            crate::gitnet::bound(&mut command);
+        }
+        let out = match command.output() {
             Ok(out) => CommandOutput {
                 success: out.status.success(),
                 stdout: String::from_utf8_lossy(&out.stdout).to_string(),
@@ -133,6 +140,9 @@ fn run_bounded(program: &str, args: &[&str], timeout: Duration) -> CommandOutput
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if program == "git" {
+        crate::gitnet::bound(&mut command);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -267,12 +277,21 @@ fn run_bounded(program: &str, args: &[&str], timeout: Duration) -> CommandOutput
     }
 }
 
+/// SIGKILL a whole process group, falling back to the child alone if the group kill fails.
+///
+/// Public because killing only the child is not enough for the callers that need this: the thing
+/// that hangs is usually a *grandchild* (`bn dispatch` → `git fetch` → `ssh`), and reaping the
+/// parent while the network-blocked grandchild lives on leaks the very process you were trying to
+/// stop. Requires the child to have been spawned with `process_group(0)`.
 #[cfg(unix)]
 #[allow(
     unsafe_code,
     reason = "libc::kill is required to terminate the bounded command's process group"
 )]
-fn kill_process_tree(process_group: u32, child: &mut std::process::Child) -> std::io::Result<()> {
+pub fn kill_process_tree(
+    process_group: u32,
+    child: &mut std::process::Child,
+) -> std::io::Result<()> {
     // SAFETY: the child was spawned as the leader of its own process group, so the negative pid
     // targets only that bounded command and descendants it created.
     let result = unsafe { libc::kill(-(process_group as i32), libc::SIGKILL) };
@@ -283,8 +302,12 @@ fn kill_process_tree(process_group: u32, child: &mut std::process::Child) -> std
     }
 }
 
+/// Non-unix stand-in: there are no process groups to signal, so the child is all we can reach.
 #[cfg(not(unix))]
-fn kill_process_tree(_process_group: u32, child: &mut std::process::Child) -> std::io::Result<()> {
+pub fn kill_process_tree(
+    _process_group: u32,
+    child: &mut std::process::Child,
+) -> std::io::Result<()> {
     child.kill()
 }
 

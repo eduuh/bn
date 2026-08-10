@@ -1212,7 +1212,7 @@ pub(crate) fn orchestrate_add(
     let mut added: Vec<String> = Vec::new();
     for item in items {
         let mut spec = spec.clone();
-        spec.task = crate::cmd::task::task_for_enqueue(cfg, &repo, item, &spec.source);
+        spec.task = crate::cmd::task_mint::task_for_enqueue(cfg, &repo, item, &spec.source);
         match backlog::add(&path, &repo, std::slice::from_ref(item), &spec, now) {
             Ok(ids) => added.extend(ids),
             Err(e) => {
@@ -1565,7 +1565,7 @@ pub(crate) fn orchestrate_queue_from(
             touches: item.touches.clone(),
             source: source.clone(),
             controller_id: std::env::var("BN_CONTROLLER_ID").ok(),
-            task: crate::cmd::task::task_for_enqueue(cfg, &repo, &item.title, &source),
+            task: crate::cmd::task_mint::task_for_enqueue(cfg, &repo, &item.title, &source),
             ..Default::default()
         };
         let added = match backlog::add(&path, &repo, std::slice::from_ref(&item.title), &spec, now)
@@ -1670,7 +1670,7 @@ pub(crate) fn orchestrate_ask(
         controller_id: std::env::var("BN_CONTROLLER_ID").ok(),
         // Every enqueue names a task (#1001) — minted here so the ergonomic one-command path
         // still works while leaving a durable record behind it.
-        task: crate::cmd::task::task_for_enqueue(cfg, &repo, question, "ask"),
+        task: crate::cmd::task_mint::task_for_enqueue(cfg, &repo, question, "ask"),
         ..Default::default()
     };
     let path = backlog::backlog_path();
@@ -3403,7 +3403,7 @@ fn keep_warm_tick(cfg: &Config, run_path: &Path, repo: &str, now: i64) -> bool {
             priority: -10,
             source: "keep-warm-brainstorm".to_string(),
             // Brainstorm work is bn-authored, but it still needs a task like everything else.
-            task: crate::cmd::task::task_for_enqueue(
+            task: crate::cmd::task_mint::task_for_enqueue(
                 cfg,
                 repo,
                 plan.brainstorm.first().map(String::as_str).unwrap_or("brainstorm"),

@@ -138,9 +138,10 @@ export function draftIsEmpty(draft: CaptureDraft): boolean {
 /**
  * Persist the in-progress capture so a reload, a crashed tab or a mis-click does not erase it.
  *
- * File bytes are **not** persisted: a few screenshots would blow through the ~5 MB `localStorage`
- * quota and take the recoverable text down with them. Losing the prose is unrecoverable; losing an
- * attachment means dragging the file in again, so the text is what the budget is spent on.
+ * File bytes are **not** persisted here: a few screenshots would blow through the ~5 MB
+ * `localStorage` quota and take the recoverable text down with them. They go to IndexedDB instead
+ * — see [`captureFiles`](./captureFiles.ts), which exists because a restored draft whose files had
+ * been dropped still *referenced* them, and created a task pointing at images it never had.
  */
 export function saveDraft(draft: CaptureDraft): void {
   try {

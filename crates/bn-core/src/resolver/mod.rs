@@ -32,5 +32,8 @@ pub use jobs::{
     agent_dirs, job_dirs, job_script, list_jobs, mcp_extras, quarter_review_cron_override,
     JobConfig, JobRef, JobScope,
 };
-pub use queue_config::{dispatcher_alive, QueueConfig, ALL_PRODUCERS, DISPATCHER_TTL_SECS};
+pub use queue_config::{
+    dispatcher_alive, dispatcher_heartbeat_age, dispatcher_heartbeat_path, dispatcher_pass_age,
+    dispatcher_pass_path, QueueConfig, ALL_PRODUCERS, DISPATCHER_STALL_SECS, DISPATCHER_TTL_SECS,
+};
 pub use tools_config::ToolsConfig;

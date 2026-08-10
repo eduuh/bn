@@ -60,6 +60,49 @@ pub(crate) fn effective_launch_harness(
     resolved
 }
 
+/// What a dispatch asks of the plan-review gate.
+///
+/// Tri-state rather than a `bool`, because "I did not ask for the gate" and "I am asking for no
+/// gate" are different requests and only the second one may override `--yolo`. A second bool
+/// alongside `plan` would have made the pair (true, true) representable and left every reader to
+/// guess which wins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlanGate {
+    /// No opinion — `[dispatch].plan_review` and `--yolo` decide.
+    Auto,
+    /// `--plan`: raise the gate whatever the config says.
+    Force,
+    /// `--no-plan-review`: no gate, even under `--yolo`.
+    Off,
+}
+
+/// Whether this dispatch runs behind the plan-review gate.
+///
+/// A scout never does: it ships nothing, so there is no plan to review. Otherwise the request wins
+/// where it states one, and `Auto` falls back to the trusted-autonomy rule — `--yolo` raises the
+/// gate rather than bypassing it, so autonomy costs a plan review instead of buying its way out of
+/// one.
+pub(crate) fn plan_gate_enabled(request: PlanGate, configured: bool, yolo: bool, scout: bool) -> bool {
+    if scout {
+        return false;
+    }
+    match request {
+        PlanGate::Force => true,
+        PlanGate::Off => false,
+        PlanGate::Auto => configured || yolo,
+    }
+}
+
+/// The seed-routing predicate: a skill-less non-scout agent dispatch enters the task pipeline at
+/// its Investigate stage; a scout seeds the scout envelope; an explicit `--skill X` lane (queue
+/// skill lanes, the critic's execute re-dispatch) runs that skill under the ship envelope —
+/// autonomy stance, verify gate, completion protocol, optional plan gate. Pure so the
+/// seed-assembly tests can pin the routing table: without the `skill` arm every non-scout agent
+/// dispatch took the investigate envelope, leaving the whole ship-envelope path unreachable.
+pub(crate) fn routes_to_pipeline_investigate(has_agent: bool, scout: bool, skill: Option<&str>) -> bool {
+    has_agent && !scout && skill.is_none()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

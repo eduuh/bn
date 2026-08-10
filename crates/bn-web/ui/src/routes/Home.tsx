@@ -20,6 +20,7 @@ import type { AttnItem, IssueRow, RepoIssues, TaskRow } from "../api/types";
 import { attnAction, createTask, taskAction, taskAgent } from "../api/writes";
 import { useAppMutation } from "../hooks/useAppMutation";
 import { clearDraft } from "../lib/capture";
+import { clearPendingFiles } from "../lib/captureFiles";
 import { affects } from "../lib/invalidation";
 import { dropAttn, dropActionForAttn, dropTask, patchTask } from "../lib/optimistic";
 import { NewTaskDialog } from "../components/NewTaskDialog";
@@ -768,6 +769,10 @@ export function Home() {
     },
     onSuccess: () => {
       clearDraft();
+      // The bytes are on the server now. Until this resolves they are still cached, which is the
+      // right way round to fail: a stale cache costs one extra remount, a premature clear costs
+      // the screenshot.
+      void clearPendingFiles();
       setCaptured((n) => n + 1);
       setCreating(false);
     },

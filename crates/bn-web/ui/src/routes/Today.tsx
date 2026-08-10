@@ -137,7 +137,7 @@ function SuggestionRow({
           <span className="font-mono text-xs text-muted-foreground/80">{s.source}</span>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <Hint label="Accept — keep this proposal">
+          <Hint label="Accept — queue it (mints a task, resolves its repo if needed)">
             <Button
               variant="ghost"
               size="icon"
@@ -299,13 +299,51 @@ function TodayAgentCard() {
   );
 }
 
+/** One accepted proposal and what became of it — the round-trip half of the Today↔queue tie.
+ *
+ * Accepting is what queues the work, so an accepted suggestion has an outcome worth showing: an
+ * `enhance` entry means it is still resolving *where* the work goes, a live entry means it is in
+ * flight, and no entry at all means the queue never took it and `bn today sync` is the fix. Without
+ * this the page showed proposals vanishing on accept and never said whether anything happened. */
+function AcceptedRow({ s }: { s: Suggestion }) {
+  const q = s.queue ?? null;
+  return (
+    <li>
+      <Card className="flex items-start gap-2 border-border bg-muted/60 px-3 py-2 text-sm">
+        {q?.live ? (
+          <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-primary" aria-hidden />
+        ) : (
+          <Check className="mt-0.5 h-4 w-4 shrink-0 text-ok" aria-hidden />
+        )}
+        <div className="min-w-0 flex-1 space-y-0.5 lg:max-w-[88ch]">
+          <span className="text-foreground/90">{s.title}</span>
+          <div className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+            {s.task && <span className="font-mono">{s.task}</span>}
+            {q ? (
+              <span className="font-mono">
+                {q.repo}/{q.entry} · {q.kind} · {q.status}
+              </span>
+            ) : (
+              <span>not queued yet — run `bn today sync`</span>
+            )}
+            {q?.kind === "enhance" && <span>resolving where this happens</span>}
+          </div>
+        </div>
+      </Card>
+    </li>
+  );
+}
+
 /** Suggested tasks (#577) — Today's agent synthesizes the cron findings into reviewable proposals.
  * A manual Run trigger fires `POST /api/today/run`; each proposal can be accepted or dismissed.
- * Shows the open (suggested) list, refreshing the query after every write. */
+ * Accepting one queues it, so the accepted list below shows what the queue did with it. */
 function SuggestedTasks() {
   const suggestions = useQuery(suggestionsQuery("suggested"));
+  const accepted = useQuery(suggestionsQuery("accepted"));
   const open = suggestions.data?.suggestions ?? [];
-  const suggested = [queryKeys.suggestions("suggested")];
+  const inFlight = accepted.data?.suggestions ?? [];
+  // Accepting moves a suggestion between the two lists, so both are refreshed after a review.
+  const suggested = [queryKeys.suggestions("suggested"), queryKeys.suggestions("accepted")];
 
   const runMut = useAppMutation({
     mutationFn: () => runTodayAgent(),
@@ -327,8 +365,13 @@ function SuggestedTasks() {
   >({
     mutationFn: (v) => setSuggestionStatus(v.id, v.status),
     optimistic: dropSuggestion<{ id: string; status: "accepted" | "dismissed" }>((v) => v.id),
-    invalidates: affects.task,
-    toast: { success: (r) => `Suggestion ${r.status}`, error: "Review failed" },
+    // Accepting enqueues, so it changes the queue as well as the task store — invalidate both or the
+    // accepted row appears with no queue state until something else happens to refetch it.
+    invalidates: [...affects.task, ...suggested],
+    toast: {
+      success: (r) => (r.status === "accepted" ? "Accepted — queued" : `Suggestion ${r.status}`),
+      error: "Review failed",
+    },
   });
 
   return (
@@ -378,6 +421,18 @@ function SuggestedTasks() {
             />
           ))}
         </ul>
+      )}
+      {inFlight.length > 0 && (
+        <div className="mt-4 space-y-2 border-t border-border pt-3">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Accepted — {inFlight.length} in the queue
+          </p>
+          <ul className="space-y-2">
+            {inFlight.map((s) => (
+              <AcceptedRow key={s.id} s={s} />
+            ))}
+          </ul>
+        </div>
       )}
     </SectionCard>
   );

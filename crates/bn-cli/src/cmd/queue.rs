@@ -64,6 +64,12 @@ pub(crate) fn route(cfg: &Config, action: QueueCmd, json: bool) {
         }
         QueueCmd::Tick { dry_run } => crate::cmd::queue_tick::emit_tick(cfg, dry_run, json),
         QueueCmd::Run { interval } => crate::cmd::queue_tick::emit_run(cfg, interval),
+        QueueCmd::Pause {
+            scope,
+            reason,
+            for_,
+        } => crate::cmd::queue_pause::emit_pause(&scope, &reason, for_.as_deref(), now, json),
+        QueueCmd::Resume { scope } => crate::cmd::queue_pause::emit_resume(&scope, now, json),
         QueueCmd::Why => crate::cmd::queue_tick::emit_why(json),
         QueueCmd::Badge => emit_badge(now, json),
         QueueCmd::Log {
@@ -370,8 +376,20 @@ fn print_dispatcher(cfg: &Config, now: i64) {
         .filter(|p| cfg.queue.captures(p))
         .collect();
 
+    // A wedged dispatcher heartbeats like a healthy one — the heartbeat is a timer thread, so that
+    // it keeps reporting alive while a pass is blocked is by design. The pass stamp is what tells
+    // them apart, and the terminal says so in the same breath as the dashboard rather than leaving
+    // the two surfaces to disagree about a live-but-useless daemon.
+    let stalled = bn_core::resolver::dispatcher_pass_age(now)
+        .is_some_and(|age| age > bn_core::resolver::DISPATCHER_STALL_SECS);
     if captured.is_empty() {
         println!("\u{f05e} capture off — every producer launches directly");
+    } else if alive && stalled {
+        println!(
+            "\u{f071} dispatcher STUCK — alive, but no pass has finished in {}",
+            fmt_secs(bn_core::resolver::dispatcher_pass_age(now).unwrap_or(0))
+        );
+        println!("    it is blocked inside something it started — `bn queue why` has the last pass");
     } else if alive {
         println!("\u{f0e7} dispatcher live · capturing {}", captured.join(", "));
     } else {
@@ -820,7 +838,7 @@ fn emit_add(cfg: &Config, item: &str, repo: Option<&str>, args: AddArgs, now: i6
         touches: args.touches,
         source: "queue".to_string(),
         controller_id: std::env::var("BN_CONTROLLER_ID").ok(),
-        task: crate::cmd::task::task_for_enqueue(cfg, &repo, item, "queue"),
+        task: crate::cmd::task_mint::task_for_enqueue(cfg, &repo, item, "queue"),
         exec,
         requires: Requirements {
             harness: args.harness,

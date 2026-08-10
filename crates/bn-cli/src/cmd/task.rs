@@ -856,7 +856,9 @@ pub(crate) fn emit_task_enhance(
     }
 
     let captured = bn_core::task_agents::CapturedContext::read(cfg, &task);
-    let packet = bn_core::task_agents::improve_packet(&task, Some(&verdict), steer, &captured);
+    let placements = bn_core::issues::known_repos(cfg);
+    let packet =
+        bn_core::task_agents::improve_packet(&task, Some(&verdict), steer, &captured, &placements);
     if !dry_run && !as_json {
         println!("Improving {task_id} — fails on: {}", verdict.codes().join(", "));
     }
@@ -939,51 +941,4 @@ pub(crate) fn emit_task_triage(cfg: &Config, day: Option<&str>, dry_run: bool, a
     } else if !run.output.trim().is_empty() {
         println!("{}", run.output.trim());
     }
-}
-
-/// The task id governing `subject` in `repo`, minting one if nothing covers it yet (#1001).
-///
-/// Every enqueue must name a task — that invariant is what turns "work only ever starts from a
-/// task" from a convention into something a test can assert. Rather than making callers refuse,
-/// this mints the missing record so the ergonomic path stays one command: `bn orchestrate add
-/// "..."` still works, it just leaves a durable trail behind it.
-///
-/// Idempotent on `key:enqueue:<hash of subject>`, so re-queuing the same subject reuses its task
-/// instead of minting a second one.
-pub(crate) fn task_for_enqueue(cfg: &Config, repo: &str, subject: &str, src: &str) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    subject.trim().hash(&mut h);
-    repo.hash(&mut h);
-    let key = format!("enqueue:{:016x}", h.finish());
-
-    let path = task_path(cfg);
-    let _lock = bn_core::todo::lock(&path);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let Ok(mut file) = bn_core::todo::load(&path) else {
-        return String::new();
-    };
-    if let Some(existing) = file
-        .tasks()
-        .find(|t| t.meta("key") == Some(key.as_str()))
-        .and_then(|t| t.id())
-    {
-        return existing.to_string();
-    }
-
-    let today = today();
-    let id = file.next_id();
-    // The subject may be free text from anywhere, so defang it before it becomes a description —
-    // the same rule #1003 applies to issue titles.
-    let text = bn_core::todo::neutralize_meta(subject);
-    let mut task = bn_core::todo::Task::new_todo(&id, &text, None, "", src, &today);
-    task.set_meta_raw("repo", repo);
-    task.set_meta_raw("key", &key);
-    file.push_task(task);
-    if bn_core::todo::save(&path, &file).is_err() {
-        return String::new();
-    }
-    id
 }

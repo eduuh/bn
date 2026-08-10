@@ -344,16 +344,46 @@ export function startRepoSetupAgent(
   return post(`/api/repos/${encodeURIComponent(repo)}/setup-agent`, body ?? {});
 }
 
-/** `POST /api/repos/setup-agents {harness?}` — scan for repos that need setup and start one
- * Fleet-visible setup agent for each, skipping repos that already have one live. `queued` are the
- * repos whose agent went into the backlog instead of starting immediately. */
-export function startNeededRepoSetupAgents(body?: { harness?: string }): Promise<{
-  started: string[];
-  queued: string[];
-  skipped: { repo: string; reason: string }[];
-  failed: unknown[];
-}> {
-  return post("/api/repos/setup-agents", body ?? {});
+/** What force-killing a repo's tmux session did: how many windows went down, and what happened to
+ * each one's warm pool slot. A slot holding uncommitted work stays leased and says so. */
+export interface RepoSessionKillResult {
+  repo?: string;
+  killed?: number;
+  processes?: number;
+  windows?: { target: string; processes: number; lease_released: boolean }[];
+}
+
+/** `POST /api/repos/:repo/kill-session` — force-kill the repo's whole tmux session: every agent
+ * under it, their leases, and their pool slots. Last resort; `killAgent` stops a single one. */
+export function killRepoSession(repo: string): Promise<RepoSessionKillResult> {
+  return post(`/api/repos/${encodeURIComponent(repo)}/kill-session`);
+}
+
+/** `POST /api/repos/:repo/drain {resume?, reason?}` — hold new work for a repo, or release it.
+ * Nothing is killed: in-flight agents finish, the queue simply stops admitting more. */
+export function drainRepo(
+  repo: string,
+  body?: { resume?: boolean; reason?: string },
+): Promise<unknown> {
+  return post(`/api/repos/${encodeURIComponent(repo)}/drain`, body ?? {});
+}
+
+/** Which of a repo's agents came back, and which did not. A partial restart is a real state, so
+ * both lists are reported rather than averaged into one boolean. */
+export interface RepoSessionRelaunchResult {
+  repo?: string;
+  relaunched?: string[];
+  failed?: { target: string; error?: string }[];
+}
+
+/** `POST /api/repos/:repo/relaunch-session {hard?, harness?}` — restart every agent in the repo,
+ * each in the worktree it was already in. Soft by default: each agent resumes its recorded
+ * transcript, so unlike `killRepoSession` this keeps their context. */
+export function relaunchRepoSession(
+  repo: string,
+  body?: { hard?: boolean; harness?: string },
+): Promise<RepoSessionRelaunchResult> {
+  return post(`/api/repos/${encodeURIComponent(repo)}/relaunch-session`, body ?? {});
 }
 
 /** `PUT /api/repos/:repo/scripts/:name {content}` — save a repo-main job script. */

@@ -303,6 +303,13 @@ pub struct AgentSpec {
     /// does not fail; it starts and then waits forever for a human who was never told.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub yolo: bool,
+    /// Whether this lane declines the plan-review gate. Durable for the same reason [`yolo`] is:
+    /// dropping it between the click and the tick does not fail, it silently reinstates a gate the
+    /// caller asked to skip and leaves the agent waiting on a review nobody expected.
+    ///
+    /// [`yolo`]: AgentSpec::yolo
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_plan_review: bool,
 }
 
 impl AgentSpec {

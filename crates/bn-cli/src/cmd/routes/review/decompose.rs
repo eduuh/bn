@@ -448,7 +448,7 @@ pub(super) fn orchestrate_decompose(
             substrate: Substrate::Auto,
             source: source.clone(),
             controller_id: std::env::var("BN_CONTROLLER_ID").ok(),
-            task: crate::cmd::task::task_for_enqueue(
+            task: crate::cmd::task_mint::task_for_enqueue(
                 cfg,
                 &repo,
                 &child.title,

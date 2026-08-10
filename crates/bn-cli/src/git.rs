@@ -18,6 +18,10 @@ use std::process::{Command, Stdio};
 pub(crate) fn git_command(args: &[&str]) -> Command {
     let mut cmd = Command::new("git");
     cmd.args(args);
+    // Bound the network here, at the seam, rather than at each fetch/clone/push call site — the
+    // one that was missed took the dispatcher offline for twenty-five minutes. See
+    // [`bn_core::gitnet`].
+    bn_core::gitnet::bound(&mut cmd);
     cmd
 }
 

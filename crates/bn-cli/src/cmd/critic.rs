@@ -242,7 +242,7 @@ pub(crate) fn run_critic_dispatch(
             Vec::new()
         };
         // `model` (Critique stage) was resolved up front alongside the harness — reuse it.
-        cmd.push_str(&agent_model_suffix(agent_kind, &model, &suppressed));
+        cmd.push_str(&crate::cmd::launch_flags::agent_model_suffix(agent_kind, &model, &suppressed));
         agent_launched = wt::open_worktree_window_cmd(
             &repo,
             &critic_sanitized,
@@ -410,7 +410,8 @@ pub(crate) fn run_critic_verdict(
                 Some("execute"),
                 true,
                 true,
-                false,
+                // Unchanged behaviour: `--yolo` above still raises the plan-review gate.
+                crate::cmd::dispatch::PlanGate::Auto,
                 true,
                 false,
                 false,

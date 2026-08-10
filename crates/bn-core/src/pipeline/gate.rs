@@ -131,13 +131,28 @@ pub fn check_entry(
     let Some(task) = governing_task(cfg, repo, branch) else {
         return GateDecision::Ungoverned;
     };
+    judge(cfg, &task, today)
+}
+
+/// Judge one task directly, and realize the same consequences [`check_entry`] does.
+///
+/// The gate's body, reachable without a worktree. `check_entry` asks "may this worktree enter real
+/// work?" and has to find the task first; the `today` producer asks "is this task ready to be
+/// queued?" and already holds it — a task accepted on Today has no branch yet, so there is no
+/// `(repo, branch)` to look it up by.
+///
+/// One body rather than two, because the consequences are the load-bearing half: the `smart:` stamp,
+/// the try counter, and the attention item raised at the three-strike backstop. A second copy of the
+/// check that skipped those would let a task fail the gate forever without ever being handed to the
+/// enhance agent or to a person.
+pub fn judge(cfg: &Config, task: &Task, today: &str) -> GateDecision {
     let Some(id) = task.id().map(str::to_string) else {
         return GateDecision::Ungoverned;
     };
 
     let known = crate::issues::known_repos(cfg).into_iter().collect();
-    let doc = crate::task_doc::read(cfg, &task);
-    let verdict = smart::check(&task, doc.as_ref(), &known, today);
+    let doc = crate::task_doc::read(cfg, task);
+    let verdict = smart::check(task, doc.as_ref(), &known, today);
 
     if verdict.ok {
         mark_ok(cfg, &id);

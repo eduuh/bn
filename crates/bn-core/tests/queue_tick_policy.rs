@@ -93,6 +93,7 @@ struct Fixture {
     observed: Observed,
     max_express: usize,
     presence: Presence,
+    pauses: PauseState,
 }
 
 impl Default for Fixture {
@@ -108,6 +109,9 @@ impl Default for Fixture {
                 idle: true,
                 away_window: false,
             },
+            // Empty by default, which is the whole safety property: a machine that has never
+            // paused anything plans exactly as it did before pauses were wired in.
+            pauses: PauseState::default(),
         }
     }
 }
@@ -126,6 +130,7 @@ impl Fixture {
             kinds: None,
             goals: &[],
             attention: &[],
+            pauses: &self.pauses,
             max_express: self.max_express,
             windows: &[],
             presence: self.presence,
@@ -300,6 +305,78 @@ fn a_per_kind_ceiling_binds_inside_a_lane_that_still_has_room() {
 }
 
 // ---------------------------------------------------------------------------- pause
+
+/// A repo-scoped pause is a **drain**: it holds that repo's pending work and touches nothing else.
+#[test]
+fn a_repo_pause_holds_that_repos_work_and_only_that_repos() {
+    // `pending()` books entries against "repo"; the second is moved to "other" so the test can see
+    // the boundary rather than assume it.
+    let mut elsewhere = agent("ship the thing", 100);
+    elsewhere.repo = "other".to_string();
+    let fx = Fixture {
+        pending: vec![agent("set up the drained repo", 100), elsewhere],
+        pauses: PauseState::fold(&[pause_event(NOW - 10, "repo:repo", None)], NOW),
+        ..Default::default()
+    };
+    let plan = fx.plan();
+    assert!(
+        plan.start.iter().all(|d| d.repo != "repo"),
+        "the drained repo's work must not be admitted"
+    );
+    assert!(
+        plan.start.iter().any(|d| d.repo == "other"),
+        "a repo-scoped pause must not stop any other repo"
+    );
+    assert!(
+        plan.deferred
+            .iter()
+            .any(|d| d.reason.label() == "paused" && d.detail.contains("repo:repo")),
+        "the deferral must name the scope holding it, not just say paused"
+    );
+}
+
+/// The safety property this whole wiring rests on: no pause events, no behaviour change.
+#[test]
+fn an_empty_pause_state_changes_nothing() {
+    let planned = Fixture {
+        pending: vec![agent("set up nvim", 100)],
+        ..Default::default()
+    }
+    .plan();
+    assert!(
+        planned
+            .deferred
+            .iter()
+            .all(|d| d.reason.label() != "paused"),
+        "a machine that has never paused anything must plan exactly as it did before"
+    );
+    assert_eq!(planned.start.len(), 1);
+}
+
+/// Recovery is exempt. A pause is a statement about *new* work, and lease reclamation is precisely
+/// what a wedged machine needs and precisely what a pause would otherwise stop.
+#[test]
+fn a_pause_does_not_stop_recovery_work() {
+    let mut entry = agent("reap the fleet", 100);
+    entry.source = "cron:fleet-reap".to_string();
+    entry.exec = bn_core::queue::kind::ExecSpec::Job {
+        job: "fleet-reap".to_string(),
+        repo: None,
+        branch: None,
+    };
+    let fx = Fixture {
+        pending: vec![entry],
+        pauses: PauseState::fold(&[pause_event(NOW - 10, "all", None)], NOW),
+        ..Default::default()
+    };
+    assert!(
+        fx.plan()
+            .deferred
+            .iter()
+            .all(|d| d.reason.label() != "paused"),
+        "recovery must survive even a machine-wide pause"
+    );
+}
 
 #[test]
 fn an_expired_pause_is_not_in_historical_state() {
@@ -495,6 +572,7 @@ fn the_dispatcher_hands_the_executor_the_declared_identity() {
         branch: Some("repo-setup".to_string()),
         name: Some("repo-setup".to_string()),
         yolo: true,
+        no_plan_review: true,
     };
     let fx = Fixture {
         pending: vec![entry],
@@ -505,4 +583,5 @@ fn the_dispatcher_hands_the_executor_the_declared_identity() {
     assert_eq!(d.agent.branch.as_deref(), Some("repo-setup"));
     assert_eq!(d.agent.name.as_deref(), Some("repo-setup"));
     assert!(d.agent.yolo);
+    assert!(d.agent.no_plan_review);
 }

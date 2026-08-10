@@ -36,6 +36,8 @@ pub struct Snapshot {
     /// Inline express items one pass may run — configurable, so a slow box can lower it.
     pub max_express: usize,
     pub windows: Vec<crate::queue::window::PriorityWindow>,
+    /// The pauses in force at capture — what makes a drained repo's work stay pending.
+    pub pauses: crate::queue::pause::PauseState,
     pub presence: Presence,
 }
 
@@ -101,6 +103,9 @@ impl Snapshot {
                     .any(|w| w.mode == crate::queue::window::WindowMode::Away && w.is_open(now)),
             },
             windows,
+            // Folded once per capture, alongside every other machine signal, so the whole gate
+            // stays decidable from a captured snapshot.
+            pauses: crate::queue::pause::PauseState::load(now),
             pending,
             entries,
         }
@@ -122,6 +127,7 @@ impl Snapshot {
             attention: &self.attention,
             max_express: self.max_express,
             windows: &self.windows,
+            pauses: &self.pauses,
             presence: self.presence,
         }
     }

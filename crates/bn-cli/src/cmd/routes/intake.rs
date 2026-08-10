@@ -97,6 +97,7 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
             verify,
             yolo,
             plan,
+            no_plan_review,
             fresh,
             keep_project_mcps,
             no_pool,
@@ -134,6 +135,7 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
                         fresh,
                         verify,
                         plan,
+                        no_plan_review,
                         orchestrator,
                     },
                     json,
@@ -158,7 +160,15 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
                 skill.as_deref(),
                 verify,
                 yolo,
-                plan,
+                // clap keeps these mutually exclusive, so the tri-state cannot be asked for both
+                // ways at once.
+                if no_plan_review {
+                    crate::cmd::dispatch::PlanGate::Off
+                } else if plan {
+                    crate::cmd::dispatch::PlanGate::Force
+                } else {
+                    crate::cmd::dispatch::PlanGate::Auto
+                },
                 fresh,
                 keep_project_mcps,
                 no_pool,

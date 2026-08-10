@@ -99,6 +99,9 @@ pub(crate) fn job_queue_tick(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
 pub(crate) fn emit_run(cfg: &Config, interval: u64) {
     use bn_core::clock::Clock;
     let idle = interval.clamp(1, 3600);
+    // Started before anything else in the loop, and outliving every pass: liveness must not be a
+    // side effect of the work finishing. See [`Heartbeat`].
+    let _heartbeat = Heartbeat::start();
     let mut cfg = cfg.clone();
     let mut config_seen = config_stamp();
     let mut exe_seen = exe_stamp();
@@ -154,11 +157,14 @@ pub(crate) fn emit_run(cfg: &Config, interval: u64) {
         }
 
         cap_own_log();
-        beat();
 
         let now = bn_core::clock::RealClock.now_epoch_secs();
         let mut wait = idle;
-        if let TickOutcome::Ran(decision) = tick_once(&cfg, now, false) {
+        let outcome = tick_once(&cfg, now, false);
+        // Stamped after the pass returns, so it measures progress rather than intent. A skipped
+        // pass counts: the lock holder is the one doing the work, and the loop still turned.
+        stamp_pass();
+        if let TickOutcome::Ran(decision) = outcome {
             if decision.started > 0 {
                 println!(
                     "started {} · {} pending",
@@ -180,7 +186,7 @@ pub(crate) fn emit_run(cfg: &Config, interval: u64) {
     }
 }
 
-/// The resident dispatcher's heartbeat file, touched once per pass.
+/// The resident dispatcher's heartbeat file.
 ///
 /// Distinct from `queue-decision.json` on purpose, and the distinction is the whole point: a
 /// decision is written by *any* tick, including the inline fallback `bn` runs when it notices the
@@ -190,17 +196,83 @@ pub(crate) fn emit_run(cfg: &Config, interval: u64) {
 ///
 /// Only [`emit_run`] writes this, so "recent" means the daemon itself is alive.
 pub(crate) fn heartbeat_path() -> PathBuf {
-    bn_core::resolver::state_dir().join("queue-daemon.heartbeat")
+    bn_core::resolver::dispatcher_heartbeat_path()
+}
+
+/// A background thread that writes the heartbeat on a timer, for as long as it is held.
+///
+/// **This used to be one `beat()` at the top of the loop, and that was a bug with a two-and-a-half
+/// hour half-life.** Beating once per iteration makes liveness a function of how long a pass takes,
+/// and a pass can take arbitrarily long: it waits on `bn dispatch`, which fetches, which was one
+/// dead TCP connection away from never returning. The dispatcher then sat alive-but-blocked while
+/// `dispatcher_alive` went false, the dashboard reported "no tick is running", and launchd — whose
+/// process was perfectly healthy — had no reason to restart anything. Nothing in the system was in
+/// a position to notice, because the only liveness signal was downstream of the thing that hung.
+///
+/// A thread that only writes a timestamp cannot be blocked by the work, so "alive" now means alive.
+/// What the work is *doing* is a separate question, answered by [`stamp_pass`] — the two facts were
+/// always distinct and are now stored that way.
+struct Heartbeat {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+/// Seconds between heartbeats. Well inside `DISPATCHER_TTL_SECS` (600) so a single missed write —
+/// a full disk, a slow sync — is not enough to declare the dispatcher dead.
+const BEAT_SECS: u64 = 30;
+
+impl Heartbeat {
+    fn start() -> Heartbeat {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        beat();
+        let thread = std::thread::spawn(move || {
+            while !flag.load(Ordering::Relaxed) {
+                // Slept a second at a time so shutdown is prompt rather than up to BEAT_SECS late.
+                for _ in 0..BEAT_SECS {
+                    if flag.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+                beat();
+            }
+        });
+        Heartbeat {
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for Heartbeat {
+    fn drop(&mut self) {
+        self.stop
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 /// Record that the resident loop is alive. Best-effort: a dispatcher must not stop dispatching
 /// because it could not write a heartbeat.
 fn beat() {
-    let path = heartbeat_path();
+    write_stamp(&heartbeat_path());
+}
+
+/// Record that a pass finished. The signal that separates "wedged" from "idle" — see
+/// [`bn_core::resolver::dispatcher_pass_age`].
+fn stamp_pass() {
+    write_stamp(&bn_core::resolver::dispatcher_pass_path());
+}
+
+fn write_stamp(path: &std::path::Path) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let _ = std::fs::write(&path, bn_core::util::now_epoch_secs().to_string());
+    let _ = std::fs::write(path, bn_core::util::now_epoch_secs().to_string());
 }
 
 /// A cheap fingerprint of `config.toml` — modified time and length.
@@ -606,17 +678,92 @@ fn launch_agent(d: &Dispatch, skill: Option<(&str, Option<&str>)>, now: i64) -> 
     inv = inv
         .branch(d.agent.branch.as_deref())
         .name(d.agent.name.as_deref())
-        .yolo(d.agent.yolo);
+        .yolo(d.agent.yolo)
+        .no_plan_review(d.agent.no_plan_review);
     let Ok(exe) = std::env::current_exe() else {
         return Executed::Failed("cannot resolve the bn executable".to_string());
     };
     // No special flag needed: the child inherits the dispatch extent through the environment, so
     // its own capture check is inert. `BN_DISPATCH_NOW` remains, but as *your* escape hatch rather
     // than the dispatcher's workaround.
-    match std::process::Command::new(exe).args(inv.args()).status() {
-        Ok(st) if st.success() => Executed::Launched,
-        Ok(st) => Executed::Failed(format!("bn dispatch exited {}", st.code().unwrap_or(-1))),
-        Err(e) => Executed::Failed(e.to_string()),
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(inv.args());
+    match wait_bounded(cmd, launch_timeout()) {
+        Launch::Exited(st) if st.success() => Executed::Launched,
+        Launch::Exited(st) => {
+            Executed::Failed(format!("bn dispatch exited {}", st.code().unwrap_or(-1)))
+        }
+        Launch::TimedOut(secs) => Executed::Failed(format!(
+            "bn dispatch did not return within {secs}s — killed it and everything it started"
+        )),
+        Launch::Failed(e) => Executed::Failed(e),
+    }
+}
+
+/// How a bounded launch ended.
+enum Launch {
+    Exited(std::process::ExitStatus),
+    /// The deadline passed and the child's process group was killed.
+    TimedOut(u64),
+    Failed(String),
+}
+
+/// Seconds a single `bn dispatch` may take before the dispatcher gives up on it.
+///
+/// Five minutes is far beyond an honest launch — fetch, worktree add, tmux — and far below the
+/// point at which one wedged entry has cost the machine a meaningful amount of work. Override with
+/// `BN_QUEUE_LAUNCH_TIMEOUT_SECS` on a box that legitimately clones something enormous; `0`
+/// restores the old unbounded wait.
+const LAUNCH_TIMEOUT_SECS: u64 = 300;
+
+fn launch_timeout() -> Option<std::time::Duration> {
+    let secs = std::env::var("BN_QUEUE_LAUNCH_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(LAUNCH_TIMEOUT_SECS);
+    (secs > 0).then(|| std::time::Duration::from_secs(secs))
+}
+
+/// Spawn `cmd` with inherited stdio and wait for it, killing its whole process group if it outlives
+/// `timeout`.
+///
+/// The group, not the child, is what gets killed — and that is the entire point. The hang that
+/// motivated this was two levels down (`bn dispatch` → `git fetch` → `ssh`); reaping only the
+/// direct child would return control to the dispatcher while leaving the blocked `ssh` holding the
+/// bare repo's lock, so the next pass would inherit the same wedge with none of the evidence.
+///
+/// stdio stays inherited so the child's diagnostics keep landing in the dispatcher log where
+/// operators already look for them.
+fn wait_bounded(mut cmd: std::process::Command, timeout: Option<std::time::Duration>) -> Launch {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => return Launch::Failed(e.to_string()),
+    };
+    let Some(timeout) = timeout else {
+        return match child.wait() {
+            Ok(st) => Launch::Exited(st),
+            Err(e) => Launch::Failed(e.to_string()),
+        };
+    };
+    let group = child.id();
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => return Launch::Exited(st),
+            Ok(None) => {}
+            Err(e) => return Launch::Failed(e.to_string()),
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = bn_core::runner::kill_process_tree(group, &mut child);
+            let _ = child.wait();
+            return Launch::TimedOut(timeout.as_secs());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 
@@ -753,10 +900,17 @@ impl TickLock {
         // so the file outlives the process holding it; without a pid the only way to notice is a
         // timeout, during which every pass skips and nothing dispatches. Recording the owner turns
         // that into a fact we can check.
+        //
+        // **The pid is the whole test — age is not.** This previously also stole any lock older
+        // than `LOCK_STALE_SECS` (30), which is shorter than a perfectly ordinary pass: a tick that
+        // spends a minute launching an agent had its lock taken out from under it by the next cron
+        // tick, and then deleted that thief's lock on the way out. Two dispatchers realizing the
+        // same plan is exactly the double-dispatch the lock exists to prevent, so a live owner now
+        // keeps it however long it takes. An unparseable lock file — pre-pid, or truncated — is the
+        // one case age still decides, because there is nothing else to go on.
         if let Ok(prev) = std::fs::read_to_string(&path) {
             let owner: Option<u32> = prev.trim().parse().ok();
-            let dead = owner.is_none_or(|pid| !pid_alive(pid));
-            if dead || bn_core::store::lock_is_stale(&path) {
+            if lock_abandoned(owner, || bn_core::store::lock_is_stale(&path), &pid_alive) {
                 let _ = std::fs::remove_file(&path);
             }
         }
@@ -779,6 +933,25 @@ impl TickLock {
     }
 }
 
+/// Whether an existing lock file may be taken from whoever wrote it.
+///
+/// Pure so the rule is testable without a clock or a filesystem, because the rule is the part that
+/// was wrong: **a live owner is never abandoned, however old its lock**. Age used to steal locks
+/// from working dispatchers after thirty seconds — shorter than an ordinary pass that launches an
+/// agent — which is how two ticks came to realize the same plan. Staleness now decides one case
+/// only: a lock file with no readable pid, where there is nothing better to go on. `stale` is a
+/// closure so that check is skipped entirely in the common path.
+fn lock_abandoned(
+    owner: Option<u32>,
+    stale: impl FnOnce() -> bool,
+    alive: &impl Fn(u32) -> bool,
+) -> bool {
+    match owner {
+        Some(pid) => !alive(pid),
+        None => stale(),
+    }
+}
+
 /// Why a pass could not take the machine lock.
 enum LockDenied {
     /// Another tick is running. The healthy case: it is doing the work.
@@ -792,8 +965,20 @@ enum LockDenied {
 pub(crate) use bn_core::queue::build::pid_alive;
 
 impl Drop for TickLock {
+    /// Release the lock — but only if it is still ours.
+    ///
+    /// An unconditional `remove_file` here deletes whatever lock file happens to exist, which after
+    /// a steal is somebody else's. That turns one lost race into a permanently unlocked machine:
+    /// the thief keeps running believing it holds the lock, and every subsequent tick walks
+    /// straight in. Checking the pid first makes releasing safe even when acquiring was not.
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        let ours = std::fs::read_to_string(&self.path)
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u32>().ok())
+            .is_some_and(|pid| pid == std::process::id());
+        if ours {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -942,6 +1127,155 @@ pub(crate) fn emit_nodes(cfg: &Config, skill: Option<&str>, json: bool) {
                 continue;
             }
             println!("  {label:<8} {}", items.join(", "));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bn_core::test_support::with_state_dir;
+
+    /// A pid that is certainly not running: spawn something trivial and reap it.
+    fn a_dead_pid() -> u32 {
+        let mut child = std::process::Command::new("/usr/bin/true")
+            .spawn()
+            .expect("spawn /usr/bin/true");
+        let pid = child.id();
+        let _ = child.wait();
+        pid
+    }
+
+    /// The regression that took the machine down: a pass slower than `LOCK_STALE_SECS` used to have
+    /// its lock stolen while it was still working, so a second dispatcher realized the same plan.
+    #[test]
+    fn a_live_owner_keeps_its_lock_however_old() {
+        let alive = |_: u32| true;
+        assert!(
+            !lock_abandoned(Some(4242), || true, &alive),
+            "a lock held by a live process must not be stolen for being old"
+        );
+    }
+
+    /// Age still decides the one case with no pid to consult — an old-format or truncated lock.
+    #[test]
+    fn a_pidless_lock_falls_back_to_age() {
+        let alive = |_: u32| true;
+        assert!(lock_abandoned(None, || true, &alive), "stale and pidless");
+        assert!(
+            !lock_abandoned(None, || false, &alive),
+            "a fresh pidless lock is someone mid-write, not an abandoned one"
+        );
+    }
+
+    /// The other half: a lock whose owner died (SIGKILL, power cut) is not a lock, and the machine
+    /// must not stay locked out waiting for a `Drop` that will never run.
+    #[test]
+    fn a_dead_owners_lock_is_reclaimed() {
+        with_state_dir(|| {
+            let path = lock_path();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, a_dead_pid().to_string()).unwrap();
+
+            let guard = TickLock::try_acquire();
+            assert!(guard.is_ok(), "a dead owner's lock should be reclaimable");
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap().trim(),
+                std::process::id().to_string(),
+                "the reclaiming pass should own the lock it took"
+            );
+        });
+    }
+
+    /// Releasing must be narrower than acquiring: dropping a guard whose lock was taken by someone
+    /// else has to leave the new owner's lock alone, or one lost race unlocks the machine for good.
+    #[test]
+    fn dropping_does_not_delete_someone_elses_lock() {
+        with_state_dir(|| {
+            let path = lock_path();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let guard = TickLock::try_acquire().ok().expect("acquire a free lock");
+            // Simulate the steal: another pass now owns the file.
+            std::fs::write(&path, "999999").unwrap();
+            drop(guard);
+
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap().trim(),
+                "999999",
+                "a released guard must only remove a lock still bearing its own pid"
+            );
+        });
+    }
+
+    /// Liveness and progress are separate files because they are separate facts — the whole point
+    /// of moving the heartbeat onto a thread.
+    #[test]
+    fn heartbeat_and_pass_are_recorded_separately() {
+        with_state_dir(|| {
+            beat();
+            assert!(bn_core::resolver::dispatcher_alive(
+                bn_core::util::now_epoch_secs()
+            ));
+            assert!(
+                bn_core::resolver::dispatcher_pass_age(bn_core::util::now_epoch_secs()).is_none(),
+                "a heartbeat alone must not claim a pass has completed"
+            );
+
+            stamp_pass();
+            assert_eq!(
+                bn_core::resolver::dispatcher_pass_age(bn_core::util::now_epoch_secs()),
+                Some(0)
+            );
+        });
+    }
+
+    /// The bound that would have capped the incident at five minutes instead of twenty-five — and
+    /// specifically that it reaches the *grandchild*, which is where the hang actually lived
+    /// (`bn dispatch` → `git fetch` → `ssh`). Killing only the direct child would pass a weaker
+    /// version of this test while leaving the blocked process holding the repo.
+    #[test]
+    fn a_launch_that_never_returns_is_killed_along_with_its_children() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pidfile = dir.path().join("grandchild.pid");
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg("-c").arg(format!(
+            "sleep 60 & echo $! > {}; wait",
+            pidfile.to_string_lossy()
+        ));
+
+        let started = std::time::Instant::now();
+        let outcome = wait_bounded(cmd, Some(std::time::Duration::from_secs(1)));
+
+        assert!(matches!(outcome, Launch::TimedOut(_)));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "the wait must end at its deadline, not at the child's convenience"
+        );
+
+        let grandchild: u32 = std::fs::read_to_string(&pidfile)
+            .expect("the shell should have recorded its background pid")
+            .trim()
+            .parse()
+            .expect("a pid");
+        // The group signal lands immediately; reparenting and reaping take a moment longer.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while pid_alive(grandchild) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            !pid_alive(grandchild),
+            "the whole process group must die, not just the process we spawned"
+        );
+    }
+
+    /// …and a launch that returns normally still reports its own exit status.
+    #[test]
+    fn a_launch_that_returns_keeps_its_status() {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg("-c").arg("exit 3");
+        match wait_bounded(cmd, Some(std::time::Duration::from_secs(30))) {
+            Launch::Exited(st) => assert_eq!(st.code(), Some(3)),
+            _ => panic!("a prompt child should report its exit status"),
         }
     }
 }

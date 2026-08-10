@@ -48,6 +48,13 @@ pub struct TickInputs<'a> {
     pub observed: &'a Observed,
     /// Per-kind concurrency ceilings, layered on top of the lane caps.
     pub kind_caps: &'a KindCaps,
+    /// The pauses in force this pass — [`crate::queue::pause::PauseState`], folded from the event
+    /// log by the caller.
+    ///
+    /// A pause stops **admission, not execution**: work already leased finishes normally, which is
+    /// what makes a repo-scoped pause a *drain* rather than a stop. An empty state (no pause event
+    /// has ever been written) covers nothing, so this is inert until somebody pauses something.
+    pub pauses: &'a crate::queue::pause::PauseState,
     /// Which kinds this tick may claim.
     ///
     /// The migration valve that keeps this tick and the per-repo orchestrate tick from contending
@@ -207,12 +214,15 @@ pub enum DeferReason {
     Snoozed,
     /// Opportunistic work is waiting for idle/away time.
     AwaitingAway,
+    /// A pause covering this entry is in force — the repo is draining, or the machine is held.
+    Paused,
 }
 
 impl DeferReason {
     /// The kebab-case label for the decision file and the status surface.
     pub fn label(&self) -> &'static str {
         match self {
+            DeferReason::Paused => "paused",
             DeferReason::Capacity(_) => "capacity",
             DeferReason::KindCap => "kind-cap",
             DeferReason::Conflict => "conflict",
@@ -321,6 +331,26 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
                 "waiting for idle time or an away window".to_string(),
             ));
             continue;
+        }
+        // Recovery is exempt, deliberately: a pause is a statement about *new* work, and lease
+        // reclamation is precisely what a wedged machine needs and precisely what a pause would
+        // otherwise stop (see `queue::jobs::RECOVERY_JOBS`).
+        if !entry_is_recovery(entry) {
+            if let Some(pause) = inputs.pauses.blocks(
+                &entry.repo,
+                entry.kind,
+                WorkClass::from_kind(entry.kind),
+                entry.assigned_to.as_deref(),
+            ) {
+                plan.deferred.push(defer(
+                    entry,
+                    DeferReason::Paused,
+                    // Name the scope, not just "paused": on a machine with several independent
+                    // pauses, "which one is holding this?" is the only useful question.
+                    format!("{} is paused", pause.scope.key()),
+                ));
+                continue;
+            }
         }
         if let Some(kinds) = inputs.kinds {
             if !kinds.contains(&entry.kind) {
@@ -605,4 +635,21 @@ fn find<'a>(entries: &[&'a BacklogEntry], repo: &str, id: &str) -> Option<&'a Ba
         .iter()
         .find(|e| e.repo == repo && e.id == id)
         .copied()
+}
+
+/// Whether this entry is recovery work, and so exempt from every pause.
+///
+/// Reads what the entry *declares* — the job it runs, or the cron that produced it — never its
+/// subject line. The same rule, and the same reason, as [`crate::queue::classify`]'s warming test:
+/// an agent whose prompt happens to mention a recovery job is not recovery work.
+fn entry_is_recovery(entry: &BacklogEntry) -> bool {
+    let by_source = entry
+        .source
+        .strip_prefix("cron:")
+        .is_some_and(crate::queue::jobs::is_recovery);
+    let by_exec = matches!(
+        &entry.exec,
+        crate::queue::kind::ExecSpec::Job { job, .. } if crate::queue::jobs::is_recovery(job)
+    );
+    by_source || by_exec
 }
