@@ -2,6 +2,7 @@
 name: m365-sweep
 kind: command
 on_calendar: "Mon..Fri *-*-* 14:55:00"
+catch_up: true
 network: true
 description: "bn — sweep M365 (workIQ) for urgent emails, Teams mentions, commitments, owed replies"
 ---

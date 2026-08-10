@@ -122,11 +122,21 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
             if dispatch_captured(cfg, on_pool_full) {
                 let ok = crate::cmd::queue_producers::capture_dispatch(
                     cfg,
-                    repo.as_deref(),
-                    &item.join(" "),
-                    scout,
-                    skill.as_deref(),
-                    agent.as_deref(),
+                    &crate::cmd::queue_producers::DispatchRequest {
+                        repo: repo.as_deref(),
+                        item: &item.join(" "),
+                        scout,
+                        skill: skill.as_deref(),
+                        harness: agent.as_deref(),
+                        branch: branch.as_deref(),
+                        name: name.as_deref(),
+                        yolo,
+                        fresh,
+                        verify,
+                        plan,
+                        orchestrator,
+                    },
+                    json,
                 );
                 if ok {
                     return;

@@ -15,7 +15,7 @@ untouched. Otherwise execute the auto-class items as below. When in doubt, prefe
 it is always safe to leave an item for the user, never safe to act on a misread one.
 
 1. **Load the queue.** Run `bn next --json` in the shell. Each action is
-   `{kind, title, detail, link?, priority, age}`, ranked most-pressing first. `kind` is one of
+   `{kind, title, detail, link?, priority, age, attn_id?}`, ranked most-pressing first. `kind` is one of
    `wip`, `cron`, `attn`, `review`, `pr`, `goal`, `blocked`, `meeting`, `email`, `mention`.
    Read it; don't re-fetch anything over the network — the queue is already the distilled,
    offline signal.
@@ -49,8 +49,9 @@ it is always safe to leave an item for the user, never safe to act on a misread 
    - **Re-push** the branch when a rebase or fmt changed it.
    After each, note the outcome (succeeded / skipped-because-conflict / no-op). Never merge,
    approve, close, force-push over others' work, or touch `main` — those are out of scope here,
-   full stop. If `attn`/`cron` items have an id, `bn attn ack <id>` one **only** once its
-   mechanical action genuinely completed; never ack a judgment item.
+   full stop. If an `attn` item carries an `attn_id`, `bn attn ack <attn_id>` it **only** once
+   its mechanical action genuinely completed; never ack a judgment item. (Other kinds carry no
+   `attn_id` — they clear themselves from the queue when their underlying condition resolves.)
 
 5. **Report.** Lead with a one-line tally: *N items — X auto-executed, Y left for you*
    (in dry-run: *would auto-execute X, leave Y*). Then two short groups:

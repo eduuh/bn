@@ -26,6 +26,9 @@ use bn_core::orchestrate::{
 use bn_core::runner::CommandRunner;
 use std::path::{Path, PathBuf};
 
+mod signals;
+use signals::*;
+
 /// Poll cadence while work is in flight — react fast to completions/outages.
 const POLL_ACTIVE_SECS: u64 = 15;
 /// Poll cadence while only waiting (all items queued behind the cap, or backoff pending).
@@ -3617,17 +3620,28 @@ fn supervise_inflight(cfg: &Config, st: &mut OrchestrateState, now: i64) {
             ..ExternalState::default()
         };
         if should_stop_after_ship(external) {
-            let killed = crate::reap::terminate_lane(&cfg.worktree_dir, &st.repo, &branch);
-            if killed > 0 {
-                let killed = killed.to_string();
+            // Freeing the slot is bookkeeping and always safe; killing the processes is not. A
+            // just-merged lane is a prime thing to be reading — the PR landed, so you go look at
+            // what it did — so leave the pane alone while somebody is in it and let the ordinary
+            // reap collect it once they've moved on. Reconciliation below still runs either way.
+            if obs.attended {
                 log_event(
-                    "orchestrate_stop_after_ship",
-                    &[
-                        ("repo", &st.repo),
-                        ("branch", &branch),
-                        ("processes", &killed),
-                    ],
+                    "orchestrate_stop_after_ship_deferred",
+                    &[("repo", &st.repo), ("branch", &branch), ("why", "attended")],
                 );
+            } else {
+                let killed = crate::reap::terminate_lane(&cfg.worktree_dir, &st.repo, &branch);
+                if killed > 0 {
+                    let killed = killed.to_string();
+                    log_event(
+                        "orchestrate_stop_after_ship",
+                        &[
+                            ("repo", &st.repo),
+                            ("branch", &branch),
+                            ("processes", &killed),
+                        ],
+                    );
+                }
             }
 
             if reconcile_external_state(cfg, st, &id, &branch, true, (external, pr_url), now) {
@@ -3665,7 +3679,7 @@ fn supervise_inflight(cfg: &Config, st: &mut OrchestrateState, now: i64) {
         // Every other state keeps the deterministic #340 mapping.
         let action =
             if state == PaneState::IdleClean && orchestrate::shows_bare_prompt(&obs.as_obs()) {
-                let live = gather_liveness(cfg, &st.repo, &branch, now);
+                let live = gather_liveness(cfg, &st.repo, &branch, obs.attended, now);
                 orchestrate::idle_clean_action(live, IDLE_CLEAN_STALE_SECS)
             } else {
                 orchestrate::action_for(state)
@@ -3780,7 +3794,7 @@ fn update_stuck_lane(
 /// a missing session reads as `aic = 0` (just-launched → leave) and an *inconclusive* PR lookup (gh
 /// offline / auth) reads as `has_pr = true` (finished → leave), so an unobservable agent is never
 /// hard-restarted on a hunch (a false-positive would re-do delivered work).
-fn gather_liveness(cfg: &Config, repo: &str, branch: &str, now: i64) -> Liveness {
+fn gather_liveness(cfg: &Config, repo: &str, branch: &str, attended: bool, now: i64) -> Liveness {
     let wt = worktree_path(cfg, repo, branch);
     let (aic, idle_secs) = match bn_core::agent::agent_progress_for_cwd(&wt) {
         Some(p) => (p.aic.max(0) as u64, (now - p.last_activity_ts).max(0)),
@@ -3794,6 +3808,7 @@ fn gather_liveness(cfg: &Config, repo: &str, branch: &str, now: i64) -> Liveness
         aic,
         has_pr,
         idle_secs,
+        attended,
     }
 }
 
@@ -4216,7 +4231,15 @@ fn relaunch_to_resume(
     // hard restart — a switched lane relaunches on the harness it was moved to, not the run default.
     let harness = harness.unwrap_or_else(|| st.dispatch_harness().to_string());
     let kind =
-        match orchestrate::plan_relaunch(state, attempts, last, now, obs.has_window, &backoff) {
+        match orchestrate::plan_relaunch(
+            state,
+            attempts,
+            last,
+            now,
+            obs.has_window,
+            obs.attended,
+            &backoff,
+        ) {
             RelaunchDecision::GiveUp => {
                 st.mark_failed(id, now);
                 st.record_recovery(
@@ -6199,259 +6222,6 @@ pub(crate) fn orchestrate_scale(
     true
 }
 
-// ===========================================================================
-// Live-signal capture + executor plumbing
-// ===========================================================================
-
-/// An owned pane observation — the buffers a borrowed [`PaneObservation`] points at.
-struct Observed {
-    tail: Vec<String>,
-    has_window: bool,
-    has_process: bool,
-    plane_a: String,
-    has_wip: bool,
-}
-
-impl Observed {
-    fn as_obs(&self) -> PaneObservation<'_> {
-        PaneObservation {
-            tail: &self.tail,
-            has_window: self.has_window,
-            plane_a: &self.plane_a,
-            has_wip: self.has_wip,
-        }
-    }
-}
-
-/// The tmux window name for an agent: `repo:sanitized-branch` (matching how `bn dispatch` opens it).
-fn tmux_target(repo: &str, branch: &str) -> String {
-    format!("{repo}:{}", wt::sanitize_branch(branch))
-}
-
-/// The sanitized-branch window suffixes of `repo`'s **live agent windows** — the candidate standalone
-/// dispatch lanes a supervisor adopts (#426). Thin delegate to the pure #455 policy
-/// ([`bn_core::crossrepo::lane_windows_in_session`]): keeps windows in this repo's session
-/// (`<repo>:<window>`), dropping the repo's own `main`/`master` checkout, warm `_pool` slots, and
-/// empty names. The window name is the sanitized branch (`bn dispatch`'s naming), so this is the
-/// tmux half of discovery; [`discover_lanes`] resolves each to its real branch on disk.
-fn lane_windows_for(repo: &str, windows: &[String]) -> Vec<String> {
-    bn_core::crossrepo::lane_windows_in_session(repo, windows)
-}
-
-/// Discover this repo's live standalone `bn dispatch` lanes for supervisor adoption (#426): every
-/// live agent window ([`lane_windows_for`]) whose worktree still exists on disk, resolved to its real
-/// git branch (the form `bn dispatch --json` records and the daemon tracks). A window without a
-/// worktree, or one whose branch can't be read, is skipped. Best-effort and read-only — a lane the
-/// supervisor can't resolve is simply not adopted this pass (its PR still lands via `bn wt merge
-/// --all`), never mis-recovered.
-fn discover_lanes(cfg: &Config, repo: &str, windows: &[String]) -> Vec<String> {
-    let mut out = Vec::new();
-    for win in lane_windows_for(repo, windows) {
-        // The window name is the sanitized branch == the worktree dir name.
-        let wt = cfg.worktree_dir.join(repo).join(&win);
-        if !wt.join(".git").exists() {
-            continue; // no live worktree — nothing to supervise (PRs still land unconditionally)
-        }
-        let branch = wt::git_out(&[
-            "-C",
-            &wt.to_string_lossy(),
-            "rev-parse",
-            "--abbrev-ref",
-            "HEAD",
-        ])
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty() && s != "HEAD")
-        .unwrap_or(win);
-        if !out.iter().any(|e: &String| e == &branch) {
-            out.push(branch);
-        }
-    }
-    out
-}
-
-/// Gather the live signals for one agent into an owned [`Observed`]: the pane tail, whether a live
-/// window exists, its Plane-A `@bn_agent` state, and whether the worktree carries WIP.
-fn observe(
-    cfg: &Config,
-    repo: &str,
-    branch: &str,
-    windows: &[String],
-    live_processes: &std::collections::BTreeSet<String>,
-) -> Observed {
-    let target = tmux_target(repo, branch);
-    let has_window = windows.iter().any(|w| w.eq_ignore_ascii_case(&target));
-    let has_process = live_processes.contains(&target.to_ascii_lowercase());
-    let tail = if has_window {
-        capture_pane_tail(&target, 8)
-    } else {
-        Vec::new()
-    };
-    let plane_a = crate::proc::tmux(&[
-        "display-message",
-        "-p",
-        "-t",
-        &format!("={target}"),
-        "-F",
-        "#{@bn_agent}",
-    ])
-    .unwrap_or_default();
-    let wt = worktree_path(cfg, repo, branch);
-    let has_wip = worktree_has_wip(&wt);
-    Observed {
-        tail,
-        has_window,
-        has_process,
-        plane_a,
-        has_wip,
-    }
-}
-
-fn lane_is_dead(has_window: bool, has_process: bool) -> bool {
-    !has_window && !has_process
-}
-
-/// Whether a worktree carries genuine WIP the supervisor should recover — uncommitted changes, or
-/// commits unique to HEAD vs **current** `origin/<default>` (#370 defect 3). The old check compared
-/// against the stale *local* `main`/`master` ref (which a bare-repo worktree layout rarely updates),
-/// so a clean branch that had advanced to current main read as "ahead of the old base" → false
-/// `wip=true` → an infinite relaunch loop. Judging against `origin/<default>` (refreshed once per
-/// tick by [`fetch_origin_default`]) means a clean tree at main's tip has zero unique commits and is
-/// correctly `idle-clean`, never `idle-with-wip`.
-fn worktree_has_wip(wt: &Path) -> bool {
-    if !wt.is_dir() {
-        return false;
-    }
-    // Uncommitted work (staged, unstaged, or untracked) — `git status --porcelain` non-empty.
-    if wt::dirty_count(&wt.to_string_lossy()) > 0 {
-        return true;
-    }
-    // Committed-but-unmerged work — commits on HEAD not reachable from current origin/<default>.
-    commits_ahead_of_origin_default(wt) > 0
-}
-
-/// Commits unique to the worktree's HEAD vs current `origin/<default>` (0 when HEAD sits at or
-/// behind main's tip). Pure read against the already-fetched ref — no network here; the per-tick
-/// refresh lives in [`fetch_origin_default`] so this stays cheap per agent.
-fn commits_ahead_of_origin_default(wt: &Path) -> u32 {
-    let wts = wt.to_string_lossy();
-    let base = format!("origin/{}", origin_default_branch(wt));
-    wt::git_out(&["-C", &wts, "rev-list", "--count", &format!("{base}..HEAD")])
-        .and_then(|s| s.trim().parse::<u32>().ok())
-        .unwrap_or(0)
-}
-
-/// The remote's default branch name for a worktree (`origin/HEAD` → `main`), falling back to `main`
-/// then `master` when `origin/HEAD` isn't set — so wip is judged against the branch the repo
-/// actually merges into.
-fn origin_default_branch(wt: &Path) -> String {
-    let wts = wt.to_string_lossy();
-    if let Some(name) = wt::git_out(&[
-        "-C",
-        &wts,
-        "symbolic-ref",
-        "--short",
-        "refs/remotes/origin/HEAD",
-    ])
-    .map(|s| s.trim().trim_start_matches("origin/").to_string())
-    .filter(|s| !s.is_empty())
-    {
-        return name;
-    }
-    for cand in ["main", "master"] {
-        if wt::git_out(&[
-            "-C",
-            &wts,
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("origin/{cand}"),
-        ])
-        .is_some()
-        {
-            return cand.to_string();
-        }
-    }
-    "main".to_string()
-}
-
-/// Best-effort refresh of `origin/<default>` on the repo's shared bare, once per tick — so the wip
-/// check ([`worktree_has_wip`]) is judged against the *live* main, not a ref last fetched at
-/// dispatch time (#370 defect 3). Silent on failure (offline / DNS outage): the comparison then
-/// falls back to the last-known origin tip, which is still current relative to the (also-stalled)
-/// branch, so no false wip is introduced.
-fn fetch_origin_default(cfg: &Config, repo: &str) {
-    if let Some(wt) = a_repo_worktree(cfg, repo) {
-        let wts = wt.to_string_lossy().to_string();
-        let default = origin_default_branch(&wt);
-        let _ = wt::run_git(&["-C", &wts, "fetch", "--quiet", "origin", &default]);
-    }
-}
-
-/// The last `n` non-empty lines of an agent pane's active pane, addressed by its exact window name.
-fn capture_pane_tail(target: &str, n: usize) -> Vec<String> {
-    let out = crate::proc::tmux_raw(&["capture-pane", "-p", "-t", &format!("={target}")])
-        .unwrap_or_default();
-    let lines: Vec<String> = out
-        .lines()
-        .map(|l| l.trim_end().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
-    let start = lines.len().saturating_sub(n);
-    lines[start..].to_vec()
-}
-
-/// Every live tmux window as `session:window`, or `None` when tmux is unreachable (so callers can
-/// distinguish "no windows" from "no tmux" and avoid a false `dead` classification). A missing
-/// tmux server after reboot is an observable empty fleet, not an unreachable probe: recovery may
-/// safely recreate the session through the normal fresh dispatch path.
-fn list_windows() -> Option<Vec<String>> {
-    let out =
-        crate::proc::tmux_command(&["list-windows", "-a", "-F", "#{session_name}:#{window_name}"])
-            .output()
-            .ok()?;
-    classify_window_listing(
-        out.status.success(),
-        &String::from_utf8_lossy(&out.stdout),
-        &String::from_utf8_lossy(&out.stderr),
-    )
-}
-
-fn classify_window_listing(success: bool, stdout: &str, stderr: &str) -> Option<Vec<String>> {
-    if success {
-        return Some(
-            stdout
-                .lines()
-                .map(|line| line.trim().to_string())
-                .filter(|line| !line.is_empty())
-                .collect(),
-        );
-    }
-    let error = stderr.to_ascii_lowercase();
-    if error.contains("no server running")
-        || error.contains("failed to connect to server")
-        || error.contains("error connecting to")
-    {
-        return Some(Vec::new());
-    }
-    None
-}
-
-/// The worktree dir for an agent: `<worktree_dir>/<repo>/<sanitized-branch>`.
-fn worktree_path(cfg: &Config, repo: &str, branch: &str) -> PathBuf {
-    cfg.worktree_dir
-        .join(repo)
-        .join(wt::sanitize_branch(branch))
-}
-
-/// Any existing worktree of the repo (to `cd` into for the cwd-scoped merge-queue), or `None`.
-fn a_repo_worktree(cfg: &Config, repo: &str) -> Option<PathBuf> {
-    let repo_dir = cfg.worktree_dir.join(repo);
-    let rd = std::fs::read_dir(&repo_dir).ok()?;
-    rd.flatten()
-        .map(|e| e.path())
-        .find(|p| p.is_dir() && p.join(".git").exists())
-}
-
 /// The raw dispatch subject of an item (for a re-dispatch relaunch).
 fn item_of(st: &OrchestrateState, id: &str) -> String {
     st.queue
@@ -7016,3 +6786,4 @@ fn record_degradation(
         states.insert(key, active);
     }
 }
+

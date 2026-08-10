@@ -25,3 +25,6 @@ items:
 ```
 
 Keep `note.md` as an index/status file only.
+
+Before finishing, record one workflow reflection with
+`bn reflect "skill:plan — <what worked or what to change>"`.

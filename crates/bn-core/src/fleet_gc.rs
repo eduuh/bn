@@ -75,6 +75,11 @@ pub enum KeepReason {
     /// Carries uncommitted (dirty) or unpushed work — spared unless `--force`, so a reap never
     /// discards work.
     Uncommitted,
+    /// A human is at this agent's window — scrolling its scrollback, looking at it in an attached
+    /// client, or having done either within [`crate::tmux::ATTENDED_DECAY_SECS`]. Spared unless
+    /// `--force`: reviewing an agent's work is *work*, and a GC that pulls the pane out from under a
+    /// reviewer is worse than one that leaves a finished lane running for another minute.
+    Attended,
     /// Too recently active to reap yet — a launch/teardown grace window so an agent isn't reaped
     /// mid-transition. Spared unless `--force`.
     Grace,
@@ -88,6 +93,7 @@ impl KeepReason {
             KeepReason::Working => "working",
             KeepReason::Orchestrator => "orchestrator",
             KeepReason::Uncommitted => "uncommitted",
+            KeepReason::Attended => "attended",
             KeepReason::Grace => "grace",
         }
     }
@@ -136,6 +142,10 @@ pub struct AgentObservation {
     pub is_working: bool,
     /// The worktree carries uncommitted (dirty tree) or unpushed (ahead-of-remote) work.
     pub has_uncommitted: bool,
+    /// A human is at this agent's window, now or within the decay window (see
+    /// [`crate::tmux::observe_presence`]). Only observable for an agent that still has a live
+    /// window; a windowless straggler is never attended.
+    pub attended: bool,
     /// This is the orchestrator / `--resume` supervisor session — never reap it.
     pub is_orchestrator: bool,
     /// Seconds since the agent's last recorded activity. `0` when unknown (treated as very fresh,
@@ -153,6 +163,7 @@ impl Default for AgentObservation {
             pr: PrStatus::None,
             is_working: false,
             has_uncommitted: false,
+            attended: false,
             is_orchestrator: false,
             idle_secs: 0,
         }
@@ -191,8 +202,9 @@ impl Default for ReapPolicy {
 /// 1. **Orchestrator is sacrosanct** — never reaped, even with `--force`.
 /// 2. **Not stale** — a live window, a present worktree, and a PR that's open or not-yet-opened
 ///    (or whose state is unknown) ⇒ a healthy in-flight agent, kept.
-/// 3. **Stale, but guarded** — a stale agent is still spared (unless `--force`) when it is actively
-///    working, carries uncommitted/unpushed work, or is still inside the idle grace window.
+/// 3. **Stale, but guarded** — a stale agent is still spared (unless `--force`) when a human is
+///    watching its window, it is actively working, it carries uncommitted/unpushed work, or it is
+///    still inside the idle grace window.
 /// 4. **Reap** — otherwise, tagged with the stale reason.
 pub fn classify(obs: &AgentObservation, policy: &ReapPolicy) -> Disposition {
     // (1) The orchestrator / `--resume` supervisor is never reaped — force does not apply. Killing
@@ -221,6 +233,16 @@ pub fn classify(obs: &AgentObservation, policy: &ReapPolicy) -> Disposition {
 
     // (3) Safety gates. `--force` overrides all of these (but not the orchestrator guard above).
     if !policy.force {
+        // Never take a pane away from the human reading it. This gate comes first because it is the
+        // only one that outranks *every* stale signal: a merged PR, a deleted worktree and a closed
+        // window all still describe an agent whose transcript someone is in the middle of reviewing,
+        // and the other guards (working / uncommitted) are all blind to a read-only agent — which
+        // never dirties a tree and never opens a PR, and so was permanently reap-eligible.
+        if obs.attended {
+            return Disposition::Keep {
+                reason: KeepReason::Attended,
+            };
+        }
         // Never kill an agent mid-turn.
         if obs.is_working {
             return Disposition::Keep {
@@ -285,4 +307,93 @@ pub fn pool_slot(worktree_dir: &Path, cwd: &Path) -> Option<(String, u32)> {
     }
     let slot = comps.next()?.as_os_str().to_str()?.parse().ok()?;
     Some((repo, slot))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A long-idle agent whose PR merged, with nothing uncommitted — the shape a finished lane has
+    /// once its work lands, and the exact shape of an agent whose transcript you are reading.
+    fn finished_and_quiet() -> AgentObservation {
+        AgentObservation {
+            pr: PrStatus::Merged,
+            idle_secs: DEFAULT_MIN_IDLE_SECS * 10,
+            ..AgentObservation::default()
+        }
+    }
+
+    #[test]
+    fn a_watched_agent_is_never_reaped() {
+        let obs = AgentObservation {
+            attended: true,
+            ..finished_and_quiet()
+        };
+        assert_eq!(
+            classify(&obs, &ReapPolicy::default()),
+            Disposition::Keep {
+                reason: KeepReason::Attended
+            }
+        );
+    }
+
+    #[test]
+    fn the_same_agent_is_reaped_once_nobody_is_watching() {
+        assert_eq!(
+            classify(&finished_and_quiet(), &ReapPolicy::default()),
+            Disposition::Reap {
+                reason: ReapReason::PrMerged
+            }
+        );
+    }
+
+    /// The read-only agent this gate exists for: it investigates, opens no PR and dirties no tree,
+    /// so `is_working` and `has_uncommitted` are both false and every other guard waves it through.
+    /// Reading its findings is the only thing keeping it alive.
+    #[test]
+    fn a_read_only_agent_under_review_survives_a_dead_window() {
+        let obs = AgentObservation {
+            has_live_window: false,
+            attended: true,
+            idle_secs: DEFAULT_MIN_IDLE_SECS * 10,
+            ..AgentObservation::default()
+        };
+        assert_eq!(
+            classify(&obs, &ReapPolicy::default()),
+            Disposition::Keep {
+                reason: KeepReason::Attended
+            }
+        );
+    }
+
+    #[test]
+    fn force_still_reaps_a_watched_agent() {
+        let obs = AgentObservation {
+            attended: true,
+            ..finished_and_quiet()
+        };
+        let policy = ReapPolicy {
+            force: true,
+            ..ReapPolicy::default()
+        };
+        assert!(classify(&obs, &policy).is_reap());
+    }
+
+    #[test]
+    fn the_orchestrator_outranks_everything_including_force() {
+        let obs = AgentObservation {
+            is_orchestrator: true,
+            ..finished_and_quiet()
+        };
+        let policy = ReapPolicy {
+            force: true,
+            ..ReapPolicy::default()
+        };
+        assert_eq!(
+            classify(&obs, &policy),
+            Disposition::Keep {
+                reason: KeepReason::Orchestrator
+            }
+        );
+    }
 }

@@ -1,117 +1,14 @@
 //! `bn dispatch` — fork a worktree for a todo and launch an agent in it.
 use crate::*;
 
+#[cfg(test)]
+mod tests;
+
+pub(crate) mod invocation;
 pub(crate) mod policy;
+pub(crate) use invocation::DispatchInvocation;
 use policy as dp;
 pub(crate) use policy::{effective_launch_harness, normalize_agent};
-
-/// Canonical argv builder for agent-bearing `bn dispatch` invocations.
-///
-/// Orchestrator and SSH-host callers deliberately execute dispatch in a child process, but they
-/// must not independently encode its flags: seed construction, trust, and launch behavior belong
-/// to [`run_dispatch`]. This type keeps those callers on one command shape.
-pub(crate) struct DispatchInvocation<'a> {
-    item: &'a str,
-    repo: &'a str,
-    agent: &'a str,
-    branch: Option<&'a str>,
-    skill: Option<&'a str>,
-    scout: bool,
-    verify: bool,
-    yolo: bool,
-    fresh: bool,
-    json: bool,
-}
-
-impl<'a> DispatchInvocation<'a> {
-    pub(crate) fn new(item: &'a str, repo: &'a str, agent: &'a str) -> Self {
-        Self {
-            item,
-            repo,
-            agent,
-            branch: None,
-            skill: None,
-            scout: false,
-            verify: false,
-            yolo: false,
-            fresh: false,
-            json: false,
-        }
-    }
-
-    pub(crate) fn branch(mut self, branch: Option<&'a str>) -> Self {
-        self.branch = branch;
-        self
-    }
-
-    pub(crate) fn skill(mut self, skill: Option<&'a str>) -> Self {
-        self.skill = skill;
-        self
-    }
-
-    pub(crate) fn scout(mut self, scout: bool) -> Self {
-        self.scout = scout;
-        self
-    }
-
-    pub(crate) fn verify(mut self, verify: bool) -> Self {
-        self.verify = verify;
-        self
-    }
-
-    pub(crate) fn yolo(mut self, yolo: bool) -> Self {
-        self.yolo = yolo;
-        self
-    }
-
-    pub(crate) fn fresh(mut self, fresh: bool) -> Self {
-        self.fresh = fresh;
-        self
-    }
-
-    pub(crate) fn json(mut self, json: bool) -> Self {
-        self.json = json;
-        self
-    }
-
-    pub(crate) fn args(&self) -> Vec<String> {
-        let mut args = vec![
-            "dispatch".to_string(),
-            self.item.to_string(),
-            "--repo".to_string(),
-            self.repo.to_string(),
-            "--agent".to_string(),
-            self.agent.to_string(),
-        ];
-        if let Some(branch) = self.branch {
-            args.extend(["--branch".to_string(), branch.to_string()]);
-        }
-        if self.scout {
-            args.push("--scout".to_string());
-        }
-        if let Some(skill) = self.skill {
-            args.extend(["--skill".to_string(), skill.to_string()]);
-        }
-        if self.verify {
-            args.push("--verify".to_string());
-        }
-        if self.yolo {
-            args.push("--yolo".to_string());
-        }
-        if self.fresh {
-            args.push("--fresh".to_string());
-        }
-        // The orchestrator *is* the queue: queueing an item it just pulled off that queue would
-        // loop. Its concurrency cap already bounds how many worktrees a run can grow, so the
-        // daemon keeps the historical cold fallback while interactive/dashboard dispatches get the
-        // queueing default.
-        args.extend(["--on-pool-full".to_string(), "cold".to_string()]);
-        if self.json {
-            args.push("--json".to_string());
-        }
-        args
-    }
-}
 
 /// Whether `s` looks like a todo id: `t` followed by digits (t3, t12).
 pub(crate) fn is_dispatch_todo_id(s: &str) -> bool {
@@ -749,6 +646,12 @@ fn append_plan_gate(
 /// (burn the note's plan down to its done-when criteria). `debug` is the explicit pick for a
 /// repro-first bugfix.
 ///
+/// Note the default ship arm is mostly historical now: a skill-less non-scout agent dispatch is
+/// `pipeline_investigate` and enters the task pipeline's Investigate stage instead, so this
+/// function's ship default only applies on paths outside that routing. Explicit `--skill` lanes
+/// (including queue `ExecSpec::Skill` and the critic's execute re-dispatch) run here under the
+/// ship envelope.
+///
 /// Deliberately **not** the same mapping as [`bn_core::pipeline::stage::Stage::default_skill`],
 /// which answers a different question. This one is "what does an ad-hoc `bn dispatch` run?" — a
 /// ship gets `plan-work`, because a dispatched lane writes its own plan and burns it down. That one
@@ -1290,6 +1193,16 @@ fn cross_repo_session_block(
     }
 }
 
+/// The seed-routing predicate: a skill-less non-scout agent dispatch enters the task pipeline at
+/// its Investigate stage; a scout seeds the scout envelope; an explicit `--skill X` lane (queue
+/// skill lanes, the critic's execute re-dispatch) runs that skill under the ship envelope —
+/// autonomy stance, verify gate, completion protocol, optional plan gate. Pure so the
+/// seed-assembly tests can pin the routing table: without the `skill` arm every non-scout agent
+/// dispatch took the investigate envelope, leaving the whole ship-envelope path unreachable.
+fn routes_to_pipeline_investigate(has_agent: bool, scout: bool, skill: Option<&str>) -> bool {
+    has_agent && !scout && skill.is_none()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_dispatch(
     cfg: &Config,
@@ -1526,7 +1439,7 @@ pub(crate) fn run_dispatch(
     // Notes key the branch sanitized (resolver::normalize does slash→dash), and the worktree dir
     // uses the same form — so the note we seed here is the one the user sees on `cd`.
     let sanitized = branch.replace('/', "-");
-    let pipeline_investigate = agent_kind.is_some() && !scout;
+    let pipeline_investigate = routes_to_pipeline_investigate(agent_kind.is_some(), scout, skill);
 
     // Pool-backed dispatch is the default (#457 generalized): every repo with a bn-managed bare
     // clone leases a warm, reap-safe slot (deps/build cache intact) instead of paying a cold

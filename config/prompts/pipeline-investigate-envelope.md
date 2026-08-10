@@ -21,3 +21,6 @@ Source: {{source}}
 --- WORKFLOW: investigate ---
 {{workflow_body}}
 --- END WORKFLOW ---
+
+Before finishing, record one workflow reflection with
+`bn reflect "skill:investigate — <what worked or what to change>"`.

@@ -506,7 +506,7 @@ fn print_active(active: &[&BacklogEntry], now: i64) {
             node,
             format!("{}/{}", truncate(&e.repo, 8), truncate(&e.id, 9)),
             fmt_secs(now.saturating_sub(e.updated_at)),
-            truncate(&e.item, 44),
+            truncate(&e.title(), 44),
         );
     }
 }
@@ -700,7 +700,7 @@ fn emit_list(
             e.exec.label(),
             e.status.label(),
             truncate(&e.repo, 20),
-            truncate(&e.item, 44),
+            truncate(&e.title(), 44),
             req
         );
     }

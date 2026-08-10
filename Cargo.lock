@@ -256,6 +256,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bn-e2e"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "tempfile",
+]
+
+[[package]]
 name = "bn-mcp"
 version = "0.5.0"
 dependencies = [

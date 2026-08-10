@@ -5,20 +5,21 @@
 #
 #   - the FEED gets every important meeting (`bn feed ingest meetings`). Each run *replaces* the
 #     source, so finished meetings fall off on their own — no expiry logic here.
-#   - the ATTENTION LIST gets the single most-important meeting (`bn attn add`), so it rides in
-#     `bn next`. Severity `info`, so it never toasts; it's an anchor, not an alarm.
-#   - the FEED source `meeting-prep` gets a short brief for that next meeting (agenda, your role,
-#     the latest relevant thread, a doc to skim) — one extra workIQ call, only when one's upcoming.
+#   - the GAP CACHE gets the day's events, so `bn gap` / `bn next --fit` see the calendar.
+#   - the FEED source `meeting-prep` gets a short brief for the next important meeting (agenda,
+#     your role, the latest thread, a doc to skim) — one extra workIQ call, only when one's
+#     upcoming. Attention items are NOT raised here: the consolidated attention-sweep owns the
+#     attention list, so a meeting never lands twice under two sources.
 #
 # Pipeline: workiq answers (and judges which meetings are skippable) → a shared local Copilot pass
-# (lib/m365-json.sh) coerces that prose into strict JSON → jq fans it out to the two surfaces.
+# (lib/m365-json.sh) coerces that prose into strict JSON → jq fans it out to the surfaces.
 #
 # Best-effort and non-destructive: if workiq is absent/unauthenticated or yields nothing, the
 # feed and attention list are left as-is rather than cleared. workiq lives only on the work
 # laptop, so this is a clean no-op elsewhere — pair with `[jobs.only_on] meetings = ["<laptop>"]`
 # to keep the timer off other machines too. Triggered by `bn run meetings`; scheduled by the
-# meetings agent manifest (config/agents/meetings.md, weekdays 14:50), and re-fired on the first
-# bn event of the day via `bn run meetings --if-stale`.
+# meetings agent manifest (config/agents/meetings.md, weekdays 14:50, `catch_up: true` — so it
+# also re-fires on the day's first bn event via `bn run meetings --if-stale`).
 set -eu
 
 bn="${BN:-$HOME/.config/bn/bn}"
@@ -46,17 +47,26 @@ wq_timeout="${BN_MEETINGS_WORKIQ_TIMEOUT:-150}"
 schema=$("$bn" skills render meetings-schema)
 
 meetings_rc=0
-# Bound generously — the footnote URLs are long (~300 chars each), and truncating them would lose
-# exactly the join links we are after.
+# No explicit bytes bound: bn_prompt_json's 16000 default is ample for the ~300-char footnote
+# join URLs we need preserved.
 meetings=$(m365_query_json "$wq_timeout" "$question" "$schema") || meetings_rc=$?
 if [ "$meetings_rc" -eq 1 ]; then
   echo "meetings: workiq returned nothing within ${wq_timeout}s — leaving feed/attention as-is"
   exit 0
 fi
+if [ "$meetings_rc" -ne 0 ]; then
+  echo "meetings: could not parse workiq's answer — leaving feed/attention as-is"
+  exit 0
+fi
 
 count=$(printf '%s' "${meetings:-}" | jq 'length' 2>/dev/null || echo 0)
 if [ "${count:-0}" -eq 0 ]; then
-  echo "meetings: no important meetings parsed for $today — leaving feed/attention as-is"
+  # A *parsed* empty array is a confident all-clear (distinct from the stall/parse cases above):
+  # drop any stale meeting anchor so a no-meeting day doesn't keep nagging with yesterday's top.
+  "$bn" attn list --json 2>/dev/null \
+    | jq -r '.data.items[]? | select(.source=="meetings") | .id' 2>/dev/null \
+    | while IFS= read -r id; do [ -n "$id" ] && "$bn" attn ack "$id" >/dev/null 2>&1 || true; done
+  echo "meetings: no important meetings for $today — cleared any stale meeting attention"
   exit 0
 fi
 
@@ -75,30 +85,27 @@ printf '%s' "$meetings" \
   | jq -c '.[] | {start: (.start // ""), title: .subject, url: (.joinUrl // "")}' \
   | "$bn" gap ingest || true
 
-# 4) ATTENTION — clear any stale meeting items (prior days, or an earlier top that's changed),
-#    then raise today's single most-important one. Info severity: shows in `bn next`, never toasts.
+# 4) NEXT-UP — attention is attention-sweep's job now (the consolidated gatherer), so no anchor
+#    is raised here; the clear below is retirement hygiene draining anything the old behavior
+#    left under this source. The most-important upcoming meeting is still computed: it picks
+#    which meeting gets the prep brief in step 5.
 "$bn" attn list --json 2>/dev/null \
   | jq -r '.data.items[]? | select(.source=="meetings") | .id' 2>/dev/null \
   | while IFS= read -r id; do [ -n "$id" ] && "$bn" attn ack "$id" >/dev/null 2>&1 || true; done
 
 now=$(date +%H:%M)
-# Anchor on the most important meeting that's both still ahead AND genuinely worth interrupting for
-# (critical/high) — so the attention list never nags about an optional/low item, and the afternoon
-# refresh drops finished ones. Missing start → treated as upcoming (surface, not drop). The feed
-# keeps showing the whole day regardless. `meetings` is already importance-sorted, so .[0] wins.
+# The most important meeting that's both still ahead AND genuinely worth preparing for
+# (critical/high). Missing start → treated as upcoming (surface, not drop). The feed keeps
+# showing the whole day regardless. Highest rank wins; among equals, the earliest start.
 top=$(printf '%s' "$meetings" | jq -c --arg now "$now" '
   def rank: {"critical":3,"high":2,"medium":1,"low":0}[(.importance // "" | ascii_downcase)] // 0;
   [ .[] | select((.start // "99:99") >= $now and rank >= 2) ]
-  | sort_by(rank) | reverse | .[0] // empty')
+  | sort_by([-(rank), (.start // "99:99")]) | .[0] // empty')
 
 if [ -n "$top" ]; then
   subject=$(printf '%s' "$top" | jq -r '.subject')
   start=$(printf '%s'   "$top" | jq -r '.start // ""')
-  join=$(printf '%s'    "$top" | jq -r '.joinUrl // ""')
-  # `|| true`: a failed add must not abort before the meeting-prep step (5) runs.
-  "$bn" attn add "$start $subject" --severity info --source meetings --key "meeting-$today" \
-    ${join:+--link "$join"} >/dev/null || true
-  echo "meetings: $count meeting(s) → feed; next-up → attention ($start $subject)"
+  echo "meetings: $count meeting(s) → feed; next-up: $start $subject"
 
   # 5) MEETING PREP — a short brief for that next meeting, into its own feed source (the feed holds
   #    multi-line content; the attention list is one anchor line). One extra workIQ call, and only

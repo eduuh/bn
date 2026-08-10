@@ -9,8 +9,9 @@ picture), not a single branch — that's what `start-session` is for. Be fast an
 the goal is to end with 1–3 concrete things to do, not a wall of text.
 
 1. **Read the queue.** Run `bn next --json` in the shell. It is the distilled, priority-ranked
-   morning signal — failing crons, real review asks, your stale PRs, today's goals, and blockers
-   are already filtered and ordered, so read it instead of re-deriving them from raw sources.
+   morning signal — every actionable kind (failing crons, review asks, meetings, mentions,
+   attention items, goals, blockers, …) already filtered and ordered, so read it instead of
+   re-deriving anything from raw sources.
 
 2. **Interpret, don't relist.** For each pressing item, say what it means and name the single
    next action: a failing cron is a symptom to diagnose, not a chore to rerun; an over-SLA

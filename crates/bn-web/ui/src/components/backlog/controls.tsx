@@ -1,43 +1,6 @@
-/** Small shared form controls for the backlog page. */
+import { Button } from "../ui/button";
 
-/** A repo combobox: free-text (dispatch/start can target a brand-new repo) with a `datalist` of the
- * repos already seen in the live runs / fleet (`#343` repo select, no repos endpoint needed). */
-export function RepoField({
-  id,
-  value,
-  onChange,
-  options,
-  placeholder = "repo (optional)",
-}: {
-  id: string;
-  value: string;
-  onChange: (v: string) => void;
-  options: string[];
-  placeholder?: string;
-}) {
-  const listId = `${id}-repos`;
-  return (
-    <>
-      <input
-        id={id}
-        className="mono"
-        list={options.length ? listId : undefined}
-        value={value}
-        placeholder={placeholder}
-        autoComplete="off"
-        spellCheck={false}
-        onChange={(e) => onChange(e.target.value)}
-      />
-      {options.length > 0 && (
-        <datalist id={listId}>
-          {options.map((r) => (
-            <option key={r} value={r} />
-          ))}
-        </datalist>
-      )}
-    </>
-  );
-}
+/** Small shared form controls for the backlog page. */
 
 /** A clamped −/value/+ integer stepper (concurrency lanes). */
 export function Stepper({
@@ -60,26 +23,34 @@ export function Stepper({
     if (next !== value) onChange(next);
   };
   return (
-    <div className="stepper" role="group" aria-label={label ?? "stepper"}>
-      <button
+    <div
+      className="inline-flex items-center overflow-hidden rounded-md border border-input"
+      role="group"
+      aria-label={label ?? "stepper"}
+    >
+      <Button
         type="button"
-        className="step"
+        variant="ghost"
+        size="icon"
+        className="rounded-none text-base"
         disabled={disabled || value <= min}
         onClick={() => set(value - 1)}
         aria-label="decrease"
       >
         −
-      </button>
-      <span className="step-value mono">{value}</span>
-      <button
+      </Button>
+      <span className="min-w-10 text-center font-mono font-bold tabular-nums">{value}</span>
+      <Button
         type="button"
-        className="step"
+        variant="ghost"
+        size="icon"
+        className="rounded-none text-base"
         disabled={disabled || value >= max}
         onClick={() => set(value + 1)}
         aria-label="increase"
       >
         +
-      </button>
+      </Button>
     </div>
   );
 }

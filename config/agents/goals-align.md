@@ -35,7 +35,7 @@ Produce a briefing card that:
   quarter `status`). Be specific and unsentimental. If everything is already well-aligned, say so
   briefly.
 - may include, for the highest-signal recommendations only:
-  - `attn` items (default) — a reprioritization the owner should see now, e.g. an at-risk goal with
+  - `attn` items — a reprioritization the owner should see now, e.g. an at-risk goal with
     no aligned activity, or an urgent off-goal activity eating time.
   - a single `note-append` item only when the owner has an obvious active branch note to record the
     focus recommendation on; omit it otherwise.

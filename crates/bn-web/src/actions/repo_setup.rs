@@ -36,8 +36,21 @@ fn valid_script_name(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
 }
 
-fn live_setup_agent_repos(cfg: &bn_core::resolver::Config) -> BTreeSet<String> {
-    bn_core::agent::supervise(
+/// The fleet task name a repo setup agent runs under. Declared once: it is what the dispatch is
+/// launched with, what a running agent is recognised by, and what a queued entry carries in its
+/// [`bn_core::backlog::AgentSpec`], so all three cannot drift apart.
+pub const SETUP_TASK_NAME: &str = "repo-setup";
+
+/// Every repo that already has a setup agent — **running or waiting to run**.
+///
+/// It used to consult only the live fleet, which was right while a click launched an agent
+/// immediately. Once dispatch began enqueueing, a queued agent was invisible here: the guard saw no
+/// agent, so the next click enqueued a second one, and the one after that a third. Nothing capped
+/// it, and the duplicates would all start together the moment the queue found capacity.
+///
+/// A queue makes "is this already happening?" a question about two places, so it has to ask both.
+fn setup_agent_repos(cfg: &bn_core::resolver::Config) -> BTreeSet<String> {
+    let live = bn_core::agent::supervise(
         cfg,
         bn_core::agent::DEFAULT_IDLE_MINS,
         bn_core::agent::DEFAULT_STUCK_MINS,
@@ -47,10 +60,35 @@ fn live_setup_agent_repos(cfg: &bn_core::resolver::Config) -> BTreeSet<String> {
     .filter(|a| {
         a.task_name
             .as_deref()
-            .is_some_and(|name| name == "repo-setup")
+            .is_some_and(|name| name == SETUP_TASK_NAME)
     })
     .map(|a| a.repo.to_ascii_lowercase())
-    .collect()
+    .collect::<BTreeSet<String>>();
+
+    let backlog = bn_core::backlog::load(&bn_core::backlog::backlog_path());
+    let queued = backlog
+        .entries()
+        .iter()
+        .filter(|e| e.status.is_active())
+        .filter(|e| e.agent.name.as_deref() == Some(SETUP_TASK_NAME))
+        .map(|e| e.repo.to_ascii_lowercase());
+
+    live.into_iter().chain(queued).collect()
+}
+
+/// Whether `bn dispatch` put this setup agent in the queue instead of starting it.
+///
+/// A captured dispatch is a success — the work is durably filed and the tick will start it — but it
+/// is emphatically not a launch, and reporting it as one is how the dashboard came to say "starting
+/// an agent…" for ten repos whose agents were sitting in the backlog. The envelope says which
+/// happened; this reads it rather than assuming.
+fn was_queued(result: &RunResult) -> bool {
+    result
+        .envelope
+        .get("data")
+        .and_then(|data| data.get("dispatched"))
+        .and_then(serde_json::Value::as_bool)
+        .is_some_and(|dispatched| !dispatched)
 }
 
 async fn launch_repo_setup_agent(
@@ -77,9 +115,9 @@ async fn launch_repo_setup_agent(
         "--repo".to_string(),
         repo.to_string(),
         "--branch".to_string(),
-        "repo-setup".to_string(),
+        SETUP_TASK_NAME.to_string(),
         "--name".to_string(),
-        "repo-setup".to_string(),
+        SETUP_TASK_NAME.to_string(),
         "--agent".to_string(),
         harness.to_string(),
         "--yolo".to_string(),
@@ -197,10 +235,9 @@ pub async fn repo_setup_agent_start(
 
     let cfg = state.cfg.clone();
     let repo_key = repo.to_ascii_lowercase();
-    let already =
-        tokio::task::spawn_blocking(move || live_setup_agent_repos(&cfg).contains(&repo_key))
-            .await
-            .unwrap_or(false);
+    let already = tokio::task::spawn_blocking(move || setup_agent_repos(&cfg).contains(&repo_key))
+        .await
+        .unwrap_or(false);
     if already {
         return conflict(
             cmd,
@@ -243,12 +280,13 @@ pub async fn repo_setup_agents_start(
             .collect();
         repos.sort();
         repos.dedup();
-        (repos, live_setup_agent_repos(&cfg))
+        (repos, setup_agent_repos(&cfg))
     })
     .await
     .unwrap_or_default();
 
     let mut started = Vec::new();
+    let mut queued = Vec::new();
     let mut skipped = Vec::new();
     let mut failed = Vec::new();
     for repo in repos {
@@ -257,17 +295,19 @@ pub async fn repo_setup_agents_start(
             continue;
         }
         let result = launch_repo_setup_agent(&state.cfg, &repo, harness).await;
-        if result.ok {
-            started.push(repo);
-        } else {
+        if !result.ok {
             failed.push(json!({ "repo": repo, "envelope": result.envelope }));
+        } else if was_queued(&result) {
+            queued.push(repo);
+        } else {
+            started.push(repo);
         }
     }
     let ok = failed.is_empty();
     audit::record(&state, "repo-setup-agents", "needed", addr, ok);
     Json(Envelope::success(
         cmd,
-        json!({ "started": started, "skipped": skipped, "failed": failed }),
+        json!({ "started": started, "queued": queued, "skipped": skipped, "failed": failed }),
     ))
     .into_response()
 }

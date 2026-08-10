@@ -1,4 +1,6 @@
 import type { RunView } from "../../api/types";
+import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
 import { Stepper } from "./controls";
 
 /**
@@ -20,11 +22,10 @@ export function LanesPanel({
 }) {
   const effective = run.solo ? 1 : run.concurrency;
   return (
-    <div className="lanes-panel">
-      <div className="lanes-main">
-        <div className="lanes-label">
-          <span className="lanes-title">Concurrency</span>
-          <span className="sub">lanes the daemon runs in parallel</span>
+    <div className="mb-3 rounded-md border border-border bg-card p-4">
+      <div className="flex flex-wrap items-center gap-4">
+        <div className="text-sm">
+          <span className="block font-semibold">Concurrency</span>
         </div>
         <Stepper
           value={run.concurrency}
@@ -32,25 +33,28 @@ export function LanesPanel({
           onChange={onScale}
           label="concurrency"
         />
+        <span className="text-xs text-muted-foreground">lanes the daemon runs in parallel</span>
       </div>
 
-      <div className="lanes-state">
+      <div className="mt-3 flex flex-wrap items-center gap-2">
         {run.solo && (
-          <span className="chip chip-amber" title="solo → one lane regardless of cap">
+          <Badge variant="warn" title="solo → one lane regardless of cap">
             solo · {effective}
-          </span>
+          </Badge>
         )}
-        {run.stopped && <span className="chip chip-red">stopped</span>}
-        {run.drained && <span className="chip chip-grey">drained</span>}
-        <button
+        {run.stopped && <Badge variant="urgent">stopped</Badge>}
+        {run.drained && <Badge variant="muted">drained</Badge>}
+        <Button
           type="button"
-          className="btn btn-danger"
+          variant="outline"
+          size="sm"
+          className="border-urgent/40 text-urgent hover:bg-urgent-muted hover:text-urgent"
           onClick={onStop}
           disabled={busy || run.stopped}
           title="stop the daemon (next tick exits + launchd unload)"
         >
           Stop
-        </button>
+        </Button>
       </div>
     </div>
   );

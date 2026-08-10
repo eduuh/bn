@@ -16,9 +16,11 @@ The mechanics are scripted. Run, via the harness:
 config/scripts/pull-ado.sh
 ```
 
-(path relative to the bn repo checkout — locate it there if you're dispatched elsewhere).
-Pass `--repo {{repo}}` if a repo was given, and `--iteration {{iteration}}` if an iteration
-was given; the script defaults to the current repo and all assigned open items. It queries
+(the script lives in the bn repo checkout — run it **by absolute path from the target repo's
+worktree**, or always pass `--repo` explicitly: its default repo is the basename of whatever
+git repo you run it from). Pass `--repo {{repo}}` if a repo was given, and
+`--iteration {{iteration}}` if an iteration was given; otherwise it pulls all assigned open
+items. It queries
 ADO for your assigned open work items and writes each into the repo's `main` note as an
 idempotent `[#<id>] <title>` todo (`--if-absent "[#<id>]"` dedups re-pulls and keeps
 completed todos from being resurrected).

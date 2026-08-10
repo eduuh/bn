@@ -268,6 +268,49 @@ pub struct BacklogEntry {
     /// Manual classification override when durable fields are not enough.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class_override: Option<ClassOverride>,
+    /// The identity a worktree-bearing entry keeps across the queue — see [`AgentSpec`]. Read when
+    /// [`ExecSpec::needs_worktree`] and ignored otherwise; empty on every line written before it
+    /// existed, which reads as the historical "let dispatch derive it".
+    #[serde(default, skip_serializing_if = "AgentSpec::is_empty")]
+    pub agent: AgentSpec,
+}
+
+/// The identity a queued agent must keep in order to run as the same piece of work it was declared
+/// to be.
+///
+/// **Why this exists.** `bn dispatch` takes identity as launch *flags* — `--branch`, `--name`,
+/// `--yolo` — and for years the only consumer was the launcher, which read them immediately. When
+/// dispatch learned to enqueue instead, the capture path carried the subject and the harness and
+/// silently dropped the rest. A repo-setup agent declared as `--branch repo-setup --name repo-setup
+/// --yolo` came back out of the queue as a bare agent on a branch slugified from its own prompt,
+/// unable to be recognised by the guard that was supposed to stop a second one starting.
+///
+/// The loss was invisible: nothing failed, the work simply became a different piece of work. So the
+/// identity is durable now, and [`crate::queue::kind::ExecSpec::needs_worktree`] decides when it is
+/// read. Empty means "let dispatch derive it", which is the historical behavior of a bare
+/// `bn dispatch <item>`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSpec {
+    /// The branch the agent works on. `None` lets dispatch slugify one from the item — right for a
+    /// free-text dispatch, wrong for anything that must be found again by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// The fleet task name, which is how a running agent is *recognised* — the dashboard's
+    /// already-running guards match on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Whether the agent runs without stopping for approvals. An autonomous job that loses this
+    /// does not fail; it starts and then waits forever for a human who was never told.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub yolo: bool,
+}
+
+impl AgentSpec {
+    /// Whether this adds nothing to a bare dispatch — the skip-serializing test, so an entry that
+    /// declares no identity is byte-identical to every line written before this field existed.
+    pub fn is_empty(&self) -> bool {
+        self == &AgentSpec::default()
+    }
 }
 
 /// Manual queue class override on an entry.
@@ -391,9 +434,33 @@ pub struct AddSpec {
     pub heavy: bool,
     /// Manual classification override — see [`BacklogEntry::class_override`].
     pub class_override: Option<ClassOverride>,
+    /// The identity a worktree-bearing agent keeps — see [`AgentSpec`].
+    pub agent: AgentSpec,
 }
 
 impl BacklogEntry {
+    /// One line naming this work, for any surface that lists entries.
+    ///
+    /// `item` is the dispatch *subject*, which for a job is a short name and for an agent is the
+    /// entire seed prompt. Rendering it raw is why ten queued setup agents all opened with the same
+    /// wrapped paragraph and were impossible to tell apart or recognise. A declared
+    /// [`AgentSpec::name`] is the better answer where there is one, because it is the same name the
+    /// running agent will appear under in the fleet — the queue and the fleet name one piece of
+    /// work identically.
+    pub fn title(&self) -> String {
+        if let Some(name) = self.agent.name.as_deref().map(str::trim) {
+            if !name.is_empty() {
+                return name.to_string();
+            }
+        }
+        self.item
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("")
+            .to_string()
+    }
+
     /// Whether this may run inline in a tick, rather than being admitted and spawned.
     ///
     /// The one place the question is answered, so the express path and the executor cannot disagree
@@ -428,6 +495,7 @@ impl AddSpec {
             recovery: entry.recovery,
             heavy: entry.heavy,
             class_override: entry.class_override,
+            agent: entry.agent.clone(),
         }
     }
 }
@@ -480,6 +548,7 @@ impl BacklogEntry {
             recovery: spec.recovery,
             heavy: spec.heavy,
             class_override: spec.class_override,
+            agent: spec.agent.clone(),
         }
     }
 

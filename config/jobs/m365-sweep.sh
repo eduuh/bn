@@ -4,19 +4,20 @@
 # Copilot pass (lib/m365-json.sh) normalizes the prose to JSON, jq fans it out — run once across
 # four signals so workIQ's latency is paid a single time:
 #
-#   1. urgent emails      → attention (reply-needed) + feed `email` (all worth seeing)
-#   2. Teams @-mentions   → attention (reply-needed) + feed `teams`
+#   1. urgent emails      → feed `email` (all worth seeing)
+#   2. Teams @-mentions   → feed `teams`
 #   3. today's commitments→ daily goals (today's plan)
 #   4. dropped balls       → feed `owe` (glance only — I owe someone a reply)
 #
-# Conservative loudness: an attention item is `urgent` (and so toasts via the notify job) ONLY when
-# workIQ is confident it's high-stakes — your manager/skip-level wrote, a deadline is today, or it's
-# a direct question to you. Everything else is `warn`: visible in `bn next`, silent.
+# Attention items are NOT raised here: the consolidated attention-sweep (08/11/14/17) owns the
+# attention list, so a signal never lands twice under two sources. This sweep owns the glanceable
+# feed rows and the daily-goal commitments.
 #
 # Best-effort and non-destructive: each section is independent; a workIQ stall or empty answer for
 # one leaves that surface as-is (keeps the last good data) and the others still run. workIQ lives on
 # the work laptop only, so this is a clean no-op elsewhere — pair with `[jobs.only_on] m365-sweep =
-# ["<laptop>"]`. Triggered by `bn run m365-sweep`; scheduled afternoon + catch_up (first bn event).
+# ["<laptop>"]`. Triggered by `bn run m365-sweep`; scheduled weekday afternoons by the m365-sweep
+# agent manifest (`catch_up: true` — it also re-fires on the day's first bn event).
 set -eu
 
 bn="${BN:-$HOME/.config/bn/bn}"
@@ -42,24 +43,13 @@ clear_source() {
     | while IFS= read -r _id; do [ -n "$_id" ] && "$bn" attn ack "$_id" >/dev/null 2>&1 || true; done
 }
 
-# route_attn <source> — read a JSON array on stdin of {id,title,link,urgent} (the shape the
-# m365-*-schema prompts produce) and raise one attention item per element. `urgent:true` →
-# severity urgent (toasts); else warn (silent). The `id` becomes the stable --key so re-runs
-# dedup instead of stacking duplicates.
-route_attn() {
-  _src=$1
-  jq -c '.[]' | while IFS= read -r _it; do
-    _title=$(printf '%s' "$_it" | jq -r '.title // empty')
-    [ -z "$_title" ] && continue
-    _link=$(printf '%s' "$_it" | jq -r '.link // ""')
-    _key=$(printf '%s'  "$_it" | jq -r '.id // empty')
-    _sev=$(printf '%s'  "$_it" | jq -r 'if (.urgent // false) then "urgent" else "warn" end')
-    # `|| true`: a failed add must not abort the run — this loop is the last stage of the caller's
-    # pipe, so under `set -e` its exit status would propagate and kill the remaining sections.
-    "$bn" attn add "$_title" --severity "$_sev" --source "$_src" \
-      ${_key:+--key "$_src-$today-$_key"} ${_link:+--link "$_link"} >/dev/null || true
-  done
-}
+
+# Attention is attention-sweep's job now (the consolidated 08/11/14/17 gatherer): this sweep
+# stopped writing email/teams attention items so the same signal can't land twice under two
+# sources. The unconditional clears below are retirement hygiene — they drain any items the old
+# behavior left under these sources, and are cheap no-ops once the queue is clean.
+clear_source email
+clear_source teams
 
 # ── 1) Urgent emails ─────────────────────────────────────────────────────────────────────────────
 email_q=$("$bn" skills render m365-email-query)
@@ -67,11 +57,11 @@ email_schema=$("$bn" skills render m365-email-schema)
 emails=$(ask_json "$email_q" "$email_schema")
 if [ -n "$emails" ] && [ "$(printf '%s' "$emails" | jq 'length')" -gt 0 ]; then
   printf '%s' "$emails" | jq -c '.[] | {key:.id, text:.title, url:(.link//"")}' | "$bn" feed ingest email
-  clear_source email
-  printf '%s' "$emails" | route_attn email
-  echo "m365-sweep: $(printf '%s' "$emails" | jq 'length') email(s) → feed + attention"
+  echo "m365-sweep: $(printf '%s' "$emails" | jq 'length') email(s) → feed"
+elif [ -n "$emails" ]; then
+  echo "m365-sweep: inbox all clear"
 else
-  echo "m365-sweep: no actionable emails — leaving email surfaces as-is"
+  echo "m365-sweep: no answer for emails — leaving the email feed as-is"
 fi
 
 # ── 2) Teams @-mentions / DMs awaiting a reply ───────────────────────────────────────────────────
@@ -80,11 +70,11 @@ teams_schema=$("$bn" skills render m365-teams-schema)
 mentions=$(ask_json "$teams_q" "$teams_schema")
 if [ -n "$mentions" ] && [ "$(printf '%s' "$mentions" | jq 'length')" -gt 0 ]; then
   printf '%s' "$mentions" | jq -c '.[] | {key:.id, text:.title, url:(.link//"")}' | "$bn" feed ingest teams
-  clear_source teams
-  printf '%s' "$mentions" | route_attn teams
-  echo "m365-sweep: $(printf '%s' "$mentions" | jq 'length') Teams mention(s) → feed + attention"
+  echo "m365-sweep: $(printf '%s' "$mentions" | jq 'length') Teams mention(s) → feed"
+elif [ -n "$mentions" ]; then
+  echo "m365-sweep: no Teams mentions awaiting me"
 else
-  echo "m365-sweep: no Teams mentions awaiting me — leaving teams surfaces as-is"
+  echo "m365-sweep: no answer for Teams — leaving the teams feed as-is"
 fi
 
 # ── 3) Today's commitments / action items → daily goals ──────────────────────────────────────────

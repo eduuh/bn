@@ -12,7 +12,7 @@ import {
   orchestrateQuery,
   tasksQuery,
 } from "../../api/client";
-import { fleetEntries, needsYou } from "../../lib/fleet";
+import { fleetEntries } from "../../lib/fleet";
 import { useExperimental } from "../../lib/experimental";
 import { NAV_GROUPS, type NavItem } from "../../lib/nav";
 import { cn } from "../../lib/utils";
@@ -35,8 +35,8 @@ import { cn } from "../../lib/utils";
  *
  * Optional destinations are behind `?experimental` (see `lib/experimental`). Until a screen is
  * tested end to end it stays out of the rail; the default rail carries Today + Cron, plus the
- * settings link. Each optional tab carries the `exp` key that reveals it, so `?experimental=fleet`
- * brings Fleet back and `/settings` flips the same keys without the URL syntax. The routes still
+ * settings link. Each optional tab carries the `exp` key that reveals it, so `?experimental=queue`
+ * brings Queue back and `/settings` flips the same keys without the URL syntax. The routes still
  * resolve either way; optional routes are simply not advertised.
  */
 export function Rail() {
@@ -50,8 +50,9 @@ export function Rail() {
   const nodes = useQuery(nodesQuery());
   const tasks = useQuery(tasksQuery("today"));
 
+  // Still the agent count for the host footer, even though the rail no longer routes to a fleet
+  // screen — the number is host vitals, not navigation.
   const entries = fleetEntries(orch.data, fleet.data);
-  const needAttention = needsYou(entries).length;
   const urgentActions = (actions.data?.actions ?? []).filter((a) => a.severity === "urgent").length;
   const failingCron = (cron.data?.jobs ?? []).filter((j) => j.ok === false).length;
   const allNodes = nodes.data?.nodes ?? [];
@@ -62,7 +63,6 @@ export function Rail() {
   const counts: Record<string, number> = {
     "/": todayTasks,
     "/console": urgentActions,
-    "/fleet": needAttention,
     "/nodes": allNodes.length,
     "/cron": failingCron,
     "/attention": attn.data?.items.length ?? 0,

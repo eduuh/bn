@@ -58,6 +58,18 @@ pub const RECOVERY_JOBS: &[&str] = &[
 /// skip on the lock.
 pub const HEAVY_JOBS: &[&str] = &["pool-warm", "keep-warm", "nightly-release"];
 
+/// The jobs that *are* pool warming — the work [`crate::queue::classify`] holds to idle and away
+/// windows.
+///
+/// A subset of [`HEAVY_JOBS`] rather than the same list: `nightly-release` is every bit as
+/// expensive, but it is not warming and must not inherit warming's away-only admission.
+///
+/// It is a declared list because the alternative was a substring test on the entry's item text,
+/// which classified anything whose *subject* happened to say "warm" as pool warming — including a
+/// repo-setup agent whose prompt mentions keeping scripts idempotent for warm pools. Work is what
+/// it declares itself to be, never what its prose happens to contain.
+pub const WARMING_JOBS: &[&str] = &["pool-warm", "keep-warm"];
+
 /// Where recovery work sits in the ordering.
 ///
 /// Above routine scheduled work, which sits below zero, and below anything a person is waiting on.
@@ -83,6 +95,11 @@ pub fn is_recovery(name: &str) -> bool {
 /// Whether this job must be admitted and spawned rather than run inline on the express path.
 pub fn is_heavy(name: &str) -> bool {
     HEAVY_JOBS.contains(&name)
+}
+
+/// Whether this job is pool warming, and so runs only while you are idle or away.
+pub fn is_warming(name: &str) -> bool {
+    WARMING_JOBS.contains(&name)
 }
 
 /// Whether queueing this job would be circular.

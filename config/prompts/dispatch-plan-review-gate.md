@@ -13,7 +13,9 @@ arguments:
 ---
 === PLAN-REVIEW GATE ===
 
-Before implementing anything or opening a PR, register the plan and wait for approval:
+Before implementing anything or opening a PR, register the plan and wait for approval. This gate
+owns the plan lifecycle: the workflow's "no active plan → stop and recommend `plan`" case does
+not apply here — you write the plan yourself, below.
 
 1. Investigate, then write the plan as Markdown — approach, touched files, risks — directly into
    the bn-owned draft file `{{plan_file}}`, not into branch-note todo/done-when items.
@@ -25,8 +27,10 @@ Before implementing anything or opening a PR, register the plan and wait for app
 3. Poll with `bn review status <id>`. Do not write code or open a PR while status is `pending`.
    `consensus: human-required` needs explicit human approval even in unattended mode;
    `consensus: no-consensus` must be resolved by a human.
-4. `approved`: implement the plan. {{verification_requirement}} When the work is green, open the
-   PR, run `bn ingest`, and report with `bn agent done --summary '<one line>' --pr <url>`.
+4. `approved`: promote the approved draft to the active plan with
+   `bn plan promote {{session_id}}`, then implement it via the workflow's execution loop.
+   {{verification_requirement}} When the work is green, open the PR, run `bn ingest`, and report
+   with `bn agent done --summary '<one line>' --pr <url>`.
 5. `changes-requested`: read `bn review show <id>`, revise, resubmit the same review, and poll again.
 6. `rejected`: stop without implementing and run
    `bn agent done --report-only --summary 'plan rejected'`.

@@ -164,6 +164,9 @@ pub struct Dispatch {
     /// The advise rationale that justified starting it now — carried onto the event and the
     /// timeline mark, so a start is always explainable after the fact.
     pub rationale: String,
+    /// The identity the entry declared — see [`crate::backlog::AgentSpec`]. The executor must
+    /// launch *this* piece of work, not something resembling it built from the subject line.
+    pub agent: crate::backlog::AgentSpec,
 }
 
 /// One entry that stayed pending this pass, and why.
@@ -582,6 +585,7 @@ fn dispatch(
         priority: entry.priority,
         heavy: entry.heavy,
         rationale: rationale.to_string(),
+        agent: entry.agent.clone(),
     }
 }
 

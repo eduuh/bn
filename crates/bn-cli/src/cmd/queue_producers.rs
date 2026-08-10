@@ -316,20 +316,83 @@ pub(crate) fn maybe_capture_job(
     ))
 }
 
+/// What a `bn dispatch` asked for, in one value.
+///
+/// Positional arguments are how the identity was lost: `capture_dispatch` took the six the queue
+/// happened to support, and `--branch`/`--name`/`--yolo` were simply never passed to it. Nothing
+/// failed — the call compiled, the work enqueued, and it came back out as a different piece of
+/// work. A struct makes the whole request one thing that is either carried or refused, and adding
+/// a dispatch flag now means adding a field here, where [`DispatchRequest::unsupported`] is
+/// looking.
+///
+/// **Deliberately not [`Default`].** A default would let the construction site write
+/// `..Default::default()`, and then a newly added flag would take a silent `false` instead of
+/// failing to compile — reintroducing the exact loss this type exists to prevent, in the exact
+/// place it happened before. Every field must be stated, so adding one is a compile error at every
+/// caller until each has decided what it means.
+#[derive(Debug, Clone)]
+pub(crate) struct DispatchRequest<'a> {
+    pub repo: Option<&'a str>,
+    pub item: &'a str,
+    pub scout: bool,
+    pub skill: Option<&'a str>,
+    pub harness: Option<&'a str>,
+    pub branch: Option<&'a str>,
+    pub name: Option<&'a str>,
+    pub yolo: bool,
+    /// Flags whose meaning is "do this to the worktree as you cut it". The queue cuts the worktree
+    /// later, from the entry alone, so these have nowhere durable to live yet.
+    pub fresh: bool,
+    pub verify: bool,
+    pub plan: bool,
+    pub orchestrator: bool,
+}
+
+impl DispatchRequest<'_> {
+    /// What this request asks for that a queue entry cannot express — empty when capture is
+    /// lossless.
+    ///
+    /// **The invariant: a capture is lossless or it does not happen.** Silently dropping an
+    /// unrepresentable flag turns enqueueing into a quiet mutation of what the caller asked for,
+    /// and the failure surfaces hours later as an agent doing not-quite-the-declared-job. Naming
+    /// the gap sends the work down the direct path instead, which is always correct — worse for
+    /// throughput, never wrong.
+    fn unsupported(&self) -> Vec<&'static str> {
+        [
+            (self.orchestrator, "--orchestrator"),
+            (self.fresh, "--fresh"),
+            (self.verify, "--verify"),
+            (self.plan, "--plan"),
+        ]
+        .into_iter()
+        .filter_map(|(set, flag)| set.then_some(flag))
+        .collect()
+    }
+}
+
 /// Enqueue a typed `bn dispatch` instead of launching it.
 ///
 /// The most user-visible capture, so it prints where the work went and how to get it back — a
 /// command that used to open a window and now prints one line has to say why, or it reads as a
 /// failure.
-pub(crate) fn capture_dispatch(
-    cfg: &Config,
-    repo: Option<&str>,
-    item: &str,
-    scout: bool,
-    skill: Option<&str>,
-    harness: Option<&str>,
-) -> bool {
-    let repo = match repo {
+///
+/// Returns `false` when the work was **not** taken, which the caller reads as "launch it directly":
+/// no repo to book it against, an unrepresentable flag, or a failed write.
+pub(crate) fn capture_dispatch(cfg: &Config, req: &DispatchRequest<'_>, json: bool) -> bool {
+    let DispatchRequest {
+        item, scout, skill, harness, ..
+    } = *req;
+    let unsupported = req.unsupported();
+    if !unsupported.is_empty() {
+        // Loud, because the alternative is the bug this whole type exists to prevent. It runs now
+        // instead — the right outcome — but the operator should know the queue was bypassed.
+        eprintln!(
+            "bn dispatch: running directly — the queue cannot yet carry {}",
+            unsupported.join(", ")
+        );
+        return false;
+    }
+    let repo = match req.repo {
         Some(r) => r.to_string(),
         None => {
             let cwd = std::env::current_dir().unwrap_or_default();
@@ -366,14 +429,40 @@ pub(crate) fn capture_dispatch(
             harness: harness.map(|h| vec![h.to_string()]).unwrap_or_default(),
             ..Default::default()
         },
+        // The identity travels with the entry, so the tick launches the work that was declared
+        // rather than one rebuilt from its subject line.
+        agent: bn_core::backlog::AgentSpec {
+            branch: req.branch.map(str::to_string),
+            name: req.name.map(str::to_string),
+            yolo: req.yolo,
+        },
         ..Default::default()
     };
     match enqueue(&backlog::backlog_path(), &repo, item, &spec, now) {
         Ok(e) => {
-            let verb = if e.is_new() { "queued" } else { "already queued" };
-            println!("{verb} {repo}/{} · {} · priority 100", e.entry().id, kind.label());
-            println!("  the tick starts it when there is capacity — `bn queue status`, or");
-            println!("  `bn dispatch --on-pool-full fail …` to run one directly.");
+            // Under `--json` this must emit an envelope, not prose. Every API caller — the
+            // dashboard's setup and dispatch buttons among them — reads the last JSON line of
+            // stdout; printing only human text made a *queued* dispatch indistinguishable from a
+            // *launched* one, so the UI kept reporting "starting an agent…" for work that had gone
+            // into the backlog and would not run for hours.
+            if json {
+                let data = serde_json::json!({
+                    "repo": repo,
+                    "id": e.entry().id,
+                    "item": item,
+                    "kind": kind.label(),
+                    "dispatched": false,
+                    "queued": e.is_new(),
+                    "priority": e.entry().priority,
+                    "status": e.entry().status.label(),
+                });
+                println!("{}", Envelope::success("dispatch", data).to_json());
+            } else {
+                let verb = if e.is_new() { "queued" } else { "already queued" };
+                println!("{verb} {repo}/{} · {} · priority 100", e.entry().id, kind.label());
+                println!("  the tick starts it when there is capacity — `bn queue status`, or");
+                println!("  `bn dispatch --on-pool-full fail …` to run one directly.");
+            }
             true
         }
         Err(err) => {
@@ -424,5 +513,72 @@ mod tests {
                 branch: Some("feature".to_string()),
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod capture_tests {
+    //! The lossless-capture invariant, tested directly. It is the rule that turns "we remembered to
+    //! carry the branch" into "we cannot fail to notice that we didn't".
+    use super::*;
+
+    /// A plain dispatch, with every field stated.
+    ///
+    /// Spelled out rather than defaulted for the same reason the type has no [`Default`]: adding a
+    /// dispatch flag should fail to compile here too, so the test that guards the invariant is
+    /// forced to say whether the new flag is carried or refused.
+    fn req<'a>() -> DispatchRequest<'a> {
+        DispatchRequest {
+            repo: Some("nvim"),
+            item: "set up nvim",
+            scout: false,
+            skill: None,
+            harness: None,
+            branch: None,
+            name: None,
+            yolo: false,
+            fresh: false,
+            verify: false,
+            plan: false,
+            orchestrator: false,
+        }
+    }
+
+    #[test]
+    fn identity_the_queue_carries_is_not_a_reason_to_bypass_it() {
+        let r = DispatchRequest {
+            branch: Some("repo-setup"),
+            name: Some("repo-setup"),
+            yolo: true,
+            harness: Some("copilot"),
+            ..req()
+        };
+        assert!(
+            r.unsupported().is_empty(),
+            "branch, name and yolo are durable — capture must still happen"
+        );
+    }
+
+    #[test]
+    fn a_flag_the_queue_cannot_express_sends_the_work_down_the_direct_path() {
+        // The failure this prevents is silent, so the test is about *naming* the gap rather than
+        // about any particular flag: whatever cannot be carried must be reported, never dropped.
+        for r in [
+            DispatchRequest { fresh: true, ..req() },
+            DispatchRequest { verify: true, ..req() },
+            DispatchRequest { plan: true, ..req() },
+            DispatchRequest { orchestrator: true, ..req() },
+        ] {
+            assert_eq!(
+                r.unsupported().len(),
+                1,
+                "an unrepresentable flag must be named, not silently dropped"
+            );
+        }
+    }
+
+    #[test]
+    fn a_plain_dispatch_is_captured() {
+        assert!(req().unsupported().is_empty());
     }
 }

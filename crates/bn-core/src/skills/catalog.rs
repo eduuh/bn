@@ -185,6 +185,24 @@ pub fn parse_skill(text: &str, stem: &str) -> Result<Skill, SkillParseError> {
 }
 
 /// Parse every `*.md` skill in `dir`, paired with its file path. A missing directory is empty.
+/// Whether this `.md` documents the directory rather than declaring a skill.
+///
+/// A skills directory is a directory someone reads, so it grows a README — this repo ships one in
+/// `config/skills/` explaining what belongs there. Without this the loader parsed that README as a
+/// skill, found no frontmatter, and failed the **entire catalog**: one documentation file and every
+/// skill on the machine stops resolving, with an error naming the README rather than saying that
+/// nothing can load. It cost a red CI job whose tests passed on every developer machine that
+/// happened not to have one.
+///
+/// Only the conventional name is exempt. A file someone meant as a skill and got wrong must still
+/// be loud — silently skipping it would mean a skill that simply never runs, with nothing said,
+/// which is the worse failure of the two.
+fn is_directory_doc(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("README.md"))
+}
+
 pub(super) fn load_skill_files(dir: &Path) -> Result<Vec<(Skill, PathBuf)>, SkillCatalogError> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -203,7 +221,9 @@ pub(super) fn load_skill_files(dir: &Path) -> Result<Vec<(Skill, PathBuf)>, Skil
             source,
         })?;
         let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) == Some("md") {
+        if path.extension().and_then(|extension| extension.to_str()) == Some("md")
+            && !is_directory_doc(&path)
+        {
             paths.push(path);
         }
     }
@@ -321,6 +341,42 @@ mod tests {
     }
 
     #[test]
+    fn a_readme_documents_the_directory_instead_of_breaking_every_skill_in_it() {
+        // The failure this prevents took out a whole CI job. A skills directory is a directory
+        // people read, so it grows a README — this repo ships one in `config/skills/`. Parsed as a
+        // skill it has no frontmatter, and the error propagated out of the *set* loader, so a
+        // single documentation file meant nothing on the machine could resolve a skill at all.
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp.path().join("README.md"),
+            "# Reference skills\n\nWhat belongs in this folder.",
+        )
+        .expect("readme");
+        std::fs::write(
+            temp.path().join("real.md"),
+            "---\ndescription: real\n---\nBody.",
+        )
+        .expect("skill");
+
+        let loaded = load_skill_set(&[temp.path().to_path_buf()]).expect("catalog still loads");
+        assert_eq!(
+            loaded.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            vec!["real"],
+            "the README is not a skill, and must not become one"
+        );
+    }
+
+    #[test]
+    fn a_malformed_skill_is_still_loud() {
+        // The other half: only the conventional README name is exempt. A file someone meant as a
+        // skill and got wrong must still fail — silently skipping it would leave them with a skill
+        // that never runs and nothing said about why, which is the worse of the two failures.
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("typo.md"), "no frontmatter here").expect("bad skill");
+        assert!(load_skill_set(&[temp.path().to_path_buf()]).is_err());
+    }
+
+    #[test]
     fn internal_prompts_load_at_runtime_but_stay_hidden_from_discovery() {
         let temp = tempfile::tempdir().expect("tempdir");
         std::fs::write(
@@ -394,6 +450,7 @@ mod tests {
             "pipeline-sub-investigator",
             "plan-review-critic",
             "repo-orchestrator-goal",
+            "repo-setup-agent",
             "review-gate-critic",
             "specialist-scaffold",
         ] {

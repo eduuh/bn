@@ -497,6 +497,11 @@ struct AgentFrontmatter {
     kind: Option<AgentKind>,
     #[serde(default)]
     on_calendar: Option<String>,
+    /// Also fire on the day's first bn event (`bn run <name> --if-stale`), not only on the
+    /// `on_calendar` timer — the agent-manifest twin of `[[cron]] catch_up` (see crons.rs), for
+    /// refreshes tied to *when you start work* (meetings, the m365 sweep).
+    #[serde(default)]
+    catch_up: bool,
     #[serde(default)]
     retry_after: Option<String>,
     #[serde(default)]
@@ -561,6 +566,8 @@ pub struct AgentDef {
     pub kind: AgentKind,
     /// systemd `OnCalendar` schedule; present for a cron agent, absent for a startup-only one.
     pub on_calendar: Option<String>,
+    /// Also fire on the day's first bn event, not only on the schedule (`catch_up:` frontmatter).
+    pub catch_up: bool,
     /// Failure retry backoff in seconds. Scheduled agents default to 15 minutes.
     pub retry_after_secs: Option<i64>,
     /// An explicit custom shell command from `run:`. When absent, `bn run <name>` resolves the
@@ -743,6 +750,7 @@ pub fn parse_agent(
         name,
         kind,
         on_calendar: front.on_calendar,
+        catch_up: front.catch_up,
         retry_after_secs,
         run: front.run,
         network: front.network,
@@ -819,6 +827,62 @@ fn load_agent_files(dir: &Path, scope: JobScope) -> Result<Vec<AgentDef>, AgentC
         agents.push(parse_agent(&text, &stem, scope, path)?);
     }
     Ok(agents)
+}
+
+/// Rewrite one agent's `on_calendar:` frontmatter line in its source `.md` (the tier it was
+/// discovered from). `Some(expr)` sets or replaces the schedule after validating the systemd
+/// `OnCalendar` spec parses; `None` removes it (the agent becomes trigger/manual-only). The
+/// agent-scheduler reads the catalog every tick, so the change takes effect on the next pass —
+/// no re-registration needed. Returns the file rewritten.
+pub fn set_schedule(
+    cfg: &Config,
+    ctx: Option<&Resolved>,
+    agent: &str,
+    on_calendar: Option<&str>,
+) -> Result<PathBuf, String> {
+    if let Some(expr) = on_calendar {
+        if crate::staff_schedule::Schedule::parse(expr).is_none() {
+            return Err(format!(
+                "'{expr}' is not a recognized OnCalendar spec (e.g. \"Mon..Fri *-*-* 14:50:00\")"
+            ));
+        }
+    }
+    let catalog = discover(cfg, ctx).map_err(|e| e.to_string())?;
+    let def = catalog
+        .iter()
+        .find(|a| a.name == agent)
+        .ok_or_else(|| format!("no agent named '{agent}'"))?;
+    let text = std::fs::read_to_string(&def.path).map_err(|e| e.to_string())?;
+    // The frontmatter is the leading `---` fence block; operate line-wise inside it only, so a
+    // body that mentions `on_calendar:` is never touched.
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let Some(end) = lines
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, l)| l.trim() == "---")
+        .map(|(i, _)| i)
+    else {
+        return Err(format!("{}: no frontmatter fence", def.path.display()));
+    };
+    let existing = lines[1..end]
+        .iter()
+        .position(|l| l.trim_start().starts_with("on_calendar:"))
+        .map(|i| i + 1);
+    match (existing, on_calendar) {
+        (Some(i), Some(expr)) => lines[i] = format!("on_calendar: \"{expr}\""),
+        (Some(i), None) => {
+            lines.remove(i);
+        }
+        (None, Some(expr)) => lines.insert(2.min(end), format!("on_calendar: \"{expr}\"")),
+        (None, None) => {}
+    }
+    let mut out = lines.join("\n");
+    if text.ends_with('\n') {
+        out.push('\n');
+    }
+    crate::store::write_atomic(&def.path, out.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(def.path.clone())
 }
 
 /// Every agent across all tiers for `ctx`, folded first-tier-wins by name (a branch `agents/`

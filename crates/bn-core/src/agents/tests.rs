@@ -17,6 +17,15 @@ fn command_defaults_run_and_retry() {
     assert_eq!(agent.kind, AgentKind::Command);
     assert_eq!(agent.run, None);
     assert_eq!(agent.retry_after_secs, Some(DEFAULT_RETRY_AFTER_SECS));
+    assert!(!agent.catch_up);
+}
+
+#[test]
+fn catch_up_frontmatter_parses() {
+    let agent =
+        parse("---\nname: demo\nkind: command\non_calendar: \"*:0/15\"\ncatch_up: true\n---\n")
+            .expect("agent parses");
+    assert!(agent.catch_up);
 }
 
 fn run_detail(ts: i64, exit_code: i32) -> CronRunDetail {

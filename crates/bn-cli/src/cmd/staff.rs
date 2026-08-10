@@ -494,6 +494,15 @@ pub(crate) fn emit_staff_gather(cfg: &Config, agent: &str) -> i32 {
 /// rate-limited.
 pub(crate) fn emit_staff_board(cfg: &Config, ctx: Option<&Resolved>, as_json: bool) {
     use bn_core::{staff, staff_schedule};
+    if as_json {
+        // The shared fold (#273 taxonomy + #269 backpressure state) — the same view the
+        // dashboard's `GET /api/staff/board` serializes.
+        match staff::board_view(cfg, ctx) {
+            Ok(view) => println!("{view}"),
+            Err(error) => fail(&format!("bn staff: invalid agent catalog: {error}")),
+        }
+        return;
+    }
     let agents = staff::discover(cfg, ctx)
         .unwrap_or_else(|error| fail(&format!("bn staff: invalid agent catalog: {error}")));
     let last = staff::last_runs();
@@ -511,35 +520,6 @@ pub(crate) fn emit_staff_board(cfg: &Config, ctx: Option<&Resolved>, as_json: bo
             .into_iter()
             .map(|m| (m.agent, m.scheduled))
             .collect();
-
-    if as_json {
-        let rows: Vec<_> = agents
-            .iter()
-            .map(|a| {
-                let lr = last.get(&a.name);
-                let missed_since = missed.get(&a.name).copied();
-                serde_json::json!({
-                    "name": a.name,
-                    "on_calendar": a.on_calendar,
-                    "sinks": a.sinks,
-                    "harness": a.harness.clone().unwrap_or_else(|| "copilot".into()),
-                    "scope": a.scope.label(),
-                    "last_status": lr.map(|r| r.status.as_str()),
-                    "last_ts": lr.map(|r| r.ts),
-                    "last_error": lr.and_then(|r| r.error.clone()),
-                    "unread_card": unread.contains(&a.name),
-                    // #273: the silence bit, the miss flag, and the single taxonomy word every
-                    // surface renders (`ok-with-card` / `ok-silent` / `missed` / fail / …).
-                    "silent": lr.map(|r| r.silent).unwrap_or(false),
-                    "missed": missed_since.is_some(),
-                    "missed_since": missed_since,
-                    "health": staff_schedule::health_label(lr, missed_since.is_some()),
-                })
-            })
-            .collect();
-        println!("{}", serde_json::json!({ "agents": rows }));
-        return;
-    }
 
     if agents.is_empty() {
         println!("No staff agents. Add a .md file with `gather:` in config/agents/.");

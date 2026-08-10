@@ -197,3 +197,97 @@ jobs:
 
       - name: Installer toolchain discovery
         run: bash scripts/check-install-toolchain.sh
+
+  # End-to-end: the real `bn` binary against a real tmux server, in a hermetic sandbox.
+  #
+  # This lane covers what unit tests structurally cannot — `bn dispatch` leasing a worktree,
+  # branching, rendering the seed prompt, opening a tmux window and starting an agent in it —
+  # by giving each test its own HOME, config, state, notes, worktree pool, port and tmux server,
+  # with a scripted fake agent on PATH instead of a real harness.
+  #
+  # SELF-HOSTED SAFETY. These runners are real machines with real tmux servers on them, so a
+  # broken sandbox would not fail the lane — it would close windows on the box. Two things stand
+  # between the suite and that: `Sandbox::new` proves isolation with a canary session before any
+  # test runs and refuses if the canary is visible on the host server, and teardown asserts the
+  # host's session list is unchanged. The lane is safe *because* of those checks, so if either is
+  # ever weakened this job must be reconsidered, not just re-run.
+  #
+  # Separate from `test` because it needs a built binary plus tmux and git, and takes seconds
+  # rather than milliseconds per case; folding it into the unit lane would make a tmux timeout
+  # look like a clippy failure.
+  e2e:
+    name: e2e · sandbox + tmux
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["self-hosted","bn-ci"]') }}
+    steps:
+      - uses: actions/checkout@v4
+        env:
+          HOME: ${{ runner.temp }}/checkout-home-${{ github.job }}
+          GIT_CONFIG_GLOBAL: ${{ runner.temp }}/gitconfig-${{ github.job }}
+        with:
+          set-safe-directory: false
+
+      # Same per-runner toolchain isolation as `test`: the Fedora boxes share $HOME, and a shared
+      # CARGO_HOME/RUSTUP_HOME lets concurrent jobs delete rustc out from under each other.
+      - name: Install Rust toolchain
+        run: |
+          state="$HOME/ci-rust/$RUNNER_NAME"
+          mkdir -p "$state/cargo/bin" "$state/rustup"
+          echo "CARGO_HOME=$state/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$state/rustup" >> "$GITHUB_ENV"
+          export CARGO_HOME="$state/cargo" RUSTUP_HOME="$state/rustup"
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          export PATH="$CARGO_HOME/bin:$PATH"
+          if ! command -v rustup >/dev/null 2>&1; then
+            for proxy in "$CARGO_HOME/bin"/*; do
+              if [ -L "$proxy" ] && [ ! -e "$proxy" ]; then
+                rm -f "$proxy"
+              fi
+            done
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+              sh -s -- -y --default-toolchain none --no-modify-path
+          fi
+          rustup show
+
+      # The suite SKIPS individual cases when tmux is absent, which is right for a developer
+      # laptop and wrong for a gate: a lane that silently skips its whole reason for existing
+      # still reports green. Fail here instead, so "no tmux on the runner" is a visible infra
+      # problem rather than an invisible loss of coverage.
+      - name: Require tmux
+        run: |
+          command -v tmux >/dev/null 2>&1 || {
+            echo "tmux is not installed on $RUNNER_NAME — the e2e lane cannot cover its own" >&2
+            echo "subject matter. Install tmux on this runner rather than skipping the lane." >&2
+            exit 1
+          }
+          echo "runner=$RUNNER_NAME os=$(uname -s) $(tmux -V)"
+
+      # The harness resolves target/debug/bn (or $BN_E2E_BIN). A stale binary against fresh
+      # config/prompts/*.md fails in confusing ways — the prompts are read at runtime while the
+      # arguments that fill them are compiled in — so always build before running.
+      - name: Build bn
+        run: cargo build --workspace
+
+      # `--ignored` because the cases are marked so, to keep them out of the plain unit lane.
+      # Serial so a teardown host-check failure is attributable to one test rather than whichever
+      # of four happened to be running.
+      - name: E2E (sandbox + tmux)
+        run: cargo test -p bn-e2e -- --ignored --test-threads=1
+
+      # Self-hosted runners persist between jobs, and a cancelled run kills the test process
+      # without running Drop — leaving a sandbox tmux server alive holding a temp dir open. Sweep
+      # them so the next job starts clean. Scoped to this job's own sandbox prefix, so it can
+      # never touch a tmux server that belongs to a person using the machine.
+      - name: Sweep leaked sandboxes
+        if: always()
+        run: |
+          # `env -u TMUX -u TMUX_PANE` is not optional. $TMUX carries the socket path and tmux
+          # honours it over TMUX_TMPDIR, so a bare `TMUX_TMPDIR=… tmux kill-server` from a shell
+          # inside a tmux session kills the HOST server instead of the sandbox's. That is the
+          # precise failure this whole harness is built to prevent; the cleanup must not reintroduce
+          # it. See crates/bn-e2e/src/proof.rs.
+          for dir in "${TMPDIR:-/tmp}"/bn-e2e-* /tmp/bn-e2e-*; do
+            [ -d "$dir" ] || continue
+            env -u TMUX -u TMUX_PANE TMUX_TMPDIR="$dir/tmux" tmux kill-server 2>/dev/null || true
+            rm -rf "$dir"
+            echo "swept $dir"
+          done

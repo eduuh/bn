@@ -7,7 +7,7 @@ star in practice: AI authors a script here once; cron runs it forever, for free.
 ## How it works
 
 - Each `*.sh` file is a job. `bn run meetings` executes `meetings.sh`. Many jobs are now native
-  in-binary handlers instead (the `native_job` registry in `crates/bn-cli/src/cmd/jobs.rs`);
+  in-binary handlers instead (the `native_job` registry in `crates/bn-cli/src/cmd/job_registry.rs`);
   `bn run <job>` checks `native_job` first and only falls back to `<job>.sh` for un-ported jobs.
 - `bn run` records every run (start, duration, exit code, output tail) to the event log
   (`<personal_root>/<machine>/state/events.jsonl`), so `bn cron status` and `bn doctor` can surface what
@@ -97,8 +97,8 @@ of the shape (kept private on the machines that run them):
       # and, for the gap cache `bn gap` / `bn next --fit` size against:
       <same JSON> | jq -c '.[] | {start, title:.subject, url:.joinUrl}' | bn gap ingest
 
-  Scheduled at 14:50 (an afternoon refresh) **and** `catch_up = true` so the morning refresh fires
-  on the first bn event — see **First-event catch-up** below. When a meeting is upcoming it also
+  Scheduled weekdays at 14:50 by its agent manifest (config/agents/meetings.md, `catch_up: true` —
+  the morning re-fire on the day's first bn event). When a meeting is upcoming it also
   writes a `meeting-prep` feed source — a few bullets (agenda, your role, the latest relevant
   thread, a doc to skim) — one extra workIQ call, cleared when nothing's upcoming.
 - **`m365-sweep`** — one batched workIQ pass for everything that needs you, routed to bn's
@@ -189,7 +189,7 @@ three **tick** crons — one timer each — that fan out to their cluster in ord
 
 | Tick | Schedule | Runs |
 |---|---|---|
-| `tick-5m` | `*:0/5` | `tools-reconcile`, `notify`, `routine-tick`, `attention-sync` |
+| `tick-5m` | `*:0/5` | `tools-reconcile`, `routine-tick`, `attention-sync` |
 | `tick-10m` | `*:0/10` | `auto-review-trigger`, `attention-auto-trigger`, `agent-supervise` |
 | `tick-15m` | `*:0/15` | `auto-review-poll`, `cron-health` |
 
@@ -236,8 +236,8 @@ job** inside the now-always-up instance. Two installers recreate the whole thing
    `agent-scheduler`, never one timer per agent — each
    `Persistent=true` so a run missed while WSL was down catches up on next boot, then prunes any
    `bn-*` timer no longer in the manifest. (`daily-rollover` fires ~05:00 — carry unfinished daily
-   goals forward and drain due follow-ups. `notify` fires every 5 min — push an OS toast for each
-   *urgent* `bn attn` item not yet notified, then record it so it never re-fires. `agent-observe`
+   goals forward and drain due follow-ups. Attention toasts are owned by the `watch` cron
+   (`notify` stays runnable by hand but is not on a tick). `agent-observe`
    fires every 30 min — fold finished Claude + Copilot sessions into the metrics log. Most runs
    are no-ops.) The top-level `install.sh` already runs `bn cron register` for you, so this script
    is only needed to bootstrap timers on a host where you didn't run the full installer.
@@ -255,8 +255,9 @@ For those, mark the manifest entry `catch_up = true`: on the **first bn event of
 bn command — the SessionStart `bn --cat`, a `bn next`, anything), bn fires `bn run <job>
 --if-stale` for each such job, detached. It's gated to once per day by a sentinel in the state
 dir, and `--if-stale` is a no-op when the job's timer already ran it today — so the job runs once
-a day at the earlier of *your first activity* or its `on_calendar` time, never twice. `meetings`
-uses this: a fixed 14:50 afternoon refresh, and a morning one whenever you actually sit down.
+a day at the earlier of *your first activity* or its `on_calendar` time, never twice. Both
+manifest kinds can opt in: `catch_up = true` on a `[[cron]]` entry, or `catch_up: true` in an
+agent's frontmatter (meetings and m365-sweep use the latter).
 
 `bn run <job> --if-stale` is the primitive on its own — call it from any hook to get
 "refresh-on-first-touch" idempotency against the event log.
@@ -385,8 +386,8 @@ log unions them, and the session-id dedup makes that safe with no `[jobs.only_on
 ### Live-agent supervision (`agent-supervise`)
 
 Where `agent-observe` folds *finished* sessions into metrics, the shipped `agent-supervise` job
-watches the **running** ones — the live-supervision layer the 24/7 orchestrator pattern needs. Its
-`bn-agent-supervise.timer` fires `agent-supervise` every 10 minutes: read each running Claude
+watches the **running** ones — the live-supervision layer the 24/7 orchestrator pattern needs.
+The `tick-10m` cluster fires `agent-supervise` every 10 minutes: read each running Claude
 session's last tool-activity timestamp, classify its health (active / idle / stuck against the
 5-/15-minute defaults), and report the fleet. It's **read-only by default** (no surprise keystrokes
 into a pane you're watching); set `BN_SUPERVISE_NUDGE=1` to also send a continue-nudge to each

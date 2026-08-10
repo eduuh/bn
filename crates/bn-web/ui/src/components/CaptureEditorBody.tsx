@@ -94,8 +94,7 @@ export default function CaptureEditorBody({
       <BlockNoteView
         editor={editor}
         onChange={emit}
-        // The dashboard owns the page theme; `theme` here only picks BlockNote's own token set,
-        // and CSS variables in index.css map it onto the app's palette.
+        // The dashboard owns the page theme; `theme` here only picks BlockNote's own token set.
         theme="light"
         slashMenu={false}
         data-capture-editor

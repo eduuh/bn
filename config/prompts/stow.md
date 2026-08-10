@@ -46,6 +46,5 @@ You are stowing the current session so it is safe to reset, compact, or hand off
    durable finding and unfinished next step from this sweep is represented in bn and the handoff
    packet is readable.
 
-Without the bn MCP tools, use the CLI equivalents: `bn_cat` → `bn --cat`,
-`bn_add` → `bn add <section> <text>`, `bn_handoff_write` → `bn handoff write`, and
-`bn_handoff_read` → `bn handoff read`.
+Without the bn MCP tools, use the CLI equivalents (`bn_cat` → `bn --cat`; any other `bn_*` tool
+maps to the matching `bn <subcommand>`, e.g. `bn_handoff_write` → `bn handoff write`).

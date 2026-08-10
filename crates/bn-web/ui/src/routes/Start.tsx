@@ -176,12 +176,12 @@ export function Start() {
   const canSubmit = items.length > 0 && !badItem && (!needsRepo || repo.trim().length > 0);
 
   const started = (n: number, verb: string) =>
-    `${verb} ${n} agent${n === 1 ? "" : "s"} — watch the fleet`;
-  // All three land on /fleet, so the fleet has to be reconciled or you arrive at a list that
+    `${verb} ${n} agent${n === 1 ? "" : "s"} — watch the queue`;
+  // All three land on /queue, so the fleet has to be reconciled or you arrive at a list that
   // predates what you just launched.
   const onStarted = () => {
     setText("");
-    navigate("/fleet");
+    navigate("/queue");
   };
   const launch = { invalidates: affects.agentLaunch, onSuccess: onStarted };
 

@@ -404,7 +404,10 @@ pub(crate) fn run_critic_verdict(
                 Some("copilot"),
                 false,
                 false,
-                None,
+                // Re-enter EXECUTION, as critique-fresh.md promises: the explicit skill routes
+                // this lane through the ship envelope (completion protocol included) instead of
+                // the pipeline's read-only investigate stage.
+                Some("execute"),
                 true,
                 true,
                 false,

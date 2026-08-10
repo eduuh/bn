@@ -12,10 +12,11 @@ skills themselves. The signal is reflections tagged `skill:<name> — …` (the 
 envelopes append to every dispatched skill run). Your output is a **proposed diff the user
 approves**, never a silent edit — these files are committed and shared.
 
-1. **Gather the reflections.** Run `bn learnings --skill {{skill}} --since <days>` via the
-   harness — it aggregates every recorded reflection and filters to `skill:` tags in one call.
-   Use the window ({{window}}) as days (default the last 4 weeks, `--since 28`); omit `--skill`
-   to sweep every skill. If there are none, say so and stop — nothing to evolve.
+1. **Gather the reflections.** Run `bn learnings --since <days>` via the harness — it aggregates
+   every recorded reflection in one call. Use the window ({{window}}) as days (default the last
+   4 weeks, `--since 28`). If a skill was named ({{skill}}), add `--skill <that name>` to filter
+   to it; otherwise sweep every `skill:`-tagged entry. If there are none, say so and stop —
+   nothing to evolve.
 
 2. **Group by skill and find the pattern.** Bucket the reflections per skill name. A one-off gripe
    is noise; the same complaint twice is signal. For each skill, distill the recurring friction

@@ -37,12 +37,15 @@ pub use automation::{agents_catalog, today_agents, today_crons};
 mod feeds;
 #[path = "api/note_files.rs"]
 mod note_files;
+#[path = "api/search.rs"]
+mod search_api;
 #[path = "api/shell_read.rs"]
 mod shell_read;
 pub use feeds::{actions, completed};
 pub use note_files::*;
 pub use repo_read::{repo_issues, repos};
 pub use repo_scripts::repo_script;
+pub use search_api::search;
 pub use shell_read::{attn, cron, fleet, machine, nodes};
 
 pub(crate) fn nonempty(v: Option<String>) -> Option<String> {
@@ -1062,134 +1065,6 @@ pub async fn today_agent(State(state): State<AppState>) -> Json<Envelope> {
 }
 
 // ---------------------------------------------------------------------------
-// Global search / command palette (#565)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-pub struct SearchQuery {
-    /// The palette query; absent/blank short-circuits to an empty result set.
-    pub q: Option<String>,
-}
-
-/// `GET /api/search?q=` — the ⌘K command palette's backend: one ranked, typed, actionable result
-/// set across everything bn aggregates. It gathers the same source viewmodels the `/api/actions`
-/// handler does (so the actionable core reuses the already-ranked command-center items, and "work
-/// on this task" opens the same composer), plus branch notes, learnings, the live fleet, repos,
-/// crons, skills, and best-effort GitHub issues, then folds them with
-/// [`bn_core::palette::search`]. A blank query does no work (and never shells `gh`). All the reads
-/// are cheap in-process `bn-core` calls except the best-effort `gh issue list`, so it runs on a
-/// blocking thread to keep the async executor free — matching the `actions`/`wrap` handlers.
-pub async fn search(
-    State(state): State<AppState>,
-    Query(sq): Query<SearchQuery>,
-) -> Json<Envelope> {
-    let q = nonempty(sq.q).unwrap_or_default();
-    if q.trim().is_empty() {
-        return Json(Envelope::success(
-            "search",
-            bn_core::payload::palette_data("", &[]),
-        ));
-    }
-    let cfg = state.cfg.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let today = bn_core::util::today();
-        let now = bn_core::util::now_epoch_secs();
-
-        // Actionable core — the exact source gather the `/api/actions` handler performs.
-        let attn = bn_core::attention::open_items(&today);
-        let reviews = bn_core::plan_review::list();
-        let crons = bn_core::crons::status_views(&cfg, None);
-        let notes_summary = bn_core::rollups::summary(&cfg);
-        let goals = bn_core::daily::read(&cfg.daily_file(&today))
-            .map(|d| d.front.goals)
-            .unwrap_or_default();
-        let queue: Vec<bn_core::orchestrate::QueueItem> = bn_core::orchestrate::run_paths()
-            .into_iter()
-            .filter_map(|p| bn_core::orchestrate::OrchestrateState::load(&p))
-            .flat_map(|st| st.queue.into_iter())
-            .collect();
-        let actions =
-            bn_core::action_center::build_actions(&bn_core::action_center::ActionSources {
-                attn: &attn,
-                reviews: &reviews,
-                crons: &crons,
-                notes: &notes_summary,
-                goals: &goals,
-                queue: &queue,
-                suggestions: &[],
-                now,
-            });
-
-        // Palette-only jump sources.
-        let all_notes = bn_core::rollups::all_notes(&cfg);
-        let note_cards: Vec<bn_core::palette::NoteCard> = all_notes
-            .iter()
-            .map(|bn| bn_core::palette::NoteCard {
-                repo: bn.repo.clone(),
-                branch: bn.branch.clone(),
-                goal: bn_core::render::goal_text(&bn.note.body),
-                status: bn.note.front.status.clone(),
-            })
-            .collect();
-        let learnings =
-            bn_core::learnings::collect(&cfg, &today, &bn_core::learnings::Filter::default());
-        let fleet = bn_core::agent::supervise(
-            &cfg,
-            bn_core::agent::DEFAULT_IDLE_MINS,
-            bn_core::agent::DEFAULT_STUCK_MINS,
-        );
-        // Distinct repos across this machine's clones + notes + the live fleet — the same set the
-        // Repos page keys on, so a repo you can jump to there is reachable from the palette too.
-        let mut repo_names: std::collections::BTreeSet<String> =
-            bn_core::lifecycle::cloned_repos(&cfg)
-                .into_iter()
-                .filter(|r| cfg.is_visible_repo(r))
-                .collect();
-        for bn in &all_notes {
-            repo_names.insert(bn.repo.to_ascii_lowercase());
-        }
-        for a in &fleet.agents {
-            repo_names.insert(a.repo.to_ascii_lowercase());
-        }
-        let repo_cards: Vec<bn_core::palette::RepoCard> = repo_names
-            .into_iter()
-            .map(|repo| bn_core::palette::RepoCard {
-                repo,
-                subtitle: String::new(),
-            })
-            .collect();
-        let skills = bn_core::skills::discover(&cfg, std::path::Path::new("."))
-            .map_err(|error| error.to_string())?;
-
-        // GitHub issues — best-effort, in the server's cwd repo (empty on any gh failure).
-        let issues = bn_core::palette::github_issues(&bn_core::runner::RealRunner, &q, 10);
-
-        let sources = bn_core::palette::PaletteSources {
-            actions: &actions,
-            notes: &note_cards,
-            learnings: Some(&learnings),
-            agents: &fleet.agents,
-            repos: &repo_cards,
-            crons: &crons,
-            skills: &skills,
-            issues: &issues,
-        };
-        let results = bn_core::palette::search(&sources, &q);
-        Ok::<_, String>(bn_core::payload::palette_data(&q, &results))
-    })
-    .await;
-    match result {
-        Ok(Ok(data)) => Json(Envelope::success("search", data)),
-        Ok(Err(error)) => Json(Envelope::failure("search", "invalid_catalog", error)),
-        Err(error) => Json(Envelope::failure(
-            "search",
-            "task_failed",
-            error.to_string(),
-        )),
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Skills (#483)
 // ---------------------------------------------------------------------------
 
@@ -1349,6 +1224,129 @@ pub async fn suggestions(Query(q): Query<SuggestionsQuery>) -> Json<Envelope> {
 // ---------------------------------------------------------------------------
 // Live stream (SSE)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Staff (#269/#273) — the health board, the briefing-card feed, and the read-mark write. All
+// three delegate to the shared `bn_core::staff` views (the same fold `bn staff board --json`
+// prints), so the dashboard and the CLI cannot drift. Directory-scan reads on a blocking thread.
+
+/// `GET /api/staff/board` — the roster health board: per-agent schedule, last-run taxonomy word,
+/// missed-run flag, unread-card mark, and the backpressure state (`unread_streak`/`paused`) that
+/// explains a quiet agent.
+pub async fn staff_board(State(state): State<AppState>) -> Json<Envelope> {
+    let cfg = state.cfg.clone();
+    let result = tokio::task::spawn_blocking(move || bn_core::staff::board_view(&cfg, None)).await;
+    match result {
+        Ok(Ok(data)) => Json(Envelope::success("staff-board", data)),
+        Ok(Err(error)) => Json(Envelope::failure("staff-board", "invalid-catalog", error)),
+        Err(join) => Json(Envelope::failure(
+            "staff-board",
+            "internal",
+            join.to_string(),
+        )),
+    }
+}
+
+/// `GET /api/staff/feed` — the briefing-card index, unread-first then newest-first.
+pub async fn staff_feed(State(state): State<AppState>) -> Json<Envelope> {
+    let cfg = state.cfg.clone();
+    let data = tokio::task::spawn_blocking(move || bn_core::staff::feed_view(&cfg))
+        .await
+        .unwrap_or(serde_json::Value::Null);
+    Json(Envelope::success("staff-feed", data))
+}
+
+#[derive(serde::Deserialize)]
+pub struct StaffCardQuery {
+    pub date: String,
+    pub agent: String,
+}
+
+/// `GET /api/staff/card?date=&agent=` — one card rendered to Markdown.
+pub async fn staff_card(
+    State(state): State<AppState>,
+    Query(q): Query<StaffCardQuery>,
+) -> Json<Envelope> {
+    let cfg = state.cfg.clone();
+    let result =
+        tokio::task::spawn_blocking(move || bn_core::staff::card_view(&cfg, &q.date, &q.agent))
+            .await;
+    match result {
+        Ok(Some(data)) => Json(Envelope::success("staff-card", data)),
+        Ok(None) => Json(Envelope::failure("staff-card", "not-found", "no such card")),
+        Err(join) => Json(Envelope::failure(
+            "staff-card",
+            "internal",
+            join.to_string(),
+        )),
+    }
+}
+
+/// `POST /api/staff/card/read` — mark one card read. This is the lever that resumes a
+/// backpressure-paused agent (#269): reading a card ends the unread streak, so the next
+/// scheduled run fires again.
+pub async fn staff_card_read(
+    State(_state): State<AppState>,
+    Json(q): Json<StaffCardQuery>,
+) -> Json<Envelope> {
+    match bn_core::staff::mark_read(&q.date, &q.agent) {
+        Ok(newly) => Json(Envelope::success(
+            "staff-card-read",
+            serde_json::json!({ "marked": newly, "date": q.date, "agent": q.agent }),
+        )),
+        Err(error) => Json(Envelope::failure(
+            "staff-card-read",
+            "io",
+            error.to_string(),
+        )),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct StaffScheduleBody {
+    pub agent: String,
+    /// The systemd `OnCalendar` spec to set; `null`/absent removes the schedule (the agent
+    /// becomes trigger/manual-only).
+    #[serde(default)]
+    pub on_calendar: Option<String>,
+}
+
+/// `POST /api/staff/schedule` — set or clear one agent's `on_calendar:` in its source manifest.
+/// Validated against the shared OnCalendar parser before writing; the agent-scheduler picks the
+/// change up on its next tick.
+pub async fn staff_schedule(
+    State(state): State<AppState>,
+    Json(body): Json<StaffScheduleBody>,
+) -> Json<Envelope> {
+    let cfg = state.cfg.clone();
+    let expr = body
+        .on_calendar
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let agent = body.agent.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        bn_core::agents::set_schedule(&cfg, None, &agent, expr.as_deref())
+    })
+    .await;
+    match result {
+        Ok(Ok(path)) => Json(Envelope::success(
+            "staff-schedule",
+            serde_json::json!({
+                "agent": body.agent,
+                "on_calendar": body.on_calendar,
+                "path": path.display().to_string(),
+            }),
+        )),
+        Ok(Err(error)) => Json(Envelope::failure("staff-schedule", "invalid", error)),
+        Err(join) => Json(Envelope::failure(
+            "staff-schedule",
+            "internal",
+            join.to_string(),
+        )),
+    }
+}
 
 /// `GET /api/stream` — the SSE live stream. Subscribes this client to the shared watcher broadcast;
 /// a lagged (too-slow) client silently skips dropped frames and keeps going. `EventSource`

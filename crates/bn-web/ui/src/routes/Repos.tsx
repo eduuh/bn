@@ -7,6 +7,7 @@ import {
   startNeededRepoSetupAgents,
   startRepoSetupAgent,
   warmRepoPool,
+  type RepoSetupAgentResult,
 } from "../api/writes";
 import { MAX_POOL_SIZE, MIN_POOL_SIZE, type RepoPool, type RepoRollup } from "../api/types";
 import { useAppMutation } from "../hooks/useAppMutation";
@@ -100,7 +101,10 @@ function SetupButton({ repo }: { repo: string }) {
   const mut = useAppMutation({
     mutationFn: () => startRepoSetupAgent(repo),
     invalidates: affects.agentLaunch,
-    toast: { success: `Starting repo setup for ${repo}…`, error: `Could not start ${repo} setup` },
+    toast: {
+      success: (r) => setupOutcome(r, repo),
+      error: `Could not start ${repo} setup`,
+    },
   });
   return (
     <Button
@@ -121,16 +125,30 @@ function SetupButton({ repo }: { repo: string }) {
   );
 }
 
+/** What to tell the user a setup request actually did. `bn dispatch` may launch the agent now or
+ * file it in the queue for the tick to start; saying "starting…" for the second is the reason a
+ * click could look like it had done nothing. */
+function setupOutcome(result: RepoSetupAgentResult, repo: string): string {
+  return result?.dispatched === false
+    ? `Queued repo setup for ${repo} — it starts when the queue has capacity`
+    : `Starting repo setup for ${repo}…`;
+}
+
 function SetupAllButton({ count }: { count: number }) {
   const mut = useAppMutation({
     mutationFn: () => startNeededRepoSetupAgents(),
     invalidates: affects.agentLaunch,
     toast: {
       success: (r) => {
-        const started = Array.isArray((r as { started?: unknown[] }).started)
-          ? (r as { started: unknown[] }).started.length
-          : 0;
-        return started > 0 ? `Started setup for ${started} repos` : "No new setup agents needed";
+        const res = r as { started?: unknown[]; queued?: unknown[] };
+        const started = Array.isArray(res.started) ? res.started.length : 0;
+        const queued = Array.isArray(res.queued) ? res.queued.length : 0;
+        const parts = [];
+        if (started > 0) parts.push(`started setup for ${started} repos`);
+        if (queued > 0) parts.push(`queued ${queued} for the next tick`);
+        return parts.length > 0
+          ? parts.join(", ").replace(/^./, (c) => c.toUpperCase())
+          : "No new setup agents needed";
       },
       error: "Could not start repo setup agents",
     },

@@ -1,6 +1,13 @@
-import { type ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, Check, ExternalLink, MessageSquareText, NotebookText } from "lucide-react";
+import {
+  ArrowRight,
+  Check,
+  ChevronRight,
+  ExternalLink,
+  MessageSquareText,
+  NotebookText,
+} from "lucide-react";
 import { Link } from "react-router-dom";
 
 import {
@@ -11,11 +18,13 @@ import {
   reviewsQuery,
 } from "../api/client";
 import { decideReview, sendMessage } from "../api/writes";
-import type { QueueDeferredRow, QueueNodeRow, QueueView } from "../api/queue-types";
+import { entryTitle } from "../api/queue-types";
+import type { QueueEntryView, QueueNodeRow, QueueView } from "../api/queue-types";
 import type { CompletedItem, FleetView, LiveAgent, Review } from "../api/types";
 import { QueueControls } from "../components/QueueControls";
 import { QueueReservoir } from "../components/QueueReservoir";
 import { QueueUpcoming } from "../components/QueueUpcoming";
+import { QueueVerdict } from "../components/QueueVerdict";
 import { QueueWorkLedger } from "../components/QueueWorkLedger";
 import { RecoveryFeed } from "../components/RecoveryFeed";
 import { RunControls } from "../components/RunControls";
@@ -281,29 +290,82 @@ function AgentRow({ agent, now }: { agent: LiveAgent; now: number }) {
   );
 }
 
-function ActiveAgents({
+/** One leased non-agent entry — a cron firing, a heavy job building a pool, a shell step. These
+ *  have no session to open and nothing to steer; what they owe you is what they are and how long
+ *  they have been at it. */
+function RunningJobRow({ view, now }: { view: QueueEntryView; now: number }) {
+  const { entry } = view;
+  const exec = entry.exec ?? {};
+  // The job identifier is the precise name for cron/shell work; `entryTitle` is the shared
+  // fallback, and it exists because a raw `item` is the entry's whole seed prompt.
+  const what = exec.job ?? exec.skill ?? exec.cmd ?? entryTitle(entry) ?? entry.id;
+  return (
+    <li className="flex flex-wrap items-baseline gap-x-2 gap-y-1 py-2.5">
+      <Badge variant="info">{entry.kind}</Badge>
+      <span className="min-w-0 flex-1 truncate text-sm font-medium" title={what}>
+        {what}
+      </span>
+      <span className="font-mono text-[11px] text-muted-foreground">
+        {entry.repo}
+        {view.class.subtype !== "foreground" ? ` · ${view.class.subtype}` : ""}
+      </span>
+      <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
+        running {timeAgo(entry.updated_at, now)}
+      </span>
+    </li>
+  );
+}
+
+/**
+ * Everything running right now, agents and machinery together.
+ *
+ * The card used to be "Working agents" and showed only sessions, which meant a machine busy firing
+ * crons and warming pools rendered as idle — the queue had leased the work and started it, and the
+ * one screen asking "what is happening" left it out. `queue.active` carried those rows the whole
+ * time and nothing displayed them.
+ *
+ * Agent-backed entries are filtered out of the job list by the caller rather than shown twice: a
+ * dispatched agent is already the row above, and the same work counted in two places is worse than
+ * either count alone.
+ */
+function ActiveNow({
   agents,
+  jobs,
   now,
   loading,
   error,
 }: {
   agents: LiveAgent[];
+  jobs: QueueEntryView[];
   now: number;
   loading: boolean;
   error: boolean;
 }) {
+  const total = agents.length + jobs.length;
+  const parts = [
+    agents.length > 0 ? `${agents.length} agent${agents.length === 1 ? "" : "s"}` : null,
+    jobs.length > 0 ? `${jobs.length} job${jobs.length === 1 ? "" : "s"}` : null,
+  ].filter(Boolean);
+
   return (
-    <SectionCard eyebrow="active now" title="Working agents" count={String(agents.length)}>
+    <SectionCard
+      eyebrow="active now"
+      title="Running"
+      count={parts.length > 0 ? parts.join(" · ") : String(total)}
+    >
       {error ? (
         <LoadError>Could not load the live fleet.</LoadError>
       ) : loading ? (
         <RowsSkeleton rows={3} />
-      ) : agents.length === 0 ? (
-        <Empty>No agents are working right now.</Empty>
+      ) : total === 0 ? (
+        <Empty>Nothing is running right now.</Empty>
       ) : (
         <ul className="divide-y divide-border">
           {agents.map((agent) => (
             <AgentRow key={agent.session_id} agent={agent} now={now} />
+          ))}
+          {jobs.map((view) => (
+            <RunningJobRow key={`${view.entry.repo}/${view.entry.id}`} view={view} now={now} />
           ))}
         </ul>
       )}
@@ -608,44 +670,6 @@ function RecentOutcomes({
   );
 }
 
-function Deferred({
-  rows,
-  loading,
-  error,
-}: {
-  rows: QueueDeferredRow[];
-  loading: boolean;
-  error: boolean;
-}) {
-  return (
-    <SectionCard eyebrow="held" title="Not started" count={String(rows.length)}>
-      {error ? (
-        <LoadError>Could not load the dispatcher decision.</LoadError>
-      ) : loading ? (
-        <RowsSkeleton rows={2} />
-      ) : rows.length === 0 ? (
-        <Empty>Nothing is being held back.</Empty>
-      ) : (
-        <ul className="divide-y divide-border">
-          {rows.map((row) => (
-            <li
-              key={`${row.repo}/${row.id}`}
-              className="flex flex-wrap items-baseline gap-x-2 gap-y-1 py-2 text-sm"
-            >
-              <Badge variant="muted">{row.reason}</Badge>
-              <span className="font-mono text-xs text-muted-foreground">
-                {row.repo}/{row.id}
-              </span>
-              <span className="text-muted-foreground">{row.kind}</span>
-              {row.detail ? <span className="text-foreground/80">— {row.detail}</span> : null}
-            </li>
-          ))}
-        </ul>
-      )}
-    </SectionCard>
-  );
-}
-
 function QueueShape({ data }: { data?: QueueView }) {
   const kinds = (data?.kinds ?? []).filter((kind) => kind.pending > 0);
   if (kinds.length === 0) return null;
@@ -664,6 +688,34 @@ function QueueShape({ data }: { data?: QueueView }) {
   );
 }
 
+/**
+ * The detail shelf: the sections that answer a question you went looking for, rather than one the
+ * page should volunteer.
+ *
+ * Their children each fetch their own data, so they are mounted only once opened — closed, the
+ * shelf costs nothing, and the page stops issuing five queries whose results nobody asked to see.
+ */
+function DetailShelf({ children, summary }: { children: ReactNode; summary: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="space-y-4">
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 rounded-lg border border-border bg-card px-3.5 py-2.5 text-left transition hover:bg-muted/40"
+      >
+        <ChevronRight
+          className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")}
+        />
+        <span className="text-sm font-medium">Detail</span>
+        <span className="truncate text-[11px] text-muted-foreground">{summary}</span>
+      </button>
+      {open ? children : null}
+    </div>
+  );
+}
+
 export function Queue() {
   const queue = useQuery(queueQuery());
   const fleet = useQuery(fleetQuery());
@@ -673,14 +725,31 @@ export function Queue() {
   const agents = fleet.data?.agents ?? [];
   const now = data?.now ?? Math.floor(Date.now() / 1000);
 
+  // The same two counts `NeedsInput` derives, hoisted so the page can decide whether the card is
+  // worth a band at all. A section that only ever says "nothing needs you" is page furniture.
+  const pendingReviews = (reviews.data?.reviews ?? []).filter((r) => r.status === "pending");
+  const stuckAgents = agents.filter(
+    (agent) =>
+      agent.health === "stuck" && !pendingReviews.some((review) => sameWorktree(review, agent)),
+  );
+  const needsYou = pendingReviews.length + stuckAgents.length;
+  const outcomes = completed.data?.completed ?? [];
+  const nodes = data?.nodes ?? [];
+
+  // Leased work that is not an agent: cron firings, pool warms, heavy shell steps. Agent-backed
+  // entries are dropped because the fleet already lists each of them as a session.
+  const runningJobs = (data?.active ?? []).filter((view) => view.entry.exec?.run !== "agent");
+
+  // Only the queue query gates the first paint. The others fill their own bands in, and holding
+  // the whole page for the slowest of four is what made a live machine look empty on arrival.
+  const settling = queue.isLoading;
+
   return (
     <div className="mx-auto w-full max-w-6xl space-y-4 px-4 py-5">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">Queue</h1>
-          <p className="text-sm text-muted-foreground">
-            Live work, decisions, capacity, outcomes, and the complete durable inventory.
-          </p>
+          <p className="text-sm text-muted-foreground">What is running, what is held, and why.</p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
           <Button asChild size="sm" variant="secondary">
@@ -695,41 +764,55 @@ export function Queue() {
         </div>
       </header>
 
-      <OperationsOverview data={data} fleet={fleet.data} error={queue.isError} />
+      {/* The verdict leads: on a stalled machine every card below it reports a number, and none of
+          them says why the numbers are not moving. */}
+      <QueueVerdict data={data} loading={queue.isLoading} error={queue.isError} />
 
-      <ActiveAgents agents={agents} now={now} loading={fleet.isLoading} error={fleet.isError} />
-      <QueueUpcoming />
-      <NeedsInput
-        reviews={reviews.data?.reviews ?? []}
-        agents={agents}
-        now={now}
-        loading={reviews.isLoading || fleet.isLoading}
-        error={reviews.isError || fleet.isError}
-      />
-      <ClusterCapacity nodes={data?.nodes ?? []} loading={queue.isLoading} error={queue.isError} />
-      <QueueReservoir reservoir={data?.reservoir} />
+      {/* Below the verdict the page shows only what is true right now. Each of these used to render
+          a card reading "nothing", so a quiet machine produced a full screen of scrolling that said
+          nothing at all — and a busy one buried the two bands that mattered among the ten that did
+          not. A band that would be empty is not rendered; its absence is the same information. */}
+      {needsYou > 0 ? (
+        <NeedsInput
+          reviews={reviews.data?.reviews ?? []}
+          agents={agents}
+          now={now}
+          loading={false}
+          error={reviews.isError || fleet.isError}
+        />
+      ) : null}
 
-      {/* Run-level steering, moved here from `/fleet` (#: Fleet consolidation). It sits directly
-          above the entry-level controls because that is the order the questions come in: how many
-          of these should run at once, then which of them should run at all. Renders nothing when
-          no orchestrate run is live, so the page is unchanged on a quiet machine. */}
+      {agents.length > 0 || runningJobs.length > 0 || fleet.isError ? (
+        <ActiveNow
+          agents={agents}
+          jobs={runningJobs}
+          now={now}
+          loading={false}
+          error={fleet.isError}
+        />
+      ) : null}
+
+      {/* Already self-hiding: each renders null with nothing to show. */}
       <RunSteering />
-
-      <QueueControls />
-      <Deferred
-        rows={data?.decision?.deferred ?? []}
-        loading={queue.isLoading}
-        error={queue.isError}
-      />
       <QueueShape data={data} />
-      <RecentOutcomes
-        rows={completed.data?.completed ?? []}
-        now={now}
-        loading={completed.isLoading}
-        error={completed.isError}
-      />
       <RecoveryFeed />
-      <QueueWorkLedger />
+
+      {settling ? <RowsSkeleton rows={2} /> : null}
+
+      {/* Outcomes are history, not status. Seventy-six of them at the bottom of a page called
+          "what is running" is the wall of cards this screen is trying not to be. */}
+      <DetailShelf summary="machine · upcoming · nodes · reservoir · entries · outcomes · inventory">
+        <OperationsOverview data={data} fleet={fleet.data} error={queue.isError} />
+        {outcomes.length > 0 ? (
+          <RecentOutcomes rows={outcomes} now={now} loading={false} error={completed.isError} />
+        ) : null}
+        <QueueUpcoming />
+        <ClusterCapacity nodes={nodes} loading={queue.isLoading} error={queue.isError} />
+        <QueueReservoir reservoir={data?.reservoir} />
+        <QueueControls />
+        <QueueWorkLedger />
+      </DetailShelf>
+
       {/* The run controls and the recovery feed both write, and both report through the shared
           toast store — which needs a stack mounted on the page to render into. */}
       <ToastStack />

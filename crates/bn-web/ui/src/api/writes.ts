@@ -325,16 +325,31 @@ export function startRepoOrchestrator(
   return post(`/api/repos/${encodeURIComponent(repo)}/orchestrate`, body ?? {});
 }
 
+/** The dispatch envelope a setup-agent request returns. `dispatched: false` means `bn dispatch`
+ * filed the work in the queue rather than launching it now — a success, but a different one, and
+ * the caller must say which happened rather than always reporting a launch. */
+export interface RepoSetupAgentResult {
+  dispatched?: boolean;
+  queued?: boolean;
+  repo?: string;
+  id?: string;
+}
+
 /** `POST /api/repos/:repo/setup-agent {harness?}` — start a guarded Fleet-visible repo setup
  * agent that writes/updates bn setup scripts for the repo. */
-export function startRepoSetupAgent(repo: string, body?: { harness?: string }): Promise<unknown> {
+export function startRepoSetupAgent(
+  repo: string,
+  body?: { harness?: string },
+): Promise<RepoSetupAgentResult> {
   return post(`/api/repos/${encodeURIComponent(repo)}/setup-agent`, body ?? {});
 }
 
 /** `POST /api/repos/setup-agents {harness?}` — scan for repos that need setup and start one
- * Fleet-visible setup agent for each, skipping repos that already have one live. */
+ * Fleet-visible setup agent for each, skipping repos that already have one live. `queued` are the
+ * repos whose agent went into the backlog instead of starting immediately. */
 export function startNeededRepoSetupAgents(body?: { harness?: string }): Promise<{
   started: string[];
+  queued: string[];
   skipped: { repo: string; reason: string }[];
   failed: unknown[];
 }> {
@@ -546,4 +561,26 @@ export function queueSnooze(repo: string, id: string, forDuration: string): Prom
 
 export function queueClass(repo: string, id: string, klass: string): Promise<unknown> {
   return request("POST", "/api/queue/class", { repo, id, class: klass });
+}
+
+/** Mark one briefing card read (`POST /api/staff/card/read`). This is the lever that resumes a
+ * backpressure-paused staff agent (#269): reading ends the unread streak, so the next scheduled
+ * run fires again. */
+export function markStaffCardRead(body: { date: string; agent: string }): Promise<{
+  marked: boolean;
+  date: string;
+  agent: string;
+}> {
+  return request("POST", "/api/staff/card/read", body);
+}
+
+/** Set or clear one staff agent's `on_calendar:` schedule (`POST /api/staff/schedule`). Pass
+ * `null` to unschedule (the agent stays runnable by hand / trigger). Validated server-side
+ * against the systemd OnCalendar parser; the scheduler picks the change up on its next tick. */
+export function setStaffSchedule(body: { agent: string; on_calendar: string | null }): Promise<{
+  agent: string;
+  on_calendar: string | null;
+  path: string;
+}> {
+  return request("POST", "/api/staff/schedule", body);
 }

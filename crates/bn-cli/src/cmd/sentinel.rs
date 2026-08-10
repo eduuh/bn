@@ -15,7 +15,8 @@ fn patrol_config(jc: &resolver::JobConfig) -> sentinel::PatrolConfig {
     }
 }
 
-/// `config/crons.toml` job `sentinel` — the 22:30 estate patrol. Collects the estate offline, lands
+/// The `sentinel` job (scheduled by its agent manifest, config/agents/sentinel.md) — the 22:30
+/// estate patrol. Collects the estate offline, lands
 /// findings via `attn ingest --replace`, promotes the ≤ 2 best picks for the night shift, and
 /// writes the trend card. A no-op when nothing is allowlisted (the opt-in boundary).
 pub(crate) fn job_sentinel(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {

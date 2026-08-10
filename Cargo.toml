@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/bn-core", "crates/bn-cli", "crates/bn-mcp", "crates/bn-web"]
+members = [
+  "crates/bn-core",
+  "crates/bn-cli",
+  "crates/bn-mcp",
+  "crates/bn-web",
+  "crates/bn-e2e",
+]
 
 [workspace.package]
 edition = "2021"

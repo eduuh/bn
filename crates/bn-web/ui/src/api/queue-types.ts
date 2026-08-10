@@ -124,6 +124,24 @@ export interface QueueEntry {
   not_after?: number;
   class_override?: "foreground" | "autonomous" | "opportunistic";
   exec?: { run?: string; job?: string; skill?: string; cmd?: string };
+  /** The identity a worktree-bearing entry keeps across the queue (bn_core `AgentSpec`). */
+  agent?: { branch?: string; name?: string; yolo?: boolean };
+}
+
+/** One line naming a queue entry — the mirror of `BacklogEntry::title()`.
+ *
+ * `item` is the dispatch subject, which for an agent is its whole seed prompt; rendering it raw is
+ * why a list of queued setup agents all read as the same wrapped paragraph. A declared agent name
+ * is the same name the agent will appear under in the fleet, so the two surfaces agree. */
+export function entryTitle(entry: QueueEntry): string {
+  const name = entry.agent?.name?.trim();
+  if (name) return name;
+  return (
+    entry.item
+      .split("\n")
+      .find((line) => line.trim())
+      ?.trim() ?? ""
+  );
 }
 
 export interface QueueEntryClass {
@@ -170,6 +188,9 @@ export interface QueueView {
   pending: number;
   kinds: Array<{ kind: string; lane: string; pending: number }>;
   entries: QueueEntryView[];
+  /** Leased entries the dispatcher has actually started — agents, cron jobs and heavy shell work
+   *  that are running *now*. Distinct from `entries`, which is what is still waiting. */
+  active?: QueueEntryView[];
   machine?: QueueMachine;
   nodes: QueueNodeRow[];
   decision?: QueueDecision | null;

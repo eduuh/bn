@@ -293,7 +293,15 @@ function SetupPanel({
   const start = useAppMutation({
     mutationFn: () => startRepoSetupAgent(repo),
     invalidates: affects.agentLaunch,
-    toast: { success: `Starting repo setup for ${repo}…`, error: "Could not start setup" },
+    toast: {
+      // `bn dispatch` may queue rather than launch — report which, so a click that filed work in
+      // the backlog does not read as an agent that never appeared.
+      success: (r) =>
+        (r as { dispatched?: boolean })?.dispatched === false
+          ? `Queued repo setup for ${repo} — it starts when the queue has capacity`
+          : `Starting repo setup for ${repo}…`,
+      error: "Could not start setup",
+    },
   });
   const tone = setup.needs_setup ? "warn" : "ok";
 
@@ -310,7 +318,7 @@ function SetupPanel({
           {running ? (
             <>
               <Button asChild variant="secondary" size="sm">
-                <Link to="/fleet">Watch in Fleet</Link>
+                <Link to="/queue">Watch in Queue</Link>
               </Button>
               <Button asChild size="sm">
                 <Link to={`/agents/${encodeURIComponent(running.session_id)}`}>

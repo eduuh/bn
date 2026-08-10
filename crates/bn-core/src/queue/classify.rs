@@ -119,12 +119,25 @@ pub fn classify(entry: &BacklogEntry) -> QueueClass {
     }
 }
 
+/// Whether this entry is pool warming.
+///
+/// Read only from what the entry *declares* — the job it runs, or the cron that produced it. It
+/// used to also substring-match `entry.item` for "warm", which is the entry's subject line: for a
+/// job that is a short name, but for an agent it is the whole prompt. A repo-setup agent whose
+/// prompt says to keep scripts idempotent for warm pools was therefore classified as pool warming,
+/// made opportunistic, and held for an away window — priority-100 work a person had just clicked,
+/// frozen by a word in its own instructions.
+///
+/// The job list lives in [`crate::queue::jobs::WARMING_JOBS`] so the source and exec answers cannot
+/// drift apart.
 fn is_warming(entry: &BacklogEntry) -> bool {
-    entry.source == "cron:pool-warm"
-        || entry.source == "cron:keep-warm"
-        || entry.item.to_ascii_lowercase().contains("warm")
-        || matches!(
-            &entry.exec,
-            ExecSpec::Job { job, .. } if job == "pool-warm" || job == "keep-warm"
-        )
+    let by_source = entry
+        .source
+        .strip_prefix("cron:")
+        .is_some_and(crate::queue::jobs::is_warming);
+    let by_exec = matches!(
+        &entry.exec,
+        ExecSpec::Job { job, .. } if crate::queue::jobs::is_warming(job)
+    );
+    by_source || by_exec
 }

@@ -444,6 +444,7 @@ pub(crate) fn observe_agent(
         },
         is_working: is_working(tmux_target, true, health.map(|(h, _)| h)),
         has_uncommitted: exists && has_wip(worktree),
+        attended: is_attended(None, tmux_target, true),
         is_orchestrator: false,
         // Unknown idle reads as freshly active, so the grace window protects the agent — the same
         // conservative default `reconcile` uses for a live-windowed agent the fleet hasn't logged.
@@ -645,6 +646,19 @@ fn is_working(target: &str, has_live_window: bool, health: Option<AgentHealth>) 
     health == Some(AgentHealth::Active)
 }
 
+/// Is a human at this agent's window — now, or within the decay window? The guard that keeps a GC
+/// pass from pulling a pane out from under whoever is reading it: the one signal the work-preserving
+/// guards (`is_working`, `has_uncommitted`) can't see, since reviewing produces neither a spinner nor
+/// a dirty tree. No live window ⇒ nothing to watch.
+///
+/// Asks by **window id** whenever [`discover`] resolved one, falling back to the `repo:branch`
+/// window name. The id is what makes this work for a pooled agent: its window is named for the pool
+/// slot it borrowed, not for the branch it holds, so the name-based lookup would quietly miss — and
+/// answering "unattended" by accident is exactly the failure this guard exists to prevent.
+fn is_attended(window_id: Option<&str>, target: &str, has_live_window: bool) -> bool {
+    has_live_window && bn_core::tmux::window_attended(window_id.unwrap_or(target))
+}
+
 /// One reconciled row: the candidate, its observation, and the verdict.
 struct Verdict {
     candidate: Candidate,
@@ -689,6 +703,7 @@ fn reconcile(cfg: &Config, worktree_dir: &Path, opts: &ReapOpts) -> Vec<Verdict>
                 pr,
                 is_working: working,
                 has_uncommitted: uncommitted,
+                attended: is_attended(c.window_id.as_deref(), &c.target, c.has_live_window),
                 is_orchestrator: c.is_orchestrator,
                 idle_secs,
             };

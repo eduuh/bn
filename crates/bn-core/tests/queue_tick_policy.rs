@@ -438,3 +438,71 @@ fn an_empty_queue_starts_nothing_and_says_nothing_is_wrong() {
     assert!(plan.deferred.is_empty());
     assert!(plan.expired.is_empty());
 }
+
+#[test]
+fn a_clicked_dispatch_starts_while_the_user_is_present() {
+    // The dashboard's "setup needed" button dispatches an agent whose prompt mentions warm pools.
+    // Classified by that word, it became opportunistic and the tick held every one of them
+    // `awaiting-away`: ten repos' setup agents, clicked by hand at priority 100, waiting for a
+    // window that only opens at lunch. Presence must not bear on foreground work at all.
+    let item = "You are the repo setup agent for `nvim`. Keep scripts idempotent for warm pools.";
+    let mut entry = agent(item, 100);
+    entry.source = "dispatch".to_string();
+    let fx = Fixture {
+        pending: vec![entry],
+        presence: Presence {
+            idle: false,
+            away_window: false,
+        },
+        ..Default::default()
+    };
+    let plan = fx.plan();
+    assert_eq!(
+        reason_for(&plan, item),
+        None,
+        "a foreground dispatch must not be deferred for presence"
+    );
+    assert_eq!(started(&plan), vec![item.to_string()]);
+}
+
+#[test]
+fn warming_still_waits_for_idle_or_an_away_window() {
+    // The other half of the same rule: narrowing what counts as warming must not stop warming
+    // itself from being held back while you are at the keyboard.
+    let fx = Fixture {
+        pending: vec![heavy_job("pool-warm", -50)],
+        presence: Presence {
+            idle: false,
+            away_window: false,
+        },
+        ..Default::default()
+    };
+    let plan = fx.plan();
+    assert!(matches!(
+        reason_for(&plan, "pool-warm"),
+        Some(DeferReason::AwaitingAway)
+    ));
+    assert!(started(&plan).is_empty());
+}
+
+#[test]
+fn the_dispatcher_hands_the_executor_the_declared_identity() {
+    // The gap this closes sat between admission and launch: the entry knew its branch, the plan
+    // dropped it, and the executor rebuilt an invocation from the subject line alone. Everything
+    // upstream was correct and the agent still ran as the wrong piece of work.
+    let mut entry = agent("set up nvim", 100);
+    entry.agent = bn_core::backlog::AgentSpec {
+        branch: Some("repo-setup".to_string()),
+        name: Some("repo-setup".to_string()),
+        yolo: true,
+    };
+    let fx = Fixture {
+        pending: vec![entry],
+        ..Default::default()
+    };
+    let plan = fx.plan();
+    let d = plan.start.first().expect("the entry should start");
+    assert_eq!(d.agent.branch.as_deref(), Some("repo-setup"));
+    assert_eq!(d.agent.name.as_deref(), Some("repo-setup"));
+    assert!(d.agent.yolo);
+}

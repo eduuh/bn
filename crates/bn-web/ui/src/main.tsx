@@ -22,7 +22,6 @@ const Queue = lazyRoute(() => import("./routes/Queue"), "Queue");
 const QueueEvents = lazyRoute(() => import("./routes/QueueEvents"), "QueueEvents");
 const CommandCenter = lazyRoute(() => import("./routes/CommandCenter"), "CommandCenter");
 const Today = lazyRoute(() => import("./routes/Today"), "Today");
-const Fleet = lazyRoute(() => import("./routes/Fleet"), "Fleet");
 const Nodes = lazyRoute(() => import("./routes/Nodes"), "Nodes");
 const Start = lazyRoute(() => import("./routes/Start"), "Start");
 const Insights = lazyRoute(() => import("./routes/Insights"), "Insights");
@@ -35,6 +34,7 @@ const Goals = lazyRoute(() => import("./routes/Goals"), "Goals");
 const Cron = lazyRoute(() => import("./routes/Cron"), "Cron");
 const CronDetail = lazyRoute(() => import("./routes/CronDetail"), "CronDetail");
 const Skills = lazyRoute(() => import("./routes/Skills"), "Skills");
+const Staff = lazyRoute(() => import("./routes/Staff"), "Staff");
 const Repos = lazyRoute(() => import("./routes/Repos"), "Repos");
 const Settings = lazyRoute(() => import("./routes/Settings"), "Settings");
 const RepoDetail = lazyRoute(() => import("./routes/RepoDetail"), "RepoDetail");
@@ -43,7 +43,6 @@ const RepoDetail = lazyRoute(() => import("./routes/RepoDetail"), "RepoDetail");
 // bundle the woff2 into `ui/dist`, which `build.rs` bakes into the binary alongside the JS.
 import "@fontsource-variable/roboto";
 import "@fontsource-variable/roboto-mono";
-import "./index.css";
 import "./tailwind.css";
 
 // Live updates flow from the SSE stream into the cache, so queries can stay fresh a while; the
@@ -77,7 +76,6 @@ const router = createBrowserRouter([
           // (the automation hub + the completed history).
           { path: "inbox", element: <CommandCenter /> },
           { path: "today", element: <Today /> },
-          { path: "fleet", element: <Fleet /> },
           { path: "nodes", element: <Nodes /> },
           { path: "start", element: <Start /> },
           { path: "reviews", element: <Navigate to="/inbox?tab=reviews" replace /> },
@@ -93,6 +91,7 @@ const router = createBrowserRouter([
           { path: "cron", element: <Cron /> },
           { path: "cron/:id", element: <CronDetail /> },
           { path: "skills", element: <Skills /> },
+          { path: "staff", element: <Staff /> },
           { path: "research", element: <Research /> },
           { path: "repos", element: <Repos /> },
           { path: "repos/:repo", element: <RepoDetail /> },

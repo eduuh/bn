@@ -55,6 +55,9 @@ import type {
   WeeklyView,
   BragView,
   HealthView,
+  StaffBoardView,
+  StaffFeedView,
+  StaffCardView,
 } from "./types";
 import type { NoteFileView, NoteFilesView, NotePlanView } from "./plan-types";
 
@@ -155,6 +158,12 @@ export const queryKeys = {
   reviews: ["reviews"] as const,
   /** The cron registry + last-run health (#483). */
   cron: ["cron"] as const,
+  /** The staff roster health board (#269/#273). */
+  staffBoard: ["staff", "board"] as const,
+  /** The briefing-card feed index. */
+  staffFeed: ["staff", "feed"] as const,
+  /** One rendered briefing card. */
+  staffCard: (date: string, agent: string) => ["staff", "card", date, agent] as const,
   /** One cron source's stored findings history (#576), keyed by source/job name. */
   findings: (source: string) => ["findings", source] as const,
   /** Today's agent's suggested tasks (#577), keyed by the status filter (`` = all). */
@@ -425,6 +434,36 @@ export function cronQuery() {
     queryKey: queryKeys.cron,
     queryFn: () => fetchEnvelope<CronView>("/api/cron"),
     refetchInterval: 60_000,
+  };
+}
+
+/** The staff roster health board. Slow poll — schedules fire hourly at best, and marking a card
+ * read invalidates the key directly. */
+export function staffBoardQuery() {
+  return {
+    queryKey: queryKeys.staffBoard,
+    queryFn: () => fetchEnvelope<StaffBoardView>("/api/staff/board"),
+    refetchInterval: 60_000,
+  };
+}
+
+/** The briefing-card feed index, unread-first. */
+export function staffFeedQuery() {
+  return {
+    queryKey: queryKeys.staffFeed,
+    queryFn: () => fetchEnvelope<StaffFeedView>("/api/staff/feed"),
+    refetchInterval: 60_000,
+  };
+}
+
+/** One card rendered to Markdown. Immutable once written, so no poll. */
+export function staffCardQuery(date: string, agent: string) {
+  return {
+    queryKey: queryKeys.staffCard(date, agent),
+    queryFn: () =>
+      fetchEnvelope<StaffCardView>(
+        `/api/staff/card?date=${encodeURIComponent(date)}&agent=${encodeURIComponent(agent)}`,
+      ),
   };
 }
 

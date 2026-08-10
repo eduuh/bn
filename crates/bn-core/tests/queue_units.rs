@@ -9,8 +9,11 @@
 //! An integration file rather than `#[cfg(test)]` modules: the repo runs a 1000-line ratchet over
 //! every tracked `.rs`, and inline tests would spend the remaining headroom of the very files this
 //! feature still has to grow.
-use bn_core::backlog::{AddSpec, BacklogEntry, BacklogStatus};
-use bn_core::queue::kind::{BacklogKind, ExecSpec, WorkClass};
+use bn_core::backlog::{
+    AddSpec, AgentSpec, BacklogEntry, BacklogStatus, ClassOverride, Recurrence, Substrate,
+};
+use bn_core::queue::classify::{classify, QueueMode, QueueSubtype};
+use bn_core::queue::kind::{BacklogKind, ExecSpec, Requirements, WorkClass};
 use bn_core::queue::{build, capacity, jobs, reap};
 
 // ---------------------------------------------------------------------------- lane capacity
@@ -388,4 +391,244 @@ fn only_leased_entries_are_candidates() {
     assert_eq!(pending.status, BacklogStatus::Pending);
     let entries = vec![pending];
     assert!(reap::stale(&entries, &[], 10_000_000, |_| 1).is_empty());
+}
+
+// ---------------------------------------------------------------------------- queue class
+
+/// The real repo-setup prompt's opening, verbatim in the shape that caused the bug: the goal text
+/// becomes the entry's `item`, and it talks about warm pools because that is what the scripts it
+/// writes are for.
+const REPO_SETUP_ITEM: &str = "You are the repo setup agent for `nvim`.\n\nWrite bn setup scripts \
+    that stay idempotent for future agents and warm pools.";
+
+fn dispatched(item: &str) -> BacklogEntry {
+    let spec = AddSpec {
+        kind: BacklogKind::Ship,
+        priority: 100,
+        source: "dispatch".to_string(),
+        ..Default::default()
+    };
+    BacklogEntry::new("nvim", item, &spec, 1000)
+}
+
+fn warming_job(job: &str) -> BacklogEntry {
+    let spec = AddSpec {
+        kind: BacklogKind::Cron,
+        source: format!("cron:{job}"),
+        exec: ExecSpec::Job {
+            job: job.to_string(),
+            repo: None,
+            branch: None,
+        },
+        heavy: true,
+        ..Default::default()
+    };
+    BacklogEntry::new("machine", &format!("run {job}"), &spec, 1000)
+}
+
+#[test]
+fn a_dispatch_is_foreground_however_its_prompt_reads() {
+    // The bug: `is_warming` substring-matched the item text for "warm". An entry's item is a short
+    // job name for a job and the *entire prompt* for an agent, so a repo-setup agent that mentioned
+    // warm pools was classified opportunistic and held for an away window — priority-100 work a
+    // person had just clicked, frozen by a word in its own instructions.
+    let class = classify(&dispatched(REPO_SETUP_ITEM));
+    assert_eq!(class.mode, QueueMode::Foreground, "{REPO_SETUP_ITEM}");
+    assert_eq!(class.subtype, QueueSubtype::Foreground);
+}
+
+#[test]
+fn warming_is_read_from_what_the_entry_declares() {
+    for job in jobs::WARMING_JOBS {
+        let class = classify(&warming_job(job));
+        assert_eq!(class.mode, QueueMode::Opportunistic, "{job} mode");
+        assert_eq!(class.subtype, QueueSubtype::Warming, "{job} subtype");
+    }
+}
+
+#[test]
+fn heavy_is_not_the_same_claim_as_warming() {
+    // `nightly-release` costs as much as a warm and is admitted the same way, but it is not warming
+    // and must not inherit warming's away-only admission — it would never run on a working day.
+    assert!(jobs::is_heavy("nightly-release"));
+    assert!(!jobs::is_warming("nightly-release"));
+    let spec = AddSpec {
+        kind: BacklogKind::Cron,
+        source: "cron:nightly-release".to_string(),
+        exec: ExecSpec::Job {
+            job: "nightly-release".to_string(),
+            repo: None,
+            branch: None,
+        },
+        heavy: true,
+        ..Default::default()
+    };
+    let class = classify(&BacklogEntry::new(
+        "machine",
+        "run nightly-release",
+        &spec,
+        1000,
+    ));
+    assert_eq!(class.subtype, QueueSubtype::Cron);
+    assert_eq!(class.mode, QueueMode::Autonomous);
+}
+
+// ---------------------------------------------------------------------------- agent identity
+
+fn setup_entry() -> BacklogEntry {
+    let spec = AddSpec {
+        kind: BacklogKind::Ship,
+        priority: 100,
+        source: "dispatch".to_string(),
+        agent: AgentSpec {
+            branch: Some("repo-setup".to_string()),
+            name: Some("repo-setup".to_string()),
+            yolo: true,
+        },
+        ..Default::default()
+    };
+    BacklogEntry::new("nvim", REPO_SETUP_ITEM, &spec, 1000)
+}
+
+#[test]
+fn a_queued_agent_keeps_the_identity_it_was_declared_with() {
+    // The whole point of `AgentSpec`: what comes out of the queue must be the work that went in.
+    // Losing the branch put the agent on a slug of its own prompt; losing the name meant no
+    // already-running guard could recognise it; losing yolo meant it stopped for an approval nobody
+    // had been asked for.
+    let entry = setup_entry();
+    assert_eq!(entry.agent.branch.as_deref(), Some("repo-setup"));
+    assert_eq!(entry.agent.name.as_deref(), Some("repo-setup"));
+    assert!(entry.agent.yolo);
+}
+
+#[test]
+fn identity_survives_a_round_trip_through_the_backlog_file() {
+    let entry = setup_entry();
+    let line = serde_json::to_string(&entry).expect("serialize");
+    let back: BacklogEntry = serde_json::from_str(&line).expect("deserialize");
+    assert_eq!(back.agent, entry.agent);
+}
+
+#[test]
+fn a_line_written_before_identity_existed_still_reads() {
+    // The back-compat guarantee. `agent` is skipped when empty, so every pre-existing backlog line
+    // has no such key; reading one must produce "let dispatch derive it", not an error.
+    let line = r#"{"id":"338","repo":"bn","item":"338","kind":"ship","status":"pending"}"#;
+    let entry: BacklogEntry = serde_json::from_str(line).expect("legacy line must still parse");
+    assert!(entry.agent.is_empty());
+    assert_eq!(entry.agent.branch, None);
+}
+
+#[test]
+fn an_entry_declaring_no_identity_writes_no_identity_key() {
+    // The other half of back-compat: adding the field must not rewrite every existing line.
+    let entry = BacklogEntry::new("bn", "338", &AddSpec::default(), 1000);
+    let line = serde_json::to_string(&entry).expect("serialize");
+    // The key, not the word: `exec` legitimately serializes as `{"run":"agent"}`.
+    assert!(!line.contains("\"agent\":"), "{line}");
+}
+
+#[test]
+fn a_re_add_carries_the_identity_across() {
+    // `AddSpec::from_entry` exists so a reprioritize or re-add cannot silently drop an axis. A new
+    // axis that it forgets is exactly the bug it was written to prevent.
+    let spec = AddSpec::from_entry(&setup_entry());
+    assert_eq!(spec.agent, setup_entry().agent);
+}
+
+#[test]
+fn an_entry_is_named_by_its_declared_identity_not_its_prompt() {
+    // Ten queued setup agents all rendered as "You are the repo setup agent for…", which is how a
+    // queue full of work could look like a queue full of nothing in particular.
+    assert_eq!(setup_entry().title(), "repo-setup");
+    // With nothing declared, the first non-empty line is still far better than the whole prompt.
+    let bare = BacklogEntry::new(
+        "bn",
+        "fix the parser\n\nlots of detail",
+        &AddSpec::default(),
+        0,
+    );
+    assert_eq!(bare.title(), "fix the parser");
+}
+
+// ---------------------------------------------------------------------------- nothing is lost
+
+/// An entry with **every** carried axis set to something other than its default.
+///
+/// The point is that no field is left at a value a bug could accidentally reproduce: if a rebuild
+/// drops `est_secs`, a zero here would still compare equal and the test would pass while the field
+/// was being lost. Anything added to `BacklogEntry` should be given a non-default value here.
+fn every_axis_set() -> BacklogEntry {
+    let spec = AddSpec {
+        kind: BacklogKind::Investigate,
+        priority: 77,
+        recurrence: Recurrence::Skip,
+        touches: vec!["src/**".to_string()],
+        substrate: Substrate::Remote,
+        source: "dispatch".to_string(),
+        controller_id: Some("ctl-1".to_string()),
+        task: "t-42".to_string(),
+        exec: ExecSpec::Skill {
+            skill: "investigate".to_string(),
+            arg: Some("the arg".to_string()),
+        },
+        requires: Requirements {
+            skills: vec!["investigate".to_string()],
+            harness: vec!["copilot".to_string()],
+            mcps: vec!["bn".to_string()],
+            capabilities: vec!["home:mac".to_string()],
+            excludes: vec!["slow".to_string()],
+        },
+        est_secs: 900,
+        not_after: Some(2000),
+        not_before: Some(1500),
+        recovery: true,
+        heavy: true,
+        class_override: Some(ClassOverride::Opportunistic),
+        agent: AgentSpec {
+            branch: Some("repo-setup".to_string()),
+            name: Some("repo-setup".to_string()),
+            yolo: true,
+        },
+    };
+    BacklogEntry::new("nvim", "set up nvim", &spec, 1000)
+}
+
+#[test]
+fn re_adding_an_entry_reproduces_every_axis_of_it() {
+    // The guarantee, stated as one equality instead of a checklist someone has to maintain.
+    //
+    // `AddSpec::from_entry` is what the re-add and reprioritize paths run through, and it is a
+    // hand-written field-by-field copy — the exact shape that silently drops a newly added axis.
+    // Comparing whole entries means a field added to `BacklogEntry` and forgotten in `from_entry`
+    // fails here, rather than in production months later as work that came back subtly different
+    // from the work that went in.
+    let original = every_axis_set();
+    let rebuilt = BacklogEntry::new(
+        &original.repo,
+        &original.item,
+        &AddSpec::from_entry(&original),
+        original.added_at,
+    );
+
+    // The only legitimate differences are the fields a *fresh* entry derives rather than carries:
+    // its lifecycle state and who holds it. Everything else must survive verbatim.
+    let mut expected = original.clone();
+    expected.status = BacklogStatus::Pending;
+    expected.assigned_to = None;
+    expected.updated_at = original.added_at;
+
+    assert_eq!(rebuilt, expected);
+}
+
+#[test]
+fn a_fully_populated_entry_survives_the_backlog_file() {
+    // The other way a field is lost: present in memory, absent on disk. A `skip_serializing_if`
+    // that is wrong, or a `#[serde(skip)]` added for convenience, loses the value at the first
+    // restart — and the backlog is the thing that is supposed to make work durable.
+    let original = every_axis_set();
+    let line = serde_json::to_string(&original).expect("serialize");
+    let back: BacklogEntry = serde_json::from_str(&line).expect("deserialize");
+    assert_eq!(back, original);
 }

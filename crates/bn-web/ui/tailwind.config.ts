@@ -2,16 +2,13 @@ import type { Config } from "tailwindcss";
 import animate from "tailwindcss-animate";
 
 /**
- * Tailwind for the bn-web dashboard (#554). **Preflight is disabled on purpose**: only two screens
- * migrate to Tailwind + shadcn in Phase 1 while ~19 others still render off the hand-rolled
- * `src/index.css`. Tailwind's global reset would clobber those un-migrated screens (heading sizes,
- * list markers, button chrome), so we opt out of preflight and re-add just the border reset shadcn
- * needs inside `@layer base` in `tailwind.css`. All colours are CSS-variable tokens (see
+ * Tailwind for the bn-web dashboard (#554). Every screen renders off Tailwind + shadcn — the
+ * hand-rolled `src/index.css` is gone, so preflight (on by default) plus the `@layer base` rules
+ * in `tailwind.css` are the only global styles. All colours are CSS-variable tokens (see
  * `tailwind.css`) so light/dark and the semantic urgent/warn/ok/info scale live in one place.
  */
 const config: Config = {
   darkMode: ["class"],
-  // Scope content to the migrated surfaces + shared UI kit to keep the generated CSS lean.
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
     container: {

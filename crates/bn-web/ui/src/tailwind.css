@@ -14,6 +14,8 @@
  * mirror is kept so shadcn primitives that assume a `.dark` scope still resolve). Every value is a
  * `H S% L%` triple consumed as `hsl(var(--token))`, so the whole surface is themed in one place. */
 :root {
+  color-scheme: dark;
+
   --background: 45 6% 9.5%;
   --foreground: 44 24% 95%;
 
@@ -72,11 +74,9 @@
   color-scheme: dark;
 }
 
-/* Preflight is disabled (see tailwind.config.ts) so the un-migrated legacy screens keep their
- * hand-rolled look. Re-add ONLY the border reset shadcn primitives depend on: the `border`
- * utility sets width but not style, and a default `border-style: none` would hide every shadcn
- * border. Legacy CSS always sets borders via explicit shorthands, so this zero-width solid default
- * is overridden wherever legacy declares a border and is invisible everywhere else. */
+/* The shadcn border reset: preflight leaves `border-color` at Tailwind's grey default, so every
+ * element defaults to the theme's border token instead — a bare `border` utility then renders in
+ * the design system's hairline colour without each call site naming it. */
 @layer base {
   *,
   ::before,
@@ -84,6 +84,37 @@
     border-width: 0;
     border-style: solid;
     border-color: hsl(var(--border));
+  }
+
+  body {
+    min-height: 100vh;
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    /* 0.92rem, not 1rem: the dashboard is an information-dense surface and its type scale was
+       tuned around this base — most text sets text-sm/text-xs explicitly, this covers the rest. */
+    font-size: 0.92rem;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Inline code gets a quiet tint by default; fenced blocks and `MarkdownBody` override with
+     their own classes. */
+  code {
+    padding: 0.1em 0.4em;
+    border-radius: calc(var(--radius) - 4px);
+    background: hsl(var(--muted));
+    font-size: 0.9em;
+  }
+
+  ::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 999px;
   }
 }
 

@@ -35,7 +35,7 @@ Produce a briefing card that:
   2. **Today's focus** — the open goals from `today_focus`, or a one-line "no focus set" when empty.
   Be specific and unsentimental; this is a status update, not a celebration.
 - may include, for the highest-signal items only:
-  - `attn` items (default) — surface a standup that needs the owner's eyes (e.g. a merged PR that
+  - `attn` items — surface a standup that needs the owner's eyes (e.g. a merged PR that
     still needs a follow-up), sparingly.
   - a single `note-append` item only when there is an obvious active branch note to record today's
     focus on; omit it otherwise.

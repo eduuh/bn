@@ -107,7 +107,7 @@ export function Research() {
   const q = question.trim();
   const canSubmit = q.length > 0 && repo.trim().length > 0;
 
-  // This one navigates straight to /fleet, so reconciling the fleet is the difference between
+  // This one navigates straight to /queue, so reconciling the fleet is the difference between
   // landing on the new agent and landing on a list that predates it.
   const research = useAppMutation({
     mutationFn: () => apiDispatch({ repo: repo.trim(), item: q, harness, kind: "scout" }),
@@ -118,7 +118,7 @@ export function Research() {
     },
     onSuccess: () => {
       setQuestion("");
-      navigate("/fleet");
+      navigate("/queue");
     },
   });
 

@@ -24,12 +24,12 @@ import {
   type LucideIcon,
   Microscope,
   Rocket,
-  Server,
   Settings,
   Sparkles,
   SquareTerminal,
   Sun,
   Target,
+  Users,
   Workflow,
   Zap,
 } from "lucide-react";
@@ -111,16 +111,6 @@ const DESTINATIONS: {
     keywords: "queue log history dispatch failed reclaimed expired audit",
     exp: "queue",
   },
-  // Ungated deliberately. Fleet left the rail once `/queue` gained its run controls, and it was the
-  // only tab carrying the `fleet` key — so that key no longer appears in `/settings`, and a gate
-  // here would be one nothing can switch on. The palette is now the way to this screen, the same
-  // role it plays for Queue events.
-  {
-    to: "/fleet",
-    label: "Fleet",
-    Icon: Server,
-    keywords: "agents running live sessions workers transcript steer",
-  },
   {
     to: "/nodes",
     label: "Nodes",
@@ -198,6 +188,13 @@ const DESTINATIONS: {
     Icon: Zap,
     keywords: "mcp tools capabilities prompts",
     exp: "skills",
+  },
+  {
+    to: "/staff",
+    label: "Staff",
+    Icon: Users,
+    keywords: "staff agents briefing cards feed backpressure paused roster",
+    exp: "staff",
   },
   {
     to: "/handoff",

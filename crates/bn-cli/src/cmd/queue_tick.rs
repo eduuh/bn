@@ -599,6 +599,14 @@ fn launch_agent(d: &Dispatch, skill: Option<(&str, Option<&str>)>, now: i64) -> 
     if matches!(d.kind, BacklogKind::Scout | BacklogKind::Research) {
         inv = inv.scout(true);
     }
+    // Launch the work the entry *declared*, not an approximation rebuilt from its subject line.
+    // Dropping these was invisible: the agent started, on a branch slugified from its own prompt,
+    // under a name no already-running guard would recognise, waiting on approvals nobody had been
+    // asked for. See `AgentSpec`.
+    inv = inv
+        .branch(d.agent.branch.as_deref())
+        .name(d.agent.name.as_deref())
+        .yolo(d.agent.yolo);
     let Ok(exe) = std::env::current_exe() else {
         return Executed::Failed("cannot resolve the bn executable".to_string());
     };

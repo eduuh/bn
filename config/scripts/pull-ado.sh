@@ -4,12 +4,15 @@
 # PULL-ONLY: reads ADO, writes only to bn. Never writes back to ADO.
 #
 # Usage:
-#   pull-ado.sh [--repo <bn-repo>] [--iteration <path|work-item-id|url>]
+#   pull-ado.sh [--repo <bn-repo>] [--iteration <path|work-item-id|url>] [--org <org>] [--project <p>]
 #
 # --repo defaults to the current git repo's basename. --iteration filters to one iteration
 # path; a numeric work-item id or URL is resolved to that item's System.IterationPath first.
-# Omitted → all assigned open items. Closed/Resolved/Removed/Done are filtered by the query;
-# `--if-absent "[#<id>]"` keeps re-pulls (and completed todos) from being resurrected.
+# Omitted → all assigned open items. --org/--project pass through to az (else your
+# `az devops configure` defaults apply). Closed/Resolved/Removed/Done are filtered by the query
+# (note: state names are process-template-specific — templates using e.g. Completed/Inactive
+# need the list extended); `--if-absent "[#<id>]"` keeps re-pulls (and completed todos) from
+# being resurrected.
 #
 # Degrades LOUDLY: missing az/python3 or an unresolvable repo exits non-zero with a one-line
 # reason on stderr, so the caller reports the failure instead of inventing items.
@@ -18,15 +21,23 @@ set -u
 BN="${BN:-bn}"
 REPO=""
 ITER=""
+ORG=""
+PROJECT=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) REPO="${2:-}"; shift 2 ;;
     --iteration) ITER="${2:-}"; shift 2 ;;
-    -h | --help) sed -n '2,15p' "$0"; exit 0 ;;
+    --org) ORG="${2:-}"; shift 2 ;;
+    --project) PROJECT="${2:-}"; shift 2 ;;
+    -h | --help) sed -n '2,18p' "$0"; exit 0 ;;
     *) echo "pull-ado: unknown arg '$1'" >&2; exit 2 ;;
   esac
 done
+# az arg passthrough: expand to nothing when unset (never an empty positional).
+AZ_ARGS=""
+[ -n "$ORG" ] && AZ_ARGS="$AZ_ARGS --organization $ORG"
+[ -n "$PROJECT" ] && AZ_ARGS="$AZ_ARGS --project $PROJECT"
 
 command -v az >/dev/null 2>&1 || { echo "pull-ado: 'az' CLI not found on PATH" >&2; exit 3; }
 command -v python3 >/dev/null 2>&1 || { echo "pull-ado: 'python3' not found on PATH" >&2; exit 3; }
@@ -37,19 +48,31 @@ if [ -z "$REPO" ]; then
   REPO="$(basename "$top")"
 fi
 
-# Resolve --iteration: a numeric id (or a URL ending in one) → that item's iteration path;
-# anything else is taken as a literal iteration path.
+# Resolve --iteration: a numeric id (or a URL containing one) → that item's iteration path;
+# anything else is taken as a literal iteration path. A URL we cannot extract an id from is a
+# hard error (degrade loudly) — passing the raw URL through as an iteration path would query a
+# nonexistent path and quietly report "no assigned items".
 ITER_CLAUSE=""
 if [ -n "$ITER" ]; then
   id=""
   case "$ITER" in
-    *[!0-9]*) case "$ITER" in http*) id="${ITER##*/}" ;; esac ;;
+    *[!0-9]*)
+      case "$ITER" in
+        http*)
+          # Strip query/fragment, trailing slashes, then take the last path segment.
+          id="$(printf '%s' "$ITER" | sed -e 's/[?#].*$//' -e 's:/*$::' -e 's:.*/::')"
+          case "$id" in
+            '' | *[!0-9]*) echo "pull-ado: cannot extract a work-item id from URL '$ITER'" >&2; exit 2 ;;
+          esac
+          ;;
+      esac
+      ;;
     *) id="$ITER" ;;
   esac
   case "$id" in
     '' | *[!0-9]*) : ;; # not an id — keep $ITER as the literal path
     *)
-      ITER="$(az boards work-item show --id "$id" -o json 2>/dev/null |
+      ITER="$(az boards work-item show --id "$id" $AZ_ARGS -o json 2>/dev/null |
         python3 -c 'import sys,json; print(json.loads(sys.stdin.read(), strict=False)["fields"]["System.IterationPath"])')" ||
         { echo "pull-ado: could not resolve iteration from work item $id" >&2; exit 4; }
       ;;
@@ -61,7 +84,7 @@ fi
 WIQL="SELECT [System.Id],[System.Title],[System.State],[System.WorkItemType] FROM WorkItems WHERE [System.AssignedTo] = @Me AND [System.State] NOT IN ('Closed','Resolved','Removed','Done')$ITER_CLAUSE ORDER BY [System.State]"
 
 # ADO JSON may carry control characters, hence strict=False.
-items="$(az boards query --wiql "$WIQL" -o json | python3 -c '
+items="$(az boards query --wiql "$WIQL" $AZ_ARGS -o json | python3 -c '
 import sys, json
 rows = json.loads(sys.stdin.read(), strict=False)
 for w in rows:

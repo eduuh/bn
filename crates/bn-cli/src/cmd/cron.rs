@@ -13,13 +13,18 @@ fn run_builtin_job(
     agent: Option<&bn_core::agents::AgentDef>,
     staff_json: bool,
 ) -> Option<i32> {
+    // Native-first: a same-name native implementation is the authoritative job — it may hold an
+    // opt-in gate (`[chief].enabled`) or deterministic side effects the manifest documents
+    // (sentinel's landing + night-shift promotion). Routing staff-kind agents to the generic
+    // staff pipeline *before* this check silently bypassed both. The generic pipeline remains
+    // the path for manifest-only staff agents (standup, goals-align, scout, demo, …).
+    if let Some(f) = native_job(job) {
+        return Some(run_native_job(cfg, ctx, job, f));
+    }
     if agent.is_some_and(bn_core::agents::AgentDef::is_staff) {
         return Some(run_native_job(cfg, ctx, job, |cfg, ctx| {
             staff_run_code(cfg, ctx, job, staff_json)
         }));
-    }
-    if let Some(f) = native_job(job) {
-        return Some(run_native_job(cfg, ctx, job, f));
     }
     None
 }
@@ -914,7 +919,17 @@ pub(crate) fn maybe_fire_catchup(cfg: &Config) {
         return;
     }
     let exe = std::env::current_exe().unwrap_or_else(|_| "bn".into());
-    for job in bn_core::crons::catch_up_jobs(cfg, None) {
+    // `catch_up` lives in two manifests: `[[cron]]` entries and agent frontmatter (the schedule
+    // moved to config/agents/, so the flag moved with it). Union both, deduped.
+    let mut jobs = bn_core::crons::catch_up_jobs(cfg, None);
+    if let Ok(catalog) = bn_core::agents::discover(cfg, None) {
+        for agent in catalog.iter() {
+            if agent.catch_up && agent.is_cron() && !jobs.contains(&agent.name) {
+                jobs.push(agent.name.clone());
+            }
+        }
+    }
+    for job in jobs {
         let _ = std::process::Command::new(&exe)
             .args(["run", &job, "--if-stale"])
             .env("BN_NO_CATCHUP", "1")

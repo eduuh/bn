@@ -1,6 +1,11 @@
 import { useState } from "react";
+import { X } from "lucide-react";
+
 import type { RunView } from "../../api/types";
 import { moveId, queuedItems } from "../../lib/backlog";
+import { cn } from "../../lib/utils";
+import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
 
 /**
  * The queued list (design §4(d)): native HTML5 drag-reorder → `POST queue/reorder` (optimistically
@@ -32,23 +37,29 @@ export function QueuePanel({
   };
 
   return (
-    <div className="queue-panel">
-      <div className="queue-panel-head">
-        <h4>Queued</h4>
-        <span className="count">{queued.length}</span>
-        {queued.length > 1 && <span className="sub">drag to reprioritize</span>}
+    <div className="mb-3 rounded-md border border-border bg-card p-4">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <h4 className="text-sm font-semibold">Queued</h4>
+        <Badge variant="muted" className="tabular-nums">
+          {queued.length}
+        </Badge>
+        {queued.length > 1 && (
+          <span className="text-xs text-muted-foreground">drag to reprioritize</span>
+        )}
       </div>
 
       {queued.length === 0 ? (
-        <p className="empty">No queued items.</p>
+        <p className="py-2 text-sm text-muted-foreground">No queued items.</p>
       ) : (
-        <ul className="queue-reorder">
+        <ul className="flex flex-col gap-2">
           {queued.map((it, idx) => (
             <li
               key={it.id}
-              className={`qr-row${dragId === it.id ? " dragging" : ""}${
-                overId === it.id && dragId !== it.id ? " drag-over" : ""
-              }`}
+              className={cn(
+                "flex items-center gap-2 rounded-sm border border-border bg-background px-3 py-1.5",
+                dragId === it.id && "opacity-50",
+                overId === it.id && dragId !== it.id && "ring-1 ring-ring",
+              )}
               draggable={!busy}
               onDragStart={(e) => {
                 setDragId(it.id);
@@ -71,23 +82,27 @@ export function QueuePanel({
                 setOverId(null);
               }}
             >
-              <span className="qr-handle mono" aria-hidden="true">
+              <span className="cursor-grab font-mono text-muted-foreground" aria-hidden="true">
                 ⠿
               </span>
-              <span className="qr-pos mono">{idx + 1}</span>
-              <span className="qr-item mono" title={it.item}>
+              <span className="min-w-[22px] font-mono text-sm tabular-nums text-muted-foreground">
+                {idx + 1}
+              </span>
+              <span className="min-w-0 flex-1 truncate font-mono text-sm" title={it.item}>
                 {it.item}
               </span>
-              <button
+              <Button
                 type="button"
-                className="qr-remove"
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 text-muted-foreground hover:text-urgent"
                 onClick={() => onRemove(it.id)}
                 disabled={busy}
                 title="remove from queue"
                 aria-label={`remove ${it.item}`}
               >
-                ✕
-              </button>
+                <X />
+              </Button>
             </li>
           ))}
         </ul>

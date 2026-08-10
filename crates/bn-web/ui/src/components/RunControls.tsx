@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { ChevronRight } from "lucide-react";
 
 import { orchestrateQuery } from "../api/client";
 import type { Counts } from "../api/types";
@@ -52,8 +53,11 @@ export function RunControl({ repo }: { repo: string }) {
   return (
     <div className="space-y-2">
       <MiniCounts counts={run.counts} />
-      <details className="manage">
-        <summary>Manage run</summary>
+      <details className="group mb-3">
+        <summary className="cursor-pointer list-none py-2 text-sm font-semibold text-muted-foreground [&::-webkit-details-marker]:hidden">
+          <ChevronRight className="mr-1 inline h-3.5 w-3.5 transition-transform group-open:rotate-90" />
+          Manage run
+        </summary>
         <LanesPanel
           run={run}
           busy={busy}

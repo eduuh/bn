@@ -11,6 +11,7 @@ import {
   SquareTerminal,
   Sun,
   Target,
+  Users,
   Workflow,
   Zap,
   type LucideIcon,
@@ -94,6 +95,14 @@ export const NAV_GROUPS: NavGroup[] = [
         tone: "hot",
         blurb:
           "The default automation surface: scheduled Markdown agents, cron jobs, and the health of each job's last run.",
+      },
+      {
+        to: "/staff",
+        label: "Staff",
+        Icon: Users,
+        exp: "staff",
+        blurb:
+          "The staff roster and its briefing cards: per-agent health, backpressure pauses, and the feed — readable in place, which is what resumes a paused agent.",
       },
       {
         to: "/attention",

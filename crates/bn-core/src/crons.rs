@@ -64,7 +64,7 @@ pub struct CronEntry {
     pub network: bool,
     /// Also fire this job on the **first bn event of the day** (via `bn run <job> --if-stale`), not
     /// only on its `on_calendar` timer. For refreshes whose value is tied to *when you start work*
-    /// rather than a fixed clock time — meetings, the standup view — so a variable start time still
+    /// rather than a fixed clock time — a standup-style morning view — so a variable start time still
     /// gets a fresh result without you matching a wall-clock slot. Default false.
     #[serde(default)]
     pub catch_up: bool,

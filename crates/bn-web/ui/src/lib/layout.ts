@@ -23,7 +23,6 @@ export type PageWidth = "full" | "standard" | "document";
 const EXACT: Record<string, PageWidth> = {
   "/console": "full",
   "/today": "full",
-  "/fleet": "full",
 
   // Not yet rebuilt for `full` — they still render a card stack, and a card stack in a full-bleed
   // container is strictly worse than one on a measure: the rows stretch to 1700px and the actions

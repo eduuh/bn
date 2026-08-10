@@ -6,7 +6,7 @@ import { queueEntriesQuery } from "../api/client";
 import { queueCancel, queueClass, queuePriority, queueSnooze } from "../api/writes";
 import { useAppMutation } from "../hooks/useAppMutation";
 import { affects } from "../lib/invalidation";
-import type { QueueEntry } from "../api/queue-types";
+import { entryTitle, type QueueEntry } from "../api/queue-types";
 import { ConfirmButton } from "./ConfirmButton";
 import { SectionCard } from "./SectionCard";
 import { Badge } from "./ui/badge";
@@ -93,7 +93,7 @@ function EntryRow({ entry }: { entry: QueueEntry }) {
         {entry.kind}
       </Badge>
       <span className="min-w-0 flex-1 truncate" title={entry.item}>
-        {entry.item}
+        {entryTitle(entry)}
       </span>
       {!actionable && (
         <Badge variant={STATUS_TONE[entry.status] ?? "secondary"} className="shrink-0">

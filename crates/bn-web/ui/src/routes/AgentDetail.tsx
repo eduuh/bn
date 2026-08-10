@@ -67,8 +67,8 @@ export function AgentDetail() {
   return (
     <div className="space-y-5 pb-8">
       <Button asChild variant="ghost" size="sm" className="-ml-2 text-muted-foreground">
-        <Link to="/fleet">
-          <ArrowLeft className="h-4 w-4" /> Fleet
+        <Link to="/queue">
+          <ArrowLeft className="h-4 w-4" /> Queue
         </Link>
       </Button>
 
@@ -81,8 +81,8 @@ export function AgentDetail() {
           <p className="max-w-sm text-sm text-muted-foreground">
             No live agent with session <code className="font-mono">{id}</code>. It may have finished
             — see the{" "}
-            <Link to="/fleet" className="text-primary">
-              Fleet
+            <Link to="/queue" className="text-primary">
+              queue
             </Link>
             .
           </p>

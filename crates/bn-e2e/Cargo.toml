@@ -1,0 +1,18 @@
+[package]
+name = "bn-e2e"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Hermetic end-to-end sandbox harness for the bn binary (test-only, never shipped)."
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+tempfile = "3"
+
+[dev-dependencies]
+tempfile = "3"
