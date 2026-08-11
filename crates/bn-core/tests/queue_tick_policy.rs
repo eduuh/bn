@@ -573,6 +573,7 @@ fn the_dispatcher_hands_the_executor_the_declared_identity() {
         name: Some("repo-setup".to_string()),
         yolo: true,
         no_plan_review: true,
+        stage: Some(bn_core::pipeline::stage::Stage::Critique),
     };
     let fx = Fixture {
         pending: vec![entry],
@@ -584,4 +585,11 @@ fn the_dispatcher_hands_the_executor_the_declared_identity() {
     assert_eq!(d.agent.name.as_deref(), Some("repo-setup"));
     assert!(d.agent.yolo);
     assert!(d.agent.no_plan_review);
+    // The stage has to cross the same boundary: the plan is what the executor reads, and a stage
+    // dropped here is silently re-inferred as `execute` — a different model, effort and harness than
+    // the one this entry declared.
+    assert_eq!(
+        d.agent.stage,
+        Some(bn_core::pipeline::stage::Stage::Critique)
+    );
 }

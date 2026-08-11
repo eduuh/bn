@@ -19,48 +19,6 @@ pub(crate) enum TaskOp<'a> {
     Cancel(Option<&'a str>),
 }
 
-/// Which slice of the store a listing shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TaskView {
-    /// The default: work that is actionable *now* — `day:` today or earlier (so an overdue task
-    /// stays visible rather than silently ageing out), plus everything unscheduled.
-    Today,
-    /// Every open task, whatever it is scheduled for.
-    All,
-}
-
-/// The repo scope a listing is filtered to.
-pub(crate) enum RepoScope {
-    /// No filter — every repo.
-    Any,
-    /// A specific repo name (already lowercased).
-    Named(String),
-}
-
-/// Resolve `--repo`: `.` means the repo you are standing in, anything else is a name. Exits with
-/// guidance when `.` is used outside a git repo, since there is nothing to resolve it to.
-pub(crate) fn repo_scope(cfg: &Config, repo: Option<&str>) -> RepoScope {
-    match repo {
-        None => RepoScope::Any,
-        Some(".") => match task_ctx_opt(cfg) {
-            Some(ctx) => RepoScope::Named(ctx.repo.to_ascii_lowercase()),
-            None => fail("bn task --repo .: not in a git repo — pass a repo name instead"),
-        },
-        Some(name) => RepoScope::Named(name.trim().to_ascii_lowercase()),
-    }
-}
-
-impl RepoScope {
-    fn admits(&self, task: &bn_core::todo::Task) -> bool {
-        match self {
-            RepoScope::Any => true,
-            RepoScope::Named(want) => task
-                .meta("repo")
-                .is_some_and(|r| r.eq_ignore_ascii_case(want)),
-        }
-    }
-}
-
 /// The global task store's path. No repo required — that is the point of the store.
 pub(crate) fn task_path(cfg: &Config) -> std::path::PathBuf {
     cfg.tasks_file()
@@ -122,23 +80,6 @@ pub(crate) fn emit_task_claim(
     }
 }
 
-/// Where a task sits relative to `today`, for the bare view's ordering.
-///
-/// `None` means "not actionable today" — scheduled for a future day, so it folds out of the
-/// default listing the way a snoozed task does. A malformed `day:` is treated as unscheduled
-/// rather than as a future date: the same discipline as `snooze:`, so a hand-edit or a merge
-/// artifact can never hide work forever.
-fn day_bucket(task: &bn_core::todo::Task, today: &str) -> Option<u8> {
-    match task
-        .meta("day")
-        .filter(|d| bn_core::util::epoch_day(d).is_some())
-    {
-        Some(day) if day > today => None,
-        Some(_) => Some(0),
-        None => Some(1),
-    }
-}
-
 /// Warn once when a repo-local `TODO.txt` still holds work the global store has not absorbed.
 ///
 /// Best-effort and non-blocking: on stderr so it never pollutes `--json`, and skipped entirely
@@ -159,31 +100,6 @@ fn warn_legacy_todo() {
             legacy.display()
         );
     }
-}
-
-/// The rows a listing shows, paired with their day bucket, most-actionable first.
-///
-/// Pure, so the view semantics are testable without a store or a terminal. Ordering is the day
-/// bucket first (today/overdue, then unscheduled, then — in `--all` — future work), and within a
-/// bucket the sort is stable, so `open_sorted`'s priority → due → id ranking is preserved.
-fn select_tasks<'a>(
-    file: &'a bn_core::todo::TodoFile,
-    view: TaskView,
-    scope: &RepoScope,
-    today: &str,
-) -> Vec<(u8, &'a bn_core::todo::Task)> {
-    let mut items: Vec<(u8, &bn_core::todo::Task)> = file
-        .open_sorted(today, None)
-        .into_iter()
-        .filter(|t| scope.admits(t))
-        .filter_map(|t| match (view, day_bucket(t, today)) {
-            // `--all` keeps future-dated work, sorted after everything actionable.
-            (TaskView::All, bucket) => Some((bucket.unwrap_or(2), t)),
-            (TaskView::Today, bucket) => bucket.map(|b| (b, t)),
-        })
-        .collect();
-    items.sort_by_key(|(bucket, _)| *bucket);
-    items
 }
 
 pub(crate) fn emit_task_list(cfg: &Config, view: TaskView, repo: Option<&str>, as_json: bool) {

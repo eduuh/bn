@@ -2,6 +2,7 @@
 // pane-state colouring, throughput/ETA, and the throughput sparkline series. All side-effect-free
 // and unit-tested (`board.test.ts`) so the visual layer stays a thin render of these values.
 
+import { isRunning } from "../api/types";
 import type {
   FleetView,
   LiveAgent,
@@ -152,7 +153,10 @@ export function mergeSparkline(
 
 /** Agents not owned by any run's queue (matched by repo + normalized branch) — the non-orchestrated
  * fleet rail (`bn switch`, staff runs). Branches are [`sanitizeBranch`]-normalized because the live
- * fleet reports the dash form while the queue keeps slashes. */
+ * fleet reports the dash form while the queue keeps slashes.
+ *
+ * Finished sessions are dropped: the rail is a card per agent at work, and a transcript stays
+ * readable for half an hour after its session exits. */
 export function nonOrchestratedAgents(fleet: FleetView | undefined, runs: RunView[]): LiveAgent[] {
   if (!fleet) return [];
   const tracked = new Set<string>();
@@ -163,9 +167,9 @@ export function nonOrchestratedAgents(fleet: FleetView | undefined, runs: RunVie
       }
     }
   }
-  return fleet.agents.filter(
-    (a) => !tracked.has(`${a.repo.toLowerCase()}/${sanitizeBranch(a.branch)}`),
-  );
+  return fleet.agents
+    .filter(isRunning)
+    .filter((a) => !tracked.has(`${a.repo.toLowerCase()}/${sanitizeBranch(a.branch)}`));
 }
 
 /** A GitHub href for a PR field when it is already a URL; `null` for a bare number (no owner known

@@ -43,6 +43,8 @@ import type {
   SuggestionsView,
   SkillsView,
   SkillDetail,
+  AgentDefsView,
+  AgentDefDetail,
   GoalsView,
   WrapView,
   ReposView,
@@ -187,6 +189,10 @@ export const queryKeys = {
   todayAgents: ["today-agents"] as const,
   /** Today's one *hosted* agent — the live session the Today page streams and steers. */
   todayAgent: ["today-agent"] as const,
+  /** Every Markdown agent definition across the tiers. */
+  agentDefs: ["agent-defs"] as const,
+  /** One agent definition's `.md` source, keyed by name. */
+  agentDef: (name: string) => ["agent-def", name] as const,
   /** Every skill across the tiers (#483). */
   skills: ["skills"] as const,
   /** One skill's editable source, keyed by name (#483). */
@@ -600,6 +606,27 @@ export function todayAgentQuery() {
     queryKey: queryKeys.todayAgent,
     queryFn: () => fetchEnvelope<TodayAgentView>("/api/today/agent"),
     refetchInterval: 5_000,
+  };
+}
+
+/** The Markdown agent roster. Definitions change only when a `.md` is edited, so poll slowly. */
+export function agentDefsQuery() {
+  return {
+    queryKey: queryKeys.agentDefs,
+    queryFn: () => fetchEnvelope<AgentDefsView>("/api/agent-defs"),
+    refetchInterval: 60_000,
+  };
+}
+
+/** One agent definition's verbatim `.md`. `enabled` defers the fetch until one is selected — the
+ * roster deliberately ships without bodies, so this is where the source actually comes from. */
+export function agentDefQuery(name: string | null) {
+  return {
+    queryKey: queryKeys.agentDef(name ?? ""),
+    queryFn: () =>
+      fetchEnvelope<AgentDefDetail>(`/api/agent-defs/${encodeURIComponent(name ?? "")}`),
+    enabled: !!name,
+    staleTime: 0,
   };
 }
 

@@ -56,10 +56,6 @@ pub use today::{suggestion_status, today_agent_start, today_agent_stop, today_ru
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-pub(crate) fn sh_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', r"'\''"))
-}
-
 /// The caller's socket address, or `None`. An infallible extractor: it reads the `ConnectInfo`
 /// (present in production via `into_make_service_with_connect_info`, absent under a bare test
 /// `oneshot`) from the request extensions and never rejects — so a handler can audit `remote_addr`

@@ -190,6 +190,13 @@ const DESTINATIONS: {
     exp: "skills",
   },
   {
+    to: "/agents",
+    label: "Agents",
+    Icon: Bot,
+    keywords: "markdown agents roster definitions md source cron staff specialist",
+    exp: "agents",
+  },
+  {
     to: "/staff",
     label: "Staff",
     Icon: Users,

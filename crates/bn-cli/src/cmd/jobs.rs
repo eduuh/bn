@@ -1621,9 +1621,10 @@ pub(crate) fn job_agent_supervise(cfg: &Config, _ctx: Option<&Resolved>) -> i32 
     }
     let fleet = bn_core::agent::supervise(cfg, idle, stuck_mins);
     println!(
-        "agent-supervise: {} running, {} stuck (idle>{stuck_mins}m)",
-        fleet.agents.len(),
-        fleet.stuck
+        "agent-supervise: {} running, {} stuck, {} ended (idle>{stuck_mins}m)",
+        fleet.running_count(),
+        fleet.stuck,
+        fleet.ended
     );
     if fleet.stuck > 0 && std::env::var("BN_SUPERVISE_NUDGE").as_deref() == Ok("1") {
         let msg = std::env::var("BN_SUPERVISE_NUDGE_MSG").unwrap_or_else(|_| {
@@ -2021,4 +2022,3 @@ pub(crate) fn job_ensure_tmux(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
         1
     }
 }
-

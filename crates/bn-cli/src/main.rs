@@ -101,6 +101,7 @@ pub(crate) use cmd::skills::*;
 pub(crate) use cmd::staff::*;
 pub(crate) use cmd::sync::*;
 pub(crate) use cmd::task::*;
+pub(crate) use cmd::task_view::*;
 pub(crate) use cmd::tmux_status::*;
 pub(crate) use cmd::today::*;
 pub(crate) use cmd::tools::*;

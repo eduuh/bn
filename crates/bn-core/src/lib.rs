@@ -125,6 +125,7 @@ pub mod sync;
 pub mod task_agents;
 pub mod task_attach;
 pub mod task_doc;
+pub mod task_owner;
 pub mod task_pull;
 pub mod template;
 #[cfg(any(test, feature = "test-support"))]

@@ -20,6 +20,7 @@ import {
 import { decideReview, sendMessage } from "../api/writes";
 import { entryTitle } from "../api/queue-types";
 import type { QueueEntryView, QueueNodeRow, QueueView } from "../api/queue-types";
+import { isRunning, runningCount } from "../api/types";
 import type { CompletedItem, FleetView, LiveAgent, Review } from "../api/types";
 import { QueueControls } from "../components/QueueControls";
 import { QueueReservoir } from "../components/QueueReservoir";
@@ -45,6 +46,7 @@ const HEALTH_TONE: Record<string, BadgeProps["variant"]> = {
   starting: "muted",
   idle: "warn",
   stuck: "urgent",
+  ended: "muted",
 };
 
 const NODE_TONE: Record<string, BadgeProps["variant"]> = {
@@ -142,7 +144,9 @@ function OperationsOverview({
         />
         <Metric
           label="live agents"
-          value={fleet?.agents.length ?? "—"}
+          // Running only, so this tile and the "Running" card above it cannot disagree about how
+          // busy the machine is — `agents.length` also counts the sessions that have finished.
+          value={fleet ? runningCount(fleet) : "—"}
           detail={
             fleet
               ? `${fleet.active} active · ${fleet.idle} idle · ${fleet.stuck} stuck`
@@ -327,6 +331,11 @@ function RunningJobRow({ view, now }: { view: QueueEntryView; now: number }) {
  * Agent-backed entries are filtered out of the job list by the caller rather than shown twice: a
  * dispatched agent is already the row above, and the same work counted in two places is worse than
  * either count alone.
+ *
+ * `agents` is what the caller has already filtered down to: the running sessions, minus the ones
+ * `NeedsInput` is rendering as their own rows above. Both exclusions matter — a stuck agent listed
+ * here as well was the same agent twice on one screen, and a finished session listed at all was the
+ * page answering "what is running" with work that is over.
  */
 function ActiveNow({
   agents,
@@ -722,7 +731,9 @@ export function Queue() {
   const reviews = useQuery(reviewsQuery());
   const completed = useQuery(completedQuery());
   const data = queue.data;
-  const agents = fleet.data?.agents ?? [];
+  // The fleet reports every session whose transcript is still readable, which outlasts the session
+  // itself by half an hour. This page asks "what is running", so it wants only the ones that are.
+  const agents = (fleet.data?.agents ?? []).filter(isRunning);
   const now = data?.now ?? Math.floor(Date.now() / 1000);
 
   // The same two counts `NeedsInput` derives, hoisted so the page can decide whether the card is
@@ -733,6 +744,19 @@ export function Queue() {
       agent.health === "stuck" && !pendingReviews.some((review) => sameWorktree(review, agent)),
   );
   const needsYou = pendingReviews.length + stuckAgents.length;
+  // Anything "Decisions and guidance" is already rendering does not appear under "Running" as well —
+  // a stuck agent as its own row there, an agent whose plan is waiting as that review's row. Both
+  // were the same agent twice on one screen, which is the double-count the job list refuses one line
+  // down, and an agent waiting on a person is not running in any case.
+  const promoted = new Set(
+    agents
+      .filter(
+        (agent) =>
+          agent.health === "stuck" || pendingReviews.some((review) => sameWorktree(review, agent)),
+      )
+      .map((agent) => agent.session_id),
+  );
+  const working = agents.filter((agent) => !promoted.has(agent.session_id));
   const outcomes = completed.data?.completed ?? [];
   const nodes = data?.nodes ?? [];
 
@@ -782,9 +806,9 @@ export function Queue() {
         />
       ) : null}
 
-      {agents.length > 0 || runningJobs.length > 0 || fleet.isError ? (
+      {working.length > 0 || runningJobs.length > 0 || fleet.isError ? (
         <ActiveNow
-          agents={agents}
+          agents={working}
           jobs={runningJobs}
           now={now}
           loading={false}

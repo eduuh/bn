@@ -23,6 +23,9 @@ export type PageWidth = "full" | "standard" | "document";
 const EXACT: Record<string, PageWidth> = {
   "/console": "full",
   "/today": "full",
+  // Rebuilt for `full`: owns its header and its own scrolling, narrows before it scrolls, and its
+  // grid earns columns from the viewport rather than stretching a fixed card stack across it.
+  "/repos": "full",
 
   // Not yet rebuilt for `full` — they still render a card stack, and a card stack in a full-bleed
   // container is strictly worse than one on a measure: the rows stretch to 1700px and the actions
@@ -30,7 +33,6 @@ const EXACT: Record<string, PageWidth> = {
   // the actual defect. Flip each to `full` in the commit that converts it.
   "/inbox": "full",
   "/insights": "full",
-  "/repos": "full",
   "/notes": "standard",
   "/queue": "standard",
   "/queue/events": "standard",

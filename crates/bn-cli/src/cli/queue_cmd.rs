@@ -203,6 +203,18 @@ pub(crate) struct AddCmd {
     /// executing node.
     #[arg(long)]
     pub(crate) skill: Option<String>,
+    /// The subject handed to `--skill` when the queue's own subject line is not what the workflow
+    /// should be pointed at — e.g. a bare task id under a human-readable board entry.
+    #[arg(long, requires = "skill")]
+    pub(crate) skill_arg: Option<String>,
+    /// The fleet task name to launch under, so the run is recognisable on the board and the
+    /// already-running guard can tell a duplicate from a fresh start.
+    #[arg(long)]
+    pub(crate) name: Option<String>,
+    /// Launch the agent without the permission gate. Unattended queue work that stops on a prompt
+    /// nobody is watching is work that never finishes.
+    #[arg(long)]
+    pub(crate) yolo: bool,
     /// Run a native bn job headlessly instead of launching an agent.
     #[arg(long, conflicts_with_all = ["skill", "shell"])]
     pub(crate) job: Option<String>,

@@ -26,6 +26,7 @@ pub struct BearingsFleet {
     pub active: usize,
     pub idle: usize,
     pub stuck: usize,
+    pub ended: usize,
     pub total_tokens: i64,
     pub agents: Vec<BearingsAgent>,
     pub omitted: usize,
@@ -126,8 +127,12 @@ impl BearingsSnapshot {
             format!("Generated at `{}`.", self.generated_at),
             String::new(),
             format!(
-                "## Fleet — {} active · {} starting · {} idle · {} stuck",
-                self.fleet.active, self.fleet.starting, self.fleet.idle, self.fleet.stuck
+                "## Fleet — {} active · {} starting · {} idle · {} stuck · {} ended",
+                self.fleet.active,
+                self.fleet.starting,
+                self.fleet.idle,
+                self.fleet.stuck,
+                self.fleet.ended
             ),
         ];
         if self.fleet.agents.is_empty() {
@@ -223,14 +228,10 @@ impl BearingsFleet {
             active: fleet.active,
             idle: fleet.idle,
             stuck: fleet.stuck,
+            ended: fleet.ended,
             total_tokens: fleet.total_tokens,
-            agents: fleet
-                .agents
-                .iter()
-                .take(MAX_AGENTS)
-                .map(Into::into)
-                .collect(),
-            omitted: fleet.agents.len().saturating_sub(MAX_AGENTS),
+            agents: fleet.running().take(MAX_AGENTS).map(Into::into).collect(),
+            omitted: fleet.running_count().saturating_sub(MAX_AGENTS),
         }
     }
 }

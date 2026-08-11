@@ -34,6 +34,7 @@ const Goals = lazyRoute(() => import("./routes/Goals"), "Goals");
 const Cron = lazyRoute(() => import("./routes/Cron"), "Cron");
 const CronDetail = lazyRoute(() => import("./routes/CronDetail"), "CronDetail");
 const Skills = lazyRoute(() => import("./routes/Skills"), "Skills");
+const Agents = lazyRoute(() => import("./routes/Agents"), "Agents");
 const Staff = lazyRoute(() => import("./routes/Staff"), "Staff");
 const Repos = lazyRoute(() => import("./routes/Repos"), "Repos");
 const Settings = lazyRoute(() => import("./routes/Settings"), "Settings");
@@ -82,6 +83,9 @@ const router = createBrowserRouter([
           // Cost merged into the insights page as a tab — the old URL keeps working.
           { path: "cost", element: <Navigate to="/insights?tab=cost" replace /> },
           { path: "insights", element: <Insights /> },
+          // The roster of `.md` definitions. Its `:id` sibling below is a *live session*, keyed by
+          // harness session id — the two never collide because a session id is never a bare index.
+          { path: "agents", element: <Agents /> },
           { path: "agents/:id", element: <AgentDetail /> },
           { path: "tasks/:id", element: <TaskDetail /> },
           { path: "notes", element: <NotesPage /> },

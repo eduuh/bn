@@ -518,8 +518,8 @@ pub(crate) use warm::*;
 
 pub(crate) mod reclaim;
 use reclaim::{
-    leaked_lease_candidates, reclaim_leaked_leases, reclaim_stale, ReclaimReport, ReclaimScope,
-    LEAKED_LEASE_GRACE_SECS,
+    leaked_lease_candidates, live_branch_slot, reclaim_leaked_leases, reclaim_stale, ReclaimReport,
+    ReclaimScope, LEAKED_LEASE_GRACE_SECS,
 };
 
 // --- removal classification (pure, unit-tested) ----------------------------
@@ -834,16 +834,12 @@ fn acquire_slot(
     // use can be neither picked below nor handed back as somebody else's warm hit.
     adopt_occupied_slots(ctx, &mut leases);
 
-    // Already leased to this branch, in a slot of the right class? Hand back the same slot
-    // (idempotent, a warm hit). Branches compare normalized — the ledger may hold `feature/X`
-    // where an adopted lease holds `feature-x`, and reading those as different tenants would lease
-    // a second slot for one branch.
+    // Already leased to this branch, in a slot of the right class, *and still tenanted*? Hand back
+    // the same slot (idempotent, a warm hit). A lease whose tenancy is provably over is reclaimed
+    // rather than honoured — see [`live_branch_slot`] for why answering "already running" from the
+    // ledger alone wedges a branch permanently.
     let want = bn_core::agent::normalized_branch(branch);
-    if let Some((&n, _)) = leases
-        .slots
-        .iter()
-        .find(|(&n, l)| bn_core::agent::normalized_branch(&l.branch) == want && class.owns(n))
-    {
+    if let Some(n) = live_branch_slot(ctx, &mut leases, &want, class, now_epoch()) {
         let slot = slot_path(&ctx.pool_dir, n);
         // A lease can outlive its checkout: the slot dir may have been removed out-of-band (manual
         // cleanup, a botched prune) while the holder pid is still alive — so `reclaim_stale` leaves

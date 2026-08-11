@@ -2,6 +2,7 @@ import {
   ListOrdered,
   ArrowLeftRight,
   Bell,
+  Bot,
   Clock,
   FileText,
   Folder,
@@ -169,6 +170,14 @@ export const NAV_GROUPS: NavGroup[] = [
         Icon: Zap,
         exp: "skills",
         blurb: "The skill library, editable in place and synced to the harnesses.",
+      },
+      {
+        to: "/agents",
+        label: "Agents",
+        Icon: Bot,
+        exp: "agents",
+        blurb:
+          "The Markdown agent roster — what each agent is, when it fires, and its source, read-only.",
       },
       {
         to: "/handoff",

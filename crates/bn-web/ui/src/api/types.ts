@@ -11,7 +11,15 @@ export interface Envelope<T> {
 
 // --- Fleet (GET /api/fleet .data; SSE `fleet` frame is this shape raw) ---
 
-export type AgentHealth = "starting" | "active" | "idle" | "stuck";
+/** `ended` is not an idle tier: it means no live window hosts the session and it has gone silent,
+ *  so the supervisor has called it finished. A transcript stays readable for half an hour after its
+ *  agent exits, so a screen that treats every fleet entry as running shows agents that are over. */
+export type AgentHealth = "starting" | "active" | "idle" | "stuck" | "ended";
+
+/** Whether a fleet entry is still a running session — `AgentHealth::is_running` on the server. */
+export function isRunning(agent: { health: AgentHealth }): boolean {
+  return agent.health !== "ended";
+}
 
 /** An agent's fleet role — `bn_core::agent::AgentRole` (#500). Orchestrators run the wave and pin
  * to their own top tier; workers ship PRs and render normally. Absent on pre-#500 payloads. */
@@ -84,9 +92,19 @@ export interface FleetView {
   active: number;
   idle: number;
   stuck: number;
+  /** Sessions still readable but no longer hosted. Absent on older servers, where every
+   *  finished agent still counted as `stuck`. See [`runningCount`]. */
+  ended?: number;
   total_tokens: number;
   /** Per-machine harness availability for the switcher (copilot always; claude may be disabled). */
   harnesses?: HarnessOption[];
+}
+
+/** How many fleet entries are still running — `Fleet::running_count` on the server. Any tile
+ *  headlining how busy the machine is wants this, not `agents.length`, which also counts the
+ *  sessions whose transcripts merely outlived them. */
+export function runningCount(fleet: FleetView): number {
+  return fleet.agents.length - (fleet.ended ?? 0);
 }
 
 // --- Machine health (GET /api/machine .data) — #525 ---
@@ -790,48 +808,6 @@ export interface TodayAgentView {
   output_tokens?: number | null;
 }
 
-// --- Triggerable-agent catalog (GET /api/agents/catalog .data; #557) ---
-
-/** The manifest's explicit runnable agent kind, or a plain cron/native job. */
-export type CatalogKind = "command" | "staff" | "hosted" | "specialist" | "cron";
-
-/** One triggerable agent/job — `bn_core::action_center::CatalogItem` (#557). Everything the
- * automation can fire (declared crons + native jobs + the Markdown agent roster), with the
- * metadata needed to decide whether to re-trigger it. `job` is exactly what
- * `POST /api/cron/run {job}` fires;
- * specialists are install-only and are not emitted by this triggerable catalog. */
-export interface CatalogItem {
-  job: string;
-  name: string;
-  kind: CatalogKind;
-  scope: string;
-  declared: boolean;
-  /** Neither a calendar nor startup trigger is declared. */
-  on_demand: boolean;
-  schedule?: string | null;
-  description?: string | null;
-  has_script: boolean;
-  network: boolean;
-  catch_up: boolean;
-  startup: boolean;
-  queue: boolean;
-  retry_after_secs?: number | null;
-  last_run?: number | null;
-  last_exit?: number | null;
-  ok?: boolean | null;
-  runs: number;
-  failures: number;
-  skills?: string[];
-  mcps?: string[];
-  harness?: string | null;
-}
-
-/** GET /api/agents/catalog .data — the triggerable-agent catalog (`payload::catalog_data`, #557). */
-export interface CatalogView {
-  count: number;
-  agents: CatalogItem[];
-}
-
 // --- Skills (GET /api/skills .data; GET /api/skills/:name .data; #483) ---
 
 /** One discovered skill — `bn_core::skills::SkillInfo`. `effective` marks the highest-precedence
@@ -1204,10 +1180,12 @@ export interface BragView {
   [key: string]: unknown;
 }
 
-// The task-first model lives in its own file — see `task-types.ts`. Re-exported here so the
-// dozens of `from "./types"` imports stay unchanged; this file is the UI's largest and the
+// The task-first model and the agent catalog/roster live in their own files — see
+// `task-types.ts` and `agent-def-types.ts`. Re-exported here so the dozens of
+// `from "./types"` imports stay unchanged; this file is the UI's largest and the
 // file-size ratchet holds it at its ceiling.
 export * from "./task-types";
+export * from "./agent-def-types";
 
 // --- Health (GET /api/health .data) ---
 

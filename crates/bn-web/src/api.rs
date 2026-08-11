@@ -32,7 +32,7 @@ mod automation;
 mod repo_read;
 #[path = "api/repo_scripts.rs"]
 mod repo_scripts;
-pub use automation::{agents_catalog, today_agents, today_crons};
+pub use automation::{agent_def_source, agent_defs, agents_catalog, today_agents, today_crons};
 #[path = "api/feeds.rs"]
 mod feeds;
 #[path = "api/note_files.rs"]

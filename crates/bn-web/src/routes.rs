@@ -34,6 +34,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/machine", get(api::machine))
         .route("/api/nodes", get(api::nodes))
         .route("/api/agents/catalog", get(api::agents_catalog))
+        // Their own prefix rather than under `/api/agents/`: that space is the *live fleet* keyed
+        // by session id, and a `.md` definition is a different kind of thing with a different key.
+        .route("/api/agent-defs", get(api::agent_defs))
+        .route("/api/agent-defs/{name}", get(api::agent_def_source))
         .route("/api/today/crons", get(api::today_crons))
         .route("/api/today/agents", get(api::today_agents))
         // Singular: Today's one *hosted* agent, not the scheduled roster above.

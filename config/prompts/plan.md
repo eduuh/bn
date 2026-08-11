@@ -22,8 +22,10 @@ session's coding unambiguous.
    file) and write the plan Markdown:
    - the goal, restated in one sharp line;
    - 2–5 **done-when criteria** — observable, checkable outcomes ("login succeeds on 4G within
-     10s", "`cargo test` green", "no new clippy warnings"). These are the contract the execution
-     loop verifies against; without them "done" is a guess.
+     10s", "this repo's test gate is green", "no new lint warnings"). Name the repo's *own*
+     commands, whatever its ecosystem is; a criterion quoting a tool this repo does not use is not
+     checkable. These are the contract the execution loop verifies against; without them "done" is
+     a guess.
    - **ordered steps** — one action per step, in the order you'd do them; split any step with a
      real fork or risk. The list should read as the path from here to the done-when criteria.
    - risks and open questions.

@@ -63,7 +63,7 @@ pub async fn machine(State(state): State<AppState>) -> Json<Envelope> {
                 bn_core::agent::DEFAULT_IDLE_MINS,
                 bn_core::agent::DEFAULT_STUCK_MINS,
             );
-            bn_core::payload::machine_health_data(&snapshot, fleet.agents.len())
+            bn_core::payload::machine_health_data(&snapshot, fleet.running_count())
         })
         .await;
     match data {
@@ -88,7 +88,7 @@ pub async fn nodes(State(state): State<AppState>) -> Json<Envelope> {
                 bn_core::agent::DEFAULT_IDLE_MINS,
                 bn_core::agent::DEFAULT_STUCK_MINS,
             );
-            let mut node = bn_core::payload::machine_health_data(&snapshot, fleet.agents.len());
+            let mut node = bn_core::payload::machine_health_data(&snapshot, fleet.running_count());
             node["host"] = json!(cfg.hostname);
             node["platform"] = json!(std::env::consts::OS);
             node["arch"] = json!(std::env::consts::ARCH);

@@ -20,7 +20,7 @@
 
 use crate::actions::{
     bad_request, conflict, not_found_json, parse_body, respond_process, run_bn, server_error,
-    sh_quote, valid_repo, MaybeAddr,
+    valid_repo, MaybeAddr,
 };
 use crate::audit;
 use crate::state::AppState;
@@ -695,13 +695,30 @@ pub async fn task_doc_edit(
     }
 }
 
-/// `POST /api/tasks/{id}/agent` — launch a task agent and return immediately.
+/// `POST /api/tasks/{id}/agent` — dispatch a task agent and return immediately.
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct TaskAgentBody {
     /// `enhance` (or legacy `improve`) or `triage`.
     pub agent: String,
-    /// The operator's "things to look out for", passed into the seed.
+    /// The operator's "things to look out for", recorded on the task doc so the agent reads it.
     pub steer: Option<String>,
+}
+
+/// Where a task agent stands when the task itself does not say.
+///
+/// Enhance is the stage that runs *before* a task has a `repo:` — `pipeline::sweep` skips
+/// ungrounded tasks precisely because "the enhance pass owns it until it has a repo". A steerable
+/// agent still needs a worktree to live in, and these agents only ever touch the task and its
+/// context doc (both under the notes dir, not a product checkout), so the worktree is just a place
+/// to stand. bn is the one repo guaranteed to be present.
+const AGENT_HOME_REPO: &str = "bn";
+
+/// The workflow each task agent is driven by, and the fleet name it launches under.
+fn task_workflow(agent: &str) -> &'static str {
+    match agent {
+        "triage" => "task-triage",
+        _ => "task-enhance",
+    }
 }
 
 pub async fn task_agent(
@@ -733,43 +750,78 @@ pub async fn task_agent(
         requested_agent
     };
 
-    let shell = if agent == "enhance" {
-        let mut parts = vec![
-            "bn".to_string(),
-            "task".to_string(),
-            "enhance".to_string(),
-            sh_quote(&id),
-        ];
+    // Triage covers the whole store rather than one task, so only enhance needs the task to exist.
+    // Resolving it here also decides where the agent stands and gives the board a subject a human
+    // can read.
+    let (repo, subject) = if agent == "enhance" {
+        let cfg = state.cfg.clone();
+        let task_id = id.clone();
+        let loaded = tokio::task::spawn_blocking(move || load_task(&cfg, &task_id)).await;
+        let task = match loaded {
+            Ok(Ok(task)) => task,
+            Ok(Err(e)) => {
+                audit::record(&state, "task-enhance", &id, addr, false);
+                return not_found_json(cmd, &e);
+            }
+            Err(_) => return server_error(cmd, "panicked", "the task read panicked"),
+        };
+        // Record the operator's steering on the doc rather than passing it as a flag: the agent is
+        // seeded from the workflow, not from this request, so steering that lives only in the
+        // command line never reaches it. On the doc it is durable, visible in the UI, and still
+        // there if the run is retried.
         if let Some(steer) = body
             .steer
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            parts.push("--steer".to_string());
-            parts.push(sh_quote(steer));
+            let cfg = state.cfg.clone();
+            let task = task.clone();
+            let steer = steer.to_string();
+            let _ = tokio::task::spawn_blocking(move || {
+                bn_core::task_doc::append_section(&cfg, &task, "Steering", &steer)
+            })
+            .await;
         }
-        parts.join(" ")
+        let repo = task
+            .meta("repo")
+            .map(str::trim)
+            .filter(|r| !r.is_empty() && valid_repo(r))
+            .unwrap_or(AGENT_HOME_REPO)
+            .to_string();
+        (repo, format!("enhance {id}: {}", task.summary()))
     } else {
-        "bn task triage".to_string()
+        (
+            AGENT_HOME_REPO.to_string(),
+            "triage: pick what is doable today".to_string(),
+        )
     };
-    let result = run_bn(
-        vec![
-            "queue".into(),
-            "add".into(),
-            format!("task {agent} {id}"),
-            "--repo".into(),
-            "machine".into(),
-            "--kind".into(),
-            "cron".into(),
-            "--priority".into(),
-            "25".into(),
-            "--shell".into(),
-            shell,
-        ],
-        None,
-    )
-    .await;
+
+    let workflow = task_workflow(&agent);
+    let mut args = vec![
+        "queue".into(),
+        "add".into(),
+        subject,
+        "--repo".into(),
+        repo,
+        "--kind".into(),
+        "enhance".into(),
+        "--priority".into(),
+        "25".into(),
+        "--skill".into(),
+        workflow.to_string(),
+        "--name".into(),
+        format!("{id}-{agent}"),
+        // Nobody is sitting in the pane at launch, so a permission prompt would simply stall it.
+        "--yolo".into(),
+    ];
+    if agent == "enhance" {
+        // Point the workflow at the bare id while the subject above stays human-readable. Triage
+        // takes no argument — it covers the whole store — so it is seeded from the subject.
+        args.push("--skill-arg".into());
+        args.push(id.clone());
+    }
+    let result = run_bn(args, None).await;
     respond_process(&state, &format!("task-{agent}"), &id, addr, result)
 }
 

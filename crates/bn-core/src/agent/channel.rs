@@ -253,14 +253,28 @@ fn resolve_one(
 ) -> AgentChannel {
     let sid = crate::cost::canonical_session_id(agent.session_id);
 
-    // 1. bn launched it and wrote down where.
-    if let Some(l) = leases
+    // 1. bn launched it and wrote down where — but only for as long as that window is still up.
+    //    A lease outlives the agent it recorded: release is best-effort, and a harness that crashed
+    //    or a window the user closed never releases at all. Trusting the record unchecked hands back
+    //    a target for a window that shut minutes ago, so `tmux_target` stops meaning "a live window
+    //    hosts this" and every consumer reading it as liveness reads a finished session as running.
+    //    A stale lease is no evidence, so it falls through to the tiers that look at real windows.
+    if let Some(w) = leases
         .iter()
         .find(|l| crate::cost::canonical_session_id(&l.session_id) == sid)
+        .and_then(|l| {
+            windows
+                .iter()
+                .find(|w| w.target == l.tmux_target)
+                // The lease's checkout beats the pane's: a pane may have wandered into a
+                // subdirectory, while the lease records the slot bn actually handed this session.
+                .map(|w| (w, l.key.worktree.clone()))
+        })
     {
+        let (window, worktree) = w;
         return AgentChannel {
-            tmux_target: Some(l.tmux_target.clone()),
-            worktree: Some(l.key.worktree.clone()),
+            tmux_target: Some(window.target.clone()),
+            worktree: Some(worktree),
             tier: Some(MatchTier::Lease),
             ..Default::default()
         };
@@ -395,4 +409,60 @@ pub fn parse_window_rows(out: &str) -> Vec<TmuxWindowRow> {
             (!dead).then_some(row)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::{AgentLease, AgentLeaseKey, AgentLeaseKind};
+
+    fn agent<'a>(session_id: &'a str, worktree: Option<&'a str>) -> AgentKey<'a> {
+        AgentKey {
+            session_id,
+            repo: "bn",
+            branch: "queue-duplicates",
+            worktree,
+        }
+    }
+
+    fn lease(session_id: &str, tmux_target: &str) -> AgentLease {
+        AgentLease {
+            key: AgentLeaseKey {
+                repo: "bn".to_string(),
+                branch: "queue-duplicates".to_string(),
+                worktree: "/tmp/bn-lease".to_string(),
+            },
+            session_id: session_id.to_string(),
+            harness: "copilot".to_string(),
+            kind: AgentLeaseKind::Dispatch,
+            tmux_target: tmux_target.to_string(),
+            acquired_at: 1,
+        }
+    }
+
+    #[test]
+    fn stale_lease_without_live_window_is_not_a_channel() {
+        let channels = resolve_channels(&[agent("s1", None)], &[], &[lease("s1", "bn:gone")]);
+
+        assert_eq!(channels[0].tmux_target, None);
+        assert_eq!(channels[0].tier, None);
+    }
+
+    #[test]
+    fn live_lease_still_wins_and_keeps_lease_worktree() {
+        let windows = vec![TmuxWindowRow {
+            target: "bn:slot".to_string(),
+            pane_path: "/tmp/pane".to_string(),
+            ..TmuxWindowRow::default()
+        }];
+        let channels = resolve_channels(
+            &[agent("s1", Some("/tmp/other"))],
+            &windows,
+            &[lease("s1", "bn:slot")],
+        );
+
+        assert_eq!(channels[0].tmux_target.as_deref(), Some("bn:slot"));
+        assert_eq!(channels[0].worktree.as_deref(), Some("/tmp/bn-lease"));
+        assert_eq!(channels[0].tier, Some(MatchTier::Lease));
+    }
 }

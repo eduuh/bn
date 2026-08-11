@@ -9,19 +9,26 @@
 //! file, so whichever wins the race runs and the other cleanly skips — one tick per machine, no
 //! matter how it was started.
 mod event_fields;
+mod heartbeat;
 mod heavy;
+mod launch;
+mod lock;
+mod render;
 
 use crate::*;
 use bn_core::backlog::{self, BacklogKind};
 use bn_core::queue::decision::QueueDecision;
 use bn_core::queue::tick::{plan_tick, Dispatch, TickPlan};
 use event_fields::{dispatch_fields, finish_fields, launch_failure_fields};
+use heartbeat::{Heartbeat, stamp_pass};
+use launch::{launch_timeout, wait_bounded, Launch};
+use lock::{LockDenied, TickLock};
+use render::print_decision;
 use std::path::PathBuf;
 
-/// The lock that makes "one tick per machine" true regardless of which driver started it.
-fn lock_path() -> PathBuf {
-    bn_core::resolver::state_dir().join("queue-tick.lock")
-}
+pub(crate) use heartbeat::heartbeat_path;
+pub(crate) use lock::pid_alive;
+pub(crate) use render::emit_nodes;
 
 /// `bn queue tick` — one pass.
 pub(crate) fn emit_tick(cfg: &Config, dry_run: bool, json: bool) {
@@ -186,95 +193,6 @@ pub(crate) fn emit_run(cfg: &Config, interval: u64) {
     }
 }
 
-/// The resident dispatcher's heartbeat file.
-///
-/// Distinct from `queue-decision.json` on purpose, and the distinction is the whole point: a
-/// decision is written by *any* tick, including the inline fallback `bn` runs when it notices the
-/// dispatcher is missing. Using that as the liveness signal made the fallback mask the very failure
-/// it compensates for — run `bn` often enough and the decision file never goes stale, so the repair
-/// that would restart the daemon never fires and the machine quietly runs on inline ticks forever.
-///
-/// Only [`emit_run`] writes this, so "recent" means the daemon itself is alive.
-pub(crate) fn heartbeat_path() -> PathBuf {
-    bn_core::resolver::dispatcher_heartbeat_path()
-}
-
-/// A background thread that writes the heartbeat on a timer, for as long as it is held.
-///
-/// **This used to be one `beat()` at the top of the loop, and that was a bug with a two-and-a-half
-/// hour half-life.** Beating once per iteration makes liveness a function of how long a pass takes,
-/// and a pass can take arbitrarily long: it waits on `bn dispatch`, which fetches, which was one
-/// dead TCP connection away from never returning. The dispatcher then sat alive-but-blocked while
-/// `dispatcher_alive` went false, the dashboard reported "no tick is running", and launchd — whose
-/// process was perfectly healthy — had no reason to restart anything. Nothing in the system was in
-/// a position to notice, because the only liveness signal was downstream of the thing that hung.
-///
-/// A thread that only writes a timestamp cannot be blocked by the work, so "alive" now means alive.
-/// What the work is *doing* is a separate question, answered by [`stamp_pass`] — the two facts were
-/// always distinct and are now stored that way.
-struct Heartbeat {
-    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
-/// Seconds between heartbeats. Well inside `DISPATCHER_TTL_SECS` (600) so a single missed write —
-/// a full disk, a slow sync — is not enough to declare the dispatcher dead.
-const BEAT_SECS: u64 = 30;
-
-impl Heartbeat {
-    fn start() -> Heartbeat {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        let stop = std::sync::Arc::new(AtomicBool::new(false));
-        let flag = stop.clone();
-        beat();
-        let thread = std::thread::spawn(move || {
-            while !flag.load(Ordering::Relaxed) {
-                // Slept a second at a time so shutdown is prompt rather than up to BEAT_SECS late.
-                for _ in 0..BEAT_SECS {
-                    if flag.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                }
-                beat();
-            }
-        });
-        Heartbeat {
-            stop,
-            thread: Some(thread),
-        }
-    }
-}
-
-impl Drop for Heartbeat {
-    fn drop(&mut self) {
-        self.stop
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
-
-/// Record that the resident loop is alive. Best-effort: a dispatcher must not stop dispatching
-/// because it could not write a heartbeat.
-fn beat() {
-    write_stamp(&heartbeat_path());
-}
-
-/// Record that a pass finished. The signal that separates "wedged" from "idle" — see
-/// [`bn_core::resolver::dispatcher_pass_age`].
-fn stamp_pass() {
-    write_stamp(&bn_core::resolver::dispatcher_pass_path());
-}
-
-fn write_stamp(path: &std::path::Path) {
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let _ = std::fs::write(path, bn_core::util::now_epoch_secs().to_string());
-}
-
 /// A cheap fingerprint of `config.toml` — modified time and length.
 ///
 /// Two fields rather than mtime alone: an editor that writes-and-restores a timestamp still changes
@@ -381,6 +299,7 @@ fn tick_once(cfg: &Config, now: i64, dry_run: bool) -> TickOutcome {
     crate::wt_pool::reclaim::reconcile_pools(cfg, now);
     if !dry_run {
         maybe_enqueue_spare_work(cfg, now);
+        reconcile_producers(cfg);
     }
     let snapshot = bn_core::queue::snapshot::Snapshot::capture(cfg, now);
     let inputs = snapshot.inputs();
@@ -406,6 +325,22 @@ fn tick_once(cfg: &Config, now: i64, dry_run: bool) -> TickOutcome {
 /// slot rather than hiding inside the tick. This hook supplies the missing piece: it is no longer
 /// purely calendar-driven. Every dispatcher pass may top up background work, but only when the pool
 /// planner says a stale warm pool exists.
+/// Re-run the producers whose job is to notice that something *became* due.
+///
+/// Both are sweeps rather than callbacks, and both belong on the tick rather than on a schedule of
+/// their own. `bn today sync` ran only from the 08:30 cron, so an enhance pass that resolved a task's
+/// repo at 09:15 sat unqueued until the next morning — the work was ready, the machine was idle, and
+/// nothing was looking. The pipeline sweep has the same shape: a stage finishes whenever it finishes,
+/// and its successor is due immediately.
+///
+/// Cheap enough for every pass: each reads the task store and the backlog and enqueues only what is
+/// missing, so a quiet machine pays two file reads a minute. Deliberately *before* the snapshot is
+/// captured, so work either sweep enqueues is admitted in this same pass rather than the next one.
+fn reconcile_producers(cfg: &Config) {
+    let _ = crate::cmd::today::today_reconcile(cfg);
+    let _ = crate::cmd::pipeline_sweep::sweep_tasks(cfg);
+}
+
 fn maybe_enqueue_spare_work(cfg: &Config, now: i64) {
     if !cfg.job_allowed_here("pool-warm") {
         return;
@@ -479,9 +414,10 @@ fn reclaim_stale_leases(cfg: &Config, now: i64) {
     let path = backlog::backlog_path();
     let bl = backlog::load(&path);
     let entries = bl.entries().to_vec();
+    // Only agents still running keep a lease alive. A session whose transcript is merely still
+    // readable is exactly the executor this pass exists to notice has died.
     let live: Vec<(String, String)> = bn_core::agent::supervise(cfg, 0, 0)
-        .agents
-        .iter()
+        .running()
         .map(|a| (a.repo.clone(), a.branch.clone()))
         .collect();
     let stale = bn_core::queue::reap::stale(&entries, &live, now, |w| cfg.queue.lease_ttl(w));
@@ -679,7 +615,8 @@ fn launch_agent(d: &Dispatch, skill: Option<(&str, Option<&str>)>, now: i64) -> 
         .branch(d.agent.branch.as_deref())
         .name(d.agent.name.as_deref())
         .yolo(d.agent.yolo)
-        .no_plan_review(d.agent.no_plan_review);
+        .no_plan_review(d.agent.no_plan_review)
+        .stage(d.agent.stage);
     let Ok(exe) = std::env::current_exe() else {
         return Executed::Failed("cannot resolve the bn executable".to_string());
     };
@@ -697,73 +634,6 @@ fn launch_agent(d: &Dispatch, skill: Option<(&str, Option<&str>)>, now: i64) -> 
             "bn dispatch did not return within {secs}s — killed it and everything it started"
         )),
         Launch::Failed(e) => Executed::Failed(e),
-    }
-}
-
-/// How a bounded launch ended.
-enum Launch {
-    Exited(std::process::ExitStatus),
-    /// The deadline passed and the child's process group was killed.
-    TimedOut(u64),
-    Failed(String),
-}
-
-/// Seconds a single `bn dispatch` may take before the dispatcher gives up on it.
-///
-/// Five minutes is far beyond an honest launch — fetch, worktree add, tmux — and far below the
-/// point at which one wedged entry has cost the machine a meaningful amount of work. Override with
-/// `BN_QUEUE_LAUNCH_TIMEOUT_SECS` on a box that legitimately clones something enormous; `0`
-/// restores the old unbounded wait.
-const LAUNCH_TIMEOUT_SECS: u64 = 300;
-
-fn launch_timeout() -> Option<std::time::Duration> {
-    let secs = std::env::var("BN_QUEUE_LAUNCH_TIMEOUT_SECS")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(LAUNCH_TIMEOUT_SECS);
-    (secs > 0).then(|| std::time::Duration::from_secs(secs))
-}
-
-/// Spawn `cmd` with inherited stdio and wait for it, killing its whole process group if it outlives
-/// `timeout`.
-///
-/// The group, not the child, is what gets killed — and that is the entire point. The hang that
-/// motivated this was two levels down (`bn dispatch` → `git fetch` → `ssh`); reaping only the
-/// direct child would return control to the dispatcher while leaving the blocked `ssh` holding the
-/// bare repo's lock, so the next pass would inherit the same wedge with none of the evidence.
-///
-/// stdio stays inherited so the child's diagnostics keep landing in the dispatcher log where
-/// operators already look for them.
-fn wait_bounded(mut cmd: std::process::Command, timeout: Option<std::time::Duration>) -> Launch {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(e) => return Launch::Failed(e.to_string()),
-    };
-    let Some(timeout) = timeout else {
-        return match child.wait() {
-            Ok(st) => Launch::Exited(st),
-            Err(e) => Launch::Failed(e.to_string()),
-        };
-    };
-    let group = child.id();
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(st)) => return Launch::Exited(st),
-            Ok(None) => {}
-            Err(e) => return Launch::Failed(e.to_string()),
-        }
-        if std::time::Instant::now() >= deadline {
-            let _ = bn_core::runner::kill_process_tree(group, &mut child);
-            let _ = child.wait();
-            return Launch::TimedOut(timeout.as_secs());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 
@@ -875,407 +745,4 @@ pub(crate) fn observe_nodes(cfg: &Config, now: i64) -> Vec<bn_core::hosts::NodeR
     registry.refreshed_at = now;
     let _ = registry.save();
     registry.live(now, cfg.queue.heartbeat_ttl())
-}
-
-// ---------------------------------------------------------------------------------------------
-// the lock
-// ---------------------------------------------------------------------------------------------
-
-/// A non-blocking machine-wide tick lock, released on drop.
-///
-/// Non-blocking on purpose: a tick that waited for its predecessor would pile up behind a slow
-/// pass and then fire a burst, which is precisely the over-commitment the queue exists to prevent.
-/// Skipping is correct — another pass is already deciding, and there will be one along shortly.
-struct TickLock {
-    path: PathBuf,
-}
-
-impl TickLock {
-    fn try_acquire() -> Result<TickLock, LockDenied> {
-        let path = lock_path();
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        // A lock whose owner is gone is not a lock. `Drop` does not run on SIGKILL or a power cut,
-        // so the file outlives the process holding it; without a pid the only way to notice is a
-        // timeout, during which every pass skips and nothing dispatches. Recording the owner turns
-        // that into a fact we can check.
-        //
-        // **The pid is the whole test — age is not.** This previously also stole any lock older
-        // than `LOCK_STALE_SECS` (30), which is shorter than a perfectly ordinary pass: a tick that
-        // spends a minute launching an agent had its lock taken out from under it by the next cron
-        // tick, and then deleted that thief's lock on the way out. Two dispatchers realizing the
-        // same plan is exactly the double-dispatch the lock exists to prevent, so a live owner now
-        // keeps it however long it takes. An unparseable lock file — pre-pid, or truncated — is the
-        // one case age still decides, because there is nothing else to go on.
-        if let Ok(prev) = std::fs::read_to_string(&path) {
-            let owner: Option<u32> = prev.trim().parse().ok();
-            if lock_abandoned(owner, || bn_core::store::lock_is_stale(&path), &pid_alive) {
-                let _ = std::fs::remove_file(&path);
-            }
-        }
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(mut f) => {
-                use std::io::Write;
-                let _ = write!(f, "{}", std::process::id());
-                Ok(TickLock { path })
-            }
-            // Only `AlreadyExists` means another tick holds it. Anything else — a read-only state
-            // dir, a full disk — is a different problem entirely, and reporting it as contention
-            // sends the reader hunting for a concurrent tick that does not exist.
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(LockDenied::Held),
-            Err(e) => Err(LockDenied::Unusable(e.to_string())),
-        }
-    }
-}
-
-/// Whether an existing lock file may be taken from whoever wrote it.
-///
-/// Pure so the rule is testable without a clock or a filesystem, because the rule is the part that
-/// was wrong: **a live owner is never abandoned, however old its lock**. Age used to steal locks
-/// from working dispatchers after thirty seconds — shorter than an ordinary pass that launches an
-/// agent — which is how two ticks came to realize the same plan. Staleness now decides one case
-/// only: a lock file with no readable pid, where there is nothing better to go on. `stale` is a
-/// closure so that check is skipped entirely in the common path.
-fn lock_abandoned(
-    owner: Option<u32>,
-    stale: impl FnOnce() -> bool,
-    alive: &impl Fn(u32) -> bool,
-) -> bool {
-    match owner {
-        Some(pid) => !alive(pid),
-        None => stale(),
-    }
-}
-
-/// Why a pass could not take the machine lock.
-enum LockDenied {
-    /// Another tick is running. The healthy case: it is doing the work.
-    Held,
-    /// The lock could not be created at all — an unwritable state dir, a full disk.
-    Unusable(String),
-}
-
-/// Whether `pid` names a live process — [`bn_core::queue::build::pid_alive`], re-exported so the
-/// tick, the status line and the dashboard cannot disagree about what "alive" means.
-pub(crate) use bn_core::queue::build::pid_alive;
-
-impl Drop for TickLock {
-    /// Release the lock — but only if it is still ours.
-    ///
-    /// An unconditional `remove_file` here deletes whatever lock file happens to exist, which after
-    /// a steal is somebody else's. That turns one lost race into a permanently unlocked machine:
-    /// the thief keeps running believing it holds the lock, and every subsequent tick walks
-    /// straight in. Checking the pid first makes releasing safe even when acquiring was not.
-    fn drop(&mut self) {
-        let ours = std::fs::read_to_string(&self.path)
-            .ok()
-            .and_then(|raw| raw.trim().parse::<u32>().ok())
-            .is_some_and(|pid| pid == std::process::id());
-        if ours {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// rendering
-// ---------------------------------------------------------------------------------------------
-
-fn print_decision(d: &QueueDecision) {
-    let dry = if d.dry_run { " (dry run)" } else { "" };
-    match d.outcome.as_str() {
-        "started" => println!("\u{f0e7} started {}{dry}", d.started),
-        "empty" => println!("nothing pending{dry}"),
-        _ => println!("\u{f017} started nothing — {} pending{dry}", d.pending),
-    }
-    if let Some(bind) = &d.bind {
-        let why = d.reason.as_deref().unwrap_or("");
-        println!(
-            "  bind: {bind}{}",
-            if why.is_empty() {
-                String::new()
-            } else {
-                format!(" — {why}")
-            }
-        );
-    }
-    for row in &d.dispatched {
-        println!(
-            "  → {}/{} · {} · {} on {}{}",
-            row.repo,
-            row.id,
-            row.kind,
-            row.exec,
-            row.target,
-            row.harness
-                .as_ref()
-                .map(|h| format!(" ({h})"))
-                .unwrap_or_default()
-        );
-    }
-    if !d.deferred.is_empty() {
-        println!("  held {}:", d.deferred.len());
-        for row in d.deferred.iter().take(8) {
-            let detail = if row.detail.is_empty() {
-                String::new()
-            } else {
-                format!(" — {}", row.detail)
-            };
-            println!("    {}/{} · {}{detail}", row.repo, row.id, row.reason);
-        }
-        if d.deferred.len() > 8 {
-            println!("    …and {} more", d.deferred.len() - 8);
-        }
-    }
-    for lane in &d.lanes {
-        println!(
-            "  lane {:<9} {}/{} in flight · {} pending{}",
-            lane.lane,
-            lane.in_flight,
-            lane.cap,
-            lane.pending,
-            if lane.saturated { " (full)" } else { "" }
-        );
-    }
-}
-
-/// `bn queue nodes` — the node × capability matrix.
-///
-/// The direct answer to a `no-capable-node` deferral. A queue that can only say "nothing could run
-/// this" is a queue you have to guess at; this says which boxes exist, which are actually alive,
-/// and exactly what each one serves.
-pub(crate) fn emit_nodes(cfg: &Config, skill: Option<&str>, json: bool) {
-    use bn_core::clock::Clock;
-    let now = bn_core::clock::RealClock.now_epoch_secs();
-    let ttl = cfg.queue.heartbeat_ttl();
-    let nodes = observe_nodes(cfg, now);
-    let rows: Vec<serde_json::Value> = nodes
-        .iter()
-        .map(|n| {
-            let axes = bn_core::worker::advertise::split_labels(&n.labels);
-            serde_json::json!({
-                "node_id": n.node_id,
-                "target": n.target.label(),
-                "status": format!("{:?}", n.status).to_lowercase(),
-                "slots": n.slots.max(1),
-                "busy": n.active_attempts,
-                "free": n.slots.max(1).saturating_sub(n.active_attempts),
-                "stale": bn_core::hosts::is_stale(n, now, ttl),
-                "heartbeat_age_secs": (n.last_heartbeat > 0)
-                    .then(|| now.saturating_sub(n.last_heartbeat)),
-                "skills": axes.skills,
-                "harnesses": axes.harnesses,
-                "mcps": axes.mcps,
-                "labels": axes.other,
-            })
-        })
-        .filter(|row| match skill {
-            None => true,
-            Some(want) => row["skills"]
-                .as_array()
-                .is_some_and(|s| s.iter().any(|v| v.as_str() == Some(want))),
-        })
-        .collect();
-
-    if json {
-        println!(
-            "{}",
-            Envelope::success(
-                "queue-nodes",
-                serde_json::json!({ "count": rows.len(), "nodes": rows })
-            )
-            .to_json()
-        );
-        return;
-    }
-    if rows.is_empty() {
-        match skill {
-            Some(want) => println!("no node serves skill '{want}'"),
-            None => println!("no nodes"),
-        }
-        return;
-    }
-    for row in &rows {
-        let stale = if row["stale"].as_bool().unwrap_or(false) {
-            "  (heartbeat lapsed)"
-        } else {
-            ""
-        };
-        println!(
-            "{:<18} {:<9} {:<14} {}/{} free{stale}",
-            row["node_id"].as_str().unwrap_or(""),
-            row["status"].as_str().unwrap_or(""),
-            row["target"].as_str().unwrap_or(""),
-            row["free"].as_u64().unwrap_or(0),
-            row["slots"].as_u64().unwrap_or(0),
-        );
-        for (label, key) in [
-            ("harness", "harnesses"),
-            ("mcp", "mcps"),
-            ("skills", "skills"),
-        ] {
-            let items: Vec<&str> = row[key]
-                .as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
-                .unwrap_or_default();
-            if items.is_empty() {
-                continue;
-            }
-            println!("  {label:<8} {}", items.join(", "));
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use bn_core::test_support::with_state_dir;
-
-    /// A pid that is certainly not running: spawn something trivial and reap it.
-    fn a_dead_pid() -> u32 {
-        let mut child = std::process::Command::new("/usr/bin/true")
-            .spawn()
-            .expect("spawn /usr/bin/true");
-        let pid = child.id();
-        let _ = child.wait();
-        pid
-    }
-
-    /// The regression that took the machine down: a pass slower than `LOCK_STALE_SECS` used to have
-    /// its lock stolen while it was still working, so a second dispatcher realized the same plan.
-    #[test]
-    fn a_live_owner_keeps_its_lock_however_old() {
-        let alive = |_: u32| true;
-        assert!(
-            !lock_abandoned(Some(4242), || true, &alive),
-            "a lock held by a live process must not be stolen for being old"
-        );
-    }
-
-    /// Age still decides the one case with no pid to consult — an old-format or truncated lock.
-    #[test]
-    fn a_pidless_lock_falls_back_to_age() {
-        let alive = |_: u32| true;
-        assert!(lock_abandoned(None, || true, &alive), "stale and pidless");
-        assert!(
-            !lock_abandoned(None, || false, &alive),
-            "a fresh pidless lock is someone mid-write, not an abandoned one"
-        );
-    }
-
-    /// The other half: a lock whose owner died (SIGKILL, power cut) is not a lock, and the machine
-    /// must not stay locked out waiting for a `Drop` that will never run.
-    #[test]
-    fn a_dead_owners_lock_is_reclaimed() {
-        with_state_dir(|| {
-            let path = lock_path();
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, a_dead_pid().to_string()).unwrap();
-
-            let guard = TickLock::try_acquire();
-            assert!(guard.is_ok(), "a dead owner's lock should be reclaimable");
-            assert_eq!(
-                std::fs::read_to_string(&path).unwrap().trim(),
-                std::process::id().to_string(),
-                "the reclaiming pass should own the lock it took"
-            );
-        });
-    }
-
-    /// Releasing must be narrower than acquiring: dropping a guard whose lock was taken by someone
-    /// else has to leave the new owner's lock alone, or one lost race unlocks the machine for good.
-    #[test]
-    fn dropping_does_not_delete_someone_elses_lock() {
-        with_state_dir(|| {
-            let path = lock_path();
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            let guard = TickLock::try_acquire().ok().expect("acquire a free lock");
-            // Simulate the steal: another pass now owns the file.
-            std::fs::write(&path, "999999").unwrap();
-            drop(guard);
-
-            assert_eq!(
-                std::fs::read_to_string(&path).unwrap().trim(),
-                "999999",
-                "a released guard must only remove a lock still bearing its own pid"
-            );
-        });
-    }
-
-    /// Liveness and progress are separate files because they are separate facts — the whole point
-    /// of moving the heartbeat onto a thread.
-    #[test]
-    fn heartbeat_and_pass_are_recorded_separately() {
-        with_state_dir(|| {
-            beat();
-            assert!(bn_core::resolver::dispatcher_alive(
-                bn_core::util::now_epoch_secs()
-            ));
-            assert!(
-                bn_core::resolver::dispatcher_pass_age(bn_core::util::now_epoch_secs()).is_none(),
-                "a heartbeat alone must not claim a pass has completed"
-            );
-
-            stamp_pass();
-            assert_eq!(
-                bn_core::resolver::dispatcher_pass_age(bn_core::util::now_epoch_secs()),
-                Some(0)
-            );
-        });
-    }
-
-    /// The bound that would have capped the incident at five minutes instead of twenty-five — and
-    /// specifically that it reaches the *grandchild*, which is where the hang actually lived
-    /// (`bn dispatch` → `git fetch` → `ssh`). Killing only the direct child would pass a weaker
-    /// version of this test while leaving the blocked process holding the repo.
-    #[test]
-    fn a_launch_that_never_returns_is_killed_along_with_its_children() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let pidfile = dir.path().join("grandchild.pid");
-        let mut cmd = std::process::Command::new("/bin/sh");
-        cmd.arg("-c").arg(format!(
-            "sleep 60 & echo $! > {}; wait",
-            pidfile.to_string_lossy()
-        ));
-
-        let started = std::time::Instant::now();
-        let outcome = wait_bounded(cmd, Some(std::time::Duration::from_secs(1)));
-
-        assert!(matches!(outcome, Launch::TimedOut(_)));
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(30),
-            "the wait must end at its deadline, not at the child's convenience"
-        );
-
-        let grandchild: u32 = std::fs::read_to_string(&pidfile)
-            .expect("the shell should have recorded its background pid")
-            .trim()
-            .parse()
-            .expect("a pid");
-        // The group signal lands immediately; reparenting and reaping take a moment longer.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while pid_alive(grandchild) && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        assert!(
-            !pid_alive(grandchild),
-            "the whole process group must die, not just the process we spawned"
-        );
-    }
-
-    /// …and a launch that returns normally still reports its own exit status.
-    #[test]
-    fn a_launch_that_returns_keeps_its_status() {
-        let mut cmd = std::process::Command::new("/bin/sh");
-        cmd.arg("-c").arg("exit 3");
-        match wait_bounded(cmd, Some(std::time::Duration::from_secs(30))) {
-            Launch::Exited(st) => assert_eq!(st.code(), Some(3)),
-            _ => panic!("a prompt child should report its exit status"),
-        }
-    }
 }

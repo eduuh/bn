@@ -55,8 +55,7 @@ fn setup_agent_repos(cfg: &bn_core::resolver::Config) -> BTreeSet<String> {
         bn_core::agent::DEFAULT_IDLE_MINS,
         bn_core::agent::DEFAULT_STUCK_MINS,
     )
-    .agents
-    .iter()
+    .running()
     .filter(|a| {
         a.task_name
             .as_deref()
@@ -127,7 +126,15 @@ async fn launch_repo_setup_agent(
     run_bn_env(
         args,
         None,
-        vec![("BN_WORKER_REPO".to_string(), repo.to_string())],
+        vec![
+            ("BN_WORKER_REPO".to_string(), repo.to_string()),
+            // Nobody typed this prompt — it was rendered from a template two functions ago. Without
+            // saying so, the enqueue minted a task on the human's day list carrying the whole
+            // prompt as its title, and the entry classified `foreground`, so a chore competed for
+            // the watched coding lane against the work its owner was sitting in front of. Six
+            // repos' setup agents sat pending behind that for five hours.
+            ("BN_MACHINE_DISPATCH".to_string(), "1".to_string()),
+        ],
     )
     .await
 }
@@ -156,12 +163,13 @@ pub async fn repo_orchestrate_start(
     let cfg = state.cfg.clone();
     let repo_key = repo.to_ascii_lowercase();
     let already = tokio::task::spawn_blocking(move || {
-        let fleet = bn_core::agent::supervise(
+        bn_core::agent::supervise(
             &cfg,
             bn_core::agent::DEFAULT_IDLE_MINS,
             bn_core::agent::DEFAULT_STUCK_MINS,
-        );
-        fleet.agents.iter().any(|a| {
+        )
+        .running()
+        .any(|a| {
             a.repo.eq_ignore_ascii_case(&repo_key)
                 && a.role == bn_core::agent::AgentRole::Orchestrator
         })

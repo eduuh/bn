@@ -21,14 +21,14 @@
 #
 #   scripts/check-file-size.sh --update
 1747	crates/bn-cli/src/agent_live.rs
-2861	crates/bn-cli/src/cli.rs
+2788	crates/bn-cli/src/cli.rs
 2413	crates/bn-cli/src/cmd/agent.rs
 1209	crates/bn-cli/src/cmd/attn.rs
-2185	crates/bn-cli/src/cmd/dispatch.rs
+2175	crates/bn-cli/src/cmd/dispatch.rs
 2024	crates/bn-cli/src/cmd/jobs.rs
 6789	crates/bn-cli/src/cmd/orchestrate.rs
 2125	crates/bn-cli/src/tat.rs
-1827	crates/bn-cli/src/wt_pool.rs
+1823	crates/bn-cli/src/wt_pool.rs
 1358	crates/bn-cli/src/wt/merge.rs
 1452	crates/bn-core/src/daily.rs
 1143	crates/bn-core/src/dojo.rs
@@ -38,6 +38,6 @@
 1617	crates/bn-core/src/staff.rs
 1151	crates/bn-core/src/staff/sentinel.rs
 1156	crates/bn-core/src/todo.rs
-1707	crates/bn-web/src/actions.rs
+1703	crates/bn-web/src/actions.rs
 1349	crates/bn-web/src/api.rs
-1275	crates/bn-web/ui/src/api/types.ts
+1253	crates/bn-web/ui/src/api/types.ts

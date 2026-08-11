@@ -279,9 +279,13 @@ pub fn overlay_live(rows: &mut [SessionRecord], live: &[LiveAgent]) {
         let Some(agent) = by_id.get(&canonical_session_id(&row.session_id)) else {
             continue;
         };
+        // An `Ended` agent is in the fleet only because its transcript is still readable; the row's
+        // own recorded status (done/failed) is the better answer, so the overlay leaves it alone
+        // rather than promoting a finished session back to live.
         row.status = match agent.health {
             AgentHealth::Starting | AgentHealth::Active => SessionStatus::Live,
             AgentHealth::Idle | AgentHealth::Stuck => SessionStatus::Idle,
+            AgentHealth::Ended => row.status,
         };
         row.updated_at = row.updated_at.max(agent.last_activity_ts);
         if row.harness.is_empty() {

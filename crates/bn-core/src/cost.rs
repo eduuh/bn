@@ -883,8 +883,7 @@ pub fn live_rollup(cfg: &Config) -> LiveCost {
     let fleet = supervise(cfg, DEFAULT_IDLE_MINS, DEFAULT_STUCK_MINS);
     let attribution = attribution_map();
     let samples: Vec<RunSample> = fleet
-        .agents
-        .iter()
+        .running()
         .map(|a| RunSample {
             work_class: attribution
                 .get(&canonical_session_id(&a.session_id))
@@ -901,9 +900,10 @@ pub fn live_rollup(cfg: &Config) -> LiveCost {
             cost_usd: None,
         })
         .collect();
+    let output_tokens = samples.iter().map(|s| s.output_tokens).sum();
     LiveCost {
-        agents: fleet.agents.len(),
-        output_tokens: fleet.total_tokens,
+        agents: fleet.running_count(),
+        output_tokens,
         by_category: group_by(&samples, |s| s.work_class.as_str().to_string()),
     }
 }

@@ -107,7 +107,7 @@ pub fn classify(entry: &BacklogEntry) -> QueueClass {
             subtype: QueueSubtype::Cron,
         };
     }
-    if matches!(entry.exec, ExecSpec::Job { .. } | ExecSpec::Shell { .. }) {
+    if is_machine(entry) {
         return QueueClass {
             mode: QueueMode::Autonomous,
             subtype: QueueSubtype::Maintenance,
@@ -117,6 +117,25 @@ pub fn classify(entry: &BacklogEntry) -> QueueClass {
         mode: QueueMode::Foreground,
         subtype: QueueSubtype::Foreground,
     }
+}
+
+/// Whether this entry is the machine's own bookkeeping rather than work a person chose to do.
+///
+/// The single predicate behind three otherwise-unrelated behaviours, which is why it is one function
+/// and not three conditions written out three times:
+///
+/// - the minted task (#1001) is stamped `auto:1` and folds out of the human's actionable list;
+/// - the entry classifies [`QueueMode::Autonomous`], so it stops competing in the watched lane;
+/// - the SMART gate admits it without judgement — a prompt the machine wrote for itself has no
+///   author to send it back to, so gating it only ever means never running it.
+///
+/// Two sources. What the entry *runs* answers it for jobs and shell commands: those launch no agent
+/// and nobody typed them. Everything else is the producer's own declaration
+/// ([`BacklogEntry::machine`]), because the same door serves both kinds — `bn dispatch` carries a
+/// repo-setup prompt the dashboard generated and a sentence a person just typed, and only the caller
+/// can tell them apart.
+pub fn is_machine(entry: &BacklogEntry) -> bool {
+    entry.machine || matches!(entry.exec, ExecSpec::Job { .. } | ExecSpec::Shell { .. })
 }
 
 /// Whether this entry is pool warming.

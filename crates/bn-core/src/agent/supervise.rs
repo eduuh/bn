@@ -4,7 +4,7 @@ use crate::resolver::Config;
 use crate::util::now_epoch_secs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 // --- supervise: live-agent fleet view -------------------------------------------------------
@@ -30,6 +30,12 @@ pub enum AgentHealth {
     Idle,
     /// Idle longer than the stuck threshold — flagged for a nudge.
     Stuck,
+    /// The session is over: no live window hosts it and it has been silent past the stuck threshold.
+    /// Not a health the idle thresholds produce either — [`crate::agent::supervise`] stamps it once
+    /// the window join has run, because only that pass knows whether anything still hosts the
+    /// session. A transcript stays readable for [`super::parse::QUIET_SECS`] after its agent exits,
+    /// so without this every finished agent spent half an hour posing as one that needed a nudge.
+    Ended,
 }
 
 impl AgentHealth {
@@ -51,7 +57,16 @@ impl AgentHealth {
             AgentHealth::Active => "active",
             AgentHealth::Idle => "idle",
             AgentHealth::Stuck => "stuck",
+            AgentHealth::Ended => "ended",
         }
+    }
+
+    /// Whether this agent is still a running session. The fleet reports every transcript it can
+    /// still read, which is a wider set than the sessions actually at work — [`AgentHealth::Ended`]
+    /// is the difference, and any surface answering "what is running" wants this rather than a
+    /// hand-written comparison it will forget to update.
+    pub fn is_running(self) -> bool {
+        !matches!(self, AgentHealth::Ended)
     }
 }
 
@@ -202,6 +217,11 @@ impl ControlChannel {
 pub const DEFAULT_IDLE_MINS: i64 = 5;
 /// Default minutes of quiet before an agent is flagged *stuck*.
 pub const DEFAULT_STUCK_MINS: i64 = 15;
+/// How long a session with no hosting tmux window must stay silent before the fleet calls it over
+/// ([`AgentHealth::Ended`]). Long enough that a live agent thinking between turns is never mistaken
+/// for a finished one, and well short of [`super::parse::QUIET_SECS`], after which the transcript
+/// stops being supervised at all.
+pub const ENDED_SILENCE_MINS: i64 = DEFAULT_STUCK_MINS;
 /// How long after launch a just-dispatched agent with no transcript is shown as a pending
 /// "starting…" entry (#545). Generous enough to cover a slow cold-worktree boot or an agent parked
 /// on a trust/MCP-approval prompt, yet bounded so a launch whose harness never came up (e.g. the
@@ -218,12 +238,29 @@ pub struct Fleet {
     pub active: usize,
     pub idle: usize,
     pub stuck: usize,
+    /// Sessions the supervisor can still read but nothing is hosting any more. Counted apart
+    /// from `stuck` because the two ask for opposite responses: a stuck agent wants a nudge, and a
+    /// finished one wants to be left alone.
+    #[serde(default)]
+    pub ended: usize,
     /// Σ output tokens across every live agent — the fleet-wide usage total the board headlines.
     /// Output tokens are the cross-harness comparable signal (see [`LiveAgent`]).
     pub total_tokens: i64,
 }
 
 impl Fleet {
+    /// The agents actually at work — every caller asking "what is running on this machine" wants
+    /// this rather than `agents`, which also carries the sessions that have already finished.
+    pub fn running(&self) -> impl Iterator<Item = &LiveAgent> {
+        self.agents.iter().filter(|a| a.health.is_running())
+    }
+
+    /// How many agents are at work. The count that gates capacity, saturation and "is one already
+    /// running for this repo?" — none of which a finished session should influence.
+    pub fn running_count(&self) -> usize {
+        self.agents.len().saturating_sub(self.ended)
+    }
+
     fn from_agents(agents: Vec<LiveAgent>) -> Fleet {
         let count = |h: AgentHealth| agents.iter().filter(|a| a.health == h).count();
         Fleet {
@@ -231,6 +268,7 @@ impl Fleet {
             active: count(AgentHealth::Active),
             idle: count(AgentHealth::Idle),
             stuck: count(AgentHealth::Stuck),
+            ended: count(AgentHealth::Ended),
             total_tokens: agents.iter().map(|a| a.output_tokens).sum(),
             agents,
         }
@@ -253,19 +291,8 @@ pub fn supervise(cfg: &Config, idle_mins: i64, stuck_mins: i64) -> Fleet {
     // record but no transcript yet, so a freshly-dispatched (or startup-stalled) agent is visible
     // in the fleet for ANY client — not just the one that clicked. Deduped against the live and
     // already-finished sessions so a running or completed agent is never resurrected as pending.
-    let live_ids: HashSet<String> = fleet
-        .agents
-        .iter()
-        .map(|a| canonical_session_id(&a.session_id))
-        .collect();
-    let finished_ids = finished_session_ids(cfg);
-    let pending = pending_agents(
-        &launches,
-        &live_ids,
-        &finished_ids,
-        now,
-        DEFAULT_STARTING_MINS,
-    );
+    let claimed = Claimed::from(&fleet.agents, finished_session_ids(cfg));
+    let pending = pending_agents(&launches, &claimed, now, DEFAULT_STARTING_MINS);
     if !pending.is_empty() {
         let mut agents = std::mem::take(&mut fleet.agents);
         agents.extend(pending);
@@ -277,8 +304,197 @@ pub fn supervise(cfg: &Config, idle_mins: i64, stuck_mins: i64) -> Fleet {
     // these, or is it only watching? Kept out of `supervise_from` for the same reason as roles —
     // it shells out to tmux, and that core stays a pure filesystem read.
     stamp_control(cfg, &mut fleet.agents);
+    // `stamp_control` is the first pass that knows whether any live window still hosts each session,
+    // so "this one is over" — and the counts that quote it — can only be settled after it.
+    mark_ended(&mut fleet.agents);
+    fleet = Fleet::from_agents(std::mem::take(&mut fleet.agents));
     stamp_tasks(cfg, &mut fleet.agents);
     fleet
+}
+
+/// Separate the finished sessions from the stalled ones, now that the window join has run.
+///
+/// A Claude transcript stays readable for [`super::parse::QUIET_SECS`] (30 minutes) after its
+/// session exits, which is twice [`ENDED_SILENCE_MINS`] — so every agent that finished normally aged
+/// into `Stuck` and then sat there for a quarter of an hour asking to be nudged.
+///
+/// Both halves of the test carry weight. No hosting window means nothing is running the session:
+/// after [`crate::agent::resolve_channels`] stopped taking a stale lease's word for it, that is a
+/// statement about live tmux rather than about a file bn wrote down once. The silence is what keeps
+/// the rule honest for a session started outside tmux, which has no window either — a *running* one
+/// is still writing its transcript, so it never reaches the threshold.
+///
+/// The threshold is deliberately its own constant rather than the caller's `stuck_mins`: capacity
+/// accounting supervises with `stuck_mins = 0` to mean "tell me about everyone", and reading that as
+/// "everyone without a window has finished" would retire live agents from the lane they occupy.
+///
+/// `Starting` is left alone. A just-dispatched agent has no transcript and no window yet, and
+/// [`DEFAULT_STARTING_MINS`] already ages out a launch that never came up.
+fn mark_ended(agents: &mut [LiveAgent]) {
+    let silence = ENDED_SILENCE_MINS * 60;
+    for a in agents.iter_mut() {
+        let quiet = a.health != AgentHealth::Starting && a.idle_secs >= silence;
+        if quiet && a.tmux_target.is_none() {
+            a.health = AgentHealth::Ended;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn agent(health: AgentHealth, idle_secs: i64, tmux_target: Option<&str>) -> LiveAgent {
+        LiveAgent {
+            session_id: "s1".to_string(),
+            harness: "copilot".to_string(),
+            repo: "bn".to_string(),
+            branch: "queue-duplicates".to_string(),
+            target: "bn:queue-duplicates".to_string(),
+            tmux_target: tmux_target.map(str::to_string),
+            worktree: None,
+            last_activity_ts: 100,
+            idle_secs,
+            health,
+            role: AgentRole::Worker,
+            work_class: None,
+            task_name: None,
+            turns: 1,
+            tool_calls: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            control: ControlChannel::None,
+            task: None,
+        }
+    }
+
+    #[test]
+    fn quiet_windowless_agent_is_ended_not_running() {
+        let mut agents = vec![
+            agent(AgentHealth::Stuck, ENDED_SILENCE_MINS * 60, None),
+            agent(AgentHealth::Stuck, ENDED_SILENCE_MINS * 60, Some("bn:live")),
+            agent(AgentHealth::Starting, ENDED_SILENCE_MINS * 60, None),
+        ];
+
+        mark_ended(&mut agents);
+        let fleet = Fleet::from_agents(agents);
+
+        assert_eq!(fleet.ended, 1);
+        assert_eq!(fleet.stuck, 1);
+        assert_eq!(fleet.starting, 1);
+        assert_eq!(fleet.running_count(), 2);
+        assert_eq!(fleet.running().count(), 2);
+    }
+
+    fn launch(session_id: &str, branch: &str, launched_at: i64) -> LaunchRecord {
+        LaunchRecord {
+            session_id: session_id.to_string(),
+            task_name: String::new(),
+            harness: "claude".to_string(),
+            repo: "bn".to_string(),
+            branch: branch.to_string(),
+            worktree: String::new(),
+            work_class: WorkClass::Coding,
+            launched_at,
+            controller_id: None,
+        }
+    }
+
+    /// A live agent in the launch's checkout, last heard from at `last_activity_ts`.
+    fn working(branch: &str, session_id: &str, last_activity_ts: i64) -> LiveAgent {
+        LiveAgent {
+            session_id: session_id.to_string(),
+            branch: branch.to_string(),
+            last_activity_ts,
+            ..agent(AgentHealth::Active, 0, None)
+        }
+    }
+
+    #[test]
+    fn launch_that_came_up_under_another_id_is_not_also_pending() {
+        // The harness wrote its own transcript id, so the id bn pinned never goes live — only the
+        // checkout says the launch arrived.
+        let claimed = Claimed::from(
+            &[working("repo-page", "actually-this-one", 1_100)],
+            HashSet::new(),
+        );
+
+        let pending = pending_agents(
+            &[launch("pinned-id", "repo-page", 1_000)],
+            &claimed,
+            1_200,
+            20,
+        );
+
+        assert!(pending.is_empty(), "one dispatch must render as one row");
+    }
+
+    #[test]
+    fn ghost_from_the_previous_run_does_not_hide_a_fresh_launch() {
+        // Same checkout, but its last sign of life predates the dispatch: that transcript is the run
+        // before, and the agent this launch is waiting on has genuinely not come up yet.
+        let claimed = Claimed::from(
+            &[working("repo-page", "yesterdays-run", 900)],
+            HashSet::new(),
+        );
+
+        let pending = pending_agents(
+            &[launch("pinned-id", "repo-page", 1_000)],
+            &claimed,
+            1_200,
+            20,
+        );
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].health, AgentHealth::Starting);
+    }
+
+    #[test]
+    fn checkout_match_ignores_branch_spelling() {
+        let claimed = Claimed::from(&[working("feature-x", "live", 1_100)], HashSet::new());
+
+        let pending = pending_agents(
+            &[launch("pinned-id", "feature/X", 1_000)],
+            &claimed,
+            1_200,
+            20,
+        );
+
+        assert!(
+            pending.is_empty(),
+            "`feature/X` and `feature-x` are one checkout"
+        );
+    }
+
+    #[test]
+    fn a_branchless_launch_is_not_answered_for_by_the_repo() {
+        // Neither side names a checkout, so there is nothing to match on but the repo — which is
+        // not the same work, and the placeholder is all this launch has.
+        let claimed = Claimed::from(&[working("", "some-other-agent", 1_100)], HashSet::new());
+
+        let pending = pending_agents(&[launch("pinned-id", "", 1_000)], &claimed, 1_200, 20);
+
+        assert_eq!(pending.len(), 1);
+    }
+
+    #[test]
+    fn finished_and_live_ids_still_win_on_an_untouched_checkout() {
+        let claimed = Claimed::from(&[], HashSet::from(["ingested".to_string()]));
+
+        let pending = pending_agents(
+            &[
+                launch("ingested", "done-branch", 1_000),
+                launch("fresh", "new-branch", 1_000),
+            ],
+            &claimed,
+            1_200,
+            20,
+        );
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].session_id, "fresh");
+    }
 }
 
 /// Attach each agent's governing task, so the fleet can say what an agent is working on.
@@ -355,16 +571,84 @@ fn finished_session_ids(cfg: &Config) -> HashSet<String> {
         .collect()
 }
 
+/// What the fleet already accounts for, so a synthesized "starting…" entry never duplicates a
+/// session that is right there in the list.
+///
+/// Two ways a launch is already answered for, and the session id catches only the first:
+///
+/// * **The id came up.** A transcript exists for exactly the id bn pinned, or ingest has already
+///   filed that id as finished.
+/// * **The checkout is busy.** A session is at work in the worktree the launch targeted, under some
+///   *other* id. Harnesses do not always keep the id bn asks for — a `--resume`, a relaunch, a
+///   compaction can each write a fresh one — and then the id half never matches, so the placeholder
+///   sat beside the very agent it was waiting for until [`DEFAULT_STARTING_MINS`] retired it. One
+///   dispatch rendering as two rows is the same work counted twice, which is what the queue page
+///   reads as a duplicate.
+struct Claimed {
+    /// Canonical session ids that are live or already ingested.
+    sessions: HashSet<String>,
+    /// Per `repo/branch`, the newest sign of life from a live session in that checkout — compared
+    /// against the launch time rather than merely present, so a *stale* session (a ghost transcript
+    /// still readable from the run before) cannot suppress the placeholder for a launch that fired
+    /// after it fell silent.
+    worktrees: HashMap<String, i64>,
+}
+
+impl Claimed {
+    fn from(live: &[LiveAgent], finished: HashSet<String>) -> Claimed {
+        let mut sessions = finished;
+        let mut worktrees: HashMap<String, i64> = HashMap::new();
+        for a in live {
+            sessions.insert(canonical_session_id(&a.session_id));
+            let Some(key) = worktree_key(&a.repo, &a.branch) else {
+                continue;
+            };
+            worktrees
+                .entry(key)
+                .and_modify(|ts| *ts = (*ts).max(a.last_activity_ts))
+                .or_insert(a.last_activity_ts);
+        }
+        Claimed {
+            sessions,
+            worktrees,
+        }
+    }
+
+    /// Whether the fleet already shows this launch — either its own id, or a session that has
+    /// spoken in the launch's checkout since it fired.
+    fn covers(&self, launch: &LaunchRecord) -> bool {
+        if self
+            .sessions
+            .contains(&canonical_session_id(&launch.session_id))
+        {
+            return true;
+        }
+        worktree_key(&launch.repo, &launch.branch)
+            .and_then(|key| self.worktrees.get(&key))
+            .is_some_and(|ts| *ts >= launch.launched_at)
+    }
+}
+
+/// The one spelling of a checkout both sides compare on: repo and branch in the form the worktree
+/// dirs already use, so a launch record's `feature/x` and a live agent's `feature-x` are one place.
+///
+/// `None` for a branchless record (a launch that names no checkout, an agent whose transcript could
+/// not be attributed to one). Those must not fall together into a repo-wide bucket, where any live
+/// agent in the repo would answer for a launch that has nothing to do with it.
+fn worktree_key(repo: &str, branch: &str) -> Option<String> {
+    let branch = super::lease::normalized_branch(branch);
+    (!branch.is_empty()).then(|| format!("{}/{branch}", repo.trim().to_lowercase()))
+}
+
 /// Synthesize pending "starting…" [`LiveAgent`]s from launch records (#545): a launch within
-/// `starting_mins` whose session id is neither live (already has a transcript in `live_ids`) nor
-/// finished (already ingested in `finished_ids`) was dispatched but hasn't come up yet. Pure over
-/// its inputs so it is unit-testable without touching the filesystem. The latest launch record per
-/// session wins (a re-dispatch re-pins the same id), and entries carry the launch time as their
-/// `last_activity_ts` so they sort to the top of the fleet as the newest work.
+/// `starting_mins` that the fleet does not already account for (see [`Claimed`]) was dispatched but
+/// hasn't come up yet. Pure over its inputs so it is unit-testable without touching the filesystem.
+/// The latest launch record per session wins (a re-dispatch re-pins the same id), and entries carry
+/// the launch time as their `last_activity_ts` so they sort to the top of the fleet as the newest
+/// work.
 fn pending_agents(
     launches: &[LaunchRecord],
-    live_ids: &HashSet<String>,
-    finished_ids: &HashSet<String>,
+    claimed: &Claimed,
     now: i64,
     starting_mins: i64,
 ) -> Vec<LiveAgent> {
@@ -376,9 +660,9 @@ fn pending_agents(
     }
     let window = starting_mins * 60;
     latest
-        .into_iter()
-        .filter_map(|(canon, l)| {
-            if live_ids.contains(&canon) || finished_ids.contains(&canon) {
+        .into_values()
+        .filter_map(|l| {
+            if claimed.covers(l) {
                 return None;
             }
             let age = now - l.launched_at;

@@ -20,6 +20,7 @@ pub(crate) struct DispatchInvocation<'a> {
     verify: bool,
     yolo: bool,
     no_plan_review: bool,
+    stage: Option<bn_core::pipeline::stage::Stage>,
     fresh: bool,
     json: bool,
 }
@@ -37,6 +38,7 @@ impl<'a> DispatchInvocation<'a> {
             verify: false,
             yolo: false,
             no_plan_review: false,
+            stage: None,
             fresh: false,
             json: false,
         }
@@ -80,6 +82,13 @@ impl<'a> DispatchInvocation<'a> {
         self
     }
 
+    /// Declare the pipeline stage, so the launch resolves *that* stage's model/effort/harness rather
+    /// than the one dispatch would infer from `--scout`/`--skill`.
+    pub(crate) fn stage(mut self, stage: Option<bn_core::pipeline::stage::Stage>) -> Self {
+        self.stage = stage;
+        self
+    }
+
     pub(crate) fn fresh(mut self, fresh: bool) -> Self {
         self.fresh = fresh;
         self
@@ -119,6 +128,9 @@ impl<'a> DispatchInvocation<'a> {
         }
         if self.no_plan_review {
             args.push("--no-plan-review".to_string());
+        }
+        if let Some(stage) = self.stage {
+            args.extend(["--stage".to_string(), stage.as_str().to_string()]);
         }
         if self.fresh {
             args.push("--fresh".to_string());

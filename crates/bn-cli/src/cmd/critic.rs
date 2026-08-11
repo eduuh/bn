@@ -421,6 +421,8 @@ pub(crate) fn run_critic_verdict(
                 None,
                 false,
                 &[],
+                // Hand-typed lanes: no declared stage, so the inference stands.
+                None,
                 json,
             );
             emit_verdict(

@@ -567,7 +567,7 @@ fn render_workflow_body(skill: &bn_core::skills::Skill, title: &str) -> Result<S
     let mut args = serde_json::Map::new();
     for argument in &skill.arguments {
         let value = match argument.name.as_str() {
-            "question" | "symptom" | "topic" => title,
+            "question" | "symptom" | "topic" | "task" => title,
             "continuous" => "true",
             _ => continue,
         };
@@ -1073,18 +1073,6 @@ fn pin_worktree_gh_account(repo: &str, branch: &str) -> Option<std::path::PathBu
     dir.join("hosts.yml").is_file().then_some(dir)
 }
 
-fn dispatch_pipeline_stage(scout: bool, skill: Option<&str>) -> bn_core::pipeline::stage::Stage {
-    use bn_core::pipeline::stage::Stage;
-
-    if scout || skill == Some("investigate") {
-        Stage::Investigate
-    } else if skill == Some("plan") {
-        Stage::Plan
-    } else {
-        Stage::Execute
-    }
-}
-
 /// Orchestrate `bn dispatch`: resolve the target repo (an explicit `--repo` name from anywhere, else
 /// the cwd's), resolve the item, create a worktree off `base` for it, seed that branch's note (goal
 /// = the item, plus a source link), run the post-create hook, mark the source todo done, and open a
@@ -1182,6 +1170,8 @@ pub(crate) fn run_dispatch(
     task_id: Option<&str>,
     attach: bool,
     refs: &[String],
+    // The pipeline stage this dispatch *is*, when the caller knows; `None` infers it.
+    stage: Option<bn_core::pipeline::stage::Stage>,
     json: bool,
 ) {
     let controller_id = std::env::var("BN_CONTROLLER_ID")
@@ -1295,7 +1285,7 @@ pub(crate) fn run_dispatch(
     // copilot, then the machine capability gate degrades an unavailable harness to copilot
     // (surfaced, never silent). A single dispatched run uses this one harness+model for its whole
     // pipeline, so the override only distinguishes separate dispatches by their launch stage.
-    let stage = dispatch_pipeline_stage(scout, skill);
+    let stage = dp::dispatch_pipeline_stage(stage, scout, skill);
     let model = cfg.pipeline_model(&repo, stage);
     let agent_kind: Option<&'static str> = launch_agent.then(|| {
         let stage_harness: Option<&'static str> = model

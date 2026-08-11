@@ -60,6 +60,20 @@ export function fmtAic(aic: number | null): string {
   return money(aic);
 }
 
+/** AIC at board density — `—`, `48.51`, `2.8k`, `147.4k`, `1.20M`.
+ *
+ * The same number as `fmtAic` at the precision a scan can use. Full 2dp is right on a detail screen
+ * where the figure is the subject; in a list row it is up to ten characters of mostly-noise digits,
+ * and the first thing a narrow card drops is the tail — which turned a six-figure spend into the
+ * unreadable `147,…`. Shares the `k`/`M` shape with `fmtTokens` so one habit reads both. */
+export function fmtAicCompact(aic: number | null): string {
+  if (aic === null || !Number.isFinite(aic)) return "—";
+  const n = Math.abs(aic);
+  if (n < 1_000) return aic.toFixed(2);
+  if (n < 1_000_000) return `${(aic / 1_000).toFixed(1)}k`;
+  return `${(aic / 1_000_000).toFixed(2)}M`;
+}
+
 /** $ (the cache-aware API-equiv benchmark) — `—` when nothing in the group was priceable, else
  * `$1.23`. Never a bill; a benchmark. */
 export function fmtUsd(usd: number | null): string {

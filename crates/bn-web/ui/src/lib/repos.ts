@@ -68,3 +68,69 @@ export function splitSessions(sessions: RepoSession[]): {
 export function findRepo(view: ReposView | undefined, repo: string): RepoRollup | undefined {
   return view?.repos.find((r) => r.repo.toLowerCase() === repo.toLowerCase());
 }
+
+// --- Board filtering (#495) ---
+//
+// The board is a phone surface first, and a phone shows about four cards at a time. With a dozen
+// repos cloned that is three screens of scrolling to answer "which one is busy" — so the board
+// narrows before it scrolls. The predicates live here, pure and tested, because the route is meant
+// to be a render of these values rather than a place where filtering logic accumulates.
+
+/** The board's narrowing modes: everything, repos with a live agent, repos whose bn scripts are
+ * missing, repos with a warm pool configured. */
+export type RepoFilter = "all" | "active" | "setup" | "pooled";
+
+/** The shape the filters actually read. Structural rather than `RepoRollup` so the route can pass
+ * its pool-policy-widened rollup without a cast. */
+export interface FilterableRepo {
+  repo: string;
+  active_agents: number;
+  setup?: { needs_setup: boolean } | null;
+  pool: { enabled: boolean };
+}
+
+/** Does this repo belong in `filter`? */
+export function matchesFilter(repo: FilterableRepo, filter: RepoFilter): boolean {
+  switch (filter) {
+    case "active":
+      return repo.active_agents > 0;
+    case "setup":
+      return repo.setup?.needs_setup === true;
+    case "pooled":
+      return repo.pool.enabled;
+    default:
+      return true;
+  }
+}
+
+/** Case-insensitive substring match on the repo name. Substring rather than prefix because the
+ * names people type are usually the tail (`-web`), not the owner. An all-whitespace query matches
+ * everything, so a stray space never empties the board. */
+export function matchesQuery(repo: FilterableRepo, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  return q === "" || repo.repo.toLowerCase().includes(q);
+}
+
+/** The board's visible repos: the server's activity ordering, narrowed by chip and search box. */
+export function filterRepos<T extends FilterableRepo>(
+  repos: T[],
+  filter: RepoFilter,
+  query: string,
+): T[] {
+  return repos.filter((r) => matchesFilter(r, filter) && matchesQuery(r, query));
+}
+
+/** The live count behind each chip. Counted against the search results, not the whole inventory, so
+ * a chip never advertises rows that the current search has already excluded. */
+export function repoFilterCounts(
+  repos: FilterableRepo[],
+  query: string,
+): Record<RepoFilter, number> {
+  const searched = repos.filter((r) => matchesQuery(r, query));
+  return {
+    all: searched.length,
+    active: searched.filter((r) => matchesFilter(r, "active")).length,
+    setup: searched.filter((r) => matchesFilter(r, "setup")).length,
+    pooled: searched.filter((r) => matchesFilter(r, "pooled")).length,
+  };
+}

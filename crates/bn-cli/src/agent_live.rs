@@ -228,6 +228,7 @@ fn augment_registry_with_live(
             .join(row.branch.replace('/', "-"));
         let status = match row.health {
             Some(AgentHealth::Idle | AgentHealth::Stuck) => SessionStatus::Idle,
+            Some(AgentHealth::Ended) => SessionStatus::Done,
             _ => SessionStatus::Live,
         };
         let note_ctx = Resolved {
@@ -809,6 +810,9 @@ fn lifecycle_from_state(state: &str, health: Option<AgentHealth>) -> AgentLifecy
             Some(AgentHealth::Starting) => AgentLifecycle::Starting,
             Some(AgentHealth::Idle) => AgentLifecycle::Idle,
             Some(AgentHealth::Stuck) => AgentLifecycle::Stuck,
+            // Nothing hosts the session any more — it finished, so it reads as done rather than as
+            // a stalled agent someone should go and nudge.
+            Some(AgentHealth::Ended) => AgentLifecycle::Done,
             Some(AgentHealth::Active) | None => AgentLifecycle::Active,
         },
     }

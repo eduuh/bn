@@ -172,6 +172,7 @@ pub(crate) fn capture_today(
     cfg: &Config,
     suggestion: &bn_core::suggestions::Suggestion,
     plan: &TodayPlan<'_>,
+    quiet: bool,
 ) -> Option<(String, String)> {
     let now = bn_core::util::now_epoch_secs();
     let source = suggestion.queue_source();
@@ -216,7 +217,9 @@ pub(crate) fn capture_today(
     match enqueue(&backlog::backlog_path(), &repo, &subject, &spec, now) {
         Ok(e) => {
             let id = e.entry().id.clone();
-            if e.is_new() {
+            if quiet {
+                // Nothing: the tick sweeps this every pass, and a line per pass is log noise.
+            } else if e.is_new() {
                 println!("  queued {repo}/{id} · {} · priority {}", spec.kind.label(), spec.priority);
             } else {
                 println!("  already queued {repo}/{id} ({})", e.label());
@@ -240,7 +243,8 @@ pub(crate) fn capture_review(cfg: &Config, repo: &str, number: i64, url: &str, w
         kind: BacklogKind::ReviewPr,
         priority: waited_hours.max(0),
         source: format!("review:{repo}#{number}"),
-        task: crate::cmd::task_mint::task_for_enqueue(cfg, repo, url, "review"),
+        // The auto-review poll raised this, not a person deciding to review something.
+        task: crate::cmd::task_mint::task_for_machine_enqueue(cfg, repo, url, "review"),
         exec: ExecSpec::Skill {
             skill: "auto-review-pr".to_string(),
             arg: Some(url.to_string()),
@@ -301,7 +305,7 @@ pub(crate) fn capture_job(
         // recovery, which has to outrank a backlog of routine crons to be worth exempting at all.
         priority: bn_core::queue::jobs::priority_for(name),
         source: format!("cron:{name}"),
-        task: crate::cmd::task_mint::task_for_enqueue(cfg, &repo, &subject, "cron"),
+        task: crate::cmd::task_mint::task_for_machine_enqueue(cfg, &repo, &subject, "cron"),
         exec,
         requires,
         // A scheduled job keeps its time inside the queue: past this it is dropped rather than run
@@ -452,6 +456,22 @@ pub(crate) struct DispatchRequest<'a> {
     /// Declining the plan-review gate — durable on the entry, so a captured dispatch is launched
     /// with the same stance the caller asked for.
     pub no_plan_review: bool,
+    /// The pipeline stage this dispatch is, when the caller knows it. Durable for the same reason
+    /// the rest of the identity is: the stage picks the model, effort, harness and workflow, and an
+    /// entry that loses it is re-inferred into whichever of three stages the guess allows.
+    pub stage: Option<bn_core::pipeline::stage::Stage>,
+    /// Whether the machine generated this dispatch for itself rather than a person asking for it.
+    ///
+    /// A repo setup agent is the case that forced it: the *click* is a human's, but the work — read
+    /// the build system, write `jobs/build.sh`, run `bn verify` — is bookkeeping, and its prompt is
+    /// generated. Booked as a person's task it landed on the day's list as a wall of flattened
+    /// prompt, and classified `foreground` it competed for the watched lane against work you were
+    /// actually sitting in front of.
+    ///
+    /// Declared here rather than inferred from the subject, because a subject is only ever a guess:
+    /// the last attempt at inference read the word "warm" out of a setup prompt's own instructions
+    /// and froze priority-100 work for an away window (see `queue::classify::is_warming`).
+    pub machine: bool,
     /// Flags whose meaning is "do this to the worktree as you cut it". The queue cuts the worktree
     /// later, from the entry alone, so these have nowhere durable to live yet.
     pub fresh: bool,
@@ -535,7 +555,13 @@ pub(crate) fn capture_dispatch(cfg: &Config, req: &DispatchRequest<'_>, json: bo
         // interrupt, which is the one thing that should still cut ahead of a human's own request.
         priority: 100,
         source: "dispatch".to_string(),
-        task: crate::cmd::task_mint::task_for_enqueue(cfg, &repo, item, "dispatch"),
+        task: match req.machine {
+            true => crate::cmd::task_mint::task_for_machine_enqueue(cfg, &repo, item, "dispatch"),
+            false => crate::cmd::task_mint::task_for_enqueue(cfg, &repo, item, "dispatch"),
+        },
+        // Durable, so the tick classifies the entry as what it was declared to be rather than
+        // re-deriving provenance from a subject line it cannot read.
+        machine: req.machine,
         exec,
         requires: Requirements {
             harness: harness.map(|h| vec![h.to_string()]).unwrap_or_default(),
@@ -548,6 +574,7 @@ pub(crate) fn capture_dispatch(cfg: &Config, req: &DispatchRequest<'_>, json: bo
             name: req.name.map(str::to_string),
             yolo: req.yolo,
             no_plan_review: req.no_plan_review,
+            stage: req.stage,
         },
         ..Default::default()
     };
@@ -651,10 +678,12 @@ mod capture_tests {
             name: None,
             yolo: false,
             no_plan_review: false,
+            machine: false,
             fresh: false,
             verify: false,
             plan: false,
             orchestrator: false,
+            stage: None,
         }
     }
 

@@ -98,6 +98,7 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
             yolo,
             plan,
             no_plan_review,
+            stage,
             fresh,
             keep_project_mcps,
             no_pool,
@@ -124,6 +125,9 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
                 let ok = crate::cmd::queue_producers::capture_dispatch(
                     cfg,
                     &crate::cmd::queue_producers::DispatchRequest {
+                        // Carried, not inferred: a `--stage` the caller typed must survive the
+                        // queue, or the entry comes back out as whichever stage the guess allows.
+                        stage,
                         repo: repo.as_deref(),
                         item: &item.join(" "),
                         scout,
@@ -136,6 +140,7 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
                         verify,
                         plan,
                         no_plan_review,
+                        machine: machine_dispatch(),
                         orchestrator,
                     },
                     json,
@@ -176,6 +181,7 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
                 task.as_deref(),
                 attach,
                 &refs,
+                stage,
                 json,
             );
         }
@@ -249,4 +255,22 @@ fn dispatch_captured(cfg: &Config, on_pool_full: crate::cli::OnPoolFull) -> bool
         return false;
     }
     crate::cmd::queue_producers::active(cfg, crate::cmd::queue_producers::DISPATCH)
+}
+
+/// Whether this dispatch is the machine's own bookkeeping rather than work a person asked for.
+///
+/// `$BN_MACHINE_DISPATCH` rather than a `--machine` flag, because the only caller that can honestly
+/// set it is another bn process: the dashboard's repo-setup button, which generates the prompt from
+/// a template and shells out — the same hop that already passes `$BN_WORKER_REPO`. A flag would put
+/// the declaration in a person's hands, and a person passing "this is not my work" about work they
+/// just asked for is the one case it must not be able to describe.
+///
+/// What it buys: the minted task (#1001) is stamped `auto:1` so it stays off the day's list and out
+/// of the SMART gate, and the entry classifies `autonomous` instead of competing for the watched
+/// coding lane. See [`bn_core::queue::classify::is_machine`].
+fn machine_dispatch() -> bool {
+    std::env::var("BN_MACHINE_DISPATCH").is_ok_and(|v| {
+        let v = v.trim();
+        !v.is_empty() && v != "0"
+    })
 }

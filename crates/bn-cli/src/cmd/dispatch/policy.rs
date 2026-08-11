@@ -103,6 +103,32 @@ pub(crate) fn routes_to_pipeline_investigate(has_agent: bool, scout: bool, skill
     has_agent && !scout && skill.is_none()
 }
 
+/// Which stage this dispatch runs as — **declared if the caller knows, inferred only if not**.
+///
+/// The inference is a three-way guess over `(scout, skill)` and cannot express `consensus`,
+/// `validate`, `critique`, `ship` or `learn` at all: every one of them lands on `execute` and
+/// silently borrows that stage's model, effort and harness. That is fine for a hand-typed
+/// `bn dispatch`, where those stages are not what anyone means, and wrong for a pipeline that walks
+/// a task through all nine — so a producer that knows its stage passes `--stage` and is believed.
+pub(crate) fn dispatch_pipeline_stage(
+    declared: Option<bn_core::pipeline::stage::Stage>,
+    scout: bool,
+    skill: Option<&str>,
+) -> bn_core::pipeline::stage::Stage {
+    use bn_core::pipeline::stage::Stage;
+
+    if let Some(stage) = declared {
+        return stage;
+    }
+    if scout || skill == Some("investigate") {
+        Stage::Investigate
+    } else if skill == Some("plan") {
+        Stage::Plan
+    } else {
+        Stage::Execute
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -37,6 +37,9 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
                     let ctx =
                         resolver::resolve(cfg, &std::env::current_dir().unwrap_or_default()).ok();
                     match action {
+                        PipelineCmd::Sweep => {
+                            crate::cmd::pipeline_sweep::emit_pipeline_sweep(cfg, json)
+                        }
                         PipelineCmd::Status { repo, branch } => pl::emit_pipeline_status(
                             cfg,
                             ctx.as_ref(),

@@ -3403,7 +3403,7 @@ fn keep_warm_tick(cfg: &Config, run_path: &Path, repo: &str, now: i64) -> bool {
             priority: -10,
             source: "keep-warm-brainstorm".to_string(),
             // Brainstorm work is bn-authored, but it still needs a task like everything else.
-            task: crate::cmd::task_mint::task_for_enqueue(
+            task: crate::cmd::task_mint::task_for_machine_enqueue(
                 cfg,
                 repo,
                 plan.brainstorm.first().map(String::as_str).unwrap_or("brainstorm"),

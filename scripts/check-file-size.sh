@@ -30,8 +30,12 @@ cd "$ROOT"
 SCOPE="*.rs *.ts *.tsx"
 
 scope() {
+  # `git ls-files` prints a conflicted path once per index stage (base/ours/theirs), so during an
+  # unresolved merge every conflicted file is listed two or three times. Unchecked, `--update` then
+  # writes that many baseline entries for it — which is exactly how the duplicates #1143 had to clean
+  # up got there. `sort -u` makes the listing idempotent whatever the index looks like.
   # shellcheck disable=SC2086  # SCOPE is an intentional list of pathspecs.
-  git ls-files -- $SCOPE | grep -v '\.d\.ts$' || true
+  git ls-files -- $SCOPE | grep -v '\.d\.ts$' | sort -u || true
 }
 
 # "<path>\t<lines>" for the working tree. One wc(1) for the whole set.

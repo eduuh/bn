@@ -131,6 +131,70 @@ pub(super) fn lease_facts(
     }
 }
 
+/// The slot already leased to `want` in a slot of `class` — **only while that tenancy is still
+/// live**. A branch whose prior tenancy is provably over is reclaimed here and reported as absent,
+/// so the caller leases it afresh.
+///
+/// This is the difference between "this branch is already running somewhere" and "this branch ran
+/// here once and the lease outlived it", and conflating them wedges a repo permanently. The
+/// idempotent same-branch hit exists so that re-dispatching a live agent's branch returns its own
+/// slot instead of opening a second checkout on it — correct, and it must keep working. But the hit
+/// is decided from the ledger alone, so a lease whose agent died still answered "already running".
+/// `bn dispatch` reads that back as an occupied worktree and refuses:
+///
+/// ```text
+/// bn dispatch: refusing to reuse occupied pooled worktree …/_pool/2 for branch 'repo-setup'
+/// ```
+///
+/// Nothing then clears the lease. `reclaim_leaked_leases` would, but the acquisition path only runs
+/// it when the pool comes up *full*, and a pool with nine free slots never does — so the one dead
+/// lease is skipped by the sweep that would fix it and honoured by the lookup that must not. Every
+/// retry takes the same path, which for queued work means the dispatcher re-attempts it every pass,
+/// forever: three repos spent eight hours failing once a minute on a slot nobody was in.
+///
+/// So the lookup asks the same question the sweep asks — is anyone actually *in* there — rather
+/// than trusting that a lease implies a tenant. Proof, not a guess: [`bn_core::pool::lease_abandoned`]
+/// still demands an empty, clean checkout past the startup grace, so a live agent (or one still
+/// coming up) is never reclaimed out from under itself.
+pub(super) fn live_branch_slot(
+    ctx: &PoolCtx,
+    leases: &mut Leases,
+    want: &str,
+    class: SlotRole,
+    now: i64,
+) -> Option<u32> {
+    // Branches compare normalized — the ledger may hold `feature/X` where an adopted lease holds
+    // `feature-x`, and reading those as different tenants would lease a second slot for one branch.
+    let (n, abandoned) = leases.slots.iter().find_map(|(&n, lease)| {
+        (bn_core::agent::normalized_branch(&lease.branch) == want && class.owns(n)).then(|| {
+            (
+                n,
+                bn_core::pool::lease_abandoned(
+                    lease_facts(ctx, n, lease, now),
+                    LEAKED_LEASE_GRACE_SECS,
+                ),
+            )
+        })
+    })?;
+    if !abandoned {
+        return Some(n);
+    }
+    // Hand it back exactly as the sweep would, so a slot freed here is indistinguishable from one
+    // freed by `wt pool prune` — same warm reset, same `pool_return` in the event log.
+    warm_reset(
+        &slot_path(&ctx.pool_dir, n).to_string_lossy(),
+        &ctx.bare.to_string_lossy(),
+    );
+    let branch = leases
+        .slots
+        .remove(&n)
+        .map(|l| l.branch)
+        .unwrap_or_default();
+    log_pool_event("pool_return", &ctx.repo, n, &branch, None);
+    let _ = write_leases(&ctx.pool_dir, leases);
+    None
+}
+
 /// The slots whose leases are leaked — nobody in the checkout, nothing uncommitted, and either a
 /// dead holder or a lease old enough that an agent would long since have shown up.
 pub(super) fn leaked_lease_candidates(ctx: &PoolCtx, leases: &Leases, now: i64) -> Vec<u32> {

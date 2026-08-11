@@ -84,7 +84,9 @@ fn reclaim_spec(task: String, cmd: String) -> AddSpec {
 /// checkout must not queue behind a coding agent — that is the resource it is trying to give back.
 pub(crate) fn defer(cfg: &Config, repo: &str, label: &str, path: &Path, confirmed: bool) -> String {
     let item = format!("reclaim worktree {repo}/{label}");
-    let task = crate::cmd::task_mint::task_for_enqueue(cfg, repo, &item, "wt-close");
+    // Reclaiming a worktree is housekeeping the machine owes itself, never something you sat down
+    // to do — 15 of these were on the day's list before it could say so.
+    let task = crate::cmd::task_mint::task_for_machine_enqueue(cfg, repo, &item, "wt-close");
     let spec = reclaim_spec(task, reclaim_cmd(path, confirmed));
     let now = bn_core::util::now_epoch_secs();
     match bn_core::queue::enqueue::enqueue(&backlog::backlog_path(), repo, &item, &spec, now) {

@@ -711,3 +711,129 @@ fn forcing_an_unleased_slot_still_refuses_a_live_occupant() {
         SlotRelease::Occupied { .. }
     ));
 }
+
+/// Regression: a dead tenancy on a branch must not wedge that branch's dispatches forever.
+///
+/// The shape that cost three repos eight hours. A repo-setup dispatch leased a slot, died before
+/// its agent came up, and left the lease behind. Every later attempt found the ledger's same-branch
+/// entry, was handed the slot back as an *existing* tenancy (`fresh: false`), and `bn dispatch`
+/// refused it as an occupied worktree — so the setup agent could never start again for that repo.
+/// The leaked-lease sweep would have cleared it, but the acquisition path only runs that when the
+/// pool comes up **full**, and a pool with free slots never does: the one dead lease was skipped by
+/// the sweep that would fix it and honoured by the lookup that must not.
+///
+/// Note the pool here is nearly empty. That is the whole point — the bug is invisible under
+/// pressure and permanent under plenty.
+#[test]
+fn a_branch_whose_tenancy_died_can_be_dispatched_again() {
+    let (tmp, bare) = mk_bare();
+    TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
+
+    let wt_root = tmp.path().join("wt");
+    let pdir = wt_root.join("bn").join("_pool");
+    std::fs::create_dir_all(&pdir).unwrap();
+
+    // One aged lease for `feat`, nobody in the checkout, holder pid immortal (the real-world
+    // shape: the recorded holder is a tmux server, not the agent).
+    let slot = slot_path(&pdir, 2);
+    assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
+    let mut leases = Leases::default();
+    leases.slots.insert(
+        2,
+        Lease {
+            branch: "feat".into(),
+            holder: "tmux".into(),
+            pid: std::process::id(),
+            at: now_epoch() - LEAKED_LEASE_GRACE_SECS - 1,
+            boot_id: String::new(),
+        },
+    );
+    write_leases(&pdir, &leases).unwrap();
+
+    let ctx = PoolCtx {
+        bare: PathBuf::from(&bare),
+        repo: "bn".into(),
+        pool_dir: pdir.clone(),
+        worktree_dir: wt_root,
+        size: 4,
+    };
+
+    let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker)
+        .expect("a branch whose last tenancy ended must be leasable again");
+    // `fresh` is the assertion that matters: it is what dispatch reads to decide between seeding a
+    // new run and refusing an occupied worktree. Before the fix this was `false` and every retry
+    // died there.
+    assert!(
+        leased.fresh,
+        "a dead tenancy is over — the next lease of that branch is a new one"
+    );
+    assert!(is_live_slot(&leased.slot));
+    assert_eq!(head_ref(&leased.slot), "feat");
+    let after = read_leases(&pdir);
+    assert_eq!(
+        after.slots.values().filter(|l| l.branch == "feat").count(),
+        1,
+        "one lease for the branch, not two"
+    );
+}
+
+/// …and the idempotent warm hit it is built on still works: a branch whose agent is *live* keeps
+/// getting its own slot back, rather than a second checkout opened on the same branch.
+///
+/// This is the half that must not regress. The fix distinguishes "already running" from "ran here
+/// once"; reclaiming a live tenancy would put two agents in one worktree, which is the failure the
+/// same-branch hit exists to prevent.
+#[test]
+fn a_branch_whose_agent_is_live_still_gets_its_own_slot_back() {
+    let (tmp, bare) = mk_bare();
+
+    let wt_root = tmp.path().join("wt");
+    let pdir = wt_root.join("bn").join("_pool");
+    std::fs::create_dir_all(&pdir).unwrap();
+
+    let slot = slot_path(&pdir, 2);
+    assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
+    assert!(switch_into_slot(&slot.to_string_lossy(), &bare, "feat"));
+    let mut occupants = BTreeMap::new();
+    occupants.insert(
+        slot,
+        vec![crate::agent_lease::Occupant {
+            repo: Some("bn".into()),
+            branch: Some("feat".into()),
+            session_id: Some("session-live".into()),
+            tmux_target: "bn:feat".into(),
+            kind: "dispatch".into(),
+            // Aged past the grace, so only occupancy — not youth — is keeping it alive.
+            since: now_epoch() - LEAKED_LEASE_GRACE_SECS - 1,
+        }],
+    );
+    TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(occupants));
+
+    let mut leases = Leases::default();
+    leases.slots.insert(
+        2,
+        Lease {
+            branch: "feat".into(),
+            holder: "tmux".into(),
+            pid: std::process::id(),
+            at: now_epoch() - LEAKED_LEASE_GRACE_SECS - 1,
+            boot_id: String::new(),
+        },
+    );
+    write_leases(&pdir, &leases).unwrap();
+
+    let ctx = PoolCtx {
+        bare: PathBuf::from(&bare),
+        repo: "bn".into(),
+        pool_dir: pdir.clone(),
+        worktree_dir: wt_root,
+        size: 4,
+    };
+
+    let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker).expect("its own slot back");
+    assert_eq!(leased.slot, slot_path(&pdir, 2));
+    assert!(
+        !leased.fresh,
+        "a live agent's branch keeps its tenancy — this is a warm hit, not a new run"
+    );
+}

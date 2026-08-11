@@ -36,6 +36,9 @@ pub(crate) fn route(cfg: &Config, action: QueueCmd, json: bool) {
                 kind: &a.kind,
                 priority: a.priority,
                 skill: a.skill.as_deref(),
+                skill_arg: a.skill_arg.as_deref(),
+                name: a.name.as_deref(),
+                yolo: a.yolo,
                 job: a.job.as_deref(),
                 job_repo: a.job_repo,
                 job_branch: a.job_branch,
@@ -189,6 +192,9 @@ struct AddArgs<'a> {
     kind: &'a str,
     priority: i64,
     skill: Option<&'a str>,
+    skill_arg: Option<&'a str>,
+    name: Option<&'a str>,
+    yolo: bool,
     job: Option<&'a str>,
     job_repo: Option<String>,
     job_branch: Option<String>,
@@ -434,7 +440,36 @@ fn print_dispatcher(cfg: &Config, now: i64) {
         why
     };
     println!("    lanes: {c} coding · {r} research — {derived}");
+    print_held(cfg);
     print_builds(now);
+}
+
+/// Report pipeline work waiting on **you**.
+///
+/// The point of `/queue` and `bn queue status` is answering "why is nothing running" (#1135), and a
+/// held stage is now one of the real answers. Without this line a gate is indistinguishable from an
+/// empty queue: the machine is idle, the lanes are free, and the reason is a review sitting in
+/// someone's inbox. A hold nobody can see is the failure mode the gate must not have.
+fn print_held(cfg: &Config) {
+    let held: Vec<_> = crate::cmd::pipeline_sweep::sweep_tasks(cfg)
+        .into_iter()
+        .filter(|s| s.outcome == "held")
+        .collect();
+    if held.is_empty() {
+        return;
+    }
+    println!(
+        "    held: {} task(s) waiting on your plan review — `bn review` to decide",
+        held.len()
+    );
+    for s in &held {
+        println!(
+            "      {} · {} · {}",
+            s.task,
+            s.repo,
+            s.stage.as_deref().unwrap_or("-")
+        );
+    }
 }
 
 /// The build pool, printed beside the lanes because it is the same question — what bounds this
@@ -813,7 +848,7 @@ fn emit_add(cfg: &Config, item: &str, repo: Option<&str>, args: AddArgs, now: i6
     let exec = match (args.skill, args.job, args.shell) {
         (Some(skill), _, _) => ExecSpec::Skill {
             skill: skill.to_string(),
-            arg: None,
+            arg: args.skill_arg.map(str::to_string),
         },
         (_, Some(job), _) => ExecSpec::Job {
             job: job.to_string(),
@@ -838,12 +873,25 @@ fn emit_add(cfg: &Config, item: &str, repo: Option<&str>, args: AddArgs, now: i6
         touches: args.touches,
         source: "queue".to_string(),
         controller_id: std::env::var("BN_CONTROLLER_ID").ok(),
-        task: crate::cmd::task_mint::task_for_enqueue(cfg, &repo, item, "queue"),
+        // One door, two kinds of work: `--job pool-warm` is the machine's own bookkeeping, a bare
+        // `bn queue add "fix the header"` is yours. What it *runs* is what tells them apart.
+        task: match args.job.is_some() || args.shell.is_some() {
+            true => crate::cmd::task_mint::task_for_machine_enqueue(cfg, &repo, item, "queue"),
+            false => crate::cmd::task_mint::task_for_enqueue(cfg, &repo, item, "queue"),
+        },
         exec,
         requires: Requirements {
             harness: args.harness,
             capabilities: args.requires,
             excludes: args.excludes,
+            ..Default::default()
+        },
+        // Carry the launch identity the caller declared. Without it a queued agent starts on a
+        // branch slugified from its own subject, under a name no already-running guard would
+        // recognise — the exact loss `AgentSpec` exists to prevent.
+        agent: bn_core::backlog::AgentSpec {
+            name: args.name.map(str::to_string),
+            yolo: args.yolo,
             ..Default::default()
         },
         est_secs: args.est_secs,

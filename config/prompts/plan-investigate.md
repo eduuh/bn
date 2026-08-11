@@ -25,9 +25,9 @@ building.
    findings with `bn_add research` and settled facts with `bn_add decision` as you go.
 
 3. **Write the plan artifact.** Run `bn plan init` and write `plans/active.md`: the goal in one
-   line; 2–5 **done-when criteria** — observable, checkable outcomes (`cargo test` green, no new
-   clippy warnings, a behavior verifiable by command) that the execution lane and its critique
-   verify against; **ordered steps** — one action each, the path from here to the criteria, each
+   line; 2–5 **done-when criteria** — observable, checkable outcomes (this repo's test gate green,
+   no new lint warnings, a behavior verifiable by command — named as the commands this repo
+   actually runs) that the execution lane and its critique verify against; **ordered steps** — one action each, the path from here to the criteria, each
    step tracing to a criterion, anything with a real fork or risk split out; risks and open
    questions. Do not decompose the plan through `bn_add todo`/`bn_add done-when` calls — the
    artifact is the contract.

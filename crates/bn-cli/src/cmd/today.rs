@@ -141,6 +141,14 @@ pub(crate) fn today_list(status: Option<&str>, limit: usize, as_json: bool) {
     }
 }
 
+/// The reconcile the tick runs: every accepted suggestion, silently. Returns how many are in flight.
+pub(crate) fn today_reconcile(cfg: &Config) -> usize {
+    suggestions::list(Some(SuggestionStatus::Accepted), 0)
+        .iter()
+        .filter(|s| accept_into_queue(cfg, &s.id, true).is_some())
+        .count()
+}
+
 /// `bn today sync` — reconcile every accepted suggestion against the queue.
 ///
 /// The step that makes the enhance→work hand-off need no callback. An accepted suggestion whose
@@ -299,7 +307,7 @@ pub(crate) struct QueuedSuggestion {
 pub(crate) fn accept_into_queue(
     cfg: &Config,
     id: &str,
-    as_json: bool,
+    quiet: bool,
 ) -> Option<QueuedSuggestion> {
     let suggestion = suggestions::get(id)?;
     // The repo the finding points at, when it points at a known one. `None` is not a failure: it is
@@ -308,7 +316,7 @@ pub(crate) fn accept_into_queue(
     let repo = bn_core::suggestions::repo_from_url(&suggestion.url, &known);
     let task_id = crate::cmd::task_mint::task_for_suggestion(cfg, &suggestion, repo.as_deref());
     if task_id.is_empty() {
-        if !as_json {
+        if !quiet {
             eprintln!("bn today accept: could not record a task for {id}");
         }
         return None;
@@ -320,7 +328,7 @@ pub(crate) fn accept_into_queue(
         queue_producers::TODAY,
         "leaving it accepted but unqueued",
     ) {
-        if !as_json {
+        if !quiet {
             println!("suggestion {id}: accepted · task {task_id}");
             println!("  not queued — no live dispatcher. `bn today sync` once one is running.");
         }
@@ -342,7 +350,7 @@ pub(crate) fn accept_into_queue(
             &live.id,
             bn_core::util::now_epoch_secs(),
         );
-        if !as_json {
+        if !quiet {
             println!("suggestion {id}: accepted · task {task_id}");
             println!(
                 "  already queued {}/{} ({})",
@@ -377,7 +385,7 @@ pub(crate) fn accept_into_queue(
     ) {
         // Waiting on a person: the gate has already raised the attention item, so queueing another
         // enhance attempt would only burn a lane against a task three agents have failed at.
-        if !as_json {
+        if !quiet {
             println!("suggestion {id}: accepted · task {task_id}");
             if let Some(line) = decision.refusal_line() {
                 println!("  {line}");
@@ -399,10 +407,10 @@ pub(crate) fn accept_into_queue(
         queue_producers::TodayPlan::Work { .. } => "work",
         queue_producers::TodayPlan::Enhance { .. } => "enhance",
     };
-    if !as_json {
+    if !quiet {
         println!("suggestion {id}: accepted · task {task_id}");
     }
-    let (repo, entry_id) = queue_producers::capture_today(cfg, &suggestion, &plan)?;
+    let (repo, entry_id) = queue_producers::capture_today(cfg, &suggestion, &plan, quiet)?;
     let _ = suggestions::link_queued(id, &repo, &entry_id, bn_core::util::now_epoch_secs());
     Some(QueuedSuggestion {
         task_id,

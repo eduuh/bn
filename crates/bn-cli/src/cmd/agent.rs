@@ -52,13 +52,17 @@ pub(crate) fn emit_agent_supervise(cfg: &Config, idle: i64, stuck: i64, as_json:
         println!("No running agents.");
         return;
     }
+    // `agents.len()` is every session the supervisor could still read, which includes the ones that
+    // have already finished — quoting that as "running" overstated the fleet by every agent that
+    // exited in the last half hour.
     println!(
-        "{} running · {} starting · {} active · {} idle · {} stuck",
-        fleet.agents.len(),
+        "{} running · {} starting · {} active · {} idle · {} stuck · {} ended",
+        fleet.running_count(),
         fleet.starting,
         fleet.active,
         fleet.idle,
-        fleet.stuck
+        fleet.stuck,
+        fleet.ended
     );
     for a in &fleet.agents {
         let glyph = match a.health {
@@ -66,6 +70,7 @@ pub(crate) fn emit_agent_supervise(cfg: &Config, idle: i64, stuck: i64, as_json:
             bn_core::agent::AgentHealth::Active => "●",
             bn_core::agent::AgentHealth::Idle => "◐",
             bn_core::agent::AgentHealth::Stuck => "○",
+            bn_core::agent::AgentHealth::Ended => "·",
         };
         println!(
             "  {glyph} {:<24} {:<7} idle {:<5} {} turns",
@@ -2403,7 +2408,6 @@ pub(crate) fn emit_agent_sessions(
         );
     }
 }
-
 
 
 

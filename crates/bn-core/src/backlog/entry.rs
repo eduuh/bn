@@ -265,7 +265,25 @@ pub struct BacklogEntry {
     /// So weight is declared. Heavy work is admitted like an agent and spawned like one.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub heavy: bool,
+    /// Work the machine generated for itself, rather than work a person chose to do.
+    ///
+    /// A repo setup agent, a pool warm, a worktree reclaim: the *click* may be a human's, but the
+    /// work is bookkeeping, and it should not be booked against the person the way a typed task is.
+    /// Without the distinction, every producer's enqueue minted a person-scoped task (#1001) and
+    /// today's list came back 96 items deep with three of them the human's own — a list that says
+    /// everything says nothing.
+    ///
+    /// Declared by the producer rather than inferred, because the same door serves both: `bn queue
+    /// add --job pool-warm` is machine work and `bn queue add "fix the header"` is not, and only the
+    /// caller knows which it just built. [`crate::queue::classify::is_machine`] is where the answer
+    /// is read.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub machine: bool,
     /// Manual classification override when durable fields are not enough.
+    ///
+    /// Outranks [`machine`](BacklogEntry::machine): that is the producer's statement of provenance,
+    /// this is a person's later opinion, and a person who says `bn queue class <id> foreground`
+    /// means it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class_override: Option<ClassOverride>,
     /// The identity a worktree-bearing entry keeps across the queue — see [`AgentSpec`]. Read when
@@ -310,6 +328,19 @@ pub struct AgentSpec {
     /// [`yolo`]: AgentSpec::yolo
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_plan_review: bool,
+    /// Which pipeline stage this entry **is**.
+    ///
+    /// The stage decides the model, the effort, the harness and the workflow a launch runs under, so
+    /// guessing it is guessing all four. Dispatch's fallback infers it from `(scout, skill)`, which
+    /// can only ever yield `investigate`, `plan` or `execute` — the other six stages are
+    /// unreachable, and a `critique` entry would silently launch on the execute stage's profile.
+    ///
+    /// So a producer that knows its stage says so and the entry carries it, for exactly the reason
+    /// `branch`/`name`/`yolo` are here: work should run as the thing that was declared, not as
+    /// something rebuilt from its subject line. `None` keeps the inference, so every line written
+    /// before this field existed behaves as it always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<crate::pipeline::stage::Stage>,
 }
 
 impl AgentSpec {
@@ -439,6 +470,8 @@ pub struct AddSpec {
     pub recovery: bool,
     /// Costs like an agent though it launches none — see [`BacklogEntry::heavy`].
     pub heavy: bool,
+    /// Machine bookkeeping rather than work a person chose — see [`BacklogEntry::machine`].
+    pub machine: bool,
     /// Manual classification override — see [`BacklogEntry::class_override`].
     pub class_override: Option<ClassOverride>,
     /// The identity a worktree-bearing agent keeps — see [`AgentSpec`].
@@ -501,6 +534,7 @@ impl AddSpec {
             not_before: entry.not_before,
             recovery: entry.recovery,
             heavy: entry.heavy,
+            machine: entry.machine,
             class_override: entry.class_override,
             agent: entry.agent.clone(),
         }
@@ -554,6 +588,7 @@ impl BacklogEntry {
             recurrence: spec.recurrence,
             recovery: spec.recovery,
             heavy: spec.heavy,
+            machine: spec.machine,
             class_override: spec.class_override,
             agent: spec.agent.clone(),
         }

@@ -42,8 +42,9 @@ it is always safe to leave an item for the user, never safe to act on a misread 
 4. **Execute the auto-class items** (skip this entire step in dry-run). For each, via the harness:
    - **Rebase a stale PR**: check out its branch, `git fetch`, rebase onto the base branch. If it
      conflicts, **stop** — a conflict is a judgment call; reclassify it to the report and move on.
-   - **Reformat / lint**: run the repo's formatter and linter (e.g. `cargo fmt`, the project's
-     lint task). Commit only formatting/lint fixes, nothing else.
+   - **Reformat / lint**: run the repo's own formatter and lint task — whatever its setup scripts
+     or `bn verify` define, not a tool you assume from the language. Commit only formatting/lint
+     fixes, nothing else.
    - **Nudge a reviewer**: post one short, factual comment on the PR (`gh pr comment`) — a
      status ping, no new asks. One nudge per PR per run.
    - **Re-push** the branch when a rebase or fmt changed it.

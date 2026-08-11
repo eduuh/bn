@@ -5,24 +5,23 @@ import {
   AlertTriangle,
   ArrowUpRight,
   Ban,
-  CalendarClock,
   Copy,
   CornerDownRight,
   ExternalLink,
   FileText,
   Play,
-  Search,
   Sparkles,
 } from "lucide-react";
 
 import { attnQuery, doneTasksQuery, issuesQuery, tasksQuery } from "../api/client";
-import type { AttnItem, IssueRow, RepoIssues, TaskRow } from "../api/types";
-import { attnAction, createTask, taskAction, taskAgent } from "../api/writes";
+import type { IssueRow, RepoIssues, TaskRow } from "../api/types";
+import { createTask, taskAction, taskAgent } from "../api/writes";
 import { useAppMutation } from "../hooks/useAppMutation";
 import { clearDraft } from "../lib/capture";
 import { clearPendingFiles } from "../lib/captureFiles";
 import { affects } from "../lib/invalidation";
-import { dropAttn, dropActionForAttn, dropTask, patchTask } from "../lib/optimistic";
+import { dropTask, patchTask } from "../lib/optimistic";
+import { AttnRow } from "../components/AttnRow";
 import { NewTaskDialog } from "../components/NewTaskDialog";
 import { Empty, Hint, RowsSkeleton, SectionCard } from "../components/SectionCard";
 import { SteerButton } from "../components/SteerButton";
@@ -86,11 +85,6 @@ function copy(text: string) {
   if (typeof navigator !== "undefined" && navigator.clipboard) {
     void navigator.clipboard.writeText(text).catch(() => {});
   }
-}
-
-/** Tomorrow as `YYYY-MM-DD`, for a one-day snooze. */
-function tomorrow(): string {
-  return new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
 }
 
 /**
@@ -486,88 +480,6 @@ function EnhanceQueueRow({
         onConfirm={(r) => cancel.mutate(r)}
       />
     </>
-  );
-}
-
-/** One attention item — a finding that needs a human. Right-click to investigate, enqueue, snooze
- * or dismiss (all real `/api/attention/:id` verbs); the visible button keeps the common one to hand. */
-function AttnRow({ item }: { item: AttnItem }) {
-  const investigate = useAppMutation<unknown, string>({
-    // Investigation is a task agent too: it enhances the record before anything executes.
-    mutationFn: (steer) => taskAgent(item.id, "enhance", steer || undefined),
-    invalidates: affects.agentLaunch,
-    toast: { success: `Investigating ${item.id} — watch the fleet`, error: "Could not start" },
-  });
-  // Enqueue, snooze and dismiss all take the row off today's list, so it goes on the click.
-  const resolved = [dropAttn(item.id), dropActionForAttn(item.id)];
-  const plan = useAppMutation({
-    mutationFn: () => attnAction(item.id, "plan"),
-    optimistic: resolved,
-    invalidates: affects.attention,
-    toast: { success: `Added ${item.id} to the enhance queue`, error: "Could not enqueue" },
-  });
-  const snooze = useAppMutation({
-    mutationFn: () => attnAction(item.id, "snooze", { until: tomorrow() }),
-    optimistic: resolved,
-    invalidates: affects.attention,
-    toast: { success: `Snoozed ${item.id} 1 day`, error: "Could not snooze" },
-  });
-  const dismiss = useAppMutation({
-    mutationFn: () => attnAction(item.id, "remove"),
-    optimistic: resolved,
-    invalidates: affects.attention,
-    toast: { success: `Dismissed ${item.id}`, error: "Could not dismiss" },
-  });
-  const tone = item.severity === "urgent" ? "urgent" : item.severity === "warn" ? "warn" : "info";
-
-  return (
-    <li>
-      <ContextMenu>
-        <ContextMenuTrigger asChild>
-          <Card className="flex w-full flex-wrap items-center gap-x-2.5 gap-y-1 border-border bg-muted px-3 py-2.5 shadow-sm transition-colors hover:border-input hover:bg-accent">
-            <Badge variant={tone} className="uppercase tracking-wide">
-              {item.severity}
-            </Badge>
-            <span className="min-w-0 flex-1 text-sm leading-snug text-foreground">
-              {item.title}
-            </span>
-            {item.repo && (
-              <span className="font-mono text-[11px] text-muted-foreground">
-                {item.repo}
-                {item.branch ? `/${item.branch}` : ""}
-              </span>
-            )}
-            <SteerButton
-              label="Investigate"
-              icon={Search}
-              title="run an investigation agent, steered"
-              placeholder="things to look out for (optional)"
-              busy={investigate.isPending}
-              onSubmit={(steer) => investigate.mutate(steer)}
-            />
-          </Card>
-        </ContextMenuTrigger>
-        <ContextMenuContent>
-          <ContextMenuLabel>{item.id}</ContextMenuLabel>
-          <ContextMenuItem onSelect={() => investigate.mutate("")}>
-            <Search /> Investigate
-          </ContextMenuItem>
-          <ContextMenuItem onSelect={() => plan.mutate()}>
-            <Sparkles /> Add to enhance queue
-          </ContextMenuItem>
-          <ContextMenuItem onSelect={() => snooze.mutate()}>
-            <CalendarClock /> Snooze 1 day
-          </ContextMenuItem>
-          <ContextMenuItem onSelect={() => copy(item.title)}>
-            <Copy /> Copy
-          </ContextMenuItem>
-          <ContextMenuSeparator />
-          <ContextMenuItem danger onSelect={() => dismiss.mutate()}>
-            <Ban /> Dismiss
-          </ContextMenuItem>
-        </ContextMenuContent>
-      </ContextMenu>
-    </li>
   );
 }
 

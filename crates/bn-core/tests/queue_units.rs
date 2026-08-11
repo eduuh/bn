@@ -12,6 +12,7 @@
 use bn_core::backlog::{
     AddSpec, AgentSpec, BacklogEntry, BacklogStatus, ClassOverride, Recurrence, Substrate,
 };
+use bn_core::pipeline::stage::Stage;
 use bn_core::queue::classify::{classify, QueueMode, QueueSubtype};
 use bn_core::queue::kind::{BacklogKind, ExecSpec, Requirements, WorkClass};
 use bn_core::queue::{build, capacity, jobs, reap};
@@ -438,6 +439,57 @@ fn a_dispatch_is_foreground_however_its_prompt_reads() {
 }
 
 #[test]
+fn a_generated_dispatch_is_autonomous_because_it_says_so() {
+    // The other half of the rule above. Prompt text is not evidence — but the producer's own
+    // declaration is, and it is the only thing that can tell a repo-setup agent the dashboard
+    // generated apart from the identical-looking sentence a person typed.
+    //
+    // Left foreground, six repos' setup agents sat pending for five hours behind the watched coding
+    // lane, deferred `at local concurrency cap` by the work their owner was sitting in front of.
+    let spec = AddSpec {
+        kind: BacklogKind::Ship,
+        priority: 100,
+        source: "dispatch".to_string(),
+        machine: true,
+        ..Default::default()
+    };
+    let entry = BacklogEntry::new("nvim", REPO_SETUP_ITEM, &spec, 1000);
+    assert!(bn_core::queue::classify::is_machine(&entry));
+    let class = classify(&entry);
+    assert_eq!(class.mode, QueueMode::Autonomous);
+    assert_eq!(class.subtype, QueueSubtype::Maintenance);
+}
+
+#[test]
+fn a_person_still_outranks_what_the_producer_declared() {
+    // `machine` is provenance; `class_override` is a person's later opinion. Someone who runs
+    // `bn queue class <id> foreground` has looked at this entry and decided they want to watch it,
+    // and a durable fact recorded at enqueue time must not quietly overrule them.
+    let spec = AddSpec {
+        kind: BacklogKind::Ship,
+        source: "dispatch".to_string(),
+        machine: true,
+        class_override: Some(ClassOverride::Foreground),
+        ..Default::default()
+    };
+    let class = classify(&BacklogEntry::new("nvim", REPO_SETUP_ITEM, &spec, 1000));
+    assert_eq!(class.mode, QueueMode::Foreground);
+}
+
+#[test]
+fn a_job_is_machine_work_without_having_to_declare_it() {
+    // What an entry *runs* answers the question on its own for jobs and shell commands: they launch
+    // no agent and nobody types them. Only the agent-bearing producers need the explicit bit, which
+    // is why `bn queue add --job pool-warm` needed no change to stop landing on the day's list.
+    assert!(bn_core::queue::classify::is_machine(&warming_job(
+        "pool-warm"
+    )));
+    assert!(!bn_core::queue::classify::is_machine(&dispatched(
+        REPO_SETUP_ITEM
+    )));
+}
+
+#[test]
 fn warming_is_read_from_what_the_entry_declares() {
     for job in jobs::WARMING_JOBS {
         let class = classify(&warming_job(job));
@@ -485,6 +537,7 @@ fn setup_entry() -> BacklogEntry {
             name: Some("repo-setup".to_string()),
             yolo: true,
             no_plan_review: true,
+            stage: Some(Stage::Critique),
         },
         ..Default::default()
     };
@@ -504,6 +557,33 @@ fn a_queued_agent_keeps_the_identity_it_was_declared_with() {
     // Losing this one reinstates a plan-review gate the caller declined, and the agent then waits
     // on a review nobody expected — the same class of silent-drop failure as the three above.
     assert!(entry.agent.no_plan_review);
+    // And the stage. Dispatch's fallback can only infer investigate/plan/execute, so an entry that
+    // loses `critique` does not fail — it launches on the *execute* stage's model, effort and
+    // harness. Six of the nine stages are unreachable by inference, which is why the stage has to
+    // be carried rather than re-derived.
+    assert_eq!(entry.agent.stage, Some(Stage::Critique));
+}
+
+/// A line written before the field existed must still read, and must read as "no declared stage" so
+/// the inference stays in charge of it.
+#[test]
+fn an_entry_from_before_stages_were_carried_still_infers_its_own() {
+    let line = r#"{"id":"x","repo":"nvim","item":"do a thing","priority":0,"status":"pending","source":"dispatch","added_at":1000,"updated_at":1000,"agent":{"branch":"b","yolo":true}}"#;
+    let entry: BacklogEntry = serde_json::from_str(line).expect("old line must still parse");
+    assert_eq!(entry.agent.stage, None);
+    assert_eq!(entry.agent.branch.as_deref(), Some("b"));
+}
+
+/// An entry that declares no stage must serialize exactly as it did before the field existed.
+#[test]
+fn an_undeclared_stage_adds_nothing_to_the_line() {
+    let spec = AddSpec {
+        source: "dispatch".to_string(),
+        ..Default::default()
+    };
+    let entry = BacklogEntry::new("nvim", "plain work", &spec, 1000);
+    let line = serde_json::to_string(&entry).expect("serialize");
+    assert!(!line.contains("stage"), "stage must be omitted: {line}");
 }
 
 #[test]
@@ -589,12 +669,14 @@ fn every_axis_set() -> BacklogEntry {
         not_before: Some(1500),
         recovery: true,
         heavy: true,
+        machine: true,
         class_override: Some(ClassOverride::Opportunistic),
         agent: AgentSpec {
             branch: Some("repo-setup".to_string()),
             name: Some("repo-setup".to_string()),
             yolo: true,
             no_plan_review: true,
+            stage: Some(Stage::Plan),
         },
     };
     BacklogEntry::new("nvim", "set up nvim", &spec, 1000)

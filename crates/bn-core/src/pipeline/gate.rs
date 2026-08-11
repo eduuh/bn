@@ -150,6 +150,17 @@ pub fn judge(cfg: &Config, task: &Task, today: &str) -> GateDecision {
         return GateDecision::Ungoverned;
     };
 
+    // Machine-minted work (`auto:1`) is not judged. The bar exists so that a *person's* vague
+    // sentence is sharpened before an agent burns an hour on it, and refusal routes the task to the
+    // enhance agent to be rewritten. Neither half applies here: a repo setup agent's prompt already
+    // states its done-when in full, and there is no author to hand it back to — the machine wrote
+    // it. Gating it would mean the enhance agent rewriting a generated prompt three times and then
+    // raising an attention item asking you to scope a chore you never chose. The work simply never
+    // runs, which is the failure this admits.
+    if crate::task_owner::is_machine(task) {
+        return GateDecision::Admitted;
+    }
+
     let known = crate::issues::known_repos(cfg).into_iter().collect();
     let doc = crate::task_doc::read(cfg, task);
     let verdict = smart::check(task, doc.as_ref(), &known, today);

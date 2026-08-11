@@ -165,6 +165,12 @@ fn in_flight(cfg: &Config, entries: &[BacklogEntry], now: i64) -> Vec<InFlight> 
         })
         .collect();
     for agent in crate::agent::supervise(cfg, 0, 0).agents {
+        // A finished session still has a readable transcript for half an hour after it exits, and
+        // charging that ghost a lane slot is how a machine with one live agent reported "coding 5/5,
+        // at local concurrency cap" and held everything behind it.
+        if !agent.health.is_running() {
+            continue;
+        }
         if out
             .iter()
             .any(|f| f.repo == agent.repo && agent.branch.contains(&f.id))
