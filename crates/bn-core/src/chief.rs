@@ -39,6 +39,17 @@ impl Slot {
         }
     }
 
+    /// The name this slot carries on the agent roster (`staff-chief-am` / `staff-chief-pm`) — the
+    /// manifest name, which is **not** the card name [`agent`](Slot::agent) files under. The health
+    /// board keys on this one, so anything recorded for the board must use it or the row will look
+    /// like it never ran.
+    pub fn roster_name(self) -> &'static str {
+        match self {
+            Slot::Am => "staff-chief-am",
+            Slot::Pm => "staff-chief-pm",
+        }
+    }
+
     /// The human title of the run.
     pub fn label(self) -> &'static str {
         match self {

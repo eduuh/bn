@@ -111,11 +111,18 @@ pub async fn completed(State(state): State<AppState>) -> Json<Envelope> {
                 .flat_map(|st| st.queue.into_iter())
                 .collect();
 
+            // Merged PRs from the whole-person metrics log — the work that never went through the
+            // orchestrate queue, which is most of it.
+            let merged_prs = bn_core::mentor::all_merged(&bn_core::events::read_events_across(
+                &cfg.metrics_logs_all_machines(),
+            ));
+
             let sources = bn_core::completed::CompletedSources {
                 todos: &todos,
                 goals: &goals,
                 attn: &attn,
                 merged: &merged,
+                merged_prs: &merged_prs,
             };
             let linker = bn_core::rollups::FsNoteLinker::new(&cfg, &bn_core::runner::RealRunner);
             let items = bn_core::completed::build_completed(&sources, &linker);

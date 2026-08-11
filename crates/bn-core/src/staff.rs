@@ -1,4 +1,5 @@
 //! The agent staff framework (`bn staff` / `bn staff feed`): every scheduled agent is the same machine
+
 //! with a different prompt. A markdown roster (`config/agents/*.md`) declares each agent; a run is gather → dispatch → validate → route. Deterministic CLI code *gathers* a
 //! JSON packet (the only world the agent sees), a pinned skill prompts a headless harness, the
 //! output must parse as a **briefing card**, and card items are routed through existing surfaces
@@ -39,6 +40,9 @@
 //! captured output against the CLI's actual error strings; `skipped` is policy-assigned, never
 //! classified.
 
+mod ledger;
+pub use ledger::*;
+
 use crate::resolver::{state_dir, Config, Resolved};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -56,7 +60,7 @@ pub mod sentinel;
 pub use cost::{cost_report, AgentCost, CostReport};
 
 /// The outcome of one scheduled staff run. Serialized into run records with kebab-case names
-/// (`ok` / `fail` / `auth` / `rate-limited` / `skipped`) — the taxonomy #271 settled on.
+/// (`ok` / `fail` / `auth` / `rate-limited` / `skipped` / `off`) — the taxonomy #271 settled on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RunStatus {
@@ -72,6 +76,14 @@ pub enum RunStatus {
     /// Policy chose not to run (gate, or retry-later budget spent). Assigned by the
     /// scheduler, never by [`classify_run`].
     Skipped,
+    /// The agent is switched **off** by configuration — its opt-in flag is unset, or its repo
+    /// allowlist is empty. The scheduler fired it and it correctly did nothing.
+    ///
+    /// Distinct from [`Skipped`](RunStatus::Skipped), which is a *temporary* refusal a person can
+    /// clear (backpressure, a retry budget). `Off` is a standing choice, so it must never be
+    /// dressed up as a problem: an agent you deliberately turned off has not missed anything, and
+    /// painting it red trains you to ignore the colour that means a real failure.
+    Off,
 }
 
 impl RunStatus {
@@ -83,6 +95,7 @@ impl RunStatus {
             RunStatus::Auth => "auth",
             RunStatus::RateLimited => "rate-limited",
             RunStatus::Skipped => "skipped",
+            RunStatus::Off => "off",
         }
     }
 
@@ -95,6 +108,7 @@ impl RunStatus {
             "auth" => RunStatus::Auth,
             "rate-limited" => RunStatus::RateLimited,
             "skipped" => RunStatus::Skipped,
+            "off" => RunStatus::Off,
             _ => return None,
         })
     }
@@ -807,7 +821,15 @@ pub fn board_view(cfg: &Config, ctx: Option<&Resolved>) -> Result<serde_json::Va
         .iter()
         .map(|a| {
             let lr = last.get(&a.name);
-            let missed_since = missed.get(&a.name).copied();
+            // An agent switched off by configuration cannot miss a slot it was never going to
+            // run. Suppressing the flag here (not just the health word) keeps every consumer of
+            // this row agreeing about whether anything is actually wrong.
+            let off = lr.is_some_and(|r| r.status == RunStatus::Off);
+            let missed_since = if off {
+                None
+            } else {
+                missed.get(&a.name).copied()
+            };
             let streak = crate::staff_backpressure::unread_streak(cfg, &a.name);
             let paused = crate::staff_backpressure::decide(streak, false).0;
             serde_json::json!({
@@ -1173,78 +1195,6 @@ pub fn demo_packet(cfg: &Config, today: &str) -> String {
     .to_string()
 }
 
-// --- cost ledger ---------------------------------------------------------------------------------
-
-/// One row of the staff cost ledger — appended per `bn staff run` as `staff_run` events.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct LedgerEntry {
-    pub agent: String,
-    /// The run's logical date (`YYYY-MM-DD`), used for month bucketing.
-    pub date: String,
-    /// Event timestamp (epoch secs).
-    pub ts: i64,
-    /// Estimated tokens spent (0 for a pre-dispatch-failed run).
-    pub tokens: u64,
-    /// Dispatch wall-clock in milliseconds (0 when no dispatch happened).
-    pub wall_ms: u64,
-    pub status: RunStatus,
-}
-
-/// Rough token estimate for a dispatched turn — about 4 characters per token over the prompt sent
-/// plus the output received.
-pub fn estimate_tokens(chars: usize) -> u64 {
-    (chars as u64).div_ceil(4)
-}
-
-/// The `YYYY-MM` month bucket of a `YYYY-MM-DD` date (or the whole string if it is shorter).
-pub fn month_of(date: &str) -> &str {
-    if date.len() >= 7 {
-        &date[..7]
-    } else {
-        date
-    }
-}
-
-/// The whole cost ledger, oldest first — every `staff_run` event read back as a [`LedgerEntry`].
-pub fn ledger_entries() -> Vec<LedgerEntry> {
-    crate::events::read_all()
-        .into_iter()
-        .filter(|e| e.kind == "staff_run")
-        .filter_map(|e| {
-            let agent = e.fields.get("agent").and_then(|v| v.as_str())?.to_string();
-            let status = e
-                .fields
-                .get("status")
-                .and_then(|v| v.as_str())
-                .and_then(RunStatus::parse)
-                .unwrap_or_else(|| match e.fields.get("ok").and_then(|v| v.as_bool()) {
-                    Some(true) => RunStatus::Ok,
-                    _ => RunStatus::Fail,
-                });
-            let date = e
-                .fields
-                .get("date")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| crate::util::local_date_of(e.ts));
-            let tokens = e.fields.get("tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-            let wall_ms = e
-                .fields
-                .get("wall_ms")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            Some(LedgerEntry {
-                agent,
-                date,
-                ts: e.ts,
-                tokens,
-                wall_ms,
-                status,
-            })
-        })
-        .collect()
-}
-
 // --- pipeline ------------------------------------------------------------------------------------
 
 /// The outcome of one `bn staff run` — what happened at each pipeline stage.
@@ -1393,6 +1343,25 @@ pub fn record_run(
         error,
         false,
         &RunCost { tokens, wall_ms },
+    );
+}
+
+/// Record that a scheduled agent is switched **off** by configuration, so the board says so
+/// instead of reporting a hard miss.
+///
+/// A gated job used to return before recording anything. The scheduler had fired it and it had
+/// correctly done nothing — but the health board reads `staff_run` events, so "did nothing" and
+/// "never ran" were the same absence, and a deliberately-disabled agent showed in red as
+/// `missed — scheduled run never fired`. Every gated job should call this on its opt-out path;
+/// `reason` is the one line telling the reader which switch to flip.
+pub fn record_off(agent: &str, date: &str, reason: &str) {
+    log_run_event(
+        agent,
+        date,
+        RunStatus::Off,
+        Some(reason),
+        false,
+        &RunCost::default(),
     );
 }
 

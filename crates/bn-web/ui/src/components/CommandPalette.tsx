@@ -189,12 +189,13 @@ const DESTINATIONS: {
     keywords: "mcp tools capabilities prompts",
     exp: "skills",
   },
+  // Ungated with the rail's entry — and note the palette could not have gated it correctly anyway:
+  // `experimental.ts` aliases "agents" to "fleet".
   {
     to: "/agents",
     label: "Agents",
     Icon: Bot,
-    keywords: "markdown agents roster definitions md source cron staff specialist",
-    exp: "agents",
+    keywords: "markdown agents roster definitions md source edit cron staff specialist",
   },
   {
     to: "/staff",

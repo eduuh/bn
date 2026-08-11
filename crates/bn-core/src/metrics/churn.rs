@@ -131,6 +131,20 @@ pub struct Churn {
     /// Agent churn-rate ÷ hand churn-rate — the turnover ratio. > 1 means agent code is reworked
     /// more. `None` when either side has no lines to rate. Healthy reference is < 1.5.
     pub agent_vs_hand_ratio: Option<f64>,
+    /// False when the cwd repo is one the scorecard excludes ([`crate::metrics::is_excluded_repo`])
+    /// — churn was not measured at all, as opposed to measured and found to be zero.
+    ///
+    /// Churn is the one metric read from `git log` in the current directory rather than from the
+    /// repo-tagged event log, so it was the one metric the exclusion never reached: standing in
+    /// `bn` reported `bn`'s own tooling churn as if it were project work, which is precisely the
+    /// number [`crate::metrics::EXCLUDED_REPOS`] exists to keep out of the scorecard.
+    #[serde(default = "counted_default")]
+    pub counted: bool,
+}
+
+/// Older snapshots have no `counted` field; they were all real measurements.
+fn counted_default() -> bool {
+    true
 }
 
 /// A single commit's footprint, parsed from `git log --numstat`: when it landed and which files it
@@ -194,6 +208,47 @@ pub fn parse_numstat(stdout: &str) -> Vec<CommitChurn> {
     commits
 }
 
+/// Whether a path is a generated/vendored artefact rather than authored code, and so contributes
+/// nothing meaningful to a rework signal.
+///
+/// Matched on the path, not on content: lockfiles and vendored trees are regenerated wholesale, so
+/// every refresh reads as a total rewrite of a very large file. Measured against the real repo,
+/// `package-lock.json` alone accounted for 10,730 changed lines in 30 days — more than any authored
+/// source file — which is how an unfiltered churn rate reached 72% against an industry norm nearer
+/// 6%.
+pub fn is_generated_path(path: &str) -> bool {
+    let p = path.trim_start_matches("./");
+    let base = p.rsplit('/').next().unwrap_or(p);
+    // Vendored / build output anywhere in the path.
+    if p.split('/').any(|seg| {
+        matches!(
+            seg,
+            "node_modules" | "vendor" | "target" | "dist" | "build" | ".venv" | "__pycache__"
+        )
+    }) {
+        return true;
+    }
+    // Dependency lockfiles — regenerated wholesale, never hand-authored.
+    if matches!(
+        base,
+        "package-lock.json"
+            | "pnpm-lock.yaml"
+            | "yarn.lock"
+            | "Cargo.lock"
+            | "poetry.lock"
+            | "go.sum"
+            | "composer.lock"
+            | "Gemfile.lock"
+    ) {
+        return true;
+    }
+    // Minified/compiled assets and source maps.
+    base.ends_with(".min.js")
+        || base.ends_with(".min.css")
+        || base.ends_with(".map")
+        || base.ends_with(".lock")
+}
+
 /// Compute churn from parsed commits + agent windows (pure). A file touched again within
 /// `churn_window_secs` of an earlier touch contributes that later touch's lines as churn; each
 /// commit's lines are attributed agent vs hand by whether its timestamp falls in any agent window.
@@ -212,12 +267,19 @@ pub fn churn_of(
     let mut last_touch: HashMap<String, i64> = HashMap::new();
     let mut out = Churn {
         churn_days,
+        counted: true,
         ..Default::default()
     };
 
     for c in &commits {
         let agent = is_agent(c.ts);
         for (path, lines) in &c.files {
+            // Generated artefacts are not craft, and they dwarf everything that is: one
+            // `package-lock.json` refresh outweighs a week of hand-written diffs, so leaving them
+            // in reports a churn rate that describes the lockfile rather than the author.
+            if is_generated_path(path) {
+                continue;
+            }
             out.total_lines += lines;
             if agent {
                 out.agent_lines += lines;
@@ -303,4 +365,70 @@ pub fn agent_windows_for_repo(events: &[Event], repo: &str) -> Vec<AgentWindow> 
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_artefacts_are_not_authored_code() {
+        for p in [
+            "crates/bn-web/ui/package-lock.json",
+            "Cargo.lock",
+            "ui/node_modules/react/index.js",
+            "target/debug/build/x.rs",
+            "web/dist/app.min.js",
+            "web/static/app.min.css",
+            "web/static/app.js.map",
+            "vendor/github.com/pkg/errors.go",
+            "go.sum",
+        ] {
+            assert!(is_generated_path(p), "{p} should be generated");
+        }
+    }
+
+    #[test]
+    fn authored_code_is_kept() {
+        for p in [
+            "crates/bn-core/src/metrics/churn.rs",
+            "crates/bn-web/ui/src/index.css",
+            "config/agents/standup.md",
+            "scripts/check-file-size.sh",
+            // Not a lockfile: a source file that merely mentions one.
+            "crates/bn-cli/src/lockfile_parser.rs",
+        ] {
+            assert!(!is_generated_path(p), "{p} should be authored");
+        }
+    }
+
+    /// The real shape of the bug: one lockfile refresh outweighing a week of authored work.
+    #[test]
+    fn a_lockfile_refresh_does_not_dominate_the_rate() {
+        let day = 86_400;
+        let commits = vec![
+            CommitChurn {
+                ts: 0,
+                files: vec![
+                    ("src/a.rs".into(), 10),
+                    ("package-lock.json".into(), 10_000),
+                ],
+            },
+            CommitChurn {
+                ts: day,
+                files: vec![
+                    ("src/a.rs".into(), 10),
+                    ("package-lock.json".into(), 10_000),
+                ],
+            },
+        ];
+        let c = churn_of(commits, &[], 14 * day, 14);
+        assert_eq!(c.total_lines, 20, "only the authored lines count");
+        assert_eq!(
+            c.churned_lines, 10,
+            "the second touch of a.rs is the rework"
+        );
+        assert_eq!(c.churn_rate, Some(0.5));
+        assert!(c.counted);
+    }
 }

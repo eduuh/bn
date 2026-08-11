@@ -407,6 +407,24 @@ pub(crate) fn emit_task_doc(cfg: &Config, id: &str, open: bool, as_json: bool) {
     }
 }
 
+/// The keep-warm policy a pull runs under: the low-water mark the caller asked for, over the
+/// exclusions the *user configured*.
+///
+/// Split out and pure so the wiring is testable. It was `KeepWarmPolicy { low_water,
+/// ..Default::default() }`, which silently discarded `[orchestrate] exclude_labels` /
+/// `exclude_titles` — the pull path advertised the shared policy and then ignored half of it. That
+/// made the exclusion list unusable as a gate: a repo whose findings are deliberately parked
+/// (an autonomous explore pass filing product-facing bugs as `needs-triage`, say) had them minted
+/// into the task list regardless, and from there they were executable work.
+fn pull_policy(cfg: &Config, low_water: usize) -> bn_core::orchestrate::KeepWarmPolicy {
+    bn_core::orchestrate::KeepWarmPolicy {
+        low_water,
+        exclude_titles: cfg.orchestrate_exclude_titles.clone(),
+        exclude_labels: cfg.orchestrate_exclude_labels.clone(),
+        ..Default::default()
+    }
+}
+
 /// `bn task pull` — top the task list back up from the GitHub-issue reservoir.
 ///
 /// Bounded by a low-water mark per repo, so the store stays a curated working set rather than a
@@ -432,10 +450,7 @@ pub(crate) fn emit_task_pull(
         fail("bn task pull: no repos known — set [managed_repos].repos or create a branch note");
     }
 
-    let policy = bn_core::orchestrate::KeepWarmPolicy {
-        low_water,
-        ..Default::default()
-    };
+    let policy = pull_policy(cfg, low_water);
     let now = bn_core::util::now_epoch_secs();
     let today = today();
     let runner = bn_core::runner::RealRunner;
@@ -655,206 +670,43 @@ pub(crate) fn emit_task_ingest(
     }
 }
 
-// --- The two task agents (#1002, EPIC #993) -----------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Whether this machine is the one allowed to rewrite the shared task store wholesale.
-///
-/// Triage restamps `day:` across every open task, so two laptops running it on the same synced
-/// file would fight — the union-merge repair in #995 collapses duplicates, but the *decisions*
-/// would still flip-flop. `[staff].home` is the shipped "only one machine does this" knob, so
-/// reuse it rather than inventing a second one.
-fn triage_allowed_here(cfg: &Config) -> bool {
-    match cfg.staff_home.as_deref() {
-        Some(home) => home == cfg.machine(),
-        None => true,
-    }
-}
-
-struct TaskAgentRun {
-    prompt: String,
-    launched: bool,
-    output: String,
-}
-
-/// Strictly render a task agent and run its configured headless harness unless this is a dry run.
-fn run_task_agent(cfg: &Config, label: &str, packet: &str, dry_run: bool) -> TaskAgentRun {
-    let ctx = target_ctx(cfg, None, None);
-    let catalog = bn_core::agents::discover(cfg, ctx.as_ref())
-        .unwrap_or_else(|error| fail(&format!("bn task {label}: {error}")));
-    let agent = catalog
-        .require(label)
-        .unwrap_or_else(|error| fail(&format!("bn task {label}: {error}")));
-    let mut args = serde_json::Map::new();
-    args.insert(
-        "packet".into(),
-        serde_json::Value::String(packet.to_string()),
-    );
-    let prompt = agent
-        .render(Some(&args))
-        .unwrap_or_else(|error| fail(&format!("bn task {label}: {error}")));
-    if dry_run {
-        return TaskAgentRun {
-            prompt,
-            launched: false,
-            output: String::new(),
+    /// The pull path must run under the *configured* exclusions, not the built-in defaults.
+    ///
+    /// Regression cover for the gap that made `exclude_labels` unusable as a gate on autonomous
+    /// work: the policy was built with `..Default::default()`, so a label the user parked work
+    /// behind was pulled into the task list anyway.
+    #[test]
+    fn pull_policy_carries_the_configured_exclusions() {
+        let cfg = Config {
+            orchestrate_exclude_labels: vec!["blocked".into(), "needs-triage".into()],
+            orchestrate_exclude_titles: vec!["gap(".into(), "spike:".into()],
+            ..Config::default()
         };
+
+        let policy = pull_policy(&cfg, 4);
+
+        assert_eq!(policy.low_water, 4);
+        assert_eq!(policy.exclude_labels, ["blocked", "needs-triage"]);
+        assert_eq!(policy.exclude_titles, ["gap(", "spike:"]);
     }
 
-    let harness = agent.harness.as_deref().unwrap_or("copilot");
-    let Some(cmd) =
-        crate::cmd::staff::staff_dispatch_command(harness, &prompt, agent.model.as_deref(), None)
-    else {
-        fail(&format!(
-            "bn task {label}: unknown harness '{harness}' (use copilot | claude)"
-        ));
-    };
-    let (success, output, combined) = crate::cmd::staff::dispatch_capture(cmd, None);
-    if !success {
-        fail(&format!(
-            "bn task {label}: harness failed: {}",
-            bn_core::staff::failure_detail(&combined)
-        ));
-    }
-    TaskAgentRun {
-        prompt,
-        launched: true,
-        output,
-    }
-}
+    /// An empty configured list means "exclude nothing" — it must not silently fall back to the
+    /// built-in default, or clearing the list in config would leave the old gate in force.
+    #[test]
+    fn pull_policy_honours_an_empty_exclusion_list() {
+        let cfg = Config {
+            orchestrate_exclude_labels: vec![],
+            orchestrate_exclude_titles: vec![],
+            ..Config::default()
+        };
 
-/// `bn task enhance <id>` — make one task executable.
-pub(crate) fn emit_task_enhance(
-    cfg: &Config,
-    id: Option<&str>,
-    steer: Option<&str>,
-    due: bool,
-    dry_run: bool,
-    as_json: bool,
-) {
-    let path = task_path(cfg);
-    let file = bn_core::todo::load(&path).unwrap_or_else(|e| fail(&format!("bn task: {e}")));
-    let today = today();
+        let policy = pull_policy(&cfg, 1);
 
-    let task = match (id, due) {
-        (Some(id), _) => file
-            .tasks()
-            .find(|t| t.id() == Some(id))
-            .cloned()
-            .unwrap_or_else(|| fail(&format!("bn task enhance: no task {id}"))),
-        // `--due` picks the work the gate actually rejected, highest-ranked first — the queue the
-        // idle loop drains. A `stuck` task is excluded: three agents already failed at it, so it
-        // is waiting on a person, not on another attempt.
-        (None, true) => {
-            let open: Vec<&bn_core::todo::Task> = file
-                .tasks()
-                .filter(|t| t.is_open(&today))
-                .filter(|t| !matches!(t.meta("smart"), Some("ok") | Some("stuck")))
-                .collect();
-            match bn_core::task_agents::rank(&open, &today).first() {
-                Some(t) => (*t).clone(),
-                None => {
-                    println!("Nothing needs improving — every open task has a verdict.");
-                    return;
-                }
-            }
-        }
-        (None, false) => fail("bn task enhance: pass a task id, or --due for the next one"),
-    };
-
-    let task_id = task.id().unwrap_or("?").to_string();
-    // Re-judge now so the packet names the *current* gaps rather than a stale stamp.
-    let known = bn_core::issues::known_repos(cfg).into_iter().collect();
-    let doc = bn_core::task_doc::read(cfg, &task);
-    let verdict = bn_core::smart::check(&task, doc.as_ref(), &known, &today);
-    if verdict.ok {
-        println!("{task_id} already passes the SMART gate — nothing to improve.");
-        return;
-    }
-
-    let captured = bn_core::task_agents::CapturedContext::read(cfg, &task);
-    let placements = bn_core::issues::known_repos(cfg);
-    let packet =
-        bn_core::task_agents::improve_packet(&task, Some(&verdict), steer, &captured, &placements);
-    if !dry_run && !as_json {
-        println!("Improving {task_id} — fails on: {}", verdict.codes().join(", "));
-    }
-    let run = run_task_agent(cfg, "task-enhance", &packet, dry_run);
-    if as_json {
-        let data = serde_json::json!({
-            "id": task_id,
-            "gaps": verdict.codes(),
-            "prompt": run.prompt,
-            "launched": run.launched,
-            "output": run.output,
-        });
-        println!("{}", Envelope::success("task_enhance", data).to_json());
-        return;
-    }
-    if dry_run {
-        println!("{}", run.prompt);
-    } else if !run.output.trim().is_empty() {
-        println!("{}", run.output.trim());
-    }
-}
-
-/// `bn task triage` — decide what is doable today.
-pub(crate) fn emit_task_triage(cfg: &Config, day: Option<&str>, dry_run: bool, as_json: bool) {
-    if !dry_run && !triage_allowed_here(cfg) {
-        fail(&format!(
-            "bn task triage: this machine is not the staff home ({}); triage rewrites the shared store, so it runs in one place",
-            cfg.staff_home.as_deref().unwrap_or("?")
-        ));
-    }
-    let day = day.map(str::to_string).unwrap_or_else(today);
-    if bn_core::util::epoch_day(&day).is_none() {
-        fail("bn task triage: --day must be YYYY-MM-DD");
-    }
-
-    let path = task_path(cfg);
-    let file = bn_core::todo::load(&path).unwrap_or_else(|e| fail(&format!("bn task: {e}")));
-    let open: Vec<&bn_core::todo::Task> = file.tasks().filter(|t| t.is_open(&day)).collect();
-    if open.is_empty() {
-        println!("No open tasks to triage — `bn task pull` to refill.");
-        return;
-    }
-    let ranked = bn_core::task_agents::rank(&open, &day);
-    let packet = bn_core::task_agents::triage_packet(&ranked, &day, None);
-    let shortlist: Vec<serde_json::Value> = ranked
-        .iter()
-        .take(bn_core::task_agents::TRIAGE_WINDOW)
-        .map(|t| {
-            serde_json::json!({
-                "id": t.id(),
-                "summary": t.summary(),
-                "score": bn_core::task_agents::pre_score(t, &day),
-            })
-        })
-        .collect();
-
-    if !as_json && !dry_run {
-        println!("Ranked shortlist for {day} ({} open):", open.len());
-        for t in ranked.iter().take(bn_core::task_agents::TRIAGE_WINDOW) {
-            println!(
-                "  {:>5}  {}  {}",
-                bn_core::task_agents::pre_score(t, &day),
-                t.id().unwrap_or("?"),
-                t.summary()
-            );
-        }
-    }
-    let run = run_task_agent(cfg, "task-triage", &packet, dry_run);
-    if as_json {
-        let data = serde_json::json!({
-            "day": day,
-            "shortlist": shortlist,
-            "prompt": run.prompt,
-            "launched": run.launched,
-            "output": run.output,
-        });
-        println!("{}", Envelope::success("task_triage", data).to_json());
-    } else if dry_run {
-        println!("{}", run.prompt);
-    } else if !run.output.trim().is_empty() {
-        println!("{}", run.output.trim());
+        assert!(policy.exclude_labels.is_empty());
+        assert!(policy.exclude_titles.is_empty());
     }
 }

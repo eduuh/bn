@@ -323,7 +323,9 @@ pub(crate) fn emit_metrics(
 
     // Churn / turnover — re-revised lines, split agent vs hand (the AI-era quality axis).
     let ch = &s.churn;
-    if ch.total_lines > 0 {
+    if !ch.counted {
+        println!("Churn — not counted here (this repo is excluded from the scorecard)");
+    } else if ch.total_lines > 0 {
         println!(
             "Churn — last {} days (re-revised within {}d)",
             s.window_days, ch.churn_days

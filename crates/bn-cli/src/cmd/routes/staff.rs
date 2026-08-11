@@ -138,6 +138,9 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
                 Some(StaffCmd::Gather { agent }) => {
                     std::process::exit(emit_staff_gather(cfg, &agent))
                 }
+                Some(StaffCmd::Mail { agent, date }) => std::process::exit(
+                    crate::cmd::staff_mail::emit_staff_mail(cfg, &agent, date.as_deref()),
+                ),
                 Some(StaffCmd::Feed {
                     filter,
                     unread_count,

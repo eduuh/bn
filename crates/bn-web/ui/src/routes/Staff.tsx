@@ -31,6 +31,8 @@ function healthVariant(health: string): "urgent" | "warn" | "muted" | "ok" {
     case "ok-silent":
     case "skipped":
     case "never":
+    case "off":
+      // `off` is switched off by configuration — a standing choice, not a problem to fix.
       return "muted";
     default:
       return "ok";

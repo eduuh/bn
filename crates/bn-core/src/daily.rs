@@ -340,6 +340,11 @@ fn completed_by_day(
         return out;
     };
     for task in file.tasks() {
+        // Machine bookkeeping never lands in the weekly review's "what shipped" either — same
+        // rule as the day projection, so the two windows agree about whose work this was.
+        if !projection::is_mine(task) {
+            continue;
+        }
         let Some(done_on) = task.completion.as_deref() else {
             continue;
         };
@@ -348,7 +353,7 @@ fn completed_by_day(
         }
         out.entry(done_on.to_string())
             .or_default()
-            .push(task_as_goal(task, done_on));
+            .push(projection::task_as_goal(task, done_on));
     }
     out
 }
@@ -667,65 +672,8 @@ pub fn add_full(
 
 // --- Goals as a projection over tasks (#1004, EPIC #993) -------------------------------------
 
-/// One task rendered as a daily goal.
-///
-/// A daily goal and a task stamped `day:` were the same idea in two stores, which meant keeping
-/// them in sync by hand — exactly what #993 removes. Tasks are now the store; this is the lens.
-fn task_as_goal(task: &crate::todo::Task, today: &str) -> Item {
-    let done = matches!(
-        task.status(today),
-        crate::todo::Status::Done | crate::todo::Status::Cancelled
-    );
-    Item {
-        id: task.id().unwrap_or("?").to_string(),
-        text: task.summary(),
-        created: task.created.clone().unwrap_or_else(|| today.to_string()),
-        done: Some(done),
-        done_at: task.completion.clone(),
-        // The issue a pulled task came from is the goal's link — the same field `bn daily add
-        // --link` fills, so the rendering needs no special case.
-        link: task.meta("src").map(str::to_string),
-        pct: None,
-        est: task.meta("est").map(str::to_string),
-        actual: task.meta("actual").map(str::to_string),
-        q: task.meta("q").map(str::to_string),
-        notes: Vec::new(),
-    }
-}
-
-/// Today's goals, projected from the task store.
-///
-/// **Carry-forward is free here, and that is the point.** `ensure_today` copies yesterday's open
-/// goals into a new file, which is a *write* — so `GET /api/goals` (a read) never triggered it and
-/// carried-forward goals were invisible in bn-web until the CLI happened to touch the day. A query
-/// needs no write, so the bug cannot recur: an open task dated today *or earlier* is simply still
-/// today's work.
-///
-/// Included: open tasks dated today or earlier, and tasks completed today. Excluded: future-dated
-/// work (not today's), snoozed work (deliberately out of view), and anything finished on an
-/// earlier day (it belongs to that day's record).
-pub fn task_goals(cfg: &Config, today: &str) -> Vec<Item> {
-    let Ok(file) = crate::todo::load(&cfg.tasks_file()) else {
-        return Vec::new();
-    };
-    file.tasks()
-        .filter(|t| {
-            let day = t
-                .meta("day")
-                .filter(|d| crate::util::epoch_day(d).is_some());
-            match (day, t.status(today)) {
-                // Open and scheduled for today or earlier — including work that slipped.
-                (Some(d), crate::todo::Status::Open | crate::todo::Status::Wip) => d <= today,
-                // Finished today, whenever it was scheduled: it is part of today's record.
-                (_, crate::todo::Status::Done | crate::todo::Status::Cancelled) => {
-                    t.completion.as_deref() == Some(today)
-                }
-                _ => false,
-            }
-        })
-        .map(|t| task_as_goal(t, today))
-        .collect()
-}
+mod projection;
+pub use projection::task_goals;
 
 /// Today, as the rest of bn should read it: goals projected from tasks, plus the day file's own
 /// learnings and reflections.

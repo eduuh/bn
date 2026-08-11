@@ -171,13 +171,16 @@ export const NAV_GROUPS: NavGroup[] = [
         exp: "skills",
         blurb: "The skill library, editable in place and synced to the harnesses.",
       },
+      // Ungated, like Today and Cron. Two reasons: it is now an editing surface rather than a
+      // preview, and it could not reliably be *un*-gated by hand anyway — `experimental.ts` aliases
+      // the key "agents" to "fleet", so `?experimental=agents` revealed the live fleet and never
+      // this tab. Only `?experimental=1` ever reached it.
       {
         to: "/agents",
         label: "Agents",
         Icon: Bot,
-        exp: "agents",
         blurb:
-          "The Markdown agent roster — what each agent is, when it fires, and its source, read-only.",
+          "The Markdown agent roster — what each agent is, when it fires, and its source, editable in place.",
       },
       {
         to: "/handoff",

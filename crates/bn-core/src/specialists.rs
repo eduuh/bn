@@ -145,8 +145,9 @@ fn native_agent_filename(harness: NativeHarness, name: &str) -> String {
     }
 }
 
-/// Minimal YAML scalar quoting for a one-line frontmatter value.
-fn yaml_scalar(s: &str) -> String {
+/// Minimal YAML scalar quoting for a one-line frontmatter value. Shared with
+/// [`crate::agents::write`], which assembles the same frontmatter for non-specialist agents.
+pub(crate) fn yaml_scalar(s: &str) -> String {
     let s = s.replace(['\n', '\r'], " ");
     let needs_quote = s.is_empty()
         || s.starts_with(' ')

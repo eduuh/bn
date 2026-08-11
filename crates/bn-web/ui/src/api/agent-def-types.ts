@@ -103,3 +103,70 @@ export interface AgentDefDetail {
   agent: AgentDefRow;
   source: string;
 }
+
+// --- Agent roster CRUD (POST/PUT/DELETE /api/agent-defs; `bn_web::actions::agent_defs`) --------
+
+/** The four explicit kinds an agent manifest can declare — `bn_core::agents::AgentKind`.
+ *
+ * Narrower than `CatalogKind`, which also carries `cron` for plain jobs that are not Markdown
+ * agents at all and therefore can never be authored here. */
+export const AGENT_KINDS = ["command", "staff", "hosted", "specialist"] as const;
+export type AgentKind = (typeof AGENT_KINDS)[number];
+
+/** The tiers a create may write into (`bn_core::agents::write::CREATE_SCOPES`).
+ *
+ * Only the global ones. The branch and repo tiers discovery also reads depend on a resolved
+ * checkout, and bn-web serves a machine rather than a working copy — a "repo" tier here would mean
+ * whichever repo the server happened to start in. Those files stay editable; they just cannot be
+ * *created* from the dashboard. */
+export const AGENT_DEF_SCOPES = ["global-personal", "global-shared"] as const;
+export type AgentDefScope = (typeof AGENT_DEF_SCOPES)[number];
+
+/** The Copilot/Claude native-agent re-install that rides on a specialist write.
+ *
+ * `null` rather than an all-zero report for every other kind: only a specialist compiles into a
+ * native harness agent file, so "nothing to sync" is a different fact from "synced nothing", and
+ * the UI says so. */
+export interface AgentDefNativeSync {
+  synced: boolean;
+  harnesses: string[];
+  created?: number;
+  updated?: number;
+  removed?: number;
+  unchanged?: number;
+  /** Present only on `synced: false` — the preflight that refused. */
+  error?: string;
+}
+
+/** What a create/edit/delete returns: the file that moved, and the harness sync when there was
+ * one. `remaining_scope` appears on a delete — non-null when a lower tier was unshadowed by it and
+ * still answers to the name. */
+export interface AgentDefMutation {
+  agent: {
+    name: string;
+    scope: string;
+    path: string;
+    kind: AgentKind;
+    specialist: boolean;
+  };
+  native: AgentDefNativeSync | null;
+  remaining_scope?: string | null;
+}
+
+/** The body `POST /api/agent-defs` accepts (`bn_web::actions::agent_defs::AgentDefCreateBody`).
+ *
+ * `gather`/`sinks` are staff-only and `repo` is specialist-only — each kind's validator *forbids*
+ * the fields belonging to the others, so sending a stray one is a `400` rather than a field the
+ * server quietly drops. A specialist with an empty `body` is scaffolded server-side into a full
+ * reviewer, the same file `bn agents new` writes. */
+export interface AgentDefCreateBody {
+  name: string;
+  kind: AgentKind;
+  description: string;
+  scope?: AgentDefScope;
+  gather?: string;
+  sinks?: string[];
+  repo?: string;
+  body?: string;
+  overwrite?: boolean;
+}

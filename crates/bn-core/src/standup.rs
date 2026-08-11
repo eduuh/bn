@@ -84,6 +84,71 @@ impl FocusGoal {
     }
 }
 
+/// The standing weaknesses the brief should coach against — the "where am I losing" half of the
+/// morning, computed from the scorecard so the agent reasons over measurements rather than
+/// impressions. Every field is a plain number the prompt may quote; none of it is advice.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Gaps {
+    /// Trailing window these figures cover.
+    pub window_days: i64,
+    /// Merged PRs in the window, and how many ever received a review from someone else.
+    pub merged: usize,
+    pub reviewed: usize,
+    /// reviewed ÷ merged — review coverage. `None` when nothing merged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_coverage: Option<f64>,
+    /// Open branches in flight, and how many have gone stale.
+    pub in_flight: usize,
+    pub stale: usize,
+    /// Age of the oldest open branch, in days.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oldest_branch_days: Option<i64>,
+    /// The branch the WIP guard says to finish next, and when the backlog clears at current cadence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finish_next: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clear_by: Option<String>,
+    /// Share of classified commits that were `feat:` — the building-vs-maintaining axis.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feature_ratio: Option<f64>,
+    /// Rework rate, and whether it was measured at all. Churn is read from the *current directory's*
+    /// git log, so a run from an excluded repo reports `churn_counted: false` — say nothing about
+    /// churn in that case rather than quoting a number that describes tooling work.
+    pub churn_counted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub churn_rate: Option<f64>,
+    /// Agent churn-rate ÷ hand churn-rate. Above 1.5 means agent-written code is reworked more.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_vs_hand_ratio: Option<f64>,
+}
+
+impl Gaps {
+    /// Read the gap figures off a scorecard. Pure projection — no judgement, so the numbers the
+    /// brief quotes are exactly the numbers `bn metrics` shows.
+    pub fn from_scorecard(s: &crate::metrics::Scorecard) -> Gaps {
+        Gaps {
+            window_days: s.window_days,
+            merged: s.pr.merged,
+            reviewed: s.review_latency.reviewed,
+            review_coverage: (s.pr.merged > 0)
+                .then(|| s.review_latency.reviewed as f64 / s.pr.merged as f64),
+            in_flight: s.wip_guard.in_flight,
+            stale: s.wip_guard.stale,
+            oldest_branch_days: s.branch_age_max_days,
+            finish_next: s.wip_guard.recommend.clone(),
+            clear_by: s.wip_guard.clear_by.clone(),
+            feature_ratio: s.impact.feature_ratio,
+            churn_counted: s.churn.counted,
+            churn_rate: s.churn.counted.then_some(s.churn.churn_rate).flatten(),
+            agent_vs_hand_ratio: s
+                .churn
+                .counted
+                .then_some(s.churn.agent_vs_hand_ratio)
+                .flatten(),
+        }
+    }
+}
+
 /// The deterministic packet the Standup agent is prompted with: yesterday's completed tasks
 /// (grouped by repo) and today's focus goals.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -101,9 +166,77 @@ pub struct StandupPacket {
     /// Today's open daily goals — the optional "today's focus" beat.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub today_focus: Vec<FocusGoal>,
+    /// Standing weaknesses from the scorecard — the "what to improve" beat.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gaps: Option<Gaps>,
+    /// This cycle's learning pick — the "what to read" beat. `None` when the curriculum has not
+    /// chosen a topic yet, in which case the brief simply omits the beat.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reading: Option<Reading>,
     /// Deterministic operator notes (degraded inputs), never instructions.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+}
+
+/// The current curriculum pick, as the brief should present it: one topic, one resource, bounded.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Reading {
+    pub topic: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+/// This cycle's learning pick, read off the most recent stored Curriculum card.
+///
+/// The curriculum job already chose one topic and one resource and wrote them to the feed; re-deriving
+/// them here would risk disagreeing with the card the user can open. So this reads that card rather
+/// than re-running the choice: the goal item carries `curriculum: <topic> — 30m`, and the research
+/// item carries the resource title and its link.
+pub fn reading_from_feed(cfg: &crate::resolver::Config) -> Option<Reading> {
+    let mut refs: Vec<crate::staff::CardRef> = crate::staff::list_cards(cfg)
+        .into_iter()
+        .filter(|c| c.agent == "curriculum")
+        .collect();
+    refs.sort_by(|a, b| b.date.cmp(&a.date));
+    let card = crate::staff::read_card(&refs.first()?.path)?;
+
+    let topic = card.items.iter().find_map(|it| {
+        (it.kind == "goal")
+            .then(|| it.title.strip_prefix(crate::curriculum::GOAL_PREFIX))
+            .flatten()
+            .map(|rest| {
+                rest.strip_suffix(crate::curriculum::GOAL_SUFFIX)
+                    .unwrap_or(rest)
+                    .to_string()
+            })
+    })?;
+
+    let resource = card.items.iter().find(|it| it.kind == "research");
+    Some(Reading {
+        topic,
+        why: None,
+        title: resource
+            .map(|r| {
+                r.title
+                    .strip_prefix("resource: ")
+                    .unwrap_or(&r.title)
+                    .to_string()
+            })
+            .filter(|s| !s.is_empty()),
+        url: resource
+            .map(|r| r.link.clone())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                card.items
+                    .iter()
+                    .find(|it| it.kind == "goal" && !it.link.is_empty())
+                    .map(|it| it.link.clone())
+            }),
+    })
 }
 
 /// Group yesterday's completed items by repo. Repo-less items land in the `"other"` bucket. Groups
@@ -147,6 +280,8 @@ pub fn build_packet(
     yesterday: &str,
     completed: &[CompletedItem],
     today_goals: &[Item],
+    gaps: Option<Gaps>,
+    reading: Option<Reading>,
 ) -> StandupPacket {
     let done_yesterday: Vec<&CompletedItem> = completed
         .iter()
@@ -170,6 +305,13 @@ pub fn build_packet(
     if today_focus.is_empty() {
         notes.push("no open daily goals for today — no focus to project".to_string());
     }
+    if gaps.as_ref().is_some_and(|g| !g.churn_counted) {
+        notes.push(
+            "churn was not measured on this run (the gather ran from a scorecard-excluded repo) — \
+             say nothing about rework rate"
+                .to_string(),
+        );
+    }
 
     StandupPacket {
         agent: AGENT,
@@ -179,6 +321,8 @@ pub fn build_packet(
         completed: groups,
         completed_count,
         today_focus,
+        gaps,
+        reading,
         notes,
     }
 }
@@ -207,17 +351,44 @@ pub fn gather_packet_json(cfg: &crate::resolver::Config, today: &str) -> String 
         .filter_map(|p| crate::orchestrate::OrchestrateState::load(&p))
         .flat_map(|st| st.queue.into_iter())
         .collect();
+    // PRs merged on GitHub yesterday, from the whole-person metrics log (events live in one file
+    // per machine, so a single-machine read sees a fraction of them). This is where nearly all
+    // finished work actually shows up — the orchestrate queue below only knows about work it
+    // dispatched itself.
+    let events = crate::events::read_events_across(&cfg.metrics_logs_all_machines());
+    let merged_prs = crate::mentor::discover_merged(&events, &yesterday);
+
     let sources = crate::completed::CompletedSources {
         todos: &todos,
         goals: &yesterday_goals,
         attn: &attn,
         merged: &merged,
+        merged_prs: &merged_prs,
     };
     let linker = crate::rollups::FsNoteLinker::new(cfg, &crate::runner::RealRunner);
     let completed = crate::completed::build_completed(&sources, &linker);
 
     let today_goals = crate::daily::view(cfg, today).front.goals;
 
-    let packet = build_packet(cfg.machine(), today, &yesterday, &completed, &today_goals);
+    // The improve beat: the same scorecard `bn metrics` prints, projected to the few figures the
+    // brief is allowed to coach from. Offline — it reads the event log plus the cwd git log.
+    let gaps = Some(Gaps::from_scorecard(&crate::metrics::scorecard(
+        cfg,
+        &crate::runner::RealRunner,
+        crate::util::now_epoch_secs(),
+        crate::metrics::DEFAULT_WINDOW_DAYS,
+        today,
+    )));
+    let reading = reading_from_feed(cfg);
+
+    let packet = build_packet(
+        cfg.machine(),
+        today,
+        &yesterday,
+        &completed,
+        &today_goals,
+        gaps,
+        reading,
+    );
     serde_json::to_string(&packet).unwrap_or_else(|_| "{}".into())
 }

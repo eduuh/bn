@@ -166,6 +166,13 @@ pub async fn tasks(State(state): State<AppState>, Query(q): Query<TasksQuery>) -
     let rows: Vec<Value> = file
         .open_sorted(&today, None)
         .into_iter()
+        // The board answers "what could I do today", so machine bookkeeping is folded out the way
+        // the CLI's day view already folds it (#1151, `task_view::select_tasks`). Without this the
+        // dashboard shows every `run wt-cleanup` and reclaim chore as work waiting on you — 99 rows
+        // of it against 20 real tasks — and each one sits in the enhance queue that will never
+        // touch it, because the gate does not judge machine work. `?status=all` is the ledger and
+        // still shows everything.
+        .filter(|task| !bn_core::task_owner::is_machine(task))
         .filter(|task| {
             repo.as_deref().is_none_or(|want| {
                 task.meta("repo")

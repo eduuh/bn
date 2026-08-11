@@ -145,6 +145,10 @@ pub fn pool_activity(evs: &[events::Event], now: i64, window_days: i64) -> PoolA
     }
 }
 
+/// The scorecard's default trailing window, in days. Shared so `bn metrics --since` and every
+/// programmatic reader (the standup gaps beat) describe the same period without drifting apart.
+pub const DEFAULT_WINDOW_DAYS: i64 = 30;
+
 /// Compute the full scorecard as of `now` (epoch secs) / `today` (`YYYY-MM-DD`) over the trailing
 /// `window_days`. The one impure entry point: reads the cross-machine event log and active notes,
 /// and the commit log through `runner` (for the feature-vs-maintenance mix).
@@ -173,12 +177,25 @@ pub fn scorecard(
 
     // Churn / turnover: re-revised lines over the window, split agent vs hand. The git read goes
     // through the seam; attribution joins the cwd repo's agent-session windows from the synced log.
+    // Churn is the only metric read from the cwd repo's git log rather than the repo-tagged event
+    // log, so it is the only one the repo-visibility rule never reached. Standing in an excluded
+    // repo, it reported that repo's tooling churn as project work — exactly what the exclusion
+    // exists to prevent (and what `notes` below already honours). Report "not counted" instead.
     let repo = current_repo_key(cfg, runner);
-    let agent_windows = repo
-        .as_deref()
-        .map(|r| agent_windows_for_repo(&evs, r))
-        .unwrap_or_default();
-    let churn = churn(runner, &agent_windows, &since, CHURN_DAYS);
+    let churn = match repo.as_deref() {
+        Some(r) if is_excluded_repo(r) => Churn {
+            churn_days: CHURN_DAYS,
+            counted: false,
+            ..Default::default()
+        },
+        _ => {
+            let agent_windows = repo
+                .as_deref()
+                .map(|r| agent_windows_for_repo(&evs, r))
+                .unwrap_or_default();
+            churn(runner, &agent_windows, &since, CHURN_DAYS)
+        }
+    };
 
     let notes: Vec<_> = crate::rollups::all_notes(cfg)
         .into_iter()

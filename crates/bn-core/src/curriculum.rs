@@ -655,7 +655,7 @@ pub fn build_card(plan: &Plan) -> BriefingCard {
         kind: "goal".to_string(),
         severity: "info".to_string(),
         title: plan.goal_title(),
-        link: link_if_github(&plan.resource.url),
+        link: link_if_allowed(&plan.resource.url),
         repo: String::new(),
         branch: String::new(),
     });
@@ -667,7 +667,7 @@ pub fn build_card(plan: &Plan) -> BriefingCard {
                 "resource: {} — {}",
                 plan.resource.title, plan.resource.summary
             ),
-            link: link_if_github(&plan.resource.url),
+            link: link_if_allowed(&plan.resource.url),
             repo: plan.chosen.repo.clone(),
             branch: "main".to_string(),
         });
@@ -709,10 +709,42 @@ fn verdict_line(c: &Continuity) -> String {
     }
 }
 
-/// A link only when it points at github (the always-allowed staff card domain); anything else is
-/// left off the card item so it can never carry an attacker-chosen destination. The full URL still
-/// lives in the body / learn note for a human to open deliberately.
-fn link_if_github(url: &str) -> String {
+/// Curated publications a weekly reading pick may link to directly.
+///
+/// The card's link field is model-authored, so it is allowlisted rather than trusted: an
+/// unrecognised host is dropped instead of becoming a clickable destination. GitHub alone was too
+/// narrow to be useful — the best writing on review practice, flow and distributed systems is on
+/// engineering blogs, so a resource pick either had its link silently stripped or steered itself
+/// toward whatever happened to live on GitHub. These are publications with a track record of
+/// implementation-level depth; anything else still reaches the reader through the card body, which
+/// a human opens deliberately.
+pub const READING_DOMAINS: &[&str] = &[
+    "github.com",
+    "githubusercontent.com",
+    "blog.cloudflare.com",
+    "netflixtechblog.com",
+    "github.blog",
+    "stripe.com",
+    "martinfowler.com",
+    "eng.uber.com",
+    "engineering.fb.com",
+    "slack.engineering",
+    "aws.amazon.com",
+    "danluu.com",
+    "brooker.co.za",
+    "rust-lang.org",
+    "doc.rust-lang.org",
+    "without.boats",
+    "fasterthanli.me",
+    "sqlite.org",
+    "postgresql.org",
+    "arxiv.org",
+    "acm.org",
+    "usenix.org",
+];
+
+/// The host part of `url`, lowercased, with any credentials and port stripped.
+fn host_of(url: &str) -> String {
     let host = url
         .split_once("://")
         .map(|(_, rest)| rest)
@@ -721,10 +753,68 @@ fn link_if_github(url: &str) -> String {
         .next()
         .unwrap_or("");
     let host = host.rsplit('@').next().unwrap_or(host);
-    let host = host.split(':').next().unwrap_or(host).to_ascii_lowercase();
-    if host == "github.com" || host.ends_with(".github.com") {
+    host.split(':').next().unwrap_or(host).to_ascii_lowercase()
+}
+
+/// A link only when it points at a curated publication ([`READING_DOMAINS`]); anything else is left
+/// off the card item so it can never carry an attacker-chosen destination. The full URL still lives
+/// in the body / learn note for a human to open deliberately.
+fn link_if_allowed(url: &str) -> String {
+    let host = host_of(url);
+    let ok = READING_DOMAINS
+        .iter()
+        .any(|d| host == *d || host.ends_with(&format!(".{d}")));
+    if ok {
         url.to_string()
     } else {
         String::new()
+    }
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::*;
+
+    #[test]
+    fn curated_publications_keep_their_link() {
+        for u in [
+            "https://blog.cloudflare.com/how-we-built-it",
+            "https://martinfowler.com/articles/patterns.html",
+            "https://doc.rust-lang.org/book/ch10-03.html",
+            "https://github.com/rust-lang/rust/issues/1",
+            "https://arxiv.org/abs/2401.00001",
+        ] {
+            assert_eq!(link_if_allowed(u), u, "{u} should survive");
+        }
+    }
+
+    #[test]
+    fn a_subdomain_of_a_curated_host_is_allowed() {
+        let u = "https://docs.rust-lang.org/std/index.html";
+        assert_eq!(link_if_allowed(u), u);
+    }
+
+    /// The reason this is an allowlist: the link is model-authored from an untrusted packet.
+    #[test]
+    fn anything_else_is_dropped() {
+        for u in [
+            "https://evil.example.com/pwn",
+            "https://medium.com/@someone/top-10-things",
+            // Lookalike hosts must not pass by suffix confusion.
+            "https://github.com.evil.example/x",
+            "https://notgithub.com/x",
+            "https://fakemartinfowler.com/x",
+        ] {
+            assert_eq!(link_if_allowed(u), "", "{u} should be dropped");
+        }
+    }
+
+    #[test]
+    fn credentials_and_ports_do_not_smuggle_a_host() {
+        assert_eq!(link_if_allowed("https://github.com@evil.example/x"), "");
+        assert_eq!(
+            link_if_allowed("https://blog.cloudflare.com:443/post"),
+            "https://blog.cloudflare.com:443/post"
+        );
     }
 }

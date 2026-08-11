@@ -532,15 +532,19 @@ pub(crate) fn emit_staff_board(cfg: &Config, ctx: Option<&Resolved>, as_json: bo
     );
     for a in &agents {
         let lr = last.get(&a.name);
-        let missed_since = missed.get(&a.name).copied();
+        // An agent switched off by config has not missed anything — see `staff::record_off`.
+        let missed_since = match lr {
+            Some(r) if r.status == staff::RunStatus::Off => None,
+            _ => missed.get(&a.name).copied(),
+        };
         let health = staff_schedule::health_label(lr, missed_since.is_some());
         // Colour the taxonomy word: red = a hard problem (missed / failed / auth), yellow = a
-        // transient policy state (rate-limited / skipped), dim = quiet-by-design (silent / never),
-        // green = a card landed. Padding is on the plain word so columns still line up under it.
+        // transient policy state (rate-limited / skipped), dim = quiet-by-design (silent / never /
+        // off), green = a card landed. Padding is on the plain word so columns still line up.
         let colour = match health {
             "missed" | "fail" | "auth" => "\x1b[1;31m",
             "rate-limited" => "\x1b[33m",
-            "ok-silent" | "skipped" | "never" => "\x1b[2m",
+            "ok-silent" | "skipped" | "never" | "off" => "\x1b[2m",
             _ => "\x1b[32m",
         };
         let when = match (missed_since, lr) {

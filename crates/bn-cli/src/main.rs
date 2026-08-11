@@ -50,6 +50,7 @@ pub(crate) use cli::*;
 // the crate-root namespace and crate-root test modules keep seeing the handlers by their bare
 // names exactly as before.
 pub(crate) use cmd::agent::*;
+pub(crate) use cmd::agent_resume::*;
 pub(crate) use cmd::agents::*;
 pub(crate) use cmd::archivist::*;
 pub(crate) use cmd::attn::*;

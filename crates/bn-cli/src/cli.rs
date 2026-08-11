@@ -680,7 +680,7 @@ pub(crate) enum CmdInsights {
     /// Productivity metrics over the event log: PR completion rate, cycle time, throughput.
     Metrics {
         /// Trailing window in days (default 30).
-        #[arg(long, default_value_t = 30)]
+        #[arg(long, default_value_t = bn_core::metrics::DEFAULT_WINDOW_DAYS)]
         since: i64,
         /// Write today's scorecard to the snapshot store (the weekly trend job runs this).
         #[arg(long)]

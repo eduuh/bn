@@ -46,6 +46,9 @@ pub const MAX_SLUG_CHARS: usize = 48;
 pub struct MergedRef {
     pub repo: String,
     pub number: i64,
+    /// The PR title as stamped on the `pr_merged` event. Empty for events written before the
+    /// title was carried (#213 follow-up), so every reader must tolerate a blank.
+    pub title: String,
     /// GitHub merge time (epoch secs), as stamped on the `pr_merged` event.
     pub merged_ts: i64,
 }
@@ -56,6 +59,18 @@ pub struct MergedRef {
 /// `reviewed_date`. De-duplicated by `(repo, number)` (a re-observed merge is the same PR) and
 /// returned newest-merge-first, then by repo/number, for a stable order independent of log order.
 pub fn discover_merged(events: &[crate::events::Event], reviewed_date: &str) -> Vec<MergedRef> {
+    merged_refs(events, |ts| crate::util::local_date_of(ts) == reviewed_date)
+}
+
+/// Every merged PR in the log, newest-first — [`discover_merged`] without the date narrowing, for
+/// readers that want the whole history (the Completed feed) rather than one day (the Mentor).
+pub fn all_merged(events: &[crate::events::Event]) -> Vec<MergedRef> {
+    merged_refs(events, |_| true)
+}
+
+/// Shared fold behind [`discover_merged`] and [`all_merged`]: pick `pr_merged` events whose
+/// timestamp passes `keep`, dedupe by `(repo, number)`, sort newest-merge-first.
+fn merged_refs(events: &[crate::events::Event], keep: impl Fn(i64) -> bool) -> Vec<MergedRef> {
     let mut seen = std::collections::HashSet::new();
     let mut out: Vec<MergedRef> = Vec::new();
     for e in events {
@@ -68,7 +83,7 @@ pub fn discover_merged(events: &[crate::events::Event], reviewed_date: &str) -> 
         ) else {
             continue;
         };
-        if crate::util::local_date_of(e.ts) != reviewed_date {
+        if !keep(e.ts) {
             continue;
         }
         if !seen.insert((repo.to_string(), number)) {
@@ -77,6 +92,12 @@ pub fn discover_merged(events: &[crate::events::Event], reviewed_date: &str) -> 
         out.push(MergedRef {
             repo: repo.to_string(),
             number,
+            title: e
+                .fields
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
             merged_ts: e.ts,
         });
     }

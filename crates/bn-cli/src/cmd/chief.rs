@@ -321,10 +321,12 @@ pub(crate) fn job_staff_chief_pm(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
 /// a failure.
 pub(crate) fn run_chief_job(cfg: &Config, slot: bn_core::chief::Slot) -> i32 {
     if !resolver::JobConfig::load().chief_enabled {
-        println!(
-            "{}: Chief of Staff disabled — set [chief].enabled to opt in",
-            slot.agent()
-        );
+        let reason = "Chief of Staff disabled — set [chief].enabled to opt in";
+        println!("{}: {reason}", slot.agent());
+        // Recorded against the roster name, not the card name, because that is what the health
+        // board keys on. Without it the row read "missed — scheduled run never fired": a red
+        // alarm for an agent that is simply switched off.
+        bn_core::staff::record_off(slot.roster_name(), &today(), reason);
         return 0;
     }
     let (card, effect) = run_chief(cfg, slot, &today());

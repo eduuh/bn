@@ -137,6 +137,19 @@ pub struct CompletedSources<'a> {
     pub attn: &'a [AttnItem],
     /// Every orchestrate queue item across live runs (flattened) — only `Merged` ones become items.
     pub merged: &'a [QueueItem],
+    /// PRs merged on GitHub, discovered from the metrics log's `pr_merged` events
+    /// ([`crate::mentor::discover_merged`]). This is the source that sees work done *outside* the
+    /// orchestrate queue — which is nearly all of it, so without this the fold reports a day of
+    /// shipped PRs as "quiet". Entries already represented in [`Self::merged`] are dropped by
+    /// [`build_completed`] rather than counted twice.
+    pub merged_prs: &'a [crate::mentor::MergedRef],
+}
+
+/// The repo basename a completed row groups under — `eduuh/bn` → `bn`. GitHub events carry the
+/// `owner/repo` slug while branch-note todos carry the bare name; folding them to the same key is
+/// what lets one repo's PRs and todos land in one group instead of two.
+fn repo_base(repo: &str) -> &str {
+    repo.rsplit('/').next().unwrap_or(repo)
 }
 
 /// Truncate a possibly-multiline body to a short single line for a row title.
@@ -227,9 +240,47 @@ pub fn build_completed(src: &CompletedSources, linker: &dyn NoteLinker) -> Vec<C
         });
     }
 
+    // Merged PRs observed on GitHub ---------------------------------------
+    // Recorded first so the orchestrate pass below can drop its duplicates: when a queued item
+    // lands, both sources describe the same PR, and the GitHub row is the better one (real merge
+    // timestamp, real title, canonical link).
+    let mut seen_prs: std::collections::HashSet<(String, i64)> = std::collections::HashSet::new();
+    for pr in src.merged_prs {
+        let base = repo_base(&pr.repo);
+        if !seen_prs.insert((base.to_string(), pr.number)) {
+            continue;
+        }
+        let title = if pr.title.is_empty() {
+            format!("{} #{}", pr.repo, pr.number)
+        } else {
+            format!("{} (#{})", one_line(&pr.title, 80), pr.number)
+        };
+        out.push(CompletedItem {
+            id: format!("merged-pr:{}/{}", pr.repo, pr.number),
+            kind: CompletedKind::MergedPr,
+            title,
+            source: format!("github · {}", pr.repo),
+            repo: Some(base.to_string()),
+            branch: None,
+            link: Some(format!("https://github.com/{}/pull/{}", pr.repo, pr.number)),
+            detail: None,
+            completed: pr.merged_ts,
+            note: NoteLink::default(),
+        });
+    }
+
     // Landed / merged orchestrate work -----------------------------------
     for item in src.merged {
         if item.status != ItemStatus::Merged {
+            continue;
+        }
+        // Already counted from its `pr_merged` event — one landed PR is one completed item.
+        if item
+            .pr
+            .as_deref()
+            .and_then(crate::pr_observe::parse_pr_link)
+            .is_some_and(|(r, n)| seen_prs.contains(&(repo_base(&r).to_string(), n)))
+        {
             continue;
         }
         let note = match item.branch.as_deref() {
@@ -253,4 +304,128 @@ pub fn build_completed(src: &CompletedSources, linker: &dyn NoteLinker) -> Vec<C
     // Most-recent-first; a missing/unparseable completion stamp sorts to epoch 0 (the bottom).
     out.sort_by(|a, b| b.completed.cmp(&a.completed).then(a.id.cmp(&b.id)));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mentor::MergedRef;
+
+    fn merged_ref(repo: &str, number: i64, title: &str, ts: i64) -> MergedRef {
+        MergedRef {
+            repo: repo.to_string(),
+            number,
+            title: title.to_string(),
+            merged_ts: ts,
+        }
+    }
+
+    /// The regression this whole source exists for: work that never went through the orchestrate
+    /// queue used to fold to nothing, so a day of shipped PRs read back as "quiet".
+    #[test]
+    fn a_pr_merged_outside_the_queue_is_completed_work() {
+        let prs = [merged_ref(
+            "eduuh/bn",
+            1138,
+            "never kill a watched agent",
+            500,
+        )];
+        let src = CompletedSources {
+            merged_prs: &prs,
+            ..Default::default()
+        };
+        let out = build_completed(&src, &NoLinker);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].kind, CompletedKind::MergedPr);
+        assert_eq!(out[0].title, "never kill a watched agent (#1138)");
+        assert_eq!(out[0].repo.as_deref(), Some("bn"));
+        assert_eq!(
+            out[0].link.as_deref(),
+            Some("https://github.com/eduuh/bn/pull/1138")
+        );
+        assert_eq!(out[0].completed, 500);
+    }
+
+    /// A queued item and its `pr_merged` event describe one landed PR. Counting both would inflate
+    /// every "how much got done" number by the share of work that happens to run through the queue.
+    #[test]
+    fn a_queued_item_and_its_merge_event_are_one_item() {
+        let prs = [merged_ref("eduuh/bn", 1138, "landed", 500)];
+        let queued = [QueueItem {
+            id: "1138".into(),
+            item: "1138".into(),
+            repo: "bn".into(),
+            status: ItemStatus::Merged,
+            pr: Some("https://github.com/eduuh/bn/pull/1138".into()),
+            updated_at: 400,
+            ..Default::default()
+        }];
+        let src = CompletedSources {
+            merged: &queued,
+            merged_prs: &prs,
+            ..Default::default()
+        };
+        let out = build_completed(&src, &NoLinker);
+        assert_eq!(
+            out.len(),
+            1,
+            "the GitHub row wins, the queue row folds away"
+        );
+        assert_eq!(out[0].id, "merged-pr:eduuh/bn/1138");
+    }
+
+    /// Orchestrate work with no corresponding merge event still counts — the dedupe must not
+    /// swallow queue items just because the event log hasn't caught up.
+    #[test]
+    fn queued_work_without_a_merge_event_still_counts() {
+        let queued = [QueueItem {
+            id: "77".into(),
+            item: "77".into(),
+            repo: "atlas".into(),
+            status: ItemStatus::Merged,
+            pr: Some("https://github.com/eduuh/atlas/pull/77".into()),
+            updated_at: 400,
+            ..Default::default()
+        }];
+        let src = CompletedSources {
+            merged: &queued,
+            ..Default::default()
+        };
+        let out = build_completed(&src, &NoLinker);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "merged:atlas/77");
+    }
+
+    /// Events written before titles were carried must still render a usable row.
+    #[test]
+    fn a_titleless_event_falls_back_to_the_pr_reference() {
+        let prs = [merged_ref("eduuh/wira360", 916, "", 500)];
+        let src = CompletedSources {
+            merged_prs: &prs,
+            ..Default::default()
+        };
+        let out = build_completed(&src, &NoLinker);
+        assert_eq!(out[0].title, "eduuh/wira360 #916");
+    }
+
+    /// GitHub says `eduuh/bn`, branch-note todos say `bn`. They must group under one repo.
+    #[test]
+    fn a_slug_and_a_bare_repo_name_group_together() {
+        let prs = [merged_ref("eduuh/bn", 1, "x", 500)];
+        let todos = [CompletedTodo {
+            repo: "bn".into(),
+            branch: "main".into(),
+            id: "t1".into(),
+            text: "a todo".into(),
+            done_at: "2026-08-10".into(),
+        }];
+        let src = CompletedSources {
+            todos: &todos,
+            merged_prs: &prs,
+            ..Default::default()
+        };
+        let out = build_completed(&src, &NoLinker);
+        let repos: Vec<_> = out.iter().filter_map(|c| c.repo.as_deref()).collect();
+        assert_eq!(repos, vec!["bn", "bn"]);
+    }
 }

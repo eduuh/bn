@@ -23,6 +23,11 @@ use std::path::{Path, PathBuf};
 
 pub use crate::template::ArgumentDef as AgentArgDef;
 
+/// Authoring the roster — create / save / delete an `agents/<name>.md`, each validated through
+/// [`parse_agent`] first. Its own file because the read side above is what the scheduler, the
+/// dispatcher and every roster view use, and none of them writes.
+pub mod write;
+
 pub const DEFAULT_RETRY_AFTER_SECS: i64 = 15 * 60;
 
 /// The explicit execution contract for an agent manifest.

@@ -23,9 +23,15 @@
 //! Silence itself is recorded on the run event by [`crate::staff::run_pipeline`] (a validated card
 //! with no routed items is `ok-silent`, flagged on [`crate::staff::LastRun::silent`]); this module
 //! only reads it back. The taxonomy every surface renders — `ok-with-card` / `ok-silent` /
-//! `missed` / `fail` / `auth` / `rate-limited` / `skipped` / `never` — is spelled in exactly one
-//! place, [`health_label`], so the `bn staff` board, the `bn doctor` list, and the nvim cockpit
-//! panel can never drift.
+//! `missed` / `fail` / `auth` / `rate-limited` / `skipped` / `off` / `never` — is spelled in
+//! exactly one place, [`health_label`], so the `bn staff` board, the `bn doctor` list, and the
+//! nvim cockpit panel can never drift.
+//!
+//! `off` is the third kind of silence, and it outranks `missed`: an agent whose opt-in flag is
+//! unset (or whose repo allowlist is empty) was never going to run, so a slot passing without it
+//! is not a miss. Its job records the state via [`crate::staff::record_off`] instead of returning
+//! silently — otherwise "did nothing by design" and "never ran" are the same absence, and a
+//! deliberately-disabled agent shows in red forever.
 
 use crate::staff::{LastRun, ResolvedAgent, RunStatus};
 use chrono::{Datelike, Local, NaiveDate, TimeZone, Weekday};
@@ -599,11 +605,19 @@ pub fn missed_runs(
 }
 
 /// The health word a surface renders for an agent, given its last run (if any) and whether a
-/// scheduled slot was missed. The single spelling of the #273 taxonomy: `missed` (a slot with no
-/// run — a hard miss) outranks any stale last-run word; then a clean run splits into `ok-silent`
-/// (ran, correctly said nothing) vs `ok-with-card`; and `fail` / `auth` / `rate-limited` /
-/// `skipped` pass the run status through. `never` when the agent has no run and nothing was missed.
+/// scheduled slot was missed. The single spelling of the #273 taxonomy: `off` (switched off by
+/// configuration) outranks everything, then `missed` (a slot with no run — a hard miss) outranks
+/// any stale last-run word; then a clean run splits into `ok-silent` (ran, correctly said nothing)
+/// vs `ok-with-card`; and `fail` / `auth` / `rate-limited` / `skipped` pass the run status through.
+/// `never` when the agent has no run and nothing was missed.
+///
+/// `off` is checked *before* `missed` on purpose. An agent you deliberately switched off cannot
+/// miss a slot it was never going to run, and reporting one as a hard miss is a false alarm on the
+/// one surface whose whole job is telling you what actually needs you.
 pub fn health_label(last: Option<&LastRun>, missed: bool) -> &'static str {
+    if last.is_some_and(|r| r.status == RunStatus::Off) {
+        return "off";
+    }
     if missed {
         return "missed";
     }
@@ -616,6 +630,7 @@ pub fn health_label(last: Option<&LastRun>, missed: bool) -> &'static str {
             RunStatus::Auth => "auth",
             RunStatus::RateLimited => "rate-limited",
             RunStatus::Skipped => "skipped",
+            RunStatus::Off => "off",
         },
     }
 }
@@ -623,6 +638,44 @@ pub fn health_label(last: Option<&LastRun>, missed: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run(status: RunStatus) -> LastRun {
+        LastRun {
+            status,
+            ts: 0,
+            error: None,
+            silent: false,
+        }
+    }
+
+    /// The false alarm this fixes: sentinel and both chief agents are switched off, and the board
+    /// painted them red as a hard miss.
+    #[test]
+    fn a_switched_off_agent_is_off_not_missed() {
+        assert_eq!(health_label(Some(&run(RunStatus::Off)), true), "off");
+        assert_eq!(health_label(Some(&run(RunStatus::Off)), false), "off");
+    }
+
+    /// `off` must not swallow a real miss on an agent that is genuinely enabled.
+    #[test]
+    fn an_enabled_agent_still_reports_a_miss() {
+        assert_eq!(health_label(Some(&run(RunStatus::Ok)), true), "missed");
+        assert_eq!(health_label(None, true), "missed");
+    }
+
+    /// `off` (a standing choice) and `skipped` (a clearable block, e.g. backpressure) are
+    /// different states and must stay distinguishable.
+    #[test]
+    fn off_is_not_the_same_word_as_skipped() {
+        assert_eq!(
+            health_label(Some(&run(RunStatus::Skipped)), false),
+            "skipped"
+        );
+        assert_ne!(
+            health_label(Some(&run(RunStatus::Off)), false),
+            health_label(Some(&run(RunStatus::Skipped)), false)
+        );
+    }
 
     #[test]
     fn common_scheduler_accepts_manifest_schedule_shapes() {

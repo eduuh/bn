@@ -1,10 +1,11 @@
 use super::parse::{events_json, is_quiet, note_key, read_yaml, ts_of, ws_str};
+use super::pending::{finished_session_ids, pending_agents, Claimed};
 use crate::cost::{canonical_session_id, LaunchRecord, WorkClass};
 use crate::resolver::Config;
 use crate::util::now_epoch_secs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 // --- supervise: live-agent fleet view -------------------------------------------------------
@@ -340,163 +341,6 @@ fn mark_ended(agents: &mut [LiveAgent]) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn agent(health: AgentHealth, idle_secs: i64, tmux_target: Option<&str>) -> LiveAgent {
-        LiveAgent {
-            session_id: "s1".to_string(),
-            harness: "copilot".to_string(),
-            repo: "bn".to_string(),
-            branch: "queue-duplicates".to_string(),
-            target: "bn:queue-duplicates".to_string(),
-            tmux_target: tmux_target.map(str::to_string),
-            worktree: None,
-            last_activity_ts: 100,
-            idle_secs,
-            health,
-            role: AgentRole::Worker,
-            work_class: None,
-            task_name: None,
-            turns: 1,
-            tool_calls: 0,
-            input_tokens: 0,
-            output_tokens: 0,
-            cache_read_tokens: 0,
-            control: ControlChannel::None,
-            task: None,
-        }
-    }
-
-    #[test]
-    fn quiet_windowless_agent_is_ended_not_running() {
-        let mut agents = vec![
-            agent(AgentHealth::Stuck, ENDED_SILENCE_MINS * 60, None),
-            agent(AgentHealth::Stuck, ENDED_SILENCE_MINS * 60, Some("bn:live")),
-            agent(AgentHealth::Starting, ENDED_SILENCE_MINS * 60, None),
-        ];
-
-        mark_ended(&mut agents);
-        let fleet = Fleet::from_agents(agents);
-
-        assert_eq!(fleet.ended, 1);
-        assert_eq!(fleet.stuck, 1);
-        assert_eq!(fleet.starting, 1);
-        assert_eq!(fleet.running_count(), 2);
-        assert_eq!(fleet.running().count(), 2);
-    }
-
-    fn launch(session_id: &str, branch: &str, launched_at: i64) -> LaunchRecord {
-        LaunchRecord {
-            session_id: session_id.to_string(),
-            task_name: String::new(),
-            harness: "claude".to_string(),
-            repo: "bn".to_string(),
-            branch: branch.to_string(),
-            worktree: String::new(),
-            work_class: WorkClass::Coding,
-            launched_at,
-            controller_id: None,
-        }
-    }
-
-    /// A live agent in the launch's checkout, last heard from at `last_activity_ts`.
-    fn working(branch: &str, session_id: &str, last_activity_ts: i64) -> LiveAgent {
-        LiveAgent {
-            session_id: session_id.to_string(),
-            branch: branch.to_string(),
-            last_activity_ts,
-            ..agent(AgentHealth::Active, 0, None)
-        }
-    }
-
-    #[test]
-    fn launch_that_came_up_under_another_id_is_not_also_pending() {
-        // The harness wrote its own transcript id, so the id bn pinned never goes live — only the
-        // checkout says the launch arrived.
-        let claimed = Claimed::from(
-            &[working("repo-page", "actually-this-one", 1_100)],
-            HashSet::new(),
-        );
-
-        let pending = pending_agents(
-            &[launch("pinned-id", "repo-page", 1_000)],
-            &claimed,
-            1_200,
-            20,
-        );
-
-        assert!(pending.is_empty(), "one dispatch must render as one row");
-    }
-
-    #[test]
-    fn ghost_from_the_previous_run_does_not_hide_a_fresh_launch() {
-        // Same checkout, but its last sign of life predates the dispatch: that transcript is the run
-        // before, and the agent this launch is waiting on has genuinely not come up yet.
-        let claimed = Claimed::from(
-            &[working("repo-page", "yesterdays-run", 900)],
-            HashSet::new(),
-        );
-
-        let pending = pending_agents(
-            &[launch("pinned-id", "repo-page", 1_000)],
-            &claimed,
-            1_200,
-            20,
-        );
-
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].health, AgentHealth::Starting);
-    }
-
-    #[test]
-    fn checkout_match_ignores_branch_spelling() {
-        let claimed = Claimed::from(&[working("feature-x", "live", 1_100)], HashSet::new());
-
-        let pending = pending_agents(
-            &[launch("pinned-id", "feature/X", 1_000)],
-            &claimed,
-            1_200,
-            20,
-        );
-
-        assert!(
-            pending.is_empty(),
-            "`feature/X` and `feature-x` are one checkout"
-        );
-    }
-
-    #[test]
-    fn a_branchless_launch_is_not_answered_for_by_the_repo() {
-        // Neither side names a checkout, so there is nothing to match on but the repo — which is
-        // not the same work, and the placeholder is all this launch has.
-        let claimed = Claimed::from(&[working("", "some-other-agent", 1_100)], HashSet::new());
-
-        let pending = pending_agents(&[launch("pinned-id", "", 1_000)], &claimed, 1_200, 20);
-
-        assert_eq!(pending.len(), 1);
-    }
-
-    #[test]
-    fn finished_and_live_ids_still_win_on_an_untouched_checkout() {
-        let claimed = Claimed::from(&[], HashSet::from(["ingested".to_string()]));
-
-        let pending = pending_agents(
-            &[
-                launch("ingested", "done-branch", 1_000),
-                launch("fresh", "new-branch", 1_000),
-            ],
-            &claimed,
-            1_200,
-            20,
-        );
-
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].session_id, "fresh");
-    }
-}
-
 /// Attach each agent's governing task, so the fleet can say what an agent is working on.
 ///
 /// One read of the task store for the whole pass, not one per agent — the same budget
@@ -552,150 +396,6 @@ pub fn supervision_roots() -> (PathBuf, PathBuf) {
         home.join(".claude").join("projects"),
         home.join(".copilot").join("session-state"),
     )
-}
-
-/// The harness session ids of already-finished (ingested) sessions, read from the machine-local
-/// metrics log — the same `agent_session` events [`crate::agent::session::ingest`] appends. Used to
-/// dedup pending "starting…" entries so a completed run whose launch record is still recent is not
-/// resurrected as pending. Keys are [`canonical_session_id`]-normalized to match the launch side.
-fn finished_session_ids(cfg: &Config) -> HashSet<String> {
-    crate::events::read_events_at(&cfg.metrics_log_path())
-        .into_iter()
-        .filter(|e| e.kind == "agent_session")
-        .filter_map(|e| {
-            e.fields
-                .get("session_id")
-                .and_then(|v| v.as_str())
-                .map(canonical_session_id)
-        })
-        .collect()
-}
-
-/// What the fleet already accounts for, so a synthesized "starting…" entry never duplicates a
-/// session that is right there in the list.
-///
-/// Two ways a launch is already answered for, and the session id catches only the first:
-///
-/// * **The id came up.** A transcript exists for exactly the id bn pinned, or ingest has already
-///   filed that id as finished.
-/// * **The checkout is busy.** A session is at work in the worktree the launch targeted, under some
-///   *other* id. Harnesses do not always keep the id bn asks for — a `--resume`, a relaunch, a
-///   compaction can each write a fresh one — and then the id half never matches, so the placeholder
-///   sat beside the very agent it was waiting for until [`DEFAULT_STARTING_MINS`] retired it. One
-///   dispatch rendering as two rows is the same work counted twice, which is what the queue page
-///   reads as a duplicate.
-struct Claimed {
-    /// Canonical session ids that are live or already ingested.
-    sessions: HashSet<String>,
-    /// Per `repo/branch`, the newest sign of life from a live session in that checkout — compared
-    /// against the launch time rather than merely present, so a *stale* session (a ghost transcript
-    /// still readable from the run before) cannot suppress the placeholder for a launch that fired
-    /// after it fell silent.
-    worktrees: HashMap<String, i64>,
-}
-
-impl Claimed {
-    fn from(live: &[LiveAgent], finished: HashSet<String>) -> Claimed {
-        let mut sessions = finished;
-        let mut worktrees: HashMap<String, i64> = HashMap::new();
-        for a in live {
-            sessions.insert(canonical_session_id(&a.session_id));
-            let Some(key) = worktree_key(&a.repo, &a.branch) else {
-                continue;
-            };
-            worktrees
-                .entry(key)
-                .and_modify(|ts| *ts = (*ts).max(a.last_activity_ts))
-                .or_insert(a.last_activity_ts);
-        }
-        Claimed {
-            sessions,
-            worktrees,
-        }
-    }
-
-    /// Whether the fleet already shows this launch — either its own id, or a session that has
-    /// spoken in the launch's checkout since it fired.
-    fn covers(&self, launch: &LaunchRecord) -> bool {
-        if self
-            .sessions
-            .contains(&canonical_session_id(&launch.session_id))
-        {
-            return true;
-        }
-        worktree_key(&launch.repo, &launch.branch)
-            .and_then(|key| self.worktrees.get(&key))
-            .is_some_and(|ts| *ts >= launch.launched_at)
-    }
-}
-
-/// The one spelling of a checkout both sides compare on: repo and branch in the form the worktree
-/// dirs already use, so a launch record's `feature/x` and a live agent's `feature-x` are one place.
-///
-/// `None` for a branchless record (a launch that names no checkout, an agent whose transcript could
-/// not be attributed to one). Those must not fall together into a repo-wide bucket, where any live
-/// agent in the repo would answer for a launch that has nothing to do with it.
-fn worktree_key(repo: &str, branch: &str) -> Option<String> {
-    let branch = super::lease::normalized_branch(branch);
-    (!branch.is_empty()).then(|| format!("{}/{branch}", repo.trim().to_lowercase()))
-}
-
-/// Synthesize pending "starting…" [`LiveAgent`]s from launch records (#545): a launch within
-/// `starting_mins` that the fleet does not already account for (see [`Claimed`]) was dispatched but
-/// hasn't come up yet. Pure over its inputs so it is unit-testable without touching the filesystem.
-/// The latest launch record per session wins (a re-dispatch re-pins the same id), and entries carry
-/// the launch time as their `last_activity_ts` so they sort to the top of the fleet as the newest
-/// work.
-fn pending_agents(
-    launches: &[LaunchRecord],
-    claimed: &Claimed,
-    now: i64,
-    starting_mins: i64,
-) -> Vec<LiveAgent> {
-    // `launches` is in chronological (file) order, so a later record for the same session
-    // overwrites an earlier one — latest write wins.
-    let mut latest: BTreeMap<String, &LaunchRecord> = BTreeMap::new();
-    for l in launches {
-        latest.insert(canonical_session_id(&l.session_id), l);
-    }
-    let window = starting_mins * 60;
-    latest
-        .into_values()
-        .filter_map(|l| {
-            if claimed.covers(l) {
-                return None;
-            }
-            let age = now - l.launched_at;
-            if age < 0 || age >= window {
-                return None;
-            }
-            Some(LiveAgent {
-                session_id: l.session_id.clone(),
-                harness: String::new(),
-                repo: l.repo.clone(),
-                branch: l.branch.clone(),
-                target: format!("{}:{}", l.repo, l.branch),
-                // A launch record carries no checkout; the window join still finds one by session
-                // id if the launcher already stamped or leased its window.
-                worktree: None,
-                tmux_target: None,
-                last_activity_ts: l.launched_at,
-                idle_secs: age,
-                health: AgentHealth::Starting,
-                role: AgentRole::Worker,
-                work_class: Some(l.work_class),
-                task_name: (!l.task_name.is_empty()).then(|| l.task_name.clone()),
-                turns: 0,
-                tool_calls: 0,
-                input_tokens: 0,
-                output_tokens: 0,
-                cache_read_tokens: 0,
-                // Stamped by `stamp_control` once the whole fleet is assembled.
-                control: ControlChannel::None,
-                task: None,
-            })
-        })
-        .collect()
 }
 
 /// Stamp each live agent with launch-path metadata, keyed on the harness session id `bn dispatch`
@@ -1071,7 +771,8 @@ fn parse_live_copilot(
 
 /// A file's mtime as epoch seconds (the activity fallback when a transcript carries no parseable
 /// timestamp).
-fn file_mtime(path: &Path) -> Option<i64> {
+/// Shared with [`super::progress`], which reads the same logs to answer a different question.
+pub(super) fn file_mtime(path: &Path) -> Option<i64> {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
@@ -1079,195 +780,50 @@ fn file_mtime(path: &Path) -> Option<i64> {
         .map(|d| d.as_secs() as i64)
 }
 
-// --- agent progress probe (#374) ------------------------------------------------------------
-//
-// The orchestrator's #374 liveness signal: given a worktree path, how much has the agent working
-// there actually *done* (cumulative AIC) and when did it last do anything. Unlike [`supervise`],
-// this reads a session **regardless of quiet/finished** — a *stalled* agent's log is untouched for
-// far longer than [`QUIET_SECS`], yet that's precisely the agent we must measure to tell it apart
-// from a just-launched one (no tokens yet).
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// The cumulative progress of the newest harness session whose worktree is a given cwd — the #374
-/// liveness probe the orchestrator uses to distinguish a *stalled* agent (worked, then died at an
-/// idle prompt) from a *just-launched* one (no turn produced yet).
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct AgentProgress {
-    pub harness: String,
-    pub session_id: String,
-    /// Cumulative output tokens burned (AIC, #309) — `0` when the agent produced no assistant turn.
-    pub aic: i64,
-    /// Epoch secs of the newest event (last sign of life), falling back to the log's mtime.
-    pub last_activity_ts: i64,
-}
-
-/// [`agent_progress_from`] against the real `~/.claude/projects` + `~/.copilot/session-state`.
-pub fn agent_progress_for_cwd(cwd: &Path) -> Option<AgentProgress> {
-    let home = dirs::home_dir().unwrap_or_default();
-    agent_progress_from(
-        &home.join(".claude").join("projects"),
-        &home.join(".copilot").join("session-state"),
-        cwd,
-    )
-}
-
-/// The newest Claude or Copilot session whose recorded cwd is `cwd`, with its cumulative output
-/// tokens + last-activity ts — read regardless of quiet/finished (unlike [`supervise`]), so a
-/// *stalled* agent (log untouched for > [`QUIET_SECS`]) is still measured. `None` when no session
-/// targets `cwd`. The testable core: explicit roots, no `now`/`Config` needed.
-pub fn agent_progress_from(
-    claude_root: &Path,
-    copilot_root: &Path,
-    cwd: &Path,
-) -> Option<AgentProgress> {
-    let mut best: Option<AgentProgress> = None;
-    let mut consider = |p: AgentProgress| {
-        if best
-            .as_ref()
-            .map(|b| p.last_activity_ts > b.last_activity_ts)
-            .unwrap_or(true)
-        {
-            best = Some(p);
-        }
-    };
-    // Copilot: one directory per session (events.jsonl + workspace.yaml).
-    if let Ok(dirs) = std::fs::read_dir(copilot_root) {
-        for d in dirs.flatten() {
-            let dir = d.path();
-            if dir.is_dir() {
-                if let Some(p) = copilot_progress(&dir, cwd) {
-                    consider(p);
-                }
-            }
+    fn agent(health: AgentHealth, idle_secs: i64, tmux_target: Option<&str>) -> LiveAgent {
+        LiveAgent {
+            session_id: "s1".to_string(),
+            harness: "copilot".to_string(),
+            repo: "bn".to_string(),
+            branch: "queue-duplicates".to_string(),
+            target: "bn:queue-duplicates".to_string(),
+            tmux_target: tmux_target.map(str::to_string),
+            worktree: None,
+            last_activity_ts: 100,
+            idle_secs,
+            health,
+            role: AgentRole::Worker,
+            work_class: None,
+            task_name: None,
+            turns: 1,
+            tool_calls: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            control: ControlChannel::None,
+            task: None,
         }
     }
-    // Claude: one transcript per session under <encoded-cwd>/<session>.jsonl.
-    if let Ok(projects) = std::fs::read_dir(claude_root) {
-        for proj in projects.flatten() {
-            let Ok(files) = std::fs::read_dir(proj.path()) else {
-                continue;
-            };
-            for f in files.flatten() {
-                let path = f.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                    continue;
-                }
-                if let Some(p) = claude_progress(&path, cwd) {
-                    consider(p);
-                }
-            }
-        }
-    }
-    best
-}
 
-/// Whether two paths point at the same directory — literal match first (the common case: the
-/// harness records the exact worktree path it was launched in), then canonicalized (tolerates a
-/// `/private` symlink or trailing slash on macOS).
-pub(crate) fn same_dir(a: &Path, b: &Path) -> bool {
-    if a == b {
-        return true;
-    }
-    matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
-}
+    #[test]
+    fn quiet_windowless_agent_is_ended_not_running() {
+        let mut agents = vec![
+            agent(AgentHealth::Stuck, ENDED_SILENCE_MINS * 60, None),
+            agent(AgentHealth::Stuck, ENDED_SILENCE_MINS * 60, Some("bn:live")),
+            agent(AgentHealth::Starting, ENDED_SILENCE_MINS * 60, None),
+        ];
 
-/// Progress for a Copilot session dir, iff its recorded cwd is `cwd`. Sums each `assistant.message`'s
-/// `outputTokens` (the live AIC signal) and takes the newest event ts as last-activity.
-fn copilot_progress(dir: &Path, cwd: &Path) -> Option<AgentProgress> {
-    let events = dir.join("events.jsonl");
-    let evs = events_json(&events);
-    if evs.is_empty() {
-        return None;
-    }
-    let typ = |v: &Value| {
-        v.get("type")
-            .and_then(|t| t.as_str())
-            .unwrap_or("")
-            .to_string()
-    };
-    let ws = read_yaml(&dir.join("workspace.yaml"));
-    let ctx = evs
-        .iter()
-        .find(|v| typ(v) == "session.start")
-        .and_then(|s| s.get("data"))
-        .and_then(|d| d.get("context"))
-        .cloned()
-        .unwrap_or(Value::Null);
-    let session_cwd = ws_str(&ws, "cwd")
-        .or_else(|| ctx.get("cwd").and_then(|v| v.as_str()).map(String::from))
-        .unwrap_or_default();
-    if session_cwd.is_empty() || !same_dir(Path::new(&session_cwd), cwd) {
-        return None;
-    }
-    let session_id =
-        ws_str(&ws, "id").or_else(|| dir.file_name().map(|n| n.to_string_lossy().into_owned()))?;
-    let last_activity_ts = evs
-        .iter()
-        .filter_map(ts_of)
-        .max()
-        .or_else(|| file_mtime(&events))
-        .unwrap_or(0);
-    let aic: i64 = evs
-        .iter()
-        .filter(|v| typ(v) == "assistant.message")
-        .filter_map(|v| v.get("data").and_then(|d| d.get("outputTokens")))
-        .filter_map(|v| v.as_i64())
-        .sum();
-    Some(AgentProgress {
-        harness: "copilot".into(),
-        session_id,
-        aic,
-        last_activity_ts,
-    })
-}
+        mark_ended(&mut agents);
+        let fleet = Fleet::from_agents(agents);
 
-/// Progress for a Claude transcript, iff its recorded cwd is `cwd`. Sums each assistant turn's
-/// `usage.output_tokens` and takes the newest event ts as last-activity.
-fn claude_progress(path: &Path, cwd: &Path) -> Option<AgentProgress> {
-    let lines = events_json(path);
-    if lines.is_empty() {
-        return None;
+        assert_eq!(fleet.ended, 1);
+        assert_eq!(fleet.stuck, 1);
+        assert_eq!(fleet.starting, 1);
+        assert_eq!(fleet.running_count(), 2);
+        assert_eq!(fleet.running().count(), 2);
     }
-    let typ = |v: &Value| {
-        v.get("type")
-            .and_then(|t| t.as_str())
-            .unwrap_or("")
-            .to_string()
-    };
-    let session_cwd = lines
-        .iter()
-        .find_map(|v| v.get("cwd").and_then(|x| x.as_str()).map(String::from))
-        .unwrap_or_default();
-    if session_cwd.is_empty() || !same_dir(Path::new(&session_cwd), cwd) {
-        return None;
-    }
-    let session_id = lines
-        .iter()
-        .find_map(|v| {
-            v.get("sessionId")
-                .and_then(|s| s.as_str())
-                .map(String::from)
-        })
-        .or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()))?;
-    let last_activity_ts = lines
-        .iter()
-        .filter_map(ts_of)
-        .max()
-        .or_else(|| file_mtime(path))
-        .unwrap_or(0);
-    let aic: i64 = lines
-        .iter()
-        .filter(|v| typ(v) == "assistant")
-        .filter_map(|v| {
-            v.get("message")
-                .and_then(|m| m.get("usage"))
-                .and_then(|u| u.get("output_tokens"))
-                .and_then(|v| v.as_i64())
-        })
-        .sum();
-    Some(AgentProgress {
-        harness: "claude".into(),
-        session_id,
-        aic,
-        last_activity_ts,
-    })
 }

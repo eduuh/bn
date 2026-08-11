@@ -96,6 +96,17 @@ export const affects = {
   /** A skill was created or edited. Pair with `queryKeys.skill(name)` for the open editor. */
   skills: [queryKeys.skills] as QueryKey[],
 
+  /** An agent's `.md` was created, edited or deleted. Generous on purpose: the roster is only the
+   * surface it is edited from — the same file decides what the automation can fire (`catalog`),
+   * what is scheduled for today, and what the cron page reports, so all four go stale on one
+   * write. Pair with `queryKeys.agentDef(name)` for the open editor. */
+  agentDefs: [
+    queryKeys.agentDefs,
+    queryKeys.catalog,
+    queryKeys.cron,
+    queryKeys.todayAgents,
+  ] as QueryKey[],
+
   /** A branch note was written to. Pair with `queryKeys.note(repo, branch)`. */
   notes: [queryKeys.notes] as QueryKey[],
 } as const;

@@ -41,6 +41,15 @@ pub(crate) enum StaffCmd {
         #[arg(long = "pick-col", hide = true)]
         pick_cols: Vec<String>,
     },
+    /// Put a briefing card into Gmail as a reviewable draft (never sent), and mark it read:
+    /// bn staff mail <agent> [YYYY-MM-DD]. Needs a `bn-gmail` app password in the macOS keychain;
+    /// without one it says so and leaves the card in the feed.
+    Mail {
+        /// The agent whose card to draft.
+        agent: String,
+        /// The card's date (default: that agent's most recent card).
+        date: Option<String>,
+    },
     /// Cost ledger rolled up: spend by agent for a month, each vs its per-agent budget, and the
     /// whole-roster total vs the global monthly cap: bn staff cost [<YYYY-MM>].
     Cost {

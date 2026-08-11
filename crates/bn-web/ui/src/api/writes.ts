@@ -3,7 +3,14 @@
 // this is just a small `fetch` wrapper that unwraps the standard `Envelope` and throws a typed
 // `ApiError` on any transport / command failure. Reads still go through `api/client.ts`.
 
-import type { Counts, Envelope, SkillMutation, SkillScope } from "./types";
+import type {
+  AgentDefCreateBody,
+  AgentDefMutation,
+  Counts,
+  Envelope,
+  SkillMutation,
+  SkillScope,
+} from "./types";
 import type { HandoffView } from "./types";
 import type { GoalNote } from "./types";
 
@@ -178,6 +185,32 @@ export function saveSkill(name: string, content: string): Promise<SkillMutation>
  * `remaining_scope` says which. A `404` (unknown skill) throws `ApiError`. */
 export function deleteSkill(name: string): Promise<SkillMutation> {
   return del<SkillMutation>(`/api/skills/${encodeURIComponent(name)}`);
+}
+
+// --- Agent roster CRUD — the `agents/<name>.md` source file, validated server-side per write ---
+//
+// The same three verbs as the skill endpoints next door, against a stricter server: one
+// unparseable agent file fails `agents::discover` for the *whole* catalog, so a bad edit here is
+// rejected as a 400 rather than written and discovered later by the scheduler.
+
+/** `POST /api/agent-defs {name, kind, description, scope?, …}` — author a new Markdown agent.
+ * A `400` (bad name/kind/scope, or a manifest its kind rejects) or `409` (that tier already
+ * defines the name) throws `ApiError`. */
+export function createAgentDef(body: AgentDefCreateBody): Promise<AgentDefMutation> {
+  return post<AgentDefMutation>("/api/agent-defs", body);
+}
+
+/** `PUT /api/agent-defs/:name {content}` — overwrite the effective agent's `.md`, frontmatter
+ * included. A `400` carries the parse error verbatim (it is the only way to fix the edit); a `404`
+ * means no tier defines the name. */
+export function saveAgentDef(name: string, content: string): Promise<AgentDefMutation> {
+  return request("PUT", `/api/agent-defs/${encodeURIComponent(name)}`, { content });
+}
+
+/** `DELETE /api/agent-defs/:name` — delete the effective definition. A lower tier defining the
+ * same name is unshadowed rather than removed; the reply's `remaining_scope` says which. */
+export function deleteAgentDef(name: string): Promise<AgentDefMutation> {
+  return del<AgentDefMutation>(`/api/agent-defs/${encodeURIComponent(name)}`);
 }
 
 // --- Agent steer actions (#394, design §4(c)) — the per-agent write endpoints ---

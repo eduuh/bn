@@ -186,6 +186,58 @@ pub fn judge(cfg: &Config, task: &Task, today: &str) -> GateDecision {
     }
 }
 
+/// Stamp `smart:ok` on every open task that already passes, and report how many were stamped.
+///
+/// The free half of the gate. [`smart::check`] is pure and the stamp is one file write, so judging
+/// the whole store costs no model time at all — which matters because a task that already passes is
+/// otherwise invisible to every producer: it is never stamped, so it never becomes startable, never
+/// leaves the enhance queue, and is re-picked by `--due` on the next run forever.
+///
+/// Only *passing* tasks are touched. A refusal increments the try counter and raises an attention
+/// item, and both mean "an enhance attempt happened" — a sweep is not an attempt. Judging the whole
+/// store through [`judge`] would therefore march every unscoped task to `smart:stuck` in
+/// [`MAX_IMPROVE_TRIES`] passes and raise an attention item for each, without an agent having tried
+/// once. Failing tasks are left exactly as they were, for the enhance agent to work through.
+pub fn stamp_passing(cfg: &Config, today: &str) -> usize {
+    let known: std::collections::HashSet<String> =
+        crate::issues::known_repos(cfg).into_iter().collect();
+    let path = cfg.tasks_file();
+    let _lock = crate::todo::lock(&path);
+    let Ok(mut file) = crate::todo::load(&path) else {
+        return 0;
+    };
+
+    // Judge against the store as read, then apply — `task_mut` borrows mutably, so the ids are
+    // collected first. Machine-minted work is exempt from the gate, so it is exempt here too.
+    let passing: Vec<String> = file
+        .tasks()
+        .filter(|t| t.is_open(today))
+        .filter(|t| t.meta(SMART_KEY) != Some("ok"))
+        .filter(|t| !crate::task_owner::is_machine(t))
+        .filter(|t| {
+            let doc = crate::task_doc::read(cfg, t);
+            smart::check(t, doc.as_ref(), &known, today).ok
+        })
+        .filter_map(|t| t.id().map(str::to_string))
+        .collect();
+
+    for id in &passing {
+        if let Some(task) = file.task_mut(id) {
+            task.set_meta(SMART_KEY, "ok");
+            task.set_meta(SMART_TRIES_KEY, "0");
+        }
+    }
+    if !passing.is_empty() {
+        let _ = crate::todo::save(&path, &file);
+    }
+    passing.len()
+}
+
+/// Stamp a passing verdict on one task by id — the single-task half of [`stamp_passing`].
+pub fn mark_passing(cfg: &Config, id: &str) {
+    mark_ok(cfg, id);
+}
+
 /// Stamp a passing verdict, clearing any stale failure bookkeeping.
 fn mark_ok(cfg: &Config, id: &str) {
     let path = cfg.tasks_file();
@@ -296,4 +348,138 @@ fn record_refusal(
         uncommitted_files: Vec::new(),
     };
     let _ = crate::attention::add_new(&new, today);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::todo::Task;
+
+    const TODAY: &str = "2026-08-11";
+
+    /// A config whose store lives in `root`, and which knows one repo (`bn`) so a task naming it
+    /// does not trip the `unknown_repo` gap.
+    fn cfg(root: &std::path::Path) -> Config {
+        Config {
+            personal_root: root.to_path_buf(),
+            managed_repos: vec!["https://github.com/me/bn.git".to_string()],
+            ..Default::default()
+        }
+    }
+
+    /// A task that passes every SMART dimension: known repo, sized, dated, and relevant via `q:`.
+    /// Its `## Done When` is written by [`with_doc`].
+    fn passing(id: &str) -> Task {
+        let mut task = Task::new_todo(
+            id,
+            "collapse the goal write side onto tasks",
+            None,
+            "",
+            "web",
+            TODAY,
+        );
+        task.set_meta("repo", "bn");
+        task.set_meta("est", "45m");
+        task.set_meta("day", TODAY);
+        task.set_meta("q", "ship the pipeline");
+        task
+    }
+
+    fn with_doc(cfg: &Config, task: &Task) {
+        let path =
+            crate::task_doc::staging_path(cfg, &crate::task_doc::staging_name(task.id().unwrap()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "## Done When\n- [ ] the write side is gone\n").unwrap();
+    }
+
+    fn write_store(cfg: &Config, tasks: &[Task]) {
+        std::fs::create_dir_all(&cfg.personal_root).unwrap();
+        let mut file = crate::todo::TodoFile::parse("");
+        for task in tasks {
+            file.push_task(task.clone());
+        }
+        crate::todo::save(&cfg.tasks_file(), &file).unwrap();
+    }
+
+    fn reload(cfg: &Config, id: &str) -> Task {
+        crate::todo::load(&cfg.tasks_file())
+            .unwrap()
+            .tasks()
+            .find(|t| t.id() == Some(id))
+            .cloned()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_task_that_already_passes_is_stamped_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = cfg(dir.path());
+        let task = passing("t1");
+        write_store(&cfg, std::slice::from_ref(&task));
+        with_doc(&cfg, &task);
+
+        assert_eq!(stamp_passing(&cfg, TODAY), 1);
+        assert_eq!(reload(&cfg, "t1").meta(SMART_KEY), Some("ok"));
+    }
+
+    /// The gate does not judge machine-minted work, so neither may the sweep — otherwise every
+    /// cron chore acquires a verdict the gate itself would never give it.
+    #[test]
+    fn machine_minted_work_is_never_stamped() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = cfg(dir.path());
+        let mut task = passing("t2");
+        crate::task_owner::mark_machine(&mut task);
+        write_store(&cfg, std::slice::from_ref(&task));
+        with_doc(&cfg, &task);
+
+        assert_eq!(stamp_passing(&cfg, TODAY), 0);
+        assert_eq!(reload(&cfg, "t2").meta(SMART_KEY), None);
+    }
+
+    /// The invariant that keeps the sweep honest: a refusal means "an enhance attempt happened",
+    /// and a sweep is not an attempt. Judging every failing task would march the whole backlog to
+    /// `smart:stuck` in [`MAX_IMPROVE_TRIES`] passes and raise an attention item for each, without
+    /// an agent having tried once.
+    #[test]
+    fn a_failing_task_is_left_completely_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = cfg(dir.path());
+        // No doc, no est, no date — fails on several dimensions at once.
+        let mut task = Task::new_todo(
+            "t3",
+            "look into the reconnect storm",
+            None,
+            "",
+            "web",
+            TODAY,
+        );
+        task.set_meta("repo", "bn");
+        write_store(&cfg, &[task]);
+
+        assert_eq!(stamp_passing(&cfg, TODAY), 0);
+        let after = reload(&cfg, "t3");
+        assert_eq!(after.meta(SMART_KEY), None, "no verdict may be stamped");
+        assert_eq!(
+            after.meta(SMART_TRIES_KEY),
+            None,
+            "no attempt may be counted"
+        );
+    }
+
+    /// A store with both kinds: only the passing human task moves.
+    #[test]
+    fn a_sweep_stamps_only_what_passes() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = cfg(dir.path());
+        let good = passing("t4");
+        let mut bad = passing("t5");
+        bad.set_meta("est", ""); // unsized → no_estimate
+        write_store(&cfg, &[good.clone(), bad]);
+        with_doc(&cfg, &good);
+
+        assert_eq!(stamp_passing(&cfg, TODAY), 1);
+        assert_eq!(reload(&cfg, "t4").meta(SMART_KEY), Some("ok"));
+        assert_eq!(reload(&cfg, "t5").meta(SMART_KEY), None);
+    }
 }

@@ -224,6 +224,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/skills", post(actions::skill_create))
         .route("/api/skills/{name}", put(actions::skill_write))
         .route("/api/skills/{name}", delete(actions::skill_delete))
+        // Agent-roster CRUD — the write half of the `/api/agent-defs` reads above, same shape as
+        // the skill endpoints: validated in-process writes of one `agents/<name>.md`, with a
+        // native Copilot/Claude re-install after any write that touches a specialist.
+        .route("/api/agent-defs", post(actions::agent_def_create))
+        .route("/api/agent-defs/{name}", put(actions::agent_def_write))
+        .route("/api/agent-defs/{name}", delete(actions::agent_def_delete))
         // MCP-in-API (#639): the P1 bn-mcp tool-router served over Streamable HTTP alongside the
         // REST API. `/mcp/orchestrate` (cross-worktree) is nested first so its longer prefix wins
         // over the scoped `/mcp` branch-note tools. `/mcp` derives its (repo, branch) per request

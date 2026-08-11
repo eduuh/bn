@@ -23,9 +23,12 @@ pub(crate) fn job_sentinel(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     let jc = resolver::JobConfig::load();
     let pcfg = patrol_config(&jc);
     if pcfg.repos.is_empty() {
-        println!(
-            "sentinel: no repos allowlisted ([sentinel] repos / [night] repos) — patrol is a no-op"
-        );
+        let reason = "no repos allowlisted ([sentinel] repos / [night] repos)";
+        println!("sentinel: {reason} — patrol is a no-op");
+        // Say so on the board. Returning silently left the health row reading "missed —
+        // scheduled run never fired", which is a false alarm: the patrol ran and correctly
+        // found nothing to patrol.
+        bn_core::staff::record_off("sentinel", &today(), reason);
         return 0;
     }
     let today = today();

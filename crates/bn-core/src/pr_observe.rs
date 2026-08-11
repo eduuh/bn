@@ -23,6 +23,9 @@ use std::collections::HashSet;
 pub struct ObservedPr {
     pub repo: String,
     pub number: i64,
+    /// The PR title, carried onto `pr_merged` so a reader can say *what* shipped without a second
+    /// GitHub round-trip. Empty when the search didn't supply one.
+    pub title: String,
     pub created_ts: Option<i64>,
     pub merged_ts: Option<i64>,
     /// Closed-unmerged only matters when `merged_ts` is absent (GitHub stamps both on merge).
@@ -102,6 +105,11 @@ pub fn derive_events(
             let mut fields = base();
             if let Some(lead) = pr.first_commit_ts.map(|fc| ts - fc).filter(|&s| s >= 0) {
                 fields.insert("lead_secs".into(), json!(lead));
+            }
+            // Only on `pr_merged`: the completed fold names what landed, and nothing reads a title
+            // off the other three kinds. Older events simply carry no title and read back as "".
+            if !pr.title.is_empty() {
+                fields.insert("title".into(), json!(pr.title));
             }
             out.push(PendingEvent {
                 kind: "pr_merged",

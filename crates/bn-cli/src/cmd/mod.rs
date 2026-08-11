@@ -4,6 +4,7 @@
 //! thin per-CLI-group dispatch matches that delegate into those handlers.
 
 pub(crate) mod agent;
+pub(crate) mod agent_resume;
 pub(crate) mod close_out;
 pub(crate) mod harness_models;
 pub(crate) mod launch_flags;
@@ -49,6 +50,7 @@ pub(crate) mod pipeline;
 pub(crate) mod plan;
 pub(crate) mod plan_review;
 pub(crate) mod pr_link;
+pub(crate) mod pr_observe_gh;
 pub(crate) mod promote;
 pub(crate) mod q_inbox;
 pub(crate) mod quarter;
@@ -76,8 +78,10 @@ pub(crate) mod sessions;
 pub(crate) mod setup;
 pub(crate) mod skills;
 pub(crate) mod staff;
+pub(crate) mod staff_mail;
 pub(crate) mod sync;
 pub(crate) mod task;
+pub(crate) mod task_agents;
 pub(crate) mod task_capture;
 pub(crate) mod task_view;
 pub(crate) mod tmux_status;
