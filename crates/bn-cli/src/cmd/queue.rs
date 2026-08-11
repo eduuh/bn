@@ -874,11 +874,17 @@ fn emit_add(cfg: &Config, item: &str, repo: Option<&str>, args: AddArgs, now: i6
         source: "queue".to_string(),
         controller_id: std::env::var("BN_CONTROLLER_ID").ok(),
         // One door, two kinds of work: `--job pool-warm` is the machine's own bookkeeping, a bare
-        // `bn queue add "fix the header"` is yours. What it *runs* is what tells them apart.
-        task: match args.job.is_some() || args.shell.is_some() {
+        // `bn queue add "fix the header"` is yours. What it *runs* answers that for a job or a
+        // shell command; for an agent it cannot, so the producer says so — an enhance or triage run
+        // is an agent grooming the task store, and reads as a person's work by every other signal.
+        task: match args.job.is_some()
+            || args.shell.is_some()
+            || crate::cmd::queue_producers::machine_owned()
+        {
             true => crate::cmd::task_mint::task_for_machine_enqueue(cfg, &repo, item, "queue"),
             false => crate::cmd::task_mint::task_for_enqueue(cfg, &repo, item, "queue"),
         },
+        machine: crate::cmd::queue_producers::machine_owned(),
         exec,
         requires: Requirements {
             harness: args.harness,

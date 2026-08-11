@@ -120,6 +120,8 @@ pub(crate) fn emit_run(cfg: &Config, interval: u64) {
         watches.push(crate::event_loop::Watch::file(path));
     }
     let mut reactor = crate::event_loop::EventLoop::with_wake_queue("bn queue", watches, &[]);
+    // Consecutive passes that could not take the machine lock. Reset by any pass that decides.
+    let mut skipped_passes: u32 = 0;
     println!(
         "queue dispatcher running — event-driven, {BUSY_SECS}s busy / {idle}s idle fallback · ctrl-c to stop"
     );
@@ -168,10 +170,14 @@ pub(crate) fn emit_run(cfg: &Config, interval: u64) {
         let now = bn_core::clock::RealClock.now_epoch_secs();
         let mut wait = idle;
         let outcome = tick_once(&cfg, now, false);
-        // Stamped after the pass returns, so it measures progress rather than intent. A skipped
-        // pass counts: the lock holder is the one doing the work, and the loop still turned.
-        stamp_pass();
         if let TickOutcome::Ran(decision) = outcome {
+            // Stamped only for a pass that actually decided, so the age measures *progress*. A
+            // skipped pass must not count, however healthy the skip looks: this stamp is the one
+            // signal that separates a wedged dispatcher from a working one, and a loop that stamps
+            // it while contending forever reports perfect health while dispatching nothing. That is
+            // not hypothetical — it is exactly how an orphaned lock stayed invisible for hours.
+            stamp_pass();
+            skipped_passes = 0;
             if decision.started > 0 {
                 println!(
                     "started {} · {} pending",
@@ -183,6 +189,19 @@ pub(crate) fn emit_run(cfg: &Config, interval: u64) {
             // because a lane frees the moment an agent finishes.
             if decision.pending > 0 {
                 wait = BUSY_SECS;
+            }
+        } else {
+            // Contention is normal for a pass or two; a loop that never gets in is not contention,
+            // it is a machine that has stopped dispatching. Say so on the way past the threshold —
+            // once, not every pass, so the log stays readable while the condition persists.
+            skipped_passes += 1;
+            if skipped_passes == SKIPS_BEFORE_WARNING {
+                eprintln!(
+                    "queue dispatcher: {skipped_passes} consecutive passes could not take the \
+                     machine lock ({}) — nothing is being dispatched. If no other tick is running, \
+                     the lock is orphaned; remove the file to recover.",
+                    lock::lock_path().display()
+                );
             }
         }
         if reactor.wait(std::time::Duration::from_secs(wait))
@@ -241,6 +260,11 @@ fn cap_own_log() {
 
 /// How long the resident loop waits between passes while the queue still has work.
 const BUSY_SECS: u64 = 3;
+
+/// Consecutive lock-denied passes before the loop says so. High enough that ordinary contention
+/// with the once-a-minute cron tick stays quiet, low enough that a stuck machine is named in
+/// minutes rather than hours.
+const SKIPS_BEFORE_WARNING: u32 = 20;
 
 /// `bn queue why` — the last decision, verbatim.
 pub(crate) fn emit_why(json: bool) {

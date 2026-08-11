@@ -5039,7 +5039,7 @@ fn observe_resources(
         let hour =
             bn_core::cost::rollup(cfg, &bn_core::cost::CostFilter::secs(3600, &st.repo, now));
         let live = bn_core::cost::live_rollup(cfg);
-        (hour.totals.input_tokens + hour.totals.output_tokens + live.output_tokens).max(0) as u64
+        (hour.totals.billed_tokens() + live.output_tokens).max(0) as u64
     } else {
         0
     };
@@ -5424,8 +5424,8 @@ fn orchestrate_rollups(
 }
 
 /// Today's cost burn for `repo` from the #381 cost surface, over a trailing 24h window: the AIC
-/// real Copilot bill, the cache-aware $ API-equiv benchmark, and fresh tokens (fresh input +
-/// output, excluding the ~free cache reads that would inflate the figure ~10×).
+/// real Copilot bill, the cache-aware $ API-equiv benchmark, and the metered token count
+/// ([`CostTotals::billed_tokens`] — cache reads excluded, cache writes very much included).
 fn cost_today(cfg: &Config, repo: &str, now: i64) -> (Option<f64>, Option<f64>, i64) {
     let view = bn_core::cost::rollup(
         cfg,
@@ -5437,7 +5437,7 @@ fn cost_today(cfg: &Config, repo: &str, now: i64) -> (Option<f64>, Option<f64>, 
         },
     );
     let t = &view.totals;
-    (t.aic, t.cost_usd, t.input_tokens + t.output_tokens)
+    (t.aic, t.cost_usd, t.billed_tokens())
 }
 
 fn cost_by_category_today(cfg: &Config, repo: &str, now: i64) -> Vec<bn_core::cost::CostRow> {

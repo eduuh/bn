@@ -2,7 +2,7 @@
 //! plus the low-level file/JSON helpers every scanner shares.
 
 use super::session::AgentSession;
-use crate::cost::WorkClass;
+use crate::cost::{TokenUsage, WorkClass};
 use crate::resolver::{self, Config};
 use crate::util::now_epoch_secs;
 use serde_json::Value;
@@ -79,7 +79,7 @@ fn parse_copilot_session(cfg: &Config, dir: &Path) -> Option<AgentSession> {
 
     // Token + cost aggregate from modelMetrics (per-model usage), plus model list.
     let mut models = Vec::new();
-    let (mut input, mut output, mut cache_read) = (0i64, 0i64, 0i64);
+    let (mut input, mut output, mut cache_read, mut cache_write) = (0i64, 0i64, 0i64, 0i64);
     if let Some(mm) = sd.get("modelMetrics").and_then(|v| v.as_object()) {
         for (model, m) in mm {
             models.push(model.clone());
@@ -88,6 +88,10 @@ fn parse_copilot_session(cfg: &Config, dir: &Path) -> Option<AgentSession> {
                 output += u.get("outputTokens").and_then(|v| v.as_i64()).unwrap_or(0);
                 cache_read += u
                     .get("cacheReadTokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                cache_write += u
+                    .get("cacheWriteTokens")
                     .and_then(|v| v.as_i64())
                     .unwrap_or(0);
             }
@@ -109,6 +113,11 @@ fn parse_copilot_session(cfg: &Config, dir: &Path) -> Option<AgentSession> {
         input_tokens: input,
         output_tokens: output,
         cache_read_tokens: cache_read,
+        // Copilot reports what it wrote but never at which TTL, so it all lands in the 5-minute
+        // bucket — the providers' default, and the cheaper of the two, so an unknown TTL rounds
+        // the benchmark down rather than inventing spend.
+        cache_write_5m_tokens: cache_write,
+        cache_write_1h_tokens: 0,
         cost_nanoaiu: sd.get("totalNanoAiu").and_then(|v| v.as_i64()),
         lines_added: cc.get("linesAdded").and_then(|v| v.as_i64()).unwrap_or(0),
         lines_removed: cc.get("linesRemoved").and_then(|v| v.as_i64()).unwrap_or(0),
@@ -189,13 +198,13 @@ fn parse_claude_session(cfg: &Config, path: &Path) -> Option<AgentSession> {
     let ended_ts = stamps.iter().copied().max().unwrap_or(started_ts);
 
     let mut models: Vec<String> = Vec::new();
-    let (mut input, mut output, mut cache_read, mut turns, mut tools) =
-        (0i64, 0i64, 0i64, 0i64, 0i64);
+    let mut usage = TokenUsage::default();
+    let (mut turns, mut tools) = (0i64, 0i64);
+    let mut counted: HashSet<String> = HashSet::new();
     for v in &lines {
         if typ(v) != "assistant" {
             continue;
         }
-        turns += 1;
         let msg = v.get("message").cloned().unwrap_or(Value::Null);
         if let Some(m) = msg.get("model").and_then(|x| x.as_str()) {
             // Claude stamps "<synthetic>" on placeholder assistant lines — not a real model.
@@ -203,14 +212,18 @@ fn parse_claude_session(cfg: &Config, path: &Path) -> Option<AgentSession> {
                 models.push(m.to_string());
             }
         }
-        if let Some(u) = msg.get("usage") {
-            input += u.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-            output += u.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-            cache_read += u
-                .get("cache_read_input_tokens")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
+        // One API response is written as *several* transcript lines — one per content block —
+        // and every one of them repeats the whole response's `usage`. Summing per line therefore
+        // multiplies a session's tokens by its average blocks-per-response (measured at 2.37× on
+        // a real transcript), so usage and turns are counted once per `message.id`.
+        if first_line_of_message(&msg, &mut counted) {
+            turns += 1;
+            if let Some(u) = msg.get("usage") {
+                usage += claude_usage(u);
+            }
         }
+        // Tool calls are the opposite case: each line carries its *own* block, so they are summed
+        // across every line. Deduping these would undercount by the same factor usage overcounts.
         if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
             tools += content
                 .iter()
@@ -232,9 +245,11 @@ fn parse_claude_session(cfg: &Config, path: &Path) -> Option<AgentSession> {
         tool_calls: tools,
         permission_prompts: 0, // not recorded in the transcript
         models,
-        input_tokens: input,
-        output_tokens: output,
-        cache_read_tokens: cache_read,
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cache_read_tokens: usage.cache_read_tokens,
+        cache_write_5m_tokens: usage.cache_write_5m_tokens,
+        cache_write_1h_tokens: usage.cache_write_1h_tokens,
         cost_nanoaiu: None,
         lines_added,
         lines_removed,
@@ -242,6 +257,63 @@ fn parse_claude_session(cfg: &Config, path: &Path) -> Option<AgentSession> {
         outcome: "quiet".into(),
         work_class: WorkClass::Unattributed,
     })
+}
+
+/// Whether this transcript line is the first one belonging to its API response — the guard that
+/// keeps a multi-block response's repeated `usage` from being counted once per block.
+///
+/// Claude writes one line per content block (thinking, text, and each `tool_use` land separately),
+/// and every line repeats the parent response's full `message.usage`. `message.id` is the response
+/// identity, so the first line bearing an id owns that response's usage and turn; later lines
+/// contribute only their own content. A line with **no** id can't be attributed to a response, so
+/// it counts — under-reporting a session is the worse failure, and synthetic lines carry no usage
+/// to inflate anyway.
+pub(crate) fn first_line_of_message(msg: &Value, counted: &mut HashSet<String>) -> bool {
+    match msg
+        .get("id")
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        Some(id) => counted.insert(id.to_string()),
+        None => true,
+    }
+}
+
+/// The token buckets one assistant turn's `usage` object contributes, in the shape the price table
+/// bills them ([`crate::cost::cost_usd`]).
+///
+/// Claude reports the three prompt figures **disjointly** — `input_tokens` is only the *uncached*
+/// remainder, with cache reads and cache writes in fields of their own — so they sum to the real
+/// prompt instead of overlapping. On a Claude Code turn the uncached remainder is often single
+/// digits while the cache fields run to five, which is why reading only `input_tokens` (as this
+/// parser once did) makes a session look nearly free.
+///
+/// The cache-write **TTL** decides the rate (1.25× input at 5 minutes, 2× at an hour) and lives in
+/// a nested `cache_creation` object. A transcript written before that object existed carries only
+/// the `cache_creation_input_tokens` total; that falls to the 5-minute bucket — the API default and
+/// the cheaper rate, so an unknown TTL rounds the benchmark down rather than inventing spend.
+fn claude_usage(u: &Value) -> TokenUsage {
+    let n = |k: &str| u.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+    let ttl = |k: &str| {
+        u.get("cache_creation")
+            .and_then(|c| c.get(k))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0)
+    };
+    let (write_5m, write_1h) = (
+        ttl("ephemeral_5m_input_tokens"),
+        ttl("ephemeral_1h_input_tokens"),
+    );
+    let total_writes = n("cache_creation_input_tokens");
+    TokenUsage {
+        input_tokens: n("input_tokens"),
+        cache_read_tokens: n("cache_read_input_tokens"),
+        // Trust the total over the split: the split is the newer field, and if the two ever
+        // disagree the untracked remainder is still real spend that has to be billed somewhere.
+        cache_write_5m_tokens: write_5m + (total_writes - write_5m - write_1h).max(0),
+        cache_write_1h_tokens: write_1h,
+        output_tokens: n("output_tokens"),
+    }
 }
 
 /// Sum the code changes a Claude transcript records: each Edit/Write lands a `toolUseResult`
@@ -378,4 +450,148 @@ pub(crate) fn ws_str(v: &Value, key: &str) -> Option<String> {
         .and_then(|x| x.as_str())
         .filter(|s| !s.is_empty())
         .map(String::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The `usage` object of a real mid-session Claude Code turn: two fresh input tokens against
+    /// 56_575 cache reads and 1_192 tokens written at the 1-hour TTL.
+    fn cached_turn() -> Value {
+        json!({
+            "input_tokens": 2,
+            "cache_creation_input_tokens": 1192,
+            "cache_read_input_tokens": 56575,
+            "output_tokens": 197,
+            "cache_creation": {
+                "ephemeral_1h_input_tokens": 1192,
+                "ephemeral_5m_input_tokens": 0
+            }
+        })
+    }
+
+    #[test]
+    fn a_claude_turns_cache_writes_are_captured_at_their_ttl() {
+        let u = claude_usage(&cached_turn());
+        assert_eq!(u.input_tokens, 2);
+        assert_eq!(u.cache_read_tokens, 56_575);
+        assert_eq!(u.cache_write_1h_tokens, 1_192);
+        assert_eq!(u.cache_write_5m_tokens, 0);
+        assert_eq!(u.output_tokens, 197);
+    }
+
+    #[test]
+    fn the_prompt_is_far_larger_than_the_input_tokens_field_alone() {
+        // The reason cache fields cannot be ignored: `input_tokens` accounts for 2 tokens of a
+        // ~58k prompt, so a fold that reads only it prices the session at effectively zero.
+        let u = claude_usage(&cached_turn());
+        assert_eq!(u.prompt_tokens(), 57_769);
+        assert!(u.prompt_tokens() > u.input_tokens * 1000);
+    }
+
+    #[test]
+    fn a_transcript_without_the_ttl_split_falls_back_to_the_cheaper_bucket() {
+        // Older Claude Code wrote the total with no `cache_creation` object. Attributing it to the
+        // 5-minute rate under-prices rather than inventing spend — and, crucially, still counts it.
+        let u = claude_usage(&json!({
+            "input_tokens": 10,
+            "cache_creation_input_tokens": 4096,
+            "cache_read_input_tokens": 100,
+            "output_tokens": 50
+        }));
+        assert_eq!(u.cache_write_5m_tokens, 4096);
+        assert_eq!(u.cache_write_1h_tokens, 0);
+        assert_eq!(u.cache_write_tokens(), 4096);
+    }
+
+    #[test]
+    fn a_split_that_undershoots_its_total_still_bills_the_remainder() {
+        // If a future TTL bucket appears that this parser doesn't know to name, the tokens are
+        // still real spend: the unaccounted remainder falls to the 5m bucket rather than vanishing.
+        let u = claude_usage(&json!({
+            "cache_creation_input_tokens": 1000,
+            "cache_creation": { "ephemeral_1h_input_tokens": 600 }
+        }));
+        assert_eq!(u.cache_write_1h_tokens, 600);
+        assert_eq!(u.cache_write_5m_tokens, 400);
+        assert_eq!(u.cache_write_tokens(), 1000);
+    }
+
+    #[test]
+    fn a_usage_object_missing_every_field_reads_as_zero_rather_than_panicking() {
+        let u = claude_usage(&json!({}));
+        assert_eq!(u, TokenUsage::default());
+    }
+
+    #[test]
+    fn per_turn_usage_accumulates_bucket_by_bucket_across_a_session() {
+        let mut total = TokenUsage::default();
+        for _ in 0..3 {
+            total += claude_usage(&cached_turn());
+        }
+        assert_eq!(total.input_tokens, 6);
+        assert_eq!(total.cache_read_tokens, 169_725);
+        assert_eq!(total.cache_write_1h_tokens, 3_576);
+        assert_eq!(total.output_tokens, 591);
+    }
+    /// Claude writes one line per content block, each repeating the parent response's `usage`.
+    /// These two lines are one API response: a `thinking` block and a `tool_use` block.
+    fn split_response() -> (Value, Value) {
+        let usage = json!({
+            "input_tokens": 3,
+            "cache_creation_input_tokens": 1000,
+            "cache_read_input_tokens": 50_000,
+            "output_tokens": 400,
+            "cache_creation": { "ephemeral_1h_input_tokens": 1000 }
+        });
+        (
+            json!({ "id": "msg_01", "usage": usage, "content": [{"type": "thinking"}] }),
+            json!({ "id": "msg_01", "usage": usage, "content": [{"type": "tool_use"}] }),
+        )
+    }
+
+    #[test]
+    fn a_response_split_across_lines_is_counted_once() {
+        // The 2.37x inflation this guards: both lines carry the same aggregate usage.
+        let (a, b) = split_response();
+        let mut counted = HashSet::new();
+        assert!(first_line_of_message(&a, &mut counted));
+        assert!(!first_line_of_message(&b, &mut counted));
+
+        let mut usage = TokenUsage::default();
+        let mut counted = HashSet::new();
+        for line in [&a, &b] {
+            if first_line_of_message(line, &mut counted) {
+                usage += claude_usage(line.get("usage").expect("usage"));
+            }
+        }
+        assert_eq!(usage.output_tokens, 400);
+        assert_eq!(usage.cache_write_1h_tokens, 1_000);
+        assert_eq!(usage.cache_read_tokens, 50_000);
+    }
+
+    #[test]
+    fn separate_responses_each_count() {
+        let mut counted = HashSet::new();
+        assert!(first_line_of_message(
+            &json!({ "id": "msg_01" }),
+            &mut counted
+        ));
+        assert!(first_line_of_message(
+            &json!({ "id": "msg_02" }),
+            &mut counted
+        ));
+    }
+
+    #[test]
+    fn a_line_with_no_message_id_counts_rather_than_being_dropped() {
+        // Unattributable to a response, so counting it risks a small overcount while dropping it
+        // risks losing a whole response. Synthetic lines carry no usage to inflate anyway.
+        let mut counted = HashSet::new();
+        assert!(first_line_of_message(&json!({}), &mut counted));
+        assert!(first_line_of_message(&json!({ "id": "" }), &mut counted));
+        assert!(first_line_of_message(&json!({ "id": "" }), &mut counted));
+    }
 }

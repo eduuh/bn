@@ -40,6 +40,9 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
                         PipelineCmd::Sweep => {
                             crate::cmd::pipeline_sweep::emit_pipeline_sweep(cfg, json)
                         }
+                        PipelineCmd::Route { task, all } => {
+                            pl::emit_pipeline_route(cfg, task.as_deref(), all, json)
+                        }
                         PipelineCmd::Status { repo, branch } => pl::emit_pipeline_status(
                             cfg,
                             ctx.as_ref(),

@@ -15,6 +15,11 @@ use std::path::{Path, PathBuf};
 pub enum StoreError {
     Io(std::io::Error),
     Parse(String),
+    /// The file is too large to be a note — see [`MAX_NOTE_BYTES`].
+    TooLarge {
+        bytes: u64,
+        limit: u64,
+    },
 }
 
 impl std::fmt::Display for StoreError {
@@ -22,8 +27,56 @@ impl std::fmt::Display for StoreError {
         match self {
             StoreError::Io(e) => write!(f, "io error: {e}"),
             StoreError::Parse(m) => write!(f, "parse error: {m}"),
+            StoreError::TooLarge { bytes, limit } => write!(
+                f,
+                "note is {bytes} bytes, over the {limit}-byte ceiling — refusing to read it into \
+                 memory; a writer has run away with this note"
+            ),
         }
     }
+}
+
+/// The largest file [`read`] will load. Notes are prose and item lists — the biggest real one in a
+/// long-lived tree is tens of kilobytes — so this is orders of magnitude above any honest note and
+/// exists purely as a blast-radius bound on a *writer* bug.
+///
+/// It earns its place from an outage rather than a theory. A dispatch path appended an agent's seed
+/// prompt to the same todo on every pass, growing one `note.md` to **4.2 GB**. Nothing read a note
+/// defensively, so every surface that sweeps the tree — the dashboard's rollups, the CLI, the crons
+/// — called `read_to_string` on it and allocated 4.2 GB in one go. On a 16 GB laptop the dashboard
+/// reached 8 GB resident and was SIGKILLed by the OOM killer, repeatedly, which read from the
+/// outside as a flaky web server rather than as one corrupt file.
+///
+/// A ceiling cannot stop a writer from misbehaving. What it does is keep one bad note a *local*
+/// failure — that note is skipped and named — instead of an out-of-memory kill that takes down
+/// every reader on the machine.
+pub const MAX_NOTE_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Read a file that is supposed to be a note, refusing anything past [`MAX_NOTE_BYTES`].
+///
+/// The size is checked with `metadata` *before* the read, because the whole point is never to
+/// allocate the file in the first place.
+fn read_bounded(path: &Path) -> Result<String, StoreError> {
+    read_bounded_with(path, MAX_NOTE_BYTES)
+}
+
+/// [`read_bounded`] with the ceiling supplied, so the guard can be tested without writing a
+/// 32 MB fixture.
+fn read_bounded_with(path: &Path, limit: u64) -> Result<String, StoreError> {
+    let bytes = std::fs::metadata(path)?.len();
+    if bytes > limit {
+        // Say it out loud. Most sweeps (`rollups`, the dashboard sections) drop an unreadable note
+        // with `.ok()`, so without this line the note simply stops appearing — and a note that
+        // vanishes silently is the same lie in a quieter shape than the crash it replaced. One line
+        // per sweep names the file, which is what makes the runaway writer findable at all.
+        eprintln!(
+            "bn: warning: skipping {} — {bytes} bytes, over the {limit}-byte note ceiling; \
+             a writer has run away with this note",
+            path.display()
+        );
+        return Err(StoreError::TooLarge { bytes, limit });
+    }
+    Ok(std::fs::read_to_string(path)?)
 }
 
 impl From<std::io::Error> for StoreError {
@@ -34,13 +87,13 @@ impl From<std::io::Error> for StoreError {
 
 /// Read a note from its `note.md` path, detecting the layout.
 pub fn read(note_md: &Path) -> Result<Note, StoreError> {
-    let text = std::fs::read_to_string(note_md)?;
+    let text = read_bounded(note_md)?;
 
     let yaml_sibling = note_md.with_extension("yaml");
     if yaml_sibling.exists() {
         // Split layout: items are authoritative in note.yaml; note.md is prose only and
         // (in this layout) usually has NO frontmatter fence of its own.
-        let ytext = std::fs::read_to_string(&yaml_sibling)?;
+        let ytext = read_bounded(&yaml_sibling)?;
         let front: Frontmatter =
             serde_yaml::from_str(&ytext).map_err(|e| StoreError::Parse(e.to_string()))?;
         let body = split_frontmatter(&text)
@@ -558,4 +611,43 @@ fn strip_item_sections(body: &str) -> String {
         out.pop();
     }
     out.join("\n")
+}
+
+#[cfg(test)]
+mod size_guard_tests {
+    use super::*;
+
+    /// A note within the ceiling reads exactly as before — the guard must be invisible in the
+    /// normal case, which is every note.
+    #[test]
+    fn an_ordinary_note_reads_unchanged() {
+        let dir = std::env::temp_dir().join(format!("bn-store-ok-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("note.md");
+        std::fs::write(&path, "hello note").unwrap();
+
+        let text = read_bounded_with(&path, 1024).expect("a small file reads");
+        assert_eq!(text, "hello note");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The regression. A runaway writer grew one `note.md` to 4.2 GB; every sweep that read notes
+    /// allocated all of it and the machine's OOM killer took the process. The read must refuse
+    /// instead, and say how big the file was so the culprit is findable.
+    #[test]
+    fn an_oversized_note_is_refused_instead_of_allocated() {
+        let dir = std::env::temp_dir().join(format!("bn-store-big-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("note.md");
+        std::fs::write(&path, vec![b'x'; 4096]).unwrap();
+
+        match read_bounded_with(&path, 1024) {
+            Err(StoreError::TooLarge { bytes, limit }) => {
+                assert_eq!(bytes, 4096);
+                assert_eq!(limit, 1024);
+            }
+            other => panic!("expected TooLarge, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

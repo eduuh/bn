@@ -1252,10 +1252,10 @@ pub(crate) enum CmdMisc {
     /// Unified token usage + **$ cost** across all agent work (#381), categorized by work-class
     /// (Orchestration / Coding / Scheduled / …). Two clearly-labeled units: **AIC** (the real
     /// Copilot bill) and **$ (API-equiv)** (a cache-aware price-table benchmark). Defaults to a
-    /// unified month-to-date report: `bn cost [--by category|repo|model|machine|day]
+    /// unified month-to-date report: `bn cost [--by category|repo|model|harness|machine|day]
     /// [--window <days>] [--live] [--json]`.
     Cost {
-        /// Breakdown dimension: category, repo, model, machine, or day (omitted = unified report).
+        /// Breakdown dimension: category, repo, model, harness, machine, day (omitted = unified).
         #[arg(long)]
         by: Option<String>,
         /// Trailing window in days (default: current month-to-date).

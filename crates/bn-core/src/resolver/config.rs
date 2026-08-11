@@ -350,6 +350,11 @@ pub struct Config {
     /// staff runs anywhere (a single-machine setup needs no homing). A per-agent `only_on` in
     /// `config/agents/*.md` overrides this for that one agent. Backs [`crate::staff::home_gate`].
     pub staff_home: Option<String>,
+    /// `[staff].mail`: agents whose briefing card is drafted to email the moment it lands (see
+    /// `bn staff mail`). Delivery follows the card instead of running on its own timer, so a brief
+    /// cannot be mailed before it exists. Empty = nothing mails; a card leaving the machine is
+    /// opt-in per agent.
+    pub staff_mail: Vec<String>,
     /// `[routine]` + `[[routine.blocks]]` (#801): the resolved, validated recurring weekly
     /// personal-schedule config — timezone-aware, evaluated against an authoritative IANA zone
     /// (never `chrono::Local`). `Err` holds a clear message (bad IANA name, undiscoverable host
@@ -426,6 +431,7 @@ impl Default for Config {
             orchestrate_daily_cost_usd_research: None,
             orchestrate_remote_overflow: false,
             staff_home: None,
+            staff_mail: Vec::new(),
             routine: Ok(crate::routine::RoutineConfig::disabled()),
             notify: crate::notify::policy::NotifyConfig::default(),
         }
@@ -545,6 +551,7 @@ impl Config {
             .or_else(|| file.and_then(|f| f.review_harness()))
             .map(|s| s.trim().to_lowercase())
             .filter(|s| !s.is_empty());
+        let staff_mail = file.map(|f| f.staff_mail()).unwrap_or_default();
         // `[harness].disabled` (#501): harnesses turned off on this box (org-disabled claude). Env
         // `$BN_DISABLED_HARNESSES` is comma-separated and wins over the file list; each entry is
         // trimmed + lowercased and blanks dropped. `copilot` is never disable-able, so it's filtered
@@ -868,6 +875,7 @@ impl Config {
             orchestrate_daily_cost_usd_research,
             orchestrate_remote_overflow,
             staff_home,
+            staff_mail,
             routine,
             notify,
         }

@@ -7,6 +7,7 @@ pub mod critic;
 pub mod gate;
 pub mod investigate;
 pub mod profile;
+pub mod route;
 pub mod stage;
 pub mod status;
 pub mod sweep;

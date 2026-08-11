@@ -224,9 +224,16 @@ pub(super) struct ArchivistSection {
 /// any other box, so two laptops never duplicate-review the same PRs into the synced feed. Unset =
 /// the staff runs anywhere (a single-machine setup needs no homing). A per-agent `only_on` in
 /// `config/agents/*.md` overrides this for that one agent (e.g. a work-box-only agent). Env: `$BN_STAFF_HOME`.
+///
+/// `mail` names the agents whose card should be drafted to email the moment it lands
+/// (`bn staff mail`). Delivery follows the card rather than running on its own timer, so a brief
+/// can never be mailed before it exists or skipped because a second schedule drifted. Empty = no
+/// agent mails, which is the default: a card that leaves the machine is opt-in per agent.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub(super) struct StaffSection {
     pub(super) home: Option<String>,
+    #[serde(default)]
+    pub(super) mail: Vec<String>,
 }
 
 /// `[scout]`: the Scout radar agent (#262). All optional. `watch` is the public `owner/repo`

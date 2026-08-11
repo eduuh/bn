@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { fleetQuery } from "../api/client";
-import { fmtTokens } from "../lib/format";
+import { fmtCacheReadWrite, fmtTokens } from "../lib/format";
 import { StatGrid, StatTile } from "./StatTile";
 import { Badge } from "./ui/badge";
 import { Card } from "./ui/card";
@@ -53,7 +53,7 @@ export function CostLive() {
                   <tr className="border-b border-border text-xs uppercase tracking-wide text-muted-foreground">
                     <th className="py-2 pr-3 text-left font-medium">Agent</th>
                     <th className="py-2 pl-3 text-right font-medium">Output</th>
-                    <th className="py-2 pl-3 text-right font-medium">Input (cache)</th>
+                    <th className="py-2 pl-3 text-right font-medium">Cache r/w</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -69,7 +69,7 @@ export function CostLive() {
                         {fmtTokens(a.output_tokens)}
                       </td>
                       <td className="py-2 pl-3 text-right font-mono tabular-nums text-muted-foreground">
-                        {fmtTokens(a.input_tokens)} ({fmtTokens(a.cache_read_tokens)})
+                        {fmtCacheReadWrite(a.cache_read_tokens, a.cache_write_tokens ?? 0)}
                       </td>
                     </tr>
                   ))}

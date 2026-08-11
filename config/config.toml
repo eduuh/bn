@@ -150,6 +150,12 @@ enabled = false
 
 # [staff]
 # home = "my-laptop"            # host name; default runs anywhere
+# mail = ["standup"]            # agents whose card is drafted to email as soon as it lands.
+#                               # Delivery follows the card (no second timer), so a brief is never
+#                               # mailed before it exists. Needs a Gmail app password in the
+#                               # keychain — without one it says so and leaves the card in the feed:
+#                               #   security add-generic-password -s bn-gmail -a you@gmail.com -w '<app password>'
+#                               # Default empty: a card leaving the machine is opt-in per agent.
 
 # [capture]
 # screenshot_dir = "/mnt/c/Users/you/Pictures/Screenshots"

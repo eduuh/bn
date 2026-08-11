@@ -53,6 +53,15 @@ export function categoryLabel(cat: string): string {
   return CATEGORY_META[cat]?.label ?? cat;
 }
 
+/** The product name for a harness key — mirrors `bn_core::cost::harness_label`, so the web tab and
+ * `bn cost --by harness` name the two the same way. Unknown harnesses render as their raw token and
+ * the empty one (the scheduled ledger records no harness) as an em dash. */
+export function harnessLabel(harness: string): string {
+  if (harness === "claude") return "Claude Code";
+  if (harness === "copilot") return "Copilot";
+  return harness === "" || harness === "—" ? "—" : harness;
+}
+
 /** The bar/legend colour for a category key; unknown keys cycle the fallback palette by index. */
 export function categoryColor(cat: string, fallbackIdx = 0): string {
   return CATEGORY_META[cat]?.color ?? FALLBACK_COLORS[fallbackIdx % FALLBACK_COLORS.length];

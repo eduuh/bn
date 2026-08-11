@@ -34,8 +34,19 @@ scope() {
   # unresolved merge every conflicted file is listed two or three times. Unchecked, `--update` then
   # writes that many baseline entries for it — which is exactly how the duplicates #1143 had to clean
   # up got there. `sort -u` makes the listing idempotent whatever the index looks like.
-  # shellcheck disable=SC2086  # SCOPE is an intentional list of pathspecs.
+  #
+  # `set -f` matters as much as the quoting below it. SCOPE holds *git pathspecs*, and git must
+  # receive them literally — but unquoted expansion lets the shell glob them against the working
+  # directory first. A single stray `test.ts` sitting in the repo root is enough: the shell rewrites
+  # `*.ts` to `test.ts`, git is then asked about that one file, and every real TypeScript source
+  # silently leaves the gate's scope. That is not hypothetical — it is how a 1253-line `types.ts`
+  # came to look untracked to a local run while CI, whose checkout has no stray, still saw it.
+  # A gate that can be switched off by an accidental file in the wrong place is worse than no gate,
+  # because it keeps reporting success.
+  set -f
+  # shellcheck disable=SC2086  # SCOPE is an intentional list of pathspecs, now protected from globbing.
   git ls-files -- $SCOPE | grep -v '\.d\.ts$' | sort -u || true
+  set +f
 }
 
 # "<path>\t<lines>" for the working tree. One wc(1) for the whole set.

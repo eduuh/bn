@@ -151,6 +151,7 @@ pub(super) fn pending_agents(
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_read_tokens: 0,
+                cache_write_tokens: 0,
                 // Stamped by `stamp_control` once the whole fleet is assembled.
                 control: ControlChannel::None,
                 task: None,
@@ -185,6 +186,7 @@ mod tests {
             input_tokens: 0,
             output_tokens: 0,
             cache_read_tokens: 0,
+            cache_write_tokens: 0,
             control: ControlChannel::None,
             task: None,
         }

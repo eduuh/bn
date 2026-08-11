@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { fmtAic, fmtAicCompact } from "./format";
+import { fmtAic, fmtAicCompact, fmtCacheReadWrite, fmtTokens } from "./format";
 
 describe("fmtAicCompact", () => {
   it("distinguishes an absent figure from a real zero", () => {
@@ -28,5 +28,31 @@ describe("fmtAicCompact", () => {
   it("says the same number as `fmtAic`, at less precision", () => {
     expect(fmtAic(147_396.4962)).toBe("147,396.50");
     expect(fmtAicCompact(147_396.4962)).toBe("147.4k");
+  });
+});
+
+describe("fmtTokens", () => {
+  it("reaches billions, which cached agent sessions actually do", () => {
+    // Every turn re-reads the whole cached prefix, so a month of cache-read totals passes 10^9;
+    // without this tier it rendered as `4839.35M`.
+    expect(fmtTokens(4_839_350_000)).toBe("4.84B");
+    expect(fmtTokens(999_999_999)).toBe("1000.00M");
+  });
+
+  it("keeps the smaller tiers unchanged", () => {
+    expect(fmtTokens(840)).toBe("840");
+    expect(fmtTokens(3_200)).toBe("3.2k");
+    expect(fmtTokens(1_450_000)).toBe("1.45M");
+  });
+});
+
+describe("fmtCacheReadWrite", () => {
+  it("keeps reads and writes apart, since they move the bill in opposite directions", () => {
+    expect(fmtCacheReadWrite(3_900_000, 412_000)).toBe("3.90M / 412.0k");
+  });
+
+  it("still shows a zero write column rather than hiding the half that was not measured", () => {
+    // Runs ingested before cache writes were captured report 0 — visibly zero, not absent.
+    expect(fmtCacheReadWrite(1_200_000, 0)).toBe("1.20M / 0");
   });
 });

@@ -7,23 +7,28 @@ use crate::*;
 use bn_core::pipeline::investigate::plan_packet;
 use super::plan_agent::append_plan_gate_seed;
 
-/// Build the `--disable-mcp-server <name>` pass-through for each of a repo's project MCP servers
-/// (`.mcp.json` / `.github/mcp.json`), after the launcher's own `--` boundary — so a dispatched
-/// Copilot agent never wedges at boot on a project MCP that fails to connect or wants interactive
-/// auth (#384). Empty when there's nothing to skip, so the launch command is unchanged for the
-/// common bn-only / no-MCP repo. Restored as a local helper: `dispatch.rs`'s equivalent folded
-/// into `agent_model_suffix` (#798) once dispatch always threads a pinned model, but the two
-/// pipeline sub-agent launchers below have no model to pin and only ever needed the MCP suffix.
-fn copilot_mcp_disable_suffix(names: &[String]) -> String {
-    if names.is_empty() {
-        return String::new();
-    }
-    let mut suffix = String::from(" --");
-    for name in names {
-        suffix.push_str(" --disable-mcp-server ");
-        suffix.push_str(&wt::shq(name));
-    }
-    suffix
+/// The harness pass-through for a pipeline sub-agent: the stage's model and effort, plus a
+/// `--disable-mcp-server <name>` for each of the repo's project MCP servers.
+///
+/// The MCP half is why this existed at all — a dispatched Copilot agent must never wedge at boot on
+/// a project MCP that fails to connect or wants interactive auth (#384). The model half is new.
+/// These two launchers used to pass the suppressions and *nothing else*, so the pipeline's
+/// sub-agents were the only agents in bn running on the bare harness default: no `--model`, no
+/// `--effort`, `[pipeline.stages.*]` ignored entirely. That is backwards — fan-out is where the
+/// most agents run at once, so it is where an unpinned model costs the most.
+///
+/// `agent_model_suffix` emits the `--` boundary and drops any value this harness would reject, so
+/// a stage pinned to a model Copilot does not accept still launches on the default rather than
+/// dying on the command line.
+fn pipeline_agent_suffix(
+    cfg: &Config,
+    repo: &str,
+    stage: bn_core::pipeline::stage::Stage,
+    wt_path: &std::path::Path,
+) -> String {
+    let model = cfg.pipeline_model(repo, stage);
+    let disabled = bn_core::mcp::copilot_project_servers(wt_path);
+    crate::cmd::launch_flags::agent_model_suffix("copilot", &model, &disabled)
 }
 
 fn pipeline_copilot_command(session_id: &str, seed_file: &std::path::Path) -> String {
@@ -117,8 +122,11 @@ pub(crate) fn launch_sub_investigator(
             return false;
         }
     };
-    cmd.push_str(&copilot_mcp_disable_suffix(
-        &bn_core::mcp::copilot_project_servers(&wt_path),
+    cmd.push_str(&pipeline_agent_suffix(
+        cfg,
+        &ctx.repo,
+        bn_core::pipeline::stage::Stage::Investigate,
+        &wt_path,
     ));
     cmd.push_str(&format!(
         "; status=$?; cd /; git --git-dir {} worktree remove --force {}; exit $status",
@@ -228,9 +236,7 @@ pub(crate) fn launch_plan_agent(
         return false;
     };
     let mut cmd = pipeline_copilot_command(&sid, &seed_file);
-    cmd.push_str(&copilot_mcp_disable_suffix(
-        &bn_core::mcp::copilot_project_servers(&wt_path),
-    ));
+    cmd.push_str(&pipeline_agent_suffix(cfg, &ctx.repo, bn_core::pipeline::stage::Stage::Plan, &wt_path));
     // The investigator issues this handoff from inside the window already holding the worktree's
     // dispatch lease, so the plan launch would otherwise refuse *itself* — `investigate finish` is
     // that agent saying it is done, so its lease goes with it. `Ours` means this window is the

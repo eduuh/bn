@@ -31,6 +31,14 @@ pub struct AgentSession {
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub cache_read_tokens: i64,
+    /// Prompt tokens written *into* the provider's cache at the 5-minute TTL — and, for a harness
+    /// that reports writes without a TTL, all of them.
+    pub cache_write_5m_tokens: i64,
+    /// Prompt tokens written into the cache at the 1-hour TTL, which bills at 2× fresh input
+    /// rather than 1.25×. Kept apart from the 5-minute figure all the way to the price table
+    /// because Claude Code writes at this TTL: collapsing the two would understate its dominant
+    /// cost bucket by 60% on every session.
+    pub cache_write_1h_tokens: i64,
     /// Cost in nano-AIU (Copilot only; Claude transcripts carry no cost).
     pub cost_nanoaiu: Option<i64>,
     pub lines_added: i64,
@@ -67,6 +75,14 @@ impl AgentSession {
         f.insert("input_tokens".into(), json!(self.input_tokens));
         f.insert("output_tokens".into(), json!(self.output_tokens));
         f.insert("cache_read_tokens".into(), json!(self.cache_read_tokens));
+        f.insert(
+            "cache_write_5m_tokens".into(),
+            json!(self.cache_write_5m_tokens),
+        );
+        f.insert(
+            "cache_write_1h_tokens".into(),
+            json!(self.cache_write_1h_tokens),
+        );
         if let Some(c) = self.cost_nanoaiu {
             f.insert("cost_nanoaiu".into(), json!(c));
         }
@@ -113,6 +129,11 @@ impl AgentSession {
             input_tokens: i("input_tokens"),
             output_tokens: i("output_tokens"),
             cache_read_tokens: i("cache_read_tokens"),
+            // Absent on events recorded before cache writes were captured; zero there means "never
+            // measured", not "none written" — those sessions under-report their real spend, and
+            // re-deriving it would need transcripts the harnesses have long since rotated away.
+            cache_write_5m_tokens: i("cache_write_5m_tokens"),
+            cache_write_1h_tokens: i("cache_write_1h_tokens"),
             cost_nanoaiu: ev.fields.get("cost_nanoaiu").and_then(|v| v.as_i64()),
             lines_added: i("lines_added"),
             lines_removed: i("lines_removed"),
@@ -239,4 +260,66 @@ pub fn latest_session_events(events: &[Event]) -> Vec<&Event> {
     }
     anonymous.extend(latest.into_values());
     anonymous
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn claude_session() -> AgentSession {
+        AgentSession {
+            session_id: "S-1".into(),
+            harness: "claude".into(),
+            repo: "bn".into(),
+            branch: "complete-claude-costs".into(),
+            started_ts: 1_000,
+            ended_ts: 2_000,
+            turns: 12,
+            tool_calls: 30,
+            permission_prompts: 0,
+            models: vec!["claude-opus-5".into()],
+            input_tokens: 24,
+            output_tokens: 8_400,
+            cache_read_tokens: 1_200_000,
+            cache_write_5m_tokens: 0,
+            cache_write_1h_tokens: 412_000,
+            cost_nanoaiu: None,
+            lines_added: 90,
+            lines_removed: 12,
+            files_modified: 4,
+            outcome: "quiet".into(),
+            work_class: WorkClass::Coding,
+        }
+    }
+
+    #[test]
+    fn cache_writes_survive_the_event_round_trip() {
+        // The event log is the only thing between the parser and the cost fold, so a bucket that
+        // isn't written here is a bucket the benchmark never sees again.
+        let s = claude_session();
+        let ev = Event {
+            kind: "agent_session".into(),
+            ts: s.ended_ts,
+            fields: s.to_fields(),
+        };
+        let back = AgentSession::from_event(&ev).expect("round-trips");
+        assert_eq!(back.cache_write_1h_tokens, 412_000);
+        assert_eq!(back.cache_write_5m_tokens, 0);
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn an_event_written_before_the_buckets_existed_still_reads_back() {
+        let mut fields = claude_session().to_fields();
+        fields.remove("cache_write_5m_tokens");
+        fields.remove("cache_write_1h_tokens");
+        let ev = Event {
+            kind: "agent_session".into(),
+            ts: 2_000,
+            fields,
+        };
+        let back = AgentSession::from_event(&ev).expect("older events stay readable");
+        assert_eq!(back.cache_write_1h_tokens, 0);
+        assert_eq!(back.cache_read_tokens, 1_200_000);
+    }
 }

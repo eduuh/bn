@@ -44,6 +44,20 @@ pub(crate) enum PipelineCmd {
         #[command(subcommand)]
         action: PipelineInvestigateCmd,
     },
+    /// Show the pipeline each task would get from its complexity — stages, fan-out budget,
+    /// reviewers, critique rounds — and the reason codes behind the call.
+    ///
+    /// **Read-only, and nothing consumes the answer yet.** The classifier's thresholds are guesses
+    /// until they have been run over a real store, so this exists to be looked at and argued with
+    /// before a route is allowed to change what actually runs.
+    Route {
+        /// One task by id (default: every open task the gate has admitted).
+        #[arg(long)]
+        task: Option<String>,
+        /// Include tasks the gate has not admitted yet, and machine-minted bookkeeping.
+        #[arg(long)]
+        all: bool,
+    },
     /// List every worktree's current stage, newest transition first.
     Board,
     /// Print the current worktree's compact `glyph stage` for the tmux status row (legacy

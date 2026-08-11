@@ -11,8 +11,21 @@
 # issue reservoir, `task enhance` makes each SMART, the queue dispatches a fixer, `bn gate` and
 # `bn critic` prove the fix, and a PR lands in the review queue. Merging stays a human act.
 #
-# Invoked per repo through an agent manifest that names the target:
-#   run: "BN_EXPLORE_REPO=bn bn run explore"
+# This is the shared driver, and it lives under `lib/` because of it. Each repo gets a thin wrapper
+# that sets the lane's settings and execs it — `explore-bn.sh`, `explore-wira360.sh` — and the agent
+# manifest of the same name resolves straight to that wrapper. Run a lane, never the driver:
+#   bn run explore-bn
+#
+# The settings have to live in the wrapper rather than on a manifest `run:` line, because `bn run`
+# is captured by the queue and re-dispatched in a fresh process that inherits no environment: a
+# `run: "BN_EXPLORE_REPO=bn bn run explore"` reached this driver with nothing set and exited 2 while
+# the agent recorded `ok` for having queued it.
+#
+# Sitting in `jobs/` was the second half of that bug. Job names resolve flat — `<jobs>/<name>.sh` —
+# so a driver parked there answers to `bn run explore`, exits 2 for the missing repo, and books the
+# failure against a cron nobody declared, where it reads as a live outage at the top of `bn next`.
+# `lib/` is not scanned, so the name simply stops resolving. Unlike its neighbours here it is exec'd
+# by path, not sourced.
 #
 # Env knobs:
 #   BN_EXPLORE_REPO      REQUIRED — repo to explore (a bare repo under the bare root)

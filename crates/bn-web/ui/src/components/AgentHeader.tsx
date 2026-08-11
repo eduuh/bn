@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { ChevronDown } from "lucide-react";
 import type { AgentDetailView, HarnessOption } from "../api/types";
 import { healthTone, jumpCommand } from "../lib/board";
-import { fmtInputCache, fmtTokens, timeAgo } from "../lib/format";
+import { fmtCacheReadWrite, fmtTokens, timeAgo } from "../lib/format";
 import { CopyButton } from "./CopyButton";
 import { HarnessMenu } from "./HarnessMenu";
 import { toneVariant } from "../lib/tone";
@@ -93,6 +93,13 @@ export function AgentHeader({
   const inTokens = agent.input_tokens || latest_session?.input_tokens || 0;
   const cacheTokens = agent.cache_read_tokens || latest_session?.cache_read_tokens || 0;
   const outTokens = agent.output_tokens || latest_session?.output_tokens || 0;
+  // Cache writes are the biggest bucket on a Claude Code run and the dearest per token, so the
+  // header shows them next to the reads rather than folding both into one "cache" figure.
+  const writeTokens =
+    agent.cache_write_tokens ||
+    (latest_session
+      ? latest_session.cache_write_5m_tokens + latest_session.cache_write_1h_tokens
+      : 0);
   const turns = agent.turns || latest_session?.turns || 0;
   const toolCalls = agent.tool_calls || latest_session?.tool_calls || 0;
   const tone = healthTone(agent.health);
@@ -121,8 +128,9 @@ export function AgentHeader({
       </div>
 
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
-        <Tag title="input tokens, with cached reads in parentheses">
-          {fmtInputCache(inTokens, cacheTokens)} in
+        <Tag title="fresh (uncached) input tokens">{fmtTokens(inTokens)} in</Tag>
+        <Tag title="cache reads / cache writes — reads bill ~0.1x fresh input, writes 1.25-2x">
+          {fmtCacheReadWrite(cacheTokens, writeTokens)} cache
         </Tag>
         <Tag title="live output tokens">{fmtTokens(outTokens)} out tok</Tag>
         <Tag title="assistant turns">{turns} turns</Tag>

@@ -24,4 +24,4 @@ fi
 
 export BN_EXPLORE_REPO BN_EXPLORE_MAX BN_EXPLORE_FOCUS
 
-exec sh "$(dirname "$0")/explore.sh"
+exec sh "$(dirname "$0")/lib/explore.sh"

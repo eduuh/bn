@@ -1,4 +1,6 @@
-use super::parse::{events_json, is_quiet, note_key, read_yaml, ts_of, ws_str};
+use super::parse::{
+    events_json, first_line_of_message, is_quiet, note_key, read_yaml, ts_of, ws_str,
+};
 use super::pending::{finished_session_ids, pending_agents, Claimed};
 use crate::cost::{canonical_session_id, LaunchRecord, WorkClass};
 use crate::resolver::Config;
@@ -148,13 +150,19 @@ pub struct LiveAgent {
     pub tool_calls: i64,
     /// Cumulative tokens burned so far in the *live* session. `output_tokens` is the headline
     /// usage signal — the only figure both harnesses expose mid-session, and the strongest
-    /// cost/runaway proxy (output dominates credit cost; cache reads barely register). Claude
-    /// transcripts also carry `input_tokens`/`cache_read_tokens`; a live Copilot log records only
-    /// output (its running cost/AIU lands solely in the final `session.shutdown`), so those stay 0
-    /// for Copilot until the session finishes and is folded by [`ingest`].
+    /// runaway proxy. Claude transcripts also carry `input_tokens`/`cache_read_tokens`/
+    /// `cache_write_tokens`; a live Copilot log records only output (its running cost/AIU lands
+    /// solely in the final `session.shutdown`), so those stay 0 for Copilot until the session
+    /// finishes and is folded by [`ingest`].
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub cache_read_tokens: i64,
+    /// Prompt tokens written into the cache so far, both TTLs together — the live counterpart of
+    /// [`crate::agent::session::AgentSession`]'s split pair. Undivided because nothing live prices
+    /// it: `bn cost --live` reports tokens only, and the $ lands at ingest from the split fields.
+    /// `#[serde(default)]` keeps fleet JSON written before the field existed readable.
+    #[serde(default)]
+    pub cache_write_tokens: i64,
     /// How — or whether — bn can drive this agent. Supervision *observes* every running session on
     /// the machine, including ones bn never launched, so being in the fleet does not imply being
     /// steerable. Surfacing that lets a client disable steer/relaunch/kill up front instead of
@@ -618,18 +626,29 @@ fn parse_live_claude(
     let idle_secs = (now - last_activity_ts).max(0);
 
     let (mut turns, mut tools) = (0i64, 0i64);
-    let (mut input, mut output, mut cache_read) = (0i64, 0i64, 0i64);
+    let (mut input, mut output, mut cache_read, mut cache_write) = (0i64, 0i64, 0i64, 0i64);
+    // Same per-response dedupe the finished-session parser does: one API response spans several
+    // transcript lines, each repeating the whole response's `usage`, so a live board that summed
+    // per line would show a burn rate inflated by blocks-per-response. See [`first_line_of_message`].
+    let mut counted: std::collections::HashSet<String> = std::collections::HashSet::new();
     for v in &lines {
         if typ(v) != "assistant" {
             continue;
         }
-        turns += 1;
         let msg = v.get("message");
-        if let Some(u) = msg.and_then(|m| m.get("usage")) {
+        let fresh_response = msg.is_some_and(|m| first_line_of_message(m, &mut counted));
+        if fresh_response {
+            turns += 1;
+        }
+        if let Some(u) = msg.filter(|_| fresh_response).and_then(|m| m.get("usage")) {
             input += u.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
             output += u.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
             cache_read += u
                 .get("cache_read_input_tokens")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            cache_write += u
+                .get("cache_creation_input_tokens")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
         }
@@ -665,6 +684,7 @@ fn parse_live_claude(
         input_tokens: input,
         output_tokens: output,
         cache_read_tokens: cache_read,
+        cache_write_tokens: cache_write,
         control: ControlChannel::None,
         task: None,
     })
@@ -764,6 +784,7 @@ fn parse_live_copilot(
         input_tokens: 0,
         output_tokens,
         cache_read_tokens: 0,
+        cache_write_tokens: 0,
         control: ControlChannel::None,
         task: None,
     })
@@ -804,6 +825,7 @@ mod tests {
             input_tokens: 0,
             output_tokens: 0,
             cache_read_tokens: 0,
+            cache_write_tokens: 0,
             control: ControlChannel::None,
             task: None,
         }

@@ -88,6 +88,30 @@ pub(crate) fn active(cfg: &Config, producer: &str) -> bool {
     active_with_fallback(cfg, producer, "running it directly")
 }
 
+/// Whether the work being enqueued is the machine's own bookkeeping rather than something a person
+/// asked for.
+///
+/// `$BN_MACHINE_DISPATCH` rather than a flag, because the only caller that can honestly set it is
+/// another bn process: the dashboard's repo-setup button and its enhance/triage agents, each of
+/// which renders a prompt from a template and shells out — the same hop that already passes
+/// `$BN_WORKER_REPO`. A flag would put the declaration in a person's hands, and a person asserting
+/// "this is not my work" about work they just asked for is the one case it must not describe.
+///
+/// Read by **both** enqueue doors, which is the whole point of it living here. `bn dispatch` had it
+/// first; `bn queue add` did not, and that gap is what put `enhance t17: Run the today-agent daily
+/// coordination cron` on a human's list. Grooming a machine-minted cron task is machine work twice
+/// over — the task being groomed was never a person's, and neither is the grooming.
+///
+/// What it buys: the minted task (#1001) is stamped `auto:1`, so it stays off the day's list and
+/// out of the SMART gate, and the entry classifies `autonomous` rather than competing for the
+/// watched coding lane. See [`bn_core::queue::classify::is_machine`].
+pub(crate) fn machine_owned() -> bool {
+    std::env::var("BN_MACHINE_DISPATCH").is_ok_and(|v| {
+        let v = v.trim();
+        !v.is_empty() && v != "0"
+    })
+}
+
 /// [`active`], naming what happens when the queue is configured but not draining.
 ///
 /// Most producers fall back to launching the work themselves, which is what the default phrase says.
@@ -726,5 +750,21 @@ mod capture_tests {
     #[test]
     fn a_plain_dispatch_is_captured() {
         assert!(req().unsupported().is_empty());
+    }
+
+    /// The env marker is read the same way on both enqueue doors, and only an explicit truthy value
+    /// counts. `BN_MACHINE_DISPATCH=0` is a caller saying *no* — it must not read as "set, therefore
+    /// machine", which is the shape of bug that turns an opt-in into "this machine has run one".
+    #[test]
+    fn only_an_explicit_marker_declares_machine_work() {
+        let _lock = bn_core::test_support::env_lock();
+        let guard = bn_core::test_support::EnvGuard::remove("BN_MACHINE_DISPATCH");
+        assert!(!machine_owned(), "unset is not a declaration");
+
+        for (value, want) in [("", false), ("   ", false), ("0", false), ("1", true), (" 1 ", true)]
+        {
+            guard.set_value(value);
+            assert_eq!(machine_owned(), want, "BN_MACHINE_DISPATCH={value:?}");
+        }
     }
 }

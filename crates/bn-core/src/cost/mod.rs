@@ -9,10 +9,11 @@
 //!   session ([`crate::agent::parse`]); it is surfaced here as `aic`, `None` for raw-Claude / non-
 //!   Copilot runs (which carry no AIC).
 //! * **$ (API-equiv)** — a *benchmark*: tokens × the [`model_price`] table. Not a bill — what the
-//!   same work would cost at public per-model API list prices. The price table is **cache-aware**:
-//!   the bulk of prompt tokens are cache reads, which bill ~10× cheaper than fresh input, so
-//!   pricing every input token at the fresh rate overcounts by ~10×. [`cost_usd`] therefore prices
-//!   the cached subset of the input at a separate cache-read rate.
+//!   same work would cost at public per-model API list prices. The price table is **cache-aware**,
+//!   which on a Claude Code session is the difference between a number and a fiction: nearly every
+//!   prompt token is a cache read (~10× cheaper than fresh input) or a cache *write* (1.25–2×
+//!   *dearer*), so a flat per-input-token rate is wrong in both directions at once. [`cost_usd`]
+//!   charges each of [`TokenUsage`]'s four buckets at its own rate; see [`price`] for the table.
 //!
 //! [`WorkClass`] is the category: orchestration | coding | scheduled | research | remote (+
 //! `unattributed` for rows recorded before the launch path threaded a class through). Every launch
@@ -28,6 +29,10 @@
 //! The [`CostView`] shape (totals + by_category/by_machine/by_repo/by_model/by_day) matches the
 //! bn-web dashboard design (#391/#389) so the web read-API can call [`rollup`] natively rather than
 //! re-deriving the fold.
+
+mod price;
+
+pub use price::{cost_usd, fresh_input, model_price, ModelPrice, TokenUsage};
 
 use crate::events::{self, Event};
 use crate::resolver::Config;
@@ -104,92 +109,18 @@ impl WorkClass {
     }
 }
 
-// --- price table (cache-aware) --------------------------------------------------------------
+// --- harness -------------------------------------------------------------------------------
 
-/// One model's list price in USD per 1M tokens, split three ways. `cache_read_per_1m` is the
-/// discounted rate for prompt tokens served from the provider's cache (~10× cheaper than fresh
-/// input on both Anthropic and OpenAI); most of our prompt tokens are cache reads, so pricing them
-/// at the fresh `input_per_1m` rate overcounts by ~10×. Output tokens dominate cost.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-pub struct ModelPrice {
-    pub input_per_1m: f64,
-    pub cache_read_per_1m: f64,
-    pub output_per_1m: f64,
-}
-
-/// The per-model price table — **the one place** to keep $ rates current. Matched by
-/// case-insensitive substring so the many concrete ids of a family (`claude-opus-4.8`,
-/// `gpt-5.3-codex`, `gemini-3.1-pro-preview`, …) all resolve to one row. Order matters: the cheap
-/// tier needles (`nano`/`mini`/`flash`) come before their base family so `gpt-5-mini` doesn't
-/// match the `gpt-5` row. Cache-read rates are the provider's ~10%-of-input cached-token rate. An
-/// unrecognized model returns `None` — the caller prices it as unknown (`cost_usd` null), never a
-/// panic.
-pub fn model_price(model: &str) -> Option<ModelPrice> {
-    let m = model.trim().to_ascii_lowercase();
-    if m.is_empty() {
-        return None;
-    }
-    // (needle, input $/1M, cache-read $/1M, output $/1M). First substring match wins, so the
-    // order guards against substring collisions: `flash`/`gemini` precede `mini` because
-    // "ge**mini**" contains "mini"; the cheap `nano`/`mini` tiers precede the `gpt-5` base so
-    // `gpt-5-mini` doesn't match `gpt-5`.
-    const TABLE: &[(&str, f64, f64, f64)] = &[
-        ("nano", 0.05, 0.005, 0.40),
-        // Google Gemini (before the generic `mini`, which "gemini" contains).
-        ("flash", 0.30, 0.03, 2.50),
-        ("gemini", 1.25, 0.125, 10.00),
-        // OpenAI GPT-5 mini/base.
-        ("mini", 0.25, 0.025, 2.00),
-        // Anthropic Claude.
-        ("haiku", 0.80, 0.08, 4.00),
-        ("sonnet", 3.00, 0.30, 15.00),
-        ("opus", 15.00, 1.50, 75.00),
-        // OpenAI GPT-5 family base + codex variants.
-        ("gpt-5", 1.25, 0.125, 10.00),
-    ];
-    for (needle, inp, cache, out) in TABLE {
-        if m.contains(needle) {
-            return Some(ModelPrice {
-                input_per_1m: *inp,
-                cache_read_per_1m: *cache,
-                output_per_1m: *out,
-            });
-        }
-    }
-    None
-}
-
-/// The $ (API-equiv) cost of one run on `model`, or `None` when the model is not in the
-/// [`model_price`] table. **Cache-aware:** `fresh_input_tokens` is the non-cached input (priced at
-/// the full rate) and `cache_read_tokens` the cached prompt tokens (priced at the ~10×-cheaper
-/// cache rate) — the two are already separated (see [`fresh_input`]), not overlapping. Negative
-/// counts clamp to zero.
-pub fn cost_usd(
-    model: &str,
-    fresh_input_tokens: i64,
-    cache_read_tokens: i64,
-    output_tokens: i64,
-) -> Option<f64> {
-    let p = model_price(model)?;
-    let per_1m = |tokens: i64, rate: f64| (tokens.max(0) as f64) / 1_000_000.0 * rate;
-    Some(
-        per_1m(fresh_input_tokens, p.input_per_1m)
-            + per_1m(cache_read_tokens, p.cache_read_per_1m)
-            + per_1m(output_tokens, p.output_per_1m),
-    )
-}
-
-/// Split a session's raw `input_tokens` into the **non-cached** input to price at the full rate.
-/// The harnesses disagree on what `input_tokens` means: a Copilot session reports the *total*
-/// prompt there (cache reads are a subset — typically ~95% of it), so the fresh part is
-/// `input - cache_read`; a Claude transcript reports only the *fresh* input, with cache reads
-/// counted separately (and often far larger). Normalizing to the fresh input is what stops the
-/// ~10× overcount from pricing every cached token as fresh.
-pub fn fresh_input(harness: &str, input_tokens: i64, cache_read_tokens: i64) -> i64 {
-    if harness.eq_ignore_ascii_case("copilot") {
-        (input_tokens - cache_read_tokens.max(0)).max(0)
-    } else {
-        input_tokens.max(0)
+/// The product name for a harness token, for the `by_harness` breakdown: `claude` → `Claude Code`,
+/// `copilot` → `Copilot`. An unrecognized token renders as-is, and the empty one (the scheduled
+/// ledger records no harness) as `—`, so a new harness shows up under its own raw name rather than
+/// being silently folded into someone else's row.
+pub fn harness_label(harness: &str) -> String {
+    match harness.trim().to_ascii_lowercase().as_str() {
+        "claude" => "Claude Code".to_string(),
+        "copilot" => "Copilot".to_string(),
+        "" => "—".to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -217,6 +148,11 @@ pub struct CostRow {
     pub input_tokens: i64,
     /// Cached prompt tokens, priced at the ~10×-cheaper cache-read rate.
     pub cache_read_tokens: i64,
+    /// Prompt tokens written *into* the cache, both TTLs together — priced at 1.25–2× the input
+    /// rate on Anthropic, so a big number here is spend, not savings. The TTL split that pricing
+    /// needs lives on [`RunSample`]; by the time a row is folded the $ is already computed, and
+    /// carrying two display columns nobody reads separately would only widen the table.
+    pub cache_write_tokens: i64,
     pub output_tokens: i64,
     /// **AIC** (AI Credits) — the real Copilot bill (Σ `totalNanoAiu` / 1e9). `None` = no Copilot
     /// runs in this group.
@@ -224,6 +160,20 @@ pub struct CostRow {
     /// **$ (API-equiv)** — the cache-aware benchmark from the price table. `None` = no priceable
     /// model in this group.
     pub cost_usd: Option<f64>,
+}
+
+impl CostTotals {
+    /// The tokens a budget should meter: fresh input + cache **writes** + output.
+    ///
+    /// Cache *reads* are deliberately excluded — they bill at a tenth of fresh input and dominate
+    /// the raw count, so including them inflates a burn rate ~10× and throttles work that costs
+    /// almost nothing. Cache *writes* are just as deliberately included: at 1.25–2× fresh input
+    /// they are the dearest prompt tokens a run spends, and on a Claude Code session they are most
+    /// of the prompt. A rate that dropped them would run slowest on the cheapest traffic and
+    /// fastest on the most expensive.
+    pub fn billed_tokens(&self) -> i64 {
+        self.input_tokens + self.cache_write_tokens + self.output_tokens
+    }
 }
 
 /// The whole-window totals across every source, in both cost units.
@@ -234,6 +184,8 @@ pub struct CostTotals {
     pub input_tokens: i64,
     /// Cached prompt tokens (priced at the cheap cache-read rate).
     pub cache_read_tokens: i64,
+    /// Prompt tokens written into the cache, both TTLs together (priced at 1.25–2× input).
+    pub cache_write_tokens: i64,
     pub output_tokens: i64,
     /// **AIC** (AI Credits) — the real Copilot bill. `None` = no Copilot runs.
     pub aic: Option<f64>,
@@ -254,6 +206,8 @@ pub struct DayCategory {
     pub sessions: u64,
     pub input_tokens: i64,
     pub cache_read_tokens: i64,
+    /// Prompt tokens written into the cache, both TTLs together.
+    pub cache_write_tokens: i64,
     pub output_tokens: i64,
     /// **AIC** — the real Copilot bill for this cell; `None` = no Copilot runs.
     pub aic: Option<f64>,
@@ -272,6 +226,14 @@ pub struct CostView {
     pub by_machine: Vec<CostRow>,
     pub by_repo: Vec<CostRow>,
     pub by_model: Vec<CostRow>,
+    /// Claude Code vs Copilot — the fold by the harness that produced each run.
+    ///
+    /// **Read this one down the `$` column, not `aic`.** The two cost units are not symmetric
+    /// across harnesses: AIC is metered by Copilot and does not exist for Claude, so a Claude row
+    /// reports a null AIC that renders as `—` and reads, wrongly, as "free". The $ benchmark is
+    /// the only figure computed the same way for both, which is exactly what makes it the basis
+    /// for comparison — see [`harness_label`], which the surfaces use to say so.
+    pub by_harness: Vec<CostRow>,
     pub by_day: Vec<CostRow>,
     /// The (day × category) cross-tab for the stacked-by-category-per-day chart (#391 §4(b)).
     pub by_day_category: Vec<DayCategory>,
@@ -323,11 +285,16 @@ pub struct RunSample {
     pub machine: String,
     pub repo: String,
     pub model: String,
+    /// Which harness produced the run — `claude` | `copilot`, or empty for a source that records
+    /// none (the scheduled `staff_run` ledger). Also decides how `input_tokens` was normalized,
+    /// since the two harnesses disagree on what that field counts ([`fresh_input`]).
+    pub harness: String,
     pub ts: i64,
-    /// Fresh (non-cached) input tokens (harness-normalized; see [`fresh_input`]).
-    pub input_tokens: i64,
-    pub cache_read_tokens: i64,
-    pub output_tokens: i64,
+    /// The four token buckets, each already normalized to what its own price-table rate applies
+    /// to (see [`fresh_input`]). Held as a [`TokenUsage`] rather than loose fields because they
+    /// only mean anything together: pricing reads all four, and the TTL split inside it is the one
+    /// thing the folded [`CostRow`] cannot reconstruct.
+    pub usage: TokenUsage,
     /// AIC (real Copilot bill); `None` for Claude / non-Copilot.
     pub aic: Option<f64>,
     /// $ (API-equiv) benchmark; `None` when the model is unpriceable.
@@ -339,6 +306,7 @@ struct Acc {
     sessions: u64,
     input_tokens: i64,
     cache_read_tokens: i64,
+    cache_write_tokens: i64,
     output_tokens: i64,
     aic: Option<f64>,
     cost_usd: Option<f64>,
@@ -347,9 +315,10 @@ struct Acc {
 impl Acc {
     fn add(&mut self, s: &RunSample) {
         self.sessions += 1;
-        self.input_tokens += s.input_tokens;
-        self.cache_read_tokens += s.cache_read_tokens;
-        self.output_tokens += s.output_tokens;
+        self.input_tokens += s.usage.input_tokens;
+        self.cache_read_tokens += s.usage.cache_read_tokens;
+        self.cache_write_tokens += s.usage.cache_write_tokens();
+        self.output_tokens += s.usage.output_tokens;
         self.aic = add_opt(self.aic, s.aic);
         self.cost_usd = add_opt(self.cost_usd, s.cost_usd);
     }
@@ -359,6 +328,7 @@ impl Acc {
             sessions: self.sessions,
             input_tokens: self.input_tokens,
             cache_read_tokens: self.cache_read_tokens,
+            cache_write_tokens: self.cache_write_tokens,
             output_tokens: self.output_tokens,
             aic: self.aic,
             cost_usd: self.cost_usd,
@@ -445,6 +415,7 @@ pub fn fold(samples: &[RunSample], window_days: i64) -> CostView {
             sessions: t.sessions,
             input_tokens: t.input_tokens,
             cache_read_tokens: t.cache_read_tokens,
+            cache_write_tokens: t.cache_write_tokens,
             output_tokens: t.output_tokens,
             aic: t.aic,
             cost_usd: t.cost_usd,
@@ -453,6 +424,7 @@ pub fn fold(samples: &[RunSample], window_days: i64) -> CostView {
         by_machine: group_by(samples, |s| s.machine.clone()),
         by_repo: group_by(samples, |s| s.repo.clone()),
         by_model: group_by_model(samples),
+        by_harness: group_by(samples, |s| s.harness.clone()),
         by_day: group_by(samples, |s| local_date_of(s.ts)),
         by_day_category: group_by_day_category(samples),
     }
@@ -474,6 +446,7 @@ fn group_by_day_category(samples: &[RunSample]) -> Vec<DayCategory> {
             sessions: a.sessions,
             input_tokens: a.input_tokens,
             cache_read_tokens: a.cache_read_tokens,
+            cache_write_tokens: a.cache_write_tokens,
             output_tokens: a.output_tokens,
             aic: a.aic,
             cost_usd: a.cost_usd,
@@ -730,17 +703,31 @@ fn sample_from_agent_session(
         .find(|s| !s.is_empty())
         .unwrap_or("")
         .to_string();
-    let input = field_i64(e, "input_tokens");
-    let cache_read = field_i64(e, "cache_read_tokens");
-    let output = field_i64(e, "output_tokens");
     let harness = e
         .fields
         .get("harness")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    // Normalize `input_tokens` to the non-cached input the full rate applies to (harness-aware),
-    // so a Copilot session's ~95%-cached prompt isn't priced 10× too high.
-    let fresh = fresh_input(harness, input, cache_read);
+    let cache_read = field_i64(e, "cache_read_tokens");
+    // Absent on every event recorded before cache writes were captured, which reads as zero — an
+    // honest "never measured" rather than a backfilled guess, so historical rows stay comparable
+    // to the bill they were folded from even though they undercount it.
+    let write_5m = field_i64(e, "cache_write_5m_tokens");
+    let write_1h = field_i64(e, "cache_write_1h_tokens");
+    let usage = TokenUsage {
+        // Normalize `input_tokens` to the non-cached input the full rate applies to
+        // (harness-aware), so a Copilot session's ~95%-cached prompt isn't priced as fresh.
+        input_tokens: fresh_input(
+            harness,
+            field_i64(e, "input_tokens"),
+            cache_read,
+            write_5m + write_1h,
+        ),
+        cache_read_tokens: cache_read,
+        cache_write_5m_tokens: write_5m,
+        cache_write_1h_tokens: write_1h,
+        output_tokens: field_i64(e, "output_tokens"),
+    };
     let aic = e
         .fields
         .get("cost_nanoaiu")
@@ -756,12 +743,11 @@ fn sample_from_agent_session(
             .unwrap_or("")
             .to_string(),
         model: model.clone(),
+        harness: harness.to_string(),
         ts: e.ts,
-        input_tokens: fresh,
-        cache_read_tokens: cache_read,
-        output_tokens: output,
+        usage,
         aic,
-        cost_usd: cost_usd(&model, fresh, cache_read, output),
+        cost_usd: cost_usd(&model, usage),
     }
 }
 
@@ -782,18 +768,22 @@ fn sample_from_staff_run(e: &Event, machine: &str) -> RunSample {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let tokens = field_i64(e, "tokens");
+    let usage = TokenUsage {
+        output_tokens: field_i64(e, "tokens"),
+        ..TokenUsage::default()
+    };
     RunSample {
         work_class,
         machine: machine.to_string(),
         repo: String::new(),
         model: model.clone(),
+        // The scheduled ledger records no harness (it dispatches headless), so these fold into
+        // the `by_harness` `—` row rather than being attributed to a harness they may not have used.
+        harness: String::new(),
         ts: e.ts,
-        input_tokens: 0,
-        cache_read_tokens: 0,
-        output_tokens: tokens,
+        usage,
         aic: None,
-        cost_usd: cost_usd(&model, 0, 0, tokens),
+        cost_usd: cost_usd(&model, usage),
     }
 }
 
@@ -892,18 +882,34 @@ pub fn live_rollup(cfg: &Config) -> LiveCost {
             machine: cfg.machine().to_string(),
             repo: a.repo.clone(),
             model: String::new(),
+            harness: a.harness.clone(),
             ts: a.last_activity_ts,
-            input_tokens: fresh_input(&a.harness, a.input_tokens, a.cache_read_tokens),
-            cache_read_tokens: a.cache_read_tokens,
-            output_tokens: a.output_tokens,
+            usage: TokenUsage {
+                input_tokens: fresh_input(
+                    &a.harness,
+                    a.input_tokens,
+                    a.cache_read_tokens,
+                    a.cache_write_tokens,
+                ),
+                cache_read_tokens: a.cache_read_tokens,
+                // A live transcript reports how much was written but not at which TTL; the
+                // 5-minute bucket is the providers' default and, since a live row carries no $
+                // anyway, the choice only affects which display column the tokens land in.
+                cache_write_5m_tokens: a.cache_write_tokens,
+                cache_write_1h_tokens: 0,
+                output_tokens: a.output_tokens,
+            },
             aic: None,
             cost_usd: None,
         })
         .collect();
-    let output_tokens = samples.iter().map(|s| s.output_tokens).sum();
+    let output_tokens = samples.iter().map(|s| s.usage.output_tokens).sum();
     LiveCost {
         agents: fleet.running_count(),
         output_tokens,
         by_category: group_by(&samples, |s| s.work_class.as_str().to_string()),
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -1,17 +1,29 @@
 //! The machine-wide tick lock: one dispatcher pass at a time, whichever driver started it.
 //!
-//! The rule that makes it work is narrower than it looks. Acquiring may steal a lock whose owner is
-//! **gone** — `Drop` does not run on SIGKILL or a power cut, and a machine that stays locked out
-//! waiting for a release that will never come dispatches nothing. Releasing may only remove a lock
-//! that is **still ours**.
+//! Ownership is held by the **kernel**, via a non-blocking `flock` on an open descriptor, rather
+//! than by a pid written into a file. That is the whole design, and it is a correction: every
+//! file-content scheme has to answer "is the recorded owner still alive?", and on a machine that
+//! reboots or recycles pids there is no honest answer.
 //!
-//! Both halves were wrong in the same incident. Acquire also stole any lock older than
-//! `LOCK_STALE_SECS` (30) — shorter than an ordinary pass that launches an agent — so the
-//! once-a-minute cron tick took the lock from a working daemon; release then deleted whatever file
-//! it found, which by then belonged to the thief, leaving the machine unlocked from there on. Two
-//! dispatchers realizing the same plan is precisely the double-dispatch this file exists to
-//! prevent.
+//! The incident that moved it here. A tick took the lock, wrote its pid, and was killed before
+//! `Drop` could run; the file survived. The machine then restarted its user session, and the kernel
+//! handed that same pid to a system agent that never exits. From then on the liveness check —
+//! `!pid_alive(owner)` — said the owner was alive, every acquire was denied, and the resident
+//! dispatcher skipped **every** pass for hours while reporting itself healthy. Nothing dispatched.
+//! The queue grew to thirty-five entries behind a lock held by a text-input menu.
+//!
+//! `flock` removes the question instead of answering it better. The lock lives on the open file
+//! description, so the kernel drops it when the holder exits *however* it exits — clean return,
+//! SIGKILL, panic, power cut — and a pid is never consulted, so a recycled one cannot impersonate a
+//! holder. Non-blocking (`LOCK_NB`) keeps the original semantics: a pass that cannot take the lock
+//! **skips**, because another pass is already deciding and there will be one along shortly. A tick
+//! that queued behind its predecessor would pile up and then fire a burst, which is the
+//! over-commitment the queue exists to prevent.
+//!
+//! The pid still goes *into* the file, purely so an operator reading it learns who holds the lock.
+//! Nothing reads it back to make a decision.
 
+use std::fs::File;
 use std::path::PathBuf;
 
 /// The lock that makes "one tick per machine" true regardless of which driver started it.
@@ -19,168 +31,184 @@ pub(super) fn lock_path() -> PathBuf {
     bn_core::resolver::state_dir().join("queue-tick.lock")
 }
 
-/// A non-blocking machine-wide tick lock, released on drop.
-///
-/// Non-blocking on purpose: a tick that waited for its predecessor would pile up behind a slow
-/// pass and then fire a burst, which is precisely the over-commitment the queue exists to prevent.
-/// Skipping is correct — another pass is already deciding, and there will be one along shortly.
+/// A non-blocking machine-wide tick lock, released when the holder's descriptor closes.
 pub(super) struct TickLock {
-    path: PathBuf,
+    /// The open descriptor **is** the lock: `flock` binds to the open file description, so the
+    /// kernel releases it when this closes. Holding the `File` for the guard's lifetime is
+    /// therefore not bookkeeping — drop it early and the lock is gone.
+    _file: File,
 }
 
 impl TickLock {
     pub(super) fn try_acquire() -> Result<TickLock, LockDenied> {
-        let path = lock_path();
+        Self::try_acquire_at(&lock_path())
+    }
+
+    /// [`try_acquire`](Self::try_acquire) against an explicit path, so the locking behaviour can be
+    /// tested without going through the process-global state directory (which other tests move out
+    /// from under it).
+    fn try_acquire_at(path: &std::path::Path) -> Result<TickLock, LockDenied> {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        // A lock whose owner is gone is not a lock, and recording the owner is what turns that from
-        // a guess into a fact we can check.
-        if let Ok(prev) = std::fs::read_to_string(&path) {
-            let owner: Option<u32> = prev.trim().parse().ok();
-            if lock_abandoned(owner, || bn_core::store::lock_is_stale(&path), &pid_alive) {
-                let _ = std::fs::remove_file(&path);
-            }
-        }
-        match std::fs::OpenOptions::new()
+        // `create`, never `create_new`: the file outlives any single holder now, because ownership
+        // is the flock rather than the file's existence.
+        let file = match File::options()
             .write(true)
-            .create_new(true)
-            .open(&path)
+            .create(true)
+            .truncate(false)
+            .open(path)
         {
-            Ok(mut f) => {
-                use std::io::Write;
-                let _ = write!(f, "{}", std::process::id());
-                Ok(TickLock { path })
-            }
-            // Only `AlreadyExists` means another tick holds it. Anything else — a read-only state
-            // dir, a full disk — is a different problem entirely, and reporting it as contention
-            // sends the reader hunting for a concurrent tick that does not exist.
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(LockDenied::Held),
-            Err(e) => Err(LockDenied::Unusable(e.to_string())),
+            Ok(f) => f,
+            Err(e) => return Err(LockDenied::Unusable(e.to_string())),
+        };
+
+        match try_flock(&file) {
+            FlockOutcome::Acquired => {}
+            FlockOutcome::Held => return Err(LockDenied::Held),
+            FlockOutcome::Failed(e) => return Err(LockDenied::Unusable(e)),
         }
+
+        // Diagnostics only — recorded after the lock is ours so the file always names its actual
+        // holder. A failure here costs an operator a hint, never correctness, so it is not fatal.
+        let _ = record_holder(&file);
+        Ok(TickLock { _file: file })
     }
 }
 
-/// Whether an existing lock file may be taken from whoever wrote it.
-///
-/// Pure so the rule is testable without a clock or a filesystem, because the rule is the part that
-/// was wrong: **a live owner is never abandoned, however old its lock**. Staleness decides one case
-/// only — a lock file with no readable pid, where there is nothing better to go on. `stale` is a
-/// closure so that check is skipped entirely in the common path.
-fn lock_abandoned(
-    owner: Option<u32>,
-    stale: impl FnOnce() -> bool,
-    alive: &impl Fn(u32) -> bool,
-) -> bool {
-    match owner {
-        Some(pid) => !alive(pid),
-        None => stale(),
+/// What a non-blocking `flock` attempt did.
+enum FlockOutcome {
+    Acquired,
+    /// Another live descriptor holds it — the healthy contention case.
+    Held,
+    Failed(String),
+}
+
+/// Take an exclusive, non-blocking `flock` on `file`.
+#[cfg(unix)]
+#[allow(
+    unsafe_code,
+    reason = "libc::flock is the portable advisory whole-file lock; the fd is owned by `file` and \
+              valid for the call"
+)]
+fn try_flock(file: &File) -> FlockOutcome {
+    use std::os::unix::io::AsRawFd;
+    // SAFETY: `file` owns a valid, open descriptor for the duration of this call, and `flock`
+    // neither retains the fd past it nor writes through any pointer.
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc == 0 {
+        return FlockOutcome::Acquired;
     }
+    let err = std::io::Error::last_os_error();
+    // `EWOULDBLOCK` (== `EAGAIN`) is the one error that means "someone else has it". Anything else
+    // — a read-only state dir, a filesystem without advisory locking — is a different problem, and
+    // reporting it as contention sends the reader hunting for a concurrent tick that does not exist.
+    match err.raw_os_error() {
+        Some(code) if code == libc::EWOULDBLOCK => FlockOutcome::Held,
+        _ => FlockOutcome::Failed(err.to_string()),
+    }
+}
+
+#[cfg(not(unix))]
+fn try_flock(_file: &File) -> FlockOutcome {
+    FlockOutcome::Failed("advisory file locking is unavailable on this platform".to_string())
+}
+
+/// Write the holding pid into the lock file, replacing whatever a previous holder left.
+fn record_holder(file: &File) -> std::io::Result<()> {
+    use std::io::{Seek, SeekFrom, Write};
+    let mut file = file;
+    file.set_len(0)?;
+    file.seek(SeekFrom::Start(0))?;
+    write!(file, "{}", std::process::id())?;
+    file.flush()
 }
 
 /// Why a pass could not take the machine lock.
 pub(super) enum LockDenied {
     /// Another tick is running. The healthy case: it is doing the work.
     Held,
-    /// The lock could not be created at all — an unwritable state dir, a full disk.
+    /// The lock could not be taken at all — an unwritable state dir, a filesystem with no advisory
+    /// locking.
     Unusable(String),
 }
 
 /// Whether `pid` names a live process — [`bn_core::queue::build::pid_alive`], re-exported so the
 /// tick, the status line and the dashboard cannot disagree about what "alive" means.
+///
+/// Deliberately **not** used to decide lock ownership: see the module docs for the outage that
+/// taught us a pid cannot answer that question.
 pub(crate) use bn_core::queue::build::pid_alive;
 
-impl Drop for TickLock {
-    /// Release the lock — but only if it is still ours.
-    ///
-    /// An unconditional `remove_file` here deletes whatever lock file happens to exist, which after
-    /// a steal is somebody else's. That turns one lost race into a permanently unlocked machine:
-    /// the thief keeps running believing it holds the lock, and every subsequent tick walks
-    /// straight in. Checking the pid first makes releasing safe even when acquiring was not.
-    fn drop(&mut self) {
-        let ours = std::fs::read_to_string(&self.path)
-            .ok()
-            .and_then(|raw| raw.trim().parse::<u32>().ok())
-            .is_some_and(|pid| pid == std::process::id());
-        if ours {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
-}
+// The lock file is never unlinked. Removing it would reintroduce the classic flock race: a waiter
+// that already opened the file would end up locking an unlinked inode while the next acquirer
+// creates and locks a fresh one, and two passes would dispatch the same plan. Closing the
+// descriptor is the entire release.
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bn_core::test_support::with_state_dir;
 
-    /// A pid that is certainly not running: spawn something trivial and reap it.
-    fn a_dead_pid() -> u32 {
-        let mut child = std::process::Command::new("/usr/bin/true")
-            .spawn()
-            .expect("spawn /usr/bin/true");
-        let pid = child.id();
-        let _ = child.wait();
-        pid
+    /// A private lock path for one test. Deliberately *not* the process-global state directory:
+    /// these tests exercise the locking primitive, and routing them through `$BN_STATE_DIR` makes
+    /// them race with any concurrently running test that touches the same machine lock.
+    fn scratch(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("create a temp dir");
+        let path = dir.path().join(name);
+        (dir, path)
     }
 
-    /// The regression that took the machine down: a pass slower than `LOCK_STALE_SECS` used to have
-    /// its lock stolen while it was still working, so a second dispatcher realized the same plan.
     #[test]
-    fn a_live_owner_keeps_its_lock_however_old() {
-        let alive = |_: u32| true;
+    fn a_free_lock_is_acquirable_and_records_its_holder() {
+        let (_dir, path) = scratch("queue-tick.lock");
         assert!(
-            !lock_abandoned(Some(4242), || true, &alive),
-            "a lock held by a live process must not be stolen for being old"
+            TickLock::try_acquire_at(&path).is_ok(),
+            "an uncontended lock should be acquirable"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap().trim(),
+            std::process::id().to_string(),
+            "the holding pass should name itself in the lock file"
         );
     }
 
-    /// Age still decides the one case with no pid to consult — an old-format or truncated lock.
+    /// The regression this module was rewritten for. A lock file left behind by a killed tick names
+    /// a pid the OS later handed to an unrelated, immortal process (on the machine that found this,
+    /// a system text-input agent). Under the old pid-liveness rule that lock could never be
+    /// reclaimed and the dispatcher skipped every pass for hours. Ownership is the flock now, so
+    /// leftover content is inert.
     #[test]
-    fn a_pidless_lock_falls_back_to_age() {
-        let alive = |_: u32| true;
-        assert!(lock_abandoned(None, || true, &alive), "stale and pidless");
+    fn a_lock_file_naming_a_live_unrelated_pid_is_still_acquirable() {
+        let (_dir, path) = scratch("queue-tick.lock");
+        // Our own pid: certainly alive, and certainly not a tick holding this lock.
+        std::fs::write(&path, std::process::id().to_string()).unwrap();
+
         assert!(
-            !lock_abandoned(None, || false, &alive),
-            "a fresh pidless lock is someone mid-write, not an abandoned one"
+            TickLock::try_acquire_at(&path).is_ok(),
+            "an abandoned lock file must never outlive its writer, whatever pid it names"
         );
     }
 
-    /// The other half: a lock whose owner died (SIGKILL, power cut) is not a lock, and the machine
-    /// must not stay locked out waiting for a `Drop` that will never run.
+    /// Contention still skips. `flock` binds to the open file description, so a second acquire —
+    /// even from this same process — is a genuine second holder and must be denied.
     #[test]
-    fn a_dead_owners_lock_is_reclaimed() {
-        with_state_dir(|| {
-            let path = lock_path();
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, a_dead_pid().to_string()).unwrap();
-
-            let guard = TickLock::try_acquire();
-            assert!(guard.is_ok(), "a dead owner's lock should be reclaimable");
-            assert_eq!(
-                std::fs::read_to_string(&path).unwrap().trim(),
-                std::process::id().to_string(),
-                "the reclaiming pass should own the lock it took"
-            );
-        });
+    fn a_held_lock_denies_the_next_pass() {
+        let (_dir, path) = scratch("queue-tick.lock");
+        let _held = TickLock::try_acquire_at(&path).ok().expect("a free lock");
+        assert!(
+            matches!(TickLock::try_acquire_at(&path), Err(LockDenied::Held)),
+            "a second pass must skip while the first holds the lock"
+        );
     }
 
-    /// Releasing must be narrower than acquiring: dropping a guard whose lock was taken by someone
-    /// else has to leave the new owner's lock alone, or one lost race unlocks the machine for good.
+    /// And releasing actually releases: the next pass gets in.
     #[test]
-    fn dropping_does_not_delete_someone_elses_lock() {
-        with_state_dir(|| {
-            let path = lock_path();
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            let guard = TickLock::try_acquire().ok().expect("acquire a free lock");
-            // Simulate the steal: another pass now owns the file.
-            std::fs::write(&path, "999999").unwrap();
-            drop(guard);
-
-            assert_eq!(
-                std::fs::read_to_string(&path).unwrap().trim(),
-                "999999",
-                "a released guard must only remove a lock still bearing its own pid"
-            );
-        });
+    fn dropping_the_guard_frees_the_machine() {
+        let (_dir, path) = scratch("queue-tick.lock");
+        drop(TickLock::try_acquire_at(&path).ok().expect("a free lock"));
+        assert!(
+            TickLock::try_acquire_at(&path).is_ok(),
+            "a released lock should be immediately re-acquirable"
+        );
     }
 }

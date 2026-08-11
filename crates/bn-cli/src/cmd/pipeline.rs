@@ -17,8 +17,9 @@ use crate::*;
 
 #[path = "pipeline/launch.rs"]
 mod launch;
+mod route_view;
 use launch::{launch_plan_agent, launch_sub_investigator};
-use bn_core::pipeline::investigate::{next_after_investigation, InvestigationNext};
+use bn_core::pipeline::investigate::{next_after_investigation, InvestigationNext, MAX_FANOUT};
 use bn_core::pipeline::stage::{self, BoardEntry, Stage};
 use bn_core::pipeline::status::{infer, PipelineView, PlanReview, TaskSignals};
 use bn_core::plan_review::{Review, ReviewStatus};
@@ -29,6 +30,7 @@ mod board;
 mod plan_agent;
 use status_render::{render_pipeline, render_pipeline_list, terminal_width};
 mod target;
+pub(crate) use route_view::emit_pipeline_route;
 pub(crate) use board::{emit_pipeline_badge, emit_pipeline_board};
 use board::fmt_ts;
 use target::{current_stage, resolve_target};
@@ -327,6 +329,18 @@ fn transition(cfg: &Config, ctx: &Resolved, stage: Stage, as_json: bool) {
     }
 }
 
+/// Record unknowns the fan-out cap would not fund, as research items on the note.
+///
+/// A capped unknown must not simply disappear: the plan stage reads the note's research to decide
+/// what it knows, and a note that silently lost three questions reads as a complete investigation.
+/// The text doubles as the dedupe key, so re-running the finish step does not stack duplicates.
+fn record_deferred(cfg: &Config, ctx: &Resolved, deferred: &[String]) {
+    for question in deferred {
+        let text = format!("deferred unknown (fan-out capped at {MAX_FANOUT}): {question}");
+        let _ = commands::add(cfg, ctx, "research", &text, Some(&text), &today());
+    }
+}
+
 fn raise_investigation_attention(cfg: &Config, ctx: &Resolved, reason: &str) {
     let key = format!("investigate:{}/{}", ctx.repo, ctx.branch);
     let title = format!("Planning input needed for {}/{}", ctx.repo, ctx.branch);
@@ -427,8 +441,11 @@ pub(crate) fn emit_pipeline_investigate_finish(
         .map(|item| item.text.clone())
         .collect::<Vec<_>>();
 
-    match next_after_investigation(&findings, unknowns, blocked) {
-        InvestigationNext::Plan { findings } => {
+    // The cap is the pipeline's, not the investigating agent's: it lists what it wants looked at,
+    // and this decides how many of those are worth a worktree each.
+    match next_after_investigation(&findings, unknowns, blocked, MAX_FANOUT) {
+        InvestigationNext::Plan { findings, deferred } => {
+            record_deferred(cfg, &ctx, &deferred);
             enter_plan(cfg, &ctx, &goal, &findings, no_tmux, as_json);
         }
         InvestigationNext::Escalate { reason } => {
@@ -451,7 +468,11 @@ pub(crate) fn emit_pipeline_investigate_finish(
                 println!("investigate: paused — planning attention raised: {reason}");
             }
         }
-        InvestigationNext::FanOut { findings, unknowns } => {
+        InvestigationNext::FanOut {
+            findings,
+            unknowns,
+            deferred,
+        } => {
             let existing = pending_fanout_tokens(&note);
             if !existing.is_empty() {
                 if as_json {
@@ -477,6 +498,7 @@ pub(crate) fn emit_pipeline_investigate_finish(
                 }
                 return;
             }
+            record_deferred(cfg, &ctx, &deferred);
             let run = format!("f{}", bn_core::util::now_epoch_secs());
             let mut launched = 0usize;
             let mut tokens = Vec::new();

@@ -103,6 +103,19 @@ const VAGUE_OPENERS: [&str; 8] = [
     "tidy",
 ];
 
+/// Whether a summary opens with one of the [`VAGUE_OPENERS`].
+///
+/// Exposed as a predicate rather than the list, so callers cannot grow their own rule out of it.
+/// The gate treats this as one gap among several; routing reads it as a hint that a task is
+/// under-specified, and only ever to give it *more* scrutiny — it is a substring match on text a
+/// third party may have written, so it must never buy a cheaper pipeline.
+pub fn opens_vaguely(summary: &str) -> bool {
+    let lower = summary.to_ascii_lowercase();
+    VAGUE_OPENERS
+        .iter()
+        .any(|opener| lower.starts_with(*opener))
+}
+
 fn gap(
     dimension: Dim,
     code: &'static str,

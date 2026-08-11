@@ -1,6 +1,10 @@
 // Typed viewmodels for the bn-web read API. Every shape here mirrors a `bn-core` payload builder
 // exactly (design §3), so SSE frames and REST envelopes share one contract.
 
+// The cost shapes live in ./cost.ts; imported for the local references below and re-exported near
+// the end of this file, so `from "../api/types"` remains the single import path for API types.
+import type { WorkClass } from "./cost";
+
 /** The standard bn JSON envelope wrapping every REST response (`bn_core::render::Envelope`). */
 export interface Envelope<T> {
   ok: boolean;
@@ -55,6 +59,8 @@ export interface LiveAgent {
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
+  /** Prompt tokens written into the cache so far, both TTLs together. */
+  cache_write_tokens?: number;
   /**
    * How bn can write to this agent — `resume` (a recorded session), `tmux` (a live window), or
    * `none`. Supervision observes every running session on the machine, including ones bn never
@@ -306,6 +312,10 @@ export interface AgentSession {
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
+  /** Cache writes at the 5-minute TTL (and all writes, for a harness that reports no TTL). */
+  cache_write_5m_tokens: number;
+  /** Cache writes at the 1-hour TTL — the one Claude Code takes; bills at 2× fresh input. */
+  cache_write_1h_tokens: number;
   cost_nanoaiu: number | null;
   lines_added: number;
   lines_removed: number;
@@ -1004,64 +1014,10 @@ export interface LearningsView {
   unreviewed: number;
 }
 
-// --- Cost (GET /api/cost .data; mirrors `bn_core::cost::CostView` from #381) ---
+// --- Cost (GET /api/cost .data; #381) — the row/total/view shapes live in ./cost.ts and are
+// re-exported here so `from "../api/types"` stays the one import path for API types. ---
 
-/** The work-class category token on a cost row (`bn_core::cost::WorkClass::as_str`). Rows recorded
- * before #381 threaded a class through fold into `unattributed` (expected to dominate history). */
-export type WorkClass =
-  "orchestration" | "coding" | "scheduled" | "research" | "remote" | "unattributed";
-
-/** One grouped cost line — `bn_core::cost::CostRow`. `aic` (the *metered Copilot bill*) is `null`
- * for a group with no Copilot runs; `cost_usd` (the *API-equiv benchmark*) is `null` when nothing
- * in the group had a priceable model. */
-export interface CostRow {
-  key: string;
-  /** Fresh (non-cached) input tokens. */
-  input_tokens: number;
-  /** Cached prompt tokens (priced ~10× cheaper). */
-  cache_read_tokens: number;
-  output_tokens: number;
-  sessions: number;
-  /** AIC — the real Copilot bill. */
-  aic: number | null;
-  /** $ — the cache-aware API-equiv benchmark. */
-  cost_usd: number | null;
-}
-
-/** Whole-window totals in both cost units — `bn_core::cost::CostTotals`. */
-export interface CostTotals {
-  sessions: number;
-  input_tokens: number;
-  cache_read_tokens: number;
-  output_tokens: number;
-  aic: number | null;
-  cost_usd: number | null;
-}
-
-/** One (day × category) cell — `bn_core::cost::DayCategory`, the stacked-bar chart's source. */
-export interface DayCategory {
-  day: string;
-  category: string;
-  sessions: number;
-  input_tokens: number;
-  cache_read_tokens: number;
-  output_tokens: number;
-  aic: number | null;
-  cost_usd: number | null;
-}
-
-/** GET /api/cost .data — `bn_core::cost::CostView`. Every breakdown is always present, so the page
- * switches the table dimension client-side; only the window picker changes the fetch. */
-export interface CostView {
-  window_days: number;
-  totals: CostTotals;
-  by_category: CostRow[];
-  by_machine: CostRow[];
-  by_repo: CostRow[];
-  by_model: CostRow[];
-  by_day: CostRow[];
-  by_day_category: DayCategory[];
-}
+export type { CostRow, CostTotals, CostView, DayCategory, WorkClass } from "./cost";
 
 // --- Wrap: today's "achieved" digest (GET /api/wrap .data; #490) ---
 

@@ -256,6 +256,10 @@ pub(crate) fn staff_run_code(
     } else {
         report_staff_run(name, &today, &report);
     }
+    // A card that landed can now leave the machine, if this agent is opted in.
+    if report.ok {
+        crate::cmd::staff_mail::mail_if_enabled(cfg, name);
+    }
     if report.ok || report.status == staff::RunStatus::Skipped {
         0
     } else {
@@ -664,9 +668,14 @@ pub(crate) fn emit_staff_feed(cfg: &Config, filter: Option<&str>, as_json: bool)
     }
 }
 
-/// Compact human token count: `48.2k`, `1.3m`, or the bare number under 1000.
+/// Compact human token count: `48.2k`, `1.3m`, `4.8b`, or the bare number under 1000.
+///
+/// The billions tier is not hypothetical: every turn of a cached agent session re-reads the whole
+/// prefix, so a month of `bn cost` cache-read totals runs to 10^9 and used to render as `4839.4m`.
 pub(crate) fn fmt_tokens(t: u64) -> String {
-    if t >= 1_000_000 {
+    if t >= 1_000_000_000 {
+        format!("{:.1}b", t as f64 / 1_000_000_000.0)
+    } else if t >= 1_000_000 {
         format!("{:.1}m", t as f64 / 1_000_000.0)
     } else if t >= 1_000 {
         format!("{:.1}k", t as f64 / 1_000.0)

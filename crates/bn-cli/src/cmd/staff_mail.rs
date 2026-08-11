@@ -63,6 +63,20 @@ pub(crate) fn emit_staff_mail(cfg: &Config, agent: &str, date: Option<&str>) -> 
     }
 }
 
+/// Draft `agent`'s newest card to email if `[staff].mail` opted it in — the hook that makes a
+/// brief *arrive* rather than wait to be fetched.
+///
+/// Called right after a run writes its card, so delivery follows the card instead of running on
+/// its own timer: a brief can never be mailed before it exists, and there is no second schedule to
+/// drift out of step with the first. Silent and harmless for every agent not on the list, and
+/// every failure inside is already non-fatal, so this can never turn a good run into a bad one.
+pub(crate) fn mail_if_enabled(cfg: &Config, agent: &str) {
+    if !cfg.staff_mail.iter().any(|a| a == agent) {
+        return;
+    }
+    emit_staff_mail(cfg, agent, None);
+}
+
 /// The card to send: `date`'s if given, else the agent's most recent.
 fn resolve_card(
     cfg: &Config,

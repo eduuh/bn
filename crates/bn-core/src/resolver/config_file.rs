@@ -774,6 +774,17 @@ impl ConfigFile {
             .or_else(|| self.staff.as_ref().and_then(|s| s.home.clone()))
     }
 
+    /// `[staff].mail` — the agents whose card is drafted to email as soon as it lands. Empty by
+    /// default: leaving the machine is opt-in per agent.
+    pub(super) fn staff_mail(&self) -> Vec<String> {
+        self.win()
+            .and_then(|w| w.staff.as_ref())
+            .map(|s| s.mail.clone())
+            .filter(|m| !m.is_empty())
+            .or_else(|| self.staff.as_ref().map(|s| s.mail.clone()))
+            .unwrap_or_default()
+    }
+
     pub(super) fn mcp_extras(&self) -> Option<Vec<String>> {
         self.win()
             .and_then(|w| w.mcp.as_ref())

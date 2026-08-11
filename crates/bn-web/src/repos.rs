@@ -606,6 +606,7 @@ mod tests {
             sessions: 1,
             input_tokens: 0,
             cache_read_tokens: 0,
+            cache_write_tokens: 0,
             output_tokens: 0,
             aic: Some(aic),
             cost_usd: Some(usd),

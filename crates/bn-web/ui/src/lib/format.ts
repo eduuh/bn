@@ -14,12 +14,15 @@ export function timeAgo(ts: number, now: number): string {
   return `${days}d ${hrs % 24}h`;
 }
 
-/** Human token counts: `840 / 3.2k / 1.45M`. */
+/** Human token counts: `840 / 3.2k / 1.45M / 4.84B`. The billions tier is not hypothetical —
+ * every turn of a cached agent session re-reads the whole prefix, so a month of cache-read totals
+ * runs to 10^9 and would otherwise render as `4839.35M`. */
 export function fmtTokens(n: number): string {
   if (!Number.isFinite(n)) return "—";
   if (n < 1_000) return String(n);
   if (n < 1_000_000) return `${(n / 1_000).toFixed(1)}k`;
-  return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n < 1_000_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  return `${(n / 1_000_000_000).toFixed(2)}B`;
 }
 
 /** A merges-per-hour rate, e.g. `0.75/hr` or `2.4/hr`; `—` when zero/unknown. */
@@ -81,8 +84,9 @@ export function fmtUsd(usd: number | null): string {
   return `$${money(usd)}`;
 }
 
-/** Input tokens with the cached subset in parens — the `bn cost` INPUT(cache) column, e.g.
- * `4.20M (3.90M)`. */
-export function fmtInputCache(input: number, cache: number): string {
-  return `${fmtTokens(input)} (${fmtTokens(cache)})`;
+/** Cache reads then writes — the `bn cost` CACHE r/w column, e.g. `3.90M / 412K`. The two stay
+ * apart because they move the bill in opposite directions: a read bills at a tenth of fresh input,
+ * a write at 1.25–2× it, so one number for "cache" would hide which kind of traffic a row is. */
+export function fmtCacheReadWrite(read: number, write: number): string {
+  return `${fmtTokens(read)} / ${fmtTokens(write)}`;
 }

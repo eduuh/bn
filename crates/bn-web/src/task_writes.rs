@@ -19,7 +19,7 @@
 //! way what they typed is gone. One request either records the whole thing or records nothing.
 
 use crate::actions::{
-    bad_request, conflict, not_found_json, parse_body, respond_process, run_bn, server_error,
+    bad_request, conflict, not_found_json, parse_body, respond_process, run_bn_env, server_error,
     valid_repo, MaybeAddr,
 };
 use crate::audit;
@@ -821,7 +821,17 @@ pub async fn task_agent(
         args.push("--skill-arg".into());
         args.push(id.clone());
     }
-    let result = run_bn(args, None).await;
+    // Nobody typed this. An enhance run is an agent grooming a task in the store, and a triage run
+    // is an agent ranking the store — machine bookkeeping in both cases, and doubly so when the
+    // task being groomed is itself machine-minted. Without the declaration the enqueue minted a
+    // person-scoped task, so `enhance t17: Run the today-agent daily coordination cron` and three
+    // more like it landed on a human's day list within minutes of the cron tasks being marked.
+    let result = run_bn_env(
+        args,
+        None,
+        vec![("BN_MACHINE_DISPATCH".to_string(), "1".to_string())],
+    )
+    .await;
     respond_process(&state, &format!("task-{agent}"), &id, addr, result)
 }
 
