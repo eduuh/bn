@@ -10,11 +10,13 @@
 //! every tracked `.rs`, and inline tests would spend the remaining headroom of the very files this
 //! feature still has to grow.
 use bn_core::backlog::{
-    AddSpec, AgentSpec, BacklogEntry, BacklogStatus, ClassOverride, Recurrence, Substrate,
+    AddSpec, AgentSpec, Backlog, BacklogEntry, BacklogStatus, ClassOverride, LaunchFailure,
+    Recurrence, Substrate,
 };
 use bn_core::pipeline::stage::Stage;
 use bn_core::queue::classify::{classify, QueueMode, QueueSubtype};
 use bn_core::queue::kind::{BacklogKind, ExecSpec, Requirements, WorkClass};
+use bn_core::queue::tick::{launch_retry_delay, LAUNCH_ATTEMPT_CAP};
 use bn_core::queue::{build, capacity, jobs, reap};
 
 // ---------------------------------------------------------------------------- lane capacity
@@ -718,4 +720,118 @@ fn a_fully_populated_entry_survives_the_backlog_file() {
     let line = serde_json::to_string(&original).expect("serialize");
     let back: BacklogEntry = serde_json::from_str(&line).expect("deserialize");
     assert_eq!(back, original);
+}
+
+// ---------------------------------------------------------------- launch retry, and its ending
+
+/// The schedule that replaced a flat ten-minute wait. Doubling keeps the early retries close
+/// together, where a transient blocker is most likely to have cleared.
+#[test]
+fn the_wait_after_a_failed_launch_doubles_up_to_a_ceiling() {
+    assert_eq!(launch_retry_delay(1), Some(600));
+    assert_eq!(launch_retry_delay(2), Some(1200));
+    assert_eq!(launch_retry_delay(3), Some(2400));
+    // Capped, so doubling stays a backoff rather than a disappearance.
+    assert_eq!(launch_retry_delay(4), Some(3600));
+}
+
+/// The half the backoff alone never had. `bn dispatch` refuses an item whose branch is already
+/// active, and a merged branch's leftover ref satisfies that test forever — so "wait and retry"
+/// with no floor meant 15,559 failed launches in 52 hours on the machine this was written for.
+#[test]
+fn the_attempts_run_out_instead_of_retrying_forever() {
+    assert_eq!(launch_retry_delay(LAUNCH_ATTEMPT_CAP), None);
+    assert_eq!(launch_retry_delay(LAUNCH_ATTEMPT_CAP + 1), None);
+}
+
+fn leased_backlog(id_seed: &str) -> Backlog {
+    let spec = AddSpec {
+        kind: BacklogKind::Ship,
+        exec: ExecSpec::Agent,
+        ..Default::default()
+    };
+    let mut e = BacklogEntry::new("repo", id_seed, &spec, 1000);
+    e.status = BacklogStatus::Leased;
+    Backlog::from_lines([serde_json::to_string(&e).expect("serialize")])
+}
+
+#[test]
+fn a_failed_launch_counts_the_attempt_and_holds_the_entry() {
+    let mut bl = leased_backlog("work");
+    let id = bl.entries()[0].id.clone();
+
+    let (entry, outcome) = bl
+        .fail_launch("repo", &id, 5_000, launch_retry_delay)
+        .expect("leased entry");
+
+    assert_eq!(
+        outcome,
+        LaunchFailure::Retrying {
+            attempt: 1,
+            retry_at: 5_600
+        }
+    );
+    // Back in the running, but not before the wait is up.
+    assert_eq!(entry.status, BacklogStatus::Pending);
+    assert_eq!(entry.not_before, Some(5_600));
+    assert_eq!(entry.launch_failures, 1);
+}
+
+/// The entry stops being pending at all, which is the whole point: a permanently blocked item now
+/// has a terminal state somebody can see, instead of reading `snoozed` for as long as the box is up.
+#[test]
+fn the_last_failed_launch_resolves_the_entry_rather_than_holding_it() {
+    let mut bl = leased_backlog("doomed");
+    let id = bl.entries()[0].id.clone();
+
+    for attempt in 1..LAUNCH_ATTEMPT_CAP {
+        // Re-lease between attempts, as the tick does when the snooze expires.
+        bl.lease_ids("repo", std::slice::from_ref(&id), 1_000);
+        let (_, outcome) = bl
+            .fail_launch("repo", &id, 5_000, launch_retry_delay)
+            .expect("leased entry");
+        assert!(
+            matches!(outcome, LaunchFailure::Retrying { .. }),
+            "{attempt}"
+        );
+    }
+    bl.lease_ids("repo", std::slice::from_ref(&id), 1_000);
+    let (entry, outcome) = bl
+        .fail_launch("repo", &id, 5_000, launch_retry_delay)
+        .expect("leased entry");
+
+    assert_eq!(
+        outcome,
+        LaunchFailure::GaveUp {
+            attempt: LAUNCH_ATTEMPT_CAP
+        }
+    );
+    assert_eq!(entry.status, BacklogStatus::Failed);
+}
+
+/// Consecutive, not lifetime. A lease reclaimed after a healthy launch would otherwise carry old
+/// failures into a fresh attempt and give up early on work that had been starting fine.
+#[test]
+fn a_launch_that_works_forgets_the_failures_before_it() {
+    let mut bl = leased_backlog("flaky");
+    let id = bl.entries()[0].id.clone();
+    bl.fail_launch("repo", &id, 5_000, launch_retry_delay);
+    bl.lease_ids("repo", std::slice::from_ref(&id), 1_000);
+
+    assert!(bl.clear_launch_failures("repo", &id).is_some());
+    assert_eq!(bl.get("repo", &id).expect("entry").launch_failures, 0);
+    // Already zero: nothing changed, so the caller writes no line.
+    assert!(bl.clear_launch_failures("repo", &id).is_none());
+}
+
+/// A pending entry has no launch in flight to fail, so this cannot be used to resolve work the
+/// caller never leased — the same discipline `mark_leased` enforces.
+#[test]
+fn only_a_leased_entry_can_fail_its_launch() {
+    let mut bl = leased_backlog("pending-one");
+    let id = bl.entries()[0].id.clone();
+    bl.fail_launch("repo", &id, 5_000, launch_retry_delay); // -> Pending
+    assert!(bl
+        .fail_launch("repo", &id, 6_000, launch_retry_delay)
+        .is_none());
 }

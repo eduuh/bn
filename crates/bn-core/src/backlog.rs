@@ -44,6 +44,16 @@ impl Backlog {
     }
 }
 
+/// What [`Backlog::fail_launch`] did about a launch that never started — the caller's cue for what
+/// to tell the operator, and the difference between a wait and an ending.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchFailure {
+    /// Back to pending, held until `retry_at`. `attempt` is 1-based and counts consecutively.
+    Retrying { attempt: u32, retry_at: i64 },
+    /// `attempt` was the last one worth making; the entry is now [`BacklogStatus::Failed`].
+    GaveUp { attempt: u32 },
+}
+
 /// The in-memory current view of the backlog: the folded, latest-per-`(repo, id)` set of entries in
 /// first-seen order. Every ordering / dedup / lease decision is a pure method here — the file I/O
 /// ([`load`], [`add`], [`lease`], [`mark`], [`compact`]) is a thin wrapper that folds the log in and
@@ -344,6 +354,62 @@ impl Backlog {
         }
         e.status = BacklogStatus::Pending;
         e.updated_at = now;
+        Some(e.clone())
+    }
+
+    /// Record that a leased entry never got off the ground: count the attempt, then either return
+    /// it to pending snoozed past the retry delay, or — once `delay` declines to give one — resolve
+    /// it `Failed`.
+    ///
+    /// One mutation rather than the release-then-snooze pair it replaces, because those were two
+    /// lock acquisitions and two appended lines per failure for an entry that had not moved. On a
+    /// wedged entry retried every ten minutes that is where the backlog's line count comes from.
+    pub fn fail_launch(
+        &mut self,
+        repo: &str,
+        id: &str,
+        now: i64,
+        delay: fn(u32) -> Option<i64>,
+    ) -> Option<(BacklogEntry, LaunchFailure)> {
+        let e = self
+            .entries
+            .iter_mut()
+            .find(|e| e.repo == repo && e.id == id)?;
+        if e.status != BacklogStatus::Leased {
+            return None;
+        }
+        e.launch_failures = e.launch_failures.saturating_add(1);
+        e.updated_at = now;
+        let attempt = e.launch_failures;
+        let outcome = match delay(attempt) {
+            Some(secs) => {
+                let retry_at = now.saturating_add(secs);
+                e.status = BacklogStatus::Pending;
+                e.not_before = Some(retry_at);
+                LaunchFailure::Retrying { attempt, retry_at }
+            }
+            None => {
+                e.status = BacklogStatus::Failed;
+                LaunchFailure::GaveUp { attempt }
+            }
+        };
+        Some((e.clone(), outcome))
+    }
+
+    /// Forget an entry's failed-launch history, because this one started.
+    ///
+    /// Without it the count is a lifetime total, and an entry whose lease is reclaimed after a
+    /// healthy run would carry old failures into a fresh attempt — eventually giving up on work
+    /// that had been launching fine.
+    pub fn clear_launch_failures(&mut self, repo: &str, id: &str) -> Option<BacklogEntry> {
+        let e = self
+            .entries
+            .iter_mut()
+            .find(|e| e.repo == repo && e.id == id)?;
+        if e.launch_failures == 0 {
+            return None;
+        }
+        e.launch_failures = 0;
         Some(e.clone())
     }
 
@@ -667,6 +733,45 @@ pub fn set_priority(
     let _lock = FileLock::acquire_required(path)?;
     let mut bl = load(path);
     match bl.set_priority(repo, id, priority, now) {
+        Some(entry) => {
+            append_line(path, &entry)?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// Record a failed launch for a leased `(repo, id)` entry — the disk wrapper over
+/// [`Backlog::fail_launch`]. `None` means the entry was absent or not leased.
+///
+/// `delay` is the policy, injected rather than imported so the retry schedule stays in
+/// [`crate::queue::tick`] with the rest of the dispatcher's decisions:
+/// [`crate::queue::tick::launch_retry_delay`] is the one the tick passes.
+pub fn fail_launch(
+    path: &Path,
+    repo: &str,
+    id: &str,
+    now: i64,
+    delay: fn(u32) -> Option<i64>,
+) -> std::io::Result<Option<LaunchFailure>> {
+    let _lock = FileLock::acquire_required(path)?;
+    let mut bl = load(path);
+    match bl.fail_launch(repo, id, now, delay) {
+        Some((entry, outcome)) => {
+            append_line(path, &entry)?;
+            Ok(Some(outcome))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Reset `(repo, id)`'s consecutive launch-failure count after a launch that worked — the disk
+/// wrapper over [`Backlog::clear_launch_failures`]. Writes nothing when the count is already zero,
+/// which is the common case.
+pub fn clear_launch_failures(path: &Path, repo: &str, id: &str) -> std::io::Result<bool> {
+    let _lock = FileLock::acquire_required(path)?;
+    let mut bl = load(path);
+    match bl.clear_launch_failures(repo, id) {
         Some(entry) => {
             append_line(path, &entry)?;
             Ok(true)

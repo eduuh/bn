@@ -12,19 +12,16 @@ pub(crate) use kill::*;
 pub(crate) use read::*;
 pub(crate) use steer::*;
 
-pub(crate) fn emit_agent_ingest(cfg: &Config, as_json: bool) {
-    match bn_core::agent::ingest(cfg) {
+pub(crate) fn emit_agent_ingest(cfg: &Config, reingest: bool, as_json: bool) {
+    let mode = bn_core::agent::IngestMode::poll(reingest);
+    match bn_core::agent::ingest_with_mode(cfg, mode) {
         Ok(r) => {
             if as_json {
-                let data = serde_json::json!({ "ingested": r.ingested, "skipped": r.skipped });
+                let data = serde_json::json!({
+                    "ingested": r.ingested, "skipped": r.skipped, "reingest": reingest });
                 println!("{}", Envelope::success("agent_ingest", data).to_json());
             } else {
-                println!(
-                    "ingested {} new session{} ({} already seen)",
-                    r.ingested,
-                    if r.ingested == 1 { "" } else { "s" },
-                    r.skipped
-                );
+                println!("{}", r.summary(mode));
             }
         }
         Err(e) => fail(&format!("bn agent ingest: {e}")),

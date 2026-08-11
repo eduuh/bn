@@ -593,3 +593,41 @@ fn the_dispatcher_hands_the_executor_the_declared_identity() {
         Some(bn_core::pipeline::stage::Stage::Critique)
     );
 }
+
+// ---------------------------------------------------------------------------- launch backoff
+
+/// The contract the tick's launch-failure backoff rests on: an entry snoozed into the future is
+/// held, not started.
+///
+/// Worth pinning because of what it prevents. `bn dispatch` refuses an item whose branch is
+/// already active, and a failed launch used to go straight back to pending — so the next pass,
+/// seconds later, tried the identical thing and failed identically. One entry burned 57 launch
+/// attempts in under an hour, each spawning a subprocess that did real git work before failing.
+/// The fix sets `not_before`; this is the half that makes the fix mean anything.
+#[test]
+fn a_snoozed_entry_is_held_rather_than_started() {
+    let mut blocked = shell("blocked", 99);
+    blocked.not_before = Some(NOW + 600);
+    let f = Fixture {
+        pending: vec![blocked, shell("free", 1)],
+        ..Default::default()
+    };
+    let plan = f.plan();
+
+    // Highest priority in the queue, and still held — the snooze outranks the score.
+    assert_eq!(started(&plan), vec!["free"]);
+    assert_eq!(reason_for(&plan, "blocked"), Some(&DeferReason::Snoozed));
+}
+
+/// And the backoff is a delay, not a cancellation: once the window passes the entry competes
+/// normally again. A retry that never came would be a worse bug than the one being fixed.
+#[test]
+fn a_snooze_that_has_expired_starts_normally() {
+    let mut waited = shell("waited", 99);
+    waited.not_before = Some(NOW - 1);
+    let f = Fixture {
+        pending: vec![waited],
+        ..Default::default()
+    };
+    assert_eq!(started(&f.plan()), vec!["waited"]);
+}

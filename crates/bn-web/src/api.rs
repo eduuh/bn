@@ -32,6 +32,9 @@ mod repo_read;
 #[path = "api/repo_scripts.rs"]
 mod repo_scripts;
 pub use automation::{agent_def_source, agent_defs, agents_catalog, today_agents, today_crons};
+#[path = "api/staff.rs"]
+mod staff_api;
+pub use staff_api::*;
 #[path = "api/metrics.rs"]
 mod metrics_api;
 pub use metrics_api::*;
@@ -659,31 +662,38 @@ pub async fn task_detail(State(state): State<AppState>, Path(id): Path<String>) 
 ///
 /// A repo whose slug could not be resolved is present with `slug: null` and a reason, never
 /// omitted — a caller cannot act on a repo it never hears about.
+/// The sweep is fanned out across repos and served from a TTL window — see
+/// [`crate::view_cache::ISSUES`] for why an endpoint that already has a per-repo cache still needs
+/// one, and `bn_core::issues::all_parallel` for the fan-out.
 pub async fn issues(State(state): State<AppState>) -> Json<Envelope> {
     let cfg = state.cfg.clone();
-    let repos = tokio::task::spawn_blocking(move || {
-        let runner = bn_core::runner::RealRunner;
-        bn_core::issues::all(&cfg, &runner, bn_core::util::now_epoch_secs())
-    })
-    .await
-    .unwrap_or_default();
+    let data = state
+        .views
+        .get_or_compute(crate::view_cache::ISSUES, move || {
+            let repos = bn_core::issues::all_parallel(&cfg, bn_core::util::now_epoch_secs());
+            let stale = repos.iter().filter(|r| r.stale).count();
+            let unreachable = repos
+                .iter()
+                .filter(|r| r.error.is_some() && !r.stale)
+                .count();
+            let total: usize = repos.iter().map(|r| r.issues.len()).sum();
+            json!({
+                "repos": repos,
+                "count": total,
+                "stale_repos": stale,
+                "unreachable_repos": unreachable,
+            })
+        })
+        .await;
 
-    let stale = repos.iter().filter(|r| r.stale).count();
-    let unreachable = repos
-        .iter()
-        .filter(|r| r.error.is_some() && !r.stale)
-        .count();
-    let total: usize = repos.iter().map(|r| r.issues.len()).sum();
-
-    Json(Envelope::success(
-        "issues",
-        json!({
-            "repos": repos,
-            "count": total,
-            "stale_repos": stale,
-            "unreachable_repos": unreachable,
-        }),
-    ))
+    match data {
+        Some(data) => Json(Envelope::success("issues", (*data).clone())),
+        None => Json(Envelope::failure(
+            "issues",
+            "view_panicked",
+            "sweeping the repos' issues failed",
+        )),
+    }
 }
 
 /// `GET /api/today/agent` — Today's **hosted** agent: the record of what bn launched, joined with
@@ -840,129 +850,6 @@ pub async fn findings(Query(q): Query<FindingsQuery>) -> Json<Envelope> {
 // ---------------------------------------------------------------------------
 // Live stream (SSE)
 // ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Staff (#269/#273) — the health board, the briefing-card feed, and the read-mark write. All
-// three delegate to the shared `bn_core::staff` views (the same fold `bn staff board --json`
-// prints), so the dashboard and the CLI cannot drift. Directory-scan reads on a blocking thread.
-
-/// `GET /api/staff/board` — the roster health board: per-agent schedule, last-run taxonomy word,
-/// missed-run flag, unread-card mark, and the backpressure state (`unread_streak`/`paused`) that
-/// explains a quiet agent.
-pub async fn staff_board(State(state): State<AppState>) -> Json<Envelope> {
-    let cfg = state.cfg.clone();
-    let result = tokio::task::spawn_blocking(move || bn_core::staff::board_view(&cfg, None)).await;
-    match result {
-        Ok(Ok(data)) => Json(Envelope::success("staff-board", data)),
-        Ok(Err(error)) => Json(Envelope::failure("staff-board", "invalid-catalog", error)),
-        Err(join) => Json(Envelope::failure(
-            "staff-board",
-            "internal",
-            join.to_string(),
-        )),
-    }
-}
-
-/// `GET /api/staff/feed` — the briefing-card index, unread-first then newest-first.
-pub async fn staff_feed(State(state): State<AppState>) -> Json<Envelope> {
-    let cfg = state.cfg.clone();
-    let data = tokio::task::spawn_blocking(move || bn_core::staff::feed_view(&cfg))
-        .await
-        .unwrap_or(serde_json::Value::Null);
-    Json(Envelope::success("staff-feed", data))
-}
-
-#[derive(serde::Deserialize)]
-pub struct StaffCardQuery {
-    pub date: String,
-    pub agent: String,
-}
-
-/// `GET /api/staff/card?date=&agent=` — one card rendered to Markdown.
-pub async fn staff_card(
-    State(state): State<AppState>,
-    Query(q): Query<StaffCardQuery>,
-) -> Json<Envelope> {
-    let cfg = state.cfg.clone();
-    let result =
-        tokio::task::spawn_blocking(move || bn_core::staff::card_view(&cfg, &q.date, &q.agent))
-            .await;
-    match result {
-        Ok(Some(data)) => Json(Envelope::success("staff-card", data)),
-        Ok(None) => Json(Envelope::failure("staff-card", "not-found", "no such card")),
-        Err(join) => Json(Envelope::failure(
-            "staff-card",
-            "internal",
-            join.to_string(),
-        )),
-    }
-}
-
-/// `POST /api/staff/card/read` — mark one card read. This is the lever that resumes a
-/// backpressure-paused agent (#269): reading a card ends the unread streak, so the next
-/// scheduled run fires again.
-pub async fn staff_card_read(
-    State(_state): State<AppState>,
-    Json(q): Json<StaffCardQuery>,
-) -> Json<Envelope> {
-    match bn_core::staff::mark_read(&q.date, &q.agent) {
-        Ok(newly) => Json(Envelope::success(
-            "staff-card-read",
-            serde_json::json!({ "marked": newly, "date": q.date, "agent": q.agent }),
-        )),
-        Err(error) => Json(Envelope::failure(
-            "staff-card-read",
-            "io",
-            error.to_string(),
-        )),
-    }
-}
-
-#[derive(serde::Deserialize)]
-pub struct StaffScheduleBody {
-    pub agent: String,
-    /// The systemd `OnCalendar` spec to set; `null`/absent removes the schedule (the agent
-    /// becomes trigger/manual-only).
-    #[serde(default)]
-    pub on_calendar: Option<String>,
-}
-
-/// `POST /api/staff/schedule` — set or clear one agent's `on_calendar:` in its source manifest.
-/// Validated against the shared OnCalendar parser before writing; the agent-scheduler picks the
-/// change up on its next tick.
-pub async fn staff_schedule(
-    State(state): State<AppState>,
-    Json(body): Json<StaffScheduleBody>,
-) -> Json<Envelope> {
-    let cfg = state.cfg.clone();
-    let expr = body
-        .on_calendar
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let agent = body.agent.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        bn_core::agents::set_schedule(&cfg, None, &agent, expr.as_deref())
-    })
-    .await;
-    match result {
-        Ok(Ok(path)) => Json(Envelope::success(
-            "staff-schedule",
-            serde_json::json!({
-                "agent": body.agent,
-                "on_calendar": body.on_calendar,
-                "path": path.display().to_string(),
-            }),
-        )),
-        Ok(Err(error)) => Json(Envelope::failure("staff-schedule", "invalid", error)),
-        Err(join) => Json(Envelope::failure(
-            "staff-schedule",
-            "internal",
-            join.to_string(),
-        )),
-    }
-}
 
 /// `GET /api/stream` — the SSE live stream. Subscribes this client to the shared watcher broadcast;
 /// a lagged (too-slow) client silently skips dropped frames and keeps going. `EventSource`

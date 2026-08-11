@@ -291,6 +291,16 @@ pub struct BacklogEntry {
     /// existed, which reads as the historical "let dispatch derive it".
     #[serde(default, skip_serializing_if = "AgentSpec::is_empty")]
     pub agent: AgentSpec,
+    /// Consecutive launches of this entry that never got off the ground, reset by the first that
+    /// does — see [`crate::queue::tick::launch_retry_delay`].
+    ///
+    /// A launch failure returns the entry to pending, which is what makes it retryable and also
+    /// what made it immortal: nothing counted the attempts, so an entry whose blocker never lifts
+    /// retried for as long as the machine was up. This is the count that lets the tick eventually
+    /// stop. It is *consecutive* rather than lifetime, because a lease reclaimed after a healthy
+    /// launch says nothing about whether the next one will start.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub launch_failures: u32,
 }
 
 /// The identity a queued agent must keep in order to run as the same piece of work it was declared
@@ -382,6 +392,10 @@ impl ClassOverride {
 /// Serde skip predicate for an unset [`BacklogEntry::est_secs`], so an entry that carries no
 /// estimate keeps a byte-identical JSON line.
 fn is_zero_i64(v: &i64) -> bool {
+    *v == 0
+}
+
+fn is_zero_u32(v: &u32) -> bool {
     *v == 0
 }
 
@@ -591,6 +605,7 @@ impl BacklogEntry {
             machine: spec.machine,
             class_override: spec.class_override,
             agent: spec.agent.clone(),
+            launch_failures: 0,
         }
     }
 

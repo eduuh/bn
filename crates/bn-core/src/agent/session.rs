@@ -156,14 +156,77 @@ pub struct IngestReport {
     pub skipped: usize,
 }
 
+/// Whether a poll re-reads sessions it has already recorded.
+///
+/// The metrics log is append-only and every read path folds the *latest* snapshot per session id
+/// ([`latest_session_events`], [`crate::cost::rollup`]), so a corrected re-read supersedes the row
+/// it replaces instead of double-counting it. That is what makes a backfill safe to express as
+/// "poll again, ignoring what you've seen".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IngestMode {
+    /// Record only sessions not already in the log — the steady-state poll the `agent-observe`
+    /// job runs every few minutes.
+    NewOnly,
+    /// Re-read every session still on disk, replacing its recorded row.
+    ///
+    /// For when the *parser* changed rather than the data: a row recorded by an older bn carries
+    /// whatever that version could measure, and no amount of re-polling in [`NewOnly`] mode will
+    /// revisit it. Two such corrections shipped together — cache-creation tokens were not captured
+    /// at all, and a response's usage was counted once per transcript line rather than once per
+    /// response (a ~2.4× overcount) — leaving every pre-existing Claude row both short a cost
+    /// bucket and inflated in the ones it had.
+    Backfill,
+}
+
+impl IngestMode {
+    /// The mode a `--reingest` flag selects.
+    pub fn poll(reingest: bool) -> IngestMode {
+        if reingest {
+            IngestMode::Backfill
+        } else {
+            IngestMode::NewOnly
+        }
+    }
+
+    /// Whether an already-recorded session should be re-read rather than skipped.
+    fn revisits_recorded_sessions(self) -> bool {
+        self == IngestMode::Backfill
+    }
+}
+
+impl IngestReport {
+    /// The one-line human summary. Mode-dependent on purpose: a backfill's count is sessions
+    /// whose rows were *replaced*, and calling those "new" would misreport a correction as growth.
+    pub fn summary(&self, mode: IngestMode) -> String {
+        let s = if self.ingested == 1 { "" } else { "s" };
+        match mode {
+            IngestMode::Backfill => format!(
+                "re-read {} session{s} from disk, superseding their recorded rows",
+                self.ingested
+            ),
+            IngestMode::NewOnly => format!(
+                "ingested {} new session{s} ({} already seen)",
+                self.ingested, self.skipped
+            ),
+        }
+    }
+}
+
 /// Poll both harnesses and append any not-yet-seen completed session as an `agent_session` event
 /// to the synced metrics log. Idempotent: a session whose id already appears is skipped.
 pub fn ingest(cfg: &Config) -> std::io::Result<IngestReport> {
+    ingest_with_mode(cfg, IngestMode::NewOnly)
+}
+
+/// [`ingest`] under an explicit [`IngestMode`] — the entry point `bn agent ingest --reingest` uses
+/// to re-read sessions whose recorded row predates a parser fix.
+pub fn ingest_with_mode(cfg: &Config, mode: IngestMode) -> std::io::Result<IngestReport> {
     let home = dirs::home_dir().unwrap_or_default();
-    ingest_from(
+    ingest_from_with_mode(
         cfg,
         &home.join(".copilot").join("session-state"),
         &home.join(".claude").join("projects"),
+        mode,
     )
 }
 
@@ -172,6 +235,16 @@ pub fn ingest_from(
     cfg: &Config,
     copilot_root: &Path,
     claude_root: &Path,
+) -> std::io::Result<IngestReport> {
+    ingest_from_with_mode(cfg, copilot_root, claude_root, IngestMode::NewOnly)
+}
+
+/// [`ingest_from`] under an explicit [`IngestMode`].
+pub fn ingest_from_with_mode(
+    cfg: &Config,
+    copilot_root: &Path,
+    claude_root: &Path,
+    mode: IngestMode,
 ) -> std::io::Result<IngestReport> {
     let mut seen: BTreeMap<String, i64> = events::read_events_at(&cfg.metrics_log_path())
         .into_iter()
@@ -195,9 +268,10 @@ pub fn ingest_from(
     let (mut ingested, mut skipped) = (0, 0);
     for mut s in found {
         let canonical = crate::cost::canonical_session_id(&s.session_id);
-        if seen
-            .get(&canonical)
-            .is_some_and(|last_ended| *last_ended >= s.ended_ts)
+        if !mode.revisits_recorded_sessions()
+            && seen
+                .get(&canonical)
+                .is_some_and(|last_ended| *last_ended >= s.ended_ts)
         {
             skipped += 1;
             continue;
@@ -321,5 +395,49 @@ mod tests {
         let back = AgentSession::from_event(&ev).expect("older events stay readable");
         assert_eq!(back.cache_write_1h_tokens, 0);
         assert_eq!(back.cache_read_tokens, 1_200_000);
+    }
+
+    /// Two snapshots of one session id, as a backfill produces: the row an older bn recorded
+    /// (no cache writes, inflated output) and the corrected re-read appended after it.
+    fn snapshots() -> Vec<Event> {
+        let mut old = claude_session();
+        old.cache_write_1h_tokens = 0;
+        old.output_tokens = 20_400; // the per-line double-count
+        let new = claude_session();
+        [old, new]
+            .into_iter()
+            .map(|s| Event {
+                kind: "agent_session".into(),
+                ts: s.ended_ts,
+                fields: s.to_fields(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_backfilled_row_supersedes_the_one_it_corrects() {
+        // The property the whole backfill rests on: the log is append-only, so the corrected row
+        // must *win* rather than sum with the row it replaces.
+        let events = snapshots();
+        let latest = latest_session_events(&events);
+        assert_eq!(latest.len(), 1, "one session id must fold to one row");
+        let folded = AgentSession::from_event(latest[0]).expect("reads back");
+        assert_eq!(folded.cache_write_1h_tokens, 412_000);
+        assert_eq!(folded.output_tokens, 8_400);
+    }
+
+    #[test]
+    fn re_reading_the_same_session_twice_is_still_one_row() {
+        // A backfill run twice (or a synced log carrying both machines' copies) must not
+        // double-count: the fold is by session id, not by event.
+        let mut events = snapshots();
+        events.extend(snapshots());
+        assert_eq!(latest_session_events(&events).len(), 1);
+    }
+
+    #[test]
+    fn only_the_backfill_mode_revisits_a_recorded_session() {
+        assert!(IngestMode::Backfill.revisits_recorded_sessions());
+        assert!(!IngestMode::NewOnly.revisits_recorded_sessions());
     }
 }

@@ -4,9 +4,11 @@ use crate::*;
 #[cfg(test)]
 mod tests;
 
+pub(crate) mod branch;
 pub(crate) mod invocation;
 pub(crate) mod policy;
 pub(crate) use invocation::DispatchInvocation;
+use branch::dispatch_branch_occupied;
 use policy as dp;
 pub(crate) use policy::{
     effective_launch_harness, normalize_agent, plan_gate_enabled, routes_to_pipeline_investigate,
@@ -78,33 +80,6 @@ pub(crate) fn slugify(s: &str) -> String {
     }
     let capped: String = out.chars().take(40).collect();
     capped.trim_matches('-').to_string()
-}
-
-fn dispatch_branch_occupied(
-    bare: &std::path::Path,
-    worktree_dir: &std::path::Path,
-    repo: &str,
-    branch: &str,
-) -> bool {
-    let bare_s = bare.to_string_lossy().to_string();
-    let ref_exists = ["heads", "remotes/origin"].iter().any(|kind| {
-        crate::git::git_command(&[
-            "--git-dir",
-            &bare_s,
-            "show-ref",
-            "--verify",
-            "--quiet",
-            &format!("refs/{kind}/{branch}"),
-        ])
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-    });
-    ref_exists
-        || worktree_dir
-            .join(repo)
-            .join(branch.replace('/', "-"))
-            .exists()
 }
 
 fn may_reuse_occupied_worktree(fresh: bool, launching_agent: bool) -> bool {
@@ -1352,7 +1327,9 @@ pub(crate) fn run_dispatch(
             &title,
             fresh,
             agent_kind.is_some(),
-            |candidate| dispatch_branch_occupied(&bare, &cfg.worktree_dir, &repo, candidate),
+            |candidate| {
+                dispatch_branch_occupied(&bare, &cfg.worktree_dir, &repo, candidate, &base)
+            },
         ) {
             dp::DispatchBranchChoice::Use(branch) => branch,
             dp::DispatchBranchChoice::AlreadyActive(branch) => fail_json(

@@ -312,10 +312,103 @@ pub fn for_repo(cfg: &Config, runner: &dyn CommandRunner, repo: &str, now: i64) 
 ///
 /// A repo that cannot be reached is **present with a reason**, never omitted. Sorted by repo name
 /// so callers and tests see a stable order.
+///
+/// Sequential, and deliberately so for an injected runner: [`CommandRunner`] carries no `Sync`
+/// bound, so a fixture runner cannot be shared across threads. Callers driving the *real* runner
+/// over many repos want [`all_parallel`].
 pub fn all(cfg: &Config, runner: &dyn CommandRunner, now: i64) -> Vec<RepoIssues> {
     known_repos(cfg)
         .into_iter()
         .map(|repo| for_repo(cfg, runner, &repo, now))
+        .collect()
+}
+
+/// How many `gh issue list` calls may be in flight at once.
+///
+/// The work is network latency, not CPU, so the useful width is set by what GitHub and the local
+/// `gh` will tolerate rather than by core count. Eight turns a dozen repos into two waves while
+/// staying far below anything that reads as abuse.
+pub const MAX_PARALLEL_FETCHES: usize = 8;
+
+/// [`all`] with the per-repo fetches run concurrently against the real runner.
+///
+/// The sequential version is a *timeout* per repo, not a budget for the sweep: each repo may spend
+/// [`FETCH_TIMEOUT`] (20s), and a failed fetch is never cached, so a handful of unreachable repos
+/// re-pay that cost on every call. On a machine with twelve repos this made `/api/issues` take 14
+/// to 70 seconds — on the dashboard shell's critical path, where it head-of-line blocked the whole
+/// page.
+///
+/// Each worker builds its own [`RealRunner`] (a unit struct) rather than sharing one, which is what
+/// lets this parallelize without widening [`CommandRunner`] with a `Sync` bound that every fixture
+/// runner would then have to honour.
+///
+/// **Order and completeness are preserved**: results are re-sorted into `known_repos` order, and a
+/// repo whose worker panicked comes back with an error rather than going missing — the same promise
+/// the sequential path makes, since a caller cannot act on a repo it never hears about.
+pub fn all_parallel(cfg: &Config, now: i64) -> Vec<RepoIssues> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let repos = known_repos(cfg);
+    if repos.len() <= 1 {
+        return all(cfg, &crate::runner::RealRunner, now);
+    }
+
+    let cursor = AtomicUsize::new(0);
+    let workers = repos.len().min(MAX_PARALLEL_FETCHES);
+    let repos_ref = &repos;
+
+    let done: Vec<(usize, RepoIssues)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let runner = crate::runner::RealRunner;
+                    let mut mine = Vec::new();
+                    loop {
+                        let i = cursor.fetch_add(1, Ordering::Relaxed);
+                        let Some(repo) = repos_ref.get(i) else { break };
+                        mine.push((i, for_repo(cfg, &runner, repo, now)));
+                    }
+                    mine
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok())
+            .flatten()
+            .collect()
+    });
+
+    merge_in_order(&repos, done, now)
+}
+
+/// Put concurrent results back into `repos` order, and account for every repo.
+///
+/// Pure, and separate, because this is the step that can silently lose one. Workers finish out of
+/// order and a panicking worker returns nothing at all; a merge that simply collected whatever came
+/// back would hand callers a short list with no indication anything was missing — the precise lie
+/// this module exists to remove, since an absent repo is indistinguishable from one with an empty
+/// backlog.
+fn merge_in_order(repos: &[String], done: Vec<(usize, RepoIssues)>, now: i64) -> Vec<RepoIssues> {
+    let mut slots: Vec<Option<RepoIssues>> = repos.iter().map(|_| None).collect();
+    for (i, fetched) in done {
+        if let Some(slot) = slots.get_mut(i) {
+            *slot = Some(fetched);
+        }
+    }
+    repos
+        .iter()
+        .zip(slots)
+        .map(|(repo, slot)| {
+            slot.unwrap_or_else(|| {
+                RepoIssues::failed(
+                    repo,
+                    None,
+                    now,
+                    "the worker fetching this repo did not finish".to_string(),
+                )
+            })
+        })
         .collect()
 }
 
@@ -343,4 +436,54 @@ fn repo_name_from_url(url: &str) -> Option<String> {
     let last = trimmed.rsplit(['/', ':']).next()?;
     let name = last.strip_suffix(".git").unwrap_or(last).trim();
     (!name.is_empty()).then(|| name.to_ascii_lowercase())
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    fn fetched(repo: &str) -> RepoIssues {
+        RepoIssues {
+            repo: repo.to_string(),
+            slug: Some(format!("owner/{repo}")),
+            fetched_at: 100,
+            stale: false,
+            error: None,
+            issues: Vec::new(),
+        }
+    }
+
+    /// Workers finish in whatever order the network allows; callers and tests see `known_repos`
+    /// order regardless.
+    #[test]
+    fn out_of_order_results_are_restored_to_repo_order() {
+        let repos = vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()];
+        let done = vec![
+            (2, fetched("gamma")),
+            (0, fetched("alpha")),
+            (1, fetched("beta")),
+        ];
+        let merged = merge_in_order(&repos, done, 200);
+        assert_eq!(
+            merged.iter().map(|r| r.repo.as_str()).collect::<Vec<_>>(),
+            ["alpha", "beta", "gamma"]
+        );
+        assert!(merged.iter().all(|r| r.error.is_none()));
+    }
+
+    /// A repo whose worker died comes back **present, with a reason**. Dropping it would let a
+    /// crashed fetch read as an empty backlog.
+    #[test]
+    fn a_repo_no_worker_reported_is_present_with_an_error() {
+        let repos = vec!["alpha".to_string(), "beta".to_string()];
+        let merged = merge_in_order(&repos, vec![(0, fetched("alpha"))], 200);
+
+        assert_eq!(merged.len(), 2, "every repo is accounted for");
+        assert_eq!(merged[1].repo, "beta");
+        assert!(
+            merged[1].error.is_some(),
+            "a repo nobody fetched must say so, not look empty"
+        );
+        assert!(merged[1].issues.is_empty());
+    }
 }

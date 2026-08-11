@@ -1267,7 +1267,7 @@ pub(crate) fn job_weekly_insights(cfg: &Config, _ctx: Option<&Resolved>) -> i32 
 
 /// `jobs/agent-observe.sh` — ingest agent session state (`bn agent ingest`).
 pub(crate) fn job_agent_observe(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
-    emit_agent_ingest(cfg, false);
+    emit_agent_ingest(cfg, false, false);
     0
 }
 

@@ -18,7 +18,15 @@ pub(crate) enum AgentCmd {
     },
     /// Fold not-yet-seen Claude + Copilot sessions into the metrics log: bn agent ingest.
     /// Idempotent by session id; called by the `agent-observe` job.
-    Ingest,
+    Ingest {
+        /// Re-read every session still on disk, replacing its recorded row, instead of only
+        /// folding new ones. For when the parser changed rather than the data — rows written
+        /// before cache-creation tokens were captured carry neither those nor a per-response
+        /// token count. Reads supersede rather than duplicate: every read path folds the latest
+        /// snapshot per session id.
+        #[arg(long)]
+        reingest: bool,
+    },
     /// Mine this branch's recorded sessions into proposed note lines — a progress bullet, and
     /// (for code-changing sessions) a decision stub + follow-up todo — for work that never
     /// landed in the note. Propose-only, mirroring `bn sync`: `--json` emits and writes nothing;

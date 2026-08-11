@@ -23,6 +23,48 @@ use crate::scheduler::{admit, Bind, Caps, Observed};
 use crate::select::{select_wave, SelectCandidate, SelectionInputs, SkipReason};
 use std::collections::{BTreeMap, HashMap};
 
+/// How long an entry waits after its first failed launch, and the floor every later wait doubles
+/// from. Long enough that a blocking condition — the branch already active, the worktree busy — has
+/// a real chance to clear; short enough that work whose blocker lifts early is not stranded for a
+/// noticeable part of a working session.
+pub const LAUNCH_RETRY_BASE_SECS: i64 = 600;
+
+/// The ceiling on one wait, so doubling stays a backoff rather than a disappearance.
+pub const LAUNCH_RETRY_MAX_SECS: i64 = 3600;
+
+/// Consecutive failed launches after which the tick stops trying and resolves the entry `Failed`.
+///
+/// With the delays below, the fifth failure lands a little over three hours after the first — long
+/// enough that anything genuinely transient has had its chance, short enough that a permanently
+/// blocked entry does not outlive the day.
+pub const LAUNCH_ATTEMPT_CAP: u32 = 5;
+
+/// How long to wait after `attempt` consecutive launch failures, or `None` once the tick should
+/// give up and mark the entry `Failed`.
+///
+/// **Why the attempts are counted at all.** A launch failure returns the entry to pending, which is
+/// correct — most of them are conditions (a branch already active, a pooled worktree busy) that
+/// clear on somebody else's schedule, and the retry that matters is the one *after* the condition
+/// lifts. But some of those conditions never lift: a merged branch's leftover ref, an entry naming
+/// a repo that cannot be dispatched. Retrying and giving up were the same code path, so those
+/// entries retried until the machine was restarted — 15,559 failed launches across 52 hours on the
+/// machine this was written for, the worst single entry accounting for 3,193 of them.
+///
+/// So the wait doubles, and the attempts run out. Doubling keeps the early retries close together
+/// where a transient blocker is most likely to have cleared, and the cap converts "held forever,
+/// labelled `snoozed`" into a terminal state somebody can see and act on.
+pub fn launch_retry_delay(attempt: u32) -> Option<i64> {
+    if attempt >= LAUNCH_ATTEMPT_CAP {
+        return None;
+    }
+    let doublings = attempt.saturating_sub(1).min(u32::BITS - 1);
+    Some(
+        LAUNCH_RETRY_BASE_SECS
+            .saturating_mul(1i64 << doublings)
+            .min(LAUNCH_RETRY_MAX_SECS),
+    )
+}
+
 /// Everything one tick needs, captured as a snapshot.
 #[derive(Debug, Clone)]
 pub struct TickInputs<'a> {

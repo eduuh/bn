@@ -93,19 +93,28 @@ enum FlockOutcome {
 )]
 fn try_flock(file: &File) -> FlockOutcome {
     use std::os::unix::io::AsRawFd;
-    // SAFETY: `file` owns a valid, open descriptor for the duration of this call, and `flock`
-    // neither retains the fd past it nor writes through any pointer.
-    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if rc == 0 {
-        return FlockOutcome::Acquired;
-    }
-    let err = std::io::Error::last_os_error();
-    // `EWOULDBLOCK` (== `EAGAIN`) is the one error that means "someone else has it". Anything else
-    // — a read-only state dir, a filesystem without advisory locking — is a different problem, and
-    // reporting it as contention sends the reader hunting for a concurrent tick that does not exist.
-    match err.raw_os_error() {
-        Some(code) if code == libc::EWOULDBLOCK => FlockOutcome::Held,
-        _ => FlockOutcome::Failed(err.to_string()),
+    loop {
+        // SAFETY: `file` owns a valid, open descriptor for the duration of this call, and `flock`
+        // neither retains the fd past it nor writes through any pointer.
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if rc == 0 {
+            return FlockOutcome::Acquired;
+        }
+        let err = std::io::Error::last_os_error();
+        return match err.raw_os_error() {
+            // A signal landed mid-call. `flock` is interruptible even with `LOCK_NB`, and the
+            // dispatcher is the *most* likely process to see it: every pass spawns children, so
+            // `SIGCHLD` arrives constantly. Treating that as a failure would make the tick skip
+            // for a reason that has nothing to do with contention — retry, which is what `EINTR`
+            // means.
+            Some(code) if code == libc::EINTR => continue,
+            // `EWOULDBLOCK` (== `EAGAIN`) is the one error that means "someone else has it".
+            Some(code) if code == libc::EWOULDBLOCK => FlockOutcome::Held,
+            // Anything else — a read-only state dir, a filesystem without advisory locking — is a
+            // different problem, and reporting it as contention sends the reader hunting for a
+            // concurrent tick that does not exist.
+            _ => FlockOutcome::Failed(err.to_string()),
+        };
     }
 }
 
@@ -158,13 +167,20 @@ mod tests {
         (dir, path)
     }
 
+    /// Acquire, or fail the test naming *why*. A bare `is_ok()` cannot tell a lock genuinely held
+    /// by someone else from an unusable state dir, and those want opposite investigations.
+    fn acquire(path: &std::path::Path) -> TickLock {
+        match TickLock::try_acquire_at(path) {
+            Ok(guard) => guard,
+            Err(LockDenied::Held) => panic!("expected a free lock, but it was held"),
+            Err(LockDenied::Unusable(why)) => panic!("lock unusable: {why}"),
+        }
+    }
+
     #[test]
     fn a_free_lock_is_acquirable_and_records_its_holder() {
         let (_dir, path) = scratch("queue-tick.lock");
-        assert!(
-            TickLock::try_acquire_at(&path).is_ok(),
-            "an uncontended lock should be acquirable"
-        );
+        let _guard = acquire(&path);
         assert_eq!(
             std::fs::read_to_string(&path).unwrap().trim(),
             std::process::id().to_string(),
@@ -183,10 +199,8 @@ mod tests {
         // Our own pid: certainly alive, and certainly not a tick holding this lock.
         std::fs::write(&path, std::process::id().to_string()).unwrap();
 
-        assert!(
-            TickLock::try_acquire_at(&path).is_ok(),
-            "an abandoned lock file must never outlive its writer, whatever pid it names"
-        );
+        // Must be acquirable: an abandoned lock file never outlives its writer, whatever pid it names.
+        let _guard = acquire(&path);
     }
 
     /// Contention still skips. `flock` binds to the open file description, so a second acquire —
@@ -194,7 +208,7 @@ mod tests {
     #[test]
     fn a_held_lock_denies_the_next_pass() {
         let (_dir, path) = scratch("queue-tick.lock");
-        let _held = TickLock::try_acquire_at(&path).ok().expect("a free lock");
+        let _held = acquire(&path);
         assert!(
             matches!(TickLock::try_acquire_at(&path), Err(LockDenied::Held)),
             "a second pass must skip while the first holds the lock"
@@ -205,10 +219,8 @@ mod tests {
     #[test]
     fn dropping_the_guard_frees_the_machine() {
         let (_dir, path) = scratch("queue-tick.lock");
-        drop(TickLock::try_acquire_at(&path).ok().expect("a free lock"));
-        assert!(
-            TickLock::try_acquire_at(&path).is_ok(),
-            "a released lock should be immediately re-acquirable"
-        );
+        drop(acquire(&path));
+        // A released lock must be immediately re-acquirable.
+        let _reacquired = acquire(&path);
     }
 }

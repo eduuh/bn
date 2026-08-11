@@ -122,10 +122,41 @@ pub fn goal_text(body: &str) -> Option<String> {
     first_nonblank_in_section(body, "## Goal")
 }
 
-/// Return `body` with the `## Goal` section's content replaced by `text` (a single line,
-/// the inverse of `goal_text`). Preserves the rest of the body verbatim. If there's no
-/// `## Goal` heading, appends one. Keeps the template shape: heading, blank, goal line.
+/// Flatten `text` into the one line a goal actually is.
+///
+/// [`goal_text`] reads the goal back as *the first non-blank line* of the section, so a single line
+/// is the whole data model — anything past the first newline was never readable as the goal. Two
+/// things follow, and the second is why this function exists rather than being a caller's problem.
+///
+/// A goal carrying `\n## Goal` inside it made [`set_goal_in_body`] **double the body on every
+/// call**. The replace drops old content only up to the next heading, so an embedded `## Goal`
+/// terminated the delete early and survived; the scan then reached that survivor, matched it, and
+/// inserted the whole text again. Each existing occurrence became two. On a real branch note an
+/// agent's seed prompt — which has its own `## Goal` and `## Rules` headings — went through this
+/// about twenty-one times and reached **4.2 GB** (2^21 copies), which took the dashboard's rollups
+/// out of memory and got the server OOM-killed repeatedly.
+///
+/// Collapsing whitespace keeps every word while making a heading impossible: a heading has to
+/// *start a line*, and after this there is only one line. The leading-`#` escape covers the
+/// degenerate case where the goal itself begins with `## `.
+fn one_line_goal(text: &str) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.starts_with('#') {
+        // `\#` renders as `#` and cannot be a heading.
+        format!("\\{flat}")
+    } else {
+        flat
+    }
+}
+
+/// Return `body` with the `## Goal` section's content replaced by `text`. Preserves the rest of the
+/// body verbatim. If there's no `## Goal` heading, appends one. Keeps the template shape: heading,
+/// blank, goal line.
+///
+/// `text` is flattened to one line first — see [`one_line_goal`] for the data model that requires
+/// it and the runaway it prevents.
 pub fn set_goal_in_body(body: &str, text: &str) -> String {
+    let text = &one_line_goal(text);
     let lines: Vec<(&str, bool)> = crate::markdown::scan(body).collect();
     let mut out: Vec<String> = Vec::new();
     let mut i = 0;
@@ -422,4 +453,81 @@ pub fn related_footer(related: &[crate::related::RelatedBranch]) -> String {
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod goal_tests {
+    use super::*;
+
+    const TEMPLATE: &str = "# repo / branch\n\n## Goal\n\n\n## Progress\n";
+
+    /// Headings are *lines*, so count lines. A flattened goal may legitimately contain the text
+    /// `## Goal` mid-line — that is precisely what makes it harmless, and a substring count would
+    /// report it as a second section.
+    fn goal_headings(body: &str) -> usize {
+        body.lines().filter(|l| l.trim_end() == "## Goal").count()
+    }
+
+    /// The regression, stated as the property that was violated: setting a goal is **idempotent in
+    /// size**. Set the same goal twenty times and the note is the same length it was after one.
+    ///
+    /// The seed text here is the shape that caused the outage — an agent prompt carrying its own
+    /// `## Goal` and `## Rules` headings. Before the fix each call doubled the body: twenty-one
+    /// passes reached 4.2 GB and OOM-killed every reader on the machine.
+    #[test]
+    fn setting_a_goal_repeatedly_does_not_grow_the_note() {
+        let seed =
+            "Set up the repo.\n\n## Goal\n\nCreate the surface.\n\n## Rules\n\n- be idempotent.\n";
+
+        let once = set_goal_in_body(TEMPLATE, seed);
+        let mut body = once.clone();
+        for _ in 0..20 {
+            body = set_goal_in_body(&body, seed);
+        }
+
+        assert_eq!(
+            body, once,
+            "setting the same goal again must not change the note"
+        );
+        assert_eq!(
+            goal_headings(&body),
+            1,
+            "the note must keep exactly one Goal heading"
+        );
+    }
+
+    /// And the goal survives the flattening: every word is still there, readable back out.
+    #[test]
+    fn a_multiline_goal_keeps_its_words_on_one_line() {
+        let body = set_goal_in_body(TEMPLATE, "ship the\n\n## Rules\n\nqueue fix");
+        assert_eq!(
+            goal_text(&body).as_deref(),
+            Some("ship the ## Rules queue fix")
+        );
+    }
+
+    /// A goal that itself begins with `## ` cannot be allowed to become a heading — that is the
+    /// same wound in its smallest form.
+    #[test]
+    fn a_goal_that_starts_like_a_heading_is_escaped() {
+        let body = set_goal_in_body(TEMPLATE, "## not a section");
+        assert_eq!(
+            goal_headings(&body),
+            1,
+            "only the real Goal heading may be a heading"
+        );
+        let re_set = set_goal_in_body(&body, "## not a section");
+        assert_eq!(re_set, body, "and it stays stable across repeats");
+    }
+
+    /// The ordinary case is untouched: a plain one-line goal round-trips exactly.
+    #[test]
+    fn a_plain_goal_round_trips() {
+        let body = set_goal_in_body(TEMPLATE, "make the queue drain");
+        assert_eq!(goal_text(&body).as_deref(), Some("make the queue drain"));
+        assert!(
+            body.contains("## Progress"),
+            "the rest of the body survives"
+        );
+    }
 }

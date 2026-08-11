@@ -16,7 +16,7 @@ mod lock;
 mod render;
 
 use crate::*;
-use bn_core::backlog::{self, BacklogKind};
+use bn_core::backlog::{self, BacklogKind, LaunchFailure};
 use bn_core::queue::decision::QueueDecision;
 use bn_core::queue::tick::{plan_tick, Dispatch, TickPlan};
 use event_fields::{dispatch_fields, finish_fields, launch_failure_fields};
@@ -533,11 +533,17 @@ fn realize(cfg: &Config, plan: &TickPlan, now: i64) {
         let _ =
             bn_core::events::append_at("queue_dispatch", now, dispatch_fields(d, cfg.machine()));
         let outcome = execute(cfg, d, now);
-        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
         match outcome {
             // An agent launch hands off to a long-running harness; the entry stays leased until the
             // run reconciles its terminal outcome, exactly as an orchestrate-dispatched item does.
-            Executed::Launched => {}
+            //
+            // Clearing the failure count here is what keeps it *consecutive*. A lease reclaimed
+            // after a healthy launch returns the entry to pending, and without this it would carry
+            // an old entry's worth of failures into the next attempt and give up early on work
+            // that had been starting fine.
+            Executed::Launched => {
+                let _ = backlog::clear_launch_failures(&path, &d.repo, &d.id);
+            }
             // A headless job is over the moment it returns, so resolve it here rather than leaving
             // it leased forever waiting for a reconciler that has nothing to observe.
             Executed::Finished { code } => {
@@ -559,13 +565,55 @@ fn realize(cfg: &Config, plan: &TickPlan, now: i64) {
                 );
             }
             Executed::Failed(err) => {
-                eprintln!("bn queue tick: {}/{} did not start: {err}", d.repo, d.id);
                 let finished_at = bn_core::util::now_epoch_secs();
-                let _ = backlog::release_many(&path, &d.repo, &refs, finished_at);
+                // Released straight back to pending, this entry is picked again on the very next
+                // pass — seconds later — and fails for the same reason. Backing off fixed the
+                // spin; it did not fix the forever. `bn dispatch` refuses an item whose branch is
+                // already active, and a merged branch's leftover ref satisfies that test with no
+                // agent alive and nothing left to finish, so the condition the wait is waiting for
+                // never arrives. Counting the attempts is what turns that into an ending.
+                //
+                // `fail_launch` is one mutation: it counts the attempt and then either snoozes the
+                // entry past `launch_retry_delay` or, once the attempts run out, resolves it
+                // `Failed` — where a person and the queue page can both see it, instead of it
+                // sitting in HELD WORK reading `snoozed` for as long as the machine is up.
+                let outcome = backlog::fail_launch(
+                    &path,
+                    &d.repo,
+                    &d.id,
+                    finished_at,
+                    bn_core::queue::tick::launch_retry_delay,
+                )
+                .ok()
+                .flatten();
+                let (attempt, gave_up) = match outcome {
+                    Some(LaunchFailure::Retrying { attempt, retry_at }) => {
+                        eprintln!(
+                            "bn queue tick: {}/{} did not start (attempt {attempt}, retrying at \
+                             {}): {err}",
+                            d.repo,
+                            d.id,
+                            bn_core::util::clock_hm(retry_at)
+                        );
+                        (Some(attempt), false)
+                    }
+                    Some(LaunchFailure::GaveUp { attempt }) => {
+                        eprintln!(
+                            "bn queue tick: {}/{} did not start after {attempt} attempts — giving \
+                             up: {err}",
+                            d.repo, d.id
+                        );
+                        (Some(attempt), true)
+                    }
+                    None => {
+                        eprintln!("bn queue tick: {}/{} did not start: {err}", d.repo, d.id);
+                        (None, false)
+                    }
+                };
                 let _ = bn_core::events::append_at(
                     "queue_finish",
                     finished_at,
-                    launch_failure_fields(&d.repo, &d.id, &err),
+                    launch_failure_fields(&d.repo, &d.id, &err, attempt, gave_up),
                 );
             }
         }

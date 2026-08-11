@@ -132,6 +132,19 @@ pub const COMPLETED: View = View {
     ttl: Duration::from_secs(30),
 };
 
+/// The cross-repo open-issue sweep: one `gh issue list` per repo, fanned out.
+///
+/// The longest window here, and the one that most needs it. `bn_core::issues` already caches each
+/// repo for ten minutes — but only on *success*, deliberately, so one flaky minute cannot become a
+/// ten-minute outage. The consequence is that unreachable repos re-pay a 20s timeout on every
+/// sweep, which is what made this endpoint take 14 to 70 seconds while sitting on the shell's
+/// critical path. Parallel fetches cut the wall clock; this stops the dashboard's poll loop from
+/// re-running the sweep at all between windows.
+pub const ISSUES: View = View {
+    key: "issues",
+    ttl: Duration::from_secs(120),
+};
+
 /// A parameter set a caller has certified as finite, and therefore safe to put in a cache key.
 ///
 /// The type carries no validation of its own — it cannot, since only the handler knows what its

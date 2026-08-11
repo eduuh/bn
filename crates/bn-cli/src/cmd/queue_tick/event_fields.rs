@@ -15,14 +15,31 @@ pub(super) fn finish_fields(repo: &str, id: &str, exit_code: i32) -> Map<String,
     ])
 }
 
-pub(super) fn launch_failure_fields(repo: &str, id: &str, error: &str) -> Map<String, Value> {
-    Map::from_iter([
+/// `attempt` is the consecutive failure count this launch produced, and `gave_up` says the tick has
+/// stopped retrying. Both are recorded because "it failed" and "it failed for the last time" are
+/// different facts, and until the second one was written down a permanently blocked entry was
+/// indistinguishable in the log from one waiting on something that would clear.
+pub(super) fn launch_failure_fields(
+    repo: &str,
+    id: &str,
+    error: &str,
+    attempt: Option<u32>,
+    gave_up: bool,
+) -> Map<String, Value> {
+    let mut fields = Map::from_iter([
         ("repo".to_string(), Value::String(repo.to_string())),
         ("id".to_string(), Value::String(id.to_string())),
         ("outcome".to_string(), Value::String("failed".to_string())),
         ("phase".to_string(), Value::String("launch".to_string())),
         ("error".to_string(), Value::String(error.to_string())),
-    ])
+    ]);
+    if let Some(attempt) = attempt {
+        fields.insert("attempt".to_string(), Value::from(attempt));
+    }
+    if gave_up {
+        fields.insert("gave_up".to_string(), Value::Bool(true));
+    }
+    fields
 }
 
 pub(super) fn dispatch_fields(d: &Dispatch, machine: &str) -> Map<String, Value> {

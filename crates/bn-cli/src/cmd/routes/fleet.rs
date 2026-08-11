@@ -142,7 +142,7 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
             Some(AttnCmd::Notified { id }) => emit_attn_notified(&id, json),
         },
         CmdFleet::Agent { action } => match action {
-            Some(AgentCmd::Ingest) => emit_agent_ingest(cfg, json),
+            Some(AgentCmd::Ingest { reingest }) => emit_agent_ingest(cfg, reingest, json),
             Some(AgentCmd::Digest { repo, branch, yes }) => {
                 let ctx =
                     target_ctx(cfg, repo, branch).unwrap_or_else(|| fail("Not in a git repo"));

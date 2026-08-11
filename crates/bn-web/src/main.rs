@@ -184,7 +184,34 @@ async fn main() {
     }
 }
 
-/// Resolve when the process receives Ctrl-C, so axum drains in-flight requests and exits cleanly.
+/// Resolve when the process is asked to stop, so axum drains in-flight requests and exits cleanly.
+///
+/// **Both signals, not just Ctrl-C.** Interactive `bn serve` ends with `SIGINT`, but every *managed*
+/// stop sends `SIGTERM`: launchd and systemd do, and so does `bn serve stop`, whose own comment says
+/// it sends "`SIGTERM` first so bn-web can close its listener cleanly, escalating to `SIGKILL` only
+/// if it is still there". That promise was not kept. Waiting on `ctrl_c` alone left `SIGTERM` at its
+/// default disposition, so a managed restart killed the process outright — in-flight requests
+/// dropped mid-response, the listener never closed, and the exit looked like a crash to anything
+/// reading the service's status.
+///
+/// Whichever arrives first wins; both mean the same thing to a server.
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        // A process that cannot register the handler is better off with Ctrl-C than with nothing,
+        // so fall back rather than abandoning graceful shutdown entirely.
+        let Ok(mut term) = signal(SignalKind::terminate()) else {
+            let _ = tokio::signal::ctrl_c().await;
+            return;
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
