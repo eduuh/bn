@@ -22,11 +22,15 @@ prose() {
     fm                     { next }
     /^[[:space:]]*```/     { inblock = !inblock; next }
     inblock                { next }
-    # <Terminal lines={[...]} /> is captured output, not prose
-    /<Terminal/            { interm = 1 }
-    interm                 { if ($0 ~ /\/>/) interm = 0; next }
+    # An unterminated JSX open tag starts a multi-line props/data block:
+    # <Terminal lines={[…]} /> is captured output, <Sandpack files={{…}} /> is
+    # real source. Both are code, not prose. A tag that closes on its own line
+    # (<Callout type="tip">, a one-line <GitHubRepo … />) still gets checked.
+    /^[[:space:]]*<[A-Z][A-Za-z]*/ && $0 !~ />[[:space:]]*$/ { injsx = 1 }
+    injsx                  { if ($0 ~ /\/>/) injsx = 0; next }
     /^[[:space:]]*$/       { next }
-    { print NR ": " $0 }
+    # blank out inline `code` spans: `{...}` and `bs=1m --flag` are not prose
+    { line = $0; gsub(/`[^`]*`/, "``", line); print NR ": " line }
   ' "$1"
 }
 
