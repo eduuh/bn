@@ -69,35 +69,6 @@ fn sandbox_and_host_tmux_servers_are_mutually_invisible() -> anyhow::Result<()> 
     Ok(())
 }
 
-/// `bn fleet` enumerates tmux across every session on the default socket. In a sandbox it must
-/// report nothing, even on a machine with a live fleet.
-///
-/// This is the containment test for the whole default-socket surface: `bn fleet` is the read-only
-/// member of the same family as `reap`'s `kill-window`, so if it is contained, so are they.
-#[test]
-#[ignore = "e2e: needs a built bn binary (cargo build --workspace)"]
-fn bn_fleet_in_a_sandbox_cannot_see_the_hosts_agents() -> anyhow::Result<()> {
-    require_tmux!();
-    let sb = Sandbox::new()?;
-
-    let run = sb.bn(["fleet"])?;
-    let out = run.output();
-
-    assert!(
-        out.contains("No live agents"),
-        "a fresh sandbox should have no fleet, got:\n{out}"
-    );
-    // Nothing from the real machine may appear. The developer's worktrees live under their real
-    // home; every sandbox path lives under the sandbox root.
-    assert!(
-        !out.contains("/Users/") && !out.contains("/home/"),
-        "bn fleet leaked host paths into a sandbox run:\n{out}"
-    );
-
-    sb.assert_host_untouched()?;
-    Ok(())
-}
-
 /// The isolation guard detects a real leak — it is not merely always-passing.
 ///
 /// A safety check that cannot fail is worse than none, because it is believed. This reproduces the

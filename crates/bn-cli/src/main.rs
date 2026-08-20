@@ -210,7 +210,10 @@ fn main() {
         //
         // Skipped for `bn queue` itself: its fallback path can run a tick, and a tick triggered by
         // the command that was about to tick is one tick too many.
-        if !matches!(&cli.command, Some(Command::Fleet(CmdFleet::Queue { .. }))) {
+        if !matches!(
+            &cli.command,
+            Some(Command::Automation(CmdAutomation::Queue { .. }))
+        ) {
             cmd::queue_install::ensure(&cfg);
         }
     }

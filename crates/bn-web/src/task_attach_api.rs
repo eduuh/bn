@@ -256,7 +256,11 @@ mod tests {
 
     /// Drive one request through the full router and return `(status, parsed envelope)`.
     async fn call(cfg: &Config, req: Request<Body>) -> (StatusCode, serde_json::Value) {
-        let res = router(AppState::new(cfg.clone()))
+        let res = router(AppState::with_live_addr(
+            cfg.clone(),
+            cfg.web.bind.clone(),
+            cfg.web.port,
+        ))
             .oneshot(req)
             .await
             .expect("router");

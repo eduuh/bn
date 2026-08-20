@@ -484,11 +484,6 @@ pub(crate) fn emit_tmux_help() {
         "Tab",
         "fast-path: jump to the top window needing you (repeat to cycle)",
     );
-    row(
-        "f",
-        "fleet picker: jump to ANY agent + orchestrator window (live preview)",
-    );
-
     hdr("Branch notes (bn)");
     row("n", "open the branch note");
     row("a", "quick-add a todo");
@@ -574,5 +569,4 @@ pub(crate) fn prompt_capture(section: &str) -> Option<String> {
         Some(text)
     }
 }
-
 

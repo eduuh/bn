@@ -56,7 +56,10 @@ is_bare_repo() {
 
 # Resolve the main worktree path for a bare repo
 bare_repo_main_path() {
-    local main_wt="$WORKTREE_DIR/$1/main"
+    local bare="$BARE_DIR/${1}.git"
+    local branch
+    branch="$(default_branch_for_bare "$bare" 2>/dev/null || echo main)"
+    local main_wt="$WORKTREE_DIR/$1/$branch"
     [[ -d "$main_wt" ]] && echo "$main_wt" || echo "$BARE_DIR/${1}.git"
 }
 
@@ -107,7 +110,22 @@ session_window_count() {
     $TMUX_CMD list-windows -t "=$1" -F x 2>/dev/null | wc -l
 }
 
-# Ensure a worktree exists for repo/branch; create from latest main if missing.
+# Print the conventional base branch available in a bare repo.
+default_branch_for_bare() {
+    local bare="$1"
+    local branch
+    for branch in main master; do
+        if git --git-dir="$bare" show-ref --verify --quiet "refs/remotes/origin/$branch" ||
+           git --git-dir="$bare" show-ref --verify --quiet "refs/heads/$branch"; then
+            echo "$branch"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Ensure a worktree exists for repo/branch; create from latest main, falling
+# back to master if main does not exist.
 # Prints progress to stdout (intended for interactive popups).
 # Usage: ensure_worktree <repo> <branch>
 # Returns 0 on success, 1 on failure.
@@ -123,7 +141,6 @@ ensure_worktree() {
     echo "Creating worktree: $worktree_path"
     echo "Fetching origin..."
     git --git-dir="$bare" fetch origin || { echo "Fetch failed"; return 1; }
-    git --git-dir="$bare" branch -f main origin/main 2>/dev/null
     mkdir -p "$WORKTREE_DIR/$repo"
     if git --git-dir="$bare" show-ref --verify --quiet "refs/heads/$branch"; then
         if ! git --git-dir="$bare" worktree add "$worktree_path" "$branch"; then
@@ -131,7 +148,11 @@ ensure_worktree() {
             return 1
         fi
     else
-        if ! git --git-dir="$bare" worktree add -b "$branch" "$worktree_path" main; then
+        local base
+        base="$(default_branch_for_bare "$bare")" ||
+            { echo "No main or master branch found: $repo"; return 1; }
+        git --git-dir="$bare" branch -f "$base" "origin/$base" 2>/dev/null || true
+        if ! git --git-dir="$bare" worktree add -b "$branch" "$worktree_path" "$base"; then
             echo "Failed to create worktree"
             return 1
         fi
@@ -146,7 +167,11 @@ ensure_main_worktree() {
     local repo="$1"
     [[ -z "$repo" ]] && return 1
     is_bare_repo "$repo" || return 0
-    ensure_worktree "$repo" "main"
+    local bare="$BARE_DIR/${repo}.git"
+    local base
+    base="$(default_branch_for_bare "$bare")" ||
+        { echo "No main or master branch found: $repo"; return 1; }
+    ensure_worktree "$repo" "$base"
 }
 
 # Resolve repo name and branch from a directory path

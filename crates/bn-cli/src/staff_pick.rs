@@ -1,5 +1,5 @@
 //! `bn staff feed --pick` — the prefix-B briefing popup (#265). The sibling of the attention
-//! popup (`bn doctor --pick`, prefix C-a) and the fleet picker (`bn fleet pick`): an fzf popup over
+//! popup (`bn doctor --pick`, prefix C-a): an fzf popup over
 //! the staff's briefing cards, unread-first then newest-first. `↵` renders the focused card in the
 //! pager and marks it read; `m` marks read without opening; `ctrl-o` opens the card's link via the
 //! shared opener (the same one prefix-N/`bn jump` uses); `ctrl-r` reloads.

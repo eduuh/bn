@@ -2350,7 +2350,8 @@ pub fn legacy_state_path() -> PathBuf {
 }
 
 /// Every per-run state file in `dir` (`orchestrate-*.json`), sorted for deterministic listing.
-/// Excludes the legacy `orchestrate.json` and atomic-save `*.json.tmp` siblings.
+/// Excludes the legacy `orchestrate.json`, controller-owner leases, and atomic-save `*.json.tmp`
+/// siblings.
 pub fn run_files_in(dir: &Path) -> Vec<PathBuf> {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -2359,13 +2360,42 @@ pub fn run_files_in(dir: &Path) -> Vec<PathBuf> {
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("orchestrate-") && n.ends_with(".json"))
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                n.starts_with("orchestrate-") && n.ends_with(".json") && !n.ends_with(".owner.json")
+            })
         })
         .collect();
     files.sort();
     files
+}
+
+#[cfg(test)]
+mod run_file_tests {
+    use super::*;
+
+    #[test]
+    fn run_files_exclude_controller_owner_leases() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for name in [
+            "orchestrate-zeta.json",
+            "orchestrate-alpha.json",
+            "orchestrate-alpha.owner.json",
+            "orchestrate-alpha.json.tmp",
+            "orchestrate.json",
+        ] {
+            std::fs::write(dir.path().join(name), "{}").expect("write fixture");
+        }
+
+        let names = run_files_in(dir.path())
+            .into_iter()
+            .filter_map(|path| path.file_name()?.to_str().map(str::to_string))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec!["orchestrate-alpha.json", "orchestrate-zeta.json"]
+        );
+    }
 }
 
 /// Every per-run state file in the state dir.

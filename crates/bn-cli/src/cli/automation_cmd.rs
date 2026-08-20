@@ -1,11 +1,11 @@
-//! The fleet / orchestration command group: everything that drives agents rather than notes.
+//! Automation and orchestration commands: everything that drives agents rather than notes.
 //!
 //! Split out of [`crate::cli`] so this group can gain subcommands — `bn queue` is the first —
 //! without pushing `cli.rs` further past the 1000-line ratchet (see `.file-size-baseline`).
 use crate::*;
 
 #[derive(Subcommand, Debug)]
-pub(crate) enum CmdFleet {
+pub(crate) enum CmdAutomation {
     /// What each agent harness serves — the model ids and reasoning-effort levels it accepts.
     /// Discovered from the harness itself (Copilot enumerates them in its shell completion) and
     /// cached for a day, so a pipeline stage is never configured with a model that will be silently
@@ -31,7 +31,7 @@ pub(crate) enum CmdFleet {
         /// are in — quiet worktrees included — rather than only what needs you. Rows carry the tab
         /// bar's badges (blockers · todos · agent state) plus a live pane preview, ordered
         /// last-used first so a bare ↵ toggles back to the window you came from. The
-        /// session-scoped sibling of `bn fleet pick` (every session).
+        /// Session-scoped window picker (every session).
         #[arg(long)]
         session: bool,
         /// Internal: the fzf callback stage a `jump` session re-invokes (list/preview).
@@ -158,47 +158,6 @@ pub(crate) enum CmdFleet {
         /// Exact task name, full session id, or unambiguous session-id prefix. Omit to select the
         /// latest Copilot or Claude session recorded for the current git worktree.
         name_or_id: Option<String>,
-    },
-    /// The at-a-glance fleet board: every live agent across all worktrees and both harnesses
-    /// (Copilot + Claude), ranked by who needs you, each with a short live preview of its pane —
-    /// so you see what they're all doing without attaching. One-shot. `bn fleet pick` is the
-    /// interactive jump-in (an fzf picker with a live pane preview, orchestrators included).
-    Fleet {
-        /// Interactive picker to jump to an agent — `bn fleet pick` (absent → the read board).
-        #[command(subcommand)]
-        action: Option<FleetCmd>,
-        /// Minutes of quiet before an agent is *idle*.
-        #[arg(long, default_value_t = bn_core::agent::DEFAULT_IDLE_MINS)]
-        idle: i64,
-        /// Minutes of quiet before an agent is flagged *stuck*.
-        #[arg(long, default_value_t = bn_core::agent::DEFAULT_STUCK_MINS)]
-        stuck: i64,
-        /// Fix the usage-limited agents: for every agent sitting at its harness's usage-limit
-        /// prompt, run `bn switch --in-place` to the other harness (handoff written, pane
-        /// respawned) so the work continues instead of waiting for the limit to reset.
-        #[arg(long)]
-        fix: bool,
-        /// Per-run token budget: flag any agent whose cumulative tokens exceed it — spot a
-        /// runaway (e.g. a rebase loop that won't converge) early.
-        #[arg(long)]
-        budget: Option<i64>,
-        /// Show live in-flight token usage by work-class category instead of the fleet board.
-        #[arg(long)]
-        cost: bool,
-        /// Compact one-line-per-agent list — the scannable default (`status · target · harness ·
-        /// tokens`, no pane preview). Already the default; the flag (and its `--compact` /
-        /// `--no-preview` aliases) is here for explicitness and to override a `--preview`.
-        #[arg(long, visible_aliases = ["compact", "no-preview"])]
-        oneline: bool,
-        /// Opt into the multi-line live pane preview beneath each agent (a `tmux capture-pane`
-        /// peek of what it's doing) — the richer, less scannable board. Overridden by `--oneline`.
-        #[arg(long)]
-        preview: bool,
-        /// Narrow-screen reflow (#633): render one compact line per agent that never wraps at
-        /// ~40 cols — a short state badge, the truncated `repo:branch` target, and the token
-        /// burn — so the board stays readable in a phone SSH client. Forces `--oneline`.
-        #[arg(long)]
-        mobile: bool,
     },
     /// The night shift — the nightly fleet planner. Picks the top promoted todos (ranked by
     /// `bn next`), isolates each in its own worktree, dispatches an agent, and leaves you a morning

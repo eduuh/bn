@@ -10,7 +10,7 @@
 //! This module applies the rule the staff framework already states for attention cards (#269,
 //! [`crate::staff_backpressure`]) to the OS toast layer: **degrade toward silence, not noise.**
 //! A toast means *work has stopped and needs your decision*. Everything else is pull-only and
-//! stays readable in `bn next` / `bn attn` / `bn fleet` and the tmux badges.
+//! stays readable in `bn next` / `bn attn` / `bn agent live` and the tmux badges.
 //!
 //! Call sites declare **intent** — a [`Class`] and a stable dedup [`Notification::key`] — and
 //! [`decide`] alone decides delivery, in this order:

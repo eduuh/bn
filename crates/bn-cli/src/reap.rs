@@ -1,4 +1,4 @@
-//! `bn fleet reap` — the fleet garbage-collector (#503).
+//! Stale-agent garbage collection (#503).
 //!
 //! The side-effecting realization of [`bn_core::fleet_gc`]: this module captures the live signals
 //! the pure policy needs — the process table, tmux windows/panes, worktree dirs, PR state — feeds
@@ -78,7 +78,7 @@ pub(crate) struct ReapOpts {
     /// Emit the JSON envelope instead of the human summary.
     pub as_json: bool,
     /// Query PR state per candidate (a network `gh`/`az` call each). Off for the fast opportunistic
-    /// sweep; on for `bn fleet reap` and the cron.
+    /// sweep; on for scheduled cleanup.
     pub check_pr: bool,
     /// Suppress the human summary entirely (for the opportunistic sweep folded into other commands).
     pub quiet: bool,
@@ -717,7 +717,7 @@ fn reconcile(cfg: &Config, worktree_dir: &Path, opts: &ReapOpts) -> Vec<Verdict>
         .collect()
 }
 
-/// `bn fleet reap` — the command entry. Dry-run + JSON by default; `--kill`/`--yes` to act.
+/// Run a stale-agent reconciliation pass.
 /// Returns a process exit code (always 0 — a GC pass with nothing to do is success).
 pub(crate) fn run_reap(cfg: &Config, opts: ReapOpts) -> i32 {
     let (_, worktree_dir) = crate::wt::layout(cfg);

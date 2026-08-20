@@ -33,7 +33,7 @@ pub enum PrStatus {
 }
 
 /// Why an agent process is a reap candidate — the stale signal, in the priority [`classify`] tests
-/// it. Serialized kebab-case for the `bn fleet reap --json` surface.
+/// it. Serialized kebab-case for cleanup event surfaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ReapReason {

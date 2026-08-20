@@ -83,7 +83,7 @@ const _: () = assert!(ATTENDED_DECAY_SECS > 10 * 60);
 /// The tmux **window user-option** holding the epoch secs of the last time a human was positively
 /// observed at this window. Written by [`observe_presence`] on a `Live` verdict only, and read back
 /// through the same `-F` enumeration — tmux is the storage, so the decay survives across the
-/// independent, stateless sweeps (`bn fleet reap`, the orchestrate tick) without a ledger of its own,
+/// independent, stateless sweeps (scheduled cleanup, the orchestrate tick) without a ledger of its own,
 /// and dies with the window it describes. Same mechanism as the existing `@bn_agent` window options.
 const ATTENDED_AT_OPT: &str = "@bn_attended_at";
 

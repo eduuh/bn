@@ -263,12 +263,32 @@ fn health_envelope(state: &AppState) -> Envelope {
             "uptime_secs": uptime,
             "ui_built": assets::ui_built(),
             "web": {
-                "port": state.cfg.web.port,
-                "bind": state.cfg.web.bind,
+                "port": state.live_port,
+                "bind": state.live_bind,
                 "fleet_poll_secs": state.cfg.web.fleet_poll_secs,
             },
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bn_core::resolver::Config;
+
+    #[test]
+    fn health_reports_the_live_bind_not_the_config_default() {
+        let state = AppState::with_live_addr(Config::load(), "127.0.0.1".to_string(), 7791);
+        let envelope = health_envelope(&state);
+        let web = envelope
+            .data
+            .get("web")
+            .and_then(serde_json::Value::as_object)
+            .expect("health envelope carries web metadata");
+
+        assert_eq!(web.get("bind").and_then(serde_json::Value::as_str), Some("127.0.0.1"));
+        assert_eq!(web.get("port").and_then(serde_json::Value::as_u64), Some(7791));
+    }
 }
 
 /// Serve the embedded UI. An exact asset path wins; any other path falls back to `index.html` so

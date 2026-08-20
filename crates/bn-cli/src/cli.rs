@@ -782,15 +782,15 @@ pub(crate) enum CmdInsights {
     },
 }
 
-/// The fleet / orchestration command group — see [`crate::cli::fleet_cmd`].
+/// Automation and orchestration commands — see [`crate::cli::automation_cmd`].
+pub(crate) mod automation_cmd;
 pub(crate) mod cron_cmd;
-pub(crate) mod fleet_cmd;
 pub(crate) mod machine_cmd;
 pub(crate) mod queue_cmd;
 pub(crate) mod routine_cmd;
 pub(crate) mod staff_cmd;
+pub(crate) use automation_cmd::CmdAutomation;
 pub(crate) use cron_cmd::CronCmd;
-pub(crate) use fleet_cmd::CmdFleet;
 pub(crate) use machine_cmd::MachineCmd;
 pub(crate) use queue_cmd::QueueCmd;
 pub(crate) use routine_cmd::{RoutineCmd, RoutineServiceCmd};
@@ -1669,7 +1669,7 @@ pub(crate) enum Command {
     #[command(flatten)]
     Insights(CmdInsights),
     #[command(flatten)]
-    Fleet(CmdFleet),
+    Automation(CmdAutomation),
     #[command(flatten)]
     Staff(CmdStaff),
     #[command(flatten)]
@@ -1975,71 +1975,6 @@ pub(crate) enum McpCmd {
         /// Serve the cross-worktree orchestrator tools instead of the scoped branch-note tools.
         #[arg(long)]
         orchestrate: bool,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-pub(crate) enum FleetCmd {
-    /// Jump to any active agent's tmux window via an fzf picker — the interactive companion to the
-    /// read-only `bn fleet` board (#347). Lists every live agent window across all sessions **and**
-    /// the orchestrator cockpit (`planning`, #345); the fzf `--preview` is a live `tmux
-    /// capture-pane` of the highlighted agent. Select → jump focus there (`switch-client` inside
-    /// tmux, `attach` from outside). Reads tmux as the source of truth. Degrades to the board when
-    /// fzf is absent.
-    Pick {
-        /// Scope the picker to *dispatched* agents only — the `dispatch/*` worktrees `bn dispatch`
-        /// / `bn orchestrate` launched — dropping manually-run agents and the orchestrator cockpit.
-        #[arg(long)]
-        dispatched: bool,
-        /// Internal: the fzf preview callback stage a `pick` session re-invokes.
-        #[arg(long, hide = true, value_enum)]
-        pick_stage: Option<agent_live::FleetPickStage>,
-        /// Internal: the focused row's tmux window id, passed to `--pick-stage preview`.
-        #[arg(hide = true)]
-        target: Option<String>,
-    },
-    /// Single-key tmux jumper (#633): a native `display-menu` popup, one entry per live agent
-    /// window plus the orchestrator cockpit, each with an accelerator key (1-9, a-z) and a short
-    /// state badge (needs-you / working / idle …), plus a `/` entry that opens the fzf `bn fleet
-    /// pick` in a `display-popup` search overlay (#633 P2). Press the key → jump focus to that
-    /// window (`switch-client`). Pass `<issue|repo>` to jump straight to the one window it names
-    /// (numeric issue# or repo/branch fragment) with no menu. Zero typing, big tap targets — the
-    /// mobile/one-handed companion to the fzf-based `bn fleet pick`. Prints the read board when
-    /// tmux is unavailable.
-    Jump {
-        /// Optional issue#/repo/branch fragment: jump directly to the single window it matches,
-        /// skipping the menu. Omit it to raise the single-key `display-menu` popup.
-        query: Option<String>,
-    },
-    /// Quick-steer an agent from a fleet row (#633 P3): a native `display-menu` of the live fleet
-    /// (one entry per agent window + orchestrator cockpit, needs-you first); pick one to open a
-    /// single-key action submenu — Approve (1/2), Continue, Send text, Interrupt (Ctrl-C), Kill —
-    /// that steers the agent **without** navigating into its pane. The common answers agents block
-    /// on, one-handed on a phone. Text steers reuse `bn agent send --keys`. Pass `<target>` (a tmux
-    /// `window_id` or `repo:branch`) to jump straight to the action menu for that one window. Prints
-    /// the board when tmux is unavailable.
-    Steer {
-        /// Optional tmux `window_id` (or `repo:branch`): open the action submenu for that one
-        /// window directly. Omit it to raise the fleet-row picker first.
-        target: Option<String>,
-    },
-    /// Garbage-collect the fleet (#503): find orphaned/stale agents — a process still alive whose
-    /// tmux window is gone, worktree removed, or PR merged/closed — and terminate the **full
-    /// process tree**, then prune the dead window. Also prunes `remain-on-exit` dead panes/windows.
-    /// Dry-run + `--json` by default (shows what *would* be reaped); pass `--kill` (`--yes`) to act.
-    /// Never touches an actively-working agent, the orchestrator/`--resume` session, or an agent
-    /// with uncommitted work unless `--force`.
-    Reap {
-        /// Act: kill the stale process trees and prune the dead windows. Without it, a dry run.
-        #[arg(long, visible_alias = "yes")]
-        kill: bool,
-        /// Override the safety gates — reap even a working / uncommitted / just-quiet stale agent.
-        /// Never overrides the orchestrator guard (the supervisor is never reaped).
-        #[arg(long)]
-        force: bool,
-        /// Grace seconds: a stale agent quieter than this is spared (launch/teardown race guard).
-        #[arg(long, default_value_t = bn_core::fleet_gc::DEFAULT_MIN_IDLE_SECS)]
-        min_idle: i64,
     },
 }
 

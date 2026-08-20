@@ -300,7 +300,7 @@ pub(crate) fn emit_afk(cfg: &Config, action: Option<AfkCmd>, as_json: bool) {
             } else if let Some(s) = since {
                 println!("\u{f08b} away · {}m — {need} need you", (now - s) / 60);
             } else {
-                println!("not away — {need} need you (bn fleet / bn next for detail)");
+                println!("not away — {need} need you (bn agent live / bn next for detail)");
             }
         }
     }

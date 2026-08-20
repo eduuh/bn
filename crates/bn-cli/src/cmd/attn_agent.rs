@@ -7,6 +7,10 @@ use bn_core::backlog::{self, AddSpec, BacklogKind, Recurrence};
 use bn_core::attention::{ingest, IngestItem};
 use bn_core::queue::kind::ExecSpec;
 
+/// Keep the headless harness under the outer cron budget so a slow model call can still fall back
+/// and finish green instead of being killed by the scheduler.
+const HARNESS_WALL_SECS: u64 = 90;
+
 /// The source stamped on everything the watchdog mints — the attention row, the repair task, and
 /// the queued repair agent. Shared because [`close_recovered_repairs`] matches backlog entries on
 /// it: a literal that drifted on one side would silently stop the sweep finding its own work.
@@ -348,6 +352,89 @@ fn parse_ranked(stdout: &str) -> Vec<RankedItem> {
         .unwrap_or_default()
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct FindingsPacket {
+    sources: Vec<FindingsPacketSource>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct FindingsPacketSource {
+    source: String,
+    items: Vec<FindingsPacketItem>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct FindingsPacketItem {
+    text: String,
+    #[serde(default)]
+    url: String,
+}
+
+fn health_items(health: &[String]) -> Vec<IngestItem> {
+    let mut items = Vec::new();
+    for line in health {
+        let title = line.trim();
+        if title.is_empty() {
+            continue;
+        }
+        items.push(IngestItem {
+            title: title.to_string(),
+            severity: Some("urgent".to_string()),
+            source: None,
+            key: Some(slug(title)),
+            link: None,
+            repo: None,
+            branch: None,
+            detail: None,
+        });
+        if items.len() >= 10 {
+            break;
+        }
+    }
+    items
+}
+
+fn fallback_attention_items(findings: &str, health: &[String]) -> Vec<IngestItem> {
+    let mut items = health_items(health);
+    let Ok(packet) = serde_json::from_str::<FindingsPacket>(findings) else {
+        return items;
+    };
+
+    for source in packet.sources {
+        for item in source.items {
+            let title = item.text.trim();
+            if title.is_empty() {
+                continue;
+            }
+            items.push(IngestItem {
+                title: title.to_string(),
+                severity: Some("info".to_string()),
+                source: None,
+                key: Some(slug(title)),
+                link: {
+                    let url = item.url.trim();
+                    if url.is_empty() {
+                        None
+                    } else {
+                        Some(url.to_string())
+                    }
+                },
+                repo: None,
+                branch: None,
+                detail: Some(format!(
+                    "Fallback from attention-agent after a harness failure; source {}.",
+                    source.source
+                )),
+            });
+            if items.len() >= 10 {
+                return items;
+            }
+        }
+    }
+
+    items
+}
+
 /// Normalize a model-supplied severity to one of `info|warn|urgent`; anything else folds to `info`.
 fn normalize_severity(s: &str) -> &'static str {
     match s.trim().to_ascii_lowercase().as_str() {
@@ -422,7 +509,7 @@ pub(crate) fn job_attention_agent(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
     };
     let mut args = serde_json::Map::new();
     args.insert("date".into(), serde_json::Value::String(today.clone()));
-    args.insert("findings".into(), serde_json::Value::String(findings));
+    args.insert("findings".into(), serde_json::Value::String(findings.clone()));
     args.insert(
         "cron_health".into(),
         serde_json::Value::String(health_block),
@@ -441,40 +528,48 @@ pub(crate) fn job_attention_agent(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
         eprintln!("attention-agent: unknown harness '{harness}'");
         return 1;
     };
-    let (ok, stdout, combined) =
-        crate::cmd::staff::dispatch_capture(cmd, Some(std::time::Duration::from_secs(240)));
-    if !ok {
+    let (ok, stdout, combined) = crate::cmd::staff::dispatch_capture(
+        cmd,
+        Some(std::time::Duration::from_secs(HARNESS_WALL_SECS)),
+    );
+    let mut used_fallback = false;
+    let items: Vec<IngestItem> = if ok {
+        parse_ranked(&stdout)
+            .iter()
+            .map(|r| IngestItem {
+                title: r.title.clone(),
+                severity: Some(normalize_severity(&r.severity).to_string()),
+                source: None,
+                key: Some(slug(&r.title)),
+                link: r.link.clone(),
+                repo: None,
+                branch: None,
+                detail: r.why.clone(),
+            })
+            .filter(|i| !i.title.trim().is_empty())
+            .collect()
+    } else {
         eprintln!("attention-agent: harness run failed — {}", combined.trim());
-        return 1;
-    }
-
-    let ranked = parse_ranked(&stdout);
-    let items: Vec<IngestItem> = ranked
-        .iter()
-        .map(|r| IngestItem {
-            title: r.title.clone(),
-            severity: Some(normalize_severity(&r.severity).to_string()),
-            source: None,
-            key: Some(slug(&r.title)),
-            link: r.link.clone(),
-            repo: None,
-            branch: None,
-            detail: r.why.clone(),
-        })
-        .filter(|i| !i.title.trim().is_empty())
-        .collect();
+        used_fallback = true;
+        fallback_attention_items(&findings, &health)
+    };
     let n = items.len();
     match ingest(&items, "attention-agent", "info", true, &today) {
         Ok(_) => {
             if n == 0 {
                 println!("attention-agent: nothing worth the user's attention right now");
             } else {
+                if used_fallback {
+                    println!(
+                        "attention-agent: harness failed; using deterministic fallback attention items"
+                    );
+                }
                 println!("attention-agent: ranked {n} attention item(s):");
-                for (i, r) in ranked.iter().enumerate() {
+                for (i, r) in items.iter().enumerate() {
                     println!(
                         "  {}. [{}] {}",
                         i + 1,
-                        normalize_severity(&r.severity),
+                        normalize_severity(r.severity.as_deref().unwrap_or("info")),
                         r.title.trim()
                     );
                 }
@@ -579,5 +674,33 @@ mod tests {
             assert_eq!(closed, 0, "a still-failing cron keeps its repair task");
             assert_eq!(withdrawn, 0, "and keeps its queued repair agent");
         });
+    }
+
+    #[test]
+    fn harness_failure_falls_back_to_findings_and_health_items() {
+        let findings = serde_json::json!({
+            "generated_at": 1,
+            "date": "2026-08-20",
+            "sources": [{
+                "source": "meetings",
+                "run_id": "run-1",
+                "gathered_at": 1,
+                "items": [
+                    {"key": "k1", "text": "First finding", "url": "https://example.com/1"},
+                    {"key": "k2", "text": "   ", "url": "https://example.com/2"}
+                ]
+            }]
+        })
+        .to_string();
+        let health = vec!["cron 'attention-agent' is failing — 6/62 runs failed (last exit 1)".to_string()];
+
+        let items = fallback_attention_items(&findings, &health);
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].title, health[0]);
+        assert_eq!(items[0].severity.as_deref(), Some("urgent"));
+        assert_eq!(items[1].title, "First finding");
+        assert_eq!(items[1].severity.as_deref(), Some("info"));
+        assert_eq!(items[1].link.as_deref(), Some("https://example.com/1"));
     }
 }

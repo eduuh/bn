@@ -54,7 +54,7 @@ pub(crate) enum AgentCmd {
     /// Joined live fleet across BOTH harnesses: every agent seen by its tmux window (@bn_agent
     /// working/waiting/done) and/or the session-log health (active/idle/stuck), one row per
     /// repo:branch. The machine-readable "what are all my agents doing" behind the fleet board;
-    /// pairs with `bn fleet`. bn agent live [--json].
+    /// `bn agent live [--json]`.
     Live {
         /// Minutes of quiet before an agent is *idle*.
         #[arg(long, default_value_t = bn_core::agent::DEFAULT_IDLE_MINS)]

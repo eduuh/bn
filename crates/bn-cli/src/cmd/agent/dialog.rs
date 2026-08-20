@@ -1,7 +1,8 @@
 //! `bn agent prompt` / `bn agent answer` — read the dialog a blocked agent is on, and answer it.
 //!
 //! The pair replaces guessing. Before this, the only way to clear a permission prompt from outside
-//! the pane was to send a bare digit — `bn fleet steer` offered "Approve (1)" and "Approve (2)" and
+//! the pane was to send a bare digit — the old quick-steer menu offered "Approve (1)" and
+//! "Approve (2)" and
 //! fired that number blind. On Claude's dialog, option 2 is "Yes, and don't ask again" but option 3
 //! is "No, and tell Claude what to do differently"; one keystroke off and an approval becomes a
 //! rejection into a composer nobody is going to fill in.

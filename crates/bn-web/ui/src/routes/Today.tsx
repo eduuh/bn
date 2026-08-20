@@ -31,6 +31,7 @@ import { Separator } from "../components/ui/separator";
 import { Skeleton } from "../components/ui/skeleton";
 import { TooltipProvider } from "../components/ui/tooltip";
 import { cn } from "../lib/utils";
+import { todayRouteLoading } from "./todayLoading";
 
 /** Quarter-goal health → Badge variant (mirrors the CLI's status palette); unknown → muted. */
 const STATUS_VARIANT: Record<string, BadgeProps["variant"]> = {
@@ -497,7 +498,9 @@ export function Today() {
   const usdToday = todayCost?.cost_usd ?? null;
   const spentIsAic = aicToday !== null;
 
-  const loading = goals.isLoading || wrap.isLoading || cost.isLoading || fleet.isLoading;
+  const loading = todayRouteLoading({
+    goalsLoading: goals.isLoading,
+  });
   const achievedNothing = doneGoals.length === 0 && mergedPrs.length === 0 && commits.length === 0;
   const goalPct = totalGoals > 0 ? Math.round((doneCount / totalGoals) * 100) : 0;
 

@@ -3,7 +3,7 @@
 //! Supervision could always say *that* an agent was waiting ([`crate::orchestrate::classify`]
 //! returns `trust-menu` / `command-approval` / `question-menu`). It could never say **what** it was
 //! waiting on: the question text and the option list stayed locked in the pane. So every surface
-//! that offered to "approve" was guessing a digit — `bn fleet steer` literally offered
+//! that offered to "approve" was guessing a digit — the old quick-steer menu literally offered
 //! `Approve (1)` and `Approve (2)` and sent that number, which on a menu whose option 2 is
 //! "No, and tell Claude what to do differently" is a rejection, not an approval.
 //!

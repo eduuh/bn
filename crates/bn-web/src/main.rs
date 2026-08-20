@@ -160,7 +160,7 @@ async fn main() {
         }
     };
 
-    let state = AppState::new(cfg);
+    let state = AppState::with_live_addr(cfg, bind.clone(), port);
 
     // Spawn the single SSE watcher (design §2.2): one task feeds the broadcast channel that every
     // `/api/stream` client subscribes to, so N browsers share one set of file reads.

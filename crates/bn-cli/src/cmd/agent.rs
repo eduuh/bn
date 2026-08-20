@@ -1724,7 +1724,7 @@ fn exec_harness(bin: &str, args: &[String]) -> ! {
 /// respawned running the target harness (shell-backed), seeded to read the handoff.
 ///
 /// Returns whether the switch succeeded. The result rather than a bare `exit` because
-/// [`run_fleet_fix`] loops this over every usage-limited agent: one target whose worktree or window
+/// Automated recovery can call this for each usage-limited agent: one target whose worktree or window
 /// can't be resolved must not abort the sweep for the rest. The single-target CLI route turns a
 /// `false` into a non-zero exit.
 #[must_use]
@@ -1957,63 +1957,6 @@ fn switch_envelope(
             format!("bn switch --in-place: {why} — start it manually:\n  {launch}"),
         ),
         _ => Envelope::success("switch", data),
-    }
-}
-
-/// `bn fleet --fix` — the recovery arm of the fleet board (#307): find every agent sitting at its
-/// harness's usage-limit prompt (`state == "limited"`, inferred from the live pane) and switch
-/// each to the *other* harness in place, so the work continues instead of waiting for the limit
-/// to reset. Each switch is the full `bn switch --in-place`: handoff written, trust granted, pane
-/// respawned. The target harness is the opposite of the limited agent's own; when the harness is
-/// unknown (a window-only row), `emit_switch` derives it from the outgoing session as usual.
-pub(crate) fn run_fleet_fix(cfg: &Config, idle: i64, stuck: i64, as_json: bool) {
-    let limited: Vec<_> = agent_live::collect(cfg, idle, stuck)
-        .into_iter()
-        .filter(|r| r.state == "limited")
-        .collect();
-    if limited.is_empty() {
-        if as_json {
-            println!(
-                "{}",
-                Envelope::success("fleet_fix", serde_json::json!({ "switched": [] })).to_json()
-            );
-        } else {
-            println!("bn fleet --fix: no usage-limited agents.");
-        }
-        return;
-    }
-    for r in &limited {
-        let to = match r.harness.as_deref() {
-            Some("claude") => Some("copilot".to_string()),
-            Some("copilot") => Some("claude".to_string()),
-            _ => None,
-        };
-        if !as_json {
-            println!(
-                "\n{} hit a usage limit — switching to {} in place…",
-                r.target,
-                to.as_deref().unwrap_or("the other harness")
-            );
-        }
-        let Some(ctx) = target_ctx(cfg, Some(r.repo.clone()), Some(r.branch.clone())) else {
-            eprintln!("bn fleet --fix: could not resolve {} — skipped", r.target);
-            continue;
-        };
-        // The fleet auto-switch is always rate-limit driven — the agent hit its usage limit.
-        // One target whose worktree or window can't be resolved is reported and skipped: the
-        // point of the sweep is the *other* limited agents, and aborting on the first failure
-        // would leave them sitting at their limit prompt.
-        if !emit_switch(
-            cfg,
-            &ctx,
-            to,
-            None,
-            true,
-            Some("limit".to_string()),
-            as_json,
-        ) {
-            eprintln!("bn fleet --fix: switching {} failed — skipped", r.target);
-        }
     }
 }
 
@@ -2266,8 +2209,6 @@ pub(crate) fn emit_agent_sessions(
         );
     }
 }
-
-
 
 
 

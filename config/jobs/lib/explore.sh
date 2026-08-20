@@ -100,7 +100,11 @@ fi
 # is taken from inside the repo's own main worktree. A repo whose worktree isn't where we expect
 # skips the check rather than the run — an unenforced cap is a smaller failure than never exploring.
 repo_main="${BN_WORKTREE_DIR:-$HOME/projects/worktree}/$REPO/main"
-if command -v gh >/dev/null 2>&1 && [ -d "$repo_main" ]; then
+[ -d "$repo_main" ] || {
+  log "explore: no worktree at $repo_main — skipping unavailable repo"
+  exit 0
+}
+if command -v gh >/dev/null 2>&1; then
   open_backlog="$(cd "$repo_main" && gh issue list --label "$LABEL" --state open --limit 100 \
     --json number 2>/dev/null | jq 'length' 2>/dev/null)" || open_backlog=""
   if [ -n "$open_backlog" ] && [ "$open_backlog" -ge "$BACKLOG_CAP" ]; then
@@ -108,7 +112,7 @@ if command -v gh >/dev/null 2>&1 && [ -d "$repo_main" ]; then
     exit 0
   fi
 else
-  log "explore: skipping the backlog check (no gh, or no worktree at $repo_main)"
+  log "explore: skipping the backlog check (no gh)"
 fi
 
 # --- the assignment -----------------------------------------------------------------------

@@ -1,6 +1,6 @@
 use crate::*;
 
-mod fleet;
+mod automation;
 mod git_pr;
 mod insights;
 mod intake;
@@ -18,7 +18,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Planning(_) => "planning",
         Command::Tracking(_) => "tracking",
         Command::Insights(_) => "insights",
-        Command::Fleet(_) => "fleet",
+        Command::Automation(_) => "automation",
         Command::Staff(_) => "staff",
         Command::ShellUi(_) => "shell-ui",
         Command::GitPr(_) => "git-pr",
@@ -45,7 +45,7 @@ pub(crate) fn route_command(cfg: &Config, command: Command, json: bool) {
         Command::Planning(action) => planning::route(cfg, action, json),
         Command::Tracking(action) => tracking::route(cfg, action, json),
         Command::Insights(action) => insights::route(cfg, action, json),
-        Command::Fleet(action) => fleet::route(cfg, action, json),
+        Command::Automation(action) => automation::route(cfg, action, json),
         Command::Staff(action) => staff::route(cfg, action, json),
         Command::ShellUi(action) => shell_ui::route(cfg, action, json),
         Command::GitPr(action) => git_pr::route(cfg, action, json),

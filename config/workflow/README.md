@@ -89,7 +89,6 @@ worktree creation. See `config/hooks/post-create` for a starting point.
 | S   | `bn tmux-cockpit` (native; orchestration roll-up) |
 | j   | `bn jump` (native; everything that needs you: windows + `bn next` queue) |
 | Tab | `bn jump --next` (native; jump to top window needing you; repeat to cycle) |
-| f   | `bn fleet pick` (native; jump to ANY agent + orchestrator window, live preview) |
 | m   | watch this window (silence → ✓) |
 
 ## Live agent activity in the status bar

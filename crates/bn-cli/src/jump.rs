@@ -426,9 +426,9 @@ fn goto(wid: &str) {
 
 // ---- bn jump --session : the this-session window picker (prefix `) -------------------------------
 //
-// The third member of the jump family, scoped where the other two are not: `prefix Tab` jumps to
-// whatever needs you next, `prefix f` spans every agent window on the server, and this one lists
-// *every* window of the session you are in — worktrees with nothing flagged included — because
+// The session-scoped member of the jump family: `prefix Tab` jumps to whatever needs you next,
+// while this one lists *every* window of the session you are in — worktrees with nothing flagged
+// included — because
 // "switch to the branch I was on" is navigation, not triage. Windows carry the same badges the tab
 // bar draws (`@bn_blockers` / `@bn_todos` / `@bn_agent`), so the picker reads like the bar it
 // replaces, with a live pane preview the bar can't show.

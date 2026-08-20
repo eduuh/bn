@@ -3591,16 +3591,46 @@ fn supervise_inflight(cfg: &Config, st: &mut OrchestrateState, now: i64) {
     // Refresh origin/<default> once for the whole fleet so the per-agent wip check is judged
     // against the *live* main, not a stale local ref (#370 defect 3).
     fetch_origin_default(cfg, &st.repo);
-    let inflight: Vec<(String, String)> = st
+    let inflight: Vec<(String, String, i64)> = st
         .queue
         .iter()
         .filter(|i| i.status == ItemStatus::Dispatched)
-        .filter_map(|i| i.branch.clone().map(|b| (i.id.clone(), b)))
+        .filter_map(|i| {
+            i.branch
+                .clone()
+                .map(|branch| (i.id.clone(), branch, i.dispatched_at))
+        })
         .collect();
-    for (id, branch) in inflight {
+    for (id, branch, dispatched_at) in inflight {
         let obs = observe(cfg, &st.repo, &branch, &windows, &live_processes);
         let wt = worktree_path(cfg, &st.repo, &branch);
         let progress = bn_core::agent::agent_progress_for_cwd(&wt);
+        // `bn agent done` is durable even when it runs through `agent send --detach`, where the
+        // resumed process cannot stamp the original tmux window's Plane-A state. Treat a fresh,
+        // explicitly keyed completion report as the same Done signal as `@bn_agent=done`; otherwise
+        // an empty badge plus committed WIP relaunches an already-finished agent forever.
+        if completion_for_lane(&st.repo, &branch, dispatched_at).is_some() {
+            let newly_done = st
+                .queue
+                .iter()
+                .find(|item| item.id == id)
+                .is_none_or(|item| item.last_state != Some(PaneState::Done));
+            st.set_state(&id, PaneState::Done, now);
+            if newly_done {
+                st.record_recovery(
+                    &id,
+                    PaneState::Done,
+                    SupervisorAction::Land,
+                    "agent completion report observed",
+                    now,
+                );
+                log_event(
+                    "orchestrate_done_reported",
+                    &[("repo", &st.repo), ("branch", &branch)],
+                );
+            }
+            continue;
+        }
         update_stuck_lane(
             cfg,
             st,
@@ -4150,7 +4180,8 @@ fn switch_cooldown_elapsed(last_switch_at: i64, now: i64) -> bool {
 /// bias+fallback, so a Claude (or Copilot) lane that hit its cap continues on the other harness with
 /// nobody at the keyboard. Reuses the proven `bn switch --in-place` machinery (writes the handoff,
 /// grants folder trust, respawns the worktree's pane on the target harness seeded to read it), the
-/// same path `bn fleet --fix` uses. The switch is skipped inside the [`SWITCH_COOLDOWN_SECS`] window
+/// same in-place switch path used for manual recovery. The switch is skipped inside the
+/// [`SWITCH_COOLDOWN_SECS`] window
 /// since the last one, so a just-respawned harness isn't flipped back while it's still booting.
 fn switch_limited_lane(st: &mut OrchestrateState, id: &str, branch: &str, now: i64) {
     let (current, last_switch) = st
@@ -6233,13 +6264,90 @@ fn item_of(st: &OrchestrateState, id: &str) -> String {
 
 /// The best-known PR link for a landed branch, from the `bn agent done` completion item (if any).
 fn done_pr_link(repo: &str, branch: &str) -> Option<String> {
-    let key = format!("done:{repo}/{branch}");
+    completion_for_lane(repo, branch, 0).and_then(|item| item.link)
+}
+
+fn completion_for_lane(
+    repo: &str,
+    branch: &str,
+    dispatched_at: i64,
+) -> Option<bn_core::attention::AttnItem> {
     let today = bn_core::util::today();
     bn_core::attention::completed_items(&today)
         .into_iter()
         .chain(bn_core::attention::open_items(&today))
-        .find(|a| a.key.as_deref() == Some(key.as_str()))
-        .and_then(|a| a.link)
+        .find(|item| {
+            completion_matches_lane(
+                item.repo.as_deref(),
+                item.branch.as_deref(),
+                item.key.as_deref(),
+                item.created,
+                repo,
+                branch,
+                dispatched_at,
+            )
+        })
+}
+
+fn completion_matches_lane(
+    completion_repo: Option<&str>,
+    completion_branch: Option<&str>,
+    completion_key: Option<&str>,
+    completion_created: i64,
+    repo: &str,
+    branch: &str,
+    dispatched_at: i64,
+) -> bool {
+    completion_created >= dispatched_at
+        && completion_key.is_some_and(|key| key.starts_with("done:"))
+        && completion_repo.is_some_and(|value| value.eq_ignore_ascii_case(repo))
+        && completion_branch.is_some_and(|value| {
+            wt::sanitize_branch(value).eq_ignore_ascii_case(&wt::sanitize_branch(branch))
+        })
+}
+
+#[cfg(test)]
+mod completion_report_tests {
+    use super::completion_matches_lane;
+
+    #[test]
+    fn fresh_completion_matches_sanitized_lane() {
+        assert!(completion_matches_lane(
+            Some("bigmono"),
+            Some("dispatch-use-playwright"),
+            Some("done:bigmono/dispatch-use-playwright"),
+            200,
+            "BigMono",
+            "dispatch/use-playwright",
+            100,
+        ));
+    }
+
+    #[test]
+    fn completion_older_than_dispatch_does_not_match() {
+        assert!(!completion_matches_lane(
+            Some("bigmono"),
+            Some("dispatch-use-playwright"),
+            Some("done:bigmono/dispatch-use-playwright"),
+            99,
+            "bigmono",
+            "dispatch/use-playwright",
+            100,
+        ));
+    }
+
+    #[test]
+    fn non_completion_attention_does_not_match() {
+        assert!(!completion_matches_lane(
+            Some("bigmono"),
+            Some("dispatch-use-playwright"),
+            Some("investigate:bigmono/dispatch-use-playwright"),
+            200,
+            "bigmono",
+            "dispatch/use-playwright",
+            100,
+        ));
+    }
 }
 
 /// Seed a run's dispatch harness from the `[orchestrate].agent` config default (#382) when it isn't
@@ -6786,4 +6894,3 @@ fn record_degradation(
         states.insert(key, active);
     }
 }
-

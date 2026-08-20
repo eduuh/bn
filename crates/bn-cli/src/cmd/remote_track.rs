@@ -1,4 +1,4 @@
-//! Legacy remote-run tracking (#282) — surface historical remote runs in `bn status` / `bn fleet`.
+//! Legacy remote-run tracking (#282) — surface historical remote runs in `bn status` / `bn agent live`.
 //!
 //! Older builds recorded a triggered GitHub Actions run as a `remote-run:` line in the branch note
 //! (the durable record). This module reads those lines back, reconciles the still-open ones against
@@ -20,7 +20,6 @@ use bn_core::staff::RunStatus;
 use bn_core::{events, store, util};
 use serde::Serialize;
 use serde_json::json;
-use std::time::Duration;
 
 /// The collab-section prefix marking a triggered remote-run record.
 const RECORD_PREFIX: &str = "remote-run: ";
@@ -198,7 +197,7 @@ fn report_is_final(report: &RemoteRunReport) -> bool {
     }
 }
 
-/// A remote run flattened for rendering + JSON on `bn status` / `bn fleet`. `state` is the display
+/// A remote run flattened for rendering + JSON on `bn status` / `bn agent live`. `state` is the display
 /// word (`pending` | `running` | `gone` | the #271 taxonomy); `run_status` carries the terminal
 /// taxonomy value when finished (for coloring / counting).
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -328,7 +327,7 @@ pub(crate) fn track_current_note(
 }
 
 /// Reconcile + persist one note's remote runs against live `gh`, returning the rendered views. The
-/// shared core behind `bn status` (its own note) and `bn fleet` (every note). `probe` memoizes the
+/// shared core behind `bn status` (its own note) and `bn agent live` (every note). `probe` memoizes the
 /// one-time `gh` availability check; `budget` bounds how many open runs across a batch of notes hit
 /// the network, so a large fleet never stalls the board. Open runs that reach a terminal state are
 /// written back (monotonically, under a lock) and billed to the ledger once.
@@ -459,7 +458,7 @@ fn emit_ledger(ctx: &Resolved, rec: &RemoteRunRecord) {
     );
 }
 
-/// Remote-run views across every local branch note, for the `bn fleet` board and `bn agent live`.
+/// Remote-run views across every local branch note for `bn agent live`.
 /// Reconciles open runs live (bounded by [`FLEET_RECONCILE_CAP`] so a big fleet never stalls the
 /// board) and persists any that reached a terminal state — so a run finalizes even when the fleet
 /// board is the only surface the operator ever opens (`bn status` isn't the sole reconcile point).
@@ -483,45 +482,11 @@ pub(crate) fn fleet_views(cfg: &Config, runner: &dyn CommandRunner) -> Vec<Remot
     out
 }
 
-struct BoundedRunner<'a> {
-    inner: &'a dyn CommandRunner,
-    timeout: Duration,
-}
-
-impl CommandRunner for BoundedRunner<'_> {
-    fn run(&self, program: &str, args: &[&str]) -> bn_core::runner::CommandOutput {
-        self.inner.run_with_timeout(program, args, self.timeout)
-    }
-}
-
-/// Bounded, read-only remote-run projection for [`crate::agent_live::FleetSnapshot`]. Open runs
-/// reconcile against GitHub for current display, but learned state is never written back.
-pub(crate) fn fleet_views_snapshot(cfg: &Config, runner: &dyn CommandRunner) -> Vec<RemoteRunView> {
-    let bounded = BoundedRunner {
-        inner: runner,
-        timeout: Duration::from_secs(2),
-    };
-    let mut probe: Option<bool> = None;
-    let mut budget = FLEET_RECONCILE_CAP;
-    let mut views = Vec::new();
-    for branch_note in rollups::all_notes(cfg) {
-        for record in records_in(&branch_note.note) {
-            let wants_live = record.state.is_none() && budget > 0;
-            let gh_ok = wants_live && *probe.get_or_insert_with(|| gh_available(&bounded));
-            if gh_ok {
-                budget -= 1;
-            }
-            views.push(reconcile_one(&bounded, &record, gh_ok).0);
-        }
-    }
-    views
-}
-
 /// Most open remote runs the fleet board reconciles live per render — keeps an at-a-glance board
 /// snappy while still refreshing a realistic number of in-flight runs.
 const FLEET_RECONCILE_CAP: usize = 8;
 
-/// A one-line-per-run text rendering for `bn status` / `bn fleet` (glyph + state + PR + seed).
+/// A one-line-per-run text rendering for `bn status` / `bn agent live` (glyph + state + PR + seed).
 pub(crate) fn render_line(v: &RemoteRunView) -> String {
     let mark = match v.state.as_str() {
         "ok" => "✓ ok         ",

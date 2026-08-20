@@ -346,7 +346,7 @@ pub(crate) fn return_slot(cfg: &Config, slot: &Path, force: bool) -> bool {
 /// provably finished. Returns whether the slot is now free to reset.
 ///
 /// "Provably finished" is not a new rule: it is [`bn_core::fleet_gc::classify`], the same policy
-/// `bn fleet reap` already applies to every agent on the box — its PR merged or closed, its window
+/// The stale-agent reaper already applies to every agent on the box — its PR merged or closed, its window
 /// or worktree gone, and past the idle grace with nothing uncommitted. Anything else (mid-turn,
 /// dirty, freshly launched) is kept, because a forced *slot* return should never be a quieter way
 /// to kill a working agent than `bn agent kill` is.

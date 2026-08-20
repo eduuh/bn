@@ -1,6 +1,6 @@
 //! Unified token-usage + **$ cost** accounting across *all* agent work (issue #381).
 //!
-//! Today usage is fragmented: `bn fleet` shows live tokens for currently-running dispatched
+//! Today usage is fragmented: `bn agent live` shows live tokens for currently-running dispatched
 //! agents (no $, no history) and `bn staff cost` shows a monthly $ ledger for **only** the #266
 //! staff-cron agents. This module is the one accounting surface that unifies them, categorized by
 //! **work-class** (who launched the run) and reported in **two clearly-labeled cost units**:

@@ -1,8 +1,8 @@
 use crate::*;
 
-pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
+pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
     match action {
-        CmdFleet::Jump {
+        CmdAutomation::Jump {
             next,
             session,
             pick_stage,
@@ -18,7 +18,7 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
                 jump::run(cfg)
             }
         }
-        CmdFleet::Tat {
+        CmdAutomation::Tat {
             name,
             root,
             pick_stage,
@@ -30,7 +30,7 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
                 tat::run(cfg, name.as_deref(), root.as_deref())
             }
         }
-        CmdFleet::Connect {
+        CmdAutomation::Connect {
             host,
             window,
             read_only,
@@ -42,26 +42,26 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
                 connect::run(cfg, host.as_deref(), window, read_only)
             }
         }
-        CmdFleet::Queue { action } => cmd::queue::route(cfg, action, json),
-        CmdFleet::Harness { action } => match action {
-            crate::cli::fleet_cmd::HarnessCmd::Models { harness } => {
+        CmdAutomation::Queue { action } => cmd::queue::route(cfg, action, json),
+        CmdAutomation::Harness { action } => match action {
+            crate::cli::automation_cmd::HarnessCmd::Models { harness } => {
                 cmd::harness_models::emit_harness_models(harness.as_deref(), json)
             }
         },
-        CmdFleet::Mobile { host } => mobile::run(cfg, &host),
-        CmdFleet::Notify { action } => match action {
+        CmdAutomation::Mobile { host } => mobile::run(cfg, &host),
+        CmdAutomation::Notify { action } => match action {
             None | Some(NotifyCmd::Status) => cmd::notify::emit_notify_status(cfg, json),
         },
-        CmdFleet::Focus { action } => match action {
+        CmdAutomation::Focus { action } => match action {
             None | Some(FocusCmd::Status) => emit_focus_status(json),
             Some(FocusCmd::Start { dur }) => emit_focus_start(&dur, json),
             Some(FocusCmd::End) => emit_focus_end(cfg, json),
         },
-        CmdFleet::Sync { yes } => {
+        CmdAutomation::Sync { yes } => {
             let ctx = resolve_or_exit(cfg);
             emit_sync(cfg, &ctx, yes, json);
         }
-        CmdFleet::Attn {
+        CmdAutomation::Attn {
             action,
             type_filter,
         } => match action {
@@ -141,7 +141,7 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
             Some(AttnCmd::ToNotify) => emit_attn_to_notify(json),
             Some(AttnCmd::Notified { id }) => emit_attn_notified(&id, json),
         },
-        CmdFleet::Agent { action } => match action {
+        CmdAutomation::Agent { action } => match action {
             Some(AgentCmd::Ingest { reingest }) => emit_agent_ingest(cfg, reingest, json),
             Some(AgentCmd::Digest { repo, branch, yes }) => {
                 let ctx =
@@ -297,13 +297,13 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
                 passthrough,
             ),
         },
-        CmdFleet::Sessions { action } => match action {
+        CmdAutomation::Sessions { action } => match action {
             None => emit_sessions(cfg, json),
             Some(SessionsCmd::Resume { name_or_id }) => {
                 resume_registered_session(cfg, Some(&name_or_id), json, "sessions_resume")
             }
         },
-        CmdFleet::Resume {
+        CmdAutomation::Resume {
             all,
             dry_run,
             yes,
@@ -334,67 +334,7 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
                 },
             )
         }
-        CmdFleet::Fleet {
-            action,
-            idle,
-            stuck,
-            fix,
-            budget,
-            cost,
-            oneline,
-            preview,
-            mobile,
-        } => match action {
-            None => {
-                if cost {
-                    crate::cmd::cost::emit_live(cfg, json);
-                } else if fix {
-                    run_fleet_fix(cfg, idle, stuck, json);
-                } else if json {
-                    agent_live::emit_board_json(cfg, idle, stuck, budget);
-                } else if mobile {
-                    agent_live::run_board_mobile(cfg, idle, stuck, budget);
-                } else {
-                    agent_live::run_board(cfg, idle, stuck, budget, preview && !oneline);
-                }
-            }
-            Some(FleetCmd::Pick {
-                pick_stage: Some(stage),
-                target,
-                ..
-            }) => agent_live::pick_stage(stage, target.as_deref()),
-            Some(FleetCmd::Pick {
-                pick_stage: None,
-                dispatched,
-                ..
-            }) => agent_live::run_pick(cfg, idle, stuck, dispatched),
-            Some(FleetCmd::Jump { query }) => match query {
-                Some(q) => agent_live::run_direct_jump(cfg, idle, stuck, &q),
-                None => agent_live::run_menu_jump(cfg, idle, stuck),
-            },
-            Some(FleetCmd::Steer { target }) => match target {
-                Some(t) => agent_live::run_steer_target(cfg, &t),
-                None => agent_live::run_steer_menu(cfg, idle, stuck),
-            },
-            Some(FleetCmd::Reap {
-                kill,
-                force,
-                min_idle,
-            }) => {
-                reap::run_reap(
-                    cfg,
-                    reap::ReapOpts {
-                        kill,
-                        force,
-                        min_idle_secs: min_idle,
-                        as_json: json,
-                        check_pr: true,
-                        quiet: false,
-                    },
-                );
-            }
-        },
-        CmdFleet::Night { action } => match action {
+        CmdAutomation::Night { action } => match action {
             None | Some(NightCmd::Status) => emit_night_status(cfg, json),
             Some(NightCmd::Plan) => emit_night_plan(cfg, json),
             Some(NightCmd::Run { max, force }) => emit_night_run(cfg, max, force, json),
@@ -402,7 +342,7 @@ pub(super) fn route(cfg: &Config, action: CmdFleet, json: bool) {
             Some(NightCmd::Off) => emit_night_switch(false, json),
             Some(NightCmd::On) => emit_night_switch(true, json),
         },
-        CmdFleet::Dojo { action, repo, max } => match action {
+        CmdAutomation::Dojo { action, repo, max } => match action {
             None => emit_dojo_session(cfg, dojo_selector(repo, None, None), max, json),
             Some(DojoCmd::Quiz { repo, max }) => emit_dojo_session(
                 cfg,

@@ -1,7 +1,7 @@
 //! `bn notify status` — what the notification policy gate did today, and why.
 //!
 //! The gate's whole promise is that quiet never means lost: a toast it holds back is still in
-//! `bn next`, `bn attn`, `bn fleet` and the tmux badges. This is the surface that makes the
+//! `bn next`, `bn attn`, `bn agent live` and the tmux badges. This is the surface that makes the
 //! holding *legible* — how much of today's budget is spent, which quiet window is open, and what
 //! was withheld — so "I never heard about it" always has an answer.
 

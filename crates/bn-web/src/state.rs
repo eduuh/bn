@@ -22,6 +22,10 @@ const STREAM_CAPACITY: usize = 256;
 pub struct AppState {
     /// The resolved bn configuration (roots, hostname, `[web]` settings, …).
     pub cfg: Arc<Config>,
+    /// The actual bind address this process is serving, after applying CLI flags like `--port`.
+    pub live_bind: String,
+    /// The actual TCP port this process is serving, after applying CLI flags like `--port`.
+    pub live_port: u16,
     /// Server start time (epoch seconds), for `GET /api/health`'s uptime.
     pub started_at: i64,
     /// SSE fan-out: the watcher sends [`StreamFrame`]s here; `/api/stream` clients subscribe.
@@ -32,11 +36,13 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Build the shared state from a resolved config.
-    pub fn new(cfg: Config) -> AppState {
+    /// Build the shared state from a resolved config and an explicit live bind.
+    pub fn with_live_addr(cfg: Config, live_bind: String, live_port: u16) -> AppState {
         let (tx, _rx) = broadcast::channel(STREAM_CAPACITY);
         AppState {
             cfg: Arc::new(cfg),
+            live_bind,
+            live_port,
             started_at: bn_core::util::now_epoch_secs(),
             tx,
             views: ViewCache::new(),

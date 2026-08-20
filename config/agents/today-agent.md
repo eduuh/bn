@@ -52,7 +52,7 @@ Reconcile the packet and the suggestion list against the day's goals, then act:
   than quietly accepting it. Deciding what not to do is half the job.
 
 ## Monitoring & steering
-- `bn fleet` — the live board: who is **working**, **waiting** (needs a human), **stuck**.
+- `bn agent live` — the live agents: who is **working**, **waiting** (needs a human), **stuck**.
 - Nudge a running worker: `bn agent send <target> "<message>" --detach` (`<target>` is its
   `repo:branch`). Use `--detach` so you never block on a long turn.
 - Workers report completion themselves via `bn agent done`, which surfaces as a review item **and

@@ -127,7 +127,7 @@ pub fn readiness(runner: &dyn CommandRunner, repo_root: &Path) -> RemoteReadines
 //
 // Older builds recorded triggered GitHub Actions runs in the branch note. This half tracks those
 // legacy records: classify the run's outcome onto the #271 run-status taxonomy and reconcile a
-// recorded run against live `gh` (its state + the draft PR it opened) so `bn status` / `bn fleet`
+// recorded run against live `gh` (its state + the draft PR it opened) so `bn status` / `bn agent live`
 // surface a historical remote run alongside local tmux agents. The failure→taxonomy table is the #279 spike's
 // (branch note `remote-gh-spike.md`); all `gh` access routes through the [`CommandRunner`] seam.
 
@@ -404,7 +404,7 @@ pub fn find_run_pr(runner: &dyn CommandRunner, slug: &str, run_url: &str) -> PrL
 }
 
 /// One reconciled remote run: its live [`RemoteRunState`] and the linked PR when found. Built from
-/// live `gh` by [`reconcile_remote_run`]; the shared record `bn status` / `bn fleet` render and (on
+/// live `gh` by [`reconcile_remote_run`]; the shared record `bn status` / `bn agent live` render and (on
 /// `bn status`) write back into the branch note once terminal.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RemoteRunReport {

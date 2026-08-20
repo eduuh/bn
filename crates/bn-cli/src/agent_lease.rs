@@ -353,7 +353,7 @@ pub(crate) fn live_agents_in(worktree: &Path) -> Vec<Occupant> {
 }
 
 /// Live panes whose working directory is inside `worktree` and whose foreground command is a known
-/// agent harness — an agent bn never registered. Same signal `bn fleet reap`'s discovery uses,
+/// agent harness — an agent bn never registered. Same signal the stale-agent reaper uses,
 /// read straight off tmux rather than the process table so it needs no `/proc` (which does not
 /// exist on macOS, where the pool's old in-use check therefore always answered "idle").
 fn harness_panes_in(worktree: &Path) -> Vec<Occupant> {

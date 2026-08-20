@@ -76,7 +76,7 @@ long-running, so let it run in its own window. `--no-pool` opts out for a delibe
 ## Monitoring & steering (your communication surface)
 - `bn control status --id {{controller_id}}` — your durable queue and the worker lanes this
   controller owns.
-- `bn fleet` — the live board of every agent across all worktrees and both harnesses: who is
+- `bn agent live` — every live agent across all worktrees and both harnesses: who is
   **working**, **waiting** (needs a human), or **stuck** (idle too long).
 - Workers report completion themselves via `bn agent done`, which surfaces as an attention
   "review" item. Don't re-dispatch a finished worker — surface it for review/merge.
