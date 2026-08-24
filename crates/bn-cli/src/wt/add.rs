@@ -231,12 +231,23 @@ pub(crate) fn create_worktree(bare_s: &str, branch: &str, wt_s: &str, pull: bool
         .is_some()
     };
     let created = if exists("heads") {
-        run_git(&["--git-dir", bare_s, "worktree", "add", wt_s, branch])
+        run_git(&[
+            "-c",
+            "safe.bareRepository=all",
+            "--git-dir",
+            bare_s,
+            "worktree",
+            "add",
+            wt_s,
+            branch,
+        ])
     } else if exists("remotes/origin") {
         // Remote-only ref → create the local branch explicitly from origin/<branch>. A bare
         // `worktree add <path> <branch>` won't DWIM a slash-named remote branch under a limited
         // fetch refspec (e.g. Office/BigMono tracks only main) — it errors "invalid reference".
         run_git(&[
+            "-c",
+            "safe.bareRepository=all",
             "--git-dir",
             bare_s,
             "worktree",
@@ -249,6 +260,8 @@ pub(crate) fn create_worktree(bare_s: &str, branch: &str, wt_s: &str, pull: bool
     } else {
         println!("{YELLOW}Branch '{branch}' not found. Creating new branch...{NC}");
         run_git(&[
+            "-c",
+            "safe.bareRepository=all",
             "--git-dir",
             bare_s,
             "worktree",
@@ -377,5 +390,4 @@ pub(crate) fn run_clone_all(cfg: &Config, manifest: &str) -> bool {
     println!("{GREEN}Done: cloned {cloned}, skipped {skipped}, failed {failed}{NC}");
     true
 }
-
 

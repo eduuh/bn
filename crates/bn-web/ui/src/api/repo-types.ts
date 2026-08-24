@@ -58,7 +58,7 @@ export type RepoVerifyMode = "command" | "scripts" | "missing";
 export interface RepoSetupScript {
   name: string;
   exists: boolean;
-  scope: "branch" | "repo" | "global" | null;
+  scope: "branch" | "project" | "repo" | "global" | null;
   path: string | null;
   repo_path: string;
   repo_owned: boolean;
@@ -85,7 +85,7 @@ export interface RepoSetup {
 export interface RepoScriptView {
   repo: string;
   name: string;
-  scope: "branch" | "repo" | "global" | null;
+  scope: "branch" | "project" | "repo" | "global" | null;
   path: string | null;
   repo_path: string;
   content: string;

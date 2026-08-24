@@ -169,10 +169,8 @@ pub(crate) fn create_worktree(
     }
     let bare_s = bare.to_string_lossy().to_string();
     let wt_s = wt_path.to_string_lossy().to_string();
-    let git = |args: &[&str]| crate::git::git_command(args).output();
-    let branch_exists = git(&[
-        "--git-dir",
-        &bare_s,
+    let bare_git = |tail: &[&str]| crate::git::git_command(&bare_git_args(&bare_s, tail)).output();
+    let branch_exists = bare_git(&[
         "show-ref",
         "--verify",
         "--quiet",
@@ -182,7 +180,7 @@ pub(crate) fn create_worktree(
     .unwrap_or(false);
     let out = if branch_exists {
         // Re-dispatch of an existing branch: check it out as-is — no base fork involved.
-        git(&["--git-dir", &bare_s, "worktree", "add", &wt_s, branch])
+        bare_git(&["worktree", "add", &wt_s, branch])
     } else {
         // #304: fork the new branch from an *up-to-date* base. A stale local base (not updated
         // after sibling PRs merged on the remote) makes every dispatched branch miss those
@@ -191,27 +189,18 @@ pub(crate) fn create_worktree(
         // branch starts from current remote base. `-c credential.useHttpPath` mirrors the wt.rs
         // fetch helper so ADO/GCM fetches can derive the org from the URL path.
         let origin_ref = format!("refs/remotes/origin/{base}");
-        let _ = git(&[
-            "--git-dir",
-            &bare_s,
+        let _ = bare_git(&[
             "-c",
             "credential.useHttpPath=true",
             "fetch",
             "origin",
             &format!("refs/heads/{base}:{origin_ref}"),
         ]);
-        let origin_exists = git(&[
-            "--git-dir",
-            &bare_s,
-            "show-ref",
-            "--verify",
-            "--quiet",
-            &origin_ref,
-        ])
+        let origin_exists = bare_git(&["show-ref", "--verify", "--quiet", &origin_ref])
         .map(|o| o.status.success())
         .unwrap_or(false);
         let count = |range: &str| -> u32 {
-            git(&["--git-dir", &bare_s, "rev-list", "--count", range])
+            bare_git(&["rev-list", "--count", range])
                 .ok()
                 .filter(|o| o.status.success())
                 .and_then(|o| {
@@ -234,16 +223,7 @@ pub(crate) fn create_worktree(
         if let Some(w) = warn {
             eprintln!("bn dispatch: {w}");
         }
-        git(&[
-            "--git-dir",
-            &bare_s,
-            "worktree",
-            "add",
-            "-b",
-            branch,
-            &wt_s,
-            &start,
-        ])
+        bare_git(&["worktree", "add", "-b", branch, &wt_s, &start])
     }
     .map_err(|e| e.to_string())?;
     if !out.status.success() {

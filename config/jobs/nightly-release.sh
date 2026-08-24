@@ -225,7 +225,9 @@ if [ "${BN_NIGHTLY_SKIP_TESTS:-0}" = "1" ]; then
   log "warning: test gate bypassed (BN_NIGHTLY_SKIP_TESTS=1)"
 else
   echo "nightly-release: running the workspace test suite…"
-  ( cd "$repo" && cargo test --workspace ) ||
+  # The workspace suite has a small amount of shared-state test code; run it single-threaded so
+  # the release gate matches the stable local path.
+  ( cd "$repo" && cargo test --workspace -- --test-threads=1 ) ||
     die "nightly-release: tests failed @ $short — not publishing"
 fi
 

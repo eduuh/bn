@@ -5,7 +5,7 @@ use super::config_file::ConfigFile;
 use super::util::{non_empty_env, split_list};
 use super::{agents_dir, jobs_dir, Config, Resolved};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Resolved config for the autopilot jobs (#98 wrap, #99 standup, #110 DXI). Kept off [`Config`]
 /// so the hot path stays untouched: these flags only matter to the three job entry points, which
@@ -280,13 +280,21 @@ pub fn quarter_review_cron_override() -> Option<(PathBuf, String)> {
         .map(|value| (super::config_file_path(), value))
 }
 
-/// Where a job script lives. Jobs resolve branch → repo → global, like PATH.
+/// Where a job script lives. Jobs resolve branch → project → repo → global, like PATH.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JobScope {
     /// `<branch note dir>/jobs/` — scoped to one branch.
     Branch,
-    /// `<repo>/main note dir/jobs/` — the repo's own maintenance scripts.
+    /// `<worktree>/.bn/jobs/` — committed with the project itself, like `.bn/skills`. Travels
+    /// with a plain `git clone` of the repo, so every collaborator (and every worktree/branch
+    /// carrying the file) gets the same script with no bn-notes setup required.
+    Project,
+    /// `<notes root>/jobs/<repo>/` — the repo's own maintenance scripts, machine-independent and
+    /// synced through the same notes git repo as everything else in `notes_root`. Deliberately
+    /// carries no `machine()` segment: one script per repo, not one per machine. A script that
+    /// truly needs to branch on machine can do so internally (e.g. `hostname`/`uname`) rather
+    /// than bn maintaining separate near-duplicate copies that drift.
     Repo,
     /// `~/.config/bn/jobs/` (→ repo `jobs/`) — machine-level jobs.
     Global,
@@ -296,6 +304,7 @@ impl JobScope {
     pub fn label(self) -> &'static str {
         match self {
             JobScope::Branch => "branch",
+            JobScope::Project => "project",
             JobScope::Repo => "repo",
             JobScope::Global => "global",
         }
@@ -310,24 +319,42 @@ pub struct JobRef {
     pub path: String,
 }
 
-/// Candidate job dirs in resolution order for `ctx`: branch, then the repo's main note, then
-/// global. Global resolves across three tiers — private work-notes `jobs/`, private
+/// Candidate job dirs in resolution order for `ctx`: branch, then the project's own committed
+/// `.bn/jobs/`, then the repo's machine-independent `jobs/<repo>/` (synced via the notes repo),
+/// then global. Global resolves across three tiers — private work-notes `jobs/`, private
 /// personal-notes `jobs/`, then the shipped `jobs_dir()` — so a sensitive global job lives in
-/// your synced notes (private) and shadows a same-named shipped default. On `main` the branch dir
-/// *is* the repo dir, so it's listed once as `repo`.
+/// your synced notes (private) and shadows a same-named shipped default.
 pub fn job_dirs(cfg: &Config, ctx: Option<&Resolved>) -> Vec<(JobScope, PathBuf)> {
     let mut dirs = Vec::new();
     if let Some(c) = ctx {
-        if c.branch == "main" {
-            dirs.push((JobScope::Repo, cfg.note_dir(c).join("jobs")));
-        } else {
+        if c.branch != "main" {
             dirs.push((JobScope::Branch, cfg.note_dir(c).join("jobs")));
-            let repo_main = Resolved {
-                repo: c.repo.clone(),
-                branch: "main".to_string(),
-            };
-            dirs.push((JobScope::Repo, cfg.note_dir(&repo_main).join("jobs")));
         }
+        // Project tier: this branch's own checkout, at the conventional `<worktree_dir>/<repo>/
+        // <branch>` path bn's own `wt` layout uses — no cwd needed, so cron/web/CLI callers all
+        // resolve it the same way regardless of process cwd. `c.repo` is always lowercased (note
+        // key normalization), but the on-disk worktree dir preserves its original case (e.g.
+        // `BigMono`, not `bigmono`) — a literal join would silently miss it on a case-sensitive fs, so
+        // look the entry up case-insensitively first and fall back to the literal join (covers
+        // case-insensitive filesystems and repos that happen to already be lowercase).
+        if let Some(project_root) = find_worktree_repo_dir(&cfg.worktree_dir, &c.repo)
+            .map(|d| d.join(&c.branch))
+            .filter(|d| d.is_dir())
+            .or_else(|| {
+                let literal = cfg.worktree_dir.join(&c.repo).join(&c.branch);
+                literal.is_dir().then_some(literal)
+            })
+        {
+            dirs.push((JobScope::Project, project_root.join(".bn").join("jobs")));
+        }
+        // Repo tier: `<notes_dir_for(repo)>/jobs/<repo>/` — no `machine()` segment, so every
+        // machine that syncs the notes repo resolves the exact same script. This replaced an
+        // earlier per-machine `<machine>/<repo>/main note dir>/jobs/` copy that let a repo's
+        // build/start/etc. scripts silently drift between machines.
+        dirs.push((
+            JobScope::Repo,
+            cfg.notes_dir_for(&c.repo).join("jobs").join(&c.repo),
+        ));
     }
     // Global tiers, highest precedence first: private work notes, private personal notes, then
     // the shipped repo jobs. `<root>/jobs` is machine-agnostic (synced across machines via the
@@ -343,6 +370,18 @@ pub fn job_dirs(cfg: &Config, ctx: Option<&Resolved>) -> Vec<(JobScope, PathBuf)
         }
     }
     dirs
+}
+
+/// Find `<worktree_dir>/<name>` case-insensitively — the physical worktree directory preserves
+/// whatever case the repo was cloned/checked-out with (e.g. `BigMono`), while every `Resolved.repo`
+/// is lowercased for note-key purposes. `None` when `worktree_dir` itself isn't readable or no
+/// entry matches.
+fn find_worktree_repo_dir(worktree_dir: &Path, name_lower: &str) -> Option<PathBuf> {
+    std::fs::read_dir(worktree_dir).ok()?.find_map(|entry| {
+        let entry = entry.ok()?;
+        let file_name = entry.file_name();
+        (file_name.to_string_lossy().to_lowercase() == name_lower).then(|| entry.path())
+    })
 }
 
 /// Candidate self-describing-agent dirs in resolution order for `ctx` — the agent analogue of

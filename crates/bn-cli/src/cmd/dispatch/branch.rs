@@ -113,6 +113,7 @@ mod tests {
     fn git(dir: &Path, args: &[&str]) {
         let out = Command::new("git")
             .current_dir(dir)
+            .args(["-c", "safe.bareRepository=all"])
             .args(args)
             .output()
             .expect("run git");
@@ -203,13 +204,17 @@ mod tests {
         git(&work, &["branch", "repo-setup"]);
         git(&work, &["push", "-q", "origin", "repo-setup"]);
         let pool = tmp.path().join("pool2");
-        git(
-            &bare_of(&tmp),
-            &["worktree", "add", "-q", pool.to_str().unwrap(), "repo-setup"],
-        );
+        let bare = bare_of(&tmp);
+        assert!(crate::cmd::dispatch::create_worktree(
+            &bare,
+            &pool,
+            "repo-setup",
+            "main",
+        )
+        .expect("create worktree"));
 
         assert!(dispatch_branch_occupied(
-            &bare_of(&tmp),
+            &bare,
             &tmp.path().join("worktrees"),
             "r",
             "repo-setup",

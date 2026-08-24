@@ -114,7 +114,6 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
         CmdMisc::Version => println!("{}", version::line()),
         CmdMisc::Bearings => emit_bearings(cfg, json),
         CmdMisc::Kill { port } => std::process::exit(emit_kill(&port)),
-        CmdMisc::KillTmux { no_backup, yes } => std::process::exit(emit_kill_tmux(no_backup, yes)),
         CmdMisc::Issue { action } => match action {
             IssueCmd::File {
                 title,
@@ -271,4 +270,3 @@ fn emit_shell_init(shell: Shell) {
     }
     print!("{SHELL_WRAPPERS}");
 }
-

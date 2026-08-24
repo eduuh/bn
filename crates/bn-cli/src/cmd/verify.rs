@@ -62,9 +62,12 @@ pub(crate) fn resolve_verify_target(
                 }],
             })),
             None => Err(format!(
-                "no '{j}' job for {} — create {}/jobs/{j}.sh",
+                "no '{j}' job for {} — create {}/{j}.sh",
                 ctx.repo,
-                cfg.note_dir(ctx).display()
+                cfg.notes_dir_for(&ctx.repo)
+                    .join("jobs")
+                    .join(&ctx.repo)
+                    .display()
             )),
         };
     }
@@ -357,9 +360,12 @@ pub(crate) fn emit_verify(cfg: &Config, job: Option<String>, as_json: bool, skip
     let target = match resolve_verify_target(cfg, &ctx, job.as_deref()) {
         Ok(Some(t)) => t,
         Ok(None) => fail(&format!(
-            "bn verify: no build, test, or lint job for {} — create one under {}/jobs",
+            "bn verify: no build, test, or lint job for {} — create one under {}",
             ctx.repo,
-            cfg.note_dir(&ctx).display()
+            cfg.notes_dir_for(&ctx.repo)
+                .join("jobs")
+                .join(&ctx.repo)
+                .display()
         )),
         Err(msg) => fail(&format!("bn verify: {msg}")),
     };

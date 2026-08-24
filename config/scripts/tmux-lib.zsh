@@ -167,7 +167,7 @@ ensure_worktree() {
     git --git-dir="$bare" fetch origin || { echo "Fetch failed"; return 1; }
     mkdir -p "$WORKTREE_DIR/$repo"
     if git --git-dir="$bare" show-ref --verify --quiet "refs/heads/$branch"; then
-        if ! git --git-dir="$bare" worktree add "$worktree_path" "$branch"; then
+        if ! git -c safe.bareRepository=all --git-dir="$bare" worktree add "$worktree_path" "$branch"; then
             echo "Failed to create worktree"
             return 1
         fi
@@ -176,7 +176,7 @@ ensure_worktree() {
         base="$(default_branch_for_bare "$bare")" ||
             { echo "No main or master branch found: $repo"; return 1; }
         git --git-dir="$bare" branch -f "$base" "origin/$base" 2>/dev/null || true
-        if ! git --git-dir="$bare" worktree add -b "$branch" "$worktree_path" "$base"; then
+        if ! git -c safe.bareRepository=all --git-dir="$bare" worktree add -b "$branch" "$worktree_path" "$base"; then
             echo "Failed to create worktree"
             return 1
         fi

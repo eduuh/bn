@@ -29,10 +29,14 @@ pub(crate) fn run_build_cmd(
     };
     let job = name.as_deref().unwrap_or("build");
     let Some((_scope, script)) = resolver::job_script(cfg, Some(&ctx), job) else {
+        let repo_dir = cfg.notes_dir_for(&ctx.repo).join("jobs").join(&ctx.repo);
         eprintln!(
-            "bn build: no '{job}' script for {} — create {}/jobs/{job}.sh",
+            "bn build: no '{job}' script for {} — create {}/{job}.sh (synced to every machine \
+             through the notes repo), or, to commit it with the project's own git history, \
+             {}/.bn/jobs/{job}.sh",
             ctx.repo,
-            cfg.note_dir(&ctx).display()
+            repo_dir.display(),
+            cwd.display()
         );
         return 2;
     };

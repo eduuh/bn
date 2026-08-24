@@ -33,10 +33,14 @@ pub async fn repo_script(
         repo: repo.clone(),
         branch: "main".to_string(),
     };
+    // Machine-independent repo-tier path a save writes to — mirrors `JobScope::Repo` in
+    // `bn_core::resolver::job_dirs`: `<notes_dir_for(repo)>/jobs/<repo>/`, no `machine()`
+    // segment, so it's synced identically to every machine through the notes repo.
     let repo_path = state
         .cfg
-        .note_dir(&ctx)
+        .notes_dir_for(&repo)
         .join("jobs")
+        .join(&repo)
         .join(format!("{name}.sh"));
     let resolved = bn_core::resolver::job_script(&state.cfg, Some(&ctx), &name);
     let (scope, path, content) = match resolved {

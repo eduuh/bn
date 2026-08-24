@@ -1265,18 +1265,6 @@ pub(crate) enum CmdMisc {
         #[arg(long)]
         live: bool,
     },
-    /// Reset tmux to a clean slate: back up the tmux-resurrect saved state to a tarball, wipe it
-    /// so tmux-continuum won't auto-restore the old sessions, then kill the tmux server (tmux
-    /// starts fresh next launch). Run from inside tmux and it ends the current session too.
-    /// `--no-backup` skips the tarball; `--yes` (`--force`) skips the confirmation.
-    KillTmux {
-        /// Skip the tarball backup of the resurrect state before wiping it.
-        #[arg(long)]
-        no_backup: bool,
-        /// Skip the confirmation prompt.
-        #[arg(long, visible_alias = "force")]
-        yes: bool,
-    },
     /// Auto-file a bn issue on an identified problem (#345 proposal 4): the orchestrator or an
     /// agent captures a bug / friction / blocker as a labeled, **deduped** GitHub issue instead of
     /// relying on a human to file it. `bn issue file "<title>"` checks the repo's OPEN issues first

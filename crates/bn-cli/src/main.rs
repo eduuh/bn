@@ -75,7 +75,6 @@ pub(crate) use cmd::insights::*;
 pub(crate) use cmd::issue::*;
 pub(crate) use cmd::job_registry::*;
 pub(crate) use cmd::jobs::*;
-pub(crate) use cmd::kill_tmux::*;
 pub(crate) use cmd::killport::*;
 pub(crate) use cmd::learnings::*;
 pub(crate) use cmd::lifecycle::*;

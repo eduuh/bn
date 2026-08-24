@@ -99,7 +99,10 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool) -> bool {
     let build = match bn_core::resolver::job_script(cfg, Some(&rctx), "build") {
         Some((_, path)) => Some(path),
         None => {
-            let dir = cfg.note_dir(&rctx).join("jobs");
+            // Machine-independent `JobScope::Repo` tier — `<notes_dir_for(repo)>/jobs/<repo>/` —
+            // so a freshly scaffolded build.sh is immediately shared with every machine that
+            // syncs the notes repo, instead of landing in a per-machine copy nobody else sees.
+            let dir = cfg.notes_dir_for(&rctx.repo).join("jobs").join(&rctx.repo);
             let _ = std::fs::create_dir_all(&dir);
             let path = dir.join("build.sh");
             // Atomic scaffold: write a temp sibling, mark it executable, then rename into place —

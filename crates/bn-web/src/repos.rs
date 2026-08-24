@@ -472,6 +472,7 @@ fn assemble(
 fn scope_label(scope: JobScope) -> &'static str {
     match scope {
         JobScope::Branch => "branch",
+        JobScope::Project => "project",
         JobScope::Repo => "repo",
         JobScope::Global => "global",
     }
@@ -484,9 +485,14 @@ fn repo_main(repo: &str) -> Resolved {
     }
 }
 
+/// Where a repo-owned (`JobScope::Repo`) script lives now: `<notes_dir_for(repo)>/jobs/<repo>/`
+/// — machine-independent, synced through the notes repo like everything else in `notes_root`.
+/// This is the path the dashboard shows/writes to for a "repo" scope save, matching
+/// [`bn_core::resolver::job_dirs`]'s `JobScope::Repo` tier exactly.
 fn repo_script_path(cfg: &Config, repo: &str, name: &str) -> PathBuf {
-    cfg.note_dir(&repo_main(repo))
+    cfg.notes_dir_for(repo)
         .join("jobs")
+        .join(repo)
         .join(format!("{name}.sh"))
 }
 

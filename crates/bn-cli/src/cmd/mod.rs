@@ -38,7 +38,6 @@ pub(crate) mod insights;
 pub(crate) mod issue;
 pub(crate) mod job_registry;
 pub(crate) mod jobs;
-pub(crate) mod kill_tmux;
 pub(crate) mod killport;
 pub(crate) mod learnings;
 pub(crate) mod lifecycle;
