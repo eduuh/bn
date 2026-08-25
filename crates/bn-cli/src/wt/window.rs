@@ -32,15 +32,36 @@ pub(crate) fn cmd_open(
     };
 
     let sanitized = sanitize_branch(&branch);
-    let wt_path = worktree_dir.join(&name).join(&sanitized);
-    if !wt_path.is_dir() {
-        let _ = std::fs::create_dir_all(worktree_dir.join(&name));
-        println!("{BLUE}Creating worktree: {}{NC}", wt_path.display());
-        if !create_worktree(&bare_s, &branch, &wt_path.to_string_lossy(), true) {
-            return false;
+    let conventional_path = worktree_dir.join(&name).join(&sanitized);
+    let wt_path = if conventional_path.is_dir() {
+        conventional_path
+    } else {
+        match crate::wt_pool::lease_for_direct_open(cfg, &name, &branch) {
+            crate::wt_pool::DirectLease::Leased(slot) => slot,
+            crate::wt_pool::DirectLease::Unavailable => return false,
+            crate::wt_pool::DirectLease::MissingRepo => {
+                eprintln!("{RED}No bare repo '{name}' under {}{NC}", bare_dir.display());
+                return false;
+            }
+            crate::wt_pool::DirectLease::Unpooled => {
+                let _ = std::fs::create_dir_all(worktree_dir.join(&name));
+                println!("{BLUE}Creating worktree: {}{NC}", conventional_path.display());
+                if !create_worktree(
+                    &bare_s,
+                    &branch,
+                    &conventional_path.to_string_lossy(),
+                    true,
+                ) {
+                    return false;
+                }
+                println!(
+                    "{GREEN}Created worktree: {}{NC}",
+                    conventional_path.display()
+                );
+                conventional_path
+            }
         }
-        println!("{GREEN}Created worktree: {}{NC}", wt_path.display());
-    }
+    };
     if !no_tmux {
         open_worktree_window(&name, &sanitized, &wt_path, force_new);
     }

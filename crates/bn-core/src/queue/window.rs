@@ -52,6 +52,8 @@ pub enum WindowMode {
     Watched,
     /// Away/off-peak time: matching opportunistic work may run.
     Away,
+    /// A maintenance deadline: matching work becomes mandatory once the window opens.
+    Deadline,
 }
 
 impl WindowMode {
@@ -60,6 +62,7 @@ impl WindowMode {
             "prefer" | "priority" => Some(WindowMode::Prefer),
             "watched" | "watch" | "foreground" => Some(WindowMode::Watched),
             "away" | "off-peak" | "opportunistic" => Some(WindowMode::Away),
+            "deadline" | "mandatory" => Some(WindowMode::Deadline),
             _ => None,
         }
     }
@@ -123,7 +126,7 @@ pub fn boost_for(entry: &BacklogEntry, windows: &[PriorityWindow], now: i64) -> 
             match w.mode {
                 WindowMode::Prefer => w.applies_to(entry),
                 WindowMode::Watched => classify::classify(entry).mode == QueueMode::Foreground,
-                WindowMode::Away => w.applies_to(entry),
+                WindowMode::Away | WindowMode::Deadline => w.applies_to(entry),
             }
         })
         .fold(0i64, |acc, w| acc.saturating_add(w.boost))
@@ -136,9 +139,11 @@ pub fn open(windows: &[PriorityWindow], now: i64) -> Vec<&PriorityWindow> {
 
 /// Whether this entry may run as opportunistic work at `now`.
 pub fn allows_opportunistic(entry: &BacklogEntry, windows: &[PriorityWindow], now: i64) -> bool {
-    windows
-        .iter()
-        .any(|w| w.mode == WindowMode::Away && w.is_open(now) && w.applies_to(entry))
+    windows.iter().any(|w| {
+        matches!(w.mode, WindowMode::Away | WindowMode::Deadline)
+            && w.is_open(now)
+            && w.applies_to(entry)
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,16 +151,21 @@ pub struct PoolWarmWindow {
     pub name: String,
     pub at: String,
     pub fore: String,
+    pub mode: WindowMode,
 }
 
 pub fn pool_warm_windows(windows: &[PriorityWindow]) -> Vec<PoolWarmWindow> {
     windows
         .iter()
-        .filter(|w| w.mode == WindowMode::Away && w.matches.iter().any(|m| m == POOL_WARM_MATCH))
+        .filter(|w| {
+            matches!(w.mode, WindowMode::Away | WindowMode::Deadline)
+                && w.matches.iter().any(|m| m == POOL_WARM_MATCH)
+        })
         .map(|w| PoolWarmWindow {
             name: w.name.clone(),
             at: w.at.clone(),
             fore: format_duration(w.secs),
+            mode: w.mode,
         })
         .collect()
 }
@@ -166,11 +176,13 @@ pub fn default_pool_warm_priority_windows() -> Vec<PriorityWindow> {
             name: POOL_WARM_LUNCH.to_string(),
             at: "Mon..Fri *-*-* 12:30:00".to_string(),
             fore: "90m".to_string(),
+            mode: WindowMode::Away,
         }),
         priority_window_from_pool(PoolWarmWindow {
             name: POOL_WARM_AFTER_WORK.to_string(),
-            at: "Mon..Fri *-*-* 17:30:00".to_string(),
+            at: "*-*-* 17:30:00".to_string(),
             fore: "2h".to_string(),
+            mode: WindowMode::Deadline,
         }),
     ]
 }
@@ -182,8 +194,31 @@ fn priority_window_from_pool(win: PoolWarmWindow) -> PriorityWindow {
         secs: crate::focus::parse_duration(&win.fore).unwrap_or(90 * 60),
         boost: 100,
         matches: vec![POOL_WARM_MATCH.to_string()],
-        mode: WindowMode::Away,
+        mode: win.mode,
     }
+}
+
+/// Upgrade the two built-in pool windows without changing their configured clock times.
+///
+/// Existing configs wrote both windows as weekday `away` windows. The names are stable, so they
+/// provide a migration seam: lunch remains opportunistic, while after-work becomes a seven-day
+/// deadline using the time already chosen on this machine.
+pub fn normalize_pool_warm_priority_windows(
+    mut windows: Vec<PriorityWindow>,
+) -> Vec<PriorityWindow> {
+    for window in &mut windows {
+        match window.name.as_str() {
+            POOL_WARM_LUNCH => window.mode = WindowMode::Away,
+            POOL_WARM_AFTER_WORK => {
+                window.mode = WindowMode::Deadline;
+                if let Some(time) = window.at.split_whitespace().last() {
+                    window.at = format!("*-*-* {time}");
+                }
+            }
+            _ => {}
+        }
+    }
+    windows
 }
 
 pub fn read_pool_warm_windows(
@@ -236,7 +271,28 @@ fn pool_warm_windows_from_config(text: &str) -> Vec<PoolWarmWindow> {
             continue;
         };
         let fore = string_value(&block, "fore").unwrap_or_else(|| "1h".to_string());
-        out.push(PoolWarmWindow { name, at, fore });
+        let mode = string_value(&block, "mode")
+            .as_deref()
+            .and_then(WindowMode::parse)
+            .unwrap_or(if name == POOL_WARM_AFTER_WORK {
+                WindowMode::Deadline
+            } else {
+                WindowMode::Away
+            });
+        let at = if name == POOL_WARM_AFTER_WORK {
+            at.split_whitespace()
+                .last()
+                .map(|time| format!("*-*-* {time}"))
+                .unwrap_or(at)
+        } else {
+            at
+        };
+        out.push(PoolWarmWindow {
+            name,
+            at,
+            fore,
+            mode,
+        });
     }
     out
 }
@@ -274,7 +330,13 @@ pub fn edit_pool_warm_windows(content: &str, windows: &[PoolWarmWindow]) -> Stri
         out.push(format!("name = \"{}\"", escape_toml(&win.name)));
         out.push(format!("at = \"{}\"", escape_toml(&win.at)));
         out.push(format!("fore = \"{}\"", escape_toml(&win.fore)));
-        out.push("mode = \"away\"".to_string());
+        let mode = match win.mode {
+            WindowMode::Prefer => "prefer",
+            WindowMode::Watched => "watched",
+            WindowMode::Away => "away",
+            WindowMode::Deadline => "deadline",
+        };
+        out.push(format!("mode = \"{mode}\""));
         out.push("boost = 100".to_string());
         out.push("matches = [\"source:cron:pool-warm\"]".to_string());
     }

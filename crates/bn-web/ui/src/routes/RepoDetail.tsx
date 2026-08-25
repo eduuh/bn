@@ -488,7 +488,9 @@ function PoolWarmSchedule({ repo, pool }: { repo: string; pool: RepoPool }) {
         <div>
           <div className="text-sm font-medium">Warm schedule</div>
           <div className="text-xs text-muted-foreground">
-            Pool warming runs as native queue work during these windows, one stale repo at a time.
+            Lunch is a best-effort opportunity. At the daily deadline, warming owns new queue
+            admission until every due pool is refreshed. The hard freshness limit is{" "}
+            {pool.policy.max_freshness_hours} hours.
           </div>
         </div>
         <span className="flex-1" />
@@ -498,7 +500,7 @@ function PoolWarmSchedule({ repo, pool }: { repo: string; pool: RepoPool }) {
       </div>
       <div className="grid gap-2 sm:grid-cols-3">
         <label className="space-y-1 text-xs text-muted-foreground">
-          Lunch
+          Lunch opportunity
           <input
             type="time"
             value={lunch}
@@ -507,7 +509,7 @@ function PoolWarmSchedule({ repo, pool }: { repo: string; pool: RepoPool }) {
           />
         </label>
         <label className="space-y-1 text-xs text-muted-foreground">
-          After work
+          Daily deadline
           <input
             type="time"
             value={afterWork}
@@ -516,7 +518,7 @@ function PoolWarmSchedule({ repo, pool }: { repo: string; pool: RepoPool }) {
           />
         </label>
         <label className="space-y-1 text-xs text-muted-foreground">
-          Window minutes
+          Opportunity window minutes
           <input
             type="number"
             min={15}

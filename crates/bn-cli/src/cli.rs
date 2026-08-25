@@ -121,7 +121,7 @@ pub(crate) enum CmdIntake {
         orchestrator: bool,
         /// Workflow skill to seed the agent with (see `bn skills`): its rendered body becomes the
         /// agent's process, closing with a `bn reflect "skill:<name> — …"` line so evolve-skills
-        /// learns from the run. Defaults: `plan-work` (ship) / `investigate` (--scout); pick
+        /// learns from the run. Defaults: `ship-solo` (ship) / `investigate` (--scout); pick
         /// `debug` for a repro-first bugfix. `--skill investigate` implies a scout task.
         #[arg(long)]
         skill: Option<String>,

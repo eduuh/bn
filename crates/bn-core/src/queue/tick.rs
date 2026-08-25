@@ -120,6 +120,8 @@ pub struct TickInputs<'a> {
     pub windows: &'a [crate::queue::window::PriorityWindow],
     /// Current presence/away state for opportunistic admission.
     pub presence: Presence,
+    /// A due pool-warm sweep owns admission until it completes.
+    pub mandatory_warming: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -258,6 +260,8 @@ pub enum DeferReason {
     AwaitingAway,
     /// A pause covering this entry is in force — the repo is draining, or the machine is held.
     Paused,
+    /// A mandatory pool refresh is draining new work before it starts.
+    MandatoryWarming,
 }
 
 impl DeferReason {
@@ -275,6 +279,7 @@ impl DeferReason {
             DeferReason::Expired => "expired",
             DeferReason::Snoozed => "snoozed",
             DeferReason::AwaitingAway => "awaiting-away",
+            DeferReason::MandatoryWarming => "mandatory-warming",
         }
     }
 }
@@ -362,8 +367,18 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
                 continue;
             }
         }
+        if inputs.mandatory_warming && !crate::queue::classify::is_mandatory_pool_warming(entry) {
+            plan.deferred.push(defer(
+                entry,
+                DeferReason::MandatoryWarming,
+                "mandatory pool warming owns new admission".to_string(),
+            ));
+            continue;
+        }
         if crate::queue::classify::classify(entry).mode
             == crate::queue::classify::QueueMode::Opportunistic
+            && !(inputs.mandatory_warming
+                && crate::queue::classify::is_mandatory_pool_warming(entry))
             && !inputs.presence.idle
             && !crate::queue::window::allows_opportunistic(entry, inputs.windows, inputs.now)
         {
@@ -377,7 +392,7 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
         // Recovery is exempt, deliberately: a pause is a statement about *new* work, and lease
         // reclamation is precisely what a wedged machine needs and precisely what a pause would
         // otherwise stop (see `queue::jobs::RECOVERY_JOBS`).
-        if !entry_is_recovery(entry) {
+        if !entry_is_recovery(entry) && !crate::queue::classify::is_mandatory_pool_warming(entry) {
             if let Some(pause) = inputs.pauses.blocks(
                 &entry.repo,
                 entry.kind,
@@ -466,6 +481,21 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
             continue;
         };
         let lane = WorkClass::from_kind(entry.kind);
+
+        if inputs.mandatory_warming
+            && crate::queue::classify::is_mandatory_pool_warming(entry)
+            && !inputs.in_flight.is_empty()
+        {
+            plan.deferred.push(defer(
+                entry,
+                DeferReason::Capacity(Bind::LocalCap),
+                format!(
+                    "draining {} existing job(s) before mandatory pool warming",
+                    inputs.in_flight.len()
+                ),
+            ));
+            continue;
+        }
 
         if entry.heavy && heavy_used > 0 {
             plan.deferred.push(defer(

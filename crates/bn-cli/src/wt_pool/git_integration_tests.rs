@@ -176,6 +176,73 @@ fn warm_reset_discards_tracked_but_keeps_ignored_deps() {
 }
 
 #[test]
+fn direct_open_leases_a_configured_warm_slot_and_never_spills_cold() {
+    let _g = bn_core::test_support::env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let bare = root.join("bare").join("bn.git");
+    build_repo_into(&root.join("src"), &bare);
+    let pools = root.join("pools");
+    std::fs::write(&pools, "bn 2\n").unwrap();
+
+    let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
+    let _pools = bn_core::test_support::EnvGuard::set("WT_POOLS", &pools);
+    TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
+
+    let pool_dir = root.join("worktree").join("bn").join("_pool");
+    let slot = pool_dir.join("2");
+    assert!(add_detached_slot(
+        &bare.to_string_lossy(),
+        &slot.to_string_lossy()
+    ));
+    let cfg = bn_core::test_support::config(root);
+
+    match lease_for_direct_open(&cfg, "bn", "feat") {
+        DirectLease::Leased(path) => assert_eq!(path, slot),
+        _ => panic!("configured direct open should lease the warm worker slot"),
+    }
+    assert_eq!(head_ref(&slot), "feat");
+    assert!(!root.join("worktree").join("bn").join("feat").exists());
+
+    assert!(matches!(
+        lease_for_direct_open(&cfg, "bn", "second"),
+        DirectLease::Unavailable
+    ));
+    assert!(!root.join("worktree").join("bn").join("second").exists());
+}
+
+#[test]
+fn direct_open_reports_unpooled_without_allocating() {
+    let _g = bn_core::test_support::env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let pools = tmp.path().join("pools");
+    std::fs::write(&pools, "").unwrap();
+    let _pools = bn_core::test_support::EnvGuard::set("WT_POOLS", &pools);
+    let cfg = bn_core::test_support::config(tmp.path());
+
+    assert!(matches!(
+        lease_for_direct_open(&cfg, "bn", "feat"),
+        DirectLease::Unpooled
+    ));
+}
+
+#[test]
+fn direct_open_distinguishes_a_wildcard_pool_from_a_missing_repo() {
+    let _g = bn_core::test_support::env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let pools = tmp.path().join("pools");
+    std::fs::write(&pools, "default 2\n").unwrap();
+    let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", tmp.path());
+    let _pools = bn_core::test_support::EnvGuard::set("WT_POOLS", &pools);
+    let cfg = bn_core::test_support::config(tmp.path());
+
+    assert!(matches!(
+        lease_for_direct_open(&cfg, "missing", "feat"),
+        DirectLease::MissingRepo
+    ));
+}
+
+#[test]
 fn wt_cleanup_inside_pool_slot_returns_the_slot() {
     let _g = bn_core::test_support::env_lock();
     let tmp = tempfile::tempdir().unwrap();

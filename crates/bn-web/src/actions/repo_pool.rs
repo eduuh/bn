@@ -93,10 +93,9 @@ fn default_warm_duration_mins() -> i64 {
     90
 }
 
-/// `POST /api/repos/{repo}/pool/schedule` — configure the machine-wide windows during which
-/// opportunistic pool warming may run. The repo path keeps the control next to the warm-pool UI,
-/// but the setting is intentionally global: pool-warm scans pooled repos and warms at most one
-/// stale repo per pass, so per-repo clocks would fight each other.
+/// `POST /api/repos/{repo}/pool/schedule` — configure this machine's best-effort lunch opportunity
+/// and mandatory daily pool-warm deadline. The repo path keeps the control next to the warm-pool
+/// UI, but the setting is global to this machine because one sweep refreshes every due pool.
 pub async fn repo_pool_schedule_set(
     State(state): State<AppState>,
     MaybeAddr(addr): MaybeAddr,
@@ -112,6 +111,7 @@ pub async fn repo_pool_schedule_set(
         bn_core::queue::window::POOL_WARM_LUNCH,
         &body.lunch_time,
         body.duration_mins,
+        false,
     ) {
         Ok(w) => w,
         Err(e) => return bad_request(cmd, "invalid_lunch_time", &e),
@@ -120,6 +120,7 @@ pub async fn repo_pool_schedule_set(
         bn_core::queue::window::POOL_WARM_AFTER_WORK,
         &body.after_work_time,
         body.duration_mins,
+        true,
     ) {
         Ok(w) => w,
         Err(e) => return bad_request(cmd, "invalid_after_work_time", &e),
@@ -166,13 +167,23 @@ fn warm_window(
     name: &str,
     time: &str,
     duration_mins: i64,
+    deadline: bool,
 ) -> Result<bn_core::queue::window::PoolWarmWindow, String> {
     let time = normalize_hhmm(time)?;
     let duration_mins = duration_mins.clamp(15, 240);
     Ok(bn_core::queue::window::PoolWarmWindow {
         name: name.to_string(),
-        at: format!("Mon..Fri *-*-* {time}:00"),
+        at: if deadline {
+            format!("*-*-* {time}:00")
+        } else {
+            format!("Mon..Fri *-*-* {time}:00")
+        },
         fore: format!("{duration_mins}m"),
+        mode: if deadline {
+            bn_core::queue::window::WindowMode::Deadline
+        } else {
+            bn_core::queue::window::WindowMode::Away
+        },
     })
 }
 

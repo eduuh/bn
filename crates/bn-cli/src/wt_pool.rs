@@ -1184,6 +1184,32 @@ pub fn lease_for_dispatch(cfg: &Config, repo: &str, branch: &str) -> Option<(Pat
     lease_for_dispatch_mode(cfg, repo, branch, false).map(|(slot, _, fresh)| (slot, fresh))
 }
 
+/// Outcome of a direct human request to open a branch.
+///
+/// Unlike dispatch, a direct open has no work item to schedule. It may use a conventional
+/// worktree only when the repo is not configured for pooling; a configured pool that cannot lease
+/// must remain a visible capacity failure rather than silently cutting a cold checkout.
+pub(crate) enum DirectLease {
+    Unpooled,
+    Leased(PathBuf),
+    MissingRepo,
+    Unavailable,
+}
+
+pub(crate) fn lease_for_direct_open(cfg: &Config, repo: &str, branch: &str) -> DirectLease {
+    if pool_size(repo).is_none() {
+        return DirectLease::Unpooled;
+    }
+    let (bare_dir, _) = wt::layout(cfg);
+    if !bare_dir.join(format!("{repo}.git")).is_dir() {
+        return DirectLease::MissingRepo;
+    }
+    match lease_for_dispatch(cfg, repo, branch) {
+        Some((slot, _fresh)) => DirectLease::Leased(slot),
+        None => DirectLease::Unavailable,
+    }
+}
+
 pub fn lease_for_dispatch_mode(
     cfg: &Config,
     repo: &str,

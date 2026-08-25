@@ -152,6 +152,9 @@ fn scheduler_enqueues_due_agents_and_queue_tick_runs_them() {
     let _agents = bn_core::test_support::EnvGuard::set("BN_AGENTS_DIR", &agents);
     let _jobs = bn_core::test_support::EnvGuard::set("BN_JOBS_DIR", temp.path().join("jobs"));
     let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", &state);
+    let pools = temp.path().join("pools");
+    std::fs::write(&pools, "").expect("empty pools config");
+    let _pools = bn_core::test_support::EnvGuard::set("WT_POOLS", &pools);
     // This test asserts the agent is *queued* rather than run, which is exactly what an inherited
     // dispatch extent turns off — see `outside_a_dispatch` for why that leaks into agent sessions.
     let _outside = bn_core::test_support::outside_a_dispatch();
@@ -353,7 +356,10 @@ fn cron_health_closes_the_repair_task_and_withdraws_the_agent_once_the_cron_reco
         .tasks()
         .find(|task| task.meta("key") == Some("cron-repair:flaky-cron"))
         .expect("repair task still recorded");
-    assert!(!repair.is_open(&today), "a recovered cron closes its repair task");
+    assert!(
+        !repair.is_open(&today),
+        "a recovered cron closes its repair task"
+    );
     assert_eq!(
         repair.meta("reason"),
         Some("cron-recovered"),

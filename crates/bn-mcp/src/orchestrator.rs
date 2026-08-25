@@ -53,7 +53,7 @@ struct SpinUpArgs {
     scout: bool,
     /// Workflow skill to seed the agent with (see the bn skill prompts): its rendered body becomes
     /// the agent's process, ending with a `bn reflect "skill:<name> — …"` line. Defaults per task
-    /// type — `plan-work` (ship) / `investigate` (scout); pass `debug` for a repro-first bugfix.
+    /// type — `ship-solo` (ship) / `investigate` (scout); pass `debug` for a repro-first bugfix.
     #[serde(default)]
     skill: Option<String>,
     /// Gate "done" on verification: the ship agent must run `bn verify` (the repo's build/test/lint gate)

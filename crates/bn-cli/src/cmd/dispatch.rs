@@ -1523,7 +1523,7 @@ pub(crate) fn run_dispatch(
     }
 
     // Resolve the workflow skill that will drive the agent (#321): explicit --skill, else by task
-    // type (scout → investigate, ship → plan-work). Loaded against the fresh worktree so repo-tier
+    // type (scout → investigate, ship → ship-solo). Loaded against the fresh worktree so repo-tier
     // skills apply, falling back to the dispatcher's cwd (where the bn checkout / BN_MCP_SKILLS_DIR
     // may be visible). Runtime workflows are required: missing defaults fail loudly rather than
     // falling back to a compiled prompt.

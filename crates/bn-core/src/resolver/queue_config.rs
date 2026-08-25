@@ -94,10 +94,11 @@ impl QueueConfig {
             express_lease_ttl_secs,
             opportunistic_idle_mins: opportunistic_idle_mins.filter(|n| *n >= 0).unwrap_or(10),
             kind_caps: file.map(|f| f.queue_kind_caps()).unwrap_or_default(),
-            windows: file
-                .map(|f| f.queue_windows())
-                .filter(|windows| !windows.is_empty())
-                .unwrap_or_else(crate::queue::window::default_pool_warm_priority_windows),
+            windows: crate::queue::window::normalize_pool_warm_priority_windows(
+                file.map(|f| f.queue_windows())
+                    .filter(|windows| !windows.is_empty())
+                    .unwrap_or_else(crate::queue::window::default_pool_warm_priority_windows),
+            ),
         }
     }
 

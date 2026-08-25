@@ -315,6 +315,7 @@ fn pool_disabled(cfg: &Config) -> Value {
 fn pool_policy_json(cfg: &Config) -> Value {
     json!({
         "min_ready": POOL_MIN_READY,
+        "max_freshness_hours": 24,
         "warm_windows": bn_core::queue::window::read_pool_warm_windows(
             &bn_core::resolver::config_file_path(),
             &cfg.queue.windows,

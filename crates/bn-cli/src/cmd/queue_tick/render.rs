@@ -4,9 +4,9 @@
 //! crowding the other — the file-size ratchet made the seam mandatory, but it was always the right
 //! line: nothing below decides anything, it only says what was decided.
 
+use super::observe_nodes;
 use crate::*;
 use bn_core::queue::decision::QueueDecision;
-use super::observe_nodes;
 
 pub(super) fn print_decision(d: &QueueDecision) {
     let dry = if d.dry_run { " (dry run)" } else { "" };

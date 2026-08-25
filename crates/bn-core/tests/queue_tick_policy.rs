@@ -6,9 +6,11 @@
 //! the queue not moving.
 use bn_core::backlog::{AddSpec, BacklogEntry, ExecutionTarget};
 use bn_core::hosts::{NodeRecord, NodeStatus};
-use bn_core::queue::kind::{BacklogKind, ExecSpec};
+use bn_core::queue::kind::{BacklogKind, ExecSpec, WorkClass};
 use bn_core::queue::pause::PauseState;
-use bn_core::queue::tick::{plan_tick, DeferReason, KindCaps, Presence, TickInputs, TickPlan};
+use bn_core::queue::tick::{
+    plan_tick, DeferReason, InFlight, KindCaps, Presence, TickInputs, TickPlan,
+};
 use bn_core::scheduler::{Caps, Observed};
 
 const NOW: i64 = 1_000_000;
@@ -80,6 +82,16 @@ fn heavy_job(id: &str, priority: i64) -> BacklogEntry {
     e
 }
 
+fn targeted_pool_warm(id: &str, priority: i64) -> BacklogEntry {
+    let mut e = heavy_job(id, priority);
+    e.exec = ExecSpec::Job {
+        job: "pool-warm".to_string(),
+        repo: Some("repo".to_string()),
+        branch: Some("main".to_string()),
+    };
+    e
+}
+
 fn agent(id: &str, priority: i64) -> BacklogEntry {
     pending(id, BacklogKind::Ship, priority, ExecSpec::Agent)
 }
@@ -94,6 +106,8 @@ struct Fixture {
     max_express: usize,
     presence: Presence,
     pauses: PauseState,
+    mandatory_warming: bool,
+    in_flight: Vec<InFlight>,
 }
 
 impl Default for Fixture {
@@ -112,6 +126,8 @@ impl Default for Fixture {
             // Empty by default, which is the whole safety property: a machine that has never
             // paused anything plans exactly as it did before pauses were wired in.
             pauses: PauseState::default(),
+            mandatory_warming: false,
+            in_flight: Vec::new(),
         }
     }
 }
@@ -122,7 +138,7 @@ impl Fixture {
             now: NOW,
             machine: "testbox",
             pending: &self.pending,
-            in_flight: &[],
+            in_flight: &self.in_flight,
             nodes: &self.nodes,
             caps: &self.caps,
             observed: &self.observed,
@@ -134,6 +150,7 @@ impl Fixture {
             max_express: self.max_express,
             windows: &[],
             presence: self.presence,
+            mandatory_warming: self.mandatory_warming,
         })
     }
 }
@@ -379,6 +396,22 @@ fn a_pause_does_not_stop_recovery_work() {
 }
 
 #[test]
+fn a_pause_does_not_deadlock_mandatory_pool_warming() {
+    let fx = Fixture {
+        pending: vec![agent("ordinary-work", 100), heavy_job("pool-warm", -50)],
+        pauses: PauseState::fold(&[pause_event(NOW - 10, "all", None)], NOW),
+        mandatory_warming: true,
+        ..Default::default()
+    };
+    let plan = fx.plan();
+    assert_eq!(started(&plan), vec!["pool-warm"]);
+    assert_eq!(
+        reason_for(&plan, "ordinary-work"),
+        Some(&DeferReason::MandatoryWarming)
+    );
+}
+
+#[test]
 fn an_expired_pause_is_not_in_historical_state() {
     let events = vec![pause_event(NOW - 100, "all", Some(NOW - 1))];
     assert!(!PauseState::fold(&events, NOW).is_paused());
@@ -560,6 +593,94 @@ fn warming_still_waits_for_idle_or_an_away_window() {
         Some(DeferReason::AwaitingAway)
     ));
     assert!(started(&plan).is_empty());
+}
+
+#[test]
+fn mandatory_warming_blocks_new_work_and_starts_the_warm() {
+    let fx = Fixture {
+        pending: vec![agent("foreground", 100), heavy_job("pool-warm", -50)],
+        presence: Presence {
+            idle: false,
+            away_window: false,
+        },
+        mandatory_warming: true,
+        ..Default::default()
+    };
+    let plan = fx.plan();
+    assert_eq!(started(&plan), vec!["pool-warm"]);
+    assert_eq!(
+        reason_for(&plan, "foreground"),
+        Some(&DeferReason::MandatoryWarming)
+    );
+}
+
+#[test]
+fn keep_warm_does_not_trigger_or_bypass_mandatory_pool_warming() {
+    let mut keep_warm = heavy_job("keep-warm", -50);
+    keep_warm.exec = ExecSpec::Job {
+        job: "keep-warm".to_string(),
+        repo: None,
+        branch: None,
+    };
+    let fx = Fixture {
+        pending: vec![keep_warm, heavy_job("pool-warm", -50)],
+        mandatory_warming: true,
+        ..Default::default()
+    };
+    let plan = fx.plan();
+    assert_eq!(started(&plan), vec!["pool-warm"]);
+    assert_eq!(
+        reason_for(&plan, "keep-warm"),
+        Some(&DeferReason::MandatoryWarming)
+    );
+}
+
+#[test]
+fn targeted_pool_warm_does_not_bypass_mandatory_pool_warming() {
+    let fx = Fixture {
+        pending: vec![
+            targeted_pool_warm("targeted-warm", -50),
+            heavy_job("pool-warm", -50),
+        ],
+        mandatory_warming: true,
+        ..Default::default()
+    };
+    let plan = fx.plan();
+    assert_eq!(started(&plan), vec!["pool-warm"]);
+    assert_eq!(
+        reason_for(&plan, "targeted-warm"),
+        Some(&DeferReason::MandatoryWarming)
+    );
+}
+
+#[test]
+fn mandatory_warming_drains_existing_work_without_starting_more() {
+    let fx = Fixture {
+        pending: vec![agent("foreground", 100), heavy_job("pool-warm", -50)],
+        caps: caps(1, Some(1)),
+        mandatory_warming: true,
+        in_flight: vec![InFlight {
+            repo: "repo".to_string(),
+            id: "already-running".to_string(),
+            kind: BacklogKind::Ship,
+            work_class: WorkClass::Coding,
+            heavy: false,
+            node: None,
+            touches: Vec::new(),
+            started_at: NOW - 60,
+        }],
+        ..Default::default()
+    };
+    let plan = fx.plan();
+    assert!(started(&plan).is_empty());
+    assert_eq!(
+        reason_for(&plan, "foreground"),
+        Some(&DeferReason::MandatoryWarming)
+    );
+    assert!(matches!(
+        reason_for(&plan, "pool-warm"),
+        Some(DeferReason::Capacity(_))
+    ));
 }
 
 #[test]

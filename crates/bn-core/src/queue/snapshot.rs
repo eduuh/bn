@@ -39,6 +39,8 @@ pub struct Snapshot {
     /// The pauses in force at capture — what makes a drained repo's work stay pending.
     pub pauses: crate::queue::pause::PauseState,
     pub presence: Presence,
+    /// A due pool-warm sweep is pending or running and owns new admission until it completes.
+    pub mandatory_warming: bool,
 }
 
 impl Snapshot {
@@ -55,6 +57,9 @@ impl Snapshot {
             .filter(|e| e.status == BacklogStatus::Pending)
             .cloned()
             .collect();
+        let mandatory_warming = entries.iter().any(|entry| {
+            entry.status.is_active() && crate::queue::classify::is_mandatory_pool_warming(entry)
+        });
         let (coding, research) = cfg.queue.lanes();
         let mut kind_caps = BTreeMap::new();
         for (label, n) in &cfg.queue.kind_caps {
@@ -102,6 +107,7 @@ impl Snapshot {
                     .iter()
                     .any(|w| w.mode == crate::queue::window::WindowMode::Away && w.is_open(now)),
             },
+            mandatory_warming,
             windows,
             // Folded once per capture, alongside every other machine signal, so the whole gate
             // stays decidable from a captured snapshot.
@@ -129,6 +135,7 @@ impl Snapshot {
             windows: &self.windows,
             pauses: &self.pauses,
             presence: self.presence,
+            mandatory_warming: self.mandatory_warming,
         }
     }
 

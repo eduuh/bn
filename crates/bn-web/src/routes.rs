@@ -281,8 +281,14 @@ mod tests {
             .and_then(serde_json::Value::as_object)
             .expect("health envelope carries web metadata");
 
-        assert_eq!(web.get("bind").and_then(serde_json::Value::as_str), Some("127.0.0.1"));
-        assert_eq!(web.get("port").and_then(serde_json::Value::as_u64), Some(7791));
+        assert_eq!(
+            web.get("bind").and_then(serde_json::Value::as_str),
+            Some("127.0.0.1")
+        );
+        assert_eq!(
+            web.get("port").and_then(serde_json::Value::as_u64),
+            Some(7791)
+        );
     }
 }
 

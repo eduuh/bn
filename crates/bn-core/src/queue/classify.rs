@@ -149,7 +149,7 @@ pub fn is_machine(entry: &BacklogEntry) -> bool {
 ///
 /// The job list lives in [`crate::queue::jobs::WARMING_JOBS`] so the source and exec answers cannot
 /// drift apart.
-fn is_warming(entry: &BacklogEntry) -> bool {
+pub fn is_warming(entry: &BacklogEntry) -> bool {
     let by_source = entry
         .source
         .strip_prefix("cron:")
@@ -159,4 +159,19 @@ fn is_warming(entry: &BacklogEntry) -> bool {
         ExecSpec::Job { job, .. } if crate::queue::jobs::is_warming(job)
     );
     by_source || by_exec
+}
+
+/// Whether this entry is the machine-wide mandatory pool refresh.
+///
+/// A targeted `pool-warm` comes from a person's per-repo dashboard action and remains ordinary
+/// opportunistic maintenance. Only the untargeted daily sweep owns machine-wide admission.
+pub fn is_mandatory_pool_warming(entry: &BacklogEntry) -> bool {
+    matches!(
+        &entry.exec,
+        ExecSpec::Job {
+            job,
+            repo: None,
+            ..
+        } if job == "pool-warm"
+    )
 }

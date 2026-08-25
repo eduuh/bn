@@ -205,6 +205,7 @@ fn plan_order(pending: &[BacklogEntry], windows: &[PriorityWindow], now: i64) ->
             idle: true,
             away_window: false,
         },
+        mandatory_warming: false,
     });
     plan.start.iter().map(|d| d.id.clone()).collect()
 }
@@ -255,4 +256,51 @@ fn no_windows_configured_changes_nothing() {
         entry("b", BacklogKind::Cron, 9, "cron:y"),
     ];
     assert_eq!(plan_order(&pending, &[], lunch_start()), vec!["b", "a"]);
+}
+
+#[test]
+fn default_after_work_window_is_a_daily_deadline() {
+    let windows = window::default_pool_warm_priority_windows();
+    let lunch = windows
+        .iter()
+        .find(|w| w.name == window::POOL_WARM_LUNCH)
+        .unwrap();
+    let after_work = windows
+        .iter()
+        .find(|w| w.name == window::POOL_WARM_AFTER_WORK)
+        .unwrap();
+
+    assert_eq!(lunch.mode, window::WindowMode::Away);
+    assert_eq!(lunch.at, "Mon..Fri *-*-* 12:30:00");
+    assert_eq!(after_work.mode, window::WindowMode::Deadline);
+    assert_eq!(after_work.at, "*-*-* 17:30:00");
+}
+
+#[test]
+fn existing_after_work_config_keeps_its_time_when_upgraded() {
+    let windows = window::normalize_pool_warm_priority_windows(vec![PriorityWindow {
+        name: window::POOL_WARM_AFTER_WORK.to_string(),
+        at: "Mon..Fri *-*-* 19:45:00".to_string(),
+        secs: 5400,
+        boost: 100,
+        matches: vec!["source:cron:pool-warm".to_string()],
+        mode: window::WindowMode::Away,
+    }]);
+
+    assert_eq!(windows[0].mode, window::WindowMode::Deadline);
+    assert_eq!(windows[0].at, "*-*-* 19:45:00");
+}
+
+#[test]
+fn pool_window_serialization_exposes_deadline_mode() {
+    let windows = window::pool_warm_windows(&window::default_pool_warm_priority_windows());
+    let after_work = windows
+        .iter()
+        .find(|w| w.name == window::POOL_WARM_AFTER_WORK)
+        .unwrap();
+    let text = window::edit_pool_warm_windows("", &windows);
+
+    assert_eq!(after_work.mode, window::WindowMode::Deadline);
+    assert!(text.contains("at = \"*-*-* 17:30:00\""));
+    assert!(text.contains("mode = \"deadline\""));
 }

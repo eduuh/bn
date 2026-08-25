@@ -29,6 +29,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub enum TatStage {
     /// Emit the decorated, frecency-sorted project list (the `start`/`ctrl-x` reload feed).
     List,
+    /// Force a filesystem/frecency rescan, rewrite the discovery cache, then emit the list.
+    Refresh,
     /// Render the preview pane for the focused row's hidden `ref`.
     Preview,
     /// Kill the session backing the focused row's hidden `ref` (the `ctrl-x` binding).
@@ -784,16 +786,100 @@ fn open_or_select_window(session: &str, window: &str, wt_path: &Path) {
 
 // --- list (the --pick-stage list feed) -------------------------------------
 
-/// Decorated list rows: `<display>\t<ref>`. fzf shows only `<display>` (`--with-nth=1`); the
-/// `<ref>` rides along as the hidden last field (`{-1}`) for preview/kill/selection.
-fn build_list(roots: &Roots) {
+const DISCOVERY_CACHE_TTL_SECS: i64 = 30;
+
+#[derive(Default, Deserialize, Serialize)]
+struct DiscoveryCache {
+    roots_key: String,
+    refs_saved_at: i64,
+    refs: Vec<String>,
+    worktrees: HashMap<String, CachedWorktrees>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct CachedWorktrees {
+    saved_at: i64,
+    names: Vec<String>,
+}
+
+fn discovery_cache_path() -> PathBuf {
+    cache_home().join("wt").join("tat-discovery.json")
+}
+
+fn discovery_ttl_secs() -> i64 {
+    std::env::var("WF_TAT_TTL")
+        .ok()
+        .and_then(|s| s.parse::<i64>().ok())
+        .filter(|&n| n >= 0)
+        .unwrap_or(DISCOVERY_CACHE_TTL_SECS)
+}
+
+fn discovery_cache_fresh(saved_at: i64) -> bool {
+    bn_core::util::now_epoch_secs().saturating_sub(saved_at) <= discovery_ttl_secs()
+}
+
+fn read_discovery_cache() -> DiscoveryCache {
+    std::fs::read_to_string(discovery_cache_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn write_discovery_cache(cache: &DiscoveryCache) {
+    let Ok(bytes) = serde_json::to_vec(cache) else {
+        return;
+    };
+    let _ = write_atomic(&discovery_cache_path(), &bytes);
+}
+
+fn roots_cache_key(roots: &Roots) -> String {
+    let mut parts = vec![
+        roots.primary.to_string_lossy().to_string(),
+        roots.primary_bare.to_string_lossy().to_string(),
+        roots.primary_worktree.to_string_lossy().to_string(),
+        roots.win_scoped.to_string(),
+    ];
+    parts.extend(
+        roots
+            .extras
+            .iter()
+            .map(|(tag, path)| format!("{tag}={}", path.display())),
+    );
+    parts.join("\n")
+}
+
+/// Repository discovery and zoxide ordering are stable across the short-lived processes fzf
+/// starts for callbacks. Snapshot those filesystem-derived values; tmux and pool state stay live.
+fn ordered_refs(roots: &Roots, refresh: bool) -> Vec<String> {
+    let key = roots_cache_key(roots);
+    let mut cache = read_discovery_cache();
+    if !refresh
+        && cache.roots_key == key
+        && discovery_cache_fresh(cache.refs_saved_at)
+        && !cache.refs.is_empty()
+    {
+        return cache.refs;
+    }
+
     let mut refs = roots.all_refs();
     refs.sort();
     refs.dedup();
+    let refs = sort_by_frecency(roots, refs);
+    cache.roots_key = key;
+    cache.refs_saved_at = bn_core::util::now_epoch_secs();
+    cache.refs.clone_from(&refs);
+    write_discovery_cache(&cache);
+    refs
+}
+
+/// Decorated list rows: `<display>\t<ref>`. fzf shows only `<display>` (`--with-nth=1`); the
+/// `<ref>` rides along as the hidden last field (`{-1}`) for preview/kill/selection.
+fn build_list(roots: &Roots, refresh: bool) {
+    let refs = ordered_refs(roots, refresh);
     let known_sessions: HashSet<String> = refs.iter().map(|r| ref_session(r)).collect();
     let known_repos: HashSet<String> = refs.iter().map(|r| ref_repo(r).to_string()).collect();
     let tmux = tmux_sessions();
-    for r in sort_by_frecency(roots, refs) {
+    for r in refs {
         let sess = ref_session(&r);
         let marker = if let Some(count) = tmux.count(&sess) {
             format!("[*{count}w] ")
@@ -1422,7 +1508,7 @@ pub fn run(cfg: &Config, name: Option<&str>, root_opt: Option<&str>) {
                 .arg("--print-query")
                 .arg("--delimiter=\t")
                 .arg("--with-nth=1")
-                .arg("--header=Enter: open | ctrl-x: kill | type repo/branch or paste a git URL")
+                .arg("--header=Enter: open | ctrl-r: refresh | ctrl-x: kill | type repo/branch or paste a git URL")
                 .arg(format!(
                     "--preview={bn} tat{root_flag} --pick-stage preview {{-1}}"
                 ))
@@ -1433,6 +1519,9 @@ pub fn run(cfg: &Config, name: Option<&str>, root_opt: Option<&str>) {
                 .arg(format!(
                     "--bind=ctrl-x:execute-silent({bn} tat{root_flag} --pick-stage kill {{-1}})+reload({bn} tat{root_flag} --pick-stage list)"
                 ))
+                .arg(format!(
+                    "--bind=ctrl-r:reload({bn} tat{root_flag} --pick-stage refresh)"
+                ))
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .spawn();
@@ -1440,7 +1529,7 @@ pub fn run(cfg: &Config, name: Option<&str>, root_opt: Option<&str>) {
                 Ok(c) => c,
                 Err(_) => {
                     // No fzf on PATH — degrade to a plain list, then hold.
-                    build_list(&roots);
+                    build_list(&roots, false);
                     crate::picker::hold();
                     return;
                 }
@@ -1532,14 +1621,27 @@ fn open_worktree(cfg: &Config, roots: &Roots, r: &str, branch: &str) {
 
     // Pooled repo: lease a warm slot for this branch (idempotent — an already-leased branch hands
     // back its slot), and open the window at the slot path rather than a cold `worktree/<repo>/…`.
+    // A configured pool with no capacity is a direct-open failure, not permission to grow an
+    // unbounded parallel set of cold worktrees.
     if pool_eligible(roots, r) {
-        if let Some((slot, _fresh)) = crate::wt_pool::lease_for_dispatch(cfg, repo, branch) {
-            ensure_session(r, &bare_repo_main_path(roots, r));
-            open_or_select_window(&sess, &sanitized, &slot);
-            goto_session(&sess);
-            return;
+        match crate::wt_pool::lease_for_direct_open(cfg, repo, branch) {
+            crate::wt_pool::DirectLease::Leased(slot) => {
+                ensure_session(r, &bare_repo_main_path(roots, r));
+                open_or_select_window(&sess, &sanitized, &slot);
+                goto_session(&sess);
+                return;
+            }
+            crate::wt_pool::DirectLease::Unavailable => {
+                crate::picker::hold();
+                return;
+            }
+            crate::wt_pool::DirectLease::MissingRepo => {
+                eprintln!("Not a bare repo: {r}");
+                crate::picker::hold();
+                return;
+            }
+            crate::wt_pool::DirectLease::Unpooled => {}
         }
-        // Pool full (or lease failed) — fall through to a cold worktree.
     }
 
     let bare = roots.bare_dir(r).join(format!("{repo}.git"));
@@ -1597,8 +1699,19 @@ fn clone_and_open(cfg: &Config, roots: &Roots, url: &str) {
 /// straight from the filesystem (skipping the `_pool` warm-slot dir and dotfiles) so the sub-picker
 /// paints without a `git worktree list` subprocess. Falls back to the git listing when that dir
 /// can't be read yet (e.g. before the first worktree is cut). Sorted for a stable row order.
-fn scan_worktrees(roots: &Roots, name: &str) -> Vec<String> {
+fn scan_worktrees(roots: &Roots, name: &str, refresh: bool) -> Vec<String> {
     let dir = roots.worktree_dir(name).join(ref_repo(name));
+    let key = dir.to_string_lossy().to_string();
+    let mut cache = read_discovery_cache();
+    if !refresh {
+        if let Some(hit) = cache
+            .worktrees
+            .get(&key)
+            .filter(|hit| discovery_cache_fresh(hit.saved_at))
+        {
+            return hit.names.clone();
+        }
+    }
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return list_worktrees(roots, name);
     };
@@ -1609,6 +1722,14 @@ fn scan_worktrees(roots: &Roots, name: &str) -> Vec<String> {
         .filter(|n| n != "_pool" && !n.starts_with('.'))
         .collect();
     names.sort();
+    cache.worktrees.insert(
+        key,
+        CachedWorktrees {
+            saved_at: bn_core::util::now_epoch_secs(),
+            names: names.clone(),
+        },
+    );
+    write_discovery_cache(&cache);
     names
 }
 
@@ -1616,7 +1737,12 @@ fn scan_worktrees(roots: &Roots, name: &str) -> Vec<String> {
 /// agent-status dot), idle worktrees (fast dir-scan), codespace branches, and warm-pool slots.
 /// Returns the rows plus the live-window count (the caller's quiet-clone shortcut). Shared by the
 /// initial in-process paint and the `--pick-stage sublist` reload feed so the two stay identical.
-fn build_sub_rows(cfg: &Config, roots: &Roots, name: &str) -> (String, usize) {
+fn build_sub_rows(
+    cfg: &Config,
+    roots: &Roots,
+    name: &str,
+    refresh_worktrees: bool,
+) -> (String, usize) {
     let sess = ref_session(name);
     let repo = ref_repo(name);
     let bare = is_bare_repo(roots, name);
@@ -1648,7 +1774,7 @@ fn build_sub_rows(cfg: &Config, roots: &Roots, name: &str) -> (String, usize) {
 
     let worktree_dir = roots.worktree_dir(name);
     if bare {
-        for w in &scan_worktrees(roots, name) {
+        for w in &scan_worktrees(roots, name, refresh_worktrees) {
             if open_windows.iter().any(|ow| ow == w) {
                 continue; // already a window
             }
@@ -1740,7 +1866,7 @@ fn open_project(cfg: &Config, roots: &Roots, name: &str) {
 
     // Build the rows once, in-process, for the initial paint; a post-action `reload()` re-runs the
     // identical builder via `--pick-stage sublist` so the list refreshes in place.
-    let (rows, win_count) = build_sub_rows(cfg, roots, name);
+    let (rows, win_count) = build_sub_rows(cfg, roots, name, false);
     // A quiet flat clone (≤ 1 window, no worktrees) just switches to its session.
     if !bare && win_count <= 1 {
         goto_session(&sess);
@@ -2058,11 +2184,12 @@ pub fn stage(
 ) {
     let roots = Roots::resolve(cfg, root_opt);
     match stage {
-        TatStage::List => build_list(&roots),
+        TatStage::List => build_list(&roots, false),
+        TatStage::Refresh => build_list(&roots, true),
         TatStage::Preview => preview(&roots, name.unwrap_or("")),
         TatStage::Kill => kill_from_line(name.unwrap_or("")),
         TatStage::SubList => {
-            let (rows, _) = build_sub_rows(cfg, &roots, name.unwrap_or(""));
+            let (rows, _) = build_sub_rows(cfg, &roots, name.unwrap_or(""), true);
             print!("{rows}");
         }
         TatStage::RmWorktree => {
@@ -2122,4 +2249,78 @@ fn agent_dot(state: &str, since: &str) -> String {
         _ => ("2", '◌'),          // dim — decorated but idle/unknown
     };
     format!("\x1b[{color}m{glyph}\x1b[0m ")
+}
+
+#[cfg(test)]
+mod discovery_cache_tests {
+    use super::*;
+
+    fn roots(root: &Path) -> Roots {
+        Roots {
+            primary: root.to_path_buf(),
+            primary_bare: root.join("bare"),
+            primary_worktree: root.join("worktree"),
+            extras: Vec::new(),
+            win_scoped: false,
+        }
+    }
+
+    fn add_bare(root: &Path, repo: &str) {
+        std::fs::create_dir_all(root.join("bare").join(format!("{repo}.git"))).unwrap();
+    }
+
+    #[test]
+    fn ordered_refs_cache_hits_until_refresh_and_isolates_roots() {
+        let _g = bn_core::test_support::env_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let _cache = bn_core::test_support::EnvGuard::set("XDG_CACHE_HOME", &cache);
+        let _ttl = bn_core::test_support::EnvGuard::set("WF_TAT_TTL", "30");
+        let _now = bn_core::test_support::EnvGuard::set("BN_NOW", "100");
+        let first = tmp.path().join("first");
+        let second = tmp.path().join("second");
+        add_bare(&first, "alpha");
+        add_bare(&second, "other");
+
+        assert!(discovery_cache_fresh(70));
+        assert!(!discovery_cache_fresh(69));
+        assert_eq!(ordered_refs(&roots(&first), true), vec!["alpha"]);
+        add_bare(&first, "beta");
+        assert_eq!(
+            ordered_refs(&roots(&first), false),
+            vec!["alpha"],
+            "fresh cache should avoid another filesystem walk"
+        );
+        assert_eq!(
+            ordered_refs(&roots(&first), true),
+            vec!["beta", "alpha"],
+            "forced refresh should expose new repositories"
+        );
+        assert_eq!(
+            ordered_refs(&roots(&second), false),
+            vec!["other"],
+            "a different root must not reuse the first root's snapshot"
+        );
+    }
+
+    #[test]
+    fn worktree_cache_refreshes_and_corrupt_cache_is_a_miss() {
+        let _g = bn_core::test_support::env_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let _cache = bn_core::test_support::EnvGuard::set("XDG_CACHE_HOME", &cache);
+        let root = tmp.path().join("root");
+        let repo_dir = root.join("worktree").join("alpha");
+        std::fs::create_dir_all(repo_dir.join("one")).unwrap();
+        let roots = roots(&root);
+
+        assert_eq!(scan_worktrees(&roots, "alpha", true), vec!["one"]);
+        std::fs::create_dir_all(repo_dir.join("two")).unwrap();
+        assert_eq!(scan_worktrees(&roots, "alpha", false), vec!["one"]);
+        assert_eq!(scan_worktrees(&roots, "alpha", true), vec!["one", "two"]);
+
+        std::fs::write(discovery_cache_path(), "not json").unwrap();
+        assert!(read_discovery_cache().refs.is_empty());
+        assert!(read_discovery_cache().worktrees.is_empty());
+    }
 }

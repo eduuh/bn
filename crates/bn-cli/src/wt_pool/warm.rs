@@ -144,6 +144,7 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool) -> bool {
     // slot that's leased (a running agent owns it), dirty (uncommitted local work), or — under
     // `--new` — already holding a *live* checkout; those are counted as skipped and left untouched.
     let mut skipped = 0u32;
+    let mut failed = 0u32;
     let mut ready: Vec<(u32, PathBuf)> = Vec::new();
     for n in 1..=ctx.size as u32 {
         let slot = slot_path(&ctx.pool_dir, n);
@@ -191,6 +192,7 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool) -> bool {
             }
             if !add_detached_slot(&bare_s, &slot.to_string_lossy()) {
                 eprintln!("{RED}[{n}] failed to create checkout{NC}");
+                failed += 1;
                 continue;
             }
         }
@@ -209,6 +211,7 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool) -> bool {
     // A ready slot whose build.sh failed is still leasable, just not fully provisioned — count it
     // separately (made) from the fully-warmed slots so the summary can distinguish the two.
     let made = ready.len() as u32 - warmed;
+    let complete = warm_complete(ctx.size as u32, warmed, skipped, failed, made);
     // Record the refresh so `bn metrics` can surface pool freshness — how many slots warmed, and
     // when the pool was last refreshed (one event per `pool warm`, alongside pool_get/pool_return).
     {
@@ -216,17 +219,33 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool) -> bool {
         f.insert("repo".to_string(), ctx.repo.clone().into());
         f.insert("warmed".to_string(), warmed.into());
         f.insert("size".to_string(), (ctx.size as u64).into());
+        f.insert("skipped".to_string(), skipped.into());
+        f.insert("failed".to_string(), (failed + made).into());
+        f.insert("complete".to_string(), complete.into());
         let _ = bn_core::events::append("pool_warm", f);
     }
     let mut summary = format!("Warmed {warmed}/{} slots for {}", ctx.size, ctx.repo);
     if made > 0 {
         summary += &format!(" · {made} checked out but build failed");
     }
+    if failed > 0 {
+        summary += &format!(" · {failed} checkout failures");
+    }
     if skipped > 0 {
         summary += &format!(" · {skipped} skipped (leased/dirty/existing)");
     }
     println!("{GREEN}{summary}.{NC}");
-    true
+    complete
+}
+
+fn warm_complete(
+    size: u32,
+    warmed: u32,
+    skipped: u32,
+    checkout_failed: u32,
+    build_failed: u32,
+) -> bool {
+    warmed == size && skipped == 0 && checkout_failed == 0 && build_failed == 0
 }
 
 /// Build every ready slot: prime the first at full parallelism (seeding the sccache cache), then
@@ -293,9 +312,9 @@ fn run_bn_build(repo: &str, slot: &Path, jobs: Option<usize>) -> bool {
     cmd.status().map(|s| s.success()).unwrap_or(false)
 }
 
-/// Whether an idle-time pool refresh has real work to do right now.
+/// Whether a mandatory pool refresh has real work to do right now.
 ///
-/// This is the cheap predicate the queue tick uses before enqueueing opportunistic warm work. The
+/// This is the cheap predicate the queue tick uses before enqueueing mandatory warm work. The
 /// expensive build still runs through [`job_pool_warm`], which re-checks the same gate before doing
 /// anything; this only keeps the queue from filling with "wake up and skip" entries.
 pub(crate) fn pool_refresh_due(cfg: &Config, now: i64) -> bool {
@@ -305,10 +324,8 @@ pub(crate) fn pool_refresh_due(cfg: &Config, now: i64) -> bool {
     )
 }
 
-/// `pool-warm` cron — refresh every repo's warm-slot pool while the device is idle, so a leased
-/// dispatch always lands on a ready checkout. Off-peak by schedule and idle-gated at runtime (never
-/// builds on top of active work), with a per-repo staleness guard so a long idle stretch re-warms
-/// each repo at most every few hours. When queued with `bn run pool-warm --repo <repo>`, the context
+/// `pool-warm` cron — refresh every due repo's warm-slot pool after its daily deadline, so a leased
+/// dispatch always lands on a ready checkout. When queued with `bn run pool-warm --repo <repo>`, the context
 /// scopes the refresh to that one repo so the Repos page can schedule a pool build without turning
 /// it into an all-pools sweep. Each repo's warm records a `pool_warm` event, so `bn metrics` shows
 /// when the pools were last refreshed (the "record when we refresh pools" ask).
@@ -323,6 +340,7 @@ pub(crate) fn job_pool_warm(cfg: &Config, ctx: Option<&bn_core::resolver::Resolv
             0
         }
         crate::wt_pool_refresh::PoolRefreshPlan::Warm(targets) => {
+            let _ = bn_core::events::append("pool_refresh_attempt", serde_json::Map::new());
             crate::cmd::jobs::native_job_line(
                 &format!(
                     "pool-warm: refreshing {} pool(s): {}",
@@ -371,6 +389,20 @@ fn warm_pool_for_cron(cfg: &Config, repo: &str) -> i32 {
     if warm_pool(cfg, &ctx, true, false) {
         return 0;
     }
+
     crate::cmd::jobs::native_job_line(&format!("pool-warm: {repo} refresh failed"), true);
     1
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::warm_complete;
+
+    #[test]
+    fn only_a_full_success_advances_pool_freshness() {
+        assert!(warm_complete(3, 3, 0, 0, 0));
+        assert!(!warm_complete(3, 2, 1, 0, 0));
+        assert!(!warm_complete(3, 2, 0, 1, 0));
+        assert!(!warm_complete(3, 2, 0, 0, 1));
+    }
 }

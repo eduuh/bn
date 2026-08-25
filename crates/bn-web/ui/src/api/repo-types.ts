@@ -32,6 +32,7 @@ export interface RepoPool {
 
 export interface RepoPoolPolicy {
   min_ready: number;
+  max_freshness_hours: number;
   warm_windows: RepoPoolWarmWindow[];
 }
 
@@ -39,6 +40,7 @@ export interface RepoPoolWarmWindow {
   name: string;
   at: string;
   fore: string;
+  mode: "away" | "deadline";
 }
 
 /** One warm-pool slot, 1-indexed to match its on-disk `_pool/<n>` dir. */

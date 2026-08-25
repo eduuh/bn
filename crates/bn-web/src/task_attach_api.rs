@@ -261,9 +261,9 @@ mod tests {
             cfg.web.bind.clone(),
             cfg.web.port,
         ))
-            .oneshot(req)
-            .await
-            .expect("router");
+        .oneshot(req)
+        .await
+        .expect("router");
         let status = res.status();
         let bytes = axum::body::to_bytes(res.into_body(), 4 * 1024 * 1024)
             .await

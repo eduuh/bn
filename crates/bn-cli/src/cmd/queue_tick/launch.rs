@@ -31,6 +31,22 @@ pub(super) fn launch_timeout() -> Option<std::time::Duration> {
     (secs > 0).then(|| std::time::Duration::from_secs(secs))
 }
 
+/// Maximum wall-clock time for work executed inline by one dispatcher pass.
+///
+/// Express work holds the machine tick lock until it returns, so unlike agent launch this bound
+/// cannot be disabled: an unbounded value restores the exact failure mode the lock exists to
+/// prevent. Jobs that honestly need longer belong on the detached `heavy` path.
+const EXPRESS_TIMEOUT_SECS: u64 = 300;
+
+pub(super) fn express_timeout() -> std::time::Duration {
+    let secs = std::env::var("BN_QUEUE_EXPRESS_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(EXPRESS_TIMEOUT_SECS)
+        .clamp(1, 3600);
+    std::time::Duration::from_secs(secs)
+}
+
 /// Spawn `cmd` with inherited stdio and wait for it, killing its whole process group if it outlives
 /// `timeout`.
 ///

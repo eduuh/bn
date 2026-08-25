@@ -10,7 +10,14 @@ pub(super) fn finish_fields(repo: &str, id: &str, exit_code: i32) -> Map<String,
         ("exit_code".to_string(), Value::from(exit_code)),
         (
             "outcome".to_string(),
-            Value::String(if exit_code == 0 { "completed" } else { "failed" }.to_string()),
+            Value::String(
+                if exit_code == 0 {
+                    "completed"
+                } else {
+                    "failed"
+                }
+                .to_string(),
+            ),
         ),
     ])
 }
@@ -53,7 +60,10 @@ pub(super) fn dispatch_fields(d: &Dispatch, machine: &str) -> Map<String, Value>
             "work_kind".to_string(),
             Value::String(d.kind.label().to_string()),
         ),
-        ("exec".to_string(), Value::String(d.exec.label().to_string())),
+        (
+            "exec".to_string(),
+            Value::String(d.exec.label().to_string()),
+        ),
         ("target".to_string(), Value::String(d.target.label())),
         (
             "node".to_string(),
@@ -68,10 +78,7 @@ pub(super) fn dispatch_fields(d: &Dispatch, machine: &str) -> Map<String, Value>
             Value::String(d.work_class.label().to_string()),
         ),
         ("priority".to_string(), Value::from(d.priority)),
-        (
-            "rationale".to_string(),
-            Value::String(d.rationale.clone()),
-        ),
+        ("rationale".to_string(), Value::String(d.rationale.clone())),
     ]);
     if let Some(harness) = &d.harness {
         fields.insert("harness".to_string(), Value::String(harness.clone()));

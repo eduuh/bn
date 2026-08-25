@@ -20,8 +20,8 @@ use bn_core::backlog::{self, BacklogKind, LaunchFailure};
 use bn_core::queue::decision::QueueDecision;
 use bn_core::queue::tick::{plan_tick, Dispatch, TickPlan};
 use event_fields::{dispatch_fields, finish_fields, launch_failure_fields};
-use heartbeat::{Heartbeat, stamp_pass};
-use launch::{launch_timeout, wait_bounded, Launch};
+use heartbeat::{stamp_pass, Heartbeat};
+use launch::{express_timeout, launch_timeout, wait_bounded, Launch};
 use lock::{LockDenied, TickLock};
 use render::print_decision;
 use std::path::PathBuf;
@@ -342,13 +342,10 @@ fn tick_once(cfg: &Config, now: i64, dry_run: bool) -> TickOutcome {
     TickOutcome::Ran(Box::new(decision))
 }
 
-/// Queue autonomous maintenance only when it has real work to do.
+/// Queue mandatory pool maintenance only when it has real work to do.
 ///
-/// The queue already protects the machine once the item exists: `pool-warm` is classified as heavy
-/// and priority -50, so it only runs after person-facing and routine work and it consumes a lane
-/// slot rather than hiding inside the tick. This hook supplies the missing piece: it is no longer
-/// purely calendar-driven. Every dispatcher pass may top up background work, but only when the pool
-/// planner says a stale warm pool exists.
+/// Every dispatcher pass may enqueue one deduplicated sweep when the planner finds a missed daily
+/// deadline or a pool at the 24-hour backstop.
 /// Re-run the producers whose job is to notice that something *became* due.
 ///
 /// Both are sweeps rather than callbacks, and both belong on the tick rather than on a schedule of
@@ -372,15 +369,20 @@ fn maybe_enqueue_spare_work(cfg: &Config, now: i64) {
     if !crate::wt_pool::pool_refresh_due(cfg, now) {
         return;
     }
-    let repo = cfg.queue_home_repo();
     if bn_core::backlog::load(&bn_core::backlog::backlog_path())
-        .is_active(&repo, &bn_core::orchestrate::derive_id("run pool-warm"))
+        .entries()
+        .iter()
+        .any(|entry| {
+            entry.status.is_active()
+                && bn_core::queue::classify::is_mandatory_pool_warming(entry)
+        })
     {
         return;
     }
-    let _ = crate::cmd::queue_producers::capture_job(
+    let _ = crate::cmd::queue_producers::capture_job_with_subject(
         cfg,
         "pool-warm",
+        "run mandatory pool-warm",
         bn_core::queue::kind::ExecSpec::Job {
             job: "pool-warm".to_string(),
             repo: None,
@@ -568,8 +570,8 @@ fn realize(cfg: &Config, plan: &TickPlan, now: i64) {
                 let deferred_at = bn_core::util::now_epoch_secs();
                 let refs = [d.id.as_str()];
                 let _ = backlog::release_many(&path, &d.repo, &refs, deferred_at);
-                let retry_at = deferred_at
-                    + bn_core::queue::tick::launch_retry_delay(1).unwrap_or(60);
+                let retry_at =
+                    deferred_at + bn_core::queue::tick::launch_retry_delay(1).unwrap_or(60);
                 let _ = backlog::snooze(&path, &d.repo, &d.id, retry_at, deferred_at);
                 eprintln!(
                     "bn queue tick: {}/{} waiting until {}: {reason}",
@@ -651,28 +653,26 @@ fn execute(cfg: &Config, d: &Dispatch, now: i64) -> Executed {
     match &d.exec {
         // Heavy work is spawned, never run inline — a minutes-long build inside the tick would
         // hold the dispatcher for minutes and make every pass behind it skip on the lock.
-        bn_core::queue::kind::ExecSpec::Job { job, repo, branch } if d.heavy => {
-            spawn_heavy(d, &heavy::job_command(job, repo.as_deref(), branch.as_deref()))
-        }
+        bn_core::queue::kind::ExecSpec::Job { job, repo, branch } if d.heavy => spawn_heavy(
+            d,
+            &heavy::job_command(job, repo.as_deref(), branch.as_deref()),
+        ),
         bn_core::queue::kind::ExecSpec::Shell { cmd } if d.heavy => spawn_heavy(d, cmd),
-        // The ordinary entry point, deliberately: `Dispatching` makes capture inert for this
-        // extent, so `run_job` runs the job instead of re-queueing it. Special-casing the
-        // implementation here was the old per-call-site fix, and it is exactly what kept getting
-        // forgotten.
+        // Express work runs in a child process because this function is inside the machine tick
+        // lock. An in-process job that hangs would prevent Drop from releasing that lock and make
+        // every future pass skip forever. `Dispatching` is inherited, so re-entering `bn run`
+        // executes rather than re-queues the job.
         bn_core::queue::kind::ExecSpec::Job { job, repo, branch } => {
-            let ctx = if repo.is_none() && branch.is_none() {
-                None
-            } else {
-                target_ctx(cfg, repo.clone(), branch.clone())
-            };
-            Executed::Finished {
-                code: crate::cmd::cron::run_job(cfg, ctx.as_ref(), job),
-            }
+            run_express_job(cfg, job, repo.as_deref(), branch.as_deref())
         }
-        bn_core::queue::kind::ExecSpec::Shell { cmd } => match run_shell(cmd) {
-            Ok(code) => Executed::Finished { code },
-            Err(e) => Executed::Failed(e),
-        },
+        bn_core::queue::kind::ExecSpec::Shell { cmd } => {
+            let mut child = std::process::Command::new("/bin/sh");
+            child
+                .arg("-c")
+                .arg(cmd)
+                .env("PATH", crate::cmd::cron::job_path());
+            run_express(child, "shell command")
+        }
         bn_core::queue::kind::ExecSpec::Agent => launch_agent(cfg, d, None, now),
         bn_core::queue::kind::ExecSpec::Skill { skill, arg } => {
             launch_agent(cfg, d, Some((skill.as_str(), arg.as_deref())), now)
@@ -689,11 +689,7 @@ fn launch_agent(
     now: i64,
 ) -> Executed {
     if d.agent.with_main
-        && !crate::wt_pool::paired_capacity_available(
-            cfg,
-            &d.repo,
-            d.agent.branch.as_deref(),
-        )
+        && !crate::wt_pool::paired_capacity_available(cfg, &d.repo, d.agent.branch.as_deref())
     {
         return Executed::Deferred(
             "--with-main needs two available worker slots in the repo pool".to_string(),
@@ -758,6 +754,93 @@ fn spawn_heavy(d: &Dispatch, cmd: &str) -> Executed {
     }
 }
 
+#[cfg(not(test))]
+fn run_express_job(
+    _cfg: &Config,
+    job: &str,
+    repo: Option<&str>,
+    branch: Option<&str>,
+) -> Executed {
+    let Ok(exe) = std::env::current_exe() else {
+        return Executed::Failed("cannot resolve the bn executable".to_string());
+    };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(["run", job, "--now"]);
+    if let Some(repo) = repo {
+        cmd.args(["--repo", repo]);
+    }
+    if let Some(branch) = branch {
+        cmd.args(["--branch", branch]);
+    }
+    run_express(cmd, &format!("job {job}"))
+}
+
+// Rust's unit-test executable is not the `bn` CLI and cannot be re-entered with `bn run`.
+#[cfg(test)]
+fn run_express_job(
+    cfg: &Config,
+    job: &str,
+    repo: Option<&str>,
+    branch: Option<&str>,
+) -> Executed {
+    let ctx = if repo.is_none() && branch.is_none() {
+        None
+    } else {
+        target_ctx(
+            cfg,
+            repo.map(ToOwned::to_owned),
+            branch.map(ToOwned::to_owned),
+        )
+    };
+    Executed::Finished {
+        code: crate::cmd::cron::run_job(cfg, ctx.as_ref(), job),
+    }
+}
+
+fn run_express(cmd: std::process::Command, label: &str) -> Executed {
+    run_express_with_timeout(cmd, label, express_timeout())
+}
+
+fn run_express_with_timeout(
+    cmd: std::process::Command,
+    label: &str,
+    timeout: std::time::Duration,
+) -> Executed {
+    match wait_bounded(cmd, Some(timeout)) {
+        Launch::Exited(st) => Executed::Finished {
+            code: st.code().unwrap_or(1),
+        },
+        Launch::TimedOut(secs) => {
+            eprintln!(
+                "bn queue tick: express {label} exceeded {secs}s — killed it and everything it started"
+            );
+            Executed::Finished { code: 124 }
+        }
+        Launch::Failed(e) => Executed::Failed(e),
+    }
+}
+
+#[cfg(test)]
+mod express_tests {
+    use super::*;
+
+    #[test]
+    fn a_hung_express_job_ends_instead_of_holding_the_tick_lock_forever() {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args(["-c", "sleep 60"]);
+
+        let started = std::time::Instant::now();
+        let outcome =
+            run_express_with_timeout(cmd, "test job", std::time::Duration::from_secs(1));
+
+        assert!(matches!(outcome, Executed::Finished { code: 124 }));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "express work must end at its deadline"
+        );
+    }
+}
+
 /// `bn queue finish` — the callback heavy work makes when it is done.
 pub(crate) fn emit_finish(repo: &str, id: &str, exit_code: i32, json: bool) {
     let now = bn_core::util::now_epoch_secs();
@@ -782,19 +865,6 @@ pub(crate) fn emit_finish(repo: &str, id: &str, exit_code: i32, json: bool) {
     } else if resolved > 0 {
         println!("{repo}/{id} → {}", status.label());
     }
-}
-
-/// Run a headless shell command — a `.md` cron agent's `run:` contract, verbatim.
-fn run_shell(cmd: &str) -> Result<i32, String> {
-    std::process::Command::new("/bin/sh")
-        .arg("-c")
-        .arg(cmd)
-        .env("PATH", crate::cmd::cron::job_path())
-        .status()
-        // The real code, not just success/failure: `exit 3` should read as `exit 3` in the log.
-        // A signal death has no code; 1 is the conventional stand-in and is still non-zero.
-        .map(|st| st.code().unwrap_or(1))
-        .map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------------------------

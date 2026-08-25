@@ -317,11 +317,28 @@ pub(crate) fn capture_job(
     requires: Requirements,
     not_after: Option<i64>,
 ) -> bool {
+    capture_job_with_subject(
+        cfg,
+        name,
+        &format!("run {name}"),
+        exec,
+        requires,
+        not_after,
+    )
+}
+
+pub(crate) fn capture_job_with_subject(
+    cfg: &Config,
+    name: &str,
+    subject: &str,
+    exec: ExecSpec,
+    requires: Requirements,
+    not_after: Option<i64>,
+) -> bool {
     let recovery = bn_core::queue::jobs::is_recovery(name);
     let heavy = bn_core::queue::jobs::is_heavy(name);
     let repo = cfg.queue_home_repo();
     let now = bn_core::util::now_epoch_secs();
-    let subject = format!("run {name}");
     let spec = AddSpec {
         kind: BacklogKind::Cron,
         // Scheduled work is the floor: it should run, but never ahead of work a person is waiting
@@ -329,7 +346,7 @@ pub(crate) fn capture_job(
         // recovery, which has to outrank a backlog of routine crons to be worth exempting at all.
         priority: bn_core::queue::jobs::priority_for(name),
         source: format!("cron:{name}"),
-        task: crate::cmd::task_mint::task_for_machine_enqueue(cfg, &repo, &subject, "cron"),
+        task: crate::cmd::task_mint::task_for_machine_enqueue(cfg, &repo, subject, "cron"),
         exec,
         requires,
         // A scheduled job keeps its time inside the queue: past this it is dropped rather than run
@@ -342,8 +359,8 @@ pub(crate) fn capture_job(
     report(
         name,
         &repo,
-        &subject,
-        enqueue(&backlog::backlog_path(), &repo, &subject, &spec, now),
+        subject,
+        enqueue(&backlog::backlog_path(), &repo, subject, &spec, now),
     )
 }
 

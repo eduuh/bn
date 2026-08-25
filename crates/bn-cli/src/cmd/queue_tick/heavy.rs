@@ -55,7 +55,11 @@ fn tmux_target(d: &Dispatch) -> (String, String) {
         bn_core::queue::kind::ExecSpec::Job { job, repo, .. } => {
             let session = repo
                 .as_deref()
-                .unwrap_or(if job == "nightly-release" { "bn" } else { &d.repo })
+                .unwrap_or(if job == "nightly-release" {
+                    "bn"
+                } else {
+                    &d.repo
+                })
                 .to_string();
             (session, crate::wt::sanitize_branch(job))
         }
