@@ -54,15 +54,19 @@ fn gate(verify: bool) -> String {
     .expect("gate renders")
 }
 
-/// The routing table itself: default ship → pipeline investigate; scout and explicit-skill
-/// lanes (queue skill lanes, the critic's `execute` re-dispatch) seed their own envelopes.
+/// The routing table itself: with the pipeline flag off (the default) even the skill-less ship
+/// dispatch stays on the single-session ship lane; with it on, that lane enters pipeline
+/// investigate, while scout and explicit-skill lanes always seed their own envelopes.
 #[test]
 fn routing_table() {
-    assert!(routes_to_pipeline_investigate(true, false, None));
-    assert!(!routes_to_pipeline_investigate(true, true, None));
-    assert!(!routes_to_pipeline_investigate(true, false, Some("plan-work")));
-    assert!(!routes_to_pipeline_investigate(true, false, Some("execute")));
-    assert!(!routes_to_pipeline_investigate(false, false, None));
+    // Off by default: the ordinary ship dispatch runs one `ship-solo` session, not the pipeline.
+    assert!(!routes_to_pipeline_investigate(false, true, false, None));
+    // Opt in via `$BN_DISPATCH_PIPELINE=1`: a skill-less non-scout agent dispatch enters investigate.
+    assert!(routes_to_pipeline_investigate(true, true, false, None));
+    assert!(!routes_to_pipeline_investigate(true, true, true, None));
+    assert!(!routes_to_pipeline_investigate(true, true, false, Some("plan-work")));
+    assert!(!routes_to_pipeline_investigate(true, true, false, Some("execute")));
+    assert!(!routes_to_pipeline_investigate(true, false, false, None));
 }
 
 /// The plan-review gate's decision table.
@@ -94,6 +98,23 @@ fn scout_seed_uses_scout_envelope_with_report_only_completion() {
     assert!(s.contains("--- WORKFLOW: investigate ---"));
     assert!(s.contains("bn agent done --report-only"));
     assert!(!s.contains("CONCURRENCY DISCIPLINE"));
+}
+
+#[test]
+fn ship_solo_seed_uses_the_solo_stance_even_under_yolo() {
+    // `ship-solo` is the default ship lane. Its stance is autonomous-but-ask-on-ambiguity: it must
+    // neither force a plan proposal (interactive) nor forbid `ask_user` (unattended), even under
+    // `--yolo`, and it never carries a plan-review gate.
+    for yolo in [false, true] {
+        let s = seed(false, yolo, false, false, "ship-solo");
+        assert!(s.contains("--- WORKFLOW: ship-solo ---"));
+        assert!(s.contains("ask the human with `ask_user`"));
+        assert!(!s.contains("propose a concrete plan"));
+        assert!(!s.contains("unattended worktree"));
+        // Exactly one completion protocol and one reflect hook, like every ship seed.
+        assert_eq!(s.matches("bn agent done --summary").count(), 1);
+        assert_eq!(s.matches("bn reflect \"skill:").count(), 1);
+    }
 }
 
 #[test]

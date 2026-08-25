@@ -338,6 +338,10 @@ pub struct AgentSpec {
     /// [`yolo`]: AgentSpec::yolo
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_plan_review: bool,
+    /// Reserve a second warm pool slot, detached at the repo's primary branch, for comparison
+    /// testing alongside the feature worktree.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub with_main: bool,
     /// Which pipeline stage this entry **is**.
     ///
     /// The stage decides the model, the effort, the harness and the workflow a launch runs under, so

@@ -159,7 +159,8 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool) -> bool {
             skipped += 1;
             continue;
         }
-        if let Some(l) = leases.slots.get(&n) {
+        if let Some(owner) = leases.owner_slot(n) {
+            let l = &leases.slots[&owner];
             eprintln!("{YELLOW}[{n}] leased {} — skipping{NC}", l.branch);
             skipped += 1;
             continue;

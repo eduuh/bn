@@ -480,6 +480,8 @@ pub(crate) struct DispatchRequest<'a> {
     /// Declining the plan-review gate — durable on the entry, so a captured dispatch is launched
     /// with the same stance the caller asked for.
     pub no_plan_review: bool,
+    /// Whether dispatch must reserve a detached primary-branch comparison slot too.
+    pub with_main: bool,
     /// The pipeline stage this dispatch is, when the caller knows it. Durable for the same reason
     /// the rest of the identity is: the stage picks the model, effort, harness and workflow, and an
     /// entry that loses it is re-inferred into whichever of three stages the guess allows.
@@ -598,6 +600,7 @@ pub(crate) fn capture_dispatch(cfg: &Config, req: &DispatchRequest<'_>, json: bo
             name: req.name.map(str::to_string),
             yolo: req.yolo,
             no_plan_review: req.no_plan_review,
+            with_main: req.with_main,
             stage: req.stage,
         },
         ..Default::default()
@@ -702,6 +705,7 @@ mod capture_tests {
             name: None,
             yolo: false,
             no_plan_review: false,
+            with_main: false,
             machine: false,
             fresh: false,
             verify: false,
@@ -720,12 +724,13 @@ mod capture_tests {
             // The repo-setup lane's stance: autonomous, and explicitly not behind the plan-review
             // gate. Both are durable on the entry, so neither is a reason to skip the queue.
             no_plan_review: true,
+            with_main: true,
             harness: Some("copilot"),
             ..req()
         };
         assert!(
             r.unsupported().is_empty(),
-            "branch, name, yolo and no-plan-review are durable — capture must still happen"
+            "branch, name, yolo, no-plan-review and with-main are durable — capture must still happen"
         );
     }
 

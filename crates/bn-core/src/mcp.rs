@@ -40,6 +40,9 @@ first. Keep this branch's note current as you work — don't wait to be asked:
 This is a deliberately slim tool surface for efficiency. The single-purpose tools (`bn_goal`,
 `bn_pr`, `bn_status`, `bn_sync`, `bn_handoff_read`, `bn_handoff_write`) are not advertised over
 MCP — use the `bn` CLI (`bn goal`, `bn pr`, `bn status`, `bn sync`, `bn handoff …`) when needed.
+If the MCP server is unavailable, keep working through the CLI instead of blocking: each `bn_*`
+tool maps to the same words after `bn` (`bn_context` → `bn status`, `bn_cat` → `bn cat`,
+`bn_add` → `bn add`, and `bn_done` → `bn done`).
 
 The MCP surface intentionally cannot target another repo or branch and does not expose
 cross-branch rollups, search, daily goals, reviews, metrics, attention queues, cron status, or

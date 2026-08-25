@@ -93,14 +93,28 @@ pub(crate) fn plan_gate_enabled(request: PlanGate, configured: bool, yolo: bool,
     }
 }
 
-/// The seed-routing predicate: a skill-less non-scout agent dispatch enters the task pipeline at
-/// its Investigate stage; a scout seeds the scout envelope; an explicit `--skill X` lane (queue
-/// skill lanes, the critic's execute re-dispatch) runs that skill under the ship envelope —
-/// autonomy stance, verify gate, completion protocol, optional plan gate. Pure so the
-/// seed-assembly tests can pin the routing table: without the `skill` arm every non-scout agent
-/// dispatch took the investigate envelope, leaving the whole ship-envelope path unreachable.
-pub(crate) fn routes_to_pipeline_investigate(has_agent: bool, scout: bool, skill: Option<&str>) -> bool {
-    has_agent && !scout && skill.is_none()
+/// The seed-routing predicate: a skill-less non-scout agent dispatch enters the multi-session task
+/// pipeline at its Investigate stage; a scout seeds the scout envelope; an explicit `--skill X`
+/// lane (queue skill lanes, the critic's execute re-dispatch) runs that skill under the ship
+/// envelope — autonomy stance, verify gate, completion protocol, optional plan gate.
+///
+/// `configured` (`$BN_DISPATCH_PIPELINE=1`, default false) is the master
+/// switch: it defaults **off**, so the ordinary ship lane runs a single session on the `ship-solo`
+/// workflow (investigate → implement → review as bounded subagents, human-gated on ambiguity)
+/// rather than fanning the work across a fresh session per pipeline stage. Set it true to restore
+/// the nine-stage pipeline as the default `bn dispatch` entry; the `bn pipeline` state machine is
+/// unchanged and always reachable directly.
+///
+/// Pure so the seed-assembly tests can pin the routing table: without the `skill` arm every
+/// non-scout agent dispatch took the investigate envelope, leaving the whole ship-envelope path
+/// unreachable.
+pub(crate) fn routes_to_pipeline_investigate(
+    configured: bool,
+    has_agent: bool,
+    scout: bool,
+    skill: Option<&str>,
+) -> bool {
+    configured && has_agent && !scout && skill.is_none()
 }
 
 /// Which stage this dispatch runs as — **declared if the caller knows, inferred only if not**.

@@ -181,6 +181,11 @@ tmux_mcp_badge = true
 plan_review = false
 plan_reviewers = 3
 plan_review_quorum = 2
+# The default ship lane is the single-session `ship-solo` workflow: one driver runs
+# investigate → implement → review as bounded subagents and asks you the moment something is
+# unclear — no separate planning agent, plan artifact, or consensus stage. Set the env var
+# $BN_DISPATCH_PIPELINE=1 to restore the legacy nine-stage multi-session pipeline as the
+# `bn dispatch` default; the `bn pipeline` state machine stays directly reachable either way.
 
 [orchestrate]
 agent = "copilot"               # copilot | claude

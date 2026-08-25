@@ -377,21 +377,6 @@ export function startRepoSetupAgent(
   return post(`/api/repos/${encodeURIComponent(repo)}/setup-agent`, body ?? {});
 }
 
-/** What force-killing a repo's tmux session did: how many windows went down, and what happened to
- * each one's warm pool slot. A slot holding uncommitted work stays leased and says so. */
-export interface RepoSessionKillResult {
-  repo?: string;
-  killed?: number;
-  processes?: number;
-  windows?: { target: string; processes: number; lease_released: boolean }[];
-}
-
-/** `POST /api/repos/:repo/kill-session` — force-kill the repo's whole tmux session: every agent
- * under it, their leases, and their pool slots. Last resort; `killAgent` stops a single one. */
-export function killRepoSession(repo: string): Promise<RepoSessionKillResult> {
-  return post(`/api/repos/${encodeURIComponent(repo)}/kill-session`);
-}
-
 /** `POST /api/repos/:repo/drain {resume?, reason?}` — hold new work for a repo, or release it.
  * Nothing is killed: in-flight agents finish, the queue simply stops admitting more. */
 export function drainRepo(
@@ -411,7 +396,7 @@ export interface RepoSessionRelaunchResult {
 
 /** `POST /api/repos/:repo/relaunch-session {hard?, harness?}` — restart every agent in the repo,
  * each in the worktree it was already in. Soft by default: each agent resumes its recorded
- * transcript, so unlike `killRepoSession` this keeps their context. */
+ * transcript, so this keeps their context. */
 export function relaunchRepoSession(
   repo: string,
   body?: { hard?: boolean; harness?: string },

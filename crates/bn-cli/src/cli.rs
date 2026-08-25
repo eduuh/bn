@@ -102,10 +102,10 @@ pub(crate) enum CmdIntake {
         /// Don't open a tmux window even when inside tmux.
         #[arg(long)]
         no_tmux: bool,
-        /// Launch an AI agent in the worktree's window, seeded with the note and asked to propose a
-        /// plan first. `--agent` alone lets the launch stage's configured harness decide (falling
-        /// back to copilot); `--agent claude` (aka claudecode) or `--agent copilot` pins the harness.
-        /// Opens (or reuses) the repo's tmux session, so it works from outside tmux too.
+        /// Launch an AI agent in the worktree's window, seeded with the note to deliver the task end
+        /// to end in one `ship-solo` session (investigate → implement → review, asking you when
+        /// unclear). `--agent` alone lets the launch stage's harness decide (falling back to copilot);
+        /// `--agent claude` (aka claudecode) or `--agent copilot` pins it. Opens the repo's tmux session.
         #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
         agent: Option<String>,
         /// Scout task: investigate / reproduce / audit and write findings to the branch note — the
@@ -185,6 +185,10 @@ pub(crate) enum CmdIntake {
         /// no bare clone (or a full pool) already falls back to cold automatically.
         #[arg(long)]
         no_pool: bool,
+        /// Reserve a second warm pool slot detached at the latest remote primary branch.
+        /// The feature and comparison slots are leased and returned together. Requires pooling.
+        #[arg(long, conflicts_with = "no_pool")]
+        with_main: bool,
         /// What to do when every warm pool slot is leased. `queue` (default) schedules the item on
         /// the repo's orchestrate run so it starts as soon as a slot frees; `cold` cuts a fresh
         /// worktree anyway (the old behaviour — unbounded, since nothing ever reclaims those);

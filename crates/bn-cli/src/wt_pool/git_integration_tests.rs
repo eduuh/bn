@@ -216,6 +216,7 @@ fn wt_cleanup_inside_pool_slot_returns_the_slot() {
             pid: std::process::id(),
             at: now_epoch(),
             boot_id: String::new(),
+            comparison_slot: None,
         },
     );
     write_leases(&pdir, &leases).unwrap();
@@ -251,6 +252,7 @@ fn acquire_repairs_a_lease_whose_checkout_vanished() {
             pid: std::process::id(), // alive → not reclaimed as a dead holder
             at: now_epoch(),
             boot_id: String::new(), // unknown boot → liveness falls back to the (alive) pid
+            comparison_slot: None,
         },
     );
     write_leases(&pdir, &leases).unwrap();
@@ -263,7 +265,7 @@ fn acquire_repairs_a_lease_whose_checkout_vanished() {
         size: 4,
     };
 
-    let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker)
+    let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker, false)
         .expect("a vanished checkout must be rebuilt, not surfaced as a dead warm hit");
     // Same branch's tenancy predates this call, so it is not a fresh lease…
     assert!(!leased.fresh);
@@ -302,6 +304,7 @@ fn acquire_reclaims_leaked_leases_before_declaring_the_pool_full() {
                 pid: std::process::id(), // immortal holder: alive for the whole test
                 at: now_epoch() - LEAKED_LEASE_GRACE_SECS - 1,
                 boot_id: String::new(),
+                comparison_slot: None,
             },
         );
     }
@@ -315,7 +318,7 @@ fn acquire_reclaims_leaked_leases_before_declaring_the_pool_full() {
         size: 4,
     };
 
-    let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker)
+    let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker, false)
         .expect("a pool of leases nobody is using must yield a slot, not read as full");
     assert!(leased.fresh);
     assert!(is_live_slot(&leased.slot));
@@ -367,6 +370,7 @@ fn acquire_never_reclaims_an_occupied_slot() {
                 pid: std::process::id(),
                 at: now_epoch() - LEAKED_LEASE_GRACE_SECS - 1,
                 boot_id: String::new(),
+                comparison_slot: None,
             },
         );
     }
@@ -382,7 +386,7 @@ fn acquire_never_reclaims_an_occupied_slot() {
     };
 
     assert!(
-        acquire_slot(&ctx, "feat", None, SlotRole::Worker).is_none(),
+        acquire_slot(&ctx, "feat", None, SlotRole::Worker, false).is_none(),
         "a pool whose every slot holds a live agent is genuinely full"
     );
     // Every original tenancy survives untouched.
@@ -419,6 +423,7 @@ fn acquire_warm_hit_reuses_a_live_checkout() {
             pid: std::process::id(),
             at: now_epoch(),
             boot_id: String::new(),
+            comparison_slot: None,
         },
     );
     write_leases(&pdir, &leases).unwrap();
@@ -430,7 +435,7 @@ fn acquire_warm_hit_reuses_a_live_checkout() {
         worktree_dir: wt_root,
         size: 4,
     };
-    let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker).expect("warm hit");
+    let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker, false).expect("warm hit");
     assert!(!leased.fresh);
     assert_eq!(leased.slot, slot);
     assert!(is_live_slot(&leased.slot));
@@ -586,6 +591,7 @@ fn reconcile_pools_adopts_occupied_and_returns_empty_slots() {
             pid: std::process::id(), // immortal holder — the pid check would never free this
             at: now_epoch() - LEAKED_LEASE_GRACE_SECS - 1,
             boot_id: String::new(),
+            comparison_slot: None,
         },
     );
     write_leases(&pool_dir, &leases).unwrap();
@@ -712,6 +718,93 @@ fn forcing_an_unleased_slot_still_refuses_a_live_occupant() {
     ));
 }
 
+#[test]
+fn paired_dispatch_leases_and_returns_feature_and_main_slots_together() {
+    let _g = bn_core::test_support::env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let bare = root.join("bare").join("bn.git");
+    build_repo_into(&root.join("bn-src"), &bare);
+
+    let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
+    let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", root.join("state"));
+    TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
+
+    let cfg = bn_core::test_support::config(root);
+    let ctx = PoolCtx {
+        bare: bare.clone(),
+        repo: "bn".to_string(),
+        pool_dir: root.join("worktree").join("bn").join("_pool"),
+        worktree_dir: root.join("worktree"),
+        size: 4,
+    };
+    let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker, true)
+        .expect("two worker slots should be available");
+    let comparison = leased.comparison.expect("comparison slot");
+
+    assert_eq!(head_ref(&leased.slot), "feat");
+    assert_eq!(head_ref(&comparison), "HEAD");
+    assert_eq!(
+        wt::git_out(&["-C", &comparison.to_string_lossy(), "rev-parse", "HEAD"]),
+        wt::git_out(&[
+            "--git-dir",
+            &bare.to_string_lossy(),
+            "rev-parse",
+            &default_base(&bare.to_string_lossy())
+        ])
+    );
+
+    let leases = read_leases(&ctx.pool_dir);
+    assert_eq!(leases.slots.len(), 1, "the pair has one owning lease");
+    assert_eq!(leases.reserved_slots().len(), 2);
+
+    let probe = comparison.join("comparison-probe.txt");
+    std::fs::write(&probe, "keep me\n").unwrap();
+    let duplicate = acquire_slot(&ctx, "feat", None, SlotRole::Worker, true)
+        .expect("an idempotent lookup should return the existing pair");
+    assert_eq!(duplicate.comparison.as_deref(), Some(comparison.as_path()));
+    assert_eq!(
+        std::fs::read_to_string(&probe).unwrap(),
+        "keep me\n",
+        "looking up a live pair must not reset its comparison checkout"
+    );
+    std::fs::remove_file(probe).unwrap();
+
+    assert!(matches!(
+        crate::wt_pool::release_slot(&cfg, &leased.slot, false),
+        SlotRelease::Returned { .. }
+    ));
+    assert!(read_leases(&ctx.pool_dir).slots.is_empty());
+    assert_eq!(head_ref(&leased.slot), "HEAD");
+    assert_eq!(head_ref(&comparison), "HEAD");
+}
+
+#[test]
+fn paired_dispatch_is_all_or_nothing_when_only_one_worker_slot_is_free() {
+    let _g = bn_core::test_support::env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let bare = root.join("bare").join("bn.git");
+    build_repo_into(&root.join("bn-src"), &bare);
+
+    let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
+    let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", root.join("state"));
+    TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
+
+    let ctx = PoolCtx {
+        bare,
+        repo: "bn".to_string(),
+        pool_dir: root.join("worktree").join("bn").join("_pool"),
+        worktree_dir: root.join("worktree"),
+        size: 2,
+    };
+    assert!(acquire_slot(&ctx, "feat", None, SlotRole::Worker, true).is_none());
+    assert!(
+        read_leases(&ctx.pool_dir).slots.is_empty(),
+        "a failed pair must not leave half a lease"
+    );
+}
+
 /// Regression: a dead tenancy on a branch must not wedge that branch's dispatches forever.
 ///
 /// The shape that cost three repos eight hours. A repo-setup dispatch leased a slot, died before
@@ -746,6 +839,7 @@ fn a_branch_whose_tenancy_died_can_be_dispatched_again() {
             pid: std::process::id(),
             at: now_epoch() - LEAKED_LEASE_GRACE_SECS - 1,
             boot_id: String::new(),
+            comparison_slot: None,
         },
     );
     write_leases(&pdir, &leases).unwrap();
@@ -758,7 +852,7 @@ fn a_branch_whose_tenancy_died_can_be_dispatched_again() {
         size: 4,
     };
 
-    let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker)
+    let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker, false)
         .expect("a branch whose last tenancy ended must be leasable again");
     // `fresh` is the assertion that matters: it is what dispatch reads to decide between seeding a
     // new run and refusing an occupied worktree. Before the fix this was `false` and every retry
@@ -818,6 +912,7 @@ fn a_branch_whose_agent_is_live_still_gets_its_own_slot_back() {
             pid: std::process::id(),
             at: now_epoch() - LEAKED_LEASE_GRACE_SECS - 1,
             boot_id: String::new(),
+            comparison_slot: None,
         },
     );
     write_leases(&pdir, &leases).unwrap();
@@ -830,7 +925,8 @@ fn a_branch_whose_agent_is_live_still_gets_its_own_slot_back() {
         size: 4,
     };
 
-    let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker).expect("its own slot back");
+    let leased =
+        acquire_slot(&ctx, "feat", None, SlotRole::Worker, false).expect("its own slot back");
     assert_eq!(leased.slot, slot_path(&pdir, 2));
     assert!(
         !leased.fresh,

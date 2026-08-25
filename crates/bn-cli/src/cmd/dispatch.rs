@@ -7,8 +7,8 @@ mod tests;
 pub(crate) mod branch;
 pub(crate) mod invocation;
 pub(crate) mod policy;
-pub(crate) use invocation::DispatchInvocation;
 use branch::dispatch_branch_occupied;
+pub(crate) use invocation::DispatchInvocation;
 use policy as dp;
 pub(crate) use policy::{
     effective_launch_harness, normalize_agent, plan_gate_enabled, routes_to_pipeline_investigate,
@@ -197,8 +197,8 @@ pub(crate) fn create_worktree(
             &format!("refs/heads/{base}:{origin_ref}"),
         ]);
         let origin_exists = bare_git(&["show-ref", "--verify", "--quiet", &origin_ref])
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+            .map(|o| o.status.success())
+            .unwrap_or(false);
         let count = |range: &str| -> u32 {
             bare_git(&["rev-list", "--count", range])
                 .ok()
@@ -596,24 +596,23 @@ fn append_plan_gate(
 }
 
 /// The workflow skill a dispatch seeds its agent with (#321): an explicit `--skill` wins, else
-/// the task type picks — a scout runs `investigate` (read-only findings), a ship runs `plan-work`
-/// (burn the note's plan down to its done-when criteria). `debug` is the explicit pick for a
-/// repro-first bugfix.
+/// the task type picks — a scout runs `investigate` (read-only findings), a ship runs `ship-solo`
+/// (scope, build, and review the change end to end in one session via bounded subagents). `debug`
+/// is the explicit pick for a repro-first bugfix.
 ///
-/// Note the default ship arm is mostly historical now: a skill-less non-scout agent dispatch is
-/// `pipeline_investigate` and enters the task pipeline's Investigate stage instead, so this
-/// function's ship default only applies on paths outside that routing. Explicit `--skill` lanes
-/// (including queue `ExecSpec::Skill` and the critic's execute re-dispatch) run here under the
-/// ship envelope.
+/// The default ship arm is the ordinary `bn dispatch` entry: with the multi-session pipeline off
+/// (the default; opt in with `$BN_DISPATCH_PIPELINE=1`), a skill-less non-scout agent dispatch is
+/// *not* `pipeline_investigate`, so it lands here and runs `ship-solo`. With the pipeline flag on, that
+/// same dispatch routes to the Investigate stage instead and this default only applies to explicit
+/// `--skill` lanes (queue `ExecSpec::Skill`, the critic's execute re-dispatch).
 ///
 /// Deliberately **not** the same mapping as [`bn_core::pipeline::stage::Stage::default_skill`],
 /// which answers a different question. This one is "what does an ad-hoc `bn dispatch` run?" — a
-/// ship gets `plan-work`, because a dispatched lane writes its own plan and burns it down. That one
-/// is "what does the nine-stage pipeline run at this stage?" — `execute` picks up an *already
-/// approved* plan. Both are correct; folding them together would silently change what dispatch
-/// launches.
+/// ship gets `ship-solo`, a self-contained investigate→implement→review lane. That one is "what
+/// does the nine-stage pipeline run at this stage?" — `execute` picks up an *already approved*
+/// plan. Both are correct; folding them together would silently change what dispatch launches.
 pub(crate) fn dispatch_skill_name(explicit: Option<&str>, scout: bool) -> &str {
-    explicit.unwrap_or(if scout { "investigate" } else { "plan-work" })
+    explicit.unwrap_or(if scout { "investigate" } else { "ship-solo" })
 }
 
 /// The seed for a skill-driven dispatch (#321): wraps the skill's rendered workflow body with
@@ -650,15 +649,20 @@ fn skill_seed_prompt(
         String::new()
     };
     // The verify gate renders at most once per seed: the plan-review gate carries it when one is
-    // appended, and `plan-work`/`execute` already gate step 6 on `bn verify` (rebase re-run
-    // included), so only other workflows need the explicit clause.
-    let verification =
-        if ctx.verify && !ctx.scout && !ctx.plan_gate && name != "plan-work" && name != "execute" {
-            bn_core::skills::render_required(cfg, base_dir, "dispatch-verify-gate", None)
-                .map_err(|error| error.to_string())?
-        } else {
-            String::new()
-        };
+    // appended, and `plan-work`/`execute`/`ship-solo` already gate their finish step on `bn verify`
+    // (rebase re-run included), so only other workflows need the explicit clause.
+    let verification = if ctx.verify
+        && !ctx.scout
+        && !ctx.plan_gate
+        && name != "plan-work"
+        && name != "execute"
+        && name != "ship-solo"
+    {
+        bn_core::skills::render_required(cfg, base_dir, "dispatch-verify-gate", None)
+            .map_err(|error| error.to_string())?
+    } else {
+        String::new()
+    };
     let mut args = serde_json::Map::new();
     for (key, value) in [
         ("goal", ctx.title.to_string()),
@@ -676,7 +680,12 @@ fn skill_seed_prompt(
         return bn_core::skills::render_required(cfg, base_dir, "dispatch-scout", Some(&args))
             .map_err(|error| error.to_string());
     }
-    let autonomy_name = if ctx.yolo {
+    let autonomy_name = if name == "ship-solo" {
+        // Neither stance fits ship-solo: interactive forces a plan proposal it has no stage for,
+        // and unattended forbids the `ask_user` that is its whole human-gate. Its own stance is
+        // autonomous-but-ask-on-ambiguity.
+        "dispatch-autonomy-solo"
+    } else if ctx.yolo {
         "dispatch-autonomy-unattended"
     } else {
         "dispatch-autonomy-interactive"
@@ -1121,6 +1130,7 @@ pub(crate) fn run_dispatch(
     fresh: bool,
     keep_project_mcps: bool,
     no_pool: bool,
+    with_main: bool,
     on_pool_full: crate::cli::OnPoolFull,
     task_id: Option<&str>,
     attach: bool,
@@ -1299,7 +1309,19 @@ pub(crate) fn run_dispatch(
     // approval before implementing / opening a PR. On by `--plan` or the `[dispatch].plan_review`
     // config default. Trusted `--yolo` lanes still pass through agent consensus so sensitive plans
     // cannot bypass a mandatory human decision; low-risk quorum approval remains unattended.
-    let plan_gate = plan_gate_enabled(plan, cfg.dispatch_plan_review, yolo, scout);
+    //
+    // The default ship lane is `ship-solo`, which carries no plan artifact — it scopes in-session
+    // and asks a human when unclear — so the plan-review gate (and its editor/nvim plan split)
+    // never applies, even under `--yolo`. The legacy nine-stage pipeline auto-route is off unless
+    // `$BN_DISPATCH_PIPELINE=1`; the `bn pipeline` machine stays reachable regardless.
+    let pipeline_opt_in = std::env::var("BN_DISPATCH_PIPELINE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let pipeline_investigate =
+        routes_to_pipeline_investigate(pipeline_opt_in, agent_kind.is_some(), scout, skill);
+    let ship_solo_lane = !pipeline_investigate && !scout && matches!(skill, None | Some("ship-solo"));
+    let plan_gate =
+        plan_gate_enabled(plan, cfg.dispatch_plan_review, yolo, scout) && !ship_solo_lane;
 
     let branch = match branch {
         Some(branch) => branch,
@@ -1307,9 +1329,7 @@ pub(crate) fn run_dispatch(
             &title,
             fresh,
             agent_kind.is_some(),
-            |candidate| {
-                dispatch_branch_occupied(&bare, &cfg.worktree_dir, &repo, candidate, &base)
-            },
+            |candidate| dispatch_branch_occupied(&bare, &cfg.worktree_dir, &repo, candidate, &base),
         ) {
             dp::DispatchBranchChoice::Use(branch) => branch,
             dp::DispatchBranchChoice::AlreadyActive(branch) => fail_json(
@@ -1341,7 +1361,6 @@ pub(crate) fn run_dispatch(
     // Notes key the branch sanitized (resolver::normalize does slash→dash), and the worktree dir
     // uses the same form — so the note we seed here is the one the user sees on `cd`.
     let sanitized = branch.replace('/', "-");
-    let pipeline_investigate = routes_to_pipeline_investigate(agent_kind.is_some(), scout, skill);
 
     // Pool-backed dispatch is the default (#457 generalized): every repo with a bn-managed bare
     // clone leases a warm, reap-safe slot (deps/build cache intact) instead of paying a cold
@@ -1378,16 +1397,22 @@ pub(crate) fn run_dispatch(
         };
         (wt_path, created)
     };
-    let (wt_path, created, used_pool) = match mode {
-        bn_core::pool::WorktreeMode::Pool => match wt_pool::lease_for_dispatch(cfg, &repo, &branch)
-        {
+    let (wt_path, comparison_path, created, used_pool) = match mode {
+        bn_core::pool::WorktreeMode::Pool => match wt_pool::lease_for_dispatch_mode(
+            cfg,
+            &repo,
+            &branch,
+            with_main,
+        ) {
             // A same-branch pooled slot is reusable only for explicit --fresh recovery; the agent
             // lease below reaps/replaces its prior owner before the new harness starts.
-            Some((slot, true)) => (slot, true, true),
-            Some((slot, false)) if may_reuse_occupied_worktree(fresh, agent_kind.is_some()) => {
-                (slot, false, true)
+            Some((slot, comparison, true)) => (slot, comparison, true, true),
+            Some((slot, comparison, false))
+                if may_reuse_occupied_worktree(fresh, agent_kind.is_some()) =>
+            {
+                (slot, comparison, false, true)
             }
-            Some((slot, false)) => {
+            Some((slot, _, false)) => {
                 fail_json(
                     json,
                     "dispatch",
@@ -1406,6 +1431,21 @@ pub(crate) fn run_dispatch(
             // schedule the work and let it start when a slot frees.
             None => match on_pool_full {
                 crate::cli::OnPoolFull::Queue => {
+                    // An orchestrate run stores only the item text, so handing a paired request to
+                    // it would silently drop --with-main. Normal captured dispatches already live
+                    // in the typed backlog and will retry there; a forced direct dispatch must fail
+                    // intact rather than queue different work.
+                    if with_main {
+                        fail_json(
+                            json,
+                            "dispatch",
+                            "paired_pool_unavailable",
+                            &format!(
+                                "bn dispatch: --with-main needs two warm worker slots for '{repo}'; \
+                                 the paired request was not downgraded or queued without its flag"
+                            ),
+                        );
+                    }
                     schedule_on_pool_full(&repo, raw, json);
                     // `schedule_on_pool_full` returns only when there was no run to queue onto.
                     eprintln!(
@@ -1413,7 +1453,7 @@ pub(crate) fn run_dispatch(
                          — falling back to a cold worktree."
                     );
                     let (p, c) = cold_worktree();
-                    (p, c, false)
+                    (p, None, c, false)
                 }
                 crate::cli::OnPoolFull::Fail => fail_json(
                     json,
@@ -1426,18 +1466,27 @@ pub(crate) fn run_dispatch(
                     ),
                 ),
                 crate::cli::OnPoolFull::Cold => {
+                    if with_main {
+                        fail_json(
+                            json,
+                            "dispatch",
+                            "paired_pool_unavailable",
+                            "bn dispatch: --with-main requires two pool slots and cannot fall back \
+                             to one cold worktree",
+                        );
+                    }
                     eprintln!(
                         "bn dispatch: couldn't lease a warm slot for '{repo}' (pool full? run \
                          `bn wt pool warm`, or pass --no-pool) — falling back to a cold worktree."
                     );
                     let (p, c) = cold_worktree();
-                    (p, c, false)
+                    (p, None, c, false)
                 }
             },
         },
         bn_core::pool::WorktreeMode::Cold => {
             let (p, c) = cold_worktree();
-            (p, c, false)
+            (p, None, c, false)
         }
     };
 
@@ -1579,6 +1628,20 @@ pub(crate) fn run_dispatch(
                 "decision",
                 &format!("skill: {} — the workflow this dispatch follows", s.name),
                 Some("skill:"),
+                &today(),
+            );
+        }
+        if let Some(main) = &comparison_path {
+            let comparison = format!(
+                "comparison worktree: {} — detached at the latest remote main",
+                main.display()
+            );
+            let _ = commands::add(
+                cfg,
+                &target,
+                "decision",
+                &comparison,
+                Some("comparison worktree:"),
                 &today(),
             );
         }
@@ -1796,7 +1859,11 @@ pub(crate) fn run_dispatch(
             };
             // `stage`/`model` were resolved up front (with the harness); reuse them here. The
             // suffix builder ignores `model.harness` — it only emits `--model`/`--effort`.
-            cmd.push_str(&crate::cmd::launch_flags::agent_model_suffix(kind, &model, &suppressed));
+            cmd.push_str(&crate::cmd::launch_flags::agent_model_suffix(
+                kind,
+                &model,
+                &suppressed,
+            ));
             suppressed_mcps = suppressed;
             // #456: pin this worktree to its own GH_CONFIG_DIR so the agent's `gh auth switch`
             // (e.g. work → personal to reach a private repo) is scoped here and can't flip a
@@ -1913,6 +1980,7 @@ pub(crate) fn run_dispatch(
                             "branch": branch,
                             "task": if scout { "scout" } else { "ship" },
                             "worktree": worktree,
+                            "main_worktree": comparison_path,
                             "pooled": used_pool,
                             "slot_returned": slot_returned,
                             "session_id": sid,
@@ -2065,6 +2133,7 @@ pub(crate) fn run_dispatch(
                 "yolo_blocked_external": yolo_blocked_external,
                 "launch_yolo": launch_yolo,
                 "worktree": wt_path.to_string_lossy(),
+                "main_worktree": comparison_path,
                 "created": created,
                 "pooled": used_pool,
                 "tmux_opened": tmux_opened,
@@ -2095,6 +2164,9 @@ pub(crate) fn run_dispatch(
             "  pool: leased a warm slot (no cold install) — {}",
             wt_path.display()
         );
+    }
+    if let Some(main) = &comparison_path {
+        println!("  main: paired comparison slot — {}", main.display());
     }
     if let Some(s) = &skill_loaded {
         println!("  skill: {}", s.name);

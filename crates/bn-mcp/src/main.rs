@@ -14,6 +14,8 @@ use bn_mcp::server::BnServer;
 use bn_mcp::Scope;
 use rmcp::ServiceExt;
 
+mod discovery;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // `--orchestrate` selects the opt-in CROSS-WORKTREE server (the "friend"): it composes the `bn`
@@ -21,8 +23,10 @@ async fn main() -> Result<()> {
     // server, locked to the launch worktree — the safety boundary an agent-in-a-repo relies on.
     // (A one-flag check keeps this crate arg-parser-free, matching its minimalism.)
     if std::env::args().any(|a| a == "--orchestrate") {
+        let transport =
+            discovery::with_legacy_discovery_fallback((tokio::io::stdin(), tokio::io::stdout()));
         let service = BnOrchestratorServer::new()
-            .serve((tokio::io::stdin(), tokio::io::stdout()))
+            .serve(transport)
             .await
             .context("starting bn-mcp --orchestrate stdio server")?;
         service.waiting().await?;
@@ -42,8 +46,10 @@ async fn main() -> Result<()> {
     // The stdio transport is fixed to its launch worktree: one scope for the whole session,
     // derived from cwd — so the scoped tools resolve the current branch without any client headers.
     let server = BnServer::new(cfg, Scope::launch(base_dir), skill_dirs);
+    let transport =
+        discovery::with_legacy_discovery_fallback((tokio::io::stdin(), tokio::io::stdout()));
     let service = server
-        .serve((tokio::io::stdin(), tokio::io::stdout()))
+        .serve(transport)
         .await
         .context("starting bn-mcp stdio server")?;
     service.waiting().await?;

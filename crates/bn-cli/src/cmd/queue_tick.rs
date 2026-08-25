@@ -564,6 +564,20 @@ fn realize(cfg: &Config, plan: &TickPlan, now: i64) {
                     finish_fields(&d.repo, &d.id, code),
                 );
             }
+            Executed::Deferred(reason) => {
+                let deferred_at = bn_core::util::now_epoch_secs();
+                let refs = [d.id.as_str()];
+                let _ = backlog::release_many(&path, &d.repo, &refs, deferred_at);
+                let retry_at = deferred_at
+                    + bn_core::queue::tick::launch_retry_delay(1).unwrap_or(60);
+                let _ = backlog::snooze(&path, &d.repo, &d.id, retry_at, deferred_at);
+                eprintln!(
+                    "bn queue tick: {}/{} waiting until {}: {reason}",
+                    d.repo,
+                    d.id,
+                    bn_core::util::clock_hm(retry_at)
+                );
+            }
             Executed::Failed(err) => {
                 let finished_at = bn_core::util::now_epoch_secs();
                 // Released straight back to pending, this entry is picked again on the very next
@@ -626,6 +640,8 @@ enum Executed {
     Launched,
     /// A headless job ran to completion here, with this exit status.
     Finished { code: i32 },
+    /// Capacity is temporarily unavailable; return the entry to pending without spending a retry.
+    Deferred(String),
     /// Nothing started — the entry goes back to pending.
     Failed(String),
 }
@@ -657,16 +673,32 @@ fn execute(cfg: &Config, d: &Dispatch, now: i64) -> Executed {
             Ok(code) => Executed::Finished { code },
             Err(e) => Executed::Failed(e),
         },
-        bn_core::queue::kind::ExecSpec::Agent => launch_agent(d, None, now),
+        bn_core::queue::kind::ExecSpec::Agent => launch_agent(cfg, d, None, now),
         bn_core::queue::kind::ExecSpec::Skill { skill, arg } => {
-            launch_agent(d, Some((skill.as_str(), arg.as_deref())), now)
+            launch_agent(cfg, d, Some((skill.as_str(), arg.as_deref())), now)
         }
     }
 }
 
 /// Launch a worktree agent by re-entering `bn dispatch` — the one launcher, rather than a second
 /// copy of the worktree/lease/tmux sequence that would drift from it.
-fn launch_agent(d: &Dispatch, skill: Option<(&str, Option<&str>)>, now: i64) -> Executed {
+fn launch_agent(
+    cfg: &Config,
+    d: &Dispatch,
+    skill: Option<(&str, Option<&str>)>,
+    now: i64,
+) -> Executed {
+    if d.agent.with_main
+        && !crate::wt_pool::paired_capacity_available(
+            cfg,
+            &d.repo,
+            d.agent.branch.as_deref(),
+        )
+    {
+        return Executed::Deferred(
+            "--with-main needs two available worker slots in the repo pool".to_string(),
+        );
+    }
     let item = match skill.and_then(|(_, arg)| arg) {
         Some(arg) => arg.to_string(),
         None => d.item.clone(),
@@ -688,6 +720,7 @@ fn launch_agent(d: &Dispatch, skill: Option<(&str, Option<&str>)>, now: i64) -> 
         .name(d.agent.name.as_deref())
         .yolo(d.agent.yolo)
         .no_plan_review(d.agent.no_plan_review)
+        .with_main(d.agent.with_main)
         .stage(d.agent.stage);
     let Ok(exe) = std::env::current_exe() else {
         return Executed::Failed("cannot resolve the bn executable".to_string());

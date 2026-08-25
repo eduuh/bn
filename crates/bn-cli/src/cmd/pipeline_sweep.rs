@@ -129,6 +129,7 @@ fn enqueue_stage(
             no_plan_review: false,
             // Declared, so the launch resolves *this* stage's model and effort rather than the one
             // dispatch would infer from the skill.
+            with_main: false,
             stage: Some(stage),
         },
         ..Default::default()

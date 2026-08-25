@@ -404,6 +404,8 @@ struct LeaseEntry {
     /// Epoch seconds the lease was taken.
     #[serde(default)]
     at: i64,
+    #[serde(default)]
+    comparison_slot: Option<u32>,
 }
 
 /// One pool slot's live state, 1-indexed to match its on-disk `_pool/<n>` dir.
@@ -500,14 +502,24 @@ fn compute_status(cfg: &Config, repo: &str, size: usize) -> PoolStatus {
         if let Some(ts) = warmed_ts {
             last_warmed_ts = Some(last_warmed_ts.map_or(ts, |m| m.max(ts)));
         }
-        match leases.get(&n) {
-            Some(l) => {
+        let owner = leases.get(&n).map(|lease| (n, lease)).or_else(|| {
+            leases
+                .iter()
+                .find(|(_, lease)| lease.comparison_slot == Some(n))
+                .map(|(owner, lease)| (*owner, lease))
+        });
+        match owner {
+            Some((owner_slot, l)) => {
                 leased += 1;
                 slots.push(PoolSlot {
                     n,
                     leased: true,
                     warm: on_disk,
-                    branch: Some(l.branch.clone()),
+                    branch: Some(if owner_slot == n {
+                        l.branch.clone()
+                    } else {
+                        format!("main (for {})", l.branch)
+                    }),
                     holder: Some(l.holder.clone()),
                     age_secs: Some((now - l.at).max(0)),
                     warmed_ts,

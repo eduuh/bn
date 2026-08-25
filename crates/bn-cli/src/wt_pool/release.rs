@@ -141,27 +141,37 @@ fn release_slot_core(cfg: &Config, worktree: &Path, policy: ReleasePolicy) -> Sl
 
     let _lock = lock_leases(&pdir);
     let mut leases = read_leases(&pdir);
-    let lease = leases.slots.get(&n).cloned();
+    let owner = leases.owner_slot(n);
+    let lease = owner.and_then(|owner| leases.slots.get(&owner).cloned());
     if lease.is_none() && !policy.force {
         return SlotRelease::NotLeased { repo, slot: n };
+    }
+    let owner = owner.unwrap_or(n);
+    let mut group = vec![owner];
+    if let Some(comparison) = lease.as_ref().and_then(|lease| lease.comparison_slot) {
+        group.push(comparison);
     }
     // Whose slot is it *really*? A kill knows which agent it stopped, not which checkout that agent
     // shared — and the worktree it resolves can belong to somebody else entirely (a stale lease
     // entry, or git's answer for a branch that has since moved). Anyone still working here keeps it.
-    if let Some(holder) = slot_occupants(worktree).into_iter().find(|occupant| {
-        match (occupant.session_id.as_deref(), policy.gone_session) {
-            // Only the session we just killed is discounted. An occupant with no session id
-            // registered nothing and can't be the one that was killed — it still holds the slot.
-            (Some(seen), Some(gone)) => seen != gone,
-            _ => true,
-        }
+    if let Some((occupied_slot, holder)) = group.iter().find_map(|slot_n| {
+        let path = slot_path(&pdir, *slot_n);
+        slot_occupants(&path)
+            .into_iter()
+            .find(
+                |occupant| match (occupant.session_id.as_deref(), policy.gone_session) {
+                    (Some(seen), Some(gone)) => seen != gone,
+                    _ => true,
+                },
+            )
+            .map(|holder| (path, holder))
     }) {
         // `--force` may evict, but only an agent `fleet_gc::classify` calls finished. If it won't
         // go, the slot is still held and must report as held.
-        if !policy.force || !evict_occupant(cfg, worktree, &holder, n, &repo) {
+        if !policy.force || !evict_occupant(cfg, &occupied_slot, &holder, owner, &repo) {
             return SlotRelease::Occupied {
                 repo,
-                slot: n,
+                slot: owner,
                 holder: holder.describe(),
             };
         }
@@ -173,26 +183,38 @@ fn release_slot_core(cfg: &Config, worktree: &Path, policy: ReleasePolicy) -> Sl
     // `lease_facts` already applies, and like there it is the load-bearing check off Linux, where
     // no `/proc` scan can answer. Not consulted under `--force`: the human aiming `wt pool return
     // --force` at a slot is standing somewhere, possibly in it.
-    if !policy.force && crate::agent_lease::any_live_pane_in(worktree) {
+    if !policy.force
+        && group
+            .iter()
+            .map(|slot_n| slot_path(&pdir, *slot_n))
+            .any(|slot| crate::agent_lease::any_live_pane_in(&slot))
+    {
         return SlotRelease::Occupied {
             repo,
-            slot: n,
+            slot: owner,
             holder: "tmux pane rooted in the slot".to_string(),
         };
     }
     if !policy.force {
-        let dirty = wt::dirty_count(&worktree.to_string_lossy());
-        if dirty > 0 {
+        if let Some((dirty_slot, dirty)) = group.iter().find_map(|slot_n| {
+            let dirty = wt::dirty_count(&slot_path(&pdir, *slot_n).to_string_lossy());
+            (dirty > 0).then_some((*slot_n, dirty))
+        }) {
             return SlotRelease::Dirty {
                 repo,
-                slot: n,
+                slot: dirty_slot,
                 dirty,
             };
         }
     }
     let branch = lease.map(|l| l.branch).unwrap_or_default();
-    warm_reset(&worktree.to_string_lossy(), &bare.to_string_lossy());
-    leases.slots.remove(&n);
+    for slot_n in &group {
+        warm_reset(
+            &slot_path(&pdir, *slot_n).to_string_lossy(),
+            &bare.to_string_lossy(),
+        );
+    }
+    leases.slots.remove(&owner);
     if let Err(e) = write_leases(&pdir, &leases) {
         return SlotRelease::Failed {
             repo,
@@ -200,10 +222,12 @@ fn release_slot_core(cfg: &Config, worktree: &Path, policy: ReleasePolicy) -> Sl
             error: e.to_string(),
         };
     }
-    log_pool_event("pool_return", &repo, n, &branch, None);
+    for slot_n in &group {
+        log_pool_event("pool_return", &repo, *slot_n, &branch, None);
+    }
     SlotRelease::Returned {
         repo,
-        slot: n,
+        slot: owner,
         branch,
     }
 }

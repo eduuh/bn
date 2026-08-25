@@ -1,4 +1,4 @@
-/** The repo page's operational controls: hold intake, restart everything, force-kill everything.
+/** The repo page's operational controls: hold intake and restart everything.
  *
  * Together rather than scattered, and in that order, because the order *is* the guidance — each one
  * costs strictly more than the one above it, so the cheapest thing that could work is always the
@@ -6,10 +6,10 @@
  * anyway: this is the only part of the page that changes the machine rather than describing it.
  */
 import { useQuery } from "@tanstack/react-query";
-import { PauseCircle, PlayCircle, RefreshCw, Skull } from "lucide-react";
+import { PauseCircle, PlayCircle, RefreshCw } from "lucide-react";
 
 import { queueQuery } from "../api/client";
-import { drainRepo, killRepoSession, relaunchRepoSession } from "../api/writes";
+import { drainRepo, relaunchRepoSession } from "../api/writes";
 import { useAppMutation } from "../hooks/useAppMutation";
 import { affects } from "../lib/invalidation";
 import { ConfirmButton } from "./ConfirmButton";
@@ -23,7 +23,6 @@ export function RepoControls({ repo, live }: { repo: string; live: number }) {
     <>
       <DrainPanel repo={repo} />
       <RelaunchPanel repo={repo} live={live} />
-      <DangerPanel repo={repo} live={live} />
     </>
   );
 }
@@ -151,77 +150,6 @@ function RelaunchPanel({ repo, live }: { repo: string; live: number }) {
           onConfirm={() => relaunch.mutate()}
         >
           <RefreshCw className="h-4 w-4" /> Restart agents
-        </ConfirmButton>
-      </Card>
-    </section>
-  );
-}
-
-/**
- * Force-kill this repo's whole tmux session — every agent under it at once.
- *
- * Last resort, and shaped to read as one: it sits at the bottom of the page, states its blast radius
- * in the dialog rather than asking a generic "are you sure", and names the cheaper move (kill the
- * one stuck agent from its own page) so this is the button you reach for *second*.
- *
- * It does not delete anything on disk. Worktrees stay, and a pool slot holding uncommitted changes
- * stays leased rather than being reset — what a force kill discards is the agents' in-flight
- * context. That distinction is in the dialog because it is the only question worth asking here.
- */
-function DangerPanel({ repo, live }: { repo: string; live: number }) {
-  const kill = useAppMutation({
-    mutationFn: () => killRepoSession(repo),
-    invalidates: affects.agentLaunch,
-    toast: {
-      success: (r) => {
-        const killed = (r as { killed?: number })?.killed ?? 0;
-        return killed === 0
-          ? `No live tmux session for ${repo}`
-          : `Killed ${repo} — ${killed} window${killed === 1 ? "" : "s"} closed`;
-      },
-      error: `Could not kill the tmux session for ${repo}`,
-    },
-  });
-
-  return (
-    <section className="space-y-3">
-      <SectionHead icon={Skull} title="Danger zone" />
-      <Card className="flex flex-wrap items-center gap-3 border-urgent/40 p-4">
-        <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold">Force-kill the tmux session</div>
-          <p className="text-xs text-muted-foreground">
-            Kills every agent in <code className="font-mono">{repo}</code> at once, releases their
-            leases and returns their pool slots. Worktrees are left untouched.
-          </p>
-        </div>
-        <ConfirmButton
-          variant="destructive"
-          size="sm"
-          destructive
-          disabled={kill.isPending}
-          title={`Force-kill the ${repo} tmux session?`}
-          description={
-            <>
-              This closes{" "}
-              {live > 0 ? (
-                <strong>
-                  {live} live agent{live === 1 ? "" : "s"}
-                </strong>
-              ) : (
-                "every window"
-              )}{" "}
-              in <code className="font-mono">{repo}</code> and loses their in-flight context. Files
-              are safe — worktrees stay on disk, and a slot with uncommitted changes keeps its
-              lease.
-              <br />
-              <br />
-              To stop just one stuck agent, use Kill on that agent's page instead.
-            </>
-          }
-          confirmLabel={kill.isPending ? "killing…" : "Force kill"}
-          onConfirm={() => kill.mutate()}
-        >
-          <Skull className="h-4 w-4" /> Force kill session
         </ConfirmButton>
       </Card>
     </section>

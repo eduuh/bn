@@ -102,6 +102,7 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
             fresh,
             keep_project_mcps,
             no_pool,
+            with_main,
             on_pool_full,
             task,
             // Deprecated no-op: pooling is the default dispatch path now (kept hidden for
@@ -140,6 +141,7 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
                         verify,
                         plan,
                         no_plan_review,
+                        with_main,
                         machine: crate::cmd::queue_producers::machine_owned(),
                         orchestrator,
                     },
@@ -177,6 +179,7 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
                 fresh,
                 keep_project_mcps,
                 no_pool,
+                with_main,
                 on_pool_full,
                 task.as_deref(),
                 attach,
@@ -256,4 +259,3 @@ fn dispatch_captured(cfg: &Config, on_pool_full: crate::cli::OnPoolFull) -> bool
     }
     crate::cmd::queue_producers::active(cfg, crate::cmd::queue_producers::DISPATCH)
 }
-

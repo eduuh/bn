@@ -539,6 +539,7 @@ fn setup_entry() -> BacklogEntry {
             name: Some("repo-setup".to_string()),
             yolo: true,
             no_plan_review: true,
+            with_main: false,
             stage: Some(Stage::Critique),
         },
         ..Default::default()
@@ -678,6 +679,7 @@ fn every_axis_set() -> BacklogEntry {
             name: Some("repo-setup".to_string()),
             yolo: true,
             no_plan_review: true,
+            with_main: false,
             stage: Some(Stage::Plan),
         },
     };

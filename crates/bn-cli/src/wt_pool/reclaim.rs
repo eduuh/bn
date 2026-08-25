@@ -77,7 +77,14 @@ pub(super) fn reclaim_stale(
             let reclaimable = dead_holder
                 && slot_occupants(&slot).is_empty()
                 && !any_proc_in(&slot)
-                && wt::dirty_count(&slot.to_string_lossy()) == 0;
+                && wt::dirty_count(&slot.to_string_lossy()) == 0
+                && l.comparison_slot.is_none_or(|comparison| {
+                    let comparison = slot_path(&ctx.pool_dir, comparison);
+                    slot_occupants(&comparison).is_empty()
+                        && !crate::agent_lease::any_live_pane_in(&comparison)
+                        && !any_proc_in(&comparison)
+                        && wt::dirty_count(&comparison.to_string_lossy()) == 0
+                });
             reclaimable.then_some((*n, prior_boot))
         })
         .collect();
@@ -90,6 +97,12 @@ pub(super) fn reclaim_stale(
             .map(|l| l.branch.clone())
             .unwrap_or_default();
         warm_reset(&slot.to_string_lossy(), &bare_s);
+        if let Some(comparison) = leases.slots.get(&n).and_then(|lease| lease.comparison_slot) {
+            warm_reset(
+                &slot_path(&ctx.pool_dir, comparison).to_string_lossy(),
+                &bare_s,
+            );
+        }
         leases.slots.remove(&n);
         if prior_boot {
             log_pool_event("pool_recover", &ctx.repo, n, &branch, None);
@@ -119,6 +132,7 @@ pub(super) fn lease_facts(
     now: i64,
 ) -> bn_core::pool::LeaseFacts {
     let slot = slot_path(&ctx.pool_dir, n);
+    let comparison = lease.comparison_slot.map(|n| slot_path(&ctx.pool_dir, n));
     bn_core::pool::LeaseFacts {
         holder_alive: pid_alive(lease.pid),
         age_secs: now - lease.at,
@@ -126,8 +140,16 @@ pub(super) fn lease_facts(
         // unregistered harness pane, or just a shell somebody left open in the checkout.
         occupied: !slot_occupants(&slot).is_empty()
             || crate::agent_lease::any_live_pane_in(&slot)
-            || any_proc_in(&slot),
-        dirty: wt::dirty_count(&slot.to_string_lossy()) > 0,
+            || any_proc_in(&slot)
+            || comparison.as_ref().is_some_and(|slot| {
+                !slot_occupants(slot).is_empty()
+                    || crate::agent_lease::any_live_pane_in(slot)
+                    || any_proc_in(slot)
+            }),
+        dirty: wt::dirty_count(&slot.to_string_lossy()) > 0
+            || comparison
+                .as_ref()
+                .is_some_and(|slot| wt::dirty_count(&slot.to_string_lossy()) > 0),
     }
 }
 
@@ -185,6 +207,12 @@ pub(super) fn live_branch_slot(
         &slot_path(&ctx.pool_dir, n).to_string_lossy(),
         &ctx.bare.to_string_lossy(),
     );
+    if let Some(comparison) = leases.slots.get(&n).and_then(|lease| lease.comparison_slot) {
+        warm_reset(
+            &slot_path(&ctx.pool_dir, comparison).to_string_lossy(),
+            &ctx.bare.to_string_lossy(),
+        );
+    }
     let branch = leases
         .slots
         .remove(&n)
@@ -269,7 +297,7 @@ pub(crate) fn reconcile_pools(cfg: &Config, now: i64) {
         // (`acquire_slot`) already runs this same sweep itself at the moment it comes up empty,
         // so a full pool still self-heals in the pass that needs the slot; this tick-head sweep
         // only clears the backlog-visible drift in that same full-pool state.
-        let leased: BTreeSet<u32> = leases.slots.keys().copied().collect();
+        let leased = leases.reserved_slots();
         let freed = if bn_core::pool::pick_slot(ctx.size, &leased).is_some() {
             Vec::new()
         } else {
@@ -313,6 +341,12 @@ pub(super) fn reclaim_leaked_leases(
             .map(|l| l.branch.clone())
             .unwrap_or_default();
         warm_reset(&slot.to_string_lossy(), &bare_s);
+        if let Some(comparison) = leases.slots.get(n).and_then(|lease| lease.comparison_slot) {
+            warm_reset(
+                &slot_path(&ctx.pool_dir, comparison).to_string_lossy(),
+                &bare_s,
+            );
+        }
         leases.slots.remove(n);
         log_pool_event("pool_return", &ctx.repo, *n, &branch, None);
         if announce {

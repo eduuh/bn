@@ -87,10 +87,10 @@ esac
 # Rust bn is the only implementation: the zsh bn it grew out of is gone, so every command
 # lives in the binary and an unknown one is a clap error rather than a pass-through.
 #
-# Binary acquisition builds from source by default, so an install always reflects this
-# checkout's code (main HEAD) rather than the last cut release, which lags behind. Only when
-# there's no Rust toolchain (e.g. Codespaces) does it fall back to a prebuilt release. Set
-# BN_USE_RELEASE=1 to force the prebuilt path even with cargo present.
+# Binary acquisition prefers the rolling GitHub release. Main publishes a tested build after
+# every push, so installing from a checkout (including a dotfiles bootstrap) does not spend
+# minutes rebuilding the same commit locally. Set BN_BUILD_FROM_SOURCE=1 when developing an
+# unmerged checkout whose exact binaries are not in the rolling release yet.
 slug="${BN_REPO_SLUG:-eduuh/bn}"
 # shellcheck source=scripts/install-toolchain.sh
 source "$repo/scripts/install-toolchain.sh"
@@ -105,22 +105,27 @@ atomic_install() {
   cp "$src" "$tmp" && chmod 0755 "$tmp" && mv -f "$tmp" "$dst" || { rm -f "$tmp"; return 1; }
 }
 
-# Download the prebuilt bn + bn-web for this platform from the latest GitHub release, placing real
-# binaries at ~/.bin/{bn,bn-web}. Returns non-zero (→ build fallback) on any missing tool, unknown
-# platform, or absent asset.
-#
-# NOTE: bn-mcp is still a binary. #640 added an HTTP MCP transport inside bn-web, but it did not
-# retire the stdio launcher: `register_mcp` below points Claude Code / Copilot at `bn mcp serve`,
-# which execs the sibling `bn-mcp`. This path does not fetch it, so a prebuilt install leaves that
-# launcher dead. Harmless while no release publishes assets (the caller falls back to
-# build_from_source, which does install bn-mcp) — but publishing bn-cli/bn-web assets without a
-# bn-mcp asset would silently break MCP for every prebuilt install.
+resolve_real_tmux() {
+  local saved_path="$PATH"
+  local filtered=""
+  local part
+  IFS=: read -r -a parts <<< "$PATH"
+  for part in "${parts[@]}"; do
+    [ "$part" = "$bindir" ] && continue
+    filtered="${filtered:+$filtered:}$part"
+  done
+  PATH="$filtered" command -v tmux 2>/dev/null || true
+  PATH="$saved_path"
+}
+
+# Download the prebuilt bn, bn-web, and bn-mcp for this platform from the latest GitHub release.
+# Returns non-zero (→ build fallback) on any missing tool, unknown platform, or absent asset.
 download_release() {
-  local target tmp app archive url bin src
+  local target tmp app archive url bin src bn_src=""
   command -v tar >/dev/null 2>&1 || return 1
   target=$(bn_install_detect_target) || return 1
   tmp=$(mktemp -d)
-  for app in bn-cli bn-web; do
+  for app in bn-cli bn-web bn-mcp; do
     archive="${app}-${target}.tar.xz"
     # Prefer authenticated `gh` so this works for a PRIVATE repo (unauthenticated curl on
     # releases/latest/download 404s there). Fall back to curl when the repo is public or gh
@@ -136,13 +141,20 @@ download_release() {
     fi
     tar -xf "$tmp/$archive" -C "$tmp" || { rm -rf "$tmp"; return 1; }
   done
-  for bin in bn bn-web; do
+  for bin in bn bn-web bn-mcp; do
     src=$(find "$tmp" -type f -name "$bin" -perm -u+x | head -n1)
     [ -n "$src" ] || { rm -rf "$tmp"; return 1; }
+    [ "$bin" = "bn" ] && bn_src="$src"
+  done
+  # A GNU/Linux archive can exist yet require a newer glibc than this machine. Probe before
+  # replacing anything so the caller can fall back to a local source build safely.
+  "$bn_src" --version >/dev/null 2>&1 || { rm -rf "$tmp"; return 1; }
+  for bin in bn bn-web bn-mcp; do
+    src=$(find "$tmp" -type f -name "$bin" -perm -u+x | head -n1)
     atomic_install "$src" "$bindir/$bin" || { rm -rf "$tmp"; return 1; }
   done
   rm -rf "$tmp"
-  echo "Installed prebuilt bn + bn-web ($target) from the latest release."
+  echo "Installed prebuilt bn + bn-web + bn-mcp ($target) from the latest release."
 }
 
 # Fingerprint of the file that pins the UI's dependency tree — the lockfile when there is one, else
@@ -183,7 +195,7 @@ build_web_ui() {
   fi
   if ! command -v npm >/dev/null 2>&1; then
     echo "note: npm not found — bn-web will serve the 'UI not built' placeholder page." >&2
-    echo "      Install Node.js/npm and re-run ./install.sh (or BN_USE_RELEASE=1 for the prebuilt UI)." >&2
+    echo "      Install Node.js/npm and re-run, or unset BN_BUILD_FROM_SOURCE for the prebuilt UI." >&2
     return 0
   fi
   local pin="$ui/package.json" stamp="$ui/node_modules/.bn-deps-stamp" want=""
@@ -205,7 +217,7 @@ build_web_ui() {
     npm run build
   ) || {
     echo "warning: bn-web UI build failed — installing with the placeholder page." >&2
-    echo "         Fix Node/npm and re-run ./install.sh, or use BN_USE_RELEASE=1 for the prebuilt UI." >&2
+    echo "         Fix Node/npm and re-run, or unset BN_BUILD_FROM_SOURCE for the prebuilt UI." >&2
     return 0
   }
   echo "Built the bn-web dashboard UI ($ui/dist)."
@@ -263,11 +275,9 @@ build_from_source() {
   echo "Installed $bindir/bn (copy of $target_dir/release/bn; re-run after rebuilds)"
 }
 
-# Build from this checkout by default. Fall back to a prebuilt release only when cargo is
-# absent; BN_USE_RELEASE=1 forces the prebuilt path (and still builds if the download fails).
-if [ "${BN_USE_RELEASE:-}" = "1" ]; then
-  download_release || build_from_source
-elif bn_install_activate_cargo "$repo"; then
+# Main's rolling release is the default fast path. A source build remains available for branch
+# development and is also the fallback when this platform has no published artifact yet.
+if [ "${BN_BUILD_FROM_SOURCE:-0}" = "1" ]; then
   build_from_source
 else
   download_release || build_from_source
@@ -276,6 +286,21 @@ fi
 # Sweep the retired bash fallback: older installs symlinked $bindir/bn-bash at the repo's zsh
 # `bn`, which no longer exists. Left alone it is a dangling symlink on every upgraded box.
 rm -f "$bindir/bn-bash"
+
+# Install the tmux guard before the workflow layer starts using the command. The guard shadows the
+# real binary on PATH and refuses the destructive kill verbs; the real binary stays available as
+# `tmux.real` next to it for the rare caller that needs a raw passthrough during maintenance.
+tmux_src="$repo/config/workflow/bin/tmux"
+if [ -f "$tmux_src" ]; then
+  real_tmux="$(resolve_real_tmux)"
+  if [ -n "$real_tmux" ]; then
+    ln -sfn "$real_tmux" "$bindir/tmux.real"
+    atomic_install "$tmux_src" "$bindir/tmux"
+    echo "Installed tmux guard at $bindir/tmux (real binary kept at tmux.real)"
+  else
+    echo "warning: tmux not found on PATH — skipping tmux guard install." >&2
+  fi
+fi
 
 # Stable binary anchor: the tmux status bar (and tmux-lib) call bn by absolute path
 # because the tmux server's PATH lacks $bindir. ~/.config/bn/bn is bindir-independent,

@@ -1,4 +1,4 @@
-//! The dashboard's stops and restarts: one agent, or a repo's whole tmux session.
+//! The dashboard's stops and restarts: one agent, or a repo-wide relaunch.
 //!
 //! Kept together and apart from the rest of `actions` because they only make sense read together —
 //! what separates them is blast radius, and that is the whole reason each is its own route rather
@@ -7,7 +7,7 @@
 //!
 //! Restart lives here rather than beside the launch actions because it is a stop that happens to be
 //! followed by a start: it tears the same process trees down by the same rules, and reading it next
-//! to the kills is what keeps the two from drifting into different ideas of what "gone" means.
+//! to the other stop paths keeps the two from drifting into different ideas of what "gone" means.
 use super::{
     bad_request, normalize_harness, parse_body, respond_process, run_bn, valid_repo, valid_target,
     MaybeAddr,
@@ -36,30 +36,6 @@ pub async fn agent_kill(
     respond_process(&state, "kill", &target, addr, result)
 }
 
-/// `POST /api/repos/:repo/kill-session` → `bn agent kill-repo <repo>`: force-kill the repo's whole
-/// tmux session, every agent under it at once. The last-resort valve for a session wedged as a
-/// whole; [`agent_kill`] is the cheaper move when one branch is stuck.
-///
-/// The CLI releases each window's lease and hands its pool slot back, so the repo is usable again
-/// immediately after — a raw `tmux kill-session` would leave every slot leased to a dead session.
-pub async fn repo_session_kill(
-    State(state): State<AppState>,
-    MaybeAddr(addr): MaybeAddr,
-    Path(repo): Path<String>,
-) -> Response {
-    let cmd = "repo_session_kill";
-    let repo = repo.trim().to_string();
-    if !valid_repo(&repo) {
-        return bad_request(cmd, "invalid_repo", "repo has invalid characters");
-    }
-    let args = vec!["agent".to_string(), "kill-repo".to_string(), repo.clone()];
-    let result = run_bn(args, None).await;
-    // Agent counts and pool slots both change here, and both are served from the cached `/api/repos`
-    // view — without this the page shows the killed session as still live until the TTL expires.
-    state.views.invalidate(crate::view_cache::REPOS).await;
-    respond_process(&state, "kill-session", &repo, addr, result)
-}
-
 /// `POST /api/repos/:repo/relaunch-session {hard?, harness?}` — restart every agent in the repo.
 #[derive(Debug, Default, Deserialize)]
 pub struct RepoRelaunchBody {
@@ -74,10 +50,9 @@ pub struct RepoRelaunchBody {
 /// `POST /api/repos/:repo/relaunch-session` → `bn agent relaunch-repo <repo>`: stop every agent in
 /// the repo and start it again in the worktree it was already in.
 ///
-/// The button most reaches for [`repo_session_kill`] actually want: a wedged session is usually a
-/// thing to repair, not to lose. A soft relaunch resumes each agent's recorded transcript, so unlike
-/// the force kill this keeps their context; `hard` is the escape hatch for when that context is the
-/// problem.
+/// The button most reaches for actually wants a repair, not a wipe. A soft relaunch resumes each
+/// agent's recorded transcript, so it keeps their context; `hard` is the escape hatch for when
+/// that context is the problem.
 pub async fn repo_session_relaunch(
     State(state): State<AppState>,
     MaybeAddr(addr): MaybeAddr,
@@ -142,10 +117,10 @@ pub struct RepoDrainBody {
 
 /// `POST /api/repos/:repo/drain` → `bn queue pause|resume --scope repo:<repo>`.
 ///
-/// The non-destructive sibling of [`repo_session_kill`], and usually the one that is actually
-/// wanted: it stops the queue admitting *new* work for the repo and leaves everything already
-/// running to finish. Nothing is killed, so there is no confirm dialog and nothing to lose — the
-/// only way to undo it is to press it again.
+/// The non-destructive sibling of the old repo-wide kill route, and usually the one that is
+/// actually wanted: it stops the queue admitting *new* work for the repo and leaves everything
+/// already running to finish. Nothing is killed, so there is no confirm dialog and nothing to
+/// lose — the only way to undo it is to press it again.
 pub async fn repo_drain(
     State(state): State<AppState>,
     MaybeAddr(addr): MaybeAddr,

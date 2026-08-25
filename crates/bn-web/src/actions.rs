@@ -53,7 +53,7 @@ mod skills;
 #[path = "actions/today.rs"]
 mod today;
 pub use agent_defs::{agent_def_create, agent_def_delete, agent_def_write};
-pub use kill::{agent_kill, repo_drain, repo_session_kill, repo_session_relaunch};
+pub use kill::{agent_kill, repo_drain, repo_session_relaunch};
 pub use plan::plan_promote;
 pub use repo_setup::{repo_orchestrate_start, repo_script_write, repo_setup_agent_start};
 pub use reviews::review_decide;

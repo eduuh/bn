@@ -20,6 +20,7 @@ pub(crate) struct DispatchInvocation<'a> {
     verify: bool,
     yolo: bool,
     no_plan_review: bool,
+    with_main: bool,
     stage: Option<bn_core::pipeline::stage::Stage>,
     fresh: bool,
     json: bool,
@@ -38,6 +39,7 @@ impl<'a> DispatchInvocation<'a> {
             verify: false,
             yolo: false,
             no_plan_review: false,
+            with_main: false,
             stage: None,
             fresh: false,
             json: false,
@@ -79,6 +81,11 @@ impl<'a> DispatchInvocation<'a> {
     /// Decline the plan-review gate — the stance a queued entry recorded, replayed verbatim.
     pub(crate) fn no_plan_review(mut self, no_plan_review: bool) -> Self {
         self.no_plan_review = no_plan_review;
+        self
+    }
+
+    pub(crate) fn with_main(mut self, with_main: bool) -> Self {
+        self.with_main = with_main;
         self
     }
 
@@ -129,6 +136,9 @@ impl<'a> DispatchInvocation<'a> {
         if self.no_plan_review {
             args.push("--no-plan-review".to_string());
         }
+        if self.with_main {
+            args.push("--with-main".to_string());
+        }
         if let Some(stage) = self.stage {
             args.extend(["--stage".to_string(), stage.as_str().to_string()]);
         }
@@ -170,7 +180,8 @@ mod invocation_tests {
                 .branch(Some("repo-setup"))
                 .name(Some("repo-setup"))
                 .yolo(true)
-                .no_plan_review(true),
+                .no_plan_review(true)
+                .with_main(true),
         );
         assert_eq!(flag_value(&args, "--branch"), Some("repo-setup"));
         assert_eq!(flag_value(&args, "--name"), Some("repo-setup"));
@@ -178,6 +189,7 @@ mod invocation_tests {
         // A queued entry that declined the gate must be relaunched having declined it: rebuilding
         // the command without this is how the tick would quietly reinstate a plan review.
         assert!(args.iter().any(|a| a == "--no-plan-review"));
+        assert!(args.iter().any(|a| a == "--with-main"));
     }
 
     #[test]
@@ -189,5 +201,6 @@ mod invocation_tests {
         assert_eq!(flag_value(&args, "--name"), None);
         assert!(!args.iter().any(|a| a == "--yolo"));
         assert!(!args.iter().any(|a| a == "--no-plan-review"));
+        assert!(!args.iter().any(|a| a == "--with-main"));
     }
 }

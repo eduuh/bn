@@ -5,9 +5,9 @@
 # Why it exists: the tag-driven cargo-dist workflow (.github/workflows/release.yml) is not
 # producing assets — v0.4.1 shipped with none — so install.sh's download_release() always 404s
 # and every install falls back to a from-source build. This job supplies the missing half for the
-# platform I actually run: it builds the same three binaries install.sh builds (bn-cli/`bn`,
-# bn-web, bn-mcp), gates them behind the workspace test suite, and uploads them as
-# cargo-dist-named archives to a single rolling release.
+# platform I actually run: it discovers and builds every binary target in the Cargo workspace,
+# gates them behind the workspace test suite, and uploads them as cargo-dist-named archives to a
+# single rolling release.
 #
 # Contract:
 #   - `nightly` is pinned as the repo's **Latest** release on every run, so it is what the GitHub
@@ -56,7 +56,6 @@ export PATH="$HOME/.local/bin:$HOME/.bin:$HOME/.bn/bin:$HOME/.cargo/bin:/opt/hom
 
 BN="${BN:-bn}"
 TAG="${BN_NIGHTLY_TAG:-nightly}"
-APPS="bn-cli bn-web bn-mcp"
 
 log() { printf '  %s\n' "$*" >&2; }
 die() { log "$*"; exit 1; }
@@ -66,7 +65,7 @@ die() { log "$*"; exit 1; }
 # has gone missing leaves every shim there — `cargo` included — a dangling symlink, so a PATH check
 # reports "not found" while a perfectly good toolchain sits in ~/.rustup/toolchains. install.sh
 # survives that; this job has to as well, or a broken shim silently stops every release.
-for tool in git gh tar; do
+for tool in git gh jq tar; do
   command -v "$tool" >/dev/null 2>&1 || die "nightly-release: $tool not found — cannot publish"
 done
 
@@ -174,7 +173,15 @@ target=$(bn_install_detect_target) || die "nightly-release: unsupported platform
 # under a tag other people can download is the one failure this job must never have.
 branch=$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null) ||
   die "nightly-release: cannot read HEAD in $repo"
-[ "$branch" = "main" ] || die "nightly-release: $repo is on '$branch', not main — skipping"
+if [ "$branch" != "main" ]; then
+  # actions/checkout intentionally leaves the pushed commit detached. The workflow is scoped to
+  # pushes to main; accept only that exact immutable SHA, while keeping workstation runs strict.
+  if [ "${GITHUB_ACTIONS:-false}" != "true" ] || [ "$branch" != "HEAD" ] ||
+    [ -z "${GITHUB_SHA:-}" ] ||
+    [ "$(git -C "$repo" rev-parse HEAD 2>/dev/null)" != "$GITHUB_SHA" ]; then
+    die "nightly-release: $repo is on '$branch', not main — skipping"
+  fi
+fi
 
 # Tracked changes only: untracked build/test leftovers (ui/dist, ui/test-results) are normal in a
 # worktree that builds, and none of them reach the binaries. A modified *tracked* file does.
@@ -186,7 +193,7 @@ git -C "$repo" fetch --quiet origin main 2>/dev/null || log "warning: git fetch 
 git -C "$repo" merge --ff-only --quiet origin/main 2>/dev/null || true
 
 head=$(git -C "$repo" rev-parse HEAD 2>/dev/null) || die "nightly-release: cannot resolve HEAD"
-remote_head=$(git -C "$repo" rev-parse origin/main 2>/dev/null || echo "")
+remote_head=$(git -C "$repo" rev-parse --verify origin/main 2>/dev/null || echo "")
 if [ -n "$remote_head" ] && [ "$head" != "$remote_head" ]; then
   die "nightly-release: $repo main ($(git -C "$repo" rev-parse --short HEAD)) is not at origin/main — skipping"
 fi
@@ -216,8 +223,17 @@ if [ "${BN_SKIP_UI:-0}" != "1" ] && [ -f "$ui/package.json" ] && command -v npm 
   ) >/dev/null 2>&1 || log "warning: bn-web UI build failed — publishing with whatever is in ui/dist"
 fi
 
-echo "nightly-release: building $APPS @ $short ($target)…"
-( cd "$repo" && cargo build --release -p bn-cli -p bn-web -p bn-mcp ) ||
+bins=$(cd "$repo" && cargo metadata --no-deps --format-version 1 |
+  jq -r '
+    .packages[] as $package
+    | $package.targets[]
+    | select(.kind | index("bin"))
+    | [$package.name, .name] | @tsv
+  ') || die "nightly-release: cannot discover workspace binaries"
+[ -n "$bins" ] || die "nightly-release: the workspace has no binary targets"
+
+echo "nightly-release: building every workspace binary @ $short ($target)…"
+( cd "$repo" && cargo build --release --workspace --bins ) ||
   die "nightly-release: release build failed @ $short"
 
 # The gate: nothing reaches a downloadable asset unless the workspace suite is green here.
@@ -232,16 +248,15 @@ else
 fi
 
 # --- package ---------------------------------------------------------------------------------
-# One tar.xz per app, laid out like cargo-dist's: a single `<app>-<target>/` dir holding the
-# binary, which is how download_release() finds it (`find -name bn -perm -u+x`).
+# One tar.xz per binary package, laid out like cargo-dist's: a single `<app>-<target>/` directory
+# holding the binary. Packages with multiple binary targets use `<package>-<binary>` as the app
+# name, keeping every archive unique.
 stage=$(mktemp -d) || die "nightly-release: cannot create a staging dir"
 trap 'rm -rf "$stage"' EXIT INT TERM
 archives=""
-for app in $APPS; do
-  case "$app" in
-    bn-cli) binname=bn ;;
-    *) binname="$app" ;;
-  esac
+while IFS="$(printf '\t')" read -r package binname; do
+  count=$(printf '%s\n' "$bins" | awk -F '\t' -v package="$package" '$1 == package { count++ } END { print count + 0 }')
+  if [ "$count" -eq 1 ]; then app="$package"; else app="$package-$binname"; fi
   bin="$repo/target/release/$binname"
   [ -x "$bin" ] || die "nightly-release: $bin missing after the build"
   mkdir -p "$stage/$app-$target" || die "nightly-release: cannot stage $app"
@@ -249,7 +264,9 @@ for app in $APPS; do
   ( cd "$stage" && tar -cJf "$app-$target.tar.xz" "$app-$target" ) ||
     die "nightly-release: cannot archive $app-$target"
   archives="$archives $stage/$app-$target.tar.xz"
-done
+done <<EOF
+$bins
+EOF
 
 if [ "${BN_NIGHTLY_DRYRUN:-0}" = "1" ]; then
   echo "nightly-release (dry-run): would publish $TAG @ $short with:"
@@ -328,5 +345,6 @@ printf '%s\n' "$head" >"$stamp"
 # must never fail a successful publish.
 "$BN" event deploy --field repo=bn --field tag="$TAG" --field commit="$short" >/dev/null 2>&1 || true
 
-echo "nightly-release: published $TAG @ $short — $(echo "$APPS" | wc -w | tr -d ' ') assets for $target"
+asset_count=$(printf '%s\n' "$bins" | grep -c .)
+echo "nightly-release: published $TAG @ $short — $asset_count assets for $target"
 echo "  https://github.com/$slug/releases/tag/$TAG"

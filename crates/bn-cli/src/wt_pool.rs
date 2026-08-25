@@ -122,6 +122,35 @@ struct Lease {
     /// boot-scoping (treated as an unknown boot → falls back to the pid check), hence `default`.
     #[serde(default)]
     boot_id: String,
+    /// A second worker slot reserved by this lease as a detached primary-branch comparison tree.
+    /// The relationship is stored only on the owning feature lease, so it cannot become a
+    /// half-written pair.
+    #[serde(default)]
+    comparison_slot: Option<u32>,
+}
+
+impl Leases {
+    fn reserved_slots(&self) -> BTreeSet<u32> {
+        self.slots
+            .iter()
+            .flat_map(|(&owner, lease)| [Some(owner), lease.comparison_slot])
+            .flatten()
+            .collect()
+    }
+
+    fn owner_slot(&self, n: u32) -> Option<u32> {
+        self.slots.contains_key(&n).then_some(n).or_else(|| {
+            self.slots
+                .iter()
+                .find_map(|(&owner, lease)| (lease.comparison_slot == Some(n)).then_some(owner))
+        })
+    }
+
+    fn comparison_owner(&self, n: u32) -> Option<u32> {
+        self.slots
+            .iter()
+            .find_map(|(&owner, lease)| (lease.comparison_slot == Some(n)).then_some(owner))
+    }
 }
 
 /// This boot's unique id: a value that changes on every (re)boot, so a lease tagged with a
@@ -272,6 +301,29 @@ fn git_silent(args: &[&str]) -> bool {
 /// A valid base ref to create/reset slots against — the first of origin/main, main, origin/master,
 /// master that resolves, else HEAD.
 fn default_base(bare_s: &str) -> String {
+    if let Some(remote_head) = wt::git_out(&[
+        "--git-dir",
+        bare_s,
+        "symbolic-ref",
+        "--quiet",
+        "--short",
+        "refs/remotes/origin/HEAD",
+    ]) {
+        let remote_head = remote_head.trim();
+        if !remote_head.is_empty()
+            && wt::git_out(&[
+                "--git-dir",
+                bare_s,
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                remote_head,
+            ])
+            .is_some()
+        {
+            return remote_head.to_string();
+        }
+    }
     for r in ["origin/main", "main", "origin/master", "master"] {
         if wt::git_out(&["--git-dir", bare_s, "rev-parse", "--verify", "--quiet", r]).is_some() {
             return r.to_string();
@@ -450,6 +502,11 @@ fn occupant_label(occupant: &crate::agent_lease::Occupant, n: u32) -> String {
 fn adopt_occupied_slots(ctx: &PoolCtx, leases: &mut Leases) -> Vec<u32> {
     let mut adopted = Vec::new();
     for n in 1..=ctx.size as u32 {
+        // A comparison checkout is reserved by its feature lease but deliberately has no agent of
+        // its own. Never turn activity inside it into a second, independent tenancy.
+        if leases.comparison_owner(n).is_some() {
+            continue;
+        }
         let slot = slot_path(&ctx.pool_dir, n);
         if !slot.is_dir() {
             continue;
@@ -483,6 +540,7 @@ fn adopt_occupied_slots(ctx: &PoolCtx, leases: &mut Leases) -> Vec<u32> {
                 pid: crate::agent_lease::pane_pid(&occupant.tmux_target).unwrap_or_else(caller_pid),
                 at: occupant.since.max(0),
                 boot_id: current_boot_id().unwrap_or_default(),
+                comparison_slot: None,
             },
         );
         adopted.push(n);
@@ -772,7 +830,7 @@ fn pool_get(
         eprintln!("{RED}Usage: wt pool get <branch>{NC}");
         return false;
     };
-    let Some(leased) = acquire_slot(&ctx, &branch, holder, SlotRole::Worker) else {
+    let Some(leased) = acquire_slot(&ctx, &branch, holder, SlotRole::Worker, false) else {
         return false;
     };
     finish_get(&ctx, &leased.slot, &branch, path_only, no_tmux)
@@ -783,6 +841,7 @@ fn pool_get(
 /// maps `fresh` onto its "created" flag (seed the note / run setup only on a fresh lease).
 struct Leased {
     slot: PathBuf,
+    comparison: Option<PathBuf>,
     fresh: bool,
 }
 
@@ -817,6 +876,7 @@ fn acquire_slot(
     branch: &str,
     holder: Option<String>,
     class: SlotRole,
+    with_main: bool,
 ) -> Option<Leased> {
     // Held for the whole pick-and-persist sequence: two concurrent dispatches that each read the
     // lease set before either wrote would pick the same lowest-free slot and the second write would
@@ -873,19 +933,70 @@ fn acquire_slot(
                 SlotRole::Controller => warm_reset(&slot_s, &bare_s),
             }
         }
+        let comparison = if with_main {
+            match ensure_comparison_slot(ctx, &mut leases, n, branch, true) {
+                Some(slot) => Some(slot),
+                None => return None,
+            }
+        } else {
+            leases
+                .slots
+                .get(&n)
+                .and_then(|lease| lease.comparison_slot)
+                .map(|comparison| slot_path(&ctx.pool_dir, comparison))
+        };
+        if with_main && write_leases(&ctx.pool_dir, &leases).is_err() {
+            eprintln!("{RED}Failed to persist the paired pool lease.{NC}");
+            return None;
+        }
         log_pool_event("pool_get", &ctx.repo, n, branch, Some(warm));
-        return Some(Leased { slot, fresh: false });
+        return Some(Leased {
+            slot,
+            comparison,
+            fresh: false,
+        });
     }
 
     // Pick the lowest idle slot of this class (pure policy in bn-core). Live-boot leases are durable
     // (held until `return`), so we DON'T reclaim them pre-emptively — only as a last resort when
     // every slot is leased, and only for slots whose holder is genuinely gone (dead pid, nothing
     // running in them).
-    let leased_set = |l: &Leases| l.slots.keys().copied().collect::<BTreeSet<u32>>();
+    let leased_set = |l: &Leases| l.reserved_slots();
     let pick = |l: &Leases| match class {
         SlotRole::Worker => bn_core::pool::pick_slot(ctx.size, &leased_set(l)),
         SlotRole::Controller => bn_core::pool::pick_controller_slot(&leased_set(l)),
     };
+    let enough_worker_slots = |l: &Leases, needed: usize| {
+        let mut reserved = l.reserved_slots();
+        (0..needed).all(|_| {
+            let Some(n) = bn_core::pool::pick_slot(ctx.size, &reserved) else {
+                return false;
+            };
+            reserved.insert(n);
+            true
+        })
+    };
+    if with_main
+        && class == SlotRole::Worker
+        && !enough_worker_slots(&leases, 2)
+        && reclaim_stale(ctx, &mut leases, ReclaimScope::AnyDeadHolder).changed()
+    {
+        // Re-evaluated below; this pass may have recovered both slots.
+    }
+    if with_main
+        && class == SlotRole::Worker
+        && !enough_worker_slots(&leases, 2)
+        && !reclaim_leaked_leases(ctx, &mut leases, now_epoch(), false).is_empty()
+    {
+        // Re-evaluated below; this pass may have recovered both slots.
+    }
+    if with_main && class == SlotRole::Worker && !enough_worker_slots(&leases, 2) {
+        eprintln!(
+            "{RED}Pool needs two free worker slots for --with-main.{NC} Return a slot or increase \
+             this repo's pool size."
+        );
+        return None;
+    }
     let mut n = pick(&leases);
     if n.is_none() && reclaim_stale(ctx, &mut leases, ReclaimScope::AnyDeadHolder).changed() {
         n = pick(&leases);
@@ -910,7 +1021,11 @@ fn acquire_slot(
             ),
             SlotRole::Worker => eprintln!(
                 "{RED}Pool full: {}/{} worker slots leased.{NC} Return one with `wt pool return`.",
-                leases.slots.keys().filter(|&&n| class.owns(n)).count(),
+                leases
+                    .reserved_slots()
+                    .into_iter()
+                    .filter(|&n| class.owns(n))
+                    .count(),
                 ctx.size.saturating_sub(1)
             ),
         }
@@ -959,13 +1074,103 @@ fn acquire_slot(
             pid: caller_pid(),
             at: now_epoch(),
             boot_id: current_boot_id().unwrap_or_default(),
+            comparison_slot: None,
         },
     );
-    if write_leases(&ctx.pool_dir, &leases).is_err() {
-        eprintln!("{YELLOW}Warning: failed to persist lease for slot {n}{NC}");
+    let comparison = if with_main {
+        match ensure_comparison_slot(ctx, &mut leases, n, branch, false) {
+            Some(slot) => Some(slot),
+            None => {
+                warm_reset(&slot_s, &bare_s);
+                leases.slots.remove(&n);
+                return None;
+            }
+        }
+    } else {
+        None
+    };
+    if let Err(error) = write_leases(&ctx.pool_dir, &leases) {
+        warm_reset(&slot_s, &bare_s);
+        if let Some(comparison) = &comparison {
+            warm_reset(&comparison.to_string_lossy(), &bare_s);
+        }
+        leases.slots.remove(&n);
+        let _ = write_leases(&ctx.pool_dir, &leases);
+        eprintln!("{RED}Failed to persist lease for slot {n}: {error}{NC}");
+        return None;
     }
     log_pool_event("pool_get", &ctx.repo, n, branch, Some(warm));
-    Some(Leased { slot, fresh: true })
+    Some(Leased {
+        slot,
+        comparison,
+        fresh: true,
+    })
+}
+
+/// Add or refresh the comparison half of a feature lease while the caller holds the pool lock.
+fn ensure_comparison_slot(
+    ctx: &PoolCtx,
+    leases: &mut Leases,
+    owner: u32,
+    branch: &str,
+    allow_reclaim: bool,
+) -> Option<PathBuf> {
+    let bare_s = ctx.bare.to_string_lossy().to_string();
+    if let Some(n) = leases
+        .slots
+        .get(&owner)
+        .and_then(|lease| lease.comparison_slot)
+    {
+        let slot = slot_path(&ctx.pool_dir, n);
+        // This pair already belongs to a live tenancy. Looking it up must be non-destructive: the
+        // caller may still refuse the duplicate dispatch, and resetting here would erase work in
+        // the comparison checkout before that refusal.
+        return Some(slot);
+    }
+
+    let mut reserved = leases.reserved_slots();
+    let mut comparison = bn_core::pool::pick_slot(ctx.size, &reserved);
+    if allow_reclaim
+        && comparison.is_none()
+        && reclaim_stale(ctx, leases, ReclaimScope::AnyDeadHolder).changed()
+    {
+        reserved = leases.reserved_slots();
+        comparison = bn_core::pool::pick_slot(ctx.size, &reserved);
+    }
+    if allow_reclaim
+        && comparison.is_none()
+        && !reclaim_leaked_leases(ctx, leases, now_epoch(), false).is_empty()
+    {
+        reserved = leases.reserved_slots();
+        comparison = bn_core::pool::pick_slot(ctx.size, &reserved);
+    }
+    let Some(n) = comparison else {
+        eprintln!(
+            "{RED}Pool needs two free worker slots for --with-main, but only one is available.{NC} \
+             Return a slot or increase this repo's pool size."
+        );
+        return None;
+    };
+    let slot = slot_path(&ctx.pool_dir, n);
+    if !is_live_slot(&slot) {
+        if slot.exists() {
+            force_remove_worktree(&bare_s, &slot);
+        }
+        eprintln!("{BLUE}Creating comparison slot {n} for {}…{NC}", ctx.repo);
+        if !add_detached_slot(&bare_s, &slot.to_string_lossy()) {
+            return None;
+        }
+    }
+    warm_reset(&slot.to_string_lossy(), &bare_s);
+    leases.slots.get_mut(&owner)?.comparison_slot = Some(n);
+    log_pool_event(
+        "pool_get",
+        &ctx.repo,
+        n,
+        &format!("main for {branch}"),
+        Some(true),
+    );
+    Some(slot)
 }
 
 /// Lease a warm pool slot for a `bn dispatch` of `branch` in `repo` (#457) — the same primitive as
@@ -976,12 +1181,90 @@ fn acquire_slot(
 /// a cold worktree. Leasing is the default dispatch path, so this pools *every* repo (see
 /// [`resolve_dispatch_pool`]).
 pub fn lease_for_dispatch(cfg: &Config, repo: &str, branch: &str) -> Option<(PathBuf, bool)> {
+    lease_for_dispatch_mode(cfg, repo, branch, false).map(|(slot, _, fresh)| (slot, fresh))
+}
+
+pub fn lease_for_dispatch_mode(
+    cfg: &Config,
+    repo: &str,
+    branch: &str,
+    with_main: bool,
+) -> Option<(PathBuf, Option<PathBuf>, bool)> {
     let ctx = resolve_dispatch_pool(cfg, repo)?;
-    let leased = acquire_slot(&ctx, branch, None, SlotRole::Worker)?;
+    if with_main
+        && !git_quiet(&[
+            "--git-dir",
+            &ctx.bare.to_string_lossy(),
+            "fetch",
+            "--quiet",
+            "origin",
+        ])
+    {
+        eprintln!(
+            "{RED}Could not refresh origin before leasing --with-main for {repo}.{NC} The paired \
+             comparison must represent the latest remote primary branch."
+        );
+        return None;
+    }
+    if with_main {
+        let _ = git_quiet(&[
+            "--git-dir",
+            &ctx.bare.to_string_lossy(),
+            "remote",
+            "set-head",
+            "origin",
+            "--auto",
+        ]);
+    }
+    let leased = acquire_slot(&ctx, branch, None, SlotRole::Worker, with_main)?;
     // Taking a slot may have taken the *last* one. Refill behind ourselves so the next dispatch
     // finds capacity already waiting instead of discovering the pool is full.
     ensure_spare_slot(&ctx);
-    Some((leased.slot, leased.fresh))
+    Some((leased.slot, leased.comparison, leased.fresh))
+}
+
+/// Whether a queued paired dispatch can reserve its required worker slots right now.
+///
+/// This preflight keeps ordinary capacity waits from counting as failed launches. Allocation still
+/// rechecks under the same lease lock, so this is scheduling guidance rather than authority.
+pub fn paired_capacity_available(cfg: &Config, repo: &str, branch: Option<&str>) -> bool {
+    let Some(ctx) = resolve_dispatch_pool(cfg, repo) else {
+        return false;
+    };
+    let _lock = lock_leases(&ctx.pool_dir);
+    let mut leases = read_leases(&ctx.pool_dir);
+    reclaim_stale(&ctx, &mut leases, ReclaimScope::PriorBootOnly);
+    adopt_occupied_slots(&ctx, &mut leases);
+
+    let enough = |leases: &Leases| {
+        let existing = branch.and_then(|branch| {
+            let want = bn_core::agent::normalized_branch(branch);
+            leases.slots.iter().find_map(|(&n, lease)| {
+                (bn_core::agent::normalized_branch(&lease.branch) == want).then_some(n)
+            })
+        });
+        let needed = existing
+            .and_then(|n| leases.slots.get(&n))
+            .map_or(2, |lease| usize::from(lease.comparison_slot.is_none()));
+        let mut reserved = leases.reserved_slots();
+        (0..needed).all(|_| {
+            let Some(n) = bn_core::pool::pick_slot(ctx.size, &reserved) else {
+                return false;
+            };
+            reserved.insert(n);
+            true
+        })
+    };
+
+    if enough(&leases) {
+        return true;
+    }
+    reclaim_stale(&ctx, &mut leases, ReclaimScope::AnyDeadHolder);
+    if enough(&leases) {
+        return true;
+    }
+    reclaim_leaked_leases(&ctx, &mut leases, now_epoch(), false);
+    enough(&leases)
 }
 
 /// The branch a pool slot is currently leased to, or `None` for a path that is not a leased slot.
@@ -1020,7 +1303,9 @@ pub(crate) fn slot_branch(slot: &Path) -> Option<String> {
 /// whole history is legitimately yours.
 pub fn slot_lease_started_at(worktree: &Path) -> Option<i64> {
     let (_repo, n, pdir) = slot_parts(worktree)?;
-    read_leases(&pdir).slots.get(&n).map(|lease| lease.at)
+    let leases = read_leases(&pdir);
+    let owner = leases.owner_slot(n)?;
+    leases.slots.get(&owner).map(|lease| lease.at)
 }
 
 /// Refresh the lease on the slot an agent is being *relaunched* into.
@@ -1036,7 +1321,10 @@ pub fn touch_dispatch_lease(cfg: &Config, worktree: &Path) -> bool {
     };
     let _lock = lock_leases(&pdir);
     let mut leases = read_leases(&pdir);
-    let Some(lease) = leases.slots.get_mut(&n) else {
+    let Some(owner) = leases.owner_slot(n) else {
+        return false;
+    };
+    let Some(lease) = leases.slots.get_mut(&owner) else {
         return false;
     };
     lease.pid = caller_pid();
@@ -1073,7 +1361,7 @@ pub enum SpareSlot {
 fn ensure_spare_slot(ctx: &PoolCtx) -> SpareSlot {
     let leased: BTreeSet<u32> = {
         let _lock = lock_leases(&ctx.pool_dir);
-        read_leases(&ctx.pool_dir).slots.keys().copied().collect()
+        read_leases(&ctx.pool_dir).reserved_slots()
     };
     let Some(n) = bn_core::pool::pick_slot(ctx.size, &leased) else {
         return SpareSlot::Full(ctx.size);
@@ -1147,6 +1435,7 @@ pub fn lease_controller_slot(cfg: &Config, repo: &str) -> Option<(PathBuf, bool)
         CONTROLLER_LEASE_LABEL,
         Some("bn-control".into()),
         SlotRole::Controller,
+        false,
     )?;
     Some((leased.slot, leased.fresh))
 }
@@ -1238,8 +1527,9 @@ fn pool_status(cfg: &Config, repo: Option<String>) -> bool {
         } else {
             String::new()
         };
-        match leases.slots.get(&n) {
-            Some(l) => {
+        let owner = leases.owner_slot(n);
+        match owner.and_then(|owner| leases.slots.get(&owner).map(|lease| (owner, lease))) {
+            Some((owner, l)) => {
                 // Flag a stuck slot so it is visible even though the durable-lease policy leaves it
                 // for `prune`/reuse. Two ways a lease stops meaning anything: its holder pid died,
                 // or nobody ever turned up in the checkout and the lease has aged out — the common
@@ -1263,7 +1553,9 @@ fn pool_status(cfg: &Config, repo: Option<String>) -> bool {
                 };
                 // Say what actually frees the slot: a dirty abandoned slot is deliberately *not*
                 // reclaimable, so pointing at `prune` there promises something it will refuse to do.
-                let flag = if bn_core::pool::lease_abandoned(facts, LEAKED_LEASE_GRACE_SECS) {
+                let flag = if owner != n {
+                    "  (paired main comparison)".to_string()
+                } else if bn_core::pool::lease_abandoned(facts, LEAKED_LEASE_GRACE_SECS) {
                     "  (nobody home — reclaimable)".to_string()
                 } else if bn_core::pool::lease_abandoned(
                     bn_core::pool::LeaseFacts {
@@ -1281,7 +1573,11 @@ fn pool_status(cfg: &Config, repo: Option<String>) -> bool {
                 };
                 println!(
                     "  {YELLOW}[{n}] leased{NC}{role}  {}  holder={} age={}{flag}{occupancy}{crowded}",
-                    l.branch,
+                    if owner == n {
+                        l.branch.clone()
+                    } else {
+                        format!("main (for {})", l.branch)
+                    },
                     l.holder,
                     fmt_age(now - l.at)
                 );
@@ -1382,7 +1678,7 @@ fn pool_metrics(cfg: &Config, path: Option<String>, repo: Option<String>) -> boo
         }
     }
 
-    let leased = leases.slots.len();
+    let leased = leases.reserved_slots().len();
     let idle = ctx.size.saturating_sub(leased);
     let cold = gets.saturating_sub(warm);
     let warm_pct = if gets > 0 {
@@ -1497,6 +1793,11 @@ fn scan_slots(ctx: &PoolCtx, leases: &Leases) -> Vec<u32> {
     for n in leases.slots.keys() {
         set.insert(*n, ());
     }
+    for lease in leases.slots.values() {
+        if let Some(n) = lease.comparison_slot {
+            set.insert(n, ());
+        }
+    }
     set.into_keys().collect()
 }
 
@@ -1533,12 +1834,30 @@ fn classify_slot(
 ) -> SlotClass {
     let slot = slot_path(&ctx.pool_dir, n);
     let exists = slot.is_dir();
+    let group = leases
+        .owner_slot(n)
+        .and_then(|owner| leases.slots.get(&owner).map(|lease| (owner, lease)))
+        .map(|(owner, lease)| {
+            [Some(owner), lease.comparison_slot]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| vec![n]);
     SlotClass {
-        leased: leases.slots.contains_key(&n),
-        dirty: exists && wt::dirty_count(&slot.to_string_lossy()) > 0,
+        leased: leases.owner_slot(n).is_some(),
+        dirty: group.iter().any(|slot_n| {
+            let slot = slot_path(&ctx.pool_dir, *slot_n);
+            slot.is_dir() && wt::dirty_count(&slot.to_string_lossy()) > 0
+        }),
         // A live agent in the slot is the in-use signal that matters; the `/proc` cwd scan is a
         // Linux-only extra (it sees a plain shell or a build, and sees nothing at all on macOS).
-        in_use: !slot_occupants(&slot).is_empty() || any_proc_in(&slot),
+        in_use: group.iter().any(|slot_n| {
+            let slot = slot_path(&ctx.pool_dir, *slot_n);
+            !slot_occupants(&slot).is_empty()
+                || crate::agent_lease::any_live_pane_in(&slot)
+                || any_proc_in(&slot)
+        }),
         over_size: n > ctx.size as u32,
         orphan: !ctx.bare.is_dir() || (exists && !registered.contains(&n)),
     }
@@ -1574,32 +1893,56 @@ fn kill_procs_in(_slot: &Path) {}
 /// Remove one slot: SIGTERM its processes, step our cwd out if we're inside it, `git worktree
 /// remove --force` (with an orphan fallback), drop its lease (caller persists), tidy the parent.
 fn remove_slot(ctx: &PoolCtx, n: u32, leases: &mut Leases) -> bool {
-    let slot = slot_path(&ctx.pool_dir, n);
     let bare_s = ctx.bare.to_string_lossy().to_string();
-    let branch = leases
-        .slots
-        .get(&n)
+    let owner = leases.owner_slot(n);
+    let branch = owner
+        .and_then(|owner| leases.slots.get(&owner))
         .map(|l| l.branch.clone())
         .unwrap_or_default();
 
-    kill_procs_in(&slot);
-    if wt::cwd().starts_with(&slot) {
-        let _ = std::env::set_current_dir(&ctx.pool_dir);
+    if let Some(owner) = owner {
+        let comparison = leases
+            .slots
+            .get(&owner)
+            .and_then(|lease| lease.comparison_slot);
+        for slot_n in [Some(owner), comparison].into_iter().flatten() {
+            let slot = slot_path(&ctx.pool_dir, slot_n);
+            kill_procs_in(&slot);
+            if wt::cwd().starts_with(&slot) {
+                let _ = std::env::set_current_dir(&ctx.pool_dir);
+            }
+            force_remove_worktree(&bare_s, &slot);
+            wt::rmdir_if_empty_repo(&slot, &ctx.worktree_dir);
+        }
+        leases.slots.remove(&owner);
+    } else {
+        let slot = slot_path(&ctx.pool_dir, n);
+        kill_procs_in(&slot);
+        if wt::cwd().starts_with(&slot) {
+            let _ = std::env::set_current_dir(&ctx.pool_dir);
+        }
+        force_remove_worktree(&bare_s, &slot);
+        wt::rmdir_if_empty_repo(&slot, &ctx.worktree_dir);
     }
-    force_remove_worktree(&bare_s, &slot);
-    leases.slots.remove(&n);
-    wt::rmdir_if_empty_repo(&slot, &ctx.worktree_dir);
     log_pool_event("pool_destroy", &ctx.repo, n, &branch, None);
     true
 }
 
 /// `branch=<x>` for a leased slot, else `idle`.
 fn slot_tag(leases: &Leases, n: u32) -> String {
-    leases
-        .slots
-        .get(&n)
-        .map(|l| format!("branch={}", l.branch))
-        .unwrap_or_else(|| "idle".to_string())
+    match leases.owner_slot(n) {
+        Some(owner) if owner == n => leases
+            .slots
+            .get(&owner)
+            .map(|l| format!("branch={}", l.branch))
+            .unwrap_or_else(|| "idle".to_string()),
+        Some(owner) => leases
+            .slots
+            .get(&owner)
+            .map(|l| format!("main-for={}", l.branch))
+            .unwrap_or_else(|| "idle".to_string()),
+        None => "idle".to_string(),
+    }
 }
 
 /// Print one slot's planned/applied action.
@@ -1772,7 +2115,7 @@ fn pool_destroy(
     let mut to_remove = Vec::new();
     for n in &targets {
         // A specific slot that doesn't exist at all → report and skip.
-        if !slot_path(&ctx.pool_dir, *n).is_dir() && !leases.slots.contains_key(n) {
+        if !slot_path(&ctx.pool_dir, *n).is_dir() && leases.owner_slot(*n).is_none() {
             println!("  {YELLOW}[{n}] no such slot{NC}");
             continue;
         }
