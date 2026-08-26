@@ -2,23 +2,19 @@
 # nightly-release — build `main` on THIS machine and publish the binaries to the rolling
 # `nightly` GitHub release, which is pinned as the repo's Latest.
 #
-# Why it exists: the tag-driven cargo-dist workflow (.github/workflows/release.yml) is not
-# producing assets — v0.4.1 shipped with none — so install.sh's download_release() always 404s
-# and every install falls back to a from-source build. This job supplies the missing half for the
-# platform I actually run: it discovers and builds every binary target in the Cargo workspace,
-# gates them behind the workspace test suite, and uploads them as cargo-dist-named archives to a
-# single rolling release.
+# Why it exists: the tag-driven cargo-dist workflow (.github/workflows/release.yml) did not
+# produce assets for v0.4.1. This job publishes rolling binaries for the platform I actually run:
+# it discovers and builds every binary target in the Cargo workspace, gates them behind the
+# workspace test suite, and uploads them as cargo-dist-named archives to a single rolling release.
 #
 # Contract:
 #   - `nightly` is pinned as the repo's **Latest** release on every run, so it is what the GitHub
-#     front page shows and what `releases/latest/download` — the URL install.sh reads — resolves
-#     to. bn tracks `main`: this is deliberately the install channel, and the `v*` tags are
-#     history. Pinning is explicit (`--latest`) rather than left to gh's date/version default,
-#     which would hand the badge to any `v*` release cut after this row was created.
+#     front page shows. Pinning is explicit (`--latest`) rather than left to gh's date/version
+#     default, which would hand the badge to any `v*` release cut after this row was created.
 #   - The `nightly` tag is force-moved to the commit that was built, so the release always points
 #     at the source inside it.
-#   - Asset names match install.sh's download_release(): `<app>-<target>.tar.xz`, with <target>
-#     from scripts/install-toolchain.sh, so an installer can consume them unchanged.
+#   - Asset names follow cargo-dist: `<app>-<target>.tar.xz`, with <target> from
+#     scripts/install-toolchain.sh.
 #   - It never installs anything. Keeping the installed `bn` in lock-step with main is
 #     `self-update`'s job; this one only publishes.
 #
@@ -135,9 +131,9 @@ jobdir=$(CDPATH= cd -- "$(dirname "$0")" && pwd -P)
   die "nightly-release: cannot load checkout lifecycle helper"
 repo=$(bn_nightly_prepare_worktree) || exit 1
 
-# Target triple and toolchain both come from the installer's own helpers, so the asset names can
-# never drift from what download_release() looks for and the build uses the same cargo install.sh
-# would pick — including its fallback straight into ~/.rustup/toolchains when the shims are broken.
+# Target triple and toolchain both come from the installer's own helpers, so release builds use the
+# same Cargo install.sh picks, including its fallback straight into ~/.rustup/toolchains when the
+# shims are broken.
 . "$repo/scripts/install-toolchain.sh" || die "nightly-release: cannot source install-toolchain.sh"
 bn_install_activate_cargo "$repo" ||
   die "nightly-release: no usable Cargo toolchain (rustup shims broken? try 'rustup-init' or repair ~/.cargo/bin)"

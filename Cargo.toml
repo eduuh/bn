@@ -76,7 +76,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # version is the workspace's decision.
 base64 = "0.22"
 
-# Optimize from-source installs (`cargo build --release`, Codespaces, BN_BUILD_FROM_SOURCE):
+# Optimize source installs (`cargo build --release`, Codespaces):
 # fat LTO + single codegen unit for a tight, fast-starting CLI; strip symbols and abort on
 # panic to roughly halve binary size. Released artifacts inherit this via [profile.dist].
 [profile.release]

@@ -558,37 +558,75 @@ pub fn validate_card(
         ));
     }
     sanitize_card_text(&mut card)?;
-    for (i, item) in card.items.iter_mut().enumerate() {
-        let sink = kind_sink(&item.kind).ok_or_else(|| {
-            format!(
-                "item {i}: unknown kind '{}' (allowed: {})",
-                item.kind,
-                KINDS.join(" | ")
-            )
-        })?;
-        if !allowed_sinks.iter().any(|s| s == sink) {
-            return Err(format!(
-                "item {i}: sink '{sink}' (kind '{}') is not on agent '{agent}' sink allowlist [{}]",
-                item.kind,
-                allowed_sinks.join(", ")
-            ));
-        }
-        if !crate::attention::SEVERITIES.contains(&item.severity.as_str()) {
-            return Err(format!(
-                "item {i}: invalid severity '{}' (want {})",
-                item.severity,
-                crate::attention::SEVERITIES.join(" | ")
-            ));
-        }
-        sanitize_card_item(item, allowed_domains).map_err(|e| format!("item {i}: {e}"))?;
-        if kind_needs_route(&item.kind) && (item.repo.is_empty() || item.branch.is_empty()) {
-            return Err(format!(
-                "item {i}: kind '{}' requires repo and branch",
-                item.kind
-            ));
+    // Item-level problems drop the offending item; they do not discard the card.
+    //
+    // A staff brief is mostly its headline and body, and one malformed item used to destroy all of
+    // it — `staff-chief-am` and `staff-chief-pm` both failed repeatedly because a single item used a
+    // kind outside the agent's sink allowlist, losing four good items and the whole briefing with
+    // it. The prompt already advertises the permitted kinds, so an item that ignores it is the
+    // model erring, not the brief being untrustworthy.
+    //
+    // Card-level failures above (unparseable, wrong agent, bad date, unsafe text) still reject
+    // outright: those say the whole document is wrong. Sanitization stays a *drop*, never a pass —
+    // an item that fails it is discarded, so nothing unsafe is admitted by this relaxation.
+    let mut dropped: Vec<String> = Vec::new();
+    let mut kept: Vec<CardItem> = Vec::with_capacity(card.items.len());
+    for (i, mut item) in std::mem::take(&mut card.items).into_iter().enumerate() {
+        match validate_card_item(&mut item, i, agent, allowed_sinks, allowed_domains) {
+            Ok(()) => kept.push(item),
+            Err(reason) => dropped.push(reason),
         }
     }
+    card.items = kept;
+    if !dropped.is_empty() {
+        // Surface the loss in the brief itself, so a silently thinner card is never mistaken for a
+        // quiet day.
+        card.body_md.push_str(&format!(
+            "\n\n> Dropped {} invalid item(s): {}",
+            dropped.len(),
+            dropped.join("; ")
+        ));
+    }
     Ok(card)
+}
+
+/// Validate one card item in place. `Err` means "drop this item", never "reject the card".
+fn validate_card_item(
+    item: &mut CardItem,
+    i: usize,
+    agent: &str,
+    allowed_sinks: &[String],
+    allowed_domains: &[String],
+) -> Result<(), String> {
+    let sink = kind_sink(&item.kind).ok_or_else(|| {
+        format!(
+            "item {i}: unknown kind '{}' (allowed: {})",
+            item.kind,
+            KINDS.join(" | ")
+        )
+    })?;
+    if !allowed_sinks.iter().any(|s| s == sink) {
+        return Err(format!(
+            "item {i}: sink '{sink}' (kind '{}') is not on agent '{agent}' sink allowlist [{}]",
+            item.kind,
+            allowed_sinks.join(", ")
+        ));
+    }
+    if !crate::attention::SEVERITIES.contains(&item.severity.as_str()) {
+        return Err(format!(
+            "item {i}: invalid severity '{}' (want {})",
+            item.severity,
+            crate::attention::SEVERITIES.join(" | ")
+        ));
+    }
+    sanitize_card_item(item, allowed_domains).map_err(|e| format!("item {i}: {e}"))?;
+    if kind_needs_route(&item.kind) && (item.repo.is_empty() || item.branch.is_empty()) {
+        return Err(format!(
+            "item {i}: kind '{}' requires repo and branch",
+            item.kind
+        ));
+    }
+    Ok(())
 }
 
 // --- feed store + read-marks ---------------------------------------------------------------------
