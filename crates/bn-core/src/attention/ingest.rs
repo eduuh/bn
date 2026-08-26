@@ -5,7 +5,7 @@ use super::lifecycle::{ack, mark_planned, update};
 use super::model::{
     AddOutcome, IngestItem, IngestOutcome, IngestedItem, PlanError, PlanOutcome, SEVERITIES,
 };
-use super::query::{live_by_key, open_items};
+use super::query::{live_by_key, live_with_key_prefix, open_items};
 use super::store::{get, next_id};
 use crate::commands;
 use crate::events;
@@ -36,6 +36,40 @@ pub struct NewAttn<'a> {
     /// The uncommitted file paths blocking a merged worktree's reclaim — the actionable list a
     /// consumer renders instead of re-parsing the change-count sentence. Empty for other items.
     pub uncommitted_files: Vec<String>,
+}
+
+/// Key namespace of the deterministic cron-health producer. Its item is the canonical record of a
+/// failing job: one stable, subject-derived key that refreshes in place across every failure.
+pub(crate) const CRON_HEALTH_PREFIX: &str = "attn:cron-health:";
+
+/// True for the free-text producers whose items *restate* a problem rather than establish it: the
+/// LLM attention agent and every staff agent (`staff-<agent>`).
+///
+/// Their keys encode when the card was written (`staff:<agent>:<date>:<i>`) or how the model
+/// happened to word it (`attn:attention-agent:<title-slug>`), so neither can ever dedupe against a
+/// restatement. Both must therefore be checked against the canonical subject instead.
+pub(crate) fn is_advisory_source(source: &str) -> bool {
+    source == "attention-agent" || source.starts_with("staff-")
+}
+
+/// The canonical key among `canonical` whose subject `title` restates, if any.
+///
+/// Pure so the matching rule is testable without an event store. A key's subject is its final
+/// segment (`attn:cron-health:live-cowork-scrape` → `live-cowork-scrape`); a title restates it when
+/// it names that subject. Job names are distinctive hyphenated identifiers, so a plain
+/// case-insensitive containment check is specific enough without inventing a fuzzy matcher — and
+/// being conservative matters, since a false match silently drops a real alert.
+pub(crate) fn restated_subject<'a>(title: &str, canonical: &[&'a str]) -> Option<&'a str> {
+    let hay = title.to_ascii_lowercase();
+    canonical
+        .iter()
+        .filter(|k| {
+            k.rsplit(':')
+                .next()
+                .is_some_and(|subject| !subject.is_empty() && hay.contains(&subject.to_lowercase()))
+        })
+        .copied()
+        .next()
 }
 
 /// Raise an attention item from a [`NewAttn`]. With a `key`, the add is idempotent: if a *live*
@@ -96,6 +130,26 @@ pub fn add_new(n: &NewAttn, today: &str) -> std::io::Result<AddOutcome> {
                 id: existing.id,
                 skipped: true,
             });
+        }
+    }
+
+    // Cross-producer suppression: an advisory producer restating a subject the deterministic
+    // producer already owns must refresh that canonical item, not stack another one beside it.
+    //
+    // This is the actual source of attention duplication. `cron-health` keeps exactly one item per
+    // failing job, while the staff agents and the attention agent re-word the same concern on every
+    // run — one job accumulated 12 live items across 3 producers, none of which could dedupe
+    // because their keys encode the date or the phrasing rather than the subject.
+    if is_advisory_source(n.source) {
+        let canonical = live_with_key_prefix(CRON_HEALTH_PREFIX);
+        let keys: Vec<&str> = canonical.iter().filter_map(|i| i.key.as_deref()).collect();
+        if let Some(hit) = restated_subject(n.title, &keys) {
+            if let Some(existing) = canonical.iter().find(|i| i.key.as_deref() == Some(hit)) {
+                return Ok(AddOutcome {
+                    id: existing.id.clone(),
+                    skipped: true,
+                });
+            }
         }
     }
 
@@ -424,4 +478,65 @@ fn non_empty_opt(s: Option<&str>) -> Option<&str> {
 
 fn invalid_input(msg: String) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_advisory_source, restated_subject};
+
+    const COWORK: &str = "attn:cron-health:live-cowork-scrape";
+    const NIGHTLY: &str = "attn:cron-health:nightly-release";
+
+    /// The observed duplication: three staff agents and the attention agent each re-worded the same
+    /// failing job, so no two titles matched and every run minted another item.
+    #[test]
+    fn every_rewording_of_a_job_resolves_to_one_subject() {
+        for title in [
+            "Fix first: cron 'live-cowork-scrape' failing 4/5 runs — the only urgent item",
+            "Focus this week — cowork-scrapper deploy: fix the live-cowork-scrape cron FIRST",
+            "Fix and verify live-cowork-scrape first, then complete cowork-scrapper deployment",
+            "Repair the live-cowork-scrape cron",
+        ] {
+            assert_eq!(
+                restated_subject(title, &[COWORK, NIGHTLY]),
+                Some(COWORK),
+                "should collapse onto the canonical item: {title}"
+            );
+        }
+    }
+
+    /// Suppression must be specific: an unrelated alert has to survive, or the fix silently drops
+    /// real work.
+    #[test]
+    fn an_unrelated_title_is_never_suppressed() {
+        assert_eq!(
+            restated_subject("Renew the expired Azure Contributor PIM role", &[COWORK, NIGHTLY]),
+            None
+        );
+    }
+
+    /// Each subject collapses onto its own canonical item, not the first one that happens to exist.
+    #[test]
+    fn a_title_matches_only_its_own_subject() {
+        assert_eq!(
+            restated_subject("Investigate the nightly-release cron failures", &[COWORK, NIGHTLY]),
+            Some(NIGHTLY)
+        );
+    }
+
+    /// With no canonical item there is nothing to collapse onto, so the advisory item must stand.
+    #[test]
+    fn nothing_is_suppressed_without_a_canonical_item() {
+        assert_eq!(restated_subject("Repair the live-cowork-scrape cron", &[]), None);
+    }
+
+    /// Deterministic producers establish subjects; only the free-text ones restate them.
+    #[test]
+    fn only_free_text_producers_are_advisory() {
+        assert!(is_advisory_source("attention-agent"));
+        assert!(is_advisory_source("staff-standup"));
+        assert!(is_advisory_source("staff-goals-align"));
+        assert!(!is_advisory_source("cron-health"));
+        assert!(!is_advisory_source("wt-cleanup"));
+    }
 }

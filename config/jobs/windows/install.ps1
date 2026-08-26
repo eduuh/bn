@@ -33,11 +33,11 @@ $bn     = "/home/$WslUser/.config/bn/bn"
 $action = New-ScheduledTaskAction -Execute 'wsl.exe' `
             -Argument "-d $Distro -u $WslUser -- $bn run ensure-tmux"
 
-# At logon, then re-check every 30 min (indefinitely) so a dead tmux/WSL self-heals.
-$atLogon = New-ScheduledTaskTrigger -AtLogOn
+# At this user's logon, then re-check every 30 min (indefinitely) so a dead tmux/WSL self-heals.
+# An all-users AtLogOn trigger requires elevation even though the task itself runs as this user.
+$atLogon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $repeat  = New-ScheduledTaskTrigger -Once -At (Get-Date) `
-            -RepetitionInterval (New-TimeSpan -Minutes 30) `
-            -RepetitionDuration ([TimeSpan]::MaxValue)
+            -RepetitionInterval (New-TimeSpan -Minutes 30)
 
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable `
             -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `

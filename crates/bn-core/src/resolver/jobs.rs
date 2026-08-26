@@ -88,12 +88,6 @@ pub struct JobConfig {
     /// (`staff-mentor`) is live. Off by default — it dispatches an LLM harness and appends craft
     /// notes to your branch notes, so it stays opt-in. A manual `bn mentor` runs regardless.
     pub mentor_enabled: bool,
-    /// `[eye].enabled` / `$BN_EYE_ENABLED`: the daily + weekly eye-health coach jobs are live.
-    pub eye_enabled: bool,
-    /// `[eye].last_review` / `$BN_EYE_LAST_REVIEW`: configured baseline monitoring review date.
-    pub eye_last_review: Option<String>,
-    /// `[eye].review_interval_months` / `$BN_EYE_REVIEW_INTERVAL_MONTHS`, clamped to 6-12.
-    pub eye_review_interval_months: u32,
     /// `[today].enabled` / `$BN_TODAY_ENABLED`: Today's agent cron (`today-agent`, #577) is live.
     /// Off by default — a scheduled run writes reviewable suggestions — so it stays opt-in. A
     /// manual `bn today` runs regardless of this flag.
@@ -131,9 +125,6 @@ impl Default for JobConfig {
             archivist_time: "17:30".into(),
             retro_enabled: false,
             mentor_enabled: false,
-            eye_enabled: false,
-            eye_last_review: None,
-            eye_review_interval_months: 12,
             today_enabled: false,
             attention_agent_enabled: false,
         }
@@ -238,16 +229,6 @@ impl JobConfig {
             mentor_enabled: env_bool("BN_MENTOR_ENABLED")
                 .or_else(|| file.and_then(|f| f.mentor_enabled()))
                 .unwrap_or(d.mentor_enabled),
-            eye_enabled: env_bool("BN_EYE_ENABLED")
-                .or_else(|| file.and_then(|f| f.eye_enabled()))
-                .unwrap_or(d.eye_enabled),
-            eye_last_review: non_empty_env("BN_EYE_LAST_REVIEW")
-                .or_else(|| file.and_then(|f| f.eye_last_review())),
-            eye_review_interval_months: non_empty_env("BN_EYE_REVIEW_INTERVAL_MONTHS")
-                .and_then(|v| v.parse::<u32>().ok())
-                .or_else(|| file.and_then(|f| f.eye_review_interval_months()))
-                .unwrap_or(d.eye_review_interval_months)
-                .clamp(6, 12),
             today_enabled: env_bool("BN_TODAY_ENABLED")
                 .or_else(|| file.and_then(|f| f.today_enabled()))
                 .unwrap_or(d.today_enabled),

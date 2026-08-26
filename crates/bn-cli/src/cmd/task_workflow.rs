@@ -137,7 +137,7 @@ pub(crate) fn emit_task_enhance(
                 // outnumber real tasks 99 to 20 and the hourly run never reaches yours.
                 .filter(|t| !bn_core::task_owner::is_machine(t))
                 .collect();
-            match bn_core::task_agents::rank(&open, &today).first() {
+            match bn_core::task_priority::rank(&open, &today).first() {
                 Some(t) => (*t).clone(),
                 None => {
                     if as_json {
@@ -193,10 +193,10 @@ pub(crate) fn emit_task_enhance(
         return;
     }
 
-    let captured = bn_core::task_agents::CapturedContext::read(cfg, &task);
+    let captured = bn_core::task_priority::CapturedContext::read(cfg, &task);
     let placements = bn_core::issues::known_repos(cfg);
     let packet =
-        bn_core::task_agents::improve_packet(&task, Some(&verdict), steer, &captured, &placements);
+        bn_core::task_priority::improve_packet(&task, Some(&verdict), steer, &captured, &placements);
     if !dry_run && !as_json {
         println!("{}", scheduled_line(stamped));
         println!("Improving {task_id} — fails on: {}", verdict.codes().join(", "));
@@ -286,26 +286,26 @@ pub(crate) fn emit_task_triage(cfg: &Config, day: Option<&str>, dry_run: bool, a
         println!("No open tasks to triage — `bn task pull` to refill.");
         return;
     }
-    let ranked = bn_core::task_agents::rank(&open, &day);
-    let packet = bn_core::task_agents::triage_packet(&ranked, &day, None);
+    let ranked = bn_core::task_priority::rank(&open, &day);
+    let packet = bn_core::task_priority::triage_packet(&ranked, &day, None);
     let shortlist: Vec<serde_json::Value> = ranked
         .iter()
-        .take(bn_core::task_agents::TRIAGE_WINDOW)
+        .take(bn_core::task_priority::TRIAGE_WINDOW)
         .map(|t| {
             serde_json::json!({
                 "id": t.id(),
                 "summary": t.summary(),
-                "score": bn_core::task_agents::pre_score(t, &day),
+                "score": bn_core::task_priority::pre_score(t, &day),
             })
         })
         .collect();
 
     if !as_json && !dry_run {
         println!("Ranked shortlist for {day} ({} open):", open.len());
-        for t in ranked.iter().take(bn_core::task_agents::TRIAGE_WINDOW) {
+        for t in ranked.iter().take(bn_core::task_priority::TRIAGE_WINDOW) {
             println!(
                 "  {:>5}  {}  {}",
-                bn_core::task_agents::pre_score(t, &day),
+                bn_core::task_priority::pre_score(t, &day),
                 t.id().unwrap_or("?"),
                 t.summary()
             );

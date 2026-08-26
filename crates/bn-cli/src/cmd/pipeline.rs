@@ -27,7 +27,7 @@ use bn_core::rollups::BranchNote;
 
 mod status_render;
 mod board;
-mod plan_agent;
+mod plan_gate;
 use status_render::{render_pipeline, render_pipeline_list, terminal_width};
 mod target;
 pub(crate) use route_view::emit_pipeline_route;

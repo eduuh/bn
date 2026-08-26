@@ -1343,13 +1343,6 @@ pub(crate) enum CmdMisc {
         #[command(subcommand)]
         action: Option<PipelineCmd>,
     },
-    /// Opt-in keratoconus protective-behaviour coach. `check-in` records today's habits, bare
-    /// `bn eye` shows the no-rubbing streak + weekly adherence, and `review` records monitoring.
-    /// The `staff-eye-daily` / `staff-eye-weekly` jobs use the same deterministic packet.
-    Eye {
-        #[command(subcommand)]
-        action: Option<EyeCmd>,
-    },
     /// Routine-aware personal schedule coach (#801): a timezone-aware `[routine]` weekly recurring
     /// schedule (work/learning, family/recovery/exercise/sleep, …). Bare `bn routine` shows status;
     /// `now`/`next` report the current/upcoming block; `check-in`/`snooze`/`skip`/`override` record
@@ -1430,69 +1423,6 @@ pub(crate) enum ControlCmd {
     TurnEndGuard {
         #[arg(long)]
         id: Option<String>,
-    },
-}
-
-#[derive(clap::ValueEnum, Clone, Debug)]
-pub(crate) enum EyeMode {
-    Daily,
-    Weekly,
-}
-
-impl EyeMode {
-    pub(crate) fn as_str(&self) -> &'static str {
-        match self {
-            Self::Daily => "daily",
-            Self::Weekly => "weekly",
-        }
-    }
-}
-
-#[derive(Subcommand, Debug)]
-pub(crate) enum EyeCmd {
-    /// Record one date-scoped protective-behaviour check-in.
-    CheckIn {
-        #[arg(long)]
-        date: Option<String>,
-        /// Eye rubbing happened today (omitting means a clean no-rubbing day).
-        #[arg(long)]
-        rubbed: bool,
-        #[arg(long)]
-        drops: bool,
-        #[arg(long)]
-        greens: bool,
-        #[arg(long = "omega-3")]
-        omega_3: bool,
-        #[arg(long)]
-        sunglasses: bool,
-        #[arg(long = "screen-breaks")]
-        screen_breaks: bool,
-        #[arg(long = "slept-back")]
-        slept_back: bool,
-    },
-    /// Show the current no-rubbing streak, weekly adherence/misses, and monitoring status.
-    Status {
-        #[arg(long)]
-        date: Option<String>,
-    },
-    /// Print the deterministic daily or weekly staff packet JSON.
-    Gather {
-        #[arg(value_enum, default_value_t = EyeMode::Daily)]
-        mode: EyeMode,
-        #[arg(long)]
-        date: Option<String>,
-    },
-    /// Run the pinned eye staff skill now and route its validated card.
-    Run {
-        #[arg(value_enum, default_value_t = EyeMode::Daily)]
-        mode: EyeMode,
-        #[arg(long)]
-        date: Option<String>,
-    },
-    /// Record the date of a completed topography/ophthalmology monitoring review.
-    Review {
-        #[arg(long)]
-        date: Option<String>,
     },
 }
 

@@ -108,7 +108,6 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
                 }
             }
         }
-        CmdMisc::Eye { action } => emit_eye(cfg, action, json),
         CmdMisc::Routine { action } => emit_routine(cfg, action, json),
         CmdMisc::Control { action } => emit_control(cfg, action, json),
         CmdMisc::Version => println!("{}", version::line()),

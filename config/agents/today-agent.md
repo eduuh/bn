@@ -2,6 +2,9 @@
 name: today-agent
 kind: hosted
 on_calendar: "Mon..Fri *-*-* 08:30:00"
+host_repo: today
+host_session: planning
+host_window: today
 network: false
 description: "bn — Today's agent (#577): the hosted, steerable session that works the day with you. Launched into the tmux `planning` session by `bn today agent start`, seeded with the cron findings packet, steered from the dashboard's Today page. Opt-in; [today].enabled"
 arguments:

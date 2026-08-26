@@ -121,6 +121,35 @@ pub fn live_by_key(key: &str) -> Option<AttnItem> {
     found
 }
 
+/// Every live item whose key starts with `prefix`, in append order.
+///
+/// The prefix scan behind cross-producer suppression: the deterministic producers namespace their
+/// keys (`attn:cron-health:<job>`), so their live items are the canonical record of a subject and
+/// can be recognised without hardcoding what subjects exist.
+pub fn live_with_key_prefix(prefix: &str) -> Vec<AttnItem> {
+    let events = events::read_all();
+    let (states, overrides) = fold_states(&events);
+    let mut out: Vec<AttnItem> = Vec::new();
+    for ev in &events {
+        if ev.kind != "attn" {
+            continue;
+        }
+        let Some(id) = field_str(ev, "id") else {
+            continue;
+        };
+        if matches!(states.get(&id), Some(LifeState::Terminal)) {
+            continue;
+        }
+        let ov = overrides.get(&id);
+        let item = fold_item(ev, id, ov);
+        if item.key.as_deref().is_some_and(|k| k.starts_with(prefix)) {
+            out.retain(|e: &AttnItem| e.key != item.key);
+            out.push(item);
+        }
+    }
+    out
+}
+
 /// The open attention items — the actionable "to start" lane: raised, needs-you, not yet started,
 /// resolved, or snoozed into the future. Urgent-first then oldest-first. *Completions* (finished
 /// work awaiting review, see [`is_completion`]) are excluded — they are outcomes, not actions, and

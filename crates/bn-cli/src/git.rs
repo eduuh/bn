@@ -94,6 +94,28 @@ pub(crate) fn git_capture(args: &[&str], dir: Option<&Path>, trim: bool) -> Opti
     })
 }
 
+/// Run `git <args>` (optionally in `dir` via `-C <dir>`), returning `(success, stdout, stderr)`,
+/// both streams trimmed.
+///
+/// [`git_capture`] collapses every failure to `None`, which leaves a failing maintenance job able
+/// to report only *that* git failed and never *why* — the trap that made chronic `commit-notes`
+/// failures undiagnosable. Prefer this wherever the failure is surfaced to a human.
+pub(crate) fn git_result(args: &[&str], dir: Option<&Path>) -> (bool, String, String) {
+    let dir_cow = dir.map(|d| d.to_string_lossy());
+    let mut full: Vec<&str> = Vec::with_capacity(args.len() + 2);
+    if let Some(d) = &dir_cow {
+        full.push("-C");
+        full.push(d.as_ref());
+    }
+    full.extend_from_slice(args);
+    let out = RealRunner.git(&full);
+    (
+        out.success,
+        out.stdout.trim().to_string(),
+        out.stderr.trim().to_string(),
+    )
+}
+
 /// Run `git <args>`, capturing (and discarding) output; returns whether it exited 0. Replaces the
 /// null-stdout+null-stderr `git_silent`: capturing both streams and dropping them is observably
 /// identical to routing them to `/dev/null`. Not for spawns that must show live progress.

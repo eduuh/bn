@@ -226,7 +226,7 @@ pub struct TaskCreateBody {
     /// Screenshots, logs, specs.
     #[serde(default)]
     pub attachments: Vec<AttachmentBody>,
-    /// Provenance for the `src:` meta — an issue URL scores higher in `task_agents::pre_score`.
+    /// Provenance for the `src:` meta — an issue URL scores higher in `task_priority::pre_score`.
     pub src: Option<String>,
 }
 
@@ -384,7 +384,7 @@ pub async fn task_create(
 /// Two different agents contribute, and both are required. `triage` decides what is genuinely
 /// doable **today** and stamps `day:`; `improve` makes one task SMART and records the `smart:`
 /// verdict. Requiring both means an agent is never handed work that is either unscheduled or
-/// unscoped — and it is exactly what `task_agents::pre_score` already *ranks* by (+250 due today,
+/// unscoped — and it is exactly what `task_priority::pre_score` already *ranks* by (+250 due today,
 /// +200 `smart:ok`). The gate only enforces what the ranker already believed.
 ///
 /// A `day:` in the future is deliberately not startable: it was triaged *for another day*.
@@ -450,7 +450,7 @@ pub async fn task_action(
         // The Start gate. Enforced here rather than by hiding a button, because the dashboard is
         // not the only caller: the CLI and every agent hit this same endpoint, and a rule that
         // only the UI honours is a suggestion. `smart:` alone would not do it — it is a *ranking*
-        // signal (`task_agents::pre_score` adds +200 for `ok`), and ranking never blocked anything.
+        // signal (`task_priority::pre_score` adds +200 for `ok`), and ranking never blocked anything.
         if act == "wip" {
             match file.tasks().find(|t| t.id() == Some(task_id.as_str())) {
                 Some(t) if !is_triaged(t, &today) => {

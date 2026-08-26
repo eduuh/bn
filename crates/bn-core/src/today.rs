@@ -1,4 +1,4 @@
-//! Today's agent (#577): the agent that works the day with you.
+//! Today suggestions, synthesis, and hosted-session state.
 //!
 //! It began as a deterministic offline fold — gather the cron findings store (#576), turn each
 //! finding item into one proposed task, upsert it into the [`crate::suggestions`] store — and that
@@ -12,14 +12,14 @@
 //!     a headless machine keeps its suggestions instead of silently getting nothing.
 //!
 //! This module owns the *pure* half of that: the packet, the synthesis, the seed, and the small
-//! durable record of which session is Today's agent ([`AgentRecord`]). Launching the session —
+//! durable record of which session hosts Today ([`AgentRecord`]). Launching the session —
 //! tmux windows, agent leases, harness argv — lives in `bn-cli`, next to the `bn control` code it
 //! mirrors, because that is where every other launch path lives.
 //!
 //! Re-runs of the offline fold stay idempotent via the suggestions store's id dedupe.
 
 use crate::findings::{self, FindingsRun};
-use crate::resolver::{state_dir, Config, Resolved};
+use crate::resolver::{state_dir, Config};
 use crate::suggestions::{self, Suggestion};
 use crate::util::{local_date_of, now_epoch_secs};
 use serde::{Deserialize, Serialize};
@@ -152,35 +152,6 @@ pub fn run(today: &str, lookback_days: i64, per_source: usize) -> std::io::Resul
 // The hosted agent: identity, durable record, and seed
 // ---------------------------------------------------------------------------
 
-/// The synthetic repo Today's agent is addressed under. Today's agent belongs to the *day*, not to
-/// any checkout, so — exactly like `bn control`'s `control` repo — it takes a synthetic repo name
-/// and lets the date be the branch. That gives it a real `repo:branch` target, which is the only
-/// thing every steering path (`bn agent send`, the web Steer panel, the window join in
-/// [`crate::agent::channel`]) actually needs.
-pub const TODAY_REPO: &str = "today";
-
-/// The tmux window Today's agent runs in, inside [`PLANNING_SESSION`].
-pub const TODAY_WINDOW: &str = "today";
-
-/// The persistent tmux session that hosts planning and orchestration — the one
-/// `config/workflow/tmux.conf` creates on server start and prefix `C-p` jumps to. Today's agent
-/// lands here rather than in a per-repo session because it is not about a repo, and because this
-/// is the session you are already in when you are planning the day.
-///
-/// Deliberately *not* the fleet's orchestrator session (`cron`): that one holds workers, gets
-/// reaped, and is not where a human sits.
-pub const PLANNING_SESSION: &str = "planning";
-
-/// The `repo:branch` target for a given day's agent — what you pass to `bn agent send`.
-pub fn target(date: &str) -> String {
-    format!("{TODAY_REPO}:{date}")
-}
-
-/// The exact `session:window` Today's agent occupies.
-pub fn tmux_target() -> String {
-    format!("{PLANNING_SESSION}:{TODAY_WINDOW}")
-}
-
 /// Where a recorded agent sits in its lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -266,15 +237,10 @@ pub fn mark_stopped(now: i64) -> std::io::Result<bool> {
 /// done. The agent therefore starts already knowing what the crons found, instead of spending its
 /// first turns rediscovering it.
 pub fn build_seed(
-    cfg: &Config,
-    ctx: Option<&Resolved>,
+    def: &crate::agents::AgentDef,
     date: &str,
     packet: &str,
 ) -> Result<String, String> {
-    let catalog = crate::agents::discover(cfg, ctx).map_err(|error| error.to_string())?;
-    let def = catalog
-        .require("today-agent")
-        .map_err(|error| error.to_string())?;
     let mut args = serde_json::Map::new();
     args.insert("date".into(), serde_json::Value::String(date.to_string()));
     args.insert(

@@ -264,15 +264,6 @@ pub(super) struct MentorSection {
     pub(super) enabled: Option<bool>,
 }
 
-/// `[eye]`: the opt-in keratoconus protective-behaviour coach. `last_review` seeds monitoring
-/// state until `bn eye review` records a newer date; the interval is clamped to 6-12 months.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub(super) struct EyeSection {
-    pub(super) enabled: Option<bool>,
-    pub(super) last_review: Option<String>,
-    pub(super) review_interval_months: Option<u32>,
-}
-
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub(super) struct JobsSection {
     /// `[jobs.only_on]`: job name → machines it may run on. Unlisted jobs run everywhere.

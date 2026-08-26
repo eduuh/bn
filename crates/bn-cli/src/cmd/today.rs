@@ -1,7 +1,7 @@
 //! `bn today` — Today's agent (#577). Two halves, one command:
 //!
 //! * the **review surface** — `run` / `list` / `accept` / `dismiss` over the suggestions store,
-//!   built on the deterministic fold in [`bn_core::today_agent`];
+//!   built on the deterministic fold in [`bn_core::today`];
 //! * the **hosted agent** — `bn today agent start|stop|status`, which launches a live harness
 //!   session into the tmux `planning` session, seeded with today's findings packet, and leaves it
 //!   steerable from the Today page.
@@ -13,7 +13,7 @@
 use crate::cmd::queue_producers;
 use crate::*;
 use bn_core::suggestions::{self, Suggestion, SuggestionStatus};
-use bn_core::today_agent::{self, AgentRecord, AgentStatus};
+use bn_core::today::{self, AgentRecord, AgentStatus};
 
 /// Serialize a suggestion for the `--json` surfaces (matches the web `/api/suggestions` shape).
 fn suggestion_json(s: &Suggestion, bl: &bn_core::backlog::Backlog) -> serde_json::Value {
@@ -59,9 +59,9 @@ fn print_suggestion(s: &Suggestion, bl: &bn_core::backlog::Backlog) {
 /// `bn today run` (and bare `bn today`) — the manual trigger. Runs the agent, then reports what it
 /// added and lists the currently open (suggested) proposals.
 pub(crate) fn today_run(lookback_days: Option<i64>, per_source: Option<usize>, as_json: bool) {
-    let lookback = lookback_days.unwrap_or(today_agent::DEFAULT_LOOKBACK_DAYS);
-    let per_source = per_source.unwrap_or(today_agent::DEFAULT_PER_SOURCE);
-    let report = match today_agent::run(&today(), lookback, per_source) {
+    let lookback = lookback_days.unwrap_or(today::DEFAULT_LOOKBACK_DAYS);
+    let per_source = per_source.unwrap_or(today::DEFAULT_PER_SOURCE);
+    let report = match today::run(&today(), lookback, per_source) {
         Ok(r) => r,
         Err(e) => {
             fail_json(as_json, "today", "run_failed", &format!("bn today: {e}"));
@@ -220,10 +220,10 @@ pub(crate) fn job_today_agent(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
 
 /// The offline fold, as a job result: what a box with no tmux and no harness still gets.
 fn job_today_offline() -> i32 {
-    match today_agent::run(
+    match today::run(
         &today(),
-        today_agent::DEFAULT_LOOKBACK_DAYS,
-        today_agent::DEFAULT_PER_SOURCE,
+        today::DEFAULT_LOOKBACK_DAYS,
+        today::DEFAULT_PER_SOURCE,
     ) {
         Ok(r) => {
             println!(
@@ -495,12 +495,30 @@ pub(crate) fn start_hosted_agent(
     lookback_days: Option<i64>,
 ) -> Result<StartOutcome, String> {
     let date = today();
-    let target = today_agent::target(&date);
-    let tmux_target = today_agent::tmux_target();
+    let hint = resolver::resolve_hint(cfg, &std::env::current_dir().unwrap_or_default());
+    let catalog =
+        bn_core::agents::discover(cfg, hint.as_ref()).map_err(|error| error.to_string())?;
+    let definition = catalog
+        .require("today-agent")
+        .map_err(|error| error.to_string())?;
+    let host_repo = definition
+        .host_repo
+        .as_deref()
+        .ok_or("today-agent.md requires host_repo")?;
+    let host_session = definition
+        .host_session
+        .as_deref()
+        .ok_or("today-agent.md requires host_session")?;
+    let host_window = definition
+        .host_window
+        .as_deref()
+        .ok_or("today-agent.md requires host_window")?;
+    let target = format!("{host_repo}:{date}");
+    let tmux_target = format!("{host_session}:{host_window}");
 
     // Already up? Trust the window, not the record: a record whose window is gone is stale, and
     // re-launching over a live one would give the day two agents and an ambiguous steer channel.
-    if let Some(existing) = today_agent::read_record() {
+    if let Some(existing) = today::read_record() {
         if existing.date == date
             && existing.status != AgentStatus::Stopped
             && window_exists(&existing.tmux_target)
@@ -539,13 +557,12 @@ pub(crate) fn start_hosted_agent(
     }
 
     let ctx = Resolved {
-        repo: today_agent::TODAY_REPO.to_string(),
+        repo: host_repo.to_string(),
         branch: date.clone(),
     };
-    let lookback = lookback_days.unwrap_or(today_agent::DEFAULT_LOOKBACK_DAYS);
-    let packet = today_agent::gather_packet_json(&date, lookback);
-    let hint = resolver::resolve_hint(cfg, &std::env::current_dir().unwrap_or_default());
-    let seed = today_agent::build_seed(cfg, hint.as_ref(), &date, &packet)
+    let lookback = lookback_days.unwrap_or(today::DEFAULT_LOOKBACK_DAYS);
+    let packet = today::gather_packet_json(&date, lookback);
+    let seed = today::build_seed(definition, &date, &packet)
         .map_err(|error| format!("today agent prompt: {error}"))?;
     let session_id = crate::cmd::dispatch::gen_uuid();
 
@@ -574,14 +591,14 @@ pub(crate) fn start_hosted_agent(
     );
 
     let opened = wt::open_worktree_window_cmd_named(
-        today_agent::TODAY_REPO,
+        host_repo,
         &date,
-        today_agent::TODAY_WINDOW,
+        host_window,
         &cwd,
         false,
         Some(&cmd),
         true,
-        Some(wt::planning_session()),
+        Some(host_session),
     );
     if !opened {
         if let Err(e) = reservation.rollback() {
@@ -600,7 +617,7 @@ pub(crate) fn start_hosted_agent(
             session_id: &session_id,
             worktree: &cwd.to_string_lossy(),
             work_class: bn_core::cost::WorkClass::Orchestration,
-            task_name: Some("today-agent"),
+            task_name: Some(&definition.name),
             controller_id: None,
         },
     );
@@ -620,7 +637,7 @@ pub(crate) fn start_hosted_agent(
         started_at: bn_core::util::now_epoch_secs(),
         stopped_at: None,
     };
-    today_agent::write_record(&record).map_err(|e| format!("could not record the agent: {e}"))?;
+    today::write_record(&record).map_err(|e| format!("could not record the agent: {e}"))?;
 
     Ok(StartOutcome {
         record,
@@ -667,7 +684,7 @@ pub(crate) fn today_agent_start(
 /// that is already gone is a success, because the state the caller asked for is the state they get.
 pub(crate) fn today_agent_stop(as_json: bool) {
     let now = bn_core::util::now_epoch_secs();
-    let record = today_agent::read_record();
+    let record = today::read_record();
     let killed = record
         .as_ref()
         .map(|r| kill_window(&r.tmux_target, &r.cwd))
@@ -677,7 +694,7 @@ pub(crate) fn today_agent_stop(as_json: bool) {
             eprintln!("bn today agent stop: lease release failed; {e}");
         }
     }
-    if let Err(e) = today_agent::mark_stopped(now) {
+    if let Err(e) = today::mark_stopped(now) {
         fail_json(
             as_json,
             "today-agent-stop",
@@ -706,7 +723,7 @@ pub(crate) fn today_agent_stop(as_json: bool) {
 /// `bn today agent status` — the record joined with the live fleet, so "recorded" and "actually
 /// alive" are never conflated.
 pub(crate) fn today_agent_status(cfg: &Config, as_json: bool) {
-    let view = today_agent::status_view(cfg);
+    let view = today::status_view(cfg);
     if as_json {
         println!(
             "{}",
@@ -714,7 +731,7 @@ pub(crate) fn today_agent_status(cfg: &Config, as_json: bool) {
         );
         return;
     }
-    match today_agent::read_record() {
+    match today::read_record() {
         None => println!("Today's agent: never started. `bn today agent start` launches it."),
         Some(r) => {
             let live = view["running"].as_bool().unwrap_or(false);
@@ -729,5 +746,3 @@ pub(crate) fn today_agent_status(cfg: &Config, as_json: bool) {
         }
     }
 }
-
-

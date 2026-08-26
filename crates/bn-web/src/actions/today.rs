@@ -46,12 +46,12 @@ pub async fn today_run(
     };
     let lookback = body
         .lookback_days
-        .unwrap_or(bn_core::today_agent::DEFAULT_LOOKBACK_DAYS);
+        .unwrap_or(bn_core::today::DEFAULT_LOOKBACK_DAYS);
     let per_source = body
         .per_source
-        .unwrap_or(bn_core::today_agent::DEFAULT_PER_SOURCE);
+        .unwrap_or(bn_core::today::DEFAULT_PER_SOURCE);
     let res = tokio::task::spawn_blocking(move || {
-        bn_core::today_agent::run(&bn_core::util::today(), lookback, per_source)
+        bn_core::today::run(&bn_core::util::today(), lookback, per_source)
     })
     .await;
     match res {

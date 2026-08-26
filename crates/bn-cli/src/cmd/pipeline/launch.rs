@@ -5,7 +5,7 @@
 //! caps that file, and this is the half that grows whenever a harness gains a flag.
 use crate::*;
 use bn_core::pipeline::investigate::plan_packet;
-use super::plan_agent::append_plan_gate_seed;
+use super::plan_gate::append_plan_gate_seed;
 
 /// The harness pass-through for a pipeline sub-agent: the stage's model and effort, plus a
 /// `--disable-mcp-server <name>` for each of the repo's project MCP servers.

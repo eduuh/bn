@@ -704,11 +704,11 @@ pub async fn issues(State(state): State<AppState>) -> Json<Envelope> {
 /// `target` and `control` channel, which is exactly what `SteerPanel` needs to decide whether the
 /// composer is live or greyed.
 ///
-/// Built by `bn_core::today_agent::status_view`, the same builder `bn today agent status` prints —
+/// Built by `bn_core::today::status_view`, the same builder `bn today agent status` prints —
 /// so the CLI and the dashboard cannot drift on whether the agent is up.
 pub async fn today_agent(State(state): State<AppState>) -> Json<Envelope> {
     let cfg = state.cfg.clone();
-    let data = tokio::task::spawn_blocking(move || bn_core::today_agent::status_view(&cfg))
+    let data = tokio::task::spawn_blocking(move || bn_core::today::status_view(&cfg))
         .await
         .unwrap_or_else(|_| json!({ "running": false, "agent": Value::Null }));
     Json(Envelope::success("today-agent", data))

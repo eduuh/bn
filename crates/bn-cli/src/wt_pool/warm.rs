@@ -235,7 +235,7 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool) -> bool {
         summary += &format!(" · {skipped} skipped (leased/dirty/existing)");
     }
     println!("{GREEN}{summary}.{NC}");
-    complete
+    warm_succeeded(failed, made)
 }
 
 fn warm_complete(
@@ -245,7 +245,13 @@ fn warm_complete(
     checkout_failed: u32,
     build_failed: u32,
 ) -> bool {
-    warmed == size && skipped == 0 && checkout_failed == 0 && build_failed == 0
+    warmed + skipped == size && checkout_failed == 0 && build_failed == 0
+}
+
+/// Whether the attempted refresh itself succeeded. Safe skips are not job failures: warming cannot
+/// and must not touch leased, occupied, dirty, or deliberately excluded existing slots.
+fn warm_succeeded(checkout_failed: u32, build_failed: u32) -> bool {
+    checkout_failed == 0 && build_failed == 0
 }
 
 /// Build every ready slot: prime the first at full parallelism (seeding the sccache cache), then
@@ -396,13 +402,20 @@ fn warm_pool_for_cron(cfg: &Config, repo: &str) -> i32 {
 
 #[cfg(test)]
 mod completion_tests {
-    use super::warm_complete;
+    use super::{warm_complete, warm_succeeded};
 
     #[test]
-    fn only_a_full_success_advances_pool_freshness() {
+    fn successful_safe_skips_advance_pool_freshness() {
         assert!(warm_complete(3, 3, 0, 0, 0));
-        assert!(!warm_complete(3, 2, 1, 0, 0));
+        assert!(warm_complete(3, 2, 1, 0, 0));
         assert!(!warm_complete(3, 2, 0, 1, 0));
         assert!(!warm_complete(3, 2, 0, 0, 1));
+    }
+
+    #[test]
+    fn safe_skips_do_not_fail_the_warm_job() {
+        assert!(warm_succeeded(0, 0));
+        assert!(!warm_succeeded(1, 0));
+        assert!(!warm_succeeded(0, 1));
     }
 }

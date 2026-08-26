@@ -350,19 +350,6 @@ pub(crate) fn orchestrator_session() -> &'static str {
     ORCHESTRATOR_SESSION
 }
 
-/// The persistent **planning** session — the one `config/workflow/tmux.conf` creates on server
-/// start and prefix `C-p` / `C-BSpace` jump to, rooted in the personal-notes repo. It is where a
-/// human plans, so it is where Today's agent is hosted: you can drop into its window with one
-/// chord instead of hunting the fleet for it.
-///
-/// Distinct from [`ORCHESTRATOR_SESSION`] on purpose. That session holds *workers* — reaped,
-/// churned, and not somewhere you sit. The name resolves through
-/// [`bn_core::today_agent::PLANNING_SESSION`] so tmux.conf, the launcher and the dashboard cannot
-/// drift apart on what "planning" is called.
-pub(crate) fn planning_session() -> &'static str {
-    bn_core::today_agent::PLANNING_SESSION
-}
-
 /// Like [`open_worktree_window`], but the window runs `cmd` (an agent launch) instead of a shell,
 /// and — with `prime_agent` — stamps the empty `@bn_agent` badge on the window so the agent's
 /// lifecycle hooks can decorate it (working / waiting / done badges). This is the single disciplined

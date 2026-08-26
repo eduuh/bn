@@ -94,6 +94,136 @@ pub(crate) enum NotesAction {
     CommitAndPush,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum RemoteRefState {
+    Exists,
+    Missing,
+    QueryFailed,
+}
+
+/// Read tracking configuration without resolving the remote-tracking ref. `@{u}` stops resolving
+/// after `fetch --prune` removes a deleted remote branch, but these two settings remain and are
+/// exactly what lets commit-notes recreate that branch.
+fn configured_upstream(
+    git: &impl Fn(&std::path::Path, &[&str]) -> (bool, String),
+    root: &std::path::Path,
+    branch: &str,
+) -> Option<(String, String)> {
+    let remote_key = format!("branch.{branch}.remote");
+    let merge_key = format!("branch.{branch}.merge");
+    let (remote_ok, remote) = git(root, &["config", "--get", &remote_key]);
+    let (merge_ok, merge_ref) = git(root, &["config", "--get", &merge_key]);
+    (remote_ok && merge_ok && !remote.is_empty() && !merge_ref.is_empty())
+        .then_some((remote, merge_ref))
+}
+
+/// Query the remote ref without `--exit-code`: a successful empty result proves absence, while a
+/// non-zero exit remains distinguishable as an auth/network/invalid-remote failure.
+fn remote_ref_state(root: &std::path::Path, remote: &str, merge_ref: &str) -> RemoteRefState {
+    match crate::git::git_capture(
+        &["ls-remote", "--heads", remote, merge_ref],
+        Some(root),
+        true,
+    ) {
+        Some(output) if output.is_empty() => RemoteRefState::Missing,
+        Some(_) => RemoteRefState::Exists,
+        None => RemoteRefState::QueryFailed,
+    }
+}
+
+#[cfg(test)]
+mod commit_notes_upstream_tests {
+    use super::*;
+
+    fn git_ok(dir: &std::path::Path, args: &[&str]) -> bool {
+        crate::git::git_command(args)
+            .current_dir(dir)
+            .status()
+            .expect("run git")
+            .success()
+    }
+
+    fn git_out(dir: &std::path::Path, args: &[&str]) -> String {
+        let output = crate::git::git_command(args)
+            .current_dir(dir)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("utf8 git output")
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn deleted_and_pruned_upstream_is_recreated() {
+        let _env = bn_core::test_support::env_lock();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let remote = temp.path().join("remote.git");
+        let notes = temp.path().join("notes");
+        let remote_s = remote.to_string_lossy();
+        let notes_s = notes.to_string_lossy();
+
+        assert!(git_ok(
+            temp.path(),
+            &["init", "--quiet", "--bare", remote_s.as_ref()]
+        ));
+        assert!(git_ok(
+            temp.path(),
+            &["init", "--quiet", "-b", "topic", notes_s.as_ref()]
+        ));
+        assert!(git_ok(&notes, &["config", "user.name", "bn test"]));
+        assert!(git_ok(
+            &notes,
+            &["config", "user.email", "bn-test@example.invalid"]
+        ));
+        std::fs::write(notes.join("note.md"), "# Notes\n\nfirst\n").expect("seed note");
+        assert!(git_ok(&notes, &["add", "note.md"]));
+        assert!(git_ok(&notes, &["commit", "--quiet", "-m", "seed"]));
+        assert!(git_ok(
+            &notes,
+            &["remote", "add", "origin", remote_s.as_ref()]
+        ));
+        assert!(git_ok(&notes, &["push", "--quiet", "-u", "origin", "topic"]));
+
+        assert!(git_ok(
+            &notes,
+            &["push", "--quiet", "origin", "--delete", "topic"]
+        ));
+        assert!(git_ok(&notes, &["fetch", "--quiet", "--prune", "origin"]));
+        assert!(
+            !git_ok(&notes, &["rev-parse", "--verify", "@{u}"]),
+            "the remote-tracking ref must be pruned for this regression"
+        );
+
+        std::fs::write(notes.join("note.md"), "# Notes\n\nsecond\n").expect("change note");
+        let cfg = Config {
+            personal_root: notes.clone(),
+            work_root: temp.path().join("missing"),
+            hostname: "test-host".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(job_commit_notes(&cfg, None), 0);
+        assert_eq!(
+            git_out(&notes, &["rev-parse", "HEAD"]),
+            git_out(
+                temp.path(),
+                &[
+                    "--git-dir",
+                    remote_s.as_ref(),
+                    "rev-parse",
+                    "refs/heads/topic"
+                ]
+            )
+        );
+    }
+}
+
 /// Whether a dirty tree holds anything a human would want to see in the notes history.
 ///
 /// `only_state_churn` says every changed path is machine bookkeeping ([`is_state_churn_path`]):
@@ -399,6 +529,12 @@ pub(crate) fn job_commit_notes(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
         }
     };
 
+    // Same seam, but keeping stderr, for the paths whose failure is reported to a human. Without
+    // it a failed commit can only name the repo, never the reason.
+    let git_full = |dir: &std::path::Path, args: &[&str]| -> (bool, String, String) {
+        crate::git::git_result(args, Some(dir))
+    };
+
     let mut rc = 0;
     let mut seen: Vec<PathBuf> = Vec::new();
     for dir in [cfg.personal_root.clone(), cfg.work_root.clone()] {
@@ -429,12 +565,20 @@ pub(crate) fn job_commit_notes(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
         // Deleting an *untracked* scaffold leaves nothing behind; deleting a *tracked* one leaves a
         // staged deletion, which is a real change and is committed like any other.
         let only_state_churn = dirty && changed.iter().all(|e| is_state_churn_path(&e.path));
-        let has_upstream = git(&root, &["rev-parse", "--abbrev-ref", "@{u}"]).0;
-        let ahead: u64 = if has_upstream {
+        let branch = git(&root, &["rev-parse", "--abbrev-ref", "HEAD"]).1;
+        let tracking_config = configured_upstream(&git, &root, &branch);
+        let (resolved_upstream, upstream) =
+            git(&root, &["rev-parse", "--abbrev-ref", "@{u}"]);
+        let has_upstream = tracking_config.is_some() || resolved_upstream;
+        let ahead: u64 = if resolved_upstream {
             git(&root, &["rev-list", "--count", "@{u}..HEAD"])
                 .1
                 .parse()
                 .unwrap_or(0)
+        } else if has_upstream {
+            // A configured-but-pruned upstream has no local comparison ref. Treat it as pending
+            // sync so a clean tree with commits from an earlier failed run still recreates it.
+            1
         } else {
             0
         };
@@ -456,7 +600,7 @@ pub(crate) fn job_commit_notes(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
                 continue;
             }
             NotesAction::CommitOnly => {
-                if commit_all(&git, &root, host, &stamp) {
+                if commit_all(&git_full, &root, host, &stamp) {
                     native_job_line(
                         &format!("no upstream; commit-only: {}", root.display()),
                         false,
@@ -468,13 +612,80 @@ pub(crate) fn job_commit_notes(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
             }
             NotesAction::CommitAndPush => {
                 if notes_worth_committing(dirty, only_state_churn)
-                    && !commit_all(&git, &root, host, &stamp)
+                    && !commit_all(&git_full, &root, host, &stamp)
                 {
                     rc = 1;
                     continue;
                 }
-                let branch = git(&root, &["rev-parse", "--abbrev-ref", "HEAD"]).1;
-                if git(&root, &["pull", "--rebase", "--autostash", "-q"]).0 {
+                // Prefer the durable branch config because `@{u}` no longer resolves after prune.
+                // The fallback only serves unusual repositories whose upstream resolves despite
+                // missing branch config.
+                let upstream_target = tracking_config.clone().or_else(|| {
+                    upstream.split_once('/').map(|(remote, remote_branch)| {
+                        (remote.to_string(), format!("refs/heads/{remote_branch}"))
+                    })
+                });
+                let Some((remote, merge_ref)) = upstream_target else {
+                    native_job_line(
+                        &format!(
+                            "upstream configuration unreadable; local commit kept, push skipped: {} ({branch})",
+                            root.display()
+                        ),
+                        true,
+                    );
+                    rc = 1;
+                    continue;
+                };
+                let ready_to_push = match remote_ref_state(&root, &remote, &merge_ref) {
+                    RemoteRefState::Missing => true,
+                    RemoteRefState::Exists => {
+                        // Integrate only when the remote actually has commits this clone lacks.
+                        // The notes repo is written continuously by other bn processes, so
+                        // `pull --rebase --autostash` on an already-current branch is pure risk:
+                        // the autostash can fail to reapply, which aborts the run and leaves the
+                        // stash behind (five had accumulated on a real host) while achieving
+                        // nothing, because there was never anything to rebase onto.
+                        //
+                        // Fetch into the tracking ref explicitly rather than reading `FETCH_HEAD`,
+                        // which is shared state another git operation in the same repo may have
+                        // written.
+                        let remote_branch =
+                            merge_ref.strip_prefix("refs/heads/").unwrap_or(&merge_ref);
+                        let tracking = format!("refs/remotes/{remote}/{remote_branch}");
+                        let refspec = format!("+{merge_ref}:{tracking}");
+                        if !git(&root, &["fetch", "--quiet", &remote, &refspec]).0 {
+                            native_job_line(
+                                &format!(
+                                    "fetch failed (auth/network?); local commit kept, push skipped: {} ({branch})",
+                                    root.display()
+                                ),
+                                true,
+                            );
+                            rc = 1;
+                            continue;
+                        }
+                        let behind: u64 = git(
+                            &root,
+                            &["rev-list", "--count", &format!("HEAD..{tracking}")],
+                        )
+                        .1
+                        .parse()
+                        .unwrap_or(0);
+                        behind == 0 || git(&root, &["rebase", "--autostash", "-q", &tracking]).0
+                    }
+                    RemoteRefState::QueryFailed => {
+                        native_job_line(
+                            &format!(
+                                "upstream query failed (auth/network?); local commit kept, push skipped: {} ({branch})",
+                                root.display()
+                            ),
+                            true,
+                        );
+                        rc = 1;
+                        continue;
+                    }
+                };
+                if ready_to_push {
                     if git(&root, &["push", "-q"]).0 {
                         native_job_line(&format!("pushed: {} ({branch})", root.display()), false);
                     } else {
@@ -562,20 +773,44 @@ pub(crate) fn heal_stale_git_state(root: &std::path::Path) -> Vec<String> {
 }
 
 fn commit_all(
-    git: &impl Fn(&std::path::Path, &[&str]) -> (bool, String),
+    git: &impl Fn(&std::path::Path, &[&str]) -> (bool, String, String),
     root: &std::path::Path,
     host: &str,
     stamp: &str,
 ) -> bool {
     git(root, &["add", "-A"]);
     let msg = notes_commit_message(host, stamp);
-    if git(root, &["commit", "-q", "-m", &msg]).0 {
+    let (ok, out, err) = git(root, &["commit", "-q", "-m", &msg]);
+    if ok {
         native_job_line(&format!("committed: {} — {msg}", root.display()), false);
-        true
-    } else {
-        native_job_line(&format!("commit failed: {}", root.display()), true);
-        false
+        return true;
     }
+
+    // `git commit` also exits non-zero when there is simply nothing staged. The notes repo is
+    // written continuously by other bn processes, so a concurrent writer can commit the very
+    // paths this run saw as dirty between the status snapshot and here. That is a benign no-op,
+    // not a sync failure — deciding from the tree itself keeps this locale-independent rather
+    // than matching git's "nothing to commit" wording.
+    if git(root, &["status", "--porcelain"]).1.is_empty() {
+        native_job_line(
+            &format!(
+                "nothing to commit (already captured by a concurrent run): {}",
+                root.display()
+            ),
+            false,
+        );
+        return true;
+    }
+
+    let reason = [err.as_str(), out.as_str()]
+        .into_iter()
+        .find(|s| !s.is_empty())
+        .unwrap_or("no output from git");
+    native_job_line(
+        &format!("commit failed: {} — {reason}", root.display()),
+        true,
+    );
+    false
 }
 
 /// One `git status --porcelain` row: its two-letter status and the repo-relative path.

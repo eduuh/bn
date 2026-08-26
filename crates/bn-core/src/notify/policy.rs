@@ -298,7 +298,7 @@ impl NotifyConfig {
     /// Resolve the `[notify]` table over the defaults. Deliberately infallible: a nonsense value
     /// falls back to its default rather than failing the whole `Config::resolve`, because a typo
     /// in a notification preference must never break unrelated commands. Out-of-range numbers are
-    /// clamped the way `[eye].review_interval_months` is.
+    /// clamped rather than rejected.
     ///
     /// What is **not** configurable, on purpose: the class of each call site, the quiet-window
     /// semantics, and which classes each bar admits. The point of the gate is fewer knobs, not

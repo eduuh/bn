@@ -34,7 +34,6 @@ pub(super) struct ConfigFile {
     archivist: Option<ArchivistSection>,
     retro: Option<RetroSection>,
     mentor: Option<MentorSection>,
-    eye: Option<EyeSection>,
     /// `[routine]` + `[[routine.blocks]]` (#801): the recurring weekly personal-schedule config.
     /// Deserialized directly into the domain's own raw shape (mirrors `pipeline`) since the
     /// block list is structural, not scalar — no per-field windows overlay for the array.
@@ -725,27 +724,6 @@ impl ConfigFile {
             .and_then(|w| w.mentor.as_ref())
             .and_then(|s| s.enabled)
             .or_else(|| self.mentor.as_ref().and_then(|s| s.enabled))
-    }
-
-    pub(super) fn eye_enabled(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.eye.as_ref())
-            .and_then(|s| s.enabled)
-            .or_else(|| self.eye.as_ref().and_then(|s| s.enabled))
-    }
-
-    pub(super) fn eye_last_review(&self) -> Option<String> {
-        self.win()
-            .and_then(|w| w.eye.as_ref())
-            .and_then(|s| s.last_review.clone())
-            .or_else(|| self.eye.as_ref().and_then(|s| s.last_review.clone()))
-    }
-
-    pub(super) fn eye_review_interval_months(&self) -> Option<u32> {
-        self.win()
-            .and_then(|w| w.eye.as_ref())
-            .and_then(|s| s.review_interval_months)
-            .or_else(|| self.eye.as_ref().and_then(|s| s.review_interval_months))
     }
 
     /// `[routine]` + `[[routine.blocks]]` (#801), windows-overlaid whole-table like `pipeline`

@@ -1,4 +1,4 @@
-//! Cron-result agents: the deterministic failing-cron watchdog (`cron-health`) and the periodic
+//! Attention workflow: the deterministic failing-cron watchdog (`cron-health`) and the periodic
 //! LLM `attention-agent` that reviews recent cron findings + cron health and writes a ranked
 //! attention list. Both raise into the same attention store via `ingest(..., replace=true)`, so a
 //! recovered cron's / dropped item's alert is auto-acked on the next run.
@@ -476,9 +476,9 @@ pub(crate) fn job_attention_agent(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
         return 0;
     }
     let today = bn_core::clock::RealClock.today();
-    let findings = bn_core::today_agent::gather_packet_json(
+    let findings = bn_core::today::gather_packet_json(
         &today,
-        bn_core::today_agent::DEFAULT_LOOKBACK_DAYS,
+        bn_core::today::DEFAULT_LOOKBACK_DAYS,
     );
     let health = failing_cron_lines(cfg, ctx);
 

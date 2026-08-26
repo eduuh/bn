@@ -112,11 +112,6 @@ enabled = false
 [mentor]
 enabled = false
 
-[eye]
-enabled = false
-review_interval_months = 12     # 6..12 months
-# last_review = "2026-01-15"    # YYYY-MM-DD; optional baseline
-
 [routine]
 enabled = false
 timezone = "local"              # IANA zone or local

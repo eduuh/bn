@@ -258,7 +258,10 @@ fn cron_health_creates_repair_task_and_queues_agent() {
         .expect("cron event");
     }
 
-    assert_eq!(crate::cmd::attn_agent::job_cron_health(&cfg, None), 0);
+    assert_eq!(
+        crate::cmd::attention_workflow::job_cron_health(&cfg, None),
+        0
+    );
 
     let tasks = bn_core::todo::load(&cfg.tasks_file()).expect("tasks");
     let repair = tasks
@@ -282,7 +285,10 @@ fn cron_health_creates_repair_task_and_queues_agent() {
     assert!(entry.item.contains("Fix failing cron job 'broken-cron'"));
     assert!(entry.item.contains("panic: missing config"));
 
-    assert_eq!(crate::cmd::attn_agent::job_cron_health(&cfg, None), 0);
+    assert_eq!(
+        crate::cmd::attention_workflow::job_cron_health(&cfg, None),
+        0
+    );
     let tasks_again = bn_core::todo::load(&cfg.tasks_file()).expect("tasks again");
     assert_eq!(
         tasks_again
@@ -327,7 +333,10 @@ fn cron_health_closes_the_repair_task_and_withdraws_the_agent_once_the_cron_reco
         )
         .expect("cron event");
     }
-    assert_eq!(crate::cmd::attn_agent::job_cron_health(&cfg, None), 0);
+    assert_eq!(
+        crate::cmd::attention_workflow::job_cron_health(&cfg, None),
+        0
+    );
 
     let today = bn_core::clock::Clock::today(&bn_core::clock::RealClock);
     let tasks = bn_core::todo::load(&cfg.tasks_file()).expect("tasks");
@@ -349,7 +358,10 @@ fn cron_health_closes_the_repair_task_and_withdraws_the_agent_once_the_cron_reco
     // The cron recovers — exactly what the PATH-prelude fix did to `scout`.
     bn_core::events::log_cron_run("flaky-cron", "global", None, None, now, 10, 0, "")
         .expect("green run");
-    assert_eq!(crate::cmd::attn_agent::job_cron_health(&cfg, None), 0);
+    assert_eq!(
+        crate::cmd::attention_workflow::job_cron_health(&cfg, None),
+        0
+    );
 
     let tasks = bn_core::todo::load(&cfg.tasks_file()).expect("tasks after recovery");
     let repair = tasks
@@ -407,7 +419,10 @@ fn cron_health_withholds_repair_agent_for_a_cron_that_no_longer_resolves() {
         .expect("cron event");
     }
 
-    assert_eq!(crate::cmd::attn_agent::job_cron_health(&cfg, None), 0);
+    assert_eq!(
+        crate::cmd::attention_workflow::job_cron_health(&cfg, None),
+        0
+    );
 
     let tasks = bn_core::todo::load(&cfg.tasks_file()).expect("tasks");
     assert!(

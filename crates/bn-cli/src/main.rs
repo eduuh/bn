@@ -67,7 +67,6 @@ pub(crate) use cmd::daily::*;
 pub(crate) use cmd::dispatch::*;
 pub(crate) use cmd::doctor::*;
 pub(crate) use cmd::dojo::*;
-pub(crate) use cmd::eye::*;
 pub(crate) use cmd::findings::*;
 pub(crate) use cmd::focus::*;
 pub(crate) use cmd::gitio::*;

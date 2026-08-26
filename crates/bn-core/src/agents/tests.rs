@@ -240,8 +240,6 @@ fn shipped_agent_catalog_is_valid() {
         ("today-agent", "bn today list"),
         ("controller", "Keep the user in the loop"),
         ("staff-mentor", "Mentor"),
-        ("staff-eye-daily", "daily eye-health coach"),
-        ("staff-eye-weekly", "weekly eye-health coach"),
     ] {
         assert!(
             catalog

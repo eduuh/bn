@@ -104,7 +104,7 @@ pub(super) fn route(cfg: &Config, action: CmdPlanning, json: bool) {
                 steer,
                 due,
                 dry_run,
-            }) => crate::cmd::task_agents::emit_task_enhance(
+            }) => crate::cmd::task_workflow::emit_task_enhance(
                 cfg,
                 id.as_deref(),
                 steer.as_deref(),
@@ -113,7 +113,7 @@ pub(super) fn route(cfg: &Config, action: CmdPlanning, json: bool) {
                 json,
             ),
             Some(TaskCmd::Triage { day, dry_run }) => {
-                crate::cmd::task_agents::emit_task_triage(cfg, day.as_deref(), dry_run, json)
+                crate::cmd::task_workflow::emit_task_triage(cfg, day.as_deref(), dry_run, json)
             }
             Some(TaskCmd::Pull { low_water, dry_run }) => {
                 emit_task_pull(cfg, repo.as_deref(), low_water, dry_run, json)

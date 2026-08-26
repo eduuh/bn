@@ -9,7 +9,7 @@
 use bn_core::cost::{self, CostFilter, CostView};
 use bn_core::resolver::{Config, JobScope, Resolved};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 const POOL_MIN_READY: usize = 1;
@@ -31,8 +31,15 @@ fn repo_name(url: &str) -> String {
 
 /// Synthetic targets are steerable agent addresses, not work repos. They may have notes/fleet rows
 /// so their owning page can render state, but the Repos board should list only repos bn can work in.
-fn is_synthetic_repo(repo: &str) -> bool {
-    repo == bn_core::today_agent::TODAY_REPO
+fn synthetic_repos(cfg: &Config) -> BTreeSet<String> {
+    bn_core::agents::discover(cfg, None)
+        .map(|catalog| {
+            catalog
+                .iter()
+                .filter_map(|agent| agent.host_repo.clone())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// One session (branch) within a repo — a branch note, a live agent, and/or a dispatched orchestrate
@@ -226,11 +233,13 @@ pub fn repos_view(cfg: &Config) -> Value {
         .iter()
         .map(|repo| (repo.clone(), setup_json(cfg, repo)))
         .collect();
+    let synthetic = synthetic_repos(cfg);
 
     assemble(
         cfg,
         &managed,
         &cloned,
+        &synthetic,
         seeds,
         &cv,
         RepoLookups {
@@ -339,6 +348,7 @@ fn assemble(
     cfg: &Config,
     managed: &[String],
     cloned: &[String],
+    synthetic: &BTreeSet<String>,
     seeds: Vec<Session>,
     cost: &CostView,
     lookups: RepoLookups<'_>,
@@ -353,7 +363,7 @@ fn assemble(
     // Merge seeds by (repo, note-key branch).
     let mut merged: BTreeMap<(String, String), Session> = BTreeMap::new();
     for s in seeds {
-        if is_synthetic_repo(&s.repo) {
+        if synthetic.contains(&s.repo) {
             continue;
         }
         let key = (s.repo.clone(), s.branch.clone());
@@ -367,7 +377,7 @@ fn assemble(
     let mut by_repo: BTreeMap<String, Vec<Session>> = BTreeMap::new();
     let real_repos: std::collections::BTreeSet<String> = cloned
         .iter()
-        .filter(|r| !is_synthetic_repo(r))
+        .filter(|r| !synthetic.contains(*r))
         .cloned()
         .chain(
             merged
@@ -462,7 +472,7 @@ fn assemble(
     let mut known: Vec<String> = rollups
         .iter()
         .filter_map(|r| r.get("repo").and_then(Value::as_str))
-        .filter(|repo| *repo != bn_core::today_agent::TODAY_REPO)
+        .filter(|repo| !synthetic.contains(*repo))
         .map(str::to_string)
         .collect();
     known.sort();
@@ -666,6 +676,7 @@ mod tests {
             &cfg,
             &["managed".to_string(), "cloned".to_string()],
             &["cloned".to_string()],
+            &BTreeSet::new(),
             vec![],
             &cost,
             lookups(&pools, &links, &BTreeMap::new()),
@@ -694,6 +705,7 @@ mod tests {
             &cfg,
             &[],
             &["bn".to_string()],
+            &BTreeSet::new(),
             seeds,
             &cost,
             lookups(&BTreeMap::new(), &BTreeMap::new(), &BTreeMap::new()),
@@ -735,6 +747,7 @@ mod tests {
             &cfg,
             &["bn".to_string()],
             &["bn".to_string(), "app".to_string()],
+            &BTreeSet::new(),
             vec![],
             &CostView::default(),
             lookups(&pools, &BTreeMap::new(), &BTreeMap::new()),
@@ -815,6 +828,7 @@ mod tests {
             &cfg,
             &[],
             &["bn".to_string(), "app".to_string()],
+            &BTreeSet::new(),
             vec![],
             &CostView::default(),
             lookups(&BTreeMap::new(), &BTreeMap::new(), &setup),
@@ -828,18 +842,15 @@ mod tests {
 
     #[test]
     fn assemble_known_excludes_today() {
-        let seeds = vec![session(bn_core::today_agent::TODAY_REPO, "2026-08-06")];
         let cfg = cfg();
+        let synthetic = "virtual".to_string();
+        let synthetic_repos = BTreeSet::from([synthetic.clone()]);
+        let seeds = vec![session(&synthetic, "2026-08-06")];
         let v = assemble(
             &cfg,
-            &[
-                "bn".to_string(),
-                bn_core::today_agent::TODAY_REPO.to_string(),
-            ],
-            &[
-                "bn".to_string(),
-                bn_core::today_agent::TODAY_REPO.to_string(),
-            ],
+            &["bn".to_string(), synthetic.clone()],
+            &["bn".to_string(), synthetic.clone()],
+            &synthetic_repos,
             seeds,
             &CostView::default(),
             lookups(&BTreeMap::new(), &BTreeMap::new(), &BTreeMap::new()),
@@ -857,9 +868,9 @@ mod tests {
             .filter_map(Value::as_str)
             .collect();
         assert!(repos.contains(&"bn"));
-        assert!(!repos.contains(&bn_core::today_agent::TODAY_REPO));
+        assert!(!repos.contains(&synthetic.as_str()));
         assert!(known.contains(&"bn"));
-        assert!(!known.contains(&bn_core::today_agent::TODAY_REPO));
+        assert!(!known.contains(&synthetic.as_str()));
     }
 
     #[test]
@@ -870,6 +881,7 @@ mod tests {
             &cfg,
             &[],
             &["bn".to_string()],
+            &BTreeSet::new(),
             seeds,
             &CostView::default(),
             lookups(&BTreeMap::new(), &BTreeMap::new(), &BTreeMap::new()),
@@ -895,6 +907,7 @@ mod tests {
             &cfg,
             &[],
             &[],
+            &BTreeSet::new(),
             vec![idle, hot],
             &CostView::default(),
             lookups(&BTreeMap::new(), &BTreeMap::new(), &BTreeMap::new()),

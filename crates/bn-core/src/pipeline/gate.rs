@@ -170,6 +170,26 @@ pub fn judge(cfg: &Config, task: &Task, today: &str) -> GateDecision {
         return GateDecision::Admitted;
     }
 
+    // `smart:stuck` is terminal: the task is already waiting on a person, and re-judging cannot
+    // change that. Repeat the refusal from the recorded counter without touching the store.
+    //
+    // Without this short-circuit every re-offer of a stuck task re-stamps `tasks.txt`. A producer
+    // that keeps re-accepting the same suggestion therefore rewrites the task store forever —
+    // observed on a stuck dojo-quiz task at roughly one write every 23s and 3,899 accumulated
+    // tries, which also kept the notes repo permanently dirty and fed the commit-notes churn. The
+    // attention item is keyed and already raised, so repeating it buys nothing either.
+    if task.meta(SMART_KEY) == Some("stuck") {
+        return GateDecision::Refused {
+            task_id: id,
+            verdict,
+            tries: task
+                .meta(SMART_TRIES_KEY)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(MAX_IMPROVE_TRIES),
+            stuck: true,
+        };
+    }
+
     let tries = task
         .meta(SMART_TRIES_KEY)
         .and_then(|v| v.parse().ok())
@@ -464,6 +484,40 @@ mod tests {
             after.meta(SMART_TRIES_KEY),
             None,
             "no attempt may be counted"
+        );
+    }
+
+    /// A task already handed to a person is terminal. Re-judging it must not count another
+    /// attempt or rewrite the store: a producer that keeps re-offering the same stuck task would
+    /// otherwise rewrite `tasks.txt` on every pass forever (observed at ~1 write/23s and 3,899
+    /// accumulated tries on one dojo-quiz task), keeping the notes repo permanently dirty.
+    #[test]
+    fn a_stuck_task_is_not_regraded() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = cfg(dir.path());
+        let mut task = Task::new_todo("t9", "quiz · explain something", None, "", "web", TODAY);
+        task.set_meta("repo", "bn");
+        task.set_meta(SMART_KEY, "stuck");
+        task.set_meta(SMART_TRIES_KEY, "3");
+        task.set_meta(SMART_AT_KEY, "1787768779");
+        write_store(&cfg, std::slice::from_ref(&task));
+
+        let decision = judge(&cfg, &task, TODAY);
+        assert!(
+            matches!(decision, GateDecision::Refused { stuck: true, .. }),
+            "a stuck task still refuses admission"
+        );
+
+        let after = reload(&cfg, "t9");
+        assert_eq!(
+            after.meta(SMART_TRIES_KEY),
+            Some("3"),
+            "re-judging must not count another attempt"
+        );
+        assert_eq!(
+            after.meta(SMART_AT_KEY),
+            Some("1787768779"),
+            "re-judging must not restamp the task store"
         );
     }
 

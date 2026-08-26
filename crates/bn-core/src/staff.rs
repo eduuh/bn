@@ -851,11 +851,7 @@ pub fn route_card(cfg: &Config, card: &BriefingCard, today: &str) -> Result<Rout
             |e: crate::commands::CmdError| format!("item {i} ({}): {}", item.kind, e.message());
         match item.kind.as_str() {
             "attn" => {
-                let key = if matches!(card.agent.as_str(), "eye-daily" | "eye-weekly") {
-                    "staff:eye:monitoring-review".to_string()
-                } else {
-                    format!("staff:{}:{}:{i}", card.agent, card.date)
-                };
+                let key = format!("staff:{}:{}:{i}", card.agent, card.date);
                 // Backpressure (#269): shed stale info items to keep this source under its cap,
                 // then admit the item at a severity that honors the agent's daily urgent budget.
                 crate::staff_backpressure::enforce_source_cap(&source, today);

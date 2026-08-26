@@ -110,12 +110,6 @@ impl Config {
         self.daily_dir().join(format!("{date}.md"))
     }
 
-    /// `<personal_root>/<machine>/eye` — date-scoped protective-behaviour logs and monitoring
-    /// metadata for the opt-in eye-health coach. It survives worktree cleanup like `daily/`.
-    pub fn eye_dir(&self) -> PathBuf {
-        self.personal_root.join(self.machine()).join("eye")
-    }
-
     /// `<personal_root>/staff/feed` — the agent-staff briefing-card store
     /// (`feed/<YYYY-MM-DD>/<agent>.json` + rendered `.md`). **Person-scoped, not machine-scoped**
     /// (#270): the staff is one team that runs on a single home machine (see [`Config::staff_home`]),

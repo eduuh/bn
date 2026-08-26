@@ -310,7 +310,7 @@ fn plan_for(route: Route, guarded: bool, reasons: Vec<RouteReason>) -> RoutePlan
 /// rather than an error.
 pub fn resolve(cfg: &Config, task: &Task) -> RoutePlan {
     let doc = crate::task_doc::read(cfg, task);
-    let captured = crate::task_agents::CapturedContext::read(cfg, task);
+    let captured = crate::task_priority::CapturedContext::read(cfg, task);
     let labels: Vec<String> = task
         .meta("labels")
         .map(|raw| {
