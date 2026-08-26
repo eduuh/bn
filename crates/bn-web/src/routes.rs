@@ -266,31 +266,6 @@ fn health_envelope(state: &AppState) -> Envelope {
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use bn_core::resolver::Config;
-
-    #[test]
-    fn health_reports_the_live_bind_not_the_config_default() {
-        let state = AppState::with_live_addr(Config::load(), "127.0.0.1".to_string(), 7791);
-        let envelope = health_envelope(&state);
-        let web = envelope
-            .data
-            .get("web")
-            .and_then(serde_json::Value::as_object)
-            .expect("health envelope carries web metadata");
-
-        assert_eq!(
-            web.get("bind").and_then(serde_json::Value::as_str),
-            Some("127.0.0.1")
-        );
-        assert_eq!(
-            web.get("port").and_then(serde_json::Value::as_u64),
-            Some(7791)
-        );
-    }
-}
 
 /// Serve the embedded UI. An exact asset path wins; any other path falls back to `index.html` so
 /// client-side (SPA) routes resolve. `/api/*` never reaches here — those are real routes, so an
@@ -317,4 +292,30 @@ fn resolve_asset(path: &str) -> Option<(String, Vec<u8>)> {
     let file = assets::get(lookup).or_else(|| assets::get("index.html"))?;
     let mime = file.metadata.mimetype().to_string();
     Some((mime, file.data.into_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bn_core::resolver::Config;
+
+    #[test]
+    fn health_reports_the_live_bind_not_the_config_default() {
+        let state = AppState::with_live_addr(Config::load(), "127.0.0.1".to_string(), 7791);
+        let envelope = health_envelope(&state);
+        let web = envelope
+            .data
+            .get("web")
+            .and_then(serde_json::Value::as_object)
+            .expect("health envelope carries web metadata");
+
+        assert_eq!(
+            web.get("bind").and_then(serde_json::Value::as_str),
+            Some("127.0.0.1")
+        );
+        assert_eq!(
+            web.get("port").and_then(serde_json::Value::as_u64),
+            Some(7791)
+        );
+    }
 }

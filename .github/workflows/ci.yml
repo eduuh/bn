@@ -198,6 +198,9 @@ jobs:
       - name: Installer toolchain discovery
         run: bash scripts/check-install-toolchain.sh
 
+      - name: Nightly release worktree safety
+        run: sh scripts/check-nightly-release-worktree.sh
+
   # End-to-end: the real `bn` binary against a real tmux server, in a hermetic sandbox.
   #
   # This lane covers what unit tests structurally cannot — `bn dispatch` leasing a worktree,

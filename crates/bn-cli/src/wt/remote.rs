@@ -271,7 +271,7 @@ pub(crate) fn merged_pr_heads(remote: &Remote, branch: &str) -> Vec<String> {
 
 /// One of my open PRs on the hosting service — the source for `wt remote`. The `branch` is the PR's
 /// head/source branch, which is what becomes a local worktree.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub(crate) struct RemotePr {
     pub(crate) number: i64,
     pub(crate) title: String,
@@ -316,24 +316,32 @@ pub(crate) fn my_open_prs(remote: &Remote) -> Vec<RemotePr> {
 /// My open GitHub PRs for `slug` via `gh pr list --author @me`. `@me` is the gh-authenticated user,
 /// so this naturally scopes to PRs I opened — including ones pushed from another machine.
 pub(crate) fn gh_my_open_prs(slug: &str) -> Vec<RemotePr> {
-    let stdout = bn_core::runner::RealRunner
-        .gh(&[
-            "pr",
-            "list",
-            "--repo",
-            slug,
-            "--author",
-            "@me",
-            "--state",
-            "open",
-            "--limit",
-            "100",
-            "--json",
-            "number,title,headRefName,url",
-        ])
-        .ok_stdout()
-        .unwrap_or_default();
-    parse_gh_prs(&stdout)
+    let out = bn_core::runner::RealRunner.gh(&[
+        "pr",
+        "list",
+        "--repo",
+        slug,
+        "--author",
+        "@me",
+        "--state",
+        "open",
+        "--limit",
+        "100",
+        "--json",
+        "number,title,headRefName,url",
+    ]);
+    if !out.success {
+        let detail = out.stderr.trim();
+        if detail.is_empty() {
+            eprintln!("{YELLOW}remote PR: GitHub query failed — run `gh auth status`{NC}");
+        } else {
+            eprintln!(
+                "{YELLOW}remote PR: GitHub query failed: {detail} — run `gh auth status`{NC}"
+            );
+        }
+        return Vec::new();
+    }
+    parse_gh_prs(&out.stdout)
 }
 
 /// Parse `gh pr list --json number,title,headRefName,url` output into [`RemotePr`]s. Pure (testable).
@@ -370,7 +378,7 @@ pub(crate) fn ado_my_open_prs(t: AdoTarget<'_>) -> Vec<RemotePr> {
     let org_url = format!("https://dev.azure.com/{org}");
     let Some(creator) = ado_creator(&org_url) else {
         eprintln!(
-            "{YELLOW}wt remote: couldn't resolve your Azure DevOps identity — set \
+            "{YELLOW}remote PR: couldn't resolve your Azure DevOps identity — set \
              BN_ADO_CREATOR=<identity-guid> or run `az login`{NC}"
         );
         return Vec::new();
@@ -395,13 +403,13 @@ pub(crate) fn ado_my_open_prs(t: AdoTarget<'_>) -> Vec<RemotePr> {
         Ok(o) if o.status.success() => parse_ado_prs(&String::from_utf8_lossy(&o.stdout), t),
         Ok(o) => {
             eprintln!(
-                "{YELLOW}wt remote: Azure DevOps PR query failed: {}{NC}",
+                "{YELLOW}remote PR: Azure DevOps query failed: {}{NC}",
                 String::from_utf8_lossy(&o.stderr).trim()
             );
             Vec::new()
         }
         Err(e) => {
-            eprintln!("{YELLOW}wt remote: couldn't run `az rest`: {e}{NC}");
+            eprintln!("{YELLOW}remote PR: couldn't run `az rest`: {e}{NC}");
             Vec::new()
         }
     }
@@ -453,6 +461,29 @@ pub(crate) fn parse_ado_prs(json: &str, t: AdoTarget<'_>) -> Vec<RemotePr> {
             })
         })
         .collect()
+}
+
+/// Make an open PR's source branch available in the bare repository without deciding where it
+/// should be checked out. ADO limited-ref repositories need the branch favourited before fetch;
+/// GitHub and ordinary ADO repositories go straight to the exact branch refspec.
+pub(crate) fn prepare_remote_pr_branch(remote: &Remote, bare_s: &str, pr: &RemotePr) -> bool {
+    if matches!(remote, Remote::Ado { .. }) && !favourite_branch(remote, &pr.branch) {
+        eprintln!(
+            "{YELLOW}remote PR: could not favourite {} — fetch may fail on a limited-ref repo{NC}",
+            pr.branch
+        );
+    }
+
+    println!("{BLUE}Fetching PR #{} ({})...{NC}", pr.number, pr.branch);
+    if fetch_branch(bare_s, &pr.branch) {
+        true
+    } else {
+        eprintln!(
+            "{RED}remote PR: failed to fetch {} for PR #{}{NC}",
+            pr.branch, pr.number
+        );
+        false
+    }
 }
 
 /// My Azure DevOps identity GUID, used to filter PRs (`searchCriteria.creatorId`): `BN_ADO_CREATOR`

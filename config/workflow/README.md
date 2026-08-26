@@ -15,6 +15,13 @@ there (`bn tat --pick-stage list|preview|kill` are the internal fzf callbacks), 
 `bn tat --root win` scoping to the Windows-filesystem repos. It replaced the
 cross-platform bash `bin/tat`/`bin/tatw` + `lib/codespaces.sh` at migration.
 
+Inside a bare repository, the same picker lists live windows, local worktrees, pool
+slots, and **your open remote PRs that do not yet exist on this laptop**. Remote PR
+discovery is cached briefly; selecting a `PR` row fetches its source branch and
+opens it through the normal worktree path (a warm lease for pooled repositories,
+otherwise a conventional worktree). `bn wt remote` remains the batch and
+non-interactive equivalent.
+
 A codespace is treated as a remote worktree of the same `session = repo`,
 `window = branch` model: it shows up in the picker (inside its repo's worktree list
 if cloned locally, else as a top-level `(codespace)` row), and selecting it opens a

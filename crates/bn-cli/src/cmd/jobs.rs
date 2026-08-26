@@ -131,98 +131,6 @@ fn remote_ref_state(root: &std::path::Path, remote: &str, merge_ref: &str) -> Re
     }
 }
 
-#[cfg(test)]
-mod commit_notes_upstream_tests {
-    use super::*;
-
-    fn git_ok(dir: &std::path::Path, args: &[&str]) -> bool {
-        crate::git::git_command(args)
-            .current_dir(dir)
-            .status()
-            .expect("run git")
-            .success()
-    }
-
-    fn git_out(dir: &std::path::Path, args: &[&str]) -> String {
-        let output = crate::git::git_command(args)
-            .current_dir(dir)
-            .output()
-            .expect("run git");
-        assert!(
-            output.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8(output.stdout)
-            .expect("utf8 git output")
-            .trim()
-            .to_string()
-    }
-
-    #[test]
-    fn deleted_and_pruned_upstream_is_recreated() {
-        let _env = bn_core::test_support::env_lock();
-        let temp = tempfile::tempdir().expect("tempdir");
-        let remote = temp.path().join("remote.git");
-        let notes = temp.path().join("notes");
-        let remote_s = remote.to_string_lossy();
-        let notes_s = notes.to_string_lossy();
-
-        assert!(git_ok(
-            temp.path(),
-            &["init", "--quiet", "--bare", remote_s.as_ref()]
-        ));
-        assert!(git_ok(
-            temp.path(),
-            &["init", "--quiet", "-b", "topic", notes_s.as_ref()]
-        ));
-        assert!(git_ok(&notes, &["config", "user.name", "bn test"]));
-        assert!(git_ok(
-            &notes,
-            &["config", "user.email", "bn-test@example.invalid"]
-        ));
-        std::fs::write(notes.join("note.md"), "# Notes\n\nfirst\n").expect("seed note");
-        assert!(git_ok(&notes, &["add", "note.md"]));
-        assert!(git_ok(&notes, &["commit", "--quiet", "-m", "seed"]));
-        assert!(git_ok(
-            &notes,
-            &["remote", "add", "origin", remote_s.as_ref()]
-        ));
-        assert!(git_ok(&notes, &["push", "--quiet", "-u", "origin", "topic"]));
-
-        assert!(git_ok(
-            &notes,
-            &["push", "--quiet", "origin", "--delete", "topic"]
-        ));
-        assert!(git_ok(&notes, &["fetch", "--quiet", "--prune", "origin"]));
-        assert!(
-            !git_ok(&notes, &["rev-parse", "--verify", "@{u}"]),
-            "the remote-tracking ref must be pruned for this regression"
-        );
-
-        std::fs::write(notes.join("note.md"), "# Notes\n\nsecond\n").expect("change note");
-        let cfg = Config {
-            personal_root: notes.clone(),
-            work_root: temp.path().join("missing"),
-            hostname: "test-host".to_string(),
-            ..Default::default()
-        };
-
-        assert_eq!(job_commit_notes(&cfg, None), 0);
-        assert_eq!(
-            git_out(&notes, &["rev-parse", "HEAD"]),
-            git_out(
-                temp.path(),
-                &[
-                    "--git-dir",
-                    remote_s.as_ref(),
-                    "rev-parse",
-                    "refs/heads/topic"
-                ]
-            )
-        );
-    }
-}
 
 /// Whether a dirty tree holds anything a human would want to see in the notes history.
 ///
@@ -2118,5 +2026,98 @@ pub(crate) fn job_ensure_tmux(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     } else {
         eprintln!("ensure-tmux: failed to start tmux session '{session}'");
         1
+    }
+}
+
+#[cfg(test)]
+mod commit_notes_upstream_tests {
+    use super::*;
+
+    fn git_ok(dir: &std::path::Path, args: &[&str]) -> bool {
+        crate::git::git_command(args)
+            .current_dir(dir)
+            .status()
+            .expect("run git")
+            .success()
+    }
+
+    fn git_out(dir: &std::path::Path, args: &[&str]) -> String {
+        let output = crate::git::git_command(args)
+            .current_dir(dir)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("utf8 git output")
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn deleted_and_pruned_upstream_is_recreated() {
+        let _env = bn_core::test_support::env_lock();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let remote = temp.path().join("remote.git");
+        let notes = temp.path().join("notes");
+        let remote_s = remote.to_string_lossy();
+        let notes_s = notes.to_string_lossy();
+
+        assert!(git_ok(
+            temp.path(),
+            &["init", "--quiet", "--bare", remote_s.as_ref()]
+        ));
+        assert!(git_ok(
+            temp.path(),
+            &["init", "--quiet", "-b", "topic", notes_s.as_ref()]
+        ));
+        assert!(git_ok(&notes, &["config", "user.name", "bn test"]));
+        assert!(git_ok(
+            &notes,
+            &["config", "user.email", "bn-test@example.invalid"]
+        ));
+        std::fs::write(notes.join("note.md"), "# Notes\n\nfirst\n").expect("seed note");
+        assert!(git_ok(&notes, &["add", "note.md"]));
+        assert!(git_ok(&notes, &["commit", "--quiet", "-m", "seed"]));
+        assert!(git_ok(
+            &notes,
+            &["remote", "add", "origin", remote_s.as_ref()]
+        ));
+        assert!(git_ok(&notes, &["push", "--quiet", "-u", "origin", "topic"]));
+
+        assert!(git_ok(
+            &notes,
+            &["push", "--quiet", "origin", "--delete", "topic"]
+        ));
+        assert!(git_ok(&notes, &["fetch", "--quiet", "--prune", "origin"]));
+        assert!(
+            !git_ok(&notes, &["rev-parse", "--verify", "@{u}"]),
+            "the remote-tracking ref must be pruned for this regression"
+        );
+
+        std::fs::write(notes.join("note.md"), "# Notes\n\nsecond\n").expect("change note");
+        let cfg = Config {
+            personal_root: notes.clone(),
+            work_root: temp.path().join("missing"),
+            hostname: "test-host".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(job_commit_notes(&cfg, None), 0);
+        assert_eq!(
+            git_out(&notes, &["rev-parse", "HEAD"]),
+            git_out(
+                temp.path(),
+                &[
+                    "--git-dir",
+                    remote_s.as_ref(),
+                    "rev-parse",
+                    "refs/heads/topic"
+                ]
+            )
+        );
     }
 }

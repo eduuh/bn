@@ -151,7 +151,7 @@ pub fn improve_packet(
     known_repos: &[String],
 ) -> String {
     let id = task.id().unwrap_or("?");
-    serde_json::to_string_pretty(&serde_json::json!({
+    let packet = serde_json::json!({
         "task": {
             "id": id,
             "summary": task.summary(),
@@ -168,8 +168,10 @@ pub fn improve_packet(
         },
         "verdict": verdict,
         "steer": steer.map(str::trim).filter(|value| !value.is_empty()),
-    }))
-    .expect("task packet is JSON-serializable")
+    });
+    // Pretty-printing an in-memory `Value` cannot realistically fail, but a packet is worth more
+    // than a panic: fall back to the compact form, which is still valid JSON for the workflow.
+    serde_json::to_string_pretty(&packet).unwrap_or_else(|_| packet.to_string())
 }
 
 /// Serialize a deterministic ranked task window as data for a Markdown-defined workflow.
@@ -189,12 +191,12 @@ pub fn triage_packet(ranked: &[&Task], today: &str, capacity_hint: Option<&str>)
             })
         })
         .collect();
-    serde_json::to_string_pretty(&serde_json::json!({
+    let packet = serde_json::json!({
         "date": today,
         "capacity": capacity_hint,
         "shortlist": shortlist,
-    }))
-    .expect("triage packet is JSON-serializable")
+    });
+    serde_json::to_string_pretty(&packet).unwrap_or_else(|_| packet.to_string())
 }
 
 #[cfg(test)]

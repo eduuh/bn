@@ -4,7 +4,7 @@
 
 [[cron]]
 job = "watch"
-on_calendar = "*:0/2"
+on_calendar = "*:0/5"
 persistent = false
 randomized_delay = "20s"
 description = "bn — wake reactor and sole owner of attention toasts: ONE batched toast for NEW blocking events (agents waiting/blocked/stuck/failed, urgent attention) via the notification policy gate; completions and warn items stay pull-only; quiet otherwise"
@@ -51,10 +51,10 @@ description = "bn — 10-minute tick: auto-review-trigger (prepare the next queu
 
 [[cron]]
 job = "agent-scheduler"
-on_calendar = "*:0/1"
+on_calendar = "*:0/5"
 persistent = true
 network = true
-description = "bn — common Markdown agent scheduler: every minute strictly load config/agents, run each due agent by name, catch up missed slots, and back off failed attempts per retry_after"
+description = "bn — common Markdown agent scheduler: every 5 minutes strictly load config/agents, run each due agent by name, catch up missed slots, and back off failed attempts per retry_after"
 
 [[cron]]
 job = "tick-15m"

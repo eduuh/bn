@@ -39,7 +39,7 @@ The left pill shows the session name and **flips to reverse-video `PREFIX`** the
 
 | Key | Action |
 |-----|--------|
-| `C-o` | Project picker (fzf over `~/projects`). Creates or switches session. |
+| `C-o` | Project picker (fzf over `~/projects`). Creates or switches session. A bare repo's sub-picker includes windows, local worktrees, pool slots, and your open PRs missing from this laptop; selecting a `PR` row fetches and opens its branch. |
 | `t` | Kill current session, switch to next. |
 | `.` | Rename current session. |
 | `d` | Detach client (built-in). |

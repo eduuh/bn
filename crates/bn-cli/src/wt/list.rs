@@ -430,21 +430,7 @@ pub(crate) fn create_remote_worktree(
     let wt_path = worktree_dir.join(repo).join(&sanitized);
     let _ = std::fs::create_dir_all(worktree_dir.join(repo));
 
-    // ADO advertises only favourited refs on limited-ref repos, so an unfavourited branch is
-    // invisible to fetch. Favourite first (no-op / harmless elsewhere) — mirrors the review path.
-    if matches!(remote, Remote::Ado { .. }) && !favourite_branch(remote, &pr.branch) {
-        eprintln!(
-            "{YELLOW}wt remote: could not favourite {} — fetch may fail on a limited-ref repo{NC}",
-            pr.branch
-        );
-    }
-
-    println!("{BLUE}Fetching PR #{} ({})...{NC}", pr.number, pr.branch);
-    if !fetch_branch(bare_s, &pr.branch) {
-        eprintln!(
-            "{RED}wt remote: failed to fetch {} for PR #{}{NC}",
-            pr.branch, pr.number
-        );
+    if !prepare_remote_pr_branch(remote, bare_s, pr) {
         return false;
     }
     let wt_s = wt_path.to_string_lossy().to_string();
@@ -480,5 +466,3 @@ pub(crate) fn cmd_prune(cfg: &Config) -> bool {
     println!("{GREEN}Pruned stale worktree references{NC}");
     true
 }
-
-

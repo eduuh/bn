@@ -145,6 +145,35 @@ fn unshadowed(mut fields: Map<String, Value>) -> Map<String, Value> {
     fields
 }
 
+/// A stable, filesystem-safe key for `path`, so a symlinked and a literal spelling of the same log
+/// contend on one lock. (This machine reaches the notes repo through a symlink.)
+fn log_lock_key(path: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    canon.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
+
+/// Serialize concurrent appends to `path`, returning a guard held for the duration of the write.
+///
+/// [`append_event_at`] keeps its payload to a single `write` because an O_APPEND write is atomic
+/// per call — but that guarantee comes from the *filesystem*, and it does not hold on the 9p mount
+/// WSL uses for `/mnt/c`, which is where the notes repo lives on this host. Concurrent writers
+/// there tore records apart: 276 lines were found glued together or truncated mid-record, and
+/// `read_events_at` silently skips unparseable lines, so the loss was invisible.
+///
+/// The lock file is deliberately kept on **local** disk rather than beside the log: a lock on the
+/// same 9p mount would inherit the very semantics being compensated for. Best-effort by design — if
+/// the lock cannot be taken we still write, which is never worse than the unlocked behaviour.
+fn lock_log(path: &Path) -> Option<std::fs::File> {
+    let dir = std::env::temp_dir().join("bn-log-locks");
+    std::fs::create_dir_all(&dir).ok()?;
+    let f = std::fs::File::create(dir.join(format!("{}.lock", log_lock_key(path)))).ok()?;
+    f.lock().ok()?;
+    Some(f)
+}
+
 /// Append an event stamped at `ts` (epoch secs) to a specific log file, creating its parent
 /// dir on demand. The location-agnostic primitive: the machine-local cron log writes here via
 /// [`append_at`]; the synced productivity log writes here via [`append_metric_at`].
@@ -162,20 +191,25 @@ pub fn append_event_at(
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
+    // Held until this function returns, so no other bn process can interleave a write.
+    let guard = lock_log(path);
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)?;
     // ONE write, payload and newline together. `writeln!` issues them as separate `write` calls,
     // and these logs are appended to concurrently by unrelated `bn` processes — every note command
-    // writes a metric — so a split write lets two lines interleave into one corrupt line. An
-    // O_APPEND write is atomic per call on the platforms bn runs on, so keeping it to a single call
-    // is what makes the log parseable. (`read_events_at` skips unparseable lines, which is exactly
-    // why this went unnoticed: the corruption showed up as quietly missing data.)
+    // writes a metric — so a split write lets two lines interleave into one corrupt line. A single
+    // O_APPEND write is atomic on a local filesystem; [`lock_log`] is what extends that guarantee
+    // to the 9p mounts where it does not hold. (`read_events_at` skips unparseable lines, which is
+    // exactly why this went unnoticed: the corruption showed up as quietly missing data.)
     let mut line = serde_json::to_string(&ev)?;
     line.push('\n');
-    f.write_all(line.as_bytes())?;
-    Ok(())
+    let res = f.write_all(line.as_bytes());
+    if let Some(g) = guard {
+        let _ = g.unlock();
+    }
+    res
 }
 
 /// Like [`append_event_at`], but `fsync`s the file before returning (`sync_all`) — a durable

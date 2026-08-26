@@ -30,8 +30,8 @@
 # moved is a no-op. The stamp is written ONLY after a successful upload, so a failed build or a
 # red test suite retries on the next tick.
 #
-# Shares `main`'s target/ with self-update's install.sh build at the same 0/6:00 slot. Cargo's
-# target-dir lock makes that safe — the later build waits rather than corrupting the other.
+# Builds in a dedicated `_release-main` worktree, including its own target/, so release preparation
+# never resets a user checkout or contends with self-update's build in the ordinary main worktree.
 #
 # Queued, not run inline: a cron `bn run` hands every job to the machine-wide queue
 # (cron.rs -> queue_producers::maybe_capture_job), and `nightly-release` is listed in
@@ -48,7 +48,7 @@
 #   BN_NIGHTLY_FORCE      1 to rebuild + republish the same commit
 #   BN_NIGHTLY_DRYRUN     1 to build + test + package, but never touch git/GitHub
 #   BN_NIGHTLY_SKIP_TESTS 1 to bypass the test gate (manual runs only — never for cron)
-#   BN_MAIN_WORKTREE      override the resolved bn main worktree
+#   BN_MAIN_WORKTREE      explicit checkout override (used by CI; otherwise `_release-main`)
 #   BN_SKIP_UI            1 to skip the bn-web UI build (embeds whatever is in ui/dist already)
 set -u
 
@@ -127,37 +127,13 @@ if [ "${BN_NIGHTLY_TMUX:-1}" = "1" ] && [ "${BN_NIGHTLY_INNER:-0}" != "1" ] &&
   exit "$rc"
 fi
 
-# Resolve bn's main worktree the same way self-update does: the install anchor
-# (~/.config/bn/repo, a symlink to the checkout install.sh ran from) → its main worktree, then
-# $BN_MAIN_WORKTREE, then the worktree-dir convention. A cron has an arbitrary cwd, so none of
-# this may assume it was launched from the repo.
-#
-# Pick the worktree actually checked out on `main` rather than the first entry `worktree list`
-# prints: in a bare-repo layout (the one this machine uses) that first entry is the bare
-# `bn.git` itself, which has no tree to build. Falls back to the `/bn/main` path convention.
-resolve_main_worktree() {
-  anchor=$(cd "$HOME/.config/bn/repo" 2>/dev/null && pwd -P) || anchor=""
-  if [ -n "$anchor" ]; then
-    wt=$(git -C "$anchor" worktree list --porcelain 2>/dev/null | awk '
-      /^worktree / { path = substr($0, 10) }
-      /^branch refs\/heads\/main$/ { print path; exit }
-    ')
-    [ -n "$wt" ] || wt=$(git -C "$anchor" worktree list --porcelain 2>/dev/null |
-      sed -n 's/^worktree //p' | grep '/bn/main$' | head -n1)
-    if [ -n "$wt" ] && [ -d "$wt" ]; then
-      printf '%s\n' "$wt"
-      return 0
-    fi
-  fi
-  if [ -n "${BN_MAIN_WORKTREE:-}" ] && [ -d "$BN_MAIN_WORKTREE" ]; then
-    printf '%s\n' "$BN_MAIN_WORKTREE"
-    return 0
-  fi
-  printf '%s\n' "$HOME/projects/worktree/bn/main"
-}
-
-repo=$(resolve_main_worktree)
-[ -e "$repo/.git" ] || die "nightly-release: bn main worktree not found ($repo)"
+# Workstation releases own a dedicated checkout. It may be fast-forwarded or reset while detached
+# only after proving it has no tracked changes; ordinary user worktrees are never selected or
+# modified. CI's explicit BN_MAIN_WORKTREE remains immutable and must match GITHUB_SHA.
+jobdir=$(CDPATH= cd -- "$(dirname "$0")" && pwd -P)
+. "$jobdir/nightly-release-worktree" ||
+  die "nightly-release: cannot load checkout lifecycle helper"
+repo=$(bn_nightly_prepare_worktree) || exit 1
 
 # Target triple and toolchain both come from the installer's own helpers, so the asset names can
 # never drift from what download_release() looks for and the build uses the same cargo install.sh
@@ -167,36 +143,8 @@ bn_install_activate_cargo "$repo" ||
   die "nightly-release: no usable Cargo toolchain (rustup shims broken? try 'rustup-init' or repair ~/.cargo/bin)"
 target=$(bn_install_detect_target) || die "nightly-release: unsupported platform for a release build"
 
-# --- pin to a clean, up-to-date main -------------------------------------------------------
-# A nightly must be reproducible from a commit that exists on the remote, so refuse anything but
-# a clean main sitting exactly at origin/main. Publishing uncommitted or diverged local work
-# under a tag other people can download is the one failure this job must never have.
-branch=$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null) ||
-  die "nightly-release: cannot read HEAD in $repo"
-if [ "$branch" != "main" ]; then
-  # actions/checkout intentionally leaves the pushed commit detached. The workflow is scoped to
-  # pushes to main; accept only that exact immutable SHA, while keeping workstation runs strict.
-  if [ "${GITHUB_ACTIONS:-false}" != "true" ] || [ "$branch" != "HEAD" ] ||
-    [ -z "${GITHUB_SHA:-}" ] ||
-    [ "$(git -C "$repo" rev-parse HEAD 2>/dev/null)" != "$GITHUB_SHA" ]; then
-    die "nightly-release: $repo is on '$branch', not main — skipping"
-  fi
-fi
-
-# Tracked changes only: untracked build/test leftovers (ui/dist, ui/test-results) are normal in a
-# worktree that builds, and none of them reach the binaries. A modified *tracked* file does.
-if [ -n "$(git -C "$repo" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
-  die "nightly-release: $repo has uncommitted changes — refusing to publish an unreproducible build"
-fi
-
-git -C "$repo" fetch --quiet origin main 2>/dev/null || log "warning: git fetch failed — using the local main"
-git -C "$repo" merge --ff-only --quiet origin/main 2>/dev/null || true
-
+# --- pin to the prepared latest origin/main ------------------------------------------------
 head=$(git -C "$repo" rev-parse HEAD 2>/dev/null) || die "nightly-release: cannot resolve HEAD"
-remote_head=$(git -C "$repo" rev-parse --verify origin/main 2>/dev/null || echo "")
-if [ -n "$remote_head" ] && [ "$head" != "$remote_head" ]; then
-  die "nightly-release: $repo main ($(git -C "$repo" rev-parse --short HEAD)) is not at origin/main — skipping"
-fi
 short=$(git -C "$repo" rev-parse --short HEAD)
 
 # --- stamp: skip a commit already published ------------------------------------------------

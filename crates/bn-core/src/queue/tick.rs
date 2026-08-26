@@ -377,8 +377,8 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
         }
         if crate::queue::classify::classify(entry).mode
             == crate::queue::classify::QueueMode::Opportunistic
-            && !(inputs.mandatory_warming
-                && crate::queue::classify::is_mandatory_pool_warming(entry))
+            && (!inputs.mandatory_warming
+                || !crate::queue::classify::is_mandatory_pool_warming(entry))
             && !inputs.presence.idle
             && !crate::queue::window::allows_opportunistic(entry, inputs.windows, inputs.now)
         {

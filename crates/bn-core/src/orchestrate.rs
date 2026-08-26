@@ -2369,34 +2369,6 @@ pub fn run_files_in(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-#[cfg(test)]
-mod run_file_tests {
-    use super::*;
-
-    #[test]
-    fn run_files_exclude_controller_owner_leases() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        for name in [
-            "orchestrate-zeta.json",
-            "orchestrate-alpha.json",
-            "orchestrate-alpha.owner.json",
-            "orchestrate-alpha.json.tmp",
-            "orchestrate.json",
-        ] {
-            std::fs::write(dir.path().join(name), "{}").expect("write fixture");
-        }
-
-        let names = run_files_in(dir.path())
-            .into_iter()
-            .filter_map(|path| path.file_name()?.to_str().map(str::to_string))
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            names,
-            vec!["orchestrate-alpha.json", "orchestrate-zeta.json"]
-        );
-    }
-}
 
 /// Every per-run state file in the state dir.
 pub fn run_paths() -> Vec<PathBuf> {
@@ -2486,4 +2458,33 @@ pub fn migrate_legacy_state_in(dir: &Path) -> Option<(String, PathBuf)> {
 /// [`migrate_legacy_state_in`] against the state dir.
 pub fn migrate_legacy_state() -> Option<(String, PathBuf)> {
     migrate_legacy_state_in(&crate::resolver::state_dir())
+}
+
+#[cfg(test)]
+mod run_file_tests {
+    use super::*;
+
+    #[test]
+    fn run_files_exclude_controller_owner_leases() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for name in [
+            "orchestrate-zeta.json",
+            "orchestrate-alpha.json",
+            "orchestrate-alpha.owner.json",
+            "orchestrate-alpha.json.tmp",
+            "orchestrate.json",
+        ] {
+            std::fs::write(dir.path().join(name), "{}").expect("write fixture");
+        }
+
+        let names = run_files_in(dir.path())
+            .into_iter()
+            .filter_map(|path| path.file_name()?.to_str().map(str::to_string))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec!["orchestrate-alpha.json", "orchestrate-zeta.json"]
+        );
+    }
 }

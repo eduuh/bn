@@ -213,6 +213,9 @@ use exec::{run_custom_command, run_script};
 #[path = "cron/scheduler.rs"]
 mod scheduler;
 pub(crate) use scheduler::*;
+#[path = "cron/schedule.rs"]
+mod schedule;
+pub(crate) use schedule::schedule_text;
 #[path = "cron/drift.rs"]
 mod drift;
 pub(crate) use drift::cron_drift;
@@ -245,7 +248,17 @@ pub(crate) fn emit_cron_running() {
 pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json: bool) {
     let scripts = resolver::list_jobs(cfg, ctx);
     let runs = bn_core::events::cron_status();
+    let systemd = have_systemctl();
+    let launchd_on = !systemd && launchd::have_launchctl();
     let registered = timers::registered();
+    let launchd_registered: std::collections::HashSet<String> = if launchd_on {
+        launchd::registered()
+            .into_iter()
+            .map(|agent| agent.job)
+            .collect()
+    } else {
+        std::collections::HashSet::new()
+    };
     let wintasks = winsched::registered();
     let now = bn_core::util::now_epoch_secs();
     let catalog = bn_core::agents::discover(cfg, ctx)
@@ -302,6 +315,24 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
             .or_else(|| run(name).map(|r| r.scope.as_str())))
             .unwrap_or("?")
     };
+    let schedule = |name: &str| {
+        let launchd_loaded = if launchd_on && launchd_registered.contains(name) {
+            declared
+                .iter()
+                .find(|cron| cron.entry.job == *name)
+                .map(|cron| launchd::is_loaded(&cron_gen::launchd_label(cron)))
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        schedule_text(
+            now,
+            timer(name),
+            wintask(name),
+            launchd_on && launchd_registered.contains(name),
+            launchd_loaded,
+        )
+    };
 
     if as_json {
         let rows: Vec<serde_json::Value> = names
@@ -310,6 +341,15 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
                 let t = timer(name);
                 let w = wintask(name);
                 let r = run(name);
+                let launchd_loaded = if launchd_on && launchd_registered.contains(name.as_str()) {
+                    declared
+                        .iter()
+                        .find(|cron| cron.entry.job == *name)
+                        .map(|cron| launchd::is_loaded(&cron_gen::launchd_label(cron)))
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
                 let agents: &[bn_core::crons::AgentScheduleView] = if name == "agent-scheduler" {
                     &agent_views
                 } else {
@@ -319,6 +359,7 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
                 let (scheduler, next_run) = match (t, w) {
                     (Some(t), _) => (Some("systemd"), t.next_epoch),
                     (None, Some(w)) => (Some("windows"), w.next_epoch),
+                    (None, None) if launchd_loaded => (Some("launchd"), None),
                     (None, None) => (None, None),
                 };
                 serde_json::json!({
@@ -389,28 +430,7 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
     }
     for name in &names {
         // systemd timer wins over a Windows task if somehow both schedule a job.
-        let schedule = if let Some(t) = timer(name) {
-            match t.next_epoch {
-                Some(next) => format!("systemd · next {}", until(next - now)),
-                None => "systemd · scheduled".to_string(),
-            }
-        } else if let Some(w) = wintask(name) {
-            if w.disabled() {
-                "windows · DISABLED".to_string()
-            } else {
-                let base = match w.next_epoch {
-                    Some(next) => format!("windows · next {}", until(next - now)),
-                    None => "windows · scheduled".to_string(),
-                };
-                if w.last_failed() {
-                    format!("{base} · last FAIL ({})", w.last_result.unwrap_or(-1))
-                } else {
-                    base
-                }
-            }
-        } else {
-            "not scheduled".to_string()
-        };
+        let schedule = schedule(name);
         let orphan = if (timer(name).is_some() || wintask(name).is_some()) && script(name).is_none()
         {
             if native_job(name).is_some() || catalog.find(name).is_some() {

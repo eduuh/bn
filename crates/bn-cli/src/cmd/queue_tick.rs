@@ -820,26 +820,6 @@ fn run_express_with_timeout(
     }
 }
 
-#[cfg(test)]
-mod express_tests {
-    use super::*;
-
-    #[test]
-    fn a_hung_express_job_ends_instead_of_holding_the_tick_lock_forever() {
-        let mut cmd = std::process::Command::new("/bin/sh");
-        cmd.args(["-c", "sleep 60"]);
-
-        let started = std::time::Instant::now();
-        let outcome =
-            run_express_with_timeout(cmd, "test job", std::time::Duration::from_secs(1));
-
-        assert!(matches!(outcome, Executed::Finished { code: 124 }));
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(30),
-            "express work must end at its deadline"
-        );
-    }
-}
 
 /// `bn queue finish` — the callback heavy work makes when it is done.
 pub(crate) fn emit_finish(repo: &str, id: &str, exit_code: i32, json: bool) {
@@ -920,4 +900,25 @@ pub(crate) fn observe_nodes(cfg: &Config, now: i64) -> Vec<bn_core::hosts::NodeR
     registry.refreshed_at = now;
     let _ = registry.save();
     registry.live(now, cfg.queue.heartbeat_ttl())
+}
+
+#[cfg(test)]
+mod express_tests {
+    use super::*;
+
+    #[test]
+    fn a_hung_express_job_ends_instead_of_holding_the_tick_lock_forever() {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args(["-c", "sleep 60"]);
+
+        let started = std::time::Instant::now();
+        let outcome =
+            run_express_with_timeout(cmd, "test job", std::time::Duration::from_secs(1));
+
+        assert!(matches!(outcome, Executed::Finished { code: 124 }));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "express work must end at its deadline"
+        );
+    }
 }
