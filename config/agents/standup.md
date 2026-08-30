@@ -1,5 +1,6 @@
 ---
 name: standup
+requires_repo: bn
 kind: staff
 on_calendar: "Mon..Fri *-*-* 08:30:00"
 network: false

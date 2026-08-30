@@ -453,10 +453,9 @@ fn window_count(session: &str) -> Option<usize> {
 /// Close the window at `target`, killing the process tree under it first (the same two-step
 /// `bn control stop` uses — a bare `kill-window` can leave orphaned harness children behind).
 ///
-/// If the agent's window is the **last** one in its session, a plain shell window is opened first.
-/// tmux destroys a session when its final window closes, and `planning` is a *persistent* session:
-/// tmux.conf creates it on server start and prefix `C-p` expects it to be there. Stopping today's
-/// agent must not also take away the place you plan from.
+/// If the agent's window is the **last** one in its repository session, a plain shell window is
+/// opened first. tmux destroys a session when its final window closes; stopping Today's agent must
+/// not also close the repository session around it.
 fn kill_window(target: &str, fallback_cwd: &str) -> bool {
     let exact = format!("={target}");
     let Some(window_id) = proc::tmux(&["display-message", "-p", "-t", &exact, "#{window_id}"])
@@ -501,20 +500,17 @@ pub(crate) fn start_hosted_agent(
     let definition = catalog
         .require("today-agent")
         .map_err(|error| error.to_string())?;
-    let host_repo = definition
-        .host_repo
-        .as_deref()
-        .ok_or("today-agent.md requires host_repo")?;
-    let host_session = definition
-        .host_session
-        .as_deref()
-        .ok_or("today-agent.md requires host_session")?;
+    if !definition.repo_available_here(cfg) {
+        let repo = definition.requires_repo.as_deref().unwrap_or_default();
+        return Err(format!(
+            "today-agent requires repository '{repo}' to be registered and available on '{}'",
+            cfg.machine()
+        ));
+    }
     let host_window = definition
         .host_window
         .as_deref()
         .ok_or("today-agent.md requires host_window")?;
-    let target = format!("{host_repo}:{date}");
-    let tmux_target = format!("{host_session}:{host_window}");
 
     // Already up? Trust the window, not the record: a record whose window is gone is stale, and
     // re-launching over a live one would give the day two agents and an ambiguous steer channel.
@@ -549,17 +545,20 @@ pub(crate) fn start_hosted_agent(
         return Err("no reachable tmux server".to_string());
     }
 
-    // The agent is rooted where the planning session is rooted (tmux.conf uses the personal-notes
-    // repo), so dropping into its window lands you in the same place your own planning does.
+    // Today's agent is rooted in the configured personal notes checkout. Require that directory to
+    // resolve to a real repo/branch, then use that identity for its note, lease, and tmux session.
     let cwd = cfg.personal_root.clone();
     if !cwd.is_dir() {
         return Err(format!("planning root {} does not exist", cwd.display()));
     }
-
-    let ctx = Resolved {
-        repo: host_repo.to_string(),
-        branch: date.clone(),
-    };
+    let ctx = resolver::resolve(cfg, &cwd).map_err(|_| {
+        format!(
+            "today agent requires a git worktree, but {} is not on a repository branch",
+            cwd.display()
+        )
+    })?;
+    let target = format!("{}:{}", ctx.repo, ctx.branch);
+    let tmux_target = format!("{}:{host_window}", ctx.repo);
     let lookback = lookback_days.unwrap_or(today::DEFAULT_LOOKBACK_DAYS);
     let packet = today::gather_packet_json(&date, lookback);
     let seed = today::build_seed(definition, &date, &packet)
@@ -591,14 +590,14 @@ pub(crate) fn start_hosted_agent(
     );
 
     let opened = wt::open_worktree_window_cmd_named(
-        host_repo,
-        &date,
+        &ctx.repo,
+        &ctx.branch,
         host_window,
         &cwd,
         false,
         Some(&cmd),
         true,
-        Some(host_session),
+        None,
     );
     if !opened {
         if let Err(e) = reservation.rollback() {

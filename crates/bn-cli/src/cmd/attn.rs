@@ -679,77 +679,11 @@ pub(crate) fn agent_prompt(cfg: &Config, base: &std::path::Path, id: &str, promp
         .unwrap_or_else(|error| fail(&format!("bn attn start: {error}")))
 }
 
-fn planning_agent_prompt(
-    cfg: &Config,
-    base: &std::path::Path,
-    item: &bn_core::attention::AttnItem,
-) -> String {
-    let context = item
-        .prompt
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .or(item.detail.as_deref().filter(|s| !s.is_empty()))
-        .unwrap_or(&item.title);
-    let mut args = serde_json::Map::new();
-    for (name, value) in [
-        ("id", item.id.as_str()),
-        ("title", item.title.as_str()),
-        ("context", context),
-    ] {
-        args.insert(name.into(), serde_json::Value::String(value.to_string()));
-    }
-    bn_core::skills::render_required(cfg, base, "attention-planning", Some(&args))
-        .unwrap_or_else(|error| fail(&format!("bn attn start: {error}")))
-}
-
-fn run_repoless_attn_start(
-    cfg: &Config,
-    item: &bn_core::attention::AttnItem,
-    agent: bool,
-) -> Option<StartOutcome> {
-    let safe_id = wt::sanitize_branch(&item.id);
-    let win = format!("attn-{safe_id}");
-    let workspace = cfg.state_dir().join("attention-planning").join(safe_id);
-    if let Err(e) = std::fs::create_dir_all(&workspace) {
-        eprintln!(
-            "bn attn start: failed to create planning workspace {}: {e}",
-            workspace.display()
-        );
-        return None;
-    }
-    if !wt::open_worktree_window_cmd(
-        wt::orchestrator_session(),
-        &win,
-        &workspace,
-        false,
-        None,
-        agent,
-        Some(wt::orchestrator_session()),
-    ) {
-        return None;
-    }
-    let _ = bn_core::attention::mark_started(&item.id);
-
-    let launched = agent
-        && wt::launch_agent_in_window(
-            cfg,
-            wt::orchestrator_session(),
-            &win,
-            &workspace,
-            &planning_agent_prompt(cfg, &workspace, item),
-            wt::AgentLaunchOpts::new(item.mode() == "auto", item.mode() == "auto"),
-        );
-    Some(StartOutcome {
-        wt_path: workspace,
-        launched,
-    })
-}
-
 /// Open the item's worktree window, mark it in-flight, and — when `agent` — launch (`auto`, which
-/// submits + runs unattended with the tool bypass) or stage (`assist`, interactive) the harness with
-/// its prompt. Repo-less items open a scratch window in the shared fleet/cockpit session and hand off
-/// through `bn attn dispatch` once scoped. `None` if the target window couldn't be opened. Shared by
-/// `bn attn start --agent` and the `attention-auto-trigger` job.
+/// submits + runs unattended with the tool bypass) or stage (`assist`, interactive) the harness
+/// with its prompt. An item must already carry a repo and branch; repo-less work stays queued until
+/// task enhancement assigns it. `None` if the target window couldn't be opened. Shared by `bn attn
+/// start --agent` and the `attention-auto-trigger` job.
 pub(crate) fn run_attn_start(
     cfg: &Config,
     item: &bn_core::attention::AttnItem,
@@ -765,7 +699,11 @@ pub(crate) fn run_attn_start_attributed(
     work_class: Option<bn_core::cost::WorkClass>,
 ) -> Option<StartOutcome> {
     if item.repo.is_none() && item.branch.is_none() {
-        return run_repoless_attn_start(cfg, item, agent);
+        eprintln!(
+            "bn attn start: item {} has no repo/branch; enhance or assign it before starting",
+            item.id
+        );
+        return None;
     }
     let repo = item.repo.as_deref()?;
     let branch = item.branch.as_deref()?;
@@ -867,13 +805,15 @@ pub(crate) fn emit_attn_start(cfg: &Config, id: &str, agent: bool, as_json: bool
                 "bn attn start: couldn't open a worktree for {repo}/{branch} \
                  (bare repo or branch note missing locally?)"
             )),
-            _ => fail("bn attn start: couldn't open the fleet/cockpit session"),
+            _ => fail(
+                "bn attn start: item has no repo/branch; enhance or assign it before starting",
+            ),
         }
     };
     let (wt_path, launched) = (outcome.wt_path, outcome.launched);
     let target = match (&repo, &branch) {
         (Some(repo), Some(branch)) => format!("{repo}/{branch}"),
-        _ => format!("{}/attn-{id}", wt::orchestrator_session()),
+        _ => unreachable!("repo-less attention items are refused above"),
     };
 
     if as_json {
@@ -1206,4 +1146,3 @@ pub(crate) fn emit_attn_dispatch(
         );
     }
 }
-

@@ -31,6 +31,7 @@ pub(crate) fn due_agents(
     Ok(bn_core::agents::discover(cfg, ctx)?
         .into_iter()
         .filter(|agent| agent.is_cron() && !agent.is_specialist())
+        .filter(|agent| agent.repo_available_here(cfg))
         .filter(|agent| agent.due(bn_core::events::last_run(&agent.name).as_ref(), now))
         .collect())
 }

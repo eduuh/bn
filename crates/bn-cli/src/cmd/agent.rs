@@ -1243,9 +1243,8 @@ pub(crate) fn effective_session_id(
     plan.session.clone()
 }
 
-/// Set `BN_AGENT_GUARD=0` to launch an agent wherever you are, bypassing the placement rule — the
-/// deliberate-override valve, mirroring `git commit --no-verify` against the repo's `pre-commit`
-/// hook. Anything else (including unset) enforces.
+/// Set `BN_AGENT_GUARD=0` to bypass the within-repo placement rules for one launch. The repository
+/// requirement is unconditional: bn never creates a harness session it cannot attach to a branch.
 fn launch_guard_enabled() -> bool {
     !matches!(
         std::env::var("BN_AGENT_GUARD").as_deref().map(str::trim),
@@ -1253,15 +1252,23 @@ fn launch_guard_enabled() -> bool {
     )
 }
 
+fn resolve_launch_context(cfg: &Config, cwd: &std::path::Path) -> Result<Resolved, &'static str> {
+    resolver::resolve(cfg, cwd).map_err(|_| {
+        "bn agent launch: sessions require a git worktree on a branch; enter or create a repository first"
+    })
+}
+
 /// Refuse to start an agent where one may not run, and otherwise take this worktree's lease.
 ///
-/// Two rules, in order:
+/// Three rules, in order:
 ///
-/// 1. **The main worktree hosts no agents.** It stays clean on `main` — the same checkout the
+/// 1. **Every session belongs to a repository branch.** Planning, investigation, and coding
+///    sessions all need a resolvable git worktree so bn can persist and recover their context.
+/// 2. **The main worktree hosts no agents.** It stays clean on `main` — the same checkout the
 ///    repo's `pre-commit` hook refuses commits in. Rather than dead-ending, this asks what the work
 ///    is and hands the whole thing to `bn dispatch`, which leases a warm pool slot, seeds the goal
 ///    and a todo, and launches the agent there (execs — never returns).
-/// 2. **One agent per worktree.** A checkout already held by a live agent refuses the second one,
+/// 3. **One agent per worktree.** A checkout already held by a live agent refuses the second one,
 ///    naming the holder and the two ways out (steer it, or kill it).
 ///
 /// A launch that survives both takes a [`AgentLeaseKind::Dispatch`] lease for the worktree, so a
@@ -1281,10 +1288,14 @@ fn enforce_launch_placement(
     session: Option<&str>,
     pinned_session: &str,
 ) -> Option<()> {
+    let canonical = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let ctx = resolve_launch_context(cfg, &canonical).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(1);
+    });
     if !launch_guard_enabled() {
         return None;
     }
-    let canonical = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     if bn_core::agent::is_main_worktree_path(&canonical) {
         redirect_from_main(&canonical, harness);
     }
@@ -1316,10 +1327,6 @@ fn enforce_launch_placement(
         }
         agent_lease::WorktreeHolder::Free => {}
     }
-    // Only lease a checkout bn can name (a resolvable repo/branch). Outside one — a scratch clone,
-    // a detached path — there is nothing to key a lease on, so the launch simply proceeds unleased.
-    let ctx = resolver::resolve(cfg, &canonical).ok()?;
-
     // 3. **Agents live in tmux windows.** Typed on a bare terminal there is no window to steer, kill
     //    or even name, so the agent would run outside the control plane bn exists to provide. Open
     //    the window bn would have opened and attach to it — the same shape `bn dispatch` produces.
@@ -1385,6 +1392,19 @@ fn enforce_launch_placement(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod launch_context_tests {
+    use super::*;
+
+    #[test]
+    fn sessions_require_a_git_worktree() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let error = resolve_launch_context(&Config::default(), dir.path())
+            .expect_err("a plain directory must not back a session");
+        assert!(error.contains("sessions require a git worktree"));
+    }
 }
 
 /// Whether a launch typed outside tmux should be moved into a bn-managed window.
@@ -2209,7 +2229,6 @@ pub(crate) fn emit_agent_sessions(
         );
     }
 }
-
 
 
 

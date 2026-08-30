@@ -1,5 +1,6 @@
 ---
 name: task-triage
+requires_repo: bn
 kind: command
 on_calendar: "*-*-* 07:30:00"
 run: "bn task triage"

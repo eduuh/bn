@@ -1,5 +1,6 @@
 ---
 name: staff-mentor
+requires_repo: bn
 kind: command
 on_calendar: "Mon..Fri *-*-* 06:30:00"
 network: true

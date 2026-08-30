@@ -61,6 +61,7 @@ One rule, enforced in `bn agent launch` — the chokepoint every entry point fun
 
 | Worktree | May host |
 |---|---|
+| outside a git worktree | **nothing.** Every session, including planning, must be backed by a repository branch. |
 | `worktree/<repo>/main` | **nothing.** It stays clean on `main`, matching the `pre-commit` hook that already refuses commits there. |
 | `_pool/1` | the `bn control` orchestrator, and only it. `bn control start` leases this slot from anywhere in the repo. |
 | `_pool/2…N`, branch worktrees | exactly **one** agent each. |
@@ -68,10 +69,12 @@ One rule, enforced in `bn agent launch` — the chokepoint every entry point fun
 So:
 
 - Typing `claude` (or `copilot`) in `main` doesn't dead-end — it asks *what is this worktree for?*, then hands the answer to `bn dispatch`, which leases a warm pool slot, seeds that branch's note with the goal **and** an open todo, and starts the agent there.
+- Typing either harness outside a git worktree refuses to start. Enter an existing repository or create one first.
+- Repo-less attention items remain queued until task enhancement or a human assigns a repo and branch; bn no longer opens planning scratch sessions for them.
 - Typing it in a worktree that already has a live agent refuses, naming the holder: steer it with `bn agent send <repo>:<branch> "…"`, or free it with `bn agent kill <repo>:<branch>`.
 - Typing it on a **bare terminal** (no surrounding tmux) opens the branch's window and attaches you to it, so the agent lands somewhere bn can steer, kill and show in the dashboard rather than in a pane nothing can address. Requires a real terminal and a running tmux server; `BN_AGENT_TMUX_REDIRECT=0` turns it off for one call.
 - `wt pool status` shows slot 1 labelled `(controller)`; the configured pool size counts it, so `<repo> 4` means one controller plus three workers.
-- `BN_AGENT_GUARD=0 claude …` bypasses the rule for one call — the deliberate override, like `git commit --no-verify`.
+- `BN_AGENT_GUARD=0 claude …` bypasses the within-repo placement rules for one call — the repository requirement remains unconditional.
 
 Every launch through this chokepoint also records `agent-session: <harness> <id>` on the branch note — the same line `bn dispatch` writes, and the thing that makes `bn agent send --resume` and the dashboard's Steer panel work. The one exception is `claude --continue`, where the harness picks its own id; those agents are still steerable through their tmux window.
 

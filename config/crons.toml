@@ -1,5 +1,9 @@
 # bn cron manifest.
 # Active [[cron]] entries are the shipped defaults used by bn cron register.
+# This manifest belongs to the bn repository. Registration and execution skip every entry when bn
+# is not both assigned to this machine and present in its local bare-repository inventory.
+repo = "bn"
+#
 # Expected fields: job name, systemd OnCalendar schedule, optional booleans, and duration jitter.
 
 [[cron]]

@@ -1,5 +1,6 @@
 ---
 name: sentinel
+requires_repo: bn
 kind: staff
 on_calendar: "Mon..Fri *-*-* 22:30:00"
 network: false

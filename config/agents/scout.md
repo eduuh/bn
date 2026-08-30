@@ -1,5 +1,6 @@
 ---
 name: scout
+requires_repo: bn
 kind: staff
 on_calendar: "Sat *-*-* 10:00:00"
 network: true

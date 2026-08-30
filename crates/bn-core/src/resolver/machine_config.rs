@@ -62,6 +62,23 @@ impl Config {
             == 1
     }
 
+    /// Whether an authorized repository is physically available in this machine's bn-managed
+    /// bare-repository inventory. Scheduled work uses this stricter gate: assignment alone must
+    /// not keep firing a cron after its checkout has been removed from the machine.
+    pub fn repo_available_here(&self, repo: &str) -> bool {
+        if !self.repo_allowed_here(repo) {
+            return false;
+        }
+        let base = repo
+            .trim()
+            .trim_end_matches(['/', '\\'])
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(repo)
+            .to_lowercase();
+        crate::lifecycle::cloned_repos(self).contains(&base)
+    }
+
     pub fn queue_enabled_here(&self) -> bool {
         self.machine_profile.as_ref().is_some_and(|p| p.queue)
     }
@@ -105,6 +122,23 @@ impl Config {
 mod tests {
     use super::*;
     use crate::resolver::config_file::ConfigFile;
+
+    #[test]
+    fn scheduled_repo_requires_assignment_and_a_local_clone() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut cfg = Config::default();
+        cfg.worktree_dir = temp.path().join("worktree");
+        cfg.machine_profile = Some(MachineProfile {
+            repos: vec!["owner/api".to_string()],
+            ..MachineProfile::default()
+        });
+
+        assert!(!cfg.repo_available_here("owner/api"));
+        std::fs::create_dir_all(temp.path().join("bare").join("api.git"))
+            .expect("create bare repo marker");
+        assert!(cfg.repo_available_here("owner/api"));
+        assert!(!cfg.repo_available_here("owner/web"));
+    }
 
     #[test]
     fn missing_profile_denies_everything() {

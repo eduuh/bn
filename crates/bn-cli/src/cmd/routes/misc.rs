@@ -205,16 +205,16 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
 ///
 /// `claude` and `copilot` **are** shadowed here: that is the point. The placement rule — main hosts
 /// no agents, one agent per worktree — can only be enforced if the bare commands people actually
-/// type are routed through `bn agent launch`, where the guard lives. Outside a git work tree the
-/// functions fall straight through to the real binary, so non-repo use is untouched.
+/// type are routed through `bn agent launch`, where the guard lives. The launcher refuses outside a
+/// git worktree, so every session — including planning — has a repository branch behind it.
 ///
 /// `agency <claude|copilot>` is kept as the explicit form of the same thing. `command` (and the
 /// `execvp` the harness launcher uses) bypass shell functions, so neither wrapper recurses.
-const SHELL_WRAPPERS: &str = r#"# bn shell wrappers (bn shell-init) — `claude` / `copilot` inside a git repo are routed through
-# `bn agent launch`, which enforces where an agent may run: the main worktree hosts none (it asks
-# what the work is and dispatches into a warm pool slot instead), and a worktree that already has a
-# live agent refuses a second one. Outside a repo they fall through to the real binary untouched.
-# Escape hatch for one call: BN_AGENT_GUARD=0 claude …
+const SHELL_WRAPPERS: &str = r#"# bn shell wrappers (bn shell-init) — `claude` / `copilot` route through
+# `bn agent launch`, which requires a git worktree and enforces where an agent may run: the main
+# worktree hosts none (it asks what the work is and dispatches into a warm pool slot instead), and a
+# worktree that already has a live agent refuses a second one.
+# Escape hatch for within-repo placement rules: BN_AGENT_GUARD=0 claude …
 #
 # The marker below is how `bn doctor` can tell these wrappers are actually live in your shell: a
 # child process cannot see its parent's functions, only its environment.
@@ -222,10 +222,6 @@ export BN_SHELL_WRAPPERS=1
 
 _bn_launch() {
   local _bn_h="$1"; shift
-  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    command "$_bn_h" "$@"
-    return $?
-  fi
   bn agent launch "$_bn_h" -- "$@"
 }
 
@@ -244,8 +240,12 @@ agency() {
     claude|copilot) ;;
     *) echo "agency: unknown agent '$_bn_h' (use: claude | copilot)" >&2; return 2 ;;
   esac
-  if [ "$#" -eq 0 ] || ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    command "$_bn_h" "$@"
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "agency: sessions require a git worktree; enter or create a repository first" >&2
+    return 1
+  fi
+  if [ "$#" -eq 0 ]; then
+    bn agent launch "$_bn_h"
     return $?
   fi
   bn dispatch --agent "$_bn_h" --yolo --scout --pool --attach -- "$@"
@@ -255,7 +255,7 @@ agency() {
 /// Emit the shell wrappers to stdout — source them with `source <(bn shell-init zsh)`.
 ///
 /// `claude`/`copilot` inside a git work tree route through `bn agent launch`, the chokepoint that
-/// enforces agent placement; outside a repo they fall through to the real binary (`command <h>`).
+/// enforces agent placement and refuses to create sessions outside a git worktree.
 /// `agency <claude|copilot> <args>` stays the explicit pooled-scout form
 /// (`bn dispatch --agent <h> --yolo --scout --pool --attach -- <args>`), a foreground investigation
 /// whose warm slot returns to the pool the moment the agent exits.

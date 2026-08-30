@@ -11,8 +11,10 @@ fn parse(text: &str) -> Result<AgentDef, AgentCatalogError> {
 
 #[test]
 fn command_defaults_run_and_retry() {
-    let agent = parse("---\nname: demo\nkind: command\non_calendar: \"*:0/15\"\n---\n")
-        .expect("agent parses");
+    let agent = parse(
+        "---\nname: demo\nkind: command\nrequires_repo: bn\non_calendar: \"*:0/15\"\n---\n",
+    )
+    .expect("agent parses");
 
     assert_eq!(agent.kind, AgentKind::Command);
     assert_eq!(agent.run, None);
@@ -22,9 +24,10 @@ fn command_defaults_run_and_retry() {
 
 #[test]
 fn catch_up_frontmatter_parses() {
-    let agent =
-        parse("---\nname: demo\nkind: command\non_calendar: \"*:0/15\"\ncatch_up: true\n---\n")
-            .expect("agent parses");
+    let agent = parse(
+        "---\nname: demo\nkind: command\nrequires_repo: bn\non_calendar: \"*:0/15\"\ncatch_up: true\n---\n",
+    )
+    .expect("agent parses");
     assert!(agent.catch_up);
 }
 
@@ -83,8 +86,10 @@ fn kind_schedule_and_recursion_errors_are_typed_and_path_qualified() {
     ));
     assert!(missing_kind.to_string().contains("config/agents/demo.md"));
 
-    let bad_schedule = parse("---\nname: demo\nkind: command\non_calendar: \"sometimes\"\n---\n")
-        .expect_err("schedule is invalid");
+    let bad_schedule = parse(
+        "---\nname: demo\nkind: command\nrequires_repo: bn\non_calendar: \"sometimes\"\n---\n",
+    )
+    .expect_err("schedule is invalid");
     assert!(matches!(
         bad_schedule,
         AgentCatalogError::InvalidAgent {
@@ -103,13 +108,28 @@ fn kind_schedule_and_recursion_errors_are_typed_and_path_qualified() {
         }
     ));
 
-    let zero_retry =
-        parse("---\nname: demo\nkind: command\non_calendar: daily\nretry_after: 0m\n---\n")
-            .expect_err("retry must be positive");
+    let zero_retry = parse(
+        "---\nname: demo\nkind: command\nrequires_repo: bn\non_calendar: daily\nretry_after: 0m\n---\n",
+    )
+    .expect_err("retry must be positive");
     assert!(matches!(
         zero_retry,
         AgentCatalogError::InvalidAgent {
             source: AgentParseError::InvalidRetryAfter { .. },
+            ..
+        }
+    ));
+
+    let missing_repo =
+        parse("---\nname: demo\nkind: command\non_calendar: daily\n---\n")
+            .expect_err("scheduled agents require a repo");
+    assert!(matches!(
+        missing_repo,
+        AgentCatalogError::InvalidAgent {
+            source: AgentParseError::RequiredField {
+                field: "requires_repo",
+                ..
+            },
             ..
         }
     ));
@@ -296,7 +316,7 @@ fn triggerable_catalog_keeps_runnable_kinds_and_excludes_specialists() {
         ("command", "---\nname: command\nkind: command\n---\n"),
         (
             "scheduled",
-            "---\nname: scheduled\nkind: command\non_calendar: daily\n---\n",
+            "---\nname: scheduled\nkind: command\nrequires_repo: bn\non_calendar: daily\n---\n",
         ),
         (
             "staff",

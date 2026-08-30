@@ -1,5 +1,6 @@
 ---
 name: explore-bn
+requires_repo: bn
 kind: command
 on_calendar: "*-*-* 02:00:00"
 network: true

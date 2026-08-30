@@ -68,6 +68,10 @@ pub struct CronEntry {
     /// gets a fresh result without you matching a wall-clock slot. Default false.
     #[serde(default)]
     pub catch_up: bool,
+    /// Repository required by this cron. Entry-level values override the manifest's top-level
+    /// `repo`; absent means the cron is genuinely machine-global.
+    #[serde(default)]
+    pub repo: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -87,6 +91,8 @@ pub struct ResolvedCron {
 
 #[derive(Debug, Default, serde::Deserialize)]
 struct CronManifest {
+    /// Default repository requirement inherited by every entry that does not declare its own.
+    repo: Option<String>,
     #[serde(default, rename = "cron")]
     crons: Vec<CronEntry>,
 }
@@ -95,8 +101,13 @@ struct CronManifest {
 /// caller can report it), mirroring the degrade-loudly contract of config parsing.
 pub fn parse_manifest(path: &Path) -> Result<Vec<CronEntry>, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let manifest: CronManifest =
+    let mut manifest: CronManifest =
         toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    for entry in &mut manifest.crons {
+        if entry.repo.is_none() {
+            entry.repo.clone_from(&manifest.repo);
+        }
+    }
     Ok(manifest.crons)
 }
 
@@ -126,10 +137,10 @@ pub fn discover(cfg: &Config, ctx: Option<&Resolved>) -> Vec<ResolvedCron> {
                     if out.iter().any(|rc| rc.entry.job == entry.job) {
                         continue;
                     }
-                    let repo = match scope {
+                    let repo = entry.repo.clone().or_else(|| match scope {
                         JobScope::Global => None,
                         _ => ctx.map(|c| c.repo.clone()),
-                    };
+                    });
                     out.push(ResolvedCron {
                         entry,
                         scope,
@@ -149,9 +160,54 @@ pub fn discover(cfg: &Config, ctx: Option<&Resolved>) -> Vec<ResolvedCron> {
 pub fn catch_up_jobs(cfg: &Config, ctx: Option<&Resolved>) -> Vec<String> {
     discover(cfg, ctx)
         .into_iter()
-        .filter(|rc| rc.entry.catch_up)
+        .filter(|rc| {
+            rc.entry.catch_up
+                && rc
+                    .repo
+                    .as_deref()
+                    .is_none_or(|repo| cfg.repo_available_here(repo))
+        })
         .map(|rc| rc.entry.job)
         .collect()
+}
+
+/// Repository required by a scheduled job, if its effective cron declaration names one.
+pub fn job_repo(cfg: &Config, ctx: Option<&Resolved>, job: &str) -> Option<String> {
+    discover(cfg, ctx)
+        .into_iter()
+        .find(|cron| cron.entry.job == job)
+        .and_then(|cron| cron.repo)
+}
+
+#[cfg(test)]
+mod repo_tests {
+    use super::*;
+
+    #[test]
+    fn manifest_repo_is_inherited_unless_an_entry_overrides_it() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("crons.toml");
+        std::fs::write(
+            &path,
+            r#"
+repo = "bn"
+
+[[cron]]
+job = "defaulted"
+on_calendar = "daily"
+
+[[cron]]
+job = "overridden"
+repo = "arena"
+on_calendar = "hourly"
+"#,
+        )
+        .expect("write manifest");
+
+        let entries = parse_manifest(&path).expect("parse manifest");
+        assert_eq!(entries[0].repo.as_deref(), Some("bn"));
+        assert_eq!(entries[1].repo.as_deref(), Some("arena"));
+    }
 }
 
 /// The declared [`CronClass`] for `job`, folded across the job tiers ([`discover`]). Jobs no

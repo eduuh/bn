@@ -3,8 +3,8 @@
 //! It began as a deterministic offline fold — gather the cron findings store (#576), turn each
 //! finding item into one proposed task, upsert it into the [`crate::suggestions`] store — and that
 //! fold is still here. What changed is what it *is*: Today's agent is now a **hosted, steerable
-//! harness session**, launched into the persistent tmux `planning` session and driven from the
-//! dashboard's Today page. The deterministic half became its two supporting halves:
+//! harness session**, launched into the configured personal-notes repository session and driven
+//! from the dashboard's Today page. The deterministic half became its two supporting halves:
 //!
 //!   * [`gather_packet_json`] is the agent's **opening packet** — the same JSON a headless variant
 //!     would have consumed, now seeded into a live session by [`build_seed`];

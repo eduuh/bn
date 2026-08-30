@@ -1,5 +1,6 @@
 ---
 name: task-enhance
+requires_repo: bn
 kind: command
 on_calendar: "*-*-* 0/1:00:00"
 run: "bn task enhance --due"

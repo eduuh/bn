@@ -132,6 +132,15 @@ fn run_job_inner(
     if !machine_scope::run_enabled(cfg) {
         return 1;
     }
+    if let Some(repo) = bn_core::crons::job_repo(cfg, ctx, job) {
+        if !cfg.repo_available_here(&repo) {
+            println!(
+                "bn run: skipping '{job}' — repository '{repo}' is not registered and available on '{}'",
+                cfg.machine()
+            );
+            return 0;
+        }
+    }
     // The scheduler must be able to record its own catalog-load failure. Resolving it through the
     // catalog first would return before the common wrapper could write the failing scheduler row.
     if job == "agent-scheduler" {
@@ -156,6 +165,14 @@ fn run_job_inner(
         if let Err(error) = agent.ensure_runnable() {
             eprintln!("bn run: {error}");
             return 2;
+        }
+        if !agent.repo_available_here(cfg) {
+            let repo = agent.requires_repo.as_deref().unwrap_or_default();
+            println!(
+                "bn run: skipping '{job}' — repository '{repo}' is not registered and available on '{}'",
+                cfg.machine()
+            );
+            return 0;
         }
     }
 
@@ -937,7 +954,11 @@ pub(crate) fn maybe_fire_catchup(cfg: &Config) {
     let mut jobs = bn_core::crons::catch_up_jobs(cfg, None);
     if let Ok(catalog) = bn_core::agents::discover(cfg, None) {
         for agent in catalog.iter() {
-            if agent.catch_up && agent.is_cron() && !jobs.contains(&agent.name) {
+            if agent.catch_up
+                && agent.is_cron()
+                && agent.repo_available_here(cfg)
+                && !jobs.contains(&agent.name)
+            {
                 jobs.push(agent.name.clone());
             }
         }

@@ -23,9 +23,11 @@ before expecting cross-repo views, queue dispatch, cron jobs, or `bn-web` to run
 
 Machine profiles are the outer boundary. `[nodes].owned_repos` still limits worker placement,
 `[jobs.only_on]` still limits individual job execution, and `[[cron]].only_on` still limits timer
-registration. Disabling cron and rerunning `bn cron register` prunes bn-managed timers; disabled
-queue/web services are unloaded by normal bn lifecycle reconciliation. Status commands remain
-available and report `not_enabled`.
+registration. A cron may also declare `repo = "name"` (or inherit a manifest-level `repo`): it is
+registered and run only while that repository is assigned to the machine and present in the local
+bare-repository inventory. Disabling cron and rerunning `bn cron register` prunes bn-managed
+timers; disabled queue/web services are unloaded by normal bn lifecycle reconciliation. Status
+commands remain available and report `not_enabled`.
 
 ## How it works
 
@@ -219,6 +221,12 @@ three **tick** crons — one timer each — that fan out to their cluster in ord
 `agent-scheduler` runs every minute and owns every `on_calendar` declared in
 `config/agents/*.md`; agent schedules do not belong in `crons.toml`.
 
+Every scheduled agent must also declare `requires_repo: <name>`. The scheduler, first-activity
+catch-up, and direct `bn run <agent>` path all skip it unless that repository is assigned to the
+current machine and present in the local bare-repository inventory. This is independent of the
+specialist-only `repo:` field, which selects native review-agent compilation rather than runtime
+availability.
+
 Each child still runs through the normal `bn run` path, so it records its **own** `cron_run`
 event. `bn cron` nests each schedule and its due/retry state beneath `agent-scheduler`; `bn doctor`
 still sees each child's own failure history. A failing child never blocks its siblings, and the
@@ -255,7 +263,8 @@ job** inside the now-always-up instance. Two installers recreate the whole thing
    single source of truth on every platform. `bn cron register` strictly validates the Markdown
    agent catalog, then reads `config/crons.toml` (+ any per-repo `crons.toml`) and generates +
    `daemon-reload`s + `enable --now`s a `.service`/`.timer` into
-   `~/.config/systemd/user/` for **every** declared cron — including the one common
+   `~/.config/systemd/user/` for every declared cron whose required repository is registered and
+   locally available — including the one common
    `agent-scheduler`, never one timer per agent — each
    `Persistent=true` so a run missed while WSL was down catches up on next boot, then prunes any
    `bn-*` timer no longer in the manifest. (`daily-rollover` fires ~05:00 — carry unfinished daily

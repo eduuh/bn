@@ -75,6 +75,10 @@ pub(super) fn desired_crons(
         .into_iter()
         .filter(|cron| {
             cfg.job_allowed_here(&cron.entry.job)
+                && cron
+                    .repo
+                    .as_deref()
+                    .is_none_or(|repo| cfg.repo_available_here(repo))
                 && (cron.entry.only_on.is_empty()
                     || cron
                         .entry

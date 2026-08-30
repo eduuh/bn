@@ -1,5 +1,6 @@
 ---
 name: staff-chief-am
+requires_repo: bn
 kind: staff
 on_calendar: "Mon..Fri *-*-* 05:30:00"
 network: false

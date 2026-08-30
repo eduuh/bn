@@ -1,5 +1,6 @@
 ---
 name: explore-wira360
+requires_repo: wira360
 kind: command
 on_calendar: "*-*-* 03:00:00"
 network: true

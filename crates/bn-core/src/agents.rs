@@ -369,6 +369,27 @@ fn validate_agent_frontmatter(
                 value: schedule.to_string(),
             });
         }
+        if front
+            .requires_repo
+            .as_deref()
+            .map(str::trim)
+            .filter(|repo| !repo.is_empty())
+            .is_none()
+        {
+            return Err(AgentParseError::RequiredField {
+                kind,
+                field: "requires_repo",
+            });
+        }
+    }
+    if front
+        .requires_repo
+        .as_deref()
+        .is_some_and(|repo| repo.trim().is_empty())
+    {
+        return Err(AgentParseError::EmptyField {
+            field: "requires_repo",
+        });
     }
     if front
         .run
@@ -532,6 +553,10 @@ struct AgentFrontmatter {
     link_domains: Vec<String>,
     #[serde(default)]
     harness: Option<String>,
+    /// Repository that must be assigned to this machine and locally available before a scheduled
+    /// or manually invoked agent may run.
+    #[serde(default)]
+    requires_repo: Option<String>,
     /// Synthetic steering address used by a hosted agent that does not belong to a checkout.
     #[serde(default)]
     host_repo: Option<String>,
@@ -606,6 +631,8 @@ pub struct AgentDef {
     pub link_domains: Vec<String>,
     /// Headless harness override (`copilot` / `claude`).
     pub harness: Option<String>,
+    /// Repository required before this agent may run.
+    pub requires_repo: Option<String>,
     /// Synthetic steering address for a hosted agent.
     pub host_repo: Option<String>,
     /// Persistent tmux session for a hosted agent.
@@ -644,6 +671,13 @@ impl AgentDef {
     /// True when this agent participates in the common scheduler (it has a schedule).
     pub fn is_cron(&self) -> bool {
         self.on_calendar.is_some()
+    }
+
+    /// Whether this agent's declared repository is assigned to this machine and present locally.
+    pub fn repo_available_here(&self, cfg: &Config) -> bool {
+        self.requires_repo
+            .as_deref()
+            .is_none_or(|repo| cfg.repo_available_here(repo))
     }
 
     /// True when this agent should also fire once on tmux-server startup (`bn startup`).
@@ -783,6 +817,7 @@ pub fn parse_agent(
         mcps: front.mcps,
         link_domains: front.link_domains,
         harness: front.harness,
+        requires_repo: front.requires_repo,
         host_repo: front.host_repo,
         host_session: front.host_session,
         host_window: front.host_window,
@@ -875,6 +910,11 @@ pub fn set_schedule(
         .iter()
         .find(|a| a.name == agent)
         .ok_or_else(|| format!("no agent named '{agent}'"))?;
+    if on_calendar.is_some() && def.requires_repo.is_none() {
+        return Err(format!(
+            "agent '{agent}' must declare requires_repo before it can be scheduled"
+        ));
+    }
     let text = std::fs::read_to_string(&def.path).map_err(|e| e.to_string())?;
     // The frontmatter is the leading `---` fence block; operate line-wise inside it only, so a
     // body that mentions `on_calendar:` is never touched.

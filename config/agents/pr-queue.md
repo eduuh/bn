@@ -1,5 +1,6 @@
 ---
 name: pr-queue
+requires_repo: bn
 kind: command
 on_calendar: "*:0/15"
 network: true

@@ -20,6 +20,12 @@ fn run_events(job: &str) -> Vec<bn_core::events::Event> {
         .collect()
 }
 
+fn make_repo_available(cfg: &mut Config, root: &std::path::Path, repo: &str) {
+    cfg.worktree_dir = root.join("worktree");
+    std::fs::create_dir_all(root.join("bare").join(format!("{repo}.git")))
+        .expect("create repo marker");
+}
+
 #[test]
 fn named_agents_use_one_recorded_execution_boundary() {
     let _lock = bn_core::test_support::env_lock();
@@ -118,24 +124,25 @@ fn scheduler_isolates_sibling_failures_and_backs_off_retries() {
     std::fs::create_dir_all(&agents).expect("agents dir");
     std::fs::write(
         agents.join("a-fail.md"),
-        "---\nname: a-fail\nkind: command\non_calendar: minutely\nrun: \"exit 7\"\n---\n",
+        "---\nname: a-fail\nkind: command\nrequires_repo: test-repo\non_calendar: minutely\nrun: \"exit 7\"\n---\n",
     )
     .expect("failing agent");
     std::fs::write(
         agents.join("z-good.md"),
-        "---\nname: z-good\nkind: command\non_calendar: minutely\nrun: \"printf 'good\\\\n'\"\n---\n",
+        "---\nname: z-good\nkind: command\nrequires_repo: test-repo\non_calendar: minutely\nrun: \"printf 'good\\\\n'\"\n---\n",
     )
     .expect("successful agent");
 
     let _agents = bn_core::test_support::EnvGuard::set("BN_AGENTS_DIR", &agents);
     let _jobs = bn_core::test_support::EnvGuard::set("BN_JOBS_DIR", temp.path().join("jobs"));
     let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", temp.path().join("state"));
-    let cfg = Config {
+    let mut cfg = Config {
         personal_root: temp.path().join("personal"),
         work_root: temp.path().join("work"),
         hostname: "test-host".to_string(),
         ..Default::default()
     };
+    make_repo_available(&mut cfg, temp.path(), "test-repo");
 
     assert_eq!(job_agent_scheduler(&cfg, None), 0);
     assert_eq!(run_events("a-fail").len(), 1);
@@ -155,7 +162,7 @@ fn scheduler_enqueues_due_agents_and_queue_tick_runs_them() {
     std::fs::create_dir_all(&agents).expect("agents dir");
     std::fs::write(
         agents.join("queued-agent.md"),
-        "---\nname: queued-agent\nkind: command\non_calendar: minutely\nrun: \"printf 'queued-agent-work\\\\n'\"\n---\n",
+        "---\nname: queued-agent\nkind: command\nrequires_repo: test-repo\non_calendar: minutely\nrun: \"printf 'queued-agent-work\\\\n'\"\n---\n",
     )
     .expect("queued agent");
 
@@ -168,12 +175,13 @@ fn scheduler_enqueues_due_agents_and_queue_tick_runs_them() {
     // This test asserts the agent is *queued* rather than run, which is exactly what an inherited
     // dispatch extent turns off — see `outside_a_dispatch` for why that leaks into agent sessions.
     let _outside = bn_core::test_support::outside_a_dispatch();
-    let cfg = Config {
+    let mut cfg = Config {
         personal_root: temp.path().join("personal"),
         work_root: temp.path().join("work"),
         hostname: "test-host".to_string(),
         ..Default::default()
     };
+    make_repo_available(&mut cfg, temp.path(), "test-repo");
 
     std::fs::create_dir_all(&state).expect("state dir");
     std::fs::write(
@@ -608,7 +616,7 @@ fn run_now_executes_in_place_instead_of_queueing() {
     std::fs::create_dir_all(&state).expect("state dir");
     std::fs::write(
         agents.join("now-agent.md"),
-        "---\nname: now-agent\nkind: command\non_calendar: minutely\nrun: \"printf 'ran-inline\\\\n'\"\n---\n",
+        "---\nname: now-agent\nkind: command\nrequires_repo: test-repo\non_calendar: minutely\nrun: \"printf 'ran-inline\\\\n'\"\n---\n",
     )
     .expect("agent");
 
@@ -622,12 +630,13 @@ fn run_now_executes_in_place_instead_of_queueing() {
         bn_core::util::now_epoch_secs().to_string(),
     )
     .expect("heartbeat");
-    let cfg = Config {
+    let mut cfg = Config {
         personal_root: temp.path().join("personal"),
         work_root: temp.path().join("work"),
         hostname: "test-host".to_string(),
         ..Default::default()
     };
+    make_repo_available(&mut cfg, temp.path(), "test-repo");
 
     // Baseline: without --now this exact job is captured, not run.
     assert_eq!(super::run_job(&cfg, None, "now-agent"), 0);

@@ -1,5 +1,6 @@
 ---
 name: goals-align
+requires_repo: bn
 kind: staff
 on_calendar: "Mon *-*-* 08:00:00"
 network: false

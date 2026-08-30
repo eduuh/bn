@@ -23,6 +23,7 @@ fn agent_def_row(a: &crate::agents::AgentDef) -> Value {
         "on_demand": a.on_calendar.is_none() && !a.is_startup(),
         "specialist": a.is_specialist(),
         "harness": a.harness,
+        "requires_repo": a.requires_repo,
         "host_repo": a.host_repo,
         "host_session": a.host_session,
         "host_window": a.host_window,

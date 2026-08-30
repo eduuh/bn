@@ -1,5 +1,6 @@
 ---
 name: attention-agent
+requires_repo: bn
 kind: command
 on_calendar: "*-*-* 0/2:00:00"
 network: true

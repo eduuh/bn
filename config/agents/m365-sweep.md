@@ -1,5 +1,6 @@
 ---
 name: m365-sweep
+requires_repo: bn
 kind: command
 on_calendar: "Mon..Fri *-*-* 14:55:00"
 catch_up: true

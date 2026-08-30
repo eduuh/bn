@@ -1194,9 +1194,10 @@ pub(crate) enum CmdMisc {
     /// Print the shell wrappers that make agent placement enforceable: inside a git repo, `claude`
     /// and `copilot` route through `bn agent launch`, which keeps the main worktree agent-free
     /// (asking what the work is and dispatching into a warm pool slot instead) and refuses a second
-    /// agent in a worktree that already has one. Outside a repo they fall through to the real
-    /// binary. `agency claude` / `agency copilot` remain the explicit pooled-scout form. Source
-    /// from your shell rc, e.g. `source <(bn shell-init zsh)` (bash|zsh).
+    /// agent in a worktree that already has one. Outside a repo they refuse to start, so every
+    /// session — including planning — is backed by a repository branch. `agency claude` /
+    /// `agency copilot` remain the explicit pooled-scout form. Source from your shell rc, e.g.
+    /// `source <(bn shell-init zsh)` (bash|zsh).
     ShellInit {
         /// Shell to emit wrappers for (bash or zsh).
         shell: Shell,
@@ -2257,10 +2258,9 @@ pub(crate) enum AttnCmd {
         #[arg(long)]
         link: Option<String>,
     },
-    /// Start an item: open/switch to its worktree tmux window and mark it in-flight (the IN
-    /// PROGRESS lane). Repo-less items open a planning-session scratch window that scopes and
-    /// dispatches the real worktree. With --agent, launch the harness: `auto` submits it (runs),
-    /// `assist` stages it in the pane for you to run.
+    /// Start an item: open/switch to its repository worktree tmux window and mark it in-flight (the
+    /// IN PROGRESS lane). Repo-less items must be enhanced or assigned first. With --agent, launch
+    /// the harness: `auto` submits it (runs), `assist` stages it in the pane for you to run.
     Start {
         id: String,
         /// Launch the coding agent with the item's prompt (auto runs it, assist stages it).
