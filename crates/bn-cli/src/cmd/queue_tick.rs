@@ -32,6 +32,17 @@ pub(crate) use render::emit_nodes;
 
 /// `bn queue tick` — one pass.
 pub(crate) fn emit_tick(cfg: &Config, dry_run: bool, json: bool) {
+    if !cfg.queue_enabled_here() {
+        fail_json(
+            json,
+            "queue-tick",
+            "not_enabled",
+            &format!(
+                "bn queue tick: not enabled on this machine ('{}')",
+                cfg.machine()
+            ),
+        );
+    }
     use bn_core::clock::Clock;
     let now = bn_core::clock::RealClock.now_epoch_secs();
     match tick_once(cfg, now, dry_run) {
@@ -73,6 +84,13 @@ pub(crate) fn emit_tick(cfg: &Config, dry_run: bool, json: bool) {
 /// into a systemd unit or launchd job that survives reboot. A box wanting faster pickup runs
 /// `bn queue run` alongside; the lock keeps them from overlapping.
 pub(crate) fn job_queue_tick(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
+    if !cfg.queue_enabled_here() {
+        eprintln!(
+            "queue tick: not enabled on this machine ('{}')",
+            cfg.machine()
+        );
+        return 1;
+    }
     use bn_core::clock::Clock;
     let now = bn_core::clock::RealClock.now_epoch_secs();
     match tick_once(cfg, now, false) {
@@ -104,6 +122,12 @@ pub(crate) fn job_queue_tick(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
 /// `--interval` sets the idle ceiling. The busy floor is fixed and short — the point of a resident
 /// loop is that arriving work does not wait for the next round number on the clock.
 pub(crate) fn emit_run(cfg: &Config, interval: u64) {
+    if !cfg.queue_enabled_here() {
+        fail(&format!(
+            "bn queue run: not enabled on this machine ('{}')",
+            cfg.machine()
+        ));
+    }
     use bn_core::clock::Clock;
     let idle = interval.clamp(1, 3600);
     // Started before anything else in the loop, and outliving every pass: liveness must not be a
@@ -163,6 +187,10 @@ pub(crate) fn emit_run(cfg: &Config, interval: u64) {
             config_seen = stamp;
             cfg = Config::load();
             println!("queue dispatcher: config reloaded");
+            if !cfg.queue_enabled_here() {
+                println!("queue dispatcher: no longer enabled on this machine — exiting");
+                return;
+            }
         }
 
         cap_own_log();
@@ -373,8 +401,7 @@ fn maybe_enqueue_spare_work(cfg: &Config, now: i64) {
         .entries()
         .iter()
         .any(|entry| {
-            entry.status.is_active()
-                && bn_core::queue::classify::is_mandatory_pool_warming(entry)
+            entry.status.is_active() && bn_core::queue::classify::is_mandatory_pool_warming(entry)
         })
     {
         return;
@@ -755,12 +782,7 @@ fn spawn_heavy(d: &Dispatch, cmd: &str) -> Executed {
 }
 
 #[cfg(not(test))]
-fn run_express_job(
-    _cfg: &Config,
-    job: &str,
-    repo: Option<&str>,
-    branch: Option<&str>,
-) -> Executed {
+fn run_express_job(_cfg: &Config, job: &str, repo: Option<&str>, branch: Option<&str>) -> Executed {
     let Ok(exe) = std::env::current_exe() else {
         return Executed::Failed("cannot resolve the bn executable".to_string());
     };
@@ -777,12 +799,7 @@ fn run_express_job(
 
 // Rust's unit-test executable is not the `bn` CLI and cannot be re-entered with `bn run`.
 #[cfg(test)]
-fn run_express_job(
-    cfg: &Config,
-    job: &str,
-    repo: Option<&str>,
-    branch: Option<&str>,
-) -> Executed {
+fn run_express_job(cfg: &Config, job: &str, repo: Option<&str>, branch: Option<&str>) -> Executed {
     let ctx = if repo.is_none() && branch.is_none() {
         None
     } else {
@@ -819,7 +836,6 @@ fn run_express_with_timeout(
         Launch::Failed(e) => Executed::Failed(e),
     }
 }
-
 
 /// `bn queue finish` — the callback heavy work makes when it is done.
 pub(crate) fn emit_finish(repo: &str, id: &str, exit_code: i32, json: bool) {
@@ -912,8 +928,7 @@ mod express_tests {
         cmd.args(["-c", "sleep 60"]);
 
         let started = std::time::Instant::now();
-        let outcome =
-            run_express_with_timeout(cmd, "test job", std::time::Duration::from_secs(1));
+        let outcome = run_express_with_timeout(cmd, "test job", std::time::Duration::from_secs(1));
 
         assert!(matches!(outcome, Executed::Finished { code: 124 }));
         assert!(

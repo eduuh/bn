@@ -130,6 +130,30 @@ function stalled(overrides: Partial<QueueView> = {}): QueueView {
 afterEach(cleanup);
 
 describe("QueueVerdict", () => {
+  it("renders a disabled queue as not enabled rather than offline or accepting", () => {
+    render(
+      <QueueVerdict
+        data={{
+          ...stalled(),
+          state: "not_enabled",
+          message: "queue is not enabled on this machine ('web-only')",
+          accepting: false,
+          pending: 0,
+          entries: [],
+          nodes: [],
+          machine: undefined,
+        }}
+        loading={false}
+        error={false}
+      />,
+    );
+
+    expect(screen.getByText("Queue is not enabled")).toBeTruthy();
+    expect(screen.getByText("not enabled")).toBeTruthy();
+    expect(screen.queryByText("The dispatcher is offline")).toBeNull();
+    expect(screen.queryByText("accepting")).toBeNull();
+  });
+
   it("names presence as the blocker instead of only labelling the symptom", () => {
     // The old card rendered two rows reading `awaiting-away` and never said what the machine was
     // waiting for, which is the one fact that explains the stall.

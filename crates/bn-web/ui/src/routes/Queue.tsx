@@ -767,6 +767,7 @@ export function Queue() {
   // Only the queue query gates the first paint. The others fill their own bands in, and holding
   // the whole page for the slowest of four is what made a live machine look empty on arrival.
   const settling = queue.isLoading;
+  const notEnabled = data?.state === "not_enabled";
 
   return (
     <div className="mx-auto w-full max-w-6xl space-y-4 px-4 py-5">
@@ -792,54 +793,58 @@ export function Queue() {
           them says why the numbers are not moving. */}
       <QueueVerdict data={data} loading={queue.isLoading} error={queue.isError} />
 
-      {/* Below the verdict the page shows only what is true right now. Each of these used to render
+      {notEnabled ? null : (
+        <>
+          {/* Below the verdict the page shows only what is true right now. Each of these used to render
           a card reading "nothing", so a quiet machine produced a full screen of scrolling that said
           nothing at all — and a busy one buried the two bands that mattered among the ten that did
           not. A band that would be empty is not rendered; its absence is the same information. */}
-      {needsYou > 0 ? (
-        <NeedsInput
-          reviews={reviews.data?.reviews ?? []}
-          agents={agents}
-          now={now}
-          loading={false}
-          error={reviews.isError || fleet.isError}
-        />
-      ) : null}
+          {needsYou > 0 ? (
+            <NeedsInput
+              reviews={reviews.data?.reviews ?? []}
+              agents={agents}
+              now={now}
+              loading={false}
+              error={reviews.isError || fleet.isError}
+            />
+          ) : null}
 
-      {working.length > 0 || runningJobs.length > 0 || fleet.isError ? (
-        <ActiveNow
-          agents={working}
-          jobs={runningJobs}
-          now={now}
-          loading={false}
-          error={fleet.isError}
-        />
-      ) : null}
+          {working.length > 0 || runningJobs.length > 0 || fleet.isError ? (
+            <ActiveNow
+              agents={working}
+              jobs={runningJobs}
+              now={now}
+              loading={false}
+              error={fleet.isError}
+            />
+          ) : null}
 
-      {/* Already self-hiding: each renders null with nothing to show. */}
-      <RunSteering />
-      <QueueShape data={data} />
-      <RecoveryFeed />
+          {/* Already self-hiding: each renders null with nothing to show. */}
+          <RunSteering />
+          <QueueShape data={data} />
+          <RecoveryFeed />
 
-      {settling ? <RowsSkeleton rows={2} /> : null}
+          {settling ? <RowsSkeleton rows={2} /> : null}
 
-      {/* Outcomes are history, not status. Seventy-six of them at the bottom of a page called
+          {/* Outcomes are history, not status. Seventy-six of them at the bottom of a page called
           "what is running" is the wall of cards this screen is trying not to be. */}
-      <DetailShelf summary="machine · upcoming · nodes · reservoir · entries · outcomes · inventory">
-        <OperationsOverview data={data} fleet={fleet.data} error={queue.isError} />
-        {outcomes.length > 0 ? (
-          <RecentOutcomes rows={outcomes} now={now} loading={false} error={completed.isError} />
-        ) : null}
-        <QueueUpcoming />
-        <ClusterCapacity nodes={nodes} loading={queue.isLoading} error={queue.isError} />
-        <QueueReservoir reservoir={data?.reservoir} />
-        <QueueControls />
-        <QueueWorkLedger />
-      </DetailShelf>
+          <DetailShelf summary="machine · upcoming · nodes · reservoir · entries · outcomes · inventory">
+            <OperationsOverview data={data} fleet={fleet.data} error={queue.isError} />
+            {outcomes.length > 0 ? (
+              <RecentOutcomes rows={outcomes} now={now} loading={false} error={completed.isError} />
+            ) : null}
+            <QueueUpcoming />
+            <ClusterCapacity nodes={nodes} loading={queue.isLoading} error={queue.isError} />
+            <QueueReservoir reservoir={data?.reservoir} />
+            <QueueControls />
+            <QueueWorkLedger />
+          </DetailShelf>
 
-      {/* The run controls and the recovery feed both write, and both report through the shared
+          {/* The run controls and the recovery feed both write, and both report through the shared
           toast store — which needs a stack mounted on the page to render into. */}
-      <ToastStack />
+          <ToastStack />
+        </>
+      )}
     </div>
   );
 }

@@ -102,13 +102,35 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
                 Some(CronCmd::Failures { limit }) => emit_cron_failures(limit, json),
                 Some(CronCmd::Unregister { job }) => emit_cron_unregister(&job, json),
                 Some(CronCmd::Retire { job, reason }) => {
+                    if !cfg.cron_enabled_here() {
+                        fail_json(
+                            json,
+                            "cron-retire",
+                            "not_enabled",
+                            &format!(
+                                "bn cron retire: not enabled on this machine ('{}')",
+                                cfg.machine()
+                            ),
+                        );
+                    }
                     emit_cron_retire(cfg, ctx.as_ref(), &job, &reason.join(" "), json)
                 }
                 Some(CronCmd::Register { dry_run }) => {
                     emit_cron_register(cfg, ctx.as_ref(), dry_run, json)
                 }
-                Some(CronCmd::Running) => emit_cron_running(),
+                Some(CronCmd::Running) => emit_cron_running(cfg),
                 Some(CronCmd::RefreshWindows) => {
+                    if !cfg.cron_enabled_here() {
+                        fail_json(
+                            json,
+                            "cron-refresh-windows",
+                            "not_enabled",
+                            &format!(
+                                "bn cron refresh-windows: not enabled on this machine ('{}')",
+                                cfg.machine()
+                            ),
+                        );
+                    }
                     winsched::refresh();
                 }
             }
@@ -125,12 +147,7 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
             match action {
                 None => emit_staff_board(cfg, ctx.as_ref(), json),
                 Some(StaffCmd::Run { agent }) => {
-                    std::process::exit(run_job_with_staff_output(
-                        cfg,
-                        ctx.as_ref(),
-                        &agent,
-                        json,
-                    ))
+                    std::process::exit(run_job_with_staff_output(cfg, ctx.as_ref(), &agent, json))
                 }
                 Some(StaffCmd::Plan { agent }) => {
                     std::process::exit(emit_staff_plan(cfg, ctx.as_ref(), &agent, json))

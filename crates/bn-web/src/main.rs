@@ -116,6 +116,13 @@ async fn main() {
     }
 
     let cfg = Config::load();
+    if !cfg.web_enabled_here() {
+        eprintln!(
+            "bn-web: web is not enabled on this machine ('{}')",
+            cfg.machine()
+        );
+        std::process::exit(1);
+    }
 
     // Bootstrap the web token file (design §5): `--show-token` prints it and exits, so an external
     // dev tunnel can pair against it. The server itself no longer gates on the token (#523), so a

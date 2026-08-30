@@ -4,65 +4,19 @@ use crate::*;
 #[cfg(test)]
 mod tests;
 
+mod authorization;
 pub(crate) mod branch;
 pub(crate) mod invocation;
+mod item;
 pub(crate) mod policy;
 use branch::dispatch_branch_occupied;
 pub(crate) use invocation::DispatchInvocation;
+pub(crate) use item::resolve_dispatch_item;
 use policy as dp;
 pub(crate) use policy::{
     effective_launch_harness, normalize_agent, plan_gate_enabled, routes_to_pipeline_investigate,
     PlanGate,
 };
-
-/// Whether `s` looks like a todo id: `t` followed by digits (t3, t12).
-pub(crate) fn is_dispatch_todo_id(s: &str) -> bool {
-    s.strip_prefix('t')
-        .is_some_and(|r| !r.is_empty() && r.chars().all(|c| c.is_ascii_digit()))
-}
-
-/// Split a captured item's stored text into (title, optional url). `bn capture` stores items as
-/// "<title> — <url>"; a bare trailing URL is also recognized. Otherwise it's all title.
-pub(crate) fn split_item_text(text: &str) -> (String, Option<String>) {
-    if let Some((title, url)) = text.rsplit_once(" — ") {
-        let url = url.trim();
-        if url.starts_with("http") && !url.contains(' ') {
-            return (title.trim().to_string(), Some(url.to_string()));
-        }
-    }
-    (text.trim().to_string(), None)
-}
-
-/// Resolve the dispatch target from a raw arg: an issue/PR URL, a todo id / unique substring
-/// (looked up in the current note's open todos), or free text. Returns (title, url, source_todo_id).
-pub(crate) fn resolve_dispatch_item(
-    cfg: &Config,
-    ctx: Option<&Resolved>,
-    raw: &str,
-) -> (String, Option<String>, Option<String>) {
-    let raw = raw.trim();
-    if raw.starts_with("http") {
-        return (capture_title(raw), Some(raw.to_string()), None);
-    }
-    // Todo-id / substring resolution keys off the *current* note. When dispatching into another
-    // repo from outside any repo (no cwd context), there's no note to consult — treat as free text.
-    if let Some(note) = ctx.and_then(|c| bn_core::store::read(&cfg.note_file(c)).ok()) {
-        let todos = &note.front.todos;
-        let found = if is_dispatch_todo_id(raw) {
-            todos.iter().find(|t| t.id == raw)
-        } else {
-            let rl = raw.to_lowercase();
-            todos
-                .iter()
-                .find(|t| t.is_open_todo() && t.text.to_lowercase().contains(&rl))
-        };
-        if let Some(t) = found {
-            let (title, url) = split_item_text(&t.text);
-            return (title, url, Some(t.id.clone()));
-        }
-    }
-    (raw.to_string(), None, None)
-}
 
 /// Slugify a title into a branch-safe segment: lowercase, runs of non-alphanumerics → one '-',
 /// trimmed, capped so branch/dir names stay sane.
@@ -1182,42 +1136,7 @@ pub(crate) fn run_dispatch(
             })
         });
 
-    // Resolve the target repo + its bare path: an explicit `--repo <name>` (from anywhere, cwd
-    // ignored), else the cwd's repo. `resolve_bare_by_name` maps a GitHub name onto the local bare
-    // and errors (never silently) on an unknown one — surfaced as a `--json` envelope, not empty
-    // output (#452).
-    let (repo, bare) = match wt::resolve_bare_by_name(cfg, repo_override) {
-        Ok(Some((r, b))) => (r, b),
-        Ok(None) => {
-            let ctx = ctx.unwrap_or_else(|| {
-                fail_json(
-                    json,
-                    "dispatch",
-                    "no-repo",
-                    "bn dispatch: not in a repo — pass --repo <name> to target one from anywhere",
-                )
-            });
-            let bare = cfg.bare_dir().join(format!("{}.git", ctx.repo));
-            if !bare.is_dir() {
-                fail_json(
-                    json,
-                    "dispatch",
-                    "no-bare-repo",
-                    &format!(
-                        "bn dispatch: no bare repo at {} — dispatch needs the bare+worktree layout",
-                        bare.display()
-                    ),
-                );
-            }
-            (ctx.repo.clone(), bare)
-        }
-        Err(e) => fail_json(
-            json,
-            "dispatch",
-            "unknown-repo",
-            &format!("bn dispatch: {e}"),
-        ),
-    };
+    let (repo, bare) = authorization::resolve_authorized_repo(cfg, ctx, repo_override, json);
     // Repo-session containment: an explicit `--repo X` fired from a *different* repo's session is
     // refused (a neutral origin or X's own session pass through). Keeps each repo's work in its own
     // session without breaking `--repo`-from-anywhere or the orchestrator.
@@ -1319,7 +1238,8 @@ pub(crate) fn run_dispatch(
         .unwrap_or(false);
     let pipeline_investigate =
         routes_to_pipeline_investigate(pipeline_opt_in, agent_kind.is_some(), scout, skill);
-    let ship_solo_lane = !pipeline_investigate && !scout && matches!(skill, None | Some("ship-solo"));
+    let ship_solo_lane =
+        !pipeline_investigate && !scout && matches!(skill, None | Some("ship-solo"));
     let plan_gate =
         plan_gate_enabled(plan, cfg.dispatch_plan_review, yolo, scout) && !ship_solo_lane;
 

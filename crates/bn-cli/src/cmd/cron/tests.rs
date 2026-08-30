@@ -1,5 +1,15 @@
 use super::*;
 
+#[test]
+fn disabled_machine_has_no_desired_crons() {
+    let cfg = Config {
+        machine_profile: None,
+        ..Config::default()
+    };
+
+    assert!(desired_crons(&cfg, None).is_empty());
+}
+
 fn run_events(job: &str) -> Vec<bn_core::events::Event> {
     bn_core::events::read_all()
         .into_iter()

@@ -119,6 +119,9 @@ pub(crate) fn machine_owned() -> bool {
 /// suggestion is "running directly" when it is in fact sitting unqueued describes the opposite of
 /// what happened, and the whole point of the warning is that a degraded machine stays legible.
 pub(crate) fn active_with_fallback(cfg: &Config, producer: &str, fallback: &str) -> bool {
+    if !cfg.queue_enabled_here() {
+        return false;
+    }
     // Inside a dispatch, never. The decision to queue this work has already been made — by the
     // dispatcher, which is why it is executing it.
     if Dispatching::active() {

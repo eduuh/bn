@@ -137,7 +137,11 @@ pub async fn queue(State(state): State<AppState>) -> Json<Envelope> {
 ///
 /// Folds [`bn_core::queue::log`], the same code `bn queue log` renders, so the terminal and the
 /// browser cannot tell different stories about the same dispatcher.
-pub async fn queue_events(Query(q): Query<QueueEventsQuery>) -> Json<Envelope> {
+pub async fn queue_events(
+    State(state): State<AppState>,
+    Query(q): Query<QueueEventsQuery>,
+) -> Json<Envelope> {
+    let cfg = state.cfg.clone();
     let data = tokio::task::spawn_blocking(move || {
         let now = bn_core::util::now_epoch_secs();
         let window = q
@@ -165,9 +169,18 @@ pub async fn queue_events(Query(q): Query<QueueEventsQuery>) -> Json<Envelope> {
                     repo: q.repo.as_deref().filter(|r| !r.is_empty()),
                 },
             )
+            .into_iter()
+            .filter(|row| row.repo.is_empty() || cfg.queue_repo_allowed_here(&row.repo))
+            .collect()
         };
         let backlog = bn_core::backlog::load(&bn_core::backlog::backlog_path());
-        let runs = bn_core::queue::log::runs(&rows, backlog.entries(), now);
+        let entries: Vec<_> = backlog
+            .entries()
+            .iter()
+            .filter(|entry| cfg.queue_repo_allowed_here(&entry.repo))
+            .cloned()
+            .collect();
+        let runs = bn_core::queue::log::runs(&rows, &entries, now);
         let nodes = runs
             .iter()
             .filter(|run| !run.node.is_empty())
@@ -298,6 +311,7 @@ pub async fn queue_entries(
         q.limit,
     );
 
+    let cfg = state.cfg.clone();
     let build = move || {
         let bl = bn_core::backlog::load(&bn_core::backlog::backlog_path());
         let want = q.status.as_deref().filter(|s| !s.is_empty() && *s != "all");
@@ -307,6 +321,7 @@ pub async fn queue_entries(
         let mut rows: Vec<_> = bl
             .entries()
             .iter()
+            .filter(|e| cfg.queue_repo_allowed_here(&e.repo))
             .filter(|e| want.is_none_or(|s| e.status.label() == s))
             .filter(|e| repo.is_none_or(|r| e.repo.eq_ignore_ascii_case(r)))
             .filter(|e| kind.is_none_or(|k| e.kind.label() == k))
@@ -322,7 +337,11 @@ pub async fn queue_entries(
         // Counts over the *unfiltered* set, so the chips can show what is behind each one rather
         // than only what the current filter already selected.
         let mut counts = std::collections::BTreeMap::<String, usize>::new();
-        for e in bl.entries() {
+        for e in bl
+            .entries()
+            .iter()
+            .filter(|e| cfg.queue_repo_allowed_here(&e.repo))
+        {
             *counts.entry(e.status.label().to_string()).or_default() += 1;
         }
         serde_json::json!({
@@ -545,6 +564,8 @@ pub struct QueueClassBody {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::AppState;
+    use bn_core::resolver::{Config, MachineProfile};
 
     // The cache never evicts, so "the key space is finite" is not a nicety — it is the property
     // that stops a query string from growing the process without bound. These tests are where that
@@ -631,5 +652,29 @@ mod tests {
         }
         assert!(!known_class(""));
         assert!(!known_status(""));
+    }
+
+    #[tokio::test]
+    async fn queue_endpoint_reports_not_enabled_without_work_rows() {
+        let cfg = Config {
+            hostname: "web-only".to_string(),
+            machine_profile: Some(MachineProfile {
+                repos: vec!["acme/api".to_string()],
+                queue: false,
+                cron: false,
+                web: true,
+            }),
+            ..Config::default()
+        };
+        let state = AppState::with_live_addr(cfg, "127.0.0.1".to_string(), 7770);
+
+        let Json(envelope) = queue(State(state)).await;
+
+        assert!(envelope.ok);
+        assert_eq!(envelope.data["state"], "not_enabled");
+        assert_eq!(envelope.data["accepting"], false);
+        assert_eq!(envelope.data["entries"], serde_json::json!([]));
+        assert_eq!(envelope.data["active"], serde_json::json!([]));
+        assert_eq!(envelope.data["nodes"], serde_json::json!([]));
     }
 }

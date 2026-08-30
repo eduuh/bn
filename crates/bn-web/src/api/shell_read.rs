@@ -132,6 +132,18 @@ pub async fn attn(State(state): State<AppState>) -> Json<Envelope> {
 /// catalog on every poll fixes nothing, and the envelope has to survive the round trip either way.
 pub async fn cron(State(state): State<AppState>) -> Json<Envelope> {
     let cfg = state.cfg.clone();
+    if !cfg.cron_enabled_here() {
+        return Json(Envelope::success(
+            "cron",
+            json!({
+                "state": "not_enabled",
+                "machine": cfg.machine(),
+                "message": format!("cron is not enabled on this machine ('{}')", cfg.machine()),
+                "count": 0,
+                "jobs": [],
+            }),
+        ));
+    }
     let view = state
         .views
         .get_or_compute(crate::view_cache::CRON, move || {
@@ -155,5 +167,33 @@ pub async fn cron(State(state): State<AppState>) -> Json<Envelope> {
             err.as_str().unwrap_or("invalid cron catalog").to_string(),
         )),
         (None, None) => view_panicked("cron", "building the cron registry failed"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bn_core::resolver::{Config, MachineProfile};
+
+    #[tokio::test]
+    async fn cron_endpoint_reports_not_enabled_without_jobs() {
+        let cfg = Config {
+            hostname: "web-only".to_string(),
+            machine_profile: Some(MachineProfile {
+                repos: vec!["acme/api".to_string()],
+                queue: false,
+                cron: false,
+                web: true,
+            }),
+            ..Config::default()
+        };
+        let state = AppState::with_live_addr(cfg, "127.0.0.1".to_string(), 7770);
+
+        let Json(envelope) = cron(State(state)).await;
+
+        assert!(envelope.ok);
+        assert_eq!(envelope.data["state"], "not_enabled");
+        assert_eq!(envelope.data["count"], 0);
+        assert_eq!(envelope.data["jobs"], serde_json::json!([]));
     }
 }

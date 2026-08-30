@@ -12,6 +12,27 @@ use bn_core::queue::kind::{ExecSpec, Requirements, WorkClass};
 pub(crate) fn route(cfg: &Config, action: QueueCmd, json: bool) {
     use bn_core::clock::Clock;
     let now = bn_core::clock::RealClock.now_epoch_secs();
+    if !cfg.queue_enabled_here() {
+        crate::cmd::queue_scope::disable_if_authorized(cfg, crate::cmd::queue_install::disable);
+        if matches!(&action, QueueCmd::Status { .. }) {
+            crate::cmd::queue_scope::emit_not_enabled_status(cfg, json);
+            return;
+        }
+        if matches!(&action, QueueCmd::Badge) {
+            crate::cmd::queue_scope::emit_disabled_badge(cfg, json);
+            return;
+        }
+        fail_json(
+            json,
+            "queue",
+            "not_enabled",
+            &format!(
+                "bn queue: not enabled on this machine ('{}'); add queue = true under [machines.{}]",
+                cfg.machine(),
+                cfg.machine()
+            ),
+        );
+    }
     match action {
         QueueCmd::Status { repo } => emit_status(cfg, repo.as_deref(), now, json),
         QueueCmd::List {
@@ -21,6 +42,7 @@ pub(crate) fn route(cfg: &Config, action: QueueCmd, json: bool) {
             status,
             all,
         } => emit_list(
+            cfg,
             kind.as_deref(),
             repo.as_deref(),
             class_filter.as_deref(),
@@ -74,13 +96,14 @@ pub(crate) fn route(cfg: &Config, action: QueueCmd, json: bool) {
         } => crate::cmd::queue_pause::emit_pause(&scope, &reason, for_.as_deref(), now, json),
         QueueCmd::Resume { scope } => crate::cmd::queue_pause::emit_resume(&scope, now, json),
         QueueCmd::Why => crate::cmd::queue_tick::emit_why(json),
-        QueueCmd::Badge => emit_badge(now, json),
+        QueueCmd::Badge => crate::cmd::queue_scope::emit_badge(cfg, now, json),
         QueueCmd::Log {
             since,
             limit,
             kind,
             repo,
         } => crate::cmd::queue_log::emit_log(
+            cfg,
             &since,
             limit,
             kind.as_deref(),
@@ -88,103 +111,24 @@ pub(crate) fn route(cfg: &Config, action: QueueCmd, json: bool) {
             now,
             json,
         ),
-        QueueCmd::Timeline { date, class_filter } => {
-            crate::cmd::queue_timeline::emit_timeline(
-                cfg,
-                date.as_deref(),
-                class_filter.as_deref(),
-                json,
-            )
-        }
+        QueueCmd::Timeline { date, class_filter } => crate::cmd::queue_timeline::emit_timeline(
+            cfg,
+            date.as_deref(),
+            class_filter.as_deref(),
+            json,
+        ),
         QueueCmd::Finish {
             repo,
             id,
             exit_code,
-        } => crate::cmd::queue_tick::emit_finish(&repo, &id, exit_code, json),
+        } => {
+            crate::cmd::queue_scope::require_repo_allowed(cfg, &repo, json);
+            crate::cmd::queue_tick::emit_finish(&repo, &id, exit_code, json);
+        }
         QueueCmd::Nodes { skill } => {
             crate::cmd::queue_tick::emit_nodes(cfg, skill.as_deref(), json)
         }
     }
-
-    fn emit_badge(now: i64, json: bool) {
-        let decision = bn_core::queue::decision::QueueDecision::read();
-        let stale = decision
-            .as_ref()
-            .is_none_or(|d| d.dry_run || now.saturating_sub(d.at) > 180);
-        let backlog = backlog::load(&backlog::backlog_path());
-        let entries = backlog.entries();
-        let failed = entries
-            .iter()
-            .filter(|e| e.status == BacklogStatus::Failed)
-            .filter(|e| e.updated_at == 0 || now.saturating_sub(e.updated_at) <= 86_400)
-            .count();
-        let foreground_pending = entries
-            .iter()
-            .filter(|e| e.status == BacklogStatus::Pending)
-            .filter(|e| !bn_core::queue::classify::classify(e).mode.is_autonomous())
-            .count();
-        let foreground_running = entries
-            .iter()
-            .filter(|e| e.status == BacklogStatus::Leased)
-            .filter(|e| !bn_core::queue::classify::classify(e).mode.is_autonomous())
-            .count();
-        let held = decision
-            .as_ref()
-            .filter(|d| d.outcome == "held" && d.pending > 0)
-            .and_then(attention_hold)
-            .unwrap_or_default();
-        let text = if failed > 0 {
-            format!("Q !{failed}")
-        } else if stale {
-            "Q stale".to_string()
-        } else if matches!(held, "no-capable-node" | "cant-merge" | "conflict") {
-            format!("Q !{held}")
-        } else if foreground_running > 0 || foreground_pending > 0 {
-            let mut parts = Vec::new();
-            if foreground_running > 0 {
-                parts.push(format!("{foreground_running}▶"));
-            }
-            if foreground_pending > 0 {
-                parts.push(format!("{foreground_pending}·fg"));
-            }
-            format!("Q {}", parts.join(" "))
-        } else {
-            String::new()
-        };
-        if json {
-            println!(
-                "{}",
-                Envelope::success(
-                    "queue-badge",
-                    serde_json::json!({
-                        "text": text,
-                        "stale": stale,
-                        "failed": failed,
-                        "foreground_pending": foreground_pending,
-                        "foreground_running": foreground_running,
-                        "held": held,
-                    }),
-                )
-                .to_json()
-            );
-            return;
-        }
-        if !text.is_empty() {
-            println!("{text}");
-        }
-    }
-}
-
-fn attention_hold(d: &bn_core::queue::decision::QueueDecision) -> Option<&str> {
-    d.bind
-        .as_deref()
-        .filter(|bind| matches!(*bind, "no-capable-node" | "cant-merge" | "conflict"))
-        .or_else(|| {
-            d.deferred
-                .iter()
-                .map(|row| row.reason.as_str())
-                .find(|reason| matches!(*reason, "no-capable-node" | "cant-merge" | "conflict"))
-        })
 }
 
 /// The `bn queue add` options, bundled so the handler signature stays readable.
@@ -209,7 +153,10 @@ struct AddArgs<'a> {
 
 /// `bn queue cancel` — take pending work back out.
 fn emit_cancel(cfg: &Config, id: &str, repo: Option<&str>, now: i64, json: bool) {
-    let repo = repo.map(str::to_string).unwrap_or_else(|| resolve_or_exit(cfg).repo);
+    let repo = repo
+        .map(str::to_string)
+        .unwrap_or_else(|| resolve_or_exit(cfg).repo);
+    crate::cmd::queue_scope::require_repo_allowed(cfg, &repo, json);
     let path = backlog::backlog_path();
     let done = backlog::cancel(&path, &repo, id, now)
         .unwrap_or_else(|e| fail(&format!("bn queue cancel: could not update backlog: {e}")));
@@ -241,7 +188,10 @@ fn emit_cancel(cfg: &Config, id: &str, repo: Option<&str>, now: i64, json: bool)
 
 /// `bn queue priority` — move queued work up or down.
 fn emit_priority(cfg: &Config, id: &str, priority: i64, repo: Option<&str>, now: i64, json: bool) {
-    let repo = repo.map(str::to_string).unwrap_or_else(|| resolve_or_exit(cfg).repo);
+    let repo = repo
+        .map(str::to_string)
+        .unwrap_or_else(|| resolve_or_exit(cfg).repo);
+    crate::cmd::queue_scope::require_repo_allowed(cfg, &repo, json);
     let path = backlog::backlog_path();
     let done = backlog::set_priority(&path, &repo, id, priority, now)
         .unwrap_or_else(|e| fail(&format!("bn queue priority: could not update backlog: {e}")));
@@ -269,6 +219,7 @@ fn emit_snooze(cfg: &Config, id: &str, dur: &str, repo: Option<&str>, now: i64, 
     let repo = repo
         .map(str::to_string)
         .unwrap_or_else(|| resolve_or_exit(cfg).repo);
+    crate::cmd::queue_scope::require_repo_allowed(cfg, &repo, json);
     let path = backlog::backlog_path();
     let done = backlog::snooze(&path, &repo, id, until, now)
         .unwrap_or_else(|e| fail(&format!("bn queue snooze: could not update backlog: {e}")));
@@ -282,7 +233,10 @@ fn emit_snooze(cfg: &Config, id: &str, dur: &str, repo: Option<&str>, now: i64, 
             .to_json()
         );
     } else if done {
-        println!("{repo}/{id} snoozed until {}", bn_core::util::clock_hm(until));
+        println!(
+            "{repo}/{id} snoozed until {}",
+            bn_core::util::clock_hm(until)
+        );
     } else {
         println!("{repo}/{id} unchanged (absent, not pending, or already snoozed there)");
     }
@@ -299,6 +253,7 @@ fn emit_class(cfg: &Config, id: &str, class: &str, repo: Option<&str>, now: i64,
     let repo = repo
         .map(str::to_string)
         .unwrap_or_else(|| resolve_or_exit(cfg).repo);
+    crate::cmd::queue_scope::require_repo_allowed(cfg, &repo, json);
     let path = backlog::backlog_path();
     let done = backlog::set_class_override(&path, &repo, id, override_class, now)
         .unwrap_or_else(|e| fail(&format!("bn queue class: could not update backlog: {e}")));
@@ -334,12 +289,14 @@ fn emit_status(cfg: &Config, repo: Option<&str>, now: i64, json: bool) {
     let pending: Vec<&BacklogEntry> = backlog
         .entries()
         .iter()
+        .filter(|e| cfg.queue_repo_allowed_here(&e.repo))
         .filter(|e| e.status == BacklogStatus::Pending)
         .filter(|e| repo.is_none_or(|r| e.repo.eq_ignore_ascii_case(r)))
         .collect();
     let active: Vec<&BacklogEntry> = backlog
         .entries()
         .iter()
+        .filter(|e| cfg.queue_repo_allowed_here(&e.repo))
         .filter(|e| e.status == BacklogStatus::Leased)
         .filter(|e| repo.is_none_or(|r| e.repo.eq_ignore_ascii_case(r)))
         .collect();
@@ -348,8 +305,11 @@ fn emit_status(cfg: &Config, repo: Option<&str>, now: i64, json: bool) {
     if json {
         println!(
             "{}",
-            Envelope::success("queue-status", status_json(cfg, &pending, &active, &nodes, now))
-                .to_json()
+            Envelope::success(
+                "queue-status",
+                status_json(cfg, &pending, &active, &nodes, now)
+            )
+            .to_json()
         );
         return;
     }
@@ -395,9 +355,14 @@ fn print_dispatcher(cfg: &Config, now: i64) {
             "\u{f071} dispatcher STUCK — alive, but no pass has finished in {}",
             fmt_secs(bn_core::resolver::dispatcher_pass_age(now).unwrap_or(0))
         );
-        println!("    it is blocked inside something it started — `bn queue why` has the last pass");
+        println!(
+            "    it is blocked inside something it started — `bn queue why` has the last pass"
+        );
     } else if alive {
-        println!("\u{f0e7} dispatcher live · capturing {}", captured.join(", "));
+        println!(
+            "\u{f0e7} dispatcher live · capturing {}",
+            captured.join(", ")
+        );
     } else {
         println!(
             "\u{f071} dispatcher NOT running — {} would queue but are launching directly",
@@ -674,6 +639,7 @@ fn node_rows(cfg: &Config) -> Vec<NodeRow> {
 
 /// `bn queue list` — entries with their kind, priority, executor and requirements.
 fn emit_list(
+    cfg: &Config,
     kind: Option<&str>,
     repo: Option<&str>,
     class_filter: Option<&str>,
@@ -706,6 +672,7 @@ fn emit_list(
     let mut rows: Vec<&BacklogEntry> = backlog
         .entries()
         .iter()
+        .filter(|e| cfg.queue_repo_allowed_here(&e.repo))
         .filter(|e| want_kind.is_none_or(|k| e.kind == k))
         .filter(|e| want_status.is_none_or(|s| e.status == s))
         .filter(|e| repo.is_none_or(|r| e.repo.eq_ignore_ascii_case(r)))
@@ -769,15 +736,13 @@ fn emit_list(
             )),
         }
     }
-
 }
 
 fn class_matches(entry: &BacklogEntry, want: &str) -> bool {
-    want.is_empty()
-        || {
-            let class = bn_core::queue::classify::classify(entry);
-            class.mode.label() == want || class.subtype.label() == want
-        }
+    want.is_empty() || {
+        let class = bn_core::queue::classify::classify(entry);
+        class.mode.label() == want || class.subtype.label() == want
+    }
 }
 
 fn class_label(entry: &BacklogEntry) -> &'static str {
@@ -840,8 +805,12 @@ fn emit_add(cfg: &Config, item: &str, repo: Option<&str>, args: AddArgs, now: i6
         Some(r) => r.to_string(),
         None => resolve_or_exit(cfg).repo,
     };
+    crate::cmd::queue_scope::require_repo_allowed(cfg, &repo, json);
     if args.job_repo.is_some() != args.job_branch.is_some() {
         fail("bn queue add: --job-repo and --job-branch must be given together");
+    }
+    if let Some(job_repo) = args.job_repo.as_deref() {
+        crate::cmd::queue_scope::require_repo_allowed(cfg, job_repo, json);
     }
     // An explicit executor wins; otherwise the kind's default applies inside `BacklogEntry::new`,
     // which also folds the implied skill into the requirements.
@@ -911,8 +880,14 @@ fn emit_add(cfg: &Config, item: &str, repo: Option<&str>, args: AddArgs, now: i6
         bn_core::queue::jobs::classify(&mut spec, job, args.priority == 0);
     }
     let path = backlog::backlog_path();
-    let added = backlog::add(&path, &repo, std::slice::from_ref(&item.to_string()), &spec, now)
-        .unwrap_or_else(|e| fail(&format!("bn queue add: could not update backlog: {e}")));
+    let added = backlog::add(
+        &path,
+        &repo,
+        std::slice::from_ref(&item.to_string()),
+        &spec,
+        now,
+    )
+    .unwrap_or_else(|e| fail(&format!("bn queue add: could not update backlog: {e}")));
 
     if json {
         println!(
@@ -972,18 +947,17 @@ fn summarize(items: &[String], max: usize) -> String {
     if items.len() <= max {
         return items.join(", ");
     }
-    format!(
-        "{}, +{} more",
-        items[..max].join(", "),
-        items.len() - max
-    )
+    format!("{}, +{} more", items[..max].join(", "), items.len() - max)
 }
 
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }
-    format!("{}…", s.chars().take(max.saturating_sub(1)).collect::<String>())
+    format!(
+        "{}…",
+        s.chars().take(max.saturating_sub(1)).collect::<String>()
+    )
 }
 
 fn fmt_secs(secs: i64) -> String {

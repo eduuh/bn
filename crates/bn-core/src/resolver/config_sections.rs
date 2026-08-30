@@ -7,6 +7,20 @@
 
 use std::collections::HashMap;
 
+/// `[machines.<name>]`: the repositories and resident runtimes explicitly assigned to one stable
+/// machine identity. Every field is opt-in; omitted runtime flags deserialize to `false`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct MachineProfile {
+    #[serde(default)]
+    pub repos: Vec<String>,
+    #[serde(default)]
+    pub queue: bool,
+    #[serde(default)]
+    pub cron: bool,
+    #[serde(default)]
+    pub web: bool,
+}
+
 /// `[mcp]`: per-repo MCP wiring options (#323). `extras` is the opt-in list of curated
 /// planning/productivity MCP servers (`crate::mcp::EXTRAS` names) that `bn mcp init` — and the
 /// dispatch setup path — wire alongside bn's own server. Empty/absent = bn only.

@@ -16,6 +16,14 @@ impl Config {
         "machine".to_string()
     }
 
+    /// Whether queue work belongs to this machine.
+    ///
+    /// Repository-less automation is booked against [`Self::queue_home_repo`] and is
+    /// machine-scoped rather than subject to repository authorization.
+    pub fn queue_repo_allowed_here(&self, repo: &str) -> bool {
+        repo.eq_ignore_ascii_case(&self.queue_home_repo()) || self.repo_allowed_here(repo)
+    }
+
     /// The `[staff].home` pin as a value, so it can travel as an ordinary `home:<machine>`
     /// requirement rather than being re-checked by every scheduled job. Same pin
     /// `staff::home_gate` enforces.
@@ -220,4 +228,27 @@ fn read_stamp(path: &std::path::Path) -> Option<i64> {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|raw| raw.trim().parse::<i64>().ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resolver::MachineProfile;
+
+    #[test]
+    fn machine_queue_repo_bypasses_repo_authorization_but_unassigned_repos_do_not() {
+        let cfg = Config {
+            machine_profile: Some(MachineProfile {
+                repos: vec!["acme/assigned".to_string()],
+                queue: true,
+                cron: false,
+                web: false,
+            }),
+            ..Config::default()
+        };
+
+        assert!(cfg.queue_repo_allowed_here(&cfg.queue_home_repo()));
+        assert!(cfg.queue_repo_allowed_here("acme/assigned"));
+        assert!(!cfg.queue_repo_allowed_here("acme/unassigned"));
+    }
 }

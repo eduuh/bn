@@ -51,7 +51,7 @@ impl Snapshot {
     /// registry before capturing; everything else reads what it last wrote.
     pub fn capture(cfg: &Config, now: i64) -> Snapshot {
         let bl = backlog::load(&backlog::backlog_path());
-        let entries = bl.entries().to_vec();
+        let entries = eligible_entries(cfg, &bl);
         let pending: Vec<BacklogEntry> = entries
             .iter()
             .filter(|e| e.status == BacklogStatus::Pending)
@@ -150,6 +150,15 @@ impl Snapshot {
     }
 }
 
+fn eligible_entries(cfg: &Config, backlog: &backlog::Backlog) -> Vec<BacklogEntry> {
+    backlog
+        .entries()
+        .iter()
+        .filter(|entry| cfg.queue_repo_allowed_here(&entry.repo))
+        .cloned()
+        .collect()
+}
+
 /// What the machine is already committed to.
 ///
 /// Two sources, deliberately: leased backlog entries (whose kind and touches are known) **and** live
@@ -222,5 +231,106 @@ fn observed(cfg: &Config) -> Observed {
         cost_today_usd: 0.0,
         cost_today_coding_usd: 0.0,
         cost_today_research_usd: 0.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backlog::{AddSpec, ExecSpec};
+    use crate::hosts::{NodeRecord, NodeStatus};
+    use crate::queue::pause::PauseState;
+    use crate::queue::tick::{plan_tick, KindCaps, Presence, TickInputs};
+    use crate::resolver::MachineProfile;
+
+    #[test]
+    fn snapshot_excludes_unregistered_repos_before_planning() {
+        let cfg = Config {
+            machine_profile: Some(MachineProfile {
+                repos: vec!["acme/registered".to_string()],
+                queue: true,
+                cron: false,
+                web: false,
+            }),
+            ..Config::default()
+        };
+        let mut backlog = backlog::Backlog::new();
+        let spec = AddSpec {
+            kind: BacklogKind::Cron,
+            exec: ExecSpec::Shell {
+                cmd: "true".to_string(),
+            },
+            ..Default::default()
+        };
+        for (repo, id) in [
+            ("acme/unregistered", "blocked"),
+            ("acme/registered", "registered"),
+            ("machine", "machine-job"),
+        ] {
+            backlog.apply(BacklogEntry::new(repo, id, &spec, 900));
+        }
+
+        let pending = eligible_entries(&cfg, &backlog);
+        assert_eq!(
+            pending
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["registered", "machine-job"]
+        );
+
+        let caps = Caps {
+            max_local: 2,
+            research: Some(1),
+            min_free_ram_mb: None,
+            max_loadavg: None,
+            max_swap_pct: None,
+            tokens_per_hour: None,
+            daily_cost_usd: None,
+            daily_cost_usd_coding: None,
+            daily_cost_usd_research: None,
+            plan_gated: false,
+            remote_overflow: false,
+            local_owned: true,
+        };
+        let observed = Observed::default();
+        let kind_caps = KindCaps::default();
+        let pauses = PauseState::default();
+        let nodes = vec![NodeRecord {
+            node_id: "testbox".to_string(),
+            status: NodeStatus::Ready,
+            slots: 2,
+            last_heartbeat: 1_000,
+            ..Default::default()
+        }];
+        let plan = plan_tick(&TickInputs {
+            now: 1_000,
+            machine: "testbox",
+            pending: &pending,
+            in_flight: &[],
+            nodes: &nodes,
+            caps: &caps,
+            observed: &observed,
+            kind_caps: &kind_caps,
+            kinds: None,
+            goals: &[],
+            attention: &[],
+            max_express: 2,
+            windows: &[],
+            pauses: &pauses,
+            presence: Presence {
+                idle: true,
+                away_window: false,
+            },
+            mandatory_warming: false,
+        });
+
+        assert_eq!(
+            plan.start
+                .iter()
+                .map(|dispatch| dispatch.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["registered", "machine-job"]
+        );
     }
 }

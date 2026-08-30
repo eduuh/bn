@@ -4,6 +4,29 @@ Version-controlled scripts that cron triggers via `bn run <job>`. The script is 
 artifact — reviewable, diffable, in git — not an inline crontab command. This is the north
 star in practice: AI authors a script here once; cron runs it forever, for free.
 
+## Machine registration
+
+The synced `config.toml` must explicitly register every machine and the repositories and resident
+runtimes it may use:
+
+```toml
+[machines.MyLaptop]
+repos = ["bn", "owner/arena"]
+queue = true
+cron = true
+web = true
+```
+
+Use the exact identity reported by `bn machine`. A missing profile, repository, or flag is denied.
+This is an intentional migration requirement: after upgrading, add a profile on every machine
+before expecting cross-repo views, queue dispatch, cron jobs, or `bn-web` to run.
+
+Machine profiles are the outer boundary. `[nodes].owned_repos` still limits worker placement,
+`[jobs.only_on]` still limits individual job execution, and `[[cron]].only_on` still limits timer
+registration. Disabling cron and rerunning `bn cron register` prunes bn-managed timers; disabled
+queue/web services are unloaded by normal bn lifecycle reconciliation. Status commands remain
+available and report `not_enabled`.
+
 ## How it works
 
 - Each `*.sh` file is a job. `bn run meetings` executes `meetings.sh`. Many jobs are now native

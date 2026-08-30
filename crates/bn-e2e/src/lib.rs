@@ -99,7 +99,7 @@ impl Sandbox {
         std::fs::write(
             root.join("home/.bn/config/config.toml"),
             format!(
-                "[personal]\nnotes_root = \"{}\"\n\n[web]\nport = {port}\nbind = \"127.0.0.1\"\n",
+                "[personal]\nnotes_root = \"{}\"\n\n[web]\nport = {port}\nbind = \"127.0.0.1\"\n\n[machines.e2ehost]\nrepos = [\"repo\"]\nqueue = true\ncron = true\nweb = true\n",
                 root.join("notes").display()
             ),
         )

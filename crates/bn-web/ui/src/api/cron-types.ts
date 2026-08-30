@@ -42,6 +42,9 @@ export interface CronJob {
 
 /** GET /api/cron .data — the machine-wide cron registry. */
 export interface CronView {
+  state?: "not_enabled";
+  machine?: string;
+  message?: string;
   count: number;
   jobs: CronJob[];
 }

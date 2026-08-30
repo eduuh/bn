@@ -319,6 +319,20 @@ export function QueueVerdict({
     );
   }
 
+  if (data.state === "not_enabled") {
+    return (
+      <SectionCard
+        eyebrow="verdict"
+        title="Queue is not enabled"
+        action={<Badge variant="muted">not enabled</Badge>}
+      >
+        <p className="text-sm text-muted-foreground">
+          {data.message ?? "This machine is not configured to accept queued work."}
+        </p>
+      </SectionCard>
+    );
+  }
+
   const held = data.decision?.deferred ?? [];
   const groups = groupByReason(held);
 

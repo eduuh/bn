@@ -327,3 +327,66 @@ pub(crate) fn emit_task_triage(cfg: &Config, day: Option<&str>, dry_run: bool, a
         println!("{}", run.output.trim());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    #[cfg(unix)]
+    #[test]
+    fn task_enhance_launches_the_copilot_harness_from_the_shared_job_path() {
+        let _lock = bn_core::test_support::env_lock();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let overlay = temp.path().join("overlay");
+        let home = temp.path().join("home");
+        let agents = overlay.join("agents");
+        let bin = home.join(".local/bin");
+        fs::create_dir_all(&agents).expect("agents dir");
+        fs::create_dir_all(&bin).expect("copilot dir");
+
+        let copilot = bin.join("copilot");
+        fs::write(&copilot, "#!/bin/sh\nprintf 'copilot-stub\\n'\n").expect("copilot stub");
+        let mut perms = fs::metadata(&copilot).expect("copilot metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&copilot, perms).expect("copilot executable");
+
+        fs::write(
+            agents.join("task-enhance.md"),
+            concat!(
+                "---\n",
+                "name: task-enhance\n",
+                "kind: command\n",
+                "harness: copilot\n",
+                "arguments:\n",
+                "  - name: packet\n",
+                "    required: true\n",
+                "---\n",
+                "{{packet}}\n",
+            ),
+        )
+        .expect("task-enhance manifest");
+
+        let _home = bn_core::test_support::EnvGuard::set("HOME", &home);
+        let _agents_dir = bn_core::test_support::EnvGuard::set("BN_AGENTS_DIR", &agents);
+        let path = temp.path().join("path");
+        fs::create_dir_all(&path).expect("path dir");
+        let _path = bn_core::test_support::EnvGuard::set("PATH", &path);
+        let cfg = Config {
+            personal_root: temp.path().join("personal"),
+            work_root: temp.path().join("work"),
+            overlay_root: Some(overlay),
+            hostname: "test-host".to_string(),
+            ..Default::default()
+        };
+
+        let run = run_task_agent(&cfg, "task-enhance", "hello", false);
+
+        assert!(run.launched, "the harness should launch");
+        assert_eq!(run.prompt.trim(), "hello");
+        assert_eq!(run.output.trim(), "copilot-stub");
+    }
+}

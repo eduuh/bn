@@ -31,17 +31,17 @@ pub(crate) fn render_tmux_mcp_badge(enabled: bool, listening: bool, port: u16) -
 /// `bn tmux-mcp ensure` — idempotently ensure the managed bn-web/MCP service is reachable.
 pub(crate) fn emit_tmux_mcp_ensure(cfg: &Config) {
     if tmux_mcp_should_start(
-        cfg.web.tmux_mcp_autostart,
+        cfg.web_enabled_here() && cfg.web.tmux_mcp_autostart,
         crate::serve::port_listening(cfg.web.port),
     ) {
-        crate::serve::run(None, false, true, false);
+        crate::serve::run(cfg, None, false, true, false);
     }
 }
 
 /// `bn tmux-mcp badge` — emit a fast green/red health segment for the configured service port.
 pub(crate) fn emit_tmux_mcp_badge(cfg: &Config) {
     if let Some(badge) = render_tmux_mcp_badge(
-        cfg.web.tmux_mcp_badge,
+        cfg.web_enabled_here() && cfg.web.tmux_mcp_badge,
         crate::serve::port_listening(cfg.web.port),
         cfg.web.port,
     ) {
@@ -320,6 +320,7 @@ pub(crate) fn emit_tmux_done_badge(win: &str) {
     if win.is_empty() {
         return;
     }
+
     let name = crate::proc::tmux_raw(&["display-message", "-p", "-t", win, "#{window_name}"])
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -465,7 +466,10 @@ pub(crate) fn emit_tmux_help() {
     hdr("Worktrees (windows)");
     row("o", "open worktree window (create from main if new)");
     row("W", "always open a NEW worktree window");
-    row("x", "close this worktree — return its lease, drop its window");
+    row(
+        "x",
+        "close this worktree — return its lease, drop its window",
+    );
     row("X", "kill this window (all panes); the worktree stays");
     row("D", "pick any worktree to delete");
 
@@ -515,7 +519,10 @@ pub(crate) fn emit_tmux_help() {
         &format!("navigate    {D}S-arrows{N} resize    {D}z{N} zoom"),
     );
     row("! / @", "break-pane / join-pane");
-    row("q", "kill pane (worktree + lease untouched — x is the close)");
+    row(
+        "q",
+        "kill pane (worktree + lease untouched — x is the close)",
+    );
 
     hdr("Tools & popups");
     row("e", &format!("floating nvim (toggle)    {D}g{N} lazygit"));
@@ -562,6 +569,7 @@ pub(crate) fn prompt_capture(section: &str) -> Option<String> {
     if std::io::stdin().read_line(&mut buf).is_err() {
         return None;
     }
+
     let text = buf.trim_end_matches(['\n', '\r']).to_string();
     if text.is_empty() {
         None
@@ -570,3 +578,13 @@ pub(crate) fn prompt_capture(section: &str) -> Option<String> {
     }
 }
 
+#[cfg(test)]
+mod machine_scope_tests {
+    use super::*;
+
+    #[test]
+    fn disabled_web_neither_starts_nor_renders_a_badge() {
+        assert!(!tmux_mcp_should_start(false, false));
+        assert_eq!(render_tmux_mcp_badge(false, true, 7770), None);
+    }
+}

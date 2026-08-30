@@ -191,6 +191,7 @@ fn main() {
     reset_sigpipe();
     let cli = Cli::parse();
     let cfg = Config::load();
+    serve::reconcile(&cfg);
 
     // Verbose/debug action log (opt-in): CLI `--verbose/--debug` OR env (`BN_VERBOSE`/`BN_LOG`) OR
     // `[log]` config.toml. Initialize once, before any action runs, so the runner seam and command
@@ -203,8 +204,8 @@ fn main() {
     // `bn run`), so it never recurses.
     if !matches!(&cli.command, Some(Command::Staff(CmdStaff::Run { .. }))) {
         maybe_fire_catchup(&cfg);
-        // The queue is on by default, so its dispatcher has to be too — a queue nothing drains
-        // silently stops the machine. One stat in the common case; see `queue_install`.
+        // An enabled queue needs a dispatcher; a disabled one needs any old managed dispatcher
+        // removed. One stat in the common enabled case; see `queue_install`.
         //
         // Skipped for `bn queue` itself: its fallback path can run a tick, and a tick triggered by
         // the command that was about to tick is one tick too many.

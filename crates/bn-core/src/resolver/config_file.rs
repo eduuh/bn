@@ -54,6 +54,8 @@ pub(super) struct ConfigFile {
     orchestrate: Option<OrchestrateSection>,
     /// `[queue]`: the machine-wide work queue — which producers enqueue, and its ceilings.
     queue: Option<QueueSection>,
+    /// `[machines.<name>]`: synced machine registrations. Missing current profile is deny-all.
+    machines: Option<HashMap<String, MachineProfile>>,
     /// `[hosts.<alias>]`: ssh-host enrichment for `bn connect`. Keyed by
     /// the ssh-config `Host` alias; connection details stay in `~/.ssh/config`.
     pub(super) hosts: Option<HashMap<String, crate::hosts::HostExtra>>,
@@ -70,6 +72,12 @@ pub(super) struct ConfigFile {
 use super::config_sections::*;
 
 impl ConfigFile {
+    pub(super) fn machine_profile(&self, machine: &str) -> Option<MachineProfile> {
+        self.machines
+            .as_ref()
+            .and_then(|profiles| profiles.get(machine).cloned())
+    }
+
     /// `[queue].capture` — the producers that enqueue instead of launching.
     pub(super) fn queue_capture(&self) -> Option<Vec<String>> {
         self.win()
@@ -143,17 +151,32 @@ impl ConfigFile {
             .unwrap_or_default()
     }
 
-    /// Read + parse `config.toml`. `None` when the file is absent; a parse error is reported
-    /// to stderr and treated as absent so a malformed file degrades to legacy/defaults
-    /// rather than bricking every command.
+    /// Read + parse `config.toml`. `None` when the file is absent or invalid; errors are reported
+    /// while ordinary config resolution remains fail-closed.
     pub(super) fn load() -> Option<ConfigFile> {
+        Self::load_with_status().0
+    }
+
+    /// Read + parse `config.toml`, retaining whether a real file parsed successfully.
+    ///
+    /// Callers that reconcile managed services need this distinction: an absent or malformed file
+    /// must deny execution, but it must not be treated as an explicit instruction to uninstall
+    /// services.
+    pub(super) fn load_with_status() -> (Option<ConfigFile>, bool) {
         let path = config_file_path();
-        let text = std::fs::read_to_string(&path).ok()?;
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return (None, false),
+            Err(error) => {
+                eprintln!("bn: could not read {}: {error}", path.display());
+                return (None, false);
+            }
+        };
         match toml::from_str::<ConfigFile>(&text) {
-            Ok(cf) => Some(cf),
+            Ok(cf) => (Some(cf), true),
             Err(e) => {
                 eprintln!("bn: ignoring malformed {}: {e}", path.display());
-                None
+                (None, false)
             }
         }
     }

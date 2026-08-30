@@ -65,6 +65,7 @@ fn web_args(port: Option<u16>, lan: bool) -> Vec<String> {
 /// `bn serve [status|stop]` dispatch. Bare `bn serve` (`action: None`) runs/daemonizes the server;
 /// the `status` / `stop` subcommands manage the daemon's lifecycle.
 pub(crate) fn run_cmd(
+    cfg: &Config,
     action: Option<ServeCmd>,
     port: Option<u16>,
     lan: bool,
@@ -72,14 +73,25 @@ pub(crate) fn run_cmd(
     json: bool,
 ) {
     match action {
-        None => run(port, lan, daemon, json),
-        Some(ServeCmd::Status { port }) => status(port, json),
+        None => run(cfg, port, lan, daemon, json),
+        Some(ServeCmd::Status { port }) => status(cfg, port, json),
         Some(ServeCmd::Stop) => stop(json),
     }
 }
 
 /// `bn serve [--port] [--lan] [--daemon]`.
-pub(crate) fn run(port: Option<u16>, lan: bool, daemon: bool, json: bool) {
+pub(crate) fn run(cfg: &Config, port: Option<u16>, lan: bool, daemon: bool, json: bool) {
+    if !cfg.web_enabled_here() {
+        fail_json(
+            json,
+            "serve",
+            "not_enabled",
+            &format!(
+                "bn serve: web is not enabled on this machine ('{}')",
+                cfg.machine()
+            ),
+        );
+    }
     let bin = resolve_bn_web();
     let args = web_args(port, lan);
 
@@ -164,7 +176,27 @@ fn serve_daemon(bin: &std::path::Path, args: &[String], json: bool) {
 /// launchd plist / systemd unit on disk) and is *something listening* on the port. This is the
 /// operator-side twin of the dashboard's honest connection banner (#499): "down" means installed
 /// but not serving, not an eternal spinner.
-fn status(port: Option<u16>, json: bool) {
+fn status(cfg: &Config, port: Option<u16>, json: bool) {
+    if !cfg.web_enabled_here() {
+        let message = format!("web is not enabled on this machine ('{}')", cfg.machine());
+        if json {
+            println!(
+                "{}",
+                Envelope::success(
+                    "serve",
+                    serde_json::json!({
+                        "state": "not_enabled",
+                        "machine": cfg.machine(),
+                        "message": message,
+                    }),
+                )
+                .to_json()
+            );
+        } else {
+            println!("bn serve: {message}");
+        }
+        return;
+    }
     let port = resolved_port(port);
     let installed = crate::launchd::web_installed() || crate::systemd::web_installed();
     let listening = port_listening(port);
@@ -180,6 +212,7 @@ fn status(port: Option<u16>, json: bool) {
         println!("{}", Envelope::success("serve", data).to_json());
         return;
     }
+
     println!("bn serve: {}", state.summary());
     println!(
         "  port {port}: {}   managed service: {}",
@@ -195,6 +228,15 @@ fn status(port: Option<u16>, json: bool) {
     } else if matches!(state, ServeState::NotInstalled) {
         println!("  start it with `bn serve --daemon` (managed) or `bn serve` (foreground).");
     }
+}
+
+/// Reconcile the managed web service with the current machine policy.
+pub(crate) fn reconcile(cfg: &Config) {
+    if cfg.web_enabled_here() || !cfg.destructive_reconcile_allowed() {
+        return;
+    }
+    crate::launchd::web_uninstall();
+    crate::systemd::web_uninstall();
 }
 
 /// How long to wait between liveness polls while a signalled listener shuts down.

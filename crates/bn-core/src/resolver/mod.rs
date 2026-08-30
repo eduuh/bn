@@ -14,14 +14,15 @@ mod config_sections;
 mod context;
 mod dirs;
 mod jobs;
+mod machine_config;
 mod paths;
 mod queue_config;
 mod tools_config;
 mod util;
 
 pub use config::{
-    Config, ContextError, LogConfig, PipelineConfig, PipelineModel, RepoBranch, RepoConfig,
-    RepoPlacementPolicy, Resolved, StageConfig, WebConfig,
+    Config, ContextError, LogConfig, MachineProfile, PipelineConfig, PipelineModel, RepoBranch,
+    RepoConfig, RepoPlacementPolicy, Resolved, StageConfig, WebConfig,
 };
 pub use context::{repo_root, resolve, resolve_hint, resolve_target};
 pub use dirs::{

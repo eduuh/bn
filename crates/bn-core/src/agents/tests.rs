@@ -248,6 +248,13 @@ fn shipped_agent_catalog_is_valid() {
             "{name} lost contract marker {contract:?}"
         );
     }
+
+    let task_enhance = catalog.find("task-enhance").expect("task-enhance agent");
+    assert_eq!(task_enhance.harness.as_deref(), Some("copilot"));
+    assert!(
+        task_enhance.model.is_none(),
+        "task-enhance should not pin a model after the stalled-cron recovery"
+    );
 }
 
 #[test]

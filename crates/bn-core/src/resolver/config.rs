@@ -2,6 +2,7 @@
 //! overrides), the [`Resolved`] context key, [`ContextError`], and the classification predicates.
 
 use super::config_file::ConfigFile;
+pub use super::config_sections::MachineProfile;
 use super::dirs::config_dir;
 use super::queue_config::QueueConfig;
 use super::util::{
@@ -202,6 +203,12 @@ pub struct Config {
     pub worktree_dir: PathBuf,
     pub work_repos: Vec<String>,
     pub hostname: String,
+    /// The `[machines.<machine>]` profile resolved for [`machine`](Self::machine). `None` means
+    /// this machine is unregistered and therefore has no repository or runtime permissions.
+    pub machine_profile: Option<MachineProfile>,
+    /// Whether the on-disk config file was read and parsed successfully. Service reconciliation
+    /// may only remove managed services when this is true.
+    pub config_file_loaded: bool,
     /// Per-job machine allowlist from `[jobs.only_on]`: job → machines it may run on. A job
     /// absent from the map runs everywhere. Backs `bn run`'s per-host gating.
     pub job_only_on: HashMap<String, Vec<String>>,
@@ -384,6 +391,15 @@ impl Default for Config {
             worktree_dir: PathBuf::new(),
             work_repos: Vec::new(),
             hostname: String::new(),
+            // `Config::default()` is predominantly a test constructor. Keep those focused tests
+            // permissive; production `load()`/`from_env()` resolve a missing profile to `None`.
+            machine_profile: Some(MachineProfile {
+                repos: vec!["*".to_string()],
+                queue: true,
+                cron: true,
+                web: true,
+            }),
+            config_file_loaded: false,
             job_only_on: HashMap::new(),
             weekly_anchor: 1,
             sla_first_review_hours: 4.0,
@@ -442,7 +458,10 @@ impl Config {
     /// Production entry: layer defaults → `config.toml` → legacy plaintext → env overrides.
     /// Reads the real config file (`$BN_CONFIG` or `<config_dir>/config.toml`).
     pub fn load() -> Config {
-        Config::resolve(ConfigFile::load().as_ref())
+        let (file, config_file_loaded) = ConfigFile::load_with_status();
+        let mut cfg = Config::resolve(file.as_ref());
+        cfg.config_file_loaded = config_file_loaded;
+        cfg
     }
 
     /// Build config from the environment only (no config file). Kept for the test contract
@@ -514,6 +533,9 @@ impl Config {
         let hostname = non_empty_env("BN_HOSTNAME")
             .or_else(|| file.and_then(|f| f.hostname()))
             .unwrap_or_else(stable_machine);
+        let machine_profile = file
+            .and_then(|f| f.machine_profile(&hostname))
+            .map(Self::normalize_machine_profile);
 
         let job_only_on = file.map(|f| f.job_only_on()).unwrap_or_default();
 
@@ -831,6 +853,8 @@ impl Config {
             worktree_dir,
             work_repos,
             hostname,
+            machine_profile,
+            config_file_loaded: false,
             job_only_on,
             weekly_anchor,
             screenshot_dir,
@@ -879,23 +903,6 @@ impl Config {
             routine,
             notify,
         }
-    }
-
-    /// Whether `job` is allowed to run on this host. A job listed in `[jobs.only_on]` runs only
-    /// on its named machines (matched against [`machine`]); any job not listed runs everywhere.
-    /// This is how `bn run` makes a cron laptop-specific without per-machine installers.
-    pub fn job_allowed_here(&self, job: &str) -> bool {
-        match self.job_only_on.get(job) {
-            Some(machines) => machines.iter().any(|m| m == self.machine()),
-            None => true,
-        }
-    }
-    /// Whether `repo` is in the work allowlist (`[work].work_repos`). Matched on the trailing
-    /// path segment so a gh `owner/repo` identifier (`m365-core/arena`) and a bare bn repo name
-    /// (`arena`) classify the same.
-    pub fn is_work_repo(&self, repo: &str) -> bool {
-        let base = repo.rsplit('/').next().unwrap_or(repo);
-        self.work_repos.iter().any(|w| w == base || w == repo)
     }
 
     /// The repo's configured NATIVE verify command (`[repo.<name>].verify`, #454), if any. The
@@ -966,13 +973,6 @@ impl Config {
             effort: profile.effort,
             harness: profile.harness,
         }
-    }
-
-    /// Whether a repo should appear in cross-repo views on this machine. Always true on a
-    /// personal machine; on a [`work_only`](Config::work_only) machine, only work repos pass —
-    /// the single predicate that keeps personal work off a work screen.
-    pub fn is_visible_repo(&self, repo: &str) -> bool {
-        !self.work_only || self.is_work_repo(repo)
     }
 
     fn normalized_capabilities(values: &[String]) -> Vec<String> {

@@ -434,9 +434,13 @@ export function Cron() {
       {!cron.isLoading && !cron.isError && jobs.length === 0 && (
         <Card className="flex flex-col items-center gap-2 px-6 py-12 text-center">
           <CalendarClock className="h-8 w-8 text-muted-foreground" />
-          <h3 className="text-lg font-semibold">No cron jobs</h3>
+          <h3 className="text-lg font-semibold">
+            {cron.data?.state === "not_enabled" ? "Cron is not enabled" : "No cron jobs"}
+          </h3>
           <p className="max-w-sm text-sm text-muted-foreground">
-            No declared crons or recorded runs on this machine yet.
+            {cron.data?.state === "not_enabled"
+              ? (cron.data.message ?? "This machine is not configured to run scheduled jobs.")
+              : "No declared crons or recorded runs on this machine yet."}
           </p>
         </Card>
       )}

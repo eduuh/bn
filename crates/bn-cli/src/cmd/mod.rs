@@ -57,6 +57,7 @@ pub(crate) mod queue_install;
 pub(crate) mod queue_log;
 pub(crate) mod queue_pause;
 pub(crate) mod queue_producers;
+pub(crate) mod queue_scope;
 pub(crate) mod queue_tick;
 pub(crate) mod queue_timeline;
 pub(crate) mod recall;

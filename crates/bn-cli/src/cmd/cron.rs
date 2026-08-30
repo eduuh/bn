@@ -6,6 +6,11 @@
 //! (`bn cron`) rather than from a parked terminal.
 use crate::*;
 
+#[path = "cron/machine_scope.rs"]
+mod machine_scope;
+pub(crate) use machine_scope::emit_cron_running;
+use machine_scope::{desired_crons, keepalive_status};
+
 fn run_builtin_job(
     cfg: &Config,
     ctx: Option<&Resolved>,
@@ -124,11 +129,15 @@ fn run_job_inner(
     staff_json: bool,
     now: bool,
 ) -> i32 {
+    if !machine_scope::run_enabled(cfg) {
+        return 1;
+    }
     // The scheduler must be able to record its own catalog-load failure. Resolving it through the
     // catalog first would return before the common wrapper could write the failing scheduler row.
     if job == "agent-scheduler" {
-        if let Some(queued) =
-            (!now).then(|| crate::cmd::queue_producers::maybe_capture_job(cfg, ctx, job)).flatten()
+        if let Some(queued) = (!now)
+            .then(|| crate::cmd::queue_producers::maybe_capture_job(cfg, ctx, job))
+            .flatten()
         {
             return i32::from(!queued);
         }
@@ -176,9 +185,7 @@ fn run_job_inner(
         .as_ref()
         .and_then(|agent| agent.run.as_deref().map(|command| (agent, command)))
     {
-        return run_recorded_job(cfg, ctx, job, agent.scope, || {
-            run_custom_command(command)
-        });
+        return run_recorded_job(cfg, ctx, job, agent.scope, || run_custom_command(command));
     }
     if let Some(code) = run_builtin_job(cfg, ctx, job, agent.as_ref(), staff_json) {
         return code;
@@ -220,32 +227,10 @@ pub(crate) use schedule::schedule_text;
 mod drift;
 pub(crate) use drift::cron_drift;
 
-/// Health of the WSL keepalive Windows task (the one running `ensure-tmux`). `None` when it's
-/// fine — or when we're not on WSL, where the warning is irrelevant. `Some(reason)` when it's
-/// missing or disabled, which silently halts every systemd timer that needs WSL held up.
-pub(crate) fn keepalive_status(wintasks: &[winsched::WinTask]) -> Option<&'static str> {
-    if !winsched::on_wsl() {
-        return None;
-    }
-    match wintasks.iter().find(|w| w.job == "ensure-tmux") {
-        Some(w) if w.disabled() => Some("disabled"),
-        Some(_) => None,
-        None => Some("missing"),
-    }
-}
-
-/// `bn cron running`: a compact badge of jobs running right now, for the tmux status bar.
-/// Prints nothing when idle so the bar stays clean; one job → `⟳ <job>`; more → `⟳ <job>+N`.
-pub(crate) fn emit_cron_running() {
-    let jobs = bn_core::events::running_jobs();
-    match jobs.split_first() {
-        None => {}
-        Some((first, [])) => println!("⟳ {first}"),
-        Some((first, rest)) => println!("⟳ {first}+{}", rest.len()),
-    }
-}
-
 pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json: bool) {
+    if machine_scope::emit_disabled_dashboard(cfg, as_json) {
+        return;
+    }
     let scripts = resolver::list_jobs(cfg, ctx);
     let runs = bn_core::events::cron_status();
     let systemd = have_systemctl();
@@ -310,9 +295,11 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
             .iter()
             .find(|cron| cron.entry.job == name)
             .map(|cron| cron.scope.label())
-            .or_else(|| script(name)
-            .map(|s| s.scope.label())
-            .or_else(|| run(name).map(|r| r.scope.as_str())))
+            .or_else(|| {
+                script(name)
+                    .map(|s| s.scope.label())
+                    .or_else(|| run(name).map(|r| r.scope.as_str()))
+            })
             .unwrap_or("?")
     };
     let schedule = |name: &str| {
@@ -618,8 +605,10 @@ pub(crate) fn emit_cron_register(
     dry_run: bool,
     as_json: bool,
 ) {
-    bn_core::agents::discover(cfg, ctx)
-        .unwrap_or_else(|error| fail(&format!("bn cron register: {error}")));
+    if cfg.cron_enabled_here() {
+        bn_core::agents::discover(cfg, ctx)
+            .unwrap_or_else(|error| fail(&format!("bn cron register: {error}")));
+    }
 
     // Prefer the bindir-independent stable anchor (`<config_dir>/bn`, which install.sh keeps
     // pointed at the live binary) so the systemd units survive a bindir move; fall back to the
@@ -633,7 +622,7 @@ pub(crate) fn emit_cron_register(
             .to_string_lossy()
             .into_owned()
     };
-    let want = bn_core::crons::discover(cfg, ctx);
+    let want = desired_crons(cfg, ctx);
 
     // Backend: systemd on Linux; launchd user agents on macOS. `have` and the on-disk artifact
     // dir are backend-shaped, but the diff/prune logic below is shared (launchd agents are mapped
@@ -678,6 +667,7 @@ pub(crate) fn emit_cron_register(
                     let label = cron_gen::launchd_label(rc);
                     on_disk(dir.join(format!("{label}.plist"))) == plist
                 }
+
                 Err(e) => {
                     // A schedule launchd can't express isn't an install failure — it's still
                     // scheduled on Linux via systemd. Name the timer and skip it so `--core`
@@ -921,6 +911,9 @@ pub(crate) fn today_epoch() -> i64 {
 /// in the state dir; the spawned children carry `--if-stale` (a no-op if their timer already ran
 /// today) and are fully detached, so this never blocks or delays the command you actually ran.
 pub(crate) fn maybe_fire_catchup(cfg: &Config) {
+    if !cfg.cron_enabled_here() {
+        return;
+    }
     // The spawned children are `bn run …`, already excluded by the caller's match — but guard with
     // an env flag too, so any nested bn call inside a job can't re-trigger the sweep.
     if std::env::var_os("BN_NO_CATCHUP").is_some() {

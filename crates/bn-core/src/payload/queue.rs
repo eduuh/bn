@@ -10,6 +10,24 @@ use serde_json::Value;
 /// One builder for both surfaces: a dashboard that computes its own version of "what is queued"
 /// is a dashboard that will eventually disagree with the command line about it.
 pub fn queue_data(cfg: &crate::resolver::Config, now: i64) -> Value {
+    if !cfg.queue_enabled_here() {
+        return serde_json::json!({
+            "state": "not_enabled",
+            "machine_name": cfg.machine(),
+            "message": format!("queue is not enabled on this machine ('{}')", cfg.machine()),
+            "now": now,
+            "accepting": false,
+            "pauses": [],
+            "pending": 0,
+            "kinds": [],
+            "entries": [],
+            "active": [],
+            "nodes": [],
+            "machine": null,
+            "decision": null,
+            "reservoir": null,
+        });
+    }
     use crate::queue::kind::{BacklogKind, WorkClass};
     let snap = crate::queue::snapshot::Snapshot::capture(cfg, now);
     serde_json::json!({
@@ -177,4 +195,34 @@ pub fn reservoir_of(file: &crate::todo::TodoFile, today: &str) -> Value {
         "stuck": stuck,
         "total": needs_scoping + ready + failed + stuck,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resolver::Config;
+
+    #[test]
+    fn disabled_queue_is_explicit_and_has_no_work_rows() {
+        let cfg = Config {
+            hostname: "web-only".to_string(),
+            machine_profile: Some(crate::resolver::MachineProfile {
+                repos: vec!["acme/api".to_string()],
+                queue: false,
+                cron: false,
+                web: true,
+            }),
+            ..Config::default()
+        };
+
+        let data = queue_data(&cfg, 123);
+
+        assert_eq!(data["state"], "not_enabled");
+        assert_eq!(data["machine_name"], "web-only");
+        assert_eq!(data["accepting"], false);
+        assert_eq!(data["pending"], 0);
+        assert_eq!(data["entries"], serde_json::json!([]));
+        assert_eq!(data["active"], serde_json::json!([]));
+        assert_eq!(data["nodes"], serde_json::json!([]));
+    }
 }

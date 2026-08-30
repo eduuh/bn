@@ -1,10 +1,8 @@
 //! Keeping the dispatcher installed, without anyone having to remember to.
 //!
-//! The queue is on by default, and a queue whose dispatcher is not running is a queue that quietly
-//! stops the machine. The liveness guard makes that *safe* — producers fall back to launching
-//! inline — but safe is not the same as working: your scheduled work would run, just never through
-//! the queue, so windows and caps and the timeline would all be describing a system nobody was
-//! using.
+//! The queue is explicitly enabled per machine, and an enabled queue whose dispatcher is not
+//! running is a queue that quietly stops the machine. The liveness guard makes that *safe* —
+//! producers fall back to launching inline — but safe is not the same as working.
 //!
 //! So bn ensures the timer exists rather than waiting to be asked. Three properties make that
 //! defensible rather than presumptuous:
@@ -71,7 +69,10 @@ pub(crate) fn dispatcher_bin() -> String {
     if anchor.exists() {
         anchor.to_string_lossy().into_owned()
     } else {
-        resolver::bin_dir().join("bn").to_string_lossy().into_owned()
+        resolver::bin_dir()
+            .join("bn")
+            .to_string_lossy()
+            .into_owned()
     }
 }
 
@@ -145,9 +146,16 @@ const FALLBACK_TICK_AFTER_SECS: i64 = 600;
 ///
 /// Called once per `bn` invocation. Returns immediately in the common case.
 pub(crate) fn ensure(cfg: &Config) {
+    if !cfg.queue_enabled_here() {
+        if cfg.destructive_reconcile_allowed() {
+            disable();
+        }
+        return;
+    }
     if std::env::var_os(OPT_OUT).is_some() || std::env::var_os("BN_NO_CATCHUP").is_some() {
         return;
     }
+
     // A tick must never install or invoke itself.
     if std::env::var_os("BN_IN_QUEUE_TICK").is_some() {
         return;
@@ -166,6 +174,32 @@ pub(crate) fn ensure(cfg: &Config) {
         // No init system to install into. Fall back to ticking inline, rarely.
         Install::Unsupported => fallback_tick(cfg),
     }
+}
+
+/// Remove only bn's managed resident queue service. This is the disable half of reconciliation:
+/// changing the synced machine profile takes effect on the next ordinary `bn` invocation.
+pub(crate) fn disable() {
+    if cfg!(target_os = "linux") {
+        let systemd = crate::cmd::cron::have_systemctl();
+        if systemd {
+            let _ = crate::cmd::cron::systemctl(&["disable", "--now", UNIT]);
+        }
+        let path = crate::cmd::cron::systemd_user_dir().join(UNIT);
+        if std::fs::remove_file(path).is_ok() && systemd {
+            let _ = crate::cmd::cron::systemctl(&["daemon-reload"]);
+        }
+    }
+    if cfg!(target_os = "macos") {
+        let path =
+            crate::launchd::agents_dir().join(format!("{}.plist", crate::launchd::QUEUE_LABEL));
+        if path.exists() {
+            if crate::launchd::have_launchctl() {
+                let _ = crate::launchd::bootout(crate::launchd::QUEUE_LABEL);
+            }
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    retire_timer();
 }
 
 /// Notice a dispatcher that is installed but gone, and put it back.
@@ -241,10 +275,7 @@ fn install_state() -> Install {
 /// Where this platform's dispatcher artifact lives.
 fn unit_path() -> Option<std::path::PathBuf> {
     if cfg!(target_os = "macos") {
-        Some(
-            crate::launchd::agents_dir()
-                .join(format!("{}.plist", crate::launchd::QUEUE_LABEL)),
-        )
+        Some(crate::launchd::agents_dir().join(format!("{}.plist", crate::launchd::QUEUE_LABEL)))
     } else if cfg!(target_os = "linux") {
         Some(crate::cmd::cron::systemd_user_dir().join(UNIT))
     } else {

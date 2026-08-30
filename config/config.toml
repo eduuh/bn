@@ -1,10 +1,25 @@
 # bn configuration.
-# Sensible defaults are active below. Machine/user-specific keys (paths, hostnames,
-# repos, nodes) stay commented — uncomment and fill them to opt in.
+# Sensible defaults are active below. Repository visibility and resident runtimes are explicitly
+# assigned per machine; copy this profile and use the exact name reported by `bn machine`.
 # Precedence: defaults -> config.toml -> legacy files -> BN_* env vars.
 
 # worktree_dir = "/home/you/projects/worktree"  # absolute path; default ~/projects/worktree
 # hostname = "my-laptop"                         # default auto-detected
+
+[machines.MyLaptop]
+repos = ["bn", "arena"]
+queue = true
+cron = true
+web = true
+
+# Every machine that uses this synced file needs its own profile. Missing profiles, repositories,
+# and runtime flags are denied. `[nodes].owned_repos`, `[jobs.only_on]`, and `[[cron]].only_on`
+# remain additional placement/scheduling restrictions.
+# [machines.work-pc]
+# repos = ["owner/internal-tool"]
+# queue = false
+# cron = false
+# web = false
 
 [harness]
 # default = "claude"             # copilot | claude; preferred harness every launcher uses when
@@ -169,8 +184,8 @@ enabled = false
 port = 7770
 bind = "127.0.0.1"              # loopback
 fleet_poll_secs = 2
-tmux_mcp_autostart = true
-tmux_mcp_badge = true
+tmux_mcp_autostart = true        # also requires machines.<current>.web = true
+tmux_mcp_badge = true            # suppressed when machines.<current>.web is false/absent
 
 [dispatch]
 plan_review = false

@@ -20,7 +20,7 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
             port,
             lan,
             daemon,
-        } => serve::run_cmd(action, port, lan, daemon, json),
+        } => serve::run_cmd(cfg, action, port, lan, daemon, json),
         CmdMisc::Cost { by, window, live } => emit_cost(cfg, by.as_deref(), window, live, json),
         CmdMisc::Worker { action } => std::process::exit(emit_worker(cfg, action, json)),
         CmdMisc::Tools { action } => std::process::exit(emit_tools(action, json)),

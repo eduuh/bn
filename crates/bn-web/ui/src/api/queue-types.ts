@@ -200,6 +200,9 @@ export interface QueuePause {
 }
 
 export interface QueueView {
+  state?: "not_enabled";
+  machine_name?: string;
+  message?: string;
   now: number;
   /** Whether the machine is admitting work at all. False only for a machine-wide (`all`) pause —
    *  a repo drain leaves this true, and shows up in `pauses` instead. */

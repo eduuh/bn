@@ -8,6 +8,7 @@ use bn_core::queue::log::{self, Query, Row, Tone};
 
 /// `bn queue log` — the dispatcher's recent history, oldest first so it reads as a narrative.
 pub(crate) fn emit_log(
+    cfg: &Config,
     since: &str,
     limit: usize,
     kind: Option<&str>,
@@ -28,12 +29,15 @@ pub(crate) fn emit_log(
             return;
         }
     }
-    let rows = log::read(&Query {
+    let rows: Vec<Row> = log::read(&Query {
         since: now.saturating_sub(window),
         limit,
         kind,
         repo,
-    });
+    })
+    .into_iter()
+    .filter(|row| row.repo.is_empty() || cfg.queue_repo_allowed_here(&row.repo))
+    .collect();
 
     if json {
         println!(
@@ -54,7 +58,10 @@ pub(crate) fn emit_log(
         }
         return;
     }
-    println!("\u{f017} dispatcher log — last {since} ({} events)", rows.len());
+    println!(
+        "\u{f017} dispatcher log — last {since} ({} events)",
+        rows.len()
+    );
     for r in &rows {
         println!(
             "  {}  {:<10} {}",
