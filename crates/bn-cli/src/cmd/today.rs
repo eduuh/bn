@@ -191,53 +191,6 @@ pub(crate) fn today_sync(cfg: &Config, as_json: bool) {
     }
 }
 
-/// `today-agent` cron (#577) — the scheduled trigger. Opt-in via `[today].enabled`; a clean no-op
-/// when off (a declined gate isn't a failure).
-///
-/// Starts the **hosted** agent, which is what Today's agent now is. When this box cannot host one
-/// — no tmux server, or no harness installed — it falls back to the offline synthesis rather than
-/// doing nothing: a headless machine still wants its suggestions, and a cron that silently
-/// accomplishes nothing is worse than one that does the lesser thing loudly.
-pub(crate) fn job_today_agent(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
-    if !resolver::JobConfig::load().today_enabled {
-        println!("today-agent: Today's agent disabled — set [today].enabled to opt in");
-        return 0;
-    }
-    // Reconcile before starting anything. Yesterday's accepted-but-unqueued work is the day's oldest
-    // debt, and an agent that opens by re-proposing work it already accepted is worse than useless.
-    today_sync(cfg, false);
-    match start_hosted_agent(cfg, None, None) {
-        Ok(outcome) => {
-            println!("today-agent: {}", outcome.message);
-            0
-        }
-        Err(reason) => {
-            println!("today-agent: cannot host an agent here ({reason}) — synthesizing offline");
-            job_today_offline()
-        }
-    }
-}
-
-/// The offline fold, as a job result: what a box with no tmux and no harness still gets.
-fn job_today_offline() -> i32 {
-    match today::run(
-        &today(),
-        today::DEFAULT_LOOKBACK_DAYS,
-        today::DEFAULT_PER_SOURCE,
-    ) {
-        Ok(r) => {
-            println!(
-                "today-agent: {} source(s), {} finding(s) → {} new suggestion(s)",
-                r.sources, r.items, r.added
-            );
-            0
-        }
-        Err(e) => {
-            eprintln!("today-agent: {e}");
-            1
-        }
-    }
-}
 
 /// `bn today accept|dismiss <id>` — move one suggestion in its review lifecycle.
 ///
@@ -652,6 +605,10 @@ pub(crate) fn today_agent_start(
     lookback_days: Option<i64>,
     as_json: bool,
 ) {
+    // Reconcile before starting anything. Yesterday's accepted-but-unqueued work is the day's
+    // oldest debt, and an agent that opens by re-proposing work it already accepted is worse than
+    // useless.
+    today_sync(cfg, false);
     match start_hosted_agent(cfg, harness, lookback_days) {
         Ok(outcome) => {
             if as_json {
@@ -670,12 +627,23 @@ pub(crate) fn today_agent_start(
                 println!("Today's agent: {}", outcome.message);
             }
         }
-        Err(reason) => fail_json(
-            as_json,
-            "today-agent-start",
-            "start_failed",
-            &format!("bn today agent start: {reason}"),
-        ),
+        // A box with no tmux server or no harness cannot host an agent, but it still wants its
+        // suggestions — so fall back to the offline synthesis rather than doing nothing. A run
+        // that silently accomplishes nothing is worse than one that does the lesser thing loudly.
+        Err(reason) => {
+            println!("Today's agent: cannot host one here ({reason}) — synthesizing offline");
+            match today::run(
+                &today(),
+                lookback_days.unwrap_or(today::DEFAULT_LOOKBACK_DAYS),
+                today::DEFAULT_PER_SOURCE,
+            ) {
+                Ok(r) => println!(
+                    "Today's agent: {} source(s), {} finding(s) → {} new suggestion(s)",
+                    r.sources, r.items, r.added
+                ),
+                Err(e) => fail_json(as_json, "today-agent-start", "start_failed", &format!("{e}")),
+            }
+        }
     }
 }
 

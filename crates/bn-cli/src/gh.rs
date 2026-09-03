@@ -30,6 +30,15 @@ pub(crate) fn gh_capture(args: &[&str]) -> Option<String> {
     RealRunner.gh(args).ok_stdout()
 }
 
+/// Like [`gh_capture`] but with a wall-clock deadline, for callers that run on a timer and must
+/// never block on a hung, offline or rate-limited `gh` — the tmux status bar reruns its segments
+/// every `status-interval` seconds, so an unbounded call there stalls the whole row. Routes
+/// through the same bounded runner seam `bn_core::issues` uses for its own `gh` fetches
+/// (process-group kill on timeout), so no new dependency and one consistent failure shape.
+pub(crate) fn gh_capture_bounded(args: &[&str], timeout: std::time::Duration) -> Option<String> {
+    RealRunner.run_with_timeout("gh", args, timeout).ok_stdout()
+}
+
 /// Like [`gh_capture`] but run in `dir` (gh has no `-C` flag, so this sets the child's
 /// `current_dir` via the builder). Trimmed non-empty stdout on success, else `None`.
 pub(crate) fn gh_capture_in(dir: &Path, args: &[&str]) -> Option<String> {

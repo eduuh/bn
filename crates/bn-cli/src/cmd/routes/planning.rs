@@ -54,7 +54,14 @@ pub(super) fn route(cfg: &Config, action: CmdPlanning, json: bool) {
         CmdPlanning::Summary => emit_summary(cfg, json),
         CmdPlanning::Daily { action, date } => emit_daily(cfg, action, date, json),
         CmdPlanning::Quarter { action, quarter } => emit_quarter(cfg, action, quarter, json),
-        CmdPlanning::Standup { copy, cron } => {
+        CmdPlanning::Standup {
+            copy,
+            cron,
+            gather,
+        } => {
+            if gather {
+                std::process::exit(emit_standup_gather(cfg));
+            }
             // Cron gate: the standup-push job no-ops unless autopilot is enabled.
             let jc = resolver::JobConfig::load();
             if cron && !jc.standup_enabled {
@@ -103,18 +110,28 @@ pub(super) fn route(cfg: &Config, action: CmdPlanning, json: bool) {
                 id,
                 steer,
                 due,
+                agent,
                 dry_run,
             }) => crate::cmd::task_workflow::emit_task_enhance(
                 cfg,
                 id.as_deref(),
                 steer.as_deref(),
                 due,
+                &agent,
                 dry_run,
                 json,
             ),
-            Some(TaskCmd::Triage { day, dry_run }) => {
-                crate::cmd::task_workflow::emit_task_triage(cfg, day.as_deref(), dry_run, json)
-            }
+            Some(TaskCmd::Triage {
+                day,
+                agent,
+                dry_run,
+            }) => crate::cmd::task_workflow::emit_task_triage(
+                cfg,
+                day.as_deref(),
+                &agent,
+                dry_run,
+                json,
+            ),
             Some(TaskCmd::Pull { low_water, dry_run }) => {
                 emit_task_pull(cfg, repo.as_deref(), low_water, dry_run, json)
             }

@@ -937,17 +937,6 @@ fn parse_main_worktree(porcelain: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// True if `cargo` is on `PATH` — the native form of the shell job's `command -v cargo`.
-fn cargo_on_path() -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|dir| {
-        let c = dir.join("cargo");
-        c.is_file() || c.with_extension("exe").is_file()
-    })
-}
-
 /// True if `p` is an executable file (unix exec bit), mirroring the shell job's `[ -x ... ]`.
 fn is_executable_file(p: &std::path::Path) -> bool {
     #[cfg(unix)]
@@ -986,15 +975,16 @@ fn resolve_bn_main_worktree() -> String {
 
 /// `self-update` — keep the installed `bn` in lock-step with `bn/main` by re-running the repo's own
 /// `install.sh` whenever main advances. install.sh is the single source of truth for how bn is
-/// built and wired (binaries, the `~/.config/bn` anchors, cron registration,
-/// MCP registration), so we delegate to it rather than reimplementing a cargo build here — that
+/// installed and wired (binaries, the `~/.config/bn` anchors, cron registration,
+/// MCP registration), so we delegate to it rather than reimplementing the download here — that
 /// would drift on a new cron/MCP/anchor a fresh main needs. Cheap to run often: it fast-forwards
-/// main and only re-installs when HEAD actually moved past the last build (tracked in a stamp
-/// file). No cargo (e.g. Codespaces, which run a prebuilt release) → it no-ops. Native port of
-/// `jobs/self-update.sh`: the git fan-out and stamp bookkeeping run in-process; only the final
-/// build+wire step still delegates to `install.sh --core` (which stays shell — it bootstraps bn
-/// before bn exists). `--core` skips the tmux layer, whose helpers are symlinks into this worktree
-/// and so already track main without re-linking.
+/// main and only re-installs when HEAD actually moved past the last install (tracked in a stamp
+/// file). No Rust toolchain is needed: install.sh downloads main's published release binaries, so
+/// this runs on a box that has never seen cargo. Native port of `jobs/self-update.sh`: the git
+/// fan-out and stamp bookkeeping run in-process; only the final install+wire step still delegates
+/// to `install.sh --core` (which stays shell — it bootstraps bn before bn exists). `--core` skips
+/// the tmux layer, whose helpers are symlinks into this worktree and so already track main without
+/// re-linking.
 pub(crate) fn job_self_update(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     use std::path::{Path, PathBuf};
     let home = wt::home_str();
@@ -1021,14 +1011,6 @@ pub(crate) fn job_self_update(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
             true,
         );
         return 1;
-    }
-
-    if !cargo_on_path() {
-        native_job_line(
-            "self-update: cargo absent — leaving the prebuilt binary in place",
-            false,
-        );
-        return 0;
     }
 
     // Best-effort fast-forward of main (matches the shell's `|| true`).
@@ -1058,8 +1040,9 @@ pub(crate) fn job_self_update(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
         return 0;
     }
 
-    // Single source of truth: install.sh rebuilds from source and re-wires everything. It is not a
-    // git/gh/tmux binary, so spawning it directly is fine (the subprocess guard only covers those).
+    // Single source of truth: install.sh reinstalls the release binaries and re-wires everything.
+    // It is not a git/gh/tmux binary, so spawning it directly is fine (the subprocess guard only
+    // covers those).
     let installer = Path::new(&main_wt).join("install.sh");
     // Capture rather than inherit: a cron has no terminal, so inherited output goes nowhere and a
     // failed build leaves `bn cron`/`bn doctor` showing a bare "FAIL" with no cause. Capturing lets
@@ -1078,7 +1061,7 @@ pub(crate) fn job_self_update(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
                 &format!("self-update: install.sh --core failed ({})", out.status),
                 true,
             );
-            // The last few lines carry the actual compiler/installer error.
+            // The last few lines carry the actual installer error.
             for line in tail_lines(&combined, 12).lines() {
                 native_job_line(&format!("  {line}"), true);
             }
@@ -1462,48 +1445,6 @@ pub(crate) fn job_notify(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     0
 }
 
-/// `jobs/quarter-review.sh` — the recurring impact agent (#252). Opt-in via `[quarter].enabled`;
-/// runs `bn quarter review --cron`, which scores the window's shipped work against the quarter
-/// goals, appends a validated review, and flags at-risk goals (a malformed run records nothing and
-/// raises a warn attention item). Native so the weekly cron drives it with `bn run quarter-review`.
-pub(crate) fn job_quarter_review(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
-    let jc = resolver::JobConfig::load();
-    if !jc.quarter_review_enabled {
-        println!("quarter-review: impact agent disabled — set [quarter].enabled to opt in");
-        return 0;
-    }
-    let harness = jc
-        .quarter_harness
-        .clone()
-        .or_else(|| cfg.review_harness.clone());
-    match bn_core::quarter::review(
-        cfg,
-        &bn_core::runner::RealRunner,
-        harness.as_deref(),
-        &today(),
-        jc.quarter_review_window_days,
-    ) {
-        Ok(bn_core::quarter::ReviewOutcome::Appended { review, raised }) => {
-            println!(
-                "quarter-review: appended review ({} goals, {raised} flagged)",
-                review.assessments.len()
-            );
-            0
-        }
-        Ok(bn_core::quarter::ReviewOutcome::Malformed { reason }) => {
-            println!("quarter-review: agent output failed validation — warn item raised: {reason}");
-            0
-        }
-        Ok(bn_core::quarter::ReviewOutcome::Skipped { reason }) => {
-            println!("quarter-review: skipped ({reason})");
-            0
-        }
-        Err(e) => {
-            eprintln!("quarter-review: {e}");
-            1
-        }
-    }
-}
 
 /// `jobs/standup-push.sh` — copy today's standup line to the clipboard and toast it (autopilot).
 pub(crate) fn job_standup_push(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
@@ -1797,11 +1738,11 @@ pub(crate) fn tmux_send_keys(target: &str, msg: &str) -> bool {
     send(msg) && send("Enter")
 }
 
-/// `jobs/pr-queue.sh` — rebuild the review-queue cache from GitHub: PRs awaiting your review and
+/// `bn reviews --fetch` — rebuild the review-queue cache from GitHub: PRs awaiting your review and
 /// your own open PRs, each stamped with state + reviewDecision. Replaces the gh+jq pipeline.
-pub(crate) fn job_pr_queue(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
+pub(crate) fn fetch_review_queue() -> i32 {
     if !gh_ready() {
-        eprintln!("pr-queue: gh not found or not authenticated");
+        eprintln!("reviews: gh not found or not authenticated");
         return 0; // non-fatal, like the shim
     }
     let mut prs = Vec::new();
@@ -1812,7 +1753,7 @@ pub(crate) fn job_pr_queue(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
         prs.extend(gh_search_bucket(query, tag));
     }
     if prs.is_empty() {
-        println!("pr-queue: nothing to review and no open PRs of mine — leaving cache as-is");
+        println!("reviews: nothing to review and no open PRs of mine — leaving cache as-is");
         return 0;
     }
     let cache = bn_core::reviews::ReviewCache {
@@ -1823,7 +1764,7 @@ pub(crate) fn job_pr_queue(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     let json = match serde_json::to_string_pretty(&cache) {
         Ok(j) => j,
         Err(e) => {
-            eprintln!("pr-queue: {e}");
+            eprintln!("reviews: {e}");
             return 1;
         }
     };
@@ -1833,14 +1774,14 @@ pub(crate) fn job_pr_queue(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     match std::fs::write(&path, json) {
         Ok(()) => {
             println!(
-                "pr-queue: wrote {} PR(s) to {}",
+                "reviews: wrote {} PR(s) to {}",
                 cache.prs.len(),
                 path.display()
             );
             0
         }
         Err(e) => {
-            eprintln!("pr-queue: {e}");
+            eprintln!("reviews: {e}");
             1
         }
     }
@@ -1861,7 +1802,7 @@ pub(crate) fn job_pr_observe(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     use bn_core::pr_observe as po;
     if !gh_ready() {
         eprintln!("pr-observe: gh not found or not authenticated");
-        return 0; // non-fatal, like pr-queue
+        return 0; // non-fatal, like the review-queue fetch
     }
     let seen = po::seen_keys(&bn_core::events::read_events_across(
         &cfg.metrics_logs_all_machines(),

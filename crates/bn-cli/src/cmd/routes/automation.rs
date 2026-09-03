@@ -91,6 +91,13 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
                 prompt.as_deref(),
                 json,
             ),
+            Some(AttnCmd::Gather) => {
+                let ctx = target_ctx(cfg, None, None);
+                std::process::exit(crate::cmd::attention_workflow::emit_attention_gather(
+                    cfg,
+                    ctx.as_ref(),
+                ))
+            }
             Some(AttnCmd::Ingest {
                 source,
                 severity,

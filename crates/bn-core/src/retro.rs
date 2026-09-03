@@ -512,6 +512,7 @@ pub fn build_card(session: &Session, tags: &RetroTags, today: &str) -> BriefingC
         headline,
         body_md: body.trim_end().to_string(),
         items: Vec::new(),
+        ..Default::default()
     }
 }
 
@@ -526,7 +527,7 @@ pub fn validate_and_write_card(
     let card = build_card(session, tags, today);
     let json = serde_json::to_string(&card).map_err(|e| e.to_string())?;
     let sinks: Vec<String> = CARD_SINKS.iter().map(|s| s.to_string()).collect();
-    let validated = crate::staff::validate_card(&json, AGENT, &sinks, &[], today)?;
+    let validated = crate::staff::validate_card(&json, AGENT, &sinks, &[], today, false, None)?;
     crate::staff::write_card(cfg, &validated).map_err(|e| e.to_string())
 }
 

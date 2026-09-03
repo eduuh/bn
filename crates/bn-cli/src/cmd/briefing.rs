@@ -1,18 +1,23 @@
-//! `bn chief` — the AM/PM chief-of-staff briefing + its cron jobs.
+//! `bn briefing gather` — the day's state folded from every store, printed as JSON.
+//!
+//! The I/O edge over [`bn_core::briefing`]: read the night shift, the ranked actions, the calendar
+//! cache, the quarter, the `q` inbox, the daily rollup, the standup line and the wrap — each
+//! degrading on its own — and print. It writes nothing and decides nothing; the
+//! `staff-chief-{am,pm}` agents own what the day means.
 use crate::*;
 
 /// Pick the brief slot when `bn chief` is run bare: mornings (before noon local) → AM, afternoons
 /// and evenings → PM. Falls back to AM when the local clock can't be read.
-pub(crate) fn default_chief_slot() -> bn_core::chief::Slot {
+pub(crate) fn default_slot() -> bn_core::briefing::Slot {
     match bn_core::night::local_minutes(&bn_core::clock::RealClock) {
-        Some(m) if m >= 12 * 60 => bn_core::chief::Slot::Pm,
-        _ => bn_core::chief::Slot::Am,
+        Some(m) if m >= 12 * 60 => bn_core::briefing::Slot::Pm,
+        _ => bn_core::briefing::Slot::Am,
     }
 }
 
 /// The traceable source label for a `bn next` action's kind — what the AM card's top-3 points back
 /// to ("review you/bn#12 (review)").
-pub(crate) fn chief_action_source(kind: bn_core::next::ActionKind) -> String {
+pub(crate) fn action_source(kind: bn_core::next::ActionKind) -> String {
     use bn_core::next::ActionKind;
     match kind {
         ActionKind::Wip => "wip",
@@ -33,20 +38,20 @@ pub(crate) fn chief_action_source(kind: bn_core::next::ActionKind) -> String {
 /// `bn night report` does, reused for the AM card's review queue. Delegates to the shared
 /// [`bn_core::night::report_since`] so the card and the `night-shift` findings gatherer stay in
 /// lockstep; `hours` is clamped to a non-negative cutoff exactly as before.
-pub(crate) fn chief_night_items(hours: i64) -> Vec<bn_core::night::NightReportItem> {
+pub(crate) fn night_items(hours: i64) -> Vec<bn_core::night::NightReportItem> {
     let cutoff = bn_core::util::now_epoch_secs() - hours.max(0) * 3600;
     bn_core::night::report_since(cutoff)
 }
 
 /// Quarter status for the card, or `None` when there's no current quarter file / no goals yet.
-pub(crate) fn chief_quarter(cfg: &Config, today: &str) -> Option<bn_core::chief::QuarterStatus> {
+pub(crate) fn quarter_status(cfg: &Config, today: &str) -> Option<bn_core::briefing::QuarterStatus> {
     let qid = bn_core::quarter::quarter_id(today)?;
     let q = bn_core::quarter::read_quarter(cfg, &qid).ok().flatten()?;
     if q.front.goals.is_empty() {
         return None;
     }
     let elapsed = bn_core::quarter::elapsed_fraction(&qid, today).unwrap_or(0.0);
-    Some(bn_core::chief::QuarterStatus {
+    Some(bn_core::briefing::QuarterStatus {
         elapsed_pct: (elapsed * 100.0).round().clamp(0.0, 100.0) as u8,
         on_track: q.on_track_count(),
         total: q.front.goals.len(),
@@ -56,14 +61,14 @@ pub(crate) fn chief_quarter(cfg: &Config, today: &str) -> Option<bn_core::chief:
 }
 
 /// The daily rollup the card summarizes: yesterday's for the AM brief, today's for the PM shutdown.
-pub(crate) fn chief_daily(
+pub(crate) fn daily_summary(
     cfg: &Config,
-    slot: bn_core::chief::Slot,
+    slot: bn_core::briefing::Slot,
     today: &str,
-) -> Option<bn_core::chief::DailySummary> {
+) -> Option<bn_core::briefing::DailySummary> {
     let d = match slot {
-        bn_core::chief::Slot::Am => bn_core::daily::previous_day(cfg, today)?,
-        bn_core::chief::Slot::Pm => {
+        bn_core::briefing::Slot::Am => bn_core::daily::previous_day(cfg, today)?,
+        bn_core::briefing::Slot::Pm => {
             let path = cfg.daily_file(today);
             if !path.exists() {
                 return None;
@@ -71,7 +76,7 @@ pub(crate) fn chief_daily(
             bn_core::daily::read(&path).ok()?
         }
     };
-    Some(bn_core::chief::DailySummary {
+    Some(bn_core::briefing::DailySummary {
         done: d.completed().count(),
         open: d.open().count(),
         done_titles: d.completed().map(|g| g.text.clone()).collect(),
@@ -81,22 +86,22 @@ pub(crate) fn chief_daily(
 
 /// Assemble the Chief of Staff packet from the offline stores, degrading per-source: a source that
 /// is missing or unreadable simply omits its section (never an error).
-pub(crate) fn gather_chief_packet(
+pub(crate) fn gather_briefing_packet(
     cfg: &Config,
-    slot: bn_core::chief::Slot,
+    slot: bn_core::briefing::Slot,
     today: &str,
-) -> bn_core::chief::Packet {
-    use bn_core::chief;
+) -> bn_core::briefing::Packet {
+    use bn_core::briefing;
     let now = bn_core::util::now_epoch_secs();
-    let mut p = chief::Packet::new(today, slot);
+    let mut p = briefing::Packet::new(today, slot);
 
     // Night shift (AM only): draft PRs waiting on review.
-    if slot == chief::Slot::Am {
-        p.night = chief_night_items(24)
+    if slot == briefing::Slot::Am {
+        p.night = night_items(24)
             .into_iter()
             .filter(|it| it.outcome == bn_core::night::NightOutcome::PrReady)
             .filter_map(|it| {
-                it.link.as_ref().map(|link| chief::NightPr {
+                it.link.as_ref().map(|link| briefing::NightPr {
                     slug: bn_core::night::pr_slug(&it.repo, link),
                     repo: it.repo.clone(),
                     link: link.clone(),
@@ -124,9 +129,9 @@ pub(crate) fn gather_chief_packet(
     p.actions = actions
         .iter()
         .take(3)
-        .map(|a| chief::TopAction {
+        .map(|a| briefing::TopAction {
             title: a.title.clone(),
-            source: chief_action_source(a.kind),
+            source: action_source(a.kind),
             link: a.link.clone(),
         })
         .collect();
@@ -137,11 +142,11 @@ pub(crate) fn gather_chief_packet(
         .find(|s| s.source == "meetings")
         .and_then(|s| {
             let texts: Vec<String> = s.items.into_iter().map(|i| i.text).collect();
-            chief::calendar_shape(&texts)
+            briefing::calendar_shape(&texts)
         });
 
     // Quarter status.
-    p.quarter = chief_quarter(cfg, today);
+    p.quarter = quarter_status(cfg, today);
 
     // `q` inbox — count + oldest item age.
     let inbox_items = bn_core::inbox::read(cfg);
@@ -154,14 +159,14 @@ pub(crate) fn gather_chief_packet(
             (Some(o), Some(t)) => Some((t - o).max(0)),
             _ => None,
         };
-        p.inbox = Some(chief::InboxStatus {
+        p.inbox = Some(briefing::InboxStatus {
             count: inbox_items.len(),
             oldest_age_days,
         });
     }
 
     // Daily rollup (yesterday's for AM, today's for PM).
-    p.daily = chief_daily(cfg, slot, today);
+    p.daily = daily_summary(cfg, slot, today);
 
     // Folded-in surfaces (#274): the morning brief absorbs the standup line and the evening
     // shutdown absorbs the wrap digest, retiring the standalone 09:00/17:00 push crons. Each is
@@ -171,7 +176,7 @@ pub(crate) fn gather_chief_packet(
 
     // Standup line (AM) — offline only. The one-shot PR delta stays with the manual
     // `bn run standup-push`, keeping the brief's deterministic/offline contract intact.
-    if slot == chief::Slot::Am && jc.standup_enabled {
+    if slot == briefing::Slot::Am && jc.standup_enabled {
         let s = bn_core::reports::standup(cfg, today);
         let has_signal = s
             .yesterday
@@ -187,18 +192,18 @@ pub(crate) fn gather_chief_packet(
     }
 
     // Wrap summary (PM) — compact: only the tails the shutdown card didn't already carry.
-    if slot == chief::Slot::Pm && jc.wrap_enabled {
+    if slot == briefing::Slot::Pm && jc.wrap_enabled {
         let note_since = target_ctx(cfg, None, None)
             .and_then(|ctx| bn_core::store::read(&cfg.note_file(&ctx)).ok())
             .map(|note| bn_core::reports::note_last_activity(&note))
             .unwrap_or_else(|| today.to_string());
         let w = bn_core::reports::wrap(cfg, today, &note_since, &bn_core::runner::RealRunner);
-        let summary = chief::WrapSummary {
+        let summary = briefing::WrapSummary {
             unnoted_commits: w.unnoted_commits.len(),
             merged_prs: w
                 .merged_prs
                 .iter()
-                .map(|pr| chief::WrapPr {
+                .map(|pr| briefing::WrapPr {
                     label: format!("#{} {}", pr.number, pr.title),
                     url: pr.url.clone(),
                 })
@@ -212,127 +217,13 @@ pub(crate) fn gather_chief_packet(
     p
 }
 
-/// AM side-effect summary — delegates the idempotent daily writes to `chief::add_night_goals`.
-pub(crate) fn chief_am_effect(
-    cfg: &Config,
-    today: &str,
-    night: &[bn_core::chief::NightPr],
-) -> String {
-    let added = bn_core::chief::add_night_goals(cfg, today, night);
-    if night.is_empty() {
-        "no night PRs to review".to_string()
-    } else if added == 0 {
-        "review goals already queued".to_string()
-    } else {
-        format!("added {added} review goal(s) to today's daily")
-    }
-}
-
-/// PM side-effect summary — delegates the idempotent scheduling to `chief::schedule_tomorrow`.
-pub(crate) fn chief_pm_effect(
-    cfg: &Config,
-    today: &str,
-    packet: &bn_core::chief::Packet,
-) -> String {
-    use bn_core::chief::TomorrowOutcome;
-    match bn_core::chief::schedule_tomorrow(cfg, today, packet) {
-        TomorrowOutcome::Scheduled { text, .. } => {
-            format!("scheduled tomorrow's first task: {text}")
-        }
-        TomorrowOutcome::AlreadySet { text } => {
-            format!("tomorrow's first task already set: {text}")
-        }
-        TomorrowOutcome::Empty => "nothing to carry — clean slate tomorrow".to_string(),
-        TomorrowOutcome::Failed(e) => format!("couldn't schedule tomorrow's task: {e}"),
-    }
-}
-
-/// Map a card to feed items (headline first, then each structured item) so `bn feed` surfaces it
-/// under the `chief-am` / `chief-pm` source. A run replaces the source, so yesterday's card falls
-/// off on its own.
-pub(crate) fn chief_feed_items(card: &bn_core::chief::Card) -> Vec<bn_core::feed::FeedItem> {
-    let mut items = vec![bn_core::feed::FeedItem {
-        key: format!("{}-headline", card.agent),
-        text: card.headline.clone(),
-        url: String::new(),
-    }];
-    for (i, it) in card.items.iter().enumerate() {
-        items.push(bn_core::feed::FeedItem {
-            key: format!("{}-{i}", card.agent),
-            text: it.title.clone(),
-            url: it.link.clone().unwrap_or_default(),
-        });
-    }
-    items
-}
-
-/// The Chief of Staff pipeline shared by `bn chief` and the `staff-chief-{am,pm}` crons: gather →
-/// build the card → apply the card's side-effects (AM: a review goal per night PR; PM: tomorrow's
-/// first task) → mirror the card to the feed. Returns the card and a one-line summary of what it
-/// changed.
-pub(crate) fn run_chief(
-    cfg: &Config,
-    slot: bn_core::chief::Slot,
-    today: &str,
-) -> (bn_core::chief::Card, String) {
-    use bn_core::chief::Slot;
-    let packet = gather_chief_packet(cfg, slot, today);
-    let card = bn_core::chief::build_card(&packet);
-    let effect = match slot {
-        Slot::Am => chief_am_effect(cfg, today, &packet.night),
-        Slot::Pm => chief_pm_effect(cfg, today, &packet),
-    };
-    let _ = bn_core::feed::ingest(slot.agent(), chief_feed_items(&card));
-    (card, effect)
-}
-
-/// `bn chief [am|pm]` — run the Chief of Staff for a slot and print its card. Always runs (unlike
-/// the crons, which gate on `[chief].enabled`). `--json` emits the full card envelope.
-pub(crate) fn emit_chief(cfg: &Config, slot: bn_core::chief::Slot, as_json: bool) {
-    let today = today();
-    let (card, effect) = run_chief(cfg, slot, &today);
-    if as_json {
-        println!(
-            "{}",
-            Envelope::success(
-                "chief",
-                serde_json::json!({ "card": card, "effect": effect })
-            )
-            .to_json()
-        );
-        return;
-    }
-    print!("{}", bn_core::chief::render(&card));
-    println!("\n— {effect}");
-}
-
-/// `staff-chief-am` cron — the 05:30 morning brief. Opt-in via `[chief].enabled`.
-pub(crate) fn job_staff_chief_am(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
-    run_chief_job(cfg, bn_core::chief::Slot::Am)
-}
-
-/// `staff-chief-pm` cron — the 16:45 evening shutdown. Opt-in via `[chief].enabled`.
-pub(crate) fn job_staff_chief_pm(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
-    run_chief_job(cfg, bn_core::chief::Slot::Pm)
-}
-
-/// Shared cron entry for both Chief of Staff slots: gate on `[chief].enabled` (a clean no-op when
-/// off), else run the pipeline and print a compact summary. Always exits 0 — a declined gate isn't
-/// a failure.
-pub(crate) fn run_chief_job(cfg: &Config, slot: bn_core::chief::Slot) -> i32 {
-    if !resolver::JobConfig::load().chief_enabled {
-        let reason = "Chief of Staff disabled — set [chief].enabled to opt in";
-        println!("{}: {reason}", slot.agent());
-        // Recorded against the roster name, not the card name, because that is what the health
-        // board keys on. Without it the row read "missed — scheduled run never fired": a red
-        // alarm for an agent that is simply switched off.
-        bn_core::staff::record_off(slot.roster_name(), &today(), reason);
-        return 0;
-    }
-    let (card, effect) = run_chief(cfg, slot, &today());
-    println!("{}: {}", slot.agent(), card.headline);
-    println!("  {effect}");
+/// `bn briefing gather --slot <am|pm>` — print the packet as JSON. Always exits 0: a quiet day is
+/// a legitimately thin packet, and the reader's job is to say so rather than to invent a brief.
+pub(crate) fn emit_briefing_gather(cfg: &Config, slot: bn_core::briefing::Slot) -> i32 {
+    let packet = gather_briefing_packet(cfg, slot, &today());
+    println!(
+        "{}",
+        serde_json::to_string(&packet).unwrap_or_else(|_| "{}".into())
+    );
     0
 }
-
-

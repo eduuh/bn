@@ -93,11 +93,13 @@ fn scheduled_line(stamped: usize) -> String {
 }
 
 /// `bn task enhance <id>` — make one task executable.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_task_enhance(
     cfg: &Config,
     id: Option<&str>,
     steer: Option<&str>,
     due: bool,
+    agent: &str,
     dry_run: bool,
     as_json: bool,
 ) {
@@ -201,7 +203,7 @@ pub(crate) fn emit_task_enhance(
         println!("{}", scheduled_line(stamped));
         println!("Improving {task_id} — fails on: {}", verdict.codes().join(", "));
     }
-    let run = run_task_agent(cfg, "task-enhance", &packet, dry_run);
+    let run = run_task_agent(cfg, agent, &packet, dry_run);
 
     // Judge the task the agent just rewrote, and record the answer. This is what makes the loop
     // terminate: a pass is stamped `smart:ok` so the task becomes startable in this run rather than
@@ -261,7 +263,13 @@ pub(crate) fn emit_task_enhance(
 }
 
 /// `bn task triage` — decide what is doable today.
-pub(crate) fn emit_task_triage(cfg: &Config, day: Option<&str>, dry_run: bool, as_json: bool) {
+pub(crate) fn emit_task_triage(
+    cfg: &Config,
+    day: Option<&str>,
+    agent: &str,
+    dry_run: bool,
+    as_json: bool,
+) {
     if !dry_run && !triage_allowed_here(cfg) {
         fail(&format!(
             "bn task triage: this machine is not the staff home ({}); triage rewrites the shared store, so it runs in one place",
@@ -311,7 +319,7 @@ pub(crate) fn emit_task_triage(cfg: &Config, day: Option<&str>, dry_run: bool, a
             );
         }
     }
-    let run = run_task_agent(cfg, "task-triage", &packet, dry_run);
+    let run = run_task_agent(cfg, agent, &packet, dry_run);
     if as_json {
         let data = serde_json::json!({
             "day": day,

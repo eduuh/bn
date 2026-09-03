@@ -63,22 +63,13 @@ pub struct JobConfig {
     /// presents. Default 5.
     pub dojo_daily_target: usize,
     /// `[chief].enabled` / `$BN_CHIEF_ENABLED`: the Chief of Staff briefing jobs
-    /// (`staff-chief-am` / `staff-chief-pm`) are live. Off by default — the jobs write daily goals,
-    /// so they stay opt-in. A manual `bn chief` runs regardless of this flag.
+    /// (`staff-chief-am` / `staff-chief-pm`) are live. Read only by the legacy fold in
+    /// [`super::config_file`], which maps it onto `[agents] enabled`.
     pub chief_enabled: bool,
-    /// `[chief].am_time` / `$BN_CHIEF_AM_TIME`: local `HH:MM` the morning brief fires (default
-    /// `05:30`). Informative — the real schedule lives in `config/crons.toml`.
-    pub chief_am_time: String,
-    /// `[chief].pm_time` / `$BN_CHIEF_PM_TIME`: local `HH:MM` the evening shutdown fires (default
-    /// `16:45`). Informative — the real schedule lives in `config/crons.toml`.
-    pub chief_pm_time: String,
     /// `[archivist].enabled` / `$BN_ARCHIVIST_ENABLED`: the Archivist's Friday weekly-chronicle job
     /// (`staff-archivist`) is live. Off by default — it writes a file into the private notes repo,
     /// so it stays opt-in. A manual `bn archivist` runs regardless of this flag.
     pub archivist_enabled: bool,
-    /// `[archivist].time` / `$BN_ARCHIVIST_TIME`: local `HH:MM` the weekly chronicle fires (default
-    /// `17:30`, Fridays). Informative — the real schedule lives in `config/crons.toml`.
-    pub archivist_time: String,
     /// `[retro].enabled` / `$BN_RETRO_ENABLED`: the Interviewer (#261) `staff-interviewer` cron is
     /// live — it raises the Friday weekly-retro attention item and escalates it once on Monday.
     /// Off by default (it raises a weekly nag), so it stays opt-in. The session itself
@@ -87,7 +78,10 @@ pub struct JobConfig {
     /// `[mentor].enabled` / `$BN_MENTOR_ENABLED`: the Mentor's post-merge review cron
     /// (`staff-mentor`) is live. Off by default — it dispatches an LLM harness and appends craft
     /// notes to your branch notes, so it stays opt-in. A manual `bn mentor` runs regardless.
-    pub mentor_enabled: bool,
+    /// `[agents].enabled` / `$BN_AGENTS_ENABLED`: the opt-in agents (`opt_in: true` in their
+    /// manifest) that are switched on, by name. An agent not named here does nothing when its
+    /// schedule fires, and says so on the board rather than reading as a missed run.
+    pub agents_enabled: Vec<String>,
     /// `[today].enabled` / `$BN_TODAY_ENABLED`: Today's agent cron (`today-agent`, #577) is live.
     /// Off by default — a scheduled run writes reviewable suggestions — so it stays opt-in. A
     /// manual `bn today` runs regardless of this flag.
@@ -111,7 +105,7 @@ impl Default for JobConfig {
             night_window: "23:00-06:00".into(),
             night_repos: Vec::new(),
             sentinel_repos: Vec::new(),
-            sentinel_todo_age_days: crate::staff::sentinel::DEFAULT_TODO_AGE_DAYS,
+            sentinel_todo_age_days: crate::estate::DEFAULT_TODO_AGE_DAYS,
             quarter_review_enabled: false,
             quarter_review_window_days: 7,
             quarter_harness: None,
@@ -119,12 +113,9 @@ impl Default for JobConfig {
             dojo_repos: Vec::new(),
             dojo_daily_target: crate::dojo::DEFAULT_DAILY_TARGET,
             chief_enabled: false,
-            chief_am_time: "05:30".into(),
-            chief_pm_time: "16:45".into(),
             archivist_enabled: false,
-            archivist_time: "17:30".into(),
             retro_enabled: false,
-            mentor_enabled: false,
+            agents_enabled: Vec::new(),
             today_enabled: false,
             attention_agent_enabled: false,
         }
@@ -211,24 +202,16 @@ impl JobConfig {
             chief_enabled: env_bool("BN_CHIEF_ENABLED")
                 .or_else(|| file.and_then(|f| f.chief_enabled()))
                 .unwrap_or(d.chief_enabled),
-            chief_am_time: non_empty_env("BN_CHIEF_AM_TIME")
-                .or_else(|| file.and_then(|f| f.chief_am_time()))
-                .unwrap_or(d.chief_am_time),
-            chief_pm_time: non_empty_env("BN_CHIEF_PM_TIME")
-                .or_else(|| file.and_then(|f| f.chief_pm_time()))
-                .unwrap_or(d.chief_pm_time),
             archivist_enabled: env_bool("BN_ARCHIVIST_ENABLED")
                 .or_else(|| file.and_then(|f| f.archivist_enabled()))
                 .unwrap_or(d.archivist_enabled),
-            archivist_time: non_empty_env("BN_ARCHIVIST_TIME")
-                .or_else(|| file.and_then(|f| f.archivist_time()))
-                .unwrap_or(d.archivist_time),
             retro_enabled: env_bool("BN_RETRO_ENABLED")
                 .or_else(|| file.and_then(|f| f.retro_enabled()))
                 .unwrap_or(d.retro_enabled),
-            mentor_enabled: env_bool("BN_MENTOR_ENABLED")
-                .or_else(|| file.and_then(|f| f.mentor_enabled()))
-                .unwrap_or(d.mentor_enabled),
+            agents_enabled: non_empty_env("BN_AGENTS_ENABLED")
+                .map(|v| split_list(&v))
+                .or_else(|| file.and_then(|f| f.agents_enabled()))
+                .unwrap_or_else(|| d.agents_enabled.clone()),
             today_enabled: env_bool("BN_TODAY_ENABLED")
                 .or_else(|| file.and_then(|f| f.today_enabled()))
                 .unwrap_or(d.today_enabled),

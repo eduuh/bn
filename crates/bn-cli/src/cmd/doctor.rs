@@ -441,7 +441,18 @@ pub(crate) fn emit_next(
     {
         let mut ledger = bn_core::notify::policy::load_ledger();
         ledger.roll(&today);
-        let withheld = ledger.withheld_today();
+        // Two different stories, so two different lines: a policy hold is the gate working and
+        // needs nothing from you, while an undeliverable toast means the channel itself is
+        // broken and every interrupt raised today was lost. Summed, the second hid inside the
+        // first.
+        let undeliverable = ledger.undeliverable();
+        if undeliverable > 0 {
+            println!(
+                "{} {undeliverable} notification(s) could not be delivered today — no working toast backend — bn notify status\n",
+                bn_core::glyph::BELL_SLASH
+            );
+        }
+        let withheld = ledger.withheld_by_policy();
         if withheld > 0 {
             println!("{} {withheld} notification(s) held back today — bn notify status\n", bn_core::glyph::BELL);
         }

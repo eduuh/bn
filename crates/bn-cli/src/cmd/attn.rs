@@ -468,7 +468,8 @@ pub(crate) fn emit_attn_ingest(source: &str, severity: &str, replace: bool, as_j
 /// otherwise; nothing when all quiet, so the bar stays clean. The single attention producer in
 /// status-format (the window tally used to be a separate `bn-attention-count.sh` fragment).
 pub(crate) fn emit_attn_badge() {
-    let b = bn_core::doctor::badge(&today());
+    let today = today();
+    let b = bn_core::doctor::badge(&today);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -480,20 +481,24 @@ pub(crate) fn emit_attn_badge() {
         "#{@bn_agent}\t#{@bn_done}\t#{@bn_agent_since}",
     ])
     .unwrap_or_default();
-    let (waiting, ready, wait) = crate::cmd::tmux_status::attn_window_tally(&win, now);
-    let total = b.urgent + b.other + waiting as usize + ready as usize;
-    if total == 0 {
-        return;
+    let tally = crate::cmd::tmux_status::attn_window_tally(&win, now);
+    if let Some(badge) =
+        crate::cmd::tmux_status::render_attn_badge(&b, &tally, notify_channel_is_dead(&today))
+    {
+        print!("{badge}");
     }
-    let color = if b.urgent > 0 || wait >= 900 {
-        "red"
-    } else {
-        "colour214"
-    };
-    print!(
-        "#[fg={color}]{total}{} #[fg=#3b4261]\u{b7} ",
-        bn_core::glyph::BELL
-    );
+}
+
+/// Whether today's notifications all failed to reach a backend — i.e. the push channel is broken
+/// rather than deliberately quiet. The ledger is not rolled on load, so roll it first (as
+/// `bn doctor` does) or a stale day's tallies leak into today's answer.
+///
+/// This is the difference between "bn chose not to interrupt you" and "bn tried and could not
+/// reach you", which nothing on the bar could previously express.
+fn notify_channel_is_dead(today: &str) -> bool {
+    let mut ledger = bn_core::notify::policy::load_ledger();
+    ledger.roll(today);
+    ledger.sent_today == 0 && ledger.undeliverable() > 0
 }
 
 pub(crate) fn emit_attn_to_notify(as_json: bool) {

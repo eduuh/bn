@@ -52,7 +52,7 @@ pub fn list_files(cfg: &Config, ctx: &Resolved) -> (std::path::PathBuf, Vec<File
 
 /// Map a free-text body-section keyword to its markdown heading. These prose sections live in
 /// the note body (not the frontmatter item lists): `bn notes`, `bn tc`, `bn log-progress`.
-fn body_heading(kw: &str) -> Option<&'static str> {
+pub fn body_heading(kw: &str) -> Option<&'static str> {
     match kw {
         "notes" => Some("## Notes"),
         "tc" | "testcase" | "testcases" => Some("## Test Cases"),
@@ -78,6 +78,26 @@ pub fn append_body(
     bullet: &str,
     today: &str,
 ) -> Result<AppendOutcome, CmdError> {
+    append_body_once(cfg, ctx, section_kw, bullet, None, false, today).map(|(outcome, _)| outcome)
+}
+
+/// [`append_body`] with an idempotency marker. When `if_absent` is `Some(marker)` and the section
+/// already contains that marker on some line, nothing is written and the returned flag is `false`.
+///
+/// The marker is a caller-chosen identity for the *subject* of the bullet (a `repo#number`, a
+/// finding key) rather than the bullet's own text, because a producer that re-derives its prose
+/// every run words the same fact differently each time and a text match would append a near-
+/// duplicate every day.
+#[allow(clippy::too_many_arguments)]
+pub fn append_body_once(
+    cfg: &Config,
+    ctx: &Resolved,
+    section_kw: &str,
+    bullet: &str,
+    if_absent: Option<&str>,
+    require_note: bool,
+    today: &str,
+) -> Result<(AppendOutcome, bool), CmdError> {
     let heading =
         body_heading(section_kw).ok_or_else(|| CmdError::UnknownSection(section_kw.into()))?;
     let bullet = bullet.trim();
@@ -85,6 +105,15 @@ pub fn append_body(
         return Err(CmdError::EmptyText);
     }
     let note_md = cfg.note_file(ctx);
+    let outcome = AppendOutcome {
+        label: heading.trim_start_matches("## ").to_string(),
+    };
+    // `require_note` is for a producer appending *about* a branch it did not choose: a post-hoc
+    // review of a PR merged on another machine names a branch whose note was never here, and
+    // creating one would mint an empty note for dead work rather than record anything.
+    if require_note && !note_md.exists() {
+        return Ok((outcome, false));
+    }
     // Lock the read-modify-write (see set_goal) so a parallel writer can't lose this update.
     // append_body runs on fleet hot paths (merge/verify/agent) concurrently with `bn add`/`bn done`.
     let _lock = store::NoteLock::acquire(&note_md);
@@ -93,12 +122,18 @@ pub fn append_body(
     } else {
         Note::new(ctx.rb(), today, &cfg.hostname)
     };
+    if let Some(marker) = if_absent.map(str::trim).filter(|m| !m.is_empty()) {
+        if crate::render::section_content(&note.body, heading)
+            .iter()
+            .any(|l| l.contains(marker))
+        {
+            return Ok((outcome, false));
+        }
+    }
     note.body = crate::render::append_to_section(&note.body, heading, &format!("- {bullet}"));
     note.front.record_session();
     store::save(&note, &note_md)?;
-    Ok(AppendOutcome {
-        label: heading.trim_start_matches("## ").to_string(),
-    })
+    Ok((outcome, true))
 }
 
 /// Record an approved plan verbatim under the note's `## Plan` section (idempotent — replaces any

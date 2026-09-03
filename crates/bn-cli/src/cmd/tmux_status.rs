@@ -121,9 +121,19 @@ pub(crate) fn emit_tmux_git(path: Option<String>) {
     if !dir.is_dir() {
         return;
     }
-    let Some(status) =
-        crate::git::git_capture(&["status", "--porcelain=v2", "--branch"], Some(&dir), false)
-    else {
+    // `--no-optional-locks`: this is a read-only display segment that reruns every
+    // status-interval, and a plain `git status` takes a write lock to refresh the index —
+    // racing the automated commits agents make in the same worktree. (The documented
+    // workaround was to switch the whole dashboard off with `status-interval 0` during heavy
+    // git work.) Both `-C` and this are git-global flags, so the leading `-C <dir>` that
+    // `git_capture` prepends stays valid. Cost: a stat-dirty-but-identical file keeps showing
+    // in `dirty` until some other git command refreshes the index — a cosmetic overcount on a
+    // counter that is only ever a count.
+    let Some(status) = crate::git::git_capture(
+        &["--no-optional-locks", "status", "--porcelain=v2", "--branch"],
+        Some(&dir),
+        false,
+    ) else {
         return;
     };
     if let Some(out) = render_git_seg(&parse_git_status(&status)) {
@@ -145,12 +155,15 @@ pub(crate) fn truncate_label(label: &str, max: usize) -> String {
 }
 
 /// Render the focus segment: the linked PR title (preferred) or the branch goal, truncated. An
-/// empty `label` renders the dim "set a goal" nudge.
-pub(crate) fn render_goal_seg(label: &str) -> String {
+/// empty `label` renders the dim "set a goal" nudge. A `stale` label — a PR title served from an
+/// expired cache because `gh` could not be reached — renders dim, so a frozen title is
+/// distinguishable from a current one without spending any width on a marker.
+pub(crate) fn render_goal_seg(label: &str, stale: bool) -> String {
     if label.is_empty() {
         return "#[fg=#565f89]\u{25c6} set a goal".to_string();
     }
-    format!("#[fg=#c0caf5]{}", truncate_label(label, 80))
+    let fg = if stale { "#565f89" } else { "#c0caf5" };
+    format!("#[fg={fg}]{}", truncate_label(label, 80))
 }
 
 /// `bn tmux-goal [path]` — emit the focus segment (PR title if linked, else branch goal). Prefers
@@ -172,24 +185,77 @@ pub(crate) fn emit_tmux_goal(cfg: &Config, path: Option<String>) {
     };
 
     let mut label = String::new();
+    let mut stale = false;
     if let Some(pr) = &note.front.pr {
         let pr_url = pr.display();
         if pr_url.starts_with("http") {
-            label = pr_title_cached(&pr_url);
+            (label, stale) = pr_title_cached(&pr_url);
         }
     }
     if label.is_empty() {
+        // Falling back to the note's own goal — a local read, never stale.
+        stale = false;
         if let Some(goal) = bn_core::render::goal_text(&note.body) {
             label = goal;
         }
     }
-    print!("{}", render_goal_seg(&label));
+    print!("{}", render_goal_seg(&label, stale));
 }
 
-/// Resolve a PR's title, memoised on disk for 5 minutes. Returns the cached title on a `gh` miss
-/// so a transient network failure doesn't blank the bar. Empty string when uncached and `gh`
-/// yields nothing.
-fn pr_title_cached(pr_url: &str) -> String {
+/// How long a fetched PR title stays fresh.
+const PR_TITLE_TTL_SECS: u64 = 300;
+/// First backoff window after a failed `gh` call, doubling to [`PR_TITLE_BACKOFF_MAX_SECS`].
+const PR_TITLE_BACKOFF_MIN_SECS: u64 = 30;
+/// Backoff ceiling — capped at the TTL so the title self-heals within one normal interval.
+const PR_TITLE_BACKOFF_MAX_SECS: u64 = 300;
+/// Wall-clock deadline for the status bar's `gh` call. The bar reruns every few seconds; a
+/// lookup that has not answered in this long is not going to answer usefully.
+const GH_STATUS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Grow the backoff window after another failure: first miss waits
+/// [`PR_TITLE_BACKOFF_MIN_SECS`], each subsequent one doubles up to [`PR_TITLE_BACKOFF_MAX_SECS`].
+pub(crate) fn next_backoff(prev_secs: u64) -> u64 {
+    if prev_secs == 0 {
+        PR_TITLE_BACKOFF_MIN_SECS
+    } else {
+        prev_secs
+            .saturating_mul(2)
+            .clamp(PR_TITLE_BACKOFF_MIN_SECS, PR_TITLE_BACKOFF_MAX_SECS)
+    }
+}
+
+/// Whether the status bar should spend a `gh` call this tick. `cache_age` is the age of the
+/// stored title (`None` when never fetched); `miss` is `(age, backoff_window)` of the last failed
+/// attempt. A fresh title needs nothing; a recent failure must not be retried until its window
+/// has elapsed. Pure so the backoff is testable without a network or a clock.
+pub(crate) fn should_refetch(cache_age: Option<u64>, miss: Option<(u64, u64)>) -> bool {
+    if cache_age.is_some_and(|age| age < PR_TITLE_TTL_SECS) {
+        return false;
+    }
+    !matches!(miss, Some((age, window)) if age < window)
+}
+
+/// Age of `path` in whole seconds, or `None` when it does not exist / has no usable mtime.
+fn age_secs(path: &std::path::Path) -> Option<u64> {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()?
+        .elapsed()
+        .ok()
+        .map(|e| e.as_secs())
+}
+
+/// Resolve a PR's title, memoised on disk for [`PR_TITLE_TTL_SECS`]. Returns
+/// `(title, stale)` — `stale` when the value came from an expired cache the bar could not
+/// refresh, so the caller can render it dimmed rather than silently showing a frozen title.
+///
+/// The failure path used to return the stale title *without touching any file*, so the freshness
+/// test failed again on the very next tick: offline, on a VPN flap or under a `gh` rate limit
+/// this spawned `gh pr view` every few seconds forever, once per PR-linked worktree. A miss now
+/// records itself in a sibling `<key>.miss` marker holding the current backoff window, so
+/// failures cost one call per window instead of one per tick. The call is bounded too — an
+/// unbounded `gh` on a status segment stalls the whole row.
+fn pr_title_cached(pr_url: &str) -> (String, bool) {
     let cache_dir = std::env::temp_dir().join("bn-prtitle");
     let _ = std::fs::create_dir_all(&cache_dir);
     let key: String = pr_url
@@ -197,23 +263,42 @@ fn pr_title_cached(pr_url: &str) -> String {
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
     let cache = cache_dir.join(&key);
+    let miss_marker = cache_dir.join(format!("{key}.miss"));
 
-    let fresh = std::fs::metadata(&cache)
-        .and_then(|m| m.modified())
-        .map(|t| t.elapsed().map(|e| e.as_secs() < 300).unwrap_or(false))
-        .unwrap_or(false);
-    if fresh {
-        return std::fs::read_to_string(&cache).unwrap_or_default();
+    let cache_age = age_secs(&cache);
+    let miss = age_secs(&miss_marker).map(|age| {
+        let window = std::fs::read_to_string(&miss_marker)
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .unwrap_or(PR_TITLE_BACKOFF_MIN_SECS);
+        (age, window)
+    });
+
+    let cached = || std::fs::read_to_string(&cache).unwrap_or_default();
+    if !should_refetch(cache_age, miss) {
+        // Either the title is still fresh, or we are inside a backoff window and must not spend
+        // another call. Fresh reads render normally; a held-back one is stale by definition.
+        let fresh = cache_age.is_some_and(|age| age < PR_TITLE_TTL_SECS);
+        return (cached(), !fresh);
     }
 
-    match crate::gh::gh_capture(&["pr", "view", pr_url, "--json", "title", "-q", ".title"]) {
+    match crate::gh::gh_capture_bounded(
+        &["pr", "view", pr_url, "--json", "title", "-q", ".title"],
+        GH_STATUS_TIMEOUT,
+    ) {
         Some(title) if !title.trim().is_empty() => {
             let title = title.trim().to_string();
             let _ = std::fs::write(&cache, &title);
-            title
+            let _ = std::fs::remove_file(&miss_marker);
+            (title, false)
         }
-        // gh failed / empty — fall back to any stale cache so the bar keeps its last title.
-        _ => std::fs::read_to_string(&cache).unwrap_or_default(),
+        // gh failed / empty — keep the last title, and record the miss so the next tick backs
+        // off instead of firing again immediately.
+        _ => {
+            let window = next_backoff(miss.map(|(_, w)| w).unwrap_or(0));
+            let _ = std::fs::write(&miss_marker, window.to_string());
+            (cached(), true)
+        }
     }
 }
 
@@ -245,56 +330,154 @@ pub(crate) fn parse_attn_row(line: &str) -> AttnRow<'_> {
 /// The pure count itself lives in [`attn_window_tally`] so `bn attn badge` (which folds these
 /// windows into its single total) shares one implementation.
 pub(crate) fn render_attn_count(lines: &str, now: i64) -> String {
-    let (waiting, ready, wait) = attn_window_tally(lines, now);
+    let t = attn_window_tally(lines, now);
 
     let mut s = String::new();
-    if waiting > 0 {
-        let color = if wait >= 900 { "red" } else { "colour214" };
-        s.push_str(&format!("#[fg={color}]{waiting} waiting "));
-        if wait >= 60 {
-            let m = wait / 60;
-            let dur = if m >= 60 {
-                format!("{}h{:02}m", m / 60, m % 60)
-            } else {
-                format!("{m}m")
-            };
+    if t.waiting > 0 {
+        let color = wait_color(t.wait);
+        s.push_str(&format!("#[fg={color}]{} waiting ", t.waiting));
+        if let Some(dur) = fmt_wait(t.wait) {
             s.push_str(&format!("#[fg=colour243]{dur} "));
         }
         s.push_str("#[fg=#3b4261]\u{b7} ");
     }
-    if ready > 0 {
-        s.push_str(&format!("#[fg=green]{ready} ready #[fg=#3b4261]\u{b7} "));
+    if t.ready > 0 {
+        s.push_str(&format!("#[fg=green]{} ready #[fg=#3b4261]\u{b7} ", t.ready));
     }
     s
 }
 
-/// Pure global tally of agent windows from `list-windows` lines + the current epoch `now`:
-/// returns `(waiting, ready, longest_wait_secs)`. `waiting` = an agent needs you
-/// (`@bn_agent==waiting`); `ready` = finished (`@bn_agent==done`, or the silence-watch
-/// `@bn_done==✓`); `longest_wait_secs` = how long the oldest waiting window has waited (`0`
-/// when nothing is waiting). Shared by [`render_attn_count`] and `bn attn badge`.
-pub(crate) fn attn_window_tally(lines: &str, now: i64) -> (u32, u32, i64) {
-    let mut waiting = 0u32;
-    let mut ready = 0u32;
+/// A wait crosses from "an agent is thinking" to "you are the bottleneck" at 15 minutes.
+const WAIT_URGENT_SECS: i64 = 900;
+
+/// Colour for a wait of `secs`: amber until [`WAIT_URGENT_SECS`], red past it.
+pub(crate) fn wait_color(secs: i64) -> &'static str {
+    if secs >= WAIT_URGENT_SECS {
+        "red"
+    } else {
+        "colour214"
+    }
+}
+
+/// Format a wait as `45m` / `2h15m`, or `None` under a minute (too short to be worth the width).
+pub(crate) fn fmt_wait(secs: i64) -> Option<String> {
+    (secs >= 60).then(|| {
+        let m = secs / 60;
+        if m >= 60 {
+            format!("{}h{:02}m", m / 60, m % 60)
+        } else {
+            format!("{m}m")
+        }
+    })
+}
+
+/// Global tally of agent windows across every session.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct AgentTally {
+    /// An agent needs you (`@bn_agent==waiting`).
+    pub waiting: u32,
+    /// Finished (`@bn_agent==done`, or the silence-watch `@bn_done==✓`).
+    pub ready: u32,
+    /// Running and needing nothing (`@bn_agent==working`).
+    pub working: u32,
+    /// How long the oldest waiting window has waited, `0` when nothing is waiting.
+    pub wait: i64,
+}
+
+/// Pure global tally of agent windows from `list-windows` lines + the current epoch `now`.
+/// Shared by [`render_attn_count`], [`render_attn_badge`] and `bn attn badge`.
+///
+/// `working` is counted even though it needs nothing from you: the fall-through arm used to drop
+/// those rows entirely, which made "three agents are busy" and "the machine is idle" render
+/// identically on the bar.
+pub(crate) fn attn_window_tally(lines: &str, now: i64) -> AgentTally {
+    let mut t = AgentTally::default();
     let mut oldest: i64 = 0;
     for line in lines.lines() {
         let r = parse_attn_row(line);
         match r.agent {
             "waiting" => {
-                waiting += 1;
+                t.waiting += 1;
                 if let Ok(since) = r.since.parse::<i64>() {
                     if oldest == 0 || since < oldest {
                         oldest = since;
                     }
                 }
             }
-            "done" => ready += 1,
-            "" if r.done == "\u{2713}" => ready += 1,
+            "done" => t.ready += 1,
+            "working" => t.working += 1,
+            "" if r.done == "\u{2713}" => t.ready += 1,
             _ => {}
         }
     }
-    let wait = if oldest > 0 { now - oldest } else { 0 };
-    (waiting, ready, wait)
+    t.wait = if oldest > 0 { now - oldest } else { 0 };
+    t
+}
+
+/// Render the status-bar attention badge as up to five lanes, each omitted when zero, in
+/// descending urgency: undeliverable-notification warning, urgent (cron failures + urgent
+/// attention items), raised (everything else open), an agent waiting on you with the longest
+/// wait, and agents merely working. `None` when there is nothing at all to say, so the bar
+/// stays clean.
+///
+/// This replaced a single summed integer. `urgent + other + waiting + ready` collapsed four
+/// unrelated conditions into one red number, so the only available response was "open a popup
+/// and read" — and the wait duration, which is the whole reason a wait matters, was computed and
+/// then dropped. Each lane now maps to a different action: red bolt = go fix cron, bell =
+/// someone raised something, clock = an agent has been blocked on you this long (prefix-Tab
+/// jumps to it), dim gear = the machine is busy, leave it alone.
+pub(crate) fn render_attn_badge(
+    b: &bn_core::doctor::Badge,
+    t: &AgentTally,
+    dead_channel: bool,
+) -> Option<String> {
+    if b.urgent == 0 && b.other == 0 && t.waiting == 0 && t.ready == 0 && t.working == 0 {
+        return None;
+    }
+    let mut s = String::new();
+    if dead_channel {
+        // Every notification today was undeliverable: the push channel is not merely quiet, it
+        // is broken, and nothing else on the bar distinguishes those two.
+        s.push_str(&format!("#[fg=red]{}dead ", bn_core::glyph::BELL_SLASH));
+    }
+    if b.urgent > 0 {
+        s.push_str(&format!("#[fg=red]{}{} ", b.urgent, bn_core::glyph::BOLT));
+    }
+    if b.other > 0 {
+        s.push_str(&format!(
+            "#[fg=colour214]{}{} ",
+            b.other,
+            bn_core::glyph::BELL
+        ));
+    }
+    if t.waiting > 0 {
+        s.push_str(&format!(
+            "#[fg={}]{}{}",
+            wait_color(t.wait),
+            t.waiting,
+            bn_core::glyph::CLOCK
+        ));
+        match fmt_wait(t.wait) {
+            Some(dur) => s.push_str(&format!("{dur} ")),
+            None => s.push(' '),
+        }
+    }
+    if t.ready > 0 {
+        s.push_str(&format!(
+            "#[fg=#9ece6a]{}{} ",
+            t.ready,
+            bn_core::glyph::CHECK
+        ));
+    }
+    if t.working > 0 {
+        s.push_str(&format!(
+            "#[fg=#565f89]{}{} ",
+            t.working,
+            bn_core::glyph::GEAR
+        ));
+    }
+    s.push_str("#[fg=#3b4261]\u{b7} ");
+    Some(s)
 }
 
 /// `bn tmux-attn-count` — global tally of windows needing attention across ALL sessions, for the
@@ -458,6 +641,7 @@ pub(crate) fn emit_tmux_help() {
     hdr("Projects & sessions");
     row("C-o", "project / worktree picker (frecency + preview)");
     row("C-w", "picker scoped to Windows-fs repos");
+    row("C-j", "tmux-native session tree (choose-tree; f filters, x kills)");
     row("C-p", "jump to the planning / orchestration session");
     row("BSpace", "jump to the planning session (same as C-p)");
     row("t", "kill this session, switch to next");
@@ -586,5 +770,173 @@ mod machine_scope_tests {
     fn disabled_web_neither_starts_nor_renders_a_badge() {
         assert!(!tmux_mcp_should_start(false, false));
         assert_eq!(render_tmux_mcp_badge(false, true, 7770), None);
+    }
+}
+
+#[cfg(test)]
+mod attn_badge_tests {
+    use super::*;
+    use bn_core::doctor::Badge;
+
+    /// `#{@bn_agent}\t#{@bn_done}\t#{@bn_agent_since}`, the shape `tmux list-windows -a` emits.
+    fn row(agent: &str, since: i64) -> String {
+        format!("{agent}\t\t{since}")
+    }
+
+    fn badge(urgent: usize, other: usize) -> Badge {
+        Badge { urgent, other }
+    }
+
+    /// The regression the old fall-through arm caused: a working agent was matched by `_ => {}`
+    /// and discarded, so a busy machine tallied identically to an idle one.
+    #[test]
+    fn a_working_agent_is_counted_rather_than_dropped() {
+        let lines = [row("working", 0), row("working", 0), row("waiting", 500)].join("\n");
+        let t = attn_window_tally(&lines, 1_000);
+        assert_eq!(t.working, 2);
+        assert_eq!(t.waiting, 1);
+        assert_eq!(t.wait, 500);
+    }
+
+    /// The silence-watch fallback (`@bn_done == ✓` on a window with no `@bn_agent`) still counts
+    /// as ready — behaviour the lane split must not disturb.
+    #[test]
+    fn the_silence_watch_fallback_still_counts_as_ready() {
+        let t = attn_window_tally("\t\u{2713}\t", 1_000);
+        assert_eq!(t.ready, 1);
+        assert_eq!(t.working, 0);
+    }
+
+    /// The longest wait wins, not the most recent one — the bar should report the agent that has
+    /// been blocked on you the longest.
+    #[test]
+    fn the_wait_reported_is_the_oldest_of_several() {
+        let lines = [row("waiting", 900), row("waiting", 100)].join("\n");
+        assert_eq!(attn_window_tally(&lines, 1_000).wait, 900);
+    }
+
+    #[test]
+    fn a_quiet_cockpit_renders_no_badge_at_all() {
+        let t = AgentTally::default();
+        assert_eq!(render_attn_badge(&badge(0, 0), &t, false), None);
+    }
+
+    /// Ready windows alone are enough to render — they were part of the old summed total, so
+    /// dropping them would be a silent regression.
+    #[test]
+    fn ready_windows_alone_still_render() {
+        let t = AgentTally {
+            ready: 1,
+            ..Default::default()
+        };
+        let out = render_attn_badge(&badge(0, 0), &t, false).expect("ready is worth saying");
+        assert!(out.contains(bn_core::glyph::CHECK), "{out}");
+    }
+
+    /// The whole point of the change: four conditions that used to sum into one red integer now
+    /// render as four separately-coloured lanes, in descending urgency, with the wait duration
+    /// that was previously computed and thrown away.
+    #[test]
+    fn every_lane_renders_in_descending_urgency_with_the_wait_duration() {
+        let t = AgentTally {
+            waiting: 1,
+            ready: 0,
+            working: 3,
+            wait: 8_100, // 2h15m
+        };
+        let out = render_attn_badge(&badge(6, 3), &t, false).expect("plenty to say");
+        let expected = format!(
+            "#[fg=red]6{} #[fg=colour214]3{} #[fg=red]1{}2h15m #[fg=#565f89]3{} #[fg=#3b4261]\u{b7} ",
+            bn_core::glyph::BOLT,
+            bn_core::glyph::BELL,
+            bn_core::glyph::CLOCK,
+            bn_core::glyph::GEAR,
+        );
+        assert_eq!(out, expected);
+    }
+
+    /// A wait is amber while an agent is merely thinking and red once you are plainly the
+    /// bottleneck; the boundary is 15 minutes.
+    #[test]
+    fn a_wait_turns_red_at_fifteen_minutes() {
+        assert_eq!(wait_color(899), "colour214");
+        assert_eq!(wait_color(900), "red");
+    }
+
+    /// Sub-minute waits are not worth the width; beyond that the format switches at an hour.
+    #[test]
+    fn a_wait_is_formatted_only_once_it_is_worth_reading() {
+        assert_eq!(fmt_wait(59), None);
+        assert_eq!(fmt_wait(60).as_deref(), Some("1m"));
+        assert_eq!(fmt_wait(2_700).as_deref(), Some("45m"));
+        assert_eq!(fmt_wait(8_100).as_deref(), Some("2h15m"));
+    }
+
+    /// A broken push channel is announced ahead of everything else, and says nothing at all when
+    /// the backend is healthy.
+    #[test]
+    fn a_dead_notification_channel_is_announced_first() {
+        let t = AgentTally {
+            working: 1,
+            ..Default::default()
+        };
+        let dead = render_attn_badge(&badge(0, 0), &t, true).expect("something to say");
+        assert!(
+            dead.starts_with(&format!("#[fg=red]{}dead ", bn_core::glyph::BELL_SLASH)),
+            "{dead}"
+        );
+        let healthy = render_attn_badge(&badge(0, 0), &t, false).expect("something to say");
+        assert!(!healthy.contains("dead"), "{healthy}");
+    }
+
+    /// `bn tmux-attn-count` is a separate, unchanged surface — pin its output so the AgentTally
+    /// refactor cannot quietly alter it.
+    #[test]
+    fn the_standalone_attn_count_segment_is_unchanged_by_the_refactor() {
+        let lines = [row("waiting", 100), row("done", 0), row("working", 0)].join("\n");
+        assert_eq!(
+            render_attn_count(&lines, 8_200),
+            "#[fg=red]1 waiting #[fg=colour243]2h15m #[fg=#3b4261]\u{b7} \
+             #[fg=green]1 ready #[fg=#3b4261]\u{b7} "
+        );
+    }
+}
+
+#[cfg(test)]
+mod pr_title_backoff_tests {
+    use super::*;
+
+    /// A fresh title needs no call; an expired one does.
+    #[test]
+    fn a_fresh_title_is_not_refetched_and_an_expired_one_is() {
+        assert!(!should_refetch(Some(10), None));
+        assert!(should_refetch(Some(PR_TITLE_TTL_SECS), None));
+        assert!(should_refetch(None, None));
+    }
+
+    /// The bug this fixes: the failure path left no trace, so an expired cache re-fired `gh` on
+    /// every tick. Inside a recorded backoff window the bar must spend nothing.
+    #[test]
+    fn a_recent_failure_suppresses_the_next_call_until_its_window_elapses() {
+        assert!(!should_refetch(Some(9_999), Some((5, 30))));
+        assert!(should_refetch(Some(9_999), Some((30, 30))));
+    }
+
+    #[test]
+    fn the_backoff_window_doubles_from_thirty_seconds_up_to_the_ttl() {
+        assert_eq!(next_backoff(0), 30);
+        assert_eq!(next_backoff(30), 60);
+        assert_eq!(next_backoff(60), 120);
+        assert_eq!(next_backoff(240), PR_TITLE_BACKOFF_MAX_SECS);
+        assert_eq!(next_backoff(PR_TITLE_BACKOFF_MAX_SECS), PR_TITLE_BACKOFF_MAX_SECS);
+    }
+
+    /// A title the bar could not refresh renders dim, so a frozen title is distinguishable from a
+    /// current one — but an absent goal keeps its own distinct nudge.
+    #[test]
+    fn a_stale_title_renders_dim_and_a_fresh_one_bright() {
+        assert_eq!(render_goal_seg("ship it", false), "#[fg=#c0caf5]ship it");
+        assert_eq!(render_goal_seg("ship it", true), "#[fg=#565f89]ship it");
+        assert_eq!(render_goal_seg("", true), "#[fg=#565f89]\u{25c6} set a goal");
     }
 }

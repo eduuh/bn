@@ -43,3 +43,5 @@ pub const AWAY: &str = "\u{f08b}";
 pub const PENCIL: &str = "\u{f040}";
 /// nf-fa-clock-o — SLA / wait-time / cron schedule.
 pub const CLOCK: &str = "\u{f017}";
+/// nf-fa-bell-slash-o — the notification channel is broken, not merely quiet.
+pub const BELL_SLASH: &str = "\u{f1f7}";

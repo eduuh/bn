@@ -34,6 +34,7 @@ pub(super) struct ConfigFile {
     archivist: Option<ArchivistSection>,
     retro: Option<RetroSection>,
     mentor: Option<MentorSection>,
+    agents: Option<AgentsSection>,
     /// `[routine]` + `[[routine.blocks]]` (#801): the recurring weekly personal-schedule config.
     /// Deserialized directly into the domain's own raw shape (mirrors `pipeline`) since the
     /// block list is structural, not scalar — no per-field windows overlay for the array.
@@ -70,6 +71,27 @@ pub(super) struct ConfigFile {
 }
 
 use super::config_sections::*;
+
+/// The pre-manifest per-agent switches, mapped to the agents they turn on.
+///
+/// Each of these was read by a native job named after its agent. Now that an agent is a manifest,
+/// the switch is `[agents] enabled = [...]` — but a config in the wild still says
+/// `[chief] enabled = true`, so keep honouring it. This table is the only place an agent name and
+/// a config key meet, and it exists to be deleted.
+type LegacySwitch = (fn(&ConfigFile) -> Option<bool>, &'static [&'static str]);
+
+const LEGACY_AGENT_SWITCHES: &[LegacySwitch] = &[
+    (
+        ConfigFile::chief_enabled,
+        &["staff-chief-am", "staff-chief-pm"],
+    ),
+    (ConfigFile::archivist_enabled, &["staff-archivist"]),
+    (ConfigFile::retro_enabled, &["staff-interviewer"]),
+    (ConfigFile::mentor_enabled, &["staff-mentor"]),
+    (ConfigFile::today_enabled, &["today-agent"]),
+    (ConfigFile::attention_agent_enabled, &["attention-agent"]),
+    (ConfigFile::quarter_enabled, &["quarter-review"]),
+];
 
 impl ConfigFile {
     pub(super) fn machine_profile(&self, machine: &str) -> Option<MachineProfile> {
@@ -707,20 +729,6 @@ impl ConfigFile {
             .or_else(|| self.attention_agent.as_ref().and_then(|s| s.enabled))
     }
 
-    pub(super) fn chief_am_time(&self) -> Option<String> {
-        self.win()
-            .and_then(|w| w.chief.as_ref())
-            .and_then(|s| s.am_time.clone())
-            .or_else(|| self.chief.as_ref().and_then(|s| s.am_time.clone()))
-    }
-
-    pub(super) fn chief_pm_time(&self) -> Option<String> {
-        self.win()
-            .and_then(|w| w.chief.as_ref())
-            .and_then(|s| s.pm_time.clone())
-            .or_else(|| self.chief.as_ref().and_then(|s| s.pm_time.clone()))
-    }
-
     pub(super) fn archivist_enabled(&self) -> Option<bool> {
         self.win()
             .and_then(|w| w.archivist.as_ref())
@@ -728,18 +736,39 @@ impl ConfigFile {
             .or_else(|| self.archivist.as_ref().and_then(|s| s.enabled))
     }
 
-    pub(super) fn archivist_time(&self) -> Option<String> {
-        self.win()
-            .and_then(|w| w.archivist.as_ref())
-            .and_then(|s| s.time.clone())
-            .or_else(|| self.archivist.as_ref().and_then(|s| s.time.clone()))
-    }
-
     pub(super) fn retro_enabled(&self) -> Option<bool> {
         self.win()
             .and_then(|w| w.retro.as_ref())
             .and_then(|s| s.enabled)
             .or_else(|| self.retro.as_ref().and_then(|s| s.enabled))
+    }
+
+    /// `[agents].enabled` — the opt-in agents switched on, plus anything still named by a legacy
+    /// per-agent `[<agent>] enabled = true`.
+    ///
+    /// The legacy fold is a migration shim, not a design: those keys predate agents being Markdown
+    /// manifests, when each one had a native job in Rust to read its own switch. Honouring them
+    /// means an existing config keeps working; new agents use the list. Drop the fold once nobody
+    /// is on the old keys.
+    pub(super) fn agents_enabled(&self) -> Option<Vec<String>> {
+        let listed = self
+            .win()
+            .and_then(|w| w.agents.as_ref())
+            .and_then(|s| s.enabled.clone())
+            .or_else(|| self.agents.as_ref().and_then(|s| s.enabled.clone()));
+        let legacy: Vec<String> = LEGACY_AGENT_SWITCHES
+            .iter()
+            .filter(|(read, _)| read(self).unwrap_or(false))
+            .flat_map(|(_, agents)| agents.iter().map(|a| a.to_string()))
+            .collect();
+        match (listed, legacy.is_empty()) {
+            (None, true) => None,
+            (None, false) => Some(legacy),
+            (Some(mut listed), _) => {
+                listed.extend(legacy);
+                Some(listed)
+            }
+        }
     }
 
     pub(super) fn mentor_enabled(&self) -> Option<bool> {

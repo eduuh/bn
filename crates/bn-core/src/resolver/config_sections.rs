@@ -212,25 +212,21 @@ pub(super) struct DojoSection {
     pub(super) daily_target: Option<usize>,
 }
 
-/// `[chief]`: the Chief of Staff briefing agent (#257) — the twice-daily `staff-chief-{am,pm}`
-/// jobs. Disabled by default (it writes daily goals), so it stays opt-in. `am_time`/`pm_time` are
-/// the local `HH:MM` the AM brief / PM shutdown fire (informative — the real schedule lives in
-/// `config/crons.toml`).
+/// `[chief]`: legacy. `enabled` is folded onto `[agents] enabled` (see `config_file`); the two
+/// time fields are read and ignored, since a `staff-chief-*` agent's schedule is its manifest's
+/// `on_calendar` and always was — these only ever restated it.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub(super) struct ChiefSection {
     pub(super) enabled: Option<bool>,
-    pub(super) am_time: Option<String>,
-    pub(super) pm_time: Option<String>,
 }
 
-/// `[archivist]`: the Archivist (#263) — the Friday private weekly chronicle (`staff-archivist`
-/// job). Disabled by default (it writes a file into the private notes repo), so it stays opt-in.
-/// `time` is the local `HH:MM` the chronicle fires (informative — the real schedule lives in
+/// `[archivist]`: legacy. `enabled` is folded onto `[agents] enabled` (see `config_file`); the
+/// former `time` field is gone, since the schedule is the manifest's `on_calendar` and this only
+/// ever restated it (informative — the real schedule lived in
 /// `config/crons.toml`).
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub(super) struct ArchivistSection {
     pub(super) enabled: Option<bool>,
-    pub(super) time: Option<String>,
 }
 
 /// `[staff]`: the agent-staff framework's multi-machine settings (#270). `home` names the single
@@ -276,6 +272,17 @@ pub(super) struct RetroSection {
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub(super) struct MentorSection {
     pub(super) enabled: Option<bool>,
+}
+
+/// `[agents]`: which opt-in agents are switched on, by name.
+///
+/// An agent whose manifest sets `opt_in: true` does something consequential — spends model tokens,
+/// writes into your notes, opens a session — so it stays off until it is named here. One list
+/// rather than a `[<agent>] enabled` table per agent: an agent is a Markdown manifest, and it
+/// should be possible to add one without also teaching `bn` a new config section.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub(super) struct AgentsSection {
+    pub(super) enabled: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]

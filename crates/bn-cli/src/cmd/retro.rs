@@ -229,24 +229,20 @@ pub(crate) fn emit_retro_show(cfg: &Config, week: Option<String>, as_json: bool)
     }
 }
 
-/// `staff-interviewer` cron — the Interviewer's only unattended action: raise the Friday retro
-/// attention item, escalate it once on Monday, then drop it (never nag twice). Opt-in via
-/// `[retro].enabled`; a manual `bn retro chat` always runs regardless of this flag.
-pub(crate) fn job_staff_interviewer(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
-    if !resolver::JobConfig::load().retro_enabled {
-        println!("staff-interviewer: Interviewer disabled — set [retro].enabled to opt in");
-        return 0;
-    }
+/// `bn retro tick` — the Interviewer's only unattended action: raise the Friday retro attention
+/// item, escalate it once on Monday, then drop it. It never nags twice, and it never starts the
+/// conversation — the person does that with `bn retro chat` when they are ready.
+pub(crate) fn emit_retro_tick() -> i32 {
     match retro::run_weekly_tick(&today()) {
         Ok(report) => {
             println!(
-                "staff-interviewer: {:?} for {} (dropped {} stale)",
+                "retro tick: {:?} for {} (dropped {} stale)",
                 report.action, report.week, report.dropped_stale
             );
             0
         }
         Err(e) => {
-            eprintln!("staff-interviewer: {e}");
+            eprintln!("retro tick: {e}");
             1
         }
     }

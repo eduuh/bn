@@ -128,6 +128,10 @@ pub(crate) enum TaskCmd {
         /// Take the highest-ranked task that failed the gate, rather than a named one.
         #[arg(long)]
         due: bool,
+        /// The agent manifest whose body is the prompt. The scheduled run passes its own name
+        /// from its `run:` line, which is the only place that name should appear.
+        #[arg(long, default_value = "task-enhance")]
+        agent: String,
         /// Render the prompt instead of launching an agent.
         #[arg(long)]
         dry_run: bool,
@@ -138,6 +142,10 @@ pub(crate) enum TaskCmd {
         /// The day to triage for (default today).
         #[arg(long, value_name = "DATE")]
         day: Option<String>,
+        /// The agent manifest whose body is the prompt. The scheduled run passes its own name
+        /// from its `run:` line, which is the only place that name should appear.
+        #[arg(long, default_value = "task-triage")]
+        agent: String,
         /// Print the rendered prompt instead of launching an agent.
         #[arg(long)]
         dry_run: bool,

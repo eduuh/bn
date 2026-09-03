@@ -231,12 +231,25 @@ fn status(cfg: &Config, port: Option<u16>, json: bool) {
 }
 
 /// Reconcile the managed web service with the current machine policy.
+///
+/// Runs on **every** `bn` invocation, so the common case has to cost nothing. The uninstallers
+/// shell out to `systemctl --user disable --now` plus a `daemon-reload` (or `launchctl bootout`),
+/// which is a third of a second of init-system IPC on a box where systemd is slow — and it was
+/// being spent on every command to remove a service that had never been installed. That is where
+/// the picker's latency actually lived: `ctrl-o` spent 345ms here before painting a single row.
+///
+/// Two stats decide it now. There is nothing to uninstall unless the unit file or the plist is on
+/// disk, and when one is, the real work runs exactly once and the next invocation is free again.
 pub(crate) fn reconcile(cfg: &Config) {
     if cfg.web_enabled_here() || !cfg.destructive_reconcile_allowed() {
         return;
     }
-    crate::launchd::web_uninstall();
-    crate::systemd::web_uninstall();
+    if crate::launchd::web_installed() {
+        crate::launchd::web_uninstall();
+    }
+    if crate::systemd::web_installed() {
+        crate::systemd::web_uninstall();
+    }
 }
 
 /// How long to wait between liveness polls while a signalled listener shuts down.

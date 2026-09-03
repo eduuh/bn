@@ -4,8 +4,9 @@ requires_repo: bn
 kind: staff
 on_calendar: "Mon..Fri *-*-* 08:30:00"
 network: false
-gather: "bn staff gather standup"
+gather: "bn standup --gather"
 sinks: ["attn", "note"]
+replace: true
 description: "Morning standup card from yesterday completed work and today focus."
 ---
 You are the **Standup** agent. Each morning you turn **yesterday's completed work** into a short,

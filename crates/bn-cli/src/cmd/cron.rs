@@ -18,20 +18,15 @@ fn run_builtin_job(
     agent: Option<&bn_core::agents::AgentDef>,
     staff_json: bool,
 ) -> Option<i32> {
-    // Native-first: a same-name native implementation is the authoritative job — it may hold an
-    // opt-in gate (`[chief].enabled`) or deterministic side effects the manifest documents
-    // (sentinel's landing + night-shift promotion). Routing staff-kind agents to the generic
-    // staff pipeline *before* this check silently bypassed both. The generic pipeline remains
-    // the path for manifest-only staff agents (standup, goals-align, scout, demo, …).
-    if let Some(f) = native_job(job) {
-        return Some(run_native_job(cfg, ctx, job, f));
-    }
+    // A staff agent runs the generic pipeline; anything else is an ordinary job. No agent is
+    // dispatched by name any more — an agent that does something deterministic says so in its
+    // `run:` line, which is handled before this is reached.
     if agent.is_some_and(bn_core::agents::AgentDef::is_staff) {
         return Some(run_native_job(cfg, ctx, job, |cfg, ctx| {
             staff_run_code(cfg, ctx, job, staff_json)
         }));
     }
-    None
+    native_job(job).map(|f| run_native_job(cfg, ctx, job, f))
 }
 
 fn cron_event_target(
@@ -161,19 +156,9 @@ fn run_job_inner(
         }
     };
     let agent = catalog.find(job).cloned();
-    if let Some(agent) = agent.as_ref() {
-        if let Err(error) = agent.ensure_runnable() {
-            eprintln!("bn run: {error}");
-            return 2;
-        }
-        if !agent.repo_available_here(cfg) {
-            let repo = agent.requires_repo.as_deref().unwrap_or_default();
-            println!(
-                "bn run: skipping '{job}' — repository '{repo}' is not registered and available on '{}'",
-                cfg.machine()
-            );
-            return 0;
-        }
+    if let Some(agent_gate::Refusal(code)) = agent.as_ref().and_then(|a| agent_gate::refuse(cfg, a))
+    {
+        return code;
     }
 
     // Resolve *before* capturing. A name nothing backs used to be enqueued regardless, and only
@@ -225,6 +210,8 @@ pub(crate) fn shq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+#[path = "cron/agent_gate.rs"]
+mod agent_gate;
 #[path = "cron/retire.rs"]
 mod retire;
 pub(crate) use retire::{emit_cron_retire, emit_cron_unregister};

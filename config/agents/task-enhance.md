@@ -3,7 +3,7 @@ name: task-enhance
 requires_repo: bn
 kind: command
 on_calendar: "*-*-* 0/1:00:00"
-run: "bn task enhance --due"
+run: "bn task enhance --due --agent task-enhance"
 harness: copilot
 network: true
 description: "bn — task enhance: the cheap first stage of the work pipeline. Grounds a task in bn (repo, project, quarter goal) and makes it SMART (why, done-when, estimate, day) so the gate will admit it"

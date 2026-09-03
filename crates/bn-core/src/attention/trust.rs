@@ -37,6 +37,9 @@ use crate::resolver::Config;
 pub const SOURCE_SELF: &str = "manual";
 /// Task-derived: minted by bn from a task, possibly one pulled from a public issue.
 pub const SOURCE_TASK: &str = "task";
+/// Staff-promoted: routed by a Markdown agent the person switched on, which deliberately marked
+/// the item `mode: auto`. The prefix every routed staff item carries.
+pub const SOURCE_STAFF_PREFIX: &str = "staff-";
 
 /// Prompt openers bn itself writes for task-derived items. A prompt that does not begin with one
 /// of these was not composed by us, so it cannot be trusted to be instruction-free.
@@ -132,13 +135,38 @@ pub fn auto_verdict(cfg: &Config, item: &AttnItem, today: &str) -> AutoVerdict {
     if let Err(why) = has_runnable_shape(item) {
         return AutoVerdict::Denied(why);
     }
-    match effective_source(item) {
+    let source = effective_source(item);
+    match source {
         // Self-authored: unchanged, and still the widest tier.
         SOURCE_SELF => AutoVerdict::Eligible,
         SOURCE_TASK => task_tier(cfg, item),
+        _ if source.starts_with(SOURCE_STAFF_PREFIX) => staff_tier(cfg, item),
         // Anything else — a script, a PR webhook, an unrecognised label — stays out. Fail closed.
         _ => AutoVerdict::Denied("source is not a trusted tier"),
     }
+}
+
+/// The tier for an item a staff agent elevated with `mode: auto`.
+///
+/// Three deliberate acts stand behind such an item: the person switched the agent on, they
+/// allowlisted the repo it may patrol, and the agent chose to promote this finding. That is a
+/// weaker warrant than "you typed it" — the prompt was written by a model — so it carries the same
+/// guard the task tier does and for the same reason: an attacker who chooses the repo chooses
+/// where the agent gets write access. Everything downstream (the night allowlist, its enable, its
+/// window) still applies.
+///
+/// Before this tier existed the promotion path was dead: the deleted Rust stamped its promotions
+/// `manual` to clear the gate, and once routing stamped them `staff-<agent>` instead, every
+/// promotion was minted, queued, and never picked up — silently, since a denied item looks exactly
+/// like one nothing has got to yet.
+fn staff_tier(cfg: &Config, item: &AttnItem) -> AutoVerdict {
+    let Some(repo) = item.repo.as_deref().map(str::to_ascii_lowercase) else {
+        return AutoVerdict::Denied("staff item names no repo");
+    };
+    if !crate::issues::known_repos(cfg).contains(&repo) {
+        return AutoVerdict::Denied("staff item targets an unknown repo");
+    }
+    AutoVerdict::Eligible
 }
 
 /// The tier an item *actually* belongs to, which is not always the tier its `source` records.

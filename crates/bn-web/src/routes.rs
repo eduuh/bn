@@ -266,7 +266,6 @@ fn health_envelope(state: &AppState) -> Envelope {
     )
 }
 
-
 /// Serve the embedded UI. An exact asset path wins; any other path falls back to `index.html` so
 /// client-side (SPA) routes resolve. `/api/*` never reaches here — those are real routes, so an
 /// unknown `/api/...` path correctly 404s rather than returning the SPA shell.

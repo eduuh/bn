@@ -42,14 +42,18 @@ pub struct NewAttn<'a> {
 /// failing job: one stable, subject-derived key that refreshes in place across every failure.
 pub(crate) const CRON_HEALTH_PREFIX: &str = "attn:cron-health:";
 
-/// True for the free-text producers whose items *restate* a problem rather than establish it: the
-/// LLM attention agent and every staff agent (`staff-<agent>`).
+/// True for the free-text producers whose items *restate* a problem rather than establish it —
+/// every agent-routed source (`staff-<agent>`).
 ///
-/// Their keys encode when the card was written (`staff:<agent>:<date>:<i>`) or how the model
-/// happened to word it (`attn:attention-agent:<title-slug>`), so neither can ever dedupe against a
-/// restatement. Both must therefore be checked against the canonical subject instead.
+/// Their keys encode either when the card was written (`staff:<agent>:<date>:<i>`) or how the
+/// agent happened to word the subject, so neither can dedupe against a restatement of the same
+/// problem. They must be checked against the canonical subject instead.
+///
+/// The bare `attention-agent` arm is legacy: that agent routed its own items under an unprefixed
+/// source before it became an ordinary staff agent, and items raised then are still on some
+/// boards. Drop it once none survive.
 pub(crate) fn is_advisory_source(source: &str) -> bool {
-    source == "attention-agent" || source.starts_with("staff-")
+    source.starts_with("staff-") || source == "attention-agent"
 }
 
 /// The canonical key among `canonical` whose subject `title` restates, if any.
@@ -441,29 +445,53 @@ pub fn ingest(
     }
 
     if replace {
-        for item in open_items(today) {
-            if !affected_sources.contains(&item.source) {
-                continue;
-            }
-            let Some(k) = item.key.as_deref() else {
-                continue;
-            };
-            if !k.starts_with(&format!("attn:{}:", item.source)) {
-                continue;
-            }
-            let keep = current_keys
-                .get(&item.source)
-                .is_some_and(|keys| keys.contains(k));
-            if !keep && ack(&item.id)? {
-                out.resolved += 1;
-            }
+        for source in &affected_sources {
+            out.resolved += resolve_absent(
+                source,
+                current_keys.get(source).unwrap_or(&Default::default()),
+                today,
+            )?;
         }
     }
 
     Ok(out)
 }
 
-fn ingest_key(source: &str, key: &str) -> String {
+/// Ack every open, keyed item of `source` whose key is absent from `current` — the "the producer
+/// re-stated its whole current set, so what it left out is fixed" half of `--replace`.
+///
+/// Its own function because two producers need it and only one of them is [`ingest`]: a staff card
+/// that re-derives its findings every run auto-resolves rot that has disappeared the same way a
+/// polling script does. Only keys this source itself minted (`attn:<source>:`) are considered, so a
+/// producer can never resolve another's item. Returns how many were acked.
+pub fn resolve_absent(
+    source: &str,
+    current: &std::collections::HashSet<String>,
+    today: &str,
+) -> std::io::Result<usize> {
+    let prefix = format!("attn:{source}:");
+    let mut resolved = 0;
+    for item in open_items(today) {
+        if item.source != source {
+            continue;
+        }
+        let Some(k) = item.key.as_deref() else {
+            continue;
+        };
+        if !k.starts_with(&prefix) || current.contains(k) {
+            continue;
+        }
+        if ack(&item.id)? {
+            resolved += 1;
+        }
+    }
+    Ok(resolved)
+}
+
+/// The source-namespaced form of a producer-supplied key: `attn:<source>:<key>`. Namespacing lets
+/// independent producers reuse natural ids without colliding, and is what [`resolve_absent`]
+/// matches on.
+pub fn ingest_key(source: &str, key: &str) -> String {
     format!("attn:{source}:{key}")
 }
 
@@ -510,7 +538,10 @@ mod tests {
     #[test]
     fn an_unrelated_title_is_never_suppressed() {
         assert_eq!(
-            restated_subject("Renew the expired Azure Contributor PIM role", &[COWORK, NIGHTLY]),
+            restated_subject(
+                "Renew the expired Azure Contributor PIM role",
+                &[COWORK, NIGHTLY]
+            ),
             None
         );
     }
@@ -519,7 +550,10 @@ mod tests {
     #[test]
     fn a_title_matches_only_its_own_subject() {
         assert_eq!(
-            restated_subject("Investigate the nightly-release cron failures", &[COWORK, NIGHTLY]),
+            restated_subject(
+                "Investigate the nightly-release cron failures",
+                &[COWORK, NIGHTLY]
+            ),
             Some(NIGHTLY)
         );
     }
@@ -527,7 +561,10 @@ mod tests {
     /// With no canonical item there is nothing to collapse onto, so the advisory item must stand.
     #[test]
     fn nothing_is_suppressed_without_a_canonical_item() {
-        assert_eq!(restated_subject("Repair the live-cowork-scrape cron", &[]), None);
+        assert_eq!(
+            restated_subject("Repair the live-cowork-scrape cron", &[]),
+            None
+        );
     }
 
     /// Deterministic producers establish subjects; only the free-text ones restate them.

@@ -7,9 +7,6 @@ use bn_core::backlog::{self, AddSpec, BacklogKind, Recurrence};
 use bn_core::attention::{ingest, IngestItem};
 use bn_core::queue::kind::ExecSpec;
 
-/// Keep the headless harness under the outer cron budget so a slow model call can still fall back
-/// and finish green instead of being killed by the scheduler.
-const HARNESS_WALL_SECS: u64 = 90;
 
 /// The source stamped on everything the watchdog mints — the attention row, the repair task, and
 /// the queued repair agent. Shared because [`close_recovered_repairs`] matches backlog entries on
@@ -306,21 +303,9 @@ pub(crate) fn job_cron_health(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
     }
 }
 
-/// One ranked item the LLM returns. Tolerant of the usual field-name drift (`why`/`reason`,
-/// `link`/`url`); an absent severity folds to `info`.
-#[derive(Debug, serde::Deserialize)]
-struct RankedItem {
-    title: String,
-    #[serde(default)]
-    severity: String,
-    #[serde(default, alias = "reason", alias = "rationale")]
-    why: Option<String>,
-    #[serde(default, alias = "url")]
-    link: Option<String>,
-}
 
-/// Whether the findings packet has no sources (nothing gathered) — a guardrail so the agent never
-/// spends a model call on an empty packet.
+/// Whether the findings packet has no sources (nothing gathered) — the guardrail behind the
+/// gather's decline, so no model is ever paid to look at an empty day.
 fn findings_packet_empty(packet: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(packet)
         .ok()
@@ -332,254 +317,67 @@ fn findings_packet_empty(packet: &str) -> bool {
         .unwrap_or(true)
 }
 
-/// Extract the first top-level JSON array from a model reply, which is often wrapped in prose or a
-/// ```json fence. Returns the `[..]` slice, or `None` when there's no balanced array.
-fn extract_json_array(s: &str) -> Option<&str> {
-    let start = s.find('[')?;
-    let end = s.rfind(']')?;
-    if end > start {
-        Some(&s[start..=end])
-    } else {
-        None
-    }
-}
 
-/// Parse the model's ranked attention list from its (possibly prose-wrapped) stdout. Returns an
-/// empty vec on any parse failure — a bad reply is a no-op, never a crash.
-fn parse_ranked(stdout: &str) -> Vec<RankedItem> {
-    extract_json_array(stdout)
-        .and_then(|j| serde_json::from_str::<Vec<RankedItem>>(j).ok())
-        .unwrap_or_default()
-}
 
-#[derive(Debug, serde::Deserialize)]
-struct FindingsPacket {
-    sources: Vec<FindingsPacketSource>,
-}
 
-#[derive(Debug, serde::Deserialize)]
-struct FindingsPacketSource {
-    source: String,
-    items: Vec<FindingsPacketItem>,
-}
 
-#[derive(Debug, serde::Deserialize)]
-struct FindingsPacketItem {
-    text: String,
-    #[serde(default)]
-    url: String,
-}
 
-fn health_items(health: &[String]) -> Vec<IngestItem> {
-    let mut items = Vec::new();
-    for line in health {
-        let title = line.trim();
-        if title.is_empty() {
-            continue;
-        }
-        items.push(IngestItem {
-            title: title.to_string(),
-            severity: Some("urgent".to_string()),
-            source: None,
-            key: Some(slug(title)),
-            link: None,
-            repo: None,
-            branch: None,
-            detail: None,
-        });
-        if items.len() >= 10 {
-            break;
-        }
-    }
-    items
-}
 
-fn fallback_attention_items(findings: &str, health: &[String]) -> Vec<IngestItem> {
-    let mut items = health_items(health);
-    let Ok(packet) = serde_json::from_str::<FindingsPacket>(findings) else {
-        return items;
-    };
 
-    for source in packet.sources {
-        for item in source.items {
-            let title = item.text.trim();
-            if title.is_empty() {
-                continue;
-            }
-            items.push(IngestItem {
-                title: title.to_string(),
-                severity: Some("info".to_string()),
-                source: None,
-                key: Some(slug(title)),
-                link: {
-                    let url = item.url.trim();
-                    if url.is_empty() {
-                        None
-                    } else {
-                        Some(url.to_string())
-                    }
-                },
-                repo: None,
-                branch: None,
-                detail: Some(format!(
-                    "Fallback from attention-agent after a harness failure; source {}.",
-                    source.source
-                )),
-            });
-            if items.len() >= 10 {
-                return items;
-            }
-        }
-    }
 
-    items
-}
 
-/// Normalize a model-supplied severity to one of `info|warn|urgent`; anything else folds to `info`.
-fn normalize_severity(s: &str) -> &'static str {
-    match s.trim().to_ascii_lowercase().as_str() {
-        "urgent" | "critical" | "high" => "urgent",
-        "warn" | "warning" | "medium" => "warn",
-        _ => "info",
-    }
-}
 
-/// A stable dedupe slug from a title: lowercase, non-alphanumerics collapsed to single dashes,
-/// bounded length. Keeps the attention key steady across runs so re-ranking refreshes rather than
-/// duplicates the item.
-fn slug(title: &str) -> String {
-    let mut out = String::new();
-    let mut prev_dash = false;
-    for c in title.trim().to_ascii_lowercase().chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c);
-            prev_dash = false;
-        } else if !prev_dash {
-            out.push('-');
-            prev_dash = true;
-        }
-        if out.len() >= 48 {
-            break;
-        }
-    }
-    out.trim_matches('-').to_string()
-}
 
-/// `attention-agent` — the periodic LLM cron (#): fold recent cron findings + cron health into a
-/// ranked attention list via a headless copilot run, then raise the items (source
-/// `attention-agent`, `replace=true` so a dropped item is auto-acked). Opt-in via
-/// `[attention_agent].enabled`; a clean no-op when off or when there is nothing to review.
-pub(crate) fn job_attention_agent(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
+/// `bn attn gather` — what the local automation noticed today, printed as JSON: the cron findings
+/// packet plus the crons that are currently failing.
+///
+/// Declines (`{"skip": …}`) when there is nothing at all to look at. That guardrail is the reason
+/// this is a command rather than two: the decision "is there anything here" needs both halves, and
+/// splitting them would push it into a shell pipeline where it could not be made.
+pub(crate) fn emit_attention_gather(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
     use bn_core::clock::Clock;
-    if !resolver::JobConfig::load().attention_agent_enabled {
-        println!("attention-agent: disabled — set [attention_agent].enabled to opt in");
-        return 0;
-    }
     let today = bn_core::clock::RealClock.today();
-    let findings = bn_core::today::gather_packet_json(
-        &today,
-        bn_core::today::DEFAULT_LOOKBACK_DAYS,
-    );
+    let findings = bn_core::today::gather_packet_json(&today, bn_core::today::DEFAULT_LOOKBACK_DAYS);
     let health = failing_cron_lines(cfg, ctx);
-
-    // Guardrail: never spend a model call on an empty packet.
     if findings_packet_empty(&findings) && health.is_empty() {
-        println!("attention-agent: no cron findings or failures to review — skipping");
+        println!(
+            "{}",
+            serde_json::json!({ "skip": "no cron findings or failures to review" })
+        );
         return 0;
     }
-
-    let health_block = if health.is_empty() {
-        "(none)".to_string()
-    } else {
-        health.join("\n")
-    };
-    let catalog = match bn_core::agents::discover(cfg, ctx) {
-        Ok(catalog) => catalog,
-        Err(error) => {
-            eprintln!("attention-agent: {error}");
-            return 1;
-        }
-    };
-    let agent = match catalog.require("attention-agent") {
-        Ok(agent) => agent,
-        Err(error) => {
-            eprintln!("attention-agent: {error}");
-            return 1;
-        }
-    };
-    let mut args = serde_json::Map::new();
-    args.insert("date".into(), serde_json::Value::String(today.clone()));
-    args.insert("findings".into(), serde_json::Value::String(findings.clone()));
-    args.insert(
-        "cron_health".into(),
-        serde_json::Value::String(health_block),
+    let findings: serde_json::Value =
+        serde_json::from_str(&findings).unwrap_or(serde_json::Value::Null);
+    println!(
+        "{}",
+        serde_json::json!({
+            "date": today,
+            "findings": findings,
+            "failing_crons": health,
+        })
     );
-    let prompt = match agent.render(Some(&args)) {
-        Ok(prompt) => prompt,
-        Err(error) => {
-            eprintln!("attention-agent: {error}");
-            return 1;
-        }
-    };
+    0
+}
 
-    // Claude is org-disabled in this environment, so copilot is the default headless harness.
-    let harness = "copilot";
-    let Some(cmd) = crate::cmd::staff::staff_dispatch_command(harness, &prompt, None, None) else {
-        eprintln!("attention-agent: unknown harness '{harness}'");
-        return 1;
-    };
-    let (ok, stdout, combined) = crate::cmd::staff::dispatch_capture(
-        cmd,
-        Some(std::time::Duration::from_secs(HARNESS_WALL_SECS)),
-    );
-    let mut used_fallback = false;
-    let items: Vec<IngestItem> = if ok {
-        parse_ranked(&stdout)
-            .iter()
-            .map(|r| IngestItem {
-                title: r.title.clone(),
-                severity: Some(normalize_severity(&r.severity).to_string()),
-                source: None,
-                key: Some(slug(&r.title)),
-                link: r.link.clone(),
-                repo: None,
-                branch: None,
-                detail: r.why.clone(),
-            })
-            .filter(|i| !i.title.trim().is_empty())
-            .collect()
-    } else {
-        eprintln!("attention-agent: harness run failed — {}", combined.trim());
-        used_fallback = true;
-        fallback_attention_items(&findings, &health)
-    };
-    let n = items.len();
-    match ingest(&items, "attention-agent", "info", true, &today) {
-        Ok(_) => {
-            if n == 0 {
-                println!("attention-agent: nothing worth the user's attention right now");
-            } else {
-                if used_fallback {
-                    println!(
-                        "attention-agent: harness failed; using deterministic fallback attention items"
-                    );
-                }
-                println!("attention-agent: ranked {n} attention item(s):");
-                for (i, r) in items.iter().enumerate() {
-                    println!(
-                        "  {}. [{}] {}",
-                        i + 1,
-                        normalize_severity(r.severity.as_deref().unwrap_or("info")),
-                        r.title.trim()
-                    );
-                }
-            }
-            0
-        }
-        Err(e) => {
-            eprintln!("attention-agent: {e}");
-            1
-        }
+#[cfg(test)]
+mod gather_tests {
+    use super::findings_packet_empty;
+
+    /// The guardrail behind the decline: a packet whose sources are empty means the gatherers found
+    /// nothing, which is materially different from a packet that failed to parse — both must
+    /// decline, because paying a model to rank nothing is the failure mode this prevents.
+    #[test]
+    fn an_empty_or_unreadable_packet_reads_as_nothing_to_review() {
+        assert!(findings_packet_empty(r#"{"sources":[]}"#));
+        assert!(findings_packet_empty("not json"));
+        assert!(findings_packet_empty("{}"));
+    }
+
+    #[test]
+    fn a_packet_with_any_source_is_worth_reviewing() {
+        assert!(!findings_packet_empty(
+            r#"{"sources":[{"source":"meetings","items":[]}]}"#
+        ));
     }
 }
 
@@ -676,31 +474,4 @@ mod tests {
         });
     }
 
-    #[test]
-    fn harness_failure_falls_back_to_findings_and_health_items() {
-        let findings = serde_json::json!({
-            "generated_at": 1,
-            "date": "2026-08-20",
-            "sources": [{
-                "source": "meetings",
-                "run_id": "run-1",
-                "gathered_at": 1,
-                "items": [
-                    {"key": "k1", "text": "First finding", "url": "https://example.com/1"},
-                    {"key": "k2", "text": "   ", "url": "https://example.com/2"}
-                ]
-            }]
-        })
-        .to_string();
-        let health = vec!["cron 'attention-agent' is failing — 6/62 runs failed (last exit 1)".to_string()];
-
-        let items = fallback_attention_items(&findings, &health);
-
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].title, health[0]);
-        assert_eq!(items[0].severity.as_deref(), Some("urgent"));
-        assert_eq!(items[1].title, "First finding");
-        assert_eq!(items[1].severity.as_deref(), Some("info"));
-        assert_eq!(items[1].link.as_deref(), Some("https://example.com/1"));
-    }
 }

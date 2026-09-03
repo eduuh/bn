@@ -28,6 +28,10 @@ pub use crate::template::ArgumentDef as AgentArgDef;
 /// dispatcher and every roster view use, and none of them writes.
 pub mod write;
 
+/// What a manifest may declare, and every refusal for one that declares something else.
+mod validate;
+pub use validate::*;
+
 pub const DEFAULT_RETRY_AFTER_SECS: i64 = 15 * 60;
 
 /// The explicit execution contract for an agent manifest.
@@ -81,440 +85,6 @@ impl TriggerSpec {
     }
 }
 
-/// A malformed agent source, independent of where it was loaded from.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AgentParseError {
-    MissingFrontmatter,
-    InvalidFrontmatter {
-        message: String,
-    },
-    MissingKind,
-    InvalidName {
-        name: String,
-    },
-    EmptyField {
-        field: &'static str,
-    },
-    RequiredField {
-        kind: AgentKind,
-        field: &'static str,
-    },
-    ForbiddenField {
-        kind: AgentKind,
-        field: &'static str,
-    },
-    UnknownSink {
-        sink: String,
-    },
-    UnsafeSkill {
-        skill: String,
-    },
-    UnsafeMcp {
-        mcp: String,
-    },
-    InvalidRetryAfter {
-        value: String,
-    },
-    InvalidSchedule {
-        value: String,
-    },
-    RecursiveRun {
-        name: String,
-    },
-    InvalidTemplate {
-        source: TemplateError,
-    },
-}
-
-impl fmt::Display for AgentParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingFrontmatter => write!(f, "missing YAML frontmatter"),
-            Self::InvalidFrontmatter { message } => write!(f, "invalid frontmatter: {message}"),
-            Self::MissingKind => write!(
-                f,
-                "missing required agent kind (command | staff | hosted | specialist)"
-            ),
-            Self::InvalidName { name } => {
-                write!(f, "agent name '{name}' must be alphanumeric/-/_")
-            }
-            Self::EmptyField { field } => write!(f, "field '{field}' must not be empty"),
-            Self::RequiredField { kind, field } => {
-                write!(f, "{} agent requires non-empty '{field}'", kind.label())
-            }
-            Self::ForbiddenField { kind, field } => {
-                write!(f, "{} agent forbids '{field}'", kind.label())
-            }
-            Self::UnknownSink { sink } => write!(
-                f,
-                "unknown sink '{sink}' (allowed: {})",
-                crate::staff::SINKS.join(" | ")
-            ),
-            Self::UnsafeSkill { skill } => write!(f, "unsafe skill path '{skill}'"),
-            Self::UnsafeMcp { mcp } => {
-                write!(f, "mcp name '{mcp}' must be alphanumeric/-/_")
-            }
-            Self::InvalidRetryAfter { value } => {
-                write!(
-                    f,
-                    "invalid retry_after '{value}'; use a positive duration such as 15m"
-                )
-            }
-            Self::InvalidSchedule { value } => {
-                write!(f, "unsupported on_calendar schedule '{value}'")
-            }
-            Self::RecursiveRun { name } => {
-                write!(
-                    f,
-                    "agent '{name}' explicitly recurses through 'bn run {name}'"
-                )
-            }
-            Self::InvalidTemplate { source } => write!(f, "invalid template: {source}"),
-        }
-    }
-}
-
-impl std::error::Error for AgentParseError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::InvalidTemplate { source } => Some(source),
-            _ => None,
-        }
-    }
-}
-
-/// A path-qualified agent catalog failure.
-#[derive(Debug)]
-pub enum AgentCatalogError {
-    LegacyScheduleOverride {
-        path: PathBuf,
-        value: String,
-    },
-    NonMarkdownAgent {
-        path: PathBuf,
-    },
-    ReadDirectory {
-        path: PathBuf,
-        source: std::io::Error,
-    },
-    ReadFile {
-        path: PathBuf,
-        source: std::io::Error,
-    },
-    InvalidAgent {
-        path: PathBuf,
-        source: AgentParseError,
-    },
-}
-
-impl AgentCatalogError {
-    pub fn path(&self) -> &Path {
-        match self {
-            Self::LegacyScheduleOverride { path, .. }
-            | Self::NonMarkdownAgent { path }
-            | Self::ReadDirectory { path, .. }
-            | Self::ReadFile { path, .. }
-            | Self::InvalidAgent { path, .. } => path,
-        }
-    }
-}
-
-impl fmt::Display for AgentCatalogError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::LegacyScheduleOverride { path, value } => write!(
-                f,
-                "{} still sets the legacy quarter-review schedule '{value}'; remove it and override config/agents/quarter-review.md in a higher-precedence agents/ tier",
-                path.display()
-            ),
-            Self::NonMarkdownAgent { path } => write!(
-                f,
-                "{} is in an agents/ directory but is not a Markdown .md manifest",
-                path.display()
-            ),
-            Self::ReadDirectory { path, source } => {
-                write!(f, "read agent directory {}: {source}", path.display())
-            }
-            Self::ReadFile { path, source } => {
-                write!(f, "read agent {}: {source}", path.display())
-            }
-            Self::InvalidAgent { path, source } => write!(f, "{}: {source}", path.display()),
-        }
-    }
-}
-
-impl std::error::Error for AgentCatalogError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::LegacyScheduleOverride { .. } | Self::NonMarkdownAgent { .. } => None,
-            Self::ReadDirectory { source, .. } | Self::ReadFile { source, .. } => Some(source),
-            Self::InvalidAgent { source, .. } => Some(source),
-        }
-    }
-}
-
-/// The validated, precedence-folded agent roster.
-#[derive(Debug, Clone, Default)]
-pub struct AgentCatalog {
-    agents: Vec<AgentDef>,
-}
-
-impl AgentCatalog {
-    pub fn iter(&self) -> impl Iterator<Item = &AgentDef> {
-        self.agents.iter()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.agents.is_empty()
-    }
-
-    pub fn find(&self, name: &str) -> Option<&AgentDef> {
-        self.agents.iter().find(|agent| agent.name == name)
-    }
-
-    pub fn require(&self, name: &str) -> Result<&AgentDef, AgentLookupError> {
-        self.find(name).ok_or_else(|| AgentLookupError {
-            name: name.to_string(),
-        })
-    }
-}
-
-impl IntoIterator for AgentCatalog {
-    type Item = AgentDef;
-    type IntoIter = std::vec::IntoIter<AgentDef>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.agents.into_iter()
-    }
-}
-
-impl<'a> IntoIterator for &'a AgentCatalog {
-    type Item = &'a AgentDef;
-    type IntoIter = std::slice::Iter<'a, AgentDef>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.agents.iter()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentLookupError {
-    pub name: String,
-}
-
-impl fmt::Display for AgentLookupError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "no agent named '{}'", self.name)
-    }
-}
-
-impl std::error::Error for AgentLookupError {}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AgentRunError {
-    Specialist { name: String },
-}
-
-impl fmt::Display for AgentRunError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Specialist { name } => {
-                write!(f, "specialist agent '{name}' is installable, not runnable")
-            }
-        }
-    }
-}
-
-impl std::error::Error for AgentRunError {}
-
-/// A roster / MCP name must stay filename-safe so frontmatter cannot escape config dirs.
-pub(crate) fn safe_name(s: &str) -> bool {
-    !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-}
-
-/// A reusable skill path may contain `/`, but never an absolute path or `..`.
-pub(crate) fn safe_skill(s: &str) -> bool {
-    !s.is_empty()
-        && !s.contains("..")
-        && !s.starts_with('/')
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '/')
-}
-
-fn validate_agent_frontmatter(
-    front: &AgentFrontmatter,
-    name: &str,
-    body: &str,
-) -> Result<(AgentKind, Option<i64>), AgentParseError> {
-    let kind = front.kind.ok_or(AgentParseError::MissingKind)?;
-    if !safe_name(name) {
-        return Err(AgentParseError::InvalidName {
-            name: name.to_string(),
-        });
-    }
-    if front
-        .on_calendar
-        .as_deref()
-        .is_some_and(|schedule| schedule.trim().is_empty())
-    {
-        return Err(AgentParseError::EmptyField {
-            field: "on_calendar",
-        });
-    }
-    if let Some(schedule) = front.on_calendar.as_deref() {
-        if !crate::staff_schedule::calendar_supported(schedule) {
-            return Err(AgentParseError::InvalidSchedule {
-                value: schedule.to_string(),
-            });
-        }
-        if front
-            .requires_repo
-            .as_deref()
-            .map(str::trim)
-            .filter(|repo| !repo.is_empty())
-            .is_none()
-        {
-            return Err(AgentParseError::RequiredField {
-                kind,
-                field: "requires_repo",
-            });
-        }
-    }
-    if front
-        .requires_repo
-        .as_deref()
-        .is_some_and(|repo| repo.trim().is_empty())
-    {
-        return Err(AgentParseError::EmptyField {
-            field: "requires_repo",
-        });
-    }
-    if front
-        .run
-        .as_deref()
-        .is_some_and(|run| run.trim().is_empty())
-    {
-        return Err(AgentParseError::EmptyField { field: "run" });
-    }
-    if front.gather.as_deref().is_some_and(|g| g.trim().is_empty()) {
-        return Err(AgentParseError::EmptyField { field: "gather" });
-    }
-    for s in &front.sinks {
-        if !crate::staff::SINKS.contains(&s.as_str()) {
-            return Err(AgentParseError::UnknownSink { sink: s.clone() });
-        }
-    }
-    for sk in &front.skills {
-        if !safe_skill(sk) {
-            return Err(AgentParseError::UnsafeSkill { skill: sk.clone() });
-        }
-    }
-    for m in &front.mcps {
-        if !safe_name(m) {
-            return Err(AgentParseError::UnsafeMcp { mcp: m.clone() });
-        }
-    }
-    template::validate(body, &front.arguments)
-        .map_err(|source| AgentParseError::InvalidTemplate { source })?;
-
-    let require = |field| AgentParseError::RequiredField { kind, field };
-    let forbid = |field| AgentParseError::ForbiddenField { kind, field };
-    match kind {
-        AgentKind::Command => {
-            if front.gather.is_some() {
-                return Err(forbid("gather"));
-            }
-            if front.repo.is_some() {
-                return Err(forbid("repo"));
-            }
-        }
-        AgentKind::Staff => {
-            if body.trim().is_empty() {
-                return Err(require("body"));
-            }
-            if front.gather.is_none() {
-                return Err(require("gather"));
-            }
-            if front.sinks.is_empty() {
-                return Err(require("sinks"));
-            }
-            if front.repo.is_some() {
-                return Err(forbid("repo"));
-            }
-        }
-        AgentKind::Hosted => {
-            if body.trim().is_empty() {
-                return Err(require("body"));
-            }
-            if front.gather.is_some() {
-                return Err(forbid("gather"));
-            }
-            if front.repo.is_some() {
-                return Err(forbid("repo"));
-            }
-        }
-        AgentKind::Specialist => {
-            if body.trim().is_empty() {
-                return Err(require("body"));
-            }
-            if front
-                .repo
-                .as_deref()
-                .map(str::trim)
-                .filter(|repo| !repo.is_empty())
-                .is_none()
-            {
-                return Err(require("repo"));
-            }
-            if front.on_calendar.is_some() {
-                return Err(forbid("on_calendar"));
-            }
-            if front.trigger.is_some() {
-                return Err(forbid("trigger"));
-            }
-            if front.gather.is_some() {
-                return Err(forbid("gather"));
-            }
-            if front.run.is_some() {
-                return Err(forbid("run"));
-            }
-        }
-    }
-
-    if front
-        .run
-        .as_deref()
-        .is_some_and(|run| explicit_recursive_run(run, name))
-    {
-        return Err(AgentParseError::RecursiveRun {
-            name: name.to_string(),
-        });
-    }
-
-    let retry_after_secs = match front.retry_after.as_deref() {
-        Some(value) => Some(
-            crate::focus::parse_duration(value)
-                .filter(|seconds| *seconds > 0)
-                .ok_or_else(|| AgentParseError::InvalidRetryAfter {
-                    value: value.to_string(),
-                })?,
-        ),
-        None if front.on_calendar.is_some() => Some(DEFAULT_RETRY_AFTER_SECS),
-        None => None,
-    };
-    Ok((kind, retry_after_secs))
-}
-
-fn explicit_recursive_run(run: &str, name: &str) -> bool {
-    let mut parts = run.split_whitespace();
-    parts.next() == Some("bn")
-        && parts.next() == Some("run")
-        && parts.next() == Some(name)
-        && parts.next().is_none()
-}
-
 /// Raw frontmatter as declared in `agents/<name>.md`, before normalization into [`AgentDef`].
 #[derive(Debug, Deserialize)]
 struct AgentFrontmatter {
@@ -545,6 +115,19 @@ struct AgentFrontmatter {
     gather: Option<String>,
     #[serde(default)]
     sinks: Vec<String>,
+    /// This agent re-derives its whole current set of attention items every run, so a keyed item
+    /// it stops reporting is resolved rather than merely stale. See [`AgentDef::replace`].
+    #[serde(default)]
+    replace: bool,
+    /// This agent stays off until it is named in `[agents] enabled`. See [`AgentDef::opt_in`].
+    #[serde(default)]
+    opt_in: bool,
+    /// The notes-repo directory this agent's `doc` items land in. See [`AgentDef::doc_dir`].
+    #[serde(default)]
+    doc_dir: Option<String>,
+    /// The highest severity this agent's items may claim. See [`AgentDef::max_severity`].
+    #[serde(default)]
+    max_severity: Option<String>,
     #[serde(default)]
     skills: Vec<String>,
     #[serde(default)]
@@ -622,6 +205,40 @@ pub struct AgentDef {
     pub gather: Option<String>,
     /// Per-agent sink allowlist for routed briefing-card items.
     pub sinks: Vec<String>,
+    /// The per-machine notes-repo directory this agent's `doc` items are written into, relative to
+    /// `<personal_root>/<machine>/` — `chronicle`, `learn`, and so on.
+    ///
+    /// Declared in the manifest, and *only* there: a card names the file, the manifest names the
+    /// directory, so an agent's output cannot escape the archive it was given no matter what its
+    /// harness returns. Required when `doc` is on the sink allowlist, and forbidden otherwise.
+    pub doc_dir: Option<String>,
+    /// The highest severity this agent's items may claim; anything above it is clamped down.
+    ///
+    /// Some agents summarize rather than discover — a briefing that folds seven sources into one
+    /// card is not the thing that found the problem, and urgency belongs to whatever did. Stating
+    /// that in prose does not hold: the output contract offers `urgent` to every agent, and a
+    /// model handed a genuinely alarming packet will reach for it. So it is declared, and the
+    /// item is clamped rather than dropped — a summarizer that over-reached still has something
+    /// worth reading.
+    pub max_severity: Option<String>,
+    /// Whether this agent stays switched off until `[agents] enabled` names it.
+    ///
+    /// Declared by agents that do something consequential unattended — spend model tokens, write
+    /// into the notes repo, open a session. A person should choose those deliberately, and a
+    /// scheduled run that finds itself off records as *off* rather than as a miss.
+    ///
+    /// It lives in the manifest because it is a property of what the agent does, not of one
+    /// machine's configuration: adding an agent that reviews your PRs should not also require
+    /// remembering to gate it.
+    pub opt_in: bool,
+    /// Whether this agent's card states its **whole current set** of keyed attention items, so
+    /// anything it stops reporting is resolved rather than left standing.
+    ///
+    /// True for an agent that re-derives its findings from the world every run (an estate patrol,
+    /// a queue poll); false for one that reports events as they occur, where silence about an item
+    /// means nothing. It changes the output contract the agent is given as well as how its card is
+    /// routed, so it is declared once here rather than guessed per run.
+    pub replace: bool,
     /// Reusable bn skills available to this agent, referred to by name (loaded natively in its
     /// harness — not invoked as slash-command prompts).
     pub skills: Vec<String>,
@@ -678,6 +295,29 @@ impl AgentDef {
         self.requires_repo
             .as_deref()
             .is_none_or(|repo| cfg.repo_available_here(repo))
+    }
+
+    /// Whether this agent may run here, given the machine's `[agents] enabled` list.
+    ///
+    /// An agent that is not opt-in always may. One that is must be named — matched
+    /// case-insensitively, since the list is hand-written config and `Staff-Mentor` plainly means
+    /// the same agent.
+    pub fn switched_on(&self, enabled: &[String]) -> bool {
+        !self.opt_in
+            || enabled
+                .iter()
+                .any(|name| name.trim().eq_ignore_ascii_case(&self.name))
+    }
+
+    /// Why this agent will do nothing right now, phrased for the person who has to fix it.
+    /// `None` when it may run.
+    pub fn off_reason(&self, enabled: &[String]) -> Option<String> {
+        (!self.switched_on(enabled)).then(|| {
+            format!(
+                "not switched on — add '{}' to [agents] enabled to opt in",
+                self.name
+            )
+        })
     }
 
     /// True when this agent should also fire once on tmux-server startup (`bn startup`).
@@ -813,6 +453,10 @@ pub fn parse_agent(
         description: front.description,
         gather: front.gather,
         sinks: front.sinks,
+        replace: front.replace,
+        opt_in: front.opt_in,
+        doc_dir: front.doc_dir,
+        max_severity: front.max_severity,
         skills: front.skills,
         mcps: front.mcps,
         link_domains: front.link_domains,
@@ -946,6 +590,50 @@ pub fn set_schedule(
     }
     crate::store::write_atomic(&def.path, out.as_bytes()).map_err(|e| e.to_string())?;
     Ok(def.path.clone())
+}
+
+/// The validated, precedence-folded agent roster.
+#[derive(Debug, Clone, Default)]
+pub struct AgentCatalog {
+    agents: Vec<AgentDef>,
+}
+
+impl AgentCatalog {
+    pub fn iter(&self) -> impl Iterator<Item = &AgentDef> {
+        self.agents.iter()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.agents.is_empty()
+    }
+
+    pub fn find(&self, name: &str) -> Option<&AgentDef> {
+        self.agents.iter().find(|agent| agent.name == name)
+    }
+
+    pub fn require(&self, name: &str) -> Result<&AgentDef, AgentLookupError> {
+        self.find(name).ok_or_else(|| AgentLookupError {
+            name: name.to_string(),
+        })
+    }
+}
+
+impl IntoIterator for AgentCatalog {
+    type Item = AgentDef;
+    type IntoIter = std::vec::IntoIter<AgentDef>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.agents.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a AgentCatalog {
+    type Item = &'a AgentDef;
+    type IntoIter = std::slice::Iter<'a, AgentDef>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.agents.iter()
+    }
 }
 
 /// Every agent across all tiers for `ctx`, folded first-tier-wins by name (a branch `agents/`

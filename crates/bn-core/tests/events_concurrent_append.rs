@@ -28,8 +28,13 @@ fn concurrent_appends_never_tear_a_record() {
                     fields.insert("n".into(), serde_json::json!(n));
                     // Padding widens the window a non-atomic write would tear in.
                     fields.insert("pad".into(), serde_json::json!("x".repeat(512)));
-                    bn_core::events::append_event_at(&path, "probe", 1_700_000_000 + n as i64, fields)
-                        .expect("append");
+                    bn_core::events::append_event_at(
+                        &path,
+                        "probe",
+                        1_700_000_000 + n as i64,
+                        fields,
+                    )
+                    .expect("append");
                 }
             });
         }

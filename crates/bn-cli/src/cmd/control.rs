@@ -107,12 +107,11 @@ pub(crate) fn append_inherited_worker_event(
 fn controller_seed(
     cfg: &Config,
     ctx: Option<&Resolved>,
+    agent: &str,
     controller_id: &str,
 ) -> Result<String, String> {
     let catalog = bn_core::agents::discover(cfg, ctx).map_err(|error| error.to_string())?;
-    let def = catalog
-        .require("controller")
-        .map_err(|error| error.to_string())?;
+    let def = catalog.require(agent).map_err(|error| error.to_string())?;
     let mut args = serde_json::Map::new();
     args.insert(
         "controller_id".into(),
@@ -218,11 +217,13 @@ enum StartReservation {
     },
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_controller(
     cfg: &Config,
     id: Option<String>,
     name: Option<String>,
     harness: Option<String>,
+    agent: &str,
     request: Vec<String>,
     json: bool,
 ) {
@@ -365,7 +366,7 @@ fn start_controller(
         .unwrap_or_else(|_| std::path::PathBuf::from("bn"))
         .to_string_lossy()
         .into_owned();
-    let seed = controller_seed(cfg, resolved.as_ref(), &id)
+    let seed = controller_seed(cfg, resolved.as_ref(), agent, &id)
         .unwrap_or_else(|error| fail(&format!("bn control start: {error}")));
     let cmd = format!(
         "{} control watch --id {} & exec env BN_CONTROLLER_ID={} {} agent launch {} --fresh --yolo --session {} --seed {}",
@@ -907,8 +908,9 @@ pub(crate) fn emit_control(cfg: &Config, action: ControlCmd, json: bool) {
             id,
             name,
             harness,
+            agent,
             request,
-        } => start_controller(cfg, id, name, harness, request, json),
+        } => start_controller(cfg, id, name, harness, &agent, request, json),
         ControlCmd::Status { id } => status_controllers(id, json),
         ControlCmd::Stop { id } => stop_controller(cfg, id, json),
         ControlCmd::Lease { id } => lease_request(id, json),

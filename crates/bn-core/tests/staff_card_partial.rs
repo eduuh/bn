@@ -28,7 +28,8 @@ fn an_item_outside_the_sink_allowlist_is_dropped_not_fatal() {
            {"kind":"todo","severity":"warn","title":"not allowed here","link":"","repo":"","branch":""}"#,
     );
 
-    let card = validate_card(&raw, AGENT, &sinks(), &[], TODAY).expect("card must survive");
+    let card =
+        validate_card(&raw, AGENT, &sinks(), &[], TODAY, false, None).expect("card must survive");
 
     assert_eq!(card.headline, "Morning brief", "headline must be kept");
     assert_eq!(card.items.len(), 1, "only the invalid item is dropped");
@@ -48,7 +49,8 @@ fn an_invalid_severity_drops_only_that_item() {
            {"kind":"attn","severity":"urgent","title":"good","link":"","repo":"","branch":""}"#,
     );
 
-    let card = validate_card(&raw, AGENT, &sinks(), &[], TODAY).expect("card must survive");
+    let card =
+        validate_card(&raw, AGENT, &sinks(), &[], TODAY, false, None).expect("card must survive");
     assert_eq!(card.items.len(), 1);
     assert_eq!(card.items[0].title, "good");
 }
@@ -60,7 +62,7 @@ fn a_valid_card_is_unchanged() {
         r#"{"kind":"attn","severity":"info","title":"fine","link":"","repo":"","branch":""}"#,
     );
 
-    let card = validate_card(&raw, AGENT, &sinks(), &[], TODAY).expect("valid card");
+    let card = validate_card(&raw, AGENT, &sinks(), &[], TODAY, false, None).expect("valid card");
     assert_eq!(card.items.len(), 1);
     assert_eq!(card.body_md, "the useful part");
 }
@@ -74,5 +76,5 @@ fn a_card_level_failure_still_rejects() {
     )
     .replace(AGENT, "someone-else");
 
-    assert!(validate_card(&raw, AGENT, &sinks(), &[], TODAY).is_err());
+    assert!(validate_card(&raw, AGENT, &sinks(), &[], TODAY, false, None).is_err());
 }

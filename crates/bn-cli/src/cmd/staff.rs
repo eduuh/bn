@@ -420,77 +420,6 @@ pub(crate) fn emit_staff_plan(
     }
 }
 
-/// `bn staff gather <agent>` — print the built-in deterministic packet JSON for `agent` to stdout.
-/// The shipped `demo` gatherer (#256), the `scout` radar (#262), the `sentinel`/`mentor` packets,
-/// and the `goals-align` fold (#563) build in; the `standup` fold (#566) too; other real agents
-/// supply their own `gather` command
-/// in `config/agents/*.md`. Exit 0 on a printed packet, 2 for an unknown gatherer.
-pub(crate) fn emit_staff_gather(cfg: &Config, agent: &str) -> i32 {
-    match agent {
-        "demo" => {
-            println!("{}", bn_core::staff::demo_packet(cfg, &today()));
-            0
-        }
-        "scout" => {
-            println!(
-                "{}",
-                bn_core::scout::gather_packet_json(cfg, &bn_core::runner::RealRunner, &today())
-            );
-            0
-        }
-        "sentinel" => crate::cmd::sentinel::emit_sentinel_gather(cfg),
-        "goals-align" => {
-            println!(
-                "{}",
-                bn_core::goals_align::gather_packet_json(cfg, &today())
-            );
-            0
-        }
-        "standup" => {
-            println!("{}", bn_core::standup::gather_packet_json(cfg, &today()));
-            0
-        }
-        "staff-chief-am" => {
-            let packet =
-                crate::cmd::chief::gather_chief_packet(cfg, bn_core::chief::Slot::Am, &today());
-            println!(
-                "{}",
-                serde_json::to_string(&packet).unwrap_or_else(|_| "{}".into())
-            );
-            0
-        }
-        "staff-chief-pm" => {
-            let packet =
-                crate::cmd::chief::gather_chief_packet(cfg, bn_core::chief::Slot::Pm, &today());
-            println!(
-                "{}",
-                serde_json::to_string(&packet).unwrap_or_else(|_| "{}".into())
-            );
-            0
-        }
-        "staff-mentor" | "mentor" => {
-            // The Mentor's deterministic packet: yesterday's merged own-PRs discovered offline,
-            // their diffs fetched (the only network step). See `bn_core::mentor`.
-            let packet = gather_mentor_packet(cfg, &bn_core::runner::RealRunner, &today());
-            match packet.to_json() {
-                Ok(json) => {
-                    println!("{json}");
-                    0
-                }
-                Err(e) => {
-                    eprintln!("bn staff gather mentor: serialize packet: {e}");
-                    1
-                }
-            }
-        }
-        other => {
-            eprintln!(
-                "bn staff gather: no built-in gatherer for '{other}' (ships: demo, scout, sentinel, staff-mentor, staff-chief-am, staff-chief-pm, goals-align, standup; other agents define their own `gather` command)"
-            );
-            2
-        }
-    }
-}
 
 /// Bare `bn staff` — the roster (config/agents/*.md across tiers) joined with each agent's last-run health
 /// (the `staff_run` event log) and whether it has an unread card. The observability half of the
@@ -837,6 +766,88 @@ pub(crate) fn emit_staff_archive(cfg: &Config, dry_run: bool, as_json: bool) {
     }
 
     println!("  exempt: chronicles + retro transcripts (kept forever)");
+}
+
+
+/// `bn staff check-card <agent>` — read a briefing card on stdin and report whether this agent
+/// could have produced it, without landing anything.
+///
+/// The seam a prompt author needs. Everything about whether an agent's `.md` is *complete* — does
+/// it emit the kinds its sinks admit, does it key its items, does it fill the fields a routed kind
+/// requires — is decided by `validate_card`, and until now the only way to reach that decision was
+/// to run the agent for real and read the failure out of the event log afterwards.
+///
+/// Reports per item which sink it would reach, so "valid" and "does what it meant" can be told
+/// apart: a card can pass validation and still route nothing useful.
+pub(crate) fn emit_staff_check_card(cfg: &Config, ctx: Option<&Resolved>, name: &str) -> i32 {
+    use bn_core::staff;
+    let agent = match bn_core::agents::discover(cfg, ctx).map(|c| c.find(name).cloned()) {
+        Ok(Some(agent)) => agent,
+        Ok(None) => {
+            eprintln!("bn staff check-card: no agent '{name}' in config/agents");
+            return 2;
+        }
+        Err(error) => {
+            eprintln!("bn staff check-card: invalid agent catalog: {error}");
+            return 2;
+        }
+    };
+    let mut raw = String::new();
+    if let Err(e) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut raw) {
+        eprintln!("bn staff check-card: read stdin: {e}");
+        return 2;
+    }
+    let card = match staff::validate_card(
+        &raw,
+        &agent.name,
+        &agent.sinks,
+        &agent.link_domains,
+        &today(),
+        agent.replace,
+        agent.max_severity.as_deref(),
+    ) {
+        Ok(card) => card,
+        Err(error) => {
+            println!(
+                "{}",
+                serde_json::json!({ "agent": name, "ok": false, "error": error })
+            );
+            return 1;
+        }
+    };
+    // A dropped item leaves its reason appended to the body by `validate_card`; surface that as a
+    // first-class field so a caller can assert on it rather than grepping prose.
+    let dropped: Vec<&str> = card
+        .body_md
+        .split("> Dropped ")
+        .skip(1)
+        .map(str::trim)
+        .collect();
+    let items: Vec<serde_json::Value> = card
+        .items
+        .iter()
+        .map(|item| {
+            serde_json::json!({
+                "kind": item.kind,
+                "sink": staff::kind_sink(&item.kind),
+                "title": item.title,
+                "key": item.key,
+                "severity": item.severity,
+            })
+        })
+        .collect();
+    println!(
+        "{}",
+        serde_json::json!({
+            "agent": name,
+            "ok": dropped.is_empty(),
+            "headline": card.headline,
+            "replace": card.replace,
+            "items": items,
+            "dropped": dropped,
+        })
+    );
+    i32::from(!dropped.is_empty())
 }
 
 #[cfg(test)]

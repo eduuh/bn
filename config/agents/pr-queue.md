@@ -4,6 +4,8 @@ requires_repo: bn
 kind: command
 on_calendar: "*:0/15"
 network: true
+run: "bn reviews --fetch"
 description: "bn — fetch the PR review queue from GitHub (review + my own PRs)"
 ---
-Implemented by the native `pr-queue` job in bn (run as `bn run pr-queue`).
+Refreshes the local review-queue cache from GitHub every 15 minutes: the open PRs awaiting your
+review, and your own. Deterministic — it decides nothing, and `bn reviews` reads what it wrote.

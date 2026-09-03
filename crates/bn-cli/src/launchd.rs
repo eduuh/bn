@@ -400,6 +400,12 @@ pub(crate) fn web_installed() -> bool {
 /// goal state). The inverse of [`web_install`], called by `bn serve stop`. `bootout` before the
 /// `remove_file` so launchd's KeepAlive can't relaunch it after the plist is gone.
 pub(crate) fn web_uninstall() {
+    // The launchd twin of the guard in [`crate::systemd::web_uninstall`]: `bootout` costs a
+    // `gui_domain()` (`id -u`) spawn plus a `launchctl` round-trip, on every `bn` invocation, to
+    // unload something that was never loaded. The plist is [`web_installed`]'s source of truth.
+    if !web_plist_path().exists() {
+        return;
+    }
     let _ = bootout(WEB_LABEL);
     let _ = std::fs::remove_file(web_plist_path());
 }

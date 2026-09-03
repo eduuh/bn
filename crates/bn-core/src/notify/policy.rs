@@ -456,6 +456,26 @@ impl Ledger {
             .sum()
     }
 
+    /// Toasts that failed to reach a backend at all today — the channel is broken, not busy.
+    ///
+    /// Split out of [`Self::withheld_today`] because the two mean opposite things to the reader:
+    /// a cooldown or a spent budget is the policy gate working as designed and needs no action,
+    /// while `no-backend` means every interrupt bn raised today was lost and someone has to fix
+    /// the delivery path. Summed together they read as one undifferentiated "held" count.
+    pub fn undeliverable(&self) -> usize {
+        self.held_today
+            .get(Suppressed::NoBackend.label())
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Toasts held back today by a *policy* decision — a quiet window, a cooldown, a spent
+    /// budget — excluding both by-design silence (`below-bar`) and outright delivery failure
+    /// ([`Self::undeliverable`]).
+    pub fn withheld_by_policy(&self) -> usize {
+        self.withheld_today() - self.undeliverable()
+    }
+
     /// Keys still inside their cooldown at `now`, newest delivery first — the `bn notify status`
     /// "currently quiet" list.
     pub fn in_cooldown(&self, cooldown_secs: i64, now: i64) -> Vec<(String, i64)> {

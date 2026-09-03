@@ -113,7 +113,7 @@ pub async fn completed(State(state): State<AppState>) -> Json<Envelope> {
 
             // Merged PRs from the whole-person metrics log — the work that never went through the
             // orchestrate queue, which is most of it.
-            let merged_prs = bn_core::mentor::all_merged(&bn_core::events::read_events_across(
+            let merged_prs = bn_core::merged_prs::all_merged(&bn_core::events::read_events_across(
                 &cfg.metrics_logs_all_machines(),
             ));
 

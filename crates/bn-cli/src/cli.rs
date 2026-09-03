@@ -503,6 +503,10 @@ pub(crate) enum CmdPlanning {
         /// `standup-push` job passes this; an interactive `bn standup` always renders.
         #[arg(long, hide = true)]
         cron: bool,
+        /// Print the agent packet as JSON instead of the rendered view — what the `standup` agent
+        /// reads.
+        #[arg(long)]
+        gather: bool,
     },
 }
 
@@ -668,11 +672,17 @@ pub(crate) enum CmdInsights {
         #[arg(long, default_value_t = 10)]
         limit: usize,
     },
-    /// PR review queue: open PRs from followed authors (cached by the pr-queue job).
+    /// PR review queue: the open PRs awaiting your review and your own, from a local cache.
+    /// `--fetch` refreshes that cache from GitHub — the write side the `pr-queue` agent runs on a
+    /// schedule.
     Reviews {
-        /// Print the path to the review cache file (where the pr-queue job writes), then exit.
+        /// Print the path to the review cache file, then exit.
         #[arg(long)]
         path: bool,
+        /// Refresh the cache from GitHub instead of reading it. Needs an authenticated `gh`; a
+        /// missing one is reported and exits 0, since a machine without it is not broken.
+        #[arg(long)]
+        fetch: bool,
     },
     /// Informational-cron inbox: items surfaced by feed jobs (PRs to review, today's meetings,
     /// …), grouped by source. Bare `bn feed` renders; `bn feed ingest <source>` is the write path
@@ -789,12 +799,14 @@ pub(crate) enum CmdInsights {
 /// Automation and orchestration commands — see [`crate::cli::automation_cmd`].
 pub(crate) mod automation_cmd;
 pub(crate) mod cron_cmd;
+pub(crate) mod gathers;
 pub(crate) mod machine_cmd;
 pub(crate) mod queue_cmd;
 pub(crate) mod routine_cmd;
 pub(crate) mod staff_cmd;
 pub(crate) use automation_cmd::CmdAutomation;
 pub(crate) use cron_cmd::CronCmd;
+pub(crate) use gathers::*;
 pub(crate) use machine_cmd::MachineCmd;
 pub(crate) use queue_cmd::QueueCmd;
 pub(crate) use routine_cmd::{RoutineCmd, RoutineServiceCmd};
@@ -802,46 +814,41 @@ pub(crate) use staff_cmd::StaffCmd;
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum CmdStaff {
-    /// The Chief of Staff — the one card you read. Twice a day it synthesizes what the system
-    /// already knows (the night shift, `bn next`, the calendar cache, the quarter, the `q` inbox,
-    /// your daily) into a single briefing card: `bn chief am` is the 05:30 morning brief (start the
-    /// day with the decision made; adds a review goal per night PR), `bn chief pm` is the 16:45
-    /// evening shutdown (what moved, what to defer, and tomorrow's first task pre-chosen). Bare
-    /// `bn chief` picks the slot by the time of day. Offline reads only; the card is never urgent.
-    /// The `staff-chief-{am,pm}` crons run it on a schedule (opt-in via `[chief].enabled`).
-    Chief {
+    /// Where the day stands, folded from every store into one packet: the night shift's draft PRs,
+    /// the top `bn next` actions, the calendar's shape, the quarter, the `q` inbox, the daily
+    /// rollup, the standup line and the wrap. `bn briefing gather` prints it as JSON — offline
+    /// reads only, every source degrading on its own — and judges none of it. That is how the
+    /// `staff-chief-am` and `staff-chief-pm` agents get their input.
+    Briefing {
         #[command(subcommand)]
-        action: Option<ChiefCmd>,
+        action: BriefingCmd,
     },
-    /// The Archivist — the Friday private weekly chronicle: the *story* of the week. Once a week it
-    /// folds what the system already knows (the staff's feed cards, merged-PR + goal metrics vs the
-    /// prior week, achievements logged this week, the quarter's status) into a ~300-word, five-
-    /// section chronicle written to `<notes>/<machine>/chronicle/<YYYY-Www>.md` — strictly private,
-    /// never published (it replaces the rejected "Publicist"). Thin weeks degrade to a two-line
-    /// chronicle, not filler. Unlogged wins are surfaced as *draft* brag entries on the feed only —
-    /// `bn achieve` stays a human act. Offline reads only. The `staff-archivist` cron runs it
-    /// Fridays 17:30 (opt-in via `[archivist].enabled`); `bn archivist` runs it on demand.
-    Archivist,
-    /// The Curriculum Director (#260) — the Sunday weekly learning plan. It reads *where you're
-    /// weak* (recurring reflection themes + the #253 dojo mastery map, falling back to a tech
-    /// inventory when signals are thin) and turns it into ONE topic a week with a single
-    /// time-boxed resource, 2–3 dojo drills, a Monday 30-minute goal, and a seeded learn note —
-    /// honestly carrying or dropping last week's topic (a topic never rides unfinished for a
-    /// month). Bare `bn curriculum` (or `plan`) previews the card read-only; `bn curriculum run`
-    /// applies its idempotent side-effects; `bn curriculum gather` prints the packet JSON. The
-    /// `staff-curriculum` cron runs it Sunday 18:00.
-    Curriculum {
+    /// The week's raw material, gathered from every store: the staff feed's activity, merges and
+    /// PR cycle time against the preceding week, daily-goal completion, logged achievements, the
+    /// week's wins, the retro summary, and where the quarter stands. `bn week gather` prints it as
+    /// JSON — offline reads only — and writes no narrative; that is the `staff-archivist` agent's
+    /// job.
+    Week {
         #[command(subcommand)]
-        action: Option<CurriculumCmd>,
+        action: WeekCmd,
     },
-    /// The Mentor — post-merge review-to-teach on your *own* merged PRs (#258). For each of your
-    /// PRs merged yesterday it reviews the diff like a staff engineer whose only job is to teach:
-    /// the stronger design, one idiom worth stealing, one genuine strength, and a recurring-theme
-    /// tag. It appends a craft note to the merged branch's note, reinforces a dojo deck card per
-    /// theme, and files one info card per PR in `bn staff feed`. Never gates, never posts anywhere.
-    /// The `staff-mentor` cron runs it Mon..Fri 06:30 (opt-in via `[mentor].enabled`); bare
-    /// `bn mentor` runs it now regardless.
-    Mentor,
+    /// The evidence for what to practise next: the recurring themes a post-merge review kept
+    /// naming, the dojo area never drilled, what the code is actually written in, the learn notes
+    /// that already exist, and what the last few weeks chose (and whether those topics were ever
+    /// finished). `bn weakness gather` prints it as JSON and picks nothing — choosing the week's
+    /// one topic is the `staff-curriculum` agent's job.
+    Weakness {
+        #[command(subcommand)]
+        action: WeaknessCmd,
+    },
+    /// Your own pull requests merged yesterday, with the material needed to talk about them: each
+    /// one's diff (capped, largest-first) plus the branch note's goal and decisions — the *why* a
+    /// post-hoc reader never otherwise has. `bn merged-prs gather` prints the packet as JSON and
+    /// forms no opinion about it; that is how the `staff-mentor` agent gets its input.
+    MergedPrs {
+        #[command(subcommand)]
+        action: MergedPrsCmd,
+    },
     /// Away mode — batched fleet supervision. While away, routine agent activity is absorbed and
     /// only captain-relevant events (an agent that needs you / is stuck, an urgent attention item)
     /// count. `bn afk end` prints ONE batched digest of what needs you. Bare `bn afk` shows status.
@@ -940,6 +947,30 @@ pub(crate) enum CmdStaff {
         repo: Option<String>,
         #[arg(long)]
         branch: Option<String>,
+    },
+    /// The outside world's week: upstream issues in subsystems this person actually works in,
+    /// dependency releases and advisories, tooling changelogs. `bn radar gather` prints the packet
+    /// as JSON — the one gather that touches the network, with each of its three collectors
+    /// degrading independently and saying so. Ranking and filing it is the `scout` agent's job.
+    Radar {
+        #[command(subcommand)]
+        action: RadarCmd,
+    },
+    /// Command Center activity against the daily and quarter goals: what the week actually went
+    /// into, and what it was supposed to. `bn goals-align gather` prints the packet as JSON;
+    /// judging the gap is the `goals-align` agent's job.
+    GoalsAlign {
+        #[command(subcommand)]
+        action: GoalsAlignCmd,
+    },
+    /// The offline estate sweep: aging TODO/FIXME markers, stale dependencies, flaky verify
+    /// history, worktree/branch cruft, and note hygiene across the `[sentinel] repos` allowlist
+    /// (falling back to `[night] repos`). `bn estate gather` prints the packet as JSON and lands
+    /// nothing — it reports what the estate looks like and leaves the judgment to whoever reads
+    /// it, which is how the `sentinel` agent gets its nightly input.
+    Estate {
+        #[command(subcommand)]
+        action: EstateCmd,
     },
     /// Agent staff framework: scheduled agents that gather a deterministic packet → dispatch a
     /// pinned skill → validate a briefing card → route its items into your existing surfaces
@@ -1382,6 +1413,10 @@ pub(crate) enum ControlCmd {
         /// (`[harness].default` / `$BN_HARNESS`, else copilot).
         #[arg(long)]
         harness: Option<String>,
+        /// The agent manifest whose body seeds the controller. Its name lives here rather than in
+        /// Rust so the seed can be swapped by editing `config/agents/`, not by a rebuild.
+        #[arg(long, default_value = "controller")]
+        agent: String,
         /// Initial request to enqueue for this controller.
         #[arg(value_name = "REQUEST")]
         request: Vec<String>,
@@ -1684,10 +1719,10 @@ pub(crate) enum QuarterCmd {
     /// Run the impact agent now: score the window's shipped work against the quarter goals, append
     /// a validated review, and flag at-risk/off-track goals as attention items.
     Review {
-        /// Cron gate: exit silently (0) unless `[quarter].enabled`. The quarter-review job passes
-        /// this; an interactive `bn quarter review` always runs on demand.
-        #[arg(long, hide = true)]
-        cron: bool,
+        /// The agent manifest whose body is the review prompt. The scheduled run passes its own
+        /// name from its `run:` line, which is the only place that name should appear.
+        #[arg(long, default_value = "quarter-review")]
+        agent: String,
         /// Harness to drive (copilot / claude); overrides `[quarter].harness` / `[review].harness`.
         #[arg(long)]
         harness: Option<String>,
@@ -1991,14 +2026,6 @@ pub(crate) enum DojoCmd {
 }
 
 #[derive(Subcommand, Debug)]
-pub(crate) enum ChiefCmd {
-    /// The 05:30 morning brief — start the day with the decision made.
-    Am,
-    /// The 16:45 evening shutdown — close out with tomorrow's first task pre-chosen.
-    Pm,
-}
-
-#[derive(Subcommand, Debug)]
 /// The plan-review gate actions (#349). `submit`/`status` are the dispatched agent's write/poll
 /// side; `list`/`show`/`approve`/`request-changes`/`reject` are the human's review side (also
 /// reachable from the dashboard).
@@ -2115,24 +2142,6 @@ pub(crate) enum ReviewCmd {
 }
 
 #[derive(Subcommand, Debug)]
-/// The Curriculum Director actions (#260): `plan` previews the weekly card read-only, `run`
-/// applies its idempotent side-effects, `gather` prints the packet JSON.
-pub(crate) enum CurriculumCmd {
-    /// Preview this week's plan as a briefing card, read-only (no goals/notes/drills seeded).
-    Plan,
-    /// Run the full pipeline and apply its idempotent side-effects (Monday goal, learn note,
-    /// dojo drills), write the card, and mirror it to the feed.
-    Run {
-        /// Ask a harness to find the one best resource (a network read); otherwise a
-        /// deterministic self-study resource is used.
-        #[arg(long)]
-        enrich: bool,
-    },
-    /// Print the deterministic packet JSON — the agent-facing gather output.
-    Gather,
-}
-
-#[derive(Subcommand, Debug)]
 /// The Interviewer's weekly retro actions (#261).
 pub(crate) enum RetroCmd {
     /// Run the interactive weekly retro: three fixed questions plus one adaptive follow-up.
@@ -2144,6 +2153,9 @@ pub(crate) enum RetroCmd {
     },
     /// Explicitly skip this week's retro — recorded as skipped, not silently missed.
     Skip,
+    /// Raise this week's retro reminder, escalate it once, then stop. The unattended half — it
+    /// never starts the conversation. Run on a schedule by the `staff-interviewer` agent.
+    Tick,
     /// Print a recorded week's transcript (defaults to the current ISO week).
     Show {
         /// ISO week label (e.g. `2026-W28`); omit for the current week.
@@ -2164,6 +2176,10 @@ pub(crate) enum AttnCmd {
     /// Compact one-line status fragment for the tmux badge: `2 working · 1 stuck · 1 done · 3
     /// to-start`. Empty when the list is clear.
     Status,
+    /// What the local automation noticed today, as JSON: the cron findings packet plus the crons
+    /// currently failing. Raises nothing — it is the read side the `attention-agent` ranks. Prints
+    /// a `skip` when there is genuinely nothing to look at.
+    Gather,
     /// Attention lifecycle rollup over a trailing window: raised (by mode), started/done/closed,
     /// and time-in-flight. bn attn metrics [--window 30].
     Metrics {

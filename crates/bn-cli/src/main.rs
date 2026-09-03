@@ -52,23 +52,23 @@ pub(crate) use cli::*;
 pub(crate) use cmd::agent::*;
 pub(crate) use cmd::agent_resume::*;
 pub(crate) use cmd::agents::*;
-pub(crate) use cmd::archivist::*;
 pub(crate) use cmd::attn::*;
 pub(crate) use cmd::bearings::*;
+pub(crate) use cmd::briefing::*;
 pub(crate) use cmd::build::*;
-pub(crate) use cmd::chief::*;
 pub(crate) use cmd::control::*;
 pub(crate) use cmd::core_cmds::*;
 pub(crate) use cmd::cost::*;
 pub(crate) use cmd::critic::*;
 pub(crate) use cmd::cron::*;
-pub(crate) use cmd::curriculum::*;
 pub(crate) use cmd::daily::*;
 pub(crate) use cmd::dispatch::*;
 pub(crate) use cmd::doctor::*;
 pub(crate) use cmd::dojo::*;
+pub(crate) use cmd::estate::*;
 pub(crate) use cmd::findings::*;
 pub(crate) use cmd::focus::*;
+pub(crate) use cmd::gathers::*;
 pub(crate) use cmd::gitio::*;
 pub(crate) use cmd::insights::*;
 pub(crate) use cmd::issue::*;
@@ -77,7 +77,7 @@ pub(crate) use cmd::jobs::*;
 pub(crate) use cmd::killport::*;
 pub(crate) use cmd::learnings::*;
 pub(crate) use cmd::lifecycle::*;
-pub(crate) use cmd::mentor::*;
+pub(crate) use cmd::merged_prs::*;
 pub(crate) use cmd::night::*;
 pub(crate) use cmd::orchestrate::*;
 pub(crate) use cmd::plan_review::*;
@@ -93,7 +93,6 @@ pub(crate) use cmd::review_gate::*;
 pub(crate) use cmd::reviews::*;
 pub(crate) use cmd::routes::{route_command, route_default};
 pub(crate) use cmd::routine::*;
-pub(crate) use cmd::sentinel::*;
 pub(crate) use cmd::sessions::*;
 pub(crate) use cmd::setup::*;
 pub(crate) use cmd::skills::*;
@@ -107,6 +106,8 @@ pub(crate) use cmd::tools::*;
 pub(crate) use cmd::track::*;
 pub(crate) use cmd::verify::*;
 pub(crate) use cmd::watch::*;
+pub(crate) use cmd::weakness::*;
+pub(crate) use cmd::week::*;
 pub(crate) use cmd::worker::*;
 
 /// Today's date (`YYYY-MM-DD`) via the core [`Clock`] seam. The CLI is the entry-point boundary
@@ -191,7 +192,17 @@ fn main() {
     reset_sigpipe();
     let cli = Cli::parse();
     let cfg = Config::load();
-    serve::reconcile(&cfg);
+
+    // fzf re-execs `bn` for every picker callback — one process per cursor move for `--preview`,
+    // one per `reload()` bind. Machine housekeeping (reconciling managed services, firing cron
+    // catch-up, repairing the queue dispatcher) is never the right thing to do on a keystroke, and
+    // any one of those growing a subprocess again would land straight back on the interactive
+    // path. Gate the whole block on the callback so it cannot.
+    let internal = is_internal_callback(&cli.command);
+
+    if !internal {
+        serve::reconcile(&cfg);
+    }
 
     // Verbose/debug action log (opt-in): CLI `--verbose/--debug` OR env (`BN_VERBOSE`/`BN_LOG`) OR
     // `[log]` config.toml. Initialize once, before any action runs, so the runner seam and command
@@ -202,7 +213,7 @@ fn main() {
     // the manifest (meetings, standup) whenever you actually start work — the answer to a variable
     // start time a fixed timer can't match. Skipped for `bn run` itself (the spawned children are
     // `bn run`), so it never recurses.
-    if !matches!(&cli.command, Some(Command::Staff(CmdStaff::Run { .. }))) {
+    if !internal && !matches!(&cli.command, Some(Command::Staff(CmdStaff::Run { .. }))) {
         maybe_fire_catchup(&cfg);
         // An enabled queue needs a dispatcher; a disabled one needs any old managed dispatcher
         // removed. One stat in the common enabled case; see `queue_install`.
@@ -252,6 +263,35 @@ fn main() {
         Some(command) => route_command(&cfg, command, cli.json),
         None => route_default(&cfg, cli.json),
     }
+}
+
+/// Is this invocation an internal fzf callback rather than something the user typed?
+///
+/// The pickers (`tat`, `jump`, `connect`, `staff feed --pick`) are self-referencing: fzf's
+/// `--preview`, `reload()` and action binds all re-invoke `bn … --pick-stage <stage>`. Those
+/// processes exist only to print rows and exit, many times a second, so they skip the once-per-
+/// invocation machine housekeeping in [`main`].
+fn is_internal_callback(command: &Option<Command>) -> bool {
+    matches!(
+        command,
+        Some(Command::Automation(
+            CmdAutomation::Tat {
+                pick_stage: Some(_),
+                ..
+            } | CmdAutomation::Jump {
+                pick_stage: Some(_),
+                ..
+            } | CmdAutomation::Connect {
+                pick_stage: Some(_),
+                ..
+            }
+        )) | Some(Command::Staff(CmdStaff::Staff {
+            action: Some(cli::StaffCmd::Feed {
+                pick_stage: Some(_),
+                ..
+            }),
+        }))
+    )
 }
 
 /// Initialize the opt-in verbose/debug action log. Enabled when the CLI `--verbose/--debug` flag
@@ -363,5 +403,58 @@ mod prompt_command_tests {
                 }
             }
         }
+    }
+
+    /// Every `run:` and `gather:` line in an agent manifest must parse as a real bn invocation.
+    ///
+    /// These are the lines that actually *execute*: `run:` is what a scheduled agent does, and
+    /// `gather:` is what fills its packet. The backtick check above never sees them — they live in
+    /// frontmatter, not prose — so before this a manifest could name a command that had been
+    /// renamed away and nothing would notice until the cron failed at 05:30. That is exactly the
+    /// bug class the backtick check exists to prevent, on the half of the file that matters more.
+    ///
+    /// Parsing rather than running: a gather touches the network and the stores, and this must
+    /// stay a unit test. `try_get_matches_from` proves the subcommand and every flag exist, which
+    /// is what actually rots.
+    #[test]
+    fn agent_run_and_gather_lines_parse_as_real_commands() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/agents");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).expect("agents dir listing") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("agent readable");
+            for line in text.lines() {
+                let Some(rest) = line
+                    .strip_prefix("run:")
+                    .or_else(|| line.strip_prefix("gather:"))
+                else {
+                    continue;
+                };
+                let command = rest.trim().trim_matches(['"', '\''].as_slice());
+                let Some(args) = command.strip_prefix("bn ") else {
+                    // A manifest may shell out to something that is not bn (a user script); this
+                    // test only speaks for bn's own surface.
+                    continue;
+                };
+                let argv = std::iter::once("bn").chain(args.split_whitespace());
+                let parsed = Cli::command().try_get_matches_from(argv);
+                assert!(
+                    parsed.is_ok(),
+                    "{}: `{command}` does not parse — {}",
+                    path.display(),
+                    parsed.unwrap_err().kind()
+                );
+                checked += 1;
+            }
+        }
+        // A refactor that renamed the frontmatter keys would otherwise leave this test passing
+        // vacuously, which is worse than not having it.
+        assert!(
+            checked >= 10,
+            "expected the shipped roster to declare many run:/gather: lines, found {checked}"
+        );
     }
 }

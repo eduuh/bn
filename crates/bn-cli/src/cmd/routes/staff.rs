@@ -2,23 +2,21 @@ use crate::*;
 
 pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
     match action {
-        CmdStaff::Chief { action } => {
-            let slot = match action {
-                Some(ChiefCmd::Am) => bn_core::chief::Slot::Am,
-                Some(ChiefCmd::Pm) => bn_core::chief::Slot::Pm,
-                None => default_chief_slot(),
-            };
-            emit_chief(cfg, slot, json);
-        }
-        CmdStaff::Archivist => emit_archivist(cfg, json),
-        CmdStaff::Curriculum { action } => match action {
-            Some(CurriculumCmd::Gather) => std::process::exit(emit_curriculum_gather(cfg)),
-            Some(CurriculumCmd::Run { enrich }) => emit_curriculum_run(cfg, enrich, json),
-            None | Some(CurriculumCmd::Plan) => emit_curriculum_plan(cfg, json),
-        },
-        CmdStaff::Mentor => {
-            std::process::exit(emit_mentor(cfg, json));
-        }
+        CmdStaff::Briefing {
+            action: BriefingCmd::Gather { slot },
+        } => std::process::exit(emit_briefing_gather(
+            cfg,
+            slot.map(Into::into).unwrap_or_else(default_slot),
+        )),
+        CmdStaff::Week {
+            action: WeekCmd::Gather,
+        } => std::process::exit(emit_week_gather(cfg)),
+        CmdStaff::Weakness {
+            action: WeaknessCmd::Gather { for_agent },
+        } => std::process::exit(emit_weakness_gather(cfg, &for_agent)),
+        CmdStaff::MergedPrs {
+            action: MergedPrsCmd::Gather,
+        } => std::process::exit(emit_merged_prs_gather(cfg)),
         CmdStaff::Afk { action } => emit_afk(cfg, action, json),
         CmdStaff::Watch {
             once,
@@ -139,6 +137,15 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
             let ctx = target_ctx(cfg, repo, branch);
             emit_startup(cfg, ctx.as_ref());
         }
+        CmdStaff::Radar {
+            action: RadarCmd::Gather,
+        } => std::process::exit(emit_radar_gather(cfg)),
+        CmdStaff::GoalsAlign {
+            action: GoalsAlignCmd::Gather,
+        } => std::process::exit(emit_goals_align_gather(cfg)),
+        CmdStaff::Estate {
+            action: EstateCmd::Gather { carried_from },
+        } => std::process::exit(emit_estate_gather(cfg, carried_from.as_deref())),
         CmdStaff::Staff { action } => {
             // Staff agents are declared mostly in the global roster tier; a repo/branch tier is
             // still honored, resolved from the current directory (`bn run <name>` passes its own
@@ -152,8 +159,9 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
                 Some(StaffCmd::Plan { agent }) => {
                     std::process::exit(emit_staff_plan(cfg, ctx.as_ref(), &agent, json))
                 }
-                Some(StaffCmd::Gather { agent }) => {
-                    std::process::exit(emit_staff_gather(cfg, &agent))
+                Some(StaffCmd::DemoPacket) => std::process::exit(emit_demo_packet(cfg)),
+                Some(StaffCmd::CheckCard { agent }) => {
+                    std::process::exit(emit_staff_check_card(cfg, ctx.as_ref(), &agent))
                 }
                 Some(StaffCmd::Mail { agent, date }) => std::process::exit(
                     crate::cmd::staff_mail::emit_staff_mail(cfg, &agent, date.as_deref()),
@@ -188,6 +196,7 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
             None | Some(RetroCmd::Chat { voice: false }) => emit_retro_chat(cfg, false, json),
             Some(RetroCmd::Chat { voice: true }) => emit_retro_chat(cfg, true, json),
             Some(RetroCmd::Skip) => emit_retro_skip(cfg, json),
+            Some(RetroCmd::Tick) => std::process::exit(emit_retro_tick()),
             Some(RetroCmd::Show { week }) => emit_retro_show(cfg, week, json),
         },
         CmdStaff::Skills { action } => {

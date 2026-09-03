@@ -4,8 +4,9 @@ requires_repo: bn
 kind: staff
 on_calendar: "Mon *-*-* 08:00:00"
 network: false
-gather: "bn staff gather goals-align"
+gather: "bn goals-align gather"
 sinks: ["attn", "note"]
+replace: true
 description: "Weekly alignment review between Command Center activity and daily/quarter goals."
 ---
 You are the **Goals-Alignment** agent. Your north star is the owner's goals; your job is to tell

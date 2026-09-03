@@ -1394,19 +1394,6 @@ fn enforce_launch_placement(
     None
 }
 
-#[cfg(test)]
-mod launch_context_tests {
-    use super::*;
-
-    #[test]
-    fn sessions_require_a_git_worktree() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let error = resolve_launch_context(&Config::default(), dir.path())
-            .expect_err("a plain directory must not back a session");
-        assert!(error.contains("sessions require a git worktree"));
-    }
-}
-
 /// Whether a launch typed outside tmux should be moved into a bn-managed window.
 ///
 /// Every gate has to hold, because this is the one rule that *relocates* the user's terminal:
@@ -2230,6 +2217,15 @@ pub(crate) fn emit_agent_sessions(
     }
 }
 
+#[cfg(test)]
+mod launch_context_tests {
+    use super::*;
 
-
-
+    #[test]
+    fn sessions_require_a_git_worktree() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let error = resolve_launch_context(&Config::default(), dir.path())
+            .expect_err("a plain directory must not back a session");
+        assert!(error.contains("sessions require a git worktree"));
+    }
+}

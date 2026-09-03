@@ -126,12 +126,14 @@ mod tests {
     #[test]
     fn scheduled_repo_requires_assignment_and_a_local_clone() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let mut cfg = Config::default();
-        cfg.worktree_dir = temp.path().join("worktree");
-        cfg.machine_profile = Some(MachineProfile {
-            repos: vec!["owner/api".to_string()],
-            ..MachineProfile::default()
-        });
+        let cfg = Config {
+            worktree_dir: temp.path().join("worktree"),
+            machine_profile: Some(MachineProfile {
+                repos: vec!["owner/api".to_string()],
+                ..MachineProfile::default()
+            }),
+            ..Default::default()
+        };
 
         assert!(!cfg.repo_available_here("owner/api"));
         std::fs::create_dir_all(temp.path().join("bare").join("api.git"))

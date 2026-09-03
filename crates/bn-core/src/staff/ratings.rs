@@ -1,6 +1,6 @@
 //! Ratings and engagement — the staff feedback loop (#268).
 //!
-//! Its own module beside `cost` and `sentinel` for the same reason they are: `staff.rs` is at the
+//! Its own module beside `cost` for the same reason that one is: `staff.rs` is at the
 //! file-size ratchet's ceiling, and whether a card earned its cost is a self-contained question
 //! from how the card was gathered or routed.
 use super::*;

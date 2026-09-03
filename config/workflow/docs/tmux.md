@@ -16,7 +16,7 @@ A near-monochrome bar that uses **both ends** of the screen. tmux has only one s
 | `N● N✓` | Server-wide count of windows needing you — `●` waiting on input, `✓` done. |
 | `◆ <goal>` | The branch note's **goal** — what you're working on here, a faded headline (truncated after 80 chars). |
 | `⎇ <branch> ↑n ↓m ●k` | Git: branch, commits ahead `↑` / behind `↓`, dirty file count `●` (faint `●` when clean). |
-| `⟳ <job>` | A bn cron job is running in this repo. |
+| `⟳ <job>` / `⟳ <job>+N` | bn cron jobs running on this machine right now — the oldest by name, plus a count of the rest. Silent when idle, and when `[machines.<host>].cron` is off. |
 | `<session> · HH:MM Day DD` | Session name and clock, pushed to the right edge. |
 
 **Bottom — window tabs.** Active window is **white-bold**, inactive ones dim. Each carries its bn state as trailing badges:
@@ -40,6 +40,7 @@ The left pill shows the session name and **flips to reverse-video `PREFIX`** the
 | Key | Action |
 |-----|--------|
 | `C-o` | Project picker (fzf over `~/projects`). Creates or switches session. A bare repo's sub-picker includes windows, local worktrees, pool slots, and your open PRs missing from this laptop; selecting a `PR` row fetches and opens its branch. |
+| `C-j` | Session tree (`choose-tree`). tmux's own picker, no fzf and no `bn` — the fallback that still switches sessions when PATH is bare or `bn` is mid-reinstall. `f` filters, `O` re-sorts, `x` kills the highlighted row, `Right` expands a session into its windows. |
 | `t` | Kill current session, switch to next. |
 | `.` | Rename current session. |
 | `d` | Detach client (built-in). |
@@ -133,7 +134,8 @@ The three jump keys differ by **scope**, not by mechanism:
 | `` ` `` | this session | *every* window — navigation |
 | `Tab` | all sessions | the single top-ranked window needing you, no popup |
 | `f` | all sessions | every live agent window + the orchestrator cockpit |
-| `j` / `C-a` | all repos | the attention queue (cron failures, raised items, stale notes) |
+| `j` | all sessions + all repos | windows needing you (ranked by time-in-state, pane preview) over the `bn next` queue |
+| `C-a` | all repos | the attention queue (cron failures, raised items, stale notes) |
 
 ## Panes
 

@@ -10,9 +10,11 @@ pub(super) fn route(cfg: &Config, action: CmdInsights, json: bool) {
             limit,
         } => emit_recall(cfg, &query.join(" "), repo.as_deref(), index, limit, json),
         CmdInsights::Related { branch, limit } => emit_related(cfg, branch.as_deref(), limit, json),
-        CmdInsights::Reviews { path } => {
+        CmdInsights::Reviews { path, fetch } => {
             if path {
                 println!("{}", bn_core::reviews::cache_path().display());
+            } else if fetch {
+                std::process::exit(fetch_review_queue());
             } else {
                 emit_reviews(cfg, json);
             }

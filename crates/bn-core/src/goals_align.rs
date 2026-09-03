@@ -23,9 +23,6 @@ use crate::quarter::Quarter;
 use crate::resolver::Config;
 use serde::Serialize;
 
-/// The agent name — its roster entry, cron job (`staff-goals-align`), and card folder.
-pub const AGENT: &str = "goals-align";
-
 /// A compact projection of one connected note ([`crate::model::GoalNote`]) — a linked branch note
 /// or an attached text/upload — as a single human line the agent reads for goal context (#564).
 fn note_summary(n: &crate::model::GoalNote) -> String {
@@ -150,7 +147,6 @@ impl ActivityView {
 /// (daily + quarter) and the Command Center activities to weigh against them.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GoalsAlignPacket {
-    pub agent: &'static str,
     pub date: String,
     pub machine: String,
     /// Today's daily goals (open and completed).
@@ -186,7 +182,6 @@ pub fn build_packet(
     }
 
     GoalsAlignPacket {
-        agent: AGENT,
         date: today.to_string(),
         machine: machine.to_string(),
         daily_goals: daily_goals.iter().map(GoalView::from_item).collect(),

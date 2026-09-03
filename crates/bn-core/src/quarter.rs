@@ -788,12 +788,14 @@ pub enum ReviewOutcome {
 }
 
 /// Run the impact agent for the current quarter: gather context → prompt the harness → validate →
-/// append + raise attn (or raise a warn attn on malformed). `harness` picks the CLI (`copilot` by
-/// default, `claude` when set); `run_agent` shells through `runner` so it's testable. `window_days`
-/// bounds the ground-truth window when there's no prior review.
+/// append + raise attn (or raise a warn attn on malformed). `agent_name` names the manifest whose
+/// body is the prompt. `harness` picks the CLI (`copilot` by default, `claude` when set);
+/// `run_agent` shells through `runner` so it's testable. `window_days` bounds the ground-truth
+/// window when there's no prior review.
 pub fn review(
     cfg: &Config,
     runner: &dyn CommandRunner,
+    agent_name: &str,
     harness: Option<&str>,
     today: &str,
     window_days: i64,
@@ -806,14 +808,17 @@ pub fn review(
     }
     let qid = q.front.quarter.clone();
     let ctx = gather_context(cfg, &q, today, window_days, runner);
+    // The prompt comes from an agent manifest the *caller* names. Reaching for a hardcoded name
+    // here would make this function one of the places an agent has to exist in Rust — and the
+    // whole point of a Markdown agent is that its `run:` line is the only place its name appears.
     let catalog = crate::agents::discover(cfg, None)
-        .map_err(|error| StoreError::Parse(format!("quarter-review agent: {error}")))?;
+        .map_err(|error| StoreError::Parse(format!("{agent_name} agent: {error}")))?;
     let agent = catalog
-        .require("quarter-review")
+        .require(agent_name)
         .map_err(|error| StoreError::Parse(error.to_string()))?;
     let instructions = agent
         .render(None)
-        .map_err(|error| StoreError::Parse(format!("quarter-review agent: {error}")))?;
+        .map_err(|error| StoreError::Parse(format!("{agent_name} agent: {error}")))?;
     let prompt = build_prompt(&instructions, &ctx);
     let Some(output) = run_agent(runner, harness.unwrap_or("copilot"), &prompt) else {
         return Ok(ReviewOutcome::Skipped {

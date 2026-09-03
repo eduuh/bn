@@ -11,10 +11,9 @@ fn parse(text: &str) -> Result<AgentDef, AgentCatalogError> {
 
 #[test]
 fn command_defaults_run_and_retry() {
-    let agent = parse(
-        "---\nname: demo\nkind: command\nrequires_repo: bn\non_calendar: \"*:0/15\"\n---\n",
-    )
-    .expect("agent parses");
+    let agent =
+        parse("---\nname: demo\nkind: command\nrequires_repo: bn\non_calendar: \"*:0/15\"\n---\n")
+            .expect("agent parses");
 
     assert_eq!(agent.kind, AgentKind::Command);
     assert_eq!(agent.run, None);
@@ -120,9 +119,8 @@ fn kind_schedule_and_recursion_errors_are_typed_and_path_qualified() {
         }
     ));
 
-    let missing_repo =
-        parse("---\nname: demo\nkind: command\non_calendar: daily\n---\n")
-            .expect_err("scheduled agents require a repo");
+    let missing_repo = parse("---\nname: demo\nkind: command\non_calendar: daily\n---\n")
+        .expect_err("scheduled agents require a repo");
     assert!(matches!(
         missing_repo,
         AgentCatalogError::InvalidAgent {
@@ -253,13 +251,19 @@ fn shipped_agent_catalog_is_valid() {
     }
 
     for (name, contract) in [
-        ("attention-agent", "Output only a JSON array"),
+        ("attention-agent", "the single ranked list"),
         ("quarter-review", "PER-GOAL"),
         ("task-enhance", "Do not implement"),
         ("task-triage", "Do not implement"),
         ("today-agent", "bn today list"),
         ("controller", "Keep the user in the loop"),
         ("staff-mentor", "Mentor"),
+        // The Mentor is the only agent whose subject is a PR thread other people read, and it runs
+        // unattended on a box that is logged in to GitHub. Its no-publish rule was deleted once in
+        // a refactor; pin it so that cannot happen quietly again.
+        ("staff-mentor", "Never post to the pull request"),
+        ("sentinel", "Estate patrol"),
+        ("staff-archivist", "strictly private"),
     ] {
         assert!(
             catalog

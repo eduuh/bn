@@ -13,9 +13,13 @@ pub(crate) enum StaffCmd {
     /// Dry-run: print the gathered packet and the sinks the agent is allowed to route into, with
     /// no dispatch and nothing landed: bn staff plan <agent>.
     Plan { agent: String },
-    /// Print an agent's deterministic packet JSON to stdout — the built-in gatherers an
-    /// agent `gather` command shells back into (`bn staff gather <agent>`).
-    Gather { agent: String },
+    /// Print the echo-grade fixture the `demo` agent gathers, so the whole
+    /// gather → dispatch → validate → route path can be exercised without a real data source.
+    DemoPacket,
+    /// Read a briefing card on stdin and report whether `agent` could have produced it: which sink
+    /// each item would reach, and what would be dropped. Lands nothing — this is how you tell
+    /// whether an agent's `.md` is complete without running it for real.
+    CheckCard { agent: String },
     /// Read briefing cards, unread-first. Bare `bn staff feed` is the index; a filter matching an
     /// agent name or a `YYYY-MM-DD` date renders the full matching card(s) and marks them read.
     Feed {

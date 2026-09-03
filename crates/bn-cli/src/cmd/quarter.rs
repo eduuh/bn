@@ -99,26 +99,23 @@ pub(crate) fn emit_quarter(
                 .status();
             std::process::exit(status.ok().and_then(|s| s.code()).unwrap_or(1));
         }
-        Some(QuarterCmd::Review { cron, harness }) => {
-            emit_quarter_review(cfg, cron, harness, as_json)
+        Some(QuarterCmd::Review { agent, harness }) => {
+            emit_quarter_review(cfg, &agent, harness, as_json)
         }
         Some(QuarterCmd::Advise { capacity }) => emit_quarter_advise(cfg, capacity, as_json),
     }
 }
 
 /// `bn quarter review` — run the impact agent (also the `quarter-review` cron entry point). The
-/// `--cron` gate exits silently unless `[quarter].enabled`; an interactive run always proceeds.
+/// opt-in gate is applied once by `bn run`, from the manifest, so this always proceeds.
 pub(crate) fn emit_quarter_review(
     cfg: &Config,
-    cron: bool,
+    agent: &str,
     harness: Option<String>,
     as_json: bool,
 ) {
     use bn_core::quarter;
     let jc = resolver::JobConfig::load();
-    if cron && !jc.quarter_review_enabled {
-        return;
-    }
     let harness = harness
         .or_else(|| jc.quarter_harness.clone())
         .or_else(|| cfg.review_harness.clone());
@@ -127,6 +124,7 @@ pub(crate) fn emit_quarter_review(
     match quarter::review(
         cfg,
         &runner,
+        agent,
         harness.as_deref(),
         &today,
         jc.quarter_review_window_days,

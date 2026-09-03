@@ -23,9 +23,6 @@ use crate::model::Item;
 use crate::util;
 use serde::Serialize;
 
-/// The agent name — its roster entry, cron job (`staff-standup`), and card folder.
-pub const AGENT: &str = "standup";
-
 /// One completed task, projected down to the fields the standup summary needs — the note-jump /
 /// completion-timestamp plumbing of [`CompletedItem`] is dropped.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -153,7 +150,6 @@ impl Gaps {
 /// (grouped by repo) and today's focus goals.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct StandupPacket {
-    pub agent: &'static str,
     /// The run's logical date (today).
     pub date: String,
     pub machine: String,
@@ -190,6 +186,13 @@ pub struct Reading {
     pub url: Option<String>,
 }
 
+/// The agent whose latest card carries this cycle's learning pick.
+///
+/// A card is filed under the roster name that produced it, and that name changed when the agent
+/// became a Markdown manifest — leaving this filter matching nothing and the Reading beat frozen
+/// on the last card the old native job ever wrote, still presented as current.
+const CURRICULUM_AGENT: &str = "staff-curriculum";
+
 /// This cycle's learning pick, read off the most recent stored Curriculum card.
 ///
 /// The curriculum job already chose one topic and one resource and wrote them to the feed; re-deriving
@@ -199,17 +202,17 @@ pub struct Reading {
 pub fn reading_from_feed(cfg: &crate::resolver::Config) -> Option<Reading> {
     let mut refs: Vec<crate::staff::CardRef> = crate::staff::list_cards(cfg)
         .into_iter()
-        .filter(|c| c.agent == "curriculum")
+        .filter(|c| c.agent == CURRICULUM_AGENT)
         .collect();
     refs.sort_by(|a, b| b.date.cmp(&a.date));
     let card = crate::staff::read_card(&refs.first()?.path)?;
 
     let topic = card.items.iter().find_map(|it| {
         (it.kind == "goal")
-            .then(|| it.title.strip_prefix(crate::curriculum::GOAL_PREFIX))
+            .then(|| it.title.strip_prefix(crate::weakness::GOAL_PREFIX))
             .flatten()
             .map(|rest| {
-                rest.strip_suffix(crate::curriculum::GOAL_SUFFIX)
+                rest.strip_suffix(crate::weakness::GOAL_SUFFIX)
                     .unwrap_or(rest)
                     .to_string()
             })
@@ -314,7 +317,6 @@ pub fn build_packet(
     }
 
     StandupPacket {
-        agent: AGENT,
         date: today.to_string(),
         machine: machine.to_string(),
         yesterday: yesterday.to_string(),
@@ -356,7 +358,7 @@ pub fn gather_packet_json(cfg: &crate::resolver::Config, today: &str) -> String 
     // finished work actually shows up — the orchestrate queue below only knows about work it
     // dispatched itself.
     let events = crate::events::read_events_across(&cfg.metrics_logs_all_machines());
-    let merged_prs = crate::mentor::discover_merged(&events, &yesterday);
+    let merged_prs = crate::merged_prs::discover_merged(&events, &yesterday);
 
     let sources = crate::completed::CompletedSources {
         todos: &todos,

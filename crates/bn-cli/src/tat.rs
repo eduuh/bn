@@ -13,6 +13,20 @@
 //! `tatw` replacement, scoping to the Windows root alone). Codespaces (3c) and plain `tmux` only —
 //! `psmux` stays shell-side.
 
+mod codespaces;
+mod discovery;
+mod preview;
+
+use codespaces::{
+    codespaces, cs_account, cs_account_cfg_path, cs_auth_cmd, cs_auth_needed, cs_auth_refresh,
+    cs_fetch_blocking, cs_for_repo, cs_ref_branch, cs_ref_csname, cs_ref_repo, cs_window_name,
+    is_cs_ref, open_codespace,
+};
+use discovery::{
+    ordered_refs, remote_prs, remote_prs_fetch_blocking, scan_worktrees, spawn_remote_warm,
+};
+use preview::preview;
+
 use crate::proc::{tmux, tmux_command, tmux_ok, tmux_raw, tmux_run};
 use crate::wt;
 use bincode::Options;
@@ -52,6 +66,10 @@ pub enum TatStage {
     /// `kind~branch`; guarded — only a `poolbranch` row, and `return` itself refuses a dirty slot.
     #[value(name = "releasepool")]
     ReleasePool,
+    /// Internal: refresh the network-backed caches (codespaces, and `<name>`'s open PRs when given)
+    /// in the background. Spawned detached by the picker so no paint ever waits on a forge.
+    #[value(name = "warm-remote")]
+    WarmRemote,
 }
 
 // --- ref helpers -----------------------------------------------------------
@@ -242,6 +260,15 @@ fn wf_unixpath(p: &str) -> String {
         }
     }
     p.to_string()
+}
+
+/// `$XDG_CACHE_HOME` or `~/.cache`.
+fn cache_home() -> PathBuf {
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+        .unwrap_or_else(|| PathBuf::from(".cache"))
 }
 
 /// `$XDG_CONFIG_HOME` or `~/.config`.
@@ -786,100 +813,6 @@ fn open_or_select_window(session: &str, window: &str, wt_path: &Path) {
 
 // --- list (the --pick-stage list feed) -------------------------------------
 
-const DISCOVERY_CACHE_TTL_SECS: i64 = 30;
-
-#[derive(Default, Deserialize, Serialize)]
-struct DiscoveryCache {
-    roots_key: String,
-    refs_saved_at: i64,
-    refs: Vec<String>,
-    worktrees: HashMap<String, CachedWorktrees>,
-    #[serde(default)]
-    remote_prs: HashMap<String, CachedRemotePrs>,
-}
-
-#[derive(Deserialize, Serialize)]
-struct CachedWorktrees {
-    saved_at: i64,
-    names: Vec<String>,
-}
-
-#[derive(Deserialize, Serialize)]
-struct CachedRemotePrs {
-    saved_at: i64,
-    prs: Vec<wt::RemotePr>,
-}
-
-fn discovery_cache_path() -> PathBuf {
-    cache_home().join("wt").join("tat-discovery.json")
-}
-
-fn discovery_ttl_secs() -> i64 {
-    std::env::var("WF_TAT_TTL")
-        .ok()
-        .and_then(|s| s.parse::<i64>().ok())
-        .filter(|&n| n >= 0)
-        .unwrap_or(DISCOVERY_CACHE_TTL_SECS)
-}
-
-fn discovery_cache_fresh(saved_at: i64) -> bool {
-    bn_core::util::now_epoch_secs().saturating_sub(saved_at) <= discovery_ttl_secs()
-}
-
-fn read_discovery_cache() -> DiscoveryCache {
-    std::fs::read_to_string(discovery_cache_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
-}
-
-fn write_discovery_cache(cache: &DiscoveryCache) {
-    let Ok(bytes) = serde_json::to_vec(cache) else {
-        return;
-    };
-    let _ = write_atomic(&discovery_cache_path(), &bytes);
-}
-
-fn roots_cache_key(roots: &Roots) -> String {
-    let mut parts = vec![
-        roots.primary.to_string_lossy().to_string(),
-        roots.primary_bare.to_string_lossy().to_string(),
-        roots.primary_worktree.to_string_lossy().to_string(),
-        roots.win_scoped.to_string(),
-    ];
-    parts.extend(
-        roots
-            .extras
-            .iter()
-            .map(|(tag, path)| format!("{tag}={}", path.display())),
-    );
-    parts.join("\n")
-}
-
-/// Repository discovery and zoxide ordering are stable across the short-lived processes fzf
-/// starts for callbacks. Snapshot those filesystem-derived values; tmux and pool state stay live.
-fn ordered_refs(roots: &Roots, refresh: bool) -> Vec<String> {
-    let key = roots_cache_key(roots);
-    let mut cache = read_discovery_cache();
-    if !refresh
-        && cache.roots_key == key
-        && discovery_cache_fresh(cache.refs_saved_at)
-        && !cache.refs.is_empty()
-    {
-        return cache.refs;
-    }
-
-    let mut refs = roots.all_refs();
-    refs.sort();
-    refs.dedup();
-    let refs = sort_by_frecency(roots, refs);
-    cache.roots_key = key;
-    cache.refs_saved_at = bn_core::util::now_epoch_secs();
-    cache.refs.clone_from(&refs);
-    write_discovery_cache(&cache);
-    refs
-}
-
 /// Decorated list rows: `<display>\t<ref>`. fzf shows only `<display>` (`--with-nth=1`); the
 /// `<ref>` rides along as the hidden last field (`{-1}`) for preview/kill/selection.
 fn build_list(roots: &Roots, refresh: bool) {
@@ -925,159 +858,6 @@ fn build_list(roots: &Roots, refresh: bool) {
     }
 }
 
-// --- preview (the fzf side pane) -------------------------------------------
-
-fn preview(roots: &Roots, project: &str) {
-    if project.is_empty() {
-        return;
-    }
-    // The codespace auth-fix row.
-    if project == "cs-auth" {
-        let acct = cs_account();
-        println!("━━━ codespace auth ━━━\n");
-        println!("`gh cs list` failed — no codespace access on the active gh account.\n");
-        if !acct.is_empty() {
-            println!("Enter: switch to your codespace account ({acct}); if that still");
-            println!("       lacks the scope, refresh it (browser/device login).");
-        } else {
-            println!("Fix:  {}", cs_auth_cmd());
-            println!("Enter runs it (browser/device login). Tip: if your codespaces live");
-            println!(
-                "under another gh account, put its username in:\n  {}",
-                cs_account_cfg_path().display()
-            );
-        }
-        return;
-    }
-    // Codespace rows have no local session/dir — render state from the cached gh list, before any
-    // `ref_*`/`project_path` call mis-parses the `cs:` ref.
-    if is_cs_ref(project) {
-        let r = cs_ref_repo(project);
-        let b = cs_ref_branch(project);
-        let n = cs_ref_csname(project);
-        let st = codespaces()
-            .into_iter()
-            .find(|c| c.name == n)
-            .map(|c| c.state)
-            .unwrap_or_default();
-        println!("━━━ {r} / {b} (codespace) ━━━\n");
-        println!("Repo:   {r}");
-        println!("Branch: {b}");
-        println!("State:  {}", if st.is_empty() { "unknown" } else { &st });
-        println!("Name:   {n}\n");
-        println!(
-            "Enter: open \"{}\" window in session {r} (gh cs ssh + remote tmux)",
-            cs_window_name(b)
-        );
-        return;
-    }
-    let tag = ref_tag(project);
-    let sess = ref_session(project);
-    let path = project_path(roots, project);
-    let path_is_dir = path.is_dir();
-    let window_rows = tmux_raw(&[
-        "list-windows",
-        "-t",
-        &exact_session_target(&sess),
-        "-F",
-        "#{window_index}|#{window_name}|#{pane_current_command}|#{pane_current_path}|#{window_active}",
-    ]);
-    let session_up = window_rows.is_some();
-
-    if !path_is_dir && !session_up {
-        println!("Directory not found: {}", path.display());
-        return;
-    }
-
-    if !tag.is_empty() {
-        println!("━━━ {} ({tag}) ━━━\n", ref_repo(project));
-    } else if !path_is_dir {
-        println!("━━━ {project} (session) ━━━\n");
-    } else {
-        println!("━━━ {project} ━━━\n");
-    }
-
-    if let Some(raw) = window_rows {
-        println!("Windows:");
-        for line in raw.lines() {
-            if line.is_empty() {
-                continue;
-            }
-            let f = split5(line);
-            let marker = if f[4] == "1" { "*" } else { "" };
-            // The oracle's `${wpath/#$HOME/~}` is a silent no-op: bash tilde-expands the `~`
-            // replacement back to $HOME, so it replaces $HOME with $HOME. The path stays full.
-            println!("  {}{marker}: {:<14} {:<8} {}", f[0], f[1], f[2], f[3]);
-        }
-        println!();
-    }
-
-    let path_s = path.to_string_lossy().to_string();
-    if path.join(".git").exists() {
-        let branch = wt::git_out(&["-C", &path_s, "branch", "--show-current"])
-            .filter(|b| !b.is_empty())
-            .unwrap_or_else(|| "detached".to_string());
-        println!("Branch: {branch}");
-        let staged = numstat_count(&["-C", &path_s, "diff", "--cached", "--numstat"]);
-        let unstaged = numstat_count(&["-C", &path_s, "diff", "--numstat"]);
-        let untracked =
-            numstat_count(&["-C", &path_s, "ls-files", "--others", "--exclude-standard"]);
-        if staged > 0 {
-            println!("Staged: {staged}");
-        }
-        if unstaged > 0 {
-            println!("Modified: {unstaged}");
-        }
-        if untracked > 0 {
-            println!("Untracked: {untracked}");
-        }
-        if staged == 0 && unstaged == 0 && untracked == 0 {
-            println!("Clean");
-        }
-        println!();
-        println!("Recent commits:");
-        if let Some(log) = wt::git_out(&["-C", &path_s, "log", "--oneline", "-5"]) {
-            if !log.is_empty() {
-                println!("{log}");
-            }
-        }
-        println!();
-    }
-
-    if is_bare_repo(roots, project) {
-        let wts = list_worktrees(roots, project);
-        if !wts.is_empty() {
-            println!("Worktrees: ({})", wts.len());
-            for w in &wts {
-                println!("  {w}");
-            }
-            println!();
-        }
-    }
-
-    if path_is_dir {
-        let t = if path.join("Cargo.toml").is_file() {
-            "Rust"
-        } else if path.join("package.json").is_file() {
-            "Node.js"
-        } else if path.join("go.mod").is_file() {
-            "Go"
-        } else if path.join("pyproject.toml").is_file() || path.join("requirements.txt").is_file() {
-            "Python"
-        } else {
-            "Unknown"
-        };
-        println!("Type: {t}");
-    }
-}
-
-/// Number of output lines for a git command (the `… | wc -l` counters).
-fn numstat_count(args: &[&str]) -> usize {
-    wt::git_out(args)
-        .map(|s| if s.is_empty() { 0 } else { s.lines().count() })
-        .unwrap_or(0)
-}
-
 // --- kill ------------------------------------------------------------------
 
 /// Kill `ref`'s session (passed via `{-1}`), unless it's the current one.
@@ -1092,384 +872,6 @@ fn kill_from_line(r: &str) {
     }
     if has_session(r) {
         let _ = tmux_run(&["kill-session", "-t", &exact_session_target(&sess)]);
-    }
-}
-
-// --- codespaces (3c) -------------------------------------------------------
-// GitHub Codespaces as remote worktrees: a codespace is a (repo, branch) pair, so it slots into
-// tat's model — session = repo, window = "<branch> ☁", remote tmux session = branch. This is the
-// ONLY place tat shells out to `gh`. Everything degrades silently: no gh / not-logged-in / a missing
-// `codespace` scope all yield an empty list (with an actionable auth row), never an error.
-
-/// A normalized codespace row: `repo` is the LOCAL clone name (resolved through the repo map).
-struct Codespace {
-    repo: String,
-    branch: String,
-    state: String,
-    name: String,
-}
-
-/// `$XDG_CACHE_HOME` or `~/.cache`.
-fn cache_home() -> PathBuf {
-    std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
-        .unwrap_or_else(|| PathBuf::from(".cache"))
-}
-
-/// `$HOME` (the codespace session/window root), or `.` as a last resort.
-fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
-/// The cached `gh cs list` JSON path (`$WF_CS_CACHE`, else `<cache>/wt/codespaces.json`).
-fn cs_cache_path() -> PathBuf {
-    std::env::var_os("WF_CS_CACHE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| cache_home().join("wt").join("codespaces.json"))
-}
-
-/// The auth-marker path (`$WF_CS_AUTH_MARKER`, else `<cache>.auth`): non-empty when `gh cs list`
-/// last failed for an auth reason, holding the remedy command.
-fn cs_auth_marker_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("WF_CS_AUTH_MARKER") {
-        return PathBuf::from(p);
-    }
-    let mut p = cs_cache_path().into_os_string();
-    p.push(".auth");
-    PathBuf::from(p)
-}
-
-/// The codespace gh-account config (`$WF_CS_ACCOUNT_CFG`, else `~/.config/wt/cs-account`).
-fn cs_account_cfg_path() -> PathBuf {
-    std::env::var_os("WF_CS_ACCOUNT_CFG")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| config_dir().join("wt").join("cs-account"))
-}
-
-/// The codespace-repo→local-repo map (`$WF_CS_REPO_MAP`, else `~/.config/wt/cs-repo-map`).
-fn cs_repo_map_path() -> PathBuf {
-    std::env::var_os("WF_CS_REPO_MAP")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| config_dir().join("wt").join("cs-repo-map"))
-}
-
-/// Resolve a codespace repo basename to its local repo name via the repo map; identity when
-/// unmapped or no config. Mirrors `codespaces.sh:wf_cs_repo_alias`.
-fn cs_repo_alias(cs: &str) -> String {
-    let Ok(content) = std::fs::read_to_string(cs_repo_map_path()) else {
-        return cs.to_string();
-    };
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some((k, v)) = line.split_once('=') else {
-            continue;
-        };
-        let k: String = k.chars().filter(|c| !c.is_whitespace()).collect();
-        let v: String = v.chars().filter(|c| !c.is_whitespace()).collect();
-        if k == cs {
-            return if v.is_empty() { cs.to_string() } else { v };
-        }
-    }
-    cs.to_string()
-}
-
-/// Is `cmd` runnable (a cheap `--version` probe; the silent-degrade gate for `gh`)?
-fn has_cmd(cmd: &str) -> bool {
-    Command::new(cmd)
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-/// Raw `gh cs list` JSON, cached to [`cs_cache_path`] with a TTL (`$WF_CS_TTL`, default 60s). Always
-/// returns a JSON array string, never errors. An auth failure is distinguished from "no codespaces":
-/// the remedy is stashed in the auth marker and `[]` negative-cached. Mirrors `codespaces.sh`.
-fn cs_raw() -> String {
-    let ttl: u64 = std::env::var("WF_CS_TTL")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(60);
-    let cache = cs_cache_path();
-    if let Ok(meta) = std::fs::metadata(&cache) {
-        let fresh = meta
-            .modified()
-            .ok()
-            .and_then(|m| m.elapsed().ok())
-            .map(|age| age.as_secs() < ttl)
-            .unwrap_or(false);
-        if fresh {
-            if let Ok(s) = std::fs::read_to_string(&cache) {
-                return s;
-            }
-        }
-    }
-    if let Some(parent) = cache.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let limit = std::env::var("WF_CS_LIMIT")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "100".to_string());
-    let out = crate::gh::gh_command(&[
-        "cs",
-        "list",
-        "--limit",
-        &limit,
-        "--json",
-        "name,repository,gitStatus,state,lastUsedAt",
-    ])
-    .output();
-    let marker = cs_auth_marker_path();
-    match out {
-        Ok(o)
-            if o.status.success() && {
-                let s = String::from_utf8_lossy(&o.stdout);
-                s.trim_start().starts_with('[')
-            } =>
-        {
-            let json = String::from_utf8_lossy(&o.stdout).into_owned();
-            let _ = std::fs::write(&cache, &json);
-            let _ = std::fs::remove_file(&marker); // auth healthy again
-            json
-        }
-        out => {
-            // Failure: classify gh's stderr so the picker can offer the exact fix; negative-cache
-            // `[]` so we don't re-shell every open until the TTL.
-            let stderr = out
-                .ok()
-                .map(|o| String::from_utf8_lossy(&o.stderr).to_lowercase())
-                .unwrap_or_default();
-            let scope_issue = stderr.contains("required scopes")
-                || stderr.contains("auth refresh")
-                || (stderr.contains("missing") && stderr.contains("scope"));
-            let login_issue = stderr.contains("not logged in")
-                || stderr.contains("gh auth login")
-                || stderr.contains("authentication");
-            if scope_issue {
-                let _ = std::fs::write(&marker, "gh auth refresh -h github.com -s codespace\n");
-            } else if login_issue {
-                let _ = std::fs::write(&marker, "gh auth login\n");
-            }
-            let _ = std::fs::write(&cache, "[]");
-            "[]".to_string()
-        }
-    }
-}
-
-/// Normalized codespaces (repo resolved to the local clone name; rows with no repo/branch dropped).
-/// Parses `gh cs list --json` natively — no `jq` dependency (the bash oracle required it).
-fn codespaces() -> Vec<Codespace> {
-    parse_codespaces(&cs_raw())
-}
-
-/// Parse `gh cs list --json name,repository,gitStatus,state,…` into [`Codespace`] rows. Split out
-/// (pure) so it is unit-testable. Mirrors the oracle's `jq … | @tsv | awk '$1!="" && $2!=""'`.
-fn parse_codespaces(json: &str) -> Vec<Codespace> {
-    let value: serde_json::Value = serde_json::from_str(json).unwrap_or(serde_json::Value::Null);
-    let Some(arr) = value.as_array() else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for cs in arr {
-        let repo_full = cs.get("repository").and_then(|x| x.as_str()).unwrap_or("");
-        let repo_base = repo_full.rsplit('/').next().unwrap_or(repo_full);
-        let branch = cs
-            .get("gitStatus")
-            .and_then(|g| g.get("ref"))
-            .and_then(|x| x.as_str())
-            .unwrap_or("");
-        let state = cs.get("state").and_then(|x| x.as_str()).unwrap_or("");
-        let name = cs.get("name").and_then(|x| x.as_str()).unwrap_or("");
-        if repo_base.is_empty() || branch.is_empty() {
-            continue;
-        }
-        out.push(Codespace {
-            repo: cs_repo_alias(repo_base),
-            branch: branch.to_string(),
-            state: state.to_string(),
-            name: name.to_string(),
-        });
-    }
-    out
-}
-
-/// Codespace rows for a single local repo (by name).
-fn cs_for_repo(repo: &str) -> Vec<Codespace> {
-    codespaces()
-        .into_iter()
-        .filter(|c| c.repo == repo)
-        .collect()
-}
-
-/// The tmux window name for a codespace branch: sanitized branch + the ☁ marker (the single source
-/// of truth shared by the row display and the open/dedup paths).
-fn cs_window_name(branch: &str) -> String {
-    format!("{} ☁", wt::sanitize_branch(branch))
-}
-
-/// The shell command a "<branch> ☁" window runs: ssh into the codespace and attach-or-create its
-/// per-branch tmux session (installing tmux first if the codespace lacks it). The branch is quoted
-/// for BOTH the remote shell (inner) and the local shell (outer) so a crafted ref can't inject.
-fn cs_attach_cmd(name: &str, branch: &str) -> String {
-    let b = wt::sanitize_branch(branch);
-    let payload = format!(
-        "command -v tmux >/dev/null 2>&1 || {{ sudo apt-get update -qq && sudo apt-get install -y -qq tmux; }}; tmux new-session -A -s {}",
-        crate::shq(&b)
-    );
-    format!(
-        "gh cs ssh -c {} -- -t {}",
-        crate::shq(name),
-        crate::shq(&payload)
-    )
-}
-
-/// Does the cached `gh cs list` indicate an auth problem we can prompt to fix?
-fn cs_auth_needed() -> bool {
-    std::fs::metadata(cs_auth_marker_path())
-        .map(|m| m.len() > 0)
-        .unwrap_or(false)
-}
-
-/// The remedy command gh suggested (e.g. `gh auth refresh -h github.com -s codespace`).
-fn cs_auth_cmd() -> String {
-    std::fs::read_to_string(cs_auth_marker_path())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
-}
-
-/// The configured codespace gh account (machine-local), or empty if unset.
-fn cs_account() -> String {
-    std::fs::read_to_string(cs_account_cfg_path())
-        .ok()
-        .and_then(|s| s.lines().next().map(str::to_string))
-        .map(|l| l.chars().filter(|c| !c.is_whitespace()).collect())
-        .unwrap_or_default()
-}
-
-/// Codespace ref helpers. A codespace ref is `cs:<repo>/<branch>/<csname>` — a hidden picker field,
-/// NOT a project ref, so it must be intercepted before any `ref_*`/path call. `csname` has no `/`
-/// (so it right-splits cleanly) and a branch may itself contain `/`.
-fn is_cs_ref(s: &str) -> bool {
-    s.starts_with("cs:")
-}
-fn cs_ref_csname(s: &str) -> &str {
-    s.rsplit('/').next().unwrap_or(s)
-}
-fn cs_ref_repo(s: &str) -> &str {
-    let r = s.strip_prefix("cs:").unwrap_or(s);
-    r.split_once('/').map(|(a, _)| a).unwrap_or(r)
-}
-fn cs_ref_branch(s: &str) -> &str {
-    let r = s.strip_prefix("cs:").unwrap_or(s);
-    let r = r.rsplit_once('/').map(|(a, _)| a).unwrap_or(r); // drop csname
-    r.split_once('/').map(|(_, b)| b).unwrap_or("")
-}
-
-/// Focus the window named `name` in `session` by its index. The codespace window name carries a
-/// space (the ☁ marker), so `select-window -t "sess:name"` would mis-parse — look the index up.
-fn cs_focus_window(session: &str, name: &str) {
-    let Some(raw) = tmux_raw(&[
-        "list-windows",
-        "-t",
-        &exact_session_target(session),
-        "-F",
-        "#{window_index}\t#{window_name}",
-    ]) else {
-        return;
-    };
-    for line in raw.lines() {
-        if let Some((idx, wname)) = line.split_once('\t') {
-            if wname == name {
-                let _ = tmux_run(&["select-window", "-t", &exact_window_target(session, idx)]);
-                return;
-            }
-        }
-    }
-}
-
-/// Open a codespace (ref `cs:<repo>/<branch>/<csname>`): ensure the local session `<repo>`, then
-/// focus-or-open its "<branch> ☁" window (a `gh cs ssh` attach), and switch to it.
-fn open_codespace(r: &str) {
-    let repo = cs_ref_repo(r);
-    let branch = cs_ref_branch(r);
-    let csname = cs_ref_csname(r);
-    let win = cs_window_name(branch);
-    let home = home_dir();
-    if !has_session(repo) {
-        let _ = tmux_command(&["new-session", "-d", "-s", repo, "-n", "main", "-c"])
-            .arg(&home)
-            .status();
-    }
-    if window_named_exists(repo, &win) {
-        cs_focus_window(repo, &win);
-    } else {
-        let _ = tmux_command(&[
-            "new-window",
-            "-t",
-            &session_window_target(repo),
-            "-n",
-            &win,
-            "-c",
-        ])
-        .arg(&home)
-        .arg(cs_attach_cmd(csname, branch))
-        .status();
-    }
-    goto_session(repo);
-}
-
-/// Fix codespace auth: first try switching to the configured account (the common cause); only if
-/// that doesn't restore `gh cs list` fall back to the interactive scope refresh (browser/device).
-fn cs_auth_refresh() {
-    if !has_cmd("gh") {
-        println!("gh not installed");
-        return;
-    }
-    let acct = cs_account();
-    if !acct.is_empty() {
-        println!("Switching to codespace account: {acct}");
-        let _ = crate::gh::gh_ok(&["auth", "switch", "-u", &acct]);
-        let _ = std::fs::remove_file(cs_cache_path());
-        let _ = std::fs::remove_file(cs_auth_marker_path());
-        let healthy = crate::gh::gh_ok(&["cs", "list"]);
-        if healthy {
-            println!("Done — {acct} has codespace access.");
-            return;
-        }
-        println!("{acct} still lacks the codespace scope — refreshing it.\n");
-    }
-    let cmd = {
-        let c = cs_auth_cmd();
-        if c.is_empty() {
-            "gh auth refresh -h github.com -s codespace".to_string()
-        } else {
-            c
-        }
-    };
-    println!("→ {cmd}");
-    println!("  Copy the one-time code shown, then approve in the browser that opens");
-    println!("  (else open https://github.com/login/device manually).\n");
-    let ok = Command::new("sh")
-        .args(["-c", &cmd])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if ok {
-        let _ = std::fs::remove_file(cs_auth_marker_path());
-        let _ = std::fs::remove_file(cs_cache_path());
-        println!("\nDone — codespaces will reappear on the next picker open.");
-    } else {
-        println!("\nAuth command failed.");
     }
 }
 
@@ -1701,78 +1103,6 @@ fn clone_and_open(cfg: &Config, roots: &Roots, url: &str) {
         return;
     }
     open_project(cfg, roots, &clone_name(url));
-}
-
-/// Fast worktree discovery for a bare repo: the branch-dir names under `worktree_dir/<repo>/`, read
-/// straight from the filesystem (skipping the `_pool` warm-slot dir and dotfiles) so the sub-picker
-/// paints without a `git worktree list` subprocess. Falls back to the git listing when that dir
-/// can't be read yet (e.g. before the first worktree is cut). Sorted for a stable row order.
-fn scan_worktrees(roots: &Roots, name: &str, refresh: bool) -> Vec<String> {
-    let dir = roots.worktree_dir(name).join(ref_repo(name));
-    let key = dir.to_string_lossy().to_string();
-    let mut cache = read_discovery_cache();
-    if !refresh {
-        if let Some(hit) = cache
-            .worktrees
-            .get(&key)
-            .filter(|hit| discovery_cache_fresh(hit.saved_at))
-        {
-            return hit.names.clone();
-        }
-    }
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return list_worktrees(roots, name);
-    };
-    let mut names: Vec<String> = entries
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .filter(|n| n != "_pool" && !n.starts_with('.'))
-        .collect();
-    names.sort();
-    cache.worktrees.insert(
-        key,
-        CachedWorktrees {
-            saved_at: bn_core::util::now_epoch_secs(),
-            names: names.clone(),
-        },
-    );
-    write_discovery_cache(&cache);
-    names
-}
-
-/// The authenticated user's open PRs for one bare repository, cached alongside TAT's filesystem
-/// discovery so opening the picker repeatedly does not repeatedly query GitHub or Azure DevOps.
-fn remote_prs(roots: &Roots, name: &str) -> Vec<wt::RemotePr> {
-    if !is_bare_repo(roots, name) {
-        return Vec::new();
-    }
-    let bare = roots.bare_dir(name).join(format!("{}.git", ref_repo(name)));
-    let key = bare.to_string_lossy().to_string();
-    let mut cache = read_discovery_cache();
-    if let Some(hit) = cache
-        .remote_prs
-        .get(&key)
-        .filter(|hit| discovery_cache_fresh(hit.saved_at))
-    {
-        return hit.prs.clone();
-    }
-
-    let remote = wt::remote_for(&bare);
-    let prs = if remote == wt::Remote::Other {
-        Vec::new()
-    } else {
-        wt::my_open_prs(&remote)
-    };
-    cache.remote_prs.insert(
-        key,
-        CachedRemotePrs {
-            saved_at: bn_core::util::now_epoch_secs(),
-            prs: prs.clone(),
-        },
-    );
-    write_discovery_cache(&cache);
-    prs
 }
 
 /// Render open PRs whose branch has no local representation. The payload is only the numeric PR id;
@@ -2314,7 +1644,15 @@ pub fn stage(
     let roots = Roots::resolve(cfg, root_opt);
     match stage {
         TatStage::List => build_list(&roots, false),
-        TatStage::Refresh => build_list(&roots, true),
+        TatStage::Refresh => {
+            // ctrl-r is the one place a person asked for current data and can see it arrive, so it
+            // is the one place the forge is worth waiting on.
+            cs_fetch_blocking();
+            if let Some(name) = name.filter(|n| !n.is_empty()) {
+                remote_prs_fetch_blocking(&roots, name);
+            }
+            build_list(&roots, true)
+        }
         TatStage::Preview => preview(&roots, name.unwrap_or("")),
         TatStage::Kill => kill_from_line(name.unwrap_or("")),
         TatStage::SubList => {
@@ -2327,6 +1665,12 @@ pub fn stage(
         TatStage::WarmPool => warm_pool(&roots, name.unwrap_or("")),
         TatStage::ReleasePool => {
             release_pool(cfg, &roots, name.unwrap_or(""), pick_arg.unwrap_or(""))
+        }
+        TatStage::WarmRemote => {
+            cs_fetch_blocking();
+            if let Some(name) = name.filter(|n| !n.is_empty()) {
+                remote_prs_fetch_blocking(&roots, name);
+            }
         }
     }
 }
@@ -2382,6 +1726,11 @@ fn agent_dot(state: &str, since: &str) -> String {
 
 #[cfg(test)]
 mod discovery_cache_tests {
+    use super::codespaces::{cs_cache_fresh, cs_raw};
+    use super::discovery::{
+        discovery_cache_fresh, discovery_cache_path, read_discovery_cache, write_discovery_cache,
+        CachedRemotePrs, DiscoveryCache,
+    };
     use super::*;
 
     fn roots(root: &Path) -> Roots {
@@ -2406,6 +1755,13 @@ mod discovery_cache_tests {
         let _cache = bn_core::test_support::EnvGuard::set("XDG_CACHE_HOME", &cache);
         let _ttl = bn_core::test_support::EnvGuard::set("WF_TAT_TTL", "30");
         let _now = bn_core::test_support::EnvGuard::set("BN_NOW", "100");
+        // Pin zoxide at an empty data dir. Without it the ordering below depends on whether the
+        // machine running the test happens to have a zoxide db: with one, every ref scores 0.0 and
+        // `frecency_order`'s descending tiebreak reverses the list; with none, `sort_by_frecency`
+        // returns the ascending walk untouched. That ambient split is what reddened the release
+        // gate — green on a workstation, red on a CI runner that has never seen zoxide.
+        let _zoxide =
+            bn_core::test_support::EnvGuard::set("_ZO_DATA_DIR", tmp.path().join("zoxide"));
         let first = tmp.path().join("first");
         let second = tmp.path().join("second");
         add_bare(&first, "alpha");
@@ -2422,7 +1778,7 @@ mod discovery_cache_tests {
         );
         assert_eq!(
             ordered_refs(&roots(&first), true),
-            vec!["beta", "alpha"],
+            vec!["alpha", "beta"],
             "forced refresh should expose new repositories"
         );
         assert_eq!(
@@ -2517,5 +1873,55 @@ mod discovery_cache_tests {
         write_discovery_cache(&discovery);
 
         assert_eq!(remote_prs(&roots, "alpha"), vec![expected]);
+    }
+
+    #[test]
+    fn remote_pr_discovery_serves_a_stale_entry_rather_than_blocking_on_the_forge() {
+        let _g = bn_core::test_support::env_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let _cache = bn_core::test_support::EnvGuard::set("XDG_CACHE_HOME", &cache);
+        let _ttl = bn_core::test_support::EnvGuard::set("WF_TAT_TTL", "30");
+        // Far past the TTL: the old code shelled out to the forge here, which is the several
+        // seconds the picker used to spend before painting a row.
+        let _now = bn_core::test_support::EnvGuard::set("BN_NOW", "10000");
+        let _warm = bn_core::test_support::EnvGuard::set("BN_TAT_WARM", "0");
+        let root = tmp.path().join("root");
+        add_bare(&root, "alpha");
+        let roots = roots(&root);
+        let bare = root.join("bare/alpha.git").to_string_lossy().to_string();
+        let stale = wt::RemotePr {
+            number: 7,
+            title: "Stale but useful".into(),
+            branch: "feat/stale".into(),
+            url: "https://example.test/7".into(),
+        };
+        let mut discovery = DiscoveryCache::default();
+        discovery.remote_prs.insert(
+            bare,
+            CachedRemotePrs {
+                saved_at: 100,
+                prs: vec![stale.clone()],
+            },
+        );
+        write_discovery_cache(&discovery);
+
+        assert_eq!(
+            remote_prs(&roots, "alpha"),
+            vec![stale],
+            "a stale entry is still the answer the picker paints"
+        );
+    }
+
+    #[test]
+    fn codespace_rows_come_from_the_cache_even_when_it_is_cold() {
+        let _g = bn_core::test_support::env_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let _cache = bn_core::test_support::EnvGuard::set("XDG_CACHE_HOME", tmp.path());
+        let _warm = bn_core::test_support::EnvGuard::set("BN_TAT_WARM", "0");
+
+        // No cache file at all: an empty array, not a `gh cs list` the person waits on.
+        assert_eq!(cs_raw(), "[]");
+        assert!(!cs_cache_fresh());
     }
 }

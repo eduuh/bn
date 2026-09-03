@@ -120,7 +120,7 @@ impl Sandbox {
         std::fs::create_dir_all(&anchor_dir).context("create the installed-bn anchor dir")?;
         symlink_binary(&bn_bin, &anchor_dir.join("bn"))?;
 
-        // The shipped-content anchor, install.sh's `ln -sfn "$repo" "$cfgdir/repo"` (line 699).
+        // The shipped-content anchor, install.sh's `ln -sfn "$repo" "$cfgdir/repo"` (line 648).
         // `skills::shared_skills_dir` resolves the shipped skills through
         // `<config_dir>/repo/config/prompts`, and `bn dispatch --agent` refuses to launch without
         // the skill its stage requires ("required skill 'investigate' not found"). Pointing the

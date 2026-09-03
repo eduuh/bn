@@ -2369,7 +2369,6 @@ pub fn run_files_in(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-
 /// Every per-run state file in the state dir.
 pub fn run_paths() -> Vec<PathBuf> {
     run_files_in(&crate::resolver::state_dir())

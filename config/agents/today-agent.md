@@ -4,8 +4,10 @@ requires_repo: bn
 kind: hosted
 on_calendar: "Mon..Fri *-*-* 08:30:00"
 host_window: today
+opt_in: true
+run: "bn today agent start"
 network: false
-description: "bn — Today's agent (#577): the hosted, steerable session that works the day with you. Launched into the configured personal-notes repository session by `bn today agent start`, seeded with the cron findings packet, steered from the dashboard's Today page. Opt-in; [today].enabled"
+description: "bn — Today's agent (#577): the hosted, steerable session that works the day with you. Launched into the configured personal-notes repository session by `bn today agent start`, seeded with the cron findings packet, steered from the dashboard's Today page. Opt-in; [agents] enabled"
 arguments:
   - name: date
     description: Local YYYY-MM-DD date owned by the session.

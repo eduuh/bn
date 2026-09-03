@@ -291,13 +291,18 @@ fn gather_cron_health(cfg: &Config) -> GatherOut {
     GatherOut::new(items, raw_of(&alerting))
 }
 
-/// `sentinel` — last night's Debt Sentinel patrol, snapshotted from the attention items it raised
-/// (source [`crate::staff::sentinel::SOURCE`]) rather than re-running the expensive patrol.
+/// The attention source the `sentinel` agent's routed card items carry — `staff::job_name`'s form
+/// for that agent. A literal here rather than a reach into the agent: the agent is a Markdown
+/// manifest with no Rust to import, and this adapter only needs to recognize its items.
+const SENTINEL_SOURCE: &str = "staff-sentinel";
+
+/// `sentinel` — last night's estate patrol, snapshotted from the attention items the agent raised
+/// (source [`SENTINEL_SOURCE`]) rather than re-running the expensive sweep.
 fn gather_sentinel(_cfg: &Config) -> GatherOut {
     let today = crate::util::today();
     let items: Vec<AttnItem> = crate::attention::open_items(&today)
         .into_iter()
-        .filter(|i| i.source == crate::staff::sentinel::SOURCE)
+        .filter(|i| i.source == SENTINEL_SOURCE)
         .collect();
     let feed_items = items.iter().map(attn_item).collect();
     GatherOut::new(feed_items, raw_of(&items))

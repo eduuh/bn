@@ -3,7 +3,7 @@ name: task-triage
 requires_repo: bn
 kind: command
 on_calendar: "*-*-* 07:30:00"
-run: "bn task triage"
+run: "bn task triage --agent task-triage"
 harness: copilot
 network: false
 description: "bn — task triage: rank every open task deterministically, then pick and stamp what is genuinely doable today"

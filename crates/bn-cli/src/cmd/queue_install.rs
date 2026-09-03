@@ -117,6 +117,19 @@ fn service_loaded() -> bool {
 /// Left in place it would keep firing one-shot ticks alongside the resident loop — harmless, since
 /// they contend on the same lock, but two dispatchers where the user was told there is one.
 fn retire_timer() {
+    // Staged by cost, like [`repair_if_dead`]: `have_systemctl()` is a `systemctl --user
+    // show-environment` spawn, and this runs on every `bn` invocation via [`disable`]. Stat the
+    // files it would remove first — no timer on disk means nothing to retire. The launchd arm
+    // below already checks its plist; this is the systemd half of that.
+    let sd = crate::cmd::cron::systemd_user_dir();
+    if !sd.join("bn-queue-tick.timer").exists()
+        && !sd.join("bn-queue-tick.service").exists()
+        && !crate::launchd::agents_dir()
+            .join("com.bn.queue-tick.plist")
+            .exists()
+    {
+        return;
+    }
     if crate::cmd::cron::have_systemctl() {
         let _ = crate::cmd::cron::systemctl(&["disable", "--now", "bn-queue-tick.timer"]);
         let dir = crate::cmd::cron::systemd_user_dir();
@@ -179,6 +192,24 @@ pub(crate) fn ensure(cfg: &Config) {
 /// Remove only bn's managed resident queue service. This is the disable half of reconciliation:
 /// changing the synced machine profile takes effect on the next ordinary `bn` invocation.
 pub(crate) fn disable() {
+    // Reconciliation, run on every `bn` invocation whose machine profile has `queue = false` —
+    // which on a machine that never installed a dispatcher means four subprocess spawns
+    // (two `have_systemctl()` probes plus two `disable --now`) to discover there is nothing to
+    // remove. Unit/plist presence is the same source of truth [`install_state`] uses, so stat
+    // first and only spawn when there is genuinely something to tear down.
+    let sd = crate::cmd::cron::systemd_user_dir();
+    let queue_plist =
+        crate::launchd::agents_dir().join(format!("{}.plist", crate::launchd::QUEUE_LABEL));
+    if !sd.join(UNIT).exists()
+        && !queue_plist.exists()
+        && !sd.join("bn-queue-tick.timer").exists()
+        && !sd.join("bn-queue-tick.service").exists()
+        && !crate::launchd::agents_dir()
+            .join("com.bn.queue-tick.plist")
+            .exists()
+    {
+        return;
+    }
     if cfg!(target_os = "linux") {
         let systemd = crate::cmd::cron::have_systemctl();
         if systemd {

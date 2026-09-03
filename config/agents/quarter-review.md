@@ -3,8 +3,10 @@ name: quarter-review
 requires_repo: bn
 kind: command
 on_calendar: "Sun *-*-* 18:00:00"
+opt_in: true
+run: "bn quarter review --agent quarter-review"
 network: true
-description: "bn — quarter impact agent: score the window's shipped work against the quarter goals, append a validated review, flag at-risk goals (opt-in; [quarter].enabled)"
+description: "bn — quarter impact agent: score the window's shipped work against the quarter goals, append a validated review, flag at-risk goals (opt-in; [agents] enabled)"
 ---
 You are bn's **quarter impact agent**. You are given, below this prompt, a read-only packet:
 the current quarter's goals (each with a stable `key`), any previous impact reviews (for

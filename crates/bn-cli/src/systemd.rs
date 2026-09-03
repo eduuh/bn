@@ -120,6 +120,14 @@ pub(crate) fn web_installed() -> bool {
 /// [`web_install`], called by `bn serve stop`; `disable --now` before the `remove_file` so the unit
 /// is stopped before its file disappears.
 pub(crate) fn web_uninstall() {
+    // Nothing installed means nothing to reconcile, and `daemon-reload` is ~250ms of real work —
+    // paid by *every* `bn` invocation via `serve::reconcile`, and so by every fzf keystroke that
+    // re-execs `bn` for a picker preview. The unit file is already the source of truth
+    // [`web_installed`] and `bn serve status` read, so this guard also makes uninstall agree with
+    // the predicate the rest of this module uses.
+    if !web_unit_path().exists() {
+        return;
+    }
     let _ = run_user(&["disable", "--now", WEB_UNIT]);
     let _ = std::fs::remove_file(web_unit_path());
     let _ = run_user(&["daemon-reload"]);

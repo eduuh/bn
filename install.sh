@@ -6,15 +6,23 @@
 #            lavish-axi) plus the upstream Lavish agent-skill. Also enabled by
 #            BN_INSTALL_AGENT_TOOLS=1. Combines with either mode.
 # The Rust crates have zero tmux dependency; the tmux layer is opt-in glue on top.
+#
+# This script never compiles anything: it installs main's published release binaries and wires
+# every layer around them. Compiling an unmerged checkout is ./build.sh's job — it builds, then
+# re-enters this script with the internal --from-build flag so the wiring lives in one place.
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 mode="full"
 agents="${BN_INSTALL_AGENT_TOOLS:-0}"
+# Internal, set by ./build.sh once it has compiled this checkout: take the binaries from its target
+# dir instead of the release. Not for hand use — on its own it finds nothing to install.
+from_build=0
 for arg in "$@"; do
   case "$arg" in
-    --core)   mode="core" ;;
-    --agents) agents=1 ;;
+    --core)       mode="core" ;;
+    --agents)     agents=1 ;;
+    --from-build) from_build=1 ;;
     *)
       echo "error: unknown flag '$arg' (use --core and/or --agents)" >&2
       exit 1
@@ -87,7 +95,12 @@ esac
 # Rust bn is the only implementation: the zsh bn it grew out of is gone, so every command
 # lives in the binary and an unknown one is a clap error rather than a pass-through.
 #
-# Every install builds the checked-out source so the installed binaries always match this worktree.
+# Binaries come from the rolling GitHub release, never from a compile here. main publishes a tested
+# build after every push, so a new machine is wired up in the time three archives take to download
+# instead of the minutes a cold cargo build costs — the whole point of the split. When the binaries
+# you need are not in that release yet (an unmerged branch, a local patch, a platform the release
+# skips), run ./build.sh instead; it compiles and hands the result back here.
+slug="${BN_REPO_SLUG:-eduuh/bn}"
 # shellcheck source=scripts/install-toolchain.sh
 source "$repo/scripts/install-toolchain.sh"
 
@@ -101,125 +114,110 @@ atomic_install() {
   cp "$src" "$tmp" && chmod 0755 "$tmp" && mv -f "$tmp" "$dst" || { rm -f "$tmp"; return 1; }
 }
 
-# Fingerprint of the file that pins the UI's dependency tree — the lockfile when there is one, else
-# package.json. Stamped into node_modules after a successful install so the next run can tell a
-# stale tree from a current one. sha256 via whichever tool the platform ships; cksum is a weak last
-# resort, but it still changes when the file does, which is all this comparison needs.
-ui_deps_fingerprint() {
-  if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | cut -d' ' -f1
-  elif command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | cut -d' ' -f1
-  else
-    cksum "$1" | cut -d' ' -f1
+# Download the prebuilt bn, bn-web, and bn-mcp for this platform from the latest GitHub release.
+# Non-zero on any missing tool, unknown platform, or unusable asset — and each failure says which
+# one it was. There is no local-compile fallback behind this any more, so a silent return would
+# leave the person at the keyboard guessing between five different causes.
+download_release() {
+  local target tmp app archive url bin src bn_src=""
+  if ! command -v tar >/dev/null 2>&1; then
+    echo "error: tar not found — cannot unpack the release archives." >&2
+    return 1
   fi
-}
-
-# Build the bn-web dashboard UI (crates/bn-web/ui → dist) so the from-source build.rs embeds the
-# real single-page app instead of the "UI not built" placeholder. Node-optional and best-effort:
-# with no npm we leave the placeholder and the server (JSON API + MCP + dashboard shell) still runs.
-# Rebuilds the UI on EVERY install so a from-source build always embeds the current dashboard —
-# build.rs re-embeds via `cargo:rerun-if-changed` on ui/dist, so the recompiled bn-web picks the
-# change up. Set BN_SKIP_UI=1 to skip it (fast Rust-only rebuilds).
-#
-# Dependencies are restored whenever the installed tree does not match the lockfile — missing, or
-# stale because a pull moved the lockfile under an existing node_modules. That staleness used to be
-# invisible: the old check installed only when node_modules was *absent*, so pulling a commit that
-# added a dependency left the previous tree in place and `npm run build` failed on the package that
-# was in package.json but never installed. Comparing a stamped fingerprint keeps the repeat build
-# fast (no reinstall when nothing moved) without ever building against a stale tree.
-# BN_REBUILD_UI=1 forces the reinstall regardless. Never aborts the install — a UI hiccup must not
-# block the Rust binary.
-build_web_ui() {
-  local ui="$repo/crates/bn-web/ui" fresh_deps=1
-  [ -f "$ui/package.json" ] || return 0
-  if [ "${BN_SKIP_UI:-0}" = "1" ]; then
-    echo "bn-web UI build skipped (BN_SKIP_UI=1) — the binary embeds whatever is already in $ui/dist."
-    return 0
+  if ! target=$(bn_install_detect_target); then
+    echo "error: no release target triple for this platform ($(uname -sm))." >&2
+    return 1
   fi
-  if ! command -v npm >/dev/null 2>&1; then
-    echo "note: npm not found — bn-web will serve the 'UI not built' placeholder page." >&2
-    echo "      Install Node.js/npm and re-run to embed the dashboard UI." >&2
-    return 0
-  fi
-  local pin="$ui/package.json" stamp="$ui/node_modules/.bn-deps-stamp" want=""
-  [ -f "$ui/package-lock.json" ] && pin="$ui/package-lock.json"
-  want=$(ui_deps_fingerprint "$pin")
-  if [ -d "$ui/node_modules" ] && [ "${BN_REBUILD_UI:-0}" != "1" ] &&
-    [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$want" ]; then
-    fresh_deps=0
-  fi
-  echo "Building the bn-web dashboard UI (npm + vite) so the binary embeds it…"
-  (
-    cd "$ui"
-    if [ "$fresh_deps" = "1" ]; then
-      if [ -f package-lock.json ]; then npm ci; else npm install; fi
-      # After the install, not before: `npm ci` wipes node_modules (stamp included), and stamping
-      # only on success means a failed install stays stale and retries next run.
-      printf '%s\n' "$want" >"$stamp"
+  tmp=$(mktemp -d)
+  echo "Downloading the latest $slug release for $target…"
+  for app in bn-cli bn-web bn-mcp; do
+    archive="${app}-${target}.tar.xz"
+    # Prefer authenticated `gh` so this works for a PRIVATE repo (unauthenticated curl on
+    # releases/latest/download 404s there). Fall back to curl when the repo is public or gh
+    # is absent. Omitting the tag downloads the latest release.
+    if command -v gh >/dev/null 2>&1 &&
+      gh release download -R "$slug" --pattern "$archive" -D "$tmp" --clobber >/dev/null 2>&1; then
+      :
+    elif command -v curl >/dev/null 2>&1; then
+      # Only reaches a PUBLIC repo: GitHub's browser download endpoint 404s on a private one even
+      # with a token, which is why authenticated `gh` is tried first and named in the error below.
+      url="https://github.com/${slug}/releases/latest/download/${archive}"
+      if ! curl -fsSL "$url" -o "$tmp/$archive"; then
+        echo "error: could not download $archive from the latest $slug release." >&2
+        rm -rf "$tmp"
+        return 1
+      fi
+    else
+      echo "error: neither gh nor curl is available to fetch $archive." >&2
+      rm -rf "$tmp"
+      return 1
     fi
-    npm run build
-  ) || {
-    echo "warning: bn-web UI build failed — installing with the placeholder page." >&2
-    echo "         Fix Node/npm and re-run to embed the dashboard UI." >&2
-    return 0
-  }
-  echo "Built the bn-web dashboard UI ($ui/dist)."
-}
-
-kill_cargo_lock_holders() {
-  local lock="$1" pids="" pid
-  [ "${BN_INSTALL_KILL_CARGO_LOCK_HOLDER:-0}" = "1" ] || return 0
-  [ -e "$lock" ] || return 0
-  if command -v lsof >/dev/null 2>&1; then
-    pids=$(lsof -t "$lock" 2>/dev/null | sort -u || true)
-  elif command -v fuser >/dev/null 2>&1; then
-    pids=$(fuser "$lock" 2>/dev/null | tr ' ' '\n' | sort -u || true)
+    if ! tar -xf "$tmp/$archive" -C "$tmp"; then
+      echo "error: $archive did not unpack — the asset looks truncated or corrupt." >&2
+      rm -rf "$tmp"
+      return 1
+    fi
+  done
+  for bin in bn bn-web bn-mcp; do
+    src=$(find "$tmp" -type f -name "$bin" -perm -u+x | head -n1)
+    if [ -z "$src" ]; then
+      echo "error: the release archives for $target contain no $bin binary." >&2
+      rm -rf "$tmp"
+      return 1
+    fi
+    if [ "$bin" = "bn" ]; then bn_src="$src"; fi
+  done
+  # A GNU/Linux archive can exist yet need a newer glibc than this machine has. Probe before
+  # replacing anything, so a binary that cannot run here never lands on top of one that does.
+  if ! "$bn_src" --version >/dev/null 2>&1; then
+    echo "error: the downloaded bn will not run here (usually a glibc older than the one the" >&2
+    echo "       release was built against). Compile the checkout instead: ./build.sh" >&2
+    rm -rf "$tmp"
+    return 1
   fi
-  [ -n "$pids" ] || return 0
-  echo "install: terminating Cargo process(es) holding $lock: $(echo "$pids" | tr '\n' ' ')" >&2
-  for pid in $pids; do
-    [ "$pid" != "$$" ] && kill "$pid" 2>/dev/null || true
+  for bin in bn bn-web bn-mcp; do
+    src=$(find "$tmp" -type f -name "$bin" -perm -u+x | head -n1)
+    if ! atomic_install "$src" "$bindir/$bin"; then
+      echo "error: could not place $bin into $bindir." >&2
+      rm -rf "$tmp"
+      return 1
+    fi
   done
-  sleep 2
-  for pid in $pids; do
-    [ "$pid" != "$$" ] && kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
-  done
+  rm -rf "$tmp"
+  echo "Installed prebuilt bn + bn-web + bn-mcp ($target) from the latest release."
 }
 
-build_from_source() {
-  bn_install_activate_cargo "$repo" || {
-    echo "error: no usable Cargo toolchain was found." >&2
-    echo "       Install Rust with rustup, repair its proxies, or set CARGO_HOME/RUSTUP_HOME." >&2
+# Place the binaries ./build.sh has just compiled. That script re-enters this one with
+# --from-build rather than wiring anything itself, so the anchors, layers, cron and MCP
+# registration below run in exactly one place however the binaries were obtained.
+install_built_binaries() {
+  local target_dir="${BN_INSTALL_TARGET_DIR:-$repo/target/bn-install}" bin
+  for bin in bn bn-web bn-mcp; do
+    if [ ! -x "$target_dir/release/$bin" ]; then
+      echo "error: $target_dir/release/$bin is missing." >&2
+      echo "       --from-build is internal; run ./build.sh to compile and install this checkout." >&2
+      exit 1
+    fi
+  done
+  # Copy, don't symlink: a symlink into target/release breaks on `cargo clean`,
+  # silently bricking the live `bn`. Re-run ./build.sh after source changes to refresh.
+  for bin in bn bn-web bn-mcp; do
+    atomic_install "$target_dir/release/$bin" "$bindir/$bin"
+  done
+  echo "Installed bn + bn-web + bn-mcp into $bindir from $target_dir/release (source build)."
+}
+
+if [ "$from_build" = "1" ]; then
+  install_built_binaries
+else
+  download_release || {
+    echo "error: could not install bn from the latest $slug release." >&2
+    echo "       A private repo's assets are only reachable through an authenticated gh, so on a" >&2
+    echo "       fresh machine run \`gh auth login\` first and try again." >&2
+    echo "       To compile this checkout instead: ./build.sh" >&2
     exit 1
   }
-  local target_dir="${BN_INSTALL_TARGET_DIR:-$repo/target/bn-install}"
-  echo "Building Rust bn from source with $BN_INSTALL_CARGO_DIR/cargo…"
-  # bn-web bakes its dashboard UI in at compile time (build.rs embeds crates/bn-web/ui/dist). Build
-  # that UI first when node is available so the from-source binary serves the real dashboard, not
-  # the "UI not built" placeholder; build_web_ui is node-optional (no npm → placeholder, server
-  # still runs). CI builds the UI the same way before the release binary.
-  build_web_ui
-  # bn-mcp is built and installed alongside: `register_mcp` points every MCP client at the stdio
-  # launcher `bn mcp serve`, which execs the sibling `bn-mcp`. Omitting it left that launcher
-  # dead ("could not exec bn-mcp") and silently cost Claude Code / Copilot every bn tool and
-  # session-safe skill prompt — a failure only visible inside the client, never from `bn` itself.
-  # Install builds use their own target dir so self-update/nightly-release/dev builds do not block
-  # each other on Cargo's shared `target/.cargo-lock`. If that install target is wedged by a dead
-  # prior install, opt in to clearing it with BN_INSTALL_KILL_CARGO_LOCK_HOLDER=1.
-  mkdir -p "$target_dir"
-  kill_cargo_lock_holders "$target_dir/.cargo-lock"
-  kill_cargo_lock_holders "$target_dir/release/.cargo-lock"
-  ( cd "$repo" && CARGO_TARGET_DIR="$target_dir" cargo build --release -p bn-cli -p bn-web -p bn-mcp )
-  # Copy, don't symlink: a symlink into target/release breaks on `cargo clean`,
-  # silently bricking the live `bn`. Re-run install.sh after rebuilding to refresh.
-  atomic_install "$target_dir/release/bn" "$bindir/bn"
-  atomic_install "$target_dir/release/bn-web" "$bindir/bn-web"
-  atomic_install "$target_dir/release/bn-mcp" "$bindir/bn-mcp"
-  echo "Installed $bindir/bn (copy of $target_dir/release/bn; re-run after rebuilds)"
-}
-
-build_from_source
+fi
 
 # Sweep the retired bash fallback: older installs symlinked $bindir/bn-bash at the repo's zsh
 # `bn`, which no longer exists. Left alone it is a dangling symlink on every upgraded box.
