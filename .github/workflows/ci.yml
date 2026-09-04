@@ -198,6 +198,10 @@ jobs:
       - name: Installer toolchain discovery
         run: bash scripts/check-install-toolchain.sh
 
+      # macOS-only bash/libc trap this Linux CI cannot reproduce; see the script header.
+      - name: Shell multibyte adjacency
+        run: sh scripts/check-shell-multibyte.sh
+
       - name: Nightly release worktree safety
         run: sh scripts/check-nightly-release-worktree.sh
 

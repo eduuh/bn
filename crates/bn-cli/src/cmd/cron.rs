@@ -229,7 +229,8 @@ mod schedule;
 pub(crate) use schedule::schedule_text;
 #[path = "cron/drift.rs"]
 mod drift;
-pub(crate) use drift::cron_drift;
+pub(crate) use drift::{cron_drift, print_cron_disabled_notice};
+use drift::{print_cron_health, push_cron_disabled_warning};
 
 pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json: bool) {
     if machine_scope::emit_disabled_dashboard(cfg, as_json) {
@@ -398,13 +399,7 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
     // Drift: declared crons with no timer here — the silent "fresh box" case. Surface before the
     // empty/keepalive checks so a machine that registered nothing still gets the nudge.
     let drift = cron_drift(cfg, ctx);
-    if !drift.is_empty() {
-        println!(
-            "⚠ {} cron(s) declared but not registered on this machine — run `bn cron register`:",
-            drift.len()
-        );
-        println!("    {}\n", drift.join(", "));
-    }
+    print_cron_health(cfg, ctx, &drift);
 
     if names.is_empty() {
         if drift.is_empty() {
@@ -655,6 +650,7 @@ pub(crate) fn emit_cron_register(
     };
     let mut errors: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
+    let cron_disabled = push_cron_disabled_warning(cfg, ctx, &mut warnings);
 
     // Diff by comparing the rendered artifact text against what's on disk (systemd normalizes
     // OnCalendar, so a schedule-string compare would report spurious updates forever). A job is
@@ -887,7 +883,9 @@ pub(crate) fn emit_cron_register(
         if !applied.is_empty() {
             println!("\napplied: {}", applied.join(", "));
         }
-        if applied.is_empty() && adds.is_empty() && updates.is_empty() {
+        // Only a health claim when this host wanted timers: with cron off, nothing was ever going
+        // to be written, so "already match" would be a lie.
+        if applied.is_empty() && adds.is_empty() && updates.is_empty() && !cron_disabled {
             println!("\nall timers already match the manifest — nothing to do");
         }
     }

@@ -129,7 +129,7 @@ download_release() {
     return 1
   fi
   tmp=$(mktemp -d)
-  echo "Downloading the latest $slug release for $target…"
+  echo "Downloading the latest $slug release for ${target}…"
   for app in bn-cli bn-web bn-mcp; do
     archive="${app}-${target}.tar.xz"
     # Prefer authenticated `gh` so this works for a PRIVATE repo (unauthenticated curl on
@@ -242,26 +242,43 @@ if [ ! -x "$bindir/bn" ]; then
 fi
 ln -sfn "$bindir/bn" "$cfgdir/bn"
 
-# Neutralize a stale legacy ~/.bin copy that would shadow the canonical binary on PATH. When the
-# bindir moved to ~/.bn/bin (home layout) while ~/.bin is still on PATH from an older install, an
-# old ~/.bin/bn silently wins — `bn` runs stale even after a fresh build (the exact "I built the
-# latest but nothing changed" trap). Repoint any existing ~/.bin/{bn,bn-web} at the freshly
-# installed binary so PATH order can't serve a stale bn. These are untracked install artifacts
-# (gitignored), safe to overwrite; only touched when they already exist (no new PATH entries).
-# Resolve legacy_bin to its real path before comparing: a stow-managed ~/.bin is often a
-# symlink to the dotfiles .bin, which canonicalizes to the same dir as $bindir. A string
-# compare misses that and `ln` aborts with "are the same file" (fatal under set -e).
-legacy_bin="$HOME/.bin"
-legacy_bin_real=""
-[ -d "$legacy_bin" ] && legacy_bin_real="$(cd "$legacy_bin" && pwd -P)"
-if [ -n "$legacy_bin_real" ] && [ "$bindir" != "$legacy_bin_real" ]; then
+# Neutralize any older bn sitting earlier on PATH than the one just installed. Installing to a
+# dir that PATH resolves *after* another dir holding a bn means `bn` keeps running stale even
+# though the install succeeded — the exact "I built the latest but nothing changed" trap, and it
+# reports success the whole way. Repoint every such copy at the freshly installed binary so PATH
+# order can't serve a stale bn.
+#
+# This used to check only ~/.bin, which missed the case it was written for: the documented escape
+# hatch for a stow-managed ~/.bin is BN_BIN_DIR=~/.local/bin, so the stale copy lands in
+# ~/.local/bin — a dir this never looked at. One machine ran a day-old `bn` in every shell while
+# cron ran the current build through the anchor. So walk PATH itself rather than guessing which
+# dir is the offender, and keep ~/.bin in the sweep even when it isn't on the installer's PATH
+# (an interactive shell's PATH is usually longer than a script's).
+#
+# Deliberately conservative — this rewrites files outside $bindir:
+#   * only dirs under $HOME, so a packaged /usr/local/bin/bn is never touched;
+#   * only names that already exist, so no new PATH entry is ever created;
+#   * never $bindir itself, resolved to its real path first — a stow-managed ~/.bin is often a
+#     symlink to the dotfiles .bin and canonicalizes to the same dir as $bindir. A string compare
+#     misses that and `ln` aborts with "are the same file" (fatal under set -e).
+shadow_dirs=""
+# Split on ':' only — a substitution like ${PATH//:/ } would also split a dir containing a space.
+IFS=':' read -r -a path_dirs <<< "$PATH"
+for candidate in ${path_dirs[@]+"${path_dirs[@]}"} "$HOME/.bin"; do
+  [ -n "$candidate" ] && [ -d "$candidate" ] || continue
+  candidate_real="$(cd "$candidate" && pwd -P)" || continue
+  [ "$candidate_real" != "$bindir" ] || continue
+  case "$candidate_real" in "$HOME"/*) ;; *) continue ;; esac
+  case ":$shadow_dirs:" in *":$candidate_real:"*) continue ;; esac
+  shadow_dirs="$shadow_dirs:$candidate_real"
+
   for b in bn bn-web; do
-    if [ -e "$legacy_bin/$b" ] || [ -L "$legacy_bin/$b" ]; then
-      ln -sfn "$bindir/$b" "$legacy_bin/$b"
-      echo "Repointed $legacy_bin/$b -> $bindir/$b (was shadowing the current binary on PATH)"
+    if [ -e "$candidate/$b" ] || [ -L "$candidate/$b" ]; then
+      ln -sfn "$bindir/$b" "$candidate/$b"
+      echo "Repointed $candidate/$b -> $bindir/$b (was shadowing the current binary on PATH)"
     fi
   done
-fi
+done
 
 # Cron job scripts live in-repo (version-controlled); `bn run` resolves them via this path.
 ln -sfn "$repo/config/jobs" "$cfgdir/jobs"
@@ -457,6 +474,13 @@ fi
 # manifest path and stop before installing a scheduler that would fail every minute.
 if ! "$bindir/bn" agents validate; then
   echo "error: invalid Markdown agent catalog; fix the manifest above and re-run install.sh" >&2
+  # Most often the manifest is fine and the *binary* is behind it. install.sh links this
+  # checkout's config/agents but installs bn from the rolling release, so a platform whose
+  # release assets have gone stale gets a bn that has never heard of a field main added since.
+  # Compare the two before editing anything the checkout is right about.
+  echo "       If the manifest matches main, this is version skew: the installed bn is" >&2
+  echo "       $("$bindir/bn" --version 2>/dev/null || echo unknown)" >&2
+  echo "       while config/agents comes from this checkout. Build the checkout instead: ./build.sh" >&2
   exit 1
 fi
 

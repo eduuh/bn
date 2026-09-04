@@ -136,6 +136,9 @@ pub(crate) fn emit_doctor(cfg: &Config, stale_days: i64, brief: bool, as_json: b
         );
         println!("  {}", drift.join(", "));
     }
+    // Pointing at `bn cron register` is only useful advice when register would do something. On a
+    // machine with no `[machines.<name>]` profile it would not, so name that instead.
+    print_cron_disabled_notice(cfg, None);
     if !lease_violations.is_empty() {
         println!(
             "⚠ {} agent lease(s) break the main↔control invariant — run `bn control stop` / reap the offender:",

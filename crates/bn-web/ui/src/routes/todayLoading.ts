@@ -8,8 +8,6 @@ type TodayRouteLoading = {
  * Cost and fleet feed supporting tiles; holding the whole Today page behind them turned one slow
  * secondary query into a blank route.
  */
-export function todayRouteLoading({
-  goalsLoading,
-}: TodayRouteLoading): boolean {
+export function todayRouteLoading({ goalsLoading }: TodayRouteLoading): boolean {
   return goalsLoading;
 }

@@ -581,16 +581,10 @@ fn observed_agent_session(
 }
 
 
-/// A `repo:branch` target as an exact-match (`=`-prefixed) tmux target. Without `=`, tmux falls
-/// back to prefix/fnmatch resolution — and window indices renumber when `wt cleanup` kills a
-/// window, so anything loose can land keys in the *wrong agent's* pane. Ids (`%` pane, `@` window,
-/// `$` session) and already-exact targets pass through untouched.
+/// A `repo:branch` target as an exact-match tmux target — see [`bn_core::tmux::exact_target`],
+/// which anchors *both* halves so a missing window cannot prefix-match a neighbour.
 pub(crate) fn tmux_exact_target(target: &str) -> String {
-    if target.starts_with(['=', '%', '@', '$']) {
-        target.to_string()
-    } else {
-        format!("={target}")
-    }
+    bn_core::tmux::exact_target(target)
 }
 
 /// The exact tmux target hosting `repo:branch`, and the checkout it is running in.

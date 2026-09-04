@@ -3,6 +3,10 @@
 # Worktree lifecycle for nightly-release. Kept separate so checkout selection and dirty-tree
 # safety can be regression-tested without building or publishing binaries.
 
+# Note the escaped `/` inside every bracket expression below. POSIX requires it, and macOS
+# one-true-awk enforces it: an unescaped `[^/]` ends the regex literal early and the whole program
+# dies with "nonterminated character class", exit 2. gawk is lenient, so on Linux this reads fine
+# and only breaks off it — where the caller then silently falls back to the hardcoded default path.
 bn_nightly_release_path_from_porcelain() {
   awk '
     /^worktree / {
@@ -10,9 +14,9 @@ bn_nightly_release_path_from_porcelain() {
       if (path ~ /\/bn\/_release-main$/) {
         release = path
       }
-      if (root == "" && path ~ /\/bn\/[^/]+$/) {
+      if (root == "" && path ~ /\/bn\/[^\/]+$/) {
         root = path
-        sub(/\/[^/]+$/, "", root)
+        sub(/\/[^\/]+$/, "", root)
       }
     }
     END {

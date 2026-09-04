@@ -464,3 +464,65 @@ mod tests {
         assert_eq!(parse_client_activity("bn\nbn\t42\n", "bn"), Some(42));
     }
 }
+
+/// A `session:window` target with **both halves anchored** for exact matching: `=session:=window`.
+///
+/// `=` anchors only the part it precedes, so the obvious `=session:window` pins the session and
+/// leaves the *window* matching by prefix. That is not a theoretical widening. Measured against a
+/// live server with no window named `main` beside a `main-stale`, `capture-pane -t '=bn:main'`
+/// returned `main-stale`'s pane at exit 0 — a confident answer about the wrong agent, and via
+/// `send-keys`/`kill-window` a write aimed at one. Anchoring the window makes tmux answer
+/// `can't find window: main`, which every caller already handles.
+///
+/// One command stays lenient regardless: `display-message` falls back to the session's *current*
+/// window instead of failing, so it must never be used to test whether a window exists.
+///
+/// Ids (`%` pane, `@` window, `$` session) and already-anchored targets pass through untouched, and
+/// a trailing `session:` keeps tmux's own meaning of "that session's current window".
+pub fn exact_target(target: &str) -> String {
+    if target.starts_with(['=', '%', '@', '$']) {
+        return target.to_string();
+    }
+    match target.split_once(':') {
+        Some((session, window)) if !window.is_empty() => format!("={session}:={window}"),
+        _ => format!("={target}"),
+    }
+}
+
+#[cfg(test)]
+mod exact_target_tests {
+    use super::exact_target;
+
+    /// The regression this function exists for: a session-only anchor lets `main` resolve to a
+    /// same-prefixed neighbour like `main-stale`.
+    #[test]
+    fn both_halves_are_anchored() {
+        assert_eq!(exact_target("bn:main"), "=bn:=main");
+        assert_ne!(exact_target("bn:main"), "=bn:main");
+    }
+
+    /// Window names may themselves contain colons; only the first splits session from window.
+    #[test]
+    fn only_the_first_colon_splits_session_from_window() {
+        assert_eq!(exact_target("bn:feat-a:b"), "=bn:=feat-a:b");
+    }
+
+    /// A trailing colon is tmux's "that session's current window" and must not become `:=`, which
+    /// would ask for a window literally named the empty string.
+    #[test]
+    fn a_trailing_colon_still_means_the_sessions_current_window() {
+        assert_eq!(exact_target("bn:"), "=bn:");
+    }
+
+    #[test]
+    fn a_bare_session_name_is_anchored_once() {
+        assert_eq!(exact_target("bn"), "=bn");
+    }
+
+    #[test]
+    fn ids_and_already_exact_targets_pass_through_untouched() {
+        for t in ["%12", "@5", "$1", "=bn:=main", "=bn"] {
+            assert_eq!(exact_target(t), t);
+        }
+    }
+}

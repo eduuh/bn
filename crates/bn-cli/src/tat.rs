@@ -702,7 +702,7 @@ fn session_window_target(session: &str) -> String {
 }
 
 fn exact_window_target(session: &str, window: &str) -> String {
-    format!("={session}:{window}")
+    bn_core::tmux::exact_target(&format!("{session}:{window}"))
 }
 
 fn exact_tmux_target(target: &str) -> String {
