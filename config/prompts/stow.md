@@ -27,6 +27,10 @@ You are stowing the current session so it is safe to reset, compact, or hand off
 
 4. **Route only through existing bn surfaces.**
    - Durable codebase/tooling/operational facts → `bn learned "<fact>"`.
+   - A fact about *this repo* that will still be true next month — how it builds, where a
+     subsystem lives, a failure that misleads → also `bn_ref_append` into its reference notes,
+     with where it came from and today's date (see `/bn:repo-reference-update`). `bn learned` is
+     dated and personal; the reference note is where the next session on this repo will look.
    - A reusable improvement to how the work or a skill should run → `bn reflect "<improvement>"`.
    - A branch-scoped choice that should outlive the session → `bn_add decision`, carrying the *why*
      and the alternative rejected. Stripped of its reason it will simply be argued again.

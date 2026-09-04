@@ -39,7 +39,7 @@ fn the_main_worktree_is_never_reclaimed() {
 #[test]
 fn the_controller_slot_is_never_released() {
     let f = CloseFacts {
-        slot: Some(bn_core::agent::CONTROLLER_POOL_SLOT),
+        slot: Some(bn_core::agent::MAIN_POOL_SLOT),
         ..facts()
     };
     assert!(

@@ -174,7 +174,9 @@ pub(crate) fn existing_worktree_branches(worktree_dir: &Path, repo: &str) -> Vec
         .flatten()
         .filter(|e| e.path().is_dir())
         .map(|e| (e.path(), e.file_name().to_string_lossy().to_string()))
-        .filter(|(_, name)| name != "_pool")
+        // `_pool` holds warm slots, and `main` is not a worktree you open — picking "main" opens
+        // the repo's main slot ([`crate::main_slot`]) instead.
+        .filter(|(_, name)| name != "_pool" && !crate::main_slot::is_main_selection(name))
         .map(|(path, name)| {
             (
                 bn_core::agent::is_reserved_branch(&name),
@@ -607,11 +609,16 @@ pub(crate) fn dispose(window_is_last_in_session: bool, fallback: &Path) -> Windo
     }
 }
 
-/// Where a respawned last window should land: the repo's `main` worktree (the session's home, and
-/// what `prefix o` opens for a non-bare session), else the worktree root, else `$HOME`. The first
-/// existing directory wins — respawning into the worktree we just removed would fail.
+/// Where a respawned last window should land: the repo's **main slot** (`_pool/1` — the session's
+/// home, and where picking "main" goes), else its main worktree, else the worktree root, else
+/// `$HOME`. The first existing directory wins — respawning into the worktree we just removed would
+/// fail.
 pub(crate) fn respawn_fallback(worktree_dir: &Path, repo: &str) -> PathBuf {
-    let main = worktree_dir.join(repo).join("main");
+    let slot = crate::main_slot::path(worktree_dir, repo);
+    if slot.is_dir() {
+        return slot;
+    }
+    let main = crate::main_slot::main_worktree(worktree_dir, repo);
     if main.is_dir() {
         return main;
     }
@@ -782,11 +789,17 @@ mod session_guard_tests {
     }
 
     #[test]
-    fn fallback_prefers_the_repos_main_worktree() {
+    fn fallback_prefers_the_main_slot_over_the_main_worktree() {
         let tmp = std::env::temp_dir().join(format!("bn-respawn-{}", std::process::id()));
         let main = tmp.join("bn").join("main");
         std::fs::create_dir_all(&main).unwrap();
         assert_eq!(respawn_fallback(&tmp, "bn"), main);
+
+        // Once the repo has a main slot, that is the session's home — the main worktree stays
+        // clean and unvisited, so respawning into it would put a shell exactly where none belongs.
+        let slot = tmp.join("bn").join("_pool").join("1");
+        std::fs::create_dir_all(&slot).unwrap();
+        assert_eq!(respawn_fallback(&tmp, "bn"), slot);
         std::fs::remove_dir_all(&tmp).ok();
     }
 

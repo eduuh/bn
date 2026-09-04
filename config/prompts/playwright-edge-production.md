@@ -6,6 +6,25 @@ description: Drive any production or authenticated website in a visible Microsof
 Use this skill together with the `playwright-cli` skill to automate a production
 or authenticated website in the user's visible Microsoft Edge browser.
 
+## Prerequisite: `playwright-cli`
+
+Install it before anything else — the launcher exits 1 without it:
+
+```sh
+npm install -g @playwright/cli
+```
+
+**The package is `@playwright/cli`, NOT the npm package literally named
+`playwright-cli`.** That one is the deprecated pre-1.0 Playwright CLI
+("Deprecated package, use @playwright/cli instead.") and installing it yields a
+command of the same name with a completely different interface.
+`@playwright/cli` is what ships `bin: { 'playwright-cli': ... }` and the
+`-s=<session>` / `attach` / `detach` / `tab-list` / `tab-select` / `snapshot` /
+`find` / `run-code` / `--raw eval` commands used below.
+
+Edd's dotfiles install it via `install_playwright_cli` in
+`.bin/setup/common.sh`.
+
 1. Determine the target URL from the user's request. If no URL was supplied,
    ask for one before launching the browser.
 2. Run `~/.bn/config/repo/config/scripts/edge-cdp-wsl production '<target-url>'`.

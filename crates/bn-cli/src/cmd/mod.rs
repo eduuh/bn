@@ -26,6 +26,7 @@ pub(crate) mod cost;
 pub(crate) mod critic;
 pub(crate) mod cron;
 pub(crate) mod machine;
+pub(crate) mod main_sync;
 pub(crate) mod weakness;
 pub(crate) mod daily;
 pub(crate) mod dispatch;

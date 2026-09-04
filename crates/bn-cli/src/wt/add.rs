@@ -145,7 +145,7 @@ pub(crate) fn cmd_add(
 
     // -b <new> [base]: positional `branch` is treated as the base when creating a new branch.
     let (branch, create_new, base) = if let Some(nb) = new_branch {
-        let base = base.or(branch).unwrap_or_else(|| "main".to_string());
+        let base = base.or(branch).unwrap_or_else(|| base_ref(&bare_s));
         (nb, true, base)
     } else {
         let b = match branch {
@@ -174,6 +174,18 @@ pub(crate) fn cmd_add(
         };
         (b, false, String::new())
     };
+
+    // Asking for main is asking for the repo's main slot. Git would refuse to check `main` out a
+    // second time anyway (it is already in the main worktree), and that refusal used to be the
+    // whole answer — an error where the useful reply is "here is where main-branch work happens".
+    if !create_new && crate::main_slot::is_main_selection(&branch) {
+        let landing = crate::main_slot::resolve(&bare_dir, &worktree_dir, &name);
+        if !no_tmux {
+            open_worktree_window(&name, "main", &landing, false);
+        }
+        println!("cd {}", landing.display());
+        return true;
+    }
 
     let sanitized = sanitize_branch(&branch);
     let wt_path = worktree_dir.join(&name).join(&sanitized);
@@ -258,7 +270,11 @@ pub(crate) fn create_worktree(bare_s: &str, branch: &str, wt_s: &str, pull: bool
             &format!("origin/{branch}"),
         ])
     } else {
-        println!("{YELLOW}Branch '{branch}' not found. Creating new branch...{NC}");
+        // Cut from the resolved base ref — `origin/main` where it exists — not from the literal
+        // local `main`. The local branch lives in the main worktree and is only as current as the
+        // last sync; branching off it silently starts new work behind the remote.
+        let base = base_ref(bare_s);
+        println!("{YELLOW}Branch '{branch}' not found. Creating it from {base}...{NC}");
         run_git(&[
             "-c",
             "safe.bareRepository=all",
@@ -269,7 +285,7 @@ pub(crate) fn create_worktree(bare_s: &str, branch: &str, wt_s: &str, pull: bool
             "-b",
             branch,
             wt_s,
-            "main",
+            &base,
         ])
     };
     if created {
@@ -281,6 +297,17 @@ pub(crate) fn create_worktree(bare_s: &str, branch: &str, wt_s: &str, pull: bool
         return false;
     }
     created
+}
+
+/// The ref new work should be cut from: `origin/HEAD`'s branch, else the local default, via the
+/// one base-branch resolver every other part of bn already uses. Falls back to `main` only when
+/// the repo offers no answer at all — the same last resort the resolver's own callers take.
+fn base_ref(bare_s: &str) -> String {
+    bn_core::gitbase::base_ref(
+        &bn_core::runner::RealRunner,
+        bn_core::gitbase::BaseScope::BareRepo(Path::new(bare_s)),
+    )
+    .unwrap_or_else(|| "main".to_string())
 }
 
 /// Fast-forward a freshly-created worktree before reporting it ready.

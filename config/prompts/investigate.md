@@ -33,7 +33,14 @@ Do not start coding before the evidence says what to change.
    investigate finish --blocked "<specific input needed>"` so a typed Planning attention item is
    raised instead of guessing.
 
-5. **Hand off, or graduate the scout.** In the pipeline stage, when the task is scoped and
+5. **Promote the durable findings.** An investigation is where repo knowledge is *made*. Before
+   handing off, re-read your findings and ask which are true about the repo regardless of this
+   task. Those go to `bn_ref_append` with their source and today's date (see
+   `/bn:repo-reference-update`) — the branch note is scoped to this task, the reference notes
+   are what the next investigation starts from. Correct a note that this work proved wrong
+   rather than appending a contradiction.
+
+6. **Hand off, or graduate the scout.** In the pipeline stage, when the task is scoped and
    findings are recorded, run `bn pipeline investigate finish`. This advances the branch to `plan`
    and launches a fresh planner seeded with these findings. Report the finding count and stop; do
    not plan or implement in that context.

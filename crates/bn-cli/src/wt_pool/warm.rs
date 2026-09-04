@@ -368,7 +368,7 @@ pub(crate) fn job_pool_warm(cfg: &Config, ctx: Option<&bn_core::resolver::Resolv
 /// *created* the slots does.
 ///
 /// [`resolve_pool`] refuses any repo absent from `~/.config/wt/pools`, but a plain `bn dispatch`
-/// pools every repo with a bn-managed bare clone at [`bn_core::pool::DEFAULT_DISPATCH_POOL_SIZE`]
+/// pools every repo with a bn-managed bare clone at [`bn_core::pool::DEFAULT_POOL_SIZE`]
 /// (see [`resolve_dispatch_pool`]) — no registration required. So `schedule_warm` would queue
 /// `pool-warm --repo <repo>` for a pool dispatch had just created, and the cron would fail exit 1
 /// on a pool that plainly exists on disk. Resolving through the dispatch rules here is what keeps

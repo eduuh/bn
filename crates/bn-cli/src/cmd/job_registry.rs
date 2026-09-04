@@ -39,6 +39,7 @@ pub(crate) fn native_job(job: &str) -> Option<NativeJob> {
         "watch" => Some(job_watch),
         "recall-index" => Some(job_recall_index),
         "managed-repos" => Some(job_managed_repos),
+        "main-sync" => Some(crate::cmd::main_sync::job_main_sync),
         "refresh-all" => Some(job_refresh_all),
         "self-update" => Some(job_self_update),
         "tools-reconcile" => Some(job_tools_reconcile),
@@ -71,4 +72,8 @@ pub(crate) const TICK_10M: &[&str] = &[
 ];
 
 /// The `*:0/15` cadence cluster, in run order.
-pub(crate) const TICK_15M: &[&str] = &["auto-review-poll", "cron-health"];
+///
+/// `main-sync` runs first: it is the one that keeps every repo's `main` checkout present and
+/// current, so the rest of the tick — and anything cut from main before the next one — reads a
+/// fresh base rather than whatever the checkout drifted to.
+pub(crate) const TICK_15M: &[&str] = &["main-sync", "auto-review-poll", "cron-health"];

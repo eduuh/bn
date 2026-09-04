@@ -243,7 +243,7 @@ pub(super) fn leaked_lease_candidates(ctx: &PoolCtx, leases: &Leases, now: i64) 
 /// directory with a lease store in it.
 ///
 /// Enumerated from disk rather than from `~/.config/wt/pools` on purpose: a plain `bn dispatch`
-/// pools *every* repo at [`bn_core::pool::DEFAULT_DISPATCH_POOL_SIZE`] whether or not it is listed,
+/// pools *every* repo at [`bn_core::pool::DEFAULT_POOL_SIZE`] whether or not it is listed,
 /// so the config would miss exactly the unregistered pools nobody is watching.
 fn existing_pools(cfg: &Config) -> Vec<PoolCtx> {
     let (_, worktree_dir) = wt::layout(cfg);

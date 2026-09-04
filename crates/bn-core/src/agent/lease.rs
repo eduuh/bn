@@ -78,14 +78,24 @@ pub fn is_reserved_branch(branch: &str) -> bool {
     b == "main" || b == "master"
 }
 
-/// The number of the pool slot reserved for the `bn control` coordination agent. Workers lease
-/// `2..=size`; this one is never handed out to them.
-pub const CONTROLLER_POOL_SLOT: u32 = 1;
+/// The repo's **main slot** — `…/_pool/1`, reserved and never handed out to a worker (they lease
+/// `2..=size`). It is where main-branch work happens: the checkout you land in when you pick "main"
+/// in the picker, and the `bn control` coordination agent's home. Both want the same thing, a
+/// detached checkout sitting at the repo's base that ships nothing of its own, which is why one
+/// reserved slot serves both.
+///
+/// It exists so [`is_main_worktree_path`]'s checkout never has to: the stow-source `main` worktree
+/// stays clean and unvisited, and the work that used to dirty it happens here instead.
+pub const MAIN_POOL_SLOT: u32 = 1;
 
 /// The stow-source main worktree — `…/worktree/<repo>/main` — which must host no agent at all and
 /// stay clean on `main`. Matches the shape the repo's `pre-commit` hook already refuses commits in
 /// (`case "$top" in */worktree/*/main)`), so the agent rule and the commit rule read the same
 /// checkout the same way.
+///
+/// It is deliberately not a place you go: the pickers route "main" to [`MAIN_POOL_SLOT`] instead,
+/// and the `main-sync` job hard-resets this checkout to `origin/<default>` every 15 minutes. Its
+/// job is to *exist* — a clean, current checkout for stow, hooks and tooling to read.
 pub fn is_main_worktree_path(worktree: &Path) -> bool {
     let mut parts = worktree.components().rev().filter_map(|c| match c {
         std::path::Component::Normal(part) => part.to_str(),
@@ -103,7 +113,7 @@ pub fn is_main_worktree_path(worktree: &Path) -> bool {
         .is_some_and(|_repo| parts.next() == Some("worktree"))
 }
 
-/// The controller's reserved pool slot — `…/_pool/1`. The pool lays slots out as
+/// The reserved main slot — `…/_pool/1`, [`MAIN_POOL_SLOT`]. The pool lays slots out as
 /// `<root>/worktree/<repo>/_pool/<n>`, so the check is the slot number under a `_pool` parent.
 pub fn is_controller_slot_path(worktree: &Path) -> bool {
     let mut parts = worktree.components().rev().filter_map(|c| match c {
@@ -113,14 +123,15 @@ pub fn is_controller_slot_path(worktree: &Path) -> bool {
     let Some(slot) = parts.next().and_then(|n| n.parse::<u32>().ok()) else {
         return false;
     };
-    slot == CONTROLLER_POOL_SLOT && parts.next() == Some("_pool")
+    slot == MAIN_POOL_SLOT && parts.next() == Some("_pool")
 }
 
 /// The placement invariant checked before every acquisition, keyed on the worktree the lease
 /// actually points at rather than its branch name:
 ///
 /// 1. the main worktree hosts no agent, of any kind — work happens in a leased pool slot;
-/// 2. a control agent runs only in the controller pool slot, and that slot takes no other kind.
+/// 2. a control agent runs only in the reserved main slot, and that slot takes no other kind of
+///    agent (it is yours and the controller's — a dispatch belongs in a worker slot).
 ///
 /// Returns a human-readable refusal when the placement is illegal, so the message surfaces verbatim
 /// to the operator.
@@ -128,19 +139,20 @@ fn validate_kind_placement(kind: AgentLeaseKind, key: &AgentLeaseKey) -> Result<
     let worktree = Path::new(&key.worktree);
     if is_main_worktree_path(worktree) {
         return Err(format!(
-            "{} is the main worktree — it hosts no agents and stays clean on '{}'. Lease a pool \
-             slot instead: bn dispatch \"<what you're doing>\"",
+            "{} is the main worktree — it hosts no agents and stays clean on '{}'. Work on main \
+             happens in the main slot (_pool/{MAIN_POOL_SLOT}); dispatch work leases a worker \
+             slot: bn dispatch \"<what you're doing>\"",
             key.worktree, key.branch
         ));
     }
     match (kind, is_controller_slot_path(worktree)) {
         (AgentLeaseKind::Control, false) => Err(format!(
-            "the bn control agent may only run in its reserved pool slot (_pool/{CONTROLLER_POOL_SLOT}), not {}",
+            "the bn control agent may only run in the reserved main slot (_pool/{MAIN_POOL_SLOT}), not {}",
             key.worktree
         )),
         (kind, true) if kind != AgentLeaseKind::Control => Err(format!(
-            "_pool/{CONTROLLER_POOL_SLOT} is reserved for the bn control agent — a {} agent cannot \
-             occupy it",
+            "_pool/{MAIN_POOL_SLOT} is the reserved main slot (yours and bn control's) — a {} \
+             agent cannot occupy it",
             kind.label()
         )),
         _ => Ok(()),

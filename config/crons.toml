@@ -71,7 +71,7 @@ on_calendar = "*:0/15"
 persistent = true
 randomized_delay = "1m"
 network = true
-description = "bn — 15-minute tick: auto-review-poll (re-fetch active PRs, reclaim completed), cron-health (failing-cron watchdog)"
+description = "bn — 15-minute tick: main-sync (every repo has a main worktree, clean and current, and a main slot at the same commit), auto-review-poll (re-fetch active PRs, reclaim completed), cron-health (failing-cron watchdog)"
 
 [[cron]]
 job = "refresh-all"

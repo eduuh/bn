@@ -139,6 +139,10 @@ pub(super) fn ordered_refs(roots: &Roots, refresh: bool) -> Vec<String> {
 /// straight from the filesystem (skipping the `_pool` warm-slot dir and dotfiles) so the sub-picker
 /// paints without a `git worktree list` subprocess. Falls back to the git listing when that dir
 /// can't be read yet (e.g. before the first worktree is cut). Sorted for a stable row order.
+///
+/// `main` is skipped like `_pool` is, and for the same reason: it is not a row you pick. Picking
+/// "main" opens the repo's main slot ([`crate::main_slot`]), and the `worktree/<repo>/main`
+/// checkout exists only to stay clean and current for stow, hooks and tooling to read.
 pub(super) fn scan_worktrees(roots: &Roots, name: &str, refresh: bool) -> Vec<String> {
     let dir = roots.worktree_dir(name).join(ref_repo(name));
     let key = dir.to_string_lossy().to_string();
@@ -159,7 +163,7 @@ pub(super) fn scan_worktrees(roots: &Roots, name: &str, refresh: bool) -> Vec<St
         .flatten()
         .filter(|e| e.path().is_dir())
         .map(|e| e.file_name().to_string_lossy().to_string())
-        .filter(|n| n != "_pool" && !n.starts_with('.'))
+        .filter(|n| n != "_pool" && n != "main" && !n.starts_with('.'))
         .collect();
     names.sort();
     cache.worktrees.insert(

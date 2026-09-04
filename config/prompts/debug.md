@@ -12,7 +12,9 @@ work (that's `plan-work`): there is a broken thing and a passing gate at the end
 is **repro before fix, cause before patch** — a fix you can't reproduce failing you can't prove
 you made.
 
-1. **Reproduce first.** Call `bn_cat` for context; take the symptom ({{symptom}}) or the note's top bug. Before
+1. **Reproduce first.** Call `bn_cat` for context and `bn_ref` (no name) for the index of what past
+   sessions already learned about this repo — this failure may be a known gotcha, and reading a
+   one-line index is cheaper than root-causing it twice. Take the symptom ({{symptom}}) or the note's top bug. Before
    touching a cause, make the failure happen *on demand* — ideally a failing test or an exact
    command + expected-vs-actual. If you can't reproduce it, that's the whole task: say so and pin
    down the missing conditions before going further. Log the repro with `bn_add research`.
@@ -34,7 +36,11 @@ you made.
    green means not done. Where a test would have caught this, add it now.
 
 6. **Capture the learning.** Record the non-obvious cause with `bn learned "…"` — the thing that
-   would've saved you an hour. Close the bug todo with `bn_done`.
+   would've saved you an hour. Then ask whether it is *durable repo knowledge*: will it trip up
+   the next session on this repo, not just this branch? If so, fold it into the repo's reference
+   notes with `bn_ref_append` — one line, under `gotchas`, ending in where it came from and
+   today's date (see `/bn:repo-reference-update`). This is the step that stops the same cause
+   being root-caused twice. Close the bug todo with `bn_done`.
 
 7. **Report.** One line: *root cause → fix → verify PASS*. Then the repro, the cause, what changed,
    and any follow-up filed. If it's a symptom of something deeper, `bn_add todo` the real fix

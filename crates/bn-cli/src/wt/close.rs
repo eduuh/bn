@@ -92,7 +92,7 @@ pub(crate) fn close_plan(f: &CloseFacts) -> ClosePlan {
     if f.reserved {
         return ClosePlan::KillPaneOnly("main worktree");
     }
-    if f.slot == Some(bn_core::agent::CONTROLLER_POOL_SLOT) {
+    if f.slot == Some(bn_core::agent::MAIN_POOL_SLOT) {
         // The one gate `evict_occupant` refuses to let `--force` past. A keybinding must not become
         // a quieter way around it.
         return ClosePlan::KillPaneOnly("controller slot");

@@ -1,6 +1,6 @@
 //! Pure pool policy (#457) — the decisions behind pool-backed dispatch, with no I/O.
 //!
-//! `bn wt pool` keeps a small set of *warm* worktree slots for a heavy monorepo so an agent task
+//! `bn wt pool` keeps a small set of *warm* worktree slots for every repo so an agent task
 //! skips the cold `npm install`/build every fresh checkout would pay (the CLI primitive lives in
 //! `bn-cli`'s `wt_pool`). This module holds the two decisions that are pure enough to unit-test
 //! away from git and the filesystem:
@@ -13,31 +13,39 @@
 //! Keeping these here mirrors [`crate::repo_resolve`]: the CLI does the I/O (read the config, lease
 //! the slot, run git) while the policy — parse rules, clamping, precedence — is tested in one place.
 
+pub mod slot;
+pub use slot::{
+    pick_for, slot_state, BusyReason, Pick, SlotFacts, SlotState, RESERVATION_TTL_SECS,
+};
+
 use crate::resolver::Config;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-/// The smallest usable pool: the reserved controller slot plus one worker. Slot
-/// [`crate::agent::CONTROLLER_POOL_SLOT`] never serves workers, so a size of 1 would leave a pooled
+/// The smallest usable pool: the reserved main slot plus one worker. Slot
+/// [`crate::agent::MAIN_POOL_SLOT`] never serves workers, so a size of 1 would leave a pooled
 /// repo with nowhere to dispatch — every configured size clamps up to this.
 pub const MIN_POOL_SIZE: usize = 2;
 
-/// Pool size for `repo` parsed from the pools config `content`, or `None` when the repo isn't
-/// pooled. Lines are `<repo> <size>`; `#` starts a comment; blank lines are ignored.
+/// Pool size for `repo` parsed from the pools config `content` — `None` only when the repo has
+/// been explicitly opted *out*. Lines are `<repo> <size>`; `#` starts a comment; blank lines are
+/// ignored.
 ///
-/// The size counts **all** slots, of which slot 1 is the reserved controller slot — so `<repo> 4`
-/// means one controller plus three workers. A missing or unparseable size, and any size below the
-/// floor, clamps to [`MIN_POOL_SIZE`]: a pooled repo always has the controller slot plus at least
-/// one worker.
+/// The size counts **all** slots, of which slot 1 is the reserved main slot — so `<repo> 4` means
+/// one main slot plus three workers. A missing or unparseable size, and any size below the floor,
+/// clamps to [`MIN_POOL_SIZE`]: a pooled repo always has the main slot plus at least one worker.
 ///
-/// A `default <size>` line — or its `*` alias — sets a fallback that makes *any* repo poolable at
-/// that size, so a heavy checkout anywhere can lease a warm slot without being pre-registered. An
-/// explicit `<repo> <size>` line always overrides the default; with no default line an unlisted repo
-/// stays unpooled (`None`), exactly as before. `default` and `*` are reserved keys and can't name a
-/// real repo. This is the sole definition of *which repos are pooled*.
+/// **Every repo pools.** A repo the config never mentions gets [`DEFAULT_POOL_SIZE`], because
+/// leasing a warm slot is the way work happens here — a checkout that needs a pool should not have
+/// to be registered first, and the main slot has to exist for every repo whether or not anyone
+/// wrote its name down. The file is therefore only ever an *override*: `<repo> <size>` pins a
+/// different size, a `default <size>` line — or its `*` alias — moves the fallback for unlisted
+/// repos, and `<repo> 0` (or `off`/`none`) is the one way to say "this repo does not pool at all".
+/// `default` and `*` are reserved keys and can't name a real repo. This is the sole definition of
+/// *which repos are pooled*.
 pub fn parse_pool_size(content: &str, repo: &str) -> Option<usize> {
-    let mut default_size: Option<usize> = None;
+    let mut default_size: Option<usize> = Some(DEFAULT_POOL_SIZE);
     for line in content.lines() {
         let line = line.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -45,20 +53,34 @@ pub fn parse_pool_size(content: &str, repo: &str) -> Option<usize> {
         }
         let mut it = line.split_whitespace();
         let Some(key) = it.next() else { continue };
-        let size = it
-            .next()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(MIN_POOL_SIZE)
-            .max(MIN_POOL_SIZE);
+        let size = parse_size(it.next());
         if key == repo {
             // An explicit per-repo entry always wins over the default fallback.
-            return Some(size);
+            return size;
         }
         if is_default_key(key) {
-            default_size = Some(size);
+            default_size = size;
         }
     }
     default_size
+}
+
+/// One line's size field: `None` for the explicit opt-out (`0`, `off`, `none`, `-`), else the
+/// number clamped up to [`MIN_POOL_SIZE`]. A missing or unparseable field is a typo, not an
+/// opt-out — it clamps to the floor, so a malformed line can never quietly unpool a repo.
+fn parse_size(field: Option<&str>) -> Option<usize> {
+    let Some(field) = field else {
+        return Some(MIN_POOL_SIZE);
+    };
+    if matches!(field, "0" | "off" | "none" | "-") {
+        return None;
+    }
+    Some(
+        field
+            .parse::<usize>()
+            .unwrap_or(MIN_POOL_SIZE)
+            .max(MIN_POOL_SIZE),
+    )
 }
 
 /// The reserved keys a pools-config line uses to declare the any-repo fallback size rather than a
@@ -67,11 +89,17 @@ fn is_default_key(key: &str) -> bool {
     key == "default" || key == "*"
 }
 
-/// Every `(repo, size)` pair in the pools config `content`, in file order — the multi-repo view of
-/// [`parse_pool_size`] (same line grammar: `<repo> <size>`, `#` comments, blank lines skipped; a
-/// missing/unparseable size clamps to [`MIN_POOL_SIZE`]). Used to enumerate every pooled
-/// repo for a rollup (the dashboard's per-repo pool state) without probing each name individually.
-/// The `default`/`*` fallback line is skipped — it isn't a concrete repo, only the any-repo size.
+/// Every `(repo, size)` pair *named* in the pools config `content`, in file order — the multi-repo
+/// view of [`parse_pool_size`] (same line grammar: `<repo> <size>`, `#` comments, blank lines
+/// skipped; a missing/unparseable size clamps to [`MIN_POOL_SIZE`]). Used to enumerate pools for a
+/// rollup (the dashboard's per-repo pool state) and for the scheduled warm sweep, without probing
+/// each name individually. Repos opted out with `<repo> 0` are dropped, and the `default`/`*`
+/// fallback line is skipped — it isn't a concrete repo, only the any-repo size.
+///
+/// This lists the repos written down, **not** every repo that pools: since [`parse_pool_size`]
+/// pools an unlisted repo at [`DEFAULT_POOL_SIZE`], the two answers differ on purpose. Leasing is
+/// universal; the expensive scheduled *warm* (a checkout plus `build.sh` per slot) stays opt-in to
+/// the repos whose names are in the file.
 pub fn parse_pooled_repos(content: &str) -> Vec<(String, usize)> {
     let mut out = Vec::new();
     for line in content.lines() {
@@ -84,8 +112,10 @@ pub fn parse_pooled_repos(content: &str) -> Vec<(String, usize)> {
         if is_default_key(repo) {
             continue;
         }
-        let size = it.next().and_then(|s| s.parse::<usize>().ok()).unwrap_or(1);
-        out.push((repo.to_string(), size.max(MIN_POOL_SIZE)));
+        let Some(size) = parse_size(it.next()) else {
+            continue;
+        };
+        out.push((repo.to_string(), size));
     }
     out
 }
@@ -95,15 +125,19 @@ pub fn parse_pooled_repos(content: &str) -> Vec<(String, usize)> {
 /// hundred of them.
 pub const MAX_POOL_SIZE: usize = 16;
 
-/// Set (or with `size: None`, remove) `repo`'s entry in the pools config `content`, returning the
-/// new file text. A rewrite rather than an append: an existing entry is edited in place, so setting
-/// a size twice can't leave two lines whose winner depends on file order.
+/// Set (or with `size: None`, opt out of) pooling for `repo` in the pools config `content`,
+/// returning the new file text. A rewrite rather than an append: an existing entry is edited in
+/// place, so setting a size twice can't leave two lines whose winner depends on file order.
+///
+/// `size: None` writes `<repo> 0` — the explicit opt-out — rather than deleting the line. Deleting
+/// it would no longer unpool anything now that [`parse_pool_size`] pools an unmentioned repo at
+/// [`DEFAULT_POOL_SIZE`]; the line has to stay to say "not this one".
 ///
 /// Comments, blank lines, ordering and the `default`/`*` fallback line are all preserved — this is
 /// a file a human also edits, and a write from the dashboard has no business reformatting it. A new
 /// entry appends. Size is clamped to `MIN_POOL_SIZE..=MAX_POOL_SIZE`, matching the parser's own
-/// floor — a size of 1 is all controller slot and no worker, so the writer must not be able to
-/// produce a line the reader would silently widen back to 2.
+/// floor — a size of 1 is all main slot and no worker, so the writer must not be able to produce a
+/// line the reader would silently widen back to 2.
 ///
 /// Pure so the whole edit is unit-tested; [`set_pool_size`] does the I/O.
 pub fn edit_pool_size(content: &str, repo: &str, size: Option<usize>) -> String {
@@ -117,11 +151,9 @@ pub fn edit_pool_size(content: &str, repo: &str, size: Option<usize>) -> String 
             .split_whitespace()
             .next();
         if key == Some(repo) {
-            // The repo's line: rewrite it, or drop it entirely when unpooling.
-            if let Some(n) = size {
-                if !replaced {
-                    out.push(format!("{repo} {}", n.clamp(MIN_POOL_SIZE, MAX_POOL_SIZE)));
-                }
+            // The repo's line: rewrite it in place (a second one, if any, is dropped).
+            if !replaced {
+                out.push(pool_line(repo, size));
             }
             replaced = true;
             continue;
@@ -129,15 +161,21 @@ pub fn edit_pool_size(content: &str, repo: &str, size: Option<usize>) -> String 
         out.push(line.to_string());
     }
     if !replaced {
-        if let Some(n) = size {
-            out.push(format!("{repo} {}", n.clamp(MIN_POOL_SIZE, MAX_POOL_SIZE)));
-        }
+        out.push(pool_line(repo, size));
     }
     let mut text = out.join("\n");
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
     text
+}
+
+/// One config line for `repo`: its clamped size, or the `0` opt-out when `size` is `None`.
+fn pool_line(repo: &str, size: Option<usize>) -> String {
+    match size {
+        Some(n) => format!("{repo} {}", n.clamp(MIN_POOL_SIZE, MAX_POOL_SIZE)),
+        None => format!("{repo} 0"),
+    }
 }
 
 /// Pool a repo at `size` slots, or unpool it with `size: None`, by rewriting the pools config at
@@ -161,21 +199,21 @@ pub fn set_pool_size(repo: &str, size: Option<usize>) -> std::io::Result<()> {
 
 /// The lowest idle **worker** slot in `2..=size` that isn't in `leased`, or `None` when every one
 /// is leased (the pool is full). Slots are 1-indexed to match their on-disk `_pool/<n>` dirs, and
-/// slot [`CONTROLLER_POOL_SLOT`] is never returned here — it belongs to `bn control` alone (see
+/// slot [`MAIN_POOL_SLOT`] is never returned here — it is the reserved main slot (see
 /// [`pick_controller_slot`]). Leases are durable (held until `return`), so callers try this first
 /// and only reclaim genuinely abandoned slots as a fallback before deciding the pool is full.
 ///
-/// [`CONTROLLER_POOL_SLOT`]: crate::agent::CONTROLLER_POOL_SLOT
+/// [`MAIN_POOL_SLOT`]: crate::agent::MAIN_POOL_SLOT
 pub fn pick_slot(size: usize, leased: &BTreeSet<u32>) -> Option<u32> {
-    let first_worker = crate::agent::CONTROLLER_POOL_SLOT + 1;
+    let first_worker = crate::agent::MAIN_POOL_SLOT + 1;
     (first_worker..=size as u32).find(|n| !leased.contains(n))
 }
 
-/// The controller's reserved slot, or `None` when it is already leased. `bn control start` is the
-/// only caller: the controller never rotates through the worker range, so this is a fixed-slot
+/// The reserved main slot, or `None` when it is already leased. `bn control start` is the only
+/// caller: the controller never rotates through the worker range, so this is a fixed-slot
 /// availability check rather than a search.
 pub fn pick_controller_slot(leased: &BTreeSet<u32>) -> Option<u32> {
-    let n = crate::agent::CONTROLLER_POOL_SLOT;
+    let n = crate::agent::MAIN_POOL_SLOT;
     (!leased.contains(&n)).then_some(n)
 }
 
@@ -312,13 +350,13 @@ pub enum WorktreeMode {
     Cold,
 }
 
-/// Built-in pool size for a dispatch to a repo with no explicit `~/.config/wt/pools` entry.
-/// Leasing is the default dispatch path, so *every* repo pools at this size unless it names its own
-/// size (an explicit `<repo> <size>` line — or a `default`/`*` fallback — overrides it). Slots are
-/// created on demand and reused (reap-safe); a full pool spills to a cold worktree. Kept small — a
-/// few concurrent dispatch lanes per repo before the cold spill. Counts the reserved controller
-/// slot, so this is three worker lanes plus `bn control`.
-pub const DEFAULT_DISPATCH_POOL_SIZE: usize = 4;
+/// Built-in pool size for a repo with no explicit `~/.config/wt/pools` entry — which is most of
+/// them. Pooling is not opt-in: *every* repo pools at this size unless the config names its own
+/// size (an explicit `<repo> <size>` line, or a `default`/`*` fallback) or opts out with
+/// `<repo> 0`. Slots are created on demand and reused (reap-safe); a full pool spills to a cold
+/// worktree. Kept small — a few concurrent lanes per repo before the cold spill. Counts the
+/// reserved main slot, so this is three worker lanes plus `_pool/1`.
+pub const DEFAULT_POOL_SIZE: usize = 4;
 
 /// Route a dispatch to a warm pool slot or a cold worktree. Leasing is the **default**: every
 /// dispatch pools (a reap-safe slot, created on demand, deps + build cache reused) unless
@@ -361,12 +399,15 @@ fn home_str() -> String {
     std::env::var("HOME").unwrap_or_else(|_| "/".to_string())
 }
 
-/// Pool size for `repo` from the config, or `None` when the repo has no explicit/`default` entry —
-/// the file read behind [`parse_pool_size`]. `bn wt pool` and `bn orchestrate` ask this directly;
-/// a plain `bn dispatch` instead pools *every* repo, falling back to [`DEFAULT_DISPATCH_POOL_SIZE`]
-/// when this is `None`.
+/// Pool size for `repo` — the file read behind [`parse_pool_size`], and the question every caller
+/// asks before leasing. `None` means the repo was explicitly opted out (`<repo> 0`); every other
+/// repo pools, at its configured size or [`DEFAULT_POOL_SIZE`].
+///
+/// A config file that is absent or unreadable is *not* an opt-out: a machine that has never
+/// written one still pools every repo at the default, which is what makes `_pool/1` — the main
+/// slot — something every repo has without anyone registering it.
 pub fn pool_size(repo: &str) -> Option<usize> {
-    let content = std::fs::read_to_string(pools_config_path()).ok()?;
+    let content = std::fs::read_to_string(pools_config_path()).unwrap_or_default();
     parse_pool_size(&content, repo)
 }
 
@@ -569,8 +610,27 @@ mod tests {
     }
 
     #[test]
-    fn unlisted_repo_without_default_is_unpooled() {
-        assert_eq!(parse_pool_size("bn 4\n", "other"), None);
+    fn unlisted_repo_pools_at_the_built_in_default() {
+        // The point of the universal default: a repo nobody registered still pools, so it still
+        // has a main slot and can still lease.
+        assert_eq!(parse_pool_size("bn 4\n", "other"), Some(DEFAULT_POOL_SIZE));
+        assert_eq!(parse_pool_size("", "anything"), Some(DEFAULT_POOL_SIZE));
+    }
+
+    #[test]
+    fn zero_is_the_explicit_opt_out() {
+        for field in ["0", "off", "none", "-"] {
+            assert_eq!(parse_pool_size(&format!("bn {field}\n"), "bn"), None);
+        }
+        // Opting one repo out leaves every other repo pooled.
+        assert_eq!(parse_pool_size("bn 0\n", "other"), Some(DEFAULT_POOL_SIZE));
+    }
+
+    #[test]
+    fn a_default_line_of_zero_unpools_every_unlisted_repo() {
+        let cfg = "default 0\nbn 4\n";
+        assert_eq!(parse_pool_size(cfg, "other"), None);
+        assert_eq!(parse_pool_size(cfg, "bn"), Some(4));
     }
 
     #[test]
@@ -625,6 +685,14 @@ mod tests {
         assert_eq!(parse_pooled_repos("bn\n"), vec![("bn".to_string(), 2)]);
     }
 
+    #[test]
+    fn pooled_repos_skips_opted_out_repos() {
+        assert_eq!(
+            parse_pooled_repos("bn 5\napp 0\n"),
+            vec![("bn".to_string(), 5)]
+        );
+    }
+
     // --- edit_pool_size ---------------------------------------------------
 
     #[test]
@@ -642,8 +710,16 @@ mod tests {
     }
 
     #[test]
-    fn edit_removes_entry_on_none() {
-        assert_eq!(edit_pool_size("app 2\nbn 3\n", "bn", None), "app 2\n");
+    fn edit_writes_the_opt_out_marker_on_none() {
+        // Deleting the line would no longer unpool anything — the repo would fall back to the
+        // universal default — so unpooling has to leave a `0` behind.
+        assert_eq!(edit_pool_size("app 2\nbn 3\n", "bn", None), "app 2\nbn 0\n");
+        assert_eq!(parse_pool_size("app 2\nbn 0\n", "bn"), None);
+    }
+
+    #[test]
+    fn edit_opts_out_a_repo_that_had_no_line() {
+        assert_eq!(edit_pool_size("app 2\n", "bn", None), "app 2\nbn 0\n");
     }
 
     #[test]

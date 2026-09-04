@@ -517,6 +517,8 @@ mod tests {
             "bn_handoff_write",
             "bn_handoff_read",
             "bn_links_add",
+            "bn_ref",
+            "bn_ref_append",
         ];
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let dirs = [root.join("config/prompts"), root.join("config/agents")];

@@ -29,6 +29,11 @@ compact orientation, content-first steps, and definitive reporting — no ceremo
 5. **Loop**: return to step 2 while open todos remain and nothing blocks; stop when the list is
    empty, a blocker needs a human, or the session goal is met.
 
+Before the final report: Anything you learned about **the repo itself** — how it builds, where a subsystem lives, a
+failure that misleads — outlives this branch. Record it with `bn_ref_append` (one fact, with
+its source and today's date; see `/bn:repo-reference-update`), not only in the branch note,
+which disappears when the branch does.
+
 Final report — keep it to this shape:
 - **Done**: items closed this loop (ids + one line each).
 - **Open**: what remains, in priority order.

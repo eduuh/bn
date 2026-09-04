@@ -462,6 +462,41 @@ pub fn build_index(cfg: &Config, index_path: &Path, embedder: &dyn Embedder) -> 
                 );
             }
         }
+
+        // Repo reference notes: a repo-level corpus with no owning `note.md`, so the walk above
+        // never sees them. Each is fingerprinted and reused independently — there is no note dir
+        // to group them by, and one appended fact should re-embed one file, not a whole folder.
+        for (repo, path) in crate::references::notes_under_root(root) {
+            let Some(fp) = fingerprint(&path) else {
+                continue;
+            };
+            let k = key(&path);
+            if let Some(fe) = old_files.get(&k) {
+                if fe.matches(&fp) {
+                    stats.reused += fe.entries.len();
+                    new_files.insert(k, fe.clone());
+                    continue;
+                }
+            }
+            let chunks = chunk_doc(&path, &repo, "reference", "active", "");
+            let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
+            let vectors = embedder.embed(&texts);
+            let entries: Vec<Entry> = chunks
+                .into_iter()
+                .zip(vectors)
+                .map(|(chunk, vector)| Entry { chunk, vector })
+                .collect();
+            stats.embedded += entries.len();
+            new_files.insert(
+                k,
+                FileEntry {
+                    mtime_secs: fp.secs,
+                    mtime_nanos: fp.nanos,
+                    size: fp.size,
+                    entries,
+                },
+            );
+        }
     }
 
     stats.files = new_files.len();
@@ -717,6 +752,9 @@ pub fn chunk_corpus(cfg: &Config) -> Vec<Chunk> {
                     ));
                 }
             }
+        }
+        for (repo, path) in crate::references::notes_under_root(root) {
+            out.extend(chunk_doc(&path, &repo, "reference", "active", ""));
         }
     }
     out

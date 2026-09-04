@@ -124,7 +124,11 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
             } => emit_issue_file(title, body, kind, labels, repo, allow_duplicate, json),
         },
         CmdMisc::Links { action, query } => emit_links(cfg, action, query, json),
-        CmdMisc::Ref { action, name } => emit_ref(action, name, json),
+        CmdMisc::Ref {
+            action,
+            name,
+            scope,
+        } => emit_ref(cfg, action, name, scope, json),
         CmdMisc::Critic { action } => {
             let ctx = resolver::resolve(cfg, &std::env::current_dir().unwrap_or_default()).ok();
             match action {

@@ -229,7 +229,14 @@ pub(crate) fn cmd_go(cfg: &Config, worktree: Option<String>) -> bool {
             }
         }
     };
-    let path = worktree_dir.join(&worktree);
+    // "<repo>/main" is a request for the repo's main slot, not for the `main` worktree — that one
+    // stays clean and unvisited. Every other row is the worktree it names.
+    let path = match worktree.split_once('/') {
+        Some((repo, branch)) if crate::main_slot::is_main_selection(branch) => {
+            crate::main_slot::resolve(&layout(cfg).0, &worktree_dir, repo)
+        }
+        _ => worktree_dir.join(&worktree),
+    };
     if !path.is_dir() {
         eprintln!("{RED}Error: {} not found{NC}", path.display());
         return false;

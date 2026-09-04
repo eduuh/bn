@@ -1,0 +1,368 @@
+//! `main-sync` — keep every repo's `main` checkout present and current, every 15 minutes.
+//!
+//! The main worktree (`<root>/worktree/<repo>/main`) is load-bearing and unvisited: stow reads it,
+//! the `pre-commit` hook keys on its shape, and new work is cut from the branch it holds. Nobody
+//! is supposed to open it — [`crate::main_slot`] is where main-branch work happens — so its only
+//! job is to *exist*, clean and current.
+//!
+//! Left alone it does neither. A checkout drifts behind the moment `origin/main` moves, and a
+//! stray edit made before this split existed pins it there for good: `merge --ff-only` refuses a
+//! dirty tree, so main rots silently and every branch cut from it starts stale. That is not a
+//! hypothetical — the checkout this job was written on sat six commits behind with five staged
+//! files, all of them already merged upstream.
+//!
+//! So this job treats local change in the main worktree as debris, and says so:
+//!
+//! 1. fetch the bare clone;
+//! 2. create the main worktree if the repo hasn't got one — "always have a main checkout" is the
+//!    whole point, and a repo cloned by hand never gets one otherwise;
+//! 3. `reset --hard` it onto the remote tip, naming every tracked file it discards;
+//! 4. advance the repo's main slot (`_pool/1`) to the same commit, unless someone is in it.
+//!
+//! The reset is recoverable. Anything it is about to discard is committed first to
+//! `refs/bn/main-rescue` via `git stash create` — which writes the commit without touching the
+//! working tree, the index or the shared stash stack — and the log line says how to get it back.
+//! A job that runs unattended every quarter hour must not be one bad assumption away from losing
+//! work nobody knew was there.
+//!
+//! Two deliberate limits on the destruction. **Untracked files are left alone** — they never block
+//! a fast-forward or a `worktree add`, so removing them would buy nothing and could take a scratch
+//! file with it, and they are not counted as dirt either. And a main worktree sitting on some
+//! *other* branch is skipped entirely: that is a human decision the job has no business overruling.
+
+use crate::wt;
+use bn_core::resolver::{Config, Resolved};
+use std::path::Path;
+
+use super::jobs::native_job_line;
+
+/// What one repo's main worktree needs. Pure so the "when do we discard?" rule is testable without
+/// a git repo behind it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MainSync {
+    /// No checkout yet — cut one at the default branch.
+    Create,
+    /// Clean and on the default branch: reset it onto the remote tip.
+    Advance,
+    /// On the default branch with `n` tracked changes — discard them (loudly) and advance.
+    Discard(usize),
+    /// Sitting on some other branch. Somebody moved it deliberately; leave it, and say so.
+    Skip(String),
+}
+
+/// The plan for a main worktree that is `exists`, checked out on `head` (`None` when detached or
+/// unreadable), with `dirty` tracked changes. `default` is the repo's default branch.
+pub(crate) fn plan(exists: bool, head: Option<&str>, dirty: usize, default: &str) -> MainSync {
+    if !exists {
+        return MainSync::Create;
+    }
+    match head {
+        Some(branch) if branch == default => {
+            if dirty > 0 {
+                MainSync::Discard(dirty)
+            } else {
+                MainSync::Advance
+            }
+        }
+        Some(branch) => MainSync::Skip(branch.to_string()),
+        // Detached: not the branch the rest of bn expects to find here, and not ours to reattach.
+        None => MainSync::Skip("a detached HEAD".to_string()),
+    }
+}
+
+/// `main-sync` — the 15-minute sweep. Every bare repo under the configured root, in name order;
+/// one repo's failure never stops the next. Always exits 0 unless a git command that should have
+/// worked didn't: a fetch that can't reach the network is a fact about the network, not a broken
+/// cron, and paging on it every quarter hour would train the operator to ignore the job.
+pub(crate) fn job_main_sync(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
+    let (bare_dir, worktree_dir) = wt::layout(cfg);
+    let mut rc = 0;
+    for bare in wt::bare_repos(&bare_dir) {
+        let repo = wt::repo_name(&bare);
+        if !sync_repo(&bare, &worktree_dir, &repo) {
+            rc = 1;
+        }
+    }
+    rc
+}
+
+/// Bring one repo's main checkout and main slot up to date. `false` when something that should
+/// have worked failed (the caller turns that into a non-zero exit).
+///
+/// `pub(crate)` because `bn reset` needs exactly this before it tears the other worktrees down,
+/// and used to hand-roll a weaker version: a fetch plus `merge --ff-only origin/main`, which
+/// hardcoded the branch name and gave up silently on the dirty checkouts this exists to fix.
+pub(crate) fn sync_repo(bare: &Path, worktree_dir: &Path, repo: &str) -> bool {
+    let bare_s = bare.to_string_lossy().to_string();
+    if !crate::git::git_ok(&["--git-dir", &bare_s, "fetch", "--quiet", "--prune", "origin"]) {
+        // Offline, or a repo with no reachable remote. Everything below still works against
+        // whatever was last fetched, so carry on rather than skipping the repo entirely.
+        native_job_line(&format!("main-sync: {repo}: fetch failed (offline?)"), false);
+    }
+    let Some(default) = default_branch(&bare_s) else {
+        native_job_line(
+            &format!("main-sync: {repo}: no default branch — skipped"),
+            true,
+        );
+        return false;
+    };
+    let target = remote_tip(&bare_s, &default);
+    let main = crate::main_slot::main_worktree(worktree_dir, repo);
+    let main_s = main.to_string_lossy().to_string();
+
+    let ok = match plan(main.is_dir(), head_branch(&main_s).as_deref(), dirty(&main_s), &default) {
+        MainSync::Create => create_main(&bare_s, &main_s, repo, &default),
+        MainSync::Skip(head) => {
+            native_job_line(
+                &format!("main-sync: {repo}: main worktree is on {head}, not {default} — left alone"),
+                false,
+            );
+            true
+        }
+        MainSync::Discard(n) => {
+            for path in tracked_changes(&main_s).iter().take(DISCARD_REPORT_LIMIT) {
+                native_job_line(&format!("main-sync: {repo}: discarding {path}"), false);
+            }
+            if n > DISCARD_REPORT_LIMIT {
+                let rest = n - DISCARD_REPORT_LIMIT;
+                native_job_line(&format!("main-sync: {repo}: …and {rest} more"), false);
+            }
+            if let Some(rescue) = snapshot(&main_s) {
+                native_job_line(
+                    &format!("main-sync: {repo}: recover them with `git -C {main_s} stash apply {rescue}` ({RESCUE_REF})"),
+                    false,
+                );
+            }
+            advance(&main_s, &target, repo, "main worktree")
+        }
+        MainSync::Advance => advance(&main_s, &target, repo, "main worktree"),
+    };
+    sync_main_slot(bare, worktree_dir, repo, &target) && ok
+}
+
+/// How many discarded paths to name before summarising the rest. Enough to recognise what was
+/// thrown away; short enough that a badly-drifted checkout can't bury the rest of the sweep.
+const DISCARD_REPORT_LIMIT: usize = 10;
+
+/// Where the pre-reset snapshot is kept. Outside `refs/heads` and `refs/remotes`, so it shows up
+/// in neither the branch list nor a push, and outside the stash stack, which bn shares across
+/// worktrees and warns against touching.
+const RESCUE_REF: &str = "refs/bn/main-rescue";
+
+/// Commit the checkout's uncommitted state to [`RESCUE_REF`] and return the sha, before anything
+/// discards it.
+///
+/// `git stash create` builds the commit **without** touching the working tree, the index, or the
+/// stash stack — which makes it exactly the right tool here and nothing like `git stash`. The
+/// reset that follows is still a reset; this only means the operator who finds out an hour later
+/// has somewhere to go. `None` when there was nothing to snapshot or git declined, in which case
+/// the reset proceeds anyway: the snapshot is a courtesy, not a precondition.
+fn snapshot(dir_s: &str) -> Option<String> {
+    let sha = crate::git::git_capture(
+        &["-C", dir_s, "stash", "create", "bn main-sync rescue"],
+        None,
+        true,
+    )
+    .filter(|s| !s.is_empty())?;
+    crate::git::git_ok(&[
+        "-C",
+        dir_s,
+        "update-ref",
+        RESCUE_REF,
+        &sha,
+        "-m",
+        "main-sync: uncommitted work in the main worktree, before reset",
+    ])
+    .then_some(sha)
+}
+
+/// Cut the repo's missing main worktree at `default`.
+fn create_main(bare_s: &str, main_s: &str, repo: &str, default: &str) -> bool {
+    if let Some(parent) = Path::new(main_s).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if wt::create_worktree(bare_s, default, main_s, false) {
+        native_job_line(&format!("main-sync: {repo}: created main worktree"), false);
+        true
+    } else {
+        native_job_line(
+            &format!("main-sync: {repo}: could not create main worktree"),
+            true,
+        );
+        false
+    }
+}
+
+/// Move a checkout onto `target`, discarding whatever tracked state it held. Silent on a no-op:
+/// this runs every fifteen minutes across every repo, and "already current" is not news.
+fn advance(dir_s: &str, target: &str, repo: &str, what: &str) -> bool {
+    let before = head_sha(dir_s);
+    if !crate::git::git_ok(&["-C", dir_s, "reset", "--hard", "--quiet", target]) {
+        native_job_line(
+            &format!("main-sync: {repo}: could not reset {what} to {target}"),
+            true,
+        );
+        return false;
+    }
+    let after = head_sha(dir_s);
+    if before != after {
+        native_job_line(&format!("main-sync: {repo}: {what} → {target}"), false);
+    }
+    true
+}
+
+/// Create the repo's main slot if it hasn't got one, then advance it to the same commit.
+///
+/// The slot is a *detached* checkout — git will not check `main` out twice, and the main worktree
+/// holds the branch — so it is moved with a detaching reset rather than a merge. Skipped whenever
+/// somebody could lose something by it: uncommitted work in the slot, or a live agent (`bn
+/// control` lives here) working in it.
+fn sync_main_slot(bare: &Path, worktree_dir: &Path, repo: &str, target: &str) -> bool {
+    let Some(slot) = crate::main_slot::ensure(bare, worktree_dir, repo) else {
+        // No bare clone, opted out of pooling, or the checkout could not be created — all of them
+        // already reported by whoever cares. Not a failure of this job.
+        return true;
+    };
+    let slot_s = slot.to_string_lossy().to_string();
+    if dirty(&slot_s) > 0 {
+        native_job_line(
+            &format!("main-sync: {repo}: main slot has uncommitted work — left alone"),
+            false,
+        );
+        return true;
+    }
+    if !crate::agent_lease::live_agents_in(&slot).is_empty() {
+        return true;
+    }
+    let before = head_sha(&slot_s);
+    if !crate::git::git_ok(&["-C", &slot_s, "checkout", "--quiet", "--detach", target]) {
+        native_job_line(
+            &format!("main-sync: {repo}: could not advance the main slot to {target}"),
+            true,
+        );
+        return false;
+    }
+    if before != head_sha(&slot_s) {
+        native_job_line(&format!("main-sync: {repo}: main slot → {target}"), false);
+    }
+    true
+}
+
+/// The repo's default branch as a plain local branch name (`main`), from the shared base-ref
+/// resolver — `origin/HEAD` first, so a repo whose default is `develop` is handled like any other.
+fn default_branch(bare_s: &str) -> Option<String> {
+    let base = bn_core::gitbase::base_ref(
+        &bn_core::runner::RealRunner,
+        bn_core::gitbase::BaseScope::BareRepo(Path::new(bare_s)),
+    )?;
+    Some(
+        base.strip_prefix("origin/")
+            .unwrap_or(&base)
+            .trim()
+            .to_string(),
+    )
+}
+
+/// What to reset onto: the remote-tracking tip when it exists, else the local branch. A repo with
+/// no reachable origin still gets its two checkouts agreeing with each other.
+fn remote_tip(bare_s: &str, default: &str) -> String {
+    let remote = format!("origin/{default}");
+    let resolves = crate::git::git_ok(&[
+        "--git-dir",
+        bare_s,
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        &remote,
+    ]);
+    if resolves {
+        remote
+    } else {
+        default.to_string()
+    }
+}
+
+/// The branch a checkout is on, or `None` when it is detached (or unreadable).
+fn head_branch(dir_s: &str) -> Option<String> {
+    crate::git::git_capture(
+        &["-C", dir_s, "symbolic-ref", "--quiet", "--short", "HEAD"],
+        None,
+        true,
+    )
+    .filter(|s| !s.is_empty())
+}
+
+fn head_sha(dir_s: &str) -> Option<String> {
+    crate::git::git_capture(&["-C", dir_s, "rev-parse", "HEAD"], None, true)
+}
+
+/// The **tracked** changes in a checkout, as porcelain paths. Untracked files are excluded on
+/// purpose: a `reset --hard` doesn't touch them, they don't block a fast-forward or a
+/// `worktree add`, and reporting them as "discarding …" would be a lie about what the job did.
+fn tracked_changes(dir_s: &str) -> Vec<String> {
+    if !Path::new(dir_s).is_dir() {
+        return Vec::new();
+    }
+    crate::git::git_capture(
+        &["-C", dir_s, "status", "--porcelain", "--untracked-files=no"],
+        None,
+        true,
+    )
+    .map(|out| {
+        out.lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.get(3..).unwrap_or(l).trim().to_string())
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// How many tracked changes a checkout holds — what [`plan`] weighs, and what a reset discards.
+fn dirty(dir_s: &str) -> usize {
+    tracked_changes(dir_s).len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_main_worktree_is_created() {
+        assert_eq!(plan(false, None, 0, "main"), MainSync::Create);
+    }
+
+    #[test]
+    fn a_clean_main_is_advanced() {
+        assert_eq!(plan(true, Some("main"), 0, "main"), MainSync::Advance);
+    }
+
+    #[test]
+    fn a_dirty_main_is_discarded_and_advanced() {
+        // The case this job exists for: local change in a checkout nobody works in blocks the
+        // fast-forward, so main rots and every branch cut from it starts stale.
+        assert_eq!(plan(true, Some("main"), 5, "main"), MainSync::Discard(5));
+    }
+
+    #[test]
+    fn a_main_worktree_on_another_branch_is_left_alone() {
+        // Someone parked a branch here on purpose. Discarding their work to enforce a layout rule
+        // would be the job doing far more damage than the drift it exists to prevent.
+        assert_eq!(
+            plan(true, Some("release"), 3, "main"),
+            MainSync::Skip("release".to_string())
+        );
+        assert_eq!(
+            plan(true, None, 0, "main"),
+            MainSync::Skip("a detached HEAD".to_string())
+        );
+    }
+
+    #[test]
+    fn a_custom_default_branch_is_respected() {
+        assert_eq!(plan(true, Some("develop"), 0, "develop"), MainSync::Advance);
+        assert_eq!(
+            plan(true, Some("main"), 0, "develop"),
+            MainSync::Skip("main".to_string())
+        );
+    }
+}

@@ -23,6 +23,7 @@ mod git;
 mod hooks;
 mod jump;
 mod launchd;
+mod main_slot;
 mod mcp;
 mod mobile;
 mod picker;

@@ -50,6 +50,10 @@ stop — don't silently improvise a different one.
    violation, confirm it trips, then revert it — a guard you never saw fail isn't verified.
 
 7. **Learn and report.** After the verified work is committed, run `bn ingest` to fold the shipped
-   outcome back. Then report one line: *N todos closed · verify PASS/FAIL · done-when M/M met*,
+   outcome back. Anything you learned about **the repo itself** — how it builds, where a subsystem lives, a
+   failure that misleads — outlives this branch. Record it with `bn_ref_append` (one fact, with
+   its source and today's date; see `/bn:repo-reference-update`), not only in the branch note,
+   which disappears when the branch does.
+ Then report one line: *N todos closed · verify PASS/FAIL · done-when M/M met*,
    followed by what's left and the single next action. When it's genuinely all green, say so
    plainly, then `wrap-session`.

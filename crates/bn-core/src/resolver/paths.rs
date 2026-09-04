@@ -283,6 +283,21 @@ impl Config {
             .join("skills")
     }
 
+    /// `<notes_dir_for(repo)>/<machine>/<repo>/reference` — per-repo **reference notes**: what
+    /// past sessions discovered about this repository (how it builds, where the seams are, which
+    /// failures are misleading). A sibling of [`repo_skills_dir`](Config::repo_skills_dir) and of
+    /// the branch note dirs, so the knowledge outlives any one branch. Unlike the person-scoped
+    /// [`references_dir`](Config::references_dir) (coding standards, which apply everywhere), repo
+    /// notes are keyed by `<machine>` like the branch notes they sit beside. Holds nested topic
+    /// dirs (`architecture/runtime-concepts.md`) and an `images/` sibling for screenshots.
+    /// `repo` should be lowercased (as [`resolve`](super::resolve) returns it).
+    pub fn repo_references_dir(&self, repo: &str) -> PathBuf {
+        self.notes_dir_for(repo)
+            .join(self.machine())
+            .join(repo)
+            .join("reference")
+    }
+
     /// `<personal_root>/references` — the reusable standards/preferences store (`bn ref`, #623).
     /// **Person-scoped, cross-machine** (mirrors `staff/`, NOT machine-scoped like `daily`/`state`):
     /// coding standards apply on every host, so the files live once under the synced notes root and

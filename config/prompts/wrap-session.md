@@ -16,6 +16,10 @@ You are wrapping up a work session on the current branch.
    because Y"). A dead end nobody wrote down is an hour the next session spends again.
 6. Record what is still open: unresolved facts with `bn_add research`, questions that need another
    person with `bn_add ask`.
+   Anything you learned about *the repo itself* — how it builds, where something lives, a failure
+   that misleads — outlives this branch, so put it in the repo's reference notes with
+   `bn_ref_append` (with its source and today's date) rather than only in the branch note, which
+   disappears when the branch does. See `/bn:repo-reference-update`.
 7. If a PR was opened for this branch, link it with `bn_pr <url>` (or `bn pr <url>`) — the note is
    where the next session and the review queue both look for it, and a summary in chat is not a link.
 8. Capture the links this session leaves behind: `bn links capture` stores the branch's PR and

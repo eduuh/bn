@@ -725,28 +725,13 @@ pub fn reset(cfg: &Config, force: bool) -> bool {
         return true;
     }
 
-    // Rebase each repo's main worktree onto its remote before tearing the rest down.
-    println!("\n{BLUE}Rebasing main worktrees...{NC}");
+    // Bring every repo's main checkout current before tearing the rest down — through the same
+    // `main-sync` the 15-minute cron runs, so a reset can't leave main in a state the cron would
+    // then have to repair. It also creates a missing main worktree and advances the main slot,
+    // which the old inline fast-forward did neither of.
+    println!("\n{BLUE}Updating main worktrees...{NC}");
     for bare in &bares {
-        let repo = repo_name(bare);
-        let main_wt = worktree_dir.join(&repo).join("main");
-        if !main_wt.is_dir() {
-            continue;
-        }
-        println!("  {BLUE}{repo}: fetching + updating main...{NC}");
-        let _ = crate::git::git_ok(&["--git-dir", &bare.to_string_lossy(), "fetch", "origin"]);
-        let ff = crate::git::git_ok(&[
-            "-C",
-            &main_wt.to_string_lossy(),
-            "merge",
-            "--ff-only",
-            "origin/main",
-        ]);
-        if ff {
-            println!("  {GREEN}{repo}: main updated{NC}");
-        } else {
-            println!("  {YELLOW}{repo}: main not fast-forwardable, skipped{NC}");
-        }
+        crate::cmd::main_sync::sync_repo(bare, &worktree_dir, &repo_name(bare));
     }
 
     println!();

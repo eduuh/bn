@@ -279,14 +279,14 @@ fn cron_warms_a_pool_dispatch_created_for_an_unregistered_repo() {
     let bare = root.join("bare").join("nvim.git");
     build_repo_into(&root.join("nvim-src"), &bare);
 
-    // The config knows about `bn` only — `nvim` is pooled by dispatch alone, at the default size.
+    // The config knows about `bn` only — `nvim` is unmentioned, and so pools at the default size.
     let pools = root.join("pools");
     std::fs::write(&pools, "bn 2\n").unwrap();
-    assert!(bn_core::pool::pool_size("nvim").is_none());
-
     let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
     let _wt_pools = bn_core::test_support::EnvGuard::set("WT_POOLS", &pools);
     let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", root.join("state"));
+    let default = Some(bn_core::pool::DEFAULT_POOL_SIZE);
+    assert_eq!(bn_core::pool::pool_size("nvim"), default);
     TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
 
     let cfg = bn_core::test_support::config(root);
@@ -298,7 +298,7 @@ fn cron_warms_a_pool_dispatch_created_for_an_unregistered_repo() {
 
     // Not just a green exit — the slots the next dispatch leases are actually there.
     let pool_dir = root.join("worktree").join("nvim").join("_pool");
-    for n in 2..=bn_core::pool::DEFAULT_DISPATCH_POOL_SIZE as u32 {
+    for n in 2..=bn_core::pool::DEFAULT_POOL_SIZE as u32 {
         assert!(
             is_live_slot(&slot_path(&pool_dir, n)),
             "slot {n} should hold a live checkout"

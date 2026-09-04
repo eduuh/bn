@@ -1,8 +1,9 @@
 //! The standing context every freshly-dispatched agent is seeded with.
 //!
-//! Two kinds, both "rules that outlive any one session":
+//! Three kinds, all "things that outlive any one session":
 //!
 //!   * **references** (`bn ref`, #623) — person-scoped coding standards that apply on every repo,
+//!   * **reference notes** (`bn ref --repo`) — what past sessions discovered about *this* repo,
 //!   * **directives** (`bn agent instruct`) — branch-scoped standing instructions you gave *this*
 //!     lane by hand.
 //!
@@ -33,10 +34,36 @@ pub(crate) fn section(
     if let Some(s) = super::dispatch::references_section(refs) {
         out.push_str(&s);
     }
+    // Repo notes go to scouts too: a scout changes no code, so the coding standards don't apply,
+    // but "what we already know about this repo" is exactly what an investigation should start from.
+    if let Some(s) = repo_references_section(repo) {
+        out.push_str(&s);
+    }
     if let Some(s) = directives_section(cfg, repo, branch) {
         out.push_str(&s);
     }
     out
+}
+
+/// The repo's reference notes, **by name only**, with the command to read one. `None` when the
+/// repo has no notes yet.
+///
+/// Names only is the whole point: an index of a few dozen notes costs a couple of hundred tokens,
+/// so every agent can afford to know what exists, and pays for a body only when it decides it
+/// needs that body. Inlining the notes themselves would blow the seed on the first repo that
+/// accumulates real knowledge.
+pub(crate) fn repo_references_section(repo: &str) -> Option<String> {
+    let names = bn_core::references::names_in(&bn_core::references::Scope::repo(repo));
+    if names.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "\n\nThis repo's reference notes — what past sessions discovered about it (how it builds, \
+         where the seams are, which failures mislead). Read the one that bears on your task with \
+         `bn ref <name> --repo`, and when you learn something durable, record it with \
+         `bn ref append <name> --repo --section gotchas \"<fact> (src: …, <date>)\"`: {}.",
+        names.join(", ")
+    ))
 }
 
 /// The branch note's standing directives, rendered for a seed. `None` when there are none.

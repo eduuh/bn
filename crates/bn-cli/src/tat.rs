@@ -15,6 +15,7 @@
 
 mod codespaces;
 pub(crate) mod discovery;
+mod paths;
 mod preview;
 
 use codespaces::{
@@ -25,6 +26,7 @@ use codespaces::{
 use discovery::{
     ordered_refs, remote_prs, remote_prs_fetch_blocking, scan_worktrees, spawn_remote_warm,
 };
+use paths::{bare_repo_main_path, is_bare_repo, project_path, resolve_project_path};
 use preview::preview;
 
 use crate::proc::{tmux, tmux_command, tmux_ok, tmux_raw, tmux_run};
@@ -185,46 +187,6 @@ impl Roots {
             }
         }
         out
-    }
-}
-
-/// Is `ref` a bare repo (i.e. `<ref-root>/bare/<repo>.git` exists)?
-fn is_bare_repo(roots: &Roots, r: &str) -> bool {
-    roots
-        .bare_dir(r)
-        .join(format!("{}.git", ref_repo(r)))
-        .is_dir()
-}
-
-/// Where the "main" checkout for a bare repo lives (worktree if present, else the bare dir).
-fn bare_repo_main_path(roots: &Roots, r: &str) -> PathBuf {
-    let repo = ref_repo(r);
-    let m = roots.worktree_dir(r).join(repo).join("main");
-    if m.is_dir() {
-        m
-    } else {
-        roots.bare_dir(r).join(format!("{repo}.git"))
-    }
-}
-
-/// `ref` → path. `ref/branch` → a worktree path; a bare `ref` → the project root checkout.
-fn resolve_project_path(roots: &Roots, r: &str) -> PathBuf {
-    let refpart = r.split_once('/').map(|(a, _)| a).unwrap_or(r);
-    match r.split_once('/') {
-        Some((_, branch)) => roots
-            .worktree_dir(refpart)
-            .join(ref_repo(refpart))
-            .join(branch),
-        None => roots.ref_root(r).join(ref_repo(r)),
-    }
-}
-
-/// The checkout path for a ref, used for frecency scoring (bare → main path, else project path).
-fn project_path(roots: &Roots, r: &str) -> PathBuf {
-    if is_bare_repo(roots, r) {
-        bare_repo_main_path(roots, r)
-    } else {
-        resolve_project_path(roots, r)
     }
 }
 
@@ -417,7 +379,12 @@ fn list_worktrees(roots: &Roots, r: &str) -> Vec<String> {
             let pooled = Path::new(&p).components().any(|c| c.as_os_str() == "_pool");
             if !*is_bare && !pooled {
                 if let Some(base) = Path::new(&p).file_name() {
-                    res.push(base.to_string_lossy().to_string());
+                    // …and skip the main worktree: picking "main" opens the main slot instead, so
+                    // listing it here would offer a checkout nothing is supposed to work in.
+                    let name = base.to_string_lossy().to_string();
+                    if !crate::main_slot::is_main_selection(&name) {
+                        res.push(name);
+                    }
                 }
             }
         }
@@ -1020,6 +987,17 @@ fn open_worktree(cfg: &Config, roots: &Roots, r: &str, branch: &str) {
     let worktree_dir = roots.worktree_dir(r);
     let wt_path = worktree_dir.join(repo).join(&sanitized);
     let sess = ref_session(r);
+
+    // "main" is a request for the main slot, never for the `worktree/<repo>/main` checkout — that
+    // one exists to stay clean and current, and is not a place to work. Falls through to the
+    // normal path only when the repo has no main slot (opted out of pooling, or no bare clone).
+    if crate::main_slot::is_main_selection(branch) {
+        let landing = bare_repo_main_path(roots, r);
+        ensure_session(r, &landing);
+        open_or_select_window(&sess, &sanitized, &landing);
+        goto_session(&sess);
+        return;
+    }
 
     // Already a normal worktree on disk → just open/select its window.
     if wt_path.is_dir() {
@@ -1804,6 +1782,11 @@ mod discovery_cache_tests {
         assert_eq!(scan_worktrees(&roots, "alpha", true), vec!["one"]);
         std::fs::create_dir_all(repo_dir.join("two")).unwrap();
         assert_eq!(scan_worktrees(&roots, "alpha", false), vec!["one"]);
+        assert_eq!(scan_worktrees(&roots, "alpha", true), vec!["one", "two"]);
+
+        // The main worktree is never a row — picking "main" opens the main slot instead.
+        std::fs::create_dir_all(repo_dir.join("main")).unwrap();
+        std::fs::create_dir_all(repo_dir.join("_pool").join("1")).unwrap();
         assert_eq!(scan_worktrees(&roots, "alpha", true), vec!["one", "two"]);
 
         std::fs::write(

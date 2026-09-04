@@ -1290,7 +1290,7 @@ pub(crate) fn run_dispatch(
     // without a bn-managed bare clone, or a full pool, transparently falls back to a cold worktree —
     // so pooling is always a safe best-effort default, and `--no-pool` reproduces the old cold path
     // exactly. Pool size comes from `~/.config/wt/pools` (explicit or `default`), else the built-in
-    // DEFAULT_DISPATCH_POOL_SIZE, so no per-repo registration is required.
+    // DEFAULT_POOL_SIZE, so no per-repo registration is required.
     let mode = bn_core::pool::dispatch_worktree_mode(no_pool);
     // The cold path — a fresh worktree at the conventional dir — used both without `--pool` and as
     // the fallback when a warm slot can't be leased.

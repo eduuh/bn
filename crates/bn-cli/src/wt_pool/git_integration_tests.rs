@@ -261,19 +261,18 @@ fn direct_open_leases_a_configured_warm_slot_and_never_spills_cold() {
     assert!(!root.join("worktree").join("bn").join("second").exists());
 }
 
+/// `Unpooled` is now reachable only through the explicit `<repo> 0` opt-out: an unmentioned repo
+/// pools at the default size, so nothing else sends a direct open to a cold worktree.
 #[test]
-fn direct_open_reports_unpooled_without_allocating() {
+fn direct_open_reports_unpooled_only_for_an_opted_out_repo() {
     let _g = bn_core::test_support::env_lock();
     let tmp = tempfile::tempdir().unwrap();
     let pools = tmp.path().join("pools");
-    std::fs::write(&pools, "").unwrap();
+    std::fs::write(&pools, "bn 0\n").unwrap();
     let _pools = bn_core::test_support::EnvGuard::set("WT_POOLS", &pools);
     let cfg = bn_core::test_support::config(tmp.path());
-
-    assert!(matches!(
-        lease_for_direct_open(&cfg, "bn", "feat"),
-        DirectLease::Unpooled
-    ));
+    let lease = lease_for_direct_open(&cfg, "bn", "feat");
+    assert!(matches!(lease, DirectLease::Unpooled));
 }
 
 #[test]

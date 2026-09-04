@@ -225,7 +225,7 @@ three **tick** crons — one timer each — that fan out to their cluster in ord
 |---|---|---|
 | `tick-5m` | `*:0/5` | `tools-reconcile`, `routine-tick`, `attention-sync` |
 | `tick-10m` | `*:0/10` | `auto-review-trigger`, `attention-auto-trigger`, `agent-supervise` |
-| `tick-15m` | `*:0/15` | `auto-review-poll`, `cron-health` |
+| `tick-15m` | `*:0/15` | `main-sync`, `auto-review-poll`, `cron-health` |
 
 `agent-scheduler` runs every minute and owns every `on_calendar` declared in
 `config/agents/*.md`; agent schedules do not belong in `crons.toml`.

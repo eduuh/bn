@@ -221,12 +221,19 @@ pub fn repos_view(cfg: &Config) -> Value {
         })
         .collect();
 
-    // 5) Per-repo warm-pool state (#497): the live `bn wt pool` shape (size + warm/leased slots) for
-    //    every pooled repo, read in-process from the shared `bn_core::pool` status. Keyed lowercased
-    //    to match the rollup's note-canonical repo casing.
-    let pools: BTreeMap<String, Value> = bn_core::pool::all_pool_status(cfg)
+    // 5) Per-repo warm-pool state (#497): the live `bn wt pool` shape (size + warm/leased slots),
+    //    read in-process from the shared `bn_core::pool` status. Asked per **cloned** repo rather
+    //    than from the pools config: pooling is no longer opt-in, so a repo nobody wrote down still
+    //    has a pool, and reading the config would render it as "disabled" while `bn dispatch`
+    //    leased slots in it. `pool_status` returns `None` only for an explicit opt-out, which the
+    //    rollup then shows as disabled — which it genuinely is. Keyed lowercased to match the
+    //    rollup's note-canonical repo casing.
+    let pools: BTreeMap<String, Value> = cloned
         .iter()
-        .map(|st| (st.repo.to_ascii_lowercase(), pool_json(cfg, st)))
+        .filter_map(|repo| {
+            let st = bn_core::pool::pool_status(cfg, repo)?;
+            Some((repo.to_ascii_lowercase(), pool_json(cfg, &st)))
+        })
         .collect();
 
     let setup: BTreeMap<String, Value> = cloned
@@ -251,14 +258,17 @@ pub fn repos_view(cfg: &Config) -> Value {
 }
 
 /// The per-repo pool view attached to a repo rollup (#497): pooling-enabled, configured size, the
-/// warm / leased / idle split, a best-effort last-warmed timestamp, and each slot's own state. A repo
-/// not in the pools config gets [`pool_disabled`] instead, so the field is always present.
+/// warm / leased / idle split, a best-effort last-warmed timestamp, and each slot's own state. A
+/// repo explicitly opted out of pooling gets [`pool_disabled`] instead, so the field is always
+/// present.
 ///
 /// Slots ride along because the counts alone can't answer the question you actually have about a
 /// half-leased pool — *which* branch is holding a slot. The list is bounded by the configured size
 /// (at most `MAX_POOL_SIZE`) and only pooled repos have one, so this stays a small payload.
 fn pool_json(cfg: &Config, st: &bn_core::pool::PoolStatus) -> Value {
-    let controller = bn_core::agent::CONTROLLER_POOL_SLOT;
+    // Slot 1 is the reserved main slot, never a worker — it is excluded from every count that
+    // answers "can this pool take more work?".
+    let controller = bn_core::agent::MAIN_POOL_SLOT;
     let ready = st
         .slots
         .iter()
@@ -779,7 +789,7 @@ mod tests {
             last_warmed_ts: None,
             slots: vec![
                 bn_core::pool::PoolSlot {
-                    n: bn_core::agent::CONTROLLER_POOL_SLOT,
+                    n: bn_core::agent::MAIN_POOL_SLOT,
                     leased: false,
                     warm: true,
                     branch: None,

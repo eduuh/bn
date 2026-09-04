@@ -109,6 +109,34 @@ struct EmptyArgs {}
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct RefArgs {
+    /// Reference to read in full (fuzzy/prefix match, e.g. `build-and-run` or
+    /// `architecture/runtime-concepts`). Omit to get the index instead: every reference's name
+    /// and one-line summary, which is the cheap call — read a body only once you know you need it.
+    #[serde(default)]
+    name: Option<String>,
+    /// Which store: `repo` (this repo's reference notes), `global` (my coding standards), or
+    /// `all` (both). Defaults to `all`.
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RefAppendArgs {
+    /// Reference note to write to, in this repo's store. Created from a template if it doesn't
+    /// exist yet.
+    name: String,
+    /// The fact, as one line. Include where it came from and when you checked it, e.g.
+    /// `(src: web/.nvmrc, 2026-09-03)` or `(observed, 2026-09-03)`.
+    text: String,
+    /// Section heading to append under: `facts` (default), `gotchas`, or any other.
+    #[serde(default)]
+    section: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct HandoffWriteArgs {
     /// Narrative (layer 2): a few sentences on why the work looks the way it does.
     #[serde(default)]
@@ -394,6 +422,99 @@ impl BnServer {
             handoff.ok_or_else(|| ErrorData::invalid_params("No note for this branch", None))?;
         Ok(CallToolResult::structured(payload::handoff_data(&handoff)))
     }
+
+    #[tool(
+        name = "bn_ref",
+        description = "Reference docs: this repo's reference notes (what past sessions discovered about it -- how it builds, where the seams are, which failures mislead) and my global coding standards. Call with no name FIRST to get the index -- every note's name and one-line summary, a cheap call -- then call again with a name to read the one document that bears on your task. Prefer this over re-deriving repo knowledge from the code."
+    )]
+    async fn bn_ref(
+        &self,
+        Parameters(a): Parameters<RefArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        use bn_core::references::{self, Scope as RefScope};
+        let ctx = self.resolve(&ctx)?;
+        let want = a.scope.as_deref().unwrap_or("all");
+        let scopes: Vec<RefScope> = match want {
+            "repo" => vec![RefScope::repo(&ctx.repo)],
+            "global" => vec![RefScope::Global],
+            "all" => vec![RefScope::repo(&ctx.repo), RefScope::Global],
+            other => {
+                return Err(ErrorData::invalid_params(
+                    format!("unknown scope '{other}' -- use repo, global, or all"),
+                    None,
+                ));
+            }
+        };
+
+        // With a name: the first scope that has a match wins, so a repo note shadows a global
+        // standard of the same name -- the more specific knowledge is the one you asked for.
+        if let Some(name) = a.name.as_deref() {
+            for scope in &scopes {
+                if let Some((r, body)) = references::read_in(scope, name) {
+                    return Ok(CallToolResult::structured(json!({
+                        "scope": scope.label(),
+                        "name": r.name,
+                        "summary": r.summary,
+                        "path": r.path.display().to_string(),
+                        "body": body,
+                    })));
+                }
+            }
+            return Err(ErrorData::invalid_params(
+                format!(
+                    "no reference matches '{name}' -- call bn_ref with no name to see what exists"
+                ),
+                None,
+            ));
+        }
+
+        // No name: the index. Names + summaries only, so knowing what exists stays cheap.
+        let mut references_out = Vec::new();
+        for scope in &scopes {
+            for r in references::list_in(scope) {
+                references_out.push(json!({
+                    "scope": scope.label(),
+                    "name": r.name,
+                    "summary": r.summary,
+                }));
+            }
+        }
+        Ok(CallToolResult::structured(json!({
+            "repo": ctx.repo,
+            "count": references_out.len(),
+            "references": references_out,
+        })))
+    }
+
+    #[tool(
+        name = "bn_ref_append",
+        description = "Record ONE durable fact in this repo's reference notes, as a bullet under a section (facts by default, or gotchas). Use it the moment you learn something that will still be true next month and would save the next session time -- a root cause, a build gotcha, where a subsystem actually lives. Creates the note if it doesn't exist. Include where the fact came from and today's date in the text. Returns appended:false when that exact fact is already recorded. Branch-specific state belongs in bn_add, not here."
+    )]
+    async fn bn_ref_append(
+        &self,
+        Parameters(a): Parameters<RefAppendArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        use bn_core::references::{self, Scope as RefScope};
+        let ctx = self.resolve(&ctx)?;
+        if a.text.trim().is_empty() {
+            return Err(ErrorData::invalid_params("nothing to record", None));
+        }
+        let scope = RefScope::repo(&ctx.repo);
+        let out = {
+            let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+            references::append(&scope, &a.name, a.section.as_deref(), &a.text)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+        };
+        Ok(CallToolResult::structured(json!({
+            "scope": scope.label(),
+            "name": a.name,
+            "heading": out.heading,
+            "path": out.path.display().to_string(),
+            "appended": out.appended,
+        })))
+    }
 }
 
 #[tool_handler]
@@ -421,7 +542,18 @@ impl ServerHandler for BnServer {
              then stored without a repo). Call it whenever a URL surfaces that will be wanted \
              again — a PR, a work item or PBI, a portal blade, a dashboard, a docs page — \
              without waiting to be asked, and especially as a pull request completes, when those \
-             links are about to leave with the worktree. The MCP surface \
+             links are about to leave with the worktree. \
+             Two tools are repo-scoped rather than branch-scoped, because the knowledge \
+             outlives the branch: bn_ref reads this repo's reference notes (call it with no \
+             name for the cheap index before assuming anything about how the repo builds or \
+             behaves) and bn_ref_append records one durable fact back into them. \
+             Keeping those notes current is part of the work, not a chore at the end: the \
+             moment you learn something about this repo that will still be true next month -- \
+             a root cause, a build gotcha, where a subsystem actually lives -- append it with \
+             its source and today's date, and CORRECT a note this session proved wrong rather \
+             than appending a contradiction. A reference note nobody updates decays into \
+             folklore; one nobody reads gets re-derived every session. \
+             The MCP surface \
              cannot target another repo/branch and does not expose cross-branch rollups, search, \
              daily goals, reviews, metrics, attention queues, cron status, or agent fleet/session \
              mining; use the `bn` CLI for those explicit whole-person workflows. Every effective \

@@ -47,14 +47,14 @@ pub async fn repo_pool_warm(
     if !valid_repo(&repo) {
         return bad_request(cmd, "invalid_repo", "repo has invalid characters");
     }
-    // Only a repo actually in the pools config can be warmed (warming is what materializes its
-    // slots), so reject an unpooled/unknown repo up front rather than enqueueing a job that will
+    // Every repo pools by default, so this rejects only the one case warming cannot serve: a repo
+    // explicitly opted out with `<repo> 0`. Refusing up front beats enqueueing a job that would
     // later no-op. Read via the shared bn-core pool.
     if bn_core::pool::pool_size(&repo).is_none() {
         return bad_request(
             cmd,
             "not_pooled",
-            "repo is not pooled — add it to the pools config first",
+            "repo is opted out of pooling — drop its `0` line from the pools config first",
         );
     }
     let result = run_bn(pool_warm_queue_args(&repo), None).await;

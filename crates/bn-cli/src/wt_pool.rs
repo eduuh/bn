@@ -89,10 +89,10 @@ fn pools_config_path() -> PathBuf {
     bn_core::pool::pools_config_path()
 }
 
-/// Pool size for `repo` from the config, or `None` if the repo has no explicit/`default` entry.
-/// Delegates to [`bn_core::pool::pool_size`] (the shared file read + parse). `pub(crate)` so
-/// `bn wt pool` / `bn orchestrate` can ask the configured size; a plain `bn dispatch` instead pools
-/// every repo, falling back to [`bn_core::pool::DEFAULT_DISPATCH_POOL_SIZE`] when this is `None`.
+/// Pool size for `repo`, or `None` only when the repo is explicitly opted out (`<repo> 0` in the
+/// pools config). Delegates to [`bn_core::pool::pool_size`] (the shared file read + parse); every
+/// unmentioned repo pools at [`bn_core::pool::DEFAULT_POOL_SIZE`], so `None` here means "the
+/// operator said no", never "nobody registered it".
 pub(crate) fn pool_size(repo: &str) -> Option<usize> {
     bn_core::pool::pool_size(repo)
 }
@@ -310,7 +310,7 @@ fn default_base(bare_s: &str) -> String {
 }
 
 /// Create one warm slot as a detached worktree off the default base.
-fn add_detached_slot(bare_s: &str, slot_s: &str) -> bool {
+pub(crate) fn add_detached_slot(bare_s: &str, slot_s: &str) -> bool {
     let base = default_base(bare_s);
     git_quiet(&[
         "--git-dir",
@@ -380,7 +380,7 @@ fn warm_reset(slot_s: &str, bare_s: &str) {
 /// behind by an interrupted `worktree add` (killed mid-checkout leaves the files but no `.git`
 /// link). Such a stub passes `is_dir()` yet every git command in it fails, so it must be recreated,
 /// not reused. We require its own `.git` entry AND that git accepts it as a work tree.
-fn is_live_slot(slot: &Path) -> bool {
+pub(crate) fn is_live_slot(slot: &Path) -> bool {
     slot.join(".git").exists()
         && git_silent(&[
             "-C",
@@ -393,7 +393,7 @@ fn is_live_slot(slot: &Path) -> bool {
 /// Forcibly tear down a slot's worktree registration and on-disk dir, tolerating a broken/orphan
 /// state (interrupted `worktree add`, dangling ref): try `worktree remove --force`, else prune the
 /// dangling ref and remove the dir. Shared by slot removal and by the recreate path in get/warm.
-fn force_remove_worktree(bare_s: &str, slot: &Path) {
+pub(crate) fn force_remove_worktree(bare_s: &str, slot: &Path) {
     let slot_s = slot.to_string_lossy().to_string();
     if !git_silent(&[
         "--git-dir",
@@ -463,7 +463,7 @@ fn slot_occupants(slot: &Path) -> Vec<crate::agent_lease::Occupant> {
 /// reserved slot, where the lease is keyed by the fixed [`CONTROLLER_LEASE_LABEL`] rather than by
 /// whatever branch `bn control`'s checkout happens to sit on.
 fn occupant_label(occupant: &crate::agent_lease::Occupant, n: u32) -> String {
-    if n == bn_core::agent::CONTROLLER_POOL_SLOT {
+    if n == bn_core::agent::MAIN_POOL_SLOT {
         return CONTROLLER_LEASE_LABEL.to_string();
     }
     occupant.label()
@@ -708,8 +708,8 @@ fn resolve_pool(cfg: &Config, repo_arg: Option<String>) -> Option<PoolCtx> {
     let repo = wt::repo_name(&bare);
     let Some(size) = pool_size(&repo) else {
         eprintln!(
-            "{YELLOW}Repo '{repo}' is not pooled. Add it to {} (`<repo> <size>`, or a \
-             `default <size>` line to pool any repo).{NC}",
+            "{YELLOW}Repo '{repo}' is opted out of pooling. Drop its `0` line from {} (or give it \
+             a size) to pool it again.{NC}",
             pools_config_path().display()
         );
         return None;
@@ -822,10 +822,10 @@ struct Leased {
     fresh: bool,
 }
 
-/// Which half of the pool a lease may draw from. Slot [`CONTROLLER_POOL_SLOT`] is `bn control`'s
+/// Which half of the pool a lease may draw from. Slot [`MAIN_POOL_SLOT`] is `bn control`'s
 /// alone; everything else leases from the worker range, so the two can never collide.
 ///
-/// [`CONTROLLER_POOL_SLOT`]: bn_core::agent::CONTROLLER_POOL_SLOT
+/// [`MAIN_POOL_SLOT`]: bn_core::agent::MAIN_POOL_SLOT
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SlotRole {
     Worker,
@@ -834,7 +834,7 @@ pub(crate) enum SlotRole {
 
 impl SlotRole {
     fn owns(self, n: u32) -> bool {
-        let controller = n == bn_core::agent::CONTROLLER_POOL_SLOT;
+        let controller = n == bn_core::agent::MAIN_POOL_SLOT;
         match self {
             SlotRole::Worker => !controller,
             SlotRole::Controller => controller,
@@ -994,7 +994,7 @@ fn acquire_slot(
             SlotRole::Controller => eprintln!(
                 "{RED}Controller slot {} is already leased.{NC} Stop the running controller with \
                  `bn control stop <id>`, or hand the slot back with `wt pool return`.",
-                bn_core::agent::CONTROLLER_POOL_SLOT
+                bn_core::agent::MAIN_POOL_SLOT
             ),
             SlotRole::Worker => eprintln!(
                 "{RED}Pool full: {}/{} worker slots leased.{NC} Return one with `wt pool return`.",
@@ -1430,7 +1430,7 @@ pub const CONTROLLER_LEASE_LABEL: &str = "control";
 /// Lease the controller's reserved slot (`_pool/1`) for `bn control start`. Returns the slot path
 /// and whether the lease is fresh, or `None` when the repo has no bn-managed bare clone or the
 /// controller slot is already held (message printed). The controller never rotates through the
-/// worker range, so this can only ever hand back slot [`bn_core::agent::CONTROLLER_POOL_SLOT`].
+/// worker range, so this can only ever hand back slot [`bn_core::agent::MAIN_POOL_SLOT`].
 pub fn lease_controller_slot(cfg: &Config, repo: &str) -> Option<(PathBuf, bool)> {
     let ctx = resolve_dispatch_pool(cfg, repo)?;
     let leased = acquire_slot(
@@ -1445,7 +1445,7 @@ pub fn lease_controller_slot(cfg: &Config, repo: &str) -> Option<(PathBuf, bool)
 
 /// Resolve the pool for a dispatch — pooling *every* repo by default, since leasing is the default
 /// dispatch path. An explicit or `default`/`*` config size wins; otherwise the built-in
-/// [`bn_core::pool::DEFAULT_DISPATCH_POOL_SIZE`] applies, so a repo need not be pre-registered in
+/// [`bn_core::pool::DEFAULT_POOL_SIZE`] applies, so a repo need not be pre-registered in
 /// `~/.config/wt/pools` to get a warm, reap-safe slot. Returns `None` only when the repo has no
 /// bn-managed bare clone — the one case a dispatch genuinely can't pool — so the caller cuts a cold
 /// worktree instead. (Contrast [`resolve_pool`], which errors for `wt pool` when a repo is unpooled.)
@@ -1455,7 +1455,7 @@ fn resolve_dispatch_pool(cfg: &Config, repo: &str) -> Option<PoolCtx> {
     if !bare.is_dir() {
         return None;
     }
-    let size = pool_size(repo).unwrap_or(bn_core::pool::DEFAULT_DISPATCH_POOL_SIZE);
+    let size = pool_size(repo).unwrap_or(bn_core::pool::DEFAULT_POOL_SIZE);
     let pool_dir = pool_dir(&worktree_dir, repo);
     Some(PoolCtx {
         bare,
@@ -1513,7 +1513,7 @@ fn pool_status(cfg: &Config, repo: Option<String>) -> bool {
     for n in 1..=ctx.size as u32 {
         // Slot 1 is `bn control`'s alone — label it so an idle controller slot doesn't read as
         // spare worker capacity.
-        let role = if n == bn_core::agent::CONTROLLER_POOL_SLOT {
+        let role = if n == bn_core::agent::MAIN_POOL_SLOT {
             "  (controller)"
         } else {
             ""
@@ -1614,7 +1614,7 @@ fn pool_metrics(cfg: &Config, path: Option<String>, repo: Option<String>) -> boo
     // "…health of pools if they exist": a real repo without a pool is a clean answer, not an error.
     let Some(size) = pool_size(&repo_name) else {
         println!(
-            "{YELLOW}{repo_name}: not pooled — no warm-slot pool to report.{NC}\n  Add it to {} (`<repo> <size>`) to enable one.",
+            "{YELLOW}{repo_name}: opted out of pooling — no warm-slot pool to report.{NC}\n  Drop its `0` line from {} to enable one.",
             pools_config_path().display()
         );
         return true;

@@ -241,7 +241,7 @@ pub fn release_controller_slot(cfg: &Config, repo: &str) {
     let Some(ctx) = resolve_dispatch_pool(cfg, repo) else {
         return;
     };
-    let n = bn_core::agent::CONTROLLER_POOL_SLOT;
+    let n = bn_core::agent::MAIN_POOL_SLOT;
     let _lock = lock_leases(&ctx.pool_dir);
     let mut leases = read_leases(&ctx.pool_dir);
     if !leases.slots.contains_key(&n) {
@@ -392,7 +392,7 @@ fn evict_occupant(
     );
     // The controller slot is `bn control`'s, and the orchestrator guard is the one gate
     // `fleet_gc` never lets anything override.
-    observation.is_orchestrator = n == bn_core::agent::CONTROLLER_POOL_SLOT;
+    observation.is_orchestrator = n == bn_core::agent::MAIN_POOL_SLOT;
 
     // A registered agent can leave behind a live tmux window after its session is gone. If its PR
     // landed/closed and the checkout is clean, `pool return --force` may reap that stale window even

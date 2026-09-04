@@ -173,7 +173,7 @@ function PoolSizeControl({ repo, pool }: { repo: string; pool: RepoPool }) {
     );
   }
   const resize = (n: number) => () => {
-    // Slot 1 is the controller's, so MIN_POOL_SIZE is the smallest pool with a worker in it.
+    // Slot 1 is the reserved main slot, so MIN_POOL_SIZE is the smallest pool with a worker in it.
     // Stepping below that turns pooling off outright rather than sending a size the server would
     // refuse — but never silently: shrinking can strand slots, which `pool prune` reclaims.
     if (n < MIN_POOL_SIZE) {

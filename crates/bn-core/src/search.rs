@@ -61,6 +61,24 @@ pub fn search(cfg: &Config, query: &str, limit: usize) -> Vec<SearchHit> {
                 }
             }
         }
+        // Repo reference notes have no owning `note.md`, so the walk above never reaches them.
+        // They're attributed to `<repo>/reference` — the area they live in, since they belong to
+        // the repo rather than to any branch.
+        for (repo, path) in crate::references::notes_under_root(root) {
+            scan_file(
+                &path,
+                "reference",
+                &repo,
+                "reference",
+                "active",
+                &needle,
+                &mut hits,
+            );
+            if limit > 0 && hits.len() >= limit {
+                hits.truncate(limit);
+                return hits;
+            }
+        }
     }
     hits
 }

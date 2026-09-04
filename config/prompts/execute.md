@@ -46,5 +46,10 @@ reads. If the plan turns out to be wrong, say so and stop — don't silently imp
    `bn_pr <url>`. If verify fails, that failure is your next todo (or a `debug`
    hand-off) — reopen the loop, don't paper over it. The PR is what the `critique` stage reviews.
 
-7. **Report.** One line: *N todos closed · verify PASS/FAIL · done-when M/M met · PR <url>*. Then
+7. **Record what outlives the branch.** Anything you learned about **the repo itself** — how it builds, where a subsystem lives, a
+failure that misleads — outlives this branch. Record it with `bn_ref_append` (one fact, with
+its source and today's date; see `/bn:repo-reference-update`), not only in the branch note,
+which disappears when the branch does.
+
+8. **Report.** One line: *N todos closed · verify PASS/FAIL · done-when M/M met · PR <url>*. Then
    what's left and the single next action.

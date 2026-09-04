@@ -82,13 +82,13 @@ One rule, enforced in `bn agent launch` — the chokepoint every entry point fun
 | Worktree | May host |
 |---|---|
 | outside a git worktree | **nothing.** Every session, including planning, must be backed by a repository branch. |
-| `worktree/<repo>/main` | **nothing.** It stays clean on `main`, matching the `pre-commit` hook that already refuses commits there. |
-| `_pool/1` | the `bn control` orchestrator, and only it. `bn control start` leases this slot from anywhere in the repo. |
+| `worktree/<repo>/main` | **nothing.** It stays clean on `main`, matching the `pre-commit` hook that already refuses commits there — and it is not somewhere you go either: the pickers hide it, and `main-sync` hard-resets it onto the remote tip every 15 minutes. |
+| `_pool/1` — the **main slot** | the `bn control` orchestrator, and only it. It is also where *you* land when you pick "main": a detached checkout at the repo's base, so main-branch work has a home that isn't the main worktree. `bn control start` leases this slot from anywhere in the repo. |
 | `_pool/2…N`, branch worktrees | exactly **one** agent each. |
 
 So:
 
-- Typing `claude` (or `copilot`) in `main` doesn't dead-end — it asks *what is this worktree for?*, then hands the answer to `bn dispatch`, which leases a warm pool slot, seeds that branch's note with the goal **and** an open todo, and starts the agent there.
+- Typing `claude` (or `copilot`) in the main slot doesn't dead-end — it asks *what is this worktree for?*, then hands the answer to `bn dispatch`, which leases a warm pool slot, seeds that branch's note with the goal **and** an open todo, and starts the agent there.
 - Typing either harness outside a git worktree refuses to start. Enter an existing repository or create one first.
 - Repo-less attention items remain queued until task enhancement or a human assigns a repo and branch; bn no longer opens planning scratch sessions for them.
 - Typing it in a worktree that already has a live agent refuses, naming the holder: steer it with `bn agent send <repo>:<branch> "…"`, or free it with `bn agent kill <repo>:<branch>`.
