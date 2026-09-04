@@ -543,6 +543,7 @@ pub fn close_data(c: &CloseOutcome) -> Value {
         "todos_completed": c.todos_completed,
         "achievement": c.achievement,
         "unmet_criteria": c.unmet_criteria,
+        "uncaptured_links": c.uncaptured_links,
     })
 }
 

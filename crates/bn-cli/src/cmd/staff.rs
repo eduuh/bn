@@ -878,6 +878,15 @@ mod tests {
     /// exactly the regression this pins — it is what left every `goals-align` gather at exit 127.
     #[test]
     fn dispatch_capture_runs_the_child_under_the_job_path_prelude() {
+        // Same protocol as the sibling in `cmd/cron/exec.rs` (#1248): this asserts one evaluation
+        // of `job_path()` against another, either side of a fork+exec, and `job_path` reads HOME
+        // and PATH at call time. Without the lock any test that moves HOME in that window fails
+        // it, and clippy cannot see the problem because `disallowed-methods` policies writes only.
+        // `/bin/sh` is spawned by absolute path, so pinning PATH cannot break resolution.
+        let _lock = bn_core::test_support::env_lock();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = bn_core::test_support::EnvGuard::set("HOME", temp.path());
+        let _path = bn_core::test_support::EnvGuard::set("PATH", "/usr/bin:/bin");
         let exe_dir = std::env::current_exe()
             .expect("current exe")
             .parent()

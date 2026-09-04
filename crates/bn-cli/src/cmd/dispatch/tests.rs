@@ -85,17 +85,20 @@ fn plan_gate_decision_table() {
     assert!(plan_gate_enabled(PlanGate::Force, false, false, false));
     // Off wins over both config and yolo — the whole reason it is not just another bool.
     assert!(!plan_gate_enabled(PlanGate::Off, true, true, false));
-    // A scout ships nothing, so there is never a plan to review, whatever was asked for.
+    // A scout still skips the plan-review gate: it investigates first, then either ships a bounded
+    // fix directly or finishes report-only.
     for request in [PlanGate::Auto, PlanGate::Force, PlanGate::Off] {
         assert!(!plan_gate_enabled(request, true, true, true));
     }
 }
 
 #[test]
-fn scout_seed_uses_scout_envelope_with_report_only_completion() {
+fn scout_seed_uses_scout_envelope_with_ship_or_report_only_completion() {
     let s = seed(true, false, false, false, "investigate");
     assert!(s.contains("You are a SCOUT"));
     assert!(s.contains("--- WORKFLOW: investigate ---"));
+    assert!(s.contains("run `bn verify`, push, open a PR"));
+    assert!(s.contains("`bn_pr <url>`"));
     assert!(s.contains("bn agent done --report-only"));
     assert!(!s.contains("CONCURRENCY DISCIPLINE"));
 }

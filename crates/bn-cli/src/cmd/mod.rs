@@ -63,6 +63,7 @@ pub(crate) mod queue_scope;
 pub(crate) mod queue_tick;
 pub(crate) mod queue_timeline;
 pub(crate) mod recall;
+pub(crate) mod links;
 pub(crate) mod references;
 pub(crate) mod release;
 pub(crate) mod remote_track;

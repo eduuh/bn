@@ -79,6 +79,7 @@ pub(crate) use cmd::jobs::*;
 pub(crate) use cmd::killport::*;
 pub(crate) use cmd::learnings::*;
 pub(crate) use cmd::lifecycle::*;
+pub(crate) use cmd::links::*;
 pub(crate) use cmd::merged_prs::*;
 pub(crate) use cmd::night::*;
 pub(crate) use cmd::orchestrate::*;

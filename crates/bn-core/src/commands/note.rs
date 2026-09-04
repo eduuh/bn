@@ -64,6 +64,11 @@ pub struct CloseOutcome {
     /// Acceptance criteria (`## Done When`) still unmet at close — a warning, not a block. Empty
     /// when the branch declared none or met them all.
     pub unmet_criteria: Vec<String>,
+    /// The note's PR/work-item links that are not in the `bn links` store — a warning, not a
+    /// block. Closing is the last moment these are cheap to keep: the note is about to stop
+    /// being the thing anyone reads, and the worktree is usually next. Empty when the branch
+    /// linked neither, or when both are already stored.
+    pub uncaptured_links: Vec<String>,
 }
 
 /// Complete and close the branch note: mark every open todo done (stamped `today`), set the
@@ -142,7 +147,27 @@ pub fn close(
         // A re-close logged nothing — don't report an achievement it didn't append.
         achievement: if was_closed { None } else { text },
         unmet_criteria,
+        uncaptured_links: uncaptured_links(cfg, ctx, &note),
     })
+}
+
+/// The note's PR and work item that the `bn links` store does not already hold.
+///
+/// Reads the same [`crate::links::capturable`] that `bn links capture` writes from, so the
+/// warning names exactly what that command would store — including a bare work-item id, which
+/// resolves through the repo's forge rather than being skipped.
+///
+/// Read-only and best-effort: an unreadable store yields "nothing captured", which over-warns
+/// rather than under-warns. Closing a note must never fail over a bookmark list.
+fn uncaptured_links(cfg: &Config, ctx: &Resolved, note: &Note) -> Vec<String> {
+    let stored = crate::links::read(cfg);
+    let pr = note.front.pr.as_ref().map(Scalar::display);
+    let wi = note.front.work_item.as_ref().map(Scalar::display);
+    crate::links::capturable(cfg, &ctx.repo, pr.as_deref(), wi.as_deref())
+        .into_iter()
+        .map(|c| c.url)
+        .filter(|url| !stored.iter().any(|l| &l.url == url))
+        .collect()
 }
 
 /// Default achievement line when none is given: the note's Goal, suffixed with its PR when

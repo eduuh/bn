@@ -1102,10 +1102,11 @@ pub(crate) fn run_dispatch(
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
         });
-    // The investigate skill IS the scout workflow (read-only, findings to the note), so an
+    // The investigate skill IS the scout workflow (investigate first, findings to the note), so an
     // explicit `--skill investigate` gets scout semantics without needing --scout too.
     let scout = scout || skill == Some("investigate");
-    // A scout ships nothing, so the verify gate only applies to ship tasks.
+    // `--verify` still applies only to ship seeds. A scout now decides inside its workflow whether
+    // the findings should graduate into a verified PR or finish report-only.
     let verify = verify && !scout;
     if raw.trim().is_empty() {
         fail_json(json, "dispatch", "empty-item", "bn dispatch: empty item");

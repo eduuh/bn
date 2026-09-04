@@ -18,8 +18,14 @@ You are wrapping up a work session on the current branch.
    person with `bn_add ask`.
 7. If a PR was opened for this branch, link it with `bn_pr <url>` (or `bn pr <url>`) — the note is
    where the next session and the review queue both look for it, and a summary in chat is not a link.
-8. If the branch's work is merged and finished, run `bn close` in the shell — promptly, since
-   the merge→close gap is what `bn metrics` measures as close-out lag.
-9. Finish with a 2–3 line summary of what changed and what's left.
+8. Capture the links this session leaves behind: `bn links capture` stores the branch's PR and
+   work item, and `bn links add <url> --name "<what it is>" --tags <tags>` takes anything else
+   you will want again — the PBI, an Azure portal blade, a dashboard, the doc that answered the
+   question. They are person-scoped and cross-machine, so they outlive this worktree; a URL only
+   in the note leaves when the worktree does.
+9. If the branch's work is merged and finished, run `bn close` in the shell — promptly, since
+   the merge→close gap is what `bn metrics` measures as close-out lag. It warns about any PR or
+   work item you have not captured.
+10. Finish with a 2–3 line summary of what changed and what's left.
 
 Be faithful: only mark todos done that are actually complete.

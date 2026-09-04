@@ -293,6 +293,14 @@ impl Config {
         self.personal_root.join("references")
     }
 
+    /// `<personal_root>/links.md` — the store of links worth going back to (`bn links`).
+    /// **Person-scoped, cross-machine**, for the same reason as [`references_dir`](Self::references_dir):
+    /// a PBI or a portal blade is yours, not one laptop's. Sits beside `tasks.txt` in the synced
+    /// notes root rather than under `<machine>/`.
+    pub fn links_file(&self) -> PathBuf {
+        self.personal_root.join("links.md")
+    }
+
     /// Existing-roots in oracle order: personal first, then work (only if they exist).
     /// Used by cross-repo scans (list/summary). Dedups when both roots collapse. On a
     /// [`work_only`](Config::work_only) machine the personal root is skipped entirely, so a

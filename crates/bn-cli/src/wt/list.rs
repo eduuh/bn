@@ -67,17 +67,23 @@ pub(crate) fn cmd_status(cfg: &Config, all: bool, pr: bool) -> bool {
             if bn_core::agent::is_reserved_branch(&branch) {
                 continue;
             }
+            // A detached checkout — a pool slot, `_release-main`, a pipeline scratch dir — reports
+            // no branch, and `repo/` on its own names nothing you could act on. Fall back to the
+            // directory, which is the same label a reclaim files that worktree under.
+            let label = label_for(Path::new(&wt), &branch);
             let changes = dirty_count(&wt);
             if changes == 0 {
                 clean += 1;
                 if all {
-                    println!("  {GREEN}✓{NC} {repo}/{branch}  clean");
+                    println!("  {GREEN}✓{NC} {repo}/{label}  clean");
                 }
                 continue;
             }
             dirty += 1;
             if pr {
-                let state = if remote == Remote::Other {
+                // No branch means no PR to ask about: a detached checkout's HEAD belongs to
+                // whatever it was cut from, so a lookup would report someone else's state.
+                let state = if remote == Remote::Other || branch.is_empty() {
                     "—".to_string()
                 } else {
                     pr_state(&remote, &branch)
@@ -94,9 +100,9 @@ pub(crate) fn cmd_status(cfg: &Config, all: bool, pr: bool) -> bool {
                         format!("uncommitted work (PR {state})"),
                     )
                 };
-                println!("{mark} {repo}/{branch}  {changes} changes  — {verdict}");
+                println!("{mark} {repo}/{label}  {changes} changes  — {verdict}");
             } else {
-                println!("{YELLOW}•{NC} {repo}/{branch}  {changes} changes — uncommitted");
+                println!("{YELLOW}•{NC} {repo}/{label}  {changes} changes — uncommitted");
             }
         }
     }

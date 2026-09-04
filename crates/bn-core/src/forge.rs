@@ -150,6 +150,26 @@ pub fn links_from_url(url: &str) -> Option<ForgeLinks> {
     })
 }
 
+/// The browser URL for one issue / work item id, or `None` when this forge's layout cannot name
+/// one. Follows the module's rule: an absent link beats a link that 404s.
+///
+/// Only a bare number is an id — a leading `#` is trimmed, anything else is refused rather than
+/// pasted into a path. On GitHub the issue path is also right for a pull request, since
+/// `/issues/{n}` redirects to `/pull/{n}`; Azure DevOps is the unambiguous case, and the one a
+/// work item actually comes from.
+pub fn item_url(links: &ForgeLinks, id: &str) -> Option<String> {
+    let n = id.trim().trim_start_matches('#');
+    if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let issues = links.issues.as_deref()?;
+    match links.forge {
+        Forge::AzureDevOps => Some(format!("{issues}/edit/{n}")),
+        Forge::GitHub | Forge::GitLab => Some(format!("{issues}/{n}")),
+        Forge::Unknown => None,
+    }
+}
+
 /// Azure DevOps links from an already-split remote. Three remote shapes point at the same pages:
 /// `dev.azure.com/{org}/{project}/_git/{repo}`, the ssh form `ssh.dev.azure.com/v3/{org}/{project}/
 /// {repo}`, and the legacy `{org}.visualstudio.com/{project}/_git/{repo}`. Work items are a project
@@ -186,4 +206,70 @@ fn azure_links(host: &str, segs: &[&str]) -> Option<ForgeLinks> {
         pulls: Some(format!("{base}/pullrequests")),
         repo: base,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn links(remote: &str) -> ForgeLinks {
+        links_from_url(remote).expect("remote parses")
+    }
+
+    #[test]
+    fn an_azure_work_item_id_becomes_its_edit_page() {
+        let l = links("https://dev.azure.com/contoso/Project/_git/BigMono");
+        assert_eq!(l.forge, Forge::AzureDevOps);
+        assert_eq!(
+            item_url(&l, "11047593").as_deref(),
+            Some("https://dev.azure.com/contoso/Project/_workitems/edit/11047593")
+        );
+    }
+
+    #[test]
+    fn the_ssh_and_legacy_azure_remotes_reach_the_same_work_item() {
+        let want = Some("https://dev.azure.com/contoso/Project/_workitems/edit/42".to_string());
+        assert_eq!(
+            item_url(&links("git@ssh.dev.azure.com:v3/contoso/Project/BigMono"), "42"),
+            want
+        );
+        let legacy = links("https://contoso.visualstudio.com/Office/_git/BigMono");
+        assert_eq!(
+            item_url(&legacy, "42").as_deref(),
+            Some("https://contoso.visualstudio.com/Office/_workitems/edit/42")
+        );
+    }
+
+    #[test]
+    fn github_and_gitlab_use_their_issue_path() {
+        assert_eq!(
+            item_url(&links("git@github.com:eduuh/bn.git"), "1250").as_deref(),
+            Some("https://github.com/eduuh/bn/issues/1250")
+        );
+        assert_eq!(
+            item_url(&links("https://gitlab.com/group/sub/proj"), "7").as_deref(),
+            Some("https://gitlab.com/group/sub/proj/-/issues/7")
+        );
+    }
+
+    #[test]
+    fn a_hash_prefix_and_a_bare_number_agree() {
+        let l = links("git@github.com:eduuh/bn.git");
+        assert_eq!(item_url(&l, "#338"), item_url(&l, "338"));
+    }
+
+    #[test]
+    fn an_unknown_forge_names_no_item_rather_than_guessing() {
+        let l = links("git@git.example.com:team/thing.git");
+        assert_eq!(l.forge, Forge::Unknown);
+        assert!(item_url(&l, "1").is_none());
+    }
+
+    #[test]
+    fn anything_that_is_not_a_number_is_refused() {
+        let l = links("git@github.com:eduuh/bn.git");
+        for bad in ["", "  ", "#", "abc", "12a", "1/2", "../etc"] {
+            assert!(item_url(&l, bad).is_none(), "accepted {bad:?}");
+        }
+    }
 }

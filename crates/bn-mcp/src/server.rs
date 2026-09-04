@@ -10,6 +10,7 @@
 use std::path::PathBuf;
 
 use bn_core::commands::{self, CmdError};
+use bn_core::links;
 use bn_core::payload;
 use bn_core::resolver::{Config, Resolved};
 use bn_core::rollups;
@@ -83,6 +84,23 @@ struct PrArgs {
 struct GoalArgs {
     /// The one-line Goal to set under the note's `## Goal` heading.
     goal: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct LinksAddArgs {
+    /// The http(s) URL to store. Anything else is rejected — a stored link is handed straight
+    /// to a browser.
+    url: String,
+    /// What to call it in the picker. Omit and it becomes the host plus the last path segment.
+    #[serde(default)]
+    name: Option<String>,
+    /// Tags to file it under, e.g. ["dri", "telemetry"]. Unlisted tags are kept, not rejected.
+    #[serde(default)]
+    tags: Vec<String>,
+    /// Repository this link belongs to. Omit to use this worktree's repo; pass "" for none.
+    #[serde(default)]
+    repo: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -166,6 +184,45 @@ impl BnServer {
             .map_err(cmd_err)?
         };
         Ok(CallToolResult::structured(payload::add_data(&out)))
+    }
+
+    #[tool(
+        name = "bn_links_add",
+        description = "Store a link worth going back to — a PR, a work item or PBI, an Azure portal blade, a dashboard, a docs page. Call this whenever a URL surfaces that the user will want again, without waiting to be asked: the store is person-scoped and cross-machine, so a link kept here outlives this branch and this worktree. Unlike every other tool on this server, it does NOT fail closed when no branch resolves — it stores the link without a repo instead, because losing a capture over the client's working directory is the wrong trade. Re-adding a URL already stored updates it in place. Nothing is fetched over the network."
+    )]
+    async fn bn_links_add(
+        &self,
+        Parameters(a): Parameters<LinksAddArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        // Unlike every other tool here, the store is person-scoped, so a call that cannot
+        // resolve a branch still succeeds — it just stores the link without a repo. Refusing to
+        // keep a link because of where the client happens to be standing would be the wrong
+        // trade for a tool whose whole point is that capture is free.
+        let repo = match a.repo.as_deref() {
+            Some("") => None,
+            Some(r) => Some(r.to_string()),
+            None => self.resolve(&ctx).ok().map(|c| c.repo),
+        };
+        let out = {
+            let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+            links::add(
+                &self.cfg,
+                &a.url,
+                a.name.as_deref(),
+                &a.tags,
+                repo.as_deref(),
+                &today(),
+            )
+            .map_err(|e| ErrorData::invalid_params(e.message(), None))?
+        };
+        Ok(CallToolResult::structured(serde_json::json!({
+            "id": out.id,
+            "url": out.url,
+            "name": out.name,
+            "tags": out.tags,
+            "repo": out.repo,
+        })))
     }
 
     #[tool(
@@ -354,10 +411,17 @@ impl ServerHandler for BnServer {
              launcher (`bn mcp serve`) derives its scope from the client's current working \
              directory, so no per-call headers are needed; the shared HTTP transport instead \
              derives it per request (X-Bn-Repo/X-Bn-Branch headers or ?repo=&branch= query). \
-             Either way, a call that resolves to no branch fails closed. Start a session with \
+             Either way, a call that resolves to no branch fails closed — with one deliberate \
+             exception, bn_links_add, described below. Start a session with \
              bn_context (compact orientation: goal, counts, top todos, blockers, PR, next-step \
              hints), then use only the current-branch tools: bn_goal, bn_add, bn_done, bn_pr, \
-             bn_cat, bn_status, bn_sync, bn_handoff_read, and bn_handoff_write. The MCP surface \
+             bn_cat, bn_status, bn_sync, bn_handoff_read, and bn_handoff_write. bn_links_add is \
+             the one exception to branch scope: it stores a link in the person-scoped, \
+             cross-machine link store, and succeeds even when no branch resolves (the link is \
+             then stored without a repo). Call it whenever a URL surfaces that will be wanted \
+             again — a PR, a work item or PBI, a portal blade, a dashboard, a docs page — \
+             without waiting to be asked, and especially as a pull request completes, when those \
+             links are about to leave with the worktree. The MCP surface \
              cannot target another repo/branch and does not expose cross-branch rollups, search, \
              daily goals, reviews, metrics, attention queues, cron status, or agent fleet/session \
              mining; use the `bn` CLI for those explicit whole-person workflows. Every effective \

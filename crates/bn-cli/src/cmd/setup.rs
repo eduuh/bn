@@ -37,6 +37,13 @@ pub(crate) fn emit_setup(cfg: &Config, as_json: bool) {
         ));
     }
 
+    // Native skills. `bn setup` is what a machine runs to *become* a bn machine, and a machine
+    // whose harnesses have none of the slash-commands installed is set up only on paper — until
+    // now that only happened inside `install.sh`, so anyone who ran `bn setup` by hand (or added a
+    // skill and re-ran it) got nothing. Idempotent, and partial by design: a root bn does not own
+    // refuses without stopping the others, so a refusal is reported and never fails setup.
+    let skills = sync_native_skills_for_setup(cfg);
+
     if as_json {
         let data = serde_json::json!({
             "config_path": config_path.display().to_string(),
@@ -44,6 +51,8 @@ pub(crate) fn emit_setup(cfg: &Config, as_json: bool) {
             "work_repos": cfg.work_repos,
             "personal_root": cfg.personal_root.display().to_string(),
             "work_root": cfg.work_root.display().to_string(),
+            "skills_written": skills_written(&skills),
+            "skill_sync_failures": skills.failures,
         });
         println!("{}", Envelope::success("setup", data).to_json());
         return;
@@ -71,6 +80,46 @@ pub(crate) fn emit_setup(cfg: &Config, as_json: bool) {
         "Regenerated {} (the plaintext work-repos fallback).",
         work_repos_path.display()
     );
+    match (skills_written(&skills), skills.failures.len()) {
+        (0, 0) => println!("Native skills:  already up to date."),
+        (n, 0) => println!("Native skills:  {n} file(s) written for Claude + Copilot."),
+        (n, f) => {
+            println!("Native skills:  {n} file(s) written, {f} root(s) refused:");
+            for failure in &skills.failures {
+                println!(
+                    "  {:?} ({}): {}",
+                    failure.harness, failure.scope, failure.error
+                );
+            }
+        }
+    }
+}
+
+/// How many native skill files a sync actually *wrote*. `Unchanged` is the overwhelmingly common
+/// case on a re-run — the install visits every skill in every root each time — and counting those
+/// made a no-op setup claim it had refreshed 58 files.
+fn skills_written(report: &bn_core::skills::NativeSyncReport) -> usize {
+    use bn_core::skills::NativeInstallAction as A;
+    report
+        .changes
+        .iter()
+        .filter(|c| matches!(c.action, A::Created | A::Updated | A::Removed))
+        .count()
+}
+
+/// Refresh the native skill roots for [`emit_setup`], resolving the shared tier the same way
+/// `bn skills install` does: through the stable `config_dir()/repo` install anchor when it exists,
+/// so setup works from any directory, and the current directory only as a fallback for a checkout
+/// that has not been anchored yet.
+fn sync_native_skills_for_setup(cfg: &Config) -> bn_core::skills::NativeSyncReport {
+    let home = dirs::home_dir().unwrap_or_default();
+    let anchor = resolver::config_dir().join("repo");
+    let base = if anchor.is_dir() {
+        anchor
+    } else {
+        std::env::current_dir().unwrap_or_default()
+    };
+    bn_core::skills::sync_native_skills(cfg, &base, &home)
 }
 
 /// `bn glyphs` — render the whole icon vocabulary with names + codepoints, then a mock of the

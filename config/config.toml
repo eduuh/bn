@@ -187,6 +187,12 @@ fleet_poll_secs = 2
 tmux_mcp_autostart = true        # also requires machines.<current>.web = true
 tmux_mcp_badge = true            # suppressed when machines.<current>.web is false/absent
 
+[links]
+# The vocabulary `bn links` files links under. A link may carry as many as apply, and an
+# unlisted tag warns but still saves — this is a habit worth keeping, not a schema to enforce.
+# Absent, this falls back to the same list compiled into bn; `tags = []` means no vocabulary.
+tags = ["domains", "dri", "telemetry", "security", "permissions", "repos", "pipelines", "incidents", "learning"]
+
 [dispatch]
 plan_review = false
 plan_reviewers = 3

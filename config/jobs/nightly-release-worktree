@@ -31,8 +31,22 @@ bn_nightly_install_anchor() {
 
 bn_nightly_resolve_worktree() {
   if [ -n "${BN_MAIN_WORKTREE:-}" ]; then
-    printf '%s\n' "$BN_MAIN_WORKTREE"
-    return 0
+    # CI passes an explicit checkout. Local cron runs should still prefer the dedicated
+    # release worktree unless the override is the real GitHub Actions checkout.
+    if [ "${GITHUB_ACTIONS:-false}" = "true" ]; then
+      printf '%s\n' "$BN_MAIN_WORKTREE"
+      return 0
+    fi
+
+    if [ -e "$BN_MAIN_WORKTREE/.git" ]; then
+      bn_nightly_branch=$(git -C "$BN_MAIN_WORKTREE" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+      case "$bn_nightly_branch" in
+        main)
+          printf '%s\n' "$BN_MAIN_WORKTREE"
+          return 0
+          ;;
+      esac
+    fi
   fi
 
   bn_nightly_anchor=$(bn_nightly_install_anchor 2>/dev/null || true)

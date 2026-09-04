@@ -210,7 +210,7 @@ fn ps_all() -> Vec<Proc> {
 /// Every process's current working directory. Linux reads `/proc/<pid>/cwd`; elsewhere a single
 /// `lsof -d cwd` pass. Best-effort — empty when the tool is missing (windowed agents still resolve
 /// via their pane cwd).
-fn process_cwds() -> Vec<(i32, PathBuf)> {
+pub(crate) fn process_cwds() -> Vec<(i32, PathBuf)> {
     #[cfg(target_os = "linux")]
     {
         let mut rows = Vec::new();

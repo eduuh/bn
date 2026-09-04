@@ -46,6 +46,14 @@ pub(super) struct ToolsSection {
     pub(super) builtins: Option<Vec<String>>,
 }
 
+/// `[links]`: the tag vocabulary for `bn links`. A small, curated set of terms you actually file
+/// links under. Absent/empty means no vocabulary, which makes every tag "unlisted" — allowed, just
+/// unremarked. An unlisted tag warns and still saves; this is a habit, not a schema.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub(super) struct LinksSection {
+    pub(super) tags: Option<Vec<String>>,
+}
+
 /// `[web]`: the `bn-web` dashboard server (#386/#388). All optional — absent falls back to the
 /// loopback / 7770 / 2s defaults resolved in [`super::WebConfig`].
 #[derive(Debug, Clone, Default, serde::Deserialize)]

@@ -167,7 +167,8 @@ pub(crate) enum OrchestrateCmd {
         /// Priority — higher is pulled first (default 0). Ties break FIFO by add time.
         #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
         priority: i64,
-        /// Work kind: `ship` (open a PR, default) or `scout` (read-only investigation).
+        /// Work kind: `ship` (open a PR, default) or `scout` (investigate first, then either ship a
+        /// bounded fix or finish report-only).
         #[arg(long, value_enum, default_value_t = BacklogKindArg::Ship)]
         kind: BacklogKindArg,
         /// A path glob this work is expected to touch (overlap-aware scheduling hint). Repeatable.

@@ -294,12 +294,13 @@ pub struct QueueItem {
 pub type QueueEntrySpec = (String, Vec<String>, Substrate, WorkClass, Option<String>);
 
 /// The routed-back answer for a scout/ask item (#378) — the "delegate-for-answers" deliverable. A
-/// scout runs the read-only `investigate` skill, writes findings to its branch note, and opens **no
-/// PR**; when it reaches `Done` the daemon harvests those findings and records this on the run item
-/// (a pure state field), so `bn orchestrate answers` and `ask --wait` surface the answer with zero
-/// new IPC — they just read the state file the daemon already persists. `path` points at the
-/// findings write-up in the item's (synced, worktree-independent) branch-note dir, so it stays
-/// readable after the scout worktree is reaped.
+/// scout runs the investigation-first `investigate` skill, writes findings to its branch note, and
+/// may either finish report-only or continue to a bounded PR in the same session; when it reaches
+/// `Done` the daemon harvests those findings and records this on the run item (a pure state field),
+/// so `bn orchestrate answers` and `ask --wait` surface the answer with zero new IPC — they just
+/// read the state file the daemon already persists. `path` points at the findings write-up in the
+/// item's (synced, worktree-independent) branch-note dir, so it stays readable after the scout
+/// worktree is reaped.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Answer {
     /// The question that was asked — the scout item's dispatch subject, echoed back beside the

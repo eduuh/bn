@@ -120,6 +120,12 @@ fn custom_agents_preserve_the_job_host_gate() {
 fn scheduler_isolates_sibling_failures_and_backs_off_retries() {
     let _lock = bn_core::test_support::env_lock();
     let temp = tempfile::tempdir().expect("tempdir");
+    // Isolate the shipped cron manifest. `crons::discover` appends `config_dir()/crons.toml` as a
+    // Global tier, and on a machine where bn is actually installed that resolves to the REAL
+    // manifest under $HOME — whose `agent-scheduler` entry is bound to repo `bn`, which this
+    // fixture has not registered. The job was then skipped and the assertions saw zero events.
+    // It passed on CI (fresh HOME, no manifest) and failed for every developer with bn installed.
+    let _cfg_dir = bn_core::test_support::EnvGuard::set("BN_CONFIG_DIR", temp.path().join("cfg"));
     let agents = temp.path().join("agents");
     std::fs::create_dir_all(&agents).expect("agents dir");
     std::fs::write(
@@ -157,6 +163,12 @@ fn scheduler_isolates_sibling_failures_and_backs_off_retries() {
 fn scheduler_enqueues_due_agents_and_queue_tick_runs_them() {
     let _lock = bn_core::test_support::env_lock();
     let temp = tempfile::tempdir().expect("tempdir");
+    // Isolate the shipped cron manifest. `crons::discover` appends `config_dir()/crons.toml` as a
+    // Global tier, and on a machine where bn is actually installed that resolves to the REAL
+    // manifest under $HOME — whose `agent-scheduler` entry is bound to repo `bn`, which this
+    // fixture has not registered. The job was then skipped and the assertions saw zero events.
+    // It passed on CI (fresh HOME, no manifest) and failed for every developer with bn installed.
+    let _cfg_dir = bn_core::test_support::EnvGuard::set("BN_CONFIG_DIR", temp.path().join("cfg"));
     let agents = temp.path().join("agents");
     let state = temp.path().join("state");
     std::fs::create_dir_all(&agents).expect("agents dir");
@@ -540,6 +552,12 @@ fn running_an_unresolvable_job_fails_fast_instead_of_queueing_it() {
 fn scheduler_catalog_failure_is_recorded_on_the_scheduler_row() {
     let _lock = bn_core::test_support::env_lock();
     let temp = tempfile::tempdir().expect("tempdir");
+    // Isolate the shipped cron manifest. `crons::discover` appends `config_dir()/crons.toml` as a
+    // Global tier, and on a machine where bn is actually installed that resolves to the REAL
+    // manifest under $HOME — whose `agent-scheduler` entry is bound to repo `bn`, which this
+    // fixture has not registered. The job was then skipped and the assertions saw zero events.
+    // It passed on CI (fresh HOME, no manifest) and failed for every developer with bn installed.
+    let _cfg_dir = bn_core::test_support::EnvGuard::set("BN_CONFIG_DIR", temp.path().join("cfg"));
     let agents = temp.path().join("agents");
     std::fs::create_dir_all(&agents).expect("agents dir");
     std::fs::write(

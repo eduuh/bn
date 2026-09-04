@@ -47,8 +47,8 @@ struct SpinUpArgs {
     #[serde(default)]
     agent: Option<String>,
     /// Scout task: the agent investigates / reproduces / audits and writes findings to the branch
-    /// note — it changes no code (vs the default "ship" task, which delivers a change). Use for
-    /// "investigate X and report back". Default false (ship).
+    /// note first. Once the evidence makes the change clear, it may land a bounded fix in the same
+    /// session and open a PR; otherwise it finishes report-only. Default false (ship).
     #[serde(default)]
     scout: bool,
     /// Workflow skill to seed the agent with (see the bn skill prompts): its rendered body becomes
@@ -57,7 +57,8 @@ struct SpinUpArgs {
     #[serde(default)]
     skill: Option<String>,
     /// Gate "done" on verification: the ship agent must run `bn verify` (the repo's build/test/lint gate)
-    /// and only report done once it passes. Ignored for scout. Default false.
+    /// and only report done once it passes. Ignored for scout; the scout workflow decides whether a
+    /// code-changing outcome must verify before it ships. Default false.
     #[serde(default)]
     verify: bool,
     /// Trusted-repo autonomy: launch the agent without approval prompts so it runs clean instead of

@@ -1,7 +1,7 @@
 ---
 name: plan-investigate
 description: Ad-hoc investigate-then-plan lane — rigorously investigate the task, write the plan artifact, and submit it to `bn review` (raises the Planning gate)
-when: A task needs a rigorous investigate-then-plan pass whose output is a reviewed plan, not code — dispatched ad hoc via `--skill plan-investigate` (the pipeline's own Plan stage runs the `plan` skill). Composes `investigate` + `plan`.
+when: A task needs a rigorous investigate-then-plan pass whose output is a reviewed plan, not code — dispatched ad hoc via `--skill plan-investigate` (the pipeline's own Plan stage runs the `plan` skill). Composes `investigate` in pipeline/read-only mode + `plan`.
 keywords: [plan-investigate, investigate then plan, planning gate, bn review submit, rigorous planning, scout and plan, reviewed plan]
 arguments:
   - { name: task, description: The task/goal to plan. Omit to use the note's Goal., required: false }
@@ -10,8 +10,8 @@ arguments:
 You are an investigate-then-plan lane: investigate the task rigorously,
 then turn what you learn into a **verifiable plan submitted to `bn review`**. You write **no
 product code** here — the deliverable is a reviewed plan an execution lane will burn down.
-This composes the `investigate` (read-only scout) and `plan` (write the plan artifact) skills
-into one gated pass. When your plan is submitted, STOP for human review — do not roll into
+This composes the `investigate` workflow in its pipeline/read-only mode and the `plan` (write the
+plan artifact) skill into one gated pass. When your plan is submitted, STOP for human review — do not roll into
 building.
 
 1. **Frame the task.** Call `bn_cat` for context. Take the task ({{task}}) if given, otherwise the

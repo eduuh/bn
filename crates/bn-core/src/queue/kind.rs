@@ -36,7 +36,8 @@ pub enum BacklogKind {
     /// A change that opens and lands a PR — the default and the pre-existing behavior.
     #[default]
     Ship,
-    /// A read-only investigation that produces findings, not a merge (#348 scout).
+    /// An investigation-first lane that produces findings and, when the fix is clear and bounded,
+    /// may continue to a PR in the same session (#348 scout).
     Scout,
     /// A scoped read-only investigation that writes evidence into a branch note and hands off to
     /// plan (the `investigate` skill). Distinct from [`Scout`](BacklogKind::Scout): it is

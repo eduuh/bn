@@ -6376,10 +6376,11 @@ fn ensure_default_harness(cfg: &Config, st: &mut OrchestrateState) {
 /// session to restore anyway.
 ///
 /// #378: a `scout` item (an `ask`, or any research-lane entry) dispatches with `--scout` instead of
-/// the ship flags — the read-only `investigate` skill that writes findings to the branch note,
-/// opens no PR, and skips the verify gate — so the same delegate-for-answers primitive `bn dispatch
-/// --scout` already provides is reused verbatim. A ship keeps `--yolo --verify` (implement → verify
-/// → PR → done).
+/// the ship flags — the investigation-first `investigate` skill that writes findings to the branch
+/// note and may either finish report-only or continue to a bounded PR, while still skipping the
+/// explicit `--verify` flag at dispatch time because the workflow decides whether a code-changing
+/// outcome must verify before it ships. A ship keeps `--yolo --verify` (implement → verify → PR →
+/// done).
 fn sh_dispatch(
     repo: &str,
     item: &str,

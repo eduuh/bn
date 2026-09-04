@@ -62,6 +62,14 @@ pub(super) fn route(cfg: &Config, action: CmdShellUi, json: bool) {
                                 eprintln!("  - [ ] {c}");
                             }
                         }
+                        if !o.uncaptured_links.is_empty() {
+                            eprintln!(
+                                "⚠ not in your link store — run `bn links capture` before the worktree goes:"
+                            );
+                            for l in &o.uncaptured_links {
+                                eprintln!("  {l}");
+                            }
+                        }
                         // Closing the note is the local-action trigger for reclaiming the
                         // worktree + tmux window. JSON mode stays note-only for scripted callers.
                         wt::cleanup_current(cfg, force);

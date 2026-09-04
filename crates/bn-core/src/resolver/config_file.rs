@@ -47,6 +47,7 @@ pub(super) struct ConfigFile {
     mcp: Option<McpSection>,
     managed_repos: Option<ManagedReposSection>,
     tools: Option<ToolsSection>,
+    links: Option<LinksSection>,
     web: Option<WebSection>,
     log: Option<LogSection>,
     scout: Option<ScoutSection>,
@@ -272,6 +273,14 @@ impl ConfigFile {
             .and_then(|w| w.tools.as_ref())
             .and_then(|t| t.builtins.clone())
             .or_else(|| self.tools.as_ref().and_then(|t| t.builtins.clone()))
+    }
+
+    /// `[links].tags` — the curated tag vocabulary for `bn links`. `None` when unset.
+    pub(super) fn links_tags(&self) -> Option<Vec<String>> {
+        self.win()
+            .and_then(|w| w.links.as_ref())
+            .and_then(|l| l.tags.clone())
+            .or_else(|| self.links.as_ref().and_then(|l| l.tags.clone()))
     }
 
     /// `[repo.<name>]` (#454): per-repo overrides, windows-overlaid like the rest (a

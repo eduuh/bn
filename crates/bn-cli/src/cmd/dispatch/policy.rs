@@ -78,10 +78,11 @@ pub(crate) enum PlanGate {
 
 /// Whether this dispatch runs behind the plan-review gate.
 ///
-/// A scout never does: it ships nothing, so there is no plan to review. Otherwise the request wins
-/// where it states one, and `Auto` falls back to the trusted-autonomy rule — `--yolo` raises the
-/// gate rather than bypassing it, so autonomy costs a plan review instead of buying its way out of
-/// one.
+/// A scout still skips the plan-review gate: it investigates first, then either ships a bounded
+/// fix directly or finishes report-only, so there is no separate plan artifact to review.
+/// Otherwise the request wins where it states one, and `Auto` falls back to the trusted-autonomy
+/// rule — `--yolo` raises the gate rather than bypassing it, so autonomy costs a plan review
+/// instead of buying its way out of one.
 pub(crate) fn plan_gate_enabled(request: PlanGate, configured: bool, yolo: bool, scout: bool) -> bool {
     if scout {
         return false;

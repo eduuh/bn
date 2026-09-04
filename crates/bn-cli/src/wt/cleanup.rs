@@ -131,26 +131,48 @@ pub(crate) fn cmd_reap(cfg: &Config, all: bool, execute: bool) -> bool {
     } else {
         vec![cwd()]
     };
+    // One process-table pass for the whole sweep: `lsof` is expensive enough that doing it per
+    // worktree would make `--all` crawl. Empty when the tool is missing, which the scratch policy
+    // treats as "can't tell" and covers with its grace window.
+    let cwds = crate::reap::process_cwds();
     let (mut reaped, mut candidates) = (0u32, 0u32);
     for wt_path in paths {
         if !wt_path.is_dir() {
+            continue;
+        }
+        let name = wt_path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        // A pipeline scratch checkout is detached and note-less, so the branch-based path below
+        // can't see it at all. Route it through its own policy and its own (plain `git worktree
+        // remove`) disposal — no note to close, no branch to delete, no pool lease to hand back.
+        if bn_core::scratch_gc::is_scratch_dir(&name) {
+            if let Some(removed) = reap_scratch(&wt_path, &name, &cwds, execute) {
+                candidates += 1;
+                reaped += u32::from(removed);
+            }
             continue;
         }
         let Some((reason, force)) = reap_reason(cfg, &wt_path) else {
             continue;
         };
         candidates += 1;
-        let name = wt_path
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
         if execute {
             if cleanup_one_for_reap(cfg, &wt_path, &worktree_dir, force).is_ok() {
                 println!("{GREEN}reaped {name} ({reason}){NC}");
                 announce_reap(&name, &reason);
                 reaped += 1;
             } else {
-                println!("{YELLOW}skip {name} — removal failed{NC}");
+                // Say which gate refused. "removal failed" sent people to `--force`, which is the
+                // one thing that must not happen here: the usual cause is a dirty tree, and the
+                // gate that stopped the removal is the gate protecting their uncommitted work.
+                let why = if dirty_count(&wt_path.to_string_lossy()) > 0 {
+                    "uncommitted changes — commit or stash first"
+                } else {
+                    "removal failed"
+                };
+                println!("{YELLOW}skip {name} — {why}{NC}");
             }
         } else {
             println!("would reap {name} ({reason})");
@@ -164,6 +186,102 @@ pub(crate) fn cmd_reap(cfg: &Config, all: bool, execute: bool) -> bool {
         println!("{candidates} reapable — pass --yes to reap");
     }
     true
+}
+
+/// Seconds since `path` was last modified, or `0` when that can't be read. Zero reads as brand new
+/// to [`bn_core::scratch_gc::classify`], so an unreadable mtime protects the worktree instead of
+/// exposing it.
+fn age_secs(path: &Path) -> i64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|age| age.as_secs().min(i64::MAX as u64) as i64)
+        .unwrap_or(0)
+}
+
+/// Commits reachable from HEAD that are on no remote — the work a detached scratch checkout would
+/// take with it. `commits_ahead` can't answer this: it counts against `main`, and a sub-agent's
+/// worktree is cut from an arbitrary HEAD. Unreadable output counts as 1 (something to lose), so a
+/// git failure keeps the worktree.
+fn local_only_commits(wt: &Path) -> usize {
+    match git_out(&[
+        "-C",
+        &wt.to_string_lossy(),
+        "rev-list",
+        "--count",
+        "HEAD",
+        "--not",
+        "--remotes",
+    ]) {
+        Some(n) => n.trim().parse().unwrap_or(1),
+        None => 1,
+    }
+}
+
+/// Sweep one `.agent-*` pipeline scratch checkout (see [`bn_core::scratch_gc`]).
+///
+/// Returns `None` when the policy keeps it, `Some(removed)` when it is a reap candidate. Disposal
+/// is a plain `git worktree remove` against the bare repo: a scratch worktree is detached, has no
+/// note, no branch and no pool lease, so [`cleanup_one`]'s machinery has nothing to do here.
+fn reap_scratch(
+    wt_path: &Path,
+    name: &str,
+    cwds: &[(i32, std::path::PathBuf)],
+    execute: bool,
+) -> Option<bool> {
+    let prefix = wt_path.join("");
+    let occupied = cwds.iter().any(|(_, cwd)| cwd.starts_with(&prefix))
+        || !tmux_windows_for(wt_path, "").is_empty();
+    let obs = bn_core::scratch_gc::ScratchObservation {
+        dir_name: name,
+        dirty_files: dirty_count(&wt_path.to_string_lossy()),
+        local_only_commits: local_only_commits(wt_path),
+        occupied,
+        age_secs: age_secs(wt_path),
+    };
+    let disposition =
+        bn_core::scratch_gc::classify(&obs, &bn_core::scratch_gc::ScratchPolicy::default());
+    if !disposition.is_reap() {
+        // Occupied and grace are the normal states of a live sub-agent, so stay quiet about them.
+        // Dirty and unpushed are not: that is a dead sub-agent's output with nowhere else to live,
+        // and the only way anyone learns it exists is this line.
+        if matches!(
+            disposition,
+            bn_core::scratch_gc::Disposition::Keep {
+                reason: bn_core::scratch_gc::KeepReason::Dirty
+                    | bn_core::scratch_gc::KeepReason::Unpushed
+            }
+        ) {
+            println!(
+                "{YELLOW}hold {name} — leaked scratch worktree with {} work in it{NC}",
+                disposition.reason_label()
+            );
+        }
+        return None;
+    }
+    if !execute {
+        println!("would reap {name} (leaked scratch)");
+        return Some(false);
+    }
+    let Some(bare) = find_bare_repo(wt_path) else {
+        println!("{YELLOW}skip {name} — no bare repo found{NC}");
+        return Some(false);
+    };
+    let removed = crate::git::git_ok(&[
+        "--git-dir",
+        &bare.to_string_lossy(),
+        "worktree",
+        "remove",
+        "--force",
+        &wt_path.to_string_lossy(),
+    ]);
+    if removed {
+        println!("{GREEN}reaped {name} (leaked scratch){NC}");
+    } else {
+        println!("{YELLOW}skip {name} — removal failed{NC}");
+    }
+    Some(removed)
 }
 
 /// Why a worktree is reapable (with the `force` to pass cleanup), or `None` to keep it. "merged PR"

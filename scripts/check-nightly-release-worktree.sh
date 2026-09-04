@@ -58,8 +58,19 @@ grep -q dirty "$release/tracked"
 
 override=$(
   HOME="$scratch/home"
-  BN_MAIN_WORKTREE="$scratch/explicit"
+  BN_MAIN_WORKTREE="$scratch/worktree/bn/main"
   export HOME BN_MAIN_WORKTREE
+  unset GITHUB_ACTIONS
+  . "$helper"
+  bn_nightly_resolve_worktree
+)
+[ "$override" = "$scratch/worktree/bn/_release-main" ]
+
+override=$(
+  HOME="$scratch/home"
+  BN_MAIN_WORKTREE="$scratch/explicit"
+  GITHUB_ACTIONS=true
+  export HOME BN_MAIN_WORKTREE GITHUB_ACTIONS
   . "$helper"
   bn_nightly_resolve_worktree
 )

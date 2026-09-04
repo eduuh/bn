@@ -27,7 +27,8 @@ pub use config::{
 pub use context::{repo_root, resolve, resolve_hint, resolve_target};
 pub use dirs::{
     agents_dir, approvals_file_path, bin_dir, bn_home, config_dir, config_file_path, jobs_dir,
-    log_dir, managed_repos_dir, references_dir, state_dir, web_token,
+    link_tags, link_tags_with_source, log_dir, managed_repos_dir, references_dir, state_dir,
+    web_token, TagSource,
 };
 pub use jobs::{
     agent_dirs, job_dirs, job_script, list_jobs, mcp_extras, quarter_review_cron_override,

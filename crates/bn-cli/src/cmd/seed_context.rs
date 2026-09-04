@@ -19,20 +19,19 @@ use bn_core::resolver::{Config, Resolved};
 /// The seed suffix carrying both kinds of standing context. Empty when there is nothing to say, so
 /// a caller can append it unconditionally.
 ///
-/// A scout changes no code, so the coding standards are skipped for one — but directives are not:
-/// "don't touch the vendored directory" constrains an investigation exactly as much as a ship.
+/// A scout may graduate into code once its investigation narrows the change, so it gets the same
+/// coding-standards references as a ship. Directives apply either way: "don't touch the vendored
+/// directory" constrains an investigation exactly as much as a ship.
 pub(crate) fn section(
     cfg: &Config,
     repo: &str,
     branch: &str,
-    scout: bool,
+    _scout: bool,
     refs: &[String],
 ) -> String {
     let mut out = String::new();
-    if !scout {
-        if let Some(s) = super::dispatch::references_section(refs) {
-            out.push_str(&s);
-        }
+    if let Some(s) = super::dispatch::references_section(refs) {
+        out.push_str(&s);
     }
     if let Some(s) = directives_section(cfg, repo, branch) {
         out.push_str(&s);

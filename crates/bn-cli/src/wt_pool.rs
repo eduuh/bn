@@ -2161,9 +2161,11 @@ fn fmt_age(secs: i64) -> String {
 #[cfg(test)]
 mod pool_tests;
 
-/// Real-git integration tests for the worktree-creation and warming primitives — the git-touching
-/// core of `pool get`/`pool warm`. Each builds a throwaway bare repo in a tempdir and drives the
-/// actual `git` binary, so a regression in how a slot is created, switched, reset, or torn down is
-/// caught here rather than in a broken pool on someone's box.
+/// Real-git integration tests for `pool get`/`pool warm`: each builds a throwaway bare repo in a
+/// tempdir and drives the actual `git` binary, so a regression in how a slot is created, switched,
+/// reset or torn down is caught here rather than in a broken pool on someone's box. Split in two
+/// when the single file crossed the 1000-line ratchet — slot mechanics here, acquire/lease next.
 #[cfg(test)]
 mod git_integration_tests;
+#[cfg(test)]
+mod pool_acquire_tests;

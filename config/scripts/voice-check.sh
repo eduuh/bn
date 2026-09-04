@@ -63,6 +63,8 @@ check_file() {
   report "hyphen used as a dash" FAIL \
     "$(printf '%s\n' "$p" | grep -E '[[:alnum:],.")] - [[:alnum:]"(]')"
   report "ellipsis" FAIL "$(printf '%s\n' "$p" | grep -F '...')"
+  report "curly quote, use a straight one" FAIL \
+    "$(printf '%s\n' "$p" | grep $'[‘’“”]')"
   report "bold-dash bullet stack" FAIL \
     "$(printf '%s\n' "$p" | grep -E '^[0-9]+: *([-*] +)?\*\*[^*]+\*\*[ ]*[-—]')"
   # Title Case, without flagging product names ("Setting up Cloudflare Access").
@@ -77,7 +79,17 @@ check_file() {
 
   # ---- judgement calls --------------------------------------------------
   report "banned vocabulary" WARN "$(printf '%s\n' "$p" | grep -iE \
-    '\b(delve|utilize|facilitate|streamline|elevate|unlock|harness|empower|foster|showcase|spearhead|seamless|robust|comprehensive|cutting-edge|state-of-the-art|best-in-class|crucial|vital|pivotal|intricate|nuanced|holistic|myriad|plethora|deep dive|crown jewel|game-changer|paradigm|realm|tapestry|testament)\b')"
+    '\b(delve|utilize|facilitate|streamline|elevate|unlock|harness|empower|foster|showcase|spearhead|embark|underscore|garner|bolster|enhance|exemplify|seamless|robust|comprehensive|cutting-edge|state-of-the-art|best-in-class|world-class|elegant|crucial|vital|pivotal|intricate|nuanced|holistic|myriad|plethora|meticulous|vibrant|valuable|enduring|groundbreaking|renowned|profound|deep dive|crown jewel|game-changer|paradigm|realm|journey|tapestry|testament|interplay|focal point|diverse array)\b')"
+
+  # "key" is a noun and a keyboard key all over the corpus. Only the adjective is banned.
+  report "key as an adjective" WARN "$(printf '%s\n' "$p" | grep -iE \
+    '\bkey (takeaways?|features?|benefits?|advantages?|components?|aspects?|elements?|factors?|considerations?|differentiators?|capabilit(y|ies))\b')"
+
+  # abstract metaphor nouns: read as technical, mean almost nothing.
+  # "primitive" and "surface" are left out on purpose: "Kubernetes storage primitives"
+  # and "attack surface" are real names for real things in this corpus.
+  report "abstract metaphor noun, pick the concrete word" WARN "$(printf '%s\n' "$p" | grep -iE \
+    '\b(substrate|locus|vantage|nexus|bedrock|modality|flywheel|north star|endgame|gold-plat(e|ed|ing)|ratchet|wedge (in|it|them)|evacuat(e|ed|ing)|attack vector|threat vector|growth vector)\b')"
 
   report "leverage (banned as a verb, fine as a noun)" WARN \
     "$(printf '%s\n' "$p" | grep -iE '\bleverag(e|es|ed|ing)\b')"
@@ -94,7 +106,25 @@ check_file() {
 
   # copula avoidance: AI reaches for "serves as" when a human says "is"
   report "copula avoidance, just say is or has" WARN "$(printf '%s\n' "$p" | grep -iE \
-    '\b(serves as|stands as|functions as|acts as|operates as|boasts|offers a|features a|maintains a|represents a|marks the|constitutes)\b')"
+    '\b(serves as|stands as|functions as|acts as|operates as|boasts|offers a|features a|provides a|maintains a|represents a|marks the|constitutes)\b')"
+
+  # "**Performance:** Performance improved." The bold label is fine; restating it is the tell.
+  # A bold label that carries new detail after it ("**Schema in TypeScript.** Tables live in
+  # one file.") is not a tell, so only a repeated *content* word counts, and only for a label
+  # short enough to be an inline header rather than a whole bolded sentence.
+  report "bold lead-in the line then restates" WARN "$(printf '%s\n' "$p" | awk '
+    BEGIN { split("the a an it this that and but so i you we my your there here of to is are", s)
+            for (i in s) stop[s[i]] = 1 }
+    match($0, /\*\*[^*]+\*\*:?/) {
+      label = substr($0, RSTART + 2, RLENGTH - 4)
+      sub(/:$/, "", label)
+      rest = substr($0, RSTART + RLENGTH)
+      sub(/^[[:space:]:.]+/, "", rest)
+      if (split(label, lw, /[^[:alnum:]]+/) > 5) next
+      split(rest, rw, /[^[:alnum:]]+/)
+      w = tolower(lw[1])
+      if (w != "" && !stop[w] && w == tolower(rw[1])) print
+    }')"
 
   # the significance tail: ", ensuring seamless integration" glued to a real sentence
   report "-ing significance tail" WARN "$(printf '%s\n' "$p" | grep -iE \
@@ -102,6 +132,23 @@ check_file() {
 
   report "empty intensifier" WARN "$(printf '%s\n' "$p" | grep -iE \
     '\b(truly|deeply|profoundly|incredibly|remarkably|extremely|highly|significantly|substantially|immensely|vastly)\b')"
+
+  # an adverb propping up a weak verb. The number belongs there instead.
+  report "adverb doing the verb's job, give the number" WARN "$(printf '%s\n' "$p" | grep -iE \
+    '\b(dramatically|drastically|considerably|markedly|greatly|massively|hugely|enormously|effortlessly|painlessly|flawlessly|blazingly)\b')"
+
+  # passive voice. Idiomatic participles are excluded; the rest usually have a
+  # knowable actor that the sentence is hiding.
+  report "passive voice, name who does it" WARN "$(printf '%s\n' "$p" \
+    | grep -iE '\b(is|are|was|were|been|being) (also |already |still |now |never |only |always |then )?[a-z]+ed\b' \
+    | grep -ivE '\b(is|are|was|were|been|being) (also |already |still |now |never |only |always |then )?(used|based|called|named|supposed|related|interested|tired|involved|limited|located|excited|surprised|pleased|finished|allowed|expected|needed|required|deprecated|deleted|installed)\b')"
+
+  report "filler phrase" WARN "$(printf '%s\n' "$p" | grep -iE \
+    '\b(due to the fact that|in the event that|at this point in time|for the purpose of|in spite of the fact|has the ability to|a number of|the majority of|it is important to)\b')"
+
+  # assistant voice leaking into a PR description, an issue comment or an email
+  report "chatbot artifact" WARN "$(printf '%s\n' "$p" | grep -iE \
+    "(great question|good catch|absolutely right|you'?re (absolutely )?right|certainly!|of course!|perfect!|smoking gun|let me know if|feel free to|i'?d be happy to|based on the information available|while specific details are limited)")"
 
   report "hedge sandwich" WARN "$(printf '%s\n' "$p" | grep -iE \
     "while [^.]{5,70}, (it'?s|it is) (worth|important)")"

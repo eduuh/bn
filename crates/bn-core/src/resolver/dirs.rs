@@ -148,6 +148,42 @@ pub fn references_dir() -> PathBuf {
     Config::load().references_dir()
 }
 
+/// Where a `bn links` tag vocabulary came from, so `bn links tags` can say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagSource {
+    /// `[links] tags` was set in `config.toml`.
+    Config,
+    /// The key was absent, so [`crate::links::DEFAULT_TAGS`] applies.
+    Default,
+}
+
+/// The curated tag vocabulary for `bn links` (`[links].tags` in `config.toml`), and where it
+/// came from.
+///
+/// Loaded on call rather than cached on [`Config`]: the vocabulary is read once per `bn links
+/// add`, and a process-lifetime cache would be invisible to tests that swap the config file.
+///
+/// An absent key falls back to the shipped default, so a machine whose `config.toml` predates
+/// the setting still gets a working vocabulary. An explicit `tags = []` is honoured as an empty
+/// vocabulary — every tag is then unlisted, which warns but never blocks.
+pub fn link_tags_with_source() -> (Vec<String>, TagSource) {
+    match super::config_file::ConfigFile::load().and_then(|c| c.links_tags()) {
+        Some(tags) => (tags, TagSource::Config),
+        None => (
+            crate::links::DEFAULT_TAGS
+                .iter()
+                .map(|t| t.to_string())
+                .collect(),
+            TagSource::Default,
+        ),
+    }
+}
+
+/// The tag vocabulary alone, for callers that only need to validate against it.
+pub fn link_tags() -> Vec<String> {
+    link_tags_with_source().0
+}
+
 /// Directory of version-controlled cron job scripts. `$BN_JOBS_DIR` wins, else
 /// `<config_dir>/jobs` (which `install.sh` symlinks onto the repo's `jobs/` dir, so the
 /// jobs cron runs are the same scripts tracked in git). Jobs are scripts persisted in the

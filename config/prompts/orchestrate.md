@@ -41,8 +41,9 @@ leave an item for the user, never safe to start the wrong one.
      `dispatch/<slug-of-title>-<attn-id>`,
    - `agent` = `copilot` (default) unless the user set a preference,
    - `scout: true` when the item is an *investigation* (reproduce / audit / "look into X") — the
-     agent writes findings to the branch note and changes no code; promote it later with `bn promote`
-     if it should ship. Use `verify: true` for a ship you want gated on the repo's build/test/lint.
+     agent investigates first, writes findings to the branch note, and may either land a bounded
+     fix with a PR or finish report-only when the right outcome is a recommendation or no-fix. Use
+     `verify: true` for a ship you want gated on the repo's build/test/lint.
    `spin_up_work` is idempotent — re-running one that's already in flight won't clobber its note, so
    it's safe to re-run this skill. After a successful spin-up, the item is now tracked work; leave a
    trail by acking it (`bn attn ack <id>` via the CLI) — but only once it genuinely started.
