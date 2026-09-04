@@ -803,6 +803,7 @@ pub(crate) mod gathers;
 pub(crate) mod machine_cmd;
 pub(crate) mod queue_cmd;
 pub(crate) mod routine_cmd;
+pub(crate) mod shell_ui_cmd;
 pub(crate) mod staff_cmd;
 pub(crate) use automation_cmd::CmdAutomation;
 pub(crate) use cron_cmd::CronCmd;
@@ -810,6 +811,7 @@ pub(crate) use gathers::*;
 pub(crate) use machine_cmd::MachineCmd;
 pub(crate) use queue_cmd::QueueCmd;
 pub(crate) use routine_cmd::{RoutineCmd, RoutineServiceCmd};
+pub(crate) use shell_ui_cmd::CmdShellUi;
 pub(crate) use staff_cmd::StaffCmd;
 
 #[derive(Subcommand, Debug)]
@@ -1016,109 +1018,6 @@ pub(crate) enum CmdStaff {
 }
 
 #[derive(Subcommand, Debug)]
-pub(crate) enum CmdShellUi {
-    /// Scaffold ~/.config/bn/config.toml (if absent) and regenerate the legacy plaintext
-    /// file (work-repos) config loading still falls back to, from the loaded config.
-    Setup,
-    /// One-line status badge for the tmux status bar (replaces branch-note-status.sh).
-    /// Resolves from the given path (tmux passes #{pane_current_path}) or cwd; prints
-    /// nothing when there's no note or it's closed.
-    TmuxStatus { path: Option<String> },
-    /// Managed bn MCP lifecycle and health helpers for tmux. `ensure` idempotently starts
-    /// `bn serve --daemon` when configured and unreachable; `badge` emits the green/red
-    /// `bnweb:<port>` status segment.
-    TmuxMcp {
-        #[command(subcommand)]
-        action: TmuxMcpCmd,
-    },
-    /// Themed git segment for the tmux status bar (replaces workflow/bin/bn-git-status.sh):
-    /// `⎇ <branch> ↑ahead ↓behind ●dirty` from one `git status --porcelain=v2 --branch`.
-    /// Resolves from the given path (tmux passes #{pane_current_path}) or cwd; silent outside
-    /// a git repo so the segment collapses.
-    TmuxGit { path: Option<String> },
-    /// Focus segment for the tmux status bar (replaces workflow/bin/bn-goal-status.sh): the
-    /// linked PR's title (preferred, cached 5 min via gh) or the branch goal, truncated. Prints
-    /// a dim "set a goal" nudge when there's a note but no goal/PR; silent outside a repo.
-    TmuxGoal { path: Option<String> },
-    /// Global attention tally for the tmux status bar (replaces
-    /// workflow/bin/bn-attention-count.sh): counts windows `waiting` (an agent needs you) and
-    /// `ready`/done across ALL sessions, amber→red once something has waited 15+ min. Silent
-    /// when all quiet so the bar stays clean.
-    TmuxAttnCount,
-    /// Mark a watched window done when its output goes quiet (replaces
-    /// workflow/bin/tmux-done-badge.sh): invoked from the global alert-silence hook with the
-    /// window id. Sets @bn_done ✓, clears monitor-silence, fires a best-effort desktop toast.
-    TmuxDoneBadge {
-        /// The tmux window id (`#{hook_window}`) to badge.
-        window: String,
-    },
-    /// Orchestration roll-up popup (bound to prefix S; replaces workflow/bin/tmux-cockpit.sh):
-    /// in-flight windows across every session (agent state / silence-watch), fleet health
-    /// (`agent supervise`), and the bn cross-branch summary. Waits for Enter before closing.
-    TmuxCockpit,
-    /// Curated keybinding cheat-sheet popup (bound to prefix ?; replaces
-    /// workflow/bin/tmux-help.sh). The workflow bindings worth remembering, grouped. Waits for
-    /// Enter before closing.
-    TmuxHelp,
-    /// Open the current dir's branch note in $EDITOR (bound to prefix n; replaces
-    /// workflow/bin/tmux-note.sh). Execs the editor so closing it closes the popup.
-    TmuxNote,
-    /// Icon-vocabulary cheatsheet: every Nerd Font glyph bn uses (name, codepoint, meaning)
-    /// plus a mock of the two tmux status rows. If a row shows tofu/blanks, your font is
-    /// missing the glyph. The mirrors listed in bn-core/src/glyph.rs must match this set.
-    Glyphs,
-    /// Push the current note's counts into per-window tmux options (@bn_todos,
-    /// @bn_blockers, @bn_state) so the window list can decorate cheaply. Runs
-    /// automatically after `bn add` / `bn done` inside tmux; this is the manual entry.
-    TmuxSync,
-    /// Set the live agent-activity decoration on the calling pane's window via the
-    /// @bn_agent option. Driven by Claude Code hooks: UserPromptSubmit -> working,
-    /// Notification -> waiting, Stop -> done. `clear` blanks it. No-op outside tmux,
-    /// I/O-free (no note read) so hooks stay fast. Takes precedence over @bn_done (the
-    /// silence-watch fallback) in the status line and cockpit — see workflow/tmux.conf.
-    TmuxAgent {
-        /// working | waiting | done | clear
-        state: String,
-    },
-    /// Status for the current branch.
-    Status,
-    /// Lean context snapshot (goal, blockers, open todos, recent progress/decisions).
-    Brief,
-    /// Complete and close the branch note: mark open todos done, log an achievement (from the
-    /// note's Goal + PR, or `--achievement`), and set status closed. Run when work ships; then,
-    /// when run interactively inside a feature worktree, it reclaims that worktree the same way
-    /// `wt cleanup` does — removes it, deletes the branch, and kills its tmux window — provided
-    /// the PR is merged and the tree is clean (use `--force` to reclaim regardless).
-    Close {
-        /// Achievement line to log instead of the one derived from the Goal + PR.
-        #[arg(long)]
-        achievement: Option<String>,
-        /// Reclaim the worktree even if the PR isn't merged or the tree is dirty.
-        #[arg(long)]
-        force: bool,
-    },
-    /// Reopen a closed branch note.
-    Reopen,
-    /// Cut a GitHub release end-to-end (#627): bump the semver from the last tag (default patch,
-    /// `--bump major|minor|patch`), create + push the tag, and `gh release create` with notes
-    /// rolled up from the PRs merged since the last tag. Gated + idempotent — refuses on a dirty or
-    /// behind-`origin/main` tree, and never releases the same commit twice. Runs the local `bn
-    /// verify` gate first to confirm `main` is green (`--skip-verify` trusts the caller); `--dry-run`
-    /// prints the tag + notes without touching git/GitHub.
-    Release {
-        /// Which semver component to bump: major | minor | patch (default: patch).
-        #[arg(long)]
-        bump: Option<String>,
-        /// Print the tag + rolled-up notes without creating/pushing the tag or the release.
-        #[arg(long)]
-        dry_run: bool,
-        /// Skip the local `bn verify` gate (trust the caller that `main` is green).
-        #[arg(long)]
-        skip_verify: bool,
-    },
-}
-
-#[derive(Subcommand, Debug)]
 pub(crate) enum CmdGitPr {
     /// Convert legacy notes (split/md-only) to the single-file format.
     Migrate,
@@ -1175,10 +1074,30 @@ pub(crate) enum CmdGitPr {
     /// Stage tracked changes, commit (default `wip: …`), and push if an upstream is set.
     #[command(visible_alias = "ap")]
     Autopush { message: Vec<String> },
-    /// Git diff stat vs origin/main, the current note's open todos + blockers, and the
-    /// commit-count ahead. A quick "where am I" for the branch.
+    /// Git diff stat vs the branch's base, its note's open todos + blockers, and the commit-count
+    /// ahead. A quick "where am I" — for this branch, or for any other worktree via `--path` /
+    /// `--repo`+`--branch`, which is what makes it usable as a picker preview.
     #[command(visible_alias = "d")]
-    Diff,
+    Diff {
+        /// Describe a different worktree: any directory inside it.
+        #[arg(long, value_name = "DIR", conflicts_with_all = ["repo", "branch"])]
+        path: Option<std::path::PathBuf>,
+        /// Describe another repo's branch by name (with `--branch`). Resolved through the note
+        /// rollup, so a pooled slot reports its real checkout.
+        #[arg(long, requires = "branch")]
+        repo: Option<String>,
+        /// The branch to describe (with `--repo`).
+        #[arg(long, requires = "repo")]
+        branch: Option<String>,
+        /// Base ref to diff against. Default: `origin/HEAD`, else the branch's upstream, else the
+        /// first of origin/main, main, origin/master, master that resolves.
+        #[arg(long)]
+        base: Option<String>,
+        /// Use `<base>...HEAD` — changes on this branch since it diverged — instead of the
+        /// historical `<base>..HEAD`, which reports the base's own newer commits as yours.
+        #[arg(long)]
+        three_dot: bool,
+    },
     /// Open a URL (or file) in the system browser, cross-platform (WSL → Windows). Prints the
     /// URL as a fallback when no opener works, so it's safe as a `$BROWSER` command. Replaces the
     /// `workflow/bin/wf-open` helper.

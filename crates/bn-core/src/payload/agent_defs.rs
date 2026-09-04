@@ -25,7 +25,6 @@ fn agent_def_row(a: &crate::agents::AgentDef) -> Value {
         "harness": a.harness,
         "requires_repo": a.requires_repo,
         "host_repo": a.host_repo,
-        "host_session": a.host_session,
         "host_window": a.host_window,
         "model": a.model,
         "run": a.run,

@@ -31,6 +31,7 @@ mod session;
 mod stuck;
 mod supervise;
 mod switch;
+mod transport;
 
 pub use activity::*;
 pub use approval::*;
@@ -44,3 +45,4 @@ pub use session::*;
 pub use stuck::*;
 pub use supervise::*;
 pub use switch::*;
+pub use transport::*;

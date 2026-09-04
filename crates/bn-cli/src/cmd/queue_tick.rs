@@ -681,10 +681,11 @@ fn execute(cfg: &Config, d: &Dispatch, now: i64) -> Executed {
         // Heavy work is spawned, never run inline — a minutes-long build inside the tick would
         // hold the dispatcher for minutes and make every pass behind it skip on the lock.
         bn_core::queue::kind::ExecSpec::Job { job, repo, branch } if d.heavy => spawn_heavy(
+            cfg,
             d,
             &heavy::job_command(job, repo.as_deref(), branch.as_deref()),
         ),
-        bn_core::queue::kind::ExecSpec::Shell { cmd } if d.heavy => spawn_heavy(d, cmd),
+        bn_core::queue::kind::ExecSpec::Shell { cmd } if d.heavy => spawn_heavy(cfg, d, cmd),
         // Express work runs in a child process because this function is inside the machine tick
         // lock. An in-process job that hangs would prevent Drop from releasing that lock and make
         // every future pass skip forever. `Dispatching` is inherited, so re-entering `bn run`
@@ -774,8 +775,8 @@ fn dispatch_harness(d: &Dispatch, now: i64) -> String {
     }
 }
 
-fn spawn_heavy(d: &Dispatch, cmd: &str) -> Executed {
-    match heavy::spawn(d, cmd) {
+fn spawn_heavy(cfg: &Config, d: &Dispatch, cmd: &str) -> Executed {
+    match heavy::spawn(cfg, d, cmd) {
         Ok(()) => Executed::Launched,
         Err(e) => Executed::Failed(e),
     }

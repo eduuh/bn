@@ -261,9 +261,9 @@ pub(crate) fn decide_window(
 /// The tmux argv(s) that realize a `WinAction`. Pure → unit-testable. Excludes the interactive
 /// "follow" (switch-client/select-window), which only fires for a human at a tty.
 ///
-/// `session` is the tmux session the window lives in — normally the repo (session-per-repo), but
-/// [`ORCHESTRATOR_SESSION`] for an orchestrator/planning launch (#498). `cmd`, when set, is the
-/// shell command the new window runs (e.g. an agent launch) instead of an interactive shell —
+/// `session` is the tmux session the window lives in — always the repo, because that is what a
+/// session is. `cmd`, when set, is the shell command the new window runs (e.g. an agent launch)
+/// instead of an interactive shell —
 /// appended as `new-session`/`new-window`'s trailing command argument. It's only meaningful for
 /// the creating actions; `SelectExisting` reuses an existing window untouched.
 pub(crate) fn window_tmux_cmds(
@@ -334,20 +334,7 @@ pub(crate) fn window_tmux_cmds(
 /// No-op when tmux is absent. Focus only follows for a human at an interactive terminal inside
 /// tmux, so an agent/script invocation never yanks the attached client.
 pub(crate) fn open_worktree_window(repo: &str, branch: &str, wt_path: &Path, force_new: bool) {
-    open_worktree_window_cmd(repo, branch, wt_path, force_new, None, false, None);
-}
-
-/// The tmux session that hosts the orchestrator + fleet agents (controller, attention lanes,
-/// dispatch orchestrator), distinct from the per-repo *ship* agent sessions. It holds **agents**,
-/// never crons — crons run headlessly and never touch tmux at all. This is what `agent_live` (the
-/// `bn jump` picker) surfaces and `reap` treats as sacrosanct.
-pub(crate) const ORCHESTRATOR_SESSION: &str = "cron";
-
-/// The tmux session that hosts the fleet agents — [`ORCHESTRATOR_SESSION`]. A function rather than
-/// a bare const so every launch path and every protection/surfacing path (`reap`, `agent_live`,
-/// `sessions`) resolves through one place and can never drift.
-pub(crate) fn orchestrator_session() -> &'static str {
-    ORCHESTRATOR_SESSION
+    open_worktree_window_cmd(repo, branch, wt_path, force_new, None, false);
 }
 
 /// Like [`open_worktree_window`], but the window runs `cmd` (an agent launch) instead of a shell,
@@ -355,8 +342,6 @@ pub(crate) fn orchestrator_session() -> &'static str {
 /// lifecycle hooks can decorate it (working / waiting / done badges). This is the single disciplined
 /// session-per-repo path `bn dispatch --agent` and `bn wt open` now share, so a dispatched worktree
 /// lands in its repo's session (where `tat` expects it) whether or not you were already in tmux.
-/// `session_override` places the window in a session other than the repo's — [`ORCHESTRATOR_SESSION`]
-/// for an orchestrator/planning launch (#498); `None` keeps the default session-per-repo placement.
 /// Returns whether a window is now available (created or already present). No-op → false when tmux
 /// is absent.
 pub(crate) fn open_worktree_window_cmd(
@@ -366,7 +351,6 @@ pub(crate) fn open_worktree_window_cmd(
     force_new: bool,
     cmd: Option<&str>,
     prime_agent: bool,
-    session_override: Option<&str>,
 ) -> bool {
     open_worktree_window_cmd_named(
         repo,
@@ -376,13 +360,11 @@ pub(crate) fn open_worktree_window_cmd(
         force_new,
         cmd,
         prime_agent,
-        session_override,
     )
 }
 
 /// Open a worktree using a readable window name while retaining the canonical repo/branch as
 /// window metadata for fleet joins and cleanup.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn open_worktree_window_cmd_named(
     repo: &str,
     branch: &str,
@@ -391,7 +373,6 @@ pub(crate) fn open_worktree_window_cmd_named(
     force_new: bool,
     cmd: Option<&str>,
     prime_agent: bool,
-    session_override: Option<&str>,
 ) -> bool {
     open_worktree_window_cmd_impl(
         repo,
@@ -401,7 +382,6 @@ pub(crate) fn open_worktree_window_cmd_named(
         force_new,
         cmd,
         prime_agent,
-        session_override,
         true,
     )
 }
@@ -414,7 +394,6 @@ pub(crate) fn open_worktree_window_cmd_quiet(
     force_new: bool,
     cmd: Option<&str>,
     prime_agent: bool,
-    session_override: Option<&str>,
 ) -> bool {
     open_worktree_window_cmd_impl(
         repo,
@@ -424,12 +403,10 @@ pub(crate) fn open_worktree_window_cmd_quiet(
         force_new,
         cmd,
         prime_agent,
-        session_override,
         false,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn open_worktree_window_cmd_named_quiet(
     repo: &str,
     branch: &str,
@@ -438,7 +415,6 @@ pub(crate) fn open_worktree_window_cmd_named_quiet(
     force_new: bool,
     cmd: Option<&str>,
     prime_agent: bool,
-    session_override: Option<&str>,
 ) -> bool {
     open_worktree_window_cmd_impl(
         repo,
@@ -448,7 +424,6 @@ pub(crate) fn open_worktree_window_cmd_named_quiet(
         force_new,
         cmd,
         prime_agent,
-        session_override,
         false,
     )
 }
@@ -486,10 +461,9 @@ fn open_worktree_window_cmd_impl(
     force_new: bool,
     cmd: Option<&str>,
     prime_agent: bool,
-    session_override: Option<&str>,
     announce: bool,
 ) -> bool {
-    let session = session_override.unwrap_or(repo);
+    let session = repo;
     let wt = wt_path.to_string_lossy().to_string();
     let target = format!("={session}");
     let session_exists = tmux_run(&["has-session", "-t", &target]);

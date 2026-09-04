@@ -38,9 +38,6 @@
 #
 # Env knobs:
 #   BN_NIGHTLY_TAG        rolling tag name                      (default: nightly)
-#   BN_NIGHTLY_TMUX       0 to run inline instead of in a tmux session
-#   BN_NIGHTLY_TMUX_SESSION  session name                       (default: bn-nightly)
-#   BN_NIGHTLY_TIMEOUT    seconds before the session is killed  (default: 7200)
 #   BN_NIGHTLY_FORCE      1 to rebuild + republish the same commit
 #   BN_NIGHTLY_DRYRUN     1 to build + test + package, but never touch git/GitHub
 #   BN_NIGHTLY_SKIP_TESTS 1 to bypass the test gate (manual runs only — never for cron)
@@ -65,63 +62,21 @@ for tool in git gh jq tar; do
   command -v "$tool" >/dev/null 2>&1 || die "nightly-release: $tool not found — cannot publish"
 done
 
-# --- transparency: do the work inside a detached tmux session --------------------------------
+# --- transparency: where to watch a release being built --------------------------------------
 # The queue spawns heavy work detached with stdout and stderr on /dev/null (queue_tick's
 # spawn_heavy) — deliberate, since minutes of build noise do not belong in the dispatcher's log.
-# That leaves nowhere to *watch* a release being built, so this job re-execs itself into a
-# detached tmux session and waits on it:
+# The live view is the queue's own: heavy jobs get a `nightly-release` window in the bn repo's
+# tmux session, rooted in bn's main worktree, replacing the previous run's dead pane and closing
+# itself when the build succeeds.
 #
-#     tmux attach -t bn-nightly
+#     tmux attach -t bn
 #
-# Detached is the point: the pane exists to be looked at, never to appear in front of you, so the
-# headless-cron contract in config/jobs/README.md still holds — a firing cron cannot steal focus.
-# The outer process waits and exits with the inner status, so `bn run` still records the true
-# outcome and the queue's completion callback still fires. The event log, not the pane, remains
-# the durable record; the pane is the live view.
-SESSION="${BN_NIGHTLY_TMUX_SESSION:-bn-nightly}"
-if [ "${BN_NIGHTLY_TMUX:-1}" = "1" ] && [ "${BN_NIGHTLY_INNER:-0}" != "1" ] &&
-  [ -z "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
-  self=$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")
-  rc_file=$(mktemp) || die "nightly-release: cannot create the status file"
-  trap 'rm -f "$rc_file"' EXIT INT TERM
-
-  # tmux hands the command to the *server*, which does not inherit this process's environment, so
-  # every knob the inner run needs is passed explicitly rather than assumed.
-  inner="BN_NIGHTLY_INNER=1 PATH='$PATH' HOME='$HOME'"
-  inner="$inner BN_NIGHTLY_TAG='$TAG'"
-  inner="$inner BN_NIGHTLY_FORCE='${BN_NIGHTLY_FORCE:-0}'"
-  inner="$inner BN_NIGHTLY_DRYRUN='${BN_NIGHTLY_DRYRUN:-0}'"
-  inner="$inner BN_NIGHTLY_SKIP_TESTS='${BN_NIGHTLY_SKIP_TESTS:-0}'"
-  inner="$inner BN_SKIP_UI='${BN_SKIP_UI:-0}'"
-  inner="$inner BN_MAIN_WORKTREE='${BN_MAIN_WORKTREE:-}'"
-  inner="$inner BN_CONFIG_DIR='${BN_CONFIG_DIR:-}'"
-  inner="$inner sh '$self'; printf '%s\n' \"\$?\" >'$rc_file'"
-
-  # Replace a previous session rather than refusing: the last run's pane is kept on screen (see
-  # remain-on-exit below), so without this a finished session would block every later run.
-  tmux kill-session -t "$SESSION" 2>/dev/null || true
-  tmux new-session -d -s "$SESSION" -n build "$inner" ||
-    die "nightly-release: cannot start the '$SESSION' tmux session"
-  # Keep the finished pane readable until the next run replaces it. Set immediately after the
-  # session exists, so a failure fast enough to beat this line loses its pane — which is why
-  # completion is detected through the status file, and why the event log stays the real record.
-  tmux set-option -t "$SESSION" -w remain-on-exit on >/dev/null 2>&1 || true
-
-  echo "nightly-release: building in tmux session '$SESSION' — watch it with: tmux attach -t $SESSION"
-  waited=0
-  limit="${BN_NIGHTLY_TIMEOUT:-7200}"
-  while [ ! -s "$rc_file" ]; do
-    sleep 5
-    waited=$((waited + 5))
-    if [ "$waited" -ge "$limit" ]; then
-      tmux kill-session -t "$SESSION" 2>/dev/null || true
-      die "nightly-release: timed out after ${waited}s — killed the '$SESSION' session"
-    fi
-  done
-  rc=$(cat "$rc_file")
-  echo "nightly-release: tmux session '$SESSION' finished (exit $rc); its pane is kept for inspection"
-  exit "$rc"
-fi
+# This script used to re-exec itself into a tmux session of its own (`bn-nightly`) and poll a
+# status file for the inner exit code. That predated the queue's heavy lane and then outlived it:
+# two mechanisms doing the same job, the inner one creating a session named after no repository
+# and killing it out from under a still-running previous build. Now there is one, it is the
+# queue's, and this script is a single process whose exit code `queue finish` already records.
+# The event log, not the pane, remains the durable record.
 
 # Workstation releases own a dedicated checkout. It may be fast-forwarded or reset while detached
 # only after proving it has no tracked changes; ordinary user worktrees are never selected or

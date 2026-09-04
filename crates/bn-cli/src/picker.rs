@@ -33,8 +33,8 @@ pub enum PickStage {
     Remove,
     /// Plan the focused raised item — promote it to a branch todo, then resolve it (attn rows only).
     Plan,
-    /// Start the focused raised item — open its worktree/planning window, launch its agent, and
-    /// mark it in-flight.
+    /// Start the focused raised item — open its worktree window, launch its agent, and mark it
+    /// in-flight. A repo-less item has no window to open and is refused before it gets here.
     Start,
     /// Open the focused row — its link, the note in `$EDITOR`, or `cron show`.
     Open,

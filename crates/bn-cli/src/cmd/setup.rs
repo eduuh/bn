@@ -161,22 +161,39 @@ pub(crate) fn sync_tmux(cfg: &Config, ctx: &Resolved) {
     if std::env::var_os("TMUX").is_none() {
         return;
     }
-    let (todos, blockers, state) = match bn_core::store::read(&cfg.note_file(ctx)) {
+    // This decorates the window the process is running in, but `ctx` can be any note — `bn done
+    // --repo x --branch y` resolves elsewhere and would otherwise stamp *this* window with that
+    // note's counts. Once the window carries its own identity (see `bn tmux-reconcile`), we can
+    // tell the two apart and decline; a window with no identity yet behaves exactly as before.
+    let (win_repo, win_branch) = (
+        read_tmux_window_option("@bn_repo"),
+        read_tmux_window_option("@bn_branch"),
+    );
+    if !win_repo.is_empty()
+        && !win_branch.is_empty()
+        && (win_repo != ctx.repo || win_branch != ctx.branch)
+    {
+        return;
+    }
+    let (todos, blockers) = match bn_core::store::read(&cfg.note_file(ctx)) {
         Ok(note) => (
             note.front.todos.iter().filter(|t| t.is_open_todo()).count(),
             note.front.blockers.len(),
-            if note.front.status == "closed" {
-                "closed"
-            } else {
-                "active"
-            },
         ),
-        Err(_) => (0, 0, "none"),
+        Err(_) => (0, 0),
     };
-    let badge = |n: usize| if n == 0 { String::new() } else { n.to_string() };
-    set_tmux_window_option("@bn_todos", &badge(todos));
-    set_tmux_window_option("@bn_blockers", &badge(blockers));
-    set_tmux_window_option("@bn_state", state);
+    set_tmux_window_option("@bn_todos", &badge_count(todos));
+    set_tmux_window_option("@bn_blockers", &badge_count(blockers));
+}
+
+/// A count as tmux stores it: EMPTY when zero, so `#{?@bn_todos,…}` (which tests emptiness, and
+/// would read a literal "0" as truthy) stays quiet on a clean note.
+pub(crate) fn badge_count(n: usize) -> String {
+    if n == 0 {
+        String::new()
+    } else {
+        n.to_string()
+    }
 }
 
 /// Set `@bn_agent` on the calling pane's window so `window-status-format` can show live
@@ -192,12 +209,7 @@ pub(crate) fn set_tmux_agent(state: &str) {
     if std::env::var_os("TMUX").is_none() {
         return;
     }
-    // The status vocabulary (firstmate-inspired): working/waiting/done plus the escalation states
-    // `blocked` and `needs-decision`, which the fleet classifier treats as "needs you".
-    let value = match state {
-        "working" | "waiting" | "done" | "blocked" | "needs-decision" => state,
-        _ => "", // clear / unknown
-    };
+    let value = normalize_agent_state(state);
     let changed = read_tmux_window_option("@bn_agent") != value;
     set_tmux_window_option("@bn_agent", value);
     if changed {
@@ -213,15 +225,45 @@ pub(crate) fn set_tmux_agent(state: &str) {
     }
 }
 
-/// `tmux set-option -w [-t <pane>] <name> <value>` — sets a window-scoped user option for
-/// the calling pane's window (`$TMUX_PANE`). Best-effort; failures are ignored.
-pub(crate) fn set_tmux_window_option(name: &str, value: &str) {
+/// The `@bn_agent` vocabulary, and the single place that decides what is a legal value.
+///
+/// `working`/`waiting`/`done` are what the harness hooks fire. The rest are escalation states the
+/// fleet classifier produces and, until now, could not store: `blocked` and `needs-decision` mean
+/// an agent is stopped on a human, `limited` means it hit a usage cap, and `failed` means it died.
+/// `failed` in particular was being rejected here while `bn agent done --failed` passed it, so a
+/// crashed agent's badge was silently *cleared* — its window then looked identical to an idle one.
+/// Anything unrecognized still blanks the badge, which is how callers clear it.
+pub(crate) fn normalize_agent_state(state: &str) -> &str {
+    match state {
+        "working" | "waiting" | "done" | "blocked" | "needs-decision" | "limited" | "failed" => {
+            state
+        }
+        _ => "", // clear / unknown
+    }
+}
+
+/// `tmux set-option -w [-t <target>] <name> <value>` — sets a window-scoped user option.
+/// `target` names the window; `None` falls back to the calling pane's window (`$TMUX_PANE`),
+/// which is what the hook-driven callers want. Best-effort; failures are ignored.
+pub(crate) fn set_tmux_window_option_on(target: Option<&str>, name: &str, value: &str) {
     let mut cmd = crate::proc::tmux_command(&["set-option", "-w"]);
-    if let Some(pane) = std::env::var_os("TMUX_PANE") {
-        cmd.arg("-t").arg(pane);
+    match target {
+        Some(t) => {
+            cmd.arg("-t").arg(t);
+        }
+        None => {
+            if let Some(pane) = std::env::var_os("TMUX_PANE") {
+                cmd.arg("-t").arg(pane);
+            }
+        }
     }
     cmd.arg(name).arg(value);
     let _ = cmd.status();
+}
+
+/// Set a window-scoped user option on the calling pane's window.
+pub(crate) fn set_tmux_window_option(name: &str, value: &str) {
+    set_tmux_window_option_on(None, name, value);
 }
 
 /// Read a window-scoped user option for the calling pane's window (`$TMUX_PANE`); empty

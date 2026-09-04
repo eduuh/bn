@@ -68,6 +68,37 @@ pub(crate) fn emit(title: &str, body: &str) -> bool {
     false
 }
 
+/// Last-resort delivery through tmux, for hosts where every OS toast backend is absent or broken.
+///
+/// This machine is the case in point: WSL has `powershell.exe` on PATH, so [`emit`] picks the
+/// PowerShell toast and that call fails every time — the notify ledger showed `sent_today: 0`,
+/// `last_sent: {}` and nineteen `no-backend` holds in a single day. Every one of those had already
+/// passed the whole policy gate (class bar, quiet windows, cooldown, budget); they were interrupts
+/// bn had decided were worth making, and they reached nobody.
+///
+/// `display-message` with no `-t` reaches every attached client, so it lands wherever the user
+/// actually is. Gated on a client being attached, so a headless cron run reports failure honestly
+/// and is recorded as `no-backend` rather than pretending it delivered to an empty screen.
+///
+/// Deliberately not a fourth arm inside [`emit`]: this is a *different channel* with a different
+/// reach, and the caller records which one carried the message.
+pub(crate) fn emit_tmux(title: &str, body: &str) -> bool {
+    if crate::tmux::tmux_raw(&["list-clients", "-F", "#{client_name}"])
+        .map(|o| o.trim().is_empty())
+        .unwrap_or(true)
+    {
+        return false;
+    }
+    let text = if body.trim().is_empty() {
+        title.to_string()
+    } else {
+        format!("{title} — {body}")
+    };
+    // One line, on screen for 5s. The burst batching in `deliver_batch_using` already collapses a
+    // storm into a single call, so this cannot become a flood of its own.
+    crate::tmux::tmux_run(&["display-message", "-d", "5000", &text])
+}
+
 /// Copy `text` to the system clipboard. Tries wl-copy / xclip / clip.exe / pbcopy; returns whether
 /// one ran.
 pub fn clipboard(text: &str) -> bool {

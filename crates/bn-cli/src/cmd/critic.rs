@@ -250,7 +250,6 @@ pub(crate) fn run_critic_dispatch(
             false,
             Some(&cmd),
             true,
-            None,
         );
     }
 

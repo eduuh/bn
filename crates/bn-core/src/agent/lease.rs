@@ -49,9 +49,10 @@ pub enum AgentLeaseKind {
     PipelinePlan,
     /// The `bn control` coordination agent — reserved to the repo's controller pool slot.
     Control,
-    /// Today's agent — the day's hosted session in the `planning` tmux session. Unlike every other
-    /// kind it is not tied to a repo checkout at all, so it carries no placement rule beyond the
-    /// universal "not the main worktree".
+    /// Today's agent — the day's hosted session, rooted in the configured personal-notes checkout
+    /// and leased against that repo/branch like any other agent. It opens a fixed `today` window in
+    /// that repo's own session, and carries no placement rule beyond the universal "not the main
+    /// worktree".
     Today,
 }
 

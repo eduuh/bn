@@ -30,7 +30,7 @@ use std::path::Path;
 
 /// The `list-windows -F` format every join reads. One spawn per supervisor pass yields all of it;
 /// the parsing is [`parse_window_rows`].
-pub const WINDOW_FORMAT: &str = "#{session_name}:#{window_name}\t#{pane_current_path}\t#{@bn_worktree}\t#{@bn_repo}\t#{@bn_branch}\t#{@bn_session_id}\t#{pane_dead}";
+pub const WINDOW_FORMAT: &str = "#{session_name}:#{window_name}\t#{pane_current_path}\t#{@bn_worktree}\t#{@bn_repo}\t#{@bn_branch}\t#{@bn_session_id}\t#{@bn_nvim_sock}\t#{pane_dead}";
 
 /// One live tmux window, as [`WINDOW_FORMAT`] describes it. Unset `@bn_*` options come back as the
 /// empty string, which every tier treats as "no evidence" rather than a match.
@@ -43,6 +43,10 @@ pub struct TmuxWindowRow {
     pub repo: String,
     pub branch: String,
     pub session_id: String,
+    /// The `--listen` socket of the nvim hosting this window, when one stamped itself. Empty for
+    /// every window whose agent is a plain pane — which is all of them until an editor-hosted
+    /// shape exists.
+    pub nvim_sock: String,
 }
 
 impl TmuxWindowRow {
@@ -99,6 +103,24 @@ impl MatchTier {
     }
 }
 
+/// Where an nvim-hosted agent can be reached: the editor's `--listen` socket, derived from and
+/// stamped on the window that runs it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NvimEndpoint {
+    pub sock: String,
+}
+
+/// Where a write to an agent actually goes.
+///
+/// A *derived view*, never stored. Deliberately separate from [`AgentChannel`]'s fields: the
+/// channel records the evidence, this answers "so how do I talk to it". Today that is always a
+/// tmux pane; an nvim-hosted variant joins it when the transport that can drive one exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentEndpoint {
+    /// The `session:window` whose pane runs the agent directly.
+    TmuxPane(String),
+}
+
 /// The join's answer for one agent.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgentChannel {
@@ -114,6 +136,26 @@ pub struct AgentChannel {
     /// Another live agent shares this agent's `repo:branch`, so every branch-keyed channel (the
     /// note's `agent-session:` record included) is unaimable.
     pub branch_shared: bool,
+    /// The editor hosting this agent, when its window says so.
+    ///
+    /// Additive on purpose: an nvim-hosted agent still *has* a tmux window — the one running the
+    /// editor — so `tmux_target` stays correct and everything keyed on the window (presence,
+    /// reaping, picker rows) keeps working. The two are different layers, not alternatives.
+    pub nvim: Option<NvimEndpoint>,
+}
+
+impl AgentChannel {
+    /// Where to send a write, or `None` when no write may be aimed.
+    ///
+    /// Honours the ambiguity contract rather than restating it: if the join could not tell two
+    /// agents apart, there is no endpoint and the caller must refuse — exactly as it had to when
+    /// it read `tmux_target` directly.
+    pub fn endpoint(&self) -> Option<AgentEndpoint> {
+        if self.ambiguous {
+            return None;
+        }
+        self.tmux_target.clone().map(AgentEndpoint::TmuxPane)
+    }
 }
 
 /// Whether the branch note's recorded `agent-session:` names *this* live session.
@@ -174,6 +216,7 @@ pub fn resolve_channels(
             ch.tmux_target = None;
             ch.worktree = None;
             ch.tier = None;
+            ch.nvim = None;
         }
     }
     out
@@ -326,6 +369,11 @@ fn hit(w: &TmuxWindowRow, tier: MatchTier) -> AgentChannel {
         tmux_target: Some(w.target.clone()),
         worktree: Some(w.path().to_string()).filter(|p| !p.is_empty()),
         tier: Some(tier),
+        // Evidence about *how to speak*, not about which window — so it rides along with whatever
+        // tier matched and never promotes a branch-keyed match to an exact one.
+        nvim: (!w.nvim_sock.is_empty()).then(|| NvimEndpoint {
+            sock: w.nvim_sock.clone(),
+        }),
         ..Default::default()
     }
 }
@@ -404,6 +452,7 @@ pub fn parse_window_rows(out: &str) -> Vec<TmuxWindowRow> {
                 repo: f.next().unwrap_or_default().trim().to_string(),
                 branch: f.next().unwrap_or_default().trim().to_string(),
                 session_id: f.next().unwrap_or_default().trim().to_string(),
+                nvim_sock: f.next().unwrap_or_default().trim().to_string(),
             };
             let dead = f.next().unwrap_or_default().trim() == "1";
             (!dead).then_some(row)
@@ -464,5 +513,98 @@ mod tests {
         assert_eq!(channels[0].tmux_target.as_deref(), Some("bn:slot"));
         assert_eq!(channels[0].worktree.as_deref(), Some("/tmp/bn-lease"));
         assert_eq!(channels[0].tier, Some(MatchTier::Lease));
+    }
+}
+
+#[cfg(test)]
+mod endpoint_tests {
+    use super::*;
+
+    /// A row exactly as `list-windows -F WINDOW_FORMAT` would render it.
+    fn row(session_id: &str, nvim_sock: &str, dead: &str) -> String {
+        format!("bn:feat\t/wt/bn/feat\t/wt/bn/feat\tbn\tfeat\t{session_id}\t{nvim_sock}\t{dead}")
+    }
+
+    #[test]
+    fn the_format_and_the_parser_declare_the_same_number_of_fields() {
+        // These two must change together: the parser reads positionally, so a field added to the
+        // format without a matching `f.next()` silently shifts `pane_dead` and every window starts
+        // looking alive.
+        let fields = WINDOW_FORMAT.split('\t').count();
+        let parsed = parse_window_rows(&row("s1", "/run/bn/a.sock", "0"));
+        assert_eq!(fields, 8, "WINDOW_FORMAT field count changed");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].session_id, "s1");
+        assert_eq!(parsed[0].nvim_sock, "/run/bn/a.sock");
+    }
+
+    #[test]
+    fn a_dead_pane_is_still_dropped_after_the_new_field() {
+        // The regression the field-count test guards against, stated directly: `pane_dead` is the
+        // last column, and inserting ahead of it must not cost us the dead check.
+        assert!(parse_window_rows(&row("s1", "/run/bn/a.sock", "1")).is_empty());
+        assert_eq!(parse_window_rows(&row("s1", "", "1")).len(), 0);
+    }
+
+    #[test]
+    fn a_window_with_no_editor_carries_no_endpoint() {
+        let rows = parse_window_rows(&row("s1", "", "0"));
+        assert_eq!(rows[0].nvim_sock, "");
+        let ch = hit(&rows[0], MatchTier::WindowSession);
+        assert!(
+            ch.nvim.is_none(),
+            "an unset option must read as no evidence"
+        );
+    }
+
+    #[test]
+    fn a_window_that_stamped_a_socket_carries_it_on_the_channel() {
+        let rows = parse_window_rows(&row("s1", "/run/bn/a.sock", "0"));
+        let ch = hit(&rows[0], MatchTier::WindowSession);
+        assert_eq!(
+            ch.nvim,
+            Some(NvimEndpoint {
+                sock: "/run/bn/a.sock".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn an_editor_socket_never_promotes_a_branch_keyed_match_to_exact() {
+        // The socket is evidence about *how to speak*, not about which window. Letting it upgrade
+        // a name match would corrupt `is_exact`, which is what keeps the refuse-on-ambiguous rule
+        // honest for a branch hosting two agents.
+        let rows = parse_window_rows(&row("", "/run/bn/a.sock", "0"));
+        let ch = hit(&rows[0], MatchTier::WindowName);
+        assert_eq!(ch.tier, Some(MatchTier::WindowName));
+        assert!(!ch.tier.unwrap().is_exact());
+    }
+
+    #[test]
+    fn an_ambiguous_channel_offers_no_endpoint_to_write_to() {
+        // The contract callers used to enforce by hand when they read `tmux_target` directly.
+        let ch = AgentChannel {
+            tmux_target: Some("bn:feat".into()),
+            ambiguous: true,
+            ..Default::default()
+        };
+        assert!(ch.endpoint().is_none());
+    }
+
+    #[test]
+    fn a_clean_channel_resolves_to_its_pane() {
+        let ch = AgentChannel {
+            tmux_target: Some("bn:feat".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            ch.endpoint(),
+            Some(AgentEndpoint::TmuxPane("bn:feat".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_channel_that_found_nothing_offers_nothing() {
+        assert!(AgentChannel::default().endpoint().is_none());
     }
 }

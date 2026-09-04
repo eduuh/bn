@@ -190,11 +190,17 @@ pub fn work_status(
         };
     };
     match w.agent.as_str() {
-        "waiting" => WorkStatus::Waiting,
+        // An agent that is blocked, wants a decision, or has died is waiting on a human just as
+        // surely as one flagged `waiting`. These used to fall through to the window-flag branch and
+        // be classified from stale done/blocker flags — usually landing on `Working`, which is the
+        // one answer that guarantees nobody goes and looks.
+        "waiting" | "blocked" | "needs-decision" | "failed" => WorkStatus::Waiting,
         "done" => WorkStatus::Done,
         // A real "working" agent is the source of truth — age it for idle/stuck, ignoring any
         // stale blocker/done flags on the window.
-        "working" => working_age(w.agent_since, now, idle_mins, stuck_mins),
+        // `limited` is paused on a usage cap and resumes by itself — age it like `working` rather
+        // than calling for a human.
+        "working" | "limited" => working_age(w.agent_since, now, idle_mins, stuck_mins),
         // No agent signal (manual/assist window, or hooks unwired): fall back to the window flags.
         _ => {
             if w.done_flag {

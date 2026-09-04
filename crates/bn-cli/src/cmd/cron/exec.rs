@@ -109,8 +109,21 @@ mod tests {
     /// same PATH every other job process gets. Asserting the shared prelude (rather than an
     /// equivalent-looking string) is what keeps this from drifting back into the
     /// `/bin/sh: bn: command not found` 127 that silenced scheduled staff gathers.
+    ///
+    /// Pinned under [`env_lock`] because the assertion compares two *separate* evaluations of
+    /// [`job_path`], which reads `HOME` and `PATH` at call time — once inside the spawn, once
+    /// here. Any sibling test that moves `HOME` in that window (the launchd drift test does
+    /// exactly that) made this fail with a temp home spliced into the left side only. Snapshotting
+    /// the expected value first would not help: the mutation window is the spawn itself, so the
+    /// inputs have to be held still rather than merely read early. `/bin/sh` is spawned by
+    /// absolute path, so pinning `PATH` cannot break program resolution.
     #[test]
     fn a_captured_user_command_runs_under_the_shared_job_path() {
+        let _lock = bn_core::test_support::env_lock();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = bn_core::test_support::EnvGuard::set("HOME", temp.path());
+        let _path = bn_core::test_support::EnvGuard::set("PATH", "/usr/bin:/bin");
+
         let (ok, combined) =
             capture_user_command("printf %s \"$PATH\"").expect("the command echoes its PATH");
 

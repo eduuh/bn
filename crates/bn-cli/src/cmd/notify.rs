@@ -23,6 +23,7 @@ pub(crate) fn emit_notify_status(cfg: &Config, as_json: bool) {
             "enabled": p.enabled,
             "bar": p.bar.label(),
             "sent_today": ledger.sent_today,
+            "sent_via_tmux": ledger.sent_via_tmux,
             "daily_budget": p.daily_budget,
             "held_today": held,
             "held_by_reason": ledger.held_today,
@@ -40,8 +41,18 @@ pub(crate) fn emit_notify_status(cfg: &Config, as_json: bool) {
     if !p.enabled {
         println!("notify · off ([notify].enabled = false) — nothing will toast");
     } else {
+        // Say which channel carried them: "3/12 toasts today" reads as a healthy desktop backend,
+        // and on a host where every OS backend is broken that would be a lie of omission.
+        let via = if ledger.sent_via_tmux > 0 {
+            format!(
+                " ({} via tmux — no working desktop backend)",
+                ledger.sent_via_tmux
+            )
+        } else {
+            String::new()
+        };
         println!(
-            "notify · bar: {} · {}/{} toasts today",
+            "notify · bar: {} · {}/{} toasts today{via}",
             p.bar.label(),
             ledger.sent_today,
             p.daily_budget

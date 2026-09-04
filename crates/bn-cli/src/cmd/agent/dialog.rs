@@ -20,6 +20,7 @@
 
 use super::{resolve_tmux_target, tmux_exact_target};
 use crate::*;
+use bn_core::agent::AgentTransport as _;
 use bn_core::agent::{PendingPrompt, PromptSemantic, PROMPT_SCAN_LINES};
 
 /// How long to wait for the pane to repaint after a digit, before re-reading it. A TUI redraws in
@@ -54,11 +55,14 @@ fn emit_failure(cmd: &str, code: &str, msg: &str, as_json: bool) {
 /// Capture a pane tail deep enough to hold a whole dialog box, plus the window's Plane-A state.
 fn read_pane(cfg: &Config, target: &str, lines: usize) -> Option<(Vec<String>, String)> {
     let exact = resolve_tmux_target(cfg, target);
-    let raw = crate::proc::tmux_raw(&["capture-pane", "-p", "-t", &exact])?;
+    // The screen comes through the transport; Plane A does not. `@bn_agent` is a *window* option
+    // the agent sets from inside itself, so it is transport-independent by design and stays a
+    // direct read.
+    let screen = bn_core::agent::TmuxTransport::new(&exact).read_screen(lines)?;
     let plane_a = crate::proc::tmux_raw(&["show-options", "-w", "-v", "-t", &exact, "@bn_agent"])
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
-    Some((super::pane_tail(&raw, lines), plane_a))
+    Some((screen, plane_a))
 }
 
 /// Parse the dialog on `target`'s pane, or `None` when it is not blocked on one.

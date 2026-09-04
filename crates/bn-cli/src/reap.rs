@@ -43,7 +43,6 @@ pub(crate) struct Proc {
 #[derive(Debug, Clone)]
 struct Pane {
     window_id: String,
-    session: String,
     pane_pid: i32,
     dead: bool,
     cwd: String,
@@ -240,22 +239,23 @@ fn process_cwds() -> Vec<(i32, PathBuf)> {
 
 /// Every tmux pane across every session.
 fn read_panes() -> Vec<Pane> {
-    let fmt = "#{window_id}\t#{session_name}\t#{window_name}\t#{pane_pid}\t#{pane_dead}\t#{pane_current_path}";
+    // No `#{session_name}`: the reaper no longer has any question a session name answers. It reads
+    // the worktree a pane sits in, which is what actually says whose agent this is.
+    let fmt = "#{window_id}\t#{window_name}\t#{pane_pid}\t#{pane_dead}\t#{pane_current_path}";
     let Some(out) = tmux_raw(&["list-panes", "-a", "-F", fmt]) else {
         return Vec::new();
     };
     out.lines()
         .filter_map(|line| {
             let f: Vec<&str> = line.split('\t').collect();
-            if f.len() < 6 {
+            if f.len() < 5 {
                 return None;
             }
             Some(Pane {
                 window_id: f[0].to_string(),
-                session: f[1].to_string(),
-                pane_pid: f[3].parse().unwrap_or(0),
-                dead: f[4] == "1",
-                cwd: f[5].to_string(),
+                pane_pid: f[2].parse().unwrap_or(0),
+                dead: f[3] == "1",
+                cwd: f[4].to_string(),
             })
         })
         .collect()
@@ -504,16 +504,19 @@ fn discover(worktree_dir: &Path) -> Vec<Candidate> {
         let target = target_key(&repo, &branch);
         let has_live_window = window_id.is_some() || live_targets.contains(&target);
 
-        // Orchestrator guard: the planning-session cockpit (#345) is sacrosanct. We deliberately do
-        // NOT sniff the command for "orchestrate" — a dispatched agent's seed prompt (passed as
-        // `copilot -i <prompt>`) routinely contains the word, and a harness process is never the
-        // orchestrator daemon itself anyway (that's the `bn orchestrate` process that spawns them).
-        let session = window_id
-            .as_ref()
-            .and_then(|wid| live_panes.iter().find(|p| &p.window_id == wid))
-            .map(|p| p.session.clone())
-            .unwrap_or_default();
-        let is_orchestrator = session.eq_ignore_ascii_case(crate::wt::orchestrator_session());
+        // Orchestrator guard: the controller is sacrosanct (#345). Asked of the *worktree*, not of
+        // the tmux session that happens to host it. The lease layer already enforces the two
+        // directions of this — a `Control` lease may live only in `_pool/1`, and nothing else may
+        // live in it (`validate_kind_placement`) — so "this checkout is the controller slot" and
+        // "this is the controller" are the same statement, and it stays true for a straggler whose
+        // window has gone. The old check read the session name, which needed a live window to
+        // resolve and therefore silently failed to protect exactly the windowless case.
+        //
+        // We deliberately do NOT sniff the command for "orchestrate" — a dispatched agent's seed
+        // prompt (passed as `copilot -i <prompt>`) routinely contains the word, and a harness
+        // process is never the orchestrator daemon itself anyway (that's the `bn orchestrate`
+        // process that spawns them).
+        let is_orchestrator = bn_core::agent::is_controller_slot_path(&worktree_path);
 
         out.push(Candidate {
             repo,
@@ -674,6 +677,17 @@ fn reconcile(cfg: &Config, worktree_dir: &Path, opts: &ReapOpts) -> Vec<Verdict>
         .iter()
         .map(|a| (target_key(&a.repo, &a.branch), (a.health, a.idle_secs)))
         .collect();
+    // The second half of the orchestrator guard. `discover` answers for the controller by its pool
+    // slot, but a `bn dispatch --orchestrator` agent runs the wave from an ordinary slot on a real
+    // branch, so placement cannot see it. Its role can: the fleet stamps `AgentRole::Orchestrator`
+    // from the machine's own attribution log, which outlives the window that used to carry the
+    // answer in its session name.
+    let orchestrators: BTreeSet<String> = fleet
+        .agents
+        .iter()
+        .filter(|a| a.role == bn_core::agent::AgentRole::Orchestrator)
+        .map(|a| target_key(&a.repo, &a.branch))
+        .collect();
 
     let policy = ReapPolicy {
         force: opts.force,
@@ -704,7 +718,7 @@ fn reconcile(cfg: &Config, worktree_dir: &Path, opts: &ReapOpts) -> Vec<Verdict>
                 is_working: working,
                 has_uncommitted: uncommitted,
                 attended: is_attended(c.window_id.as_deref(), &c.target, c.has_live_window),
-                is_orchestrator: c.is_orchestrator,
+                is_orchestrator: c.is_orchestrator || orchestrators.contains(&c.target),
                 idle_secs,
             };
             let disposition = fleet_gc::classify(&obs, &policy);
@@ -854,5 +868,38 @@ fn emit_human(verdicts: &[Verdict], husks: &[String], opts: &ReapOpts, reaped: u
         println!("{GREEN}reaped {reaped} agent(s), pruned {pruned} dead window(s){NC}");
     } else {
         println!("{reaped} reapable, {pruned} dead window(s) — pass --kill to act");
+    }
+}
+
+#[cfg(test)]
+mod orchestrator_guard_tests {
+    use bn_core::agent::is_controller_slot_path;
+    use std::path::Path;
+
+    /// The controller is the one agent a reap must never take, force or not. It is identified by
+    /// where it runs — `_pool/1`, the slot the lease layer reserves for it and refuses to anyone
+    /// else — rather than by the name of the tmux session that happens to host its window.
+    #[test]
+    fn the_controller_slot_is_what_marks_an_orchestrator() {
+        assert!(is_controller_slot_path(Path::new(
+            "/home/me/projects/worktree/bn/_pool/1"
+        )));
+        assert!(!is_controller_slot_path(Path::new(
+            "/home/me/projects/worktree/bn/_pool/2"
+        )));
+        assert!(!is_controller_slot_path(Path::new(
+            "/home/me/projects/worktree/bn/main"
+        )));
+    }
+
+    /// The regression the old check could not cover: it resolved the session through a live window,
+    /// so a controller whose window had gone read as an ordinary agent and became reapable. A path
+    /// answers whether or not anything is still on screen.
+    #[test]
+    fn a_windowless_controller_is_still_protected() {
+        // No tmux state consulted at all — that is the point.
+        assert!(is_controller_slot_path(Path::new(
+            "/home/me/projects/worktree/BigMono/_pool/1"
+        )));
     }
 }

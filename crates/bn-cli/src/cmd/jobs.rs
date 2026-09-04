@@ -1953,23 +1953,6 @@ pub(crate) fn attn_auto_max() -> usize {
     env_i64("BN_ATTN_AUTO_MAX", 1).max(1) as usize
 }
 
-/// `jobs/ensure-tmux.sh` — ensure the keepalive tmux session exists.
-pub(crate) fn job_ensure_tmux(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
-    let session = std::env::var("BN_TMUX_SESSION").unwrap_or_else(|_| "main".to_string());
-    let has = crate::proc::tmux_run(&["has-session", "-t", &session]);
-    if has {
-        println!("tmux session '{session}' already running");
-        return 0;
-    }
-    if crate::proc::tmux_run(&["new-session", "-d", "-s", &session]) {
-        println!("started detached tmux session '{session}'");
-        0
-    } else {
-        eprintln!("ensure-tmux: failed to start tmux session '{session}'");
-        1
-    }
-}
-
 #[cfg(test)]
 mod commit_notes_upstream_tests {
     use super::*;

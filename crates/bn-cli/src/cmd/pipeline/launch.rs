@@ -176,10 +176,9 @@ pub(crate) fn launch_sub_investigator(
             false,
             Some(&cmd),
             true,
-            None,
         )
     } else {
-        wt::open_worktree_window_cmd(&ctx.repo, &window, &wt_path, false, Some(&cmd), true, None)
+        wt::open_worktree_window_cmd(&ctx.repo, &window, &wt_path, false, Some(&cmd), true)
     };
     if launched {
         agent_lease::mark_window(reservation.lease());
@@ -286,10 +285,9 @@ pub(crate) fn launch_plan_agent(
             false,
             Some(&cmd),
             true,
-            None,
         )
     } else {
-        wt::open_worktree_window_cmd(&ctx.repo, &window, &wt_path, false, Some(&cmd), true, None)
+        wt::open_worktree_window_cmd(&ctx.repo, &window, &wt_path, false, Some(&cmd), true)
     };
     if !launched {
         if let Err(error) = reservation.rollback() {

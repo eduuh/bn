@@ -13,6 +13,7 @@
 
 use super::{resolve_agent_session, resolve_tmux_target, tmux_exact_target};
 use crate::*;
+use bn_core::agent::AgentTransport as _;
 
 /// Build the `-p --resume` command for a harness (shared by the sync + detached steer paths).
 /// `None` for an unknown harness.
@@ -211,7 +212,7 @@ fn choose_channel(cfg: &Config, target: &str, requested: SteerChannel) -> SteerC
 
 fn has_live_window(cfg: &Config, target: &str) -> bool {
     let exact = tmux_exact_target(&resolve_tmux_target(cfg, target));
-    crate::proc::tmux_ok(&["display-message", "-p", "-t", &exact, "#{window_id}"])
+    bn_core::agent::TmuxTransport::new(&exact).liveness() == bn_core::agent::Liveness::Live
 }
 
 /// Deliver `text` to `target` over the auto-selected channel, quietly. The shared primitive behind

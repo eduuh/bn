@@ -124,10 +124,5 @@ pub(crate) fn emit_agent_activity(session: &str, limit: usize, as_json: bool) {
 /// lines, then keep the trailing `n`. Interior blank lines are preserved so the pane's layout
 /// survives; only the padded tail is dropped. Pure, so it's unit-testable without tmux.
 pub(crate) fn pane_tail(raw: &str, n: usize) -> Vec<String> {
-    let mut lines: Vec<String> = raw.lines().map(|l| l.trim_end().to_string()).collect();
-    while lines.last().is_some_and(|l| l.is_empty()) {
-        lines.pop();
-    }
-    let start = lines.len().saturating_sub(n);
-    lines[start..].to_vec()
+    bn_core::agent::tail(raw, n)
 }

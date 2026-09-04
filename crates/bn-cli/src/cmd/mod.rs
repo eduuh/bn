@@ -6,6 +6,7 @@
 pub(crate) mod agent;
 pub(crate) mod agent_resume;
 pub(crate) mod close_out;
+pub(crate) mod ensure_tmux;
 pub(crate) mod harness_models;
 pub(crate) mod launch_flags;
 pub(crate) mod pipeline_sweep;
@@ -84,6 +85,8 @@ pub(crate) mod task;
 pub(crate) mod task_workflow;
 pub(crate) mod task_capture;
 pub(crate) mod task_view;
+pub(crate) mod tmux_reconcile;
+pub(crate) mod tmux_sessions;
 pub(crate) mod tmux_status;
 pub(crate) mod today;
 pub(crate) mod tools;

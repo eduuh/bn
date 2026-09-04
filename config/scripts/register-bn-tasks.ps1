@@ -90,7 +90,7 @@ $triggers
 }
 
 Register-BnTask -Name 'BN Daily tmux' `
-  -Desc 'Wake WSL and ensure the persistent tmux workspace session (bn run ensure-tmux).' `
+  -Desc 'Wake WSL and ensure a repository tmux session is up (bn run ensure-tmux).' `
   -Job  'ensure-tmux' -LocalTimes @('07:00')
 
 Register-BnTask -Name 'BN Commit Notes' `

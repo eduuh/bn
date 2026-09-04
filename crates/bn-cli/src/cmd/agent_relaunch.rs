@@ -317,7 +317,6 @@ pub(crate) fn emit(
         true,
         Some(&command),
         true,
-        None,
     );
     if !opened {
         let _ = reservation.rollback();

@@ -138,43 +138,10 @@ fn current_branch(runner: &dyn CommandRunner) -> Option<String> {
 }
 
 /// The base ref to diff branches against, scoping each branch's touched-file set to *its own*
-/// work rather than the whole history. Resolution, all offline (never `git remote show origin`,
-/// which hits the network):
-///   1. `origin/HEAD`'s short name — the remote's default branch, when recorded locally.
-///   2. the current branch's upstream (e.g. `origin/develop`) — the real default on a repo whose
-///      default branch is custom *and* whose `origin/HEAD` was never set (`git remote set-head`).
-///   3. local `main`, then local `master`.
-///
-/// Returns `None` when none resolve, so the caller degrades with a diagnostic instead of diffing
-/// against a literal `main` that doesn't exist — which silently yields an empty result.
+/// work rather than the whole history. Delegates to [`crate::gitbase::base_ref`], the one
+/// resolver, scoped to the process cwd (this runs inside the checkout being recalled).
 fn base_ref(runner: &dyn CommandRunner) -> Option<String> {
-    if let Some(sym) = runner
-        .git(&["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
-        .ok_stdout()
-    {
-        if !sym.is_empty() {
-            return Some(sym);
-        }
-    }
-    if let Some(upstream) = runner
-        .git(&["rev-parse", "--abbrev-ref", "@{upstream}"])
-        .ok_stdout()
-    {
-        if verify_ref(runner, &upstream) {
-            return Some(upstream);
-        }
-    }
-    for candidate in ["main", "master"] {
-        if verify_ref(runner, candidate) {
-            return Some(candidate.to_string());
-        }
-    }
-    None
-}
-
-/// True when `git rev-parse --verify --quiet <r>` resolves `r` to an object in this repo.
-fn verify_ref(runner: &dyn CommandRunner, r: &str) -> bool {
-    runner.git(&["rev-parse", "--verify", "--quiet", r]).success
+    crate::gitbase::base_ref(runner, crate::gitbase::BaseScope::Worktree(Path::new(".")))
 }
 
 /// Local branch short-names via `git for-each-ref --format='%(refname:short)' refs/heads`.

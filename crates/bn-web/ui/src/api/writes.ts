@@ -293,8 +293,8 @@ export function runTodayAgent(body?: {
   return post<TodayRunResult>("/api/today/run", body ?? {});
 }
 
-/** `POST /api/today/agent/start {harness?}` — launch Today's **hosted** agent into the tmux
- * `planning` session. Idempotent server-side: a live agent for today is reported, not duplicated,
+/** `POST /api/today/agent/start {harness?}` — launch Today's **hosted** agent into the
+ * personal-notes repo's tmux session. Idempotent server-side: a live agent for today is reported, not duplicated,
  * so a double-click cannot fork the day. Returns the runner's envelope. */
 export function startTodayAgent(body?: { harness?: string }): Promise<unknown> {
   return post<unknown>("/api/today/agent/start", body ?? {});

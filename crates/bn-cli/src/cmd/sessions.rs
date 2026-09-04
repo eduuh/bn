@@ -98,7 +98,6 @@ struct WindowLaunch<'a> {
     command: &'a str,
     session_id: &'a str,
     harness: &'a str,
-    session_override: Option<&'a str>,
 }
 
 fn launch_session_window(launch: &WindowLaunch<'_>, json: bool) -> Result<(), String> {
@@ -108,8 +107,7 @@ fn launch_session_window(launch: &WindowLaunch<'_>, json: bool) -> Result<(), St
         bn_core::util::now_epoch_secs() & 0xffff
     );
     let branch = launch.branch.replace('/', "-");
-    let lease_session = launch.session_override.unwrap_or(launch.repo);
-    let lease_target = format!("{lease_session}:{window}");
+    let lease_target = format!("{}:{window}", launch.repo);
     let reservation = agent_lease::reserve(agent_lease::AgentLeaseRequest {
         repo: launch.repo,
         branch: &branch,
@@ -130,7 +128,6 @@ fn launch_session_window(launch: &WindowLaunch<'_>, json: bool) -> Result<(), St
             true,
             Some(launch.command),
             true,
-            launch.session_override,
         )
     } else {
         wt::open_worktree_window_cmd_named(
@@ -141,7 +138,6 @@ fn launch_session_window(launch: &WindowLaunch<'_>, json: bool) -> Result<(), St
             true,
             Some(launch.command),
             true,
-            launch.session_override,
         )
     };
     if !launched {
@@ -178,7 +174,6 @@ pub(crate) fn launch_resume_window(
             command,
             session_id,
             harness,
-            session_override: None,
         },
         false,
     )
@@ -213,7 +208,6 @@ fn launch_recorded_session(row: &bn_core::agent::SessionRecord, json: bool, comm
         wt::shell_single_quote(&row.session_id),
         wt::shell_single_quote(&row.session_id),
     );
-    let session_override = row.controller_id.as_ref().map(|_| wt::orchestrator_session());
     let launch = WindowLaunch {
         repo: &row.repo,
         branch: &row.branch,
@@ -223,7 +217,6 @@ fn launch_recorded_session(row: &bn_core::agent::SessionRecord, json: bool, comm
         command: &command,
         session_id: &row.session_id,
         harness: &row.harness,
-        session_override,
     };
     if let Err(error) = launch_session_window(&launch, json) {
         fail_json(json, command_tag, "agent_lease_or_tmux_failed", &error);
@@ -291,7 +284,6 @@ fn launch_fresh_session(cfg: &Config, worktree: &std::path::Path, json: bool, co
         command: &command,
         session_id: &session_id,
         harness: "copilot",
-        session_override: None,
     };
     if let Err(error) = launch_session_window(&launch, json) {
         fail_json(json, command_tag, "agent_lease_or_tmux_failed", &error);

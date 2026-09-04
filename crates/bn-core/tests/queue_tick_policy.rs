@@ -67,6 +67,11 @@ fn shell(id: &str, priority: i64) -> BacklogEntry {
     )
 }
 
+/// The scheduled `pool-warm` sweep — the entry that owns machine-wide admission.
+///
+/// It names the repo it warms, because every cron does now. What makes it the *mandatory* sweep is
+/// the producer (`source = "cron:pool-warm"`), not a missing repo — so this fixture is also the
+/// regression guard for that: build it the way the cron producer does.
 fn heavy_job(id: &str, priority: i64) -> BacklogEntry {
     let mut e = pending(
         id,
@@ -74,21 +79,19 @@ fn heavy_job(id: &str, priority: i64) -> BacklogEntry {
         priority,
         ExecSpec::Job {
             job: "pool-warm".to_string(),
-            repo: None,
-            branch: None,
+            repo: Some("repo".to_string()),
+            branch: Some("main".to_string()),
         },
     );
+    e.source = "cron:pool-warm".to_string();
     e.heavy = true;
     e
 }
 
+/// A person's per-repo warm from the dashboard: same job, same repo, different producer.
 fn targeted_pool_warm(id: &str, priority: i64) -> BacklogEntry {
     let mut e = heavy_job(id, priority);
-    e.exec = ExecSpec::Job {
-        job: "pool-warm".to_string(),
-        repo: Some("repo".to_string()),
-        branch: Some("main".to_string()),
-    };
+    e.source = "queue".to_string();
     e
 }
 
@@ -619,9 +622,10 @@ fn keep_warm_does_not_trigger_or_bypass_mandatory_pool_warming() {
     let mut keep_warm = heavy_job("keep-warm", -50);
     keep_warm.exec = ExecSpec::Job {
         job: "keep-warm".to_string(),
-        repo: None,
-        branch: None,
+        repo: Some("repo".to_string()),
+        branch: Some("main".to_string()),
     };
+    keep_warm.source = "cron:keep-warm".to_string();
     let fx = Fixture {
         pending: vec![keep_warm, heavy_job("pool-warm", -50)],
         mandatory_warming: true,

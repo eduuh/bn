@@ -78,11 +78,20 @@ shape into `bn attn ingest` instead of building a quoted command line:
 `--replace` makes the batch the source's current truth: keyed items no longer emitted by the job
 are resolved automatically, while repeated keys are skipped instead of duplicated.
 
-Crons are **headless**. `bn run <job>` executes the job in its own process and records the outcome;
-no tmux session, window, or pane is ever created. A firing cron cannot steal your focus, clutter a
-session, or leave a window parked behind it, because it never touches tmux at all.
+Crons never open a tmux **session**. `bn run <job>` executes the job in its own process and records
+the outcome, and a firing cron cannot steal your focus.
 
-Read a run's result from the event log rather than from a terminal:
+A job heavy enough to be spawned rather than run inline (`bn_core::queue::jobs::HEAVY_JOBS` — pool
+warming, release builds) does get a window, because minutes of build deserve somewhere to be
+watched. That window opens **in the session of the repository the job serves**, which must already
+be a repo's: bn creates no tmux session that is not named after a repository it manages, and work
+that names no repo of its own is bn's bookkeeping and lands in bn's session. The window is created
+detached, so it never takes your cursor, and it closes itself the moment the job succeeds. Only a
+failed run leaves its pane behind to be read, and the next run of that job clears it — so at most
+one stale window per job can exist, and a repo's session cannot silently fill up.
+
+Read a run's result from the event log rather than from a terminal — the pane is a live view, never
+the record:
 
 - `bn cron` — every scheduled job with its last-run health (ok/FAIL, duration, run + failure counts).
 - `bn queue badge` — the tmux status-bar signal for foreground queue attention, failures, or a
@@ -251,9 +260,12 @@ job** inside the now-always-up instance. Two installers recreate the whole thing
        pwsh -File config/jobs/windows/install.ps1 -Distro Ubuntu-22.04 -WslUser you
 
    It registers `BN WSL Keepalive` → `wsl.exe … bn run ensure-tmux`, triggered **at logon + every
-   30 min**. `ensure-tmux` starts a detached tmux server, which boots WSL and keeps it alive
-   afterwards. It also removes the older hand-made `BN Daily tmux` / `BN Commit Notes` tasks this
-   design supersedes.
+   30 min**. `ensure-tmux` opens a repository's own tmux session — bn's, or `$BN_TMUX_SESSION`
+   read as a **repo name** — which boots WSL and keeps it alive afterwards. It is a no-op when that
+   session is already open, and on a machine with no bn-managed clone it does nothing and says so
+   (a fresh box is `setup-bn`'s job, not a cron failure); WSL then idles between the half-hourly
+   wakes rather than staying up continuously. It also removes the older hand-made `BN Daily tmux` /
+   `BN Commit Notes` tasks this design supersedes.
 
 2. **WSL side** — install + enable all the job timers:
 

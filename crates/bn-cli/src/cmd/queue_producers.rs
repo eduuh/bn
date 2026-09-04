@@ -382,10 +382,21 @@ pub(crate) fn agent_requirements(agent: &bn_core::agents::AgentDef, home: Option
     }
 }
 
-fn named_job_exec(name: &str, ctx: Option<&Resolved>) -> ExecSpec {
+/// The exec for a named job, carrying the repository the job belongs to.
+///
+/// `ctx` answers when a person ran the job inside a worktree. A systemd timer has no ctx — and the
+/// repo was simply dropped there, which is how a scheduled job ended up describing itself as
+/// belonging to nothing. But the cron manifest declares one (`config/crons.toml` sets `repo = "bn"`
+/// at the top and every entry inherits it), `bn run` already reads that declaration as an
+/// availability gate, and it was being discarded one function later.
+///
+/// `declared_repo` is that manifest answer, passed in rather than looked up so this stays pure.
+fn named_job_exec(name: &str, ctx: Option<&Resolved>, declared_repo: Option<String>) -> ExecSpec {
     ExecSpec::Job {
         job: name.to_string(),
-        repo: ctx.map(|ctx| ctx.repo.clone()),
+        repo: ctx.map(|ctx| ctx.repo.clone()).or(declared_repo),
+        // Deliberately left to the ctx: the manifest names a repo, never a branch, and inventing
+        // one here would make a job claim a checkout it was never pointed at.
         branch: ctx.map(|ctx| ctx.branch.clone()),
     }
 }
@@ -428,7 +439,7 @@ pub(crate) fn maybe_capture_agent(
     Some(capture_job(
         cfg,
         &agent.name,
-        named_job_exec(&agent.name, ctx),
+        named_job_exec(&agent.name, ctx, bn_core::crons::job_repo(cfg, ctx, &agent.name)),
         agent_requirements(agent, home.as_deref()),
         schedule_deadline(agent.on_calendar.as_deref()),
     ))
@@ -464,7 +475,7 @@ pub(crate) fn maybe_capture_job(
     Some(capture_job(
         cfg,
         job,
-        named_job_exec(job, ctx),
+        named_job_exec(job, ctx, bn_core::crons::job_repo(cfg, ctx, job)),
         Requirements {
             capabilities: home.map(|h| vec![format!("home:{h}")]).unwrap_or_default(),
             ..Default::default()
@@ -693,11 +704,38 @@ mod tests {
         };
 
         assert_eq!(
-            named_job_exec("custom-agent", Some(&ctx)),
+            named_job_exec("custom-agent", Some(&ctx), None),
             ExecSpec::Job {
                 job: "custom-agent".to_string(),
                 repo: Some("demo".to_string()),
                 branch: Some("feature".to_string()),
+            }
+        );
+    }
+
+    /// The worktree a person ran it from beats what the manifest declares — they pointed at it.
+    #[test]
+    fn the_invocation_context_outranks_the_manifest() {
+        let ctx = Resolved {
+            repo: "demo".to_string(),
+            branch: "feature".to_string(),
+        };
+        let exec = named_job_exec("custom-agent", Some(&ctx), Some("bn".to_string()));
+        assert!(matches!(exec, ExecSpec::Job { repo, .. } if repo.as_deref() == Some("demo")));
+    }
+
+    /// A headless firing has no context, and used to therefore claim no repo at all — which is
+    /// what put its window in a session named after the queue's sentinel.
+    #[test]
+    fn a_headless_firing_falls_back_to_the_repo_the_manifest_declares() {
+        let exec = named_job_exec("pool-warm", None, Some("bn".to_string()));
+        assert_eq!(
+            exec,
+            ExecSpec::Job {
+                job: "pool-warm".to_string(),
+                repo: Some("bn".to_string()),
+                // No ctx, no branch: the manifest names a repo and nothing more.
+                branch: None,
             }
         );
     }

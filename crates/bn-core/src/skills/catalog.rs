@@ -420,7 +420,6 @@ mod tests {
             .collect();
         for name in [
             "attention-completion",
-            "attention-planning",
             "auto-review-envelope",
             "curriculum-resource",
             "dispatch-autonomy-interactive",

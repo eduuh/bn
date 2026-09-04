@@ -298,38 +298,15 @@ fn git_silent(args: &[&str]) -> bool {
     crate::git::git_ok(args)
 }
 
-/// A valid base ref to create/reset slots against — the first of origin/main, main, origin/master,
-/// master that resolves, else HEAD.
+/// A valid base ref to create/reset slots against. Delegates to [`bn_core::gitbase::base_ref`],
+/// the one resolver, scoped to the bare repo; `HEAD` when the repo offers no answer (a slot still
+/// has to be cut from something).
 fn default_base(bare_s: &str) -> String {
-    if let Some(remote_head) = wt::git_out(&[
-        "--git-dir",
-        bare_s,
-        "symbolic-ref",
-        "--quiet",
-        "--short",
-        "refs/remotes/origin/HEAD",
-    ]) {
-        let remote_head = remote_head.trim();
-        if !remote_head.is_empty()
-            && wt::git_out(&[
-                "--git-dir",
-                bare_s,
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                remote_head,
-            ])
-            .is_some()
-        {
-            return remote_head.to_string();
-        }
-    }
-    for r in ["origin/main", "main", "origin/master", "master"] {
-        if wt::git_out(&["--git-dir", bare_s, "rev-parse", "--verify", "--quiet", r]).is_some() {
-            return r.to_string();
-        }
-    }
-    "HEAD".to_string()
+    bn_core::gitbase::base_ref(
+        &bn_core::runner::RealRunner,
+        bn_core::gitbase::BaseScope::BareRepo(std::path::Path::new(bare_s)),
+    )
+    .unwrap_or_else(|| "HEAD".to_string())
 }
 
 /// Create one warm slot as a detached worktree off the default base.

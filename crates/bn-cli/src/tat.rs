@@ -14,7 +14,7 @@
 //! `psmux` stays shell-side.
 
 mod codespaces;
-mod discovery;
+pub(crate) mod discovery;
 mod preview;
 
 use codespaces::{
@@ -1716,10 +1716,12 @@ fn agent_dot(state: &str, since: &str) -> String {
         return "  ".to_string();
     }
     let (color, glyph) = match state {
-        "working" => ("32", '●'), // green — actively working
-        "waiting" => ("33", '●'), // yellow — waiting on you
-        "done" => ("36", '●'),    // cyan — finished
-        _ => ("2", '◌'),          // dim — decorated but idle/unknown
+        "working" => ("32", '●'),                    // green — actively working
+        "waiting" | "needs-decision" => ("33", '●'), // yellow — waiting on you
+        "blocked" | "failed" => ("31", '●'),         // red — stopped, and not on its own account
+        "limited" => ("2", '●'),                     // dim but present — paused on a usage cap
+        "done" => ("36", '●'),                       // cyan — finished
+        _ => ("2", '◌'),                             // dim — decorated but idle/unknown
     };
     format!("\x1b[{color}m{glyph}\x1b[0m ")
 }

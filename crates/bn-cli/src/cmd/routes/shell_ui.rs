@@ -2,12 +2,15 @@ use crate::*;
 
 pub(super) fn route(cfg: &Config, action: CmdShellUi, json: bool) {
     match action {
+        CmdShellUi::Edit { action } => crate::edit::route(cfg, *action, json),
         CmdShellUi::Setup => emit_setup(cfg, json),
         CmdShellUi::TmuxStatus { path } => emit_tmux_status(cfg, path),
         CmdShellUi::TmuxMcp { action } => match action {
             TmuxMcpCmd::Ensure => emit_tmux_mcp_ensure(cfg),
             TmuxMcpCmd::Badge => emit_tmux_mcp_badge(cfg),
         },
+        CmdShellUi::TmuxPrune { force } => emit_tmux_prune(cfg, force, json),
+        CmdShellUi::TmuxSnapshotFilter { path } => emit_snapshot_filter(cfg, &path),
         CmdShellUi::TmuxGit { path } => emit_tmux_git(path),
         CmdShellUi::TmuxGoal { path } => emit_tmux_goal(cfg, path),
         CmdShellUi::TmuxAttnCount => emit_tmux_attn_count(),
@@ -20,6 +23,7 @@ pub(super) fn route(cfg: &Config, action: CmdShellUi, json: bool) {
             let ctx = resolve_or_exit(cfg);
             sync_tmux(cfg, &ctx);
         }
+        CmdShellUi::TmuxReconcile { dry_run } => emit_tmux_reconcile(cfg, dry_run),
         CmdShellUi::TmuxAgent { state } => set_tmux_agent(&state),
         CmdShellUi::Status => {
             let ctx = resolve_or_exit(cfg);

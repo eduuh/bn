@@ -3,8 +3,9 @@
 //! * the **review surface** — `run` / `list` / `accept` / `dismiss` over the suggestions store,
 //!   built on the deterministic fold in [`bn_core::today`];
 //! * the **hosted agent** — `bn today agent start|stop|status`, which launches a live harness
-//!   session into the tmux `planning` session, seeded with today's findings packet, and leaves it
-//!   steerable from the Today page.
+//!   session in the configured personal-notes repository's own tmux session — a `today` window
+//!   beside that repo's worktrees — seeded with today's findings packet, and leaves it steerable
+//!   from the Today page.
 //!
 //! The launcher mirrors `bn control start` step for step (lease → window → mark → record), because
 //! that ordering is what makes an agent addressable: the lease and the window's `@bn_session_id`
@@ -502,7 +503,7 @@ pub(crate) fn start_hosted_agent(
     // resolve to a real repo/branch, then use that identity for its note, lease, and tmux session.
     let cwd = cfg.personal_root.clone();
     if !cwd.is_dir() {
-        return Err(format!("planning root {} does not exist", cwd.display()));
+        return Err(format!("personal notes root {} does not exist", cwd.display()));
     }
     let ctx = resolver::resolve(cfg, &cwd).map_err(|_| {
         format!(
@@ -550,7 +551,6 @@ pub(crate) fn start_hosted_agent(
         false,
         Some(&cmd),
         true,
-        None,
     );
     if !opened {
         if let Err(e) = reservation.rollback() {

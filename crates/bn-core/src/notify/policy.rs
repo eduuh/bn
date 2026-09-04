@@ -393,6 +393,11 @@ pub struct Ledger {
     /// Toasts actually delivered today.
     #[serde(default)]
     pub sent_today: usize,
+
+    /// How many of `sent_today` were carried by the tmux fallback rather than an OS toast — so
+    /// `bn notify status` can say the desktop backend is down without claiming nothing arrived.
+    #[serde(default)]
+    pub sent_via_tmux: usize,
     /// Source → toasts it delivered today, for the per-source share.
     #[serde(default)]
     pub sent_by_source: BTreeMap<String, usize>,
@@ -407,6 +412,7 @@ impl Ledger {
         if self.day != today {
             self.day = today.to_string();
             self.sent_today = 0;
+            self.sent_via_tmux = 0;
             self.sent_by_source.clear();
             self.held_today.clear();
         }
@@ -566,7 +572,13 @@ pub fn deliver(n: &Notification, now: i64) -> Delivery {
 
 /// [`deliver`] for callers that already hold a [`Config`], so a hot path need not re-read it.
 pub fn deliver_with(cfg: &Config, n: &Notification, now: i64) -> Delivery {
-    deliver_using(cfg, n, now, &|title, body| super::emit(title, body))
+    deliver_using(
+        cfg,
+        n,
+        now,
+        &|title, body| super::emit(title, body),
+        &|title, body| super::emit_tmux(title, body),
+    )
 }
 
 /// [`deliver_with`] with the backend injected, so tests exercise the whole ledger path without
@@ -576,17 +588,28 @@ pub fn deliver_using(
     n: &Notification,
     now: i64,
     emit: &dyn Fn(&str, &str) -> bool,
+    fallback: &dyn Fn(&str, &str) -> bool,
 ) -> Delivery {
     let quiet = Quiet::probe(cfg, now);
     let mut ledger = load_ledger();
     ledger.roll(&crate::util::today());
     let mut outcome = decide(n, &ledger, &cfg.notify, quiet, now);
+    let mut via_tmux = false;
     if outcome.sent() && !emit(&n.title, &n.body) {
-        // No backend on this host: the policy said yes but nothing reached a screen, so this must
-        // not count as a delivery (see `Suppressed::NoBackend`).
-        outcome = Delivery::Held(Suppressed::NoBackend);
+        // The OS toast backend is absent or broken. Before writing this off, try the one screen we
+        // know the user is looking at: the policy already decided this interrupt was worth making,
+        // and a decision that reaches nobody is the same as no decision at all.
+        if fallback(&n.title, &n.body) {
+            via_tmux = true;
+        } else {
+            // Nothing reached a screen, so this must not count as a delivery.
+            outcome = Delivery::Held(Suppressed::NoBackend);
+        }
     }
     ledger.record(n, outcome, now);
+    if via_tmux {
+        ledger.sent_via_tmux += 1;
+    }
     ledger.prune(now);
     crate::util::best_effort(save_ledger(&ledger), "notify: persist delivery ledger");
     outcome
@@ -605,9 +628,15 @@ pub fn deliver_batch(
     separator: &str,
     now: i64,
 ) -> Vec<Delivery> {
-    deliver_batch_using(cfg, candidates, title, separator, now, &|t, b| {
-        super::emit(t, b)
-    })
+    deliver_batch_using(
+        cfg,
+        candidates,
+        title,
+        separator,
+        now,
+        &|t, b| super::emit(t, b),
+        &|t, b| super::emit_tmux(t, b),
+    )
 }
 
 /// [`deliver_batch`] with the backend injected — see [`deliver_using`].
@@ -618,6 +647,7 @@ pub fn deliver_batch_using(
     separator: &str,
     now: i64,
     emit: &dyn Fn(&str, &str) -> bool,
+    fallback: &dyn Fn(&str, &str) -> bool,
 ) -> Vec<Delivery> {
     let quiet = Quiet::probe(cfg, now);
     let mut ledger = load_ledger();
@@ -643,10 +673,17 @@ pub fn deliver_batch_using(
             .map(|n| n.body.as_str())
             .collect::<Vec<_>>()
             .join(separator);
-        if !emit(&title(winners.len()), &body) {
-            // Nothing reached a screen, so no key earned a cooldown: demote the whole burst.
-            for verdict in verdicts.iter_mut().filter(|v| v.sent()) {
-                *verdict = Delivery::Held(Suppressed::NoBackend);
+        let headline = title(winners.len());
+        if !emit(&headline, &body) {
+            if fallback(&headline, &body) {
+                // The burst is already folded into one interrupt, so the fallback inherits that
+                // discipline: one tmux message, not one per item.
+                ledger.sent_via_tmux += 1;
+            } else {
+                // Nothing reached a screen, so no key earned a cooldown: demote the whole burst.
+                for verdict in verdicts.iter_mut().filter(|v| v.sent()) {
+                    *verdict = Delivery::Held(Suppressed::NoBackend);
+                }
             }
         }
     }
@@ -699,5 +736,105 @@ impl Notifier for RealNotifier {
             deliver(&n, crate::util::now_epoch_secs()),
             Delivery::Held(Suppressed::NoBackend)
         )
+    }
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::*;
+
+    fn blocking(key: &str) -> Notification {
+        Notification {
+            class: Class::Blocking,
+            key: key.to_string(),
+            source: "watch".to_string(),
+            title: "an agent is blocked".to_string(),
+            body: "bn/main needs a decision".to_string(),
+            user_requested: false,
+        }
+    }
+
+    /// The bug this closes. On a host where every OS toast backend is absent or broken, a
+    /// notification that passed the whole policy gate used to be written off as `no-backend` — the
+    /// ledger on the machine that motivated this read `sent_today: 0` against nineteen holds in a
+    /// day. It must now reach the screen the user is actually looking at, and count as delivered.
+    #[test]
+    fn a_dead_desktop_backend_falls_back_to_tmux_and_counts_as_sent() {
+        crate::test_support::with_state_dir(|| {
+            let cfg = Config::default();
+            let out = deliver_using(
+                &cfg,
+                &blocking("attn:1"),
+                1_000,
+                &|_, _| false, // every OS backend broken, as on WSL with a failing PS toast
+                &|_, _| true,  // a tmux client is attached
+            );
+            assert!(out.sent(), "the fallback delivered it: {out:?}");
+            let mut ledger = load_ledger();
+            ledger.roll(&crate::util::today());
+            assert_eq!(ledger.sent_today, 1);
+            assert_eq!(ledger.sent_via_tmux, 1, "and we recorded which channel");
+        });
+    }
+
+    /// With no screen at all — a headless cron run, no tmux client attached — the honest answer is
+    /// still `no-backend`. The fallback must not let us claim delivery to nobody.
+    #[test]
+    fn with_no_screen_at_all_it_is_still_recorded_as_undeliverable() {
+        crate::test_support::with_state_dir(|| {
+            let cfg = Config::default();
+            let out = deliver_using(&cfg, &blocking("attn:2"), 1_000, &|_, _| false, &|_, _| {
+                false
+            });
+            assert_eq!(out, Delivery::Held(Suppressed::NoBackend));
+            let mut ledger = load_ledger();
+            ledger.roll(&crate::util::today());
+            assert_eq!(ledger.sent_today, 0);
+            assert_eq!(ledger.undeliverable(), 1);
+        });
+    }
+
+    /// A working desktop backend must not touch the fallback, nor be miscounted as a tmux
+    /// delivery — otherwise `bn notify status` would start claiming the backend is down.
+    #[test]
+    fn a_working_desktop_backend_never_reaches_the_fallback() {
+        crate::test_support::with_state_dir(|| {
+            let cfg = Config::default();
+            let out = deliver_using(&cfg, &blocking("attn:3"), 1_000, &|_, _| true, &|_, _| {
+                panic!("the fallback must not run when the toast landed")
+            });
+            assert!(out.sent());
+            let mut ledger = load_ledger();
+            ledger.roll(&crate::util::today());
+            assert_eq!((ledger.sent_today, ledger.sent_via_tmux), (1, 0));
+        });
+    }
+
+    /// `bn watch` folds a burst into ONE interrupt; the fallback inherits that discipline rather
+    /// than firing a tmux message per item.
+    #[test]
+    fn a_burst_falls_back_as_a_single_message() {
+        crate::test_support::with_state_dir(|| {
+            let cfg = Config::default();
+            let items = [blocking("attn:a"), blocking("attn:b"), blocking("attn:c")];
+            let calls = std::cell::Cell::new(0);
+            let verdicts = deliver_batch_using(
+                &cfg,
+                &items,
+                &|n| format!("{n} need you"),
+                " · ",
+                1_000,
+                &|_, _| false,
+                &|_, _| {
+                    calls.set(calls.get() + 1);
+                    true
+                },
+            );
+            assert_eq!(calls.get(), 1, "one message for the whole burst");
+            assert!(verdicts.iter().all(|v| v.sent()), "{verdicts:?}");
+            let mut ledger = load_ledger();
+            ledger.roll(&crate::util::today());
+            assert_eq!(ledger.sent_via_tmux, 1);
+        });
     }
 }

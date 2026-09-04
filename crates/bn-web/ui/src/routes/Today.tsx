@@ -169,7 +169,8 @@ function SuggestionRow({
 /**
  * Today's agent, hosted right here.
  *
- * The agent is a live harness session in the tmux `planning` session — not a one-shot job — so this
+ * The agent is a live harness session in the personal-notes repo's tmux session — not a one-shot
+ * job — so this
  * card is a *window onto a running thing*, not a button. It carries the three affordances that make
  * a hosted agent usable without leaving the page: whether it is alive, what it is doing
  * (`AgentActivity`, the same transcript stream the agent-detail page renders), and a way to talk to
@@ -193,7 +194,7 @@ function TodayAgentCard() {
     mutationFn: () => startTodayAgent(),
     invalidates: affects.todayAgent,
     toast: {
-      success: "Today's agent starting — it lands in the tmux `planning` session",
+      success: "Today's agent starting — it lands in the personal-notes repo's tmux session",
       error: "Could not start Today's agent",
     },
   });
@@ -242,7 +243,7 @@ function TodayAgentCard() {
             )}
           </ConfirmButton>
         ) : (
-          <Hint label="Launch Today's agent into the tmux `planning` session, seeded with today's findings">
+          <Hint label="Launch Today's agent into the personal-notes repo's tmux session, seeded with today's findings">
             <Button size="sm" disabled={busy} onClick={() => start.mutate()}>
               {start.isPending ? (
                 <>
@@ -262,9 +263,10 @@ function TodayAgentCard() {
         <Skeleton className="h-16 w-full" />
       ) : !record ? (
         <Empty>
-          Today's agent hasn't run yet. Starting it opens a live session in the{" "}
-          <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">planning</code> tmux
-          session, seeded with what this morning's crons found — then you steer it from here.
+          Today's agent hasn't run yet. Starting it opens a live session in a{" "}
+          <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">today</code> window in
+          your personal-notes repo's tmux session, seeded with what this morning's crons found —
+          then you steer it from here.
         </Empty>
       ) : (
         <div className="space-y-3">

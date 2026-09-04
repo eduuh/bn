@@ -42,6 +42,7 @@ pub(crate) fn native_job(job: &str) -> Option<NativeJob> {
         "refresh-all" => Some(job_refresh_all),
         "self-update" => Some(job_self_update),
         "tools-reconcile" => Some(job_tools_reconcile),
+        "tmux-reconcile" => Some(crate::cmd::tmux_reconcile::job_tmux_reconcile),
         "keep-warm" => Some(crate::cmd::orchestrate::job_keep_warm),
         "pool-warm" => Some(crate::wt_pool::job_pool_warm),
         "cron-health" => Some(crate::cmd::attention_workflow::job_cron_health),
@@ -59,7 +60,8 @@ pub(crate) fn native_job(job: &str) -> Option<NativeJob> {
 /// `notify` deliberately left this cluster: `bn watch` (the `*:0/2` cron) owns attention delivery,
 /// and running both meant every urgent item was toasted twice on two independent dedup ledgers.
 /// The job still exists for `bn run notify` — see [`crate::cmd::jobs::job_notify`].
-pub(crate) const TICK_5M: &[&str] = &["tools-reconcile", "routine-tick", "attention-sync"];
+pub(crate) const TICK_5M: &[&str] =
+    &["tools-reconcile", "routine-tick", "attention-sync", "tmux-reconcile"];
 
 /// The `*:0/10` cadence cluster, in run order.
 pub(crate) const TICK_10M: &[&str] = &[

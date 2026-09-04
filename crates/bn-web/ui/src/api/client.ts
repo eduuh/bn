@@ -597,7 +597,8 @@ export function todayAgentsQuery() {
   };
 }
 
-/** Today's **hosted** agent — the live session in the tmux `planning` session that the Today page
+/** Today's **hosted** agent — the live session in the personal-notes repo's tmux session that the
+ * Today page
  * streams and steers. Polled briskly (5s): this is the one card whose state changes while you
  * watch it, and a stale `control` channel is the difference between a live Steer composer and a
  * greyed one. */

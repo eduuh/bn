@@ -1481,7 +1481,6 @@ fn redirect_into_window(
         false,
         Some(&cmd),
         true,
-        None,
     ) {
         eprintln!("bn agent launch: could not open {tmux_target} — starting here instead.");
         let _ = reservation.rollback();

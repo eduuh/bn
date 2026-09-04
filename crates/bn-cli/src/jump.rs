@@ -99,6 +99,23 @@ fn window_row(cols: &[&str], cur: &str, now: i64) -> Option<Win> {
             d = dur(since, now);
             (1, "\x1b[1;33m\u{f0f3} needs you\x1b[0m")
         }
+        // Same rank as `waiting`: an agent that is blocked, wants a decision, or has died is
+        // exactly what prefix-Tab exists to take you to. These fell through to `None`, which made
+        // a stopped agent *unreachable* from the one key meant to reach it.
+        "blocked" => {
+            d = dur(since, now);
+            (1, "\x1b[1;31m\u{f05e} blocked\x1b[0m  ")
+        }
+        "needs-decision" => {
+            d = dur(since, now);
+            (1, "\x1b[1;33m\u{f06e} decide\x1b[0m   ")
+        }
+        "failed" => {
+            d = dur(since, now);
+            (1, "\x1b[1;31m\u{f0e7} failed\x1b[0m   ")
+        }
+        // Paused on a usage cap — it resumes on its own, so it is not something to jump to.
+        "limited" => return None,
         "done" => {
             d = dur(since, now);
             (2, "\x1b[32m\u{f00c} done\x1b[0m     ")

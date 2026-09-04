@@ -61,5 +61,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BN_MAIN_WORKTREE: ${{ github.workspace }}
           BN_CONFIG_DIR: ${{ runner.temp }}/bn-config
-          BN_NIGHTLY_TMUX: "0"
         run: sh config/jobs/nightly-release.sh

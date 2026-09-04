@@ -165,13 +165,77 @@ pub fn is_warming(entry: &BacklogEntry) -> bool {
 ///
 /// A targeted `pool-warm` comes from a person's per-repo dashboard action and remains ordinary
 /// opportunistic maintenance. Only the untargeted daily sweep owns machine-wide admission.
+///
+/// Read from the **producer**, not from a missing repo. It used to match `repo: None` on the exec,
+/// which worked only because the cron sweep happened to name no repo — an accident of
+/// representation, and one that quietly inverted the moment crons started carrying the repo they
+/// belong to. The two producers already declare themselves: the sweep enqueues with
+/// `source = "cron:pool-warm"`, a person's dashboard warm with `source = "queue"`. Asking who
+/// asked for the work is the question this function was always trying to answer.
 pub fn is_mandatory_pool_warming(entry: &BacklogEntry) -> bool {
-    matches!(
-        &entry.exec,
-        ExecSpec::Job {
-            job,
-            repo: None,
-            ..
-        } if job == "pool-warm"
-    )
+    crate::queue::jobs::is_scheduled_firing(&entry.source, "pool-warm")
+        && matches!(&entry.exec, ExecSpec::Job { job, .. } if job == "pool-warm")
+}
+
+#[cfg(test)]
+mod mandatory_pool_warming_tests {
+    use super::*;
+    use crate::backlog::{AddSpec, BacklogKind};
+
+    fn pool_warm(source: &str, repo: Option<&str>) -> BacklogEntry {
+        let spec = AddSpec {
+            kind: BacklogKind::Cron,
+            source: source.to_string(),
+            exec: ExecSpec::Job {
+                job: "pool-warm".to_string(),
+                repo: repo.map(str::to_string),
+                branch: None,
+            },
+            heavy: true,
+            ..Default::default()
+        };
+        BacklogEntry::new("machine", "run pool-warm", &spec, 1000)
+    }
+
+    /// The regression this re-key exists for: the sweep now carries the repo it belongs to, and
+    /// must still own machine-wide admission. Under the old `repo: None` match this returned false
+    /// the moment crons started naming a repo — silently switching the whole lane off.
+    #[test]
+    fn the_cron_sweep_stays_mandatory_once_it_carries_a_repo() {
+        assert!(is_mandatory_pool_warming(&pool_warm(
+            "cron:pool-warm",
+            Some("bn")
+        )));
+        assert!(is_mandatory_pool_warming(&pool_warm(
+            "cron:pool-warm",
+            None
+        )));
+    }
+
+    /// A person's per-repo dashboard warm is ordinary opportunistic maintenance, whoever it names.
+    #[test]
+    fn a_targeted_dashboard_warm_is_not_mandatory() {
+        assert!(!is_mandatory_pool_warming(&pool_warm(
+            "queue",
+            Some("arena")
+        )));
+        assert!(!is_mandatory_pool_warming(&pool_warm("queue", None)));
+    }
+
+    /// The source alone is not enough — a cron entry that runs something else is not pool warming.
+    #[test]
+    fn another_cron_job_is_not_mandatory_pool_warming() {
+        let spec = AddSpec {
+            kind: BacklogKind::Cron,
+            source: "cron:pool-warm".to_string(),
+            exec: ExecSpec::Job {
+                job: "keep-warm".to_string(),
+                repo: None,
+                branch: None,
+            },
+            ..Default::default()
+        };
+        let entry = BacklogEntry::new("machine", "run keep-warm", &spec, 1000);
+        assert!(!is_mandatory_pool_warming(&entry));
+    }
 }

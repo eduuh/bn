@@ -20,7 +20,12 @@ description = "bn — wake reactor and sole owner of attention toasts: ONE batch
 #   bn wt cleanup   — reclaim worktrees whose PR merged (local + remote branch)
 #   bn wt reap      — remove finished/clean scout worktrees
 #   bn run fleet-reap — GC orphaned agent process trees + dead tmux windows
+#   bn tmux-prune   — remove tmux sessions that name no repository
 # Do NOT re-add these as [[cron]] entries.
+#
+# `bn tmux-snapshot-filter` is NOT this kind of reclamation, which is why it may run unattended from
+# resurrect's post-save hook: it kills nothing, and only decides which sessions the saved layout
+# records. The worst it can do is fail to restore a session after a reboot.
 #
 # The pool-slot ledger is NOT this kind of reclamation and is reconciled automatically, at the head
 # of every `queue-tick` pass: it deletes no branch, removes no worktree and kills no session. It

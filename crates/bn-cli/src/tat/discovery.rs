@@ -12,6 +12,30 @@ use super::{
     cache_home, is_bare_repo, list_worktrees, ref_repo, sort_by_frecency, write_atomic, Roots,
 };
 use crate::wt;
+use bn_core::resolver::Config;
+
+/// Every tmux session name that names a repository on this machine.
+///
+/// The answer has to come from `tat`'s own root resolution, not from the bare dir alone. A bare
+/// clone is only one of the shapes a project takes here: `list_root_projects` also picks up **flat
+/// clones** sitting directly under the root (often symlinks onto the Windows filesystem), and those
+/// get plain, untagged session names. Asking `lifecycle::cloned_repos` instead would call three
+/// live working sessions orphans — which is exactly the mistake this function exists to prevent.
+///
+/// Both root scopes are unioned: the default one (primary + `<repo>-<tag>` for each extra root) and
+/// the `--root win` scope, where the Windows root *is* the primary and so yields bare names. A
+/// machine that reaches its Windows repos either way must recognise the sessions either way.
+///
+/// Names are lowercased, because a session keeps the directory's real case (`BigMono`) while note keys
+/// do not — compare through this, never directly.
+pub(crate) fn repo_backed_sessions(cfg: &Config) -> std::collections::BTreeSet<String> {
+    [None, Some("win")]
+        .into_iter()
+        .flat_map(|scope| super::Roots::resolve(cfg, scope).all_refs())
+        .map(|r| super::ref_session(&r).to_lowercase())
+        .collect()
+}
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;

@@ -143,9 +143,6 @@ struct AgentFrontmatter {
     /// Synthetic steering address used by a hosted agent that does not belong to a checkout.
     #[serde(default)]
     host_repo: Option<String>,
-    /// Persistent tmux session in which a hosted agent opens its window.
-    #[serde(default)]
-    host_session: Option<String>,
     /// Tmux window name used by a hosted agent.
     #[serde(default)]
     host_window: Option<String>,
@@ -252,8 +249,6 @@ pub struct AgentDef {
     pub requires_repo: Option<String>,
     /// Synthetic steering address for a hosted agent.
     pub host_repo: Option<String>,
-    /// Persistent tmux session for a hosted agent.
-    pub host_session: Option<String>,
     /// Tmux window name for a hosted agent.
     pub host_window: Option<String>,
     /// Repo this specialist is gated to; `Some` marks the agent as a review specialist.
@@ -463,7 +458,6 @@ pub fn parse_agent(
         harness: front.harness,
         requires_repo: front.requires_repo,
         host_repo: front.host_repo,
-        host_session: front.host_session,
         host_window: front.host_window,
         repo: front.repo,
         references: front.references,

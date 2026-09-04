@@ -25,9 +25,28 @@ A near-monochrome bar that uses **both ends** of the screen. tmux has only one s
 |-------|---------|
 | `!N` (red) | `N` open blockers on this branch's note. |
 | `N` (dim) | `N` open todos. |
-| `●` (amber) | Claude Code agent **waiting** for your input. |
+| `●` (amber) | agent **waiting** for your input. |
+| `` (red) | agent **blocked** — stopped and cannot continue without you. |
+| `` (amber) | agent wants a **decision**. |
+| `` (red) | agent **failed**. |
+| `` (dim) | agent **rate-limited** — paused on a usage cap; it resumes on its own. |
 | `◌` (dim) | agent **working**. |
 | `✓` (green) | agent **done** (or a watched build/test went quiet — see `m`). |
+
+Badges and the window → worktree link (`@bn_repo`/`@bn_branch`) are refreshed by
+`bn tmux-reconcile`, which runs on every client attach and on the 5-minute cron. Window options do
+not survive a tmux-resurrect restore, and the badges are otherwise written only to the window bn
+happened to run in — so without the sweep a note edited by an agent in another window never reaches
+that window's tab. Run it by hand to see its decisions:
+
+```
+bn tmux-reconcile --dry-run
+```
+
+It stamps a window only where the window's name agrees with the branch its pane is actually on. A
+window named after its worktree whose branch has since changed is **reported, not guessed** — the
+identity is what every other surface trusts, so a confident wrong answer there is worse than a
+blank one.
 
 The left pill shows the session name and **flips to reverse-video `PREFIX`** the moment you press `C-Space`, so you always know whether tmux is listening.
 
@@ -76,6 +95,22 @@ So:
 - Typing it on a **bare terminal** (no surrounding tmux) opens the branch's window and attaches you to it, so the agent lands somewhere bn can steer, kill and show in the dashboard rather than in a pane nothing can address. Requires a real terminal and a running tmux server; `BN_AGENT_TMUX_REDIRECT=0` turns it off for one call.
 - `wt pool status` shows slot 1 labelled `(controller)`; the configured pool size counts it, so `<repo> 4` means one controller plus three workers.
 - `BN_AGENT_GUARD=0 claude …` bypasses the within-repo placement rules for one call — the repository requirement remains unconditional.
+
+## Which sessions exist
+
+The rule the placement table above states for *agents* holds for every session bn opens, including the ones it opens for itself: **a session is named after a repository**, and a window after a worktree. That is what `tat`, `bn jump`, the status bar and the dashboard all assume, so a session named anything else is invisible to every one of them.
+
+Three exceptions, none of which is work:
+
+| Session | What it is |
+|---|---|
+| `_bn_edit` | Storage — the holding pen for parked editor panes. Hidden from `C-j`, and any `_`-prefixed name is claiming the same private namespace. |
+| `host:<alias>` | A `bn connect` attachment to another machine. The work it shows lives in that machine's repos. |
+| `-L orch` server | The dispatch worker server, a separate tmux server entirely — not on this namespace. |
+
+Scheduled jobs get windows, never sessions: a heavy cron (`pool-warm`, `keep-warm`, `nightly-release`) opens a detached window in the session of the repo it serves, which closes itself when the job succeeds. See `config/jobs/README.md`.
+
+`bn tmux-prune` reports sessions that name no repo (dry run; `--force` kills them), sparing anything attached, busy, or hosting an agent. It is never a cron. `bn tmux-snapshot-filter` keeps orphans out of the tmux-resurrect snapshot so a killed one does not come back on the next restore — it is wired to resurrect's `post-save-layout` hook and kills nothing.
 
 Every launch through this chokepoint also records `agent-session: <harness> <id>` on the branch note — the same line `bn dispatch` writes, and the thing that makes `bn agent send --resume` and the dashboard's Steer panel work. The one exception is `claude --continue`, where the harness picks its own id; those agents are still steerable through their tmux window.
 
@@ -152,7 +187,9 @@ The three jump keys differ by **scope**, not by mechanism:
 
 | Key | Action |
 |-----|--------|
-| `e` | Toggle floating nvim scoped to the current worktree. Only one nvim ever exists: opening from a different worktree kills the previous nvim and spawns a fresh one there. Press again from inside to detach — popup closes, nvim stays alive until the next worktree switch. `:qa` quits it immediately. |
+| `e` | **Toggle this worktree's editor.** One persistent nvim *per worktree*, as a pane rather than a popup. First press splits it in at 90% of the window, collapsing the command pane to a strip rather than killing it (it often holds a running agent); second press parks the pane in the detached `_bn_edit` session — nvim keeps running, the shell/agent gets its full width back; third press joins it back with buffers, undo, marks and LSP intact. Editors in different worktrees are independent and never evict each other. `<leader>eh` inside nvim parks it without reaching for the prefix. If nvim dies, the next press detects it, clears up and starts a fresh one. |
+| `C-e` | Force the editor **visible** and land it on this branch's diff (never parks) — for returning to a worktree cold. |
+| `d` | **Worktree diff picker.** Every worktree with a checkout, badged with whether its editor is up (`●` showing · `○` parked), with `bn diff` as the live preview. `↵` switches to that worktree's window and opens Diffview in *its* nvim. `ctrl-r` reloads. |
 | `n` | Branch note popup (`note.md` for current git context). |
 | `g` | Lazygit popup. `q` closes. |
 

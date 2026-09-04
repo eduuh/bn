@@ -1,5 +1,6 @@
 //! git/clipboard/url side-effects + `bn diff`/`bn shot`/`bn autopush`.
 use crate::*;
+use std::path::{Path, PathBuf};
 
 /// Copy text to the clipboard, trying each platform tool in the oracle's order. Returns false
 /// if none is available (caller then prints the value as a fallback).
@@ -140,46 +141,153 @@ pub(crate) fn git_status(args: &[&str]) -> bool {
     wt::run_git(args)
 }
 
-/// `bn diff` — git diff stat vs origin/main + the note's open todos/blockers + commits ahead.
-/// A human convenience view, so it's text-only (no JSON envelope).
-pub(crate) fn emit_diff(cfg: &Config, ctx: &Resolved) {
-    println!("Changes ({}/{} vs main)", ctx.repo, ctx.branch);
-    let stat = git_capture(&["diff", "--stat", "origin/main..HEAD"]);
-    match stat.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        Some(s) => {
-            for line in s.lines() {
-                println!("  {line}");
-            }
-        }
-        None => println!("  (no changes vs main)"),
+/// Where `bn diff` should look. `dir` is the worktree to run git in; `ctx` keys the note whose
+/// todos/blockers are shown beside the stat. They travel together because a `--path` into another
+/// worktree must move *both* — showing this branch's todos next to that branch's diff is the
+/// picker-lies failure this whole feature exists to avoid.
+pub(crate) struct DiffTarget {
+    pub(crate) ctx: Resolved,
+    pub(crate) dir: PathBuf,
+}
+
+/// Resolve `bn diff`'s target from its flags: an explicit `--path`, an explicit `--repo/--branch`
+/// (looked up through the rollup so a pooled slot resolves to its real checkout rather than a
+/// reconstructed `<worktree_dir>/<repo>/<branch>` that would not exist), else the cwd.
+pub(crate) fn diff_target(
+    cfg: &Config,
+    path: Option<&Path>,
+    repo: Option<&str>,
+    branch: Option<&str>,
+) -> Result<DiffTarget, String> {
+    if let (Some(repo), Some(branch)) = (repo, branch) {
+        let entry = bn_core::rollups::worktrees(cfg)
+            .into_iter()
+            .find(|w| w.repo == repo && w.branch == branch)
+            .ok_or_else(|| format!("no note for {repo}/{branch}"))?;
+        let dir = entry
+            .worktree
+            .ok_or_else(|| format!("{repo}/{branch} has no worktree on this machine"))?;
+        return Ok(DiffTarget {
+            ctx: Resolved {
+                repo: repo.to_string(),
+                branch: branch.to_string(),
+            },
+            dir: PathBuf::from(dir),
+        });
     }
 
-    if let Ok(note) = bn_core::store::read(&cfg.note_file(ctx)) {
-        let open: Vec<_> = note
-            .front
-            .todos
-            .iter()
-            .filter(|t| t.is_open_todo())
-            .collect();
-        if !open.is_empty() {
-            println!("\nOpen todos");
-            for t in open {
-                println!("  - [ ] {}", t.text);
-            }
-        }
-        if !note.front.blockers.is_empty() {
-            println!("\nBlockers");
-            for b in &note.front.blockers {
-                println!("  - {}", b.text);
-            }
-        }
-    }
+    let dir = match path {
+        Some(p) => p.canonicalize().unwrap_or_else(|_| p.to_path_buf()),
+        None => std::env::current_dir().map_err(|e| e.to_string())?,
+    };
+    let ctx = bn_core::resolver::resolve(cfg, &dir).map_err(|_| format!("{} is not in a git repo", dir.display()))?;
+    Ok(DiffTarget { ctx, dir })
+}
 
-    let count = git_capture(&["rev-list", "--count", "origin/main..HEAD"])
-        .map(|s| s.trim().to_string())
+/// `bn diff` — diff stat vs the branch's base + the note's open todos/blockers + commits ahead.
+///
+/// The base comes from [`bn_core::gitbase::base_ref`] rather than a hardcoded `origin/main`, and
+/// `three_dot` selects `<base>...HEAD` — changes on this branch since it diverged. Two-dot (the
+/// historical default, kept until the flip is made deliberately) reports the base's own newer
+/// commits as "your changes" on any worktree that has fallen behind.
+pub(crate) fn emit_diff(
+    cfg: &Config,
+    target: &DiffTarget,
+    base: Option<&str>,
+    three_dot: bool,
+    as_json: bool,
+) {
+    let dir = target.dir.as_path();
+    let ctx = &target.ctx;
+    let base = base
+        .map(str::to_string)
+        .or_else(|| {
+            bn_core::gitbase::base_ref(
+                &bn_core::runner::RealRunner,
+                bn_core::gitbase::BaseScope::Worktree(dir),
+            )
+        })
+        .unwrap_or_else(|| "origin/main".to_string());
+    let range = if three_dot {
+        bn_core::gitbase::range_to_head(&base)
+    } else {
+        format!("{base}..HEAD")
+    };
+
+    let stat = git_capture_in(&["diff", "--stat", &range], dir);
+    let stat_lines: Vec<String> = stat
+        .as_deref()
+        .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "0".to_string());
-    println!("\n{count} commit(s) ahead of main");
+        // git's `--stat` indents every row by one space; trimming the block would de-indent only
+        // the first, so normalize per line and let the printer own the indent.
+        .map(|s| s.lines().map(|l| l.trim().to_string()).collect())
+        .unwrap_or_default();
+
+    let count: u64 = git_capture_in(&["rev-list", "--count", &range], dir)
+        .map(|s| s.trim().to_string())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    let note = bn_core::store::read(&cfg.note_file(ctx)).ok();
+    let todos: Vec<String> = note
+        .as_ref()
+        .map(|n| {
+            n.front
+                .todos
+                .iter()
+                .filter(|t| t.is_open_todo())
+                .map(|t| t.text.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    let blockers: Vec<String> = note
+        .as_ref()
+        .map(|n| n.front.blockers.iter().map(|b| b.text.clone()).collect())
+        .unwrap_or_default();
+
+    if as_json {
+        let env = bn_core::render::Envelope::success(
+            "diff",
+            serde_json::json!({
+                "repo": ctx.repo,
+                "branch": ctx.branch,
+                "worktree": dir.display().to_string(),
+                "base": base,
+                "range": range,
+                "stat": stat_lines,
+                "commits_ahead": count,
+                "open_todos": todos,
+                "blockers": blockers,
+            }),
+        );
+        println!("{}", env.to_json());
+        return;
+    }
+
+    println!("Changes ({}/{} vs {base})", ctx.repo, ctx.branch);
+    if stat_lines.is_empty() {
+        println!("  (no changes vs {base})");
+    } else {
+        for line in &stat_lines {
+            println!("  {line}");
+        }
+    }
+
+    if !todos.is_empty() {
+        println!("\nOpen todos");
+        for t in &todos {
+            println!("  - [ ] {t}");
+        }
+    }
+    if !blockers.is_empty() {
+        println!("\nBlockers");
+        for b in &blockers {
+            println!("  - {b}");
+        }
+    }
+
+    println!("\n{count} commit(s) ahead of {base}");
 }
 
 /// Restore the default SIGPIPE disposition on Unix. Rust ignores SIGPIPE by default, so a
@@ -203,9 +311,15 @@ pub(crate) fn reset_sigpipe() {
 pub(crate) fn reset_sigpipe() {}
 
 /// Run `git <args>` in the cwd, returning stdout (raw, untrimmed) on success, else None. Thin
-/// delegate to the runner-backed [`crate::git::git_capture`]; the git reads it backs (`bn diff`'s
-/// diff-stat / rev-list) stay driveable in core tests and `RealRunner` shells out exactly as
-/// before. trim=false preserves the raw output these callers trim themselves.
+/// delegate to the runner-backed [`crate::git::git_capture`], so the reads it backs stay driveable
+/// in core tests while `RealRunner` shells out exactly as before. trim=false preserves the raw
+/// output these callers trim themselves.
 pub(crate) fn git_capture(args: &[&str]) -> Option<String> {
     crate::git::git_capture(args, None, false)
+}
+
+/// [`git_capture`] scoped to `dir` (`git -C <dir>`) — what lets `bn diff` describe a worktree
+/// other than the one bn is running in, which is the whole point of `--path`/`--repo`.
+pub(crate) fn git_capture_in(args: &[&str], dir: &std::path::Path) -> Option<String> {
+    crate::git::git_capture(args, Some(dir), false)
 }

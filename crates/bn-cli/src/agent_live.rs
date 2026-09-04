@@ -202,12 +202,29 @@ pub fn collect(cfg: &Config, idle: i64, stuck: i64) -> Vec<LiveView> {
     // race); a real `done`/`blocked` is authoritative.
     for r in &mut rows {
         if r.has_window && matches!(r.state.as_str(), "" | "working" | "waiting") {
+            let before = r.state.clone();
             r.state = classify_lifecycle(
                 &r.state,
                 &capture_tail(&r.target, TAIL_SCAN_LINES),
                 r.health,
             )
             .state;
+            // Persist what we just worked out. Until now this inference lived and died inside a
+            // single `bn agent live` / `bn watch` pass: the classifier could tell that an agent was
+            // blocked, or had hit a usage cap, and the tab bar, jump picker and attention badge —
+            // every cheap reader of `@bn_agent` — never learned it, because nothing wrote it back.
+            // That is why `blocked` and `needs-decision` were dead vocabulary on BOTH sides.
+            //
+            // Only on an actual change, so a steady fleet costs no tmux calls, and only from here:
+            // `collect` already runs off the 5s path (`bn watch` is the *:0/5 cron), whereas the
+            // status bar must never pay for a capture-pane sweep.
+            if r.state != before {
+                crate::cmd::setup::set_tmux_window_option_on(
+                    Some(&r.target),
+                    "@bn_agent",
+                    &r.state,
+                );
+            }
         }
     }
     rows

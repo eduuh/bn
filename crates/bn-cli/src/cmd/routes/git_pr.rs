@@ -40,10 +40,21 @@ pub(super) fn route(cfg: &Config, action: CmdGitPr, json: bool) {
             emit_shot(cfg, &ctx, gif, fresh, json);
         }
         CmdGitPr::Autopush { message } => std::process::exit(emit_autopush(&message.join(" "))),
-        CmdGitPr::Diff => {
-            let ctx = resolve_or_exit(cfg);
-            emit_diff(cfg, &ctx);
-        }
+        CmdGitPr::Diff {
+            path,
+            repo,
+            branch,
+            base,
+            three_dot,
+        } => match cmd::gitio::diff_target(
+            cfg,
+            path.as_deref(),
+            repo.as_deref(),
+            branch.as_deref(),
+        ) {
+            Ok(target) => emit_diff(cfg, &target, base.as_deref(), three_dot, json),
+            Err(e) => fail_json(json, "diff", "no_target", &format!("bn diff: {e}")),
+        },
         CmdGitPr::Open { url } => {
             if !cmd::gitio::open_url(&url) {
                 println!("{url}");

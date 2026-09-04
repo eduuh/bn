@@ -396,7 +396,10 @@ pub(crate) fn attn_window_tally(lines: &str, now: i64) -> AgentTally {
     for line in lines.lines() {
         let r = parse_attn_row(line);
         match r.agent {
-            "waiting" => {
+            // `blocked`, `needs-decision` and `failed` all mean the same thing to you as `waiting`
+            // does — an agent has stopped and cannot continue without you — so they belong in the
+            // same lane and the same wait clock. They used to hit the fall-through arm and vanish.
+            "waiting" | "blocked" | "needs-decision" | "failed" => {
                 t.waiting += 1;
                 if let Ok(since) = r.since.parse::<i64>() {
                     if oldest == 0 || since < oldest {
@@ -405,7 +408,8 @@ pub(crate) fn attn_window_tally(lines: &str, now: i64) -> AgentTally {
                 }
             }
             "done" => t.ready += 1,
-            "working" => t.working += 1,
+            // `limited` is waiting on a usage cap, not on you: busy, not actionable.
+            "working" | "limited" => t.working += 1,
             "" if r.done == "\u{2713}" => t.ready += 1,
             _ => {}
         }
@@ -570,7 +574,13 @@ pub(crate) fn cockpit_body(lines: &str, now: i64) -> (String, usize) {
         };
         let line_out = match agent {
             "waiting" => row("1;33", "\u{f0f3} needs you", &ago(since)),
+            // These three hit the `_ => continue` below and dropped out of the cockpit entirely —
+            // the roll-up claimed nothing was in flight while an agent sat blocked.
+            "blocked" => row("1;31", "\u{f05e} blocked", &ago(since)),
+            "needs-decision" => row("1;33", "\u{f06e} decide", &ago(since)),
+            "failed" => row("1;31", "\u{f0e7} failed", &ago(since)),
             "working" => row("33", "\u{f013} working", &ago(since)),
+            "limited" => row("2", "\u{f017} rate-limited", &ago(since)),
             "done" => row("32", "\u{f00c} done", &ago(since)),
             _ if done == "\u{2713}" => row("32", "\u{f00c} done", ""),
             _ if !sil.is_empty() && sil != "0" => row(
@@ -642,8 +652,8 @@ pub(crate) fn emit_tmux_help() {
     row("C-o", "project / worktree picker (frecency + preview)");
     row("C-w", "picker scoped to Windows-fs repos");
     row("C-j", "tmux-native session tree (choose-tree; f filters, x kills)");
-    row("C-p", "jump to the planning / orchestration session");
-    row("BSpace", "jump to the planning session (same as C-p)");
+    row("C-p", "project / worktree picker (same as C-o)");
+    row("BSpace", "project / worktree picker (same as C-p)");
     row("t", "kill this session, switch to next");
     row(".", "rename session");
 
@@ -796,6 +806,30 @@ mod attn_badge_tests {
         assert_eq!(t.working, 2);
         assert_eq!(t.waiting, 1);
         assert_eq!(t.wait, 500);
+    }
+
+    /// The whole point of widening the vocabulary: a stopped agent is the state that most needs a
+    /// human, and it used to hit `_ => {}` and be counted as nothing at all. All three escalation
+    /// states share the `waiting` lane and its wait clock.
+    #[test]
+    fn a_blocked_or_failed_agent_counts_as_needing_you() {
+        let lines = [
+            row("blocked", 400),
+            row("needs-decision", 600),
+            row("failed", 200),
+        ]
+        .join("\n");
+        let t = attn_window_tally(&lines, 1_000);
+        assert_eq!(t.waiting, 3);
+        assert_eq!(t.wait, 800, "the oldest of the three sets the clock");
+    }
+
+    /// `limited` is stalled on a usage cap, not on you — busy, not actionable, so it belongs with
+    /// `working` rather than raising the badge.
+    #[test]
+    fn a_rate_limited_agent_counts_as_working_not_waiting() {
+        let t = attn_window_tally(&row("limited", 0), 1_000);
+        assert_eq!((t.waiting, t.working), (0, 1));
     }
 
     /// The silence-watch fallback (`@bn_done == ✓` on a window with no `@bn_agent`) still counts

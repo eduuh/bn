@@ -1816,14 +1816,6 @@ pub(crate) fn run_dispatch(
                     std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("bn"));
                 cmd = worker_completion_wrapped_command(&cmd, &request_id, &executable);
             }
-            // #498: an orchestrator/planning-role agent lives in the shared cockpit session
-            // (`wt::orchestrator_session()`, default `cron`), not the per-repo ship session — a
-            // scout/ship agent stays in its repo's session.
-            let launch_session = if orchestrator {
-                Some(wt::orchestrator_session())
-            } else {
-                None
-            };
             // #646: an odd number of single quotes in the launch command never terminates its
             // string, dropping the window to a stuck shell (surfacing as `unknown option: --zsh`).
             // Everything we append is `shq`-quoted, so this should always hold — but assert it before
@@ -1928,8 +1920,7 @@ pub(crate) fn run_dispatch(
             // branch>`). A readable "<title> · <hash>" name here made the daemon fail to match its
             // own live lanes → `has_window=false` → misclassified Dead → hard-restart churn.
             let window_name = bn_core::orchestrate::tmux_window_name(&branch);
-            let lease_session = launch_session.unwrap_or(&repo);
-            let lease_target = format!("{lease_session}:{window_name}");
+            let lease_target = format!("{repo}:{window_name}");
             let reservation = match agent_lease::reserve(agent_lease::AgentLeaseRequest {
                 repo: &repo,
                 branch: &branch,
@@ -1982,7 +1973,6 @@ pub(crate) fn run_dispatch(
                 false,
                 Some(&cmd),
                 true,
-                launch_session,
             );
             if !agent_launched {
                 if let Err(error) = reservation.rollback() {
@@ -1992,8 +1982,7 @@ pub(crate) fn run_dispatch(
                 agent_lease::mark_window(reservation.lease());
                 reservation.commit();
                 if let Some(path) = &plan_path {
-                    let split_session = launch_session.unwrap_or(&repo);
-                    let _ = wt::open_plan_split(split_session, &window_name, path);
+                    let _ = wt::open_plan_split(&repo, &window_name, path);
                 }
             }
             tmux_opened = agent_launched;
@@ -2015,11 +2004,6 @@ pub(crate) fn run_dispatch(
                 }
             }
         } else {
-            let launch_session = if orchestrator {
-                Some(wt::orchestrator_session())
-            } else {
-                None
-            };
             // Same lane-window naming contract as the agent-launch branch above: the sanitized
             // branch, so `bn orchestrate` can adopt/observe this lane by name.
             let window_name = bn_core::orchestrate::tmux_window_name(&branch);
@@ -2031,7 +2015,6 @@ pub(crate) fn run_dispatch(
                 false,
                 None,
                 false,
-                launch_session,
             );
         }
     }

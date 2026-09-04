@@ -120,6 +120,45 @@ fn dispatch_opens_a_tmux_window_running_the_agent() -> anyhow::Result<()> {
 /// do with a window from what the pane looks like after the agent is gone, and that state was
 /// previously only reachable by crashing a real agent on the developer's machine. tmux reports the
 /// exit status in a dead pane, so the harness can assert on the agent's exit code end to end.
+/// Every session bn opens is named after a repository — including an orchestrator's.
+///
+/// An orchestrator-role agent used to be placed in a shared cockpit session called `cron`, apart
+/// from the repo it works on. Nothing about supervising a wave makes an agent belong somewhere
+/// else, and a session no repo owns is invisible to `tat`, `bn jump` and the status bar, which all
+/// address work as `<repo>:<branch>`. This is the executable form of that rule: drive the one
+/// dispatch path that used to opt out, and assert the namespace still holds.
+#[test]
+#[ignore = "e2e: needs a built bn binary (cargo build --workspace)"]
+fn an_orchestrator_lands_in_its_repos_session_like_everything_else() -> anyhow::Result<()> {
+    require_tmux!();
+    let sb = Sandbox::new()?;
+    sb.seed_bare_repo("repo")?;
+    script_both_harnesses(&sb, &Behavior::Hang)?;
+
+    let run = sb.bn([
+        "dispatch",
+        "watch the wave",
+        "--agent",
+        "claude",
+        "--orchestrator",
+        "--yolo",
+    ])?;
+    run.expect_success()?;
+
+    let sessions = sb.tmux_sessions()?;
+    assert_eq!(
+        sessions,
+        vec!["repo".to_string()],
+        "an orchestrator belongs to its repo's session, not a cockpit of its own"
+    );
+    assert!(
+        sb.tmux_windows()?.iter().all(|w| w.starts_with("repo:")),
+        "every window should be addressable as <repo>:<window>, got {:?}",
+        sb.tmux_windows()?
+    );
+    Ok(())
+}
+
 #[test]
 #[ignore = "e2e: needs a built bn binary (cargo build --workspace)"]
 fn a_crashed_agent_leaves_a_dead_pane_carrying_its_exit_status() -> anyhow::Result<()> {

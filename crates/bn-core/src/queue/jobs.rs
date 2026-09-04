@@ -102,6 +102,18 @@ pub fn is_warming(name: &str) -> bool {
     WARMING_JOBS.contains(&name)
 }
 
+/// The prefix a scheduled firing stamps on an entry's `source` — `cron:<job>`.
+pub const CRON_SOURCE_PREFIX: &str = "cron:";
+
+/// Whether `source` is the *scheduled firing* of `job`, rather than someone asking for it by hand.
+///
+/// The producer is the honest answer to "is this the machine's own sweep or a person's one-off?".
+/// A person's `bn queue add --job <name>` stamps `source = "queue"`; only the cron stamps
+/// `cron:<job>`. Exact match after the prefix, so `cron:pool-warm-extra` is not `pool-warm`.
+pub fn is_scheduled_firing(source: &str, job: &str) -> bool {
+    source.strip_prefix(CRON_SOURCE_PREFIX) == Some(job)
+}
+
 /// Whether queueing this job would be circular.
 pub fn never_capture(name: &str) -> bool {
     NEVER_CAPTURE.contains(&name)
@@ -126,5 +138,21 @@ pub fn classify(spec: &mut AddSpec, job: &str, override_priority: bool) {
     spec.heavy = is_heavy(job);
     if override_priority {
         spec.priority = priority_for(job);
+    }
+}
+
+#[cfg(test)]
+mod scheduled_firing_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_cron_prefix_and_only_an_exact_job_name() {
+        assert!(is_scheduled_firing("cron:pool-warm", "pool-warm"));
+        // A person's `bn queue add --job pool-warm` — same job, different producer.
+        assert!(!is_scheduled_firing("queue", "pool-warm"));
+        // Exact, not prefix: a longer job name must not answer for a shorter one.
+        assert!(!is_scheduled_firing("cron:pool-warm-extra", "pool-warm"));
+        assert!(!is_scheduled_firing("cron:keep-warm", "pool-warm"));
+        assert!(!is_scheduled_firing("pool-warm", "pool-warm"));
     }
 }

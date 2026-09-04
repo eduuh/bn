@@ -120,8 +120,10 @@ fn controller_seed(
     def.render(Some(&args)).map_err(|error| error.to_string())
 }
 
-fn control_target(window_name: &str) -> String {
-    format!("{}:{window_name}", wt::orchestrator_session())
+/// The `session:window` a controller's window lives at — in the session of the repo whose
+/// controller slot it leases, like every other agent bn opens.
+fn control_target(repo: &str, window_name: &str) -> String {
+    format!("{repo}:{window_name}")
 }
 
 fn enqueue_request(controller_id: &str, request: &[String]) -> Vec<String> {
@@ -256,7 +258,6 @@ fn start_controller(
     };
     let task_name = bn_core::agent::derive_task_name(name.as_deref(), &source_name);
     let window_name = bn_core::agent::task_window_name(&task_name, &id);
-    let target = control_target(&window_name);
     let invoked_from = std::env::current_dir().unwrap_or_default();
     let resolved = resolver::resolve_hint(cfg, &invoked_from);
     let Some(repo) = resolved.as_ref().map(|ctx| ctx.repo.clone()) else {
@@ -266,6 +267,9 @@ fn start_controller(
             invoked_from.display()
         ));
     };
+    // Addressable only once the repo is known: the controller's window lives in that repo's
+    // session, so there is no target to name before this point.
+    let target = control_target(&repo, &window_name);
     // The controller runs in its own reserved pool slot (`_pool/1`), never in the main worktree —
     // main hosts no agents and stays clean. Leasing here means you can start a controller from
     // anywhere in the repo; the slot, not your cwd, is where it lands.
@@ -400,15 +404,16 @@ fn start_controller(
             fail(&format!("bn control start: {error}"));
         }
     };
+    // `record.repo`, not the literal `"control"` this used to pass: that argument is stamped on the
+    // window as `@bn_repo`, so every controller window was advertising a repo that does not exist.
     let opened = wt::open_worktree_window_cmd_named(
-        "control",
+        &record.repo,
         &id,
         &window_name,
         &cwd,
         false,
         Some(&cmd),
         true,
-        Some(wt::orchestrator_session()),
     );
     if !opened {
         if let Err(error) = reservation.rollback() {
