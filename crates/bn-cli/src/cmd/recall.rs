@@ -70,12 +70,22 @@ pub(crate) fn emit_list(cfg: &Config, as_json: bool) {
         return;
     }
     for e in entries {
-        println!(
-            "{}/{}  {} todos, {} blockers  ({})",
-            e.repo, e.branch, e.open_todos, e.blockers, e.status
-        );
+        // A blocker is the only thing in this row that can be wrong, so it is the only thing
+        // that earns colour; the rest is metadata you scan past.
+        let counts = format!("{} todos, {} blockers", e.open_todos, e.blockers);
+        let counts = if e.blockers > 0 {
+            style::warn(&counts)
+        } else {
+            style::meta(&counts)
+        };
+        let status = style::meta(&format!("({})", e.status));
+        println!("{}/{}  {counts}  {status}", e.repo, e.branch);
     }
 }
+
+/// How much of a note item `bn summary` shows before deferring to `bn cat`. Wide enough for a real
+/// todo, narrow enough that a dispatch prompt stored as a todo cannot bury the rows under it.
+const SUMMARY_WIDTH: usize = 110;
 
 pub(crate) fn emit_summary(cfg: &Config, as_json: bool) {
     let entries = rollups::summary(cfg);
@@ -90,12 +100,26 @@ pub(crate) fn emit_summary(cfg: &Config, as_json: bool) {
         if e.todos.is_empty() && e.blockers.is_empty() {
             continue;
         }
-        println!("{}/{} ({})", e.repo, e.branch, e.status);
+        println!(
+            "{}/{} {}",
+            e.repo,
+            e.branch,
+            style::meta(&format!("({})", e.status))
+        );
         for b in &e.blockers {
-            println!("  blocker [{}] {}", b.id, b.text);
+            println!(
+                "  {} {} {}",
+                style::danger("blocker"),
+                style::meta(&format!("[{}]", b.id)),
+                bn_core::render::oneline(&b.text, SUMMARY_WIDTH)
+            );
         }
         for t in &e.todos {
-            println!("  [ ] [{}] {}", t.id, t.text);
+            println!(
+                "  [ ] {} {}",
+                style::meta(&format!("[{}]", t.id)),
+                bn_core::render::oneline(&t.text, SUMMARY_WIDTH)
+            );
         }
     }
 }

@@ -72,7 +72,7 @@ pub(crate) fn cmd_cleanup(cfg: &Config, all: bool, force: bool, worktree: Option
         Some(t) => abs_worktree(&t, &worktree_dir),
     };
     if !wt_path.is_dir() {
-        eprintln!("{RED}Worktree not found: {}{NC}", wt_path.display());
+        ceprintln!("{RED}Worktree not found: {}{NC}", wt_path.display());
         return false;
     }
     cleanup_one(cfg, &wt_path, &worktree_dir, force).is_ok()
@@ -108,12 +108,12 @@ pub(crate) fn cleanup_all(cfg: &Config, bare_dir: &Path, force: bool) -> bool {
                 } else {
                     state
                 };
-                println!("{YELLOW}Skip {slug}/{branch} ({label}){NC}");
+                cprintln!("{YELLOW}Skip {slug}/{branch} ({label}){NC}");
                 skipped += 1;
             }
         }
     }
-    println!("{GREEN}Cleaned {cleaned}, skipped {skipped}{NC}");
+    cprintln!("{GREEN}Cleaned {cleaned}, skipped {skipped}{NC}");
     true
 }
 
@@ -160,7 +160,7 @@ pub(crate) fn cmd_reap(cfg: &Config, all: bool, execute: bool) -> bool {
         candidates += 1;
         if execute {
             if cleanup_one_for_reap(cfg, &wt_path, &worktree_dir, force).is_ok() {
-                println!("{GREEN}reaped {name} ({reason}){NC}");
+                cprintln!("{GREEN}reaped {name} ({reason}){NC}");
                 announce_reap(&name, &reason);
                 reaped += 1;
             } else {
@@ -172,7 +172,7 @@ pub(crate) fn cmd_reap(cfg: &Config, all: bool, execute: bool) -> bool {
                 } else {
                     "removal failed"
                 };
-                println!("{YELLOW}skip {name} — {why}{NC}");
+                cprintln!("{YELLOW}skip {name} — {why}{NC}");
             }
         } else {
             println!("would reap {name} ({reason})");
@@ -181,7 +181,7 @@ pub(crate) fn cmd_reap(cfg: &Config, all: bool, execute: bool) -> bool {
     if candidates == 0 {
         println!("nothing to reap (no done + safe worktree)");
     } else if execute {
-        println!("{GREEN}reaped {reaped}/{candidates}{NC}");
+        cprintln!("{GREEN}reaped {reaped}/{candidates}{NC}");
     } else {
         println!("{candidates} reapable — pass --yes to reap");
     }
@@ -253,7 +253,7 @@ fn reap_scratch(
                     | bn_core::scratch_gc::KeepReason::Unpushed
             }
         ) {
-            println!(
+            cprintln!(
                 "{YELLOW}hold {name} — leaked scratch worktree with {} work in it{NC}",
                 disposition.reason_label()
             );
@@ -265,7 +265,7 @@ fn reap_scratch(
         return Some(false);
     }
     let Some(bare) = find_bare_repo(wt_path) else {
-        println!("{YELLOW}skip {name} — no bare repo found{NC}");
+        cprintln!("{YELLOW}skip {name} — no bare repo found{NC}");
         return Some(false);
     };
     let removed = crate::git::git_ok(&[
@@ -277,9 +277,9 @@ fn reap_scratch(
         &wt_path.to_string_lossy(),
     ]);
     if removed {
-        println!("{GREEN}reaped {name} (leaked scratch){NC}");
+        cprintln!("{GREEN}reaped {name} (leaked scratch){NC}");
     } else {
-        println!("{YELLOW}skip {name} — removal failed{NC}");
+        cprintln!("{YELLOW}skip {name} — removal failed{NC}");
     }
     Some(removed)
 }
@@ -413,7 +413,7 @@ fn cleanup_one_with_policy(
     policy: CleanupPolicy,
 ) -> Result<(), ()> {
     let Some(bare) = find_bare_repo(wt_path) else {
-        eprintln!(
+        ceprintln!(
             "{RED}Could not find bare repo for: {}{NC}",
             wt_path.display()
         );
@@ -438,7 +438,7 @@ fn cleanup_one_with_policy(
         raw_branch
     };
     if bn_core::agent::is_reserved_branch(&branch) {
-        eprintln!("{RED}Refusing to clean up '{branch}' worktree{NC}");
+        ceprintln!("{RED}Refusing to clean up '{branch}' worktree{NC}");
         return Err(());
     }
 
@@ -462,9 +462,9 @@ fn cleanup_one_with_policy(
             &format!("origin/{default}"),
         ]) || run_git(&["-C", &wt_s, "merge-base", "--is-ancestor", "HEAD", &default]);
         if merged {
-            println!("{GREEN}{label}/{dirname} — detached, HEAD already in {default}{NC}");
+            cprintln!("{GREEN}{label}/{dirname} — detached, HEAD already in {default}{NC}");
         } else {
-            println!(
+            cprintln!(
                 "{YELLOW}{label}/{dirname} — detached worktree, HEAD not in {default} \
                  (unmerged commits?){NC}"
             );
@@ -480,10 +480,10 @@ fn cleanup_one_with_policy(
                 let local_head = git_out(&["-C", &wt_s, "rev-parse", "HEAD"]);
                 let merged_heads = merged_pr_heads(&remote, &branch);
                 if merged_tip_reclaimable(&wt_s, local_head.as_deref(), &merged_heads, policy) {
-                    println!("{GREEN}{label}/{branch} — PR merged{NC}");
+                    cprintln!("{GREEN}{label}/{branch} — PR merged{NC}");
                     true
                 } else {
-                    println!(
+                    cprintln!(
                         "{YELLOW}{label}/{branch} — a merged PR matches this branch name, but the \
                          local tip isn't what shipped (branch reused, or commits past the merge); \
                          use --force to clean anyway{NC}"
@@ -492,17 +492,17 @@ fn cleanup_one_with_policy(
                 }
             }
             "NONE" | "" => {
-                println!("{YELLOW}{label}/{branch} — no PR found{NC}");
+                cprintln!("{YELLOW}{label}/{branch} — no PR found{NC}");
                 false
             }
             other => {
-                println!("{YELLOW}{label}/{branch} — PR is {other}, not merged{NC}");
+                cprintln!("{YELLOW}{label}/{branch} — PR is {other}, not merged{NC}");
                 false
             }
         }
     };
     if !reclaimable && !force {
-        println!("{YELLOW}Use --force to clean anyway{NC}");
+        cprintln!("{YELLOW}Use --force to clean anyway{NC}");
         return Err(());
     }
 
@@ -518,7 +518,7 @@ fn cleanup_one_with_policy(
                 let open_todos = note.front.todos.iter().filter(|t| t.is_open_todo()).count();
                 let blockers = note.front.blockers.len();
                 if open_todos > 0 || blockers > 0 {
-                    println!(
+                    cprintln!(
                         "{YELLOW}{label}/{branch} — {open_todos} open todo(s), {blockers} blocker(s); \
                          skipping (finish them, or --force){NC}"
                     );
@@ -536,7 +536,7 @@ fn cleanup_one_with_policy(
         let files = dirty_files(&wt_str);
         let changes = files.len();
         if should_refuse_dirty(force, changes) {
-            println!(
+            cprintln!(
                 "{YELLOW}{label}/{branch} — merged but {changes} uncommitted; left in place \
                  (commit or stash, then it auto-clears){NC}"
             );
@@ -589,7 +589,7 @@ fn cleanup_one_with_policy(
     }
     remove.push(&wt_s);
     if !run_git(&remove) {
-        eprintln!("{RED}Worktree removal failed (uncommitted changes? try --force){NC}");
+        ceprintln!("{RED}Worktree removal failed (uncommitted changes? try --force){NC}");
         return Err(());
     }
 
@@ -607,10 +607,10 @@ fn cleanup_one_with_policy(
     ack_stuck(&stuck_key); // it's gone now — clear any prior merged-but-dirty attention item
     kill_tmux_windows(&wins, cwd_inside);
     if branch_deleted {
-        println!("{GREEN}Cleaned {branch}{NC}");
+        cprintln!("{GREEN}Cleaned {branch}{NC}");
         Ok(())
     } else {
-        eprintln!("{RED}Worktree removed, but local branch deletion failed: {branch}{NC}");
+        ceprintln!("{RED}Worktree removed, but local branch deletion failed: {branch}{NC}");
         Err(())
     }
 }
@@ -710,10 +710,10 @@ pub fn reset(cfg: &Config, force: bool) -> bool {
         return true;
     }
 
-    println!("{RED}Worktrees to remove:{NC}");
+    cprintln!("{RED}Worktrees to remove:{NC}");
     for wt in &to_remove {
         if dirty_count(wt) > 0 {
-            println!("  {wt} {YELLOW}(has uncommitted changes){NC}");
+            cprintln!("  {wt} {YELLOW}(has uncommitted changes){NC}");
         } else {
             println!("  {wt}");
         }
@@ -721,7 +721,7 @@ pub fn reset(cfg: &Config, force: bool) -> bool {
     println!("\n{} worktree(s) will be removed", to_remove.len());
 
     if !force {
-        println!("\n{YELLOW}Dry run. Use 'bn reset --force' to execute.{NC}");
+        cprintln!("\n{YELLOW}Dry run. Use 'bn reset --force' to execute.{NC}");
         return true;
     }
 
@@ -729,7 +729,7 @@ pub fn reset(cfg: &Config, force: bool) -> bool {
     // `main-sync` the 15-minute cron runs, so a reset can't leave main in a state the cron would
     // then have to repair. It also creates a missing main worktree and advances the main slot,
     // which the old inline fast-forward did neither of.
-    println!("\n{BLUE}Updating main worktrees...{NC}");
+    cprintln!("\n{BLUE}Updating main worktrees...{NC}");
     for bare in &bares {
         crate::cmd::main_sync::sync_repo(bare, &worktree_dir, &repo_name(bare));
     }
@@ -739,7 +739,7 @@ pub fn reset(cfg: &Config, force: bool) -> bool {
         let wt_path = PathBuf::from(wt);
         let repo = wt_repo_name(wt);
         let branch = wt_branch_name(wt);
-        println!("{YELLOW}Removing: {wt}{NC}");
+        cprintln!("{YELLOW}Removing: {wt}{NC}");
 
         let bare = bare_dir.join(format!("{repo}.git"));
         let removed = run_git(&[
@@ -759,7 +759,7 @@ pub fn reset(cfg: &Config, force: bool) -> bool {
             if under(&wt_path, &worktree_dir) {
                 let _ = std::fs::remove_dir_all(&wt_path);
             } else {
-                println!("  {YELLOW}Skipped: not under {}{NC}", worktree_dir.display());
+                cprintln!("  {YELLOW}Skipped: not under {}{NC}", worktree_dir.display());
             }
         }
 
@@ -780,7 +780,7 @@ pub fn reset(cfg: &Config, force: bool) -> bool {
     }
     let _ = bn_core::lifecycle::archive(cfg, &today(), 30, false);
 
-    println!(
+    cprintln!(
         "{GREEN}Reset complete. Removed {} worktree(s).{NC}",
         to_remove.len()
     );

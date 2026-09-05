@@ -10,6 +10,7 @@
 
 use super::target::{EditTarget, TargetSpec};
 use bn_core::resolver::Config;
+use bn_core::style;
 use std::process::{Command, Stdio};
 
 /// fzf field separator. Field 1 is what you see; 2..=4 are hidden lookup columns.
@@ -62,16 +63,21 @@ fn rows(cfg: &Config) -> Vec<Row> {
                 }
             })
             .unwrap_or(" ");
+        // Rows are rendered by a `--pick-stage list` subprocess piped into `fzf --ansi`, so they
+        // paint unconditionally; the fzf-less path prints them through `strip_unless_enabled`.
+        let ink = style::Ink::always();
+        let blocked = |b: usize| ink.danger(&format!("⛔{b}"));
         let flags = match (w.open_todos, w.blockers) {
             (0, 0) => String::new(),
             (t, 0) => format!("  {t} todo"),
-            (0, b) => format!("  \x1b[31m⛔{b}\x1b[0m"),
-            (t, b) => format!("  {t} todo  \x1b[31m⛔{b}\x1b[0m"),
+            (0, b) => format!("  {}", blocked(b)),
+            (t, b) => format!("  {t} todo  {}", blocked(b)),
         };
         out.push(Row {
             display: format!(
-                "{badge} \x1b[1m{:<14}\x1b[0m {:<34}{flags}",
-                w.repo, w.branch
+                "{badge} {} {:<34}{flags}",
+                ink.head(&format!("{:<14}", w.repo)),
+                w.branch
             ),
             repo: w.repo,
             branch: w.branch,
@@ -121,8 +127,9 @@ pub(crate) fn run(cfg: &Config, base: Option<&str>) {
         Ok(c) => c,
         Err(_) => {
             // No fzf: print the list and hold, matching every other bn picker's degradation.
+            // These rows were painted for fzf, so on stdout they have to obey NO_COLOR again.
             for r in rows(cfg) {
-                println!("{}", r.display);
+                println!("{}", style::strip_unless_enabled(&r.display));
             }
             crate::picker::hold();
             return;

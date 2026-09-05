@@ -11,6 +11,7 @@
 
 use bn_core::doctor::{self, Finding};
 use bn_core::resolver::Config;
+use bn_core::style;
 use bn_core::util::{add_days, now_epoch_secs, today};
 use std::io::{IsTerminal, Write};
 use std::process::{Command, Stdio};
@@ -64,13 +65,28 @@ impl Row {
     }
 }
 
-/// Map a `doctor` finding to a display row, matching `bn-attention.sh`'s `list()` colors.
+/// Map a `doctor` finding to a display row.
+///
+/// Every finding reads the same way — a tinted lead saying what it is, then dim detail — so the
+/// grammar lives in one closure rather than being respelled per arm. Rows are rendered by a
+/// `--pick-stage list` subprocess piped into `fzf --ansi`, hence [`style::Ink::always`]; the
+/// fzf-less fallback in `run` flattens them again.
 fn row_for(f: &Finding) -> Row {
+    let ink = style::Ink::always();
+    let disp = |tone: style::Tone, lead: String, detail: String| {
+        if detail.is_empty() {
+            ink.tone(tone, &lead)
+        } else {
+            format!("{}  {}", ink.tone(tone, &lead), ink.meta(&detail))
+        }
+    };
+    use style::Tone::{Accent, Danger, Meta, Warn};
     match f {
         Finding::Cron(c) => Row {
-            display: format!(
-                "\x1b[1;31m⚠ cron {}\x1b[0m  \x1b[2m{} fail\x1b[0m",
-                c.job, c.failures
+            display: disp(
+                Danger,
+                format!("\u{26a0} cron {}", c.job),
+                format!("{} fail", c.failures),
             ),
             kind: "cron",
             id: String::new(),
@@ -80,9 +96,10 @@ fn row_for(f: &Finding) -> Row {
         },
         Finding::Staff(s) => Row {
             // A missed staff run is a hard miss — red, the same weight as a failing cron.
-            display: format!(
-                "\x1b[1;31m⚠ staff {}\x1b[0m  \x1b[2mmissed {}\x1b[0m",
-                s.agent, s.on_calendar
+            display: disp(
+                Danger,
+                format!("\u{26a0} staff {}", s.agent),
+                format!("missed {}", s.on_calendar),
             ),
             kind: "staff",
             id: String::new(),
@@ -91,18 +108,18 @@ fn row_for(f: &Finding) -> Row {
             path: String::new(),
         },
         Finding::Attn(a) => {
-            let (color, tag) = match a.severity.as_str() {
-                "urgent" => ("1;31", "⚠"),
-                "warn" => ("33", "•"),
-                _ => ("2", "•"),
+            let (tone, tag) = match a.severity.as_str() {
+                "urgent" => (Danger, "\u{26a0}"),
+                "warn" => (Warn, "\u{2022}"),
+                _ => (Meta, "\u{2022}"),
             };
             let src = if a.source.is_empty() {
                 String::new()
             } else {
-                format!("  \x1b[2m({})\x1b[0m", a.source)
+                format!("({})", a.source)
             };
             Row {
-                display: format!("\x1b[{color}m{tag} {}\x1b[0m{src}", a.title),
+                display: disp(tone, format!("{tag} {}", a.title), src),
                 kind: "attn",
                 id: a.id.clone(),
                 job: String::new(),
@@ -111,11 +128,10 @@ fn row_for(f: &Finding) -> Row {
             }
         }
         Finding::Note(n) => Row {
-            display: format!(
-                "\x1b[36m{}/{}\x1b[0m  \x1b[2m{}\x1b[0m",
-                n.repo,
-                n.branch,
-                n.flags.join(" ")
+            display: disp(
+                Accent,
+                format!("{}/{}", n.repo, n.branch),
+                n.flags.join(" "),
             ),
             kind: "note",
             id: String::new(),
@@ -124,15 +140,16 @@ fn row_for(f: &Finding) -> Row {
             path: n.path.clone(),
         },
         Finding::Todo(t) => {
-            let (color, tag) = if t.overdue {
-                ("1;31", "⚠")
+            let (tone, tag) = if t.overdue {
+                (Danger, "\u{26a0}")
             } else {
-                ("33", "•")
+                (Warn, "\u{2022}")
             };
             Row {
-                display: format!(
-                    "\x1b[{color}m{tag} {}\x1b[0m  \x1b[2mtodo {}\x1b[0m",
-                    t.summary, t.id
+                display: disp(
+                    tone,
+                    format!("{tag} {}", t.summary),
+                    format!("todo {}", t.id),
                 ),
                 kind: "todo",
                 id: t.id.clone(),
@@ -142,9 +159,10 @@ fn row_for(f: &Finding) -> Row {
             }
         }
         Finding::Inbox(i) => Row {
-            display: format!(
-                "\x1b[33m• {}\x1b[0m  \x1b[2min inbox {}d — bn q drain\x1b[0m",
-                i.text, i.idle_days
+            display: disp(
+                Warn,
+                format!("\u{2022} {}", i.text),
+                format!("in inbox {}d — bn q drain", i.idle_days),
             ),
             kind: "inbox",
             id: i.id.clone(),
@@ -153,9 +171,10 @@ fn row_for(f: &Finding) -> Row {
             path: String::new(),
         },
         Finding::Mcp(m) => Row {
-            display: format!(
-                "\x1b[33m• mcp {}\x1b[0m  \x1b[2m'{}' {} — {}\x1b[0m",
-                m.server, m.command, m.problem, m.fix
+            display: disp(
+                Warn,
+                format!("\u{2022} mcp {}", m.server),
+                format!("'{}' {} — {}", m.command, m.problem, m.fix),
             ),
             kind: "mcp",
             id: String::new(),
@@ -164,9 +183,10 @@ fn row_for(f: &Finding) -> Row {
             path: String::new(),
         },
         Finding::StaleStaff(s) => Row {
-            display: format!(
-                "\x1b[33m• staff idle {}d\x1b[0m  \x1b[2mno card since {} — home box may be down\x1b[0m",
-                s.idle_days, s.last_card
+            display: disp(
+                Warn,
+                format!("\u{2022} staff idle {}d", s.idle_days),
+                format!("no card since {} — home box may be down", s.last_card),
             ),
             kind: "stale-staff",
             id: String::new(),
@@ -175,9 +195,13 @@ fn row_for(f: &Finding) -> Row {
             path: String::new(),
         },
         Finding::Backlog(b) => Row {
-            display: format!(
-                "\x1b[33m• queued work with no task\x1b[0m  \x1b[2m{} entry(s) predate the task invariant — `bn orchestrate status` to see them\x1b[0m",
-                b.untasked
+            display: disp(
+                Warn,
+                "\u{2022} queued work with no task".to_string(),
+                format!(
+                    "{} entry(s) predate the task invariant — `bn orchestrate status` to see them",
+                    b.untasked
+                ),
             ),
             kind: "backlog-untasked",
             id: String::new(),
@@ -186,10 +210,14 @@ fn row_for(f: &Finding) -> Row {
             path: String::new(),
         },
         Finding::NotesLeak(l) => Row {
-            display: format!(
-                "\x1b[33m• personal notes leak\x1b[0m  \x1b[2m{} foreign machine(s) under {} — repoint [personal].notes_root\x1b[0m",
-                l.foreign_machines.len(),
-                l.personal_root
+            display: disp(
+                Warn,
+                "\u{2022} personal notes leak".to_string(),
+                format!(
+                    "{} foreign machine(s) under {} — repoint [personal].notes_root",
+                    l.foreign_machines.len(),
+                    l.personal_root
+                ),
             ),
             kind: "notes-leak",
             id: String::new(),
@@ -198,9 +226,10 @@ fn row_for(f: &Finding) -> Row {
             path: String::new(),
         },
         Finding::ShellInit(s) => Row {
-            display: format!(
-                "\x1b[33m• {} wrappers\x1b[0m  \x1b[2m{} — {}\x1b[0m",
-                s.shell, s.problem, s.fix
+            display: disp(
+                Warn,
+                format!("\u{2022} {} wrappers", s.shell),
+                format!("{} — {}", s.problem, s.fix),
             ),
             kind: "shell-init",
             id: String::new(),
@@ -234,7 +263,7 @@ pub fn run(cfg: &Config) {
     let findings =
         doctor::cached_or_compute(cfg, &today(), doctor::DEFAULT_STALE_DAYS, now_epoch_secs());
     if findings.is_empty() {
-        println!("\x1b[1;32m✓ all clear — nothing needs attention\x1b[0m\n");
+        println!("{}\n", style::ok("✓ all clear — nothing needs attention"));
         hold();
         return;
     }
@@ -382,11 +411,14 @@ fn cache_drop_row(kind: &str, id: &str) {
 fn preview(kind: &str, id: &str, job: &str, link: &str, path: &str) {
     match kind {
         "cron" => {
-            println!("\x1b[1;36mcron {job}\x1b[0m\n");
+            println!("{}\n", style::Ink::always().head(&format!("cron {job}")));
             crate::emit_cron_show(job, false);
         }
         "attn" => {
-            println!("\x1b[1;36mraised item {id}\x1b[0m");
+            println!(
+                "{}",
+                style::Ink::always().head(&format!("raised item {id}"))
+            );
             // A plan-review row (no link) opens the plan in an nvim popup, not a browser (#651).
             if link.is_empty() && crate::cmd::plan_review::plan_review_id_for_attn(id).is_some() {
                 println!(

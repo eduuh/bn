@@ -147,11 +147,27 @@ pub(crate) fn emit_glyphs() {
     println!("bn icon vocabulary — Nerd Font PUA, tinted by ANSI color\n");
     for (glyph, name, meaning) in rows {
         let cp = glyph.chars().next().map(|c| c as u32).unwrap_or(0);
-        println!("  {glyph}  {name:<13} U+{cp:04X}  \x1b[2m{meaning}\x1b[0m");
+        println!(
+            "  {glyph}  {name:<13} U+{cp:04X}  {}",
+            style::meta(meaning)
+        );
     }
     println!("\nstatus-row mock (how the top bar reads):");
+    // A picture of tmux's own status bar rather than bn's output vocabulary, so it interleaves
+    // short runs and needs one thing the palette deliberately has no verb for: reverse video,
+    // which is how tmux marks the active window. Both come off the same `ink`, so the mock still
+    // goes plain under NO_COLOR like every other row.
+    let ink = style::Ink::auto();
+    let (r, y, gr, d) = (
+        ink.open(style::Tone::Danger),
+        ink.open(style::Tone::Warn),
+        ink.open(style::Tone::Ok),
+        ink.open(style::Tone::Meta),
+    );
+    let n = ink.close();
+    let inv = if ink.is_on() { "\x1b[7m" } else { "" };
     println!(
-        "  row 0   \u{1f4ee}2 \x1b[31m1⚠\x1b[0m \x1b[33m2{} 12m\x1b[0m \x1b[32m1{}\x1b[0m  {} ship the glyph module  \x1b[2m│ {} 2m │ {}3 {}1 │ 14:07 Sat 05\x1b[0m",
+        "  row 0   \u{1f4ee}2 {r}1⚠{n} {y}2{} 12m{n} {gr}1{}{n}  {} ship the glyph module  {d}│ {} 2m │ {}3 {}1 │ 14:07 Sat 05{n}",
         g::BELL,
         g::CHECK,
         g::TARGET,
@@ -160,7 +176,7 @@ pub(crate) fn emit_glyphs() {
         g::BAN,
     );
     println!(
-        "  row 1   \x1b[7m main \x1b[0m  1 main   2 imoji-improve \x1b[31m{}1\x1b[0m \x1b[2m{}2\x1b[0m \x1b[33m{}\x1b[0m   3 api \x1b[32m{}\x1b[0m",
+        "  row 1   {inv} main {n}  1 main   2 imoji-improve {r}{}1{n} {d}{}2{n} {y}{}{n}   3 api {gr}{}{n}",
         g::BAN,
         g::PENCIL,
         g::BELL,

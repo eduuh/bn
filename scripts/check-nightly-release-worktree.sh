@@ -29,6 +29,11 @@ prepare() (
   HOME="$scratch/home"
   export HOME
   unset BN_MAIN_WORKTREE
+  # This fixture stands in for a developer's machine, so it must not inherit the real workflow's
+  # GITHUB_ACTIONS/GITHUB_SHA. Left set, the helper takes its `HEAD)` CI branch and compares the
+  # scratch worktree against the PR's own sha, which never matches — green locally, red in CI on
+  # every pull request. The two `override=$(...)` blocks below already isolate this deliberately.
+  unset GITHUB_ACTIONS GITHUB_SHA
   . "$helper"
   bn_nightly_prepare_worktree
 )

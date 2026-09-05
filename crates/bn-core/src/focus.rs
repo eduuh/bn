@@ -15,7 +15,7 @@
 //! the drain is always the live picture rather than a stale snapshot.
 
 use crate::events::{self, Event};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 /// An active deep-work block, as folded from the event log.
@@ -118,36 +118,70 @@ pub fn end(now: i64) -> std::io::Result<Option<Block>> {
 /// time is still in the future and which no later `focus_end` has closed. Folding the latest
 /// start (not the first) means a second `bn focus start` cleanly extends the window.
 pub fn active(now: i64) -> Option<Block> {
-    let events = events::read_all();
+    // `now` is applied here, not inside the memo: the block list is pure log-derived state and so
+    // is cacheable, while "is it running *right now*" changes every second and is not.
+    running_at(open_blocks(), now)
+}
 
-    // ids that have been ended early.
-    let ended: std::collections::HashSet<String> = events
-        .iter()
-        .filter(|e| e.kind == "focus_end")
-        .filter_map(|e| field_str(e, "ref"))
-        .collect();
-
-    // The latest start wins, so scan in reverse file order (chronological append) and take the
-    // first still-open, still-running block.
-    events
-        .iter()
-        .rev()
-        .filter(|e| e.kind == "focus_start")
-        .find_map(|e| {
-            let id = field_str(e, "id")?;
-            if ended.contains(&id) {
-                return None;
-            }
-            let duration_secs = field_i64(e, "duration_secs")?;
-            let ends_at = e.ts + duration_secs;
-            (ends_at > now).then(|| Block {
-                id,
-                started: e.ts,
-                duration_secs,
-                ends_at,
-                remaining_secs: (ends_at - now).max(0),
-            })
+/// The first block in `blocks` (latest start first) still running at `now`. Split out from
+/// [`active`] so the `now` decision is testable without an event log behind it.
+fn running_at(blocks: Vec<OpenBlock>, now: i64) -> Option<Block> {
+    blocks.into_iter().find_map(|b| {
+        let ends_at = b.ts + b.duration_secs;
+        (ends_at > now).then(|| Block {
+            id: b.id,
+            started: b.ts,
+            duration_secs: b.duration_secs,
+            ends_at,
+            remaining_secs: (ends_at - now).max(0),
         })
+    })
+}
+
+/// A focus block exactly as the log records it, before `now` is taken into account.
+#[derive(Serialize, Deserialize)]
+struct OpenBlock {
+    id: String,
+    ts: i64,
+    duration_secs: i64,
+}
+
+/// Open (not early-ended) focus blocks, latest start first — a pure function of the event log, so
+/// it is memoised against that log's identity.
+///
+/// This matters because [`is_active`] is on the status bar's path (`bn staff feed --badge` gates
+/// on it) and its honest answer meant parsing the whole 50 MB log every refresh — measured at
+/// 227 ms, one full parse, several times a minute.
+fn open_blocks() -> Vec<OpenBlock> {
+    crate::event_memo::memoised("focus-blocks.json", "", || {
+        let events = events::read_all();
+
+        // ids that have been ended early.
+        let ended: std::collections::HashSet<String> = events
+            .iter()
+            .filter(|e| e.kind == "focus_end")
+            .filter_map(|e| field_str(e, "ref"))
+            .collect();
+
+        // The latest start wins, so scan in reverse file order (chronological append); the
+        // still-running check belongs to the caller, which knows `now`.
+        events
+            .iter()
+            .rev()
+            .filter(|e| e.kind == "focus_start")
+            .filter_map(|e| {
+                let id = field_str(e, "id")?;
+                if ended.contains(&id) {
+                    return None;
+                }
+                Some(OpenBlock {
+                    id,
+                    ts: e.ts,
+                    duration_secs: field_i64(e, "duration_secs")?,
+                })
+            })
+            .collect()
+    })
 }
 
 /// Whether a deep-work block is active right now — the gate [`crate::next`] consults to decide
@@ -215,4 +249,53 @@ fn field_str(ev: &Event, key: &str) -> Option<String> {
 
 fn field_i64(ev: &Event, key: &str) -> Option<i64> {
     ev.fields.get(key).and_then(Value::as_i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn block(id: &str, ts: i64, duration_secs: i64) -> OpenBlock {
+        OpenBlock {
+            id: id.to_string(),
+            ts,
+            duration_secs,
+        }
+    }
+
+    #[test]
+    fn a_running_block_is_active_and_reports_its_remaining_time() {
+        let b = running_at(vec![block("a", 1_000, 600)], 1_100).expect("active");
+        assert_eq!(b.id, "a");
+        assert_eq!(b.ends_at, 1_600);
+        assert_eq!(b.remaining_secs, 500);
+    }
+
+    #[test]
+    fn an_expired_block_is_not_active() {
+        assert!(running_at(vec![block("a", 1_000, 600)], 1_600).is_none());
+        assert!(running_at(vec![block("a", 1_000, 600)], 9_999).is_none());
+    }
+
+    #[test]
+    fn the_boundary_is_exclusive() {
+        // ends_at > now, so a block is over at exactly its end second — matching the pre-memo
+        // implementation, which used the same comparison.
+        assert!(running_at(vec![block("a", 0, 10)], 9).is_some());
+        assert!(running_at(vec![block("a", 0, 10)], 10).is_none());
+    }
+
+    #[test]
+    fn the_latest_start_wins_and_an_expired_newer_block_falls_through() {
+        // `open_blocks` yields latest-start-first; a newer block that has already expired must not
+        // mask an older one that is still running.
+        let blocks = vec![block("new", 1_000, 10), block("old", 900, 5_000)];
+        let b = running_at(blocks, 1_500).expect("older block still running");
+        assert_eq!(b.id, "old");
+    }
+
+    #[test]
+    fn no_blocks_means_no_focus() {
+        assert!(running_at(vec![], 1_000).is_none());
+    }
 }

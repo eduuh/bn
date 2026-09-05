@@ -90,3 +90,15 @@ panic = "abort"
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+# Dev/test builds. Without this the workspace inherits cargo's stock `debug = 2`, which emits
+# full DWARF for every one of ~175k lines of first-party code — debuginfo the dev loop pays for
+# on every codegen and every link, and that `bn` developers do not use (backtraces need file and
+# line, not variable locations).
+#
+# Measured on the 2026-09-05 baseline: a cold `cargo build --workspace` was 449.5s, of which the
+# serial chain bn-core lib (203.6s) -> bn-cli bin (192.3s) was 88%. The bin half is link-heavy,
+# which is what this profile targets; bn-core's 135.9s frontend is untouched by it and is what
+# the crate split is for.
+[profile.dev]
+debug = "line-tables-only"

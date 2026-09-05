@@ -333,9 +333,9 @@ pub(crate) fn gh_my_open_prs(slug: &str) -> Vec<RemotePr> {
     if !out.success {
         let detail = out.stderr.trim();
         if detail.is_empty() {
-            eprintln!("{YELLOW}remote PR: GitHub query failed — run `gh auth status`{NC}");
+            ceprintln!("{YELLOW}remote PR: GitHub query failed — run `gh auth status`{NC}");
         } else {
-            eprintln!(
+            ceprintln!(
                 "{YELLOW}remote PR: GitHub query failed: {detail} — run `gh auth status`{NC}"
             );
         }
@@ -377,7 +377,7 @@ pub(crate) fn ado_my_open_prs(t: AdoTarget<'_>) -> Vec<RemotePr> {
     let AdoTarget { org, project, .. } = t;
     let org_url = format!("https://dev.azure.com/{org}");
     let Some(creator) = ado_creator(&org_url) else {
-        eprintln!(
+        ceprintln!(
             "{YELLOW}remote PR: couldn't resolve your Azure DevOps identity — set \
              BN_ADO_CREATOR=<identity-guid> or run `az login`{NC}"
         );
@@ -402,14 +402,14 @@ pub(crate) fn ado_my_open_prs(t: AdoTarget<'_>) -> Vec<RemotePr> {
     match out {
         Ok(o) if o.status.success() => parse_ado_prs(&String::from_utf8_lossy(&o.stdout), t),
         Ok(o) => {
-            eprintln!(
+            ceprintln!(
                 "{YELLOW}remote PR: Azure DevOps query failed: {}{NC}",
                 String::from_utf8_lossy(&o.stderr).trim()
             );
             Vec::new()
         }
         Err(e) => {
-            eprintln!("{YELLOW}remote PR: couldn't run `az rest`: {e}{NC}");
+            ceprintln!("{YELLOW}remote PR: couldn't run `az rest`: {e}{NC}");
             Vec::new()
         }
     }
@@ -468,17 +468,17 @@ pub(crate) fn parse_ado_prs(json: &str, t: AdoTarget<'_>) -> Vec<RemotePr> {
 /// GitHub and ordinary ADO repositories go straight to the exact branch refspec.
 pub(crate) fn prepare_remote_pr_branch(remote: &Remote, bare_s: &str, pr: &RemotePr) -> bool {
     if matches!(remote, Remote::Ado { .. }) && !favourite_branch(remote, &pr.branch) {
-        eprintln!(
+        ceprintln!(
             "{YELLOW}remote PR: could not favourite {} — fetch may fail on a limited-ref repo{NC}",
             pr.branch
         );
     }
 
-    println!("{BLUE}Fetching PR #{} ({})...{NC}", pr.number, pr.branch);
+    cprintln!("{BLUE}Fetching PR #{} ({})...{NC}", pr.number, pr.branch);
     if fetch_branch(bare_s, &pr.branch) {
         true
     } else {
-        eprintln!(
+        ceprintln!(
             "{RED}remote PR: failed to fetch {} for PR #{}{NC}",
             pr.branch, pr.number
         );
@@ -544,7 +544,7 @@ pub(crate) fn favourite_branch(remote: &Remote, branch: &str) -> bool {
         "--output",
         "tsv",
     ]) else {
-        eprintln!("{YELLOW}favourite: could not resolve repo id for {project}/{repo}{NC}");
+        ceprintln!("{YELLOW}favourite: could not resolve repo id for {project}/{repo}{NC}");
         return false;
     };
 

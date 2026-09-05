@@ -516,6 +516,26 @@ register_mcp() {
   local bn_cmd="$cfgdir/bn"
   [ -x "$bn_cmd" ] || bn_cmd="$bindir/bn"
 
+  # nvim-mcp — the editor MCP server (buffers, LSP diagnostics, definitions, references, rename),
+  # registered next to bn wherever it is installed. Absolute path for the same reason bn is: a
+  # GUI-launched client inherits none of the shell PATH. `--connect auto` discovers the nvim
+  # running in the client's git root, so one user-scope entry covers every repo and no
+  # machine-local socket path is ever written.
+  #
+  # bn deliberately does not install it. The binary and the nvim plugin must come from the SAME
+  # commit — released 0.7.2 globs /tmp for sockets while the plugin on main registers them under
+  # $XDG_RUNTIME_DIR, so a crates.io binary paired with a git plugin discovers nothing, silently.
+  # Upstream's own lazy.nvim spec builds the binary from the checked-out plugin
+  # (`build = "cargo install --path ."`), which is the one setup that cannot skew. So: the editor
+  # owns the install, install.sh owns the registration.
+  local nvim_mcp_cmd
+  nvim_mcp_cmd=$(command -v nvim-mcp 2>/dev/null || true)
+  if [ -z "$nvim_mcp_cmd" ]; then
+    echo "Skipped nvim MCP registration (nvim-mcp not on PATH). To enable the editor tools, add"
+    echo "  { 'linw1995/nvim-mcp', build = 'cargo install --path .', config = function() require('nvim-mcp').setup({}) end }"
+    echo "to your nvim config, then re-run this script."
+  fi
+
   # Claude Code — user scope lives in ~/.claude.json under .mcpServers
   local cc="$HOME/.claude.json"
   [ -f "$cc" ] || echo '{}' > "$cc"
@@ -525,6 +545,16 @@ register_mcp() {
     mv "$tmp" "$cc"; echo "Registered bn MCP for Claude Code (user scope) -> $cc"
   else
     rm -f "$tmp"; echo "warning: could not update $cc (not valid JSON?)" >&2
+  fi
+  if [ -n "$nvim_mcp_cmd" ]; then
+    tmp=$(mktemp)
+    if jq --arg nv "$nvim_mcp_cmd" \
+          '.mcpServers.nvim = {type: "stdio", command: $nv, args: ["--connect","auto"]}' \
+          "$cc" > "$tmp" 2>/dev/null; then
+      mv "$tmp" "$cc"; echo "Registered nvim MCP for Claude Code (user scope) -> $cc"
+    else
+      rm -f "$tmp"; echo "warning: could not add nvim to $cc (not valid JSON?)" >&2
+    fi
   fi
 
   # VS Code Copilot — user mcp.json. Covers Linux/WSL (~/.config/Code, ~/.vscode-server) AND
@@ -551,6 +581,15 @@ register_mcp() {
       mv "$tmp" "$f"; echo "Registered bn MCP for VS Code Copilot -> $f"; wrote=1
     else
       rm -f "$tmp"; echo "warning: could not update $f (JSONC comments?) — see README for manual setup" >&2
+    fi
+    [ -n "$nvim_mcp_cmd" ] || continue
+    tmp=$(mktemp)
+    if jq --arg nv "$nvim_mcp_cmd" \
+          '.servers.nvim = {type: "stdio", command: $nv, args: ["--connect","auto"]}' \
+          "$f" > "$tmp" 2>/dev/null; then
+      mv "$tmp" "$f"; echo "Registered nvim MCP for VS Code Copilot -> $f"
+    else
+      rm -f "$tmp"; echo "warning: could not add nvim to $f (JSONC comments?)" >&2
     fi
   done
   if [ "$wrote" = 0 ]; then
@@ -592,6 +631,18 @@ register_mcp() {
       mv "$tmp" "$cli"; echo "Registered bn MCP for GitHub Copilot CLI -> $cli"
     else
       rm -f "$tmp"; echo "warning: could not update $cli (not valid JSON?)" >&2
+    fi
+    if [ -n "$nvim_mcp_cmd" ]; then
+      tmp=$(mktemp)
+      # `tools: ["*"]` — unlike bn, whose surface is deliberately trimmed to the session tools,
+      # every nvim tool is worth having: which ones matter depends entirely on the task.
+      if jq --arg nv "$nvim_mcp_cmd" \
+            '.mcpServers.nvim = {type: "local", command: $nv, args: ["--connect","auto"], tools: ["*"]}' \
+            "$cli" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$cli"; echo "Registered nvim MCP for GitHub Copilot CLI -> $cli"
+      else
+        rm -f "$tmp"; echo "warning: could not add nvim to $cli (not valid JSON?)" >&2
+      fi
     fi
   fi
 }

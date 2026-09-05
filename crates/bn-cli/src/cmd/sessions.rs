@@ -6,9 +6,10 @@ pub(crate) fn resolve_registered_session<'a>(
     rows: &'a [bn_core::agent::SessionRecord],
     query: Option<&str>,
     worktree: &str,
+    branch: &str,
 ) -> Result<Option<&'a bn_core::agent::SessionRecord>, bn_core::agent::ResolveSessionError> {
     let selector = query.map_or(
-        bn_core::agent::SessionSelector::LatestForWorktree(worktree),
+        bn_core::agent::SessionSelector::LatestForWorktree { worktree, branch },
         bn_core::agent::SessionSelector::NameOrId,
     );
     match bn_core::agent::resolve_session(rows, selector) {
@@ -100,7 +101,27 @@ struct WindowLaunch<'a> {
     harness: &'a str,
 }
 
+/// Why a checkout may not host a resumed agent, if it may not.
+///
+/// A repo's main worktree is off limits: it hosts no agents and only ever gets refreshed to latest.
+/// `bn agent launch` enforces that at its own chokepoint, but every resume path builds the *window*
+/// first — so without this a resume into main opened a detached pane that then sat on
+/// `redirect_from_main`'s "What is this worktree for?" prompt with nobody looking at it.
+fn off_limits(worktree: &std::path::Path) -> Option<String> {
+    let canonical = std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());
+    bn_core::agent::is_within_main_worktree(&canonical).then(|| {
+        format!(
+            "{} is in the main worktree — it hosts no agents and stays clean. \
+             Dispatch the work into a pool slot instead: bn dispatch \"<what you're doing>\"",
+            canonical.display()
+        )
+    })
+}
+
 fn launch_session_window(launch: &WindowLaunch<'_>, json: bool) -> Result<(), String> {
+    if let Some(refusal) = off_limits(launch.worktree) {
+        return Err(refusal);
+    }
     let window = bn_core::agent::task_window_name(launch.task_name, launch.window_scope);
     let window = format!(
         "{window} · resume-{:x}",
@@ -197,17 +218,8 @@ fn launch_recorded_session(row: &bn_core::agent::SessionRecord, json: bool, comm
             &format!("session {} has no resumable harness", row.session_id),
         );
     }
-    let exe = std::env::current_exe()
-        .unwrap_or_else(|_| std::path::PathBuf::from("bn"))
-        .to_string_lossy()
-        .into_owned();
-    let command = format!(
-        "{} agent launch {} --session {} --resume-session {}",
-        wt::shell_single_quote(&exe),
-        wt::shell_single_quote(&row.harness),
-        wt::shell_single_quote(&row.session_id),
-        wt::shell_single_quote(&row.session_id),
-    );
+    let resuming = bn_core::agent::transcript_backed(&row.harness, &row.session_id);
+    let command = agent_launch_command(&row.harness, &row.session_id, resuming);
     let launch = WindowLaunch {
         repo: &row.repo,
         branch: &row.branch,
@@ -228,20 +240,59 @@ fn launch_recorded_session(row: &bn_core::agent::SessionRecord, json: bool, comm
                 command_tag,
                 serde_json::json!({
                     "session": row,
-                    "fresh": false,
+                    "fresh": !resuming,
+                    "resumed_transcript": resuming,
+                    "harness": row.harness,
                     "tmux_opened": true,
                 }),
             )
             .to_json()
         );
-    } else {
+    } else if resuming {
         println!(
-            "resumed {} ({}) in {}",
+            "resumed {} ({} · {}) in {}",
             row.task_name,
+            row.harness,
             row.session_id,
             worktree.display()
         );
+    } else {
+        println!(
+            "{} ({}) has no transcript left to resume; started a fresh {} session in {}.",
+            row.task_name,
+            row.session_id,
+            row.harness,
+            worktree.display()
+        );
     }
+}
+
+/// The `bn agent launch` invocation for a recorded session.
+///
+/// `--resume-session` rides along only when a transcript backs the id. A harness handed an
+/// unresumable id degrades silently to a fresh, unseeded agent — so passing it unconditionally is
+/// how a resume reports success and hands back a blank prompt (#383). Mirrors
+/// `resume_fleet::launch_command`, which has always gated on the same evidence.
+fn agent_launch_command(harness: &str, session_id: &str, resuming: bool) -> String {
+    let exe = std::env::current_exe()
+        .unwrap_or_else(|_| std::path::PathBuf::from("bn"))
+        .to_string_lossy()
+        .into_owned();
+    let mut command = format!(
+        "{} agent launch {} --session {}",
+        wt::shell_single_quote(&exe),
+        wt::shell_single_quote(harness),
+        wt::shell_single_quote(session_id),
+    );
+    if resuming {
+        command.push_str(&format!(
+            " --resume-session {}",
+            wt::shell_single_quote(session_id)
+        ));
+    } else {
+        command.push_str(" --fresh");
+    }
+    command
 }
 
 fn launch_fresh_session(cfg: &Config, worktree: &std::path::Path, json: bool, command_tag: &str) {
@@ -256,25 +307,21 @@ fn launch_fresh_session(cfg: &Config, worktree: &std::path::Path, json: bool, co
     let session_id = gen_uuid();
     let task_name = bn_core::agent::derive_task_name(None, &ctx.branch);
     let worktree_text = worktree.to_string_lossy().into_owned();
+    // The machine's configured harness, not a hardcoded `copilot`. Every other launcher already
+    // asks `preferred_harness`; this one didn't, so a Claude user who ran `bn resume` in a worktree
+    // with nothing recorded was dropped into Copilot without being told why.
+    let harness = bn_core::harness::preferred_harness(cfg);
     bn_core::cost::attribute_session(bn_core::cost::SessionLaunch {
         session_id: &session_id,
         work_class: bn_core::cost::WorkClass::Coding,
         repo: &ctx.repo,
         branch: &ctx.branch,
         task_name: Some(&task_name),
-        harness: Some("copilot"),
+        harness: Some(harness),
         worktree: Some(&worktree_text),
         controller_id: None,
     });
-    let exe = std::env::current_exe()
-        .unwrap_or_else(|_| std::path::PathBuf::from("bn"))
-        .to_string_lossy()
-        .into_owned();
-    let command = format!(
-        "{} agent launch copilot --fresh --session {}",
-        wt::shell_single_quote(&exe),
-        wt::shell_single_quote(&session_id),
-    );
+    let command = agent_launch_command(harness, &session_id, false);
     let launch = WindowLaunch {
         repo: &ctx.repo,
         branch: &ctx.branch,
@@ -283,7 +330,7 @@ fn launch_fresh_session(cfg: &Config, worktree: &std::path::Path, json: bool, co
         worktree,
         command: &command,
         session_id: &session_id,
-        harness: "copilot",
+        harness,
     };
     if let Err(error) = launch_session_window(&launch, json) {
         fail_json(json, command_tag, "agent_lease_or_tmux_failed", &error);
@@ -298,7 +345,7 @@ fn launch_fresh_session(cfg: &Config, worktree: &std::path::Path, json: bool, co
                     "fresh": true,
                     "reason": "no_recorded_session",
                     "new_session_id": session_id,
-                    "harness": "copilot",
+                    "harness": harness,
                     "worktree": worktree_text,
                     "tmux_opened": true,
                 }),
@@ -307,7 +354,8 @@ fn launch_fresh_session(cfg: &Config, worktree: &std::path::Path, json: bool, co
         );
     } else {
         println!(
-            "No recorded agent session for this worktree; started a fresh Copilot session ({session_id}) in {}.",
+            "No recorded agent session for {}; started a fresh {harness} session ({session_id}) in {}.",
+            ctx.branch,
             worktree.display()
         );
     }
@@ -336,14 +384,27 @@ pub(crate) fn resume_registered_session(
         .as_deref()
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let row = resolve_registered_session(&rows, query, &worktree_text).unwrap_or_else(|error| {
-        fail_json(
-            json,
-            command_tag,
-            "session_not_found",
-            &format!("{command_tag}: {error}"),
-        )
-    });
+    // The checkout alone does not identify the work. A pool slot hosts a different branch every
+    // few hours, so `…/_pool/2` matched on path only would resume whatever branch held the slot
+    // last. An explicit `bn resume <id>` needs no branch — the caller named the session.
+    let branch = worktree
+        .as_deref()
+        .and_then(|path| resolver::resolve(cfg, path).ok())
+        .map(|ctx| ctx.branch)
+        .unwrap_or_default();
+    if let Some(refusal) = worktree.as_deref().and_then(off_limits) {
+        fail_json(json, command_tag, "main_worktree", &refusal);
+    }
+    let row = resolve_registered_session(&rows, query, &worktree_text, &branch).unwrap_or_else(
+        |error| {
+            fail_json(
+                json,
+                command_tag,
+                "session_not_found",
+                &format!("{command_tag}: {error}"),
+            )
+        },
+    );
     match row {
         Some(row) => launch_recorded_session(row, json, command_tag),
         None => {
@@ -357,5 +418,81 @@ pub(crate) fn resume_registered_session(
             });
             launch_fresh_session(cfg, &worktree, json, command_tag);
         }
+    }
+}
+
+/// A recorded harness session that a recreated window should come back running.
+pub(crate) struct WorktreeResume {
+    pub(crate) harness: String,
+    pub(crate) session_id: String,
+    /// The `bn agent launch …` line for the window's pane.
+    pub(crate) command: String,
+}
+
+/// The resumable session recorded for `worktree` on `branch`, if there is one.
+///
+/// Deliberately strict on both axes. The branch must match because pool slots are recycled, and
+/// the id must still have a transcript because a harness handed a dead id quietly starts a blank
+/// agent — either miss would put someone else's work, or no work at all, in a window that claims
+/// to have restored yours. Returns `None` (never a fresh session) so the caller keeps the plain
+/// shell it asked for when there is nothing genuine to bring back.
+pub(crate) fn worktree_resume(
+    cfg: &Config,
+    worktree: &std::path::Path,
+    branch: &str,
+) -> Option<WorktreeResume> {
+    if branch.trim().is_empty() {
+        return None;
+    }
+    // Main is off limits however the window came to be recreated, so `wt go main` never turns into
+    // an agent (or into `redirect_from_main`'s dispatch prompt).
+    let canonical = std::fs::canonicalize(worktree).unwrap_or_else(|_| worktree.to_path_buf());
+    if off_limits(&canonical).is_some() {
+        return None;
+    }
+    let rows = bn_core::agent::session_registry(cfg).ok()?;
+    let worktree_text = canonical.to_string_lossy().into_owned();
+    let row = bn_core::agent::resolve_session(
+        &rows,
+        bn_core::agent::SessionSelector::LatestForWorktree {
+            worktree: &worktree_text,
+            branch,
+        },
+    )
+    .ok()?;
+    if !bn_core::agent::transcript_backed(&row.harness, &row.session_id) {
+        return None;
+    }
+    Some(WorktreeResume {
+        command: agent_launch_command(&row.harness, &row.session_id, true),
+        harness: row.harness.clone(),
+        session_id: row.session_id.clone(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::agent_launch_command;
+
+    /// `--resume-session` is what actually restores the transcript, and `--fresh` is what stops the
+    /// harness quietly continuing *some other* session in the same checkout. A recycled pool slot
+    /// makes that "some other" a stranger's branch, so the unresumable case must say fresh out loud
+    /// rather than leave the harness to guess.
+    #[test]
+    fn only_a_backed_session_is_asked_to_resume() {
+        let resumed = agent_launch_command("claude", "abc-123", true);
+        assert!(resumed.ends_with("agent launch 'claude' --session 'abc-123' --resume-session 'abc-123'"));
+
+        let fresh = agent_launch_command("copilot", "abc-123", false);
+        assert!(fresh.ends_with("agent launch 'copilot' --session 'abc-123' --fresh"));
+        assert!(!fresh.contains("--resume-session"));
+    }
+
+    /// The harness is carried through verbatim. Hardcoding `copilot` here is what dropped a Claude
+    /// user into the wrong agent whenever a worktree had nothing recorded.
+    #[test]
+    fn the_recorded_harness_is_the_one_launched() {
+        assert!(agent_launch_command("claude", "id", true).contains("launch 'claude'"));
+        assert!(agent_launch_command("copilot", "id", true).contains("launch 'copilot'"));
     }
 }

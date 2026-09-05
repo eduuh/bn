@@ -1240,7 +1240,7 @@ fn enforce_launch_placement(
     if !launch_guard_enabled() {
         return None;
     }
-    if bn_core::agent::is_main_worktree_path(&canonical) {
+    if bn_core::agent::is_within_main_worktree(&canonical) {
         redirect_from_main(&canonical, harness);
     }
     match agent_lease::worktree_holder(&canonical) {

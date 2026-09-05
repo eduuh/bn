@@ -90,7 +90,7 @@ pub(crate) fn setup_review_worktree(
     let favourited = if favourite && matches!(remote, Remote::Ado { .. }) {
         let ok = favourite_branch(&remote, branch);
         if !ok {
-            eprintln!(
+            ceprintln!(
                 "{YELLOW}review: could not favourite {branch} — fetch may fail (unadvertised ref in a limited-ref repo){NC}"
             );
         }
@@ -101,7 +101,7 @@ pub(crate) fn setup_review_worktree(
 
     // 2) Fetch the branch into the bare repo (credential.useHttpPath is required for dev.azure.com).
     if !fetch_branch(&bare_s, branch) {
-        eprintln!(
+        ceprintln!(
             "{RED}review: failed to fetch {branch} from {}{NC}",
             remote.label()
         );
@@ -121,7 +121,7 @@ pub(crate) fn setup_review_worktree(
         if existing != wt_path {
             let launched = launch_agent && launch_review_pane(cfg, repo, branch, number, &existing);
             if launch_agent && !launched {
-                eprintln!(
+                ceprintln!(
                     "{YELLOW}review: {branch} is already checked out at {} — open a vertical pane there and run the review (no tmux window hosting it to split into){NC}",
                     existing.display()
                 );
@@ -362,9 +362,9 @@ pub(crate) fn launch_review_agent(cfg: &Config, repo: &str, win_branch: &str, nu
         &prompt,
         AgentLaunchOpts::new(true, yolo),
     ) {
-        println!("{GREEN}review agent launched in {repo}:{win_branch}{NC}");
+        cprintln!("{GREEN}review agent launched in {repo}:{win_branch}{NC}");
     } else {
-        eprintln!(
+        ceprintln!(
             "{YELLOW}review: could not send to tmux window {repo}:{win_branch} (tmux absent?){NC}"
         );
     }

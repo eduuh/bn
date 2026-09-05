@@ -113,6 +113,16 @@ pub fn is_main_worktree_path(worktree: &Path) -> bool {
         .is_some_and(|_repo| parts.next() == Some("worktree"))
 }
 
+/// Whether `path` **is or sits inside** the stow-source main worktree.
+///
+/// [`is_main_worktree_path`] answers only for the checkout root, which left the rule trivially
+/// evadable: a session recorded at `…/worktree/BigMono/main/packages/web-app` is an
+/// agent working in the main checkout by any honest reading, but every guard keyed on the root
+/// waved it through. Main hosts no agents *anywhere under it*, so the placement rules ask this.
+pub fn is_within_main_worktree(path: &Path) -> bool {
+    path.ancestors().any(is_main_worktree_path)
+}
+
 /// The reserved main slot — `…/_pool/1`, [`MAIN_POOL_SLOT`]. The pool lays slots out as
 /// `<root>/worktree/<repo>/_pool/<n>`, so the check is the slot number under a `_pool` parent.
 pub fn is_controller_slot_path(worktree: &Path) -> bool {
@@ -137,9 +147,9 @@ pub fn is_controller_slot_path(worktree: &Path) -> bool {
 /// to the operator.
 fn validate_kind_placement(kind: AgentLeaseKind, key: &AgentLeaseKey) -> Result<(), String> {
     let worktree = Path::new(&key.worktree);
-    if is_main_worktree_path(worktree) {
+    if is_within_main_worktree(worktree) {
         return Err(format!(
-            "{} is the main worktree — it hosts no agents and stays clean on '{}'. Work on main \
+            "{} is in the main worktree — it hosts no agents and stays clean on '{}'. Work on main \
              happens in the main slot (_pool/{MAIN_POOL_SLOT}); dispatch work leases a worker \
              slot: bn dispatch \"<what you're doing>\"",
             key.worktree, key.branch

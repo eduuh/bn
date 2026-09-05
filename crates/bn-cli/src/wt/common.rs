@@ -3,13 +3,21 @@
 //! former wt.rs god file (issue #351).
 
 use super::*;
+use bn_core::style;
 
-// ANSI colors (the oracle inherited these from the retired tmux-lib.sh).
-pub(crate) const RED: &str = "\u{1b}[0;31m";
-pub(crate) const GREEN: &str = "\u{1b}[0;32m";
-pub(crate) const YELLOW: &str = "\u{1b}[0;33m";
-pub(crate) const BLUE: &str = "\u{1b}[0;34m";
-pub(crate) const NC: &str = "\u{1b}[0m";
+// The `wt` commands wrap a whole message in one colour run (`{RED}…{NC}`) rather than calling a
+// helper per fragment, so they need the codes as `const` items. They are derived from the shared
+// palette rather than respelled — these used to be the retired tmux-lib.sh's own `0;3xm` set, a
+// second palette that drifted from `bn`'s.
+//
+// BLUE is gone: every one of its 27 sites marked a section or action header ("Merging PR for …",
+// "pool metrics — N slots"), and headers are bold-and-uncoloured everywhere else in bn so they
+// never compete with the rows that are actually red. It now aliases the head tone.
+pub(crate) const RED: &str = style::Tone::Danger.sgr();
+pub(crate) const GREEN: &str = style::Tone::Ok.sgr();
+pub(crate) const YELLOW: &str = style::Tone::Warn.sgr();
+pub(crate) const BLUE: &str = style::Tone::Head.sgr();
+pub(crate) const NC: &str = style::RESET;
 // Re-exported to the sibling `wt_pool` module so pool output matches the rest of `wt`.
 pub(crate) const P_RED: &str = RED;
 pub(crate) const P_GREEN: &str = GREEN;
@@ -265,7 +273,7 @@ pub(crate) fn resolve_bare_or_pick(bare_dir: &Path) -> Option<PathBuf> {
     }
     let repos = bare_repos(bare_dir);
     if repos.is_empty() {
-        eprintln!(
+        ceprintln!(
             "{RED}Error: No bare repos found in {}{NC}",
             bare_dir.display()
         );

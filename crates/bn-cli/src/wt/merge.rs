@@ -52,22 +52,22 @@ pub(crate) fn cmd_merge(cfg: &Config, flags: MergeFlags) -> bool {
     } = flags;
     let wt_path = cwd();
     let Some(bare) = find_bare_repo(&wt_path) else {
-        eprintln!("{RED}Not inside a worktree{NC}");
+        ceprintln!("{RED}Not inside a worktree{NC}");
         return false;
     };
     let Some(branch) = git_out(&["-C", &wt_path.to_string_lossy(), "branch", "--show-current"])
     else {
-        eprintln!("{RED}Could not determine current branch{NC}");
+        ceprintln!("{RED}Could not determine current branch{NC}");
         return false;
     };
     if bn_core::agent::is_reserved_branch(&branch) {
-        eprintln!("{RED}Refusing to merge '{branch}'{NC}");
+        ceprintln!("{RED}Refusing to merge '{branch}'{NC}");
         return false;
     }
     let slug = match remote_for(&bare) {
         Remote::GitHub { slug } => slug,
         _ => {
-            eprintln!(
+            ceprintln!(
                 "{YELLOW}bn wt merge supports GitHub (gh). For ADO, complete the PR in the UI/az — \
                  the `cleanup --all` poller will reclaim the worktree.{NC}"
             );
@@ -85,12 +85,12 @@ pub(crate) fn cmd_merge(cfg: &Config, flags: MergeFlags) -> bool {
                 if let GateOutcome::Ran(r) = gate_head(cfg, &ctx, &bare, &head_ref, None, true, false)
                 {
                     let color = if r.pass { GREEN } else { RED };
-                    println!("{color}{}{NC}", gate_summary(&r));
+                    cprintln!("{color}{}{NC}", gate_summary(&r));
                     let bullet =
                         format!("{} — {} (pre-merge)", bn_core::util::now_stamp(), gate_summary(&r));
                     let _ = bn_core::commands::append_body(cfg, &ctx, "progress", &bullet, &today());
                     if !r.pass {
-                        eprintln!(
+                        ceprintln!(
                             "{RED}Refusing to merge {slug}/{branch} — gate failed. Fix and re-push, \
                              or bypass with `bn wt merge --no-gate`.{NC}"
                         );
@@ -98,7 +98,7 @@ pub(crate) fn cmd_merge(cfg: &Config, flags: MergeFlags) -> bool {
                     }
                 }
             }
-            Err(_) => eprintln!(
+            Err(_) => ceprintln!(
                 "{YELLOW}bn wt merge: could not resolve repo context — skipping the pre-merge gate.{NC}"
             ),
         }
@@ -112,12 +112,12 @@ pub(crate) fn cmd_merge(cfg: &Config, flags: MergeFlags) -> bool {
     }
 
     let method = merge_method(merge, rebase);
-    println!(
+    cprintln!(
         "{BLUE}Merging PR for {slug}/{branch} ({}){NC}",
         &method[2..]
     );
     if !merge_pr_via_gh(&slug, &branch, method, !no_delete_branch, admin) {
-        eprintln!("{RED}gh pr merge failed — leaving the worktree in place{NC}");
+        ceprintln!("{RED}gh pr merge failed — leaving the worktree in place{NC}");
         return false;
     }
 
@@ -125,7 +125,7 @@ pub(crate) fn cmd_merge(cfg: &Config, flags: MergeFlags) -> bool {
     // todos/blockers, or uncommitted changes), say so but still report success.
     let (_, worktree_dir) = layout(cfg);
     if cleanup_one(cfg, &wt_path, &worktree_dir, false).is_err() {
-        println!(
+        cprintln!(
             "{YELLOW}Merged — worktree kept (see above). Clean later with `bn wt cleanup`.{NC}"
         );
     }
@@ -385,7 +385,7 @@ pub(crate) fn ci_gate_open(slug: &str, selector: &str, label: &str, wait: Durati
     match wait_for_checks(slug, selector, attempts, delay) {
         Checks::Green | Checks::None => true,
         Checks::Red => {
-            eprintln!(
+            ceprintln!(
                 "{RED}Holding {label} — CI is red. Fix and re-push, or bypass with \
                  `--no-ci-gate`.{NC}"
             );
@@ -397,7 +397,7 @@ pub(crate) fn ci_gate_open(slug: &str, selector: &str, label: &str, wait: Durati
             } else {
                 format!(" after {}s", wait.as_secs())
             };
-            eprintln!(
+            ceprintln!(
                 "{YELLOW}Holding {label} — CI hasn't finished{waited}; it'll land on a later \
                  pass.{NC}"
             );
@@ -855,23 +855,23 @@ pub(crate) fn cmd_gate(cfg: &Config, job: Option<String>, as_json: bool, skip_ui
     let wt_path = cwd();
     let wt_s = wt_path.to_string_lossy().to_string();
     let Some(bare) = find_bare_repo(&wt_path) else {
-        eprintln!("{RED}bn gate: not inside a worktree{NC}");
+        ceprintln!("{RED}bn gate: not inside a worktree{NC}");
         return false;
     };
     let Some(branch) = git_out(&["-C", &wt_s, "branch", "--show-current"]) else {
-        eprintln!("{RED}bn gate: could not determine current branch{NC}");
+        ceprintln!("{RED}bn gate: could not determine current branch{NC}");
         return false;
     };
     if bn_core::agent::is_reserved_branch(&branch) {
-        eprintln!("{RED}bn gate: refusing to gate '{branch}' — gate a feature branch{NC}");
+        ceprintln!("{RED}bn gate: refusing to gate '{branch}' — gate a feature branch{NC}");
         return false;
     }
     let Ok(ctx) = resolver::resolve(cfg, &wt_path) else {
-        eprintln!("{RED}bn gate: not in a git repo{NC}");
+        ceprintln!("{RED}bn gate: not in a git repo{NC}");
         return false;
     };
     let Some(head_sha) = git_out(&["-C", &wt_s, "rev-parse", "HEAD"]) else {
-        eprintln!("{RED}bn gate: could not resolve HEAD{NC}");
+        ceprintln!("{RED}bn gate: could not resolve HEAD{NC}");
         return false;
     };
     match gate_head(
@@ -892,7 +892,7 @@ pub(crate) fn cmd_gate(cfg: &Config, job: Option<String>, as_json: bool, skip_ui
                     bn_core::render::Envelope::success("gate", data).to_json()
                 );
             } else {
-                println!(
+                cprintln!(
                     "{YELLOW}gate: no build/test/lint job for {} — nothing to gate{NC}",
                     ctx.repo
                 );
@@ -918,7 +918,7 @@ pub(crate) fn cmd_gate(cfg: &Config, job: Option<String>, as_json: bool, skip_ui
                 );
             } else {
                 let color = if r.pass { GREEN } else { RED };
-                println!("{color}{}{NC}", gate_summary(&r));
+                cprintln!("{color}{}{NC}", gate_summary(&r));
             }
             r.pass
         }
@@ -987,13 +987,13 @@ pub(crate) fn cmd_merge_all(cfg: &Config, flags: MergeFlags) -> bool {
     } = flags;
     let wt_path = cwd();
     let Some(bare) = find_bare_repo(&wt_path) else {
-        eprintln!("{RED}Not inside a worktree — run `bn wt merge --all` from within the repo{NC}");
+        ceprintln!("{RED}Not inside a worktree — run `bn wt merge --all` from within the repo{NC}");
         return false;
     };
     let slug = match remote_for(&bare) {
         Remote::GitHub { slug } => slug,
         _ => {
-            eprintln!(
+            ceprintln!(
                 "{YELLOW}bn wt merge --all supports GitHub (gh). For ADO, complete PRs in the \
                  UI/az — the `cleanup --all` poller will reclaim the worktrees.{NC}"
             );
@@ -1022,7 +1022,7 @@ pub(crate) fn cmd_merge_all(cfg: &Config, flags: MergeFlags) -> bool {
     } else {
         String::new()
     };
-    println!(
+    cprintln!(
         "{GREEN}merge --all: {} merged{rebased_note}, {} skipped, {} failed.{NC}",
         t.merged, t.skipped, t.failed
     );
@@ -1043,10 +1043,10 @@ pub(crate) fn merge_all_in_repo(
     let remote = Remote::GitHub {
         slug: slug.to_string(),
     };
-    println!("{BLUE}Fetching your open PRs for {slug}...{NC}");
+    cprintln!("{BLUE}Fetching your open PRs for {slug}...{NC}");
     let prs = my_open_prs(&remote);
     if prs.is_empty() {
-        println!("{GREEN}No open PRs of yours to merge for {slug}.{NC}");
+        cprintln!("{GREEN}No open PRs of yours to merge for {slug}.{NC}");
         return LandTally::default();
     }
 
@@ -1067,7 +1067,7 @@ pub(crate) fn merge_all_in_repo(
 
     let serialized = clusters.iter().filter(|c| c.len() > 1).count();
     let batched = clusters.iter().filter(|c| c.len() == 1).count();
-    println!(
+    cprintln!(
         "{BLUE}{} open PR(s): {batched} independent, {serialized} overlap cluster(s) to serialize.{NC}",
         prs.len()
     );
@@ -1088,7 +1088,7 @@ pub(crate) fn merge_all_in_repo(
             // give up and skip — unless --no-auto-rebase opted out.
             let mut verdict = wait_until_mergeable(slug, pr.number, 8, Duration::from_secs(3));
             if verdict == Mergeable::Conflicting && !opts.no_auto_rebase {
-                println!(
+                cprintln!(
                     "{BLUE}#{} [{branch}] conflicting — auto-rebasing onto origin/main...{NC}",
                     pr.number
                 );
@@ -1098,7 +1098,7 @@ pub(crate) fn merge_all_in_repo(
                         verdict = wait_until_mergeable(slug, pr.number, 8, Duration::from_secs(3));
                     }
                     Err(reason) => {
-                        eprintln!(
+                        ceprintln!(
                             "{YELLOW}Skipping #{} [{branch}] — auto-rebase bailed ({reason}); \
                              rebase it manually, then re-run.{NC}",
                             pr.number
@@ -1111,7 +1111,7 @@ pub(crate) fn merge_all_in_repo(
             match verdict {
                 Mergeable::Yes => {}
                 Mergeable::Conflicting => {
-                    eprintln!(
+                    ceprintln!(
                         "{YELLOW}Skipping #{} [{branch}] — conflicting; rebase it, then re-run.{NC}",
                         pr.number
                     );
@@ -1119,7 +1119,7 @@ pub(crate) fn merge_all_in_repo(
                     continue;
                 }
                 Mergeable::Unknown => {
-                    eprintln!(
+                    ceprintln!(
                         "{YELLOW}Skipping #{} [{branch}] — mergeability still UNKNOWN after polling; \
                          try again shortly.{NC}",
                         pr.number
@@ -1158,13 +1158,13 @@ pub(crate) fn merge_all_in_repo(
                 continue;
             }
             let tag = if serialize { " (serialized)" } else { "" };
-            println!(
+            cprintln!(
                 "{BLUE}Merging #{} [{branch}] ({}){tag}{NC}",
                 pr.number,
                 &method[2..]
             );
             if !merge_pr_via_gh(slug, branch, method, !opts.no_delete_branch, opts.admin) {
-                eprintln!("{RED}gh pr merge failed for #{} [{branch}]{NC}", pr.number);
+                ceprintln!("{RED}gh pr merge failed for #{} [{branch}]{NC}", pr.number);
                 t.failed += 1;
                 continue;
             }
@@ -1193,7 +1193,7 @@ fn gate_pr_head(cfg: &Config, bare: &Path, repo: &str, branch: &str) -> bool {
     ) {
         Ok(c) => c,
         Err(_) => {
-            eprintln!(
+            ceprintln!(
                 "{YELLOW}Skipping [{branch}] in {repo} — could not resolve repo context to gate.{NC}"
             );
             return false;
@@ -1203,9 +1203,9 @@ fn gate_pr_head(cfg: &Config, bare: &Path, repo: &str, branch: &str) -> bool {
     match gate_head(cfg, &ctx, bare, &head_ref, None, true, false) {
         GateOutcome::Ran(r) => {
             let color = if r.pass { GREEN } else { RED };
-            println!("{color}{} [{repo}/{branch}]{NC}", gate_summary(&r));
+            cprintln!("{color}{} [{repo}/{branch}]{NC}", gate_summary(&r));
             if !r.pass {
-                eprintln!(
+                ceprintln!(
                     "{YELLOW}Holding {repo}/{branch} — gate failed. Fix + re-push, or land with \
                      `bn wt merge --all-repos --no-gate`.{NC}"
                 );
@@ -1244,7 +1244,7 @@ fn pr_head_sha(slug: &str, number: i64) -> Option<String> {
 fn adversarial_gate_open(cfg: &Config, slug: &str, repo: &str, number: i64) -> bool {
     let required = cfg.review_diff_gate_reviews;
     let Some(head) = pr_head_sha(slug, number) else {
-        eprintln!(
+        ceprintln!(
             "{YELLOW}Holding {repo}#{number} — diff-only review gate on but the PR head couldn't be \
              resolved to check approvals.{NC}"
         );
@@ -1252,9 +1252,9 @@ fn adversarial_gate_open(cfg: &Config, slug: &str, repo: &str, number: i64) -> b
     };
     let gs = bn_core::review_gate::gate_status(repo, number, &head, required);
     if gs.open {
-        println!("{GREEN}review-gate {repo}#{number}: {}{NC}", gs.summary());
+        cprintln!("{GREEN}review-gate {repo}#{number}: {}{NC}", gs.summary());
     } else {
-        eprintln!(
+        ceprintln!(
             "{YELLOW}Holding {repo}#{number} — review-gate {}. Run diff-only reviewers \
              (`bn review-gate prompt {repo} {number}`) and resolve blocking findings, or land with \
              `bn wt merge --no-gate`.{NC}",
@@ -1283,7 +1283,7 @@ pub(crate) fn cmd_merge_all_repos(cfg: &Config, flags: MergeFlags) -> bool {
     let names: Vec<String> = bare_repos(&bare_dir).iter().map(|b| repo_name(b)).collect();
     let order = bn_core::crossrepo::cross_repo_land_order(&names);
     if order.is_empty() {
-        eprintln!(
+        ceprintln!(
             "{YELLOW}bn wt merge --all-repos: no bare repos under {} — clone one first \
              (bn wt clone <url>).{NC}",
             bare_dir.display()
@@ -1301,7 +1301,7 @@ pub(crate) fn cmd_merge_all_repos(cfg: &Config, flags: MergeFlags) -> bool {
         ci_gate: ci.enabled,
         ci_wait: ci.wait,
     };
-    println!(
+    cprintln!(
         "{BLUE}merge --all-repos: rolling through {} repo(s): {}{NC}",
         order.len(),
         order.join(", ")
@@ -1313,11 +1313,11 @@ pub(crate) fn cmd_merge_all_repos(cfg: &Config, flags: MergeFlags) -> bool {
         let slug = match remote_for(&bare) {
             Remote::GitHub { slug } => slug,
             _ => {
-                println!("{YELLOW}— {repo}: not a GitHub repo — skipping (complete ADO PRs in the UI/az).{NC}");
+                cprintln!("{YELLOW}— {repo}: not a GitHub repo — skipping (complete ADO PRs in the UI/az).{NC}");
                 continue;
             }
         };
-        println!("{BLUE}══ {repo} ({slug}) ══{NC}");
+        cprintln!("{BLUE}══ {repo} ({slug}) ══{NC}");
         let t = merge_all_in_repo(cfg, &bare, &slug, repo, &opts);
         if t.merged + t.skipped + t.failed + t.gated_out > 0 {
             repos_with_prs += 1;
@@ -1331,7 +1331,7 @@ pub(crate) fn cmd_merge_all_repos(cfg: &Config, flags: MergeFlags) -> bool {
             } else {
                 String::new()
             };
-            println!(
+            cprintln!(
                 "{GREEN}  {repo}: {} merged{rebased_note}, {} skipped{gated_note}, {} failed.{NC}",
                 t.merged, t.skipped, t.failed
             );
@@ -1348,7 +1348,7 @@ pub(crate) fn cmd_merge_all_repos(cfg: &Config, flags: MergeFlags) -> bool {
     } else {
         String::new()
     };
-    println!(
+    cprintln!(
         "{GREEN}merge --all-repos: {} merged{rebased_note}, {} skipped{gated_note}, {} failed across {} repo(s).{NC}",
         total.merged, total.skipped, total.failed, repos_with_prs
     );

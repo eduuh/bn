@@ -39,7 +39,7 @@ pub(crate) fn cmd_open(
             crate::wt_pool::DirectLease::Leased(slot) => slot,
             crate::wt_pool::DirectLease::Unavailable => return false,
             crate::wt_pool::DirectLease::MissingRepo => {
-                eprintln!("{RED}No bare repo '{name}' under {}{NC}", bare_dir.display());
+                ceprintln!("{RED}No bare repo '{name}' under {}{NC}", bare_dir.display());
                 return false;
             }
         }
@@ -457,6 +457,37 @@ fn open_worktree_window_cmd_impl(
         windows.lines().any(|w| w == window_name)
     };
     let action = decide_window(session_exists, window_exists, force_new);
+    // Recreating a worktree's window brings its agent back. A checkout that was being driven by
+    // claude or copilot has that session recorded, so a window rebuilt for it (`wt go`, `tat`, a
+    // pool checkout, the picker) reopens on the harness it was actually using rather than a shell
+    // that has forgotten. Only for a window bn is *creating* with no command of its own —
+    // selecting an existing window leaves whatever is running in it alone.
+    let resume = (cmd.is_none() && !matches!(action, WinAction::SelectExisting))
+        .then(|| crate::cmd::sessions::worktree_resume(&Config::load(), wt_path, branch))
+        .flatten()
+        .and_then(|resume| {
+            // A held lease means an agent is already on this checkout; a second one would fight it
+            // over the same transcript. Keep the plain shell instead — the window still opens.
+            match crate::agent_lease::reserve(crate::agent_lease::AgentLeaseRequest {
+                repo,
+                branch,
+                worktree: wt_path,
+                session_id: &resume.session_id,
+                harness: &resume.harness,
+                kind: bn_core::agent::AgentLeaseKind::Dispatch,
+                tmux_target: &format!("{session}:{window_name}"),
+                replace: false,
+                in_place: false,
+            }) {
+                Ok(reservation) => Some((resume, reservation)),
+                Err(_) => None,
+            }
+        });
+    let cmd = resume
+        .as_ref()
+        .map(|(resume, _)| resume.command.as_str())
+        .or(cmd);
+    let prime_agent = prime_agent || resume.is_some();
     for (i, argv) in window_tmux_cmds(&action, session, window_name, &wt, cmd)
         .into_iter()
         .enumerate()
@@ -478,9 +509,12 @@ fn open_worktree_window_cmd_impl(
                 .map(|o| String::from_utf8_lossy(&o.stderr).trim().to_string())
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "tmux unavailable".to_string());
-            eprintln!(
+            ceprintln!(
                 "{YELLOW}wt: could not open tmux window {session}:{window_name} — {detail}{NC}"
             );
+            if let Some((_, reservation)) = resume {
+                let _ = reservation.rollback();
+            }
             return false;
         }
     }
@@ -493,8 +527,18 @@ fn open_worktree_window_cmd_impl(
     if prime_agent {
         let _ = tmux_run(&["set-window-option", "-t", &win, "@bn_agent", ""]);
     }
+    if let Some((resume, reservation)) = resume {
+        crate::agent_lease::mark_window(reservation.lease());
+        reservation.commit();
+        if announce {
+            println!(
+                "{GREEN}resumed {} session {}{NC}",
+                resume.harness, resume.session_id
+            );
+        }
+    }
     if announce {
-        println!("{GREEN}tmux window: {session}:{window_name}{NC}");
+        cprintln!("{GREEN}tmux window: {session}:{window_name}{NC}");
     }
 
     // Follow into it only for a human at an interactive terminal inside tmux.
@@ -706,7 +750,7 @@ pub(crate) fn kill_tmux_windows_into(wins: &[String], cwd_inside: bool, fallback
             close_window(&cur, fallback);
         }
     } else if cwd_inside {
-        println!("{YELLOW}Note: your shell is now in a removed directory — cd elsewhere{NC}");
+        cprintln!("{YELLOW}Note: your shell is now in a removed directory — cd elsewhere{NC}");
     }
 }
 

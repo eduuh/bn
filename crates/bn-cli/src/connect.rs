@@ -7,6 +7,7 @@
 
 use bn_core::hosts::{self, Host};
 use bn_core::resolver::Config;
+use bn_core::style;
 use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -330,12 +331,16 @@ fn row(h: &Host) -> String {
     } else if h.registered {
         notes.push("bn:yes".to_string());
     }
+    // `row` and `preview` are both rendered by a `bn connect --pick-stage …` subprocess whose
+    // stdout is a pipe into fzf (`--ansi` for the list; preview panes interpret ANSI natively), so
+    // they paint unconditionally. `pick_numbered`, the fzf-less degrade, builds its own plain rows.
+    let ink = style::Ink::always();
     let note = if h.registered {
-        format!("\x1b[32m●\x1b[0m {}", notes.join(" "))
+        format!("{} {}", ink.ok("●"), notes.join(" "))
     } else {
-        "\x1b[2m○ unregistered\x1b[0m".to_string()
+        ink.meta("○ unregistered")
     };
-    format!("{}\t\x1b[2m{}\x1b[0m\t{}", h.alias, h.target(), note)
+    format!("{}\t{}\t{note}", h.alias, ink.meta(&h.target()))
 }
 
 fn build_list(cfg: &Config) {
@@ -356,7 +361,8 @@ fn preview(cfg: &Config, alias: &str) {
         println!("unknown host: {alias}");
         return;
     };
-    println!("\x1b[1m{}\x1b[0m  {}", h.alias, h.target());
+    let ink = style::Ink::always();
+    println!("{}  {}", ink.head(&h.alias), h.target());
     if let Some(root) = &h.extra.repo_root {
         println!("repo_root: {root}");
     }
@@ -364,7 +370,7 @@ fn preview(cfg: &Config, alias: &str) {
         println!("harness:   {harness}");
     }
     if !h.registered {
-        println!("\x1b[2mnot in [hosts] — connect still works\x1b[0m");
+        println!("{}", ink.meta("not in [hosts] — connect still works"));
     }
     println!();
     // Live probe. BatchMode keeps a password prompt from wedging the preview pane; a short
@@ -380,13 +386,19 @@ fn preview(cfg: &Config, alias: &str) {
     match out {
         Ok(run) if run.status.success() => print!("{}", String::from_utf8_lossy(&run.stdout)),
         Ok(o) => println!(
-            "\x1b[2m{}\n{}\x1b[0m",
-            ssh_failure("unreachable (ssh batch probe failed)", &o),
-            ssh_next_steps(&h.alias)
+            "{}",
+            ink.meta(&format!(
+                "{}\n{}",
+                ssh_failure("unreachable (ssh batch probe failed)", &o),
+                ssh_next_steps(&h.alias)
+            ))
         ),
         Err(e) => println!(
-            "\x1b[2munreachable (failed to run ssh: {e})\n{}\x1b[0m",
-            ssh_next_steps(&h.alias)
+            "{}",
+            ink.meta(&format!(
+                "unreachable (failed to run ssh: {e})\n{}",
+                ssh_next_steps(&h.alias)
+            ))
         ),
     }
 }

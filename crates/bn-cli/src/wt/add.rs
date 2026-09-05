@@ -19,7 +19,7 @@ pub(crate) fn cmd_clone_root(url: &str, root: &Path) -> bool {
 
 fn clone_into(url: &str, name: Option<&str>, bare_dir: &Path, worktree_dir: &Path) -> bool {
     if url.is_empty() {
-        eprintln!("{RED}Error: URL required{NC}");
+        ceprintln!("{RED}Error: URL required{NC}");
         return false;
     }
     let name = match name {
@@ -34,27 +34,27 @@ fn clone_into(url: &str, name: Option<&str>, bare_dir: &Path, worktree_dir: &Pat
         let root = worktree_dir.parent().unwrap_or(worktree_dir).to_path_buf();
         let clone_path = root.join(&name);
         if clone_path.exists() {
-            eprintln!("{RED}Error: {} already exists{NC}", clone_path.display());
+            ceprintln!("{RED}Error: {} already exists{NC}", clone_path.display());
             return false;
         }
-        println!("{BLUE}Cloning {url} as regular repo (not bare)...{NC}");
+        cprintln!("{BLUE}Cloning {url} as regular repo (not bare)...{NC}");
         if !run_git(&["clone", url, &clone_path.to_string_lossy()]) {
             return false;
         }
-        println!("{GREEN}Cloned to {}{NC}", clone_path.display());
-        println!("{YELLOW}This is a regular repo (not bare). Use standard git commands.{NC}");
+        cprintln!("{GREEN}Cloned to {}{NC}", clone_path.display());
+        cprintln!("{YELLOW}This is a regular repo (not bare). Use standard git commands.{NC}");
         return true;
     }
 
     let bare = bare_dir.join(format!("{name}.git"));
     if bare.exists() {
-        eprintln!("{RED}Error: {} already exists{NC}", bare.display());
+        ceprintln!("{RED}Error: {} already exists{NC}", bare.display());
         return false;
     }
     let _ = std::fs::create_dir_all(bare_dir);
     let _ = std::fs::create_dir_all(worktree_dir);
 
-    println!("{BLUE}Cloning {url} as bare repo...{NC}");
+    cprintln!("{BLUE}Cloning {url} as bare repo...{NC}");
     if !run_git(&["clone", "--bare", url, &bare.to_string_lossy()]) {
         return false;
     }
@@ -70,7 +70,7 @@ fn clone_into(url: &str, name: Option<&str>, bare_dir: &Path, worktree_dir: &Pat
 
     let default_branch = resolve_default_branch(&bare_s);
     let Some(default_branch) = default_branch else {
-        eprintln!("{RED}Error: {url} has no branches{NC}");
+        ceprintln!("{RED}Error: {url} has no branches{NC}");
         return false;
     };
     // Point the local head at the fetched remote branch so `worktree add` checks out the tip.
@@ -84,7 +84,7 @@ fn clone_into(url: &str, name: Option<&str>, bare_dir: &Path, worktree_dir: &Pat
     ]);
     let wt_path = worktree_dir.join(&name).join(&default_branch);
     let _ = std::fs::create_dir_all(worktree_dir.join(&name));
-    println!("{BLUE}Creating worktree for {default_branch}...{NC}");
+    cprintln!("{BLUE}Creating worktree for {default_branch}...{NC}");
     if !run_git(&[
         "--git-dir",
         &bare_s,
@@ -95,8 +95,8 @@ fn clone_into(url: &str, name: Option<&str>, bare_dir: &Path, worktree_dir: &Pat
     ]) {
         return false;
     }
-    println!("{GREEN}Cloned to {}{NC}", bare.display());
-    println!("{GREEN}Worktree: {}{NC}", wt_path.display());
+    cprintln!("{GREEN}Cloned to {}{NC}", bare.display());
+    cprintln!("{GREEN}Worktree: {}{NC}", wt_path.display());
     println!("cd {}", wt_path.display());
     true
 }
@@ -190,12 +190,12 @@ pub(crate) fn cmd_add(
     let sanitized = sanitize_branch(&branch);
     let wt_path = worktree_dir.join(&name).join(&sanitized);
     if wt_path.is_dir() {
-        println!("{YELLOW}Worktree already exists: {}{NC}", wt_path.display());
+        cprintln!("{YELLOW}Worktree already exists: {}{NC}", wt_path.display());
         println!("cd {}", wt_path.display());
         return true;
     }
     let _ = std::fs::create_dir_all(worktree_dir.join(&name));
-    println!("{BLUE}Creating worktree: {}{NC}", wt_path.display());
+    cprintln!("{BLUE}Creating worktree: {}{NC}", wt_path.display());
 
     let wt_s = wt_path.to_string_lossy().to_string();
     let created = if create_new {
@@ -220,7 +220,7 @@ pub(crate) fn cmd_add(
     if !created {
         return false;
     }
-    println!("{GREEN}Created worktree: {}{NC}", wt_path.display());
+    cprintln!("{GREEN}Created worktree: {}{NC}", wt_path.display());
     if !no_tmux {
         open_worktree_window(&name, &sanitized, &wt_path, false);
     }
@@ -274,7 +274,7 @@ pub(crate) fn create_worktree(bare_s: &str, branch: &str, wt_s: &str, pull: bool
         // local `main`. The local branch lives in the main worktree and is only as current as the
         // last sync; branching off it silently starts new work behind the remote.
         let base = base_ref(bare_s);
-        println!("{YELLOW}Branch '{branch}' not found. Creating it from {base}...{NC}");
+        cprintln!("{YELLOW}Branch '{branch}' not found. Creating it from {base}...{NC}");
         run_git(&[
             "-c",
             "safe.bareRepository=all",
@@ -319,10 +319,10 @@ fn seed_skills(wt: &Path) {
         return;
     }
     if !report.is_empty() {
-        println!("{BLUE}Seeded {} repo skill file(s){NC}", report.changes.len());
+        cprintln!("{BLUE}Seeded {} repo skill file(s){NC}", report.changes.len());
     }
     for skip in &report.skipped {
-        println!(
+        cprintln!(
             "{YELLOW}Skipped {} skills: {}{NC}",
             skip.harness.label(),
             skip.reason
@@ -349,18 +349,18 @@ fn base_ref(bare_s: &str) -> String {
 /// the user the (perfectly usable) worktree "is not ready".
 pub(crate) fn ff_pull(wt_s: &str) -> bool {
     if !crate::git::git_ok(&["-C", wt_s, "rev-parse", "--git-dir"]) {
-        eprintln!("{RED}Not a git worktree: {wt_s}{NC}");
+        ceprintln!("{RED}Not a git worktree: {wt_s}{NC}");
         return false;
     }
     if !crate::git::git_ok(&["-C", wt_s, "rev-parse", "--verify", "--quiet", "@{u}"]) {
-        println!("{YELLOW}No upstream yet; skipping pull{NC}");
+        cprintln!("{YELLOW}No upstream yet; skipping pull{NC}");
         return true;
     }
-    println!("{BLUE}Pulling latest...{NC}");
+    cprintln!("{BLUE}Pulling latest...{NC}");
     if crate::git::git_ok(&["-C", wt_s, "pull", "--ff-only"]) {
         true
     } else {
-        eprintln!("{RED}Fast-forward pull failed; worktree is not ready{NC}");
+        ceprintln!("{RED}Fast-forward pull failed; worktree is not ready{NC}");
         false
     }
 }
@@ -379,7 +379,7 @@ pub(crate) fn cmd_clone_all(cfg: &Config, here: bool) -> bool {
             format!("{cfgdir}/wt/repos")
         });
     if !Path::new(&manifest).is_file() {
-        eprintln!("{RED}No clone manifest: {manifest}{NC}");
+        ceprintln!("{RED}No clone manifest: {manifest}{NC}");
         eprintln!("Add one git URL per line (comments with #), then re-run.");
         return false;
     }
@@ -406,7 +406,7 @@ pub(crate) fn cmd_clone_all(cfg: &Config, here: bool) -> bool {
             shq(&self_exe)
         );
         let _ = tmux_run(&["new-window", "-n", &label, &runner]);
-        println!("{GREEN}Cloning in new tmux window: {label} (non-blocking){NC}");
+        cprintln!("{GREEN}Cloning in new tmux window: {label} (non-blocking){NC}");
         return true;
     }
     run_clone_all(cfg, &manifest)
@@ -433,19 +433,19 @@ pub(crate) fn run_clone_all(cfg: &Config, manifest: &str) -> bool {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
         if bare_dir.join(format!("{name}.git")).is_dir() || root.join(&name).is_dir() {
-            println!("{YELLOW}[{name}] already present — skip{NC}");
+            cprintln!("{YELLOW}[{name}] already present — skip{NC}");
             skipped += 1;
             continue;
         }
-        println!("{BLUE}[{name}] cloning → {}{NC}", root.display());
+        cprintln!("{BLUE}[{name}] cloning → {}{NC}", root.display());
         if cmd_clone(cfg, &url, None) {
             cloned += 1;
         } else {
-            eprintln!("{RED}[{name}] failed{NC}");
+            ceprintln!("{RED}[{name}] failed{NC}");
             failed += 1;
         }
     }
-    println!("{GREEN}Done: cloned {cloned}, skipped {skipped}, failed {failed}{NC}");
+    cprintln!("{GREEN}Done: cloned {cloned}, skipped {skipped}, failed {failed}{NC}");
     true
 }
 

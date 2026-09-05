@@ -75,7 +75,24 @@ impl std::fmt::Display for ResolveSessionError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionSelector<'a> {
     NameOrId(&'a str),
-    LatestForWorktree(&'a str),
+    /// The latest resumable session for one checkout *on one branch*.
+    ///
+    /// The branch is not decoration. Pool slots are recycled, so `…/_pool/2` hosts a different
+    /// branch every few hours; matching on the path alone made a bare `bn resume` there restore
+    /// whichever branch happened to hold the slot last — a stranger's transcript against code that
+    /// is no longer checked out. `bn resume --all` already refuses that case
+    /// (`plan_restore`'s "checkout now holds …"); this is the same rule for the single-session path.
+    LatestForWorktree {
+        worktree: &'a str,
+        branch: &'a str,
+    },
+}
+
+/// Whether two branch spellings name the same branch. The stores disagree — a lease records
+/// `feature-x` where git reports `feature/X` — so a literal comparison would reject every branch
+/// carrying a slash or a capital.
+fn same_branch(a: &str, b: &str) -> bool {
+    super::normalized_branch(a) == super::normalized_branch(b)
 }
 
 fn recency_key(row: &SessionRecord) -> (i64, i64, String) {
@@ -93,11 +110,12 @@ pub fn resolve_session<'a>(
 ) -> Result<&'a SessionRecord, ResolveSessionError> {
     let query = match selector {
         SessionSelector::NameOrId(query) => query,
-        SessionSelector::LatestForWorktree(worktree) => {
+        SessionSelector::LatestForWorktree { worktree, branch } => {
             return rows
                 .iter()
                 .filter(|row| {
                     super::same_dir(Path::new(&row.worktree), Path::new(worktree))
+                        && same_branch(&row.branch, branch)
                         && matches!(row.harness.as_str(), "copilot" | "claude")
                 })
                 .max_by_key(|row| recency_key(row))
@@ -127,6 +145,37 @@ pub fn resolve_session<'a>(
             query.to_string(),
             matches.iter().map(|row| row.session_id.clone()).collect(),
         )),
+    }
+}
+
+/// Whether a harness transcript still exists for `session_id` — the one honest test of whether
+/// `--resume-session` will restore anything.
+///
+/// A harness silently degrades an unresumable id to a fresh, *unseeded* agent, so a resume path
+/// that skips this check reports success and hands back a blank slate (#383). `bn resume --all`
+/// already gates on it via `PriorRow::verified`; this is the same evidence for the single-session
+/// path. Read straight off disk rather than from `supervise`, whose 30-minute liveness window
+/// would call every session that stopped before lunch dead.
+pub fn transcript_backed(harness: &str, session_id: &str) -> bool {
+    let (claude_root, copilot_root) = super::supervision_roots();
+    transcript_backed_in(&claude_root, &copilot_root, harness, session_id)
+}
+
+/// [`transcript_backed`] against explicit harness roots — the testable core.
+pub fn transcript_backed_in(
+    claude_root: &Path,
+    copilot_root: &Path,
+    harness: &str,
+    session_id: &str,
+) -> bool {
+    let id = canonical_session_id(session_id);
+    if id.is_empty() {
+        return false;
+    }
+    match harness.trim().to_ascii_lowercase().as_str() {
+        "claude" => super::switch::find_claude_transcript(claude_root, &id).is_some(),
+        "copilot" => copilot_root.join(&id).join("events.jsonl").is_file(),
+        _ => false,
     }
 }
 

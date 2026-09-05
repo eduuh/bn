@@ -116,16 +116,23 @@ pub(crate) fn emit_prompt(cfg: &Config, target: &str, lines: usize, as_json: boo
 }
 
 fn print_prompt(target: &str, p: &PendingPrompt) {
-    println!("\x1b[1m{target}\x1b[0m — \x1b[33m{}\x1b[0m", p.kind.label());
+    println!("{} — {}", style::head(target), style::warn(p.kind.label()));
     if let Some(subject) = &p.subject {
         println!("  {subject}");
     }
-    println!("  \x1b[1m{}\x1b[0m", p.question);
+    println!("  {}", style::head(&p.question));
     for o in &p.options {
         let cursor = if o.selected { "\u{276f}" } else { " " };
-        println!("  {cursor} {}. {}  \x1b[2m[{}]\x1b[0m", o.number, o.label, o.semantic.label());
+        let semantic = style::meta(&format!("[{}]", o.semantic.label()));
+        println!("  {cursor} {}. {}  {semantic}", o.number, o.label);
     }
-    println!("  \x1b[2mfingerprint {} — pass as `--expect` to bn agent answer\x1b[0m", p.fingerprint);
+    println!(
+        "  {}",
+        style::meta(&format!(
+            "fingerprint {} — pass as `--expect` to bn agent answer",
+            p.fingerprint
+        ))
+    );
 }
 
 /// `bn agent answer <target>` — the write half.

@@ -412,35 +412,19 @@ fn pid_alive(pid: u32) -> bool {
     i32::try_from(pid).is_ok_and(crate::cmd::killport::process_exists)
 }
 
-/// Whether any running process has its cwd inside `slot` (best-effort, Linux-only).
-#[cfg(target_os = "linux")]
-fn any_proc_in(slot: &Path) -> bool {
-    let Ok(rd) = std::fs::read_dir("/proc") else {
-        return false;
-    };
-    for e in rd.flatten() {
-        if let Ok(target) = std::fs::read_link(e.path().join("cwd")) {
-            if target.starts_with(slot) {
-                return true;
-            }
-        }
-    }
-    false
-}
-#[cfg(not(target_os = "linux"))]
-fn any_proc_in(_slot: &Path) -> bool {
-    false
-}
+pub(crate) mod occupancy;
+use occupancy::any_proc_in;
 
 // --- agent occupancy --------------------------------------------------------
 //
 // "In use" is a fact about *agents*, and it lives in the agent-lease registry and tmux — not in
-// leases.json. The pool used to decide from its own ledger plus [`any_proc_in`], a `/proc` scan
-// that compiles to `false` off Linux, so on macOS it had no occupancy signal at all: a slot the
+// leases.json. The pool used to decide from its own ledger plus [`any_proc_in`], which was a
+// `/proc` scan compiled out off Linux, so on macOS it had no process signal at all: a slot the
 // ledger had lost track of (an in-place `bn agent launch`, or a kill that resolved the wrong
 // worktree and handed the slot back) read as idle, was leased to the next branch, and
 // `switch_into_slot` changed the branch under a running agent. Every decision below now asks the
-// same oracle the one-agent-per-worktree launch guard asks.
+// same oracle the one-agent-per-worktree launch guard asks, and [`occupancy::any_proc_in`] now
+// answers on every platform and fails closed rather than guessing idle.
 
 /// Live agents working in `slot`, oldest first. Empty for an idle slot.
 fn slot_occupants(slot: &Path) -> Vec<crate::agent_lease::Occupant> {
@@ -630,7 +614,7 @@ fn resolve_pool(cfg: &Config, repo_arg: Option<String>) -> Option<PoolCtx> {
         Some(r) => {
             let b = bare_dir.join(format!("{r}.git"));
             if !b.is_dir() {
-                eprintln!("{RED}No bare repo '{r}' under {}{NC}", bare_dir.display());
+                ceprintln!("{RED}No bare repo '{r}' under {}{NC}", bare_dir.display());
                 return None;
             }
             b
@@ -668,7 +652,7 @@ fn resolve_metrics_repo(
     if let Some(r) = repo {
         let bare = bare_dir.join(format!("{r}.git"));
         if !bare.is_dir() {
-            eprintln!("{RED}No bare repo '{r}' under {}{NC}", bare_dir.display());
+            ceprintln!("{RED}No bare repo '{r}' under {}{NC}", bare_dir.display());
             return None;
         }
         return Some((wt::repo_name(&bare), bare));
@@ -695,7 +679,7 @@ fn bare_from_path(path: &str) -> Option<PathBuf> {
     if let Some(bare) = wt::find_bare_repo(&abs) {
         return Some(bare);
     }
-    eprintln!(
+    ceprintln!(
         "{RED}'{}' isn't a bare repo or inside a worktree — can't find its pool.{NC}",
         abs.display()
     );
@@ -729,7 +713,7 @@ fn pool_get(
         return false;
     };
     let Some(branch) = branch else {
-        eprintln!("{RED}Usage: wt pool get <branch>{NC}");
+        ceprintln!("{RED}Usage: wt pool get <branch>{NC}");
         return false;
     };
     let Some(leased) = acquire_slot(&ctx, &branch, holder, SlotRole::Worker, false) else {
@@ -814,19 +798,19 @@ fn acquire_slot(
             let slot_s = slot.to_string_lossy().to_string();
             let bare_s = ctx.bare.to_string_lossy().to_string();
             if slot.exists() {
-                eprintln!("{YELLOW}Slot {n} checkout is broken — recreating…{NC}");
+                ceprintln!("{YELLOW}Slot {n} checkout is broken — recreating…{NC}");
                 force_remove_worktree(&bare_s, &slot);
             } else {
-                eprintln!("{YELLOW}Slot {n} checkout is missing — recreating…{NC}");
+                ceprintln!("{YELLOW}Slot {n} checkout is missing — recreating…{NC}");
             }
             if !add_detached_slot(&bare_s, &slot_s) {
-                eprintln!("{RED}Failed to rebuild slot {n} for {}{NC}", ctx.repo);
+                ceprintln!("{RED}Failed to rebuild slot {n} for {}{NC}", ctx.repo);
                 return None;
             }
             match class {
                 SlotRole::Worker => {
                     if !switch_into_slot(&slot_s, &bare_s, branch) {
-                        eprintln!(
+                        ceprintln!(
                             "{RED}Failed to switch '{branch}' into rebuilt slot {n} (branch checked out elsewhere?){NC}"
                         );
                         return None;
@@ -848,7 +832,7 @@ fn acquire_slot(
                 .map(|comparison| slot_path(&ctx.pool_dir, comparison))
         };
         if with_main && write_leases(&ctx.pool_dir, &leases).is_err() {
-            eprintln!("{RED}Failed to persist the paired pool lease.{NC}");
+            ceprintln!("{RED}Failed to persist the paired pool lease.{NC}");
             return None;
         }
         log_pool_event("pool_get", &ctx.repo, n, branch, Some(warm));
@@ -893,7 +877,7 @@ fn acquire_slot(
         // Re-evaluated below; this pass may have recovered both slots.
     }
     if with_main && class == SlotRole::Worker && !enough_worker_slots(&leases, 2) {
-        eprintln!(
+        ceprintln!(
             "{RED}Pool needs two free worker slots for --with-main.{NC} Return a slot or increase \
              this repo's pool size."
         );
@@ -924,12 +908,12 @@ fn acquire_slot(
     });
     let Some(n) = n else {
         match class {
-            SlotRole::Controller => eprintln!(
+            SlotRole::Controller => ceprintln!(
                 "{RED}Controller slot {} is already leased.{NC} Stop the running controller with \
                  `bn control stop <id>`, or hand the slot back with `wt pool return`.",
                 bn_core::agent::MAIN_POOL_SLOT
             ),
-            SlotRole::Worker => eprintln!(
+            SlotRole::Worker => ceprintln!(
                 "{RED}Pool full at the {} slot ceiling: {}/{} worker slots leased.{NC} \
                  Return one with `wt pool return`.",
                 bn_core::pool::MAX_POOL_SIZE,
@@ -954,19 +938,19 @@ fn acquire_slot(
     let warm = is_live_slot(&slot);
     if !warm {
         if slot.exists() {
-            eprintln!("{YELLOW}Slot {n} checkout is broken — recreating…{NC}");
+            ceprintln!("{YELLOW}Slot {n} checkout is broken — recreating…{NC}");
             force_remove_worktree(&bare_s, &slot);
         }
-        eprintln!("{BLUE}Creating warm slot {n} for {}…{NC}", ctx.repo);
+        ceprintln!("{BLUE}Creating warm slot {n} for {}…{NC}", ctx.repo);
         if !add_detached_slot(&bare_s, &slot_s) {
-            eprintln!("{RED}Failed to create slot {n}{NC}");
+            ceprintln!("{RED}Failed to create slot {n}{NC}");
             return None;
         }
     }
     match class {
         SlotRole::Worker => {
             if !switch_into_slot(&slot_s, &bare_s, branch) {
-                eprintln!(
+                ceprintln!(
                     "{RED}Failed to switch '{branch}' into slot {n} (branch checked out elsewhere?){NC}"
                 );
                 return None;
@@ -1008,7 +992,7 @@ fn acquire_slot(
         }
         leases.slots.remove(&n);
         let _ = write_leases(&ctx.pool_dir, &leases);
-        eprintln!("{RED}Failed to persist lease for slot {n}: {error}{NC}");
+        ceprintln!("{RED}Failed to persist lease for slot {n}: {error}{NC}");
         return None;
     }
     log_pool_event("pool_get", &ctx.repo, n, branch, Some(warm));
@@ -1057,7 +1041,7 @@ fn ensure_comparison_slot(
         comparison = bn_core::pool::pick_slot(ctx.size, &reserved);
     }
     let Some(n) = comparison else {
-        eprintln!(
+        ceprintln!(
             "{RED}Pool needs two free worker slots for --with-main, but only one is available.{NC} \
              Return a slot or increase this repo's pool size."
         );
@@ -1068,7 +1052,7 @@ fn ensure_comparison_slot(
         if slot.exists() {
             force_remove_worktree(&bare_s, &slot);
         }
-        eprintln!("{BLUE}Creating comparison slot {n} for {}…{NC}", ctx.repo);
+        ceprintln!("{BLUE}Creating comparison slot {n} for {}…{NC}", ctx.repo);
         if !add_detached_slot(&bare_s, &slot.to_string_lossy()) {
             return None;
         }
@@ -1135,7 +1119,7 @@ pub fn lease_for_dispatch_mode(
             "origin",
         ])
     {
-        eprintln!(
+        ceprintln!(
             "{RED}Could not refresh origin before leasing --with-main for {repo}.{NC} The paired \
              comparison must represent the latest remote primary branch."
         );
@@ -1418,21 +1402,21 @@ fn pool_status(cfg: &Config, repo: Option<String>) -> bool {
     // ledger reconciled against reality rather than the ledger's own opinion. Status is where you
     // look when the pool is confusing, so it is also where the record catches up.
     let adopted = adopt_occupied_slots(&ctx, &mut leases);
-    println!(
+    cprintln!(
         "{BLUE}{} pool — {} slots ({} worker + 1 controller){NC}",
         ctx.repo,
         ctx.size,
         ctx.size.saturating_sub(1)
     );
     if !recovered.prior_boot.is_empty() {
-        println!(
+        cprintln!(
             "  {GREEN}recovered {} slot(s) from a prior boot: {}{NC}",
             recovered.prior_boot.len(),
             slot_list(&recovered.prior_boot)
         );
     }
     if !adopted.is_empty() {
-        println!(
+        cprintln!(
             "  {YELLOW}adopted {} slot(s) held by a live agent the ledger didn't name: {}{NC}",
             adopted.len(),
             slot_list(&adopted)
@@ -1504,7 +1488,7 @@ fn pool_status(cfg: &Config, repo: Option<String>) -> bool {
                 } else {
                     String::new()
                 };
-                println!(
+                cprintln!(
                     "  {YELLOW}[{n}] leased{NC}{role}  {}  holder={} age={}{flag}{occupancy}{crowded}",
                     if owner == n {
                         l.branch.clone()
@@ -1521,7 +1505,7 @@ fn pool_status(cfg: &Config, repo: Option<String>) -> bool {
                 } else {
                     "—"
                 };
-                println!("  {GREEN}[{n}] {state}{NC}{role}{occupancy}{crowded}");
+                cprintln!("  {GREEN}[{n}] {state}{NC}{role}{occupancy}{crowded}");
             }
         }
     }
@@ -1618,7 +1602,7 @@ fn pool_metrics(cfg: &Config, path: Option<String>, repo: Option<String>) -> boo
         durations.iter().sum::<i64>() / durations.len() as i64
     };
 
-    println!("{BLUE}{} pool metrics — {} slots{NC}", ctx.repo, ctx.size);
+    cprintln!("{BLUE}{} pool metrics — {} slots{NC}", ctx.repo, ctx.size);
     println!("  utilization : {leased}/{} leased, {idle} idle", ctx.size);
     println!("  gets        : {gets}  ({warm} warm / {cold} cold · {warm_pct}% warm-hit)");
     println!("  returns     : {returns}");
@@ -1776,8 +1760,8 @@ fn classify_slot(
             let slot = slot_path(&ctx.pool_dir, *slot_n);
             slot.is_dir() && wt::dirty_count(&slot.to_string_lossy()) > 0
         }),
-        // A live agent in the slot is the in-use signal that matters; the `/proc` cwd scan is a
-        // Linux-only extra (it sees a plain shell or a build, and sees nothing at all on macOS).
+        // A live agent in the slot is the in-use signal that matters; the cwd scan is the backstop
+        // that also catches a plain shell or a build somebody left in the checkout.
         in_use: group.iter().any(|slot_n| {
             let slot = slot_path(&ctx.pool_dir, *slot_n);
             !slot_occupants(&slot).is_empty()
@@ -1888,9 +1872,9 @@ fn print_action(leases: &Leases, n: u32, class: &SlotClass, action: &Action, exe
             } else {
                 "would remove"
             };
-            println!("  {YELLOW}[{n}] {verb}{NC}  {tag}  ({reason})");
+            cprintln!("  {YELLOW}[{n}] {verb}{NC}  {tag}  ({reason})");
         }
-        Action::Skip(why) => println!("  {GREEN}[{n}] keep        {NC}  {tag}  ({why})"),
+        Action::Skip(why) => cprintln!("  {GREEN}[{n}] keep        {NC}  {tag}  ({why})"),
     }
 }
 
@@ -1898,7 +1882,7 @@ fn pool_prune(cfg: &Config, repo: Option<String>, yes: bool, all: bool, verbose:
     let targets: Vec<Option<String>> = if all {
         let repos = bn_core::pool::pooled_repos(cfg);
         if repos.is_empty() {
-            eprintln!("{YELLOW}No bn-managed bare clones — nothing to prune.{NC}");
+            ceprintln!("{YELLOW}No bn-managed bare clones — nothing to prune.{NC}");
             return true;
         }
         repos.into_iter().map(Some).collect()
@@ -1918,10 +1902,8 @@ fn pool_prune(cfg: &Config, repo: Option<String>, yes: bool, all: bool, verbose:
 
 fn prune_one(ctx: &PoolCtx, yes: bool, verbose: bool) {
     let mut leases = read_leases(&ctx.pool_dir);
-    println!(
-        "{BLUE}{} pool prune — {} slots configured{NC}",
-        ctx.repo, ctx.size
-    );
+    let (repo, size) = (&ctx.repo, ctx.size);
+    cprintln!("{BLUE}{repo} pool prune — {size} slots configured{NC}");
     // First make the ledger honest — claim slots a live agent holds, hand back the ones nobody
     // does — so the removal pass below classifies against reality rather than a stale record.
     adopt_occupied_slots(ctx, &mut leases);
@@ -1930,7 +1912,7 @@ fn prune_one(ctx: &PoolCtx, yes: bool, verbose: bool) {
     } else {
         let candidates = leaked_lease_candidates(ctx, &leases, now_epoch());
         for n in &candidates {
-            println!(
+            cprintln!(
                 "  {YELLOW}[{n}] would reclaim leaked lease ({}) — nobody is in it{NC}",
                 slot_tag(&leases, *n)
             );
@@ -1970,9 +1952,9 @@ fn prune_one(ctx: &PoolCtx, yes: bool, verbose: bool) {
             remove_slot(ctx, *n, &mut leases);
         }
         let _ = write_leases(&ctx.pool_dir, &leases);
-        println!("{GREEN}Pruned {} slot(s){reclaimed}.{NC}", to_remove.len());
+        cprintln!("{GREEN}Pruned {} slot(s){reclaimed}.{NC}", to_remove.len());
     } else {
-        println!(
+        cprintln!(
             "{YELLOW}Dry run — {} slot(s) would be pruned{reclaimed}. Re-run with --yes.{NC}",
             to_remove.len()
         );
@@ -1989,16 +1971,17 @@ fn pool_destroy(
     flags: DestroyFlags,
 ) -> bool {
     if flags.include_leased && all {
-        eprintln!("{RED}--include-leased can't be combined with --all — target an exact slot.{NC}");
+        let msg = "--include-leased can't be combined with --all — target an exact slot.";
+        ceprintln!("{RED}{msg}{NC}");
         return false;
     }
     match (slot, all) {
         (None, false) => {
-            eprintln!("{RED}Specify a slot number or --all.{NC}");
+            ceprintln!("{RED}Specify a slot number or --all.{NC}");
             return false;
         }
         (Some(_), true) => {
-            eprintln!("{RED}Pass either a slot number or --all, not both.{NC}");
+            ceprintln!("{RED}Pass either a slot number or --all, not both.{NC}");
             return false;
         }
         _ => {}
@@ -2013,21 +1996,19 @@ fn pool_destroy(
         None => scan_slots(&ctx, &leases),
     };
     if targets.is_empty() {
-        println!(
+        cprintln!(
             "{YELLOW}{} pool is empty — nothing to destroy.{NC}",
             ctx.repo
         );
         return true;
     }
-    println!(
-        "{BLUE}{} pool destroy — {} slots configured{NC}",
-        ctx.repo, ctx.size
-    );
+    let (repo, size) = (&ctx.repo, ctx.size);
+    cprintln!("{BLUE}{repo} pool destroy — {size} slots configured{NC}");
     let mut to_remove = Vec::new();
     for n in &targets {
         // A specific slot that doesn't exist at all → report and skip.
         if !slot_path(&ctx.pool_dir, *n).is_dir() && leases.owner_slot(*n).is_none() {
-            println!("  {YELLOW}[{n}] no such slot{NC}");
+            cprintln!("  {YELLOW}[{n}] no such slot{NC}");
             continue;
         }
         let class = classify_slot(&ctx, &leases, &registered, *n);
@@ -2042,9 +2023,9 @@ fn pool_destroy(
             remove_slot(&ctx, *n, &mut leases);
         }
         let _ = write_leases(&ctx.pool_dir, &leases);
-        println!("{GREEN}Destroyed {} slot(s).{NC}", to_remove.len());
+        cprintln!("{GREEN}Destroyed {} slot(s).{NC}", to_remove.len());
     } else {
-        println!(
+        cprintln!(
             "{YELLOW}Dry run — {} slot(s) would be destroyed. Re-run with --yes.{NC}",
             to_remove.len()
         );

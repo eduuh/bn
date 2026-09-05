@@ -32,7 +32,7 @@ use preview::preview;
 use crate::proc::{tmux, tmux_command, tmux_ok, tmux_raw, tmux_run};
 use crate::wt;
 use bincode::Options;
-use bn_core::resolver::Config;
+use bn_core::{resolver::Config, style};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -1688,15 +1688,15 @@ fn agent_dot(state: &str, since: &str) -> String {
     if !decorated && state.is_empty() {
         return "  ".to_string();
     }
-    let (color, glyph) = match state {
-        "working" => ("32", '●'),                    // green — actively working
-        "waiting" | "needs-decision" => ("33", '●'), // yellow — waiting on you
-        "blocked" | "failed" => ("31", '●'),         // red — stopped, and not on its own account
-        "limited" => ("2", '●'),                     // dim but present — paused on a usage cap
-        "done" => ("36", '●'),                       // cyan — finished
-        _ => ("2", '◌'),                             // dim — decorated but idle/unknown
+    let (tone, glyph) = match state {
+        "working" => (style::Tone::Ok, '●'), // actively working
+        "waiting" | "needs-decision" => (style::Tone::Warn, '●'), // waiting on you
+        "blocked" | "failed" => (style::Tone::Danger, '●'), // stopped, not on its own account
+        "limited" => (style::Tone::Meta, '●'), // paused on a usage cap
+        "done" => (style::Tone::Accent, '●'), // finished
+        _ => (style::Tone::Meta, '◌'),       // decorated but idle/unknown
     };
-    format!("\x1b[{color}m{glyph}\x1b[0m ")
+    format!("{} ", style::Ink::always().tone(tone, &glyph.to_string()))
 }
 
 #[cfg(test)]

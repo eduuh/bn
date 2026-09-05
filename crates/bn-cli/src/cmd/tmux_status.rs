@@ -566,25 +566,26 @@ pub(crate) fn cockpit_body(lines: &str, now: i64) -> (String, usize) {
             if t.is_empty() {
                 String::new()
             } else {
-                format!("  \x1b[2m{t}\x1b[0m")
+                format!("  {}", style::meta(&t))
             }
         };
-        let row = |color: &str, label: &str, extra: &str| {
-            format!("  \x1b[{color}m{label}\x1b[0m  {session}:{index}  {name}{extra}\n")
+        let row = |tone: style::Tone, label: &str, extra: &str| {
+            let tag = style::tone(tone, label);
+            format!("  {tag}  {session}:{index}  {name}{extra}\n")
         };
         let line_out = match agent {
-            "waiting" => row("1;33", "\u{f0f3} needs you", &ago(since)),
+            "waiting" => row(style::Tone::Warn, "\u{f0f3} needs you", &ago(since)),
             // These three hit the `_ => continue` below and dropped out of the cockpit entirely —
             // the roll-up claimed nothing was in flight while an agent sat blocked.
-            "blocked" => row("1;31", "\u{f05e} blocked", &ago(since)),
-            "needs-decision" => row("1;33", "\u{f06e} decide", &ago(since)),
-            "failed" => row("1;31", "\u{f0e7} failed", &ago(since)),
-            "working" => row("33", "\u{f013} working", &ago(since)),
-            "limited" => row("2", "\u{f017} rate-limited", &ago(since)),
-            "done" => row("32", "\u{f00c} done", &ago(since)),
-            _ if done == "\u{2713}" => row("32", "\u{f00c} done", ""),
+            "blocked" => row(style::Tone::Danger, "\u{f05e} blocked", &ago(since)),
+            "needs-decision" => row(style::Tone::Warn, "\u{f06e} decide", &ago(since)),
+            "failed" => row(style::Tone::Danger, "\u{f0e7} failed", &ago(since)),
+            "working" => row(style::Tone::Warn, "\u{f013} working", &ago(since)),
+            "limited" => row(style::Tone::Meta, "\u{f017} rate-limited", &ago(since)),
+            "done" => row(style::Tone::Ok, "\u{f00c} done", &ago(since)),
+            _ if done == "\u{2713}" => row(style::Tone::Ok, "\u{f00c} done", ""),
             _ if !sil.is_empty() && sil != "0" => row(
-                "33",
+                style::Tone::Warn,
                 "\u{f06e} watching",
                 &format!("  (quiet {sil}s = done)"),
             ),
@@ -607,7 +608,7 @@ pub(crate) fn emit_tmux_cockpit(cfg: &Config) {
     let fmt = "#{session_name}\t#{window_index}\t#{window_name}\t#{monitor-silence}\t#{@bn_done}\t#{@bn_agent}\t#{@bn_agent_since}";
     let inflight = crate::proc::tmux_raw(&["list-windows", "-a", "-F", fmt]).unwrap_or_default();
 
-    println!("\x1b[1;36mIn-flight windows\x1b[0m");
+    println!("{}", style::head("In-flight windows"));
     let (body, n) = cockpit_body(&inflight, now);
     if n == 0 {
         println!("  nothing in flight");
@@ -617,7 +618,7 @@ pub(crate) fn emit_tmux_cockpit(cfg: &Config) {
 
     // Fleet health (the session-log view: active/idle/stuck) — the stuck detection the window
     // decorations can't show. One supervise pass; the emitter prints directly.
-    println!("\n\x1b[1;36mFleet health\x1b[0m");
+    println!("\n{}", style::head("Fleet health"));
     crate::cmd::agent::emit_agent_supervise(
         cfg,
         bn_core::agent::DEFAULT_IDLE_MINS,
@@ -625,7 +626,7 @@ pub(crate) fn emit_tmux_cockpit(cfg: &Config) {
         false,
     );
 
-    println!("\n\x1b[1;36mbn summary\x1b[0m");
+    println!("\n{}", style::head("bn summary"));
     crate::cmd::recall::emit_summary(cfg, false);
 
     print!("\nPress Enter to close…");
@@ -639,14 +640,18 @@ pub(crate) fn emit_tmux_cockpit(cfg: &Config) {
 /// `bn tmux-help` — the curated keybinding cheat-sheet popup (bound to prefix ?). Replaces
 /// workflow/bin/tmux-help.sh; the content is embedded so it deploys with the binary.
 pub(crate) fn emit_tmux_help() {
-    const C: &str = "\x1b[1;36m"; // cyan header
-    const K: &str = "\x1b[1;37m"; // key
-    const D: &str = "\x1b[0;90m"; // dim
-    const N: &str = "\x1b[0m";
-    let row = |k: &str, desc: &str| println!("  {K}{k:<10}{N} {desc}");
-    let hdr = |h: &str| println!("\n{C}{h}{N}");
+    // Every row here interleaves several short runs inside one format string, so this block
+    // keeps an explicit open/close pair rather than a helper call per fragment. The codes still
+    // come from the palette — see `style::Ink::open`.
+    let ink = style::Ink::auto();
+    let hd = ink.open(style::Tone::Head); // section header
+    let key = ink.open(style::Tone::Accent); // a key — the actionable thing on the row
+    let d = ink.open(style::Tone::Meta); // dim
+    let n = ink.close();
+    let row = |k: &str, desc: &str| println!("  {key}{k:<10}{n} {desc}");
+    let hdr = |h: &str| println!("\n{hd}{h}{n}");
 
-    println!("{C}tmux cheat-sheet{N}  {D}prefix = C-Space{N}");
+    println!("{hd}tmux cheat-sheet{n}  {d}prefix = C-Space{n}");
 
     hdr("Projects & sessions");
     row("C-o", "project / worktree picker (frecency + preview)");
@@ -671,7 +676,7 @@ pub(crate) fn emit_tmux_help() {
     row("A", "spawn a Copilot agent on this worktree (auto-watched)");
     row(
         "m",
-        &format!("watch this window — {C}\u{f00c}{N} when it goes quiet"),
+        &format!("watch this window — {hd}\u{f00c}{n} when it goes quiet"),
     );
     row("S", "cockpit: in-flight windows + bn summary");
     row(
@@ -699,18 +704,18 @@ pub(crate) fn emit_tmux_help() {
     );
     row(
         "w",
-        &format!("new window      {D}r{N} rename     {D}1-5{N} select"),
+        &format!("new window      {d}r{n} rename     {d}1-5{n} select"),
     );
     row(
         "[ / ]",
-        &format!("prev / next     {D}< / >{N} move    {D}C-BSpace{N} next"),
+        &format!("prev / next     {d}< / >{n} move    {d}C-BSpace{n} next"),
     );
 
     hdr("Panes");
     row("v / s", "split right / below");
     row(
         "← ↑ ↓ →",
-        &format!("navigate    {D}S-arrows{N} resize    {D}z{N} zoom"),
+        &format!("navigate    {d}S-arrows{n} resize    {d}z{n} zoom"),
     );
     row("! / @", "break-pane / join-pane");
     row(
@@ -719,15 +724,15 @@ pub(crate) fn emit_tmux_help() {
     );
 
     hdr("Tools & popups");
-    row("e", &format!("floating nvim (toggle)    {D}g{N} lazygit"));
+    row("e", &format!("floating nvim (toggle)    {d}g{n} lazygit"));
     row("Enter", "scratch shell in this worktree");
     row(
         "Space",
-        &format!("copy-mode   {D}p{N} paste   {D}P{N} choose-buffer"),
+        &format!("copy-mode   {d}p{n} paste   {d}P{n} choose-buffer"),
     );
     row("R", "reload config   ? this help");
 
-    print!("\n{D}Press Enter to close…{N}");
+    print!("\n{d}Press Enter to close…{n}");
     let _ = std::io::Write::flush(&mut std::io::stdout());
     let mut buf = String::new();
     let _ = std::io::stdin().read_line(&mut buf);

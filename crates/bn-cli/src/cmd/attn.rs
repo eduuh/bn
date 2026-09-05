@@ -88,17 +88,17 @@ pub(crate) fn attn_lanes() -> (
 }
 
 /// The status glyph + color for an in-flight item, by its live [`WorkStatus`].
-pub(crate) fn status_badge(st: bn_core::attention::WorkStatus) -> (&'static str, &'static str) {
+pub(crate) fn status_badge(st: bn_core::attention::WorkStatus) -> String {
     use bn_core::attention::WorkStatus::*;
     match st {
-        Done => ("32", "✓ done"),
-        Stuck => ("1;31", "! stuck"),
-        Waiting => ("1;33", "● waiting"),
-        Blocked => ("31", "⊘ blocked"),
-        Working => ("36", "◌ working"),
-        Idle => ("2", "○ idle"),
-        Launching => ("2", "… launching"),
-        Orphaned => ("1;31", "⚠ orphaned"),
+        Done => style::ok("✓ done"),
+        Stuck => style::danger("! stuck"),
+        Waiting => style::warn("● waiting"),
+        Blocked => style::danger("⊘ blocked"),
+        Working => style::accent("◌ working"),
+        Idle => style::meta("○ idle"),
+        Launching => style::meta("… launching"),
+        Orphaned => style::danger("⚠ orphaned"),
     }
 }
 
@@ -231,8 +231,8 @@ pub(crate) fn emit_attn_board(cfg: &Config, type_filter: &[String], as_json: boo
     }
 
     let loc = |repo: &Option<String>, branch: &Option<String>| match (repo, branch) {
-        (Some(r), Some(b)) => format!("  \x1b[2m{r}/{b}\x1b[0m"),
-        (Some(r), None) => format!("  \x1b[2m{r}\x1b[0m"),
+        (Some(r), Some(b)) => format!("  {}", style::meta(&format!("{r}/{b}"))),
+        (Some(r), None) => format!("  {}", style::meta(r)),
         _ => String::new(),
     };
 
@@ -251,49 +251,41 @@ pub(crate) fn emit_attn_board(cfg: &Config, type_filter: &[String], as_json: boo
         .collect();
 
     if needs.is_empty() && progress.is_empty() && orphaned.is_empty() && open.is_empty() {
-        println!("\x1b[1;32m✓ nothing on the attention list\x1b[0m");
+        println!("{}", style::ok("✓ nothing on the attention list"));
         return;
     }
 
+    let row = |s: &bn_core::attention::StartedItem, st: bn_core::attention::WorkStatus| {
+        println!(
+            "  {}  {}{}  {}",
+            status_badge(st),
+            s.item.title,
+            loc(&s.item.repo, &s.item.branch),
+            style::meta(&s.item.id)
+        );
+    };
     if !needs.is_empty() {
-        println!("\x1b[1mNEEDS YOU\x1b[0m");
+        println!("{}", style::head("NEEDS YOU"));
         for (s, st) in &needs {
-            let (color, tag) = status_badge(*st);
-            println!(
-                "  \x1b[{color}m{tag}\x1b[0m  {}{}  \x1b[2m{}\x1b[0m",
-                s.item.title,
-                loc(&s.item.repo, &s.item.branch),
-                s.item.id
-            );
+            row(s, *st);
             if let Some(n) = &s.notes {
-                println!("      \x1b[2m{n}\x1b[0m");
+                println!("      {}", style::meta(n));
             }
             if let Some(l) = &s.item.link {
-                println!("      \x1b[2m{l}\x1b[0m");
+                println!("      {}", style::meta(l));
             }
         }
     }
     if !progress.is_empty() {
-        println!("\x1b[1mIN PROGRESS\x1b[0m");
+        println!("{}", style::head("IN PROGRESS"));
         for (s, st) in &progress {
-            let (color, tag) = status_badge(*st);
-            println!(
-                "  \x1b[{color}m{tag}\x1b[0m  {}{}  \x1b[2m{}\x1b[0m",
-                s.item.title,
-                loc(&s.item.repo, &s.item.branch),
-                s.item.id
-            );
+            row(s, *st);
         }
     }
     if !orphaned.is_empty() || !open.is_empty() {
-        println!("\x1b[1mTO START\x1b[0m");
+        println!("{}", style::head("TO START"));
         for (s, _) in &orphaned {
-            println!(
-                "  \x1b[1;31m⚠ orphaned\x1b[0m  {}{}  \x1b[2m{}\x1b[0m",
-                s.item.title,
-                loc(&s.item.repo, &s.item.branch),
-                s.item.id
-            );
+            row(s, bn_core::attention::WorkStatus::Orphaned);
         }
         for i in &open {
             // A pending plan-review is a "plan to review" — call it out explicitly and point at the
@@ -301,21 +293,22 @@ pub(crate) fn emit_attn_board(cfg: &Config, type_filter: &[String], as_json: boo
             // to-start line (#651).
             if crate::cmd::plan_review::is_plan_review_attn(i) {
                 println!(
-                    "  \x1b[1;35m◇ plan to review\x1b[0m  {}{}  \x1b[2m{}\x1b[0m",
+                    "  {}  {}{}  {}",
+                    style::warn("◇ plan to review"),
                     i.title,
                     loc(&i.repo, &i.branch),
-                    i.id
+                    style::meta(&i.id)
                 );
                 continue;
             }
             println!(
-                "  {}{}\x1b[2m[{}]\x1b[0m {}{}  \x1b[2m{}\x1b[0m",
+                "  {}{}{} {}{}  {}",
                 mode_badge(i.mode()),
                 type_badge(i.task_type()),
-                i.severity,
+                style::severity(&i.severity, &format!("[{}]", i.severity)),
                 i.title,
                 loc(&i.repo, &i.branch),
-                i.id
+                style::meta(&i.id)
             );
         }
     }
@@ -340,10 +333,10 @@ pub(crate) fn emit_attn_status() {
         parts.push(format!("{waiting} waiting"));
     }
     if stuck > 0 {
-        parts.push(format!("\x1b[1;31m{stuck} stuck\x1b[0m"));
+        parts.push(style::Ink::always().danger(&format!("{stuck} stuck")));
     }
     if done > 0 {
-        parts.push(format!("\x1b[32m{done} done\x1b[0m"));
+        parts.push(style::Ink::always().ok(&format!("{done} done")));
     }
     if !open.is_empty() {
         parts.push(format!("{} to-start", open.len()));

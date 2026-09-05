@@ -5,9 +5,30 @@ pub(crate) use bn_core::payload;
 pub(crate) use bn_core::render::Envelope;
 pub(crate) use bn_core::resolver::{self, Config, Resolved};
 pub(crate) use bn_core::rollups;
+pub(crate) use bn_core::style;
 pub(crate) use bn_core::{capture, migrate};
 pub(crate) use clap::{CommandFactory, Parser, Subcommand};
 pub(crate) use clap_complete::Shell;
+
+/// `println!` for a line built with the `wt` palette idiom (`{RED}…{NC}`), flattened when stdout
+/// is not painting.
+///
+/// The `wt` commands wrap a whole message in one colour run rather than calling a helper per
+/// fragment, and rewriting 180-odd of those into `style::danger(&format!(…))` would both churn the
+/// diff and push `wt/merge.rs` past the file-size ratchet. Gating at the sink keeps the readable
+/// shape and still honours NO_COLOR: format with escapes, then strip them when nobody can see them.
+macro_rules! cprintln {
+    ($($arg:tt)*) => {
+        println!("{}", $crate::style::strip_unless_enabled(&format!($($arg)*)))
+    };
+}
+
+/// [`cprintln`] for stderr, which gets its own TTY answer — see [`bn_core::style::enabled_stderr`].
+macro_rules! ceprintln {
+    ($($arg:tt)*) => {
+        eprintln!("{}", $crate::style::strip_unless_enabled_err(&format!($($arg)*)))
+    };
+}
 
 mod agent_lease;
 mod agent_live;

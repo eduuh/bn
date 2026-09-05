@@ -54,6 +54,24 @@ impl Envelope {
     }
 }
 
+/// Flatten `text` to a single line of at most `max` characters, marking with `…` when anything was
+/// dropped.
+///
+/// Branch-note items are free text, and some of them are whole agent prompts — `bn summary` was
+/// printing a 30-line dispatch brief inline, so one row buried every other row on the screen. A
+/// list view shows the first line; the full text is what `bn cat` is for.
+///
+/// Cuts on `char_indices`, never a byte offset, so a multi-byte title is not split mid-codepoint.
+pub fn oneline(text: &str, max: usize) -> String {
+    let first = text.lines().next().unwrap_or("").trim_end();
+    let has_more_lines = text.lines().nth(1).is_some();
+    match first.char_indices().nth(max) {
+        Some((cut, _)) => format!("{}…", first[..cut].trim_end()),
+        None if has_more_lines => format!("{first} …"),
+        None => first.to_string(),
+    }
+}
+
 /// Lean context snapshot for `bn brief` (SessionStart): goal + open blockers + top-N open
 /// todos + recent progress + recent decisions. Mirrors the oracle's cmd_brief shape.
 pub fn brief(note: &Note, repo: &str, branch: &str) -> String {
@@ -529,5 +547,48 @@ mod goal_tests {
             body.contains("## Progress"),
             "the rest of the body survives"
         );
+    }
+}
+
+#[cfg(test)]
+mod oneline_tests {
+    use super::oneline;
+
+    #[test]
+    fn keeps_a_short_single_line_verbatim() {
+        assert_eq!(oneline("fix the cron", 40), "fix the cron");
+    }
+
+    #[test]
+    fn marks_a_dropped_body() {
+        // The `bn summary` case: a whole dispatch prompt stored as one todo.
+        assert_eq!(
+            // Deliberately not phrased as a role prompt. check-prompt-sources.sh greps the
+            // second-person role opener across all of bn-core/src, and its exemptions cover
+            // `tests.rs` and `tests/` but not an inline `#[cfg(test)] mod tests` like this one.
+            oneline("Repo setup agent brief.\n\n## Goal\n\nDo the thing.", 60),
+            "Repo setup agent brief. …"
+        );
+    }
+
+    #[test]
+    fn truncates_past_the_cap() {
+        assert_eq!(oneline("abcdefghij", 4), "abcd…");
+    }
+
+    #[test]
+    fn never_splits_a_codepoint() {
+        // Every prefix must stay valid UTF-8 — a byte-offset cut would panic here.
+        let text = "héllo wörld — ✓ däne";
+        for max in 1..text.chars().count() + 2 {
+            let cut = oneline(text, max);
+            assert!(cut.chars().count() <= max + 2, "{max}: {cut:?}");
+        }
+    }
+
+    #[test]
+    fn handles_empty_and_blank_input() {
+        assert_eq!(oneline("", 10), "");
+        assert_eq!(oneline("\n\nbody", 10), " …");
     }
 }

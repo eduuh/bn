@@ -8,7 +8,6 @@
 
 use crate::action_rank::{self, Rank};
 use crate::attention::{self, AttnItem};
-use crate::events;
 use crate::model::Note;
 use crate::render;
 use crate::resolver::Config;
@@ -405,9 +404,10 @@ pub fn sort_findings(out: &mut [Finding]) {
 /// A compact tally for the ambient status-bar badge. Counts only the *actively-raised* signals
 /// — failing cron jobs and open `attn` items — not stale-note findings, which already show in
 /// the per-window badges. `urgent` is cron failures plus `urgent` attn items; `other` is the
-/// warn/info attn items. Cheap on purpose (two event-log reads, no note scan) so it can run
-/// every status-bar refresh.
-#[derive(Debug, Serialize, Default, PartialEq, Eq)]
+/// warn/info attn items. Computing it costs *two* full event-log reads and no note scan — which
+/// was cheap while the log was small and is not once it reaches tens of MB, so the status bar
+/// goes through the memo in [`crate::event_memo`] rather than calling [`compute_badge`].
+#[derive(Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct Badge {
     pub urgent: usize,
     pub other: usize,
@@ -419,10 +419,17 @@ impl Badge {
     }
 }
 
-/// The status-bar tally — see [`Badge`].
+/// The status-bar tally — see [`Badge`]. Memoised against the event log's identity, because the
+/// status line asks for it every few seconds and [`compute_badge`] reads a 50 MB log twice.
 pub fn badge(today: &str) -> Badge {
+    crate::event_memo::memoised("badge-cache.json", today, || compute_badge(today))
+}
+
+/// The live tally, without the memo. Prefer [`badge`]; this exists for the memo in [`badge`] to
+/// call on a miss, and is the definition the memo is a cache *of*.
+pub(crate) fn compute_badge(today: &str) -> Badge {
     let mut b = Badge::default();
-    for j in events::cron_status() {
+    for j in crate::events::cron_status() {
         if !j.ok {
             b.urgent += 1;
         }

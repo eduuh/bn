@@ -11,6 +11,7 @@
 
 use bn_core::resolver::Config;
 use bn_core::staff::{self, BriefingCard, CardRef};
+use bn_core::style;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -64,15 +65,20 @@ impl Row {
 /// ones sit dim — the "silence is the default state" grammar, and the same unread-dot idiom the
 /// STAFF cockpit panel (#264) uses.
 fn row_for(c: &CardRef) -> Row {
+    // Read/unread is the only distinction here, and it is structure rather than severity: unread
+    // takes the bold head, read sits in metadata dim. Rows go to `fzf --ansi`, so `Ink::always`.
     let (dot, lead) = if c.read {
-        (' ', "\x1b[2m")
+        (' ', style::Tone::Meta)
     } else {
-        ('\u{25cf}', "\x1b[1m")
+        ('\u{25cf}', style::Tone::Head)
     };
+    let ink = style::Ink::always();
     Row {
         display: format!(
-            "{lead}{dot} {}\x1b[0m  \x1b[36m{:<16}\x1b[0m {lead}{}\x1b[0m",
-            c.date, c.agent, c.headline
+            "{}  {} {}",
+            ink.tone(lead, &format!("{dot} {}", c.date)),
+            ink.accent(&format!("{:<16}", c.agent)),
+            ink.tone(lead, &c.headline)
         ),
         date: c.date.clone(),
         agent: c.agent.clone(),

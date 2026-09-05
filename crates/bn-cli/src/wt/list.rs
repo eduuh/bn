@@ -9,9 +9,9 @@ pub(crate) fn cmd_list(cfg: &Config) -> bool {
     match find_bare_repo(&cwd()) {
         Some(bare) => run_git(&["--git-dir", &bare.to_string_lossy(), "worktree", "list"]),
         None => {
-            println!("{BLUE}All worktrees:{NC}");
+            cprintln!("{BLUE}All worktrees:{NC}");
             for bare in bare_repos(&bare_dir) {
-                println!("\n{YELLOW}{}:{NC}", repo_name(&bare));
+                cprintln!("\n{YELLOW}{}:{NC}", repo_name(&bare));
                 run_git(&["--git-dir", &bare.to_string_lossy(), "worktree", "list"]);
             }
             true
@@ -75,7 +75,7 @@ pub(crate) fn cmd_status(cfg: &Config, all: bool, pr: bool) -> bool {
             if changes == 0 {
                 clean += 1;
                 if all {
-                    println!("  {GREEN}✓{NC} {repo}/{label}  clean");
+                    cprintln!("  {GREEN}✓{NC} {repo}/{label}  clean");
                 }
                 continue;
             }
@@ -100,14 +100,16 @@ pub(crate) fn cmd_status(cfg: &Config, all: bool, pr: bool) -> bool {
                         format!("uncommitted work (PR {state})"),
                     )
                 };
-                println!("{mark} {repo}/{label}  {changes} changes  — {verdict}");
+                // `mark` carries the escapes, so this needs the gated sink even though no
+                // colour constant appears in the format string itself.
+                cprintln!("{mark} {repo}/{label}  {changes} changes  — {verdict}");
             } else {
-                println!("{YELLOW}•{NC} {repo}/{label}  {changes} changes — uncommitted");
+                cprintln!("{YELLOW}•{NC} {repo}/{label}  {changes} changes — uncommitted");
             }
         }
     }
     if dirty == 0 {
-        println!("{GREEN}No worktrees with uncommitted changes{NC} ({clean} clean)");
+        cprintln!("{GREEN}No worktrees with uncommitted changes{NC} ({clean} clean)");
     } else if pr {
         println!("{stuck} stuck (merged+dirty), {dirty} with uncommitted changes, {clean} clean");
     } else {
@@ -167,7 +169,7 @@ pub(crate) fn cmd_remove(cfg: &Config, worktree: Option<String>, force: bool) ->
         None => {
             let items = list_worktree_paths(&bare_dir, current_bare.as_deref());
             if items.is_empty() {
-                println!("{YELLOW}No worktrees found{NC}");
+                cprintln!("{YELLOW}No worktrees found{NC}");
                 return true;
             }
             match fzf_select(&items, "Select worktree to remove") {
@@ -178,14 +180,14 @@ pub(crate) fn cmd_remove(cfg: &Config, worktree: Option<String>, force: bool) ->
     };
     let wt_path = abs_worktree(&worktree, &worktree_dir);
     if !wt_path.is_dir() {
-        eprintln!("{RED}Error: Worktree not found: {}{NC}", wt_path.display());
+        ceprintln!("{RED}Error: Worktree not found: {}{NC}", wt_path.display());
         return false;
     }
     if find_bare_repo(&wt_path).is_none() {
-        eprintln!("{RED}Error: Could not find bare repo for worktree{NC}");
+        ceprintln!("{RED}Error: Could not find bare repo for worktree{NC}");
         return false;
     }
-    println!("{YELLOW}Removing worktree: {}{NC}", wt_path.display());
+    cprintln!("{YELLOW}Removing worktree: {}{NC}", wt_path.display());
     // Straight through the one reclaim path — see [`crate::wt::reclaim`]. This used to run its own
     // `git worktree remove`, which skipped every gate the other paths apply: it could remove a
     // `_pool/<n>` slot out from under a live lease (leaving the ledger holding a slot that no longer
@@ -220,7 +222,7 @@ pub(crate) fn cmd_go(cfg: &Config, worktree: Option<String>) -> bool {
             }
             items.sort();
             if items.is_empty() {
-                eprintln!("{YELLOW}No worktrees found{NC}");
+                ceprintln!("{YELLOW}No worktrees found{NC}");
                 return true;
             }
             match fzf_select(&items, "Select worktree") {
@@ -238,7 +240,7 @@ pub(crate) fn cmd_go(cfg: &Config, worktree: Option<String>) -> bool {
         _ => worktree_dir.join(&worktree),
     };
     if !path.is_dir() {
-        eprintln!("{RED}Error: {} not found{NC}", path.display());
+        ceprintln!("{RED}Error: {} not found{NC}", path.display());
         return false;
     }
     // The shell wrapper cd's into this (stdout only — keep it clean).
@@ -249,7 +251,7 @@ pub(crate) fn cmd_go(cfg: &Config, worktree: Option<String>) -> bool {
 pub(crate) fn cmd_fetch(_cfg: &Config) -> bool {
     match find_bare_repo(&cwd()) {
         Some(bare) => {
-            println!("{BLUE}Fetching all remotes...{NC}");
+            cprintln!("{BLUE}Fetching all remotes...{NC}");
             let ok = run_git(&[
                 "--git-dir",
                 &bare.to_string_lossy(),
@@ -258,12 +260,12 @@ pub(crate) fn cmd_fetch(_cfg: &Config) -> bool {
                 "--prune",
             ]);
             if ok {
-                println!("{GREEN}Fetch complete{NC}");
+                cprintln!("{GREEN}Fetch complete{NC}");
             }
             ok
         }
         None => {
-            eprintln!("{RED}Error: Not in a worktree context{NC}");
+            ceprintln!("{RED}Error: Not in a worktree context{NC}");
             false
         }
     }
@@ -331,18 +333,18 @@ pub(crate) fn cmd_remote(cfg: &Config, target: Option<String>, all: bool, no_tmu
     let bare_s = bare.to_string_lossy().to_string();
     let remote = remote_for(&bare);
     if remote == Remote::Other {
-        eprintln!("{RED}wt remote: origin is not GitHub or Azure DevOps — nothing to fetch{NC}");
+        ceprintln!("{RED}wt remote: origin is not GitHub or Azure DevOps — nothing to fetch{NC}");
         return false;
     }
 
-    println!(
+    cprintln!(
         "{BLUE}Fetching your open PRs for {} ({})...{NC}",
         repo,
         remote.label()
     );
     let prs = my_open_prs(&remote);
     if prs.is_empty() {
-        println!(
+        cprintln!(
             "{YELLOW}No open PRs of yours found for {}{NC}",
             remote.label()
         );
@@ -358,7 +360,7 @@ pub(crate) fn cmd_remote(cfg: &Config, target: Option<String>, all: bool, no_tmu
         match prs.iter().find(|p| p.matches(&t)) {
             Some(p) => vec![p.clone()],
             None => {
-                eprintln!("{RED}wt remote: no open PR of yours matches '{t}'{NC}");
+                ceprintln!("{RED}wt remote: no open PR of yours matches '{t}'{NC}");
                 return false;
             }
         }
@@ -371,7 +373,7 @@ pub(crate) fn cmd_remote(cfg: &Config, target: Option<String>, all: bool, no_tmu
             .cloned()
             .collect();
         if candidates.is_empty() {
-            println!("{GREEN}All your open PRs already have local worktrees.{NC}");
+            cprintln!("{GREEN}All your open PRs already have local worktrees.{NC}");
             return true;
         }
         if all {
@@ -393,7 +395,7 @@ pub(crate) fn cmd_remote(cfg: &Config, target: Option<String>, all: bool, no_tmu
         } else {
             // Not a terminal (and no --all/target): just list the candidates so the command is
             // useful in scripts and pipelines — "fetch them in the worktree list".
-            println!(
+            cprintln!(
                 "{BLUE}Your open PRs without a local worktree (pass a number, --all, or run interactively):{NC}"
             );
             for p in &candidates {
@@ -432,7 +434,7 @@ pub(crate) fn create_remote_worktree(
     no_tmux: bool,
 ) -> bool {
     if let Some(existing) = existing_worktree_for(checked_out, worktree_dir, repo, &pr.branch) {
-        println!(
+        cprintln!(
             "{YELLOW}PR #{} ({}) already has a worktree: {}{NC}",
             pr.number, pr.branch, existing
         );
@@ -451,7 +453,7 @@ pub(crate) fn create_remote_worktree(
     if !create_worktree(bare_s, &pr.branch, &wt_s, false) {
         return false;
     }
-    println!(
+    cprintln!(
         "{GREEN}Created worktree for PR #{}: {}{NC}",
         pr.number,
         wt_path.display()
@@ -470,12 +472,12 @@ pub(crate) fn cmd_prune(cfg: &Config) -> bool {
             run_git(&["--git-dir", &bare.to_string_lossy(), "worktree", "prune"]);
         }
         None => {
-            println!("{BLUE}Pruning all bare repos...{NC}");
+            cprintln!("{BLUE}Pruning all bare repos...{NC}");
             for bare in bare_repos(&bare_dir) {
                 run_git(&["--git-dir", &bare.to_string_lossy(), "worktree", "prune"]);
             }
         }
     }
-    println!("{GREEN}Pruned stale worktree references{NC}");
+    cprintln!("{GREEN}Pruned stale worktree references{NC}");
     true
 }

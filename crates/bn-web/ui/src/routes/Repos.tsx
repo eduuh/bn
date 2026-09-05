@@ -1,21 +1,9 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import {
-  ChevronRight,
-  ExternalLink,
-  Flame,
-  Search,
-  Settings2,
-  Wrench,
-  X,
-} from "lucide-react";
+import { ChevronRight, ExternalLink, Flame, Search, Settings2, Wrench, X } from "lucide-react";
 import { reposQuery } from "../api/client";
-import {
-  startRepoSetupAgent,
-  warmRepoPool,
-  type RepoSetupAgentResult,
-} from "../api/writes";
+import { startRepoSetupAgent, warmRepoPool, type RepoSetupAgentResult } from "../api/writes";
 import { type RepoPool, type RepoRollup } from "../api/types";
 import { useAppMutation } from "../hooks/useAppMutation";
 import { affects } from "../lib/invalidation";

@@ -14,6 +14,7 @@
 
 use bn_core::next::{Action, ActionKind};
 use bn_core::resolver::Config;
+use bn_core::{glyph, style};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -94,38 +95,59 @@ fn window_row(cols: &[&str], cur: &str, now: i64) -> Option<Win> {
         return None;
     }
     let mut d = String::new();
-    let (rank, tag): (u8, &str) = match agent {
+    // Rows go down a pipe to `fzf --ansi`; the fzf-less fallback below flattens them again.
+    // The trailing spaces pad the tag column, so they stay outside the painted run.
+    let ink = style::Ink::always();
+    let (rank, tag): (u8, String) = match agent {
         "waiting" => {
             d = dur(since, now);
-            (1, "\x1b[1;33m\u{f0f3} needs you\x1b[0m")
+            (1, ink.warn(&format!("{} needs you", glyph::BELL)))
         }
         // Same rank as `waiting`: an agent that is blocked, wants a decision, or has died is
         // exactly what prefix-Tab exists to take you to. These fell through to `None`, which made
         // a stopped agent *unreachable* from the one key meant to reach it.
         "blocked" => {
             d = dur(since, now);
-            (1, "\x1b[1;31m\u{f05e} blocked\x1b[0m  ")
+            (
+                1,
+                format!("{}  ", ink.danger(&format!("{} blocked", glyph::BAN))),
+            )
         }
         "needs-decision" => {
             d = dur(since, now);
-            (1, "\x1b[1;33m\u{f06e} decide\x1b[0m   ")
+            (
+                1,
+                format!("{}   ", ink.warn(&format!("{} decide", glyph::EYE))),
+            )
         }
         "failed" => {
             d = dur(since, now);
-            (1, "\x1b[1;31m\u{f0e7} failed\x1b[0m   ")
+            (
+                1,
+                format!("{}   ", ink.danger(&format!("{} failed", glyph::BOLT))),
+            )
         }
         // Paused on a usage cap — it resumes on its own, so it is not something to jump to.
         "limited" => return None,
         "done" => {
             d = dur(since, now);
-            (2, "\x1b[32m\u{f00c} done\x1b[0m     ")
+            (
+                2,
+                format!("{}     ", ink.ok(&format!("{} done", glyph::CHECK))),
+            )
         }
         "working" => return None,
         "" => {
             if done == "✓" {
-                (2, "\x1b[32m\u{f00c} done\x1b[0m     ")
+                (
+                    2,
+                    format!("{}     ", ink.ok(&format!("{} done", glyph::CHECK))),
+                )
             } else if !blk.is_empty() {
-                (3, "\x1b[31m\u{f05e} blocker\x1b[0m  ")
+                (
+                    3,
+                    format!("{}  ", ink.danger(&format!("{} blocker", glyph::BAN))),
+                )
             } else {
                 return None;
             }
@@ -136,9 +158,9 @@ fn window_row(cols: &[&str], cur: &str, now: i64) -> Option<Win> {
     let dd = if d.is_empty() {
         String::new()
     } else {
-        format!("  \x1b[2m{d}\x1b[0m")
+        format!("  {}", ink.meta(&d))
     };
-    let display = format!("{tag}  \x1b[2m{sess}:{idx}\x1b[0m  {name}{dd}");
+    let display = format!("{tag}  {}  {name}{dd}", ink.meta(&format!("{sess}:{idx}")));
     Some(Win {
         rank,
         sortkey,
@@ -183,21 +205,22 @@ fn kind_str(k: ActionKind) -> &'static str {
 /// Map a `bn next` action to a display row, matching `tmux-attention-all.sh`'s `bn_rows` glyphs
 /// and colors (its own simpler set, distinct from the `bn next` human view's glyphs).
 fn next_row(a: &Action) -> Row {
-    let (color, glyph) = match a.kind {
-        ActionKind::Cron => ("1;31", "⚠"),
-        ActionKind::Attn => ("33", "•"),
-        ActionKind::Review => ("1;31", bn_core::glyph::BAN),
-        ActionKind::Pr => ("31", "●"),
-        ActionKind::Blocked => ("33", "○"),
-        _ => ("36", "◷"),
+    let ink = style::Ink::always();
+    let (tone, mark) = match a.kind {
+        ActionKind::Cron => (style::Tone::Danger, "⚠"),
+        ActionKind::Attn => (style::Tone::Warn, "•"),
+        ActionKind::Review => (style::Tone::Danger, glyph::BAN),
+        ActionKind::Pr => (style::Tone::Danger, "●"),
+        ActionKind::Blocked => (style::Tone::Warn, "○"),
+        _ => (style::Tone::Accent, "◷"),
     };
     let tail = if a.detail.is_empty() {
         String::new()
     } else {
-        format!("  \x1b[2m{}\x1b[0m", a.detail)
+        format!("  {}", ink.meta(&a.detail))
     };
     Row {
-        display: format!("\x1b[{color}m{glyph} {}\x1b[0m{tail}", a.title),
+        display: format!("{}{tail}", ink.tone(tone, &format!("{mark} {}", a.title))),
         kind: kind_str(a.kind).to_string(),
         target: a.link.clone().unwrap_or_default(),
         title: a.title.clone(),
@@ -249,14 +272,15 @@ pub fn run(cfg: &Config) {
         Ok(c) => c,
         Err(_) => {
             // No fzf on PATH — degrade to the plain list (display column only), then hold.
+            // The rows were painted for fzf, so this is stdout again and has to obey NO_COLOR.
             use bn_core::clock::Clock;
             let now = bn_core::clock::RealClock.now_epoch_secs();
             let cur = tmux(&["display-message", "-p", "#{window_id}"]).unwrap_or_default();
             for w in window_rows(now, &cur) {
-                println!("{}", w.display);
+                println!("{}", style::strip_unless_enabled(&w.display));
             }
             for r in next_rows(cfg) {
-                println!("{}", r.display);
+                println!("{}", style::strip_unless_enabled(&r.display));
             }
             crate::picker::hold();
             return;
@@ -377,7 +401,7 @@ fn preview(kind: &str, target: &str, title: &str, id: &str) {
         }
         return;
     }
-    println!("\x1b[1;36m{title}\x1b[0m\n");
+    println!("{}\n", style::Ink::always().head(title));
     match kind {
         "cron" => {
             let job = title.strip_prefix("fix cron ").unwrap_or(title);
@@ -479,18 +503,19 @@ impl SessWin {
 /// wins over `@bn_done` (the `bind m` silence-watch fallback). Empty when the window has nothing to
 /// report — most of them, so a quiet session reads as a plain list of branches.
 fn sess_state(agent: &str, done: &str, since: &str, now: i64) -> String {
+    let ink = style::Ink::always();
     let d = dur(since, now);
     let age = if d.is_empty() {
         String::new()
     } else {
-        format!(" \x1b[2m{d}\x1b[0m")
+        format!(" {}", ink.meta(&d))
     };
     match agent {
-        "waiting" => format!("\x1b[1;33m{} needs you\x1b[0m{age}", bn_core::glyph::BELL),
-        "working" => format!("\x1b[2m{} working{age}\x1b[0m", bn_core::glyph::GEAR),
-        "done" => format!("\x1b[32m{} done\x1b[0m{age}", bn_core::glyph::CHECK),
+        "waiting" => format!("{}{age}", ink.warn(&format!("{} needs you", glyph::BELL))),
+        "working" => ink.meta(&format!("{} working{age}", glyph::GEAR)),
+        "done" => format!("{}{age}", ink.ok(&format!("{} done", glyph::CHECK))),
         // `@bn_done` is the watch-fallback tick; it carries no timestamp of its own.
-        _ if !done.is_empty() => format!("\x1b[32m{} done\x1b[0m", bn_core::glyph::CHECK),
+        _ if !done.is_empty() => ink.ok(&format!("{} done", glyph::CHECK)),
         _ => String::new(),
     }
 }
@@ -499,17 +524,18 @@ fn sess_state(agent: &str, done: &str, since: &str, now: i64) -> String {
 /// when its window option is unset — the same lazily-written `@bn_blockers` / `@bn_todos` values
 /// `bn tmux sync` stamps.
 fn sess_badges(todos: &str, blockers: &str) -> String {
+    let ink = style::Ink::always();
     let mut s = String::new();
     if !blockers.is_empty() {
         s.push_str(&format!(
-            "  \x1b[31m{} {blockers}\x1b[0m",
-            bn_core::glyph::BAN
+            "  {}",
+            ink.danger(&format!("{} {blockers}", glyph::BAN))
         ));
     }
     if !todos.is_empty() {
         s.push_str(&format!(
-            "  \x1b[2m{} {todos}\x1b[0m",
-            bn_core::glyph::TASKS
+            "  {}",
+            ink.meta(&format!("{} {todos}", glyph::TASKS))
         ));
     }
     s
@@ -525,23 +551,26 @@ fn session_win(cols: &[&str], now: i64) -> Option<SessWin> {
         return None;
     }
     // The marker column answers "where am I / where was I" without reading the tab bar.
+    let ink = style::Ink::always();
     let (tier, mark) = if active == "1" {
-        (2, "\x1b[2m\u{25cf}\x1b[0m") // ● you are here
+        (2, ink.meta("\u{25cf}")) // ● you are here
     } else if last == "1" {
-        (0, "\x1b[36m\u{21a9}\x1b[0m") // ↩ the window you came from
+        (0, ink.accent("\u{21a9}")) // ↩ the window you came from
     } else {
-        (1, " ")
+        (1, " ".to_string())
     };
     // Only worth saying when it's true; a single-pane window is the norm.
     let split = match panes.parse::<i64>() {
-        Ok(n) if n > 1 => format!("  \x1b[2m{n} panes\x1b[0m"),
+        Ok(n) if n > 1 => format!("  {}", ink.meta(&format!("{n} panes"))),
         _ => String::new(),
     };
     let state = sess_state(agent, done, since, now);
     // A quiet window contributes no state, badges or split, so trim the separators they would have
     // been introduced by rather than leaving the row padded out with trailing blanks.
     let display = format!(
-        "{mark} \x1b[2m{idx:>2}\x1b[0m \x1b[1m{name:<22}\x1b[0m {state}{}{split}",
+        "{mark} {} {} {state}{}{split}",
+        ink.meta(&format!("{idx:>2}")),
+        ink.head(&format!("{name:<22}")),
         sess_badges(todos, blockers)
     )
     .trim_end()
@@ -613,7 +642,7 @@ pub fn session() {
         Err(_) => {
             // No fzf on PATH — degrade to the plain list (display column only), then hold.
             for w in &rows {
-                println!("{}", w.display);
+                println!("{}", style::strip_unless_enabled(&w.display));
             }
             crate::picker::hold();
             return;

@@ -316,20 +316,22 @@ fn pick(ranked: &[&Link]) -> Option<String> {
 /// One picker row: the name, then the repo, tags and URL dimmed behind it. Everything shown is
 /// also everything fzf matches on, so there is nothing searchable that is invisible.
 fn render(l: &Link) -> String {
+    // `pick` feeds these to `fzf --ansi`, so the row paints whatever bn's own stdout is doing.
+    let ink = style::Ink::always();
     let repo = l
         .repo
         .as_deref()
-        .map(|r| format!("  \x1b[36m[{r}]\x1b[0m"))
+        .map(|r| format!("  {}", ink.accent(&format!("[{r}]"))))
         .unwrap_or_default();
     let tags = if l.tags.is_empty() {
         String::new()
     } else {
-        format!("  \x1b[2m·{}\x1b[0m", l.tags.join(" ·"))
+        format!("  {}", ink.meta(&format!("·{}", l.tags.join(" ·"))))
     };
     format!(
-        "{}{repo}{tags}  \x1b[2m{}\x1b[0m",
+        "{}{repo}{tags}  {}",
         truncate(&l.name, 48),
-        l.url
+        ink.meta(&l.url)
     )
 }
 

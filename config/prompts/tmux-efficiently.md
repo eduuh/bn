@@ -2,7 +2,7 @@
 name: tmux-efficiently
 description: Use tmux as your working surface — a reusable command pane for visible commands, a disposable job pane per long-running task (never a new window), exit codes from tmux itself rather than echoed markers, and panes reaped once read. Covers launching independent agents in other sessions and reading, steering and stopping them.
 when: About to run anything long, interactive, or side-effecting; about to spawn or supervise another agent; or you need to read what an agent in another session is doing.
-keywords: [tmux, pane, panes, split, long-running, background, job, cleanup, reap, capture-pane, pipe-pane, remain-on-exit, pane_dead, agent, fleet, spawn, steer, send-keys, another session, supervise]
+keywords: [tmux, pane, panes, split, long-running, background, job, cleanup, reap, capture-pane, pipe-pane, remain-on-exit, pane_dead, wait-for, agent, fleet, spawn, steer, send-keys, another session, supervise]
 ---
 You work in tmux. Treat it as structured state you can query and address, not as a terminal you
 type into. Everything below is a handle you can hold across turns — that is what makes it
@@ -87,15 +87,17 @@ A build, a clone, an install, a test suite, a dev server. You do not sit and wai
 ```
  1. split a job pane ──▶ 2. name it, log it ──▶ 3. tell the user ──▶ 4. keep working
                                                                           │
-                             7. reap ◀── 6. read outcome ◀── 5. wait on pane_dead
+                             7. reap ◀── 6. read outcome ◀── 5. block on the channel
 ```
 
 **1–2. Create it, and make it self-reporting.**
 
 ```bash
 job_log=$SCRATCH/build.log
+chan=job-$$-$RANDOM                                       # the channel you will block on
 tmux set-option -w -t "$win" remain-on-exit on            # inherited by the next split
-job=$(tmux split-window -d -t "$win" -l 30% -P -F '#{pane_id}' 'cargo build --release')
+job=$(tmux split-window -d -t "$win" -l 30% -P -F '#{pane_id}' \
+      "trap 'tmux wait-for -S $chan' EXIT; cargo build --release")
 tmux pipe-pane -t "$job" -O "cat >> $job_log"             # first, before output starts
 tmux set-option -p -t "$job" remain-on-exit on            # pin it on the pane itself
 tmux set-option -w -u -t "$win" remain-on-exit            # hand the window back
@@ -121,20 +123,31 @@ narrate progress you have not checked.
 
 **4. Keep working.** Anything that does not depend on that job continues now.
 
-**5. Wait on `pane_dead`, never on text.**
+**5. Block on the channel, never poll and never wait on text.**
 
 ```bash
-until case $(tmux display-message -p -t "$job" '#{pane_dead}' 2>/dev/null) in 1|'') true;; *) false;; esac
-do sleep 20; done
+tmux wait-for "$chan"
 ```
 
-Run that with `run_in_background: true`. Do not chain sleeps — the harness refuses them.
+Run that with `run_in_background: true`. It wakes on the exit itself, so there is no 20s
+granularity to lose and no timer burning while it waits. Do not chain sleeps — the harness
+refuses them, and now you have nothing to sleep for.
 
-**The empty case is not decoration.** A pane that is *gone* — `remain-on-exit` never took, or someone
-closed it — makes `display-message` print nothing **and exit 0**, so a loop written as
-`[ "$(…)" = 1 ]` never becomes true and spins until the turn dies. tmux does not error on a missing
-pane; you have to treat "no answer" as an ending. When the loop ends on the empty case there is no
-status to read, and that is what you report — not a success you did not see.
+**The `EXIT` trap is what makes the channel trustworthy.** It fires on a normal exit and on the
+signals a shell can catch, so an interrupted job still signals. What it cannot survive is the pane
+being destroyed outright — `kill-pane`, or SIGKILL — because then no shell runs to signal, and a
+bare `wait-for` blocks forever. So a wait you cannot afford to lose keeps the pane check as its
+fallback:
+
+```bash
+tmux display-message -p -t "$job" '#{pane_dead}'   # 1 = finished, empty = the pane is gone
+```
+
+**The empty answer is not decoration.** A pane that is *gone* — `remain-on-exit` never took, or
+someone closed it — makes `display-message` print nothing **and exit 0**, so a check written as
+`[ "$(…)" = 1 ]` never becomes true. tmux does not error on a missing pane; you have to treat "no
+answer" as an ending. When it ends that way there is no status to read, and that is what you
+report — not a success you did not see.
 
 **6. Take the exit code from tmux.**
 
@@ -172,8 +185,8 @@ already reported is clutter taking a third of the window.
 **Sweep the window** for panes that died while you were elsewhere:
 
 ```bash
-tmux list-panes -t "$win" -F '#{pane_id} #{pane_dead}' \
-  | awk '$2==1 {print $1}' | xargs -r -n1 tmux kill-pane -t
+tmux list-panes -t "$win" -f '#{pane_dead}' -F '#{pane_id}' \
+  | xargs -r -n1 tmux kill-pane -t
 ```
 
 **Fire-and-forget** work that you will not read unless it breaks can use `remain-on-exit failed`
@@ -182,6 +195,23 @@ instead of `on`: a zero exit closes the pane by itself, a failure stays on scree
 **Never reap a live pane.** `kill-pane` on a running job kills the job, and `#{pane_dead}` is `0`
 for exactly the panes you must leave alone. Never reap the `cmd` pane or a pane hosting an agent
 mid-turn — an agent between tool calls has a quiet pane and looks idle.
+
+## Serialising work across worktrees
+
+The pool's worktrees share one git stash stack and one machine. Where two sessions can collide over
+something with a single global slot — a stash push/pop above all — take a **server-wide lock**
+instead of inventing a lockfile:
+
+```bash
+tmux wait-for -L stash        # blocks until whoever holds it releases
+git stash push -u -m "$tag"
+tmux wait-for -U stash        # release it
+```
+
+`-L` locks the channel, `-U` unlocks it, and every client on this tmux server queues on the same
+name. Same primitive as the job signal above, used for exclusion instead of completion. The lock
+lives in the tmux server, so it protects you against concurrent sessions but evaporates if the
+server dies — it is not a crash-safe lock.
 
 ## tmux as a query surface
 
@@ -193,7 +223,7 @@ dozen.
 tmux list-panes -a -F '#{session_name}:#{window_name} #{pane_id} #{pane_current_command} dead=#{pane_dead}'
 
 # every dead pane anywhere — the cleanup queue
-tmux list-panes -a -F '#{pane_id} #{pane_dead} #{pane_title}' | awk '$2==1'
+tmux list-panes -a -f '#{pane_dead}' -F '#{pane_id} #{pane_title}'
 
 # which windows have unseen output
 tmux list-windows -a -F '#{session_name}:#{window_name} activity=#{window_activity_flag}'

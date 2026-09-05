@@ -153,7 +153,7 @@ pub(crate) fn emit_doctor(cfg: &Config, stale_days: i64, brief: bool, as_json: b
             .as_ref()
             .is_none_or(|report| report.conflicts == 0 && report.errors.is_empty());
         if drift.is_empty() && lease_clear && lease_violations.is_empty() {
-            println!("All clear — nothing needs attention");
+            println!("{}", style::ok("All clear — nothing needs attention"));
         }
         return;
     }
@@ -161,28 +161,37 @@ pub(crate) fn emit_doctor(cfg: &Config, stale_days: i64, brief: bool, as_json: b
     for f in &findings {
         match f {
             Finding::Note(n) => {
-                println!("{}/{}  [{}]", n.repo, n.branch, n.flags.join(" "));
-                println!(
-                    "  {} open, {} blockers · idle {}d (last {})",
+                let tag = format!("[{}]", n.flags.join(" "));
+                let tag = if n.blockers > 0 {
+                    style::danger(&tag)
+                } else {
+                    style::warn(&tag)
+                };
+                println!("{}/{}  {tag}", n.repo, n.branch);
+                let counts = format!(
+                    "{} open, {} blockers · idle {}d (last {})",
                     n.open_todos, n.blockers, n.idle_days, n.last_activity
                 );
+                println!("  {}", style::meta(&counts));
             }
             Finding::Cron(c) => {
                 let loc = c.repo.as_deref().unwrap_or("global");
-                println!("cron {}  [cron_fail]", c.job);
-                println!("  {} · {} failure(s) on record", loc, c.failures);
+                println!("cron {}  {}", c.job, style::danger("[cron_fail]"));
+                let detail = format!("{} · {} failure(s) on record", loc, c.failures);
+                println!("  {}", style::meta(&detail));
             }
             Finding::Staff(s) => {
                 let overdue_h = s.overdue_secs / 3600;
-                println!("staff {}  [missed]", s.agent);
-                if s.last_run == 0 {
-                    println!("  {} · scheduled run missed (never run)", s.on_calendar);
+                println!("staff {}  {}", s.agent, style::warn("[missed]"));
+                let detail = if s.last_run == 0 {
+                    format!("{} · scheduled run missed (never run)", s.on_calendar)
                 } else {
-                    println!(
-                        "  {} · scheduled run missed ~{overdue_h}h ago (silence ≠ death — no card, no run)",
+                    format!(
+                        "{} · scheduled run missed ~{overdue_h}h ago (silence ≠ death — no card, no run)",
                         s.on_calendar
-                    );
-                }
+                    )
+                };
+                println!("  {}", style::meta(&detail));
             }
             Finding::Attn(a) => {
                 let loc = match (&a.repo, &a.branch) {
@@ -190,12 +199,15 @@ pub(crate) fn emit_doctor(cfg: &Config, stale_days: i64, brief: bool, as_json: b
                     (Some(r), None) => format!(" {r}"),
                     _ => String::new(),
                 };
+                let tag = style::severity(&a.severity, &format!("[{}]", a.severity));
                 println!(
-                    "{}  [{}] {} ({}){}",
-                    a.id, a.severity, a.title, a.source, loc
+                    "{}  {tag} {} {}",
+                    style::meta(&a.id),
+                    a.title,
+                    style::meta(&format!("({}){}", a.source, loc))
                 );
                 if let Some(link) = &a.link {
-                    println!("  {link}");
+                    println!("  {}", style::meta(link));
                 }
             }
             Finding::Todo(t) => {
@@ -205,7 +217,13 @@ pub(crate) fn emit_doctor(cfg: &Config, stale_days: i64, brief: bool, as_json: b
                 } else {
                     "todo".to_string()
                 };
-                println!("{}  [{}] {}{}", t.id, flag, pri, t.summary);
+                let tag = format!("[{flag}]");
+                let tag = if t.overdue {
+                    style::warn(&tag)
+                } else {
+                    style::meta(&tag)
+                };
+                println!("{}  {tag} {}{}", style::meta(&t.id), pri, t.summary);
                 let branch = t
                     .branch
                     .as_deref()
@@ -216,62 +234,80 @@ pub(crate) fn emit_doctor(cfg: &Config, stale_days: i64, brief: bool, as_json: b
                     .as_deref()
                     .map(|d| format!(" · due {d}"))
                     .unwrap_or_default();
-                println!("  {}{}{}", t.repo, branch, due);
+                println!("  {}", style::meta(&format!("{}{}{}", t.repo, branch, due)));
             }
             Finding::Inbox(i) => {
                 let loc = match (&i.repo, &i.branch) {
                     (Some(r), Some(b)) => format!(" · hinted {r}/{b}"),
                     _ => String::new(),
                 };
-                println!("{}  [inbox:{}d] {}", i.id, i.idle_days, i.text);
-                println!("  captured {}{} — bn q drain", i.created, loc);
+                let tag = style::meta(&format!("[inbox:{}d]", i.idle_days));
+                println!("{}  {tag} {}", style::meta(&i.id), i.text);
+                let detail = format!("captured {}{} — bn q drain", i.created, loc);
+                println!("  {}", style::meta(&detail));
             }
             Finding::ShellInit(s) => {
-                println!("shell  [{}] {}", s.shell, s.problem);
-                println!("  {} — fix: {}", s.rc_path, s.fix);
+                println!("shell  {} {}", style::warn(&format!("[{}]", s.shell)), s.problem);
+                let detail = format!("{} — fix: {}", s.rc_path, s.fix);
+                println!("  {}", style::meta(&detail));
             }
             Finding::Mcp(m) => {
                 println!(
-                    "mcp {}  [unresolvable] '{}' {} ({})",
-                    m.server, m.command, m.problem, m.config
+                    "mcp {}  {} '{}' {} {}",
+                    m.server,
+                    style::warn("[unresolvable]"),
+                    m.command,
+                    m.problem,
+                    style::meta(&format!("({})", m.config))
                 );
-                println!("  fix: {}", m.fix);
+                println!("  {}", style::meta(&format!("fix: {}", m.fix)));
             }
             Finding::StaleStaff(s) => {
                 println!(
-                    "staff  [stale:{}d] no briefing card since {}",
-                    s.idle_days, s.last_card
+                    "staff  {} no briefing card since {}",
+                    style::warn(&format!("[stale:{}d]", s.idle_days)),
+                    s.last_card
                 );
                 println!(
-                    "  the staff home machine may be down — re-home `[staff].home` onto a live box"
+                    "  {}",
+                    style::meta(
+                        "the staff home machine may be down — re-home `[staff].home` onto a live box"
+                    )
                 );
             }
             Finding::Backlog(b) => {
                 println!(
-                    "backlog  [untasked] {} queued item(s) name no task",
+                    "backlog  {} {} queued item(s) name no task",
+                    style::meta("[untasked]"),
                     b.untasked
                 );
                 for subject in b.sample.iter().take(3) {
-                    println!("  {subject}");
+                    println!("  {}", style::meta(subject));
                 }
                 println!(
-                    "  these predate #1001 and will run with no durable record; they are left in place deliberately so nothing in flight is orphaned"
+                    "  {}",
+                    style::meta(
+                        "these predate #1001 and will run with no durable record; they are left in place deliberately so nothing in flight is orphaned"
+                    )
                 );
             }
             Finding::NotesLeak(l) => {
                 println!(
-                    "notes  [leak] {} foreign machine subtree(s) under the personal notes root",
+                    "notes  {} {} foreign machine subtree(s) under the personal notes root",
+                    style::warn("[leak]"),
                     l.foreign_machines.len()
                 );
-                println!(
-                    "  {} carries {} — they surface on this work box via cross-machine views",
+                let detail = format!(
+                    "{} carries {} — they surface on this work box via cross-machine views",
                     l.personal_root,
                     l.foreign_machines.join(", ")
                 );
-                println!(
-                    "  fix: set [personal].notes_root to your work notes repo ({}) or remove the clone",
+                println!("  {}", style::meta(&detail));
+                let fix = format!(
+                    "fix: set [personal].notes_root to your work notes repo ({}) or remove the clone",
                     l.work_root
                 );
+                println!("  {}", style::meta(&fix));
             }
         }
     }
@@ -462,7 +498,7 @@ pub(crate) fn emit_next(
     }
 
     if actions.is_empty() && untimed.is_empty() {
-        println!("Nothing queued — desk is clear ✓");
+        println!("{}", style::ok("Nothing queued — desk is clear ✓"));
         return;
     }
     // Show the top `limit` (already priority-sorted), grouped into dashboard sections so a long
@@ -474,7 +510,7 @@ pub(crate) fn emit_next(
         if gi > 0 {
             println!();
         }
-        println!("{}", cat.header());
+        println!("{}", style::head(cat.header()));
         for a in items {
             // Momentum badge (#246) — keeps the ranking explainable: `·here` = the repo/branch
             // you're punched into right now, `·near` = same repo, different branch.
@@ -483,16 +519,25 @@ pub(crate) fn emit_next(
                 Some(bn_core::next::Momentum::Repo) => " ·near",
                 None => "",
             };
-            println!("  {} {}{badge}", a.kind_glyph(), a.title);
-            println!("     {}", a.detail);
+            let headline = format!("{} {}{badge}", a.kind_glyph(), a.title);
+            println!(
+                "  {}",
+                match cat {
+                    bn_core::next::ActionCategory::Breaking => style::danger(&headline),
+                    bn_core::next::ActionCategory::WaitingOnYou => style::warn(&headline),
+                    _ => headline,
+                }
+            );
+            println!("     {}", style::meta(&a.detail));
             if let Some(link) = &a.link {
-                println!("     ↗ {link}");
+                println!("     {}", style::meta(&format!("↗ {link}")));
             }
         }
     }
     let extra = actions.len().saturating_sub(limit);
     if extra > 0 {
-        println!("\n… +{extra} more — see `bn doctor`, `bn reviews`, `bn daily`");
+        let tail = format!("… +{extra} more — see `bn doctor`, `bn reviews`, `bn daily`");
+        println!("\n{}", style::meta(&tail));
     }
 
     // `--fit` tails: the goals that didn't fit (counted, not listed), then the un-estimated ones

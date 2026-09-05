@@ -16,6 +16,7 @@
 
 use crate::{fail, Config, Envelope, Resolved};
 use bn_core::launchable::{self, Launchable, Source};
+use bn_core::style;
 use serde_json::{Map, Value};
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -87,18 +88,22 @@ fn rows(entries: &[Launchable], only: Option<Source>) -> Vec<Row> {
         .filter(|e| !e.shadowed)
         .filter(|e| only.is_none_or(|want| e.source == want))
         .map(|e| {
+            // Rows go down a pipe to `fzf --ansi`, so they paint unconditionally. The source
+            // label is structure, not severity: agents take the one non-severity tint because
+            // they are the primary thing here, skills sit in metadata behind them.
+            let ink = style::Ink::always();
             let tag = match e.source {
-                Source::Agent => "\x1b[35magent\x1b[0m",
-                Source::Skill => "\x1b[36mskill\x1b[0m",
+                Source::Agent => ink.accent("agent"),
+                Source::Skill => ink.meta("skill"),
             };
             let args = if e.needs_args() {
-                format!(" \x1b[33m[needs {}]\x1b[0m", e.required_args().join(", "))
+                ink.warn(&format!(" [needs {}]", e.required_args().join(", ")))
             } else {
                 String::new()
             };
             let desc = e.description.as_deref().unwrap_or("");
             Row {
-                display: format!("{tag}  \x1b[1m{:<30}\x1b[0m {desc}{args}", e.name),
+                display: format!("{tag}  {} {desc}{args}", ink.head(&format!("{:<30}", e.name))),
                 name: e.name.clone(),
             }
         })
@@ -164,7 +169,7 @@ fn pick(
             // No fzf on PATH — degrade to the plain list, then hold so a tmux popup stays
             // readable instead of closing on the error.
             for row in &rows {
-                println!("{}", row.display);
+                println!("{}", style::strip_unless_enabled(&row.display));
             }
             crate::picker::hold();
             return None;
@@ -206,7 +211,9 @@ pub(crate) fn emit_pick_stage(
             let Some(entry) = name.and_then(|n| launchable::find(&entries, n)) else {
                 return;
             };
-            println!("\x1b[1m{}\x1b[0m  ({})", entry.name, entry.source.label());
+            // The preview pane renders ANSI natively, so it paints like the list does.
+            let ink = style::Ink::always();
+            println!("{}  ({})", ink.head(&entry.name), entry.source.label());
             if let Some(desc) = &entry.description {
                 println!("{desc}");
             }
@@ -227,7 +234,7 @@ pub(crate) fn emit_pick_stage(
             }
             if !entry.arguments.is_empty() {
                 println!();
-                println!("\x1b[1mArguments\x1b[0m");
+                println!("{}", ink.head("Arguments"));
                 for arg in &entry.arguments {
                     let req = if arg.required { " (required)" } else { "" };
                     let desc = arg.description.as_deref().unwrap_or("");
@@ -235,7 +242,7 @@ pub(crate) fn emit_pick_stage(
                 }
             }
             println!();
-            println!("\x1b[1mBody\x1b[0m");
+            println!("{}", ink.head("Body"));
             match std::fs::read_to_string(&entry.path) {
                 Ok(text) => println!("{text}"),
                 Err(e) => println!("({}: {e})", entry.path.display()),

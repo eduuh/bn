@@ -4,11 +4,12 @@
 //! existing config, and the instruction block lives between markers so re-running replaces just
 //! that block.
 //!
-//! Beyond bn's own server, a small curated set of planning/productivity extras (#323) can be
-//! wired alongside it — see [`EXTRAS`]. Each extra runs through `npx -y` / `uvx`, so the runner
-//! fetches (and caches) the package on first launch: install is idempotent and the config stays
-//! committable — no machine-local paths. bn's job is to verify the *runner* is on PATH and hand
-//! back the exact install command when it isn't (`bn mcp init` warns, `bn doctor` nags).
+//! Beyond bn's own server, a small curated set of external MCP servers (#323) can be wired
+//! alongside it — see [`EXTRAS`]. Most run through `npx -y` / `uvx`, so the runner fetches (and
+//! caches) the package on first launch; the rest are binaries the machine already has. Either way
+//! the entry carries no machine-local path, so the config stays committable, and bn's job is to
+//! verify the command is on PATH and hand back the exact install line when it isn't (`bn mcp init`
+//! warns, `bn doctor` nags).
 
 use std::path::{Path, PathBuf};
 
@@ -64,9 +65,10 @@ that some prompts (PR review, orchestration) describe steps whose commands live 
 Reference skills sit in `config/skills/` and are referred to by name from a prompt's body
 rather than invoked directly.";
 
-/// One curated planning/productivity MCP server (#323). `command` is always a package *runner*
-/// (`npx` / `uvx`) so the server installs itself on first launch; `runner_fix` is the exact
-/// one-line command to run when that runner is missing from PATH.
+/// One curated MCP server (#323). `command` is normally a package *runner* (`npx` / `uvx`) so the
+/// server installs itself on first launch; where no such runner exists it is the server binary
+/// itself, installed once per machine. Either way `runner_fix` is the exact one-line instruction
+/// to follow when `command` is missing from PATH.
 #[derive(Debug)]
 pub struct Extra {
     pub name: &'static str,
@@ -77,10 +79,15 @@ pub struct Extra {
 
 const NPX_FIX: &str = "install Node.js to get npx — e.g. `brew install node`";
 const UVX_FIX: &str = "install uv to get uvx — e.g. `brew install uv`";
+/// Not `cargo install nvim-mcp`: the crates.io binary and the nvim plugin drift (0.7.2 globs
+/// `/tmp` for sockets, the plugin on main registers them under `$XDG_RUNTIME_DIR`), and the crate
+/// ships no plugin at all. Building from the checked-out plugin is the one setup that cannot skew.
+const NVIM_MCP_FIX: &str = "add linw1995/nvim-mcp to your nvim config with \
+    build = 'cargo install --path .' and require('nvim-mcp').setup({}) — the plugin installs the binary";
 
 /// The curated set — deliberately minimal and vetted: structured planning, cross-session memory,
-/// and time/date awareness. Opt in via `bn mcp init --with-extras` or `[mcp] extras` in
-/// config.toml.
+/// time/date awareness, and the editor. Opt in via `bn mcp init --with-extras` or `[mcp] extras`
+/// in config.toml.
 pub const EXTRAS: &[Extra] = &[
     Extra {
         name: "sequential-thinking",
@@ -99,6 +106,21 @@ pub const EXTRAS: &[Extra] = &[
         command: "uvx",
         args: &["mcp-server-time"],
         runner_fix: UVX_FIX,
+    },
+    // The worktree's own editor: buffers, LSP diagnostics, definitions, references, rename — the
+    // semantic view of the code an editor already has, instead of an agent re-deriving it from
+    // grep and a full build.
+    //
+    // `--connect auto` is what keeps this entry committable: nvim-mcp discovers the running nvim
+    // for the *current git root* by globbing sockets the `nvim-mcp` lua plugin registers, so no
+    // machine-local socket path is written anywhere. It needs that plugin in the editor's config
+    // (`require('nvim-mcp').setup{}`); without one there is simply nothing to discover and the
+    // server serves `get_targets`/`connect` instead of failing.
+    Extra {
+        name: "nvim",
+        command: "nvim-mcp",
+        args: &["--connect", "auto"],
+        runner_fix: NVIM_MCP_FIX,
     },
 ];
 
@@ -154,7 +176,7 @@ fn is_executable(p: &Path) -> bool {
 const COPILOT_WORKSPACE_MCP_FILES: &[&str] = &[".mcp.json", ".github/mcp.json"];
 
 /// The names of the **project-scoped** MCP servers the GitHub Copilot CLI would load for the repo
-/// rooted at `worktree`, with bn's own server excluded.
+/// rooted at `worktree`, with bn's own server and the curated [`EXTRAS`] excluded.
 ///
 /// `bn dispatch` feeds each name to `copilot --disable-mcp-server <name>` so an *unattended* agent
 /// boots past a failing or auth-requiring repo MCP instead of hanging on it at startup (#384). An
@@ -162,6 +184,8 @@ const COPILOT_WORKSPACE_MCP_FILES: &[&str] = &[".mcp.json", ".github/mcp.json"];
 /// MCP handshake wedges the whole session before it ever reaches its prompt. bn's own server
 /// (the conventional name `bn`, or the legacy `bn-mcp` command) is kept — it's the local
 /// `bn serve` HTTP endpoint and the source of the branch-note tools the dispatched workflow drives.
+/// The curated [`EXTRAS`] are kept for the same reason: bn wired them, they are vetted, and none
+/// of them can ask an unattended agent to authenticate.
 ///
 /// Best-effort and side-effect free: an unreadable or malformed config file is skipped (a dispatch
 /// must never fail because a repo's MCP JSON is broken). Returns a de-duplicated, sorted list.
@@ -185,7 +209,12 @@ fn collect_non_bn_servers(root: &Value, out: &mut std::collections::BTreeSet<Str
         return;
     };
     for (name, entry) in servers {
-        if !is_bn_server(name, entry) {
+        // A curated extra is one bn wired itself (`bn mcp init --with-extras`, or the dispatch
+        // setup path). Suppressing it would switch off, for exactly the unattended agents that
+        // most need them, the servers bn just finished installing — and the failure this
+        // suppression exists to prevent is an unvetted repo server wanting interactive auth,
+        // which a vetted one does not do.
+        if !is_bn_server(name, entry) && !EXTRAS.iter().any(|e| e.name == name) {
             out.insert(name.clone());
         }
     }
@@ -763,6 +792,55 @@ mod harness_arg_tests {
         assert_eq!(
             Harness::Copilot.model_arg("claude-opus-4.8"),
             Some("claude-opus-4.8")
+        );
+    }
+}
+
+#[cfg(test)]
+mod extra_tests {
+    //! The two rules that decide whether a wired extra actually reaches an agent: it must render
+    //! into the config the harness reads, and it must survive dispatch's MCP suppression.
+    use super::*;
+
+    fn extra(name: &str) -> &'static Extra {
+        EXTRAS
+            .iter()
+            .find(|e| e.name == name)
+            .expect("curated extra")
+    }
+
+    /// `--connect auto` is what keeps the nvim entry committable — a socket path here would be
+    /// machine-local, and this config is checked in.
+    #[test]
+    fn the_nvim_extra_carries_no_machine_local_path() {
+        let e = extra("nvim");
+        assert_eq!(e.command, "nvim-mcp");
+        assert_eq!(e.args, ["--connect", "auto"]);
+        for entry in [Flavor::Stdio.extra_entry(e), Flavor::Local.extra_entry(e)] {
+            let rendered = entry.to_string();
+            assert!(rendered.contains("--connect"), "{rendered}");
+            assert!(!rendered.contains('/'), "no absolute path: {rendered}");
+        }
+    }
+
+    /// A curated extra bn wired itself must not come back in the suppression list: dispatch feeds
+    /// that list to `copilot --disable-mcp-server`, which would switch the tools off for exactly
+    /// the unattended agents bn just installed them for.
+    #[test]
+    fn dispatch_does_not_suppress_the_servers_bn_wired() {
+        let cfg = json!({
+            "mcpServers": {
+                "bn": { "command": "bn", "args": ["mcp", "serve"] },
+                "nvim": { "command": "nvim-mcp", "args": ["--connect", "auto"] },
+                "sequential-thinking": { "command": "npx", "args": ["-y", "x"] },
+                "some-repo-server": { "command": "npx", "args": ["-y", "needs-auth"] },
+            }
+        });
+        let mut out = std::collections::BTreeSet::new();
+        collect_non_bn_servers(&cfg, &mut out);
+        assert_eq!(
+            out.into_iter().collect::<Vec<_>>(),
+            vec!["some-repo-server".to_string()]
         );
     }
 }

@@ -110,6 +110,16 @@ pub(crate) fn plan_restore(
             });
             continue;
         }
+        // Main is off limits — it hosts no agents and only ever gets refreshed to latest — so a
+        // crash restore reports it rather than trying and failing at launch time.
+        if bn_core::agent::is_within_main_worktree(std::path::Path::new(&row.worktree)) {
+            rejected.push(Rejected {
+                branch: row.branch.clone(),
+                worktree: row.worktree.clone(),
+                reason: "in the main worktree — hosts no agents".into(),
+            });
+            continue;
+        }
         if !matches!(row.harness.as_str(), "claude" | "copilot") {
             rejected.push(Rejected {
                 branch: row.branch.clone(),
@@ -618,6 +628,37 @@ mod tests {
         r.worktree = "/w/feature-x".into();
         let (plan, rejected) = plan_restore(&[r], &[facts_on("feature/X")], &[]);
         assert_eq!(plan.len(), 1, "{rejected:?}");
+    }
+
+    /// A repo's main checkout hosts no agents and only ever gets refreshed to latest, so crash
+    /// recovery reports it as skipped rather than restoring an agent into it.
+    #[test]
+    fn the_main_worktree_is_never_restored_into() {
+        let mut r = row("main", "claude", "s1", true);
+        r.worktree = "/home/me/projects/worktree/bn/main".into();
+        let (plan, rejected) = plan_restore(&[r], &[facts_on("main")], &[]);
+        assert!(plan.is_empty(), "{plan:?}");
+        assert!(
+            rejected[0].reason.contains("main worktree"),
+            "{:?}",
+            rejected[0]
+        );
+    }
+
+    /// The evasion that a root-only check waved through: a real recorded session at
+    /// `…/worktree/BigMono/main/packages/web-app` is an agent working in the main
+    /// checkout, and the restore planned to adopt a pane for it.
+    #[test]
+    fn a_subdirectory_of_main_is_still_main() {
+        let mut r = row("main", "claude", "s1", true);
+        r.worktree = "/home/me/projects/worktree/BigMono/main/packages/web-app".into();
+        let (plan, rejected) = plan_restore(&[r], &[facts_on("main")], &[]);
+        assert!(plan.is_empty(), "{plan:?}");
+        assert!(
+            rejected[0].reason.contains("main worktree"),
+            "{:?}",
+            rejected[0]
+        );
     }
 
     #[test]

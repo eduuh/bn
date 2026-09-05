@@ -107,16 +107,25 @@ pub(crate) fn emit_agent_activity(session: &str, limit: usize, as_json: bool) {
 
     for e in &activity.entries {
         match e.kind {
-            bn_core::agent::EntryKind::User => println!("\n\x1b[1;34myou\x1b[0m\n{}", e.text),
-            bn_core::agent::EntryKind::Agent => println!("\n\x1b[1;32magent\x1b[0m\n{}", e.text),
-            bn_core::agent::EntryKind::Tools => println!("\n\x1b[2m· {}\x1b[0m", e.summary),
+            // Speaker labels are structure, not severity, so they take the bold head and the one
+            // non-severity tint rather than borrowing a colour that elsewhere means "on fire".
+            bn_core::agent::EntryKind::User => println!("\n{}\n{}", style::head("you"), e.text),
+            bn_core::agent::EntryKind::Agent => {
+                println!("\n{}\n{}", style::accent("agent"), e.text)
+            }
+            bn_core::agent::EntryKind::Tools => {
+                println!("\n{}", style::meta(&format!("· {}", e.summary)))
+            }
         }
     }
     println!(
-        "\n\x1b[2m{} of {} entries · {}\x1b[0m",
-        activity.entries.len(),
-        activity.total,
-        activity.harness
+        "\n{}",
+        style::meta(&format!(
+            "{} of {} entries · {}",
+            activity.entries.len(),
+            activity.total,
+            activity.harness
+        ))
     );
 }
 

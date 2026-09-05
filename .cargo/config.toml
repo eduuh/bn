@@ -27,3 +27,20 @@ retry = 10
 # binaries it spawns, so plain `cargo test --workspace` (CI + `bn verify`) picks it up.
 [env]
 RUST_MIN_STACK = "8388608"
+
+# The fast inner loop. `cargo check` skips codegen and linking entirely, which is most of what a
+# debug build spends its time on once bn-core is warm. Measured on this workspace, rebuilding
+# after touching one bn-cli file:
+#
+#     cargo check --workspace     3.8 - 4.4s
+#     cargo build --workspace    11.2 - 12.9s
+#
+# Use `cargo k` while iterating on "does this compile"; use `cargo build` only when you actually
+# need to run the binary. Neither is a merge gate: clippy and the tests still decide that.
+#
+# `k` deliberately omits `--all-targets`. Adding it pulls in the test cfg of every crate, which
+# roughly doubles the work and lands it back near `cargo build` — use `cargo ka` when you want a
+# test file checked too, not by default.
+[alias]
+k = "check --workspace"
+ka = "check --workspace --all-targets"

@@ -471,11 +471,11 @@ pub(crate) fn emit_staff_board(cfg: &Config, ctx: Option<&Resolved>, as_json: bo
         // Colour the taxonomy word: red = a hard problem (missed / failed / auth), yellow = a
         // transient policy state (rate-limited / skipped), dim = quiet-by-design (silent / never /
         // off), green = a card landed. Padding is on the plain word so columns still line up.
-        let colour = match health {
-            "missed" | "fail" | "auth" => "\x1b[1;31m",
-            "rate-limited" => "\x1b[33m",
-            "ok-silent" | "skipped" | "never" | "off" => "\x1b[2m",
-            _ => "\x1b[32m",
+        let tone = match health {
+            "missed" | "fail" | "auth" => style::Tone::Danger,
+            "rate-limited" => style::Tone::Warn,
+            "ok-silent" | "skipped" | "never" | "off" => style::Tone::Meta,
+            _ => style::Tone::Ok,
         };
         let when = match (missed_since, lr) {
             (Some(slot), _) => format!("missed {} ago", ago(now - slot)),
@@ -484,10 +484,10 @@ pub(crate) fn emit_staff_board(cfg: &Config, ctx: Option<&Resolved>, as_json: bo
         };
         let mark = if unread.contains(&a.name) { " ●" } else { "" };
         println!(
-            "  {:<16} {:<20} {colour}{:<13}\x1b[0m {}{}",
+            "  {:<16} {:<20} {} {}{}",
             a.name,
             a.on_calendar.as_deref().unwrap_or(""),
-            health,
+            style::tone(tone, &format!("{health:<13}")),
             when,
             mark
         );
