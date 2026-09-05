@@ -10,6 +10,12 @@ Thumbs.db
 # Machine-local bn skills served by bn-mcp (never commit; see README "Skills" tier table)
 .bn/skills.local/
 
+# Native Agent Skills compiled from the bn tiers into a worktree (`bn wt add` seeds these so a
+# dispatched agent can reach this repo's own skills). Generated, machine-local, and re-derivable
+# with `bn skills install` — ignoring them is also what opts this repo into the seeding at all.
+.claude/skills/
+.github/skills/
+
 # bn-web frontend build + deps (embedded into the binary by build.rs when present; CI builds
 # them for releases). A source build without these compiles against the placeholder page.
 crates/bn-web/ui/node_modules/

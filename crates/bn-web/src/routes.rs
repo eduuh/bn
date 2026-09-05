@@ -180,7 +180,6 @@ pub fn router(state: AppState) -> Router {
             "/api/repos/{repo}/pool/schedule",
             post(actions::repo_pool_schedule_set),
         )
-        .route("/api/repos/{repo}/pool", post(actions::repo_pool_set))
         // Goal-note connect/disconnect (#564) — native in-process daily-goal writes:
         .route("/api/goals/{id}/notes", post(actions::goal_note_connect))
         .route(

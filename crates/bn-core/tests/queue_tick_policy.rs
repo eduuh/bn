@@ -111,6 +111,12 @@ struct Fixture {
     pauses: PauseState,
     mandatory_warming: bool,
     in_flight: Vec<InFlight>,
+    /// Empty by default: a machine with no run history estimates every entry at the flat default,
+    /// which is exactly how the queue ranked before it learned anything.
+    durations: bn_core::queue::durations::Durations,
+    /// `None` by default: a machine with no deadline window admits work exactly as it did before
+    /// the fit gate existed, which is what keeps every case below unchanged.
+    horizon: Option<bn_core::queue::tick::Horizon>,
 }
 
 impl Default for Fixture {
@@ -131,6 +137,8 @@ impl Default for Fixture {
             pauses: PauseState::default(),
             mandatory_warming: false,
             in_flight: Vec::new(),
+            durations: bn_core::queue::durations::Durations::default(),
+            horizon: None,
         }
     }
 }
@@ -142,6 +150,8 @@ impl Fixture {
             machine: "testbox",
             pending: &self.pending,
             in_flight: &self.in_flight,
+            durations: &self.durations,
+            horizon: self.horizon.as_ref(),
             nodes: &self.nodes,
             caps: &self.caps,
             observed: &self.observed,
@@ -672,6 +682,8 @@ fn mandatory_warming_drains_existing_work_without_starting_more() {
             node: None,
             touches: Vec::new(),
             started_at: NOW - 60,
+            // The queue started this, so the queue may wait for it.
+            queue_owned: true,
         }],
         ..Default::default()
     };
@@ -685,6 +697,96 @@ fn mandatory_warming_drains_existing_work_without_starting_more() {
         reason_for(&plan, "pool-warm"),
         Some(DeferReason::Capacity(_))
     ));
+}
+
+/// The other half of the drain, and the reason the machine stopped for five days.
+///
+/// Draining before a warm is a preference. It was written as an absolute — wait until `in_flight`
+/// is empty — and `in_flight` counts live agent sessions the queue never leased. On a machine where
+/// somebody keeps an agent open, the condition is never true, so the warm never started and never
+/// released the admission it had already taken.
+#[test]
+fn the_warm_stops_waiting_for_a_drain_that_never_comes() {
+    let fx = Fixture {
+        // Freshly enqueued: the drain grace has not begun to elapse, so if this starts it is
+        // because the session was never something to wait for — not because time ran out.
+        pending: vec![heavy_job("pool-warm", -50)],
+        caps: caps(1, Some(1)),
+        mandatory_warming: true,
+        in_flight: vec![InFlight {
+            repo: "repo".to_string(),
+            id: "an-agent-somebody-left-open".to_string(),
+            kind: BacklogKind::Ship,
+            work_class: WorkClass::Coding,
+            heavy: false,
+            node: None,
+            touches: Vec::new(),
+            started_at: NOW - 60,
+            // Noticed, not launched — the case that stopped the machine for five days.
+            queue_owned: false,
+        }],
+        ..Default::default()
+    };
+    assert_eq!(started(&fx.plan()), vec!["pool-warm"]);
+}
+
+/// And the grace still covers the case the drain *can* legitimately wait for: the queue's own work,
+/// wedged. Owned work holds the warm until the grace elapses, then stops holding it.
+#[test]
+fn even_the_queues_own_work_only_holds_the_warm_for_so_long() {
+    let owned = |id: &str| InFlight {
+        repo: "repo".to_string(),
+        id: id.to_string(),
+        kind: BacklogKind::Ship,
+        work_class: WorkClass::Coding,
+        heavy: false,
+        node: None,
+        touches: Vec::new(),
+        started_at: NOW - 60,
+        queue_owned: true,
+    };
+    let mut patient = heavy_job("pool-warm", -50);
+    patient.added_at = NOW - bn_core::queue::tick::WARM_DRAIN_GRACE_SECS - 1;
+    let fx = Fixture {
+        pending: vec![patient],
+        caps: caps(1, Some(1)),
+        mandatory_warming: true,
+        in_flight: vec![owned("a-queued-job")],
+        ..Default::default()
+    };
+    assert_eq!(started(&fx.plan()), vec!["pool-warm"]);
+}
+
+/// Recovery is exempt from the warming latch for exactly the reason it is exempt from pause.
+///
+/// This is the edge that closed the cycle. `agent-supervise` reclaims the dead leases that leave
+/// work stuck in flight — which is the very condition the warm's drain waits on. Holding it here
+/// meant the only pass that could clear the blocker was itself blocked by it.
+#[test]
+fn mandatory_warming_does_not_hold_recovery_work() {
+    let mut supervise = pending(
+        "agent-supervise",
+        BacklogKind::Cron,
+        50,
+        ExecSpec::Job {
+            job: "agent-supervise".to_string(),
+            repo: None,
+            branch: None,
+        },
+    );
+    supervise.source = "cron:agent-supervise".to_string();
+    supervise.recovery = true;
+    let fx = Fixture {
+        pending: vec![supervise, heavy_job("pool-warm", -50)],
+        mandatory_warming: true,
+        ..Default::default()
+    };
+    let plan = fx.plan();
+    assert!(
+        started(&plan).contains(&"agent-supervise".to_string()),
+        "recovery must run while warming owns admission, got {:?}",
+        started(&plan)
+    );
 }
 
 #[test]

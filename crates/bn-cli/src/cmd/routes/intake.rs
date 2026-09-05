@@ -185,6 +185,8 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
                 attach,
                 &refs,
                 stage,
+                // A typed `bn dispatch` always renders its seed from a workflow skill.
+                None,
                 json,
             );
         }

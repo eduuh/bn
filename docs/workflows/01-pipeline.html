@@ -1,0 +1,421 @@
+<meta charset="utf-8">
+<title>Pipeline and Gates</title>
+<link rel="stylesheet" href="assets/bn-docs.css">
+
+<div class="wrap">
+
+<aside class="rail">
+  <a class="rail__brand" href="index.html"><b>bn</b> workflow notes</a>
+  <p class="rail__tag">How the machine actually runs</p>
+  <nav>
+    <ol>
+      <li><a href="index.html">Overview</a></li>
+      <li><a href="01-pipeline.html" aria-current="page">The pipeline &amp; its gates</a></li>
+      <li><a href="02-dispatch.html">Dispatch &amp; isolation</a></li>
+      <li><a href="03-state.html">What bn writes down</a></li>
+      <li><a href="04-catalog.html">The prompt catalog</a></li>
+      <li><a href="05-surfaces.html">Surfaces</a></li>
+    </ol>
+  </nav>
+</aside>
+
+<main>
+
+<p class="eyebrow">Note 02</p>
+<h1>The pipeline and its gates</h1>
+
+<p class="standfirst">
+Nine stages are declared. Three are driven. Two unrelated mechanisms are both called
+"gate", and only one of them can stop a transition. Getting these three facts straight
+is most of what it takes to read the pipeline code correctly.
+</p>
+
+<h2>The nine stages</h2>
+
+<p>
+<code>Stage</code> is a nine-variant enum ordered pickup→learn so that <code>Ord</code>
+comparisons and <code>next()</code> follow the flow. <code>Stage::DEFAULT</code> is
+<code>Pickup</code> — what a worktree with no recorded transition folds to.
+<span class="src">crates/bn-core/src/pipeline/stage.rs:23, :46, :59</span>
+</p>
+
+<div class="scroller">
+<table>
+<thead>
+<tr><th>#</th><th>Stage</th><th>What happens</th><th>Driven by</th></tr>
+</thead>
+<tbody>
+<tr><td>1</td><td><code>pickup</code></td><td>Task leased into a fresh, uniquely-branched worktree</td><td>—</td></tr>
+<tr><td>2</td><td><code>investigate</code></td><td>Research problem + codebase; write findings for the planner</td><td><strong>sweep</strong></td></tr>
+<tr><td>3</td><td><code>plan</code></td><td>Consume findings, propose fix + done-when, submit for review</td><td><strong>sweep</strong></td></tr>
+<tr><td>4</td><td><code>consensus</code></td><td>Reviewer agents vote; quorum advances, no-consensus pulls in a human</td><td>—</td></tr>
+<tr><td>5</td><td><code>execute</code></td><td>Implement exactly the agreed plan</td><td><strong>sweep</strong></td></tr>
+<tr><td>6</td><td><code>validate</code></td><td><code>bn verify</code> — build + test + lint, re-run after any rebase</td><td>—</td></tr>
+<tr><td>7</td><td><code>critique</code></td><td>Fresh-context adversarial diff review vs the acceptance criteria</td><td><strong>critic loop</strong></td></tr>
+<tr><td>8</td><td><code>ship</code></td><td>Open / mark-ready the PR; orchestrator lands it on merge</td><td>—</td></tr>
+<tr><td>9</td><td><code>learn</code></td><td>Fold the outcome + reflections back</td><td>—</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>
+The descriptions come from the enum's own doc lines.
+<span class="src">crates/bn-core/src/pipeline/stage.rs:24-41</span>
+</p>
+
+<p>
+Everything in the "driven by" column had to be established separately, because the enum
+does not encode it.
+</p>
+
+<h3>There is no exit predicate</h3>
+
+<p>
+Nothing in <code>Stage</code> says when a stage is finished. A stage changes when a caller
+invokes <code>stage::transition</code>. Only the <code>SWEPT</code> three have machinery
+deciding completion — their backlog entry reaching <code>Done</code> — and critique exits on
+the critic's verdict.
+<span class="src">crates/bn-core/src/pipeline/sweep.rs:40, :83-96 · critic.rs:42</span>
+</p>
+
+<p>
+The other five are reachable only by hand. <code>Stage::Consensus</code> appears exactly once
+outside <code>stage.rs</code>, mapping the <code>review</code> attention type; <code>Pickup</code>,
+<code>Validate</code>, <code>Ship</code> and <code>Learn</code> appear nowhere else at all.
+<span class="src">crates/bn-cli/src/cmd/attn.rs:669</span>
+</p>
+
+<div class="note">
+<span class="note__label">Why the sweep stops at execute</span>
+<p>
+Not an oversight. Validate, critique and ship each own their own machinery; driving them
+from the sweep as well would give a single step two owners.
+<span class="src">crates/bn-core/src/pipeline/sweep.rs:36-40</span>
+</p>
+</div>
+
+<h2>Two things called "gate"</h2>
+
+<p>
+This is the single most misread part of the pipeline. The two gates sit in different
+places, are checked by different code, and fail in different ways.
+</p>
+
+<figure>
+<svg viewBox="0 0 900 300" role="img" aria-labelledby="gates-title">
+  <title id="gates-title">The SMART gate on entry to investigate, and the hold gate inside the sweep</title>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11">
+
+    <!-- ============ GATE A ============ -->
+    <text x="8" y="20" font-size="10.5" fill="var(--accent)">GATE A — SMART, in stage::transition</text>
+
+    <rect x="8" y="34" width="104" height="46" rx="5" fill="var(--card)" stroke="var(--rule)"/>
+    <text x="60" y="62" text-anchor="middle" fill="var(--ink-mid)">any stage</text>
+
+    <path d="M112 57 L166 57" stroke="var(--rule)" stroke-width="1.5" fill="none"/>
+
+    <!-- valve -->
+    <polygon points="168,38 200,57 168,76" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+    <text x="184" y="94" text-anchor="middle" font-size="9.5" fill="var(--accent)">SMART</text>
+
+    <path d="M202 57 L250 57" stroke="var(--rule)" stroke-width="1.5" fill="none"/>
+
+    <rect x="252" y="34" width="104" height="46" rx="5" fill="var(--card)" stroke="var(--accent)" stroke-width="1.5"/>
+    <text x="304" y="62" text-anchor="middle" fill="var(--ink)">investigate</text>
+
+    <text x="372" y="52" font-size="10" fill="var(--ink-muted)">only this destination is gated</text>
+    <text x="372" y="68" font-size="10" fill="var(--ink-muted)">— keyed on where you land, not the edge</text>
+
+    <!-- refusal branch -->
+    <path d="M184 78 L184 112" stroke="var(--warn)" stroke-width="1.5" fill="none" stroke-dasharray="4 3"/>
+    <polygon points="184,114 180,106 188,106" fill="var(--warn)"/>
+    <rect x="58" y="116" width="262" height="58" rx="5" fill="var(--warn-soft)" stroke="var(--warn)"/>
+    <text x="70" y="134" font-size="10" fill="var(--warn)">REFUSED — nothing is written</text>
+    <text x="70" y="149" font-size="9.5" fill="var(--ink-mid)">stamp smart:fail · raise attn:smart:&lt;id&gt;</text>
+    <text x="70" y="164" font-size="9.5" fill="var(--ink-mid)">3 tries → smart:stuck → re-raised as manual</text>
+
+    <!-- ============ GATE B ============ -->
+    <text x="8" y="212" font-size="10.5" fill="var(--teal)">GATE B — GatePolicy::Hold, inside sweep::decide</text>
+
+    <rect x="8" y="226" width="126" height="46" rx="5" fill="var(--card)" stroke="var(--rule)"/>
+    <text x="71" y="254" text-anchor="middle" fill="var(--ink-mid)">sweep::decide</text>
+
+    <path d="M134 249 L188 249" stroke="var(--rule)" stroke-width="1.5" fill="none"/>
+
+    <rect x="190" y="230" width="16" height="38" rx="2" fill="var(--teal-soft)" stroke="var(--teal)" stroke-width="1.5"/>
+    <text x="198" y="284" text-anchor="middle" font-size="9.5" fill="var(--teal)">hold</text>
+
+    <path d="M208 249 L262 249" stroke="var(--rule)" stroke-width="1.5" fill="none"/>
+    <rect x="264" y="226" width="126" height="46" rx="5" fill="var(--card)" stroke="var(--rule)"/>
+    <text x="327" y="254" text-anchor="middle" fill="var(--ink-mid)">enqueue stage</text>
+
+    <text x="408" y="238" font-size="10" fill="var(--ink-muted)">released only by an approved plan review</text>
+    <text x="408" y="254" font-size="10" fill="var(--ink-muted)">blocks the sweep — and nothing else</text>
+    <text x="408" y="270" font-size="10" fill="var(--ink-faint)">a hand-typed bn dispatch walks straight past it</text>
+  </g>
+</svg>
+<figcaption>
+Gate A refuses a write. Gate B refuses an enqueue. Only Gate A is enforced inside
+<code>stage::transition</code>.
+</figcaption>
+</figure>
+
+<h3>Gate A — the SMART gate</h3>
+
+<p>
+<code>is_smart_gated</code> is true for exactly one destination: <code>Stage::Investigate</code>.
+It keys on where the transition lands, not on the <code>(from, to)</code> edge.
+<span class="src">crates/bn-core/src/pipeline/gate.rs:98-100</span>
+</p>
+
+<p>
+It is blocking, and it is the only enforcement point in the whole state machine.
+<code>transition</code> refuses <em>before writing anything</em> — the note keeps its old
+stage and no event is appended.
+<span class="src">crates/bn-core/src/pipeline/stage.rs:275-293</span>
+A refusal stamps <code>smart:fail</code>, bumps <code>smart_tries</code>, and raises one
+idempotent attention item keyed <code>attn:smart:&lt;id&gt;</code> carrying gap codes and
+suggested fixes. After <code>MAX_IMPROVE_TRIES = 3</code>, or immediately if the verdict
+needs a human, the task goes <code>smart:stuck</code> and the item is re-raised as manual.
+<span class="src">gate.rs:32, :198, :279-371</span>
+</p>
+
+<p>
+The judgement itself is <code>smart::check</code> over five dimensions, returning stable gap
+codes — <code>no_repo</code>, <code>too_terse</code>, <code>vague_verb</code>,
+<code>no_done_when</code>, <code>no_estimate</code>, <code>too_large</code>,
+<code>blocked</code>, <code>not_relevant</code>, <code>no_date</code>, <code>stale_date</code>.
+<span class="src">crates/bn-core/src/smart.rs:206-340</span>
+</p>
+
+<p>Three cases are admitted without judgement: an ungated stage, an <code>Ungoverned</code>
+worktree with no governing task, and machine-minted work.
+<span class="src">gate.rs:44-49, :160</span></p>
+
+<div class="note">
+<span class="note__label">Why the three-strike short-circuit exists</span>
+<p>
+A real incident: one task accumulated 3,899 tries, driving roughly one store write every
+23 seconds.
+<span class="src">crates/bn-core/src/pipeline/gate.rs:173-191</span>
+</p>
+</div>
+
+<h3>Gate B — the hold policy</h3>
+
+<p>
+<code>GatePolicy::{Auto, Hold}</code> is the human gate. It is enforced in exactly one place:
+<code>sweep::decide</code> refuses to enqueue a held stage until a plan review is approved,
+returning <code>Advance::HeldForReview</code>.
+<span class="src">pipeline/sweep.rs:92-94 · crates/bn-cli/src/cmd/pipeline_sweep.rs:63-68</span>
+</p>
+
+<p>
+So a hold blocks the sweep and nothing else — a hand-typed <code>bn dispatch</code> or
+<code>bn pipeline set</code> does not see it. A third de-facto filter sits alongside: the
+sweep only admits tasks already stamped <code>smart:ok</code>.
+<span class="src">pipeline_sweep.rs:203</span>
+</p>
+
+<h2>Routing and profiles</h2>
+
+<p>
+<code>route::classify</code> is a pure function returning a <code>RoutePlan</code>. Its trust
+boundary is expressed as a type: <code>Declared</code> inputs (bn-authored — estimate,
+done-when count, <code>smart_tries</code>, pin) may narrow <em>or</em> widen the route;
+<code>Observed</code> inputs (labels, title shape, evidence count, blockers) are
+<strong>widening only</strong>, and a test asserts it.
+<span class="src">pipeline/route.rs:79-106, :413</span>
+</p>
+
+<div class="scroller">
+<table>
+<thead>
+<tr><th>Route</th><th>Stages</th><th>Fanout</th><th>Reviewers</th><th>Critic rounds</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Mechanical</code></td><td>investigate, execute</td><td>0</td><td>0</td><td>0</td></tr>
+<tr><td><code>Standard</code></td><td>investigate, plan, execute</td><td>3</td><td>—</td><td>3</td></tr>
+<tr><td><code>Deep</code></td><td>investigate, plan, execute, critique</td><td>5</td><td>3</td><td>—</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>
+Thresholds: <code>DEEP_EST_MINUTES = 180</code>, <code>MECHANICAL_EST_MINUTES = 30</code>;
+five or more done-when criteria, two or more <code>smart_tries</code>, or three or more
+evidence items all push to Deep. Any <code>guarded</code> task — one with non-empty
+<code>risk_reasons</code> — appends critique, forces <code>Hold</code>, and floors reviewers
+and rounds at 3.
+<span class="src">route.rs:156-214, :257-292</span>
+</p>
+
+<div class="note note--gap">
+<span class="note__label">Nothing consumes this yet</span>
+<p>
+<code>RoutePlan</code> is computed and serialized by <code>bn pipeline route</code>, but no
+Rust caller was found that reads <code>reviewers</code> or <code>critic_rounds</code>. The
+module says so itself.
+<span class="src">pipeline/route.rs:8-9 · cmd/pipeline/route_view.rs:3-5</span>
+</p>
+</div>
+
+<h3>What a launcher actually reads</h3>
+
+<p>
+<code>profile::StageProfile</code> is the thing consulted at launch: model, effort, harness,
+skill, references, gate — plus a <code>Provenance</code> naming which layer won. Six layers
+fold from low to high:
+</p>
+
+<pre><code>built-in defaults
+  → [pipeline.stages.&lt;S&gt;]
+    → [repo.&lt;R&gt;.pipeline.stages.&lt;S&gt;]
+      → task meta
+        → note decision
+          → CLI flag</code></pre>
+
+<p>
+Built-in model choices: plan and critique get <code>claude-opus-4.8</code> at
+<code>max</code> effort, investigate gets <code>gpt-5.4</code> at <code>high</code>,
+everything else <code>gpt-5.4-mini</code> at <code>medium</code>.
+<span class="src">pipeline/profile.rs:176-182, :221-252</span>
+</p>
+
+<h3>The gate ratchet</h3>
+
+<p>
+One field breaks the last-writer-wins rule. Every layer below the CLI may only tighten
+<code>auto → hold</code>; an attempt to loosen is recorded in <code>gate_ratcheted_from</code>
+rather than applied.
+<span class="src">profile.rs:254-272</span>
+</p>
+
+<p>
+The reason is concrete and worth stating plainly: <code>bn_add</code> exposes the
+<code>decision</code> section over MCP. Without the ratchet, an agent sitting behind a hold
+could write <code>pipeline: execute gate=auto</code> into its own note and release itself.
+<span class="src">profile.rs:19-24</span>
+</p>
+
+<h2>How a transition is recorded</h2>
+
+<p>
+Two records, and they do not travel together. The durable current stage is note frontmatter
+(<code>stage: Option&lt;Stage&gt;</code>); every transition is <em>also</em> appended to the
+event log as kind <code>pipeline_stage</code>.
+<span class="src">crates/bn-core/src/model.rs:139 · pipeline/stage.rs:18, :183-189</span>
+</p>
+
+<p>
+Order inside <code>transition</code>: acquire the note lock, gate-check, save the note,
+append the event.
+<span class="src">stage.rs:272-293</span>
+Resolution for a legacy note is a three-step fallback — frontmatter, else the latest event,
+else <code>Stage::DEFAULT</code>. The CLI labels that last case as
+<code>(default — none recorded)</code> rather than presenting a guess as a fact.
+<span class="src">stage.rs:222-226 · cmd/pipeline/target.rs:23-33</span>
+</p>
+
+<div class="note">
+<span class="note__label">The history is machine-local</span>
+<p>
+The event log lives at <code>state_dir()/events.jsonl</code>, and <code>state_dir()</code>
+is <code>personal_root/&lt;machine&gt;/state</code>. Frontmatter syncs with the notes repo;
+<strong>the transition history does not travel between machines.</strong>
+<span class="src">crates/bn-core/src/events.rs:120 · resolver/paths.rs:261-262</span>
+</p>
+</div>
+
+<h2>The critic stage</h2>
+
+<p>
+"Fresh context" here is not a convention — it is enforced by a function signature.
+<code>critic_packet(diff, done_when, pr_url)</code> has no parameter through which the
+approved plan could leak.
+<span class="src">pipeline/critic.rs:1-8, :73</span>
+</p>
+
+<p>Mechanically, four separate measures:</p>
+
+<ul>
+<li>A new branch <code>critic/&lt;exec-branch&gt;</code> is cut off the execution head into
+its own worktree. <span class="src">crates/bn-cli/src/cmd/critic.rs:138-143</span></li>
+<li>The diff is computed by the driver, not the agent, as three-dot
+<code>base...HEAD</code>. <span class="src">critic.rs:157-160</span></li>
+<li>A <strong>plan-free note</strong> is seeded whose goal is only "critique this diff", so
+the critic cannot recover the plan with <code>bn --cat</code>.
+<span class="src">critic.rs:161-181</span></li>
+<li>The harness launches <code>--fresh</code> with a brand-new session id and zero prior
+turns. <span class="src">critic.rs:227-232</span></li>
+</ul>
+
+<p>
+The loop is bounded at <code>DEFAULT_MAX_ITERATIONS = 3</code>: a FAIL on rounds 1 and 2
+sends it back to execute, a FAIL on round 3 escalates to a planning attention item.
+<span class="src">pipeline/critic.rs:12, :42-48</span>
+</p>
+
+<p>
+The iteration counter is stored nowhere. It is parsed back out of the live attention item's
+title, explicitly so that no attention-schema change was needed.
+<span class="src">critic.rs:52-67</span>
+</p>
+
+<h2>Things that will mislead you</h2>
+
+<ul>
+<li><strong>The queue is the state machine.</strong> For the swept arc, a stage's backlog
+entry <em>is</em> its state; <code>pipeline_stage</code> events are a parallel ledger, not
+the source of truth. <code>Cancelled</code> reads as "never ran" and gets re-queued;
+<code>Failed</code> stops the walk. <span class="src">sweep.rs:11-16, :87-96</span></li>
+
+<li><strong>Two <code>default_skill</code> functions disagree, on purpose.</strong>
+<code>Stage::default_skill</code> maps plan→<code>plan-investigate</code> and
+execute→<code>execute</code>; <code>sweep::default_skill</code> maps plan→<code>plan</code>
+and execute→<code>plan-work</code>. <span class="src">stage.rs:103-112 vs sweep.rs:120-127</span></li>
+
+<li><strong>Two lowercase vocabularies.</strong> <code>Stage</code> (nine, durable) versus
+<code>status::Phase</code> (four, inferred, persisted nowhere). The JSON field is named
+<code>phase</code> precisely so <code>stage</code> stays unambiguous.
+<span class="src">status.rs:7-19</span></li>
+
+<li><strong>Mechanical keeps investigate only to preserve a gate.</strong> Dropping it would
+delete the SMART check from the dispatch path; a test pins this.
+<span class="src">route.rs:258-261, :386</span></li>
+
+<li><strong>The board shows the skill that ran, not the stage's default.</strong> It reads
+back a <code>skill:</code> note decision, because printing the default would be "a confident
+lie". <span class="src">stage.rs:228-252</span></li>
+
+<li><strong><code>attn start</code> can set a stage.</strong> It maps an attention
+<code>task_type</code> onto a stage, so a <code>review</code> item lands the worktree in
+<code>consensus</code>. <span class="src">crates/bn-cli/src/cmd/attn.rs:665-673</span></li>
+</ul>
+
+<h2>Not verified</h2>
+
+<ul>
+<li>Exit criteria for pickup, consensus, validate, ship and learn are taken from doc
+comments only — no code was found that enters or leaves them. Non-Rust drivers were not
+exhaustively searched beyond one grep of <code>*.md</code>, which found only
+<code>config/prompts/plan.md:41</code>.</li>
+<li><code>profile.rs:105</code> and <code>resolver/config.rs:964</code> reference
+<code>bn pipeline preview</code>, but <code>PipelineCmd</code> has no <code>Preview</code>
+variant. Likely doc drift; not confirmed whether it ever shipped.</li>
+<li><code>gate.rs:96-97</code> claims the hold policy is "asked after this one; see
+<code>stage::transition</code> for the ordering", but <code>transition</code> checks only the
+SMART gate. Either the comment is stale or the ordering is intended and unimplemented.</li>
+<li>Consensus and quorum were not traced end to end — only that
+<code>dispatch_plan_reviewers</code> defaults to 3 with a strict-majority quorum
+(<code>plan_review.rs:24</code>, <code>:516</code>).</li>
+</ul>
+
+<div class="foot">
+  <a href="index.html">← Overview</a>
+  <a href="02-dispatch.html">Next: dispatch &amp; isolation →</a>
+</div>
+
+</main>
+</div>

@@ -1028,7 +1028,6 @@ fn open_worktree(cfg: &Config, roots: &Roots, r: &str, branch: &str) {
                 crate::picker::hold();
                 return;
             }
-            crate::wt_pool::DirectLease::Unpooled => {}
         }
     }
 
@@ -1054,11 +1053,11 @@ fn open_worktree(cfg: &Config, roots: &Roots, r: &str, branch: &str) {
     goto_session(&sess);
 }
 
-/// Whether a new branch on `ref` should lease a warm pool slot instead of a cold worktree: an
-/// untagged primary-root ref whose repo is in the pools config (`~/.config/wt/pools`). Tagged /
-/// `--root win` refs keep the cold path — pools are a primary-root, heavy-monorepo concept.
+/// Whether a new branch on `ref` should lease a warm pool slot instead of a cold worktree: any
+/// untagged primary-root ref, since every repo pools now. Tagged / `--root win` refs keep the cold
+/// path — pools are a primary-root, heavy-monorepo concept.
 fn pool_eligible(roots: &Roots, r: &str) -> bool {
-    ref_tag(r).is_empty() && !roots.win_scoped && bn_core::pool::pool_size(ref_repo(r)).is_some()
+    ref_tag(r).is_empty() && !roots.win_scoped
 }
 
 /// Clone `<url>` into the bare+worktree layout via the native `bn wt clone`, then open it. Under
@@ -1168,7 +1167,7 @@ fn build_sub_rows(
     }
 
     let pool_status = if bare && pool_eligible(roots, name) {
-        bn_core::pool::pool_status(cfg, repo)
+        Some(bn_core::pool::pool_status(cfg, repo))
     } else {
         None
     };
@@ -1544,11 +1543,11 @@ fn rm_worktree(cfg: &Config, roots: &Roots, project: &str, arg: &str) {
 
 /// `ctrl-w` handler: warm the focused repo's pool up to its configured size via `bn wt pool warm`
 /// (which, inside tmux, spawns a `pool-warm` window to build in — so this returns promptly and the
-/// picker can reload). Refuses a repo that isn't pooled, pointing at the opt-in config.
+/// picker can reload). Refuses only the refs pools don't apply to: tagged and `--root win` ones.
 fn warm_pool(roots: &Roots, project: &str) {
     let repo = ref_repo(project);
     if !pool_eligible(roots, project) {
-        eprintln!("✗ {repo} isn't pooled — add it to ~/.config/wt/pools first");
+        eprintln!("✗ {repo} takes the cold path — pools are a primary-root, untagged concept");
         crate::picker::hold();
         return;
     }
@@ -1576,11 +1575,7 @@ fn release_pool(cfg: &Config, roots: &Roots, project: &str, arg: &str) {
         return;
     }
     let repo = ref_repo(project);
-    let Some(status) = bn_core::pool::pool_status(cfg, repo) else {
-        eprintln!("✗ {repo} isn't pooled");
-        crate::picker::hold();
-        return;
-    };
+    let status = bn_core::pool::pool_status(cfg, repo);
     let Some(slot) = status
         .slots
         .iter()

@@ -304,20 +304,41 @@ impl Harness {
         }
     }
 
-    /// The per-harness "yolo" bypass flags that skip the interactive tool/path approval prompts, so
-    /// an unattended/dispatched agent runs without blocking on a permission picker. Single source of
-    /// truth: every launch site (interactive, `-p --resume` steer, staff run, review lane) equips
-    /// the harness through here so the bypass flag set can never drift between call sites.
+    /// The per-harness autonomy flags: skip the interactive tool-approval prompts, so an
+    /// unattended/dispatched agent runs without blocking on a permission picker, **while keeping
+    /// the harness's working-directory boundary intact**. Single source of truth: every launch site
+    /// (interactive, `-p --resume` steer, staff run, review lane) equips the harness through here
+    /// so the flag set can never drift between call sites.
     ///
-    /// SECURITY: these grant a blanket tool/path bypass and must only be applied to trusted,
+    /// These deliberately stop short of a *path* bypass, which is a different thing from a tool
+    /// bypass and was the more dangerous half. Measured against both CLIs:
+    ///
+    /// | | Bash in cwd | Edit in cwd | read outside cwd |
+    /// |---|---|---|---|
+    /// | `--dangerously-skip-permissions` | yes | yes | **yes — roams the whole filesystem** |
+    /// | `--permission-mode dontAsk` | no | no | no |
+    /// | `--permission-mode acceptEdits` | yes | yes | no |
+    ///
+    /// So Claude takes `acceptEdits`: an agent still works freely inside its worktree, but a
+    /// `Read` — or a `cat` shelled out to dodge one — outside it is refused. Copilot reaches the
+    /// same place by keeping `--allow-all-tools` and dropping `--allow-all-paths`, whose own help
+    /// text is "disable file path verification". Widen either deliberately with `--add-dir`, which
+    /// both CLIs spell the same way; see [`crate::agent`]'s launch path for what bn adds by default.
+    ///
+    /// SECURITY: these still grant a blanket *tool* bypass and must only be applied to trusted,
     /// self-authored runs — never to a launch that ingests untrusted content (e.g. a review of an
-    /// external PR), where a prompt-injected file could otherwise run arbitrary commands. The gate
-    /// stays with the caller; this only defines *what* the bypass is.
-    pub fn yolo_args(self) -> &'static [&'static str] {
+    /// external PR), where a prompt-injected file could otherwise run arbitrary commands inside the
+    /// worktree. The gate stays with the caller; this only defines *what* the autonomy is.
+    pub fn autonomy_args(self) -> &'static [&'static str] {
         match self {
-            Harness::Copilot => &["--allow-all-tools", "--allow-all-paths"],
-            Harness::Claude => &["--dangerously-skip-permissions"],
+            Harness::Copilot => &["--allow-all-tools"],
+            Harness::Claude => &["--permission-mode", "acceptEdits"],
         }
+    }
+
+    /// The flag each CLI uses to widen the allowed working set by one directory.
+    pub fn add_dir_flag(self) -> &'static str {
+        "--add-dir"
     }
 
     /// The MCP-config files to write — one per editor that reads a different file or expects a

@@ -1,8 +1,13 @@
-//! Review **specialists** — repo-scoped PR-review experts that bn *compiles and installs* as
-//! native Copilot CLI / Claude Code custom agents, so a running Copilot/Claude session discovers
-//! them (via `/agent`) and can delegate to them. A specialist is authored as an ordinary
-//! `agents/<name>.md` (see [`crate::agents`]) with a `repo:` field; its `references:` docs are
-//! mined from real PR review comments and inlined into the compiled agent so it is self-contained.
+//! **Native agents** — Markdown agents that bn *compiles and installs* as native Copilot CLI /
+//! Claude Code custom agents, so a running Copilot/Claude session discovers them (via `/agent`)
+//! and can delegate to them.
+//!
+//! Review **specialists** are the original case and still the default one: a specialist is
+//! authored as an ordinary `agents/<name>.md` (see [`crate::agents`]) with a `repo:` field, and
+//! its `references:` docs are mined from real PR review comments and inlined into the compiled
+//! agent so it is self-contained. Any *other* kind of agent publishes here too by declaring
+//! `worlds:` — see [`crate::agents::AgentDef::publishes_natively`] for why that opt-in is
+//! explicit rather than automatic.
 //!
 //! This is the agent analogue of [`crate::skills`]' native-skill machinery and deliberately
 //! mirrors it: a managed-marker guard refuses to clobber user-authored agent files, stale
@@ -183,18 +188,23 @@ pub(crate) fn yaml_scalar(s: &str) -> String {
     }
 }
 
-/// The one-line description written into the compiled agent's frontmatter — the specialist's own
-/// `description:`, or a synthesized fallback naming its gated repo (Copilot requires it).
+/// The one-line description written into the compiled agent's frontmatter — the agent's own
+/// `description:`, or a synthesized fallback (Copilot requires the field to be present).
+///
+/// The fallback is kind-aware. A specialist's is the PR-review sentence naming its gated repo;
+/// anything else gets a neutral one, because a non-specialist that publishes natively is not a
+/// reviewer and telling a harness it reviews pull requests would be a lie the picker repeats.
 fn effective_description(spec: &AgentDef) -> String {
     match spec.description.as_deref().map(str::trim) {
         Some(d) if !d.is_empty() => d.to_string(),
-        _ => {
+        _ if spec.is_specialist() => {
             let repo = spec.repo.as_deref().unwrap_or("this repo");
             format!(
                 "Reviews {repo} pull requests against standards mined from merged PRs. Use for \
                  {repo} PR review."
             )
         }
+        _ => format!("bn {} agent: {}.", spec.kind.label(), spec.name),
     }
 }
 
@@ -331,9 +341,15 @@ pub fn resolve_refs(spec: &AgentDef) -> Vec<ResolvedRef> {
         .collect()
 }
 
-/// The specialists that should be materialized for `scope`: every discovered `is_specialist()`
-/// agent for a global install; only those gated to the current repo for a repo-scoped install.
-fn desired_specialists(
+/// The agents that should be materialized for `scope`: every discovered
+/// [`AgentDef::publishes_natively`] agent for a global install; only those gated to the current
+/// repo for a repo-scoped install.
+///
+/// The repo-scoped half is the specialist's `repo:` gate specifically. An agent that publishes
+/// without one is global-only — it belongs to the person, not to a checkout — and the explicit
+/// `is_some()` is what keeps it that way: without it a `None == None` comparison would match
+/// every repo-less agent into a repo install whenever the context could not be resolved.
+fn desired_native_agents(
     cfg: &Config,
     ctx: Option<&Resolved>,
     scope: NativeScope,
@@ -342,12 +358,22 @@ fn desired_specialists(
     Ok(crate::agents::discover(cfg, ctx)
         .map_err(|error| error.to_string())?
         .into_iter()
-        .filter(|a| a.is_specialist())
-        .filter(|a| match scope {
-            NativeScope::Global => true,
-            NativeScope::Repo => a.repo.as_deref() == repo,
-        })
+        .filter(|a| a.publishes_natively())
+        .filter(|a| in_scope(a, scope, repo))
         .collect())
+}
+
+/// Whether a publishing agent belongs in a `scope` install for the repo `repo`.
+///
+/// Split out from [`desired_native_agents`] because the repo half carries the one rule that is
+/// easy to regress and impossible to see in an integration test: `repo.is_some()`. Without it a
+/// repo-less agent (every non-specialist that publishes) compares `None == None` against an
+/// unresolvable context and installs itself into whatever checkout happened to ask.
+fn in_scope(agent: &AgentDef, scope: NativeScope, repo: Option<&str>) -> bool {
+    match scope {
+        NativeScope::Global => true,
+        NativeScope::Repo => agent.repo.is_some() && agent.repo.as_deref() == repo,
+    }
 }
 
 /// Materialize the discovered specialists as native custom agents for the requested harnesses.
@@ -370,7 +396,7 @@ pub fn install_native_agents(
         NativeScope::Global => base_dir.to_path_buf(),
     };
 
-    let specialists = desired_specialists(cfg, ctx, scope)?;
+    let specialists = desired_native_agents(cfg, ctx, scope)?;
     for spec in &specialists {
         validate_specialist_name(&spec.name)?;
     }
@@ -613,4 +639,44 @@ pub fn scaffold(
     std::fs::write(&path, format!("{front}{body}"))
         .map_err(|e| format!("write {}: {e}", path.display()))?;
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agents::parse_agent;
+    use crate::resolver::JobScope;
+
+    fn agent(front: &str) -> AgentDef {
+        parse_agent(
+            &format!("---\n{front}\n---\nBody.\n"),
+            "demo",
+            JobScope::Global,
+            PathBuf::from("config/agents/demo.md"),
+        )
+        .expect("agent parses")
+    }
+
+    #[test]
+    fn a_repo_gated_specialist_installs_only_into_its_own_repo() {
+        let spec = agent("name: demo\nkind: specialist\nrepo: bn");
+        assert!(in_scope(&spec, NativeScope::Repo, Some("bn")));
+        assert!(!in_scope(&spec, NativeScope::Repo, Some("wira360")));
+    }
+
+    #[test]
+    fn a_repo_less_agent_is_global_only() {
+        // The regression the `repo.is_some()` guard exists for: without it this agent's
+        // `None == None` would match a repo install whose context failed to resolve.
+        let published = agent("name: demo\nkind: command\nrequires_repo: bn\nworlds: [claude]");
+        assert!(in_scope(&published, NativeScope::Global, Some("bn")));
+        assert!(!in_scope(&published, NativeScope::Repo, None));
+        assert!(!in_scope(&published, NativeScope::Repo, Some("bn")));
+    }
+
+    #[test]
+    fn every_publishing_agent_reaches_a_global_install() {
+        let spec = agent("name: demo\nkind: specialist\nrepo: bn");
+        assert!(in_scope(&spec, NativeScope::Global, None));
+    }
 }

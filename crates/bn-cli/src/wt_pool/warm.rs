@@ -1,10 +1,16 @@
 //! Pool warming — the `bn wt pool warm` command and the `pool-warm` cron behind it.
 //!
 //! Split out of `wt_pool.rs` under the 1000-line ratchet. The seam is deliberate rather than
-//! arbitrary: warming is the one pool operation that *builds* (checkout per slot, then `bn build`
-//! in each), and it is the only one with a cron entry point, so it carries its own resolution
-//! rules and its own failure semantics. Slot classification, leasing, prune/destroy and status
-//! stay in the parent.
+//! arbitrary: warming is the one pool operation that *builds* (fetch, checkout/advance per slot,
+//! then `bn build` in each), and it is the only one with a cron entry point, so it carries its own
+//! resolution rules and its own failure semantics. Slot classification, leasing, prune/destroy and
+//! status stay in the parent.
+//!
+//! "Warm" means two things, and it used to mean only the second: a slot's deps and build cache are
+//! already there, **and** the tree they were built from is current. A warm that skipped the first
+//! left the pool pinned at whatever the bare clone last happened to fetch, so every dispatch that
+//! leased an existing slot started from a stale base — and the build cache the warm so carefully
+//! maintained was a cache of stale code.
 use super::*;
 
 /// Template written when a repo has no `build.sh` yet — the user fills in the install/build.
@@ -64,10 +70,10 @@ fn warm_in_window(ctx: &PoolCtx, new: bool) -> bool {
     true
 }
 
-/// `bn wt pool warm` — resolve the named repo through [`resolve_pool`], which requires it to be
-/// registered in the pools config, then warm it. The strict resolver is deliberate here: a person
-/// typed a repo name, so "that repo isn't pooled" is the answer they need. The cron warms a
-/// *dispatch-created* pool instead and resolves accordingly — see [`warm_pool_for_cron`].
+/// `bn wt pool warm` — resolve the named repo (or the cwd's, or an fzf pick) and warm it. Since
+/// pooling stopped being a registration, [`resolve_pool`] and the cron's [`resolve_dispatch_pool`]
+/// differ only in how they learn the repo's name, and "that repo isn't pooled" has stopped being a
+/// possible answer.
 pub(crate) fn pool_warm(cfg: &Config, repo: Option<String>, here: bool, new: bool) -> bool {
     let Some(ctx) = resolve_pool(cfg, repo) else {
         return false;
@@ -88,6 +94,8 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool) -> bool {
     }
     let _ = std::fs::create_dir_all(&ctx.pool_dir);
     let bare_s = ctx.bare.to_string_lossy().to_string();
+
+    let base = refresh_base(&ctx.repo, &bare_s);
 
     // Does this repo have a `build.sh`? Only to decide whether there's anything to build (and to
     // scaffold a template if absent) — the build itself is `bn build`, which resolves the script
@@ -138,11 +146,15 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool) -> bool {
     // slots with no checkout yet, so a re-warm after growing the pool fills only the freshly-added
     // slots and leaves every existing one (idle included) untouched.
     let leases = read_leases(&ctx.pool_dir);
-    println!("{BLUE}Warming {} slots for {}…{NC}", ctx.size, ctx.repo);
-    // Phase 1 — ensure every non-skipped slot has a live checkout. Serial on purpose: `git
-    // worktree add` takes the bare repo's lock, so parallel adds would only contend. Never warm a
-    // slot that's leased (a running agent owns it), dirty (uncommitted local work), or — under
-    // `--new` — already holding a *live* checkout; those are counted as skipped and left untouched.
+    println!(
+        "{BLUE}Warming {} slots for {} at {base}…{NC}",
+        ctx.size, ctx.repo
+    );
+    // Phase 1 — ensure every non-skipped slot has a live checkout *at the current base*. Serial on
+    // purpose: `git worktree add` takes the bare repo's lock, so parallel adds would only contend.
+    // Never warm a slot that's leased (a running agent owns it), dirty (uncommitted local work),
+    // or — under `--new` — already holding a *live* checkout; those are counted as skipped and
+    // left untouched.
     let mut skipped = 0u32;
     let mut failed = 0u32;
     let mut ready: Vec<(u32, PathBuf)> = Vec::new();
@@ -182,7 +194,7 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool) -> bool {
             continue;
         }
         if is_live_slot(&slot) {
-            eprintln!("{BLUE}[{n}] checkout present{NC}");
+            advance_idle_slot(n, &slot_s, &bare_s, &base);
         } else {
             if exists {
                 eprintln!("{YELLOW}[{n}] broken checkout — recreating…{NC}");
@@ -236,6 +248,57 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool) -> bool {
     }
     println!("{GREEN}{summary}.{NC}");
     warm_succeeded(failed, made)
+}
+
+/// Fetch origin, then resolve the base every slot in this warm is created at or advanced onto.
+///
+/// The fetch has to come first and it has to be here. Every commit a warm reaches for comes out of
+/// the bare clone, so without it the pool warms itself to whatever main looked like the last time
+/// something else happened to fetch — `bn dispatch` refreshes origin on its way past, but nothing
+/// else that touches a slot does, and the `pool-warm` cron runs on its own.
+///
+/// Best-effort, the same posture [`crate::cmd::main_sync`] takes: being offline is a fact about the
+/// network, not a reason to skip the warm. Say so and carry on against the last-fetched refs — a
+/// slot warmed against a week-old base still beats no slot at all.
+fn refresh_base(repo: &str, bare_s: &str) -> String {
+    if !git_quiet(&["--git-dir", bare_s, "fetch", "--quiet", "--prune", "origin"]) {
+        eprintln!(
+            "{YELLOW}Could not fetch origin for {repo} — warming against the last-fetched refs.{NC}"
+        );
+    }
+    default_base(bare_s)
+}
+
+/// Move an idle slot's existing checkout onto `base` and report which of the two it was.
+///
+/// The half of "warm" that used to be missing. Warming left an existing checkout wherever its last
+/// tenant left it and only re-ran the build, so a slot created weeks ago stayed pinned at that
+/// week's main forever: `bn dispatch` cutting a *new* branch got the fresh base from the bare
+/// repo's refs, but every other way into a slot — re-dispatching an existing branch, `wt pool get`,
+/// `wt open`, a controller slot — inherited the stale tree, and the deps this job keeps warm were
+/// built against it.
+///
+/// Reuses [`warm_reset`] — the same detach-and-clean `wt pool return` performs — so "an idle slot"
+/// keeps meaning one thing across the pool. It re-resolves the base itself, which costs a couple of
+/// git spawns beside a full build; `base` here is only what we report. Reached only for a slot that
+/// has already passed the leased / occupied / dirty guards, so there is nothing of anyone's to
+/// discard: `dirty_count` counts untracked files too, and `clean -df` never touches ignored ones,
+/// which is what keeps the deps intact.
+fn advance_idle_slot(n: u32, slot_s: &str, bare_s: &str, base: &str) {
+    let before = head_sha(slot_s);
+    warm_reset(slot_s, bare_s);
+    if head_sha(slot_s) == before {
+        eprintln!("{BLUE}[{n}] checkout present, already at {base}{NC}");
+    } else {
+        eprintln!("{GREEN}[{n}] advanced to {base}{NC}");
+    }
+}
+
+/// The commit a checkout is on, or `None` when git can't say. `None == None` compares equal, so an
+/// unreadable slot reports "already at" rather than a phantom advance — the honest answer when we
+/// have no evidence it moved.
+fn head_sha(slot_s: &str) -> Option<String> {
+    wt::git_out(&["-C", slot_s, "rev-parse", "HEAD"])
 }
 
 fn warm_complete(
@@ -364,15 +427,13 @@ pub(crate) fn job_pool_warm(cfg: &Config, ctx: Option<&bn_core::resolver::Resolv
     }
 }
 
-/// Warm one repo's pool on behalf of the `pool-warm` cron, resolving it the way the code that
-/// *created* the slots does.
+/// Warm one repo's pool on behalf of the `pool-warm` cron.
 ///
-/// [`resolve_pool`] refuses any repo absent from `~/.config/wt/pools`, but a plain `bn dispatch`
-/// pools every repo with a bn-managed bare clone at [`bn_core::pool::DEFAULT_POOL_SIZE`]
-/// (see [`resolve_dispatch_pool`]) — no registration required. So `schedule_warm` would queue
-/// `pool-warm --repo <repo>` for a pool dispatch had just created, and the cron would fail exit 1
-/// on a pool that plainly exists on disk. Resolving through the dispatch rules here is what keeps
-/// the two ends of that handoff agreeing.
+/// Resolved through [`resolve_dispatch_pool`], which takes the repo name straight rather than
+/// resolving a cwd — the cron has no worktree to stand in. Historically this mattered far more:
+/// `resolve_pool` refused any repo absent from `~/.config/wt/pools` while `bn dispatch` pooled
+/// every clone regardless, so a queued `pool-warm --repo <repo>` failed exit 1 on a pool that
+/// plainly existed on disk. The config is gone and the two resolvers now agree by construction.
 ///
 /// A repo with no bare clone is a **skip, not a failure**: the only way to reach that is a queued
 /// warm outliving the clone it named, which is a stale queue entry rather than a broken cron, and
@@ -417,5 +478,118 @@ mod completion_tests {
         assert!(warm_succeeded(0, 0));
         assert!(!warm_succeeded(1, 0));
         assert!(!warm_succeeded(0, 1));
+    }
+}
+
+#[cfg(test)]
+mod freshness_tests {
+    //! The "warm means current" half, against real git. A unit test cannot assert this: the whole
+    //! claim is about what `git fetch` does to refs the next `git switch` resolves, which is
+    //! exactly the part a fake would have to invent.
+    use super::*;
+    use crate::wt_pool::git_integration_tests::{build_repo_into, git};
+
+    /// A bn-shaped bare clone of a live source repo: `wt clone` configures the
+    /// `+refs/heads/*:refs/remotes/origin/*` refspec, and without it `origin/main` never exists and
+    /// a fetch has nowhere to land. Returns `(tempdir, source_path, bare_path)`.
+    fn bn_clone() -> (tempfile::TempDir, String, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let bare = tmp.path().join("bare.git");
+        build_repo_into(&src, &bare);
+        let bare_s = bare.to_string_lossy().to_string();
+        assert!(git(&[
+            "--git-dir",
+            &bare_s,
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ]));
+        assert!(git(&["--git-dir", &bare_s, "fetch", "-q", "origin"]));
+        (tmp, src.to_string_lossy().to_string(), bare_s)
+    }
+
+    /// Advance the source repo's `main` by one commit — main moving on while the pool sits idle,
+    /// which is the whole situation a warm exists to absorb.
+    fn commit_upstream(src_s: &str, name: &str) -> String {
+        std::fs::write(Path::new(src_s).join(name), "new\n").unwrap();
+        assert!(git(&["-C", src_s, "add", "-A"]));
+        assert!(git(&["-C", src_s, "commit", "-qm", name]));
+        wt::git_out(&["-C", src_s, "rev-parse", "HEAD"]).expect("upstream HEAD")
+    }
+
+    #[test]
+    fn refreshing_the_base_picks_up_a_commit_that_landed_after_the_clone() {
+        let _env = bn_core::test_support::env_lock();
+        let (_tmp, src_s, bare_s) = bn_clone();
+        let tip = commit_upstream(&src_s, "b.txt");
+
+        // Before the fetch the bare clone still resolves the base to the old tip …
+        let stale = wt::git_out(&["--git-dir", &bare_s, "rev-parse", &default_base(&bare_s)]);
+        assert_ne!(stale.as_deref(), Some(tip.as_str()));
+
+        // … and after it, to the commit that just landed.
+        let base = refresh_base("bn", &bare_s);
+        assert_eq!(
+            wt::git_out(&["--git-dir", &bare_s, "rev-parse", &base]).as_deref(),
+            Some(tip.as_str()),
+        );
+    }
+
+    #[test]
+    fn warming_moves_an_idle_slot_onto_the_new_tip() {
+        let _env = bn_core::test_support::env_lock();
+        let (tmp, src_s, bare_s) = bn_clone();
+        let slot = tmp.path().join("slot2");
+        assert!(add_detached_slot(&bare_s, &slot.to_string_lossy()));
+        let slot_s = slot.to_string_lossy().to_string();
+        let created_at = head_sha(&slot_s).expect("slot HEAD");
+
+        let tip = commit_upstream(&src_s, "b.txt");
+        let base = refresh_base("bn", &bare_s);
+        advance_idle_slot(2, &slot_s, &bare_s, &base);
+
+        assert_ne!(head_sha(&slot_s).as_deref(), Some(created_at.as_str()));
+        assert_eq!(head_sha(&slot_s).as_deref(), Some(tip.as_str()));
+        assert!(slot.join("b.txt").exists(), "the new file is checked out");
+    }
+
+    /// The build cache is the point of the pool, so advancing must not take the ignored deps with
+    /// it — `warm_reset`'s `clean -df` deliberately omits `-x`.
+    #[test]
+    fn advancing_keeps_the_ignored_build_output() {
+        let _env = bn_core::test_support::env_lock();
+        let (tmp, src_s, bare_s) = bn_clone();
+        let slot = tmp.path().join("slot2");
+        assert!(add_detached_slot(&bare_s, &slot.to_string_lossy()));
+        let slot_s = slot.to_string_lossy().to_string();
+        // `.gitignore` in the fixture ignores `target/`.
+        std::fs::create_dir_all(slot.join("target")).unwrap();
+        std::fs::write(slot.join("target").join("cached"), "expensive\n").unwrap();
+
+        commit_upstream(&src_s, "b.txt");
+        let base = refresh_base("bn", &bare_s);
+        advance_idle_slot(2, &slot_s, &bare_s, &base);
+
+        assert!(slot.join("target").join("cached").exists());
+    }
+
+    /// A repo whose origin is unreachable still gets warmed — offline is a fact about the network,
+    /// not a broken pool.
+    #[test]
+    fn an_unreachable_origin_still_yields_a_usable_base() {
+        let _env = bn_core::test_support::env_lock();
+        let (_tmp, _src_s, bare_s) = bn_clone();
+        assert!(git(&[
+            "--git-dir",
+            &bare_s,
+            "remote",
+            "set-url",
+            "origin",
+            "/nonexistent/gone.git",
+        ]));
+
+        let base = refresh_base("bn", &bare_s);
+        assert!(wt::git_out(&["--git-dir", &bare_s, "rev-parse", "--verify", &base]).is_some());
     }
 }

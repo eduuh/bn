@@ -159,18 +159,31 @@ const FALLBACK_TICK_AFTER_SECS: i64 = 600;
 ///
 /// Called once per `bn` invocation. Returns immediately in the common case.
 pub(crate) fn ensure(cfg: &Config) {
+    // The opt-out comes first, and it opts out of *both* directions.
+    //
+    // It used to sit below the reconcile, so `BN_NO_AUTO_TICK=1` stopped bn installing a
+    // dispatcher but not from removing one — which is the more destructive half, and the half a
+    // person setting this variable most obviously means to prevent.
+    //
+    // What that cost: every one of bn's own sandbox harnesses (`scripts/queue-shakedown.sh`,
+    // `scripts/try-queue.sh`) runs bn under its own `BN_HOME`/`BN_STATE_DIR`/`BN_NOTES_DIR` and
+    // sets this variable believing it is isolated. It is not. A sandbox config declares no
+    // `[machines.<host>]` profile, so `queue_enabled_here()` is false, so the reconcile fired —
+    // and launchd is per-uid, not per-`BN_HOME`. Running the test suite deleted the real
+    // machine's dispatcher, every time, and the isolation assertion at the end of the shakedown
+    // only noticed because it happened to checksum the plist.
+    //
+    // A tick must also never install or invoke itself.
+    if std::env::var_os(OPT_OUT).is_some()
+        || std::env::var_os("BN_NO_CATCHUP").is_some()
+        || std::env::var_os("BN_IN_QUEUE_TICK").is_some()
+    {
+        return;
+    }
     if !cfg.queue_enabled_here() {
         if cfg.destructive_reconcile_allowed() {
             disable();
         }
-        return;
-    }
-    if std::env::var_os(OPT_OUT).is_some() || std::env::var_os("BN_NO_CATCHUP").is_some() {
-        return;
-    }
-
-    // A tick must never install or invoke itself.
-    if std::env::var_os("BN_IN_QUEUE_TICK").is_some() {
         return;
     }
     // Nothing to keep alive if no producer would use it.

@@ -115,9 +115,11 @@ fn acquire_reclaims_leaked_leases_before_declaring_the_pool_full() {
 }
 
 /// A lease held by a live *agent* is never reclaimed, however old it is — the guard that keeps
-/// the sweep above from switching a branch out from under somebody.
+/// the sweep above from switching a branch out from under somebody. With demand-driven growth the
+/// pool now steps *past* those tenants into a new slot instead of refusing, which is the same
+/// promise from the occupant's side: nobody is evicted either way.
 #[test]
-fn acquire_never_reclaims_an_occupied_slot() {
+fn acquire_grows_past_occupied_slots_rather_than_reclaiming_one() {
     let _env = bn_core::test_support::env_lock();
     let (tmp, bare) = mk_bare();
 
@@ -165,9 +167,12 @@ fn acquire_never_reclaims_an_occupied_slot() {
         size: 4,
     };
 
-    assert!(
-        acquire_slot(&ctx, "feat", None, SlotRole::Worker, false).is_none(),
-        "a pool whose every slot holds a live agent is genuinely full"
+    let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker, false)
+        .expect("a pool whose every slot is busy grows rather than refusing");
+    assert_eq!(
+        leased.slot,
+        slot_path(&pdir, 5),
+        "growth adds the next slot, it does not recycle a busy one"
     );
     // Every original tenancy survives untouched.
     let after = read_leases(&pdir);
@@ -238,12 +243,7 @@ fn pool_warm_new_rebuilds_a_broken_stub() {
     let bare = root.join("bare").join("bn.git");
     build_repo_into(&root.join("bn-src"), &bare);
 
-    // Pool `bn` at size 2 via `$WT_POOLS`.
-    let pools = root.join("pools");
-    std::fs::write(&pools, "bn 2\n").unwrap();
-
     let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
-    let _wt_pools = bn_core::test_support::EnvGuard::set("WT_POOLS", &pools);
     let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", root.join("state"));
     // Never reach for a real tmux/agent registry during the slot scan.
     TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
@@ -265,13 +265,11 @@ fn pool_warm_new_rebuilds_a_broken_stub() {
 
 /// Regression for the `pool-warm` cron failing on a pool `bn dispatch` created implicitly.
 ///
-/// `bn dispatch` pools *every* repo with a bn-managed bare clone, registered in `~/.config/wt/pools`
-/// or not, and then queues `pool-warm --repo <that repo>` to fill the slot. The cron resolved
-/// through [`resolve_pool`], which refuses an unregistered repo — so the warm died exit 1 on a pool
-/// sitting right there on disk, and re-queued itself on the next dispatch. Here `nvim` has a bare
-/// clone and a pools file that names only `bn`: the cron must warm it and exit 0.
+/// The cron must warm a pool for a repo nobody registered — which, with the pools config gone, is
+/// every repo. Kept from the era when `resolve_pool` refused an unregistered repo and the warm died
+/// exit 1 on a pool sitting right there on disk, re-queuing itself on the next dispatch.
 #[test]
-fn cron_warms_a_pool_dispatch_created_for_an_unregistered_repo() {
+fn cron_warms_a_pool_for_a_repo_nobody_registered() {
     let _g = bn_core::test_support::env_lock();
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
@@ -279,14 +277,14 @@ fn cron_warms_a_pool_dispatch_created_for_an_unregistered_repo() {
     let bare = root.join("bare").join("nvim.git");
     build_repo_into(&root.join("nvim-src"), &bare);
 
-    // The config knows about `bn` only — `nvim` is unmentioned, and so pools at the default size.
-    let pools = root.join("pools");
-    std::fs::write(&pools, "bn 2\n").unwrap();
     let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
-    let _wt_pools = bn_core::test_support::EnvGuard::set("WT_POOLS", &pools);
     let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", root.join("state"));
-    let default = Some(bn_core::pool::DEFAULT_POOL_SIZE);
-    assert_eq!(bn_core::pool::pool_size("nvim"), default);
+    let cfg0 = bn_core::test_support::config(root);
+    // No pool on disk yet, so it derives to the floor.
+    assert_eq!(
+        bn_core::pool::pool_size(&cfg0, "nvim"),
+        bn_core::pool::DEFAULT_POOL_SIZE
+    );
     TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
 
     let cfg = bn_core::test_support::config(root);
@@ -316,10 +314,7 @@ fn cron_warm_skips_a_repo_with_no_bare_clone() {
     let root = tmp.path();
     std::fs::create_dir_all(root.join("bare")).unwrap();
 
-    let pools = root.join("pools");
-    std::fs::write(&pools, "bn 2\n").unwrap();
     let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
-    let _wt_pools = bn_core::test_support::EnvGuard::set("WT_POOLS", &pools);
     let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", root.join("state"));
 
     let cfg = bn_core::test_support::config(root);
@@ -344,17 +339,18 @@ fn reconcile_pools_adopts_occupied_and_returns_empty_slots() {
 
     let bare = root.join("bare").join("bn.git");
     build_repo_into(&root.join("bn-src"), &bare);
-    let pools = root.join("pools");
-    std::fs::write(&pools, "bn 3\n").unwrap();
 
     let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
-    let _wt_pools = bn_core::test_support::EnvGuard::set("WT_POOLS", &pools);
     let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", root.join("state"));
 
     let pool_dir = root.join("worktree").join("bn").join("_pool");
     std::fs::create_dir_all(&pool_dir).unwrap();
     let bare_s = bare.to_string_lossy().to_string();
-    for n in 2..=3 {
+    // The whole worker range of a floor-sized pool (2..=DEFAULT_POOL_SIZE), because the tick-head
+    // sweep only unleases when the pool actually needs the capacity — a free slot means a leaked
+    // lease costs nothing and eagerly resetting it could pull a checkout from under a live agent
+    // no probe recognized. So the fixture has to leave no free slot.
+    for n in 2..=bn_core::pool::DEFAULT_POOL_SIZE as u32 {
         assert!(add_detached_slot(
             &bare_s,
             &slot_path(&pool_dir, n).to_string_lossy()
@@ -362,7 +358,16 @@ fn reconcile_pools_adopts_occupied_and_returns_empty_slots() {
     }
 
     // Slot 2: leased, aged, and nobody in it. Slot 3: no lease at all, but a live agent is working
-    // in it — the pair the reconcile has to fix in opposite directions.
+    // in it — the pair the reconcile has to fix in opposite directions. Slot 4 is honestly busy,
+    // and only there so the pool is full.
+    let busy = |branch: &str| crate::agent_lease::Occupant {
+        repo: Some("bn".into()),
+        branch: Some(branch.into()),
+        session_id: Some(format!("session-{branch}")),
+        tmux_target: format!("bn:{branch}"),
+        kind: "dispatch".into(),
+        since: now_epoch() - 60,
+    };
     let mut leases = Leases::default();
     leases.slots.insert(
         2,
@@ -375,19 +380,23 @@ fn reconcile_pools_adopts_occupied_and_returns_empty_slots() {
             comparison_slot: None,
         },
     );
+    leases.slots.insert(
+        4,
+        Lease {
+            branch: "working".into(),
+            holder: "tmux".into(),
+            pid: std::process::id(),
+            at: now_epoch() - LEAKED_LEASE_GRACE_SECS - 1,
+            boot_id: String::new(),
+            comparison_slot: None,
+        },
+    );
     write_leases(&pool_dir, &leases).unwrap();
     TEST_OCCUPANTS.with(|c| {
-        *c.borrow_mut() = Some(BTreeMap::from([(
-            slot_path(&pool_dir, 3),
-            vec![crate::agent_lease::Occupant {
-                repo: Some("bn".into()),
-                branch: Some("busy".into()),
-                session_id: Some("session-busy".into()),
-                tmux_target: "bn:busy".into(),
-                kind: "dispatch".into(),
-                since: now_epoch() - 60,
-            }],
-        )]))
+        *c.borrow_mut() = Some(BTreeMap::from([
+            (slot_path(&pool_dir, 3), vec![busy("busy")]),
+            (slot_path(&pool_dir, 4), vec![busy("working")]),
+        ]))
     });
 
     let cfg = bn_core::test_support::config(root);
@@ -402,6 +411,11 @@ fn reconcile_pools_adopts_occupied_and_returns_empty_slots() {
         after.slots.get(&3).map(|l| l.branch.as_str()),
         Some("busy"),
         "a slot a live agent holds must be adopted, not left reading as idle"
+    );
+    assert_eq!(
+        after.slots.get(&4).map(|l| l.branch.as_str()),
+        Some("working"),
+        "a lease whose agent is genuinely there is left alone"
     );
 }
 

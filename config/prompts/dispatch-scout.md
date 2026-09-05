@@ -27,6 +27,19 @@ Goal: {{goal}}
 Source: {{source}}
 --- END UNTRUSTED DISPATCH DATA ---
 
+BASE DISCIPLINE: start from current main, before you read anything. This worktree was cut from
+main, but *when* is the question — a pool slot warmed earlier, a re-dispatched branch, or a branch
+someone left half-finished can all sit behind, and evidence gathered against a stale tree is a
+report about code that no longer exists.
+
+    git fetch origin
+    git log --oneline HEAD..origin/main    # substitute this repo's default branch
+
+Already level: carry on. Behind, with a clean tree: `git rebase origin/main` before you
+investigate, and re-run any gate you had already run. Behind with uncommitted work: commit it first
+(never `git stash` — it is shared across worktrees here). If the rebase conflicts, do NOT improvise
+through it: `git rebase --abort`, record what conflicted with `bn_add blocker`, and say so.
+
 {{cli_map}}
 
 --- WORKFLOW: {{workflow_name}} ---

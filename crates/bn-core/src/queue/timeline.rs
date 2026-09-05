@@ -19,31 +19,8 @@ use crate::queue::classify::{self, QueueClass, QueueMode, QueueSubtype};
 use crate::queue::kind::{BacklogKind, WorkClass};
 use crate::queue::tick::{plan_tick, InFlight, TickInputs};
 use serde::Serialize;
-use std::collections::BTreeMap;
 
-/// Fallback duration estimates per kind, in seconds, when history has nothing to say.
-///
-/// Coarse on purpose: these place a mark on an axis, they do not promise a finish time.
-pub const DEFAULT_EST_SECS: i64 = 20 * 60;
-
-/// Per-kind duration estimates in seconds.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct KindDurations(pub BTreeMap<BacklogKind, i64>);
-
-impl KindDurations {
-    /// The estimate for `entry`: its own `est_secs` when set, else the kind's, else the default.
-    /// An entry that knows its own size always wins — that is why the field exists.
-    pub fn for_entry(&self, entry: &BacklogEntry) -> i64 {
-        if entry.est_secs > 0 {
-            return entry.est_secs;
-        }
-        self.0
-            .get(&entry.kind)
-            .copied()
-            .filter(|v| *v > 0)
-            .unwrap_or(DEFAULT_EST_SECS)
-    }
-}
+use crate::queue::durations::Durations;
 
 /// One entry's projected start.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -66,7 +43,7 @@ pub struct Projected {
 /// duration, then advances the simulated clock to the earliest completion or snooze expiry so the
 /// next round sees the freed capacity / newly-eligible work. Bounded by `horizon_secs` and by
 /// rounds, so a permanently-unplaceable entry (no capable node) ends the loop rather than spinning.
-pub fn project(inputs: &TickInputs, est: &KindDurations, horizon_secs: i64) -> Vec<Projected> {
+pub fn project(inputs: &TickInputs, est: &Durations, horizon_secs: i64) -> Vec<Projected> {
     let mut out: Vec<Projected> = Vec::new();
     let mut remaining: Vec<BacklogEntry> = inputs.pending.to_vec();
     let mut clock = inputs.now;
@@ -84,7 +61,10 @@ pub fn project(inputs: &TickInputs, est: &KindDurations, horizon_secs: i64) -> V
         .in_flight
         .iter()
         .map(|f| {
-            let ends = f.started_at + DEFAULT_EST_SECS;
+            // Asked of the log the same way a pending entry's is, so the two halves of the replay
+            // agree. A running job whose history says it takes five seconds should not hold its
+            // lane for twenty minutes just because nobody wrote down when it would finish.
+            let ends = f.started_at + est.for_work(&f.repo, &f.id, f.kind.label()).secs;
             (f.clone(), ends.max(inputs.now + 60))
         })
         .collect();
@@ -109,6 +89,8 @@ pub fn project(inputs: &TickInputs, est: &KindDurations, horizon_secs: i64) -> V
                     kind: d.kind,
                     work_class: d.work_class,
                     heavy: d.heavy,
+                    // The replay just started it, so the replay owns it.
+                    queue_owned: true,
                     node: Some(d.target.label()),
                     touches: entry.touches.clone(),
                     started_at: clock,
@@ -551,7 +533,11 @@ pub fn build_live(
     class_filter: Option<&str>,
 ) -> Result<Timeline, crate::agents::AgentCatalogError> {
     let snap = crate::queue::snapshot::Snapshot::capture(cfg, now);
-    let projection = project(&snap.inputs(), &KindDurations::default(), 12 * 3600);
+    // Learned from the machine's own log rather than assumed, and taken from the snapshot so the
+    // projection and the dispatcher that produced it are working from the same numbers. Before
+    // this the projection ran on a flat twenty-minute guess for every entry, which is why a
+    // backlog of second-long crons drew as "beyond the horizon".
+    let projection = project(&snap.inputs(), &snap.durations, 12 * 3600);
     let automation = crate::action_center::build_todays_automation(cfg, None)?;
     let catalog: Vec<(String, Option<String>)> = automation
         .crons

@@ -5,8 +5,6 @@ import {
   ChevronRight,
   ExternalLink,
   Flame,
-  Minus,
-  Plus,
   Search,
   Settings2,
   Wrench,
@@ -14,15 +12,13 @@ import {
 } from "lucide-react";
 import { reposQuery } from "../api/client";
 import {
-  setRepoPool,
   startRepoSetupAgent,
   warmRepoPool,
   type RepoSetupAgentResult,
 } from "../api/writes";
-import { MAX_POOL_SIZE, MIN_POOL_SIZE, type RepoPool, type RepoRollup } from "../api/types";
+import { type RepoPool, type RepoRollup } from "../api/types";
 import { useAppMutation } from "../hooks/useAppMutation";
 import { affects } from "../lib/invalidation";
-import { setRepoPoolSize } from "../lib/optimistic";
 import { useNow } from "../hooks/useNow";
 import { timeAgo, fmtAicCompact } from "../lib/format";
 import { filterRepos, forgeLinks, repoFilterCounts, type RepoFilter } from "../lib/repos";
@@ -146,73 +142,16 @@ function setupOutcome(result: RepoSetupAgentResult, repo: string): string {
     : `Starting repo setup for ${repo}…`;
 }
 
-/** Turn pooling on / off / resize for a repo. Enabling writes the pools config the idle `pool-warm`
- * cron reads and queues an immediate pool warm, so one click is the whole setup without building on
- * the request path. */
-function PoolSizeControl({ repo, pool }: { repo: string; pool: RepoPool }) {
-  const mut = useAppMutation<{ message: string }, number | null>({
-    mutationFn: (size) => setRepoPool(repo, size),
-    optimistic: setRepoPoolSize<number | null>(repo, (size) => size),
-    invalidates: affects.pool,
-    toast: { success: (r) => r.message, error: repo },
-  });
-  if (!pool.enabled) {
-    return (
-      <Button
-        type="button"
-        variant="secondary"
-        size="sm"
-        className={TOUCH}
-        disabled={mut.isPending}
-        title={`Pool ${repo} at ${MIN_POOL_SIZE} slots and queue its first warm`}
-        onClick={() => mut.mutate(MIN_POOL_SIZE)}
-      >
-        <Flame className="h-3.5 w-3.5" />
-        {mut.isPending ? "enabling…" : "enable pool"}
-      </Button>
-    );
-  }
-  const resize = (n: number) => () => {
-    // Slot 1 is the reserved main slot, so MIN_POOL_SIZE is the smallest pool with a worker in it.
-    // Stepping below that turns pooling off outright rather than sending a size the server would
-    // refuse — but never silently: shrinking can strand slots, which `pool prune` reclaims.
-    if (n < MIN_POOL_SIZE) {
-      if (window.confirm(`Stop pooling ${repo}? Existing slots stay on disk.`)) mut.mutate(null);
-      return;
-    }
-    mut.mutate(n);
-  };
-  // A labelled stepper, not two bare glyph buttons: on a phone the pair used to sit at the end of a
-  // wrapped row with nothing between them saying what they resized.
+/** The pool's slot count, read-only. There is nothing to set: every repo pools, the size follows
+ * the slots that exist (floored at four), and a dispatch that finds the pool full grows it by one.
+ * The stepper that used to live here wrote a config that no longer exists. */
+function PoolSizeControl({ pool }: { pool: RepoPool }) {
   return (
-    <span className="inline-flex items-center gap-0.5 rounded-md border border-border bg-card p-0.5">
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className="h-8 w-8"
-        disabled={mut.isPending}
-        title={pool.total > MIN_POOL_SIZE ? `Shrink ${repo}'s pool` : `Stop pooling ${repo}`}
-        aria-label={pool.total > MIN_POOL_SIZE ? "shrink pool" : "stop pooling"}
-        onClick={resize(pool.total - 1)}
-      >
-        <Minus className="h-3.5 w-3.5" />
-      </Button>
-      <span className="min-w-[4.25rem] text-center font-mono text-xs tabular-nums text-muted-foreground">
-        {pool.total} slots
-      </span>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className="h-8 w-8"
-        disabled={mut.isPending || pool.total >= MAX_POOL_SIZE}
-        title={`Grow ${repo}'s pool`}
-        aria-label="grow pool"
-        onClick={resize(pool.total + 1)}
-      >
-        <Plus className="h-3.5 w-3.5" />
-      </Button>
+    <span
+      className="inline-flex items-center rounded-md border border-border bg-card px-2 py-1 font-mono text-xs tabular-nums text-muted-foreground"
+      title="slots in this repo's warm pool — sized automatically, and grown on demand"
+    >
+      {pool.total} slots
     </span>
   );
 }
@@ -227,7 +166,6 @@ function poolIsFull(pool: PolicyRepoPool) {
 
 /** The one-glance pool state, on the card face so the manage panel can stay shut. */
 function PoolChip({ pool }: { pool: PolicyRepoPool }) {
-  if (!pool.enabled) return <Tag title="no warm pool configured for this repo">no pool</Tag>;
   return (
     <Badge
       variant={poolNeedsTopUp(pool) ? "warn" : pool.ready > 0 ? "ok" : "muted"}
@@ -268,7 +206,7 @@ function PoolPanel({ repo, pool, now }: { repo: string; pool: PolicyRepoPool; no
         </div>
       )}
       <div className="flex flex-wrap items-center gap-2">
-        <PoolSizeControl repo={repo} pool={pool} />
+        <PoolSizeControl pool={pool} />
         {pool.enabled && <WarmButton repo={repo} />}
       </div>
     </div>

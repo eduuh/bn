@@ -10,9 +10,9 @@ const POOL_REFRESH_ATTEMPT_MIN_AGE_SECS: i64 = 30 * 60;
 /// What a pool refresh should do this tick.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum PoolRefreshPlan {
-    /// Nothing to warm (no pools, all fresh, or attempted recently) — logged, not an error.
+    /// Nothing to warm (no clones, all fresh, or attempted recently) — logged, not an error.
     Skip(String),
-    /// Warm these repos (de-duped, config order preserved).
+    /// Warm these repos (de-duped, in name order).
     Warm(Vec<String>),
 }
 
@@ -41,13 +41,28 @@ pub(crate) fn plan_pool_refresh(cfg: &Config, now: i64) -> PoolRefreshPlan {
     }
     let deadline = latest_pool_warm_deadline(&cfg.queue.windows, now);
     let assessments = classify_pool_refreshes(
-        &crate::wt_pool::pooled_repos(),
+        &warmable_repos(cfg),
         &last_successful_pool_warm_by_repo(&events),
         now,
         deadline,
         POOL_REFRESH_MAX_AGE_SECS,
     );
     plan_refreshes(&assessments)
+}
+
+/// Every repo the scheduled sweep warms: each bn-managed bare clone, full stop.
+///
+/// This was `pooled_repos()` reading `~/.config/wt/pools` — the repos somebody had *written down* —
+/// which made the daily warm opt-in while leasing stayed universal. The two halves disagreeing was
+/// not a harmless asymmetry: a repo nobody registered still got slots on demand, and a dispatch
+/// that consumed one queued a single reactive `pool-warm` that never came back. On the machine
+/// this was written for, three unregistered repos had been warmed exactly once, twenty-five days
+/// earlier, and three more never at all, while every registered repo had been refreshed that
+/// morning. Slots left at a month-old base are the opposite of warm.
+///
+/// With the config gone there is no register to be on, so membership is simply "has a bare clone".
+fn warmable_repos(cfg: &Config) -> Vec<String> {
+    bn_core::pool::pooled_repos(cfg)
 }
 
 fn mandatory_sweep_attempted_recently(events: &[bn_core::events::Event], now: i64) -> bool {
@@ -106,7 +121,7 @@ fn last_successful_pool_warm_by_repo(evs: &[bn_core::events::Event]) -> BTreeMap
 
 /// Classify every pooled repository at one captured instant.
 ///
-/// Config order is retained and duplicate repo names collapse onto their first occurrence. The
+/// Input order is retained and duplicate repo names collapse onto their first occurrence. The
 /// 24-hour boundary is inclusive: exactly 24 hours old is already hard-stale.
 fn classify_pool_refreshes(
     repos: &[String],
@@ -141,7 +156,7 @@ fn classify_pool_refreshes(
 /// Select every due repository for one mandatory sweep.
 fn plan_refreshes(assessments: &[PoolRefreshAssessment]) -> PoolRefreshPlan {
     if assessments.is_empty() {
-        return PoolRefreshPlan::Skip("no pooled repos configured".into());
+        return PoolRefreshPlan::Skip("no pooled repos on this machine".into());
     }
     let targets = assessments
         .iter()
@@ -170,7 +185,7 @@ mod tests {
         let plan = plan_refreshes(&[]);
         assert_eq!(
             plan,
-            PoolRefreshPlan::Skip("no pooled repos configured".into())
+            PoolRefreshPlan::Skip("no pooled repos on this machine".into())
         );
     }
 
@@ -303,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_repos_are_classified_once_in_config_order() {
+    fn duplicate_repos_are_classified_once_in_input_order() {
         let repos = vec!["bn".to_string(), "bn".to_string(), "other".to_string()];
         assert_eq!(
             classify_pool_refreshes(&repos, &BTreeMap::new(), 1_000, None, 100),

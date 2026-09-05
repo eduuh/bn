@@ -6,9 +6,10 @@
 //! `pool return` resets it (without wiping ignored deps) so the next `get` is instant.
 //!
 //! Model (decided): **named-branch reuse**, not treehouse's anonymous detached pool — slots still
-//! hold a real branch, so `bn`'s branch-keyed notes/metrics keep working untouched. Pools are
-//! opt-in per repo via `~/.config/wt/pools` (`<repo> <size>` per line); repos not listed behave
-//! exactly as before.
+//! hold a real branch, so `bn`'s branch-keyed notes/metrics keep working untouched. Every repo with
+//! a bn-managed bare clone pools, with no config and no registration: the size is derived from the
+//! slots that exist ([`bn_core::pool::derived_size`]) and grows by one whenever a lease finds the
+//! pool full, up to [`bn_core::pool::MAX_POOL_SIZE`].
 //!
 //! Layout: slots live at `<root>/worktree/<repo>/_pool/<n>` beside the normal branch worktrees,
 //! and lease state in `<root>/worktree/<repo>/_pool/leases.json`. The `_pool` dir is excluded from
@@ -38,7 +39,6 @@ pub fn run(cfg: &Config, action: wt::PoolCmd) -> bool {
         wt::PoolCmd::Status { repo } => pool_status(cfg, repo),
         wt::PoolCmd::Warm { repo, here, new } => pool_warm(cfg, repo, here, new),
         wt::PoolCmd::Metrics { path, repo } => pool_metrics(cfg, path, repo),
-        wt::PoolCmd::Set { size, repo, off } => pool_set(cfg, repo, size, off),
         wt::PoolCmd::Prune {
             repo,
             yes,
@@ -81,20 +81,12 @@ fn log_pool_event(kind: &str, repo: &str, slot: u32, branch: &str, warm: Option<
     let _ = bn_core::events::append(kind, f);
 }
 
-// --- config (~/.config/wt/pools) -------------------------------------------
+// --- pool size -------------------------------------------------------------
 
-/// Path of the pools config — delegates to [`bn_core::pool::pools_config_path`], the single source
-/// of truth shared with `bn-web`'s pool-status read (`$WT_POOLS` else `<xdg>/wt/pools`).
-fn pools_config_path() -> PathBuf {
-    bn_core::pool::pools_config_path()
-}
-
-/// Pool size for `repo`, or `None` only when the repo is explicitly opted out (`<repo> 0` in the
-/// pools config). Delegates to [`bn_core::pool::pool_size`] (the shared file read + parse); every
-/// unmentioned repo pools at [`bn_core::pool::DEFAULT_POOL_SIZE`], so `None` here means "the
-/// operator said no", never "nobody registered it".
-pub(crate) fn pool_size(repo: &str) -> Option<usize> {
-    bn_core::pool::pool_size(repo)
+/// Pool size for `repo` — derived from the slots that exist and the leases held, never declared.
+/// Delegates to [`bn_core::pool::pool_size`]; always a number, because every repo pools.
+pub(crate) fn pool_size(cfg: &Config, repo: &str) -> usize {
+    bn_core::pool::pool_size(cfg, repo)
 }
 
 // --- lease store (leases.json) ---------------------------------------------
@@ -632,66 +624,6 @@ struct PoolCtx {
 }
 
 /// Resolve repo → bare path + pool dir + size, or print why not and return `None`.
-/// `bn wt pool set [size] [--repo r] [--off]` — the pools config's only writer. Resolves the repo
-/// against the bare clones (so a typo is caught here rather than becoming a dead config line) and
-/// rewrites its entry via `bn_core::pool`, the same edit `/api/repos/{repo}/pool` performs.
-///
-/// Deliberately does not build the slots. Warming is a long checkout-plus-build per slot, and the
-/// `pool-warm` cron already does it while the box is idle; making the enable command block on a
-/// build would be a surprise, and doing it at a keystroke is exactly what that cron exists to avoid.
-fn pool_set(cfg: &Config, repo_arg: Option<String>, size: Option<usize>, off: bool) -> bool {
-    let (bare_dir, _) = wt::layout(cfg);
-    let Some(bare) = (match repo_arg {
-        Some(r) => {
-            let b = bare_dir.join(format!("{r}.git"));
-            if !b.is_dir() {
-                eprintln!("{RED}No bare repo '{r}' under {}{NC}", bare_dir.display());
-                return false;
-            }
-            Some(b)
-        }
-        None => wt::resolve_bare_or_pick(&bare_dir),
-    }) else {
-        return false;
-    };
-    let repo = wt::repo_name(&bare);
-
-    let target = if off {
-        None
-    } else {
-        match size {
-            Some(n) => Some(n.clamp(bn_core::pool::MIN_POOL_SIZE, bn_core::pool::MAX_POOL_SIZE)),
-            None => {
-                eprintln!("{RED}Pass a slot count, or --off to stop pooling {repo}.{NC}");
-                return false;
-            }
-        }
-    };
-    if let Err(e) = bn_core::pool::set_pool_size(&repo, target) {
-        eprintln!(
-            "{RED}Could not write {}: {e}{NC}",
-            pools_config_path().display()
-        );
-        return false;
-    }
-    match target {
-        Some(n) => {
-            println!("{GREEN}Pooling {repo} at {n} slot(s).{NC}");
-            println!(
-                "{BLUE}The idle pool-warm cron builds them on its next pass; \
-                 `bn wt pool warm --repo {repo}` does it now.{NC}"
-            );
-        }
-        // Slots are left on disk on purpose: unpooling is a config change, and silently deleting
-        // checkouts (which may hold build caches worth hours) is not what "off" should mean.
-        None => println!(
-            "{GREEN}Stopped pooling {repo}. Existing slots remain — \
-             `bn wt pool destroy --repo {repo} --all` removes them.{NC}"
-        ),
-    }
-    true
-}
-
 fn resolve_pool(cfg: &Config, repo_arg: Option<String>) -> Option<PoolCtx> {
     let (bare_dir, worktree_dir) = wt::layout(cfg);
     let bare = match repo_arg {
@@ -706,15 +638,8 @@ fn resolve_pool(cfg: &Config, repo_arg: Option<String>) -> Option<PoolCtx> {
         None => wt::resolve_bare_or_pick(&bare_dir)?,
     };
     let repo = wt::repo_name(&bare);
-    let Some(size) = pool_size(&repo) else {
-        eprintln!(
-            "{YELLOW}Repo '{repo}' is opted out of pooling. Drop its `0` line from {} (or give it \
-             a size) to pool it again.{NC}",
-            pools_config_path().display()
-        );
-        return None;
-    };
     let pool_dir = pool_dir(&worktree_dir, &repo);
+    let size = pool_size(cfg, &repo);
     Some(PoolCtx {
         bare,
         repo,
@@ -989,6 +914,14 @@ fn acquire_slot(
     if n.is_none() && !reclaim_leaked_leases(ctx, &mut leases, now_epoch(), false).is_empty() {
         n = pick(&leases);
     }
+    // Full pool? Grow by one rather than refuse. Creating slot `size + 1` *is* the growth: the
+    // size is derived from the slots that exist, so the next `derived_size` reads the new dir back
+    // and the bigger pool persists with nothing written down anywhere. Bounded by MAX_POOL_SIZE,
+    // and workers only — the controller's slot is fixed, so "already leased" is its real answer.
+    let n = n.or_else(|| {
+        (class == SlotRole::Worker && ctx.size < bn_core::pool::MAX_POOL_SIZE)
+            .then(|| ctx.size as u32 + 1)
+    });
     let Some(n) = n else {
         match class {
             SlotRole::Controller => eprintln!(
@@ -997,7 +930,9 @@ fn acquire_slot(
                 bn_core::agent::MAIN_POOL_SLOT
             ),
             SlotRole::Worker => eprintln!(
-                "{RED}Pool full: {}/{} worker slots leased.{NC} Return one with `wt pool return`.",
+                "{RED}Pool full at the {} slot ceiling: {}/{} worker slots leased.{NC} \
+                 Return one with `wt pool return`.",
+                bn_core::pool::MAX_POOL_SIZE,
                 leases
                     .reserved_slots()
                     .into_iter()
@@ -1163,20 +1098,17 @@ pub fn lease_for_dispatch(cfg: &Config, repo: &str, branch: &str) -> Option<(Pat
 
 /// Outcome of a direct human request to open a branch.
 ///
-/// Unlike dispatch, a direct open has no work item to schedule. It may use a conventional
-/// worktree only when the repo is not configured for pooling; a configured pool that cannot lease
-/// must remain a visible capacity failure rather than silently cutting a cold checkout.
+/// Unlike dispatch, a direct open has no work item to schedule, so a pool that cannot lease must
+/// remain a visible capacity failure rather than silently cutting a cold checkout. There is no
+/// longer an `Unpooled` outcome: every repo with a bare clone pools, so the only ways this fails
+/// are "no such clone" and "no capacity".
 pub(crate) enum DirectLease {
-    Unpooled,
     Leased(PathBuf),
     MissingRepo,
     Unavailable,
 }
 
 pub(crate) fn lease_for_direct_open(cfg: &Config, repo: &str, branch: &str) -> DirectLease {
-    if pool_size(repo).is_none() {
-        return DirectLease::Unpooled;
-    }
     let (bare_dir, _) = wt::layout(cfg);
     if !bare_dir.join(format!("{repo}.git")).is_dir() {
         return DirectLease::MissingRepo;
@@ -1343,7 +1275,7 @@ pub enum SpareSlot {
     Ready(u32),
     /// An idle slot number is free but has no checkout yet; a warm was scheduled to build it.
     Warming(u32),
-    /// Every slot is leased. Capacity is what the operator configured, so this is *reported*, not
+    /// Every slot is leased and the pool is at [`bn_core::pool::MAX_POOL_SIZE`]. Reported, not
     /// papered over — `bn dispatch --on-pool-full` decides what happens next.
     Full(usize),
 }
@@ -1354,11 +1286,10 @@ pub enum SpareSlot {
 /// slot pays for the checkout and the dep install before its agent starts. Looking one step ahead
 /// after each lease moves that cost off the critical path.
 ///
-/// It deliberately does **not** grow the pool. An automatic `set_pool_size` bump would mean the
-/// pool is never full — which sounds helpful and is the exact failure being fixed: capacity would
-/// again be unbounded, just through a different door, and a dispatch would be silently rewriting
-/// the operator's `wt/pools` config as a side effect. The cliff is real and belongs to
-/// `--on-pool-full`, which can queue the work instead of manufacturing a worktree for it.
+/// It does not grow the pool itself — [`acquire_slot`] does, at the moment a lease actually finds
+/// no free slot, so growth is paid for by demand rather than by a look-ahead that guesses at it.
+/// This only reports [`SpareSlot::Full`], which now means "at the ceiling" rather than "at the
+/// size somebody configured".
 ///
 /// Best-effort: it never fails a dispatch, it only makes the next one cheaper.
 fn ensure_spare_slot(ctx: &PoolCtx) -> SpareSlot {
@@ -1443,19 +1374,18 @@ pub fn lease_controller_slot(cfg: &Config, repo: &str) -> Option<(PathBuf, bool)
     Some((leased.slot, leased.fresh))
 }
 
-/// Resolve the pool for a dispatch — pooling *every* repo by default, since leasing is the default
-/// dispatch path. An explicit or `default`/`*` config size wins; otherwise the built-in
-/// [`bn_core::pool::DEFAULT_POOL_SIZE`] applies, so a repo need not be pre-registered in
-/// `~/.config/wt/pools` to get a warm, reap-safe slot. Returns `None` only when the repo has no
-/// bn-managed bare clone — the one case a dispatch genuinely can't pool — so the caller cuts a cold
-/// worktree instead. (Contrast [`resolve_pool`], which errors for `wt pool` when a repo is unpooled.)
+/// Resolve the pool for a dispatch. Identical to [`resolve_pool`] except in how the repo is named:
+/// this takes it directly (the cron and the dispatcher both know it), while `resolve_pool` resolves
+/// the cwd or an fzf pick. Neither consults a registry any more — there isn't one — so the only way
+/// this returns `None` is a repo with no bn-managed bare clone, the one case a dispatch genuinely
+/// can't pool, and the caller cuts a cold worktree instead.
 fn resolve_dispatch_pool(cfg: &Config, repo: &str) -> Option<PoolCtx> {
     let (bare_dir, worktree_dir) = wt::layout(cfg);
     let bare = bare_dir.join(format!("{repo}.git"));
     if !bare.is_dir() {
         return None;
     }
-    let size = pool_size(repo).unwrap_or(bn_core::pool::DEFAULT_POOL_SIZE);
+    let size = pool_size(cfg, repo);
     let pool_dir = pool_dir(&worktree_dir, repo);
     Some(PoolCtx {
         bare,
@@ -1611,14 +1541,7 @@ fn pool_metrics(cfg: &Config, path: Option<String>, repo: Option<String>) -> boo
     let Some((repo_name, bare)) = resolve_metrics_repo(cfg, path.as_deref(), repo) else {
         return false;
     };
-    // "…health of pools if they exist": a real repo without a pool is a clean answer, not an error.
-    let Some(size) = pool_size(&repo_name) else {
-        println!(
-            "{YELLOW}{repo_name}: opted out of pooling — no warm-slot pool to report.{NC}\n  Drop its `0` line from {} to enable one.",
-            pools_config_path().display()
-        );
-        return true;
-    };
+    let size = pool_size(cfg, &repo_name);
     let (_, worktree_dir) = wt::layout(cfg);
     let ctx = PoolCtx {
         bare,
@@ -1971,26 +1894,11 @@ fn print_action(leases: &Leases, n: u32, class: &SlotClass, action: &Action, exe
     }
 }
 
-/// All repos with a pool configured (for `--all`).
-/// The concrete pooled repos from the config, in file order — the names `pool prune --all` and the
-/// idle warm cron operate on. Delegates to [`bn_core::pool::pooled_repos`], which skips the
-/// `default`/`*` fallback line: that key names the any-repo size, not a real repo, so warming or
-/// pruning it would only resolve to a nonexistent clone.
-pub(crate) fn pooled_repos() -> Vec<String> {
-    bn_core::pool::pooled_repos()
-        .into_iter()
-        .map(|(repo, _)| repo)
-        .collect()
-}
-
 fn pool_prune(cfg: &Config, repo: Option<String>, yes: bool, all: bool, verbose: bool) -> bool {
     let targets: Vec<Option<String>> = if all {
-        let repos = pooled_repos();
+        let repos = bn_core::pool::pooled_repos(cfg);
         if repos.is_empty() {
-            eprintln!(
-                "{YELLOW}No pooled repos configured in {}.{NC}",
-                pools_config_path().display()
-            );
+            eprintln!("{YELLOW}No bn-managed bare clones — nothing to prune.{NC}");
             return true;
         }
         repos.into_iter().map(Some).collect()

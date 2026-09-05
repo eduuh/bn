@@ -292,11 +292,42 @@ pub(crate) fn create_worktree(bare_s: &str, branch: &str, wt_s: &str, pull: bool
         // New worktrees get the BN-Note trailer stamp for free (#248). Hooks live in the git
         // common dir, so after the repo's first worktree this is a quiet no-op refresh.
         crate::hooks::install_on_worktree_create(Path::new(wt_s));
+        seed_skills(Path::new(wt_s));
     }
     if created && pull && !ff_pull(wt_s) {
         return false;
     }
     created
+}
+
+/// Give a freshly created worktree this repo's repo-tier skills, so an agent dispatched into it
+/// can reach them.
+///
+/// Hooked here rather than in `bn dispatch` because every worktree deserves them, not just the
+/// dispatched ones — and because creation is the one moment there is no prior state to clobber.
+/// [`bn_core::skills::seed_worktree_skills`] owns both preconditions (the repo has repo-tier
+/// skills; the native root is gitignored) and refuses rather than writing when either fails.
+///
+/// Best-effort and quiet on the common paths: a worktree without repo skills is the normal case,
+/// and a skipped root is worth one line, not a failed `wt add`.
+fn seed_skills(wt: &Path) {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return;
+    };
+    let report = bn_core::skills::seed_worktree_skills(&bn_core::resolver::Config::load(), wt, &home);
+    if report.nothing_to_seed {
+        return;
+    }
+    if !report.is_empty() {
+        println!("{BLUE}Seeded {} repo skill file(s){NC}", report.changes.len());
+    }
+    for skip in &report.skipped {
+        println!(
+            "{YELLOW}Skipped {} skills: {}{NC}",
+            skip.harness.label(),
+            skip.reason
+        );
+    }
 }
 
 /// The ref new work should be cut from: `origin/HEAD`'s branch, else the local default, via the

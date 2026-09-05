@@ -41,6 +41,7 @@
 //! classified.
 
 mod ledger;
+mod outcome;
 pub use ledger::*;
 
 use crate::resolver::{state_dir, Config, Resolved};

@@ -423,6 +423,8 @@ pub(crate) fn run_critic_verdict(
                 &[],
                 // Hand-typed lanes: no declared stage, so the inference stands.
                 None,
+                // No pre-composed seed: this lane renders the `execute` skill above.
+                None,
                 json,
             );
             emit_verdict(

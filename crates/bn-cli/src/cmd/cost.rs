@@ -10,7 +10,7 @@
 //! that traffic pull the bill in opposite directions — a read bills at a tenth of fresh input, a
 //! write at 1.25–2× it.
 
-use crate::cmd::staff::fmt_tokens;
+use crate::cmd::fmt_units::fmt_tokens;
 use crate::Config;
 use crate::Envelope;
 use bn_core::cost::{self, CostRow, CostView, LiveCost, WorkClass};

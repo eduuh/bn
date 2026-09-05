@@ -13,21 +13,12 @@ import type {
   ActionsView,
   AttnView,
   CronView,
-  ReposView,
   SuggestionsView,
   ReviewsView,
   ReviewStatus,
   TasksView,
   GoalsView,
 } from "../api/types";
-
-type PolicyPool = ReposView["repos"][number]["pool"] & {
-  ready: number;
-  worker_idle: number;
-  needs_top_up: boolean;
-  full: boolean;
-  policy: { min_ready: number };
-};
 
 /** Take an attention row off the open list — ack, plan, snooze and dismiss all remove it. */
 export function dropAttn<TVars = void>(
@@ -118,45 +109,6 @@ export function dropTask<TVars = void>(
   return optimistic<TasksView, TVars>(queryKeys.tasks(scope), (view, vars) => {
     const tasks = view.tasks.filter((t) => t.id !== pick(vars));
     return { ...view, tasks, count: tasks.length };
-  });
-}
-
-/** Resize (or disable) a repo's warm pool in place. The +/- buttons are a stepper — they have to
- * move under the finger, or you press them twice. `size === null` turns pooling off.
- *
- * Only the config-facing fields are guessed from the requested size. Disk-backed counts (`warm`,
- * `leased`, slot mtimes) stay server-owned; policy booleans are kept coherent enough that the card
- * does not contradict the button press while the refetch is in flight. */
-export function setRepoPoolSize<TVars = void>(
-  repo: string,
-  size: number | null | ((v: TVars) => number | null),
-): OptimisticPatch<TVars> {
-  const pick = typeof size === "function" ? size : () => size;
-  return optimistic<ReposView, TVars>(queryKeys.repos, (view, vars) => {
-    const next = pick(vars);
-    const patchPool = (r: ReposView["repos"][number]) => {
-      const pool = r.pool as PolicyPool;
-      const enabled = next !== null;
-      const total = next ?? pool.total;
-      const workerCapacity = enabled ? Math.max(total - 1, 0) : 0;
-      const oldWorkerCapacity = Math.max(pool.total - 1, 0);
-      const addedCapacity = Math.max(workerCapacity - oldWorkerCapacity, 0);
-      const workerIdle = enabled ? Math.min(pool.worker_idle + addedCapacity, workerCapacity) : 0;
-      const ready = enabled ? Math.min(pool.ready, workerIdle) : 0;
-      return {
-        ...pool,
-        enabled,
-        total,
-        ready,
-        worker_idle: workerIdle,
-        needs_top_up: enabled && ready < pool.policy.min_ready && workerIdle > ready,
-        full: enabled && workerCapacity > 0 && workerIdle === 0,
-      };
-    };
-    return {
-      ...view,
-      repos: view.repos.map((r) => (r.repo === repo ? { ...r, pool: patchPool(r) } : r)),
-    };
   });
 }
 

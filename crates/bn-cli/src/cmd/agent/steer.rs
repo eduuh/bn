@@ -27,13 +27,13 @@ pub(crate) fn resume_command(
         "copilot" => {
             let mut c = std::process::Command::new("copilot");
             c.args(["-p", msg, &format!("--resume={id}")]);
-            c.args(bn_core::mcp::Harness::Copilot.yolo_args());
+            c.args(bn_core::mcp::Harness::Copilot.autonomy_args());
             c
         }
         "claude" => {
             let mut c = std::process::Command::new("claude");
             c.args(["-p", msg, "--resume", id, "--output-format", "json"]);
-            c.args(bn_core::mcp::Harness::Claude.yolo_args());
+            c.args(bn_core::mcp::Harness::Claude.autonomy_args());
             c
         }
         _ => return None,

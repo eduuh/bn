@@ -1,5 +1,7 @@
 #!/bin/sh
-# Reject `$name` written directly against a non-ASCII character, e.g. `echo "for $target…"`.
+# Reject a `$name` expansion written directly against a non-ASCII character: an unbraced
+# `$target` with an ellipsis or other multi-byte character butted up against it, no space between.
+# (Spelled out rather than shown literally — a literal example here would match this very check.)
 #
 # Why this is a real failure and not a style nit: bash decides where a variable name ends with
 # isalnum(), which is locale-dependent. On macOS in a UTF-8 locale the C library still classifies

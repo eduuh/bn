@@ -1,6 +1,9 @@
 //! `bn dispatch` — fork a worktree for a todo and launch an agent in it.
 use crate::*;
 
+mod seed;
+pub(crate) use seed::*;
+
 #[cfg(test)]
 mod tests;
 
@@ -472,230 +475,6 @@ pub(crate) fn run_post_create_hook(
     }
 }
 
-fn render_workflow_body(skill: &bn_core::skills::Skill, title: &str) -> Result<String, String> {
-    let mut args = serde_json::Map::new();
-    for argument in &skill.arguments {
-        let value = match argument.name.as_str() {
-            "question" | "symptom" | "topic" | "task" => title,
-            "continuous" => "true",
-            _ => continue,
-        };
-        args.insert(
-            argument.name.clone(),
-            serde_json::Value::String(value.to_string()),
-        );
-    }
-    skill
-        .render_checked(Some(&args))
-        .map_err(|error| format!("render workflow '{}': {error}", skill.name))
-}
-
-/// The concrete plan-review-gate protocol (#349) appended to a `bn dispatch --plan` ship seed. It
-/// is the authoritative final instruction: the agent writes a plan, registers it with `bn review
-/// submit` (raising a pending plan-review for `repo`/`branch` under session `sid`), and PAUSES —
-/// polling `bn review status <id>` — implementing and opening a PR after low-risk agent consensus,
-/// or after explicit human approval for high-risk/no-consensus plans. `verify` folds the `bn
-/// verify` gate into the post-approval implement step.
-pub(crate) fn plan_gate_seed(
-    cfg: &Config,
-    base_dir: &std::path::Path,
-    ctx: PlanGateContext<'_>,
-) -> Result<String, String> {
-    let verification_requirement = if ctx.verify {
-        bn_core::skills::render_required(cfg, base_dir, "dispatch-verify-gate", None)
-            .map_err(|error| error.to_string())?
-    } else {
-        String::new()
-    };
-    let mut args = serde_json::Map::new();
-    for (name, value) in [
-        ("repo", ctx.repo.to_string()),
-        ("branch", ctx.branch.to_string()),
-        ("session_id", ctx.sid.to_string()),
-        ("reviewers", ctx.reviewers.to_string()),
-        ("quorum", ctx.quorum.to_string()),
-        ("plan_file", ctx.plan_file.unwrap_or("plan.md").to_string()),
-        ("verification_requirement", verification_requirement),
-    ] {
-        args.insert(name.into(), serde_json::Value::String(value));
-    }
-    bn_core::skills::render_required(cfg, base_dir, "dispatch-plan-review-gate", Some(&args))
-        .map(|rendered| format!("\n\n{rendered}"))
-        .map_err(|error| error.to_string())
-}
-
-pub(crate) struct PlanGateContext<'a> {
-    pub(crate) repo: &'a str,
-    pub(crate) branch: &'a str,
-    pub(crate) sid: &'a str,
-    pub(crate) verify: bool,
-    pub(crate) reviewers: usize,
-    pub(crate) quorum: usize,
-    pub(crate) plan_file: Option<&'a str>,
-}
-
-fn append_plan_gate(
-    cfg: &Config,
-    base_dir: &std::path::Path,
-    seed: String,
-    plan_gate: bool,
-    entering_investigate: bool,
-    ctx: PlanGateContext<'_>,
-) -> Result<String, String> {
-    if plan_gate && !entering_investigate {
-        Ok(format!("{seed}{}", plan_gate_seed(cfg, base_dir, ctx)?))
-    } else {
-        Ok(seed)
-    }
-}
-
-/// The workflow skill a dispatch seeds its agent with (#321): an explicit `--skill` wins, else
-/// the task type picks — a scout runs `investigate` (read-only findings), a ship runs `ship-solo`
-/// (scope, build, and review the change end to end in one session via bounded subagents). `debug`
-/// is the explicit pick for a repro-first bugfix.
-///
-/// The default ship arm is the ordinary `bn dispatch` entry: with the multi-session pipeline off
-/// (the default; opt in with `$BN_DISPATCH_PIPELINE=1`), a skill-less non-scout agent dispatch is
-/// *not* `pipeline_investigate`, so it lands here and runs `ship-solo`. With the pipeline flag on, that
-/// same dispatch routes to the Investigate stage instead and this default only applies to explicit
-/// `--skill` lanes (queue `ExecSpec::Skill`, the critic's execute re-dispatch).
-///
-/// Deliberately **not** the same mapping as [`bn_core::pipeline::stage::Stage::default_skill`],
-/// which answers a different question. This one is "what does an ad-hoc `bn dispatch` run?" — a
-/// ship gets `ship-solo`, a self-contained investigate→implement→review lane. That one is "what
-/// does the nine-stage pipeline run at this stage?" — `execute` picks up an *already approved*
-/// plan. Both are correct; folding them together would silently change what dispatch launches.
-pub(crate) fn dispatch_skill_name(explicit: Option<&str>, scout: bool) -> &str {
-    explicit.unwrap_or(if scout { "investigate" } else { "ship-solo" })
-}
-
-/// The seed for a skill-driven dispatch (#321): wraps the skill's rendered workflow body with
-/// dispatch context (fresh worktree, plan-approval gate unless --yolo, scout read-only framing),
-/// maps the workflow's MCP tool names onto the CLI for harnesses without the bn MCP server, and
-/// closes with outcome ingestion, completion reporting, and the `bn reflect "skill:<name> — …"`
-/// line that feeds evolve-skills. Self-contained: the caller appends nothing.
-struct SkillSeedContext<'a> {
-    title: &'a str,
-    url: Option<&'a str>,
-    scout: bool,
-    yolo: bool,
-    verify: bool,
-    /// A plan-review gate will be appended to this seed. The gate then owns the plan file and
-    /// the completion protocol, so the envelope suppresses its bootstrap/verification/completion
-    /// blocks instead of issuing a second, contradicting copy.
-    plan_gate: bool,
-}
-
-fn skill_seed_prompt(
-    cfg: &Config,
-    base_dir: &std::path::Path,
-    ctx: SkillSeedContext<'_>,
-    skill: &bn_core::skills::Skill,
-) -> Result<String, String> {
-    let body = render_workflow_body(skill, ctx.title)?;
-    let name = &skill.name;
-    let cli_map = bn_core::skills::render_required(cfg, base_dir, "dispatch-cli-map", None)
-        .map_err(|error| error.to_string())?;
-    let bootstrap = if !ctx.scout && name == "plan-work" && !ctx.plan_gate {
-        bn_core::skills::render_required(cfg, base_dir, "dispatch-plan-work-bootstrap", None)
-            .map_err(|error| error.to_string())?
-    } else {
-        String::new()
-    };
-    // The verify gate renders at most once per seed: the plan-review gate carries it when one is
-    // appended, and `plan-work`/`execute`/`ship-solo` already gate their finish step on `bn verify`
-    // (rebase re-run included), so only other workflows need the explicit clause.
-    let verification = if ctx.verify
-        && !ctx.scout
-        && !ctx.plan_gate
-        && name != "plan-work"
-        && name != "execute"
-        && name != "ship-solo"
-    {
-        bn_core::skills::render_required(cfg, base_dir, "dispatch-verify-gate", None)
-            .map_err(|error| error.to_string())?
-    } else {
-        String::new()
-    };
-    let mut args = serde_json::Map::new();
-    for (key, value) in [
-        ("goal", ctx.title.to_string()),
-        (
-            "source",
-            ctx.url.unwrap_or("(none; use the branch note)").to_string(),
-        ),
-        ("workflow_name", name.to_string()),
-        ("workflow_body", body),
-        ("cli_map", cli_map),
-    ] {
-        args.insert(key.into(), serde_json::Value::String(value));
-    }
-    if ctx.scout {
-        return bn_core::skills::render_required(cfg, base_dir, "dispatch-scout", Some(&args))
-            .map_err(|error| error.to_string());
-    }
-    let autonomy_name = if name == "ship-solo" {
-        // Neither stance fits ship-solo: interactive forces a plan proposal it has no stage for,
-        // and unattended forbids the `ask_user` that is its whole human-gate. Its own stance is
-        // autonomous-but-ask-on-ambiguity.
-        "dispatch-autonomy-solo"
-    } else if ctx.yolo {
-        "dispatch-autonomy-unattended"
-    } else {
-        "dispatch-autonomy-interactive"
-    };
-    let autonomy = bn_core::skills::render_required(cfg, base_dir, autonomy_name, None)
-        .map_err(|error| error.to_string())?;
-    // With a plan gate appended, the gate's approved-branch is the completion protocol; an empty
-    // slot here keeps the seed to a single copy.
-    let completion = if ctx.plan_gate {
-        String::new()
-    } else {
-        let mut completion_args = serde_json::Map::new();
-        completion_args.insert(
-            "workflow_name".into(),
-            serde_json::Value::String(name.to_string()),
-        );
-        bn_core::skills::render_required(
-            cfg,
-            base_dir,
-            "dispatch-completion",
-            Some(&completion_args),
-        )
-        .map_err(|error| error.to_string())?
-    };
-    args.insert("autonomy".into(), serde_json::Value::String(autonomy));
-    args.insert("bootstrap".into(), serde_json::Value::String(bootstrap));
-    args.insert(
-        "verification".into(),
-        serde_json::Value::String(verification),
-    );
-    args.insert("completion".into(), serde_json::Value::String(completion));
-    bn_core::skills::render_required(cfg, base_dir, "dispatch-ship", Some(&args))
-        .map_err(|error| error.to_string())
-}
-
-fn pipeline_investigate_seed(
-    cfg: &Config,
-    base_dir: &std::path::Path,
-    title: &str,
-    url: Option<&str>,
-    skill: &bn_core::skills::Skill,
-) -> Result<String, String> {
-    let body = render_workflow_body(skill, title)?;
-    let cli_map = bn_core::skills::render_required(cfg, base_dir, "dispatch-cli-map", None)
-        .map_err(|error| error.to_string())?;
-    let mut args = serde_json::Map::new();
-    args.insert("goal".into(), serde_json::Value::String(title.to_string()));
-    args.insert(
-        "source".into(),
-        serde_json::Value::String(url.unwrap_or("(none; use the branch note)").to_string()),
-    );
-    args.insert("workflow_body".into(), serde_json::Value::String(body));
-    args.insert("cli_map".into(), serde_json::Value::String(cli_map));
-    bn_core::skills::render_required(cfg, base_dir, "pipeline-investigate-envelope", Some(&args))
-        .map_err(|error| error.to_string())
-}
 
 /// The references section folded into a dispatched ship agent's seed (#623): the selected coding
 /// standards by name, with a hint to run `bn ref <name>` for each one's full text — so the seed
@@ -1091,6 +870,10 @@ pub(crate) fn run_dispatch(
     refs: &[String],
     // The pipeline stage this dispatch *is*, when the caller knows; `None` infers it.
     stage: Option<bn_core::pipeline::stage::Stage>,
+    // A fully composed seed to use verbatim instead of rendering one from a workflow skill.
+    // `bn agent run --worktree` passes the catalog agent's own body; everything else passes
+    // `None` and gets the skill-driven seed.
+    seed_override: Option<&str>,
     json: bool,
 ) {
     let controller_id = std::env::var("BN_CONTROLLER_ID")
@@ -1289,8 +1072,8 @@ pub(crate) fn run_dispatch(
     // decision is pure policy in bn-core; the slot lease is the existing `wt pool` primitive. A repo
     // without a bn-managed bare clone, or a full pool, transparently falls back to a cold worktree —
     // so pooling is always a safe best-effort default, and `--no-pool` reproduces the old cold path
-    // exactly. Pool size comes from `~/.config/wt/pools` (explicit or `default`), else the built-in
-    // DEFAULT_POOL_SIZE, so no per-repo registration is required.
+    // exactly. Pool size is derived from the slots that exist (floored at DEFAULT_POOL_SIZE and
+    // grown on demand), so no per-repo registration or sizing is required.
     let mode = bn_core::pool::dispatch_worktree_mode(no_pool);
     // The cold path — a fresh worktree at the conventional dir — used both without `--pool` and as
     // the fallback when a warm slot can't be leased.
@@ -1664,41 +1447,52 @@ pub(crate) fn run_dispatch(
             } else {
                 bn_core::cost::WorkClass::Coding
             };
-            let workflow = skill_loaded
-                .as_ref()
-                .expect("agent dispatch requires a loaded workflow");
-            let seed = if pipeline_investigate {
-                pipeline_investigate_seed(cfg, &wt_path, &title, url.as_deref(), workflow)
-                    .unwrap_or_else(|error| {
-                        fail_json(
-                            json,
-                            "dispatch",
-                            "prompt-render",
-                            &format!("bn dispatch: {error}"),
+            // A caller that already composed the whole prompt (`bn agent run --worktree`, seeding a
+            // *catalog agent* rather than a workflow skill) hands it over verbatim, and the skill
+            // machinery is skipped rather than wrapped around a body it knows nothing about — an
+            // agent manifest is already self-contained. Everything after this point still applies:
+            // the references section, standing directives and the plan gate are properties of the
+            // dispatch, not of the skill.
+            let seed = match seed_override {
+                Some(seed) => seed.to_string(),
+                None => {
+                    let workflow = skill_loaded
+                        .as_ref()
+                        .expect("agent dispatch requires a loaded workflow");
+                    if pipeline_investigate {
+                        pipeline_investigate_seed(cfg, &wt_path, &title, url.as_deref(), workflow)
+                            .unwrap_or_else(|error| {
+                                fail_json(
+                                    json,
+                                    "dispatch",
+                                    "prompt-render",
+                                    &format!("bn dispatch: {error}"),
+                                )
+                            })
+                    } else {
+                        skill_seed_prompt(
+                            cfg,
+                            &wt_path,
+                            SkillSeedContext {
+                                title: &title,
+                                url: url.as_deref(),
+                                scout,
+                                yolo,
+                                verify,
+                                plan_gate: plan_gate && !pipeline_investigate,
+                            },
+                            workflow,
                         )
-                    })
-            } else {
-                skill_seed_prompt(
-                    cfg,
-                    &wt_path,
-                    SkillSeedContext {
-                        title: &title,
-                        url: url.as_deref(),
-                        scout,
-                        yolo,
-                        verify,
-                        plan_gate: plan_gate && !pipeline_investigate,
-                    },
-                    workflow,
-                )
-                .unwrap_or_else(|error| {
-                    fail_json(
-                        json,
-                        "dispatch",
-                        "prompt-render",
-                        &format!("bn dispatch: {error}"),
-                    )
-                })
+                        .unwrap_or_else(|error| {
+                            fail_json(
+                                json,
+                                "dispatch",
+                                "prompt-render",
+                                &format!("bn dispatch: {error}"),
+                            )
+                        })
+                    }
+                }
             };
             // Fold the coding-standards references (#623) and the branch's standing directives
             // (`bn agent instruct`) into the seed. See `seed_context::section`.

@@ -570,14 +570,14 @@ pub(crate) fn harness_cmd_from_file(
 }
 
 /// The space-joined Copilot yolo bypass flags for a shell command line (single source of truth in
-/// [`bn_core::mcp::Harness::yolo_args`]).
+/// [`bn_core::mcp::Harness::autonomy_args`]).
 fn copilot_yolo_flags() -> String {
-    bn_core::mcp::Harness::Copilot.yolo_args().join(" ")
+    bn_core::mcp::Harness::Copilot.autonomy_args().join(" ")
 }
 
 /// The space-joined Claude yolo bypass flags for a shell command line.
 fn claude_yolo_flags() -> String {
-    bn_core::mcp::Harness::Claude.yolo_args().join(" ")
+    bn_core::mcp::Harness::Claude.autonomy_args().join(" ")
 }
 
 fn session_id_fragment(session_id: Option<&str>) -> String {

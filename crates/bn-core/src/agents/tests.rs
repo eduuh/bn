@@ -376,3 +376,27 @@ fn legacy_quarter_schedule_requires_manifest_override() {
         .to_string()
         .contains("override config/agents/quarter-review.md"));
 }
+
+#[test]
+fn a_specialist_always_publishes_natively() {
+    let agent =
+        parse("---\nname: demo\nkind: specialist\nrepo: bn\n---\nBody.\n").expect("agent parses");
+    assert!(agent.publishes_natively());
+}
+
+#[test]
+fn a_plain_agent_stays_out_of_the_harness_agent_picker() {
+    // The default has to be "not published": most of the catalog is packet-fed, and a staff agent
+    // offered in a harness's own `/agent` list with no `gather:` behind it reads as broken.
+    let agent = parse("---\nname: demo\nkind: command\nrequires_repo: bn\n---\nBody.\n")
+        .expect("agent parses");
+    assert!(!agent.publishes_natively());
+}
+
+#[test]
+fn declaring_a_world_is_how_a_non_specialist_opts_in() {
+    let agent =
+        parse("---\nname: demo\nkind: command\nrequires_repo: bn\nworlds: [claude]\n---\nBody.\n")
+            .expect("agent parses");
+    assert!(agent.publishes_natively());
+}

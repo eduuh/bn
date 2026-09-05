@@ -65,6 +65,39 @@ pub fn launch_retry_delay(attempt: u32) -> Option<i64> {
     )
 }
 
+/// How long the mandatory pool refresh may wait for the machine to drain before it starts anyway.
+///
+/// The drain exists so a full-build warm does not compete with agents already running. That is a
+/// preference, and it was written as an absolute: wait until `in_flight` is empty. But `in_flight`
+/// counts every live agent session, not just the ones the queue leased — so on a machine where a
+/// person keeps agents open, the condition is never true. The warm then waits forever while
+/// *owning machine-wide admission*, and the queue stops.
+///
+/// A grace turns the absolute back into the preference it was meant to be. Warming beside one
+/// agent is a slower machine; warming that never happens is a stopped one.
+pub const WARM_DRAIN_GRACE_SECS: i64 = 30 * 60;
+
+/// How long work may sit refused-for-not-fitting before it is started anyway.
+///
+/// The fit gate is a preference with a timeout, not a wall. Work whose estimate exceeds every
+/// window the machine will ever offer — a four-hour agent on a box whose free spans are two hours —
+/// would otherwise be deferred forever, which is the same failure as the deadlock with better
+/// manners. Past this it runs, and the decision says so.
+///
+/// Set to the age term's saturation so the two agree: by the time waiting has bought an entry all
+/// the rank it is going to, it has also bought the right to ignore the horizon.
+pub const FIT_PATIENCE_SECS: i64 = crate::rank::AGE_SATURATION_SECS;
+
+/// When the machine is next claimed, and by what.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Horizon {
+    /// Epoch secs at which the claim begins.
+    pub at: i64,
+    /// The claiming window's name, for the deferral detail — "why is this held" should name the
+    /// thing holding it.
+    pub source: String,
+}
+
 /// Everything one tick needs, captured as a snapshot.
 #[derive(Debug, Clone)]
 pub struct TickInputs<'a> {
@@ -122,6 +155,17 @@ pub struct TickInputs<'a> {
     pub presence: Presence,
     /// A due pool-warm sweep owns admission until it completes.
     pub mandatory_warming: bool,
+    /// When the machine is next claimed, if anything claims it — see [`Horizon`]. `None` (no
+    /// deadline window configured) skips the fit gate entirely, so a machine that has never set
+    /// one admits work exactly as it did before fit existed.
+    pub horizon: Option<&'a Horizon>,
+    /// What the machine has learned about how long its work takes.
+    ///
+    /// Ranking needs it because urgency is measured in *slack* — the time that would be left over
+    /// after the work finished — so "is this deadline close?" cannot be answered without knowing
+    /// how big the work is. An empty set (a machine with no history yet) falls back to
+    /// [`crate::queue::durations::DEFAULT_EST_SECS`] and ranks exactly as it did before.
+    pub durations: &'a crate::queue::durations::Durations,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -158,6 +202,18 @@ pub struct InFlight {
     pub touches: Vec<String>,
     /// Epoch secs it started — the timeline's span origin.
     pub started_at: i64,
+    /// Whether the queue launched this, or merely noticed it.
+    ///
+    /// `in_flight` deliberately includes agent sessions the queue never leased — a person's own
+    /// `bn dispatch`, an editor session — because they consume the same RAM and cores, and
+    /// capacity that ignored them would over-commit the machine. That is right for *admission*.
+    ///
+    /// It is wrong for anything that waits for the machine to drain, and the difference is what
+    /// stopped this queue for five days. The mandatory warm waited for `in_flight` to empty; a
+    /// person keeping an agent open meant it never did; the warm held machine-wide admission the
+    /// whole time. A queue can wait for its own work to finish, because it knows that will happen.
+    /// It cannot wait for yours.
+    pub queue_owned: bool,
 }
 
 /// Per-kind concurrency ceilings, applied **after** the lane caps.
@@ -262,6 +318,10 @@ pub enum DeferReason {
     Paused,
     /// A mandatory pool refresh is draining new work before it starts.
     MandatoryWarming,
+    /// It would not finish before the machine is claimed — see [`Horizon`]. A deferral, not an
+    /// expiry: a three-hour job twenty minutes before a window has not lost its moment, it has
+    /// lost *this* moment.
+    WontFit,
 }
 
 impl DeferReason {
@@ -276,6 +336,7 @@ impl DeferReason {
             DeferReason::NoCapableNode => "no-capable-node",
             DeferReason::NotMyKind => "not-my-kind",
             DeferReason::ExpressBudget => "express-budget",
+            DeferReason::WontFit => "wont-fit",
             DeferReason::Expired => "expired",
             DeferReason::Snoozed => "snoozed",
             DeferReason::AwaitingAway => "awaiting-away",
@@ -367,7 +428,15 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
                 continue;
             }
         }
-        if inputs.mandatory_warming && !crate::queue::classify::is_mandatory_pool_warming(entry) {
+        // Recovery is exempt for exactly the reason it is exempt from pause, one gate below:
+        // reclaiming dead leases is not new work, it is what makes holding new work safe. Without
+        // this the warming latch closed a cycle on itself — the drain waits for the machine to
+        // empty, and `agent-supervise`, the pass that would reclaim whatever is wedged in flight,
+        // was itself deferred here. Nothing could clear the condition the warm was waiting for.
+        if inputs.mandatory_warming
+            && !crate::queue::classify::is_mandatory_pool_warming(entry)
+            && !entry_is_recovery(entry)
+        {
             plan.deferred.push(defer(
                 entry,
                 DeferReason::MandatoryWarming,
@@ -434,6 +503,12 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
                 inputs.windows,
                 inputs.now,
             )),
+            band: None,
+            // The three facts the ranker needs to weigh time. `added_at` finally reaches it: the
+            // field has been on every entry since the queue existed, and the ranker never read it.
+            added_at: e.added_at,
+            not_after: e.not_after,
+            est_secs: inputs.durations.for_entry(e),
             goal: None,
             touches: e.touches.clone(),
             // A pending entry is by definition not already in a run — the lease is what moves it
@@ -449,6 +524,7 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
         attention: inputs.attention,
         capacity: candidates.len(),
         inflight_touches: &inflight_touches,
+        now: inputs.now,
     });
     for skipped in &selection.skipped {
         if let Some(entry) = find(&claimable, &skipped.repo, &skipped.id) {
@@ -482,19 +558,53 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
         };
         let lane = WorkClass::from_kind(entry.kind);
 
+        // Drain the queue's own work first — but only its own, and not forever.
+        //
+        // Only queue-owned work, because a session somebody left open is not something the queue
+        // can wait out; see [`InFlight::queue_owned`]. And not forever, because even the queue's
+        // own work can wedge: past [`WARM_DRAIN_GRACE_SECS`] the warm starts alongside whatever is
+        // running, since the alternative is the queue never starting anything again.
+        let draining = inputs.in_flight.iter().filter(|f| f.queue_owned).count();
+        let drain_waited = inputs.now.saturating_sub(entry.added_at);
         if inputs.mandatory_warming
             && crate::queue::classify::is_mandatory_pool_warming(entry)
-            && !inputs.in_flight.is_empty()
+            && draining > 0
+            && drain_waited < WARM_DRAIN_GRACE_SECS
         {
             plan.deferred.push(defer(
                 entry,
                 DeferReason::Capacity(Bind::LocalCap),
-                format!(
-                    "draining {} existing job(s) before mandatory pool warming",
-                    inputs.in_flight.len()
-                ),
+                format!("draining {draining} queued job(s) before mandatory pool warming"),
             ));
             continue;
+        }
+
+        // Will it finish before something else needs the machine? Asked only of work that occupies
+        // it — express work runs inline in seconds and cannot overrun anything. This is the case
+        // the queue got wrong: nothing stopped it starting a three-hour agent twenty minutes before
+        // a window it was supposed to leave free.
+        if let Some(horizon) = inputs.horizon {
+            if !entry.is_express() {
+                let est = inputs.durations.for_entry(entry);
+                let free = horizon
+                    .at
+                    .saturating_sub(inputs.now)
+                    .saturating_sub(crate::meetings::FIT_BUFFER_SECS);
+                let waited = inputs.now.saturating_sub(entry.added_at);
+                if est > free && waited < FIT_PATIENCE_SECS {
+                    plan.deferred.push(defer(
+                        entry,
+                        DeferReason::WontFit,
+                        format!(
+                            "needs ~{}, {} before {} opens",
+                            crate::track::fmt_dur(est),
+                            crate::track::fmt_dur(free.max(0)),
+                            horizon.source
+                        ),
+                    ));
+                    continue;
+                }
+            }
         }
 
         if entry.heavy && heavy_used > 0 {

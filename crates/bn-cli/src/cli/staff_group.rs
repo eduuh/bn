@@ -191,6 +191,10 @@ pub(crate) enum CmdStaff {
     Skills {
         #[command(subcommand)]
         action: Option<SkillsCmd>,
+        /// Pick a skill in an fzf popup and launch it (`bn agent run`), instead of listing.
+        /// Bare `bn skills` stays a plain list, because crons and scripts parse it.
+        #[arg(long)]
+        pick: bool,
     },
     /// Strict Markdown agent catalog. Bare `bn agents` lists every explicit kind and schedule;
     /// `validate` checks every visible manifest, `render` resolves a prompt body, and specialist
@@ -198,6 +202,10 @@ pub(crate) enum CmdStaff {
     Agents {
         #[command(subcommand)]
         action: Option<AgentsCmd>,
+        /// Pick an agent in an fzf popup and launch it (`bn agent run`), instead of listing.
+        /// Bare `bn agents` stays a plain list, because crons and scripts parse it.
+        #[arg(long)]
+        pick: bool,
     },
     /// MCP server helpers. `bn mcp init <claude|copilot>` wires the current repo: the
     /// project-scoped MCP config(s) plus an instruction block in the harness's memory file

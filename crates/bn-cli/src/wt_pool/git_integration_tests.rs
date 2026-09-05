@@ -232,11 +232,7 @@ fn direct_open_leases_a_configured_warm_slot_and_never_spills_cold() {
     let root = tmp.path();
     let bare = root.join("bare").join("bn.git");
     build_repo_into(&root.join("src"), &bare);
-    let pools = root.join("pools");
-    std::fs::write(&pools, "bn 2\n").unwrap();
-
     let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
-    let _pools = bn_core::test_support::EnvGuard::set("WT_POOLS", &pools);
     TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
 
     let pool_dir = root.join("worktree").join("bn").join("_pool");
@@ -249,40 +245,58 @@ fn direct_open_leases_a_configured_warm_slot_and_never_spills_cold() {
 
     match lease_for_direct_open(&cfg, "bn", "feat") {
         DirectLease::Leased(path) => assert_eq!(path, slot),
-        _ => panic!("configured direct open should lease the warm worker slot"),
+        _ => panic!("a direct open should lease the warm worker slot"),
     }
     assert_eq!(head_ref(&slot), "feat");
     assert!(!root.join("worktree").join("bn").join("feat").exists());
 
-    assert!(matches!(
-        lease_for_direct_open(&cfg, "bn", "second"),
-        DirectLease::Unavailable
-    ));
+    // A second branch does NOT spill to a cold worktree beside the pool — it takes another slot.
+    // Slots 2..=4 exist by derivation (the floor), so this is an ordinary pick, not growth.
+    match lease_for_direct_open(&cfg, "bn", "second") {
+        DirectLease::Leased(path) => assert_eq!(path, pool_dir.join("3")),
+        _ => panic!("a direct open should lease a second slot rather than cut a cold worktree"),
+    }
     assert!(!root.join("worktree").join("bn").join("second").exists());
 }
 
-/// `Unpooled` is now reachable only through the explicit `<repo> 0` opt-out: an unmentioned repo
-/// pools at the default size, so nothing else sends a direct open to a cold worktree.
+/// The pool grows to fit demand instead of refusing, and stops at the ceiling. With the config
+/// gone this is the only thing that bounds a pool, so it has to hold at both ends.
 #[test]
-fn direct_open_reports_unpooled_only_for_an_opted_out_repo() {
+fn a_full_pool_grows_by_one_until_it_hits_the_ceiling() {
     let _g = bn_core::test_support::env_lock();
     let tmp = tempfile::tempdir().unwrap();
-    let pools = tmp.path().join("pools");
-    std::fs::write(&pools, "bn 0\n").unwrap();
-    let _pools = bn_core::test_support::EnvGuard::set("WT_POOLS", &pools);
-    let cfg = bn_core::test_support::config(tmp.path());
-    let lease = lease_for_direct_open(&cfg, "bn", "feat");
-    assert!(matches!(lease, DirectLease::Unpooled));
+    let root = tmp.path();
+    let bare = root.join("bare").join("bn.git");
+    build_repo_into(&root.join("src"), &bare);
+    let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
+    TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
+    let cfg = bn_core::test_support::config(root);
+    let pool_dir = root.join("worktree").join("bn").join("_pool");
+
+    // Slot 1 is the controller's, so the workers are 2..=MAX — every one of them leasable.
+    let max = bn_core::pool::MAX_POOL_SIZE;
+    for n in 2..=max {
+        match lease_for_direct_open(&cfg, "bn", &format!("b{n}")) {
+            DirectLease::Leased(path) => assert_eq!(path, pool_dir.join(n.to_string())),
+            _ => panic!("slot {n} should have been leased (grown into if need be)"),
+        }
+        assert_eq!(bn_core::pool::pool_size(&cfg, "bn"), n.max(4));
+    }
+
+    // At the ceiling, full is genuinely full — growth is not an escape hatch from capacity.
+    assert!(matches!(
+        lease_for_direct_open(&cfg, "bn", "one-too-many"),
+        DirectLease::Unavailable
+    ));
+    assert_eq!(bn_core::pool::pool_size(&cfg, "bn"), max);
 }
 
+/// With no config there are only two ways a direct open fails, and "no clone" is one of them.
 #[test]
-fn direct_open_distinguishes_a_wildcard_pool_from_a_missing_repo() {
+fn direct_open_reports_a_missing_repo() {
     let _g = bn_core::test_support::env_lock();
     let tmp = tempfile::tempdir().unwrap();
-    let pools = tmp.path().join("pools");
-    std::fs::write(&pools, "default 2\n").unwrap();
     let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", tmp.path());
-    let _pools = bn_core::test_support::EnvGuard::set("WT_POOLS", &pools);
     let cfg = bn_core::test_support::config(tmp.path());
 
     assert!(matches!(

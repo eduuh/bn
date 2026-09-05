@@ -246,21 +246,23 @@ halves:
 tmux capture-pane -p -t '=<repo>:=<branch>' -S -80
 ```
 
-That is still not enough on its own. When the exact window does not exist, tmux does not fail — it
-falls back to **the session's current window** and exits 0. So resolve first, and check you got what
-you asked for:
+With the window anchored, a miss is a real error — `capture-pane`, `list-panes` and `list-windows`
+all exit 1 with `can't find window: <name>`, which is what you want: a target that names no window
+should fail rather than answer.
+
+**`display-message` is the exception, and it is the one people reach for.** With no `main` beside a
+`main-stale`, `capture-pane -t '=bn:=main'` exits 1, while `display-message -p -t '=bn:=main'`
+prints the session's *current* window and exits 0. So never test a window's existence with
+`display-message`; ask something that fails:
 
 ```bash
-want=<branch>
-got=$(tmux display-message -p -t "=<repo>:=$want" '#{window_name}' 2>/dev/null)
-[ "$got" = "$want" ] || { echo "no window '$want' — tmux offered '$got'"; exit 1; }
+tmux list-panes -t "=<repo>:=<branch>" -F '#{pane_id}' >/dev/null 2>&1 \
+  || { echo "no window for <repo>:<branch>"; exit 1; }
 ```
 
-`bn agent pane` is still the better call — it joins the target against recorded agent state rather
-than guessing from window names, and it does error when nothing matches at all. But it builds the
-same `=repo:branch` form, so it inherits the prefix hazard: ask it for a branch whose window is
-missing while a same-prefixed neighbour exists, and it answers about the neighbour. Check the
-`target` you got back before you quote it, and before you act on it.
+`bn agent pane` is the better call regardless: it joins the target against recorded agent state
+rather than guessing from window names, and since bn #1264 it anchors both halves too, so it
+reports `no such window` instead of quoting a same-prefixed neighbour.
 
 **Steer them.**
 

@@ -356,18 +356,41 @@ fn tick_once(cfg: &Config, now: i64, dry_run: bool) -> TickOutcome {
     let snapshot = bn_core::queue::snapshot::Snapshot::capture(cfg, now);
     let inputs = snapshot.inputs();
     let plan = plan_tick(&inputs);
+    // Read before the write clobbers it: whether this pass is worth logging depends on what the
+    // last one said.
+    let previous = QueueDecision::read();
     let decision = QueueDecision::build(&inputs, &plan, dry_run);
     let _ = decision.write();
 
     if !dry_run {
-        log_pass(&decision, now);
+        log_pass(&decision, previous.as_ref(), now);
         // Declare the dispatcher's extent. Inside it no producer captures, so `realize` may call
         // ordinary entry points — `run_job`, `bn dispatch` — without re-queueing what it just
         // dequeued. See `queue_producers::Dispatching`.
         let _dispatching = crate::cmd::queue_producers::Dispatching::begin();
         realize(cfg, &plan, now);
+        compact_backlog();
     }
     TickOutcome::Ran(Box::new(decision))
+}
+
+/// Collapse the backlog's superseded lines, once this pass has finished writing to it.
+///
+/// `backlog::compact_if_needed` has always documented itself as "the daemon calls this once per
+/// tick"; the daemon never did. Its only caller was `bn orchestrate`'s reconcile, which runs when
+/// the queue dispatches — so the moment the queue stopped dispatching, the store stopped being
+/// compacted, and every deferral the stall produced was appended to a file nothing would ever
+/// collapse. The machine this was written on reached 153,779 raw lines for 130 live entries: a
+/// 100 MB append-only log re-read and folded on every pass. The stall was its own amplifier.
+///
+/// Here it is bounded by the tick instead, so recovery does not depend on the very dispatching
+/// that a wedged queue is not doing. Cheap when there is nothing to do — `should_compact` requires
+/// the file to have grown past a floor *and* superseded lines to outnumber live entries 2:1.
+fn compact_backlog() {
+    let path = bn_core::backlog::backlog_path();
+    if let Err(e) = bn_core::backlog::compact_if_needed(&path) {
+        eprintln!("bn queue tick: could not compact the backlog — {e}");
+    }
 }
 
 /// Queue mandatory pool maintenance only when it has real work to do.
@@ -416,7 +439,10 @@ fn maybe_enqueue_spare_work(cfg: &Config, now: i64) {
             branch: None,
         },
         bn_core::queue::kind::Requirements::default(),
-        None,
+        // A deadline, like every other scheduled firing. The sweep is daily, so a firing still
+        // waiting a day later has been superseded rather than merely delayed — and a firing that
+        // can never lapse is one that can hold admission forever.
+        Some(now.saturating_add(bn_core::queue::jobs::MANDATORY_WARM_TTL_SECS)),
     );
 }
 
@@ -434,8 +460,8 @@ fn maybe_enqueue_spare_work(cfg: &Config, now: i64) {
 ///
 /// Held, skipped and empty passes stay in `queue-decision.json`, not the event log. The decision
 /// file answers "why not now"; history is for work that actually moved.
-fn log_pass(decision: &QueueDecision, now: i64) {
-    if decision.started == 0 {
+fn log_pass(decision: &QueueDecision, previous: Option<&QueueDecision>, now: i64) {
+    if decision.started == 0 && !stall_changed(decision, previous) {
         return;
     }
     let mut f = serde_json::Map::new();
@@ -456,6 +482,33 @@ fn log_pass(decision: &QueueDecision, now: i64) {
         );
     }
     let _ = bn_core::events::append_at("queue_tick", now, f);
+}
+
+/// Whether a pass that started nothing is saying something new.
+///
+/// `queue-decision.json` records every pass, including the silent ones — that is what `bn queue
+/// why` reads, and its module doc is explicit that "a dispatcher that only records its successes
+/// makes its silences unexplainable". The event *log* did exactly that: it dropped every
+/// zero-start pass, so a stall left no history at all. Five days of this machine starting nothing
+/// appear in the log only as the scheduled work expiring around it — the cause was never written
+/// down, and `queue::log::runs` says in as many words that held passes are supposed to survive
+/// precisely so "the evidence for why nothing moved" is not erased.
+///
+/// Logging every silent pass is not the answer either: the resident loop ticks every three
+/// seconds, so a quiet weekend would be a hundred thousand identical events in a file nothing
+/// rotates. What is worth recording is the *transition* — entering a stall, and any change in why
+/// — with the clearing already covered, since a pass that starts something logs on its own.
+fn stall_changed(decision: &QueueDecision, previous: Option<&QueueDecision>) -> bool {
+    match previous {
+        // Nothing to compare against: this is the first thing the log will know about the stall.
+        None => true,
+        Some(prev) => {
+            prev.started > 0
+                || prev.outcome != decision.outcome
+                || prev.reason != decision.reason
+                || prev.bind != decision.bind
+        }
+    }
 }
 
 /// Return leases whose executor died to `pending`.

@@ -534,22 +534,6 @@ function PoolWarmSchedule({ repo, pool }: { repo: string; pool: RepoPool }) {
 }
 
 function PoolPanel({ repo, pool, now }: { repo: string; pool: RepoPool; now: number }) {
-  if (!pool.enabled) {
-    return (
-      <section className="space-y-3">
-        <SectionHead icon={Flame} title="Warm pool" />
-        <PoolWarmSchedule repo={repo} pool={pool} />
-        <Card className="p-4 text-sm text-muted-foreground">
-          Not pooled. Enable it from the{" "}
-          <Link to="/repos" className="text-primary">
-            Repos board
-          </Link>{" "}
-          (or <code className="font-mono">bn wt pool set 2</code>) and the idle pool-warm job keeps
-          its slots built, so a dispatch leases a ready checkout instead of paying a cold install.
-        </Card>
-      </section>
-    );
-  }
   return (
     <section className="space-y-3">
       <SectionHead icon={Flame} title="Warm pool" count={pool.total} />

@@ -17,8 +17,18 @@ trap cleanup EXIT INT TERM
 
 mkdir -p "$SB/home/config" "$SB/notes" "$SB/state" "$SB/repo"
 cat > "$SB/home/config/config.toml" <<EOF
+hostname = "bn-try-queue"
+
 [personal]
 notes_root = "$SB/notes"
+
+# Without this profile bn decides the queue is disabled on this host and reconciles — which means
+# removing the real machine's launchd dispatcher. The env vars below isolate bn's files; launchd is
+# per-uid and isolates nothing, so "nothing here touches your real machine" was not true.
+[machines.bn-try-queue]
+repos = ["*"]
+queue = true
+cron = true
 
 [queue]
 capture = ["cron"]

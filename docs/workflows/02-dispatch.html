@@ -1,0 +1,380 @@
+<meta charset="utf-8">
+<title>Dispatch and Isolation</title>
+<link rel="stylesheet" href="assets/bn-docs.css">
+
+<div class="wrap">
+
+<aside class="rail">
+  <a class="rail__brand" href="index.html"><b>bn</b> workflow notes</a>
+  <p class="rail__tag">How the machine actually runs</p>
+  <nav>
+    <ol>
+      <li><a href="index.html">Overview</a></li>
+      <li><a href="01-pipeline.html">The pipeline &amp; its gates</a></li>
+      <li><a href="02-dispatch.html" aria-current="page">Dispatch &amp; isolation</a></li>
+      <li><a href="03-state.html">What bn writes down</a></li>
+      <li><a href="04-catalog.html">The prompt catalog</a></li>
+      <li><a href="05-surfaces.html">Surfaces</a></li>
+    </ol>
+  </nav>
+</aside>
+
+<main>
+
+<p class="eyebrow">Note 03</p>
+<h1>Dispatch, isolation and reclamation</h1>
+
+<p class="standfirst">
+Two different things in this codebase are called a lease, over the same directory, with
+different lifetimes and different owners. Separating them is the single biggest
+comprehension win in the dispatch layer — most confusion downstream traces back to
+conflating the two.
+</p>
+
+<h2>The two leases</h2>
+
+<figure>
+<svg viewBox="0 0 900 260" role="img" aria-labelledby="leases-title">
+  <title id="leases-title">A pool lease spanning one checkout, with shorter agent leases nested inside it</title>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11">
+
+    <text x="8" y="18" font-size="11" fill="var(--ink-mid)">_pool/3 — one warm checkout, reused over time →</text>
+
+    <!-- pool lease bar -->
+    <rect x="8" y="34" width="820" height="46" rx="5"
+          fill="var(--teal-soft)" stroke="var(--teal)" stroke-width="1.5"/>
+    <text x="20" y="53" font-size="10.5" fill="var(--teal)">POOL LEASE — _pool/leases.json</text>
+    <text x="20" y="70" font-size="9.5" fill="var(--ink-mid)">{ branch, holder, pid, at, boot_id } · renewed on relaunch via touch_dispatch_lease</text>
+
+    <!-- agent lease bars -->
+    <rect x="24" y="96" width="220" height="44" rx="5"
+          fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+    <text x="36" y="114" font-size="10" fill="var(--accent)">AGENT LEASE</text>
+    <text x="36" y="130" font-size="9" fill="var(--ink-mid)">session A · no renewal</text>
+
+    <rect x="268" y="96" width="220" height="44" rx="5"
+          fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+    <text x="280" y="114" font-size="10" fill="var(--accent)">AGENT LEASE</text>
+    <text x="280" y="130" font-size="9" fill="var(--ink-mid)">session B · acquire→commit→release</text>
+
+    <rect x="512" y="96" width="220" height="44" rx="5"
+          fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+    <text x="524" y="114" font-size="10" fill="var(--accent)">AGENT LEASE</text>
+    <text x="524" y="130" font-size="9" fill="var(--ink-mid)">session C</text>
+
+    <text x="8" y="164" font-size="10" fill="var(--ink-muted)">agent-leases.json — keyed on key.worktree ALONE, so one checkout can never host two agents</text>
+
+    <!-- drift arrows -->
+    <path d="M120 178 L120 200" stroke="var(--teal)" stroke-width="1.5" fill="none"/>
+    <polygon points="120,176 116,184 124,184" fill="var(--teal)"/>
+    <text x="134" y="196" font-size="9.5" fill="var(--teal)">adopt_occupied_slots — pulls the ledger UP to reality</text>
+
+    <path d="M120 216 L120 238" stroke="var(--warn)" stroke-width="1.5" fill="none"/>
+    <polygon points="120,240 116,232 124,232" fill="var(--warn)"/>
+    <text x="134" y="234" font-size="9.5" fill="var(--warn)">reclaim_leaked_leases — pulls it back DOWN</text>
+  </g>
+</svg>
+<figcaption>
+The pool lease is the outer tenancy of a slot; agent leases are the shorter sessions inside
+it. Two reconciliation passes correct drift in opposite directions.
+</figcaption>
+</figure>
+
+<h3>Agent lease</h3>
+
+<p>
+Durable, atomic ownership of an agent-bearing worktree, stored in
+<code>agent-leases.json</code>. A record is
+<code>{key: (repo, branch, worktree), session_id, harness, kind, tmux_target, acquired_at}</code>.
+<span class="src">crates/bn-core/src/agent/lease.rs:163, :288</span>
+</p>
+
+<p>
+It protects one invariant: <strong>one agent per checkout</strong>. Conflict is detected on
+<code>key.worktree</code> alone rather than the whole key, because two branches co-owning one
+directory is the exact bug it exists to prevent.
+<span class="src">lease.rs:316-323, :345, :363</span>
+</p>
+
+<p>
+The lifecycle is acquire → commit → release, with <strong>no renewal and no heartbeat</strong>.
+A lease is authoritative if its tmux target still has a live pane, <em>or</em> if it is younger
+than <code>AGENT_LEASE_STARTING_GRACE_SECS = 30</code>.
+<span class="src">lease.rs:13, :308 · crates/bn-cli/src/agent_lease.rs:46</span>
+</p>
+
+<p>
+Acquisition is a two-phase reservation. <code>begin_agent_lease</code> writes the new owner
+while holding the file lock and returns an <code>AgentLeaseReservation</code> whose
+<code>Drop</code> restores the entire prior registry unless <code>commit()</code> is called.
+Dispatch reserves, reaps prior owners, launches the window, then commits — rolling back if
+the launch fails.
+<span class="src">lease.rs:201-246, :324 · cmd/dispatch.rs:1719-1780</span>
+</p>
+
+<p>
+Placement is validated <em>before</em> the lock, as policy rather than contention: the
+stow-source <code>worktree/&lt;repo&gt;/main</code> hosts no agent at all, and
+<code>_pool/1</code> belongs to the controller.
+<span class="src">lease.rs:89, :99, :138</span>
+</p>
+
+<h3>Pool lease</h3>
+
+<p>
+A slot tenancy in <code>&lt;worktree&gt;/&lt;repo&gt;/_pool/leases.json</code>:
+<code>{branch, holder, pid, at, boot_id, comparison_slot}</code>. This one <em>is</em> renewed,
+but only on relaunch — <code>touch_dispatch_lease</code> re-stamps pid, timestamp and boot id
+so a relaunch's kill does not look like abandonment.
+<span class="src">crates/bn-cli/src/wt_pool.rs:100, :1252</span>
+</p>
+
+<h2>The worktree pool</h2>
+
+<p>
+A slot is <code>&lt;root&gt;/worktree/&lt;repo&gt;/_pool/&lt;n&gt;</code> — a warm checkout with
+dependencies and build cache intact, reused by many branches in turn. Pool size is
+<em>derived from the directories that exist</em>, never declared:
+<code>DEFAULT_POOL_SIZE = 4</code> including the reserved slot, growing one at a time up to
+<code>MAX_POOL_SIZE = 16</code>.
+<span class="src">wt_pool.rs:1-17 · crates/bn-core/src/pool.rs:34, :215</span>
+</p>
+
+<h3>The acquisition ladder</h3>
+
+<p>
+<code>acquire_slot</code> runs the whole pick-and-persist under <code>lock_leases</code>, in
+this order:
+</p>
+
+<ol>
+<li>Reclaim prior-boot leases</li>
+<li><code>adopt_occupied_slots</code> — claim slots a live agent is in that the ledger never
+named <span class="src">wt_pool.rs:471</span></li>
+<li><code>live_branch_slot</code> — idempotent same-branch hit</li>
+<li><code>pick_slot</code> — lowest idle</li>
+<li><code>reclaim_stale(AnyDeadHolder)</code></li>
+<li><code>reclaim_leaked_leases</code></li>
+<li>Grow the pool</li>
+<li>Create or <code>switch_into_slot</code>, then persist</li>
+</ol>
+
+<p>
+Afterwards <code>ensure_spare_slot</code> warms one ahead.
+<span class="src">wt_pool.rs:776, :1295</span>
+</p>
+
+<div class="note">
+<span class="note__label">Reclamation is proof, not guess</span>
+<p>
+<code>lease_abandoned</code> requires all three: not occupied, <strong>and</strong> not dirty,
+<strong>and</strong> (holder dead or older than a five-minute grace). "Occupied" is itself a
+union of three oracles — the lease registry, <code>@bn_*</code>-stamped tmux windows, and any
+live pane rooted in the checkout.
+<span class="src">pool.rs:193 · wt_pool/reclaim.rs:123 · agent_lease.rs:300, :373</span>
+</p>
+</div>
+
+<p>
+<code>prune</code> only removes over-size or orphan slots, never leased, dirty or in-use ones;
+<code>destroy</code> requires explicit <code>--include-*</code> flags. Releasing a slot is a
+<code>warm_reset</code> — detach, discard changes, <code>clean -df</code> — so the checkout
+itself survives.
+<span class="src">wt_pool.rs:352, :585, :603</span>
+</p>
+
+<h2>Supervision</h2>
+
+<p>
+bn reads the harnesses' own on-disk transcripts and writes nothing of its own. Claude at
+<code>~/.claude/projects/&lt;encoded-cwd&gt;/&lt;sid&gt;.jsonl</code>, Copilot at
+<code>~/.copilot/session-state/&lt;id&gt;/events.jsonl</code>.
+<span class="src">crates/bn-core/src/agent/supervise.rs:290, :524</span>
+</p>
+
+<div class="scroller">
+<table>
+<thead><tr><th>Health</th><th>Condition</th><th>Derived or stamped</th></tr></thead>
+<tbody>
+<tr><td><code>Starting</code></td><td>Launch record exists, no transcript yet; retired after 20 min</td><td>stamped</td></tr>
+<tr><td><code>Active</code></td><td>Idle &lt; 5 min</td><td>derived</td></tr>
+<tr><td><code>Idle</code></td><td>Idle ≥ 5 min</td><td>derived</td></tr>
+<tr><td><code>Stuck</code></td><td>Idle ≥ 15 min</td><td>derived</td></tr>
+<tr><td><code>Ended</code></td><td>15 min silent <strong>and</strong> no hosting tmux window</td><td>stamped</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>
+<code>Ended</code> needs two facts rather than one for a concrete reason: a transcript stays
+readable for <code>QUIET_SECS = 1800</code>, so without the second condition every finished
+agent posed as stuck for half an hour.
+<span class="src">supervise.rs:46, :226-238, :342 · agent/parse.rs:14</span>
+</p>
+
+<h3>Steerability is a separate question from health</h3>
+
+<p>
+<code>resolve_channels</code> joins agents to windows on a five-tier evidence ladder — lease,
+<code>@bn_session_id</code>, worktree path, <code>@bn_repo</code>/<code>@bn_branch</code>, then
+window name — and only the branch-keyed tiers are allowed to degrade to
+<code>Ambiguous</code>. Matching on window name alone turned out to be effectively dead code.
+<span class="src">agent/channel.rs:1-25, :177</span>
+</p>
+
+<p>
+"Stuck" for a controller is a narrower, pane-text question:
+<code>classify_stuck_lane</code> returns <code>McpLoading</code>,
+<code>InteractivePrompt</code>, <code>WorkingIdle</code> (600 s of no change) or
+<code>IdleWithWip</code>, keyed off a <code>pane_activity_fingerprint</code>.
+Separately, <code>agent_progress_for_cwd</code> measures cumulative output tokens regardless
+of quiet — that is how a stalled agent is distinguished from one that simply has not produced
+a turn yet.
+<span class="src">agent/stuck.rs:15, :142, :167 · agent/progress.rs:33</span>
+</p>
+
+<h3>Reclamation policy</h3>
+
+<p>
+<code>fleet_gc::classify</code> is pure, and evaluates in a fixed order: the orchestrator is
+sacrosanct (not even <code>--force</code> touches it) → a stale reason (pr-merged, pr-closed,
+worktree-gone, window-gone) → then the guards <code>Attended</code> &gt; <code>Working</code>
+&gt; <code>Uncommitted</code> &gt; <code>Grace</code>.
+<span class="src">crates/bn-core/src/fleet_gc.rs:~208</span>
+</p>
+
+<h2>Four concepts that sound alike</h2>
+
+<div class="scroller">
+<table>
+<thead><tr><th>Module</th><th>What it actually is</th></tr></thead>
+<tbody>
+<tr><td><code>launchable.rs</code></td><td>The merged "what can I launch" namespace — Markdown agents plus workflow skills in one list. On a name collision the agent wins and the shadowed skill is marked, not dropped. <span class="src">launchable.rs:1-16, :183</span></td></tr>
+<tr><td><code>agents.rs</code></td><td>The manifest layer. <code>AgentKind = Command | Staff | Hosted | Specialist</code>, each with different required frontmatter. <span class="src">agents.rs:39</span></td></tr>
+<tr><td><code>specialists.rs</code></td><td>A <em>compiler</em>, not a runtime — it renders manifests into native Copilot/Claude agent files so a running harness finds them under <code>/agent</code>. A specialist is not runnable by bn; <code>ensure_runnable</code> refuses it. <span class="src">specialists.rs:1-22 · agents.rs:348</span></td></tr>
+<tr><td><code>agent/registry.rs</code></td><td><strong>Not</strong> a roster of agent types. It projects <code>SessionRecord</code> rows — which sessions exist and what state they are in. <span class="src">registry.rs:196, :319</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>
+Selection is mostly explicit rather than inferred. <code>dispatch_pipeline_stage</code>
+believes a declared <code>--stage</code> and only guesses over <code>(scout, skill)</code> when
+none is given.
+<span class="src">cmd/dispatch/policy.rs:~125</span>
+</p>
+
+<h2>Approvals and autonomy</h2>
+
+<p>
+<code>approval.rs</code> is a pure decision function over a parsed dialog plus
+<code>approvals.toml</code>, evaluated in a fixed safety order:
+</p>
+
+<ol>
+<li><strong>Default deny.</strong></li>
+<li><strong>A <code>question-menu</code> is never auto-answered</strong>, at any setting —
+checked <em>before</em> the master switch. <span class="src">approval.rs:272</span></li>
+<li><strong>Deny rules win unconditionally.</strong></li>
+<li><strong>The chosen option must exist in the dialog.</strong> <span class="src">approval.rs:323</span></li>
+</ol>
+
+<p>
+Policy is off by default even when the file exists; rules are substrings rather than regexes
+on purpose; trust menus need their own <code>trust_menu = true</code>; and a malformed file
+degrades to deny-everything.
+<span class="src">approval.rs:89-93, :126, :159-177</span>
+</p>
+
+<p>
+Autonomy has two axes: <code>PolicyScope = Orchestrated | Dispatched | All</code>, and
+<code>PolicyCtx.trusted</code> — the <code>--yolo</code> trust contract, carried only by
+orchestrated coding and ship items. Research and scout lanes are deliberately dispatched
+non-trusted. Every decision, approved or escalated, is appended to
+<code>state_dir/approvals.jsonl</code> along with the options it faced.
+<span class="src">approval.rs:36, :188, :230 · cmd/agent_approve.rs:19-70, :81</span>
+</p>
+
+<h2>Things that will mislead you</h2>
+
+<ul>
+<li><strong><code>--yolo</code> raises the plan-review gate rather than bypassing it</strong> —
+"autonomy costs a plan review instead of buying its way out of one". And it is silently
+dropped when the seed came from an external URL, because that is a prompt-injection →
+command-execution path. <span class="src">cmd/dispatch/policy.rs:~85 · cmd/dispatch.rs:989-1009</span></li>
+
+<li><strong>A pool lease's <code>pid</code> is the caller's parent</strong> — a tmux server or
+login shell that outlives every agent it launches. Gating reclamation on pid liveness
+therefore frees nothing in normal use, which is exactly why the second occupancy-based sweep
+exists. <span class="src">pool.rs:184-189 · wt_pool/reclaim.rs:1-8</span></li>
+
+<li><strong><code>boot_id</code> is how the pool survives a reboot</strong> — a lease tagged
+with a prior boot's id is provably dead even if the pid was recycled. Linux and WSL only.
+<span class="src">wt_pool.rs:155 · pool.rs:108</span></li>
+
+<li><strong><code>pid_alive</code> used to return <code>true</code> off Linux</strong>, which
+silently disabled every abandonment decision on macOS.
+<span class="src">wt_pool.rs:405-412</span></li>
+
+<li><strong>A slot's memory must be truncated at lease start.</strong> Harnesses key session
+history on the <em>directory</em>, so typing <code>claude</code> in a returned idle slot
+resumed the previous tenant's work. <code>slot_lease_started_at</code> exists so resume
+ignores history older than the current lease. <span class="src">wt_pool.rs:1239</span></li>
+
+<li><strong>A pooled agent has no branch in its path</strong>, so
+<code>worktree_repo_branch</code> deliberately returns <code>None</code> rather than
+<code>("bn", "_pool")</code> — otherwise every pooled agent shares one meaningless identity
+and the reaper skips exactly the agents holding the fleet.
+<span class="src">fleet_gc.rs:~270</span></li>
+
+<li><strong>A full pool queues onto the repo's orchestrate run</strong> rather than cutting a
+cold worktree; the old unconditional fallback grew the disk without bound.
+<span class="src">cmd/dispatch.rs:52-88</span></li>
+
+<li><strong>The tmux window name is presentation, not identity</strong> — yet dispatch is
+forced to use <code>orchestrate::tmux_window_name</code> anyway, because every orchestrate
+consumer reconstructs <code>&lt;repo&gt;:&lt;sanitized branch&gt;</code>. A prettier name made
+the daemon misclassify its own lanes as dead. <span class="src">cmd/dispatch.rs:1701-1710</span></li>
+
+<li><strong>Slot 1 never rotates.</strong> It is detached at the base — git refuses to check
+<code>main</code> out twice — and is shared by the controller and by you.
+<span class="src">wt_pool.rs:~1005 · lease.rs:84-89</span></li>
+
+<li><strong>A copilot-only dispatch window is hardcoded until 21:00.</strong> Before that, any
+harness choice is overridden to Copilot. <span class="src">cmd/dispatch/policy.rs:25-60</span></li>
+
+<li><strong><code>Fleet::running_count()</code> is <code>agents − ended</code></strong>, not
+<code>agents.len()</code>. Capacity supervises with <code>stuck_mins = 0</code>, and reading
+"no window ⇒ finished" there would retire live agents.
+<span class="src">supervise.rs:269, :342</span></li>
+</ul>
+
+<h2>Not verified</h2>
+
+<ul>
+<li><code>AgentKind::Hosted</code> has no distinct execution path that could be found in
+<code>bn-cli</code> — it appears only in validation, the catalog badge and the web UI.
+<code>AgentLeaseKind::Today</code> calls the day's session "hosted", so the two may be
+related, but no runtime link was confirmed.</li>
+<li>Whether a cron fires the auto-approval sweep periodically. Two call sites were found
+(<code>cmd/orchestrate.rs:4089</code>, <code>cmd/routes/automation.rs:238</code>) but the
+schedule was not traced.</li>
+<li>What <code>--with-main</code> comparison slots are actually <em>used</em> for, beyond
+"detached primary-branch comparison tree".</li>
+<li>How session outcomes are assigned on ingest. <code>outcome: "quiet"</code> is one value
+and <code>completed_status</code> maps <code>"failed"</code> → <code>SessionStatus::Failed</code>,
+but the full set was not enumerated — so the account above is stronger on the live side
+(<code>Ended</code>) than on the ingest side.</li>
+<li><code>AgentTransport</code> has exactly one implementation (<code>TmuxTransport</code>).
+The nvim-hosted second implementation hinted at by <code>@bn_nvim_sock</code> does not exist
+yet, so how a non-pane agent would be steered is unverified.</li>
+</ul>
+
+<div class="foot">
+  <a href="01-pipeline.html">← The pipeline &amp; its gates</a>
+  <a href="03-state.html">Next: what bn writes down →</a>
+</div>
+
+</main>
+</div>

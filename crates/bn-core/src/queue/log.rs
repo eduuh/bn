@@ -176,7 +176,13 @@ fn row(e: &Event, kind: &'static str) -> Row {
                 Tone::Start,
             )
         }
-        "queue_tick" => (tick_summary(&s("outcome"), &s("bind"), &n), Tone::Info),
+        "queue_tick" => {
+            let reason = s("reason");
+            (
+                tick_summary(&s("outcome"), &s("bind"), Some(reason.as_str()), &n),
+                Tone::Info,
+            )
+        }
         "queue_tick_skipped" => (format!("skipped — {}", s("reason")), Tone::Info),
         "queue_finish" => {
             let failed = s("outcome") == "failed" || n("exit_code").is_some_and(|code| code != 0);
@@ -423,7 +429,12 @@ fn integer_field(row: &Row, key: &str) -> Option<i64> {
 
 /// A pass's one-liner: what it decided, and what bound it if that says something the outcome did
 /// not (`held — local-cap` earns its words; `empty — empty` does not).
-fn tick_summary(outcome: &str, bind: &str, n: &impl Fn(&str) -> Option<i64>) -> String {
+fn tick_summary(
+    outcome: &str,
+    bind: &str,
+    reason: Option<&str>,
+    n: &impl Fn(&str) -> Option<i64>,
+) -> String {
     if outcome == "empty" {
         return "nothing queued".to_string();
     }
@@ -445,6 +456,14 @@ fn tick_summary(outcome: &str, bind: &str, n: &impl Fn(&str) -> Option<i64>) -> 
     let mut line = format!("{lead}started {started} of {pending} pending");
     if deferred > 0 {
         line.push_str(&format!(" · {deferred} held back"));
+    }
+    // The reason a pass held is the whole point of recording that it did. It has always been in
+    // the event — `bn queue why` reads the same string — and this renderer dropped it, so the log
+    // could tell you the machine started nothing all week without ever saying why. The bind names
+    // the *class* of the stall ("local-cap"); this names the thing ("all is paused", "mandatory
+    // pool warming owns new admission").
+    if let Some(reason) = reason.filter(|r| !r.is_empty() && *r != bind && started == 0) {
+        line.push_str(&format!(" — {reason}"));
     }
     line
 }

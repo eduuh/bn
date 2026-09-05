@@ -36,8 +36,16 @@ pub struct SelectCandidate {
     /// The human subject, used for display and advise keyword alignment.
     pub title: String,
     pub kind: BacklogKind,
-    /// The source's own priority — the base rank weight and the final tiebreak.
+    /// The source's own priority — read as a band plus a within-band nudge.
     pub priority: i64,
+    /// An explicit band, when the source states one; `None` derives it from `priority`.
+    pub band: Option<crate::rank::Band>,
+    /// When the work arrived — the age term and the FIFO tiebreak.
+    pub added_at: i64,
+    /// Its deadline, if it has one — what the urgency term measures slack against.
+    pub not_after: Option<i64>,
+    /// Its expected duration, so urgency asks whether the work can still finish in time.
+    pub est_secs: i64,
     /// An explicit quarter-goal key this work is tagged to, when the source knows one (advise wins
     /// over keyword matching on it); `None` falls back to title/keyword overlap.
     pub goal: Option<String>,
@@ -62,6 +70,8 @@ pub struct SelectionInputs<'a> {
     /// set. The wave never exceeds this; `0` selects nothing (everything otherwise-pickable is
     /// skipped [`SkipReason::Capacity`]).
     pub capacity: usize,
+    /// Wall clock for this pass, epoch secs — handed to the ranker's time terms.
+    pub now: i64,
     /// Touch-sets of the items already committed to the run (in-flight + queued) — the #376 conflict
     /// map a new pick must not overlap. Each pick then joins it, so two picked candidates never
     /// collide with each other either.
@@ -179,6 +189,10 @@ pub fn select_wave(inputs: &SelectionInputs) -> Selection {
             kind: c.kind,
             priority: c.priority,
             goal: c.goal.clone(),
+            band: c.band,
+            added_at: c.added_at,
+            not_after: c.not_after,
+            est_secs: c.est_secs,
         })
         .collect();
     let ranked = advise::advise(&AdviseInputs {
@@ -186,6 +200,7 @@ pub fn select_wave(inputs: &SelectionInputs) -> Selection {
         candidates: &advise_cands,
         attention: inputs.attention,
         capacity: inputs.capacity,
+        now: inputs.now,
     });
 
     // 2. Walk in rank order applying the guardrails, growing the conflict map as we pick.

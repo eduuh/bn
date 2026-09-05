@@ -70,6 +70,15 @@ pub const HEAVY_JOBS: &[&str] = &["pool-warm", "keep-warm", "nightly-release"];
 /// it declares itself to be, never what its prose happens to contain.
 pub const WARMING_JOBS: &[&str] = &["pool-warm", "keep-warm"];
 
+/// How long a mandatory pool-refresh firing stays meaningful.
+///
+/// The sweep is daily, so a firing that has not run within a day has been superseded by the next
+/// one — exactly the reasoning [`crate::backlog::BacklogEntry::not_after`] already applies to every
+/// other scheduled job. It was the one cron enqueued with no deadline at all, which is how a single
+/// stuck firing came to own machine-wide admission indefinitely: alone among scheduled work, it
+/// could never lapse.
+pub const MANDATORY_WARM_TTL_SECS: i64 = 24 * 3600;
+
 /// Where recovery work sits in the ordering.
 ///
 /// Above routine scheduled work, which sits below zero, and below anything a person is waiting on.

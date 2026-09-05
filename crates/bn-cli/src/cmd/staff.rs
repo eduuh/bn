@@ -1,5 +1,6 @@
 //! `bn staff` — plan/code/gather/board/feed for the staff agent roster.
 use crate::*;
+use crate::cmd::fmt_units::{fmt_bytes, fmt_tokens, fmt_wall_ms};
 
 /// Build the headless dispatch command for a staff run: a fresh (non-resume) `-p <prompt>` turn in
 /// the trusted-autonomy mode each harness needs to run unattended. A configured `model` is passed
@@ -18,13 +19,13 @@ pub(crate) fn staff_dispatch_command(
         "copilot" => {
             let mut c = std::process::Command::new("copilot");
             c.args(["-p", prompt]);
-            c.args(bn_core::mcp::Harness::Copilot.yolo_args());
+            c.args(bn_core::mcp::Harness::Copilot.autonomy_args());
             c
         }
         "claude" => {
             let mut c = std::process::Command::new("claude");
             c.args(["-p", prompt]);
-            c.args(bn_core::mcp::Harness::Claude.yolo_args());
+            c.args(bn_core::mcp::Harness::Claude.autonomy_args());
             c
         }
         _ => return None,
@@ -260,11 +261,7 @@ pub(crate) fn staff_run_code(
     if report.ok {
         crate::cmd::staff_mail::mail_if_enabled(cfg, name);
     }
-    if report.ok || report.status == staff::RunStatus::Skipped {
-        0
-    } else {
-        1
-    }
+    report.exit_code()
 }
 
 /// The human-readable outcome of one staff run.
@@ -597,34 +594,6 @@ pub(crate) fn emit_staff_feed(cfg: &Config, filter: Option<&str>, as_json: bool)
     }
 }
 
-/// Compact human token count: `48.2k`, `1.3m`, `4.8b`, or the bare number under 1000.
-///
-/// The billions tier is not hypothetical: every turn of a cached agent session re-reads the whole
-/// prefix, so a month of `bn cost` cache-read totals runs to 10^9 and used to render as `4839.4m`.
-pub(crate) fn fmt_tokens(t: u64) -> String {
-    if t >= 1_000_000_000 {
-        format!("{:.1}b", t as f64 / 1_000_000_000.0)
-    } else if t >= 1_000_000 {
-        format!("{:.1}m", t as f64 / 1_000_000.0)
-    } else if t >= 1_000 {
-        format!("{:.1}k", t as f64 / 1_000.0)
-    } else {
-        t.to_string()
-    }
-}
-
-/// Compact wall-clock from milliseconds: `3m12s`, `4s`, or `250ms`.
-pub(crate) fn fmt_wall_ms(ms: u64) -> String {
-    let secs = ms / 1000;
-    if secs >= 60 {
-        format!("{}m{:02}s", secs / 60, secs % 60)
-    } else if ms >= 1000 {
-        format!("{secs}s")
-    } else {
-        format!("{ms}ms")
-    }
-}
-
 /// `bn staff cost [<month>]` — staff spend by agent for a month.
 pub(crate) fn emit_staff_cost(
     cfg: &Config,
@@ -672,20 +641,6 @@ pub(crate) fn emit_staff_cost(
         fmt_tokens(report.total_tokens),
         fmt_wall_ms(report.total_wall_ms)
     );
-}
-
-/// Human-readable bytes (`3.2 MB`, `948 KB`, `12 B`) for the retention growth report.
-fn fmt_bytes(n: u64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-    let n = n as f64;
-    if n >= MB {
-        format!("{:.1} MB", n / MB)
-    } else if n >= KB {
-        format!("{:.0} KB", n / KB)
-    } else {
-        format!("{n:.0} B")
-    }
 }
 
 /// `bn staff archive [--dry-run]` — apply the #275 store-retention policy: compact fully-elapsed

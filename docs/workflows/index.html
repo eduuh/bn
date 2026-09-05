@@ -1,0 +1,245 @@
+<meta charset="utf-8">
+<title>bn Workflow Notes</title>
+<link rel="stylesheet" href="assets/bn-docs.css">
+
+<div class="wrap">
+
+<aside class="rail">
+  <a class="rail__brand" href="index.html"><b>bn</b> workflow notes</a>
+  <p class="rail__tag">How the machine actually runs</p>
+  <nav>
+    <ol>
+      <li><a href="index.html" aria-current="page">Overview</a></li>
+      <li><a href="01-pipeline.html">The pipeline &amp; its gates</a></li>
+      <li><a href="02-dispatch.html">Dispatch &amp; isolation</a></li>
+      <li><a href="03-state.html">What bn writes down</a></li>
+      <li><a href="04-catalog.html">The prompt catalog</a></li>
+      <li><a href="05-surfaces.html">Surfaces</a></li>
+    </ol>
+  </nav>
+</aside>
+
+<main>
+
+<p class="eyebrow">Overview</p>
+<h1>bn's workflow, as built rather than as designed</h1>
+
+<p class="standfirst">
+bn describes a nine-stage pipeline that carries a task from pickup to learn. Three of
+those stages are driven by code. The gap between the two is not decay — it is the most
+useful thing to understand about the system, and this set of notes is organised around
+it.
+</p>
+
+<h2>The shape of the claim</h2>
+
+<p>
+Read <code>crates/bn-core/src/pipeline/stage.rs</code> and you get a clean state machine:
+<code>pickup → investigate → plan → consensus → execute → validate → critique → ship → learn</code>.
+Nine variants, ordered so that <code>Ord</code> and <code>next()</code> follow the flow.
+It reads like a workflow engine.
+</p>
+
+<p>
+It is not one. The enum encodes no exit predicate for any stage. A stage changes when
+something calls <code>stage::transition</code>, and only three stages have machinery that
+decides when they are finished — the <code>SWEPT</code> set, whose completion is their
+backlog entry reaching <code>Done</code>.
+<span class="src">crates/bn-core/src/pipeline/sweep.rs:40</span>
+</p>
+
+<figure>
+<svg viewBox="0 0 920 250" role="img" aria-labelledby="stagestrip-title">
+  <title id="stagestrip-title">The nine pipeline stages, with the three driven by the sweep highlighted</title>
+
+  <!-- driven bracket -->
+  <rect x="96" y="46" width="272" height="76" rx="8"
+        fill="var(--accent-soft)" stroke="var(--accent-line)" stroke-width="1.5"/>
+
+  <!-- boxes -->
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" text-anchor="middle">
+
+    <!-- pickup (inert) -->
+    <rect x="8" y="58" width="80" height="52" rx="5" fill="var(--card)" stroke="var(--rule)" stroke-dasharray="3 3"/>
+    <text x="48" y="82" fill="var(--ink-faint)">pickup</text>
+    <text x="48" y="97" fill="var(--ink-faint)" font-size="9">1</text>
+
+    <!-- investigate -->
+    <rect x="104" y="58" width="80" height="52" rx="5" fill="var(--card)" stroke="var(--accent)" stroke-width="1.5"/>
+    <text x="144" y="82" fill="var(--ink)">investig.</text>
+    <text x="144" y="97" fill="var(--accent)" font-size="9">2</text>
+
+    <!-- plan -->
+    <rect x="192" y="58" width="80" height="52" rx="5" fill="var(--card)" stroke="var(--accent)" stroke-width="1.5"/>
+    <text x="232" y="82" fill="var(--ink)">plan</text>
+    <text x="232" y="97" fill="var(--accent)" font-size="9">3</text>
+
+    <!-- consensus (inert) -->
+    <rect x="280" y="58" width="80" height="52" rx="5" fill="var(--card)" stroke="var(--rule)" stroke-dasharray="3 3"/>
+    <text x="320" y="82" fill="var(--ink-faint)">consensus</text>
+    <text x="320" y="97" fill="var(--ink-faint)" font-size="9">4</text>
+
+    <!-- execute -->
+    <rect x="368" y="58" width="80" height="52" rx="5" fill="var(--card)" stroke="var(--accent)" stroke-width="1.5"/>
+    <text x="408" y="82" fill="var(--ink)">execute</text>
+    <text x="408" y="97" fill="var(--accent)" font-size="9">5</text>
+
+    <!-- validate (inert) -->
+    <rect x="456" y="58" width="80" height="52" rx="5" fill="var(--card)" stroke="var(--rule)" stroke-dasharray="3 3"/>
+    <text x="496" y="82" fill="var(--ink-faint)">validate</text>
+    <text x="496" y="97" fill="var(--ink-faint)" font-size="9">6</text>
+
+    <!-- critique -->
+    <rect x="544" y="58" width="80" height="52" rx="5" fill="var(--card)" stroke="var(--teal)" stroke-width="1.5"/>
+    <text x="584" y="82" fill="var(--ink)">critique</text>
+    <text x="584" y="97" fill="var(--teal)" font-size="9">7</text>
+
+    <!-- ship (inert) -->
+    <rect x="632" y="58" width="80" height="52" rx="5" fill="var(--card)" stroke="var(--rule)" stroke-dasharray="3 3"/>
+    <text x="672" y="82" fill="var(--ink-faint)">ship</text>
+    <text x="672" y="97" fill="var(--ink-faint)" font-size="9">8</text>
+
+    <!-- learn (inert) -->
+    <rect x="720" y="58" width="80" height="52" rx="5" fill="var(--card)" stroke="var(--rule)" stroke-dasharray="3 3"/>
+    <text x="760" y="82" fill="var(--ink-faint)">learn</text>
+    <text x="760" y="97" fill="var(--ink-faint)" font-size="9">9</text>
+  </g>
+
+  <!-- flow arrows -->
+  <g stroke="var(--rule)" stroke-width="1.5" fill="none">
+    <path d="M88 84 L102 84"/>
+    <path d="M184 84 L190 84"/>
+    <path d="M272 84 L278 84"/>
+    <path d="M360 84 L366 84"/>
+    <path d="M448 84 L454 84"/>
+    <path d="M536 84 L542 84"/>
+    <path d="M624 84 L630 84"/>
+    <path d="M712 84 L718 84"/>
+  </g>
+
+  <!-- critique loop back to execute -->
+  <path d="M584 110 L584 140 L408 140 L408 112"
+        fill="none" stroke="var(--teal)" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <polygon points="408,110 404,118 412,118" fill="var(--teal)"/>
+  <text x="496" y="156" text-anchor="middle" font-family="ui-monospace, monospace"
+        font-size="10" fill="var(--teal)">FAIL @ 1,2 → re-execute (max 3)</text>
+
+  <!-- labels -->
+  <text x="232" y="36" text-anchor="middle" font-family="ui-monospace, monospace"
+        font-size="10.5" fill="var(--accent)">SWEPT — driven by sweep::decide</text>
+
+  <text x="8" y="196" font-family="ui-monospace, monospace" font-size="10" fill="var(--ink-muted)">
+    ── dashed: named in the enum, entered by no Rust code path
+  </text>
+  <text x="8" y="214" font-family="ui-monospace, monospace" font-size="10" fill="var(--ink-muted)">
+    ── solid teal: driven, but by the critic loop rather than the sweep
+  </text>
+  <text x="8" y="232" font-family="ui-monospace, monospace" font-size="10" fill="var(--ink-muted)">
+    ── the queue is the state machine; pipeline_stage events are a parallel ledger
+  </text>
+</svg>
+<figcaption>
+Stages 1, 4, 6, 8 and 9 appear nowhere outside <code>stage.rs</code> except one attention-type
+mapping. They are reachable only by a hand-typed <code>bn pipeline set</code>.
+</figcaption>
+</figure>
+
+<div class="note">
+<span class="note__label">The load-bearing fact</span>
+<p>
+This is deliberate, not unfinished. Dropping the sweep at execute is a written decision:
+after execute, validate / critique / ship each have their own machinery, and driving them
+from the sweep too would give one step two owners.
+<span class="src">crates/bn-core/src/pipeline/sweep.rs:36-40</span>
+</p>
+</div>
+
+<h2>And the default lane is not the pipeline at all</h2>
+
+<p>
+A second gap sits underneath the first. <code>bn dispatch</code> — the command that actually
+starts work — does not enter the nine-stage pipeline by default. Its default lane is
+<code>ship-solo</code>, a single-session workflow; the pipeline is behind an environment
+variable, <code>$BN_DISPATCH_PIPELINE=1</code>.
+<span class="src">config/config.toml:200-204</span>
+</p>
+
+<p>
+So there are two answers to "what runs when I start a task", and the codebase says plainly
+that this is intended: <code>Stage::default_skill</code> and <code>dispatch_skill_name</code>
+answer different questions, and "both are right; they are not the same question."
+<span class="src">crates/bn-core/src/pipeline/stage.rs:96-102</span>
+</p>
+
+<h2>What each note covers</h2>
+
+<ul class="cards">
+  <li>
+    <a href="01-pipeline.html">
+      <p class="eyebrow">02</p>
+      <h3>The pipeline &amp; its gates</h3>
+      <p>Nine stages, three drivers. Two unrelated things called "gate", at their real
+      positions. Routing, profiles, and the ratchet that stops an agent releasing itself.</p>
+    </a>
+  </li>
+  <li>
+    <a href="02-dispatch.html">
+      <p class="eyebrow">03</p>
+      <h3>Dispatch &amp; isolation</h3>
+      <p>Two different leases over one checkout, the worktree pool's decision ladder, and
+      how bn tells a working agent from a stuck one without writing a heartbeat.</p>
+    </a>
+  </li>
+  <li>
+    <a href="03-state.html">
+      <p class="eyebrow">04</p>
+      <h3>What bn writes down</h3>
+      <p>One <code>note.md</code>, eight typed item lists, two files named
+      <code>events.jsonl</code> that mean different things, and the three scopes that decide
+      what survives cleanup.</p>
+    </a>
+  </li>
+  <li>
+    <a href="04-catalog.html">
+      <p class="eyebrow">05</p>
+      <h3>The prompt catalog</h3>
+      <p>The Markdown that drives the machine: prompts called skills, agent manifests
+      validated per kind, and how a seed prompt is assembled from fragments.</p>
+    </a>
+  </li>
+  <li>
+    <a href="05-surfaces.html">
+      <p class="eyebrow">06</p>
+      <h3>Surfaces</h3>
+      <p>~100 CLI commands, an unauthenticated web dashboard that is mostly hidden, and
+      one scheduling manifest that compiles three different ways.</p>
+    </a>
+  </li>
+</ul>
+
+<h2>How these notes were produced, and what that means for trust</h2>
+
+<p>
+Five agents read non-overlapping slices of the repo and reported with <code>file:line</code>
+citations and an explicit "could not verify" list. Everything stated as fact here carries a
+citation to the code it came from. Where the agents could not confirm something, this set
+says so rather than smoothing it over — those admissions are collected at the foot of each
+note.
+</p>
+
+<div class="note note--gap">
+<span class="note__label">Reading these safely</span>
+<p>
+Line numbers were accurate when the notes were written and will drift. Treat a citation as
+"this claim came from here", not as a permanent address — and re-check the file before
+relying on a number in a decision.
+</p>
+</div>
+
+<div class="foot">
+  <span>bn workflow notes · built from the code, not from memory</span>
+  <a href="01-pipeline.html">Next: the pipeline &amp; its gates →</a>
+</div>
+
+</main>
+</div>

@@ -191,6 +191,8 @@ fn plan_order(pending: &[BacklogEntry], windows: &[PriorityWindow], now: i64) ->
         machine: "testbox",
         pending,
         in_flight: &[],
+        horizon: None,
+        durations: &bn_core::queue::durations::Durations::default(),
         nodes: &[node],
         caps: &caps,
         observed: &observed,

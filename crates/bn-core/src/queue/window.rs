@@ -132,6 +132,25 @@ pub fn boost_for(entry: &BacklogEntry, windows: &[PriorityWindow], now: i64) -> 
         .fold(0i64, |acc, w| acc.saturating_add(w.boost))
 }
 
+/// When the machine is next claimed, and by which window.
+///
+/// Only [`WindowMode::Deadline`] windows claim it. A `Prefer` or `Away` window changes what the
+/// machine reaches for first; a `Deadline` window is the one that says "this must happen now",
+/// which is the only kind that makes starting something long beforehand a mistake.
+///
+/// Deliberately about the *machine*, not about you. A meeting bounds your attention, and
+/// `bn next --fit` already sizes your plan against it; a cron finishing during your standup is
+/// nobody's problem. Conflating the two would have the dispatcher idle because you are busy.
+pub fn next_claim(windows: &[PriorityWindow], now: i64) -> Option<(i64, String)> {
+    windows
+        .iter()
+        .filter(|w| w.mode == WindowMode::Deadline && !w.is_open(now))
+        .filter_map(|w| {
+            crate::staff_schedule::next_occurrence(&w.at, now).map(|at| (at, w.name.clone()))
+        })
+        .min_by_key(|(at, _)| *at)
+}
+
 /// The windows open at `now`, for the status surface.
 pub fn open(windows: &[PriorityWindow], now: i64) -> Vec<&PriorityWindow> {
     windows.iter().filter(|w| w.is_open(now)).collect()

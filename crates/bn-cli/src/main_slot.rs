@@ -15,9 +15,9 @@
 //! branch. Git cannot check `main` out twice, so the slot sits **detached** at the same commit:
 //! the same files, none of the branch's obligations.
 //!
-//! Every repo has one, because [`bn_core::pool::pool_size`] now pools every repo that has not been
-//! explicitly opted out. The pickers ask [`resolve`] for a repo's landing spot; the `main-sync`
-//! job ([`crate::cmd::main_sync`]) keeps both checkouts current.
+//! Every repo has one, unconditionally — pooling has no register and no opt-out. The pickers ask
+//! [`resolve`] for a repo's landing spot; the `main-sync` job ([`crate::cmd::main_sync`]) keeps
+//! both checkouts current.
 
 use std::path::{Path, PathBuf};
 
@@ -38,11 +38,11 @@ pub(crate) fn main_worktree(worktree_dir: &Path, repo: &str) -> PathBuf {
 
 /// A live main slot for `repo`, creating it if it isn't on disk yet.
 ///
-/// `None` when the repo cannot have one — no bare clone, an explicit `<repo> 0` pooling opt-out,
-/// or a `worktree add` that failed — and every caller has a fallback for that case rather than a
-/// failure, because a missing main slot must never be the thing that stops you opening a repo.
+/// `None` when the repo cannot have one — no bare clone, or a `worktree add` that failed — and
+/// every caller has a fallback for that case rather than a failure, because a missing main slot
+/// must never be the thing that stops you opening a repo.
 pub(crate) fn ensure(bare: &Path, worktree_dir: &Path, repo: &str) -> Option<PathBuf> {
-    if bn_core::pool::pool_size(repo).is_none() || !bare.is_dir() {
+    if !bare.is_dir() {
         return None;
     }
     let slot = path(worktree_dir, repo);
@@ -144,16 +144,16 @@ mod tests {
         assert_eq!(resolve(&bare_dir, &worktree_dir, "bn"), main);
     }
 
+    /// The one remaining way a repo has no main slot: bn has no clone of it. There is no pooling
+    /// opt-out to check any more.
     #[test]
-    fn a_repo_opted_out_of_pooling_gets_no_main_slot() {
+    fn a_repo_with_no_bare_clone_gets_no_main_slot() {
         let _g = bn_core::test_support::env_lock();
         let tmp = tempfile::tempdir().unwrap();
-        let pools = tmp.path().join("pools");
-        std::fs::write(&pools, "bn 0\n").unwrap();
-        let _pools = bn_core::test_support::EnvGuard::set("WT_POOLS", &pools);
-
-        let bare = tmp.path().join("bare").join("bn.git");
-        std::fs::create_dir_all(&bare).unwrap();
-        assert_eq!(ensure(&bare, &tmp.path().join("worktree"), "bn"), None);
+        let bare = tmp.path().join("bare").join("never-cloned.git");
+        assert_eq!(
+            ensure(&bare, &tmp.path().join("worktree"), "never-cloned"),
+            None
+        );
     }
 }

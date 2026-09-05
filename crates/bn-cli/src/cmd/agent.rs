@@ -923,6 +923,8 @@ pub(crate) struct LaunchPlan {
     pub(crate) fresh: bool,
     pub(crate) session: Option<String>,
     pub(crate) resume_session: Option<String>,
+    /// Directories to widen the harness's allowed working set with, beyond the launch cwd.
+    pub(crate) add_dirs: Vec<String>,
     pub(crate) passthrough: Vec<String>,
 }
 
@@ -931,11 +933,21 @@ impl LaunchPlan {
     /// caller explicitly opts in with `--yolo`. SECURITY: a seed may embed attacker-influenceable
     /// content, so a seeded launch stays gated unless the caller (who owns the trust decision)
     /// passes `--yolo`. Matches the zsh launcher.
-    fn yolo(&self) -> bool {
+    pub(super) fn yolo(&self) -> bool {
         self.seed.is_none() || self.yolo_force
     }
+    /// `--add-dir <dir>` per requested directory. Both CLIs spell this the same way.
+    ///
+    /// Applied on **every** path, resume included, and independently of [`Self::yolo`]: the
+    /// allowed working set is a property of the session, not of how its prompts are answered, so
+    /// a resumed agent must be given the same boundary as a fresh one or it silently loses access
+    /// to bn's own state halfway through a task.
+    pub(super) fn add_dir_args(&self, harness: bn_core::mcp::Harness) -> Vec<String> {
+        super::agent_scope::add_dir_args(harness, &self.add_dirs)
+    }
+
     /// `--session-id <sid>` when a session is pinned, else empty (let the harness pick its own).
-    fn session_flag(&self) -> Vec<String> {
+    pub(super) fn session_flag(&self) -> Vec<String> {
         match &self.session {
             Some(s) => vec!["--session-id".to_string(), s.clone()],
             None => Vec::new(),
@@ -1086,68 +1098,6 @@ pub(crate) fn pick_copilot_resume<'a>(
         }
     }
     best.map(|(_, id)| id.to_string())
-}
-
-/// Build the argv (after the harness binary) for a **Claude** launch. Resumes with `--continue`
-/// when this worktree has transcripts (unless `--fresh`); otherwise starts fresh, pinning the
-/// session id and passing the seed as the initial prompt. Pure — mirrors the zsh `claude` branch.
-pub(crate) fn build_claude_args(plan: &LaunchPlan, has_transcripts: bool) -> Vec<String> {
-    let mut args = Vec::new();
-    if plan.yolo() {
-        args.extend(
-            bn_core::mcp::Harness::Claude
-                .yolo_args()
-                .iter()
-                .map(|s| s.to_string()),
-        );
-    }
-    if !plan.fresh {
-        if let Some(id) = &plan.resume_session {
-            args.extend(["--resume".to_string(), id.clone()]);
-            args.extend(plan.passthrough.iter().cloned());
-            return args;
-        }
-    }
-    if !plan.fresh && has_transcripts {
-        args.push("--continue".to_string()); // resume: session already holds context
-        args.extend(plan.passthrough.iter().cloned());
-        return args;
-    }
-    args.extend(plan.session_flag());
-    if let Some(seed) = &plan.seed {
-        args.push(seed.clone()); // fresh: the seed is Claude's initial prompt (positional)
-    }
-    args.extend(plan.passthrough.iter().cloned());
-    args
-}
-
-/// Build the argv (after the harness binary) for a **Copilot** launch. Resumes the resolved session
-/// id with `--resume=` when one exists (unless `--fresh`); otherwise starts fresh, pinning the
-/// session id and seeding the first turn with `-i <seed>`. Pure — mirrors the zsh `copilot` branch.
-pub(crate) fn build_copilot_args(plan: &LaunchPlan, resume_id: Option<&str>) -> Vec<String> {
-    let mut args = Vec::new();
-    if plan.yolo() {
-        args.extend(
-            bn_core::mcp::Harness::Copilot
-                .yolo_args()
-                .iter()
-                .map(|s| s.to_string()),
-        );
-    }
-    if !plan.fresh {
-        if let Some(rid) = resume_id {
-            args.push(format!("--resume={rid}"));
-            args.extend(plan.passthrough.iter().cloned());
-            return args;
-        }
-    }
-    args.extend(plan.session_flag());
-    if let Some(seed) = &plan.seed {
-        args.push("-i".to_string()); // copilot "start interactive and run this prompt"
-        args.push(seed.clone());
-    }
-    args.extend(plan.passthrough.iter().cloned());
-    args
 }
 
 
@@ -1575,6 +1525,7 @@ pub(crate) fn emit_agent_launch(
     fresh: bool,
     session: Option<String>,
     resume_session: Option<String>,
+    add_dirs: Vec<String>,
     passthrough: Vec<String>,
 ) -> ! {
     let Some(harness) = Harness::parse(harness.as_deref()) else {
@@ -1603,6 +1554,7 @@ pub(crate) fn emit_agent_launch(
         seed,
         yolo_force: yolo,
         fresh,
+        add_dirs: super::agent_scope::launch_add_dirs(cfg, std::path::Path::new(&cwd), add_dirs),
         session: session
             .filter(|s| !s.trim().is_empty())
             .or_else(|| (!user_owns_session).then(gen_uuid)),
@@ -1644,7 +1596,7 @@ pub(crate) fn emit_agent_launch(
     match harness {
         Harness::Claude => {
             let args = with_claude_controller_hook(
-                build_claude_args(&plan, has_transcripts),
+                super::agent_scope::build_claude_args(&plan, has_transcripts),
                 controller_launch(),
             );
             exec_harness(harness.bin(), &args)
@@ -1666,7 +1618,7 @@ pub(crate) fn emit_agent_launch(
             }
             crate::cmd::promote::apply_folder_trust(&cwd, "copilot");
             let resume_id = copilot_resume;
-            let args = build_copilot_args(&plan, resume_id.as_deref());
+            let args = super::agent_scope::build_copilot_args(&plan, resume_id.as_deref());
             if resume_id.is_some() && !plan.fresh {
                 match run_copilot_resume(harness.bin(), &args) {
                     Ok((status, stderr)) if should_retry_copilot_resume(status, &stderr) => {
@@ -1674,7 +1626,7 @@ pub(crate) fn emit_agent_launch(
                             "bn agent launch: recorded Copilot session is missing; retrying fresh"
                         );
                         plan.fresh = true;
-                        let fresh_args = build_copilot_args(&plan, None);
+                        let fresh_args = super::agent_scope::build_copilot_args(&plan, None);
                         exec_harness(harness.bin(), &fresh_args)
                     }
                     Ok((status, _)) => std::process::exit(status.code().unwrap_or(1)),

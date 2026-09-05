@@ -181,9 +181,6 @@ fn scheduler_enqueues_due_agents_and_queue_tick_runs_them() {
     let _agents = bn_core::test_support::EnvGuard::set("BN_AGENTS_DIR", &agents);
     let _jobs = bn_core::test_support::EnvGuard::set("BN_JOBS_DIR", temp.path().join("jobs"));
     let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", &state);
-    let pools = temp.path().join("pools");
-    std::fs::write(&pools, "").expect("empty pools config");
-    let _pools = bn_core::test_support::EnvGuard::set("WT_POOLS", &pools);
     // This test asserts the agent is *queued* rather than run, which is exactly what an inherited
     // dispatch extent turns off — see `outside_a_dispatch` for why that leaks into agent sessions.
     let _outside = bn_core::test_support::outside_a_dispatch();
@@ -193,6 +190,15 @@ fn scheduler_enqueues_due_agents_and_queue_tick_runs_them() {
         hostname: "test-host".to_string(),
         ..Default::default()
     };
+    // Keep `pool-warm` off this fixture machine. Pooling has no config and no opt-out any more —
+    // every bare clone is warmable — so without this the tick enqueues a mandatory pool-warm for
+    // `test-repo` and it takes the single start slot this test needs for its queued agent. The
+    // machine job allowlist is the honest way to say "not this box": the test is about agent
+    // scheduling, not warming.
+    cfg.job_only_on.insert(
+        "pool-warm".to_string(),
+        vec!["some-other-host".to_string()],
+    );
     make_repo_available(&mut cfg, temp.path(), "test-repo");
 
     std::fs::create_dir_all(&state).expect("state dir");

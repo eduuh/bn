@@ -61,7 +61,12 @@ export interface QueueDeferredRow {
   repo: string;
   id: string;
   kind: string;
-  /** `capacity` | `kind-cap` | `conflict` | `cant-merge` | `no-capable-node`. */
+  /**
+   * Why the dispatcher did not start it: `capacity` | `kind-cap` | `conflict` | `cant-merge` |
+   * `no-capable-node` | `not-my-kind` | `express-budget` | `expired` | `snoozed` | `awaiting-away`
+   * | `paused` | `mandatory-warming` | `wont-fit`. Kept as a string rather than a union so a new
+   * reason from a newer dispatcher renders as itself instead of breaking the board.
+   */
   reason: string;
   detail?: string;
   waiting_since: number;

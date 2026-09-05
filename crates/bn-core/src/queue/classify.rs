@@ -1,4 +1,4 @@
-use crate::backlog::{BacklogEntry, ClassOverride, ExecSpec};
+use crate::backlog::{BacklogEntry, BacklogStatus, ClassOverride, ExecSpec};
 
 /// Whether a queue entry is user-led foreground work or autonomous machine work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,6 +177,34 @@ pub fn is_mandatory_pool_warming(entry: &BacklogEntry) -> bool {
         && matches!(&entry.exec, ExecSpec::Job { job, .. } if job == "pool-warm")
 }
 
+/// Whether the mandatory pool refresh currently owns machine-wide admission.
+///
+/// Owning admission is a strong claim — it holds every other entry on the machine — so it is
+/// granted for as long as the sweep is *running*, and only briefly while it is merely waiting.
+///
+/// The bound matters because the two halves used to disagree. Admission was seized the moment the
+/// sweep was enqueued (any `is_active()` entry, which includes `Pending`), while starting it waited
+/// for the machine to drain. A warm that could not start therefore held everything, forever,
+/// without having done any work — a `-50` entry, the lowest on the board, blocking the whole queue.
+///
+/// So the same [`crate::queue::tick::WARM_DRAIN_GRACE_SECS`] bounds both halves: it is how long the
+/// tick will wait for a drain before starting the warm anyway, and how long a still-pending warm
+/// may hold everyone else back. Past it the warm has either started — and holds admission as
+/// `Leased`, which is the case this exists for — or it could not, and a sweep that cannot run has
+/// no claim on a machine that can.
+pub fn owns_admission(entry: &BacklogEntry, now: i64) -> bool {
+    if !is_mandatory_pool_warming(entry) {
+        return false;
+    }
+    match entry.status {
+        BacklogStatus::Leased => true,
+        BacklogStatus::Pending => {
+            now.saturating_sub(entry.added_at) < crate::queue::tick::WARM_DRAIN_GRACE_SECS
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod mandatory_pool_warming_tests {
     use super::*;
@@ -237,5 +265,48 @@ mod mandatory_pool_warming_tests {
         };
         let entry = BacklogEntry::new("machine", "run keep-warm", &spec, 1000);
         assert!(!is_mandatory_pool_warming(&entry));
+    }
+
+    /// A running sweep owns admission for as long as it runs — that is the case the gate exists
+    /// for, and it has no time bound because a warm that is working is not a warm that is stuck.
+    #[test]
+    fn a_running_sweep_owns_admission_however_long_it_takes() {
+        let mut entry = pool_warm("cron:pool-warm", None);
+        entry.status = BacklogStatus::Leased;
+        assert!(owns_admission(&entry, entry.added_at + 30 * 24 * 3600));
+    }
+
+    /// A waiting sweep owns admission only briefly. The gate used to fire on any active entry,
+    /// which includes `Pending` — so the sweep seized the machine the instant it was enqueued and
+    /// held it for as long as it failed to start, having done no work at all.
+    #[test]
+    fn a_waiting_sweep_owns_admission_only_while_the_drain_grace_lasts() {
+        let entry = pool_warm("cron:pool-warm", None);
+        let grace = crate::queue::tick::WARM_DRAIN_GRACE_SECS;
+        assert!(owns_admission(&entry, entry.added_at));
+        assert!(owns_admission(&entry, entry.added_at + grace - 1));
+        assert!(!owns_admission(&entry, entry.added_at + grace));
+    }
+
+    /// A sweep that finished, failed or was cancelled has no claim on anything.
+    #[test]
+    fn a_resolved_sweep_owns_nothing() {
+        for status in [
+            BacklogStatus::Done,
+            BacklogStatus::Failed,
+            BacklogStatus::Cancelled,
+        ] {
+            let mut entry = pool_warm("cron:pool-warm", None);
+            entry.status = status;
+            assert!(!owns_admission(&entry, entry.added_at));
+        }
+    }
+
+    /// Only the machine-wide sweep can own admission; a person's dashboard warm never does.
+    #[test]
+    fn a_targeted_warm_never_owns_admission() {
+        let mut entry = pool_warm("queue", Some("arena"));
+        entry.status = BacklogStatus::Leased;
+        assert!(!owns_admission(&entry, entry.added_at));
     }
 }

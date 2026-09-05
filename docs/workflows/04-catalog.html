@@ -1,0 +1,330 @@
+<meta charset="utf-8">
+<title>The Prompt Catalog</title>
+<link rel="stylesheet" href="assets/bn-docs.css">
+
+<div class="wrap">
+
+<aside class="rail">
+  <a class="rail__brand" href="index.html"><b>bn</b> workflow notes</a>
+  <p class="rail__tag">How the machine actually runs</p>
+  <nav>
+    <ol>
+      <li><a href="index.html">Overview</a></li>
+      <li><a href="01-pipeline.html">The pipeline &amp; its gates</a></li>
+      <li><a href="02-dispatch.html">Dispatch &amp; isolation</a></li>
+      <li><a href="03-state.html">What bn writes down</a></li>
+      <li><a href="04-catalog.html" aria-current="page">The prompt catalog</a></li>
+      <li><a href="05-surfaces.html">Surfaces</a></li>
+    </ol>
+  </nav>
+</aside>
+
+<main>
+
+<p class="eyebrow">Note 05</p>
+<h1>The Markdown that drives the machine</h1>
+
+<p class="standfirst">
+The behaviour of every agent bn launches is authored in Markdown, not Rust. Three kinds of
+file do it, they live in three directories, and the naming is actively misleading: the thing
+Rust calls a "skill" lives in <code>config/prompts/</code>, while <code>config/skills/</code>
+is empty.
+</p>
+
+<h2>Three artifact kinds</h2>
+
+<div class="scroller">
+<table>
+<thead><tr><th>Term</th><th>Lives in</th><th>Loaded by</th><th>Shape</th></tr></thead>
+<tbody>
+<tr><td><strong>Prompt</strong><br><span class="src">called a "skill" in Rust</span></td><td><code>config/prompts/*.md</code></td><td><code>bn_core::skills</code></td><td>YAML frontmatter + body with <code>{{arg}}</code> placeholders</td></tr>
+<tr><td><strong>Reference skill</strong></td><td><code>config/skills/</code></td><td><em>nothing</em> — not wired up</td><td>Reserved tier; currently one README</td></tr>
+<tr><td><strong>Agent definition</strong></td><td><code>config/agents/*.md</code></td><td><code>bn_core::agents</code></td><td>Frontmatter is an <em>execution contract</em>; body is the prompt</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>
+Reference skills are the intended home for knowledge files named from a prompt body and
+installed natively into the harness, never served over MCP. The tier exists and is
+unpopulated — everything real lives in <code>config/prompts/</code>.
+<span class="src">config/skills/README.md · bn-core/src/mcp.rs:64 · skills.rs:3, :176</span>
+</p>
+
+<h3>Frontmatter and the tests that police it</h3>
+
+<p>
+Exactly six fields: <code>name</code> and <code>description</code> (required),
+<code>when</code>, <code>keywords[]</code>, <code>arguments[]</code>, <code>internal</code>.
+Two tests keep the catalog honest — every shipped prompt must render strictly with no leftover
+<code>{{</code>, and <strong>every declared argument must actually be referenced in the
+body</strong>.
+<span class="src">skills/catalog.rs:43-56, :410, :483 · template.rs:10</span>
+</p>
+
+<div class="note">
+<span class="note__label">internal: true is load-bearing</span>
+<p>
+An internal prompt stays resolvable by name at runtime but is filtered out of MCP discovery
+and out of native <code>SKILL.md</code> installation. That is how roughly 33 dispatch,
+pipeline and critic fragments stay Markdown-owned without polluting the user-facing
+<code>/bn:*</code> command surface.
+<span class="src">skills.rs:278, :508</span>
+</p>
+</div>
+
+<h3>Five precedence tiers</h3>
+
+<p>First match by name wins, highest first:</p>
+
+<pre><code>repo-personal-local
+  repo-personal-notes
+    repo-shared          &lt;repo&gt;/.bn/skills
+      global-personal
+        global-shared    &lt;config_dir&gt;/repo/config/prompts</code></pre>
+
+<p>
+Note that <code>global-shared</code> resolves to the <em>installed</em> anchor, not to whatever
+checkout you happen to be reading.
+<span class="src">skills.rs:66-107, :244</span>
+</p>
+
+<h2>Which prompt runs at which stage</h2>
+
+<p>
+Four of the nine stages deliberately run no prompt at all — they are not a harness following
+a workflow.
+</p>
+
+<div class="scroller">
+<table>
+<thead><tr><th>Stage</th><th>Default prompt</th><th>Runtime envelope</th></tr></thead>
+<tbody>
+<tr><td><code>pickup</code></td><td><em>none</em> — leases a worktree</td><td>—</td></tr>
+<tr><td><code>investigate</code></td><td><code>investigate.md</code></td><td><code>pipeline-investigate-envelope.md</code></td></tr>
+<tr><td><code>plan</code></td><td><code>plan-investigate.md</code> (composes <code>plan.md</code>)</td><td><code>pipeline-plan-envelope.md</code></td></tr>
+<tr><td><code>consensus</code></td><td><em>none</em> — reviewer votes</td><td><code>plan-review-critic.md</code> per critic</td></tr>
+<tr><td><code>execute</code></td><td><code>execute.md</code></td><td><code>dispatch-ship.md</code></td></tr>
+<tr><td><code>validate</code></td><td><em>none</em> — <code>bn verify</code></td><td><code>dispatch-verify-gate.md</code></td></tr>
+<tr><td><code>critique</code></td><td><code>critique-fresh.md</code></td><td><code>pipeline-critic-envelope.md</code></td></tr>
+<tr><td><code>ship</code></td><td><em>none</em> — hands to orchestrator</td><td><code>auto-review-envelope.md</code></td></tr>
+<tr><td><code>learn</code></td><td><code>evolve-skills.md</code></td><td>— (<code>bn ingest</code>)</td></tr>
+</tbody>
+</table>
+</div>
+
+<p class="src">bn-core/src/pipeline/stage.rs:103</p>
+
+<div class="note note--gap">
+<span class="note__label">Ad-hoc dispatch answers a different question</span>
+<p>
+<code>bn dispatch</code> defaults to <code>ship-solo</code>, or <code>investigate</code> with
+<code>--scout</code> — not to the stage's prompt. The code says so outright: "Both are right;
+they are not the same question."
+<span class="src">stage.rs:96-102 · cmd/dispatch/seed.rs:109-111</span>
+</p>
+</div>
+
+<h2>How a seed prompt is assembled</h2>
+
+<p>
+<code>skill_seed_prompt</code> fills slots in one outer envelope. Two suppression rules stop
+blocks contradicting each other.
+</p>
+
+<figure>
+<svg viewBox="0 0 900 330" role="img" aria-labelledby="seed-title">
+  <title id="seed-title">dispatch-ship.md as a slotted form fed by fragment files</title>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10">
+
+    <!-- envelope -->
+    <rect x="250" y="18" width="250" height="296" rx="6"
+          fill="var(--card)" stroke="var(--accent)" stroke-width="1.5"/>
+    <text x="262" y="38" font-size="10.5" fill="var(--accent)">dispatch-ship.md</text>
+
+    <rect x="262" y="48" width="226" height="24" rx="3" fill="var(--accent-soft)" stroke="var(--accent-line)"/>
+    <text x="272" y="64" fill="var(--ink)">{{autonomy}}</text>
+
+    <rect x="262" y="78" width="226" height="24" rx="3" fill="var(--paper-sunk)" stroke="var(--rule)"/>
+    <text x="272" y="94" fill="var(--ink-mid)">untrusted-data markers</text>
+
+    <rect x="262" y="108" width="226" height="24" rx="3" fill="var(--paper-sunk)" stroke="var(--rule)"/>
+    <text x="272" y="124" fill="var(--ink-mid)">BASE DISCIPLINE</text>
+
+    <rect x="262" y="138" width="226" height="24" rx="3" fill="var(--accent-soft)" stroke="var(--accent-line)"/>
+    <text x="272" y="154" fill="var(--ink)">{{bootstrap}}</text>
+
+    <rect x="262" y="168" width="226" height="24" rx="3" fill="var(--accent-soft)" stroke="var(--accent-line)"/>
+    <text x="272" y="184" fill="var(--ink)">{{verification}}</text>
+
+    <rect x="262" y="198" width="226" height="24" rx="3" fill="var(--accent-soft)" stroke="var(--accent-line)"/>
+    <text x="272" y="214" fill="var(--ink)">{{cli_map}}</text>
+
+    <rect x="262" y="228" width="226" height="24" rx="3" fill="var(--accent-soft)" stroke="var(--accent-line)"/>
+    <text x="272" y="244" fill="var(--ink)">{{workflow_body}}</text>
+
+    <rect x="262" y="258" width="226" height="24" rx="3" fill="var(--accent-soft)" stroke="var(--accent-line)"/>
+    <text x="272" y="274" fill="var(--ink)">{{completion}}</text>
+
+    <rect x="262" y="288" width="226" height="20" rx="3" fill="var(--paper-sunk)" stroke="var(--rule)"/>
+    <text x="272" y="302" fill="var(--ink-mid)">RECORDING + CONCURRENCY</text>
+
+    <!-- feeder files -->
+    <g fill="var(--ink-muted)" font-size="9.5" text-anchor="end">
+      <text x="242" y="64">dispatch-autonomy-{interactive|unattended|solo}.md</text>
+      <text x="242" y="154">dispatch-plan-work-bootstrap.md</text>
+      <text x="242" y="184">dispatch-verify-gate.md</text>
+      <text x="242" y="214">dispatch-cli-map.md</text>
+      <text x="242" y="244">&lt;the chosen workflow&gt;.md</text>
+      <text x="242" y="274">dispatch-completion.md</text>
+    </g>
+
+    <g stroke="var(--rule)" stroke-width="1" fill="none">
+      <path d="M246 61 L260 61"/><path d="M246 151 L260 151"/><path d="M246 181 L260 181"/>
+      <path d="M246 211 L260 211"/><path d="M246 241 L260 241"/><path d="M246 271 L260 271"/>
+    </g>
+
+    <!-- suppression -->
+    <text x="516" y="140" font-size="10" fill="var(--warn)">dispatch-plan-review-gate.md, when present,</text>
+    <text x="516" y="155" font-size="10" fill="var(--warn)">SUPPRESSES all three of these:</text>
+    <g stroke="var(--warn)" stroke-width="1.5">
+      <path d="M492 150 L508 150"/>
+      <path d="M492 180 L508 180"/>
+      <path d="M492 270 L508 270"/>
+    </g>
+    <text x="516" y="172" font-size="9.5" fill="var(--ink-muted)">bootstrap · verification · completion</text>
+    <text x="516" y="196" font-size="9.5" fill="var(--ink-muted)">so no two blocks contradict</text>
+
+    <text x="516" y="226" font-size="10" fill="var(--teal)">--scout replaces the whole envelope</text>
+    <text x="516" y="241" font-size="9.5" fill="var(--ink-muted)">with dispatch-scout.md</text>
+
+    <text x="516" y="268" font-size="10" fill="var(--teal)">self-gating workflows kill {{verification}}</text>
+    <text x="516" y="283" font-size="9.5" fill="var(--ink-muted)">plan-work · execute · ship-solo</text>
+  </g>
+</svg>
+<figcaption>
+<span class="src">cmd/dispatch/seed.rs:124-127, :148-158, :175, :181-193</span>
+</figcaption>
+</figure>
+
+<p>
+Autonomy selection is mechanical: <code>ship-solo</code> always gets <code>solo</code>,
+<code>--yolo</code> gets <code>unattended</code>, everything else gets
+<code>interactive</code>. The third stance had to exist because interactive forces a plan
+proposal that solo has no stage for, while unattended forbids the <code>ask_user</code> that
+is solo's whole point.
+<span class="src">seed.rs:181-187</span>
+</p>
+
+<p>
+The plan-review gate owns the plan lifecycle end to end: write → <code>bn review submit</code>
+→ <code>bn review agents</code> → poll → <code>bn plan promote</code>.
+</p>
+
+<h2>Agent definitions</h2>
+
+<p>
+An agent manifest declares a contract a prompt cannot. <code>kind:</code> is required and is
+one of <code>command | staff | hosted | specialist</code>; <code>AgentDef</code> carries
+roughly 35 fields including <code>on_calendar</code>, <code>gather:</code>,
+<code>sinks[]</code>, <code>doc_dir</code>, <code>opt_in</code>, <code>harness</code>,
+<code>requires_repo</code>, <code>references[]</code>, <code>worlds[]</code>,
+<code>model</code> and <code>queue</code>.
+<span class="src">agents.rs:38-44, :181-280</span>
+</p>
+
+<p>Validation refuses at <em>load</em> time, per kind:</p>
+
+<div class="scroller">
+<table>
+<thead><tr><th>Kind</th><th>Requires</th><th>Forbids</th></tr></thead>
+<tbody>
+<tr><td><code>command</code></td><td>—</td><td><code>gather</code>, <code>repo</code></td></tr>
+<tr><td><code>staff</code></td><td>body, <code>gather</code>, <code>sinks</code></td><td>—</td></tr>
+<tr><td><code>hosted</code></td><td>body</td><td><code>gather</code></td></tr>
+<tr><td><code>specialist</code></td><td>body, <code>repo</code></td><td><code>on_calendar</code>, <code>trigger</code>, <code>gather</code>, <code>run</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>
+Also: <code>doc</code> in <code>sinks</code> requires <code>doc_dir</code>, and forbids it
+otherwise — the card names the file, the manifest names the directory, so output cannot escape
+its archive.
+<span class="src">agents/validate.rs:328-350, :365-426</span>
+</p>
+
+<h2>The learning loop</h2>
+
+<p>It closes mechanically rather than by anyone remembering to do it.</p>
+
+<ol>
+<li>Every dispatch envelope ends with <code>bn reflect "skill:&lt;name&gt; — …"</code>. It is
+appended <em>by the machine</em>, not written by the workflow author.</li>
+<li><code>learnings.rs</code> parses the <code>skill:</code> prefix into a typed field, so
+<code>bn learnings --skill &lt;name&gt;</code> aggregates them.
+<span class="src">learnings.rs:175-178</span></li>
+<li><code>Stage::Learn</code> dispatches <code>evolve-skills</code>.</li>
+<li><code>evolve-skills.md</code> requires <em>repeated</em> evidence — "a one-off gripe is
+noise; the same complaint twice is signal" — locates the exact step, and proposes a
+before→after diff a human approves. Silent edits are explicitly forbidden, and the reflections
+themselves are left untouched as the historical record.</li>
+</ol>
+
+<h2>Things that will mislead you</h2>
+
+<ul>
+<li><strong><code>config/skills/</code> is empty.</strong> One README. Everything real is in
+<code>config/prompts/</code>.</li>
+
+<li><strong>Prompts and agents install to different native layouts on purpose.</strong>
+Prompts become <code>&lt;root&gt;/&lt;name&gt;/SKILL.md</code> directories; agents compile to
+flat files. <span class="src">skills.rs:520 · specialists.rs:17-21</span></li>
+
+<li><strong>Public prompts render leniently, internal ones strictly.</strong> A missing
+argument becomes an empty string in a user-invoked prompt, and a hard error in a runtime
+envelope. <span class="src">catalog.rs:26-40</span></li>
+
+<li><strong>The untrusted-data markers are a prompt-injection boundary.</strong> Goal and
+source URL are fenced and labelled "never instructions".</li>
+
+<li><strong>Discovery degrades rather than fails.</strong> A broken skill file does not make
+agents unlaunchable. <span class="src">launchable.rs:108-113</span></li>
+
+<li><strong>No shipped agent is <code>kind: specialist</code></strong>, and no shipped agent
+uses <code>skills:</code>, <code>mcps:</code>, <code>references:</code>, <code>worlds:</code>,
+<code>tools:</code> or <code>model:</code>. Those fields are implemented and validated but
+unexercised by the current roster.</li>
+
+<li><strong><code>config/workflow/</code> is not part of this catalog at all</strong> — it is
+the tmux and worktree layer, largely migrated into native <code>bn</code> subcommands.</li>
+</ul>
+
+<h2>Not verified</h2>
+
+<ul>
+<li><code>plan-investigate.md</code>, <code>orchestrate.md</code>,
+<code>auto-review-pr.md</code> and <code>triage.md</code> were not read in full; the Ship row
+in the stage table rests on descriptions plus <code>stage.rs</code>.</li>
+<li>Whether <code>Stage::Learn</code> is ever <em>auto</em>-dispatched.
+<code>default_skill</code> states the intent, but the sweep maps only investigate and plan
+(<code>pipeline/sweep.rs:122</code>) — so <code>evolve-skills</code> may in practice only run
+by hand.</li>
+<li>Which component appends the critic packets (<code>{{packet}}</code>,
+<code>{{verdict_commands}}</code>) — pipeline-internal, not covered by this slice.</li>
+<li>That <code>task-enhance</code>, <code>task-triage</code> and <code>quarter-review</code>
+skills are genuinely shadowed by same-named agents. It follows from
+<code>launchable.rs</code>'s documented rule, but <code>bn agent list</code> was not run to
+observe it.</li>
+<li>House style rules cited come from <code>evolve-skills.md</code> step 4; there is no
+<code>config/prompts/README.md</code>.</li>
+</ul>
+
+<div class="foot">
+  <a href="03-state.html">← What bn writes down</a>
+  <a href="05-surfaces.html">Next: surfaces →</a>
+</div>
+
+</main>
+</div>

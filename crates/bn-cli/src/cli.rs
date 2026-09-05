@@ -186,7 +186,7 @@ pub(crate) enum CmdIntake {
         /// Opt out of pooling: cut a fresh cold worktree instead of leasing a warm `bn wt pool`
         /// slot. Leasing a reap-safe pool slot is the default dispatch path — every repo with a
         /// bn-managed bare clone gets a warm slot (deps/build cache intact), sized from
-        /// `~/.config/wt/pools` (explicit or `default`) or a built-in fallback. Pass `--no-pool` for
+        /// the slots that exist, floored at four and grown on demand. Pass `--no-pool` for
         /// a throwaway one-off, or when you specifically want an isolated cold checkout. A repo with
         /// no bare clone (or a full pool) already falls back to cold automatically.
         #[arg(long)]

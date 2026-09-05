@@ -282,6 +282,56 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
                 };
                 emit_agent_sessions(cfg, repo, branch, json);
             }
+            Some(AgentCmd::Run {
+                name,
+                instruction,
+                harness,
+                worktree,
+                repo,
+                base,
+                yolo,
+                args,
+                add_dir,
+                list,
+                print_seed,
+                pick_stage,
+                pick_source,
+            }) => {
+                // `run` works from anywhere: the cwd need not be a repo (the picker and `--list`
+                // are useful outside one, and the launcher enforces placement itself).
+                let ctx = resolver::resolve(cfg, &std::env::current_dir().unwrap_or_default()).ok();
+                let base_dir = std::env::current_dir().unwrap_or_default();
+                let only = pick_source
+                    .as_deref()
+                    .and_then(bn_core::launchable::Source::parse);
+                match pick_stage {
+                    Some(stage) => crate::cmd::agent_run::emit_pick_stage(
+                        cfg,
+                        ctx.as_ref(),
+                        &base_dir,
+                        stage,
+                        name.as_deref(),
+                        only,
+                    ),
+                    None => crate::cmd::agent_run::emit_run(
+                        cfg,
+                        ctx.as_ref(),
+                        name,
+                        instruction,
+                        harness,
+                        worktree,
+                        repo,
+                        base,
+                        yolo,
+                        args,
+                        add_dir,
+                        list,
+                        print_seed,
+                        only,
+                        json,
+                    ),
+                }
+            }
             Some(AgentCmd::MemoryHook) => emit_memory_hook(cfg),
             Some(AgentCmd::Launch {
                 harness,
@@ -291,6 +341,7 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
                 fresh,
                 session,
                 resume_session,
+                add_dir,
                 passthrough,
             }) => cmd::agent::emit_agent_launch(
                 cfg,
@@ -301,6 +352,7 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
                 fresh,
                 session,
                 resume_session,
+                add_dir,
                 passthrough,
             ),
         },

@@ -198,6 +198,10 @@ pub(crate) fn emit_quarter_advise(cfg: &Config, capacity: usize, as_json: bool) 
             kind: e.kind,
             priority: e.priority,
             goal: None,
+            band: None,
+            added_at: e.added_at,
+            not_after: e.not_after,
+            est_secs: e.est_secs,
         })
         .collect();
 
@@ -214,6 +218,7 @@ pub(crate) fn emit_quarter_advise(cfg: &Config, capacity: usize, as_json: bool) 
         candidates: &candidates,
         attention: &attention,
         capacity,
+        now: bn_core::util::now_epoch_secs(),
     });
 
     if as_json {

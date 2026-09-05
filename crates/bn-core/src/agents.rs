@@ -331,6 +331,19 @@ impl AgentDef {
         self.kind == AgentKind::Specialist
     }
 
+    /// Whether this agent compiles into a native Copilot/Claude custom agent file, so a running
+    /// harness session discovers it under `/agent` and can delegate to it.
+    ///
+    /// A specialist always does — that is what a specialist *is*. Any other kind opts in by
+    /// declaring `worlds:`, and that opt-in is deliberate rather than automatic. Most of the
+    /// catalog is packet-fed: a staff agent picked out of a harness's own agent list, with no
+    /// `gather:` packet behind it, reads as a broken agent rather than a useful one. Publishing
+    /// all of them would be worse than publishing none, so declaring the world is how an author
+    /// says "this one stands up on its own".
+    pub fn publishes_natively(&self) -> bool {
+        self.is_specialist() || !self.worlds.is_empty()
+    }
+
     /// Reject definitions that are catalog-only and cannot cross the execution boundary.
     pub fn ensure_runnable(&self) -> Result<(), AgentRunError> {
         if self.is_specialist() {

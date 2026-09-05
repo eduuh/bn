@@ -10,12 +10,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 mod catalog;
+mod worktree;
 
 pub use crate::template::ArgumentDef as SkillArgDef;
 pub use catalog::{
     load_skill, load_skill_set, parse_skill, render_required, RuntimeSkillError, Skill,
     SkillCatalogError, SkillParseError,
 };
+pub use worktree::{seed_worktree_skills, SkipReason, WorktreeSkillsReport};
 
 const MANAGED_MARKER_PREFIX: &str = "<!-- bn-managed-skill: ";
 
@@ -148,6 +150,11 @@ pub struct SkillInfo {
     /// Match terms from the optional `keywords:` frontmatter — the strongest ranking signal.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub keywords: Vec<String>,
+    /// Declared `{{name}}` arguments. Carried here so a caller can tell that a skill needs
+    /// values *before* it renders one — [`crate::launchable`] shows it in the picker rather
+    /// than letting a launch fail at the render step.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub arguments: Vec<crate::template::ArgumentDef>,
     pub scope: SkillScope,
     pub path: String,
     pub effective: bool,
@@ -276,6 +283,7 @@ fn discover_in(tiers: &[(SkillScope, PathBuf)]) -> Result<Vec<SkillInfo>, SkillC
                 description: skill.description,
                 when: skill.when,
                 keywords: skill.keywords,
+                arguments: skill.arguments,
                 scope: *scope,
                 path: path.display().to_string(),
                 effective: false,

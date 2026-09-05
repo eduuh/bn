@@ -32,13 +32,36 @@ sect() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
 fresh() {   # a clean sandbox + repo
   rm -rf "$SB"; mkdir -p "$SB/home/config" "$SB/notes" "$SB/state" "$SB/repo" "$SB/marks" "$SB/run"
+  # A pinned hostname and its machine profile, and both halves matter.
+  #
+  # Without a profile bn concludes the queue is disabled *on this host* — and then reconciles,
+  # which means removing the real machine's launchd service. BN_HOME, BN_STATE_DIR and
+  # BN_NOTES_DIR isolate bn's files; launchd is per-uid and isolates nothing. So a suite that
+  # believed it was sandboxed deleted the developer's dispatcher on every run.
+  #
+  # Pinned rather than auto-detected so the fixture is the same on every machine: the real
+  # hostname would have to be in the profile too, and the suite would pass or fail depending on
+  # what the laptop was called.
   cat > "$SB/home/config/config.toml" <<EOF
+hostname = "bn-shakedown"
 [personal]
 notes_root = "$SB/notes"
+[machines.bn-shakedown]
+repos = ["*"]
+queue = true
+cron = true
 [queue]
 capture = ["cron"]
 coding = 2
 research = 1
+
+# No pool warming in the fixture. A fresh state dir has no record of a warm ever having run, so
+# every first tick finds one due, enqueues it, and — correctly — lets it own machine-wide admission
+# while it runs. That is the product behaving as designed, and it makes the ordering cases below
+# non-deterministic: they would be asserting against whatever the warm left room for.
+[jobs.only_on]
+pool-warm = ["not-this-host"]
+keep-warm = ["not-this-host"]
 EOF
   ( cd "$SB/repo" && git init -q . && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init )
   cp "$SRC" "$SB/run/bn"
@@ -62,7 +85,10 @@ ORDER=$($BN queue log --kind dispatch 2>/dev/null | grep -oE 'repo/[a-z-]+' | se
 is "starts in priority order" "$(echo $ORDER)" "a-high b-fail c-low"
 [ -f "$SB/marks/high" ] && [ -f "$SB/marks/low" ] && ok "shell bodies actually ran" || no "shell bodies did not run"
 has "a failure reports its real exit code" "$($BN queue log --kind finish 2>&1)" "FAILED (exit 3)"
-is "failed entry resolves to failed" "$($BN queue list --repo repo --all 2>/dev/null | grep b-fail | awk '{print $4}')" "failed"
+# Column 5, not 4: the listing grew an `exec` column ("shell"/"job"/"agent") between the status and
+# the kind, and this assertion kept reading the old position — so it compared "shell" to "failed"
+# and reported a status bug that was never there.
+is "failed entry resolves to failed" "$($BN queue list --repo repo --all 2>/dev/null | grep b-fail | awk '{print $5}')" "failed"
 
 sect "event log: the envelope is not shadowed"
 KINDS=$(python3 -c "
@@ -137,12 +163,22 @@ kill -0 $D 2>/dev/null && { no "a GOOD successor was refused — self-update wou
 sect "daemon: heartbeat is the liveness signal"
 rm -f "$SB/state/queue-daemon.heartbeat"
 "$SB/run/bn" queue run --interval 2 > "$SB/d3.log" 2>&1 & D=$!
+# The daemon beats on start and then every BEAT_SECS (30) — deliberately well inside the 600s TTL,
+# so one missed write is not "dead". This used to sample twice six seconds apart and require the
+# value to have CHANGED, which no correct dispatcher does: it asserted a thirty-second timer on a
+# six-second window. What is actually claimed is that a running daemon writes a fresh heartbeat,
+# and that it stops when it dies — the latter is the case below, which was always the real test.
 sleep 3; A=$(cat "$SB/state/queue-daemon.heartbeat" 2>/dev/null)
-sleep 3; B=$(cat "$SB/state/queue-daemon.heartbeat" 2>/dev/null)
-[ -n "$A" ] && [ "$A" != "$B" ] && ok "the daemon beats while running" || no "no heartbeat"
+AGE=$(( $(date +%s) - ${A:-0} ))
+[ -n "$A" ] && [ "$AGE" -ge 0 ] && [ "$AGE" -lt 120 ] \
+  && ok "the daemon beats while running" \
+  || no "no heartbeat (value '${A:-}', age ${AGE}s)"
 kill $D 2>/dev/null; wait $D 2>/dev/null
 sleep 3; C=$(cat "$SB/state/queue-daemon.heartbeat" 2>/dev/null)
-is "the heartbeat freezes when it dies" "$B" "$C"
+# Compared against the reading taken while it was alive: a dead daemon writes no further beats, so
+# the value must be exactly what it was. (This used to compare against a second live sample; with
+# the beat at 30s both samples were identical anyway, so the assertion held for the wrong reason.)
+is "the heartbeat freezes when it dies" "$A" "$C"
 
 sect "self-repair: detects a dropped service, refuses a bad binary"
 # Hermetic: its own HOME, so the unit file it reasons about is one this test created. Depending on

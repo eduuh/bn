@@ -41,6 +41,11 @@ pub struct Snapshot {
     pub presence: Presence,
     /// A due pool-warm sweep is pending or running and owns new admission until it completes.
     pub mandatory_warming: bool,
+    /// What the machine has learned about how long its work takes — read from the cache, so a
+    /// three-second tick does not fold a fifty-megabyte event log to find out.
+    pub durations: crate::queue::durations::Durations,
+    /// When the machine is next claimed by a deadline window, if one is configured.
+    pub horizon: Option<crate::queue::tick::Horizon>,
 }
 
 impl Snapshot {
@@ -57,9 +62,9 @@ impl Snapshot {
             .filter(|e| e.status == BacklogStatus::Pending)
             .cloned()
             .collect();
-        let mandatory_warming = entries.iter().any(|entry| {
-            entry.status.is_active() && crate::queue::classify::is_mandatory_pool_warming(entry)
-        });
+        let mandatory_warming = entries
+            .iter()
+            .any(|entry| crate::queue::classify::owns_admission(entry, now));
         let (coding, research) = cfg.queue.lanes();
         let mut kind_caps = BTreeMap::new();
         for (label, n) in &cfg.queue.kind_caps {
@@ -108,6 +113,9 @@ impl Snapshot {
                     .any(|w| w.mode == crate::queue::window::WindowMode::Away && w.is_open(now)),
             },
             mandatory_warming,
+            durations: crate::queue::durations::cached_or_compute(&entries, now),
+            horizon: crate::queue::window::next_claim(&windows, now)
+                .map(|(at, source)| crate::queue::tick::Horizon { at, source }),
             windows,
             // Folded once per capture, alongside every other machine signal, so the whole gate
             // stays decidable from a captured snapshot.
@@ -132,6 +140,8 @@ impl Snapshot {
             goals: &self.goals,
             attention: &self.attention,
             max_express: self.max_express,
+            durations: &self.durations,
+            horizon: self.horizon.as_ref(),
             windows: &self.windows,
             pauses: &self.pauses,
             presence: self.presence,
@@ -178,6 +188,8 @@ fn in_flight(cfg: &Config, entries: &[BacklogEntry], now: i64) -> Vec<InFlight> 
             node: e.assigned_to.clone(),
             touches: e.touches.clone(),
             started_at: e.updated_at,
+            // Leased by the queue: it started this, and can wait for it.
+            queue_owned: true,
         })
         .collect();
     for agent in crate::agent::supervise(cfg, 0, 0).agents {
@@ -202,6 +214,9 @@ fn in_flight(cfg: &Config, entries: &[BacklogEntry], now: i64) -> Vec<InFlight> 
             work_class: WorkClass::Coding,
             heavy: false,
             node: None,
+            // Noticed, not launched. It counts against capacity — it is using the same RAM — but
+            // nothing may *wait* for it, because nobody has promised it will ever end.
+            queue_owned: false,
             touches: Vec::new(),
             started_at: agent.last_activity_ts.min(now),
         });
@@ -296,6 +311,7 @@ mod tests {
         let observed = Observed::default();
         let kind_caps = KindCaps::default();
         let pauses = PauseState::default();
+        let durations = crate::queue::durations::Durations::default();
         let nodes = vec![NodeRecord {
             node_id: "testbox".to_string(),
             status: NodeStatus::Ready,
@@ -312,6 +328,8 @@ mod tests {
             caps: &caps,
             observed: &observed,
             kind_caps: &kind_caps,
+            durations: &durations,
+            horizon: None,
             kinds: None,
             goals: &[],
             attention: &[],

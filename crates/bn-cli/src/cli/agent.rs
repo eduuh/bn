@@ -368,8 +368,63 @@ pub(crate) enum AgentCmd {
         /// Prefer this exact recorded session before falling back to a fresh launch.
         #[arg(long, hide = true)]
         resume_session: Option<String>,
+        /// Let the agent reach this directory too, on top of the one it is launched in.
+        /// Repeatable. An agent is otherwise confined to its launch directory (plus its own
+        /// branch-note directory), so a search cannot wander into `~/Documents`.
+        #[arg(long = "add-dir", value_name = "DIR")]
+        add_dir: Vec<String>,
         /// Extra args passed through to the harness verbatim (everything after `--`).
         #[arg(last = true)]
         passthrough: Vec<String>,
+    },
+    /// Launch a catalog agent or workflow skill BY NAME, seeded with an instruction — the join
+    /// between `bn agents list` (what exists) and `bn agent launch` (how one starts). Agents and
+    /// skills share one namespace; an agent wins a name they both hold. Bare `bn agent run` opens
+    /// an fzf picker over everything launchable. Runs in the current directory (execs the harness,
+    /// so it never returns on success); `--worktree` runs it in a fresh isolated one instead.
+    /// bn agent run <name> "<instruction>"
+    Run {
+        /// Agent or skill to launch. Omit for the picker.
+        name: Option<String>,
+        /// What this agent should do — appended to its rendered body as the task.
+        #[arg(value_name = "INSTRUCTION")]
+        instruction: Vec<String>,
+        /// Harness override. Defaults to the manifest's `harness:`, else the launcher's default.
+        #[arg(long)]
+        harness: Option<String>,
+        /// Run in a fresh worktree via `bn dispatch` rather than the current directory.
+        #[arg(long)]
+        worktree: bool,
+        /// Target repo for `--worktree` (a bare repo under the bare root).
+        #[arg(long)]
+        repo: Option<String>,
+        /// Base branch to fork the `--worktree` run from (default: main).
+        #[arg(long)]
+        base: Option<String>,
+        /// Trusted-repo autonomy: launch without approval prompts.
+        #[arg(long)]
+        yolo: bool,
+        /// Fill a declared `{{key}}` argument: repeatable, e.g. `--arg date=2026-09-05`.
+        #[arg(long = "arg", value_name = "KEY=VALUE")]
+        args: Vec<String>,
+        /// Let the agent reach this directory too, on top of the one it is launched in.
+        /// Repeatable. See `bn agent launch --add-dir`.
+        #[arg(long = "add-dir", value_name = "DIR")]
+        add_dir: Vec<String>,
+        /// List everything launchable and exit, instead of opening the picker (for scripts).
+        #[arg(long)]
+        list: bool,
+        /// Print the composed seed — the exact prompt the agent would start on — and exit without
+        /// launching anything. The only way to see what a run will actually say, and what makes
+        /// the composition testable without spawning a harness.
+        #[arg(long = "print-seed")]
+        print_seed: bool,
+        /// Internal: the fzf picker's self-referencing callback stage.
+        #[arg(long, hide = true, value_name = "STAGE")]
+        pick_stage: Option<crate::cmd::agent_run::RunPickStage>,
+        /// Internal: narrow the picker to one catalog (`agent` | `skill`), so a reload and a
+        /// preview reproduce the row set the picker was opened with.
+        #[arg(long, hide = true, value_name = "SOURCE")]
+        pick_source: Option<String>,
     },
 }

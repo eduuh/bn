@@ -1,0 +1,323 @@
+<meta charset="utf-8">
+<title>Durable State</title>
+<link rel="stylesheet" href="assets/bn-docs.css">
+
+<div class="wrap">
+
+<aside class="rail">
+  <a class="rail__brand" href="index.html"><b>bn</b> workflow notes</a>
+  <p class="rail__tag">How the machine actually runs</p>
+  <nav>
+    <ol>
+      <li><a href="index.html">Overview</a></li>
+      <li><a href="01-pipeline.html">The pipeline &amp; its gates</a></li>
+      <li><a href="02-dispatch.html">Dispatch &amp; isolation</a></li>
+      <li><a href="03-state.html" aria-current="page">What bn writes down</a></li>
+      <li><a href="04-catalog.html">The prompt catalog</a></li>
+      <li><a href="05-surfaces.html">Surfaces</a></li>
+    </ol>
+  </nav>
+</aside>
+
+<main>
+
+<p class="eyebrow">Note 04</p>
+<h1>What bn writes down, and where it survives</h1>
+
+<p class="standfirst">
+Everything the system remembers sits on one of three axes: the branch, the repo, or the
+person. Which axis a thing lives on decides whether it survives worktree cleanup — and that
+single distinction answers most "where did my note go" questions.
+</p>
+
+<h2>Three scopes</h2>
+
+<figure>
+<svg viewBox="0 0 900 280" role="img" aria-labelledby="scopes-title">
+  <title id="scopes-title">Three storage scopes: branch, repo and person</title>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5">
+
+    <!-- branch scope -->
+    <rect x="8" y="28" width="278" height="150" rx="6"
+          fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/>
+    <text x="22" y="50" font-size="11" fill="var(--accent)">BRANCH SCOPE</text>
+    <text x="22" y="68" font-size="9.5" fill="var(--ink-mid)">&lt;machine&gt;/&lt;repo&gt;/&lt;branch&gt;/</text>
+    <text x="22" y="92" fill="var(--ink)">note.md</text>
+    <text x="22" y="110" fill="var(--ink)">handoff.json + handoff.md</text>
+    <text x="22" y="128" fill="var(--ink)">plans/active.md</text>
+    <text x="22" y="146" fill="var(--ink)">achievements.md</text>
+    <text x="22" y="168" font-size="9.5" fill="var(--warn)">✕ dies with bn wt cleanup</text>
+
+    <!-- repo scope -->
+    <rect x="302" y="28" width="278" height="150" rx="6"
+          fill="var(--teal-soft)" stroke="var(--teal)" stroke-width="1.5"/>
+    <text x="316" y="50" font-size="11" fill="var(--teal)">REPO SCOPE</text>
+    <text x="316" y="68" font-size="9.5" fill="var(--ink-mid)">&lt;machine&gt;/&lt;repo&gt;/</text>
+    <text x="316" y="92" fill="var(--ink)">reference/**.md</text>
+    <text x="316" y="110" fill="var(--ink)">skills/</text>
+    <text x="316" y="140" font-size="9.5" fill="var(--ink-muted)">one level ABOVE the branch dirs</text>
+    <text x="316" y="168" font-size="9.5" fill="var(--teal)">✓ survives cleanup</text>
+
+    <!-- person scope -->
+    <rect x="596" y="28" width="296" height="150" rx="6"
+          fill="var(--card)" stroke="var(--rule)" stroke-width="1.5"/>
+    <text x="610" y="50" font-size="11" fill="var(--ink-mid)">PERSON SCOPE</text>
+    <text x="610" y="68" font-size="9.5" fill="var(--ink-muted)">&lt;personal_root&gt;/ — no &lt;machine&gt; segment</text>
+    <text x="610" y="92" fill="var(--ink)">references/  (coding standards)</text>
+    <text x="610" y="110" fill="var(--ink)">links.md</text>
+    <text x="610" y="128" fill="var(--ink)">tasks.txt</text>
+    <text x="610" y="146" fill="var(--ink)">staff/feed</text>
+    <text x="610" y="168" font-size="9.5" fill="var(--ink-muted)">✓ crosses machines</text>
+
+    <text x="8" y="212" font-size="10" fill="var(--ink-muted)">The &lt;machine&gt; segment exists so several laptops syncing one notes repo never collide on a shared `main` note.</text>
+    <text x="8" y="232" font-size="10" fill="var(--ink-muted)">Person-axis stores deliberately skip it — those things are yours, not this laptop's.</text>
+    <text x="8" y="258" font-size="10" fill="var(--warn)">bn learned / bn reflect go to dated daily files, NOT the note — which is exactly why they outlive the worktree.</text>
+  </g>
+</svg>
+<figcaption>
+<span class="src">crates/bn-core/src/resolver/paths.rs:18-20, :90, :294, :307, :315</span>
+</figcaption>
+</figure>
+
+<h2>Anatomy of a branch note</h2>
+
+<p>
+One file, <code>note.md</code>, at
+<code>&lt;notes_root&gt;/&lt;machine&gt;/&lt;repo&gt;/&lt;branch&gt;/note.md</code>. Branch slashes
+are dashed into the key, so <code>feat/x</code> becomes <code>feat-x</code>.
+<span class="src">resolver/paths.rs:21, :29 · resolver/context.rs:205</span>
+</p>
+
+<p>
+The split between the two halves is strict. <strong>Frontmatter holds the structured item
+lists</strong>; <strong>the body holds prose only</strong> — <code>## Goal</code>,
+<code>## Progress</code>, and optionally <code>## Notes</code> / <code>## Test Cases</code> /
+<code>## Plan</code>.
+<span class="src">crates/bn-core/src/model.rs:132, :399 · commands/body.rs:55</span>
+</p>
+
+<pre><code>---
+repo: bn
+branch: bn-agents
+created: 2026-08-07
+status: closed
+machine: mac.lan
+pr: https://github.com/eduuh/bn/pull/1073
+harnesses:
+- copilot
+models:
+- gpt-5.6-sol
+todos: []
+blockers: []
+decisions:
+- id: d5
+  text: Remote dispatch is no longer a supported path; remove that surface.
+  created: 2026-08-08
+research:
+- id: r4
+  text: 'Scheduled-agent UX smoke: /api/today/agents returned 7 queued agents.'
+  created: 2026-08-08
+collab:
+- id: c1
+  text: 'agent-session: copilot ad42a676-f0df-43bd-bf56-10669dc2d7a8'
+  created: 2026-08-07
+ask: []
+done_when: []
+directives: []
+---
+
+# bn / bn-agents
+
+## Goal
+
+Ensure scheduled Markdown agents work correctly through the queue system.
+
+## Progress</code></pre>
+
+<p>
+Writes are atomic temp-plus-rename under an advisory <code>note.md.lock</code>. The reader
+accepts three historical layouts and migrates in memory; the writer always emits the
+single-file form.
+<span class="src">crates/bn-core/src/store.rs:1-8, :139, :403</span>
+</p>
+
+<h2>The vocabulary</h2>
+
+<div class="scroller">
+<table>
+<thead><tr><th>Section</th><th>Id</th><th>Tickable</th><th>Behaviour</th></tr></thead>
+<tbody>
+<tr><td><strong>goal</strong></td><td>—</td><td>—</td><td>Not a section at all. One line of prose, the first non-blank line under <code>## Goal</code>, replaced wholesale.</td></tr>
+<tr><td><strong>todo</strong></td><td><code>t1</code></td><td>yes</td><td>The <em>only</em> section where <code>is_todo()</code> is true, so only these count as "open todos" anywhere. Carries <code>pct</code> 1–99, <code>est</code>, <code>actual</code>.</td></tr>
+<tr><td><strong>done-when</strong></td><td><code>w1</code></td><td>yes</td><td>Checkable, but excluded from open-todo stats — and <code>bn close</code> refuses to auto-tick it.</td></tr>
+<tr><td><strong>blocker</strong></td><td><code>b1</code></td><td>no</td><td>Never completed, only removed. Feeds the handoff's "Blocked" list.</td></tr>
+<tr><td><strong>decision</strong></td><td><code>d1</code></td><td>no</td><td>Append-only record of a settled choice; flows into <code>decisions.made</code>.</td></tr>
+<tr><td><strong>directive</strong></td><td><code>i1</code></td><td>no</td><td>A standing constraint on <em>how</em> work is done. Deliberately not tickable.</td></tr>
+<tr><td><strong>research</strong></td><td><code>r1</code></td><td>no</td><td>Evidence gathered during the branch.</td></tr>
+<tr><td><strong>progress</strong></td><td>—</td><td>—</td><td>Body prose again — timestamped bullets appended to <code>## Progress</code>.</td></tr>
+</tbody>
+</table>
+</div>
+
+<p class="src">model.rs:14-53, :271-280, :326-338, :363 · render.rs:121, :158 · commands/note.rs:110-116</p>
+
+<h2>Handoffs</h2>
+
+<p>
+<code>handoff.json</code> is authoritative, <code>handoff.md</code> is the human mirror; both
+sit beside the note and are written atomically. The packet is composed from the note — goal,
+the last five progress bullets, open todos, blockers, made decisions, <code>## To Ask</code>,
+directives — with narrative, deferred decisions and an explicit priority queue supplied by the
+author.
+<span class="src">crates/bn-core/src/handoff.rs:28, :33, :116, :194</span>
+</p>
+
+<div class="note">
+<span class="note__label">Missing handoff is not an error</span>
+<p>
+When no packet exists, <em>every</em> reader composes one live from the note rather than
+failing — MCP, CLI and web alike. Only a genuinely missing <em>note</em> fails.
+<span class="src">crates/bn-mcp/src/server.rs:416-420 · cmd/agent.rs:794 · bn-web/src/api.rs:415</span>
+</p>
+</div>
+
+<h2>Reference notes: knowledge that outlives the branch</h2>
+
+<p>
+Two stores, one engine, split by <code>Scope</code>. <code>Scope::Repo</code> resolves to
+<code>&lt;notes&gt;/&lt;machine&gt;/&lt;repo&gt;/reference/**.md</code> — a <em>sibling</em> of the
+branch-note directories, not under any branch. <code>Scope::Global</code> resolves to
+<code>&lt;personal_root&gt;/references</code>, with no machine segment.
+<span class="src">crates/bn-core/src/references.rs:27 · paths.rs:294, :307</span>
+</p>
+
+<p>
+"Outliving the branch" is literal geometry: a branch note dies with <code>bn wt cleanup</code>;
+<code>reference/</code> sits one directory up and survives. The repo template bakes in the
+evidence convention — every bullet carries <code>(src: path, date)</code> — and appends are
+deduplicated document-wide, so <code>appended:false</code> means "already known" rather than
+"failed".
+<span class="src">references.rs:91, :341, :348-355, :365</span>
+</p>
+
+<h2>Two files named events.jsonl</h2>
+
+<p>
+Same primitive, different meanings, different trees. Conflating them is the easy mistake.
+</p>
+
+<div class="scroller">
+<table>
+<thead><tr><th>Log</th><th>Path</th><th>Kinds</th></tr></thead>
+<tbody>
+<tr><td>Machine-local runtime</td><td><code>&lt;personal_root&gt;/&lt;machine&gt;/state/events.jsonl</code></td><td><code>cron_run</code>, <code>queue_*</code>, <code>orchestrate_*</code>, <code>agent_session</code></td></tr>
+<tr><td>Synced productivity metrics</td><td><code>&lt;personal_root&gt;/&lt;machine&gt;/metrics/events.jsonl</code></td><td><code>activity</code> (add / done / progress / goal), <code>pr_opened|merged|closed|review</code>, <code>note_closed</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<p class="src">events.rs:119 · paths.rs:167-180, :261 · commands/error.rs:12-29</p>
+
+<p>
+Records are flat — <code>{kind, ts, ...flattened}</code> — so a new kind needs no migration.
+Every append is a <em>single</em> <code>write</code> under a local-disk lock, because O_APPEND
+atomicity does not hold on the 9p mount WSL uses. Payload keys named <code>kind</code> or
+<code>ts</code> are renamed to <code>kind_field</code>/<code>ts_field</code> so they cannot
+shadow the envelope, and unparseable lines are skipped on read.
+<span class="src">events.rs:19, :139, :169, :196-203, :250</span>
+</p>
+
+<h2>The MCP surface</h2>
+
+<p>
+Thirteen tools, scope resolved per call, failing closed with exactly one exception.
+<span class="src">crates/bn-mcp/src/server.rs:176-190</span>
+</p>
+
+<div class="scroller">
+<table>
+<thead><tr><th>Tool</th><th>Does</th><th>Scope</th></tr></thead>
+<tbody>
+<tr><td><code>bn_context</code></td><td>Session-start orientation: goal, counts, top todos, blockers, PR</td><td>branch</td></tr>
+<tr><td><code>bn_goal</code></td><td>Set the one-line <code>## Goal</code> in the body</td><td>branch</td></tr>
+<tr><td><code>bn_add</code></td><td>Append to todo / blocker / decision / research / collab / ask / done-when, with <code>if_absent</code> dedupe</td><td>branch</td></tr>
+<tr><td><code>bn_done</code></td><td>Close a todo by id or substring; <code>pct</code> 1–99 records partial progress instead</td><td>branch</td></tr>
+<tr><td><code>bn_pr</code></td><td>Record the PR on frontmatter</td><td>branch</td></tr>
+<tr><td><code>bn_cat</code></td><td>Render the full note</td><td>branch</td></tr>
+<tr><td><code>bn_status</code></td><td>Open-todo and blocker counts, work item, PR</td><td>branch</td></tr>
+<tr><td><code>bn_sync</code></td><td>Reconcile note against git/PR truth — returns proposals, never writes</td><td>branch</td></tr>
+<tr><td><code>bn_handoff_write</code></td><td>Write the resume packet</td><td>branch</td></tr>
+<tr><td><code>bn_handoff_read</code></td><td>Read orientation, composing live if absent</td><td>branch</td></tr>
+<tr><td><code>bn_ref</code></td><td>Index or body of reference docs; a repo note shadows a same-named global</td><td>repo + person</td></tr>
+<tr><td><code>bn_ref_append</code></td><td>Record one durable fact under <code>## Facts</code>/<code>## Gotchas</code></td><td>repo</td></tr>
+<tr><td><code>bn_links_add</code></td><td>Store a URL worth returning to; re-adding updates in place</td><td><strong>person</strong></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>
+A separate opt-in orchestrator server (<code>bn-mcp --orchestrate</code>) exposes
+<code>list_attention</code>, <code>list_agents</code>, <code>spin_up_work</code>,
+<code>send_to_agent</code> and <code>plan_day</code> by shelling out to the real CLI.
+<span class="src">crates/bn-mcp/src/orchestrator.rs:1-9</span>
+</p>
+
+<h2>Things that will mislead you</h2>
+
+<ul>
+<li><strong>The goal is prose, not a field.</strong> <code>bn_goal</code> edits the body and
+<code>goal_text</code> reads back the first non-blank line. A goal string containing
+<code>\n## Goal</code> once doubled the body on every call.
+<span class="src">render.rs:127-140</span></li>
+
+<li><strong><code>bn_links_add</code> is the one tool that does not fail closed.</strong> With
+no branch resolved the link is stored without a repo, because losing a capture over the
+client's working directory is the wrong trade.
+<span class="src">server.rs:218-232</span></li>
+
+<li><strong>There is no MCP path to write the global standards store.</strong>
+<code>bn_ref_append</code> is repo-scoped only; <code>bn_ref</code> can read global.</li>
+
+<li><strong><code>harnesses</code> and <code>models</code> record themselves.</strong> Every
+note mutation calls <code>record_session</code>, so the note knows which agents touched it
+without anyone saying so. <span class="src">model.rs:434</span></li>
+
+<li><strong>A 32 MB read ceiling exists because of a real 4.2 GB <code>note.md</code>.</strong>
+A dispatch bug appended a seed prompt to the same todo every pass, and every sweeping reader
+OOM-killed the dashboard. <span class="src">store.rs:41-53</span></li>
+
+<li><strong><code>bn done &lt;text&gt;</code> searches todos <em>and</em> done-when
+together</strong>, so a substring can tick an acceptance criterion you meant to leave open.
+<span class="src">commands/todo.rs:200-215</span></li>
+
+<li><strong>Findings and backlog are append-only JSONL</strong> in <code>state_dir</code>:
+findings keep history per source; backlog is log-structured with latest-line-wins per
+<code>(repo, id)</code> plus periodic compaction.
+<span class="src">findings.rs:60 · backlog.rs:16-19, :570</span></li>
+</ul>
+
+<h2>Not verified</h2>
+
+<ul>
+<li>The <code>link</code>, <code>q</code>, <code>pct</code>, <code>est</code>,
+<code>actual</code> and <code>notes</code> fields on <code>Item</code> are documented as
+primarily daily-goal and calibration features. Not every producer was traced, so which of them
+ever appear on a branch-note todo in practice is unconfirmed.</li>
+<li>How split-layout <code>note.yaml</code> notes get migrated in bulk — only that
+<code>save</code> retires the sibling to <code>.yaml.bak</code> on the next write.</li>
+<li>The exact timestamp format <code>bn log-progress</code> prepends to a progress bullet; only
+the core append path was read, not the CLI formatting.</li>
+<li>Whether <code>bn_sync</code> proposals are ever auto-applied elsewhere. The MCP tool
+itself is read-only.</li>
+<li>Whether the global standards store is reachable from the web API, or only via CLI and
+MCP.</li>
+</ul>
+
+<div class="foot">
+  <a href="02-dispatch.html">← Dispatch &amp; isolation</a>
+  <a href="04-catalog.html">Next: the prompt catalog →</a>
+</div>
+
+</main>
+</div>

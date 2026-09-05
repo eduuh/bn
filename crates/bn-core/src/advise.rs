@@ -11,6 +11,7 @@
 //! against each goal's text, so untagged backlog still finds the goal it advances.
 
 use crate::backlog::BacklogKind;
+use crate::rank::{self, Band, RankInput, Score};
 use serde::Serialize;
 
 /// One open quarter goal plus the status the latest impact review gave it — the strategic weight
@@ -32,11 +33,23 @@ pub struct Candidate {
     /// The human subject used both for display and keyword alignment.
     pub title: String,
     pub kind: BacklogKind,
-    /// The source's own priority — the base weight and the final tiebreak.
+    /// The source's own priority — read as a [`Band`] plus a within-band nudge.
     pub priority: i64,
     /// An explicit quarter-goal key this work is tagged to, when the source knows one. Wins over
     /// keyword matching; `None` falls back to text overlap.
     pub goal: Option<String>,
+    /// An explicit band, when the source states one. `None` reads the band out of `priority` —
+    /// which is how every entry already on disk keeps working without a migration.
+    pub band: Option<Band>,
+    /// When this work arrived, epoch secs. Feeds the age term and the FIFO tiebreak that
+    /// `BacklogEntry`'s own documentation has always promised.
+    pub added_at: i64,
+    /// Epoch secs after which the work is pointless — the deadline the urgency term measures
+    /// slack against.
+    pub not_after: Option<i64>,
+    /// Expected wall-clock seconds, so urgency can ask whether the work can still *finish* in
+    /// time rather than merely start.
+    pub est_secs: i64,
 }
 
 /// An open attention item reduced to the pressure it puts on a repo — a candidate touching a repo
@@ -57,6 +70,9 @@ pub struct AdviseInputs<'a> {
     pub candidates: &'a [Candidate],
     /// Open attention items, as repo pressure signals.
     pub attention: &'a [AttnSignal],
+    /// Wall clock for this pass, epoch secs — what the deadline and age terms are measured
+    /// against. Passed in rather than read, so ranking stays pure and reproducible.
+    pub now: i64,
     /// How many slots are free — the shortlist size. The top `capacity` results are flagged
     /// [`Advice::within_capacity`]; everything ranked below still returns (the caller decides how
     /// much to show), so `capacity` shapes the shortlist without truncating the ranking.
@@ -78,6 +94,10 @@ pub struct Advice {
     pub goal: Option<String>,
     /// The composite rank score (higher first) — surfaced so the orchestrator can threshold.
     pub score: i64,
+    /// The score's components, so a surface can explain the order rather than assert it.
+    pub breakdown: Score,
+    /// When the work arrived — the FIFO tiebreak, kept on the output so the order is auditable.
+    pub added_at: i64,
     /// 1-based rank in the returned order.
     pub rank: usize,
     /// Whether this candidate falls within the `capacity` shortlist (the first `capacity` ranks).
@@ -216,22 +236,34 @@ pub fn advise(inputs: &AdviseInputs) -> Vec<Advice> {
                     (Some(g.key.clone()), s, r)
                 }
                 None => {
-                    let mut r = format!(
-                        "No quarter-goal alignment — ranked on base priority {}",
-                        c.priority
-                    );
+                    // Deliberately no longer "ranked on base priority N": priority is not a
+                    // quantity added to the score any more, it is the band the work sits in, and
+                    // the breakdown appended below says which.
+                    let mut r = "No quarter-goal alignment".to_string();
                     if pressure > 0 {
                         r.push_str(&attn_clause(&c.repo, inputs.attention));
                     }
                     (None, 0, r)
                 }
             };
-            // Saturating, not wrapping: a priority near i64::MAX plus any goal alignment would
-            // overflow — panicking in debug and, far worse, WRAPPING in release, which sorts the
-            // highest-priority item last. Saturation costs nothing and removes the class.
-            let score = align_score
-                .saturating_add(pressure)
-                .saturating_add(c.priority);
+            // The band is the claim this work has on the machine; everything else competes for
+            // order inside it. Priority is read as a band plus a nudge rather than summed, which
+            // is what stops `--priority 200` from erasing the strategic layer it is added to.
+            let band = c
+                .band
+                .unwrap_or_else(|| Band::from_legacy_priority(c.priority));
+            let breakdown = rank::score(&RankInput {
+                band,
+                nudge: band.nudge_from_legacy(c.priority),
+                align: align_score,
+                pressure,
+                urgency: rank::urgency(c.not_after, inputs.now, c.est_secs),
+                age: rank::age_bonus(c.added_at, inputs.now),
+            });
+            // The arithmetic, appended to the prose. A dispatcher that only says *what* it chose
+            // leaves "why is that first?" answerable only by reading the source; carrying the
+            // terms means `bn queue why` can show the sum it actually did.
+            let rationale = format!("{rationale} · {}", breakdown.explain());
             Advice {
                 id: c.id.clone(),
                 repo: c.repo.clone(),
@@ -239,7 +271,9 @@ pub fn advise(inputs: &AdviseInputs) -> Vec<Advice> {
                 kind: c.kind.label().to_string(),
                 priority: c.priority,
                 goal: goal_key,
-                score,
+                score: breakdown.total,
+                breakdown,
+                added_at: c.added_at,
                 rank: 0,
                 within_capacity: false,
                 rationale,
@@ -247,11 +281,14 @@ pub fn advise(inputs: &AdviseInputs) -> Vec<Advice> {
         })
         .collect();
 
-    // Higher score first, then higher priority, then repo/id for a total, deterministic order.
+    // Score first; then oldest first, which is the FIFO tiebreak `BacklogEntry`'s documentation and
+    // `bn queue add --priority`'s help have always promised and this ranker never honoured — it
+    // broke ties on repo then id, alphabetically, so on a machine whose scheduled work all shares
+    // one priority the alphabet decided. Repo and id remain last, only to keep the order total.
     scored.sort_by(|a, b| {
         b.score
             .cmp(&a.score)
-            .then(b.priority.cmp(&a.priority))
+            .then(a.added_at.cmp(&b.added_at))
             .then(a.repo.cmp(&b.repo))
             .then(a.id.cmp(&b.id))
     });

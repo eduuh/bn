@@ -16,6 +16,11 @@ Goal: {{goal}}
 Source: {{source}}
 --- END UNTRUSTED TASK DATA ---
 
+BASE DISCIPLINE: before you read code, confirm this worktree is on current main — `git fetch
+origin` then `git log --oneline HEAD..origin/main` (substitute this repo's default branch). If it
+is behind and the tree is clean, `git rebase origin/main` first. Evidence gathered against a stale
+tree is a report about code that no longer exists, and the Plan stage inherits it.
+
 {{cli_map}}
 
 --- WORKFLOW: investigate ---

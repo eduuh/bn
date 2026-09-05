@@ -325,19 +325,9 @@ export interface WarmPoolResult {
 
 /** `POST /api/repos/:repo/pool/warm` — enqueue `pool-warm` for a pooled repo. Warming is
  * long-running, so the machine-wide queue admits it as heavy work instead of the server spawning an
- * uncapped detached build; a `400` (invalid or unpooled repo) throws `ApiError`. */
+ * uncapped detached build; a `400` (invalid repo, or one bn has no clone of) throws `ApiError`. */
 export function warmRepoPool(repo: string): Promise<WarmPoolResult> {
   return post<WarmPoolResult>(`/api/repos/${encodeURIComponent(repo)}/pool/warm`);
-}
-
-/** `POST /api/repos/:repo/pool {size?}` — pool a repo at `size` slots, or stop pooling it with
- * `size: null`. Enabling/resizing writes the pools config and queues `pool-warm` so new slots are
- * built under queue capacity rather than on the request path. */
-export function setRepoPool(
-  repo: string,
-  size: number | null,
-): Promise<{ repo: string; size: number | null; message: string }> {
-  return post(`/api/repos/${encodeURIComponent(repo)}/pool`, { size });
 }
 
 export function setRepoPoolSchedule(

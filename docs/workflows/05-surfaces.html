@@ -1,0 +1,361 @@
+<meta charset="utf-8">
+<title>Surfaces</title>
+<link rel="stylesheet" href="assets/bn-docs.css">
+
+<div class="wrap">
+
+<aside class="rail">
+  <a class="rail__brand" href="index.html"><b>bn</b> workflow notes</a>
+  <p class="rail__tag">How the machine actually runs</p>
+  <nav>
+    <ol>
+      <li><a href="index.html">Overview</a></li>
+      <li><a href="01-pipeline.html">The pipeline &amp; its gates</a></li>
+      <li><a href="02-dispatch.html">Dispatch &amp; isolation</a></li>
+      <li><a href="03-state.html">What bn writes down</a></li>
+      <li><a href="04-catalog.html">The prompt catalog</a></li>
+      <li><a href="05-surfaces.html" aria-current="page">Surfaces</a></li>
+    </ol>
+  </nav>
+</aside>
+
+<main>
+
+<p class="eyebrow">Note 06</p>
+<h1>The surfaces a human actually touches</h1>
+
+<p class="standfirst">
+Three doors into one core: a terminal, a browser, and a scheduler. They share an
+implementation by construction — the web UI shells out to the same <code>bn</code> binary you
+type — and they all read and write the same event log.
+</p>
+
+<h2>The CLI</h2>
+
+<p>
+One flat namespace of roughly a hundred top-level commands. Internally it is ten
+<code>#[command(flatten)]</code> group enums, and that split is purely mechanical — it keeps a
+~100-variant enum from blowing libtest's 2 MiB thread stack in debug builds. The group names
+never appear in help.
+<span class="src">crates/bn-cli/src/cli.rs:28-35, :1364</span>
+</p>
+
+<div class="scroller">
+<table>
+<thead><tr><th>Family</th><th>Commands that matter</th></tr></thead>
+<tbody>
+<tr><td><strong>Intake / dispatch</strong></td><td><code>bn add &lt;section&gt;</code>, <code>bn q</code> (zero-friction inbox), <code>bn capture &lt;url&gt;</code>, and the pivotal <code>bn dispatch</code> — resolves an item, cuts a worktree, seeds the goal, opens a tmux window</td></tr>
+<tr><td><strong>Note / review</strong></td><td><code>bn goal</code>, <code>bn done</code>, <code>bn cat</code>, <code>bn ingest</code>, <code>bn learned</code>, <code>bn reflect</code></td></tr>
+<tr><td><strong>Planning / time</strong></td><td><code>bn todo</code>, <code>bn task</code>, <code>bn daily</code>, <code>bn quarter</code>; the punch clock <code>bn in</code> / <code>bn out</code> / <code>bn track</code>; <code>bn wrap</code>, <code>bn calib</code></td></tr>
+<tr><td><strong>Insight</strong></td><td><code>bn next</code> (the ranked "what now"), <code>bn search</code>, <code>bn recall</code>, <code>bn metrics</code>, <code>bn doctor</code>, <code>bn today</code></td></tr>
+<tr><td><strong>Automation</strong></td><td><code>bn queue</code>, <code>bn jump</code>, <code>bn tat</code>, <code>bn attn</code>, <code>bn focus</code>, <code>bn sessions</code>, <code>bn resume</code></td></tr>
+<tr><td><strong>Staff / ops</strong></td><td><code>bn run &lt;job&gt;</code>, <code>bn cron</code>, <code>bn machine</code>, <code>bn estate</code>, <code>bn agents</code>, <code>bn mcp</code></td></tr>
+<tr><td><strong>Misc</strong></td><td><code>bn serve</code>, <code>bn cost</code>, <code>bn build</code>, <code>bn kill</code>, <code>bn links</code>, <code>bn ref</code>, <code>bn pipeline</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note">
+<span class="note__label">Two commands one letter apart</span>
+<p>
+<code>bn review</code> is the <em>plan-approval gate</em>. <code>bn reviews</code> is the
+<em>PR review queue</em>. They are unrelated.
+<span class="src">cli.rs:433, :684</span>
+</p>
+</div>
+
+<h3>The real interactive surface is tmux</h3>
+
+<p>
+There is no TUI. The bindings are the UI:
+<code>prefix j</code> = <code>bn jump</code>, <code>prefix Tab</code> = next agent,
+<code>prefix C-o</code> = <code>bn tat</code> (switch project),
+<code>prefix C-a</code> = <code>bn doctor --pick</code>,
+<code>prefix a</code> / <code>prefix b</code> = add a todo or blocker without leaving the pane.
+<span class="src">config/workflow/tmux.conf:146, 174, 248-255, 270-286</span>
+</p>
+
+<h2>The web dashboard</h2>
+
+<p>
+<code>bn serve</code> is a launcher only — it resolves the sibling <code>bn-web</code> binary
+and execs it, gated on <code>cfg.web_enabled_here()</code>. Default bind is
+<code>127.0.0.1:7770</code>; <code>--lan</code> binds <code>0.0.0.0</code>.
+<span class="src">crates/bn-cli/src/serve.rs:35, :85 · config/config.toml:183-186</span>
+</p>
+
+<div class="note">
+<span class="note__label">There is no authentication</span>
+<p>
+A token is generated and persisted 0600 to <code>&lt;config_dir&gt;/web-token</code>, but the
+server never requires it — on loopback or on <code>--lan</code>. The trust boundary is the
+bind address plus a trusted network; external exposure is meant to go through an
+authenticated dev tunnel. So <code>bn serve --lan</code> puts a fully mutating API — dispatch,
+kill agents, land PRs, edit skills — on <code>0.0.0.0</code> with no credential.
+<span class="src">crates/bn-web/src/auth.rs:1-8 · routes.rs:112-113, :236-237</span>
+</p>
+</div>
+
+<p>
+Reads fold <code>bn-core</code> in-process; <strong>writes shell out to <code>bn --json</code></strong>,
+so the browser and the terminal share one implementation rather than two. Every write —
+accepted <em>and</em> rejected — appends a <code>web_action</code> event, which the SSE tailer
+fans back into the activity feed.
+<span class="src">crates/bn-web/src/queue_api.rs:6-7 · audit.rs:1-10</span>
+</p>
+
+<p>
+Mutating routes include <code>/api/dispatch</code>, <code>/api/queue/{add,cancel,priority,snooze,class}</code>,
+<code>/api/agents/{target}/{send,relaunch,kill,answer,instruct}</code>, <code>/api/land</code>,
+<code>/api/reviews/{id}</code>, <code>/api/attention/{id}</code>, skills and agent-def CRUD,
+<code>/api/cron/run</code>, and the per-repo <code>drain</code> / <code>orchestrate</code> /
+<code>pool/warm</code> actions. The router also nests MCP at <code>/mcp</code> and
+<code>/mcp/orchestrate</code> — the same untokened surface.
+<span class="src">routes.rs:115-190, :232-233</span>
+</p>
+
+<div class="note note--gap">
+<span class="note__label">Most of the UI is hidden by default</span>
+<p>
+A fresh <code>bn serve</code> shows three rail entries: Today, Cron, Settings. Queue, Console,
+Nodes, Staff, Attention, Automation, Goals, Repos, Insights, Notes, Skills, Agents, Handoff
+and Research all need <code>?experimental=&lt;key&gt;</code> or a toggle on
+<code>/settings</code>. The routes resolve either way — they are simply not advertised.
+<span class="src">bn-web/ui/src/components/shell/Rail.tsx:33-39 · lib/nav.ts</span>
+</p>
+</div>
+
+<h2>Queue, attention, today — three different things</h2>
+
+<figure>
+<svg viewBox="0 0 900 250" role="img" aria-labelledby="lanes-title">
+  <title id="lanes-title">Queue, Attention and Today compared by producer and human verb</title>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10">
+
+    <!-- QUEUE -->
+    <rect x="8" y="20" width="278" height="200" rx="6" fill="var(--card)" stroke="var(--rule)" stroke-width="1.5"/>
+    <text x="22" y="42" font-size="11.5" fill="var(--accent)">QUEUE</text>
+    <text x="22" y="60" font-size="9.5" fill="var(--ink-muted)">machine-wide, every repo + agent kind</text>
+    <line x1="22" y1="70" x2="272" y2="70" stroke="var(--rule-soft)"/>
+    <text x="22" y="90" fill="var(--ink-mid)">in ← producers, bn queue add</text>
+    <text x="22" y="110" fill="var(--ink-mid)">out → queue-tick cron, when there is</text>
+    <text x="22" y="124" fill="var(--ink-mid)">      capacity AND a capable node</text>
+    <text x="22" y="150" font-size="9.5" fill="var(--ink-faint)">kinds: ship, scout, investigate,</text>
+    <text x="22" y="164" font-size="9.5" fill="var(--ink-faint)">research, enhance, review-pr, cron</text>
+    <text x="22" y="196" font-size="10.5" fill="var(--accent)">your verb: wait, or pause</text>
+
+    <!-- ATTENTION -->
+    <rect x="302" y="20" width="278" height="200" rx="6" fill="var(--card)" stroke="var(--rule)" stroke-width="1.5"/>
+    <text x="316" y="42" font-size="11.5" fill="var(--teal)">ATTENTION</text>
+    <text x="316" y="60" font-size="9.5" fill="var(--ink-muted)">waiting on a decision from you</text>
+    <line x1="316" y1="70" x2="566" y2="70" stroke="var(--rule-soft)"/>
+    <text x="316" y="90" fill="var(--ink-mid)">in ← crons, bn attn add/ingest</text>
+    <text x="316" y="110" fill="var(--ink-mid)">     dedup on --key</text>
+    <text x="316" y="136" font-size="9.5" fill="var(--ink-faint)">three lanes: needs-you /</text>
+    <text x="316" y="150" font-size="9.5" fill="var(--ink-faint)">in-progress / to-start</text>
+    <text x="316" y="172" font-size="9.5" fill="var(--ink-faint)">mode: manual | assist | auto</text>
+    <text x="316" y="196" font-size="10.5" fill="var(--teal)">your verb: ack, snooze, start</text>
+
+    <!-- TODAY -->
+    <rect x="596" y="20" width="296" height="200" rx="6" fill="var(--card)" stroke="var(--rule)" stroke-width="1.5"/>
+    <text x="610" y="42" font-size="11.5" fill="var(--warn)">TODAY</text>
+    <text x="610" y="60" font-size="9.5" fill="var(--ink-muted)">suggestions, NOT a task list</text>
+    <line x1="610" y1="70" x2="878" y2="70" stroke="var(--rule-soft)"/>
+    <text x="610" y="90" fill="var(--ink-mid)">in ← findings store</text>
+    <text x="610" y="110" fill="var(--ink-mid)">     (gather-findings cron)</text>
+    <text x="610" y="130" fill="var(--ink-mid)">via → an LLM agent that runs</text>
+    <text x="610" y="144" fill="var(--ink-mid)">      on every bn today</text>
+    <text x="610" y="170" font-size="9.5" fill="var(--ink-faint)">idempotent merge — a dismissed</text>
+    <text x="610" y="184" font-size="9.5" fill="var(--ink-faint)">proposal never returns</text>
+    <text x="610" y="208" font-size="10.5" fill="var(--warn)">your verb: accept, dismiss</text>
+  </g>
+</svg>
+<figcaption>
+<code>bn next</code> is the thing that ranks across all three, with a momentum tiebreak toward
+the repo you are punched into.
+<span class="src">cli.rs:745-777, :799-807 · cli/queue_cmd.rs:1-30</span>
+</figcaption>
+</figure>
+
+<h2>Scheduling</h2>
+
+<p>
+Twenty-two <code>[[cron]]</code> entries in <code>config/crons.toml</code>. The canonical
+schedule language is systemd <code>OnCalendar</code> — everywhere, including macOS.
+<span class="src">crates/bn-core/src/crons.rs:46-49</span>
+</p>
+
+<p>
+Several ticks fold multiple jobs behind one timer to cut timer churn:
+<code>tick-5m</code> runs tools-reconcile, routine-tick, attention-sync and tmux-reconcile;
+<code>tick-10m</code> runs auto-review-trigger, attention-auto-trigger and agent-supervise;
+<code>tick-15m</code> runs main-sync, auto-review-poll and cron-health. Each child still records
+its own <code>cron_run</code> event, so per-job rows survive.
+<span class="src">cmd/job_registry.rs:64-80</span>
+</p>
+
+<p>
+<code>bn run &lt;job&gt;</code> checks the native registry first — roughly 38 jobs are
+compiled-in Rust functions — and only falls back to <code>config/jobs/&lt;job&gt;.sh</code> for
+the seven not yet ported.
+<span class="src">job_registry.rs:16-58</span>
+</p>
+
+<h3>One manifest, three very different installs</h3>
+
+<p>Installation is the same command everywhere — <code>bn cron register</code>, idempotent —
+but what it produces diverges sharply:</p>
+
+<div class="scroller">
+<table>
+<thead><tr><th>Platform</th><th>What gets created</th></tr></thead>
+<tbody>
+<tr><td><strong>systemd</strong></td><td>A <code>.service</code> + <code>.timer</code> pair per job. <code>OnCalendar</code> passes through verbatim; <code>network = true</code> adds <code>After/Wants=network-online.target</code>. <span class="src">cron_gen.rs:28-58</span></td></tr>
+<tr><td><strong>launchd</strong></td><td>A plist per job. launchd has no <code>OnCalendar</code> parser, so the subset the manifests use is <em>translated</em> into <code>StartInterval</code> / <code>StartCalendarInterval</code>. <code>is_loaded</code> asks the supervisor rather than the filesystem, because a crash-looping job leaves its plist behind. <span class="src">cron_gen.rs:1-4, :246 · launchd.rs:67-70</span></td></tr>
+<tr><td><strong>Windows</strong></td><td><strong>Exactly one</strong> scheduled task: a WSL keepalive running <code>bn run ensure-tmux</code> at logon and every 30 minutes. The tmux server it starts keeps WSL alive, and systemd <em>inside</em> WSL runs everything else. <span class="src">config/jobs/windows/install.ps1:3-8</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note">
+<span class="note__label">Reclamation is deliberately never on a cron</span>
+<p>
+The <code>wt-cleanup</code> and <code>fleet-reap</code> crons were removed so that nothing
+automated can ever delete a branch, remove a worktree, or kill a tmux session under active
+work. There is a written "Do NOT re-add these". The jobs still exist for manual
+<code>bn wt cleanup</code> / <code>bn run fleet-reap</code>.
+<span class="src">config/crons.toml:17-25</span>
+</p>
+</div>
+
+<p>
+Gating is layered: a <code>[machines.&lt;host&gt;]</code> entry must assign the repo and set
+<code>cron = true</code>; then <code>[[cron]].only_on</code> limits registration and
+<code>[jobs.only_on]</code> limits execution. With no machine entry at all, bn fails closed and
+reports <code>not_enabled</code> rather than erroring.
+<span class="src">config/jobs/README.md:22-30</span>
+</p>
+
+<h2>Cost</h2>
+
+<p>Two units, deliberately labelled apart:</p>
+
+<ul>
+<li><strong>AIC</strong> (AI Credits) — the <em>real metered bill</em>, from
+<code>totalNanoAiu</code> on each Copilot session. <code>null</code> for raw-Claude runs, which
+carry no AIC.</li>
+<li><strong>$ (API-equiv)</strong> — a <em>benchmark, not a bill</em>: tokens against a
+cache-aware price table. On a Claude Code session nearly every prompt token is a cache read
+(~10× cheaper) or a cache write (1.25–2× dearer), so each of the four buckets is charged at
+its own rate.</li>
+</ul>
+
+<p class="src">crates/bn-core/src/cost/mod.rs:1-20</p>
+
+<p>
+Two disjoint event sources are summed: <code>agent_session</code> events (real token capture,
+synced across machines) and the <code>staff_run</code> ledger (estimated scheduled spend).
+They are disjoint because staff runs dispatch headless and never pin a session, so nothing
+double-counts.
+<span class="src">cost/mod.rs:28-32</span>
+</p>
+
+<p>
+<code>GET /api/cost</code> calls the same <code>rollup</code> and serializes it verbatim — the
+<code>?by=</code> parameter is accepted and <strong>ignored</strong>, because the view already
+carries every breakdown and the dashboard switches dimension client-side with no refetch.
+<span class="src">crates/bn-web/src/cost.rs:20-27</span>
+</p>
+
+<h2>A day in the life</h2>
+
+<pre><code># Morning: what is waiting, and what to do about it
+bn next                                   # ranked cross-repo actions
+bn attn                                   # three-lane attention board
+bn today list                             # agent-proposed tasks from cron findings
+bn today accept s2
+
+# Ground the work, then cut a worktree for it
+bn task add "fix flaky queue-tick reconcile test" --repo bn
+bn task enhance T14                       # SMART-gate it
+bn dispatch T14 --repo bn --name queue-tick-flake
+
+# Punch in and set the branch's goal (now inside the new worktree)
+bn in "queue-tick flake" --tag dev
+bn goal "make the pool-slot reconcile test deterministic"
+bn add done-when "test passes 20x in a row"
+bn add todo "reproduce locally with a seeded clock"
+
+# Work. Capture as you go, without leaving the pane (prefix a / prefix b)
+bn q "leases.json holder can outlive every agent that held it"
+bn done t1
+bn notes "root cause: reconcile ran before the tmux server exited"
+bn learned "pool leases are reconciled at the head of every queue-tick"
+
+# Ship
+bn build
+bn autopush "fix: deterministic pool-slot reconcile"
+bn pr https://github.com/owner/bn/pull/1234
+bn ingest                                 # fold the diffstat back into the note
+
+# Close the loop
+bn reflect "should have checked the lease ledger before the test"
+bn out
+bn wrap
+bn cost --by category --window 1</code></pre>
+
+<h2>Things that will mislead you</h2>
+
+<ul>
+<li><strong><code>bn dispatch</code>'s default lane is <code>ship-solo</code>, not the
+nine-stage pipeline.</strong> The pipeline is behind <code>$BN_DISPATCH_PIPELINE=1</code>.
+<span class="src">config/config.toml:200-204</span></li>
+
+<li><strong><code>bn today</code> runs an LLM agent by default.</strong> It is not a static
+list read, and it costs something each time.</li>
+
+<li><strong><code>bn cost</code>'s dollar figure is not a bill.</strong> Only AIC is metered;
+<code>$</code> is a public-list-price benchmark.</li>
+
+<li><strong>macOS never sees <code>OnCalendar</code>.</strong> It is translated at generation
+time, so a schedule expression that works on Linux may not survive translation.</li>
+
+<li><strong>Windows schedules one task, not many.</strong> If that keepalive is not running,
+nothing else runs either.</li>
+
+<li><strong><code>bn cron retire</code> exists for a reason.</strong> The watchdog reads health
+from the event log, so a renamed job's old failures otherwise read as an ongoing outage.
+<span class="src">cli/cron_cmd.rs:24-34</span></li>
+</ul>
+
+<h2>Not verified</h2>
+
+<ul>
+<li>No <code>bn</code> command was actually run. Every command name here is verified from clap
+declarations, not from live <code>--help</code>.</li>
+<li>The day-in-life block may need id-form correction: <code>bn dispatch</code> documents "a
+todo id (e.g. <code>t3</code>)" while <code>bn task</code> uses its own ids — <code>T14</code>
+versus <code>t14</code> was not confirmed at runtime.</li>
+<li>Claims about what each web screen <em>shows</em> come from <code>lib/nav.ts</code> blurbs
+and the route table. Only the first ~120 lines of <code>Today.tsx</code> were read;
+<code>Console</code>, <code>Queue</code>, <code>Attention</code>, <code>Insights</code> and
+<code>Settings</code> were not.</li>
+<li>Whether a write path exists elsewhere that registers Windows tasks from Rust.
+<code>winsched.rs</code> is clearly read-only, and <code>install.ps1</code> was the only
+registration found.</li>
+<li>Whether the <code>/mcp</code> HTTP endpoints are reachable by default or gated by config.</li>
+<li><code>config/crons.toml</code> is the shipped default for the <code>bn</code> repo.
+Per-repo and per-branch tiers exist (<code>crons.rs:118</code>) and would change what a given
+machine actually runs; they were not enumerated.</li>
+<li>The <code>--live</code> flag on <code>bn cost</code> is documented in its doc comment but
+its implementation was not read.</li>
+</ul>
+
+<div class="foot">
+  <a href="04-catalog.html">← The prompt catalog</a>
+  <a href="index.html">Back to overview</a>
+</div>
+
+</main>
+</div>

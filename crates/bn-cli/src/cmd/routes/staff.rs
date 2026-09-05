@@ -199,9 +199,18 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
             Some(RetroCmd::Tick) => std::process::exit(emit_retro_tick()),
             Some(RetroCmd::Show { week }) => emit_retro_show(cfg, week, json),
         },
-        CmdStaff::Skills { action } => {
+        CmdStaff::Skills { action, pick } => {
             let base = std::env::current_dir().unwrap_or_default();
             match action {
+                None if pick => {
+                    let ctx = resolver::resolve(cfg, &base).ok();
+                    crate::cmd::agent_run::emit_pick(
+                        cfg,
+                        ctx.as_ref(),
+                        bn_core::launchable::Source::Skill,
+                        json,
+                    )
+                }
                 None | Some(SkillsCmd::List) => emit_skills(cfg, &base, json),
                 Some(SkillsCmd::Find { query }) => {
                     emit_skills_find(cfg, &base, &query.join(" "), json)
@@ -221,9 +230,18 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
                 Some(SkillsCmd::Install) => emit_skill_install(cfg, json),
             }
         }
-        CmdStaff::Agents { action } => {
+        CmdStaff::Agents { action, pick } => {
             let base = std::env::current_dir().unwrap_or_default();
             match action {
+                None if pick => {
+                    let ctx = resolver::resolve(cfg, &base).ok();
+                    crate::cmd::agent_run::emit_pick(
+                        cfg,
+                        ctx.as_ref(),
+                        bn_core::launchable::Source::Agent,
+                        json,
+                    )
+                }
                 None | Some(AgentsCmd::List) => emit_agents(cfg, &base, json),
                 Some(AgentsCmd::Validate) => emit_agents_validate(cfg, &base, json),
                 Some(AgentsCmd::Render {

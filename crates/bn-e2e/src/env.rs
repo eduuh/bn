@@ -92,7 +92,6 @@ pub fn contract(root: &Path, port: u16, now: i64, today: &str) -> BTreeMap<Strin
     // derived as its sibling (Config::bare_dir). Set consistently, both resolve to the same pair.
     set("BN_WORKTREE_DIR", &root.join("projects/worktree"));
     set("WT_ROOT", &root.join("projects"));
-    set("WT_POOLS", &config.join("pools"));
 
     // git: a sandbox-owned global config, so commits work without the developer's identity and
     // nothing reads (or writes) their real ~/.gitconfig. Mirrors what ci.yml does per job.

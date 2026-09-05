@@ -23,6 +23,21 @@ Goal: {{goal}}
 Source: {{source}}
 --- END UNTRUSTED DISPATCH DATA ---
 
+BASE DISCIPLINE: start from current main, before you read code rather than after you have written
+some. This worktree was cut from main, but *when* is the question — a pool slot warmed earlier, a
+re-dispatched branch, or a branch someone left half-finished can all sit behind, and a stale base
+stays invisible until the PR comes up CONFLICTING or CI fails on a change that isn't yours.
+
+    git fetch origin
+    git log --oneline HEAD..origin/main    # substitute this repo's default branch
+
+Already level: carry on. Behind, with a clean tree: `git rebase origin/main`, then re-run the
+build/test gate — a rebase changes what you are building, so a green from before it means nothing.
+Behind with uncommitted work: commit it first (never `git stash`; see below). If the branch is
+already pushed, rebasing means `git push --force-with-lease` later — fine on your own open PR,
+never on anyone else's. If the rebase conflicts, do NOT improvise through it: `git rebase --abort`,
+record what conflicted with `bn_add blocker`, and say so in your report.
+
 {{bootstrap}}
 {{verification}}
 

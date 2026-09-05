@@ -244,9 +244,10 @@ pub enum WtCmd {
         #[arg(long)]
         pr: bool,
     },
-    /// Treehouse-style pool of warm, reusable worktrees for monorepos opted in via
-    /// `~/.config/wt/pools`. Slots live at `<root>/worktree/<repo>/_pool/<n>` and keep their
-    /// deps/build cache between uses, so an agent gets an isolated checkout without a cold build.
+    /// Treehouse-style pool of warm, reusable worktrees — every repo bn has a clone of, with no
+    /// registration and nothing to size. Slots live at `<root>/worktree/<repo>/_pool/<n>` and keep
+    /// their deps/build cache between uses, so an agent gets an isolated checkout without a cold
+    /// build.
     Pool {
         #[command(subcommand)]
         action: PoolCmd,
@@ -341,21 +342,6 @@ pub enum PoolCmd {
         /// Also print the in-size warm slots that are kept.
         #[arg(short = 'v', long)]
         verbose: bool,
-    },
-    /// Turn pooling on for a repo at `size` slots, or off with `--off`. Writes the repo's entry in
-    /// the pools config (`~/.config/wt/pools`) — the opt-in every other pool command reads. Slots
-    /// aren't built here: the idle `pool-warm` cron picks the repo up on its next pass, or run
-    /// `bn wt pool warm --repo <repo>` to build them now.
-    Set {
-        /// Slot count to pool at (1..=16).
-        size: Option<usize>,
-        /// Target repo (defaults to the current repo, else an fzf pick).
-        #[arg(long)]
-        repo: Option<String>,
-        /// Stop pooling this repo — remove its entry. Existing slots stay on disk; remove them with
-        /// `bn wt pool destroy --all`.
-        #[arg(long)]
-        off: bool,
     },
     /// Remove a specific slot or the whole pool. Dry-run by default; `--yes` executes. Leased,
     /// dirty, and in-use slots are skipped unless the matching `--include-*` flag opts in; a leased

@@ -222,17 +222,15 @@ pub fn repos_view(cfg: &Config) -> Value {
         .collect();
 
     // 5) Per-repo warm-pool state (#497): the live `bn wt pool` shape (size + warm/leased slots),
-    //    read in-process from the shared `bn_core::pool` status. Asked per **cloned** repo rather
-    //    than from the pools config: pooling is no longer opt-in, so a repo nobody wrote down still
-    //    has a pool, and reading the config would render it as "disabled" while `bn dispatch`
-    //    leased slots in it. `pool_status` returns `None` only for an explicit opt-out, which the
-    //    rollup then shows as disabled — which it genuinely is. Keyed lowercased to match the
-    //    rollup's note-canonical repo casing.
+    //    read in-process from the shared `bn_core::pool` status. Asked per **cloned** repo, which
+    //    is now the whole answer — pooling has no config and no opt-out, so every clone has a pool
+    //    and none of them can be "disabled". Keyed lowercased to match the rollup's note-canonical
+    //    repo casing.
     let pools: BTreeMap<String, Value> = cloned
         .iter()
-        .filter_map(|repo| {
-            let st = bn_core::pool::pool_status(cfg, repo)?;
-            Some((repo.to_ascii_lowercase(), pool_json(cfg, &st)))
+        .map(|repo| {
+            let st = bn_core::pool::pool_status(cfg, repo);
+            (repo.to_ascii_lowercase(), pool_json(cfg, &st))
         })
         .collect();
 

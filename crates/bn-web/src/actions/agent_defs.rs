@@ -218,9 +218,16 @@ pub async fn agent_def_create(
         } else {
             bn_core::agents::write::create_agent(&cfg, &scope, &name_call, &spec, overwrite)?
         };
-        // A new specialist has to reach the harnesses to exist as far as they are concerned; every
-        // other kind is dispatched by bn itself and needs no materialization.
-        let native = if spec.kind == AgentKind::Specialist {
+        // An agent that publishes natively has to reach the harnesses to exist as far as they
+        // are concerned; every other kind is dispatched by bn itself and needs no materialization.
+        // Asked of the *discovered* agent rather than the request, so a body carrying `worlds:`
+        // is honoured the same way an edit would honour it.
+        let publishes = spec.kind == AgentKind::Specialist
+            || bn_core::agents::discover(&cfg, None)
+                .ok()
+                .and_then(|c| c.find(&name_call).map(|a| a.publishes_natively()))
+                .unwrap_or(false);
+        let native = if publishes {
             sync_native_agents_summary(&cfg)
         } else {
             serde_json::Value::Null
@@ -307,17 +314,17 @@ pub async fn agent_def_write(
             let catalog = bn_core::agents::discover(&cfg, None).map_err(|e| Some(e.to_string()))?;
             let agent = catalog.find(&name_call).ok_or(None)?;
             let reference = agent_ref(agent);
-            let was_specialist = agent.is_specialist();
+            let was_published = agent.publishes_natively();
             bn_core::agents::write::save_agent(&agent.path, &name_call, agent.scope, &content)
                 .map_err(Some)?;
-            // Re-synced when the agent is a specialist either side of the edit: turning one *into*
-            // a specialist has to install it, and turning one *out of* specialist has to prune the
-            // native file that would otherwise keep answering for it.
-            let is_specialist = bn_core::agents::discover(&cfg, None)
+            // Re-synced when the agent publishes natively either side of the edit: adding
+            // `worlds:` (or a `repo:`) has to install it, and removing the last one has to prune
+            // the native file that would otherwise keep answering for it.
+            let is_published = bn_core::agents::discover(&cfg, None)
                 .ok()
-                .and_then(|c| c.find(&name_call).map(|a| a.is_specialist()))
-                .unwrap_or(was_specialist);
-            let native = if was_specialist || is_specialist {
+                .and_then(|c| c.find(&name_call).map(|a| a.publishes_natively()))
+                .unwrap_or(was_published);
+            let native = if was_published || is_published {
                 sync_native_agents_summary(&cfg)
             } else {
                 serde_json::Value::Null
@@ -388,13 +395,13 @@ pub async fn agent_def_delete(
             let catalog = bn_core::agents::discover(&cfg, None).map_err(|e| Some(e.to_string()))?;
             let agent = catalog.find(&name_call).ok_or(None)?;
             let reference = agent_ref(agent);
-            let was_specialist = agent.is_specialist();
+            let was_published = agent.publishes_natively();
             bn_core::agents::write::delete_agent(&agent.path).map_err(Some)?;
             // Re-discover: a lower tier may have been shadowed by the file just removed.
             let remaining = bn_core::agents::discover(&cfg, None)
                 .ok()
                 .and_then(|c| c.find(&name_call).map(|a| a.scope.label().to_string()));
-            let native = if was_specialist {
+            let native = if was_published {
                 sync_native_agents_summary(&cfg)
             } else {
                 serde_json::Value::Null

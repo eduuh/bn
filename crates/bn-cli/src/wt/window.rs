@@ -18,7 +18,6 @@ pub(crate) fn cmd_open(
         None => return false,
     };
     let name = repo_name(&bare);
-    let bare_s = bare.to_string_lossy().to_string();
 
     let branch = match branch {
         Some(b) => b,
@@ -42,23 +41,6 @@ pub(crate) fn cmd_open(
             crate::wt_pool::DirectLease::MissingRepo => {
                 eprintln!("{RED}No bare repo '{name}' under {}{NC}", bare_dir.display());
                 return false;
-            }
-            crate::wt_pool::DirectLease::Unpooled => {
-                let _ = std::fs::create_dir_all(worktree_dir.join(&name));
-                println!("{BLUE}Creating worktree: {}{NC}", conventional_path.display());
-                if !create_worktree(
-                    &bare_s,
-                    &branch,
-                    &conventional_path.to_string_lossy(),
-                    true,
-                ) {
-                    return false;
-                }
-                println!(
-                    "{GREEN}Created worktree: {}{NC}",
-                    conventional_path.display()
-                );
-                conventional_path
             }
         }
     };

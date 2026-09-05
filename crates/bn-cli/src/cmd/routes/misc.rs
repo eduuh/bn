@@ -215,18 +215,46 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
 ///
 /// `agency <claude|copilot>` is kept as the explicit form of the same thing. `command` (and the
 /// `execvp` the harness launcher uses) bypass shell functions, so neither wrapper recurses.
+///
+/// A **leading `@`** on the first argument names a bn agent or skill and routes to
+/// `bn agent run` instead: `claude @scout "check the tokio bump"`. The sigil is what makes that
+/// safe to add to a command people already type — every other argument shape is passed through
+/// untouched, so `claude --resume <id>` and `claude "just a prompt"` cannot change meaning, and a
+/// future catalog entry named like a real harness flag or a file cannot silently capture one.
+/// A bare `@` (no name) opens the picker.
 const SHELL_WRAPPERS: &str = r#"# bn shell wrappers (bn shell-init) — `claude` / `copilot` route through
 # `bn agent launch`, which requires a git worktree and enforces where an agent may run: the main
 # worktree hosts none (it asks what the work is and dispatches into a warm pool slot instead), and a
 # worktree that already has a live agent refuses a second one.
 # Escape hatch for within-repo placement rules: BN_AGENT_GUARD=0 claude …
 #
+# A leading @ names a bn agent or skill (`bn agent run`); a bare @ opens the picker. Everything
+# else is passed through untouched, so `claude --resume <id>` still means what it always did:
+#   claude @scout "check the tokio bump"    copilot @debug "panic in resolver"
+#
 # The marker below is how `bn doctor` can tell these wrappers are actually live in your shell: a
 # child process cannot see its parent's functions, only its environment.
 export BN_SHELL_WRAPPERS=1
 
+# True when the argument is an @-sigil selecting a bn agent or skill. A pure test, so the callers
+# below keep `bn agent run`'s own exit status instead of reporting whether routing happened.
+_bn_is_at() { case "${1-}" in @|@?*) return 0 ;; *) return 1 ;; esac; }
+
+# `<harness> @name [args...]` -> `bn agent run name --harness <harness> [args...]`.
+# A bare `@` drops the name and opens the picker.
+_bn_run_at() {
+  local _bn_h="$1"; shift
+  local _bn_a="${1#@}"; shift
+  if [ -n "$_bn_a" ]; then
+    bn agent run "$_bn_a" --harness "$_bn_h" "$@"
+  else
+    bn agent run --harness "$_bn_h" "$@"
+  fi
+}
+
 _bn_launch() {
   local _bn_h="$1"; shift
+  if _bn_is_at "${1-}"; then _bn_run_at "$_bn_h" "$@"; return $?; fi
   bn agent launch "$_bn_h" -- "$@"
 }
 
@@ -235,6 +263,7 @@ copilot() { _bn_launch copilot "$@"; }
 
 # The explicit form: `agency claude "investigate X"` runs a pooled, foreground scout in its own warm
 # slot — an interactive investigation that hands the slot back the moment it exits.
+# `agency claude @<name> "..."` launches that catalog agent or skill instead.
 agency() {
   if [ "$#" -eq 0 ]; then
     echo "usage: agency <claude|copilot> [args...]" >&2
@@ -245,6 +274,9 @@ agency() {
     claude|copilot) ;;
     *) echo "agency: unknown agent '$_bn_h' (use: claude | copilot)" >&2; return 2 ;;
   esac
+  # `agency claude @scout "..."` — same sigil as the bare wrappers, checked before the worktree
+  # gate because `bn agent run --list` and the picker are useful outside a repository.
+  if _bn_is_at "${1-}"; then _bn_run_at "$_bn_h" "$@"; return $?; fi
   if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "agency: sessions require a git worktree; enter or create a repository first" >&2
     return 1
