@@ -94,6 +94,57 @@ pub(crate) fn git_capture(args: &[&str], dir: Option<&Path>, trim: bool) -> Opti
     })
 }
 
+/// Run `git -C <dir> <args>` capturing stdout, giving up after `budget`. `None` when git fails,
+/// when it is still running at the deadline (the child is killed), or when the budget is already
+/// spent before the spawn.
+///
+/// For the read-only display surfaces that rerun on a keystroke — the `bn tat` sub-picker's side
+/// pane — where the repositories that make a call slow are exactly the ones where blocking is
+/// unacceptable: on a BigMono-sized monorepo a cold `ls-files --others` walk of the untracked tree
+/// takes over two minutes, and the pane fires one per cursor move. A panel that renders `…` for a
+/// count it could not afford is worth more than one that stalls the picker to be exact.
+///
+/// Deliberately outside the [`bn_core::runner`] seam, which captures synchronously and so has
+/// nowhere to put a deadline; this is the "bespoke configuration" case [`git_command`] exists for.
+/// Callers that must have the answer should use [`git_capture`].
+pub(crate) fn git_capture_deadline(
+    dir: &Path,
+    args: &[&str],
+    budget: std::time::Duration,
+) -> Option<String> {
+    if budget.is_zero() {
+        return None;
+    }
+    let mut full: Vec<&str> = vec!["-C"];
+    let dir_cow = dir.to_string_lossy();
+    full.push(dir_cow.as_ref());
+    full.extend_from_slice(args);
+    let mut child = git_command(&full)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    // stdout is drained on a thread rather than after the wait, so a command that outruns the pipe
+    // buffer cannot deadlock against the deadline it is being held to.
+    let stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = String::new();
+        let _ = std::io::BufReader::new(stdout).read_to_string(&mut buf);
+        let _ = tx.send(buf);
+    });
+    // The send lands when git closes stdout, which is either its exit or the kill below — so this
+    // recv is the deadline for the whole call, not merely for the first byte.
+    let Ok(text) = rx.recv_timeout(budget) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    let ok = child.wait().map(|s| s.success()).unwrap_or(false);
+    ok.then(|| text.trim().to_string())
+}
+
 /// Run `git <args>` (optionally in `dir` via `-C <dir>`), returning `(success, stdout, stderr)`,
 /// both streams trimmed.
 ///

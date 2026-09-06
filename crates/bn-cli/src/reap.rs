@@ -263,7 +263,7 @@ fn read_panes() -> Vec<Pane> {
 
 /// The last non-empty lines of a window's active pane — the live "is it mid-turn?" glance.
 fn capture_tail(target: &str, n: usize) -> Vec<String> {
-    let t = format!("={target}");
+    let t = crate::proc::exact_target(target);
     let Some(out) = tmux_raw(&["capture-pane", "-p", "-t", &t]) else {
         return Vec::new();
     };
@@ -536,40 +536,6 @@ fn discover(worktree_dir: &Path) -> Vec<Candidate> {
     out.sort_by(|a, b| a.root_pid.cmp(&b.root_pid).then(a.target.cmp(&b.target)));
     out.dedup_by(|a, b| a.root_pid == b.root_pid);
     out
-}
-
-/// The managed `repo:sanitized-branch` targets that still have a live agent harness process.
-/// Orchestrator recovery uses this beside tmux visibility so a transiently missing window never
-/// causes a duplicate fresh launch while the original agent process is still running.
-pub(crate) fn live_agent_targets(worktree_dir: &Path) -> BTreeSet<String> {
-    discover(worktree_dir)
-        .into_iter()
-        .map(|candidate| candidate.target)
-        .collect()
-}
-
-/// Terminate the live agent process tree and tmux window for one managed lane. This is the
-/// stop-after-ship primitive: the caller has already confirmed the branch's PR merged, so unlike
-/// the general fleet GC it does not apply working/WIP/idle guards to a lane whose work is shipped.
-pub(crate) fn terminate_lane(worktree_dir: &Path, repo: &str, branch: &str) -> usize {
-    let target = target_key(repo, &crate::wt::sanitize_branch(branch));
-    let candidates: Vec<Candidate> = discover(worktree_dir)
-        .into_iter()
-        .filter(|candidate| candidate.target == target && !candidate.is_orchestrator)
-        .collect();
-    if candidates.is_empty() {
-        return 0;
-    }
-
-    let edges = ps_edges();
-    let mut killed = 0;
-    for candidate in candidates {
-        killed += kill_tree(&descendants(&edges, candidate.root_pid));
-        if let Some(window_id) = candidate.window_id {
-            let _ = tmux_run(&["kill-window", "-t", &window_id]);
-        }
-    }
-    killed
 }
 
 /// Resolve the tree root to reap for a harness process. Walk up the ppid chain: the first **live

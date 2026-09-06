@@ -401,14 +401,6 @@ The weekly **shipped** `weekly-insights` job renders `bn insights` (the auto-ret
 
 ### Learning-dojo card mining (`dojo-cards`)
 
-The nightly **opt-in** `dojo-cards` job (`[dojo].enabled`) mines new `bn dojo` learning cards for
-the current repo so a session starts instantly from prepared material: bug mysteries from recent
-`fix:` commits (symptom + pre-fix code shown, the fix hidden), walkthroughs from `feat:` commits,
-and architecture tours from the module tree. It appends only cards with a new id (idempotent
-re-mining) to the append-only store under `<notes>/<machine>/dojo/`, and honors the `[dojo] repos`
-rotation allowlist. A completed `bn dojo` session emits a `dojo_session` metric event so streak +
-habit drift can surface in `bn insights`.
-
 | Event | Fields | Powers |
 |-------|--------|--------|
 | `dojo_session` | `cards`, `xp`, `streak` | dojo habit streak + learning-drift signal |

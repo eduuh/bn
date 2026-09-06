@@ -1164,11 +1164,6 @@ pub(crate) fn run_native_job(
 /// into monthly aggregates. Idempotent, so a weekly (or caught-up-after-a-miss) run is always safe;
 /// chronicles and retro transcripts are exempt. Always exits 0 — retention is best-effort
 /// housekeeping, never a page.
-pub(crate) fn job_staff_archive(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
-    emit_staff_archive(cfg, false, false);
-    0
-}
-
 /// `jobs/wt-cleanup.sh` — reclaim finished worktrees: merged-PR ships (cleanup), then done+clean
 /// scouts (reap). Both sweep all repos; the reap keeps the note (findings) while removing the
 /// disposable scout worktree, so investigation worktrees don't pile up.
@@ -1296,69 +1291,6 @@ pub(crate) fn job_gather_findings(cfg: &Config, _ctx: Option<&Resolved>) -> i32 
         }
     }
 }
-
-/// The `dojo-cards` cron (#253) — mine new learning cards for the current repo from its recent
-/// history and structure, so `bn dojo` always has fresh, pre-prepared material. Opt-in via
-/// `[dojo].enabled`; honors the `[dojo] repos` rotation allowlist (empty = mine wherever it runs).
-/// Reads `git log` for recent `fix:`/`feat:` commits (bug mysteries + walkthroughs) and the
-/// module tree (architecture tours), appending only cards whose id is new. Read-only over the
-/// repo; a git failure yields zero cards rather than an error.
-pub(crate) fn job_dojo_cards(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
-    use bn_core::runner::RealRunner;
-    let jc = resolver::JobConfig::load();
-    if !jc.dojo_enabled {
-        println!("dojo-cards: mining disabled — set [dojo] enabled = true (or $BN_DOJO_ENABLED=1)");
-        return 0;
-    }
-    let Some(repo) = dojo_current_repo(cfg) else {
-        println!("dojo-cards: not inside a resolvable repo — nothing to mine");
-        return 0;
-    };
-    if !jc.dojo_repos.is_empty() && !jc.dojo_repos.iter().any(|r| r == &repo) {
-        println!("dojo-cards: '{repo}' not in [dojo] repos — skipping");
-        return 0;
-    }
-
-    let now = bn_core::util::now_epoch_secs();
-    let since = bn_core::util::local_date_of(now - DOJO_MINE_WINDOW_DAYS * 86_400);
-    let commits = bn_core::dojo::gather_commits(&RealRunner, &since, DOJO_MINE_MAX_COMMITS);
-    let mut cards = bn_core::dojo::mine_from_commits(&repo, &commits, now);
-
-    // Architecture tours from the module tree. Stamped one second later than the commit-derived
-    // drills so a brand-new deck leads with the meatier bug/feature cards, not the tours.
-    let files: Vec<String> = {
-        use bn_core::runner::CommandRunner;
-        RealRunner
-            .git(&["ls-files", "*.rs"])
-            .ok_stdout()
-            .map(|s| s.lines().map(str::to_string).collect())
-            .unwrap_or_default()
-    };
-    cards.extend(bn_core::dojo::mine_architecture_from_paths(
-        &repo, &files, now,
-    ));
-
-    let store = bn_core::dojo::DojoStore::from_config(cfg);
-    match store.append_cards(&cards) {
-        Ok(added) => {
-            println!(
-                "dojo-cards: mined {repo} — {added} new card(s) from {} candidate(s)",
-                cards.len()
-            );
-            0
-        }
-        Err(e) => {
-            eprintln!("dojo-cards: {e}");
-            1
-        }
-    }
-}
-
-/// How far back the `dojo-cards` miner reads commit history, in days.
-pub(crate) const DOJO_MINE_WINDOW_DAYS: i64 = 45;
-
-/// Cap on `fix:`/`feat:` commits turned into cards per mining run, newest first.
-pub(crate) const DOJO_MINE_MAX_COMMITS: usize = 40;
 
 /// The `weekly-insights` cron — snapshot the current anchored week's `bn insights` retro into
 /// `<notes>/<machine>/insights/<YYYY-Www>.md` so history accumulates and syncs. Sibling of
@@ -1580,7 +1512,7 @@ pub(crate) fn pane_tail_for(repo: &str, branch: &str, lines: usize) -> Option<St
             .then(|| c.first().map(|s| s.to_string()))?
     })?;
     // `-t <window_id>` captures the window's active pane.
-    let text = crate::proc::tmux_raw(&["capture-pane", "-p", "-t", &wid])?;
+    let text = crate::proc::tmux_raw(&["capture-pane", "-p", "-J", "-t", &wid])?;
     let all: Vec<&str> = text.lines().collect();
     let trimmed_len = all
         .iter()
@@ -1595,11 +1527,6 @@ pub(crate) fn pane_tail_for(repo: &str, branch: &str, lines: usize) -> Option<St
 /// window). Delegates to [`emit_night_run`], which gates on the kill switch, `[night] enabled`, and
 /// the window; its text output is captured in the run's event tail. Always exits 0 — a gate that
 /// declines (kill switch, disabled, off-window) is a clean no-op, not a failure.
-pub(crate) fn job_night_shift(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
-    emit_night_run(cfg, None, false, false);
-    0
-}
-
 /// Fold each *stuck* in-flight item's pane tail into its `detail` — a wedged run explains itself
 /// on the board instead of silently sitting there. Overwrites on each sweep (latest state wins);
 /// best-effort throughout.

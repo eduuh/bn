@@ -78,7 +78,7 @@ pub struct TmuxTransport {
 impl TmuxTransport {
     pub fn new(target: &str) -> TmuxTransport {
         TmuxTransport {
-            target: exact(target),
+            target: crate::tmux::exact_target(target),
         }
     }
 
@@ -89,18 +89,8 @@ impl TmuxTransport {
             "bn-{}",
             self.target
                 .trim_start_matches('=')
-                .replace([':', '/', '.'], "-")
+                .replace(['=', ':', '/', '.'], "-")
         )
-    }
-}
-
-/// Normalize a target to tmux's exact-match form. Without the `=`, tmux resolves the name as an
-/// fnmatch pattern and a write can land in a neighbouring window.
-pub fn exact(target: &str) -> String {
-    if target.starts_with('=') {
-        target.to_string()
-    } else {
-        format!("={target}")
     }
 }
 
@@ -190,15 +180,31 @@ mod target_tests {
     use super::*;
 
     #[test]
-    fn a_bare_name_is_anchored_for_exact_match() {
-        // Without the `=`, tmux treats the name as an fnmatch pattern and a write can land in a
-        // neighbouring window — the failure `tmux_exact_target` exists to prevent.
-        assert_eq!(exact("bn:feat"), "=bn:feat");
+    fn both_halves_of_the_target_are_anchored() {
+        // This used to assert `=bn:feat` — which anchors only the SESSION. tmux still resolves the
+        // window half as an fnmatch pattern, so with windows `feat` and `feat-two` open, every
+        // write this transport makes (paste-buffer, send-keys, Escape, a menu digit) could land in
+        // `feat-two`. Verified against tmux 3.6: `set-window-option -t '=s:feat'` wrote onto
+        // `feat-two`. `exact_target` anchors both halves, which is the whole point of it.
+        assert_eq!(TmuxTransport::new("bn:feat").target, "=bn:=feat");
+    }
+
+    #[test]
+    fn a_prefix_of_another_window_name_cannot_match_it() {
+        assert_ne!(
+            TmuxTransport::new("bn:feat").target,
+            TmuxTransport::new("bn:feat-two").target
+        );
     }
 
     #[test]
     fn an_already_anchored_target_is_left_alone() {
-        assert_eq!(exact("=bn:feat"), "=bn:feat");
+        assert_eq!(TmuxTransport::new("=bn:=feat").target, "=bn:=feat");
+    }
+
+    #[test]
+    fn a_pane_id_passes_through_untouched() {
+        assert_eq!(TmuxTransport::new("%12").target, "%12");
     }
 
     #[test]
@@ -208,5 +214,7 @@ mod target_tests {
         let b = TmuxTransport::new("bn:other").buffer_name();
         assert_ne!(a, b);
         assert!(!a.contains(':'), "buffer names must not carry tmux syntax");
+        // The anchoring `=` is tmux syntax too, and it is now INSIDE the target, not just leading.
+        assert!(!a.contains('='), "buffer names must not carry tmux syntax");
     }
 }

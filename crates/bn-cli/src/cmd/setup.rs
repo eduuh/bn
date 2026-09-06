@@ -182,7 +182,9 @@ pub(crate) fn emit_glyphs() {
         g::BELL,
         g::CHECK,
     );
-    println!("\n  \u{1f4ee}N (row 0, far left) = unread staff briefing cards — prefix-B opens them; hidden during focus.");
+    println!(
+        "\n  \u{1f4ee}N (row 0, far left) = unread staff briefing cards; hidden during focus."
+    );
     println!(
         "\ntofu above? your terminal font isn't a Nerd Font — mirrors: see bn-core/src/glyph.rs"
     );

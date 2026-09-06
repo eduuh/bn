@@ -8,7 +8,7 @@
 //! schedule + description, never a reimplementation of the existing native/staff/script job.
 //!
 //! Parsing routes through [`crate::store::split_frontmatter`] (the crate's single frontmatter
-//! parser) and the "due" check composes [`crate::staff_schedule::previous_occurrence`] over the
+//! parser) and the "due" check composes [`crate::schedule::previous_occurrence`] over the
 //! same `OnCalendar` subset the cron generator understands — no second schedule parser. Discovery
 //! mirrors [`crate::skills::discover`] / [`crate::resolver::agent_dirs`]: branch → repo → global,
 //! first tier wins by name.
@@ -403,7 +403,7 @@ pub fn due(
     now: i64,
     retry_after_secs: i64,
 ) -> bool {
-    let Some(slot) = crate::staff_schedule::previous_occurrence(on_calendar, now) else {
+    let Some(slot) = crate::schedule::previous_occurrence(on_calendar, now) else {
         return false;
     };
     match last_run {
@@ -550,7 +550,7 @@ pub fn set_schedule(
     on_calendar: Option<&str>,
 ) -> Result<PathBuf, String> {
     if let Some(expr) = on_calendar {
-        if crate::staff_schedule::Schedule::parse(expr).is_none() {
+        if crate::schedule::Schedule::parse(expr).is_none() {
             return Err(format!(
                 "'{expr}' is not a recognized OnCalendar spec (e.g. \"Mon..Fri *-*-* 14:50:00\")"
             ));

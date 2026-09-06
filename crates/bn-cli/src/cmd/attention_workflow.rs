@@ -306,6 +306,52 @@ pub(crate) fn job_cron_health(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
 
 /// Whether the findings packet has no sources (nothing gathered) — the guardrail behind the
 /// gather's decline, so no model is ever paid to look at an empty day.
+/// How far back the attention gather reads the findings store.
+const FINDINGS_LOOKBACK_DAYS: i64 = 7;
+
+/// The findings packet the attention agent ranks: the latest run per source within the lookback,
+/// newest first.
+///
+/// This was `bn_core::today::gather_packet_json` until the Today agent was retired. The packet
+/// shape is unchanged — the agent prompt and `findings_packet_empty` both key off `sources` — and
+/// it still reads the same [`bn_core::findings`] store the `gather-findings` cron writes.
+fn findings_packet_json(today: &str, lookback_days: i64) -> String {
+    let since = match bn_core::util::epoch_day(today) {
+        Some(d) => bn_core::util::date_of((d - lookback_days.max(0)).max(0) * 86_400),
+        None => today.to_string(),
+    };
+    // One run per source: a source that gathered twice today is described by its newest run.
+    let mut latest: std::collections::HashMap<String, bn_core::findings::FindingsRun> =
+        std::collections::HashMap::new();
+    for run in bn_core::findings::query(None, Some(&since), 0) {
+        latest
+            .entry(run.source.clone())
+            .and_modify(|cur| {
+                if run.gathered_at > cur.gathered_at {
+                    *cur = run.clone();
+                }
+            })
+            .or_insert(run);
+    }
+    let mut runs: Vec<bn_core::findings::FindingsRun> = latest.into_values().collect();
+    runs.sort_by(|a, b| {
+        b.gathered_at
+            .cmp(&a.gathered_at)
+            .then(a.source.cmp(&b.source))
+    });
+    let packet = serde_json::json!({
+        "generated_at": bn_core::util::now_epoch_secs(),
+        "date": today,
+        "sources": runs.iter().map(|r| serde_json::json!({
+            "source": r.source,
+            "run_id": r.run_id,
+            "gathered_at": r.gathered_at,
+            "items": r.items,
+        })).collect::<Vec<_>>(),
+    });
+    serde_json::to_string(&packet).unwrap_or_else(|_| "{}".to_string())
+}
+
 fn findings_packet_empty(packet: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(packet)
         .ok()
@@ -337,7 +383,7 @@ fn findings_packet_empty(packet: &str) -> bool {
 pub(crate) fn emit_attention_gather(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
     use bn_core::clock::Clock;
     let today = bn_core::clock::RealClock.today();
-    let findings = bn_core::today::gather_packet_json(&today, bn_core::today::DEFAULT_LOOKBACK_DAYS);
+    let findings = findings_packet_json(&today, FINDINGS_LOOKBACK_DAYS);
     let health = failing_cron_lines(cfg, ctx);
     if findings_packet_empty(&findings) && health.is_empty() {
         println!(

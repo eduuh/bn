@@ -596,24 +596,12 @@ pub fn dedup_key_for(link: &str, title: &str) -> String {
 /// The dedup keys of every item on a Scout card filed within the last `weeks` weeks of `today`.
 /// A candidate whose [`dedup_key_for`] is in this set has already been surfaced and must be
 /// dropped — the "no re-surfacing the same release" guarantee.
-pub fn recent_scout_keys(cfg: &Config, today: &str, weeks: i64) -> BTreeSet<String> {
-    let horizon = weeks * 7;
-    let mut keys = BTreeSet::new();
-    for card in crate::staff::list_cards(cfg) {
-        if card.agent != "scout" {
-            continue;
-        }
-        match crate::util::days_since(&card.date, today) {
-            Some(d) if (0..=horizon).contains(&d) => {}
-            _ => continue,
-        }
-        if let Some(full) = crate::staff::read_card(&card.path) {
-            for item in &full.items {
-                keys.insert(dedup_key_for(&item.link, &item.title));
-            }
-        }
-    }
-    keys
+pub fn recent_scout_keys(_cfg: &Config, _today: &str, _weeks: i64) -> BTreeSet<String> {
+    // The staff card store was scout's only record of what it had already surfaced, and that store
+    // is gone. Returning an empty set means the dedup no longer suppresses anything — scout may
+    // re-surface a release it already reported. Restoring it needs a record of past scout output
+    // that outlives the retired roster.
+    BTreeSet::new()
 }
 
 // --- caching ------------------------------------------------------------------------------------

@@ -56,7 +56,20 @@ pub const RECOVERY_JOBS: &[&str] = &[
 /// Marked heavy, so they are admitted like an agent and spawned like one rather than running inline
 /// in the tick — where minutes of build would hold the dispatcher and make every pass behind it
 /// skip on the lock.
-pub const HEAVY_JOBS: &[&str] = &["pool-warm", "keep-warm", "nightly-release"];
+///
+/// `build`, `build-main`, `pool-grow` and `verify` are the picker's verbs ([`crate::wt_actions`]) that run a
+/// repo's `build.sh`, which is the same minutes-long cost `pool-warm` pays per slot — the reason
+/// heaviness is a property of the work and not of the door it came through. They are pointedly
+/// **not** in [`WARMING_JOBS`]: someone asked for these from a picker and is watching the row.
+pub const HEAVY_JOBS: &[&str] = &[
+    "pool-warm",
+    "keep-warm",
+    "nightly-release",
+    "build",
+    "build-main",
+    "pool-grow",
+    "verify",
+];
 
 /// The jobs that *are* pool warming — the work [`crate::queue::classify`] holds to idle and away
 /// windows.

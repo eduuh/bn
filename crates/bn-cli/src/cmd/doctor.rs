@@ -180,19 +180,6 @@ pub(crate) fn emit_doctor(cfg: &Config, stale_days: i64, brief: bool, as_json: b
                 let detail = format!("{} · {} failure(s) on record", loc, c.failures);
                 println!("  {}", style::meta(&detail));
             }
-            Finding::Staff(s) => {
-                let overdue_h = s.overdue_secs / 3600;
-                println!("staff {}  {}", s.agent, style::warn("[missed]"));
-                let detail = if s.last_run == 0 {
-                    format!("{} · scheduled run missed (never run)", s.on_calendar)
-                } else {
-                    format!(
-                        "{} · scheduled run missed ~{overdue_h}h ago (silence ≠ death — no card, no run)",
-                        s.on_calendar
-                    )
-                };
-                println!("  {}", style::meta(&detail));
-            }
             Finding::Attn(a) => {
                 let loc = match (&a.repo, &a.branch) {
                     (Some(r), Some(b)) => format!(" {r}/{b}"),
@@ -261,19 +248,6 @@ pub(crate) fn emit_doctor(cfg: &Config, stale_days: i64, brief: bool, as_json: b
                     style::meta(&format!("({})", m.config))
                 );
                 println!("  {}", style::meta(&format!("fix: {}", m.fix)));
-            }
-            Finding::StaleStaff(s) => {
-                println!(
-                    "staff  {} no briefing card since {}",
-                    style::warn(&format!("[stale:{}d]", s.idle_days)),
-                    s.last_card
-                );
-                println!(
-                    "  {}",
-                    style::meta(
-                        "the staff home machine may be down — re-home `[staff].home` onto a live box"
-                    )
-                );
             }
             Finding::Backlog(b) => {
                 println!(
@@ -413,11 +387,6 @@ pub(crate) fn emit_next(
         (actions, Vec::new(), 0)
     };
 
-    // Routine snapshot (#801): folded into both the JSON envelope and, when it's suppressing
-    // non-urgent guidance, a transparent one-line explanation in the human view — the filtering
-    // itself already happened inside `next_actions`.
-    let routine_snap = bn_core::routine::current_snapshot(cfg, now);
-
     if as_json {
         let mut data = payload::next_data(&actions);
         if let Some(obj) = data.as_object_mut() {
@@ -425,12 +394,6 @@ pub(crate) fn emit_next(
                 obj.insert(
                     "gap".into(),
                     serde_json::to_value(g).unwrap_or(serde_json::Value::Null),
-                );
-            }
-            if let Some(snap) = &routine_snap {
-                obj.insert(
-                    "routine".into(),
-                    serde_json::to_value(snap).unwrap_or(serde_json::Value::Null),
                 );
             }
             if fit {
@@ -468,11 +431,6 @@ pub(crate) fn emit_next(
                 bn_core::meetings::render_gap(Some(g))
             );
         }
-    }
-    // Routine explanation (#801): only when it's actually suppressing something, so an
-    // unprotected work/learning block (or routine disabled) stays silent.
-    if let Some(reason) = routine_snap.as_ref().and_then(|s| s.explanation()) {
-        println!("{reason}\n");
     }
     // Notification gate: same discipline as the routine line above — say it once when toasts were
     // actually withheld, stay silent otherwise. The withheld items are already in the list below,
@@ -623,85 +581,6 @@ pub(crate) fn gap_ingest(date: Option<String>, as_json: bool) {
                 eprintln!("bn gap ingest: {e}");
             }
             std::process::exit(1);
-        }
-    }
-}
-
-/// `bn wrap` (#98) — the end-of-day digest. Resolves the current note (best-effort, for the
-/// "un-noted commits" marker), reads git/gh through the real runner, then prints the digest.
-/// Silent, zero-exit when the day is clean — the property the deleted poller lacked; the folded-in
-/// PM shutdown wrap (#274) and `bn run wrap-digest` both rely on this no-output-on-clean behaviour.
-pub(crate) fn emit_wrap(cfg: &Config, as_json: bool) {
-    use bn_core::runner::RealRunner;
-    let today = today();
-
-    // A resolved note dates "un-noted commits"; with no note (cron in an arbitrary cwd) we pass
-    // `today` so that section stays empty rather than flagging every commit.
-    let note_since = target_ctx(cfg, None, None)
-        .and_then(|ctx| bn_core::store::read(&cfg.note_file(&ctx)).ok())
-        .map(|note| bn_core::reports::note_last_activity(&note))
-        .unwrap_or_else(|| today.clone());
-
-    let w = bn_core::reports::wrap(cfg, &today, &note_since, &RealRunner);
-
-    if as_json {
-        println!(
-            "{}",
-            Envelope::success("wrap", payload::wrap_data(&w)).to_json()
-        );
-        return;
-    }
-    if w.is_empty() {
-        return; // clean day — silent, clean exit
-    }
-    print!("{}", bn_core::reports::render_wrap(&w));
-}
-
-/// `bn rate` (#110) — record today's DXI self-rating beside the daily files. Only acts when DXI
-/// is opted in via config; otherwise it's a no-op nudge (the prompt is never forced).
-pub(crate) fn emit_rate(cfg: &Config, focus: u8, friction: u8, mood: Option<&str>, as_json: bool) {
-    if !resolver::JobConfig::load().dxi_enabled {
-        if as_json {
-            println!(
-                "{}",
-                Envelope::failure(
-                    "rate",
-                    "dxi_disabled",
-                    "DXI is disabled — enable [dxi] in config"
-                )
-                .to_json()
-            );
-        } else {
-            eprintln!("bn rate: DXI is disabled — set [dxi].enabled in config.toml to opt in");
-        }
-        return;
-    }
-    match bn_core::daily::rate(cfg, &today(), focus, friction, mood) {
-        Ok(r) => {
-            if as_json {
-                let v = serde_json::to_value(&r).unwrap_or_default();
-                println!("{}", Envelope::success("rate", v).to_json());
-            } else {
-                let mood = r
-                    .mood
-                    .as_deref()
-                    .map(|m| format!(" · {m}"))
-                    .unwrap_or_default();
-                println!(
-                    "Rated {} — focus {}/5 · friction {}/5{mood}",
-                    r.date, r.focus, r.friction
-                );
-            }
-        }
-        Err(e) => {
-            if as_json {
-                println!(
-                    "{}",
-                    Envelope::failure("rate", "store_error", e.to_string()).to_json()
-                );
-            } else {
-                fail(&format!("bn rate: {e}"));
-            }
         }
     }
 }

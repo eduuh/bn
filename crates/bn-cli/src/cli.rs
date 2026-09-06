@@ -17,8 +17,6 @@ mod task;
 pub(crate) use task::TaskCmd;
 mod pipeline_cmd;
 pub(crate) use pipeline_cmd::{PipelineCmd, PipelineInvestigateCmd};
-mod today;
-pub(crate) use today::{TodayAgentCmd, TodayCmd};
 mod ref_cmd;
 pub(crate) use ref_cmd::{RefCmd, RefScopeArg};
 mod skills_cmd;
@@ -300,56 +298,6 @@ pub(crate) enum CmdIntake {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum CmdReview {
-    /// Native, event-driven fleet orchestration (#338/#340): declare a queue of issues and bn drives
-    /// each one dispatch → self-gate → merge-queue → next until the queue drains — recovering wedged
-    /// agents (api-error / dns-outage / idle-with-WIP / dead) with exponential backoff, no
-    /// scheduled-prompt polling. Bare `bn orchestrate` shows the run; `--queue <items…>` starts one
-    /// (daemonized via launchd so it survives the launching session going away); `run` is the daemon
-    /// loop; `stop` ends it. The supervision state machine is codified + unit-tested in bn-core.
-    #[command(args_conflicts_with_subcommands = true)]
-    Orchestrate {
-        #[command(subcommand)]
-        action: Option<OrchestrateCmd>,
-        /// Declare the wave: each issue number (`338`), issue/PR URL, or free-text item is
-        /// dispatched, gated, merged, and the next pulled until the queue drains. Prefix an item
-        /// with `repo:` (e.g. `wira360:456`) to route it to another repo — one `--queue` can then
-        /// seed several repos at once (#343). Unprefixed items go to `--repo`/the current repo.
-        #[arg(long, num_args = 1.., value_name = "ITEM")]
-        queue: Vec<String>,
-        /// Default repo for unprefixed queue items (default: the current repo). Per-item
-        /// `repo:item` prefixes override this, so a single wave can span multiple repos.
-        #[arg(long)]
-        repo: Option<String>,
-        /// Max agents dispatched at once (default 2). `--solo` overrides this to 1. Also the
-        /// coding-lane cap unless `--coding` is given; a bare `--concurrency N` (no typed flags) is
-        /// the single pool every lane shares — the pre-#385 behavior.
-        #[arg(long, default_value_t = 2)]
-        concurrency: usize,
-        /// Typed concurrency lane (#385): the max **coding** (ship) agents in flight at once.
-        /// Overrides `--concurrency` for the coding lane. Pair with `--research` for `5 coding + 2
-        /// research`-style independent budgets; the daemon caps each lane separately.
-        #[arg(long)]
-        coding: Option<usize>,
-        /// Typed concurrency lane (#385): the max **research** (scout) agents in flight at once,
-        /// scaling independently of the coding lane. Omit for the single shared pool.
-        #[arg(long)]
-        research: Option<usize>,
-        /// Refactor mode — one agent at a time (e.g. a main.rs-touching change like #333), no overlap.
-        #[arg(long)]
-        solo: bool,
-        /// The harness the daemon dispatches every agent under: `claude` | `copilot` (aliases
-        /// `claudecode` / `cc` / `gh`). Omit to use `[orchestrate].agent` (`$BN_ORCHESTRATE_AGENT`),
-        /// else `copilot`. The #382 bias: on a usage-limit stall the daemon auto-switches that lane
-        /// to the *other* harness in place (`bn switch --in-place`) so the work continues.
-        #[arg(long)]
-        agent: Option<String>,
-        /// Run the loop in the foreground (blocking) instead of daemonizing via launchd.
-        #[arg(long)]
-        foreground: bool,
-    },
-    /// Idle-triggered auto-review of queued PRs: create the worktree in the PR's own repo,
-    /// favourite the branch (best-effort), review, and surface an Approve/Reject recommendation.
-    #[command(name = "review-pr")]
     ReviewPr {
         #[command(subcommand)]
         action: review_pr::ReviewPrCmd,
@@ -488,32 +436,6 @@ pub(crate) enum CmdPlanning {
         #[arg(value_name = "DATE")]
         date: Option<String>,
     },
-    /// Quarter goals + a recurring impact agent (#252) — the layer above daily/weekly. Bare
-    /// `bn quarter` prints the current quarter (goals + status + elapsed/progress header,
-    /// auto-creating on first use); `bn quarter <YYYY-Qn>` reads a past quarter; add/done/edit
-    /// manage goals; `bn quarter review` runs the impact agent (what the weekly cron calls);
-    /// `bn quarter advise` ranks the backlog into a goal-aligned shortlist for task selection.
-    Quarter {
-        #[command(subcommand)]
-        action: Option<QuarterCmd>,
-        /// Read a specific quarter (YYYY-Qn, e.g. 2026-Q2) instead of the current one. Bare view only.
-        #[arg(value_name = "QUARTER")]
-        quarter: Option<String>,
-    },
-    /// Standup view: yesterday's done/carried goals, today's plan, blockers, upcoming follow-ups.
-    Standup {
-        /// Print only the copy-paste-ready one-liner (the standup-autopilot push uses this).
-        #[arg(long)]
-        copy: bool,
-        /// Cron gate: exit silently (0) unless standup autopilot is enabled in config. The
-        /// `standup-push` job passes this; an interactive `bn standup` always renders.
-        #[arg(long, hide = true)]
-        cron: bool,
-        /// Print the agent packet as JSON instead of the rendered view — what the `standup` agent
-        /// reads.
-        #[arg(long)]
-        gather: bool,
-    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -541,29 +463,6 @@ pub(crate) enum PlanCmd {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum CmdTracking {
-    /// What got done: completed goals + logged achievements across yesterday and today.
-    Stand,
-    /// End-of-day wrap digest (#98): branches touched, un-noted commits, PRs merged today,
-    /// still-open todos, and tomorrow's carry-forward. Silent when the day is clean.
-    Wrap {
-        /// Cron gate: exit silently (0) unless the wrap digest is enabled in config. The
-        /// `wrap-digest` job passes this; an interactive `bn wrap` always runs on demand.
-        #[arg(long, hide = true)]
-        cron: bool,
-    },
-    /// Personal DXI micro-prompt (#110): record today's <10s self-rating (focus 1-5, CI/tooling
-    /// friction 1-5, one-word mood) beside the daily files. `bn weekly` plots the trend.
-    Rate {
-        /// Focus / flow-time score, 1 (fragmented) .. 5 (deep focus).
-        #[arg(long)]
-        focus: u8,
-        /// CI / tooling friction, 1 (smooth) .. 5 (fought it all day).
-        #[arg(long)]
-        friction: u8,
-        /// Optional one-word mood tag.
-        #[arg(long)]
-        mood: Option<String>,
-    },
     /// Start (or switch to) the activity you're working on now — a time-tracking punch. The
     /// previously-running activity ends the instant this lands: bn in <activity...>
     /// [--task <id>] [--link <url>] [--tag <tag>] [--at <HH:MM> | --ago <dur>]. Auto-stamps the
@@ -600,17 +499,6 @@ pub(crate) enum CmdTracking {
         #[arg(long)]
         day: Option<String>,
     },
-    /// Estimation calibration: your personal median actual÷est multiplier per tag/repo, joined
-    /// from estimated todos/goals (`--est`) and the punch log. Reads every closed item carrying
-    /// both stamps across branches + daily history. `--json` for the envelope.
-    Calib,
-    /// Weekly 1-1 review: goals completed since the anchor weekday (or `--since N` days),
-    /// PRs merged, still-open goals, and blockers.
-    Weekly {
-        /// Rolling window of N days instead of the configured weekly anchor.
-        #[arg(long)]
-        since: Option<i64>,
-    },
     /// Weekly auto-retro: mine the telemetry bn already collects (punch log, focus blocks, PR
     /// metrics, todo ages, daily goals) into a metric table + one heuristic suggestion. Anchored
     /// to the weekly window like `bn weekly`; read-only and network-free. This is the *objective*
@@ -628,15 +516,6 @@ pub(crate) enum CmdTracking {
         /// anchor and reports where it landed.
         #[arg(long)]
         set_baseline: bool,
-    },
-    /// Long-horizon impact packet for reviews: logged achievements + your merged PRs + metric
-    /// highlights + completed goals over a window, grouped by theme into review-ready markdown,
-    /// plus impactful merged PRs you never `bn achieve`d.
-    Brag {
-        /// Window start: a `YYYY-MM-DD` date, `review` (default 6-month review horizon), or an
-        /// `N`/`Nmo` month count. Default: 6 months.
-        #[arg(long)]
-        since: Option<String>,
     },
 }
 
@@ -789,39 +668,22 @@ pub(crate) enum CmdInsights {
         #[command(subcommand)]
         action: FindingsCmd,
     },
-    /// Today's agent (#577): synthesize the cron findings store (#576) into a reviewable list of
-    /// **suggested tasks** — proposals, each with its source finding + rationale — for you to
-    /// review on Today. Bare `bn today` (or `bn today run`) runs the agent: gather the latest
-    /// findings per source → synthesize proposals → merge into the suggestions store (idempotent,
-    /// so a dismissed proposal never returns). `bn today list` reads them back; `bn today
-    /// accept|dismiss <id>` reviews one. Generalizes the `bn staff`/`bn chief` pattern; promotion
-    /// of an accepted suggestion to a Command Center item is #578.
-    Today {
-        #[command(subcommand)]
-        action: Option<TodayCmd>,
-    },
 }
 
 /// Automation and orchestration commands — see [`crate::cli::automation_cmd`].
 pub(crate) mod automation_cmd;
 pub(crate) mod cron_cmd;
-pub(crate) mod gathers;
 pub(crate) mod links_cmd;
 pub(crate) mod machine_cmd;
 pub(crate) mod queue_cmd;
-pub(crate) mod routine_cmd;
 pub(crate) mod shell_ui_cmd;
-pub(crate) mod staff_cmd;
 pub(crate) mod staff_group;
 pub(crate) use automation_cmd::CmdAutomation;
 pub(crate) use cron_cmd::CronCmd;
-pub(crate) use gathers::*;
 pub(crate) use links_cmd::LinksCmd;
 pub(crate) use machine_cmd::MachineCmd;
 pub(crate) use queue_cmd::QueueCmd;
-pub(crate) use routine_cmd::{RoutineCmd, RoutineServiceCmd};
 pub(crate) use shell_ui_cmd::CmdShellUi;
-pub(crate) use staff_cmd::StaffCmd;
 pub(crate) use staff_group::CmdStaff;
 
 #[derive(Subcommand, Debug)]
@@ -1121,18 +983,6 @@ pub(crate) enum CmdMisc {
         #[command(subcommand)]
         action: Option<PipelineCmd>,
     },
-    /// Routine-aware personal schedule coach (#801): a timezone-aware `[routine]` weekly recurring
-    /// schedule (work/learning, family/recovery/exercise/sleep, …). Bare `bn routine` shows status;
-    /// `now`/`next` report the current/upcoming block; `check-in`/`snooze`/`skip`/`override` record
-    /// durable, non-destructive runtime state; `tick` (native `routine-tick` job, `notify` alias)
-    /// delivers due reminders at-least-once with a bounded catch-up horizon; `watch` is a
-    /// deadline-driven foreground loop sharing the same engine; `service` manages `watch` as a
-    /// launchd/systemd daemon. Feeds `bn next`/`bn daily`: a protected block pauses non-urgent
-    /// guidance but always keeps urgent/breaking items visible, with a transparent explanation.
-    Routine {
-        #[command(subcommand)]
-        action: Option<RoutineCmd>,
-    },
     /// Long-lived coordination-only agents. Controllers capture and route requests, dispatch
     /// workers, and own follow-through; they never implement code themselves.
     Control {
@@ -1141,8 +991,6 @@ pub(crate) enum CmdMisc {
     },
     /// Print the running binary's crate version and compile-time build provenance.
     Version,
-    /// Print one bounded current-state snapshot of live agents, orchestration, and attention.
-    Bearings,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1442,49 +1290,6 @@ pub(crate) enum DailyCmd {
 }
 
 #[derive(Subcommand, Debug)]
-pub(crate) enum QuarterCmd {
-    /// Add a quarter goal: bn quarter add <text...> [--key <key>] [--metric <hint>].
-    Add {
-        #[arg(required = true)]
-        text: Vec<String>,
-        /// Stable, greppable key the goal lives under (for --q tagging + reviews). Derived from
-        /// the text when omitted.
-        #[arg(long)]
-        key: Option<String>,
-        /// Optional metric hint for the impact agent (e.g. `pr_cycle_time<-30%`). Not enforced.
-        #[arg(long)]
-        metric: Option<String>,
-    },
-    /// Mark a quarter goal done by key or text substring: bn quarter done <key|substring...>.
-    Done {
-        #[arg(required = true)]
-        query: Vec<String>,
-    },
-    /// Open the current quarter file in $EDITOR.
-    Edit,
-    /// Run the impact agent now: score the window's shipped work against the quarter goals, append
-    /// a validated review, and flag at-risk/off-track goals as attention items.
-    Review {
-        /// The agent manifest whose body is the review prompt. The scheduled run passes its own
-        /// name from its `run:` line, which is the only place that name should appear.
-        #[arg(long, default_value = "quarter-review")]
-        agent: String,
-        /// Harness to drive (copilot / claude); overrides `[quarter].harness` / `[review].harness`.
-        #[arg(long)]
-        harness: Option<String>,
-    },
-    /// Advise next (#458): rank the pending backlog into a goal-aligned shortlist — each candidate
-    /// scored by which quarter goal it advances (slipping goals first), lifted by open attention on
-    /// its repo, with a rationale. `--json` is what the orchestrator consumes for task selection.
-    Advise {
-        /// Shortlist size — how many free slots to fill (the top `N` ranks are flagged in-capacity).
-        /// Lower-ranked candidates still print/serialize below the cut.
-        #[arg(long, default_value_t = 3)]
-        capacity: usize,
-    },
-}
-
-#[derive(Subcommand, Debug)]
 pub(crate) enum TrackCmd {
     /// What was I doing at a given clock time today: bn track at <HH:MM>.
     At {
@@ -1516,20 +1321,6 @@ pub(crate) enum FeedCmd {
     },
     /// Drop a source's items (e.g. retire a feed cron): bn feed clear <source>.
     Clear { source: String },
-    /// React to a staff briefing card: bn feed rate <card> up|down [--note "…"]. One-keystroke
-    /// feedback that tells an agent (e.g. the Mentor) whether its card earned its cost. `<card>`
-    /// is an agent name (its newest card), a YYYY-MM-DD date, or an exact <date>/<agent>. The
-    /// rating is stored beside the read-marks and feeds the `bn insights` staff performance review;
-    /// a down-vote note also accrues as prompt-tuning material.
-    Rate {
-        /// Which card: an agent name, a YYYY-MM-DD date, or <date>/<agent>.
-        card: String,
-        /// The reaction: up | down.
-        rating: String,
-        /// Why — optional. Down-vote notes accumulate as tuning material for the agent's prompt.
-        #[arg(long)]
-        note: Option<String>,
-    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1683,39 +1474,6 @@ pub(crate) enum McpCmd {
 }
 
 #[derive(Subcommand, Debug)]
-pub(crate) enum NightCmd {
-    /// Dry-run: show what tonight's shift would pick and why each candidate is skipped. No side
-    /// effects — no worktrees, no agents, no audit entries.
-    Plan,
-    /// Execute the shift now (what the `night-shift` cron calls): plan, then dispatch each pick
-    /// into its worktree with an agent, recording an audit entry per item. Respects the kill switch
-    /// and the run window (declines outside it unless `--force`).
-    Run {
-        /// Override `[night] max_dispatch` for this run (the hard cap on picks).
-        #[arg(long)]
-        max: Option<usize>,
-        /// Run even outside the configured window (still honors the kill switch + allowlist).
-        #[arg(long)]
-        force: bool,
-    },
-    /// The morning digest: what the shift dispatched last night and where it landed. Adds a
-    /// `bn daily` goal per PR waiting on review ("review night PR bn#245").
-    Report {
-        /// How far back to read the audit log, in hours (default 24).
-        #[arg(long, default_value_t = 24)]
-        hours: i64,
-    },
-    /// Kill switch — disable the shift. The `night-shift` cron checks this first and no-ops while
-    /// it's set, so you can pause autonomy without touching config.
-    Off,
-    /// Clear the kill switch — re-enable the shift (the inverse of `off`).
-    On,
-    /// Show the shift's configuration and current state: enabled, window, cap, allowlist, and
-    /// whether the kill switch is engaged.
-    Status,
-}
-
-#[derive(Subcommand, Debug)]
 pub(crate) enum LearningsCmd {
     /// Promote a learning to durable — mark it worth keeping (the human-in-the-loop "keep"). The
     /// query is a learning key from the view (e.g. `l3f9a12bc`) or a unique case-insensitive text
@@ -1738,43 +1496,10 @@ pub(crate) enum LearningsCmd {
     },
 }
 
-#[derive(Subcommand, Debug)]
-pub(crate) enum DojoCmd {
-    /// Quick-fire recall: quiz cards from your deck (spaced-repetition scheduled).
-    Quiz {
-        /// Limit to one repo (overrides the `[dojo] repos` rotation).
-        #[arg(long)]
-        repo: Option<String>,
-        /// Cards to present (overrides `[dojo] daily_target`).
-        #[arg(long)]
-        max: Option<usize>,
-    },
-    /// A debugging drill: a real past `fix:` bug re-posed as a mystery — symptom + pre-fix code
-    /// shown, the actual fix hidden until you answer.
-    Bug {
-        #[arg(long)]
-        repo: Option<String>,
-        #[arg(long)]
-        max: Option<usize>,
-    },
-    /// Guided architecture tour of a subsystem, then a drill. `<area>` is a module name (e.g.
-    /// `store`, `agent`); bare `bn dojo map` lists the areas you can tour.
-    Map {
-        /// The subsystem/module to tour.
-        area: Option<String>,
-        #[arg(long)]
-        repo: Option<String>,
-    },
-    /// Streak, XP + level per repo, and your weakest areas.
-    Stats,
-    /// Which repos are in rotation and how many cards each holds.
-    Config,
-}
-
-#[derive(Subcommand, Debug)]
 /// The plan-review gate actions (#349). `submit`/`status` are the dispatched agent's write/poll
 /// side; `list`/`show`/`approve`/`request-changes`/`reject` are the human's review side (also
 /// reachable from the dashboard).
+#[derive(Subcommand, Debug)]
 pub(crate) enum ReviewCmd {
     /// Register (or re-submit) a plan for review — the agent-facing write. Creates a pending
     /// plan-review for --repo/--branch, reusing the open one on a change-request re-submit, and
@@ -1885,28 +1610,6 @@ pub(crate) enum ReviewCmd {
     },
     /// Reject a pending plan-review — the agent stops and ships nothing.
     Reject { id: String },
-}
-
-#[derive(Subcommand, Debug)]
-/// The Interviewer's weekly retro actions (#261).
-pub(crate) enum RetroCmd {
-    /// Run the interactive weekly retro: three fixed questions plus one adaptive follow-up.
-    Chat {
-        /// Speak your answers — record + transcribe each instead of typing (needs voice tooling
-        /// configured via `$BN_VOICE_TRANSCRIBE`).
-        #[arg(long)]
-        voice: bool,
-    },
-    /// Explicitly skip this week's retro — recorded as skipped, not silently missed.
-    Skip,
-    /// Raise this week's retro reminder, escalate it once, then stop. The unattended half — it
-    /// never starts the conversation. Run on a schedule by the `staff-interviewer` agent.
-    Tick,
-    /// Print a recorded week's transcript (defaults to the current ISO week).
-    Show {
-        /// ISO week label (e.g. `2026-W28`); omit for the current week.
-        week: Option<String>,
-    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -2187,6 +1890,26 @@ pub(crate) enum IssueCmd {
         #[arg(long)]
         allow_duplicate: bool,
     },
+    /// Split one oversized GitHub issue into independently shippable, conflict-scoped child
+    /// issues, then enqueue only those children. An agent first triages the bundle into repeated
+    /// `--part "TITLE::GLOB[,GLOB]"` specifications; bn rejects overlapping touch scopes, links
+    /// every child to the parent, and carries each scope into the backlog scheduler.
+    Decompose {
+        /// Parent issue number or URL to split.
+        issue: String,
+        /// One independently shippable child as `TITLE::GLOB[,GLOB]`. Repeat at least twice.
+        #[arg(long, required = true, value_name = "TITLE::GLOB[,GLOB]")]
+        part: Vec<String>,
+        /// Target repo (default: the current repo).
+        #[arg(long)]
+        repo: Option<String>,
+        /// Priority stamped on every generated child backlog entry.
+        #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
+        priority: i64,
+        /// Validate and print the decomposition without creating or enqueueing issues.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// The problem kind for `bn issue file`, each mapping to a canonical label.
@@ -2196,95 +1919,6 @@ pub(crate) enum IssueKindArg {
     Friction,
     Blocker,
     Enhancement,
-}
-
-/// `bn orchestrate` subcommands. Bare `bn orchestrate` (no subcommand, no `--queue`) shows status.
-pub(crate) mod orchestrate_cmd;
-pub(crate) use orchestrate_cmd::OrchestrateCmd;
-
-/// `--status` for `bn orchestrate backlog`, mapped to an optional [`bn_core::backlog::BacklogStatus`]
-/// filter (`All` → no filter). bn-core is clap-free, so the value-enum lives here.
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
-pub(crate) enum BacklogStatusArg {
-    /// Pending — pullable work waiting for a slot (the default).
-    Pending,
-    /// Leased — already handed to a run.
-    Leased,
-    /// Done — a leased item that merged (present until compaction).
-    Done,
-    /// Failed — a leased item that failed (present until compaction).
-    Failed,
-    /// Every lifecycle state.
-    All,
-}
-
-/// Severity filter for `bn orchestrate logs`.
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
-pub(crate) enum OrchestrateLogLevelArg {
-    Info,
-    Warn,
-    Error,
-}
-
-impl OrchestrateLogLevelArg {
-    pub(crate) fn to_core(self) -> bn_core::events::EventLevel {
-        match self {
-            Self::Info => bn_core::events::EventLevel::Info,
-            Self::Warn => bn_core::events::EventLevel::Warn,
-            Self::Error => bn_core::events::EventLevel::Error,
-        }
-    }
-}
-
-impl BacklogStatusArg {
-    /// The [`bn_core::backlog::BacklogStatus`] filter this selects — `None` means "every status".
-    pub(crate) fn to_filter(self) -> Option<bn_core::backlog::BacklogStatus> {
-        use bn_core::backlog::BacklogStatus;
-        match self {
-            BacklogStatusArg::Pending => Some(BacklogStatus::Pending),
-            BacklogStatusArg::Leased => Some(BacklogStatus::Leased),
-            BacklogStatusArg::Done => Some(BacklogStatus::Done),
-            BacklogStatusArg::Failed => Some(BacklogStatus::Failed),
-            BacklogStatusArg::All => None,
-        }
-    }
-}
-
-/// `--kind` for `bn orchestrate add`, mapped to [`bn_core::backlog::BacklogKind`] (bn-core is
-/// clap-free, so the value-enum lives here).
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
-pub(crate) enum BacklogKindArg {
-    /// Open and land a PR.
-    Ship,
-    /// An investigation-first lane that may either report findings or land a bounded fix + PR.
-    Scout,
-}
-
-impl BacklogKindArg {
-    pub(crate) fn to_core(self) -> bn_core::backlog::BacklogKind {
-        match self {
-            BacklogKindArg::Ship => bn_core::backlog::BacklogKind::Ship,
-            BacklogKindArg::Scout => bn_core::backlog::BacklogKind::Scout,
-        }
-    }
-}
-
-/// `--substrate` for `bn orchestrate add`, mapped to [`bn_core::backlog::Substrate`].
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
-pub(crate) enum SubstrateArg {
-    /// Let the scheduler decide.
-    Auto,
-    /// Prefer a local worktree + agent.
-    Local,
-}
-
-impl SubstrateArg {
-    pub(crate) fn to_core(self) -> bn_core::backlog::Substrate {
-        match self {
-            SubstrateArg::Auto => bn_core::backlog::Substrate::Auto,
-            SubstrateArg::Local => bn_core::backlog::Substrate::Local,
-        }
-    }
 }
 
 #[derive(Subcommand, Debug)]

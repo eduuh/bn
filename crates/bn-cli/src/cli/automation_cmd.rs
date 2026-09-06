@@ -159,31 +159,6 @@ pub(crate) enum CmdAutomation {
         /// latest Copilot or Claude session recorded for the current git worktree.
         name_or_id: Option<String>,
     },
-    /// The night shift — the nightly fleet planner. Picks the top promoted todos (ranked by
-    /// `bn next`), isolates each in its own worktree, dispatches an agent, and leaves you a morning
-    /// review queue of draft PRs. `plan` dry-runs the pick; `run` executes it (what the cron calls);
-    /// `report` is the morning digest; `off`/`on` are the kill switch. Opt-in per repo via
-    /// `[night] repos` and gated by `[night] enabled` + a run window.
-    Night {
-        #[command(subcommand)]
-        action: Option<NightCmd>,
-    },
-    /// The learning dojo (#253) — gamified, spaced-repetition drills derived from your codebase and
-    /// its history: bug mysteries from real `fix:` commits, feature walkthroughs, decision recall,
-    /// and architecture tours. Bare `bn dojo` runs today's session (~a handful of cards) from
-    /// pre-mined material, self-graded Anki-style; your streak, XP and per-repo mastery accrue.
-    /// Degrades to a live architecture tour when no cards are ready. Cards are mined nightly by the
-    /// `dojo-cards` cron. Rotation honors `[dojo] repos`.
-    Dojo {
-        #[command(subcommand)]
-        action: Option<DojoCmd>,
-        /// Limit this session to one repo (overrides the `[dojo] repos` rotation).
-        #[arg(long)]
-        repo: Option<String>,
-        /// Cards to present this session (overrides `[dojo] daily_target`).
-        #[arg(long)]
-        max: Option<usize>,
-    },
 }
 
 #[derive(Subcommand, Debug)]

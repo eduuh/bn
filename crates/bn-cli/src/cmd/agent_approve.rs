@@ -73,40 +73,6 @@ fn record(target: &str, prompt: &PendingPrompt, decision: &ApprovalDecision) {
     }
 }
 
-/// Whether an orchestrate queue item carries the `--yolo` trust contract.
-///
-/// Only coding/ship items do. Research and scout lanes are deliberately dispatched non-yolo, so
-/// their command approvals stay operator decisions — a policy rule cannot grant what the lane was
-/// never trusted with in the first place.
-pub(crate) fn is_trusted_ship(st: &bn_core::orchestrate::OrchestrateState, id: &str) -> bool {
-    st.queue
-        .iter()
-        .find(|item| item.id == id)
-        .is_some_and(|item| item.command_approvals_trusted && !item.is_scout())
-}
-
-/// Decide what to do about the dialog on `tail`, and record the decision.
-///
-/// Returns `Some((option, reason))` to answer, `None` to escalate to a human. `trusted` is the
-/// lane's trust contract — an orchestrated `--yolo` coding/ship item — which no policy can waive.
-pub(crate) fn decide_for_tail(
-    target: &str,
-    tail: &[String],
-    plane_a: &str,
-    lane: LaneKind,
-    trusted: bool,
-) -> Option<(u8, String)> {
-    let prompt = bn_core::agent::parse_pending_prompt(tail, plane_a, true, false)?;
-    let ctx = PolicyCtx { lane, trusted };
-    let policy = ApprovalPolicy::load();
-    let decision = decide_with_builtin_default(&prompt, &ctx, &policy);
-    record(target, &prompt, &decision);
-    match decision {
-        ApprovalDecision::Auto { option, reason } => Some((option, reason)),
-        ApprovalDecision::Escalate { .. } => None,
-    }
-}
-
 /// Run the policy over every live agent that is currently blocked on a dialog.
 ///
 /// The orchestrate supervisor has always applied its rule to its own lanes. An agent started by a

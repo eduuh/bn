@@ -409,7 +409,6 @@ fn compact_backlog() {
 /// missing, so a quiet machine pays two file reads a minute. Deliberately *before* the snapshot is
 /// captured, so work either sweep enqueues is admitted in this same pass rather than the next one.
 fn reconcile_producers(cfg: &Config) {
-    let _ = crate::cmd::today::today_reconcile(cfg);
     let _ = crate::cmd::pipeline_sweep::sweep_tasks(cfg);
 }
 

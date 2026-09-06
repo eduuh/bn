@@ -1,8 +1,8 @@
 ---
 name: nvim-explore
-description: Ask the worktree's editor instead of re-deriving it — LSP diagnostics, definitions, references, hover, rename, over MCP
-when: You need a semantic fact about the code — does this compile, where is this defined, who calls it, what type is this — and grep or a full build is the slow way to get it. Needs the `nvim` MCP server (nvim-mcp) and an nvim open on this worktree.
-keywords: [nvim, editor, lsp, diagnostics, definition, references, hover, rename, code actions, symbols, nvim-mcp, where is this defined, who calls this]
+description: Ask the worktree's editor instead of re-deriving it — LSP diagnostics, definitions, references, hover, rename, and a real debugger, over MCP
+when: You need a semantic fact about the code — does this compile, where is this defined, who calls it, what type is this — and grep or a full build is the slow way to get it. Also when you want a debugger, because a breakpoint hit gives real values instead of a guess. Needs the `nvim` MCP server (nvim-mcp) and an nvim open on this worktree.
+keywords: [nvim, editor, lsp, diagnostics, definition, references, hover, rename, code actions, symbols, nvim-mcp, debugger, debug, dap, nvim-dap, breakpoint, step through, inspect locals, call hierarchy, where is this defined, who calls this]
 ---
 An editor that has already indexed this repo knows things you would otherwise re-derive: which
 line the type error is on, where a symbol is defined, everything that calls it. The `nvim` MCP
@@ -33,6 +33,11 @@ once the server is attached to a running nvim. If all you can see is `get_target
 - **Shape of a file** — `lsp_document_symbols` beats reading 800 lines to find three functions.
 - **Types you are guessing at** — `lsp_hover` on the expression rather than inferring from names.
 - **Repo-wide rename** — `lsp_rename` moves every reference, including the ones your regex missed.
+- **Who calls this** — `lsp_call_hierarchy_prepare`, then `lsp_call_hierarchy_incoming_calls` with
+  the item it returns. A caller graph, not a text search.
+- **Running a debugger** — `exec_lua` reaches nvim-dap, so an agent can set a breakpoint, launch,
+  read locals and step. See below; it is the one place where driving the editor beats every
+  alternative, because the values are real rather than reasoned about.
 
 ## Calling the tools
 
@@ -47,6 +52,44 @@ rather than coerced:
   nested in a `position` object.
 
 So a hover is `{connection_id, lsp_client_name, document: {absolute_path}, line, character}`.
+
+## Driving the debugger
+
+`exec_lua` is a full escape hatch into the editor, and the highest-value thing behind it is
+nvim-dap: a breakpoint hit gives you the actual values, where reading the code only gives you your
+own guess about them.
+
+DAP is asynchronous and `exec_lua` is one round trip, so park state on a global and poll it:
+
+```lua
+-- call 1: arm listeners, set the breakpoint, launch
+_G.__dbg = { stopped = false }
+local dap = require("dap")
+dap.listeners.after.event_stopped["x"] = function() _G.__dbg.stopped = true end
+local buf = vim.fn.bufadd(vim.fn.getcwd() .. "/src/main.rs"); vim.fn.bufload(buf)
+vim.api.nvim_buf_call(buf, function()
+  vim.fn.setpos(".", { 0, 4, 1, 0 }); dap.set_breakpoint()
+end)
+dap.run({ type = "codelldb", request = "launch", name = "probe",
+          program = vim.fn.getcwd() .. "/target/debug/<bin>", cwd = vim.fn.getcwd() })
+
+-- call 2: separate round trip, so require again — and wait for the frame, not just the event
+vim.wait(6000, function()
+  local s = require("dap").session()
+  return _G.__dbg.stopped and s ~= nil and s.current_frame ~= nil
+end, 50)
+```
+
+Two things will bite you:
+
+- **`stopped` fires before `session().current_frame` is populated.** Wait for the frame itself, not
+  just the event, or the next call indexes a nil.
+- **`context = "repl"` is not expression evaluation** — codelldb reads it as an LLDB command, so
+  `total` comes back as *"'total' is not a valid command"*. Use `context = "watch"` for expressions,
+  or the `scopes` → `variables` requests for a whole frame of locals at once.
+
+`dap.continue()` runs to the next hit, so a breakpoint in a loop lets you watch a value evolve. The
+program's own stdout arrives on `event_output`.
 
 ## What it is not
 
@@ -63,6 +106,15 @@ So a hover is `{connection_id, lsp_client_name, document: {absolute_path}, line,
   disk that your other tools read. Prefer reading through the editor and writing through the normal
   file tools; when you do write through it, say so.
 - **Not a file reader.** For plain content, the ordinary read tools are simpler and cheaper.
+- **Some tools fail for reasons that are not your fault.** `lsp_type_hierarchy_*` returns
+  *"unknown request"* against rust-analyzer, which does not implement it. `lsp_range_formatting`
+  refuses on stable Rust — rustfmt range formatting is nightly-only. Both are server limits; report
+  them as such instead of retrying with different arguments.
+- **A call that legitimately returns nothing may come back as an error.** On nvim-mcp at f564bbd,
+  a server answering "no result" (hover on a blank line, a document already formatted) surfaces as
+  *"Failed to parse … result: expected value at line 1 column 1"*, because the empty Lua table
+  encodes as `[]` where the Rust side wants a tagged object. Read that message as "nothing here",
+  not as a broken tool.
 
 ## Wiring
 

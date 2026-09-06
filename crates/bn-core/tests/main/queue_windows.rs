@@ -12,8 +12,8 @@ use bn_core::backlog::{AddSpec, BacklogEntry, BacklogKind, ExecSpec, ExecutionTa
 use bn_core::hosts::{NodeRecord, NodeStatus};
 use bn_core::queue::tick::{plan_tick, KindCaps, TickInputs};
 use bn_core::queue::window::{self, PriorityWindow};
+use bn_core::schedule::previous_occurrence;
 use bn_core::scheduler::{Caps, Observed};
-use bn_core::staff_schedule::previous_occurrence;
 
 /// Noon on a weekday, expressed as "whenever this spec last fired" so the test carries no timezone
 /// assumption of its own.

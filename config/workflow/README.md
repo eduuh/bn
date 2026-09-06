@@ -110,6 +110,15 @@ windows wants you:
 | `◌` dim   | `working` | Agent is processing |
 | `✓` green  | `done`    | Agent finished its turn |
 
+`✓` is also raised by the **terminal bell** (`window_bell_flag`) and by the
+`prefix m` silence watch, so a window running something that is not a hooked agent — a
+build, a test run, a non-Claude harness — still reports when it finishes.
+
+The dashboard row additionally carries one amber `` per agent **waiting anywhere on the
+server**, rendered with tmux's own `#{S:#{W:...}}` loop over every session and window. The
+tab bar cannot show this: a session is a repo, so row 1 only ever lists the current repo's
+worktrees.
+
 The dot is set by `bn tmux-agent <state>` (a per-window `@bn_agent` option, I/O-free,
 no-op outside tmux) and is the source of truth for Claude windows. It takes precedence
 over `@bn_done` — the silence-watch fallback (`bind m` / `bn tmux-done-badge`) that

@@ -18,7 +18,6 @@
 //!   content changes.
 
 use crate::state::AppState;
-use bn_core::bearings::BearingsSnapshot;
 use bn_core::events::{self, Event};
 use bn_core::{agent, attention, orchestrate, payload};
 use std::collections::hash_map::DefaultHasher;
@@ -60,7 +59,6 @@ async fn run(state: AppState) {
     let mut last_fleet: u64 = 0;
     let mut last_orch: u64 = 0;
     let mut last_attn: u64 = 0;
-    let mut last_bearings: u64 = 0;
     let mut last_queue: u64 = 0;
     let mut last_queue_inputs: u64 = 0;
 
@@ -96,12 +94,7 @@ async fn run(state: AppState) {
             let data = payload::agent_fleet_data(&fleet).to_string();
             emit_on_change(&state, "fleet", data, &mut last_fleet);
 
-            let runs = orchestrate::run_paths()
-                .iter()
-                .filter_map(|path| orchestrate::OrchestrateState::load(path))
-                .collect::<Vec<_>>();
             let items = attention::open_items(&bn_core::util::today());
-            emit_bearings_on_change(&state, &fleet, &runs, &items, &mut last_bearings);
             let data = payload::attn_list_data(&items).to_string();
             emit_on_change(&state, "attn", data, &mut last_attn);
 
@@ -137,35 +130,7 @@ async fn run(state: AppState) {
     }
 }
 
-fn emit_bearings_on_change(
-    state: &AppState,
-    fleet: &agent::Fleet,
-    runs: &[orchestrate::OrchestrateState],
-    items: &[attention::AttnItem],
-    last: &mut u64,
-) {
-    let mut content = BearingsSnapshot::from_parts(0, fleet, runs, items);
-    for agent in &mut content.fleet.agents {
-        agent.idle_secs = 0;
-    }
-    let hash = hash_str(&bearings_data(&content).to_string());
-    if hash == *last {
-        return;
-    }
-    *last = hash;
-    let snapshot =
-        BearingsSnapshot::from_parts(bn_core::util::now_epoch_secs(), fleet, runs, items);
-    let _ = state.tx.send(StreamFrame::arc(
-        "bearings",
-        bearings_data(&snapshot).to_string(),
-    ));
-}
-
 /// The byte-identical snapshot data used by the REST envelope and the SSE frame.
-pub(crate) fn bearings_data(snapshot: &BearingsSnapshot) -> serde_json::Value {
-    payload::bearings_data(snapshot)
-}
-
 /// Broadcast `data` on `event` only when its hash differs from `last` — the change-gate that keeps
 /// an unchanging fleet/attn snapshot from re-emitting every tick.
 fn emit_on_change(state: &AppState, event: &'static str, data: String, last: &mut u64) {

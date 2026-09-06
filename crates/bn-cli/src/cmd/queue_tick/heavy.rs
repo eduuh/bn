@@ -161,7 +161,7 @@ fn window_argv(session: &str, window: &str, home: &str, command: &str) -> Vec<Ve
         argv(&[
             "set-window-option",
             "-t",
-            &format!("={session}:{window}"),
+            &crate::proc::exact_target(&format!("{session}:{window}")),
             "remain-on-exit",
             "failed",
         ]),
@@ -321,12 +321,16 @@ mod tests {
         // The trailing colon makes it a *session* target; the bare form is rejected as a pane.
         assert!(new_window.contains(&"=bn:".to_string()));
         assert!(new_window.contains(&"/home/me/projects/worktree/bn/main".to_string()));
+        // `=bn:=pool-warm`, not `=bn:pool-warm`. The `=` anchors only the part it precedes, so the
+        // old expectation left the WINDOW half as an fnmatch pattern — with a `pool-warm-2` open,
+        // this `remain-on-exit` write would have landed on it. Verified against tmux 3.6:
+        // `set-window-option -t '=s:feat'` wrote onto a window named `feat-two`.
         assert_eq!(
             cmds[1],
             vec![
                 "set-window-option",
                 "-t",
-                "=bn:pool-warm",
+                "=bn:=pool-warm",
                 "remain-on-exit",
                 "failed"
             ]

@@ -183,9 +183,13 @@ pub(crate) fn emit_tmux_reconcile(cfg: &Config, dry_run: bool) {
 /// The sweep itself. `report` controls whether drift is written to stderr — the CLI says so, the
 /// cron stays quiet.
 fn reconcile(cfg: &Config, dry_run: bool, report: bool) {
-    if std::env::var_os("TMUX").is_none() {
-        return;
-    }
+    // Deliberately NOT gated on `$TMUX`. This sweep addresses the whole server (`list-windows -a`)
+    // and targets every window by id, so it needs a reachable server — not a caller that happens to
+    // be sitting inside one. A `$TMUX` guard here made [`job_tmux_reconcile`] a guaranteed no-op:
+    // the `tick-5m` cron runs under systemd, outside tmux, so the backstop that exists precisely to
+    // catch windows created since the last attach never once ran. It reported success every time,
+    // which is why it went unnoticed. The `tmux_raw` below is the correct and sufficient check —
+    // it returns `None` when there is no server to talk to.
     let Some(out) = crate::proc::tmux_raw(&["list-windows", "-a", "-F", WINDOW_FORMAT]) else {
         return;
     };

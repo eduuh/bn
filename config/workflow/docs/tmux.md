@@ -202,11 +202,12 @@ Enter with **`C-Space Space`**.
 | `v` | Start selection. |
 | `C-v` | Toggle rectangle selection. |
 | `y` | Copy to system clipboard + exit. |
-| `/` `?` | Search forward / backward. |
+| `/` `?` | Search forward / backward. tmux's own bindings, deliberately not rebound: they carry `-T search`, so <kbd>↑</kbd> at the prompt recalls earlier searches. |
 | `n` `N` | Next / previous search match. |
 | `g` `G` | Jump to top / bottom. |
+| `[` `]` | Jump to the previous / next **shell prompt** — i.e. to the start of a command's output. Needs OSC 133 marks from the shell (see the dotfiles `.zshrc`); without them these do nothing. |
 | `C-u` `C-d` | Half-page up / down. |
-| `q` or `Esc` | Exit copy mode. |
+| `q` or `Esc` | Exit copy mode. Scrolling back down to the live screen also exits on its own. |
 
 Outside copy mode: `p` paste-buffer, `P` choose-buffer.
 
@@ -215,6 +216,14 @@ Outside copy mode: `p` paste-buffer, `P` choose-buffer.
 | Key | Action |
 |-----|--------|
 | `R` | Reload `~/.tmux.conf`. |
+| `?` | The cheat-sheet. **Generated** from `list-keys -N`, never hand-written — every binding carries its own `-N "Section · description"` note, so the sheet cannot drift from the config the way it used to. tmux's own notes come through too, which is how surviving stock bindings stay discoverable. |
+| `C-d` | Detach this client. Nothing bound `detach-client` before; `d` is the diff picker. |
+
+Removed on purpose, so muscle memory does not find them: `&` (stock kill-window — it
+skipped the unsaved-work gate that `x` runs), `C-z` (suspend-client, which looks like a
+hang), `"`/`%` (stock splits — they lose the worktree path; use `v`/`s`), and `C-r`
+(tmux-resurrect's restore-over-live-session; `@continuum-restore` already restores at
+server start).
 
 ---
 

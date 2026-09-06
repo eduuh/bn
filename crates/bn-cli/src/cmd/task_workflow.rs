@@ -59,17 +59,17 @@ fn run_task_agent(cfg: &Config, label: &str, packet: &str, dry_run: bool) -> Tas
 
     let harness = agent.harness.as_deref().unwrap_or("copilot");
     let Some(cmd) =
-        crate::cmd::staff::staff_dispatch_command(harness, &prompt, agent.model.as_deref(), None)
+        crate::harness_dispatch::harness_command(harness, &prompt, agent.model.as_deref(), None)
     else {
         fail(&format!(
             "bn task {label}: unknown harness '{harness}' (use copilot | claude)"
         ));
     };
-    let (success, output, combined) = crate::cmd::staff::dispatch_capture(cmd, None);
+    let (success, output, combined) = crate::harness_dispatch::dispatch_capture(cmd, None);
     if !success {
         fail(&format!(
             "bn task {label}: harness failed: {}",
-            bn_core::staff::failure_detail(&combined)
+            bn_core::run_status::failure_detail(&combined)
         ));
     }
     TaskAgentRun {

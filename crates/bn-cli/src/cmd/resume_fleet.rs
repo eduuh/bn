@@ -409,7 +409,11 @@ fn adopt_into_pane(row: &RestoreRow, target: &str, command: &str) -> Result<(), 
         replace: false,
         in_place: true,
     })?;
-    if !crate::proc::tmux_ok(&["send-keys", "-t", target, command, "Enter"]) {
+    // `target` arrives raw from the restore row — no `=` at all, so BOTH halves fnmatch and this
+    // send-keys could type a launch command line into someone else's agent. `--` additionally stops
+    // a command starting with `-` being parsed as a flag.
+    let exact = crate::proc::exact_target(target);
+    if !crate::proc::tmux_ok(&["send-keys", "-t", &exact, "--", command, "Enter"]) {
         let _ = reservation.rollback();
         return Err(format!("could not send the launch into {target}"));
     }

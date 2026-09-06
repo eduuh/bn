@@ -67,7 +67,6 @@ impl ResultKind {
             ActionKind::StalePr => ResultKind::StalePr,
             ActionKind::Goal => ResultKind::Goal,
             ActionKind::Issue => ResultKind::Issue,
-            ActionKind::Suggestion => ResultKind::Suggestion,
         }
     }
 

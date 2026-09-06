@@ -53,45 +53,6 @@ pub(super) fn route(cfg: &Config, action: CmdPlanning, json: bool) {
         CmdPlanning::List => emit_list(cfg, json),
         CmdPlanning::Summary => emit_summary(cfg, json),
         CmdPlanning::Daily { action, date } => emit_daily(cfg, action, date, json),
-        CmdPlanning::Quarter { action, quarter } => emit_quarter(cfg, action, quarter, json),
-        CmdPlanning::Standup {
-            copy,
-            cron,
-            gather,
-        } => {
-            if gather {
-                std::process::exit(emit_standup_gather(cfg));
-            }
-            // Cron gate: the standup-push job no-ops unless autopilot is enabled.
-            let jc = resolver::JobConfig::load();
-            if cron && !jc.standup_enabled {
-                return;
-            }
-            let s = bn_core::reports::standup(cfg, &today());
-            // One-shot PR delta, only on the cron push and only when opted in.
-            let delta = if cron && jc.standup_fetch_delta {
-                bn_core::reports::pr_delta(&bn_core::runner::RealRunner)
-            } else {
-                None
-            };
-            if json {
-                println!(
-                    "{}",
-                    Envelope::success("standup", payload::standup_data(&s)).to_json()
-                );
-            } else if copy {
-                let mut line = bn_core::reports::standup_line(&s);
-                if let Some(d) = &delta {
-                    line.push_str(&format!(" · {d}"));
-                }
-                println!("{line}");
-            } else {
-                print!("{}", bn_core::reports::render_standup(&s));
-                if let Some(d) = &delta {
-                    println!("\n{d}");
-                }
-            }
-        }
         CmdPlanning::Task { action, all, repo } => match action {
             None | Some(TaskCmd::List) => emit_task_list(
                 cfg,

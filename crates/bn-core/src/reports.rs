@@ -46,11 +46,6 @@ pub struct Standup {
     pub today: Vec<GoalView>,
     pub blockers: Vec<BlockerRef>,
     pub upcoming: Vec<ScheduledItem>,
-    /// The top at-risk / off-track quarter goal (#252), as `<status>: <text>`. `None` when no
-    /// quarter goal is flagged. Omitted from JSON while absent so existing standup shapes are
-    /// unchanged.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quarter_at_risk: Option<String>,
 }
 
 /// PR throughput folded into the weekly view (from the event log via [`metrics`]).
@@ -221,20 +216,12 @@ pub fn standup(cfg: &Config, today: &str) -> Standup {
         today: today_goals,
         blockers: open_blockers(cfg),
         upcoming: daily::scheduled_pending(cfg, today),
-        quarter_at_risk: quarter_at_risk(cfg, today),
     }
 }
 
 /// The current quarter's top at-risk / off-track goal, as `<status>: <text>` (#252). Reads the
 /// quarter file only if it already exists — the standup view never *creates* a quarter. `None`
 /// when there's no quarter, no flagged goal, or the read fails.
-fn quarter_at_risk(cfg: &Config, today: &str) -> Option<String> {
-    let qid = crate::quarter::quarter_id(today)?;
-    let q = crate::quarter::read_quarter(cfg, &qid).ok().flatten()?;
-    q.top_at_risk()
-        .map(|g| format!("{}: {}", q.status_of(&g.key), g.text))
-}
-
 /// The start date of the weekly window: `today - since` days when given, else back to the
 /// most recent configured anchor weekday strictly before today (so on the anchor day you
 /// see the full prior week). Shared with [`crate::insights`] so `bn insights` anchors its
@@ -391,9 +378,6 @@ pub fn render_standup(s: &Standup) -> String {
         }
     }
 
-    if let Some(q) = &s.quarter_at_risk {
-        out.push_str(&format!("\nQuarter\n  ⚠ {q}\n"));
-    }
     out
 }
 
@@ -799,9 +783,6 @@ pub fn standup_line(s: &Standup) -> String {
     );
     if let Some(b) = s.blockers.first() {
         line.push_str(&format!("; blocked on {}", b.text));
-    }
-    if let Some(q) = &s.quarter_at_risk {
-        line.push_str(&format!("; quarter {q}"));
     }
     line
 }

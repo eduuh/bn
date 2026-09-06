@@ -97,7 +97,10 @@ impl Snapshot {
             observed: observed(cfg),
             kind_caps: KindCaps(kind_caps),
             kinds: crate::queue::tick_claimable_kinds(),
-            goals: crate::advise::open_quarter_goals(cfg, &crate::util::local_date_of(now)),
+            // No goal store since the quarter was retired: ranking falls back to
+            // priority plus attention pressure, which is what it already did whenever
+            // no quarter file existed.
+            goals: Vec::new(),
             attention: crate::attention::open_items(&crate::util::local_date_of(now))
                 .into_iter()
                 .map(|item| AttnSignal {

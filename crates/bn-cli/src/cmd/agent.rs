@@ -509,7 +509,7 @@ pub(crate) fn resolve_agent_session(
         branch: branch.clone(),
     };
     if !cfg.note_file(&direct).exists() {
-        let tmux_target = format!("={target}");
+        let tmux_target = crate::proc::exact_target(target);
         let metadata = proc::tmux(&[
             "display-message",
             "-p",

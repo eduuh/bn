@@ -48,22 +48,11 @@
 use crate::attention::AttnItem;
 use crate::crons;
 use crate::doctor::{self, Finding, NoteFinding};
-use crate::dojo::{Card, DojoStore};
 use crate::events::CronJobStatus;
 use crate::feed::{self, FeedItem};
-use crate::night::{self, NightOutcome, NightReportItem};
-use crate::quarter::{self, QuarterGoal};
 use crate::resolver::Config;
 use crate::reviews::{self, ReviewPr};
 use serde::Serialize;
-
-/// How far back the `night-shift` gatherer looks for reviewable dispatches — one shift, matching
-/// the AM chief card's 24h window so the two surfaces agree on "last night".
-const NIGHT_LOOKBACK_HOURS: i64 = 24;
-
-/// Cap on the `dojo` (growth) snapshot: the most-recently-mined cards only, so the append-only
-/// findings store can't grow unbounded as cards accumulate over daily cron runs.
-const DOJO_SNAPSHOT_CAP: usize = 15;
 
 /// The morning-planning taxonomy tier a findings source belongs to. Stored nowhere on the run
 /// record itself (the source id is identity); the planner maps id → tier via [`sources`].
@@ -158,11 +147,6 @@ pub fn sources() -> Vec<GatherSource> {
             gather: gather_stale_branches,
         },
         GatherSource {
-            id: "night-shift",
-            tier: Tier::InFlight,
-            gather: gather_night_shift,
-        },
-        GatherSource {
             id: "cron-health",
             tier: Tier::Health,
             gather: gather_cron_health,
@@ -171,16 +155,6 @@ pub fn sources() -> Vec<GatherSource> {
             id: "sentinel",
             tier: Tier::Health,
             gather: gather_sentinel,
-        },
-        GatherSource {
-            id: "quarter",
-            tier: Tier::Alignment,
-            gather: gather_quarter,
-        },
-        GatherSource {
-            id: "dojo",
-            tier: Tier::Growth,
-            gather: gather_dojo,
         },
     ]
 }
@@ -328,47 +302,12 @@ fn gather_stale_branches(cfg: &Config) -> GatherOut {
 /// (outcome [`NightOutcome::PrReady`]), from the shared [`night::report_since`] read the AM chief
 /// card uses — so the morning card and this findings source agree on "last night's work". In-flight
 /// work you need to review; keyed by the dispatch id, url = the PR link.
-fn gather_night_shift(_cfg: &Config) -> GatherOut {
-    let cutoff = crate::util::now_epoch_secs() - NIGHT_LOOKBACK_HOURS * 3600;
-    let reviewable: Vec<NightReportItem> = night::report_since(cutoff)
-        .into_iter()
-        .filter(|it| it.outcome == NightOutcome::PrReady && it.link.is_some())
-        .collect();
-    let items = reviewable.iter().map(night_item).collect();
-    GatherOut::new(items, raw_of(&reviewable))
-}
-
 /// `quarter` — the current quarter's still-open goals (goal-alignment input), reusing the shared
 /// quarter store read; the single top at-risk goal is flagged. Records nothing when there's no
 /// current quarter file or it has no goals yet.
-fn gather_quarter(cfg: &Config) -> GatherOut {
-    let today = crate::util::today();
-    let Some(qid) = quarter::quarter_id(&today) else {
-        return GatherOut::default();
-    };
-    let Ok(Some(q)) = quarter::read_quarter(cfg, &qid) else {
-        return GatherOut::default();
-    };
-    let at_risk = q.top_at_risk().map(|g| g.key.clone());
-    let goals: Vec<&QuarterGoal> = q.open().collect();
-    let items = goals
-        .iter()
-        .map(|g| quarter_item(g, at_risk.as_deref() == Some(g.key.as_str())))
-        .collect();
-    GatherOut::new(items, raw_of(&goals))
-}
-
 /// `dojo` — mined learning cards (growth input), reusing the shared dojo store read, capped to the
 /// most-recently-mined [`DOJO_SNAPSHOT_CAP`] so the append-only findings store can't bloat as cards
 /// accumulate. Records nothing when no cards are mined.
-fn gather_dojo(cfg: &Config) -> GatherOut {
-    let mut cards = DojoStore::from_config(cfg).load_cards().unwrap_or_default();
-    cards.sort_by_key(|c| std::cmp::Reverse(c.created));
-    cards.truncate(DOJO_SNAPSHOT_CAP);
-    let items = cards.iter().map(dojo_item).collect();
-    GatherOut::new(items, raw_of(&cards))
-}
-
 fn gather_meetings(_cfg: &Config) -> GatherOut {
     feed_passthrough("meetings")
 }
@@ -462,48 +401,10 @@ fn attn_item(a: &AttnItem) -> FeedItem {
 
 /// A night-shift reviewable dispatch → a feed item keyed by the dispatch id; the draft PR link is
 /// the url, and the outcome label (`PR ready`) is appended so the planner sees why it's here.
-fn night_item(it: &NightReportItem) -> FeedItem {
-    FeedItem {
-        key: it.id.clone(),
-        text: format!(
-            "{}/{} {} — {}",
-            it.repo,
-            it.branch,
-            it.title.trim(),
-            it.outcome.label()
-        ),
-        url: it.link.clone().unwrap_or_default(),
-    }
-}
-
 /// A still-open quarter goal → a feed item keyed by the goal `key` (stable across quarters); the
 /// single top at-risk goal is flagged so goal alignment surfaces the drift. No url.
-fn quarter_item(g: &QuarterGoal, at_risk: bool) -> FeedItem {
-    let flag = if at_risk { " ⚠ at-risk" } else { "" };
-    FeedItem {
-        key: g.key.clone(),
-        text: format!("{}{}", g.text.trim(), flag),
-        url: String::new(),
-    }
-}
-
 /// A mined dojo card → a feed item keyed by the stable card id; text = `<kind> · <repo> — <prompt
 /// snippet>` (the answer is never included). No url.
-fn dojo_item(c: &Card) -> FeedItem {
-    let prompt = c.prompt.trim();
-    let snippet: String = prompt.chars().take(80).collect();
-    let ellipsis = if prompt.chars().count() > 80 {
-        "…"
-    } else {
-        ""
-    };
-    FeedItem {
-        key: c.id.clone(),
-        text: format!("{} · {} — {}{}", c.kind.label(), c.repo, snippet, ellipsis),
-        url: String::new(),
-    }
-}
-
 /// Serialize a borrowed slice as the `raw` snapshot, or `None` when empty (so an empty adapter
 /// records nothing).
 fn raw_of<T: Serialize>(items: &[T]) -> Option<String> {

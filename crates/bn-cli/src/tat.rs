@@ -14,24 +14,27 @@
 //! `psmux` stays shell-side.
 
 mod codespaces;
+mod commands;
 pub(crate) mod discovery;
 mod paths;
 mod preview;
+mod rows;
 
 use codespaces::{
     codespaces, cs_account, cs_account_cfg_path, cs_auth_cmd, cs_auth_needed, cs_auth_refresh,
     cs_fetch_blocking, cs_for_repo, cs_ref_branch, cs_ref_csname, cs_ref_repo, cs_window_name,
     is_cs_ref, open_codespace,
 };
-use discovery::{
-    ordered_refs, remote_prs, remote_prs_fetch_blocking, scan_worktrees, spawn_remote_warm,
-};
+use commands::{command_from_pick, Step};
+use discovery::{ordered_refs, remote_prs, remote_prs_fetch_blocking, spawn_remote_warm};
 use paths::{bare_repo_main_path, is_bare_repo, project_path, resolve_project_path};
 use preview::preview;
+use rows::build_sub_rows;
 
 use crate::proc::{tmux, tmux_command, tmux_ok, tmux_raw, tmux_run};
 use crate::wt;
 use bincode::Options;
+use bn_core::wt_actions::When;
 use bn_core::{resolver::Config, style};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -68,6 +71,19 @@ pub enum TatStage {
     /// `kind~branch`; guarded — only a `poolbranch` row, and `return` itself refuses a dirty slot.
     #[value(name = "releasepool")]
     ReleasePool,
+    /// Render the sub-picker's side pane for the focused row. `--pick-arg` carries `kind~payload`:
+    /// unlike the project picker's rows these differ in kind, and each kind wants a different panel.
+    #[value(name = "subpreview")]
+    SubPreview,
+    /// Queue the focused command row's verb, to run now. `--pick-arg` carries `kind~action-id`;
+    /// guarded — refuses a non-`cmd` row. Selecting a verb already queued takes it back.
+    #[value(name = "runcmd")]
+    RunCmd,
+    /// As [`TatStage::RunCmd`], but filed for when you are idle or away rather than now — the
+    /// end-of-day binding. A separate stage rather than a flag on one, matching the convention the
+    /// other bindings already follow: one stage per key.
+    #[value(name = "runcmd-away")]
+    RunCmdAway,
     /// Internal: refresh the network-backed caches (codespaces, and `<name>`'s open PRs when given)
     /// in the background. Spawned detached by the picker so no paint ever waits on a forge.
     #[value(name = "warm-remote")]
@@ -1082,184 +1098,17 @@ fn clone_and_open(cfg: &Config, roots: &Roots, url: &str) {
     open_project(cfg, roots, &clone_name(url));
 }
 
-/// Render open PRs whose branch has no local representation. The payload is only the numeric PR id;
-/// branch names and titles are display data and may contain fzf's `|` delimiter.
-fn remote_pr_rows(prs: &[wt::RemotePr], represented: &HashSet<String>) -> String {
-    let mut rows = String::new();
-    for pr in prs {
-        let branch = wt::sanitize_branch(&pr.branch);
-        if represented.contains(&branch) {
-            continue;
-        }
-        let branch_display = branch.replace('|', " ");
-        let title = pr.title.replace(['\r', '\n', '|'], " ");
-        let display = format!(
-            " PR: {:<14} {:<8} {}",
-            branch_display,
-            format!("(#{} remote)", pr.number),
-            title
-        );
-        rows.push_str(&format!("remotepr|{}|{display}\n", pr.number));
-    }
-    rows
-}
-
-/// Build the sub-picker's `kind|payload|display` rows for one project: live windows (each with an
-/// agent-status dot), idle worktrees (fast dir-scan), remote PRs, codespace branches, and warm-pool
-/// slots.
-/// Returns the rows plus the live-window count (the caller's quiet-clone shortcut). Shared by the
-/// initial in-process paint and the `--pick-stage sublist` reload feed so the two stay identical.
-fn build_sub_rows(
-    cfg: &Config,
-    roots: &Roots,
-    name: &str,
-    refresh_worktrees: bool,
-) -> (String, usize) {
-    let sess = ref_session(name);
-    let repo = ref_repo(name);
-    let bare = is_bare_repo(roots, name);
-
-    let window_rows = tmux_raw(&[
-        "list-windows",
-        "-t",
-        &exact_session_target(&sess),
-        "-F",
-        "#{window_index}|#{window_name}|#{pane_current_command}|#{window_active}|#{@bn_agent}|#{@bn_agent_since}|#{pane_current_path}",
-    ]);
-    let mut open_windows = Vec::new();
-    let mut rows = String::new();
-    if let Some(raw) = &window_rows {
-        for line in raw.lines() {
-            if line.is_empty() {
-                continue;
-            }
-            let f = split7(line);
-            open_windows.push(f[1].to_string());
-            let marker = if f[3] == "1" { "*" } else { "" };
-            // A live-agent status dot in front of the window row (#457): green ● working, yellow ●
-            // waiting-on-you, dim ◌ idle, blank when no agent runs there.
-            let dot = agent_dot(f[4], f[5]);
-            let display = format!("{dot}{}{marker}: {:<14} {:<8} {}", f[0], f[1], f[2], f[6]);
-            rows.push_str(&format!("window|{}|{display}\n", f[0]));
-        }
-    }
-
-    let worktree_dir = roots.worktree_dir(name);
-    let worktrees = if bare {
-        scan_worktrees(roots, name, refresh_worktrees)
-    } else {
-        Vec::new()
-    };
-    if bare {
-        for w in &worktrees {
-            if open_windows.iter().any(|ow| ow == w) {
-                continue; // already a window
-            }
-            // Same `${short/#$HOME/~}` no-op as the preview pane — the path stays full.
-            let short = worktree_dir
-                .join(repo)
-                .join(w)
-                .to_string_lossy()
-                .to_string();
-            let display = format!(" +: {:<14} {:<8} {}", w, "(worktree)", short);
-            rows.push_str(&format!("worktree|{w}|{display}\n"));
-        }
-    }
-
-    let pool_status = if bare && pool_eligible(roots, name) {
-        Some(bn_core::pool::pool_status(cfg, repo))
-    } else {
-        None
-    };
-    let mut represented: HashSet<String> = open_windows.iter().cloned().collect();
-    represented.extend(worktrees.iter().cloned());
-    if bare {
-        let bare_s = roots
-            .bare_dir(name)
-            .join(format!("{repo}.git"))
-            .to_string_lossy()
-            .to_string();
-        represented.extend(
-            wt::checked_out_branches(&bare_s)
-                .into_keys()
-                .map(|branch| wt::sanitize_branch(&branch)),
-        );
-    }
-    if let Some(status) = &pool_status {
-        represented.extend(
-            status
-                .slots
-                .iter()
-                .filter_map(|slot| slot.branch.as_deref())
-                .map(wt::sanitize_branch),
-        );
-    }
-    rows.push_str(&remote_pr_rows(&remote_prs(roots, name), &represented));
-
-    // Codespace branches for this repo — "<branch> ☁" rows beside the worktrees, skipping any
-    // already open as a window. The payload packs `csname\tbranch` (neither contains `|`).
-    for cs in cs_for_repo(repo) {
-        let cs_win = cs_window_name(&cs.branch);
-        if open_windows.iter().any(|ow| ow == &cs_win) {
-            continue;
-        }
-        let display = format!(
-            " ☁: {:<14} {:<8} {}",
-            cs.branch,
-            format!("({})", cs.state),
-            cs.name
-        );
-        rows.push_str(&format!("codespace|{}\t{}|{display}\n", cs.name, cs.branch));
-    }
-
-    // Pool slots (#457): a leased warm slot is shown by its *leasing branch* (selectable → hands
-    // back that slot's window); an idle warm slot advertises a "type a branch to lease" row. Only
-    // for a pooled primary-root repo, and a leased branch already open as a window is skipped so it
-    // isn't listed twice.
-    if let Some(status) = &pool_status {
-        let now = bn_core::util::now_epoch_secs();
-        for slot in &status.slots {
-            // A compact "warmed <ago>" tag from the slot dir's mtime, blank when never warmed.
-            let warmed = slot
-                .warmed_ts
-                .map(|ts| format!(" · warmed {}", crate::cmd::cron::ago((now - ts).max(0))))
-                .unwrap_or_default();
-            match slot.branch.as_deref() {
-                Some(branch) if !branch.is_empty() => {
-                    let win = wt::sanitize_branch(branch);
-                    if open_windows.iter().any(|ow| ow == &win) {
-                        continue; // already a live window
-                    }
-                    let who = slot
-                        .holder
-                        .as_deref()
-                        .filter(|h| !h.is_empty())
-                        .map(|h| format!(" · {h}"))
-                        .unwrap_or_default();
-                    let display = format!(
-                        "  ◍: {:<14} {:<8} pool#{}{warmed}{who}",
-                        branch, "(leased)", slot.n
-                    );
-                    rows.push_str(&format!("poolbranch|{branch}|{display}\n"));
-                }
-                _ if slot.warm => {
-                    let display = format!(
-                        "  ○: {:<14} {:<8} pool#{}{warmed} · type a branch to lease",
-                        "(idle)", "(pool)", slot.n
-                    );
-                    rows.push_str(&format!("poolidle|{}|{display}\n", slot.n));
-                }
-                _ => {} // cold slot (not on disk yet) — nothing to show.
-            }
-        }
-    }
-
-    (rows, open_windows.len())
-}
-
 /// Open a project. Bare repos and multi-window clones get a window/worktree sub-picker; a quiet flat
 /// clone just switches to its session.
+///
+/// Running a command is not a request to leave the list, so a step that ran one reopens it. A loop
+/// rather than recursion because there is no bound on how many verbs someone fires in a sitting.
 fn open_project(cfg: &Config, roots: &Roots, name: &str) {
+    while open_project_step(cfg, roots, name) == Step::Reopen {}
+}
+
+/// One paint of the sub-picker, from building the rows to acting on the selection.
+fn open_project_step(cfg: &Config, roots: &Roots, name: &str) -> Step {
     let sess = ref_session(name);
     let repo = ref_repo(name);
     let bare = is_bare_repo(roots, name);
@@ -1276,12 +1125,12 @@ fn open_project(cfg: &Config, roots: &Roots, name: &str) {
     // A quiet flat clone (≤ 1 window, no worktrees) just switches to its session.
     if !bare && win_count <= 1 {
         goto_session(&sess);
-        return;
+        return Step::Done;
     }
     let worktree_dir = roots.worktree_dir(name);
 
     let header = if bare {
-        "Pick · PR remote branch · type a branch (pooled → warm slot) · ● live agent · ctrl-d del · ctrl-w warm · ctrl-r release"
+        "Pick · type a branch · ctrl-o do to this row · ctrl-s do it when away · ctrl-d del · ctrl-w warm · ctrl-r release · ctrl-p pane"
     } else {
         "Pick window/worktree (Esc: current)"
     };
@@ -1290,13 +1139,24 @@ fn open_project(cfg: &Config, roots: &Roots, name: &str) {
     let bn = crate::shq(&exe.display().to_string());
     let root_flag = if roots.win_scoped { " --root win" } else { "" };
     let name_q = crate::shq(name);
+    let listen = commands::Listen::reserve();
     let child = Command::new("fzf")
         .arg("--reverse")
         .arg("--ansi")
         .arg("--delimiter=|")
         .arg("--with-nth=3")
         .arg("--print-query")
+        // Handled in the parent: `execute()` can hand nothing back (see `commands::act_on_row`).
+        .arg("--expect=ctrl-o,ctrl-s")
         .arg(format!("--header={header}"))
+        // The side pane. `{1}~{2}` (kind~payload) rather than the display column, because these
+        // rows differ in kind: a window wants a live pane capture, a worktree its branch note.
+        // ctrl-p toggles it away for anyone who wants the bare list back.
+        .arg(format!(
+            "--preview={bn} tat {name_q}{root_flag} --pick-stage subpreview --pick-arg {{1}}~{{2}}"
+        ))
+        .arg("--preview-window=right:50%:wrap")
+        .arg("--bind=ctrl-p:toggle-preview")
         // ctrl-d: delete the focused *idle worktree* row (guarded: refuses a dirty tree, unpushed
         // commits, or a non-worktree row), then reload in place so the removed row disappears.
         .arg(format!(
@@ -1312,6 +1172,8 @@ fn open_project(cfg: &Config, roots: &Roots, name: &str) {
         .arg(format!(
             "--bind=ctrl-r:execute({bn} tat {name_q}{root_flag} --pick-stage releasepool --pick-arg {{1}}~{{2}})+reload({bn} tat {name_q}{root_flag} --pick-stage sublist)"
         ))
+        .args(commands::listen_args(listen.as_ref()))
+        .envs(commands::listen_env(listen.as_ref()))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn();
@@ -1319,38 +1181,46 @@ fn open_project(cfg: &Config, roots: &Roots, name: &str) {
         Ok(c) => c,
         Err(_) => {
             goto_session(&sess);
-            return;
+            return Step::Done;
         }
     };
     if let Some(stdin) = child.stdin.take() {
         let mut stdin = stdin;
         let _ = stdin.write_all(rows.as_bytes());
     }
+    let _ticker = commands::Ticker::start(listen.as_ref(), &exe, name, root_flag);
     let Ok(out) = child.wait_with_output() else {
         goto_session(&sess);
-        return;
+        return Step::Done;
     };
     if out.status.code() == Some(130) {
         goto_session(&sess);
-        return;
+        return Step::Done;
     }
     let text = String::from_utf8_lossy(&out.stdout);
     let mut lines = text.lines();
     let query = lines.next().unwrap_or("");
+    // `--expect` inserts a line naming the key that accepted — empty for a plain Enter.
+    let key = lines.next().unwrap_or("");
     let selection = lines.next().unwrap_or("");
 
     if selection.is_empty() && !query.is_empty() && bare {
         open_worktree(cfg, roots, name, query);
-        return;
+        return Step::Done;
     }
     if selection.is_empty() {
         goto_session(&sess);
-        return;
+        return Step::Done;
     }
 
     let mut parts = selection.splitn(3, '|');
     let kind = parts.next().unwrap_or("");
     let payload = parts.next().unwrap_or("");
+
+    // Acting on a row without leaving the list; what follows takes you somewhere instead.
+    if let Some(step) = commands::act_on_row(cfg, roots, name, key, kind, payload) {
+        return step;
+    }
     if kind == "window" {
         goto_session(&format!("{sess}:{payload}"));
     } else if kind == "remotepr" {
@@ -1381,6 +1251,7 @@ fn open_project(cfg: &Config, roots: &Roots, name: &str) {
         open_or_select_window(&sess, payload, &wt_path);
         goto_session(&sess);
     }
+    Step::Done
 }
 
 /// Fetch a remote-only PR's exact source branch, then hand it to the normal TAT opener. Keeping the
@@ -1615,6 +1486,9 @@ pub fn stage(
     pick_arg: Option<&str>,
 ) {
     let roots = Roots::resolve(cfg, root_opt);
+    // Unwrapped once: absent and empty mean the same thing to every handler below.
+    let row = name.unwrap_or("");
+    let arg = pick_arg.unwrap_or("");
     match stage {
         TatStage::List => build_list(&roots, false),
         TatStage::Refresh => {
@@ -1626,19 +1500,18 @@ pub fn stage(
             }
             build_list(&roots, true)
         }
-        TatStage::Preview => preview(&roots, name.unwrap_or("")),
-        TatStage::Kill => kill_from_line(name.unwrap_or("")),
+        TatStage::Preview => preview(&roots, row),
+        TatStage::Kill => kill_from_line(row),
         TatStage::SubList => {
-            let (rows, _) = build_sub_rows(cfg, &roots, name.unwrap_or(""), true);
+            let (rows, _) = build_sub_rows(cfg, &roots, row, true);
             print!("{rows}");
         }
-        TatStage::RmWorktree => {
-            rm_worktree(cfg, &roots, name.unwrap_or(""), pick_arg.unwrap_or(""))
-        }
-        TatStage::WarmPool => warm_pool(&roots, name.unwrap_or("")),
-        TatStage::ReleasePool => {
-            release_pool(cfg, &roots, name.unwrap_or(""), pick_arg.unwrap_or(""))
-        }
+        TatStage::RmWorktree => rm_worktree(cfg, &roots, row, arg),
+        TatStage::WarmPool => warm_pool(&roots, row),
+        TatStage::SubPreview => preview::row(cfg, &roots, row, arg),
+        TatStage::RunCmd => command_from_pick(cfg, &roots, row, arg, When::Now),
+        TatStage::RunCmdAway => command_from_pick(cfg, &roots, row, arg, When::Away),
+        TatStage::ReleasePool => release_pool(cfg, &roots, row, arg),
         TatStage::WarmRemote => {
             cs_fetch_blocking();
             if let Some(name) = name.filter(|n| !n.is_empty()) {
@@ -1703,8 +1576,8 @@ fn agent_dot(state: &str, since: &str) -> String {
 mod discovery_cache_tests {
     use super::codespaces::{cs_cache_fresh, cs_raw};
     use super::discovery::{
-        discovery_cache_fresh, discovery_cache_path, read_discovery_cache, write_discovery_cache,
-        CachedRemotePrs, DiscoveryCache,
+        discovery_cache_fresh, discovery_cache_path, read_discovery_cache, scan_worktrees,
+        write_discovery_cache, CachedRemotePrs, DiscoveryCache,
     };
     use super::*;
 
@@ -1796,33 +1669,6 @@ mod discovery_cache_tests {
         std::fs::write(discovery_cache_path(), "not json").unwrap();
         assert!(read_discovery_cache().refs.is_empty());
         assert!(read_discovery_cache().worktrees.is_empty());
-    }
-
-    #[test]
-    fn remote_pr_rows_hide_locally_represented_branches_and_escape_display_text() {
-        let prs = vec![
-            wt::RemotePr {
-                number: 41,
-                title: "Already local".into(),
-                branch: "feat/local".into(),
-                url: "https://example.test/41".into(),
-            },
-            wt::RemotePr {
-                number: 42,
-                title: "Remote | work\nfrom laptop".into(),
-                branch: "feat/remote".into(),
-                url: "https://example.test/42".into(),
-            },
-        ];
-        let represented = HashSet::from([wt::sanitize_branch("feat/local")]);
-
-        let rows = remote_pr_rows(&prs, &represented);
-
-        assert!(!rows.contains("Already local"));
-        assert!(rows.contains("remotepr|42|"));
-        assert!(rows.contains("feat-remote"));
-        assert!(rows.contains("Remote   work from laptop"));
-        assert_eq!(rows.lines().count(), 1);
     }
 
     #[test]

@@ -8,6 +8,11 @@
 //! catalog and nothing downstream has to defend against one.
 use super::*;
 
+/// The closed sink set. Config (`sinks = [...]`) may only allowlist these; a card item routes to
+/// exactly one of them via [`kind_sink`]. This is the privacy guard: no public sink exists, so
+/// none can be configured.
+pub const SINKS: &[&str] = &["attn", "daily", "note", "dojo", "research", "doc", "learn"];
+
 /// A malformed agent source, independent of where it was loaded from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentParseError {
@@ -81,7 +86,7 @@ impl fmt::Display for AgentParseError {
             Self::UnknownSink { sink } => write!(
                 f,
                 "unknown sink '{sink}' (allowed: {})",
-                crate::staff::SINKS.join(" | ")
+                SINKS.join(" | ")
             ),
             Self::UnsafeSkill { skill } => write!(f, "unsafe skill path '{skill}'"),
             Self::UnsafeMcp { mcp } => {
@@ -277,7 +282,7 @@ pub(super) fn validate_agent_frontmatter(
         });
     }
     if let Some(schedule) = front.on_calendar.as_deref() {
-        if !crate::staff_schedule::calendar_supported(schedule) {
+        if !crate::schedule::calendar_supported(schedule) {
             return Err(AgentParseError::InvalidSchedule {
                 value: schedule.to_string(),
             });
@@ -322,7 +327,7 @@ pub(super) fn validate_agent_frontmatter(
         }
     }
     for s in &front.sinks {
-        if !crate::staff::SINKS.contains(&s.as_str()) {
+        if !SINKS.contains(&s.as_str()) {
             return Err(AgentParseError::UnknownSink { sink: s.clone() });
         }
     }

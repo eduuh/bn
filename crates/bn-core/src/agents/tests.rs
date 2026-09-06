@@ -46,8 +46,8 @@ fn run_detail(ts: i64, exit_code: i32) -> CronRunDetail {
 fn due_catches_up_and_waits_for_the_next_successful_slot() {
     let schedule = "*:0/15";
     let now = 1_800_000_000;
-    let slot = crate::staff_schedule::previous_occurrence(schedule, now).expect("previous slot");
-    let next = crate::staff_schedule::next_occurrence(schedule, slot).expect("next slot");
+    let slot = crate::schedule::previous_occurrence(schedule, now).expect("previous slot");
+    let next = crate::schedule::next_occurrence(schedule, slot).expect("next slot");
 
     assert!(due(schedule, None, now, DEFAULT_RETRY_AFTER_SECS));
     assert!(!due(
@@ -250,20 +250,16 @@ fn shipped_agent_catalog_is_valid() {
         );
     }
 
+    // Contract markers for the agents the catalog still ships. The staff roster's entries
+    // (quarter-review, today-agent, staff-mentor, sentinel, staff-archivist) went with that roster.
+    // If the Mentor is ever brought back, restore its "Never post to the pull request" pin too: it
+    // is the only agent whose subject is a PR thread other people read, it runs unattended on a box
+    // logged in to GitHub, and that rule was already deleted once by an unrelated refactor.
     for (name, contract) in [
         ("attention-agent", "the single ranked list"),
-        ("quarter-review", "PER-GOAL"),
         ("task-enhance", "Do not implement"),
         ("task-triage", "Do not implement"),
-        ("today-agent", "bn today list"),
         ("controller", "Keep the user in the loop"),
-        ("staff-mentor", "Mentor"),
-        // The Mentor is the only agent whose subject is a PR thread other people read, and it runs
-        // unattended on a box that is logged in to GitHub. Its no-publish rule was deleted once in
-        // a refactor; pin it so that cannot happen quietly again.
-        ("staff-mentor", "Never post to the pull request"),
-        ("sentinel", "Estate patrol"),
-        ("staff-archivist", "strictly private"),
     ] {
         assert!(
             catalog

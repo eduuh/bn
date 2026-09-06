@@ -353,7 +353,7 @@ fn render_body(
 /// Compose the seed the harness starts on: the rendered body, what the entry is equipped with,
 /// and the caller's instruction.
 ///
-/// The equipped block is [`bn_core::staff::equip_preamble`] — the same text a headless staff run
+/// The equipped block is [`bn_core::equip::equip_preamble`] — the same text a headless staff run
 /// gets, rather than a second phrasing of the same list. An entry with no declared skills or MCPs
 /// contributes nothing, so this is a no-op for most skills.
 pub(crate) fn compose_seed(body: &str, entry: &Launchable, instruction: &str) -> String {
@@ -361,7 +361,7 @@ pub(crate) fn compose_seed(body: &str, entry: &Launchable, instruction: &str) ->
     if !seed.ends_with('\n') {
         seed.push('\n');
     }
-    if let Some(equipped) = bn_core::staff::equip_preamble(&entry.skills, &[]) {
+    if let Some(equipped) = bn_core::equip::equip_preamble(&entry.skills, &[]) {
         seed.push('\n');
         seed.push_str(&equipped);
     }

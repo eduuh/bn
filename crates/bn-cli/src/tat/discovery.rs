@@ -194,6 +194,25 @@ pub(super) fn remote_prs(roots: &Roots, name: &str) -> Vec<wt::RemotePr> {
     hit.map(|h| h.prs).unwrap_or_default()
 }
 
+/// Drop every cached PR list belonging to `repo`, so the next paint refetches instead of serving
+/// an answer a fetch has just invalidated.
+///
+/// Takes a bare repo *name* rather than a [`Roots`]-derived key because the caller is a queued job,
+/// which has a repo and no picker: it never resolved a root scope and should not have to. Every
+/// root holding that name is cleared, which is the conservative direction — clearing one entry too
+/// many costs a refetch, keeping one too long shows a PR that has since merged.
+pub(crate) fn invalidate_remote_prs(repo: &str) {
+    let suffix = format!("{repo}.git");
+    let mut cache = read_discovery_cache();
+    let before = cache.remote_prs.len();
+    cache
+        .remote_prs
+        .retain(|key, _| !std::path::Path::new(key).ends_with(&suffix));
+    if cache.remote_prs.len() != before {
+        write_discovery_cache(&cache);
+    }
+}
+
 /// The discovery-cache key for a repo's open PRs: its bare path, so two roots holding the same repo
 /// name keep separate entries.
 fn remote_pr_cache_key(roots: &Roots, name: &str) -> String {

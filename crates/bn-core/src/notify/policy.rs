@@ -342,16 +342,13 @@ pub struct Quiet {
 }
 
 impl Quiet {
-    /// Read the three quiet-window predicates. The routine config is fail-soft: an `Err` is a
-    /// no-op, exactly as [`crate::next::next_actions`] treats it.
-    pub fn probe(cfg: &Config, now: i64) -> Self {
+    /// Read the quiet-window predicates. `protected_block` is always false since the `[routine]`
+    /// config that supplied protected time blocks was retired; AFK and focus still silence.
+    pub fn probe(_cfg: &Config, now: i64) -> Self {
         Self {
             afk: crate::afk::is_active(now),
             focus: crate::focus::is_active(now),
-            protected_block: cfg
-                .routine
-                .as_ref()
-                .is_ok_and(|routine| crate::routine::suppresses_guidance(routine, now)),
+            protected_block: false,
         }
     }
 

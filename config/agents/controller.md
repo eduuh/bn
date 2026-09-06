@@ -65,10 +65,9 @@ long-running, so let it run in its own window. `--no-pool` opts out for a delibe
 ## Peers and automatic overflow
 - Peers are the machines declared in config.toml `[hosts]` / `[nodes]`. Run `bn connect` (no
   argument) to see the known hosts.
-- With `[nodes]` populated and `[orchestrate].remote_overflow = true`, `bn orchestrate` fans work
-  out to peers automatically when the local box is saturated — you do **not** hand-place every
-  item. Prefer `bn orchestrate` for backlog/wave work; when a request names a specific machine,
-  surface it to the user (peer execution is not dispatched directly).
+- With `[nodes]` populated, `bn queue` places work across peers when the local box is saturated —
+  you do **not** hand-place every item. Prefer `bn queue` for backlog work; when a request names a
+  specific machine, surface it to the user (peer execution is not dispatched directly).
 - Route all peer interaction through `bn connect` — never hand-rolled `ssh` — and keep a single
   `bn connect <alias>` session live per peer (it is attach-or-create; reattach instead of
   reopening).

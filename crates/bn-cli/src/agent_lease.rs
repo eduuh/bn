@@ -49,7 +49,7 @@ fn target_is_live(target: &str) -> bool {
     crate::proc::tmux_raw(&[
         "list-panes",
         "-t",
-        &format!("={target}"),
+        &crate::proc::exact_target(target),
         "-F",
         "#{pane_dead}",
     ])
@@ -62,7 +62,7 @@ pub(crate) fn pane_pid(target: &str) -> Option<u32> {
     crate::proc::tmux_raw(&[
         "list-panes",
         "-t",
-        &format!("={target}"),
+        &crate::proc::exact_target(target),
         "-F",
         "#{pane_pid} #{pane_dead}",
     ])?
@@ -196,7 +196,7 @@ fn remove_dead_launch_target(target: &str) -> Result<(), String> {
 /// three when *it* creates a window; this covers the in-place case, where the window already existed
 /// and the agent moved in.
 pub(crate) fn mark_window(lease: &AgentLease) {
-    let target = format!("={}", lease.tmux_target);
+    let target = crate::proc::exact_target(&lease.tmux_target);
     // `@bn_agent_since` is read by the tmux status row, the jump picker, the attention list and
     // `agent_live` to answer "how long has this agent been going?" — and nothing wrote it, so every
     // one of them was reading an empty string. tmux has no per-window creation time to fall back
@@ -361,7 +361,37 @@ fn harness_panes_in(worktree: &Path) -> Vec<Occupant> {
     let Some(output) = crate::proc::tmux_raw(&["list-panes", "-a", "-F", format]) else {
         return Vec::new();
     };
-    parse_harness_panes(&output, worktree, bn_core::util::now_epoch_secs())
+    let mut panes = parse_harness_panes(&output, worktree, bn_core::util::now_epoch_secs());
+    if panes.is_empty() {
+        return panes;
+    }
+    // Name them by their branch, asked of git.
+    //
+    // Left unnamed, `Occupant::label` falls back to `agent:<session>:<window>` — which doubles the
+    // prefix whenever the window is *already* called `agent:<repo>:<branch>`, as a dispatched one
+    // is. That is how a pool slot came to be recorded as `agent:bn:agent:bn:worktree-commands`,
+    // and why `wt pool return <branch>` could not match it. The ledger names a tenant by its
+    // branch, and inside a checkout the branch is knowable.
+    //
+    // Resolved only once there is someone to name, and only once per checkout rather than per
+    // pane: this sits under `pool_status`, which the picker's preview calls on every cursor move,
+    // so an unconditional subprocess here would be a subprocess per slot per keystroke.
+    //
+    // A genuinely detached checkout has no branch to find, and keeps the old fallback.
+    let Some(branch) = crate::wt::git_out(&[
+        "-C",
+        &worktree.to_string_lossy(),
+        "branch",
+        "--show-current",
+    ])
+    .map(|b| b.trim().to_string())
+    .filter(|b| !b.is_empty()) else {
+        return panes;
+    };
+    for pane in &mut panes {
+        pane.branch = Some(branch.clone());
+    }
+    panes
 }
 
 /// Whether *any* live tmux pane is sitting in `worktree` — an agent, a build, or just a shell
@@ -862,6 +892,26 @@ mod tests {
         let panes = parse_harness_panes(row, Path::new("/wt/bn/feat"), NOW);
         assert_eq!(panes.len(), 1);
         assert_eq!(panes[0].since, NOW);
+    }
+
+    /// The ledger names a tenant by its branch, and `harness_panes_in` fills one in for every pane
+    /// it finds in a checkout. Before that, occupants here carried no branch and `label()` fell
+    /// back to `agent:<session>:<window>` — so a window already named `agent:bn:feat`, which is
+    /// exactly how a dispatched one is named, produced `agent:bn:agent:bn:feat` in the pool ledger
+    /// and stopped `wt pool return feat` matching it.
+    #[test]
+    fn a_named_pane_is_labelled_by_its_branch_not_its_window() {
+        let row = "bn:agent:bn:feat\t/wt/bn/feat\tclaude\t\t0";
+        let mut panes = parse_harness_panes(row, Path::new("/wt/bn/feat"), NOW);
+        assert_eq!(panes.len(), 1);
+
+        // Unnamed — the detached-checkout case, where there is no branch to find. The fallback
+        // still doubles, which is why naming them matters.
+        assert_eq!(panes[0].label(), "agent:bn:agent:bn:feat");
+
+        // Named, as `harness_panes_in` now does for any checkout that is on a branch.
+        panes[0].branch = Some("feat".to_string());
+        assert_eq!(panes[0].label(), "feat");
     }
 
     #[test]

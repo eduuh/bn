@@ -330,13 +330,6 @@ pub fn next_actions(cfg: &Config, today: &str, now: i64) -> Vec<Action> {
         out.retain(Action::is_urgent);
     }
     // Routine-aware schedule (#801): inside a *protected* recurring block (family/recovery/
-    // exercise/sleep, or any block explicitly marked `protected`), non-urgent guidance pauses the
-    // same way focus mode does — urgent/breaking items always still surface. Work/learning blocks
-    // are unprotected by default and keep full guidance. A disabled or unresolved `[routine]`
-    // config is a silent no-op (see `current_snapshot`).
-    if crate::routine::current_snapshot(cfg, now).is_some_and(|s| s.suppresses_guidance) {
-        out.retain(Action::is_urgent);
-    }
     out
 }
 
@@ -647,9 +640,6 @@ fn from_doctor(cfg: &Config, today: &str) -> Vec<Action> {
             // Not produced here (repo=None above); doctor owns MCP-resolvability nags.
             Finding::Mcp(_) => None,
             // Neither staff health signal is a curated "do this next" task: a missed scheduled run
-            // (#273) and a stale/silent staff (#270, home machine down) are both `bn doctor` /
-            // `bn staff` territory, so they stay off the `bn next` list like note hygiene.
-            Finding::Staff(_) | Finding::StaleStaff(_) => None,
             // A cross-machine notes leak is a machine-setup misconfig surfaced by `bn doctor`, not
             // a per-repo task — keep it off the `bn next` action list. Inactive shell wrappers are
             // the same shape of problem: your shell's setup, not the next piece of work.

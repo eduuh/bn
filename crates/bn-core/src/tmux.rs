@@ -233,7 +233,10 @@ pub fn classify_presence(
 /// ambiguity resolves toward presence, since sparing a dead lane costs one slot for one decay window,
 /// and a false negative costs a human their work mid-review.
 pub fn observe_presence(target: &str, now: i64) -> Presence {
-    let t = format!("={target}");
+    // `exact_target`, not `format!("={target}")`: the latter anchors only the session half, so on a
+    // server holding `feat` and `feat-two` this read — and the `@bn_attended_at` stamp below —
+    // silently addressed the wrong window.
+    let t = exact_target(target);
     let Some(p) = tmux_raw(&["list-panes", "-t", &t, "-F", PRESENCE_FMT])
         .and_then(|out| parse_presence(&out))
     else {

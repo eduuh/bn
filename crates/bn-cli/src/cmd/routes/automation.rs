@@ -393,31 +393,5 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
                 },
             )
         }
-        CmdAutomation::Night { action } => match action {
-            None | Some(NightCmd::Status) => emit_night_status(cfg, json),
-            Some(NightCmd::Plan) => emit_night_plan(cfg, json),
-            Some(NightCmd::Run { max, force }) => emit_night_run(cfg, max, force, json),
-            Some(NightCmd::Report { hours }) => emit_night_report(cfg, hours, json),
-            Some(NightCmd::Off) => emit_night_switch(false, json),
-            Some(NightCmd::On) => emit_night_switch(true, json),
-        },
-        CmdAutomation::Dojo { action, repo, max } => match action {
-            None => emit_dojo_session(cfg, dojo_selector(repo, None, None), max, json),
-            Some(DojoCmd::Quiz { repo, max }) => emit_dojo_session(
-                cfg,
-                dojo_selector(repo, Some(bn_core::dojo::CardKind::Quiz), None),
-                max,
-                json,
-            ),
-            Some(DojoCmd::Bug { repo, max }) => emit_dojo_session(
-                cfg,
-                dojo_selector(repo, Some(bn_core::dojo::CardKind::BugMystery), None),
-                max,
-                json,
-            ),
-            Some(DojoCmd::Map { area, repo }) => emit_dojo_map(cfg, area, repo, json),
-            Some(DojoCmd::Stats) => emit_dojo_stats(cfg, json),
-            Some(DojoCmd::Config) => emit_dojo_config(cfg, json),
-        },
     }
 }

@@ -127,14 +127,6 @@ pub fn bootout(label: &str) -> Result<(), String> {
 /// The label prefix every orchestrate daemon shares — also the pre-#395 singleton's exact label.
 pub(crate) const ORCHESTRATE_LABEL_PREFIX: &str = "com.bn.orchestrate";
 
-/// The per-repo launchd label for a run's daemon: `com.bn.orchestrate.<repo>`.
-pub(crate) fn orchestrate_label(repo: &str) -> String {
-    format!(
-        "{ORCHESTRATE_LABEL_PREFIX}.{}",
-        bn_core::orchestrate::sanitize_run_key(repo)
-    )
-}
-
 /// Whether a launchd label is an orchestrate daemon — the legacy singleton (`com.bn.orchestrate`)
 /// or any per-repo daemon (`com.bn.orchestrate.<repo>`). The cron reconcile must skip ALL of them.
 pub(crate) fn is_orchestrate_label(label: &str) -> bool {
@@ -142,41 +134,6 @@ pub(crate) fn is_orchestrate_label(label: &str) -> bool {
         || label
             .strip_prefix(ORCHESTRATE_LABEL_PREFIX)
             .is_some_and(|rest| rest.starts_with('.'))
-}
-
-fn orchestrate_plist_path(label: &str) -> PathBuf {
-    agents_dir().join(format!("{label}.plist"))
-}
-
-/// The per-repo daemon plist: `RunAtLoad` starts the loop immediately; `KeepAlive
-/// {SuccessfulExit=false}` restarts it only on a *crash* (non-zero exit) — a clean drain / `bn
-/// orchestrate stop` (exit 0) stays down. A crashed daemon is relaunched by launchd, reloads the
-/// persisted queue, and resumes — the resilience a scheduled prompt can't offer (it survives the
-/// launching session AND a crash). `ThrottleInterval` guards against a hot restart loop. Login
-/// shell so `$PATH` finds gh/copilot. `--repo` pins the daemon to its own run's state file (#395).
-pub(crate) fn orchestrate_daemon_plist(bn_path: &str, repo: &str) -> String {
-    let label = orchestrate_label(repo);
-    format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-         <plist version=\"1.0\">\n\
-         <dict>\n\
-         \x20 <!-- bn orchestrate daemon (#338/#395) — event-driven fleet loop for one repo's run. Managed by `bn orchestrate`. -->\n\
-         \x20 <key>Label</key>\n  <string>{label}</string>\n\
-         \x20 <key>ProgramArguments</key>\n\
-         \x20 <array>\n\
-         \x20   <string>/bin/sh</string>\n\
-         \x20   <string>-lc</string>\n\
-         \x20   <string>exec \"{bn_path}\" orchestrate run --repo \"{repo}\"</string>\n\
-         \x20 </array>\n\
-         \x20 <key>RunAtLoad</key>\n  <true/>\n\
-         \x20 <key>KeepAlive</key>\n  <dict>\n    <key>SuccessfulExit</key>\n    <false/>\n  </dict>\n\
-         \x20 <key>ThrottleInterval</key>\n  <integer>10</integer>\n\
-         \x20 <key>StandardOutPath</key>\n  <string>/tmp/{label}.log</string>\n\
-         \x20 <key>StandardErrorPath</key>\n  <string>/tmp/{label}.log</string>\n\
-         </dict>\n\
-         </plist>\n"
-    )
 }
 
 /// The label for the queue dispatcher daemon.
@@ -214,114 +171,9 @@ pub(crate) fn queue_daemon_plist(bn_path: &str) -> String {
     )
 }
 
-/// Install (register + load) the per-repo `bn orchestrate run --repo <repo>` launchd daemon.
-/// Writes the plist to `~/Library/LaunchAgents` and bootstraps it (reloading any existing copy).
-/// Err when launchctl is unavailable (non-macOS / no GUI session) — the caller then falls back to
-/// a detached child.
-pub(crate) fn orchestrate_install(repo: &str) -> Result<(), String> {
-    if !have_launchctl() {
-        return Err("launchctl unavailable".into());
-    }
-    let bn = std::env::current_exe().map_err(|e| e.to_string())?;
-    let label = orchestrate_label(repo);
-    let path = orchestrate_plist_path(&label);
-    if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&path, orchestrate_daemon_plist(&bn.to_string_lossy(), repo))
-        .map_err(|e| e.to_string())?;
-    bootstrap(&path, &label)
-}
-
-/// Unload a repo's orchestrate daemon and delete its plist (best-effort — a not-loaded agent is
-/// already the goal state).
-pub(crate) fn orchestrate_uninstall(repo: &str) {
-    let label = orchestrate_label(repo);
-    let _ = bootout(&label);
-    let _ = std::fs::remove_file(orchestrate_plist_path(&label));
-}
-
-/// Delete a repo's orchestrate daemon plist WITHOUT booting the service out — used by the daemon
-/// itself when its run drains: the loop exits cleanly (KeepAlive leaves it down) and removing the
-/// plist stops the next login's RunAtLoad from resurrecting a loop for an already-finished run.
-/// A self-bootout here would flip the exit non-zero and make KeepAlive restart the daemon.
-pub(crate) fn orchestrate_forget(repo: &str) {
-    let _ = std::fs::remove_file(orchestrate_plist_path(&orchestrate_label(repo)));
-}
-
-/// Unload the pre-#395 machine-wide singleton daemon and delete its plist. Called once by the
-/// legacy-state migration so the old daemon can't keep driving (or resurrecting) the moved file.
-pub(crate) fn orchestrate_uninstall_legacy() {
-    let _ = bootout(ORCHESTRATE_LABEL_PREFIX);
-    let _ = std::fs::remove_file(orchestrate_plist_path(ORCHESTRATE_LABEL_PREFIX));
-}
-
 // #455: one cross-repo supervisor daemon that sweeps EVERY repo's session in a single loop, rather
 // than a per-repo daemon each blind to the other sessions. It gets its own reserved label so it
 // coexists with any per-repo daemons; `is_orchestrate_label` already covers it (cron never reaps it).
-
-/// The reserved "repo" token for the #455 cross-repo supervisor daemon — it isn't tied to any one
-/// repo, so it takes a token no real bare-repo stem produces.
-pub(crate) const ORCHESTRATE_ALL_TOKEN: &str = "__all__";
-
-/// The launchd label for the cross-repo supervisor daemon: `com.bn.orchestrate.__all__`.
-pub(crate) fn orchestrate_all_label() -> String {
-    format!("{ORCHESTRATE_LABEL_PREFIX}.{ORCHESTRATE_ALL_TOKEN}")
-}
-
-/// The cross-repo supervisor daemon plist (#455): same `RunAtLoad` + crash-only `KeepAlive` shape
-/// as the per-repo daemon, but its program is `bn orchestrate run --all-repos` — the single loop
-/// that sweeps every configured repo's session each tick.
-pub(crate) fn orchestrate_all_daemon_plist(bn_path: &str) -> String {
-    let label = orchestrate_all_label();
-    format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-         <plist version=\"1.0\">\n\
-         <dict>\n\
-         \x20 <!-- bn cross-repo orchestrate supervisor (#455) — one loop sweeping every repo's session. Managed by `bn orchestrate`. -->\n\
-         \x20 <key>Label</key>\n  <string>{label}</string>\n\
-         \x20 <key>ProgramArguments</key>\n\
-         \x20 <array>\n\
-         \x20   <string>/bin/sh</string>\n\
-         \x20   <string>-lc</string>\n\
-         \x20   <string>exec \"{bn_path}\" orchestrate run --all-repos</string>\n\
-         \x20 </array>\n\
-         \x20 <key>RunAtLoad</key>\n  <true/>\n\
-         \x20 <key>KeepAlive</key>\n  <dict>\n    <key>SuccessfulExit</key>\n    <false/>\n  </dict>\n\
-         \x20 <key>ThrottleInterval</key>\n  <integer>10</integer>\n\
-         \x20 <key>StandardOutPath</key>\n  <string>/tmp/{label}.log</string>\n\
-         \x20 <key>StandardErrorPath</key>\n  <string>/tmp/{label}.log</string>\n\
-         </dict>\n\
-         </plist>\n"
-    )
-}
-
-/// Install (register + load) the `bn orchestrate run --all-repos` cross-repo supervisor daemon.
-/// Mirrors [`orchestrate_install`]; `Err` when launchctl is unavailable so the caller falls back to
-/// a detached child.
-pub(crate) fn orchestrate_install_all() -> Result<(), String> {
-    if !have_launchctl() {
-        return Err("launchctl unavailable".into());
-    }
-    let bn = std::env::current_exe().map_err(|e| e.to_string())?;
-    let label = orchestrate_all_label();
-    let path = orchestrate_plist_path(&label);
-    if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&path, orchestrate_all_daemon_plist(&bn.to_string_lossy()))
-        .map_err(|e| e.to_string())?;
-    bootstrap(&path, &label)
-}
-
-/// Unload the cross-repo supervisor daemon and delete its plist (best-effort — a not-loaded agent
-/// is already the goal state).
-pub(crate) fn orchestrate_uninstall_all() {
-    let label = orchestrate_all_label();
-    let _ = bootout(&label);
-    let _ = std::fs::remove_file(orchestrate_plist_path(&label));
-}
 
 // --- `bn serve --daemon` bn-web dashboard (#388) -----------------------------
 // The web server is a long-running daemon (RunAtLoad + KeepAlive), same shape as the orchestrate
@@ -435,63 +287,4 @@ pub(crate) const ROUTINE_LABEL: &str = "com.bn.routine";
 /// Whether a launchd label is the routine watcher daemon — the cron reconcile must skip it.
 pub(crate) fn is_routine_label(label: &str) -> bool {
     label == ROUTINE_LABEL
-}
-
-fn routine_plist_path() -> PathBuf {
-    agents_dir().join(format!("{ROUTINE_LABEL}.plist"))
-}
-
-/// The routine watcher daemon plist: `RunAtLoad` starts `bn routine watch` immediately (and on
-/// every login/reboot); `KeepAlive {SuccessfulExit=false}` restarts it only on a *crash* — a
-/// clean SIGTERM/Ctrl-C exit (0) stays down. `ThrottleInterval` guards a hot restart loop.
-pub(crate) fn routine_daemon_plist(bn_path: &str) -> String {
-    format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-         <plist version=\"1.0\">\n\
-         <dict>\n\
-         \x20 <!-- bn routine watcher daemon (#801 amendment) — deadline-driven reconciliation loop. Managed by `bn routine service`. -->\n\
-         \x20 <key>Label</key>\n  <string>{ROUTINE_LABEL}</string>\n\
-         \x20 <key>ProgramArguments</key>\n\
-         \x20 <array>\n\
-         \x20   <string>/bin/sh</string>\n\
-         \x20   <string>-lc</string>\n\
-         \x20   <string>exec \"{bn_path}\" routine watch</string>\n\
-         \x20 </array>\n\
-         \x20 <key>RunAtLoad</key>\n  <true/>\n\
-         \x20 <key>KeepAlive</key>\n  <dict>\n    <key>SuccessfulExit</key>\n    <false/>\n  </dict>\n\
-         \x20 <key>ThrottleInterval</key>\n  <integer>10</integer>\n\
-         \x20 <key>StandardOutPath</key>\n  <string>/tmp/{ROUTINE_LABEL}.log</string>\n\
-         \x20 <key>StandardErrorPath</key>\n  <string>/tmp/{ROUTINE_LABEL}.log</string>\n\
-         </dict>\n\
-         </plist>\n"
-    )
-}
-
-/// Install (register + load) the routine watcher daemon. `Err` when launchctl is unavailable
-/// (non-macOS / no GUI session) — the caller then reports no resident coverage rather than a
-/// detached fallback (#801 amendment invariant 6: no fake coverage claims).
-pub(crate) fn routine_install(bn_path: &str) -> Result<(), String> {
-    if !have_launchctl() {
-        return Err("launchctl unavailable".into());
-    }
-    let path = routine_plist_path();
-    if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&path, routine_daemon_plist(bn_path)).map_err(|e| e.to_string())?;
-    bootstrap(&path, ROUTINE_LABEL)
-}
-
-/// Whether the routine watcher daemon is *installed* (its plist is on disk) — the same
-/// file-presence source of truth `registered()`/`web_installed` use.
-pub(crate) fn routine_installed() -> bool {
-    routine_plist_path().exists()
-}
-
-/// Unload the routine watcher daemon and delete its plist (best-effort — a not-loaded agent is
-/// already the goal state).
-pub(crate) fn routine_uninstall() {
-    let _ = bootout(ROUTINE_LABEL);
-    let _ = std::fs::remove_file(routine_plist_path());
 }

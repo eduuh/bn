@@ -6,8 +6,8 @@
 //! [`CommandRunner`] seam so the behavior is unit-testable with a [`FakeRunner`] — no network, no
 //! real `gh`.
 
+use crate::run_status::{classify_run, RunStatus};
 use crate::runner::CommandRunner;
-use crate::staff::{classify_run, RunStatus};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 

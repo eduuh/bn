@@ -41,6 +41,7 @@ mod edit;
 mod event_loop;
 mod gh;
 mod git;
+mod harness_dispatch;
 mod hooks;
 mod jump;
 mod launchd;
@@ -53,7 +54,6 @@ mod reap;
 mod retry;
 mod review_pr;
 mod serve;
-mod staff_pick;
 mod systemd;
 mod tat;
 mod timers;
@@ -76,8 +76,6 @@ pub(crate) use cmd::agent::*;
 pub(crate) use cmd::agent_resume::*;
 pub(crate) use cmd::agents::*;
 pub(crate) use cmd::attn::*;
-pub(crate) use cmd::bearings::*;
-pub(crate) use cmd::briefing::*;
 pub(crate) use cmd::build::*;
 pub(crate) use cmd::control::*;
 pub(crate) use cmd::core_cmds::*;
@@ -87,12 +85,9 @@ pub(crate) use cmd::cron::*;
 pub(crate) use cmd::daily::*;
 pub(crate) use cmd::dispatch::*;
 pub(crate) use cmd::doctor::*;
-pub(crate) use cmd::dojo::*;
 pub(crate) use cmd::ensure_tmux::*;
-pub(crate) use cmd::estate::*;
 pub(crate) use cmd::findings::*;
 pub(crate) use cmd::focus::*;
-pub(crate) use cmd::gathers::*;
 pub(crate) use cmd::gitio::*;
 pub(crate) use cmd::insights::*;
 pub(crate) use cmd::issue::*;
@@ -102,39 +97,29 @@ pub(crate) use cmd::killport::*;
 pub(crate) use cmd::learnings::*;
 pub(crate) use cmd::lifecycle::*;
 pub(crate) use cmd::links::*;
-pub(crate) use cmd::merged_prs::*;
-pub(crate) use cmd::night::*;
-pub(crate) use cmd::orchestrate::*;
 pub(crate) use cmd::plan_review::*;
 pub(crate) use cmd::pr_link::*;
 pub(crate) use cmd::promote::*;
 pub(crate) use cmd::q_inbox::*;
-pub(crate) use cmd::quarter::*;
 pub(crate) use cmd::recall::*;
 pub(crate) use cmd::references::*;
 pub(crate) use cmd::release::*;
-pub(crate) use cmd::retro::*;
 pub(crate) use cmd::review_gate::*;
 pub(crate) use cmd::reviews::*;
 pub(crate) use cmd::routes::{route_command, route_default};
-pub(crate) use cmd::routine::*;
 pub(crate) use cmd::sessions::*;
 pub(crate) use cmd::setup::*;
 pub(crate) use cmd::skills::*;
-pub(crate) use cmd::staff::*;
 pub(crate) use cmd::sync::*;
 pub(crate) use cmd::task::*;
 pub(crate) use cmd::task_view::*;
 pub(crate) use cmd::tmux_reconcile::emit_tmux_reconcile;
 pub(crate) use cmd::tmux_sessions::*;
 pub(crate) use cmd::tmux_status::*;
-pub(crate) use cmd::today::*;
 pub(crate) use cmd::tools::*;
 pub(crate) use cmd::track::*;
 pub(crate) use cmd::verify::*;
 pub(crate) use cmd::watch::*;
-pub(crate) use cmd::weakness::*;
-pub(crate) use cmd::week::*;
 pub(crate) use cmd::worker::*;
 
 /// Today's date (`YYYY-MM-DD`) via the core [`Clock`] seam. The CLI is the entry-point boundary
@@ -292,12 +277,17 @@ fn main() {
     }
 }
 
-/// Is this invocation an internal fzf callback rather than something the user typed?
+/// Is this invocation a machine-driven render rather than something the user typed?
 ///
-/// The pickers (`tat`, `jump`, `connect`, `staff feed --pick`) are self-referencing: fzf's
-/// `--preview`, `reload()` and action binds all re-invoke `bn … --pick-stage <stage>`. Those
-/// processes exist only to print rows and exit, many times a second, so they skip the once-per-
-/// invocation machine housekeeping in [`main`].
+/// Two families, same reason. The pickers (`tat`, `jump`, `connect`) are self-referencing: fzf's
+/// `--preview`, `reload()` and action binds all re-invoke `bn … --pick-stage <stage>`. And the
+/// tmux status line re-invokes seven of these commands from `#(...)` on every `status-interval`
+/// repaint — at 5s that is roughly 121k processes a day, none of them a user action.
+///
+/// Those processes exist only to print a fragment and exit, so they skip the once-per-invocation
+/// machine housekeeping in [`main`]: reconciling managed services, firing cron catch-up, repairing
+/// the queue dispatcher. Doing any of that on a status repaint is never right, and it is the path
+/// where an added subprocess would be least visible and most expensive.
 fn is_internal_callback(command: &Option<Command>) -> bool {
     matches!(
         command,
@@ -311,13 +301,24 @@ fn is_internal_callback(command: &Option<Command>) -> bool {
             } | CmdAutomation::Connect {
                 pick_stage: Some(_),
                 ..
-            }
-        )) | Some(Command::Staff(CmdStaff::Staff {
-            action: Some(cli::StaffCmd::Feed {
-                pick_stage: Some(_),
+            } | CmdAutomation::Attn {
+                action: Some(AttnCmd::Badge),
                 ..
-            }),
-        }))
+            } | CmdAutomation::Queue {
+                action: QueueCmd::Badge,
+            }
+        )) | Some(Command::Staff(CmdStaff::Cron {
+            action: Some(CronCmd::Running),
+            ..
+        })) | Some(Command::ShellUi(
+            CmdShellUi::TmuxGoal { .. }
+                | CmdShellUi::TmuxGit { .. }
+                | CmdShellUi::TmuxStatus { .. }
+                | CmdShellUi::TmuxMcp {
+                    action: TmuxMcpCmd::Badge,
+                    ..
+                }
+        ))
     )
 }
 
@@ -478,10 +479,12 @@ mod prompt_command_tests {
             }
         }
         // A refactor that renamed the frontmatter keys would otherwise leave this test passing
-        // vacuously, which is worse than not having it.
+        // vacuously, which is worse than not having it. The floor was 10 while the staff roster
+        // shipped a dozen agents; retiring that roster left 4, so it tracks the smaller catalog —
+        // the guard is "did we check anything at all", not a target headcount.
         assert!(
-            checked >= 10,
-            "expected the shipped roster to declare many run:/gather: lines, found {checked}"
+            checked >= 3,
+            "expected the shipped roster to declare run:/gather: lines, found {checked}"
         );
     }
 }

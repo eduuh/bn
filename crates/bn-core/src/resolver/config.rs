@@ -362,14 +362,6 @@ pub struct Config {
     /// cannot be mailed before it exists. Empty = nothing mails; a card leaving the machine is
     /// opt-in per agent.
     pub staff_mail: Vec<String>,
-    /// `[routine]` + `[[routine.blocks]]` (#801): the resolved, validated recurring weekly
-    /// personal-schedule config — timezone-aware, evaluated against an authoritative IANA zone
-    /// (never `chrono::Local`). `Err` holds a clear message (bad IANA name, undiscoverable host
-    /// zone, invalid day/time, zero-length block, or an overlap) rather than panicking or
-    /// silently degrading; only `bn routine …` and the `bn next`/`bn daily` integration read
-    /// this, so a broken `[routine]` section never breaks unrelated commands. See
-    /// [`crate::routine::RoutineConfig`].
-    pub routine: Result<crate::routine::RoutineConfig, String>,
     /// `[notify]`: the desktop-toast policy gate — which classes may interrupt, the per-key
     /// cooldown, and the daily/per-source budgets. Unlike [`Self::routine`] this is infallible:
     /// a bad value clamps or falls back to the default, because a notification preference must
@@ -448,7 +440,6 @@ impl Default for Config {
             orchestrate_remote_overflow: false,
             staff_home: None,
             staff_mail: Vec::new(),
-            routine: Ok(crate::routine::RoutineConfig::disabled()),
             notify: crate::notify::policy::NotifyConfig::default(),
         }
     }
@@ -752,11 +743,6 @@ impl Config {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
-        // `[routine]` + `[[routine.blocks]]` (#801): parsed/validated once here so every reader
-        // (CLI, `bn next`, `bn daily`) shares the same resolved config; `Err` carries a clear
-        // message rather than panicking the whole `Config::resolve` on a bad `[routine]` section.
-        let routine = crate::routine::RoutineConfig::resolve(file.and_then(|f| f.routine()));
-
         // `[notify]`: the desktop-toast policy gate. Infallible by design (a bad value clamps or
         // falls back), so a notification preference can never break an unrelated command. The env
         // overrides are the two a person reaches for on a specific machine — a kill switch, and
@@ -900,7 +886,6 @@ impl Config {
             orchestrate_remote_overflow,
             staff_home,
             staff_mail,
-            routine,
             notify,
         }
     }

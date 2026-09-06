@@ -17,10 +17,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 mod cron_health;
-mod staff_health;
 use cron_health::cron_findings;
 pub use cron_health::CronFinding;
-use staff_health::staff_findings;
 
 // The precomputed snapshot, split out to keep this file under the 1000-line ratchet. Re-exported
 // flat so every `doctor::cached_or_compute(..)` / `doctor::read_cache()` call site is unchanged.
@@ -44,25 +42,6 @@ pub struct NoteFinding {
     pub blockers: usize,
     pub last_activity: String,
     pub idle_days: i64,
-}
-
-/// A staff agent whose most recent scheduled run never happened (#273) — silence that is *death*,
-/// not a by-design quiet day (which records an `ok-silent` run, see [`crate::staff_schedule`]).
-/// Detected read-only by joining the roster's declared schedule with the run ledger, so it is
-/// flagged *once* per missed slot by construction: doctor recomputes it each invocation from the
-/// same inputs rather than raising a fresh item, and a slot stops surfacing the moment a run (of
-/// any status) is recorded at or after it. A skip or a silent run both write a ledger row, so
-/// neither is ever mistaken for a miss.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct StaffFinding {
-    pub agent: String,
-    pub on_calendar: String,
-    /// Epoch seconds of the missed scheduled slot.
-    pub scheduled: i64,
-    /// Epoch seconds of the agent's last recorded run, or `0` if it has never run.
-    pub last_run: i64,
-    /// Seconds the scheduled run is overdue (`now − scheduled`) — how long the silence has lasted.
-    pub overdue_secs: i64,
 }
 
 /// A hand-/script-/agent-raised attention item (see `bn attn`).
@@ -140,14 +119,6 @@ pub struct McpFinding {
 /// machine ([`crate::resolver::Config::staff_home`]) has likely been down. Manual re-home onto a
 /// live box is the v1 fix. Distinct from [`StaffFinding`] (#273), which flags a *single* agent
 /// that missed its next scheduled slot; this flags the *whole* staff going quiet across machines.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct StaleStaffFinding {
-    /// The newest card date anywhere in the feed (`YYYY-MM-DD`) — when the staff last ran.
-    pub last_card: String,
-    /// Whole days since that card (always `> STALE_STAFF_DAYS` when this surfaces).
-    pub idle_days: i64,
-}
-
 /// A cross-machine notes leak (#leak): on a work-classified machine, `personal_root` resolves to
 /// a *different* repo than `work_root` and carries branch-note subtrees for machines other than
 /// this one. Because the cross-machine views ([`crate::resolver::Config::metrics_logs_all_machines`],
@@ -240,12 +211,10 @@ impl ShellInitProblem {
 pub enum Finding {
     Note(NoteFinding),
     Cron(CronFinding),
-    Staff(StaffFinding),
     Attn(AttnFinding),
     Todo(TodoFinding),
     Inbox(InboxFinding),
     Mcp(McpFinding),
-    StaleStaff(StaleStaffFinding),
     NotesLeak(NotesLeakFinding),
     Backlog(BacklogFinding),
     ShellInit(ShellInitFinding),
@@ -257,9 +226,6 @@ impl Finding {
     fn rank(&self) -> Rank {
         match self {
             Finding::Cron(_) => action_rank::URGENT,
-            // A staff agent that missed its scheduled run is actively broken (a dead brief), on a
-            // par with a failing cron job.
-            Finding::Staff(_) => action_rank::URGENT,
             Finding::Attn(a) => action_rank::from_severity(&a.severity),
             Finding::Note(n) => {
                 if n.blockers > 0 {
@@ -276,9 +242,6 @@ impl Finding {
             // A configured-but-unresolvable MCP server breaks the next agent boot here — worth a
             // nag ahead of passive hygiene, below actively-failing signals.
             Finding::Mcp(_) => action_rank::WARN,
-            // A silent staff likely means its home machine is down — an operational problem worth
-            // surfacing above passive hygiene, below what's actively breaking work right now.
-            Finding::StaleStaff(_) => action_rank::WARN,
             // A cross-machine notes leak means another box's data is physically present and being
             // read here — an operational misconfig, on a par with the other WARN-band signals.
             Finding::NotesLeak(_) => action_rank::WARN,
@@ -298,15 +261,12 @@ impl Finding {
             Finding::Cron(c) => c.failures as i64,
             // The longer the silence, the higher within the actively-broken band — in hours, so it
             // is comparable to the day/count units the other priority-3 rows sort by.
-            Finding::Staff(s) => s.overdue_secs / 3600,
             Finding::Attn(_) => 0,
             // The more overdue, the higher within the urgent band; A-not-overdue todos (days 0)
             // sit just under overdue ones.
             Finding::Todo(t) => t.overdue_days,
             Finding::Inbox(i) => i.idle_days,
             Finding::Mcp(_) => 0,
-            // The longer the staff has been silent, the higher within its band.
-            Finding::StaleStaff(s) => s.idle_days,
             // The more foreign machines are leaking in, the higher within its band.
             Finding::NotesLeak(l) => l.foreign_machines.len() as i64,
             Finding::Backlog(b) => b.untasked as i64,
@@ -320,7 +280,6 @@ impl Finding {
         match self {
             Finding::Note(n) => format!("{}/{} idle {}d", n.repo, n.branch, n.idle_days),
             Finding::Cron(c) => format!("cron {} failing", c.job),
-            Finding::Staff(s) => format!("staff {} missed its scheduled run", s.agent),
             Finding::Attn(a) => a.title.clone(),
             Finding::Todo(t) if t.overdue => {
                 format!("{} overdue {}d", t.summary, t.overdue_days)
@@ -328,7 +287,6 @@ impl Finding {
             Finding::Todo(t) => format!("{} (A)", t.summary),
             Finding::Inbox(i) => format!("{} in inbox {}d", i.text, i.idle_days),
             Finding::Mcp(m) => format!("mcp {}: '{}' {}", m.server, m.command, m.problem),
-            Finding::StaleStaff(s) => format!("staff idle {}d", s.idle_days),
             Finding::NotesLeak(l) => format!(
                 "personal notes leak: {} foreign machine(s) under {}",
                 l.foreign_machines.len(),
@@ -376,10 +334,8 @@ pub fn doctor(
     let mut out = Vec::new();
     out.extend(note_findings(cfg, today, stale_days));
     out.extend(cron_findings(cfg));
-    out.extend(staff_findings(cfg));
     out.extend(attn_findings(today));
     out.extend(inbox_findings(cfg, today));
-    out.extend(stale_staff_findings(cfg, today));
     out.extend(notes_leak_findings(cfg));
     out.extend(backlog_findings());
     if let Some((root, name)) = repo {
@@ -500,20 +456,6 @@ pub fn note_findings(cfg: &Config, today: &str, stale_days: i64) -> Vec<Finding>
 /// fires identically on every box. Distinct from [`staff_health::staff_findings`] (#273, a *single* agent's
 /// missed slot): this is the *whole* staff going quiet across machines. Silent when the staff has
 /// never run (nothing to be stale about) or ran recently enough; at most one finding.
-fn stale_staff_findings(cfg: &Config, today: &str) -> Vec<Finding> {
-    let Some(last_card) = crate::staff::newest_card_date(cfg) else {
-        return Vec::new();
-    };
-    let idle_days = idle_days_since(&last_card, today);
-    if idle_days <= crate::staff::STALE_STAFF_DAYS {
-        return Vec::new();
-    }
-    vec![Finding::StaleStaff(StaleStaffFinding {
-        last_card,
-        idle_days,
-    })]
-}
-
 /// A cross-machine notes leak (the #leak guard). Fires only on a **work-classified** machine
 /// (one with `[work].work_repos` set or `[work].only` on) whose `personal_root` is a *separate*
 /// repo from `work_root` and physically carries branch-note subtrees for machines other than this

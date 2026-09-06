@@ -86,13 +86,13 @@ fn latest_pool_warm_deadline(
             w.name == bn_core::queue::window::POOL_WARM_AFTER_WORK
                 && w.mode == bn_core::queue::window::WindowMode::Deadline
         })
-        .filter_map(|w| bn_core::staff_schedule::previous_occurrence(&w.at, now))
+        .filter_map(|w| bn_core::schedule::previous_occurrence(&w.at, now))
         .max()
         .or_else(|| {
             bn_core::queue::window::default_pool_warm_priority_windows()
                 .iter()
                 .find(|w| w.name == bn_core::queue::window::POOL_WARM_AFTER_WORK)
-                .and_then(|w| bn_core::staff_schedule::previous_occurrence(&w.at, now))
+                .and_then(|w| bn_core::schedule::previous_occurrence(&w.at, now))
         })
 }
 

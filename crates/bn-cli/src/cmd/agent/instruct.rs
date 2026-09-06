@@ -34,7 +34,7 @@ fn ctx_for(cfg: &Config, target: &str) -> Option<Resolved> {
         "display-message",
         "-p",
         "-t",
-        &format!("={target}"),
+        &crate::proc::exact_target(target),
         "#{@bn_repo}\t#{@bn_branch}",
     ])?;
     let (repo, branch) = metadata.trim().split_once('\t')?;

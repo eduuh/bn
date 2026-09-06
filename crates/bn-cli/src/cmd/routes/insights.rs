@@ -27,9 +27,6 @@ pub(super) fn route(cfg: &Config, action: CmdInsights, json: bool) {
                 severity,
             }) => feed_ingest(&source, attn, &severity),
             Some(FeedCmd::Clear { source }) => feed_clear(&source),
-            Some(FeedCmd::Rate { card, rating, note }) => {
-                feed_rate(cfg, &card, &rating, note.as_deref(), json)
-            }
         },
         CmdInsights::Findings { action } => match action {
             FindingsCmd::Record {
@@ -51,39 +48,6 @@ pub(super) fn route(cfg: &Config, action: CmdInsights, json: bool) {
             ),
             FindingsCmd::Sources => findings_sources(json),
             FindingsCmd::Gather => findings_gather(cfg, json),
-        },
-        CmdInsights::Today { action } => match action {
-            None
-            | Some(TodayCmd::Run {
-                lookback_days: None,
-                per_source: None,
-            }) => today_run(None, None, json),
-            Some(TodayCmd::Run {
-                lookback_days,
-                per_source,
-            }) => today_run(lookback_days, per_source, json),
-            Some(TodayCmd::List { status, limit }) => today_list(status.as_deref(), limit, json),
-            Some(TodayCmd::Accept { id }) => today_set_status(
-                cfg,
-                &id,
-                bn_core::suggestions::SuggestionStatus::Accepted,
-                json,
-            ),
-            Some(TodayCmd::Dismiss { id }) => today_set_status(
-                cfg,
-                &id,
-                bn_core::suggestions::SuggestionStatus::Dismissed,
-                json,
-            ),
-            Some(TodayCmd::Sync) => today_sync(cfg, json),
-            Some(TodayCmd::Agent { action }) => match action {
-                TodayAgentCmd::Start {
-                    harness,
-                    lookback_days,
-                } => today_agent_start(cfg, harness.as_deref(), lookback_days, json),
-                TodayAgentCmd::Stop => today_agent_stop(json),
-                TodayAgentCmd::Status => today_agent_status(cfg, json),
-            },
         },
         CmdInsights::Metrics {
             since,

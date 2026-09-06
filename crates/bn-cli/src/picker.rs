@@ -94,19 +94,6 @@ fn row_for(f: &Finding) -> Row {
             link: String::new(),
             path: String::new(),
         },
-        Finding::Staff(s) => Row {
-            // A missed staff run is a hard miss — red, the same weight as a failing cron.
-            display: disp(
-                Danger,
-                format!("\u{26a0} staff {}", s.agent),
-                format!("missed {}", s.on_calendar),
-            ),
-            kind: "staff",
-            id: String::new(),
-            job: String::new(),
-            link: String::new(),
-            path: String::new(),
-        },
         Finding::Attn(a) => {
             let (tone, tag) = match a.severity.as_str() {
                 "urgent" => (Danger, "\u{26a0}"),
@@ -182,18 +169,6 @@ fn row_for(f: &Finding) -> Row {
             link: String::new(),
             path: String::new(),
         },
-        Finding::StaleStaff(s) => Row {
-            display: disp(
-                Warn,
-                format!("\u{2022} staff idle {}d", s.idle_days),
-                format!("no card since {} — home box may be down", s.last_card),
-            ),
-            kind: "stale-staff",
-            id: String::new(),
-            job: String::new(),
-            link: String::new(),
-            path: String::new(),
-        },
         Finding::Backlog(b) => Row {
             display: disp(
                 Warn,
@@ -246,9 +221,7 @@ fn header(findings: &[Finding]) -> String {
     let urgent = findings
         .iter()
         .filter(|f| {
-            matches!(f, Finding::Cron(_))
-                || matches!(f, Finding::Staff(_))
-                || matches!(f, Finding::Attn(a) if a.severity == "urgent")
+            matches!(f, Finding::Cron(_)) || matches!(f, Finding::Attn(a) if a.severity == "urgent")
         })
         .count();
     format!(

@@ -1,18 +1,11 @@
-//! Your own recently-merged pull requests, gathered with the material needed to talk about them.
+//! Your own merged pull requests, discovered offline from the metrics log.
 //!
-//! A collector, not a reviewer. It answers "what did I ship, and what did the change actually look
-//! like" — the merge events, each PR's diff, and the branch note's `goal` and `decisions`, which
-//! are the *why* a post-hoc reader never otherwise has. It forms no opinion about any of it.
+//! Discovery reads the `pr_merged` events the `pr-observe` job already folds into the metrics log —
+//! no network, no GitHub call. [`MergedRef`] is what a merged PR looks like to the rest of bn:
+//! repo, number, title and merge timestamp.
 //!
-//! Discovery is **offline**, from the `pr_merged` events the `pr-observe` job already folds into
-//! the metrics log; only the diff fetch touches the network. Diffs are capped and the day's PRs
-//! ordered largest-first, because a burst day must degrade by dropping the smallest change rather
-//! than by silently truncating everything.
-//!
-//! Read today by the `staff-mentor` agent (`config/agents/staff-mentor.md`), and by the standup
-//! and completed-work rollups, none of which this module knows about.
-
-use serde::{Deserialize, Serialize};
+//! Feeds the completed-work fold ([`crate::completed`]) and the dashboard's activity feed. The
+//! diff-gathering half that fed the retired `staff-mentor` agent went with that agent.
 
 /// PRs gathered per run: a day rarely merges more of *your own* work than this, and each one
 /// carries a full diff — the cap keeps a burst day from ballooning a packet.
@@ -94,104 +87,4 @@ fn merged_refs(events: &[crate::events::Event], keep: impl Fn(i64) -> bool) -> V
             .then(a.number.cmp(&b.number))
     });
     out
-}
-
-// --- the gathered packet -------------------------------------------------------------------------
-
-/// One PR's material — the harness's entire world for that review. The `description` and `diff`
-/// are untrusted external content (framed as data at dispatch, #272); `goal`/`decisions` are the
-/// branch-note "why" a post-hoc reviewer never has.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PrPacket {
-    /// gh `owner/repo` slug (the trusted routing key — the harness echo is never used for it).
-    pub repo: String,
-    pub number: i64,
-    /// The PR's head branch (`headRefName`) — where the craft note lands.
-    #[serde(default)]
-    pub branch: String,
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub url: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub diff: String,
-    /// Diff size in bytes — the largest-first ordering key (see [`select_and_cap`]). Not presented
-    /// to the model as guidance; just the deterministic cap order.
-    #[serde(default)]
-    pub diff_bytes: usize,
-    /// The branch-note one-line goal, when the note is on this machine.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub goal: Option<String>,
-    /// The branch-note decisions (the "why"), when present.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub decisions: Vec<String>,
-    /// Verify-gate history for the branch (did it flake, was it re-run) — best-effort; empty when
-    /// no such record exists on this machine.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub verify_history: Vec<String>,
-}
-
-/// One gather's whole result — the day's merged PRs with their material, plus what was dropped.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct MergedPrPacket {
-    /// The run date (`today`, `YYYY-MM-DD`).
-    pub date: String,
-    /// The merge day being reviewed (`yesterday`).
-    pub reviewed_date: String,
-    /// The PRs, capped and largest-diff-first.
-    pub prs: Vec<PrPacket>,
-    /// PRs merged that day beyond the cap (dropped, but *noted* — never silently truncated).
-    pub overflow: usize,
-    /// Total PRs gathered before the cap.
-    pub total_merged: usize,
-}
-
-impl MergedPrPacket {
-    /// The `(repo, number)` of every PR in the packet — the set a reader is expected to cover.
-    pub fn expected(&self) -> Vec<(String, i64)> {
-        self.prs
-            .iter()
-            .map(|p| (p.repo.clone(), p.number))
-            .collect()
-    }
-
-    /// Serialize to the JSON the harness receives.
-    pub fn to_json(&self) -> std::io::Result<String> {
-        crate::store::to_json_pretty(self)
-    }
-}
-
-/// Order PRs largest-diff-first and cap the count, reporting the overflow. Deterministic: ties
-/// break by `(repo, number)` so the same day always yields the same three. Returns `(kept,
-/// overflow)` where `overflow = len - cap` when the day merged more than the cap.
-pub fn select_and_cap(mut prs: Vec<PrPacket>, cap: usize) -> (Vec<PrPacket>, usize) {
-    prs.sort_by(|a, b| {
-        b.diff_bytes
-            .cmp(&a.diff_bytes)
-            .then(a.repo.cmp(&b.repo))
-            .then(a.number.cmp(&b.number))
-    });
-    let overflow = prs.len().saturating_sub(cap);
-    prs.truncate(cap);
-    (prs, overflow)
-}
-
-/// Assemble the packet from the fetched PRs: capture the pre-cap total, then order + cap.
-pub fn build_packet(
-    date: &str,
-    reviewed_date: &str,
-    prs: Vec<PrPacket>,
-    cap: usize,
-) -> MergedPrPacket {
-    let total_merged = prs.len();
-    let (prs, overflow) = select_and_cap(prs, cap);
-    MergedPrPacket {
-        date: date.to_string(),
-        reviewed_date: reviewed_date.to_string(),
-        prs,
-        overflow,
-        total_merged,
-    }
 }

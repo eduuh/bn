@@ -191,10 +191,6 @@ pub struct Insights {
     pub todo_age: TodoAge,
     pub ship_days: ShipDays,
     pub goal_completion: GoalCompletion,
-    /// Per-agent staff engagement (#268): cards read %, items acted %, ratings, and the fire-me
-    /// flag — over the fixed [`crate::staff::REVIEW_WINDOW_DAYS`] window, independent of `--since`.
-    /// Empty when no staff agent produced a card or rating in that window.
-    pub staff_review: Vec<crate::staff::AgentReview>,
     /// The single highest-severity heuristic suggestion, or `None` when nothing fired.
     pub suggestion: Option<String>,
 }
@@ -256,7 +252,6 @@ pub fn insights(cfg: &Config, today: &str, since: Option<i64>) -> Insights {
         todo_age,
         ship_days,
         goal_completion,
-        staff_review: crate::staff::performance_review(cfg, today),
         suggestion: None,
     };
     ins.suggestion = suggest(&ins);
@@ -664,11 +659,6 @@ pub fn render(ins: &Insights) -> String {
     };
     out.push_str(&row("Goal completion", &gc));
 
-    if !ins.staff_review.is_empty() {
-        out.push('\n');
-        out.push_str(&render_staff_review(&ins.staff_review));
-    }
-
     match &ins.suggestion {
         Some(s) => out.push_str(&format!("\n  → {s}\n")),
         None => out.push_str("\n  → No standout signal this week — steady as she goes.\n"),
@@ -679,44 +669,6 @@ pub fn render(ins: &Insights) -> String {
 /// Render the staff performance review (#268): one line per agent — cards read %, items acted %,
 /// and up/down ratings — with a fire-me flag when sustained ignore/down-rating proposes removal.
 /// Only rendered when at least one staff agent was active in the window.
-fn render_staff_review(review: &[crate::staff::AgentReview]) -> String {
-    let mut out = format!(
-        "Staff performance — last {}d\n",
-        crate::staff::REVIEW_WINDOW_DAYS
-    );
-    for r in review {
-        let read = match r.read_pct {
-            Some(p) => format!(
-                "read {:.0}% ({}/{})",
-                p * 100.0,
-                r.cards_read,
-                r.cards_total
-            ),
-            None => "read —".to_string(),
-        };
-        let acted = match r.acted_pct {
-            Some(p) => format!(
-                "acted {:.0}% ({}/{})",
-                p * 100.0,
-                r.items_acted,
-                r.items_routed
-            ),
-            None => "acted —".to_string(),
-        };
-        let rating = if r.up > 0 || r.down > 0 {
-            format!(" · ▲{} ▼{}", r.up, r.down)
-        } else {
-            String::new()
-        };
-        let flag = if r.fire_me { "  ⚑ fire-me" } else { "" };
-        out.push_str(&format!(
-            "  {:<16}{read} · {acted}{rating}{flag}\n",
-            r.agent
-        ));
-    }
-    out
-}
-
 fn row(label: &str, value: &str) -> String {
     format!("  {label:<18}{value}\n")
 }

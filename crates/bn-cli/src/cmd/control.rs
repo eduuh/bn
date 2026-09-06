@@ -158,7 +158,7 @@ fn nudge_controller(controller: &ControllerRecord) {
 }
 
 fn controller_alive(target: &str) -> bool {
-    let target = format!("={target}");
+    let target = crate::proc::exact_target(target);
     let Some(status) = proc::tmux(&[
         "display-message",
         "-p",
@@ -195,12 +195,12 @@ pub(crate) fn reconcile_controller_liveness() -> std::io::Result<()> {
 }
 
 fn controller_window_exists(target: &str) -> bool {
-    let target = format!("={target}");
+    let target = crate::proc::exact_target(target);
     proc::tmux(&["display-message", "-p", "-t", &target, "#{window_id}"]).is_some()
 }
 
 fn kill_controller_window(target: &str) -> bool {
-    let target = format!("={target}");
+    let target = crate::proc::exact_target(target);
     let Some(window_id) = proc::tmux(&["display-message", "-p", "-t", &target, "#{window_id}"])
         .map(|id| id.trim().to_string())
         .filter(|id| !id.is_empty())

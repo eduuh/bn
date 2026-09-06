@@ -14,7 +14,7 @@ parent and do not dispatch it whole.
 2. Census the named code and workflow surfaces read-only. Split by conflict boundary, not by
    arbitrary size: one child should have one coherent outcome and one non-overlapping set of path
    globs. Shared registration files belong to one child rather than being repeated across siblings.
-3. Run `bn orchestrate decompose {{issue}} --part "<shippable title>::<glob>[,<glob>]" ...`.
+3. Run `bn issue decompose {{issue}} --part "<shippable title>::<glob>[,<glob>]" ...`.
    Use at least two parts. The command validates that sibling globs do not overlap, creates or
    reuses parent-linked child issues, comments the parent with their checklist, and enqueues only
    the children. Ensure a supervisor is running when the backlog should drain immediately.

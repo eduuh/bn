@@ -72,11 +72,11 @@ impl PriorityWindow {
     /// Whether the window is open at `now`.
     ///
     /// Open means: its most recent firing is within `secs` of now. Reusing
-    /// [`crate::staff_schedule::previous_occurrence`] means a window inherits every schedule shape
+    /// [`crate::schedule::previous_occurrence`] means a window inherits every schedule shape
     /// bn already understands — weekdays, hour steps, concrete dates — instead of a parallel
     /// grammar that would drift from it.
     pub fn is_open(&self, now: i64) -> bool {
-        crate::staff_schedule::previous_occurrence(&self.at, now)
+        crate::schedule::previous_occurrence(&self.at, now)
             .is_some_and(|start| now >= start && now < start.saturating_add(self.secs.max(0)))
     }
 
@@ -104,7 +104,7 @@ impl PriorityWindow {
 
     /// Seconds until this window next closes, for the status line. `None` when it is not open.
     pub fn closes_in(&self, now: i64) -> Option<i64> {
-        crate::staff_schedule::previous_occurrence(&self.at, now)
+        crate::schedule::previous_occurrence(&self.at, now)
             .map(|start| start.saturating_add(self.secs.max(0)))
             .filter(|end| *end > now)
             .map(|end| end - now)
@@ -145,9 +145,7 @@ pub fn next_claim(windows: &[PriorityWindow], now: i64) -> Option<(i64, String)>
     windows
         .iter()
         .filter(|w| w.mode == WindowMode::Deadline && !w.is_open(now))
-        .filter_map(|w| {
-            crate::staff_schedule::next_occurrence(&w.at, now).map(|at| (at, w.name.clone()))
-        })
+        .filter_map(|w| crate::schedule::next_occurrence(&w.at, now).map(|at| (at, w.name.clone())))
         .min_by_key(|(at, _)| *at)
 }
 

@@ -4,26 +4,6 @@ use crate::*;
 /// The one-line routine context header for the bare "today" `bn daily` view (#801): what's
 /// current (with remaining minutes) or, absent that, what's next (with the countdown). Never
 /// deletes the goal log below it — purely additive context.
-fn routine_context_line(snap: &bn_core::routine::Snapshot) -> String {
-    match (&snap.current, &snap.next) {
-        (Some(cur), _) => {
-            let remaining = snap
-                .remaining_minutes
-                .map(|m| format!(" · {m}m left"))
-                .unwrap_or_default();
-            format!("🗓 {} now{remaining}", cur.name)
-        }
-        (None, Some(next)) => {
-            let until = snap
-                .until_next_minutes
-                .map(|m| format!(" in {m}m"))
-                .unwrap_or_default();
-            format!("🗓 next: {}{until}", next.name)
-        }
-        (None, None) => "🗓 Routine: nothing scheduled".to_string(),
-    }
-}
-
 /// `bn daily [date]` / `add` / `done` / `edit`. The bare view auto-creates today (carrying
 /// forward yesterday's open goals); a past `date` is read-only.
 /// Resolve a scheduling target from the mutually-exclusive `--on <date>` / `--in <days>`
@@ -79,33 +59,10 @@ pub(crate) fn emit_daily(
             } else {
                 vec![]
             };
-            // Routine context (#801): only for the bare "today" view — a past-day daily log has
-            // no "now" to be inside a block for. Folded in without touching `daily::render`/
-            // `payload::daily_data` so the existing goal-log output is preserved verbatim.
-            let routine_snap = if is_today {
-                use bn_core::clock::Clock;
-                let now = bn_core::clock::RealClock.now_epoch_secs();
-                bn_core::routine::current_snapshot(cfg, now)
-            } else {
-                None
-            };
             if as_json {
-                let mut data = payload::daily_data(&daily, &upcoming);
-                if let (Some(obj), Some(snap)) = (data.as_object_mut(), &routine_snap) {
-                    obj.insert(
-                        "routine".into(),
-                        serde_json::to_value(snap).unwrap_or(serde_json::Value::Null),
-                    );
-                }
+                let data = payload::daily_data(&daily, &upcoming);
                 println!("{}", Envelope::success("daily", data).to_json());
             } else {
-                if let Some(snap) = &routine_snap {
-                    println!("{}", routine_context_line(snap));
-                    if let Some(reason) = snap.explanation() {
-                        println!("{reason}");
-                    }
-                    println!();
-                }
                 print!("{}", daily::render(&daily, &upcoming));
             }
         }

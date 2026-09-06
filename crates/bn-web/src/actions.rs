@@ -50,15 +50,12 @@ mod reviews;
 mod agent_defs;
 #[path = "actions/skills.rs"]
 mod skills;
-#[path = "actions/today.rs"]
-mod today;
 pub use agent_defs::{agent_def_create, agent_def_delete, agent_def_write};
 pub use kill::{agent_kill, repo_drain, repo_session_relaunch};
 pub use plan::plan_promote;
 pub use repo_setup::{repo_orchestrate_start, repo_script_write, repo_setup_agent_start};
 pub use reviews::review_decide;
 pub use skills::{skill_create, skill_delete, skill_write};
-pub use today::{suggestion_status, today_agent_start, today_agent_stop, today_run};
 
 // ---------------------------------------------------------------------------
 // Shared helpers

@@ -291,9 +291,22 @@ impl Sandbox {
     }
 
     /// The visible text of a pane — for asserting an agent actually started.
+    ///
+    /// `-J` joins wrapped lines, so an assertion matches the logical line a harness printed rather
+    /// than however it happened to fold at the pane width.
     pub fn capture_pane(&self, target: &str) -> Result<String> {
-        let out = self.tmux(&["capture-pane", "-p", "-t", target])?;
+        let out = self.tmux(&["capture-pane", "-p", "-J", "-t", target])?;
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// A window user-option's value (empty string when unset).
+    ///
+    /// `show-options -v` prints just the value; `-q` keeps an unset option quiet instead of an
+    /// error, so "never written" and "written empty" both read as `""` — which is what the callers
+    /// asking "did this land on the right window?" want.
+    pub fn window_option(&self, target: &str, name: &str) -> Result<String> {
+        let out = self.tmux(&["show-options", "-w", "-q", "-v", "-t", target, name])?;
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
     }
 
     /// Poll `condition` until it holds or `timeout` elapses.

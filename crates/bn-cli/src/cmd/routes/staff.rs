@@ -2,21 +2,6 @@ use crate::*;
 
 pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
     match action {
-        CmdStaff::Briefing {
-            action: BriefingCmd::Gather { slot },
-        } => std::process::exit(emit_briefing_gather(
-            cfg,
-            slot.map(Into::into).unwrap_or_else(default_slot),
-        )),
-        CmdStaff::Week {
-            action: WeekCmd::Gather,
-        } => std::process::exit(emit_week_gather(cfg)),
-        CmdStaff::Weakness {
-            action: WeaknessCmd::Gather { for_agent },
-        } => std::process::exit(emit_weakness_gather(cfg, &for_agent)),
-        CmdStaff::MergedPrs {
-            action: MergedPrsCmd::Gather,
-        } => std::process::exit(emit_merged_prs_gather(cfg)),
         CmdStaff::Afk { action } => emit_afk(cfg, action, json),
         CmdStaff::Watch {
             once,
@@ -137,68 +122,6 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
             let ctx = target_ctx(cfg, repo, branch);
             emit_startup(cfg, ctx.as_ref());
         }
-        CmdStaff::Radar {
-            action: RadarCmd::Gather,
-        } => std::process::exit(emit_radar_gather(cfg)),
-        CmdStaff::GoalsAlign {
-            action: GoalsAlignCmd::Gather,
-        } => std::process::exit(emit_goals_align_gather(cfg)),
-        CmdStaff::Estate {
-            action: EstateCmd::Gather { carried_from },
-        } => std::process::exit(emit_estate_gather(cfg, carried_from.as_deref())),
-        CmdStaff::Staff { action } => {
-            // Staff agents are declared mostly in the global roster tier; a repo/branch tier is
-            // still honored, resolved from the current directory (`bn run <name>` passes its own
-            // context, so scheduled runs keep their tier regardless).
-            let ctx = target_ctx(cfg, None, None);
-            match action {
-                None => emit_staff_board(cfg, ctx.as_ref(), json),
-                Some(StaffCmd::Run { agent }) => {
-                    std::process::exit(run_job_with_staff_output(cfg, ctx.as_ref(), &agent, json))
-                }
-                Some(StaffCmd::Plan { agent }) => {
-                    std::process::exit(emit_staff_plan(cfg, ctx.as_ref(), &agent, json))
-                }
-                Some(StaffCmd::DemoPacket) => std::process::exit(emit_demo_packet(cfg)),
-                Some(StaffCmd::CheckCard { agent }) => {
-                    std::process::exit(emit_staff_check_card(cfg, ctx.as_ref(), &agent))
-                }
-                Some(StaffCmd::Mail { agent, date }) => std::process::exit(
-                    crate::cmd::staff_mail::emit_staff_mail(cfg, &agent, date.as_deref()),
-                ),
-                Some(StaffCmd::Feed {
-                    filter,
-                    unread_count,
-                    badge,
-                    pick,
-                    pick_stage,
-                    pick_cols,
-                }) => {
-                    if let Some(s) = pick_stage {
-                        staff_pick::stage(cfg, s, &pick_cols)
-                    } else if pick {
-                        staff_pick::run(cfg)
-                    } else if badge {
-                        emit_staff_badge(cfg)
-                    } else if unread_count {
-                        println!("{}", bn_core::staff::unread_count(cfg, &today()));
-                    } else {
-                        emit_staff_feed(cfg, filter.as_deref(), json)
-                    }
-                }
-                Some(StaffCmd::Cost { month }) => {
-                    emit_staff_cost(cfg, ctx.as_ref(), month.as_deref(), json)
-                }
-                Some(StaffCmd::Archive { dry_run }) => emit_staff_archive(cfg, dry_run, json),
-            }
-        }
-        CmdStaff::Retro { action } => match action {
-            None | Some(RetroCmd::Chat { voice: false }) => emit_retro_chat(cfg, false, json),
-            Some(RetroCmd::Chat { voice: true }) => emit_retro_chat(cfg, true, json),
-            Some(RetroCmd::Skip) => emit_retro_skip(cfg, json),
-            Some(RetroCmd::Tick) => std::process::exit(emit_retro_tick()),
-            Some(RetroCmd::Show { week }) => emit_retro_show(cfg, week, json),
-        },
         CmdStaff::Skills { action, pick } => {
             let base = std::env::current_dir().unwrap_or_default();
             match action {

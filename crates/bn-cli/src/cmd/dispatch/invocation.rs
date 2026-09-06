@@ -96,11 +96,6 @@ impl<'a> DispatchInvocation<'a> {
         self
     }
 
-    pub(crate) fn fresh(mut self, fresh: bool) -> Self {
-        self.fresh = fresh;
-        self
-    }
-
     pub(crate) fn json(mut self, json: bool) -> Self {
         self.json = json;
         self

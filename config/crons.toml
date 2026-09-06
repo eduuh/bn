@@ -128,13 +128,6 @@ randomized_delay = "10m"
 description = "bn — weekly auto-retro: snapshot bn insights into <notes>/<machine>/insights/<YYYY-Www>.md"
 
 [[cron]]
-job = "dojo-cards"
-on_calendar = "*-*-* 03:30:00"
-persistent = true
-randomized_delay = "10m"
-description = "bn — mine new bn dojo cards from recent fix:/feat: commits + module tree (dojo-cards)"
-
-[[cron]]
 job = "agent-observe"
 on_calendar = "*:0/30"
 persistent = true
@@ -150,28 +143,12 @@ network = true
 description = "bn — fold my PRs' GitHub lifecycle into the metrics log as pr_opened/pr_merged/pr_closed/pr_review (pr-observe)"
 
 [[cron]]
-job = "keep-warm"
-on_calendar = "*:5/10"
-persistent = false
-randomized_delay = "1m"
-network = true
-description = "bn — brainstorm enhancement issues for owned orchestrate repos when truly dry (opt-in; [orchestrate].keep_warm + own). Issue->work refill was superseded by `bn task pull` in #1001; this arm now only reports the deficit."
-
-[[cron]]
 job = "pool-warm"
 on_calendar = "*-*-* 0/2:40:00"
 persistent = false
 randomized_delay = "5m"
 network = true
 description = "bn — refresh warm worktree pools for every pooled repo while the device is idle (off-peak, idle-gated + per-repo staleness); records pool_warm so bn metrics shows pool freshness"
-
-[[cron]]
-job = "night-shift"
-on_calendar = "*-*-* 23:15:00"
-persistent = true
-randomized_delay = "10m"
-network = true
-description = "bn — the night shift: dispatch promoted todos into worktrees + agents (opt-in; no-ops unless [night] enabled + repos allowlisted + kill switch clear)"
 
 [[cron]]
 job = "recall-index"
@@ -187,13 +164,6 @@ catch_up = true
 persistent = true
 randomized_delay = "2m"
 description = "bn — gather findings (#897): snapshot the local morning-planning caches (PR review queue, your open PRs, inbound feed, stale/blocked branches, night-shift reviewables, failing crons, sentinel, quarter goals, dojo cards) into the append-only findings store, one durable run per non-empty source. Offline/additive: reuses the warm caches (no network, no re-fetch) and touches no feed/attention/daily side effect; feeds today-agent (#577)."
-
-[[cron]]
-job = "staff-archive"
-on_calendar = "Sun *-*-* 04:00:00"
-persistent = true
-randomized_delay = "30m"
-description = "bn — staff store retention (#275): compact fully-elapsed quarters of feed cards into a per-quarter headline index and roll up staff_run ledger rows older than a year into monthly aggregates; chronicles + retro transcripts exempt (idempotent, safe to miss)"
 
 [[cron]]
 job = "queue-tick"

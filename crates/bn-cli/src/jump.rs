@@ -391,7 +391,7 @@ pub fn stage(cfg: &Config, stage: JumpStage, fields: &[String]) {
 fn preview(kind: &str, target: &str, title: &str, id: &str) {
     if kind == "window" {
         if let Some(pane) = active_pane(target) {
-            if let Some(cap) = tmux_raw(&["capture-pane", "-p", "-t", &pane]) {
+            if let Some(cap) = tmux_raw(&["capture-pane", "-p", "-J", "-t", &pane]) {
                 let lines: Vec<&str> = cap.lines().collect();
                 let start = lines.len().saturating_sub(40);
                 for l in &lines[start..] {

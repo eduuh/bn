@@ -119,24 +119,3 @@ pub async fn weekly(
     .unwrap_or_else(|_| json!({}));
     Json(Envelope::success("weekly", data))
 }
-
-/// `GET /api/brag?since=` — the accomplishments / impact packet (mirrors `bn brag`): shipped work
-/// over the window, plus a `rendered` markdown field. Shells git/gh through the real runner, so it
-/// runs on a blocking thread. `since` is a free-form window string (e.g. `30`, `2w`); absent uses
-/// brag's default window.
-pub async fn brag(State(state): State<AppState>, Query(q): Query<InsightsQuery>) -> Json<Envelope> {
-    let cfg = state.cfg.clone();
-    let since = q.since.map(|n| n.to_string());
-    let data = tokio::task::spawn_blocking(move || {
-        let b = bn_core::brag::brag(
-            &cfg,
-            &bn_core::util::today(),
-            since.as_deref(),
-            &bn_core::runner::RealRunner,
-        );
-        bn_core::payload::brag_data(&b)
-    })
-    .await
-    .unwrap_or_else(|_| json!({}));
-    Json(Envelope::success("brag", data))
-}

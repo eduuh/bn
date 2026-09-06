@@ -241,6 +241,7 @@ name = "bn-core"
 version = "0.5.0"
 dependencies = [
  "bincode",
+ "bn-core",
  "chrono",
  "chrono-tz",
  "dirs",

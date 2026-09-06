@@ -637,100 +637,63 @@ pub(crate) fn emit_tmux_cockpit(cfg: &Config) {
 
 // ---- bn tmux-help : keybinding cheat-sheet popup (prefix ?) -------------------------------------
 
-/// `bn tmux-help` — the curated keybinding cheat-sheet popup (bound to prefix ?). Replaces
-/// workflow/bin/tmux-help.sh; the content is embedded so it deploys with the binary.
+/// `bn tmux-help` — the keybinding cheat-sheet popup (bound to prefix ?).
+///
+/// Generated from the live key table, never hand-written. This used to be ~95 lines of hardcoded
+/// rows, and it had drifted in both directions: it advertised `prefix B` (a briefings popup whose
+/// binding and backing command were both deleted in #1297) while omitting `C-e`, `E`, `G` and `d`,
+/// which had been bound for months. A cheat-sheet maintained separately from the thing it
+/// describes is a cheat-sheet that lies.
+///
+/// The section comes from the binding's own `-N` note, as `Section · description` — so tmux.conf
+/// is the single source of truth for both the key and how it is filed. Bindings tmux ships its own
+/// notes for (`$` rename-session, `#` list-buffers …) have no `·` and land under "Stock tmux",
+/// which is how the surviving defaults became discoverable at all.
 pub(crate) fn emit_tmux_help() {
-    // Every row here interleaves several short runs inside one format string, so this block
-    // keeps an explicit open/close pair rather than a helper call per fragment. The codes still
-    // come from the palette — see `style::Ink::open`.
     let ink = style::Ink::auto();
-    let hd = ink.open(style::Tone::Head); // section header
-    let key = ink.open(style::Tone::Accent); // a key — the actionable thing on the row
-    let d = ink.open(style::Tone::Meta); // dim
+    let hd = ink.open(style::Tone::Head);
+    let key = ink.open(style::Tone::Accent);
+    let d = ink.open(style::Tone::Meta);
     let n = ink.close();
-    let row = |k: &str, desc: &str| println!("  {key}{k:<10}{n} {desc}");
-    let hdr = |h: &str| println!("\n{hd}{h}{n}");
 
     println!("{hd}tmux cheat-sheet{n}  {d}prefix = C-Space{n}");
 
-    hdr("Projects & sessions");
-    row("C-o", "project / worktree picker (frecency + preview)");
-    row("C-w", "picker scoped to Windows-fs repos");
-    row("C-j", "tmux-native session tree (choose-tree; f filters, x kills)");
-    row("C-p", "project / worktree picker (same as C-o)");
-    row("BSpace", "project / worktree picker (same as C-p)");
-    row("t", "kill this session, switch to next");
-    row(".", "rename session");
-
-    hdr("Worktrees (windows)");
-    row("o", "open worktree window (create from main if new)");
-    row("W", "always open a NEW worktree window");
-    row(
-        "x",
-        "close this worktree — return its lease, drop its window",
-    );
-    row("X", "kill this window (all panes); the worktree stays");
-    row("D", "pick any worktree to delete");
-
-    hdr("Agent cockpit");
-    row("A", "spawn a Copilot agent on this worktree (auto-watched)");
-    row(
-        "m",
-        &format!("watch this window — {hd}\u{f00c}{n} when it goes quiet"),
-    );
-    row("S", "cockpit: in-flight windows + bn summary");
-    row(
-        "j",
-        "jump-picker: switch to a window needing you (preview = its pane)",
-    );
-    row(
-        "Tab",
-        "fast-path: jump to the top window needing you (repeat to cycle)",
-    );
-    hdr("Branch notes (bn)");
-    row("n", "open the branch note");
-    row("a", "quick-add a todo");
-    row("b", "quick-add a blocker");
-    row("C-a", "attention queue (doctor + open todos)");
-    row(
-        "B",
-        "briefings: staff cards (↵ read · ctrl-u ▲ · ctrl-d ▼ · m mark · ctrl-o link · ctrl-r reload)",
-    );
-
-    hdr("Windows");
-    row(
-        "`",
-        "switch to any window in THIS session (badges + live preview; ↵ toggles back)",
-    );
-    row(
-        "w",
-        &format!("new window      {d}r{n} rename     {d}1-5{n} select"),
-    );
-    row(
-        "[ / ]",
-        &format!("prev / next     {d}< / >{n} move    {d}C-BSpace{n} next"),
-    );
-
-    hdr("Panes");
-    row("v / s", "split right / below");
-    row(
-        "← ↑ ↓ →",
-        &format!("navigate    {d}S-arrows{n} resize    {d}z{n} zoom"),
-    );
-    row("! / @", "break-pane / join-pane");
-    row(
-        "q",
-        "kill pane (worktree + lease untouched — x is the close)",
-    );
-
-    hdr("Tools & popups");
-    row("e", &format!("floating nvim (toggle)    {d}g{n} lazygit"));
-    row("Enter", "scratch shell in this worktree");
-    row(
-        "Space",
-        &format!("copy-mode   {d}p{n} paste   {d}P{n} choose-buffer"),
-    );
-    row("R", "reload config   ? this help");
+    for (table, label) in [("prefix", ""), ("copy-mode-vi", " (in copy mode)")] {
+        let Some(raw) = crate::proc::tmux_raw(&["list-keys", "-N", "-T", table]) else {
+            eprintln!("bn: tmux is not reachable — no key table to read");
+            return;
+        };
+        // `list-keys -N` prints `<key><padding><note>`; the key never contains whitespace, so the
+        // first run of spaces is the split. Anything without a note is a binding nobody described.
+        let mut sections: Vec<(String, Vec<(String, String)>)> = Vec::new();
+        for line in raw.lines() {
+            let Some((k, note)) = line.split_once(char::is_whitespace) else {
+                continue;
+            };
+            let note = note.trim();
+            if note.is_empty() {
+                continue;
+            }
+            let (section, desc) = match note.split_once('·') {
+                Some((s, rest)) => (format!("{}{label}", s.trim()), rest.trim()),
+                None => (format!("Stock tmux{label}"), note),
+            };
+            let entry = (k.trim().to_string(), desc.to_string());
+            match sections.iter_mut().find(|(s, _)| *s == section) {
+                Some((_, rows)) => rows.push(entry),
+                None => sections.push((section, vec![entry])),
+            }
+        }
+        // Curated sections first, in the order tmux.conf introduces them; the stock dump last —
+        // it is reference material, not the daily loop.
+        sections.sort_by_key(|(s, _)| s.starts_with("Stock tmux"));
+        for (section, rows) in sections {
+            println!("\n{hd}{section}{n}");
+            for (k, desc) in rows {
+                println!("  {key}{k:<10}{n} {desc}");
+            }
+        }
+    }
 
     print!("\n{d}Press Enter to close…{n}");
     let _ = std::io::Write::flush(&mut std::io::stdout());

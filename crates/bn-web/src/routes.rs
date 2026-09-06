@@ -29,7 +29,6 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health))
         // Reads (design §2.1) — every response is a `render::Envelope`.
-        .route("/api/bearings", get(api::bearings))
         .route("/api/fleet", get(api::fleet))
         .route("/api/machine", get(api::machine))
         .route("/api/nodes", get(api::nodes))
@@ -41,7 +40,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/today/crons", get(api::today_crons))
         .route("/api/today/agents", get(api::today_agents))
         // Singular: Today's one *hosted* agent, not the scheduled roster above.
-        .route("/api/today/agent", get(api::today_agent))
         .route("/api/agents/{session_id}", get(api::agent_detail))
         .route("/api/agents/{target}/pane", get(api::agent_pane))
         .route(
@@ -55,17 +53,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/orchestrate", get(api::orchestrate))
         .route("/api/orchestrate/recovery", get(api::orchestrate_recovery))
-        .route("/api/staff/board", get(api::staff_board))
-        .route("/api/staff/feed", get(api::staff_feed))
-        .route("/api/staff/card", get(api::staff_card))
-        .route("/api/staff/card/read", post(api::staff_card_read))
-        .route("/api/staff/schedule", post(api::staff_schedule))
         .route("/api/cost", get(api::cost))
         .route("/api/metrics", get(api::metrics))
         .route("/api/metrics/trend", get(api::metrics_trend))
         .route("/api/insights", get(api::insights))
         .route("/api/weekly", get(api::weekly))
-        .route("/api/brag", get(api::brag))
         .route("/api/repos", get(api::repos))
         .route("/api/repos/{repo}/issues", get(api::repo_issues))
         .route(
@@ -102,7 +94,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/reviews", get(api::reviews))
         .route("/api/events", get(api::events))
         .route("/api/findings", get(api::findings))
-        .route("/api/suggestions", get(api::suggestions))
         // Live stream (design §2.2) — SSE fed by the shared watcher broadcast.
         .route("/api/queue", get(queue_api::queue))
         .route("/api/queue/entries", get(queue_api::queue_entries))
@@ -169,10 +160,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/cron/run", post(actions::cron_run))
         // Today's agent (#577) — offline re-synthesis + suggestion review (native in-process
         // store writes), then the hosted agent's lifecycle (shelled, like every other launch).
-        .route("/api/today/run", post(actions::today_run))
-        .route("/api/suggestions/{id}", post(actions::suggestion_status))
-        .route("/api/today/agent/start", post(actions::today_agent_start))
-        .route("/api/today/agent/stop", post(actions::today_agent_stop))
         // Warm-worktree pool (#497) — schedule the heavy `pool-warm` job for a pooled repo.
         // Long-running, so it goes through the machine-wide queue instead of an uncapped spawn.
         .route("/api/repos/{repo}/pool/warm", post(actions::repo_pool_warm))

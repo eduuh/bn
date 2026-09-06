@@ -319,7 +319,7 @@ pub fn build(inputs: &TimelineInputs) -> Timeline {
             .filter(|(job, _)| !queued_jobs.contains(&job.as_str()))
             .flat_map(|(job, schedule)| {
                 let spec = schedule.clone().unwrap_or_default();
-                crate::staff_schedule::slots_on(&spec, date)
+                crate::schedule::slots_on(&spec, date)
                     .into_iter()
                     .filter(|_| {
                         class_matches(

@@ -32,3 +32,7 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+# Self-dependency so bn-core's own integration tests can reach `bn_core::test_support` (the shared
+# env lock and RAII guards). Feature unification under resolver "2" keeps `test-support` out of the
+# normal build, so the shipped binary still never links tempfile or the scaffolding.
+bn-core = { path = ".", features = ["test-support"] }

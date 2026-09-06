@@ -221,17 +221,6 @@ pub(crate) fn emit_done(res: Result<DoneOutcome, CmdError>, as_json: bool) {
     }
 }
 
-/// `bn calib` — the estimation-calibration report (per-tag/repo median actual÷est multipliers).
-pub(crate) fn emit_calib(cfg: &Config, as_json: bool) {
-    let report = bn_core::calib::report(cfg);
-    if as_json {
-        let data = serde_json::to_value(&report).unwrap_or(serde_json::Value::Null);
-        println!("{}", Envelope::success("calib", data).to_json());
-    } else {
-        print!("{}", bn_core::calib::render(&report));
-    }
-}
-
 /// Validate a `--est` duration against the `bn focus start` grammar, returning the trimmed
 /// string to persist. Exits with a usage error on a malformed/empty value so a bad estimate
 /// never lands on an item. `None` passes through untouched (no estimate given).

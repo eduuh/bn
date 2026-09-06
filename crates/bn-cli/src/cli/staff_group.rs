@@ -8,41 +8,6 @@ use crate::*;
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum CmdStaff {
-    /// Where the day stands, folded from every store into one packet: the night shift's draft PRs,
-    /// the top `bn next` actions, the calendar's shape, the quarter, the `q` inbox, the daily
-    /// rollup, the standup line and the wrap. `bn briefing gather` prints it as JSON — offline
-    /// reads only, every source degrading on its own — and judges none of it. That is how the
-    /// `staff-chief-am` and `staff-chief-pm` agents get their input.
-    Briefing {
-        #[command(subcommand)]
-        action: BriefingCmd,
-    },
-    /// The week's raw material, gathered from every store: the staff feed's activity, merges and
-    /// PR cycle time against the preceding week, daily-goal completion, logged achievements, the
-    /// week's wins, the retro summary, and where the quarter stands. `bn week gather` prints it as
-    /// JSON — offline reads only — and writes no narrative; that is the `staff-archivist` agent's
-    /// job.
-    Week {
-        #[command(subcommand)]
-        action: WeekCmd,
-    },
-    /// The evidence for what to practise next: the recurring themes a post-merge review kept
-    /// naming, the dojo area never drilled, what the code is actually written in, the learn notes
-    /// that already exist, and what the last few weeks chose (and whether those topics were ever
-    /// finished). `bn weakness gather` prints it as JSON and picks nothing — choosing the week's
-    /// one topic is the `staff-curriculum` agent's job.
-    Weakness {
-        #[command(subcommand)]
-        action: WeaknessCmd,
-    },
-    /// Your own pull requests merged yesterday, with the material needed to talk about them: each
-    /// one's diff (capped, largest-first) plus the branch note's goal and decisions — the *why* a
-    /// post-hoc reader never otherwise has. `bn merged-prs gather` prints the packet as JSON and
-    /// forms no opinion about it; that is how the `staff-mentor` agent gets its input.
-    MergedPrs {
-        #[command(subcommand)]
-        action: MergedPrsCmd,
-    },
     /// Away mode — batched fleet supervision. While away, routine agent activity is absorbed and
     /// only captain-relevant events (an agent that needs you / is stuck, an urgent attention item)
     /// count. `bn afk end` prints ONE batched digest of what needs you. Bare `bn afk` shows status.
@@ -142,48 +107,12 @@ pub(crate) enum CmdStaff {
         #[arg(long)]
         branch: Option<String>,
     },
-    /// The outside world's week: upstream issues in subsystems this person actually works in,
-    /// dependency releases and advisories, tooling changelogs. `bn radar gather` prints the packet
-    /// as JSON — the one gather that touches the network, with each of its three collectors
-    /// degrading independently and saying so. Ranking and filing it is the `scout` agent's job.
-    Radar {
-        #[command(subcommand)]
-        action: RadarCmd,
-    },
-    /// Command Center activity against the daily and quarter goals: what the week actually went
-    /// into, and what it was supposed to. `bn goals-align gather` prints the packet as JSON;
-    /// judging the gap is the `goals-align` agent's job.
-    GoalsAlign {
-        #[command(subcommand)]
-        action: GoalsAlignCmd,
-    },
-    /// The offline estate sweep: aging TODO/FIXME markers, stale dependencies, flaky verify
-    /// history, worktree/branch cruft, and note hygiene across the `[sentinel] repos` allowlist
-    /// (falling back to `[night] repos`). `bn estate gather` prints the packet as JSON and lands
-    /// nothing — it reports what the estate looks like and leaves the judgment to whoever reads
-    /// it, which is how the `sentinel` agent gets its nightly input.
-    Estate {
-        #[command(subcommand)]
-        action: EstateCmd,
-    },
-    /// Agent staff framework: scheduled agents that gather a deterministic packet → dispatch a
-    /// pinned skill → validate a briefing card → route its items into your existing surfaces
-    /// (attention, daily goals, note sections, the dojo deck). Bare `bn staff` shows the roster
-    /// and each agent's last-run health; `bn staff feed` reads the briefing cards.
-    Staff {
-        #[command(subcommand)]
-        action: Option<StaffCmd>,
-    },
     /// The Interviewer (#261) — the weekly 10-minute subjective retro. A *pull* agent: the
     /// `staff-interviewer` cron only raises the Friday attention item (never dispatches), and you
     /// run the session when ready. `bn retro chat` asks three fixed questions plus one adaptive
     /// follow-up derived from the week's defer/punch/daily history; `--voice` records spoken
     /// answers; `bn retro skip` records an explicit skip. Answers land as a private transcript in
     /// the notes repo plus a validated summary card in the feed. Bare `bn retro` runs the chat.
-    Retro {
-        #[command(subcommand)]
-        action: Option<RetroCmd>,
-    },
     /// Workflow prompts (config/prompts): served to Claude Code as MCP prompts (`/bn:<name>`) and
     /// installed for Copilot CLI as native skills referred to by name. Bare `bn skills` lists them
     /// across every tier (global shared/personal, per-repo shared/personal); `bn skills new <name>`

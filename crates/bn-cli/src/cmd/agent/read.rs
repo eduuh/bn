@@ -38,7 +38,13 @@ pub(crate) fn emit_agent_pane(
     // `-e` includes SGR (colour/attribute) escapes for a real-terminal render; without it the tail
     // is plain text. `-e` covers only text attributes, not cursor motion, so the frame stays
     // line-oriented (safe to re-render in a resized xterm).
-    let mut cap_args: Vec<&str> = vec!["capture-pane", "-p"];
+    // `-J` joins lines tmux soft-wrapped at the pane width, so a long line arrives as the one
+    // logical line the program printed rather than split at whatever column the pane happened to
+    // be. Display-only paths only — the pane CLASSIFIERS (transport.rs, reap.rs, agent_live.rs)
+    // deliberately still capture unjoined: `is_footer_hint` caps a hint at 60 chars and
+    // `has_bare_prompt` compares a trimmed line for exact equality, so joining would silently
+    // change what they detect. See the classifier fixtures todo before flipping those.
+    let mut cap_args: Vec<&str> = vec!["capture-pane", "-p", "-J"];
     if ansi {
         cap_args.push("-e");
     }

@@ -21,7 +21,6 @@ use crate::model::Item;
 use crate::orchestrate::{ItemStatus, QueueItem};
 use crate::plan_review::{Review, ReviewStatus};
 use crate::rollups::SummaryEntry;
-use crate::suggestions::{Suggestion, SuggestionStatus};
 use crate::util;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -61,10 +60,6 @@ pub enum ActionKind {
     /// this; it's the shared vocabulary for "work on this issue → start an agent" from a search
     /// result, so the reused composer renders a correct badge + prompt.
     Issue,
-    /// An **accepted** suggested task from Today's agent (#577), promoted into the action feed
-    /// (#578): the owner approved it on Today, so it becomes actionable here with the shared
-    /// Start-agent CTA. Only `Accepted` suggestions become actions — `Suggested`/`Dismissed` never do.
-    Suggestion,
 }
 
 impl ActionKind {
@@ -79,7 +74,6 @@ impl ActionKind {
             ActionKind::StalePr => "stale-pr",
             ActionKind::Goal => "goal",
             ActionKind::Issue => "issue",
-            ActionKind::Suggestion => "suggestion",
         }
     }
 }
@@ -149,9 +143,6 @@ pub struct ActionSources<'a> {
     pub goals: &'a [Item],
     /// Every orchestrate queue item across live runs (flattened) — the stale-PR source.
     pub queue: &'a [QueueItem],
-    /// Today's agent suggestions (`suggestions::read`/`list`) — only the **accepted** ones become
-    /// actions; `Suggested`/`Dismissed`/`Done` are skipped by the fold.
-    pub suggestions: &'a [Suggestion],
     /// The work queue, for joining an accepted suggestion against what it produced.
     ///
     /// An accepted suggestion whose work is already in flight must not offer to start it again —
@@ -293,21 +284,6 @@ take it as far as you can toward done.",
 
 /// The suggested prompt for an accepted suggestion (#578): drive the approved proposal, carrying
 /// its rationale and source finding so the agent has the same context the owner reviewed.
-fn prompt_suggestion(s: &Suggestion) -> String {
-    let mut p = format!(
-        "Take on this approved task from Today's agent and drive it to a landed PR:\n\n{}",
-        s.title.trim()
-    );
-    if !s.rationale.trim().is_empty() {
-        p.push_str("\n\nWhy it matters:\n");
-        p.push_str(s.rationale.trim());
-    }
-    if !s.url.trim().is_empty() {
-        p.push_str(&format!("\n\nSource finding: {}", s.url.trim()));
-    }
-    p
-}
-
 /// Build the unified action list, ranked by urgency and recency.
 pub fn build_actions(src: &ActionSources) -> Vec<ActionItem> {
     let mut out: Vec<ActionItem> = Vec::new();
@@ -496,65 +472,6 @@ pub fn build_actions(src: &ActionSources) -> Vec<ActionItem> {
             suggested_prompt: prompt_goal(g),
             default_urgency: Urgency::Queued,
             created: 0,
-            stale: false,
-        });
-    }
-
-    // Accepted suggestions (Today's agent) --------------------------------
-    //
-    // Accepting a suggestion is what queues its work, so the row's job changes depending on whether
-    // that work is in flight. Offering "start an agent" for something already running is how the
-    // same work gets launched twice — and it is also simply wrong as a report of the day: the owner
-    // already decided, and the machine already acted.
-    //
-    // Only `Accepted` ones cross over: `Suggested` stay in review, `Dismissed` never resurface, and
-    // `Done` has shipped.
-    for s in src.suggestions {
-        if s.status != SuggestionStatus::Accepted {
-            continue;
-        }
-        let live = src
-            .backlog
-            .and_then(|bl| bl.active_for_source(&s.queue_source()));
-        let detail = match (live, s.rationale.trim()) {
-            // In flight: say where it is, since that is the only new information about it.
-            (Some(entry), _) => Some(format!(
-                "queued {}/{} · {} · {}",
-                entry.repo,
-                entry.id,
-                entry.kind.label(),
-                entry.status.label()
-            )),
-            (None, "") => None,
-            (None, rationale) => Some(rationale.to_string()),
-        };
-        out.push(ActionItem {
-            id: format!("suggestion:{}", s.id),
-            kind: ActionKind::Suggestion,
-            title: one_line(&s.title, 90),
-            source: format!("suggestion · {}", s.source),
-            severity: action_rank::INFO_SEVERITY.to_string(),
-            repo: live.map(|e| e.repo.clone()),
-            branch: None,
-            link: if s.url.trim().is_empty() {
-                None
-            } else {
-                Some(s.url.clone())
-            },
-            detail,
-            payload: json!({ "suggestion_id": s.id, "queued_id": live.map(|e| e.id.clone()) }),
-            // No prompt while the work is in flight. An empty `suggested_prompt` is the contract for
-            // "there is nothing to start here": the row renders its state instead of a CTA, and the
-            // composer's own guard (`prompt.trim().length > 0`) refuses to start an empty one even if
-            // it is reached another way. Expressed as the absence of a prompt rather than as a
-            // suggestion-specific flag, so any later kind that reports rather than asks inherits it.
-            suggested_prompt: if live.is_some() {
-                String::new()
-            } else {
-                prompt_suggestion(s)
-            },
-            default_urgency: Urgency::Queued,
-            created: s.created_at,
             stale: false,
         });
     }
@@ -833,7 +750,7 @@ pub struct TodayAutomation {
 }
 
 /// Split a built catalog into today's crons + today's agents (#575): keep the entries whose
-/// declared `schedule` fires on `date` ([`crate::staff_schedule::fires_on`]), partitioned by
+/// declared `schedule` fires on `date` ([`crate::schedule::fires_on`]), partitioned by
 /// [`CatalogKind`]. On-demand entries (no schedule) are dropped — "today" means *scheduled to run
 /// today*, not "every job that exists". Pure over its inputs (the fold, not the catalog build).
 pub fn todays_automation(catalog: &[CatalogItem], date: chrono::NaiveDate) -> TodayAutomation {
@@ -843,7 +760,7 @@ pub fn todays_automation(catalog: &[CatalogItem], date: chrono::NaiveDate) -> To
         let fires = item
             .schedule
             .as_deref()
-            .is_some_and(|s| crate::staff_schedule::fires_on(s, date));
+            .is_some_and(|s| crate::schedule::fires_on(s, date));
         if !fires {
             continue;
         }

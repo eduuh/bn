@@ -16,7 +16,7 @@ use bn_core::cost::WorkClass;
 use bn_core::model::Note;
 use bn_core::remote::{reconcile_remote_run, RemoteRunReport};
 use bn_core::runner::CommandRunner;
-use bn_core::staff::RunStatus;
+use bn_core::run_status::RunStatus;
 use bn_core::{events, store, util};
 use serde::Serialize;
 use serde_json::json;

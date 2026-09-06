@@ -6,7 +6,6 @@ use crate::daily::{self, Daily};
 use crate::doctor::Finding;
 use crate::events::CronJobStatus;
 use crate::metrics::Metrics;
-use crate::quarter::{self, Quarter};
 use crate::reports;
 use crate::resolver::{RepoBranch, Resolved};
 use crate::reviews::ReviewCache;
@@ -36,10 +35,6 @@ pub fn agent_fleet_data(f: &crate::agent::Fleet) -> Value {
 
 /// `bearings` → the bounded current-state snapshot. Shared by CLI, REST, and SSE so every machine
 /// surface emits the same typed data.
-pub fn bearings_data(snapshot: &crate::bearings::BearingsSnapshot) -> Value {
-    json!(snapshot)
-}
-
 /// `GET /api/machine` (#525) → the machine-health snapshot: the sampled `cpu`/`ram`/`saturation`
 /// flattened with the live fleet's `agents { active }`, so the dashboard's health widget renders
 /// the host *and* how many agents are loading it in one read. Kept here (not inline in bn-web) so
@@ -276,81 +271,13 @@ pub fn goal_note_data(o: &daily::NoteOutcome) -> Value {
 
 /// `bn quarter` (bare / past) → goals with derived status, counts, the elapsed header, and the
 /// appended reviews. `today` drives only the elapsed-vs-progress header (the file body is stable).
-pub fn quarter_data(q: &Quarter, today: &str) -> Value {
-    let goals: Vec<Value> = q
-        .front
-        .goals
-        .iter()
-        .map(|g| {
-            json!({
-                "key": g.key,
-                "text": g.text,
-                "done": g.done,
-                "done_at": g.done_at,
-                "metric": g.metric,
-                "status": q.status_of(&g.key),
-            })
-        })
-        .collect();
-    json!({
-        "quarter": q.front.quarter,
-        "elapsed_pct": (quarter::elapsed_fraction(&q.front.quarter, today).unwrap_or(0.0) * 100.0).round() as i64,
-        "open": q.open().count(),
-        "done": q.front.goals.iter().filter(|g| g.done).count(),
-        "on_track": q.on_track_count(),
-        "total": q.front.goals.len(),
-        "goals": goals,
-        "reviews": q.front.reviews,
-        "header": quarter::header(q, today),
-        "rendered": quarter::render(q, today),
-    })
-}
-
 /// `quarter add` → `{ "item": { "key", "text", "quarter" } }`.
-pub fn quarter_add_data(a: &quarter::AddOutcome) -> Value {
-    json!({ "item": { "key": a.key, "text": a.text, "quarter": a.quarter } })
-}
-
 /// `quarter done` → `{ "item": { "key", "text", "done": true } }`.
-pub fn quarter_done_data(d: &quarter::DoneOutcome) -> Value {
-    json!({ "item": { "key": d.key, "text": d.text, "done": true } })
-}
-
 /// `quarter review` → the impact-agent outcome: appended (with the validated review + attn count),
 /// malformed (with the validation reason), or skipped (no goals / agent unavailable).
-pub fn quarter_review_data(outcome: &quarter::ReviewOutcome, qid: &str) -> Value {
-    match outcome {
-        quarter::ReviewOutcome::Appended { review, raised } => json!({
-            "outcome": "appended",
-            "quarter": qid,
-            "review": review,
-            "raised": raised,
-        }),
-        quarter::ReviewOutcome::Malformed { reason } => json!({
-            "outcome": "malformed",
-            "quarter": qid,
-            "reason": reason,
-        }),
-        quarter::ReviewOutcome::Skipped { reason } => json!({
-            "outcome": "skipped",
-            "quarter": qid,
-            "reason": reason,
-        }),
-    }
-}
-
 /// `bn quarter advise` → the goal-aligned shortlist (#458): the ranked candidates plus the
 /// quarter id and the capacity the ranking was shaped to. `shortlist` is the count flagged
 /// in-capacity — what the orchestrator would dispatch this pass.
-pub fn quarter_advise_data(qid: &str, capacity: usize, advice: &[crate::advise::Advice]) -> Value {
-    json!({
-        "quarter": qid,
-        "capacity": capacity,
-        "shortlist": advice.iter().filter(|a| a.within_capacity).count(),
-        "advice": advice,
-    })
-}
-
 fn interval_json(iv: &Interval) -> Value {
     json!({
         "activity": iv.activity,
@@ -527,14 +454,6 @@ pub fn wrap_data(w: &reports::WrapDigest) -> Value {
 }
 
 /// `brag` → the full impact packet plus a `rendered` markdown field for display.
-pub fn brag_data(b: &crate::brag::Brag) -> Value {
-    let mut v = serde_json::to_value(b).unwrap_or_else(|_| json!({}));
-    if let Value::Object(ref mut m) = v {
-        m.insert("rendered".into(), json!(crate::brag::render_markdown(b)));
-    }
-    v
-}
-
 /// `close` → what the close completed: counts + the logged achievement (if any).
 pub fn close_data(c: &CloseOutcome) -> Value {
     json!({

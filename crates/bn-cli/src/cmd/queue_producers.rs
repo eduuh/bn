@@ -157,109 +157,12 @@ pub(crate) const ATTN: &str = "attn";
 pub(crate) const STAFF: &str = "staff";
 pub(crate) const CRON: &str = "cron";
 pub(crate) const DISPATCH: &str = "dispatch";
-pub(crate) const TODAY: &str = "today";
-
-/// Where an accepted suggestion's work sits against everything else in the queue.
-///
-/// Above the cron floor (negative) and above an attention `warn`, because a person reviewed this and
-/// said yes. Below a typed `bn dispatch` (100), because Today's agent proposing work and a person
-/// asking for it *right now* are not the same claim on the machine.
-pub(crate) const TODAY_PRIORITY: i64 = 80;
-
-/// What accepting a suggestion should put into the queue.
-///
-/// Two outcomes, never a refusal. A suggestion whose task the SMART gate admits queues the work; one
-/// it rejects queues the pass that will make it admissible. That is what makes "Today feeds the
-/// queue" unconditional — the alternative, demanding a `--repo` from whoever accepted it, hands the
-/// work back to a person for exactly the suggestions Today exists to handle.
-#[derive(Debug, Clone)]
-pub(crate) enum TodayPlan<'a> {
-    /// The task passed the gate: run the work itself, in `repo`.
-    Work {
-        repo: &'a str,
-        task_id: &'a str,
-        kind: BacklogKind,
-    },
-    /// The task failed an agent-closeable gap: resolve **where the work happens** first.
-    ///
-    /// Booked against the home repo rather than a real one, because the repo is precisely what this
-    /// pass is for. It is headless (`needs_worktree()` is false), so it costs no lane slot, no pool
-    /// slot and no placement — a placement-resolution pass that itself needed a placement would be
-    /// a circular requirement.
-    Enhance { task_id: &'a str },
-}
-
 /// Enqueue an accepted suggestion's work — or the enhance pass that will make it placeable.
 ///
 /// Returns the `(repo, entry_id)` the suggestion should cache, or `None` when the write failed. The
 /// caller must not treat that cache as authoritative: the entry is findable by its
 /// `source: today:<id>` regardless, which is what keeps a crash between enqueue and link from
 /// queueing the same work twice.
-pub(crate) fn capture_today(
-    cfg: &Config,
-    suggestion: &bn_core::suggestions::Suggestion,
-    plan: &TodayPlan<'_>,
-    quiet: bool,
-) -> Option<(String, String)> {
-    let now = bn_core::util::now_epoch_secs();
-    let source = suggestion.queue_source();
-    let (repo, subject, spec) = match plan {
-        TodayPlan::Work {
-            repo,
-            task_id,
-            kind,
-        } => (
-            repo.to_string(),
-            suggestion.title.clone(),
-            AddSpec {
-                kind: *kind,
-                priority: TODAY_PRIORITY,
-                source,
-                task: task_id.to_string(),
-                exec: ExecSpec::Agent,
-                ..Default::default()
-            },
-        ),
-        TodayPlan::Enhance { task_id } => (
-            cfg.queue_home_repo(),
-            format!("resolve where {task_id} happens — {}", suggestion.title),
-            AddSpec {
-                kind: BacklogKind::Enhance,
-                // One notch above the work it unblocks: nothing downstream can be placed until this
-                // has run, so letting the work it gates overtake it would only waste a lane.
-                priority: TODAY_PRIORITY + 1,
-                source,
-                task: task_id.to_string(),
-                // `Shell` rather than `Job`, because this pass must land on *this* task and the
-                // `task-enhance` job takes `--due` (whichever task ranks highest). Catalog
-                // validation is not lost: `bn task enhance <id>` renders the agent through
-                // `agents::discover` itself.
-                exec: ExecSpec::Shell {
-                    cmd: format!("bn task enhance {task_id}"),
-                },
-                ..Default::default()
-            },
-        ),
-    };
-    match enqueue(&backlog::backlog_path(), &repo, &subject, &spec, now) {
-        Ok(e) => {
-            let id = e.entry().id.clone();
-            if quiet {
-                // Nothing: the tick sweeps this every pass, and a line per pass is log noise.
-            } else if e.is_new() {
-                println!("  queued {repo}/{id} · {} · priority {}", spec.kind.label(), spec.priority);
-            } else {
-                println!("  already queued {repo}/{id} ({})", e.label());
-            }
-            Some((repo, id))
-        }
-        Err(err) => {
-            eprintln!("bn today accept: could not queue {repo} — {err}");
-            None
-        }
-    }
-}
-
 /// Enqueue a PR review instead of launching one.
 ///
 /// Priority is the hours it has been waiting, so a review that has been ignored all day outranks
@@ -680,7 +583,7 @@ pub(crate) fn capture_dispatch(cfg: &Config, req: &DispatchRequest<'_>, json: bo
 /// to miss, so it waits for capacity like any other work.
 fn schedule_deadline(on_calendar: Option<&str>) -> Option<i64> {
     let spec = on_calendar?;
-    bn_core::staff_schedule::next_occurrence(spec, bn_core::util::now_epoch_secs())
+    bn_core::schedule::next_occurrence(spec, bn_core::util::now_epoch_secs())
 }
 
 /// The `on_calendar` a declared cron carries for `job`, if any.

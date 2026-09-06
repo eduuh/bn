@@ -61,14 +61,7 @@ pub(crate) fn run(
         return ClosedOut::default();
     }
 
-    // The reverse link the task carries, stamped when Today accepted the suggestion.
-    let suggestion = task
-        .meta(crate::cmd::task_mint::SUGGESTION_KEY)
-        .map(str::to_string)
-        .filter(|s| {
-            bn_core::suggestions::set_status(s, bn_core::suggestions::SuggestionStatus::Done)
-                .unwrap_or(false)
-        });
+    let suggestion = None;
     let closed = ClosedOut {
         task: Some(id),
         suggestion,

@@ -73,48 +73,6 @@ pub(crate) fn open_item_worktree(cfg: &Config, repo: &str, branch: &str) -> Opti
     Some(wt_path)
 }
 
-/// Read-only status of a branch's existing worktree, for the night planner — never creates one.
-/// Returns `(worktree_path, dirty, changed_files)`: the worktree dir if it exists on disk, whether
-/// it has uncommitted changes, and the files it has changed vs `base` (`git diff --name-only
-/// base...branch`, three-dot — changes on the branch since it diverged). With no worktree yet the
-/// branch is clean, but committed changes are still read from the bare repo so file-overlap
-/// detection stays honest. All checks are local and best-effort (empty on any git failure).
-pub(crate) fn branch_worktree_status(
-    cfg: &Config,
-    repo: &str,
-    branch: &str,
-    base: &str,
-) -> (Option<PathBuf>, bool, Vec<String>) {
-    let Some(bare) = bare_for(cfg, repo) else {
-        return (None, false, Vec::new());
-    };
-    let name = repo_name(&bare);
-    let sanitized = sanitize_branch(branch);
-    let (_, worktree_dir) = layout(cfg);
-    let wt_path = worktree_dir.join(&name).join(&sanitized);
-    let range = format!("{base}...{branch}");
-    let changed = |dir: &str| -> Vec<String> {
-        git_out(&["-C", dir, "diff", "--name-only", &range])
-            .map(|s| {
-                s.lines()
-                    .map(str::trim)
-                    .filter(|l| !l.is_empty())
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-    if wt_path.is_dir() {
-        let wt = wt_path.to_string_lossy().to_string();
-        let dirty = dirty_count(&wt) > 0;
-        (Some(wt_path), dirty, changed(&wt))
-    } else {
-        // No worktree yet — clean, but still read committed changes vs base from the bare repo so
-        // overlap detection doesn't treat an un-checked-out feature branch as touching nothing.
-        (None, false, changed(&bare.to_string_lossy()))
-    }
-}
-
 /// Start attention item `id`: open its worktree tmux window and mark it in-flight. Returns the
 /// worktree path, or `None` if the item is unknown, carries no repo/branch, or the worktree/window
 /// couldn't be opened. The terse shared core behind the `bn jump` / `bn doctor --pick` start
@@ -300,7 +258,7 @@ pub(crate) fn window_tmux_cmds(
     // Keep command-backed (agent) panes on exit so a dead harness leaves an inspectable `[exited]`
     // pane with its final output. Plain shell windows (`cmd == None`) keep tmux's default.
     if cmd.is_some() {
-        let win = format!("={session}:{branch}");
+        let win = crate::proc::exact_target(&format!("{session}:{branch}"));
         cmds.push(argv(&[
             "set-window-option",
             "-t",
@@ -415,7 +373,7 @@ pub(crate) fn open_worktree_window_cmd_named_quiet(
 /// Open a note-owned plan artifact beside an existing agent window. This is intentionally a split,
 /// not a popup: plan mode wants the Markdown plan visible while the agent keeps running.
 pub(crate) fn open_plan_split(session: &str, window_name: &str, plan_path: &Path) -> bool {
-    let target = format!("={session}:{window_name}");
+    let target = crate::proc::exact_target(&format!("{session}:{window_name}"));
     let Some(dir) = plan_path.parent() else {
         return false;
     };
@@ -520,7 +478,7 @@ fn open_worktree_window_cmd_impl(
     }
     // Target the window by its exact `=session:branch` name (it's named after the branch), so we can
     // prime the badge without capturing a window id. Harmless if a forced duplicate exists.
-    let win = format!("={session}:{window_name}");
+    let win = crate::proc::exact_target(&format!("{session}:{window_name}"));
     let _ = tmux_run(&["set-window-option", "-t", &win, "@bn_repo", repo]);
     let _ = tmux_run(&["set-window-option", "-t", &win, "@bn_branch", branch]);
     let _ = tmux_run(&["set-window-option", "-t", &win, "@bn_worktree", &wt]);

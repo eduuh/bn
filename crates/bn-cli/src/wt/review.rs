@@ -398,7 +398,7 @@ pub(crate) fn launch_agent_in_window(
         Some(f) => harness_cmd_from_file(&harness, &f, opts.yolo, opts.session_id),
         None => harness_cmd(&harness, prompt, opts.yolo, opts.session_id),
     };
-    let target = format!("={repo}:{win_branch}");
+    let target = crate::proc::exact_target(&format!("{repo}:{win_branch}"));
     let buf = format!("bn-agent-{repo}-{win_branch}");
     let tmux = |args: &[&str]| tmux_run(args);
     let pasted = tmux(&["set-buffer", "-b", &buf, &cmd])
@@ -657,7 +657,7 @@ pub(crate) fn teardown_review_worktree(cfg: &Config, repo: &str, branch: &str) -
     let repo = repo_key(repo);
     let sanitized = sanitize_branch(branch);
     // Kill the tmux window (best-effort — `=repo:branch` exact-matches the window).
-    let _ = tmux_ok(&["kill-window", "-t", &format!("={repo}:{sanitized}")]);
+    let _ = tmux_ok(&["kill-window", "-t", &crate::proc::exact_target(&format!("{repo}:{sanitized}"))]);
 
     let Some(bare) = bare_for(cfg, repo) else {
         return false;

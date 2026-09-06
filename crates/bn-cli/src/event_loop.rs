@@ -22,17 +22,12 @@ pub(crate) enum LoopEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Watch {
     File(PathBuf),
-    Directory(PathBuf),
     Tree(PathBuf),
 }
 
 impl Watch {
     pub(crate) fn file(path: impl Into<PathBuf>) -> Self {
         Self::File(path.into())
-    }
-
-    pub(crate) fn directory(path: impl Into<PathBuf>) -> Self {
-        Self::Directory(path.into())
     }
 
     pub(crate) fn tree(path: impl Into<PathBuf>) -> Self {
@@ -42,7 +37,6 @@ impl Watch {
 
 enum Filter {
     File(PathBuf),
-    Directory(PathBuf),
     Tree(PathBuf),
 }
 
@@ -50,7 +44,6 @@ impl Filter {
     fn matches(&self, path: &Path) -> bool {
         match self {
             Self::File(target) => file_event_matches(path, target),
-            Self::Directory(root) => path == root || path.parent() == Some(root.as_path()),
             Self::Tree(root) => path.starts_with(root),
         }
     }
@@ -80,12 +73,6 @@ impl Notifier {
                     };
                     filters.push(Filter::File(target));
                     roots.entry(parent).or_insert(false);
-                }
-                Watch::Directory(path) => {
-                    std::fs::create_dir_all(&path).map_err(notify::Error::io)?;
-                    let root = normalize(&path);
-                    filters.push(Filter::Directory(root.clone()));
-                    roots.entry(root).or_insert(false);
                 }
                 Watch::Tree(path) => {
                     if !path.is_dir() {
@@ -345,12 +332,11 @@ mod tests {
     }
 
     #[test]
-    fn directory_and_tree_filters_have_distinct_scope() {
-        let directory = Filter::Directory(PathBuf::from("state"));
+    fn tree_filter_matches_at_any_depth() {
         let tree = Filter::Tree(PathBuf::from("state"));
-        assert!(directory.matches(Path::new("state/queue.json")));
-        assert!(!directory.matches(Path::new("state/nested/queue.json")));
+        assert!(tree.matches(Path::new("state/queue.json")));
         assert!(tree.matches(Path::new("state/nested/queue.json")));
+        assert!(!tree.matches(Path::new("other/queue.json")));
     }
 
     #[test]

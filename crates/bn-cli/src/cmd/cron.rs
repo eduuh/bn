@@ -18,14 +18,10 @@ fn run_builtin_job(
     agent: Option<&bn_core::agents::AgentDef>,
     staff_json: bool,
 ) -> Option<i32> {
-    // A staff agent runs the generic pipeline; anything else is an ordinary job. No agent is
-    // dispatched by name any more — an agent that does something deterministic says so in its
-    // `run:` line, which is handled before this is reached.
-    if agent.is_some_and(bn_core::agents::AgentDef::is_staff) {
-        return Some(run_native_job(cfg, ctx, job, |cfg, ctx| {
-            staff_run_code(cfg, ctx, job, staff_json)
-        }));
-    }
+    // The staff pipeline that used to run `kind: staff` agents here went with the roster. An
+    // agent that does something deterministic says so in its `run:` line, which is handled before
+    // this is reached; everything else is an ordinary native job.
+    let _ = (agent, staff_json);
     native_job(job).map(|f| run_native_job(cfg, ctx, job, f))
 }
 
@@ -106,15 +102,6 @@ pub(crate) fn run_job(cfg: &Config, ctx: Option<&Resolved>, job: &str) -> i32 {
 /// silence the capture of everything the job goes on to spawn.
 pub(crate) fn run_job_now(cfg: &Config, ctx: Option<&Resolved>, job: &str, now: bool) -> i32 {
     run_job_inner(cfg, ctx, job, false, now)
-}
-
-pub(crate) fn run_job_with_staff_output(
-    cfg: &Config,
-    ctx: Option<&Resolved>,
-    job: &str,
-    staff_json: bool,
-) -> i32 {
-    run_job_inner(cfg, ctx, job, staff_json, false)
 }
 
 fn run_job_inner(
@@ -218,7 +205,7 @@ pub(crate) use retire::{emit_cron_retire, emit_cron_unregister};
 
 #[path = "cron/exec.rs"]
 mod exec;
-pub(crate) use exec::{capture_user_command, job_path};
+pub(crate) use exec::job_path;
 use exec::{run_custom_command, run_script};
 
 #[path = "cron/scheduler.rs"]

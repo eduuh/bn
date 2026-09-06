@@ -65,7 +65,13 @@ fn warm_in_window(ctx: &PoolCtx, new: bool) -> bool {
     // Follow into it for a human at an interactive terminal.
     if in_tmux() && std::io::stdout().is_terminal() {
         let _ = crate::proc::tmux_run(&["switch-client", "-t", &target]);
-        let _ = crate::proc::tmux_run(&["select-window", "-t", &format!("{target}:pool-warm")]);
+        // `target` is already `=<session>`, so appending `:pool-warm` would anchor only the
+        // session and let the window half fnmatch. Build the pair and anchor both halves.
+        let _ = crate::proc::tmux_run(&[
+            "select-window",
+            "-t",
+            &crate::proc::exact_target(&format!("{session}:pool-warm")),
+        ]);
     }
     true
 }
@@ -357,6 +363,75 @@ fn build_slots_warm(repo: &str, ready: &[(u32, PathBuf)]) -> u32 {
         }
     });
     warmed + ok.load(Ordering::Relaxed)
+}
+
+/// What [`grow_pool`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Grown {
+    /// A brand-new slot was cut; it still needs a build. Carries what the builder needs — the slot
+    /// path and the canonical repo name — rather than a number the caller would have to re-resolve
+    /// against a pool it does not hold.
+    Cut { n: u32, slot: PathBuf, repo: String },
+    /// The pool already had an unbuilt slot below its size — nothing to cut, just warm it.
+    AlreadyRoom,
+    /// At [`bn_core::pool::MAX_POOL_SIZE`]. Each slot is a full checkout plus its build cache, so
+    /// the ceiling is disk rather than taste.
+    AtCeiling(usize),
+    /// The repo has no pool to grow (not a bare clone under the primary root).
+    NotPooled,
+}
+
+/// Cut one more warm slot, ahead of the demand that would otherwise cut it.
+///
+/// The pool already grows by one at the lease, in [`acquire_slot`], when a dispatch finds every
+/// slot taken — so this adds no new policy, only the chance to pay for that growth before you are
+/// waiting on it. Notably it is **not** a size setting: [`bn_core::pool::derived_size`] observes
+/// the slots on disk precisely because the config that used to declare a size drifted from them and
+/// was deleted, and a knob here would reintroduce exactly that drift.
+///
+/// Two cases, and the distinction is why this cannot just be `add_detached_slot`: a young pool has
+/// a derived size of [`bn_core::pool::DEFAULT_POOL_SIZE`] with only one slot actually on disk, so
+/// there is already room and cutting at `high_water + 1` would leave a gap. Only a pool whose slots
+/// have caught up with its size needs the high-water mark raised.
+pub(crate) fn grow_pool(cfg: &Config, repo: Option<String>) -> Grown {
+    let Some(ctx) = resolve_pool(cfg, repo) else {
+        return Grown::NotPooled;
+    };
+    let high_water = bn_core::pool::pool_high_water(&ctx.pool_dir);
+    if high_water < ctx.size {
+        return Grown::AlreadyRoom;
+    }
+    if high_water >= bn_core::pool::MAX_POOL_SIZE {
+        return Grown::AtCeiling(high_water);
+    }
+    let n = (high_water + 1) as u32;
+    let bare_s = ctx.bare.to_string_lossy().to_string();
+    let slot = slot_path(&ctx.pool_dir, n);
+    if add_detached_slot(&bare_s, &slot.to_string_lossy()) {
+        log_pool_event("grow", &ctx.repo, n, "", None);
+        Grown::Cut {
+            n,
+            slot,
+            repo: ctx.repo,
+        }
+    } else {
+        // git refused the checkout — report it as no room rather than inventing a slot number the
+        // warm would then fail to build.
+        Grown::AtCeiling(high_water)
+    }
+}
+
+/// Build exactly one slot, for a caller that already knows which.
+///
+/// `pool-grow` needs this and cannot use `warm --new`: cutting the slot is what raises the pool's
+/// high-water mark, and cutting it also makes it a *live* checkout — so by the time `--new` looked,
+/// the slot it was meant to build no longer counted as new and was skipped. Growing a pool left the
+/// new slot cold, which is the one thing growing it was for.
+///
+/// Warming the whole pool instead would rebuild every existing slot to provision one, so the honest
+/// primitive is "build this slot", which is what [`build_slots_warm`] does per slot anyway.
+pub(crate) fn build_one_slot(repo: &str, slot: &Path) -> bool {
+    run_bn_build(repo, slot, None)
 }
 
 /// Warm one slot by running `bn build` in it (cwd = slot) — the same command a human runs by hand,

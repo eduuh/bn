@@ -35,7 +35,6 @@ pub(super) fn refuse(cfg: &Config, agent: &AgentDef) -> Option<Refusal> {
     }
     if let Some(reason) = agent.off_reason(&resolver::JobConfig::load().agents_enabled) {
         println!("{}: {reason}", agent.name);
-        bn_core::staff::record_off(&agent.name, &today(), &reason);
         return Some(Refusal(0));
     }
     None

@@ -32,9 +32,6 @@ mod repo_read;
 #[path = "api/repo_scripts.rs"]
 mod repo_scripts;
 pub use automation::{agent_def_source, agent_defs, agents_catalog, today_agents, today_crons};
-#[path = "api/staff.rs"]
-mod staff_api;
-pub use staff_api::*;
 #[path = "api/metrics.rs"]
 mod metrics_api;
 pub use metrics_api::*;
@@ -55,9 +52,6 @@ pub use repo_read::{repo_issues, repos};
 pub use repo_scripts::repo_script;
 pub use search_api::search;
 pub use shell_read::{attn, cron, fleet, machine, nodes};
-#[path = "api/suggestions.rs"]
-mod suggestions_api;
-pub use suggestions_api::suggestions;
 
 pub(crate) fn nonempty(v: Option<String>) -> Option<String> {
     v.filter(|s| !s.trim().is_empty())
@@ -88,18 +82,6 @@ pub(crate) fn bad_request(command: &str, code: &str, message: &str) -> Response 
 
 /// `GET /api/bearings` — one bounded current-state artifact shared with `bn bearings` and the
 /// live stream.
-pub async fn bearings(State(state): State<AppState>) -> Json<Envelope> {
-    let snapshot = bn_core::bearings::BearingsSnapshot::gather(
-        &state.cfg,
-        bn_core::util::now_epoch_secs(),
-        &bn_core::util::today(),
-    );
-    Json(Envelope::success(
-        "bearings",
-        watch::bearings_data(&snapshot),
-    ))
-}
-
 /// `GET /api/agents/{session_id}` — one live agent's detail: the fleet entry plus its most-recent
 /// recorded session, last request text, the rendered branch `note` (typed frontmatter + prose
 /// body + goal), and the machine's harness availability (#501, for the detail switcher) so the
@@ -472,7 +454,7 @@ pub async fn learnings(
 }
 
 // ---------------------------------------------------------------------------
-// Goals (daily + quarter)
+// Goals (daily)
 // ---------------------------------------------------------------------------
 
 /// `GET /api/goals` — today's daily goals plus the current quarter. Read-only: a dashboard GET
@@ -491,22 +473,7 @@ pub async fn goals(State(state): State<AppState>) -> Json<Envelope> {
         bn_core::payload::daily_data(&d, &upcoming)
     };
 
-    let quarter = match bn_core::quarter::quarter_id(&today).and_then(|qid| {
-        bn_core::quarter::read_quarter(&state.cfg, &qid)
-            .ok()
-            .flatten()
-    }) {
-        Some(q) => bn_core::payload::quarter_data(&q, &today),
-        None => json!({
-            "quarter": bn_core::quarter::quarter_id(&today),
-            "goals": [], "open": 0, "done": 0, "on_track": 0, "total": 0, "reviews": []
-        }),
-    };
-
-    Json(Envelope::success(
-        "goals",
-        json!({ "daily": daily, "quarter": quarter }),
-    ))
+    Json(Envelope::success("goals", json!({ "daily": daily })))
 }
 
 // ---------------------------------------------------------------------------
@@ -694,24 +661,6 @@ pub async fn issues(State(state): State<AppState>) -> Json<Envelope> {
             "sweeping the repos' issues failed",
         )),
     }
-}
-
-/// `GET /api/today/agent` — Today's **hosted** agent: the record of what bn launched, joined with
-/// the live fleet so the page can tell "bn started one" from "one is alive right now".
-///
-/// Singular, and deliberately distinct from `/api/today/agents` above (the scheduled agent
-/// roster). This is the one session the Today page streams and steers; the payload carries its
-/// `target` and `control` channel, which is exactly what `SteerPanel` needs to decide whether the
-/// composer is live or greyed.
-///
-/// Built by `bn_core::today::status_view`, the same builder `bn today agent status` prints —
-/// so the CLI and the dashboard cannot drift on whether the agent is up.
-pub async fn today_agent(State(state): State<AppState>) -> Json<Envelope> {
-    let cfg = state.cfg.clone();
-    let data = tokio::task::spawn_blocking(move || bn_core::today::status_view(&cfg))
-        .await
-        .unwrap_or_else(|_| json!({ "running": false, "agent": Value::Null }));
-    Json(Envelope::success("today-agent", data))
 }
 
 // ---------------------------------------------------------------------------

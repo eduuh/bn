@@ -206,3 +206,57 @@ fn a_fake_agent_shim_shadows_the_real_harness() -> anyhow::Result<()> {
     assert!(calls[0].2.contains("--version"), "argv should be recorded");
     Ok(())
 }
+
+/// A write aimed at one window must not land on a window whose name merely starts the same way.
+///
+/// tmux's `=` anchors only the part it precedes, so `-t "=s:feat"` leaves the WINDOW half an
+/// fnmatch pattern and resolves it to `feat-two` when no window is named exactly `feat`. Every
+/// destructive thing bn does to a window — `set-window-option`, `paste-buffer`, `send-keys`,
+/// `kill-window` — used to be addressed that way, so with two branches sharing a prefix a steer
+/// could be typed into the wrong agent and a close could kill the wrong worktree.
+///
+/// This test pins both halves of the contract: the unanchored form really does mis-resolve (so the
+/// hazard is not hypothetical and cannot be "fixed" by deleting the anchoring), and the form
+/// `exact_target` produces does not.
+#[test]
+#[ignore = "e2e: needs a built bn binary (cargo build --workspace)"]
+fn a_window_name_prefix_cannot_capture_a_write_meant_for_another_window() -> anyhow::Result<()> {
+    require_tmux!();
+    let sb = Sandbox::new()?;
+
+    // The window the write NAMES must not exist — that is the whole hazard. tmux prefers an exact
+    // hit when one is available, so with both `feat` and `feat-two` open the unanchored form finds
+    // `feat` and looks fine. It is the case where the intended window is already gone (closed,
+    // renamed, not yet created, or never existed because the caller had a stale name) that the
+    // pattern silently walks onto a neighbour instead of failing.
+    sb.tmux(&["new-session", "-d", "-s", "probe", "-n", "feat-two"])?;
+
+    // The old shape: anchors the session, leaves the window half a pattern.
+    sb.tmux(&["set-window-option", "-t", "=probe:feat", "@probe", "leaked"])?;
+    assert_eq!(
+        sb.window_option("=probe:=feat-two", "@probe")?,
+        "leaked",
+        "expected the unanchored form to mis-resolve onto feat-two — if this fails, tmux's \
+matching changed and the anchoring below may no longer be load-bearing"
+    );
+
+    // The fixed shape: both halves anchored, so a miss is a miss rather than a neighbour.
+    sb.tmux(&["set-window-option", "-t", "=probe:=feat-two", "@probe", ""])?;
+    let out = sb.tmux(&[
+        "set-window-option",
+        "-t",
+        "=probe:=feat",
+        "@probe",
+        "anchored",
+    ])?;
+    assert!(
+        !out.status.success(),
+        "targeting a window that does not exist must fail, not silently pick a neighbour"
+    );
+    assert_eq!(
+        sb.window_option("=probe:=feat-two", "@probe")?,
+        "",
+        "an anchored write must not touch the prefix-sharing neighbour"
+    );
+    Ok(())
+}

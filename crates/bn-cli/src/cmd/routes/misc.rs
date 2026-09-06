@@ -1,5 +1,7 @@
 use crate::*;
 
+mod decompose;
+
 pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
     match action {
         CmdMisc::Reset { force } => {
@@ -108,10 +110,8 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
                 }
             }
         }
-        CmdMisc::Routine { action } => emit_routine(cfg, action, json),
         CmdMisc::Control { action } => emit_control(cfg, action, json),
         CmdMisc::Version => println!("{}", version::line()),
-        CmdMisc::Bearings => emit_bearings(cfg, json),
         CmdMisc::Kill { port } => std::process::exit(emit_kill(&port)),
         CmdMisc::Issue { action } => match action {
             IssueCmd::File {
@@ -122,6 +122,27 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
                 repo,
                 allow_duplicate,
             } => emit_issue_file(title, body, kind, labels, repo, allow_duplicate, json),
+            IssueCmd::Decompose {
+                issue,
+                part,
+                repo,
+                priority,
+                dry_run,
+            } => {
+                let ctx = resolver::resolve(cfg, &std::env::current_dir().unwrap_or_default()).ok();
+                if !decompose::issue_decompose(
+                    cfg,
+                    ctx.as_ref(),
+                    repo.as_deref(),
+                    &issue,
+                    &part,
+                    priority,
+                    dry_run,
+                    json,
+                ) {
+                    std::process::exit(1);
+                }
+            }
         },
         CmdMisc::Links { action, query } => emit_links(cfg, action, query, json),
         CmdMisc::Ref {
