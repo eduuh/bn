@@ -8,10 +8,13 @@
 //! room at all?) while this module answers placement (which box, and is it capable?).
 pub mod build;
 pub mod classify;
+pub mod config_edit;
+pub mod daemon;
 pub mod decision;
 pub mod durations;
 pub mod enqueue;
 pub mod extent;
+pub mod flock;
 pub mod jobs;
 pub mod kind;
 pub mod log;

@@ -187,6 +187,24 @@ pub fn pool_warm_windows(windows: &[PriorityWindow]) -> Vec<PoolWarmWindow> {
         .collect()
 }
 
+/// `configured`, plus any built-in pool-warm window it does not already define.
+///
+/// The built-ins are defaults, not a fallback set: a machine that configures a `nightly` window has
+/// said nothing about lunch, and reading it as "no lunch window" is how defining one window used to
+/// delete two. A configured window with a built-in's name still wins outright — that is how you
+/// change lunch's time, and how the dashboard's pool form has always worked.
+pub fn with_defaults(mut configured: Vec<PriorityWindow>) -> Vec<PriorityWindow> {
+    for built_in in default_pool_warm_priority_windows() {
+        if !configured
+            .iter()
+            .any(|w| w.name.eq_ignore_ascii_case(&built_in.name))
+        {
+            configured.push(built_in);
+        }
+    }
+    configured
+}
+
 pub fn default_pool_warm_priority_windows() -> Vec<PriorityWindow> {
     vec![
         priority_window_from_pool(PoolWarmWindow {
@@ -310,6 +328,90 @@ fn pool_warm_windows_from_config(text: &str) -> Vec<PoolWarmWindow> {
             fore,
             mode,
         });
+    }
+    out
+}
+
+/// Replace **every** `[[queue.windows]]` block in `content` with `windows`, leaving the rest of the
+/// file untouched.
+///
+/// The general form of [`edit_pool_warm_windows`], which could only ever rewrite the two built-in
+/// pool-warm names and hardcoded their `boost` and `matches`. That was enough while the dashboard's
+/// pool form was the only writer; it is not enough for `bn queue schedule add`, where the whole
+/// point is windows bn did not come with.
+///
+/// Line-oriented rather than a TOML round-trip, deliberately and for the same reason as before: the
+/// config is a file someone writes by hand, full of comments explaining why each knob is set, and a
+/// serializer would return it stripped of all of them.
+pub fn edit_windows(content: &str, windows: &[PriorityWindow]) -> String {
+    let mut out = strip_window_blocks(content, |_| true);
+    for win in windows {
+        out.push(String::new());
+        out.push("[[queue.windows]]".to_string());
+        out.push(format!("name = \"{}\"", escape_toml(&win.name)));
+        out.push(format!("at = \"{}\"", escape_toml(&win.at)));
+        out.push(format!(
+            "fore = \"{}\"",
+            escape_toml(&format_duration(win.secs))
+        ));
+        out.push(format!("mode = \"{}\"", mode_key(win.mode)));
+        out.push(format!("boost = {}", win.boost));
+        let matches = win
+            .matches
+            .iter()
+            .map(|m| format!("\"{}\"", escape_toml(m)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push(format!("matches = [{matches}]"));
+    }
+    let mut text = out.join("\n");
+    text.push('\n');
+    text
+}
+
+/// Write `windows` back to the config at `path`, replacing every window block it holds.
+pub fn write_windows(path: &std::path::Path, windows: &[PriorityWindow]) -> std::io::Result<()> {
+    let current = std::fs::read_to_string(path).unwrap_or_default();
+    std::fs::write(path, edit_windows(&current, windows))
+}
+
+/// The TOML spelling of a mode — the inverse of [`WindowMode::parse`].
+fn mode_key(mode: WindowMode) -> &'static str {
+    match mode {
+        WindowMode::Prefer => "prefer",
+        WindowMode::Watched => "watched",
+        WindowMode::Away => "away",
+        WindowMode::Deadline => "deadline",
+    }
+}
+
+/// Every line of `content` except the `[[queue.windows]]` blocks `remove` selects, with trailing
+/// blank lines trimmed so an append lands cleanly.
+fn strip_window_blocks(content: &str, remove: impl Fn(Option<&str>) -> bool) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut lines = content.lines().peekable();
+    while let Some(line) = lines.next() {
+        if line.trim() != "[[queue.windows]]" {
+            out.push(line.to_string());
+            continue;
+        }
+        let mut block = vec![line.to_string()];
+        while let Some(next) = lines.peek() {
+            if next.trim_start().starts_with("[[") || next.trim_start().starts_with('[') {
+                break;
+            }
+            block.push(lines.next().unwrap_or_default().to_string());
+        }
+        let name = string_value(
+            &block.iter().map(String::as_str).collect::<Vec<_>>(),
+            "name",
+        );
+        if !remove(name.as_deref()) {
+            out.extend(block);
+        }
+    }
+    while out.last().is_some_and(|line| line.trim().is_empty()) {
+        out.pop();
     }
     out
 }

@@ -4,29 +4,29 @@
 //! [`bn_core::queue::tick::plan_tick`], persist the decision, and realize the intent. All the
 //! *policy* lives in bn-core; what happens here is reading the world and acting on the answer.
 //!
-//! Two drivers, one code path: the `queue-tick` cron (once a minute, the always-on floor) and
-//! `bn queue run` (a resident loop for a supervised box). They interlock on a non-blocking lock
-//! file, so whichever wins the race runs and the other cleanly skips — one tick per machine, no
-//! matter how it was started.
+//! Two entry points, one code path: `bn queue run` (the resident dispatcher bn supervises) and
+//! `bn queue tick` (a single pass, by hand or from the inline fallback). They interlock on a
+//! non-blocking lock file, so whichever wins the race runs and the other cleanly skips — one pass
+//! per machine, no matter how it was started.
 mod event_fields;
-mod heartbeat;
 mod heavy;
 mod launch;
 mod lock;
+mod progress;
 mod render;
 
 use crate::*;
 use bn_core::backlog::{self, BacklogKind, LaunchFailure};
 use bn_core::queue::decision::QueueDecision;
 use bn_core::queue::tick::{plan_tick, Dispatch, TickPlan};
+use crate::cmd::queue_daemon::{Lifecycle, Supervision};
 use event_fields::{dispatch_fields, finish_fields, launch_failure_fields};
-use heartbeat::{stamp_pass, Heartbeat};
 use launch::{express_timeout, launch_timeout, wait_bounded, Launch};
 use lock::{LockDenied, TickLock};
+use progress::stamp_pass;
 use render::print_decision;
 use std::path::PathBuf;
 
-pub(crate) use heartbeat::heartbeat_path;
 pub(crate) use lock::pid_alive;
 pub(crate) use render::emit_nodes;
 
@@ -77,19 +77,19 @@ pub(crate) fn emit_tick(cfg: &Config, dry_run: bool, json: bool) {
     }
 }
 
-/// The `queue-tick` cron job — the always-on floor.
+/// One pass, as a named job — the inline fallback's entry point.
 ///
-/// Once a minute is well inside the noise floor of an agent that runs for ten to forty minutes,
-/// and it needs no new mechanism: the existing timer generators already turn a `[[cron]]` entry
-/// into a systemd unit or launchd job that survives reboot. A box wanting faster pickup runs
-/// `bn queue run` alongside; the lock keeps them from overlapping.
+/// It was a once-a-minute cron, back when the queue leaned on the init system for both its drivers.
+/// bn runs a resident dispatcher of its own now, so this is what remains: the degraded path
+/// [`crate::cmd::queue_install`] takes on a machine where a dispatcher cannot be started, and a
+/// hand-runnable single pass. The machine lock keeps it from overlapping a resident loop.
 pub(crate) fn job_queue_tick(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     if !cfg.queue_enabled_here() {
         eprintln!(
             "queue tick: not enabled on this machine ('{}')",
             cfg.machine()
         );
-        return 1;
+        return 0;
     }
     use bn_core::clock::Clock;
     let now = bn_core::clock::RealClock.now_epoch_secs();
@@ -112,8 +112,13 @@ pub(crate) fn job_queue_tick(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
 /// it comes straight back, so a burst drains at the speed the caps allow instead of one item per
 /// tick; when the queue is empty it backs off, so an idle machine costs nothing.
 ///
-/// **It re-reads config, and it retires itself in favour of a newer binary — but only one that can
-/// actually replace it.** The first two follow from the same fact: a process that lives for weeks
+/// **It holds the machine's dispatcher lock for its whole life.** That is what makes "one
+/// dispatcher per machine" true without anyone coordinating: a second `bn queue run` is refused
+/// rather than admitted alongside the first, and the lock is released by the kernel on any exit at
+/// all, so the next `bn` invocation starts a replacement. Nothing has to notice this process died.
+///
+/// **It re-reads config, and it hands over to a newer binary — but only one that can actually
+/// replace it.** The first two follow from the same fact: a process that lives for weeks
 /// accumulates a stale view of a world that keeps moving, and a daemon holding the config you edited
 /// an hour ago is worse than one that is down, because it looks like it is working. The
 /// qualification is the lesson from the one time this went wrong: handing over is irreversible, so
@@ -130,17 +135,28 @@ pub(crate) fn emit_run(cfg: &Config, interval: u64) {
     }
     use bn_core::clock::Clock;
     let idle = interval.clamp(1, 3600);
-    // Started before anything else in the loop, and outliving every pass: liveness must not be a
-    // side effect of the work finishing. See [`Heartbeat`].
-    let _heartbeat = Heartbeat::start();
+    // Taken before anything else and held for the whole run: this *is* the machine's statement that
+    // it has a dispatcher, and every producer's `capture_active` reads it. Acquiring it first also
+    // settles the start-up race — two `bn` invocations may both spawn a dispatcher, and the loser
+    // finds out here rather than by running a second loop.
+    let _lock = match bn_core::queue::daemon::DaemonLock::acquire() {
+        Ok(lock) => lock,
+        Err(bn_core::queue::daemon::Denied::Running) => {
+            println!("queue dispatcher: one is already running on this machine — nothing to do");
+            return;
+        }
+        Err(bn_core::queue::daemon::Denied::Unusable(why)) => fail(&format!(
+            "bn queue run: cannot take the dispatcher lock ({}) — {why}",
+            bn_core::queue::daemon::lock_path().display()
+        )),
+    };
     let mut cfg = cfg.clone();
-    let mut config_seen = config_stamp();
-    let mut exe_seen = exe_stamp();
+    let mut supervision = Supervision::start();
     let mut watches = vec![
         crate::event_loop::Watch::file(backlog::backlog_path()),
         crate::event_loop::Watch::file(bn_core::resolver::config_file_path()),
     ];
-    if let Some(path) = executable_path() {
+    if let Some(path) = crate::cmd::queue_daemon::executable_path() {
         watches.push(crate::event_loop::Watch::file(path));
     }
     let mut reactor = crate::event_loop::EventLoop::with_wake_queue("bn queue", watches, &[]);
@@ -150,50 +166,14 @@ pub(crate) fn emit_run(cfg: &Config, interval: u64) {
         "queue dispatcher running — event-driven, {BUSY_SECS}s busy / {idle}s idle fallback · ctrl-c to stop"
     );
     loop {
-        // A new binary means this process is the old one. Exit cleanly and let the supervisor
-        // (launchd KeepAlive / systemd Restart=always) start the new image — restarting is a
-        // solved problem owned by something that already does it well, and re-execing ourselves
-        // would be a worse copy of it.
-        //
-        // But only once the new image is known to work. **This process is the last dispatcher the
-        // machine has**, and handing over is irreversible: if the successor cannot run `queue run`
-        // it fails instantly, the supervisor throttles it, and the service is dropped — with
-        // nothing left to notice. That is not hypothetical. `self-update` rebuilt bn from a
-        // revision predating the queue, and the dispatcher dutifully retired itself in favour of a
-        // binary that had no `queue` subcommand at all.
-        //
-        // So the old image keeps serving until a replacement proves it can take over. Each new
-        // binary is probed exactly once — `exe_seen` advances either way — so a machine stuck on a
-        // bad build costs one probe per build, not one per pass.
-        let current = exe_stamp();
-        if current != exe_seen {
-            exe_seen = current;
-            let successor = crate::cmd::queue_install::dispatcher_bin();
-            if crate::cmd::queue_install::can_dispatch(&successor) {
-                println!(
-                    "queue dispatcher: binary changed — exiting for the supervisor to restart"
-                );
-                return;
-            }
-            eprintln!(
-                "queue dispatcher: {successor} changed but cannot run `bn queue run` — staying on \
-                 the running image. The queue keeps draining; reinstall bn from a revision with the \
-                 queue to hand over."
-            );
+        // Two facts about the world this process was started in can change under it: the binary it
+        // runs and the config it read. Both are handled by `queue_daemon::Supervision`, because
+        // both are questions about the dispatcher *process*, not about a pass.
+        match supervision.check(&mut cfg) {
+            Lifecycle::Continue => {}
+            Lifecycle::Retire => return,
         }
-        // Config is cheap to stat and only re-parsed when it actually moved.
-        let stamp = config_stamp();
-        if stamp != config_seen {
-            config_seen = stamp;
-            cfg = Config::load();
-            println!("queue dispatcher: config reloaded");
-            if !cfg.queue_enabled_here() {
-                println!("queue dispatcher: no longer enabled on this machine — exiting");
-                return;
-            }
-        }
-
-        cap_own_log();
+        supervision.cap_own_log();
 
         let now = bn_core::clock::RealClock.now_epoch_secs();
         let mut wait = idle;
@@ -240,58 +220,12 @@ pub(crate) fn emit_run(cfg: &Config, interval: u64) {
     }
 }
 
-/// A cheap fingerprint of `config.toml` — modified time and length.
-///
-/// Two fields rather than mtime alone: an editor that writes-and-restores a timestamp still changes
-/// the length, and a same-length edit still moves the clock. `None` when unreadable, which compares
-/// equal to itself, so a missing config does not cause a reload every pass.
-fn config_stamp() -> Option<(std::time::SystemTime, u64)> {
-    let path = bn_core::resolver::config_file_path();
-    let meta = std::fs::metadata(path).ok()?;
-    Some((meta.modified().ok()?, meta.len()))
-}
-
-fn executable_path() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    Some(std::fs::canonicalize(&exe).unwrap_or(exe))
-}
-
-/// The same fingerprint for the running binary, resolved through any symlink so replacing the
-/// target of `~/.bn/config/bn` counts as a change.
-fn exe_stamp() -> Option<(std::time::SystemTime, u64)> {
-    let meta = std::fs::metadata(executable_path()?).ok()?;
-    Some((meta.modified().ok()?, meta.len()))
-}
-
-/// Keep the supervisor's capture of our stdout from growing without bound.
-///
-/// Neither launchd nor systemd rotates the file it redirects a daemon into, and the volume is not
-/// really ours: express jobs run *inline* in the tick, so every captured cron's output lands here
-/// too — duplicating the 15-line tail `run_native_job` already records against each `cron_run`
-/// event. The durable record is the event log; this file is a convenience.
-///
-/// So it is truncated rather than rotated. Losing yesterday's copy of something already stored
-/// twice is not a loss, and a rotation scheme would be more machinery than the thing is worth.
-fn cap_own_log() {
-    const MAX_BYTES: u64 = 4 * 1024 * 1024;
-    let path = std::path::Path::new("/tmp").join(format!("{}.log", crate::launchd::QUEUE_LABEL));
-    if std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_BYTES) {
-        // The supervisor holds this fd in append mode, so truncating underneath it is safe: the
-        // next write lands at the new end rather than leaving a sparse hole.
-        if std::fs::File::create(&path).is_ok() {
-            println!(
-                "queue dispatcher: truncated its own log (>4MB; the event log keeps the record)"
-            );
-        }
-    }
-}
-
 /// How long the resident loop waits between passes while the queue still has work.
 const BUSY_SECS: u64 = 3;
 
 /// Consecutive lock-denied passes before the loop says so. High enough that ordinary contention
-/// with the once-a-minute cron tick stays quiet, low enough that a stuck machine is named in
-/// minutes rather than hours.
+/// with a hand-run `bn queue tick` stays quiet, low enough that a stuck machine is named in minutes
+/// rather than hours.
 const SKIPS_BEFORE_WARNING: u32 = 20;
 
 /// `bn queue why` — the last decision, verbatim.

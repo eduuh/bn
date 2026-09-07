@@ -144,9 +144,8 @@ fn warn_dispatcher_down(producer: &str, fallback: &str) {
     static SAID: AtomicBool = AtomicBool::new(false);
     if !SAID.swap(true, Ordering::Relaxed) {
         eprintln!(
-            "bn: '{producer}' would queue, but no tick has run in {}m — {fallback}. \
-             Register the dispatcher with `bn cron register` (see `bn queue status`).",
-            bn_core::resolver::DISPATCHER_TTL_SECS / 60
+            "bn: '{producer}' would queue, but no dispatcher is running — {fallback}. \
+             Start one with `bn queue run` (see `bn queue status`)."
         );
     }
 }
@@ -242,15 +241,20 @@ pub(crate) fn capture_job_with_subject(
     not_after: Option<i64>,
 ) -> bool {
     let recovery = bn_core::queue::jobs::is_recovery(name);
-    let heavy = bn_core::queue::jobs::is_heavy(name);
-    let repo = cfg.queue_home_repo();
+    let heavy = cfg.queue.is_heavy(name);
+    let repo = match &exec {
+        ExecSpec::Job {
+            repo: Some(repo), ..
+        } if !repo.trim().is_empty() => repo.clone(),
+        _ => "bn".to_string(),
+    };
     let now = bn_core::util::now_epoch_secs();
     let spec = AddSpec {
         kind: BacklogKind::Cron,
         // Scheduled work is the floor: it should run, but never ahead of work a person is waiting
         // on. A negative priority says that once, here, instead of at every call site — except for
         // recovery, which has to outrank a backlog of routine crons to be worth exempting at all.
-        priority: bn_core::queue::jobs::priority_for(name),
+        priority: cfg.queue.priority_for(name),
         source: format!("cron:{name}"),
         task: crate::cmd::task_mint::task_for_machine_enqueue(cfg, &repo, subject, "cron"),
         exec,

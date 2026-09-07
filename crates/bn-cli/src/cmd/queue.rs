@@ -88,7 +88,21 @@ pub(crate) fn route(cfg: &Config, action: QueueCmd, json: bool) {
             emit_class(cfg, &id, &class, repo.as_deref(), now, json)
         }
         QueueCmd::Tick { dry_run } => crate::cmd::queue_tick::emit_tick(cfg, dry_run, json),
+        QueueCmd::At { id, when, repo } => {
+            crate::cmd::queue_when::emit_at(cfg, &id, &when, repo.as_deref(), now, json)
+        }
+        QueueCmd::Now { id, repo } => {
+            crate::cmd::queue_when::emit_now(cfg, &id, repo.as_deref(), now, json)
+        }
+        QueueCmd::Away { for_duration, back } => {
+            crate::cmd::queue_when::emit_away(&for_duration, back, now, json)
+        }
+        QueueCmd::Schedule { action } => match action {
+            Some(action) => crate::cmd::queue_when::emit_schedule_edit(cfg, action, json),
+            None => crate::cmd::queue_when::emit_schedule(cfg, now, json),
+        },
         QueueCmd::Run { interval } => crate::cmd::queue_tick::emit_run(cfg, interval),
+        QueueCmd::Stop => crate::cmd::queue_daemon::emit_stop(json),
         QueueCmd::Pause {
             scope,
             reason,
@@ -289,14 +303,14 @@ fn emit_status(cfg: &Config, repo: Option<&str>, now: i64, json: bool) {
     let pending: Vec<&BacklogEntry> = backlog
         .entries()
         .iter()
-        .filter(|e| cfg.queue_repo_allowed_here(&e.repo))
+        .filter(|e| cfg.repo_allowed_here(&e.repo))
         .filter(|e| e.status == BacklogStatus::Pending)
         .filter(|e| repo.is_none_or(|r| e.repo.eq_ignore_ascii_case(r)))
         .collect();
     let active: Vec<&BacklogEntry> = backlog
         .entries()
         .iter()
-        .filter(|e| cfg.queue_repo_allowed_here(&e.repo))
+        .filter(|e| cfg.repo_allowed_here(&e.repo))
         .filter(|e| e.status == BacklogStatus::Leased)
         .filter(|e| repo.is_none_or(|r| e.repo.eq_ignore_ascii_case(r)))
         .collect();
@@ -342,10 +356,10 @@ fn print_dispatcher(cfg: &Config, now: i64) {
         .filter(|p| cfg.queue.captures(p))
         .collect();
 
-    // A wedged dispatcher heartbeats like a healthy one — the heartbeat is a timer thread, so that
-    // it keeps reporting alive while a pass is blocked is by design. The pass stamp is what tells
-    // them apart, and the terminal says so in the same breath as the dashboard rather than leaving
-    // the two surfaces to disagree about a live-but-useless daemon.
+    // A wedged dispatcher looks exactly as alive as a healthy one: it is holding its lock, and the
+    // kernel holds that for as long as the process exists however blocked it is. The pass stamp is
+    // what tells them apart, and the terminal says so in the same breath as the dashboard rather
+    // than leaving the two surfaces to disagree about a live-but-useless daemon.
     let stalled = bn_core::resolver::dispatcher_pass_age(now)
         .is_some_and(|age| age > bn_core::resolver::DISPATCHER_STALL_SECS);
     if captured.is_empty() {
@@ -359,16 +373,24 @@ fn print_dispatcher(cfg: &Config, now: i64) {
             "    it is blocked inside something it started — `bn queue why` has the last pass"
         );
     } else if alive {
-        println!(
-            "\u{f0e7} dispatcher live · capturing {}",
-            captured.join(", ")
-        );
+        // The pid is advisory (the flock is what owns the machine), but it is the thing an operator
+        // reaches for next — to `kill` it, or to find it in `ps`.
+        match bn_core::queue::daemon::holder_pid() {
+            Some(pid) => println!(
+                "\u{f0e7} dispatcher live (pid {pid}) · capturing {}",
+                captured.join(", ")
+            ),
+            None => println!(
+                "\u{f0e7} dispatcher live · capturing {}",
+                captured.join(", ")
+            ),
+        }
     } else {
         println!(
             "\u{f071} dispatcher NOT running — {} would queue but are launching directly",
             captured.join(", ")
         );
-        println!("    register it with `bn cron register` (queue-tick, every minute)");
+        println!("    start one with `bn queue run` — or any `bn` command will start it for you");
     }
     let open = bn_core::queue::window::open(&cfg.queue.windows, now);
     if !open.is_empty() {
@@ -672,7 +694,7 @@ fn emit_list(
     let mut rows: Vec<&BacklogEntry> = backlog
         .entries()
         .iter()
-        .filter(|e| cfg.queue_repo_allowed_here(&e.repo))
+        .filter(|e| cfg.repo_allowed_here(&e.repo))
         .filter(|e| want_kind.is_none_or(|k| e.kind == k))
         .filter(|e| want_status.is_none_or(|s| e.status == s))
         .filter(|e| repo.is_none_or(|r| e.repo.eq_ignore_ascii_case(r)))

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Try the queue in a throwaway sandbox — its own BN_HOME, state dir and notes root, so nothing
-# here touches your real backlog, crons, launchd or fleet. Ctrl-C cleans up.
+# here touches your real backlog, crons or fleet. Ctrl-C cleans up.
 #
 #   ./try-queue.sh            # dashboard on :7793 + a few demo entries
 #   ./try-queue.sh --cli      # same sandbox, but drop into a shell for the CLI instead
@@ -22,9 +22,10 @@ hostname = "bn-try-queue"
 [personal]
 notes_root = "$SB/notes"
 
-# Without this profile bn decides the queue is disabled on this host and reconciles — which means
-# removing the real machine's launchd dispatcher. The env vars below isolate bn's files; launchd is
-# per-uid and isolates nothing, so "nothing here touches your real machine" was not true.
+# The queue has to be enabled for this host or there is nothing to demonstrate. It is no longer a
+# safety matter: bn supervises its own dispatcher, whose lock lives under BN_STATE_DIR, so the
+# sandbox really is one. It used to reconcile a per-uid launchd agent, and "nothing here touches
+# your real machine" was not true.
 [machines.bn-try-queue]
 repos = ["*"]
 queue = true

@@ -100,6 +100,7 @@ impl Fixture {
             kinds: None,
             goals: &goals,
             attention: &attention,
+            heavy_cap: 1,
             max_express: 20,
             windows: &[],
             presence: Presence {

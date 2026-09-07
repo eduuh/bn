@@ -46,7 +46,7 @@ pub(super) fn spawn(cfg: &Config, d: &Dispatch, cmd: &str) -> Result<(), String>
 /// open a window in a repo's session, never a session of its own. Returns false when tmux cannot
 /// host it, so the caller falls back to the headless path.
 fn spawn_tmux(cfg: &Config, d: &Dispatch, wrapped: &str) -> bool {
-    let (session, window) = tmux_target(&d.exec, &d.repo, &d.id, &cfg.queue_home_repo());
+    let (session, window) = tmux_target(&d.exec, &d.repo, &d.id);
     let home = crate::wt::respawn_fallback(&cfg.worktree_dir, &session);
     let home = home.to_string_lossy().to_string();
     let target = format!("={session}");
@@ -170,13 +170,13 @@ fn window_argv(session: &str, window: &str, home: &str, command: &str) -> Vec<Ve
 
 /// Which session hosts a heavy job's window, and what the window is called. Pure.
 ///
-/// The rule is one sentence: the session is the repository the work serves. `home_repo` is the
-/// queue's sentinel repo — the key machine-wide entries are booked under. It names no checkout, so
-/// it can never be a session; work booked under it is bn's own bookkeeping and lands in bn's
-/// session instead. Passing it in rather than reading the config keeps this function pure.
-fn tmux_target(exec: &ExecSpec, entry_repo: &str, id: &str, home_repo: &str) -> (String, String) {
+/// The rule is one sentence: the session is the repository the work serves.
+///
+/// Legacy backlog rows may still name the retired `machine` sentinel until compaction rewrites
+/// them; those are bn's own bookkeeping too, so the session still falls back to `bn`.
+fn tmux_target(exec: &ExecSpec, entry_repo: &str, id: &str) -> (String, String) {
     let session_for = |repo: &str| {
-        if repo.is_empty() || repo == home_repo {
+        if repo.is_empty() || repo.eq_ignore_ascii_case("machine") {
             BN_REPO.to_string()
         } else {
             repo.to_string()
@@ -238,8 +238,6 @@ fn shq(s: &str) -> String {
 mod tests {
     use super::*;
 
-    const HOME_REPO: &str = "machine";
-
     fn job(name: &str, repo: Option<&str>) -> ExecSpec {
         ExecSpec::Job {
             job: name.to_string(),
@@ -249,17 +247,17 @@ mod tests {
     }
 
     fn session_of(exec: &ExecSpec, entry_repo: &str) -> String {
-        tmux_target(exec, entry_repo, "abc123", HOME_REPO).0
+        tmux_target(exec, entry_repo, "abc123").0
     }
 
     #[test]
     fn a_job_lands_in_the_session_of_the_repo_it_serves() {
         assert_eq!(
-            tmux_target(&job("pool-warm", Some("arena")), HOME_REPO, "id", HOME_REPO),
+            tmux_target(&job("pool-warm", Some("arena")), "arena", "id"),
             ("arena".to_string(), "pool-warm".to_string())
         );
         assert_eq!(
-            tmux_target(&job("keep-warm", Some("BigMono")), HOME_REPO, "id", HOME_REPO),
+            tmux_target(&job("keep-warm", Some("BigMono")), "BigMono", "id"),
             ("BigMono".to_string(), "keep-warm".to_string())
         );
     }
@@ -268,10 +266,7 @@ mod tests {
     fn a_job_that_names_no_repo_is_bns_own_bookkeeping() {
         // Including `nightly-release`, which used to need a hardcode to get here.
         for name in ["nightly-release", "pool-warm", "self-update"] {
-            assert_eq!(
-                tmux_target(&job(name, None), HOME_REPO, "id", HOME_REPO).0,
-                BN_REPO
-            );
+            assert_eq!(tmux_target(&job(name, None), "", "id").0, BN_REPO);
         }
     }
 
@@ -282,8 +277,8 @@ mod tests {
         let shell = ExecSpec::Shell {
             cmd: "true".to_string(),
         };
-        assert_eq!(session_of(&shell, HOME_REPO), BN_REPO);
-        assert_eq!(session_of(&ExecSpec::Agent, HOME_REPO), BN_REPO);
+        assert_eq!(session_of(&shell, "machine"), BN_REPO);
+        assert_eq!(session_of(&ExecSpec::Agent, "machine"), BN_REPO);
         // A real repo still answers for itself.
         assert_eq!(session_of(&shell, "arena"), "arena");
     }
@@ -302,9 +297,9 @@ mod tests {
             ExecSpec::Agent,
         ];
         for exec in &execs {
-            for entry_repo in [HOME_REPO, "arena", ""] {
-                let (session, window) = tmux_target(exec, entry_repo, "id", HOME_REPO);
-                assert_ne!(session, HOME_REPO, "{exec:?} / {entry_repo}");
+            for entry_repo in ["machine", "arena", ""] {
+                let (session, window) = tmux_target(exec, entry_repo, "id");
+                assert_ne!(session, "machine", "{exec:?} / {entry_repo}");
                 assert!(!session.is_empty(), "{exec:?} / {entry_repo}");
                 assert!(!window.is_empty(), "{exec:?} / {entry_repo}");
             }

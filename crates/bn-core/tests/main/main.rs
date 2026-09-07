@@ -17,6 +17,7 @@ mod advise_rank;
 mod agent_doc_dir;
 mod agent_opt_in;
 mod attn_staff_promotion;
+mod backlog_latest;
 mod events_concurrent_append;
 mod next_fit;
 mod queue_durations;

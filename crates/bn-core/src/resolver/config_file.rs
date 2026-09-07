@@ -118,15 +118,25 @@ impl ConfigFile {
         self.queue.as_ref().and_then(|q| q.heartbeat_ttl_secs)
     }
 
-    /// `[queue]` numeric knobs: the express budget and the two lease TTLs.
-    pub(super) fn queue_nums(&self) -> (Option<usize>, Option<i64>, Option<i64>, Option<i64>) {
+    /// `[queue]`'s numeric knobs, in one read.
+    ///
+    /// A named struct rather than a tuple: it started as three fields and every knob the queue
+    /// grows adds another, at which point positional destructuring is one reordering away from
+    /// silently swapping a lease TTL for an idle threshold.
+    pub(super) fn queue_nums(&self) -> QueueNums {
         let q = self.queue.as_ref();
-        (
-            q.and_then(|q| q.express_per_tick),
-            q.and_then(|q| q.agent_lease_ttl_secs),
-            q.and_then(|q| q.express_lease_ttl_secs),
-            q.and_then(|q| q.opportunistic_idle_mins),
-        )
+        QueueNums {
+            express_per_tick: q.and_then(|q| q.express_per_tick),
+            heavy: q.and_then(|q| q.heavy),
+            agent_lease_ttl_secs: q.and_then(|q| q.agent_lease_ttl_secs),
+            express_lease_ttl_secs: q.and_then(|q| q.express_lease_ttl_secs),
+            opportunistic_idle_mins: q.and_then(|q| q.opportunistic_idle_mins),
+        }
+    }
+
+    /// `[queue.jobs]` — the per-job classification overrides, if any.
+    pub(super) fn queue_job_classes(&self) -> Option<super::config_sections::JobClassSection> {
+        self.queue.as_ref().and_then(|q| q.jobs.clone())
     }
 
     /// `[[queue.windows]]` — resolved into [`crate::queue::window::PriorityWindow`] by the caller,
@@ -904,4 +914,14 @@ impl ConfigFile {
             .and_then(|s| s.max_findings)
             .or_else(|| self.scout.as_ref().and_then(|s| s.max_findings))
     }
+}
+
+/// The `[queue]` numeric knobs [`ConfigFile::queue_nums`] reads in one pass.
+#[derive(Default)]
+pub(super) struct QueueNums {
+    pub(super) express_per_tick: Option<usize>,
+    pub(super) heavy: Option<usize>,
+    pub(super) agent_lease_ttl_secs: Option<i64>,
+    pub(super) express_lease_ttl_secs: Option<i64>,
+    pub(super) opportunistic_idle_mins: Option<i64>,
 }

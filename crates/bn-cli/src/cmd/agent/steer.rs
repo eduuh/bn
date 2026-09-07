@@ -1,4 +1,4 @@
-//! `bn agent send` — the steer channels, and the tmux step plans they are built from.
+//! `bn agent send` — the steer channels and their delivery logic.
 //!
 //! Split out of `cmd/agent.rs` so the file-size ratchet leaves room for the supervision commands
 //! and so the two delivery channels live together:
@@ -8,12 +8,14 @@
 //!   * **keys** — paste into the live tmux window and submit with a verified raw CR. This is the
 //!     channel that actually steers the session on screen.
 //!
-//! Re-exported by `cmd/agent.rs`, so every `cmd::agent::emit_agent_send`, `cmd::agent::TmuxStep`,
-//! … path keeps resolving unchanged.
+//! Re-exported by `cmd/agent.rs`, so every `cmd::agent::emit_agent_send`, … path keeps resolving
+//! unchanged.
 
-use super::{resolve_agent_session, resolve_tmux_target, tmux_exact_target};
+use super::{
+    resolve_agent_session, resolve_agent_transport, resolve_tmux_target, tmux_exact_target,
+};
 use crate::*;
-use bn_core::agent::AgentTransport as _;
+use bn_core::agent::{AgentTransport as _, Key};
 
 /// Build the `-p --resume` command for a harness (shared by the sync + detached steer paths).
 /// `None` for an unknown harness.
@@ -103,53 +105,6 @@ pub(crate) fn steer_detached(
 /// moment to close any autocomplete popup so the CR lands on the message line rather than the popup.
 pub(crate) const KEYS_SUBMIT_DELAY_MS: u64 = 120;
 
-/// One step of the `--keys` steer sequence: either a `tmux` invocation (the argv *after* `tmux`) or
-/// a pause. Split out so [`keys_paste_steps`] / [`keys_submit_steps`] can be pure, unit-testable
-/// plans while the executor in [`emit_agent_send`] just runs each step (tmux I/O isn't cleanly
-/// testable).
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum TmuxStep {
-    /// Run `tmux <args...>`.
-    Cmd(Vec<String>),
-    /// Sleep this many milliseconds.
-    DelayMs(u64),
-}
-
-/// Build the tmux step plan that primes pane `target`'s input box with `msg` via a paste-buffer
-/// named `buf`. Mirrors the seed launcher (`wt::launch_agent_in_window`): stage the message into a
-/// buffer with `set-buffer` (a `--` guard so a leading `-` in `msg` isn't parsed as a flag),
-/// `paste-buffer -d` it into the pane (one block, so an autosuggest/highlight TUI can't mangle a
-/// char-by-char type; `-d` auto-deletes the buffer). Then dismiss any autocomplete popup the pasted
-/// `@`/`#` may have opened with `Escape` and pause [`KEYS_SUBMIT_DELAY_MS`]. The submit is a
-/// **separate** step ([`keys_submit_steps`]) so the executor can re-send and verify it. The target
-/// is normalized to an exact-match name ([`tmux_exact_target`]). Pure: no tmux I/O.
-pub(crate) fn keys_paste_steps(target: &str, buf: &str, msg: &str) -> Vec<TmuxStep> {
-    let target = &tmux_exact_target(target);
-    let cmd = |args: &[&str]| TmuxStep::Cmd(args.iter().map(|s| s.to_string()).collect());
-    vec![
-        cmd(&["set-buffer", "-b", buf, "--", msg]),
-        cmd(&["paste-buffer", "-d", "-b", buf, "-t", target]),
-        cmd(&["send-keys", "-t", target, "Escape"]),
-        TmuxStep::DelayMs(KEYS_SUBMIT_DELAY_MS),
-    ]
-}
-
-/// The submit step for a `--keys` steer: a **raw carriage return** via `send-keys -H 0d` (the literal
-/// CR byte, 0x0d) rather than the named `Enter` key. Copilot's compose/autocomplete TUI was observed
-/// to swallow the named `Enter` — leaving the message unsent in the box — while the raw CR submits
-/// (#306). Kept separate + pure so the executor can re-send it under pane verification. The target is
-/// normalized to an exact-match name ([`tmux_exact_target`]) so the CR lands in the same pane the
-/// paste primed, never a prefix/fnmatch-resolved neighbor.
-pub(crate) fn keys_submit_steps(target: &str) -> Vec<TmuxStep> {
-    let target = tmux_exact_target(target);
-    vec![TmuxStep::Cmd(
-        ["send-keys", "-t", &target, "-H", "0d"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-    )]
-}
-
 /// Print the outcome of a synchronous `-p --resume` steer turn — shared by the primary resume path
 /// and the keys-fallback escalation, so both report identically.
 pub(crate) fn report_resume(target: &str, harness: &str, msg: &str, reply: &str, as_json: bool) {
@@ -237,31 +192,17 @@ pub(crate) fn deliver_instruction(cfg: &Config, target: &str, text: &str) -> boo
 /// Returns `(confirmed, pasted)` so a caller can tell "no such window" from "typed it but the TUI
 /// swallowed the Enter" — two failures with different fixes.
 fn deliver_via_keys(cfg: &Config, target: &str, msg: &str) -> (bool, bool) {
-    let run_steps = |steps: Vec<TmuxStep>| -> bool {
-        for step in steps {
-            match step {
-                TmuxStep::Cmd(args) => {
-                    if !proc::tmux_ok(&args) {
-                        return false;
-                    }
-                }
-                TmuxStep::DelayMs(ms) => {
-                    std::thread::sleep(std::time::Duration::from_millis(ms));
-                }
-            }
-        }
-        true
-    };
-    // Resolve the identity to the window that actually hosts it once, and steer that — the window
-    // is rarely named `repo:branch` (pool slots, reused directories), and every step must address
-    // the same pane.
+    // Resolve both layers once: the window we verify against, and the transport that owns the
+    // actual write.
     let window = resolve_tmux_target(cfg, target);
-    let buf = format!("bn-steer-{}", bn_core::util::now_epoch_secs());
-    let pasted = run_steps(keys_paste_steps(&window, &buf, msg));
+    let transport = resolve_agent_transport(cfg, target);
+    let pasted =
+        transport.write_keys(&[Key::Text(msg.to_string())]) && transport.write_keys(&[Key::Escape]);
     let mut confirmed = false;
     if pasted {
+        std::thread::sleep(std::time::Duration::from_millis(KEYS_SUBMIT_DELAY_MS));
         for _ in 0..agent_live::SUBMIT_BACKOFF.submit_attempts() {
-            if !run_steps(keys_submit_steps(&window)) {
+            if !transport.write_keys(&[Key::Submit]) {
                 break;
             }
             if agent_live::steer_landed(&window) {
@@ -276,10 +217,10 @@ fn deliver_via_keys(cfg: &Config, target: &str, msg: &str) -> (bool, bool) {
 /// Send a message to a running agent.
 ///
 /// `--channel auto` (the default) picks from the pane: a target with a live tmux window is steered
-/// **in that window** — paste via a tmux buffer ([`keys_paste_steps`]), submit with a raw carriage
-/// return ([`keys_submit_steps`]), and verify the pane took it, retrying the CR and escalating to
-/// `-p --resume` if it still can't confirm (#306). A target with no window falls back to `-p
-/// --resume`, which returns the agent's actual reply.
+/// **in that window** — the transport writes a whole-text key, then a raw carriage return, and the
+/// caller verifies the pane took it, retrying the CR and escalating to `-p --resume` if it still
+/// can't confirm (#306). A target with no window falls back to `-p --resume`, which returns the
+/// agent's actual reply.
 ///
 /// An agent sitting on a **dialog** is refused outright. Pasting prose at a numbered menu is how a
 /// stray character becomes a menu selection nobody chose — and the message would be swallowed by
@@ -329,8 +270,8 @@ pub(crate) fn emit_agent_send(
     // reads it when the turn ends — the correct outcome — so an unconfirmed submit must NOT
     // escalate to a `-p --resume` turn. Escalating there forks a second session against the same
     // transcript (delivering the message twice) and blocks the caller for a whole agent turn.
-    let was_working = keys
-        && super::pane_state(cfg, target) == Some(bn_core::orchestrate::PaneState::Working);
+    let was_working =
+        keys && super::pane_state(cfg, target) == Some(bn_core::orchestrate::PaneState::Working);
 
     // Reliable path: run a resume turn against the recorded session, unless --keys was asked. Track
     // a failure so a keys fallback that also can't confirm doesn't re-try a resume that already died.

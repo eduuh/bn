@@ -50,6 +50,8 @@ pub(crate) mod pr_observe_gh;
 pub(crate) mod promote;
 pub(crate) mod q_inbox;
 pub(crate) mod queue;
+pub(crate) mod queue_when;
+pub(crate) mod queue_daemon;
 pub(crate) mod queue_install;
 pub(crate) mod queue_log;
 pub(crate) mod queue_pause;

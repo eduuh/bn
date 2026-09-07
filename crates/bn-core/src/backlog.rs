@@ -28,6 +28,24 @@ pub use crate::queue::kind::{BacklogKind, ExecSpec, Requirements};
 
 pub mod entry;
 pub use entry::*;
+mod writes;
+pub use writes::*;
+
+const LEGACY_MACHINE_QUEUE_REPO: &str = "machine";
+const BN_QUEUE_REPO: &str = "bn";
+
+fn normalize_queue_repo(mut entry: BacklogEntry) -> BacklogEntry {
+    if !entry.repo.eq_ignore_ascii_case(LEGACY_MACHINE_QUEUE_REPO) {
+        return entry;
+    }
+    entry.repo = match &entry.exec {
+        ExecSpec::Job {
+            repo: Some(repo), ..
+        } if !repo.trim().is_empty() => repo.clone(),
+        _ => BN_QUEUE_REPO.to_string(),
+    };
+    entry
+}
 
 impl Backlog {
     /// Live entries that name no task — the pre-#1001 grandfathers.
@@ -101,6 +119,7 @@ impl Backlog {
     /// Fold one entry into the view — supersede an existing `(repo, id)` in place, else append. The
     /// building block of [`from_lines`] and the in-memory mutations.
     pub fn apply(&mut self, entry: BacklogEntry) {
+        let entry = normalize_queue_repo(entry);
         match self
             .entries
             .iter_mut()
@@ -507,6 +526,38 @@ impl Backlog {
         Some(e.clone())
     }
 
+    /// Make a pending entry the next thing this machine starts.
+    ///
+    /// Three changes, because raising the priority alone does none of the other two and the reason
+    /// is structural: a snoozed entry is discarded *before* ranking happens
+    /// (`plan_tick` checks `not_before` in its first pass), and an opportunistic one waits for an
+    /// away window whatever its number. So "run it now" has to clear the snooze, state the class,
+    /// and out-rank the queue — and the priority is derived from what is actually pending rather
+    /// than a magic constant, so it wins without inventing a number nothing else can reach.
+    ///
+    /// Returns `None` when there is nothing to do — absent, or not pending.
+    pub fn start_next(&mut self, repo: &str, id: &str, now: i64) -> Option<BacklogEntry> {
+        let top = self
+            .entries
+            .iter()
+            .filter(|e| e.status == BacklogStatus::Pending)
+            .map(|e| e.priority)
+            .max()
+            .unwrap_or(0);
+        let e = self
+            .entries
+            .iter_mut()
+            .find(|e| e.repo == repo && e.id == id)?;
+        if e.status != BacklogStatus::Pending {
+            return None;
+        }
+        e.not_before = None;
+        e.class_override = Some(ClassOverride::Foreground);
+        e.priority = e.priority.max(top.saturating_add(1));
+        e.updated_at = now;
+        Some(e.clone())
+    }
+
     /// Override a pending entry's derived queue class.
     pub fn set_class_override(
         &mut self,
@@ -588,6 +639,38 @@ pub fn load(path: &Path) -> Backlog {
     Backlog::from_lines(read_lines(path))
 }
 
+/// The current state of one `(repo, id)`, without folding the whole store.
+///
+/// [`load`] parses every raw line into a folded view, and that is the right shape when you want the
+/// whole queue. It is the wrong shape when you want one entry on a hot path: the log is
+/// append-only, so it holds a line per state change — 1,323 lines for 50 live entries on the
+/// machine this was written for, and 153,779 for 130 on one whose dispatcher had stalled.
+///
+/// The picker's side pane asks this question once per cursor move, inside a 150ms budget that
+/// exists because that pane re-execs `bn` on every keystroke. So: scan backwards and stop at the
+/// first line for this key. Later lines supersede earlier ones ([`Backlog::apply`]), so the last
+/// one *is* the answer — a cancel or a completion is simply the line that wins.
+///
+/// The substring pre-filter is what makes it cheap. `serde_json::from_str` on a line that cannot
+/// contain the key is wasted, and skipping it turns N parses into N string searches plus one parse.
+pub fn latest(path: &Path, repo: &str, id: &str) -> Option<BacklogEntry> {
+    let id_needle = format!("\"id\":\"{id}\"");
+    read_lines(path).iter().rev().find_map(|line| {
+        // The id is the selective half, and it is the only one safe to pre-filter on: a legacy row
+        // records `repo` as the retired `machine` sentinel and only becomes its real repo once
+        // `normalize_queue_repo` has seen it. Screening on the caller's repo would skip exactly
+        // those rows — and `load` would still find them, so the picker and the queue would disagree
+        // about whether the same entry exists.
+        if !line.contains(&id_needle) {
+            return None;
+        }
+        serde_json::from_str::<BacklogEntry>(line)
+            .ok()
+            .map(normalize_queue_repo)
+            .filter(|e| e.repo == repo && e.id == id)
+    })
+}
+
 /// Append one entry as a JSON line, creating the parent dir on demand. Cheap and append-only — the
 /// whole point of the JSONL format: an `add` under a busy daemon never rewrites the file.
 fn append_line(path: &Path, entry: &BacklogEntry) -> std::io::Result<()> {
@@ -600,299 +683,6 @@ fn append_line(path: &Path, entry: &BacklogEntry) -> std::io::Result<()> {
         .open(path)?;
     writeln!(f, "{}", serde_json::to_string(entry)?)?;
     Ok(())
-}
-
-/// Append `items` to the backlog for `repo`, deduped by `(repo, id)` against active entries and
-/// within the batch. Returns the ids actually added. Holds the shared advisory lock across the
-/// fold + append so a concurrent compaction can't drop the fresh lines.
-pub fn add(
-    path: &Path,
-    repo: &str,
-    items: &[String],
-    spec: &AddSpec,
-    now: i64,
-) -> std::io::Result<Vec<String>> {
-    let _lock = FileLock::acquire_required(path)?;
-    let bl = load(path);
-    let planned = bl.plan_add(repo, items, spec, now);
-    let mut added = Vec::with_capacity(planned.len());
-    for entry in &planned {
-        append_line(path, entry)?;
-        added.push(entry.id.clone());
-    }
-    Ok(added)
-}
-
-/// Lease up to `n` highest-priority pending entries for `repo` into a run: append a `leased` line
-/// per pulled entry and return them. Locked read-modify-append so the daemon's lease never races a
-/// compaction or a concurrent `add`.
-pub fn lease(path: &Path, repo: &str, n: usize, now: i64) -> std::io::Result<Vec<BacklogEntry>> {
-    if n == 0 {
-        return Ok(Vec::new());
-    }
-    let _lock = FileLock::acquire_required(path)?;
-    let mut bl = load(path);
-    let leased = bl.lease_top(repo, n, now);
-    for entry in &leased {
-        append_line(path, entry)?;
-    }
-    Ok(leased)
-}
-
-/// Lease specific pending `ids` for `repo` in one locked pass (#459) — the disk wrapper over
-/// [`Backlog::lease_ids`]. The autonomous selection policy ranks + gates the pending pool and hands
-/// back the concrete `(repo, id)`s to start; this flips exactly those to `leased` (in the given
-/// order) and appends their lines, skipping any that raced to non-pending. Returns the leased
-/// entries so the daemon extends the run state with them.
-pub fn lease_selected(
-    path: &Path,
-    repo: &str,
-    ids: &[String],
-    now: i64,
-) -> std::io::Result<Vec<BacklogEntry>> {
-    if ids.is_empty() {
-        return Ok(Vec::new());
-    }
-    let _lock = FileLock::acquire_required(path)?;
-    let mut bl = load(path);
-    let leased = bl.lease_ids(repo, ids, now);
-    for entry in &leased {
-        append_line(path, entry)?;
-    }
-    Ok(leased)
-}
-
-/// Reconcile `(repo, id)` to a terminal `status` (done/failed), appending one line. A no-op — no
-/// append — when the entry is absent or already terminal, so a re-reconcile every tick is idempotent
-/// and never grows the file.
-pub fn mark(
-    path: &Path,
-    repo: &str,
-    id: &str,
-    status: BacklogStatus,
-    now: i64,
-) -> std::io::Result<bool> {
-    let _lock = FileLock::acquire_required(path)?;
-    let mut bl = load(path);
-    match bl.resolve(repo, id, status, now) {
-        Some(entry) => {
-            append_line(path, &entry)?;
-            Ok(true)
-        }
-        None => Ok(false),
-    }
-}
-
-/// Reconcile a leased entry to a terminal state. Pending entries are rejected so a controller
-/// cannot complete work it never claimed.
-pub fn mark_leased(
-    path: &Path,
-    repo: &str,
-    id: &str,
-    status: BacklogStatus,
-    now: i64,
-) -> std::io::Result<bool> {
-    let _lock = FileLock::acquire_required(path)?;
-    let mut bl = load(path);
-    if bl.get(repo, id).map(|entry| entry.status) != Some(BacklogStatus::Leased) {
-        return Ok(false);
-    }
-    match bl.resolve(repo, id, status, now) {
-        Some(entry) => {
-            append_line(path, &entry)?;
-            Ok(true)
-        }
-        None => Ok(false),
-    }
-}
-
-/// Cancel a pending `(repo, id)` entry, appending one line — the disk wrapper over
-/// [`Backlog::cancel`]. Returns whether a line was written; `false` means it was absent or not
-/// pending (already running, already finished), which the caller should report rather than swallow.
-pub fn cancel(path: &Path, repo: &str, id: &str, now: i64) -> std::io::Result<bool> {
-    let _lock = FileLock::acquire_required(path)?;
-    let mut bl = load(path);
-    match bl.cancel(repo, id, now) {
-        Some(entry) => {
-            append_line(path, &entry)?;
-            Ok(true)
-        }
-        None => Ok(false),
-    }
-}
-
-/// Set an active `(repo, id)` entry's priority exactly, appending one line — the disk wrapper over
-/// [`Backlog::set_priority`]. A no-op when the entry is absent, terminal, or already there.
-pub fn set_priority(
-    path: &Path,
-    repo: &str,
-    id: &str,
-    priority: i64,
-    now: i64,
-) -> std::io::Result<bool> {
-    let _lock = FileLock::acquire_required(path)?;
-    let mut bl = load(path);
-    match bl.set_priority(repo, id, priority, now) {
-        Some(entry) => {
-            append_line(path, &entry)?;
-            Ok(true)
-        }
-        None => Ok(false),
-    }
-}
-
-/// Record a failed launch for a leased `(repo, id)` entry — the disk wrapper over
-/// [`Backlog::fail_launch`]. `None` means the entry was absent or not leased.
-///
-/// `delay` is the policy, injected rather than imported so the retry schedule stays in
-/// [`crate::queue::tick`] with the rest of the dispatcher's decisions:
-/// [`crate::queue::tick::launch_retry_delay`] is the one the tick passes.
-pub fn fail_launch(
-    path: &Path,
-    repo: &str,
-    id: &str,
-    now: i64,
-    delay: fn(u32) -> Option<i64>,
-) -> std::io::Result<Option<LaunchFailure>> {
-    let _lock = FileLock::acquire_required(path)?;
-    let mut bl = load(path);
-    match bl.fail_launch(repo, id, now, delay) {
-        Some((entry, outcome)) => {
-            append_line(path, &entry)?;
-            Ok(Some(outcome))
-        }
-        None => Ok(None),
-    }
-}
-
-/// Reset `(repo, id)`'s consecutive launch-failure count after a launch that worked — the disk
-/// wrapper over [`Backlog::clear_launch_failures`]. Writes nothing when the count is already zero,
-/// which is the common case.
-pub fn clear_launch_failures(path: &Path, repo: &str, id: &str) -> std::io::Result<bool> {
-    let _lock = FileLock::acquire_required(path)?;
-    let mut bl = load(path);
-    match bl.clear_launch_failures(repo, id) {
-        Some(entry) => {
-            append_line(path, &entry)?;
-            Ok(true)
-        }
-        None => Ok(false),
-    }
-}
-
-/// Snooze a pending `(repo, id)` entry until `not_before`.
-pub fn snooze(
-    path: &Path,
-    repo: &str,
-    id: &str,
-    not_before: i64,
-    now: i64,
-) -> std::io::Result<bool> {
-    let _lock = FileLock::acquire_required(path)?;
-    let mut bl = load(path);
-    match bl.snooze(repo, id, not_before, now) {
-        Some(entry) => {
-            append_line(path, &entry)?;
-            Ok(true)
-        }
-        None => Ok(false),
-    }
-}
-
-/// Set or clear a pending `(repo, id)` entry's class override.
-pub fn set_class_override(
-    path: &Path,
-    repo: &str,
-    id: &str,
-    class_override: Option<ClassOverride>,
-    now: i64,
-) -> std::io::Result<bool> {
-    let _lock = FileLock::acquire_required(path)?;
-    let mut bl = load(path);
-    match bl.set_class_override(repo, id, class_override, now) {
-        Some(entry) => {
-            append_line(path, &entry)?;
-            Ok(true)
-        }
-        None => Ok(false),
-    }
-}
-
-/// Extend an active `(repo, id)` entry's deadline, appending one line — the disk wrapper over
-/// [`Backlog::set_deadline`]. A no-op (no append) when the deadline is not strictly later.
-pub fn set_deadline(
-    path: &Path,
-    repo: &str,
-    id: &str,
-    not_after: i64,
-    now: i64,
-) -> std::io::Result<bool> {
-    let _lock = FileLock::acquire_required(path)?;
-    let mut bl = load(path);
-    match bl.set_deadline(repo, id, not_after, now) {
-        Some(entry) => {
-            append_line(path, &entry)?;
-            Ok(true)
-        }
-        None => Ok(false),
-    }
-}
-
-/// Reprioritize an active `(repo, id)` backlog entry to `priority`, appending one line — the disk
-/// wrapper over [`Backlog::reprioritize`]. A no-op (no append) when the entry is absent, terminal,
-/// or the new priority isn't a strict raise. Returns whether a line was written.
-pub fn reprioritize(
-    path: &Path,
-    repo: &str,
-    id: &str,
-    priority: i64,
-    now: i64,
-) -> std::io::Result<bool> {
-    let _lock = FileLock::acquire_required(path)?;
-    let mut bl = load(path);
-    match bl.reprioritize(repo, id, priority, now) {
-        Some(entry) => {
-            append_line(path, &entry)?;
-            Ok(true)
-        }
-        None => Ok(false),
-    }
-}
-
-/// Reconcile several `(id, status)` terminal outcomes for `repo` in one locked pass — the daemon's
-/// per-tick reconcile of the run ledger back onto the backlog. Only entries that are still active
-/// and actually change state are appended (a repeated outcome, an already-terminal entry, or an id
-/// absent from the backlog is skipped), so a steady state writes nothing. Returns lines written.
-pub fn resolve_many(
-    path: &Path,
-    repo: &str,
-    outcomes: &[(&str, BacklogStatus)],
-    now: i64,
-) -> std::io::Result<usize> {
-    let _lock = FileLock::acquire_required(path)?;
-    let mut bl = load(path);
-    let mut written = 0;
-    for (id, status) in outcomes {
-        if let Some(entry) = bl.resolve(repo, id, *status, now) {
-            append_line(path, &entry)?;
-            written += 1;
-        }
-    }
-    Ok(written)
-}
-
-/// Return several leased entries to pending in one locked pass after their run-state handoff fails.
-pub fn release_many(path: &Path, repo: &str, ids: &[&str], now: i64) -> std::io::Result<usize> {
-    let _lock = FileLock::acquire_required(path)?;
-    let mut bl = load(path);
-    let mut written = 0;
-    for id in ids {
-        if let Some(entry) = bl.release(repo, id, now) {
-            append_line(path, &entry)?;
-            written += 1;
-        }
-    }
-    Ok(written)
 }
 
 /// Whether the file is worth rewriting: it has grown past the floor and superseded/terminal lines
@@ -962,4 +752,33 @@ pub fn assign(path: &Path, repo: &str, id: &str, machine: &str, now: i64) -> std
     updated.updated_at = now;
     append_line(path, &updated)?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_machine_queue_entries_fold_under_their_real_repo() {
+        let lines = vec![
+            r#"{"id":"run-main-sync","repo":"machine","item":"run main-sync","kind":"cron","added_at":1000,"source":"cron:main-sync","task":"t1","status":"pending","updated_at":1000,"exec":{"run":"job","job":"main-sync","repo":"bn"}}"#.to_string(),
+            r#"{"id":"run-main-sync","repo":"bn","item":"run main-sync","kind":"cron","added_at":1000,"source":"cron:main-sync","task":"t1","status":"leased","updated_at":1010,"exec":{"run":"job","job":"main-sync","repo":"bn"}}"#.to_string(),
+        ];
+
+        let backlog = Backlog::from_lines(lines);
+        let entry = backlog
+            .get("bn", "run-main-sync")
+            .expect("normalized entry");
+        assert_eq!(entry.status, BacklogStatus::Leased);
+        assert!(backlog.get("machine", "run-main-sync").is_none());
+    }
+
+    #[test]
+    fn legacy_machine_shell_entries_fall_back_to_bn() {
+        let lines = vec![r#"{"id":"run-tools-reconcile","repo":"machine","item":"run tools-reconcile","kind":"cron","added_at":1000,"source":"cron:tools-reconcile","task":"t1","status":"pending","updated_at":1000,"exec":{"run":"shell","cmd":"true"}}"#.to_string()];
+
+        let backlog = Backlog::from_lines(lines);
+        assert!(backlog.get("machine", "run-tools-reconcile").is_none());
+        assert!(backlog.get("bn", "run-tools-reconcile").is_some());
+    }
 }

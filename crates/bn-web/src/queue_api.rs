@@ -170,14 +170,18 @@ pub async fn queue_events(
                 },
             )
             .into_iter()
-            .filter(|row| row.repo.is_empty() || cfg.queue_repo_allowed_here(&row.repo))
+            .filter(|row| {
+                row.repo.is_empty()
+                    || row.repo.eq_ignore_ascii_case("machine")
+                    || cfg.repo_allowed_here(&row.repo)
+            })
             .collect()
         };
         let backlog = bn_core::backlog::load(&bn_core::backlog::backlog_path());
         let entries: Vec<_> = backlog
             .entries()
             .iter()
-            .filter(|entry| cfg.queue_repo_allowed_here(&entry.repo))
+            .filter(|entry| cfg.repo_allowed_here(&entry.repo))
             .cloned()
             .collect();
         let runs = bn_core::queue::log::runs(&rows, &entries, now);
@@ -321,7 +325,7 @@ pub async fn queue_entries(
         let mut rows: Vec<_> = bl
             .entries()
             .iter()
-            .filter(|e| cfg.queue_repo_allowed_here(&e.repo))
+            .filter(|e| cfg.repo_allowed_here(&e.repo))
             .filter(|e| want.is_none_or(|s| e.status.label() == s))
             .filter(|e| repo.is_none_or(|r| e.repo.eq_ignore_ascii_case(r)))
             .filter(|e| kind.is_none_or(|k| e.kind.label() == k))
@@ -340,7 +344,7 @@ pub async fn queue_entries(
         for e in bl
             .entries()
             .iter()
-            .filter(|e| cfg.queue_repo_allowed_here(&e.repo))
+            .filter(|e| cfg.repo_allowed_here(&e.repo))
         {
             *counts.entry(e.status.label().to_string()).or_default() += 1;
         }

@@ -28,7 +28,7 @@ description = "bn — wake reactor and sole owner of attention toasts: ONE batch
 # records. The worst it can do is fail to restore a session after a reboot.
 #
 # The pool-slot ledger is NOT this kind of reclamation and is reconciled automatically, at the head
-# of every `queue-tick` pass: it deletes no branch, removes no worktree and kills no session. It
+# of every dispatcher pass: it deletes no branch, removes no worktree and kills no session. It
 # only makes each warm pool's `leases.json` agree with who is actually in its slots — otherwise a
 # lease outlives every agent that ever held it (the recorded holder is a tmux server or login shell
 # that never exits), the pool reads full, and `bn dispatch` silently spills into cold worktrees.
@@ -165,8 +165,3 @@ persistent = true
 randomized_delay = "2m"
 description = "bn — gather findings (#897): snapshot the local morning-planning caches (PR review queue, your open PRs, inbound feed, stale/blocked branches, night-shift reviewables, failing crons, sentinel, quarter goals, dojo cards) into the append-only findings store, one durable run per non-empty source. Offline/additive: reuses the warm caches (no network, no re-fetch) and touches no feed/attention/daily side effect; feeds today-agent (#577)."
 
-[[cron]]
-job = "queue-tick"
-on_calendar = "*:0/1"
-persistent = true
-description = "bn — queue tick: drain the machine-wide work queue in priority order, starting only what there is capacity and a capable node for. Records why on every pass (`bn queue why`), including the passes that start nothing. Honours `bn queue pause`."

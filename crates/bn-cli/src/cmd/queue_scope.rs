@@ -69,7 +69,7 @@ pub(crate) fn emit_badge(cfg: &Config, now: i64, json: bool) {
     let entries: Vec<&BacklogEntry> = backlog
         .entries()
         .iter()
-        .filter(|entry| cfg.queue_repo_allowed_here(&entry.repo))
+        .filter(|entry| cfg.repo_allowed_here(&entry.repo))
         .collect();
     let failed = entries
         .iter()

@@ -436,12 +436,29 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
 
-        let signal = std::process::Command::new("kill")
-            .args(["-TERM", &child.id().to_string()])
-            .status()
-            .unwrap();
-        assert!(signal.success());
+        send_term(child.id());
         assert!(child.wait().unwrap().success());
+    }
+
+    /// SIGTERM the child directly rather than shelling out to `kill`.
+    ///
+    /// `Command::new("kill")` has to resolve the binary through `PATH`, which it reads from
+    /// `environ` — and the suite runs tests in parallel with others that set and clear environment
+    /// variables through `EnvGuard`. `setenv` reallocates `environ` underneath a concurrent
+    /// `spawn`, so the lookup intermittently failed with `ENOENT` for a binary that is plainly
+    /// there, and the child then timed out waiting for a signal that was never sent. A direct
+    /// `kill(2)` reads no environment and spawns no process, so the test measures what it is about.
+    #[cfg(unix)]
+    #[allow(
+        unsafe_code,
+        reason = "libc::kill is the only way to signal another process; the pid comes from a Child \
+                  this test owns and the call writes through no pointer"
+    )]
+    fn send_term(pid: u32) {
+        // SAFETY: a plain signal delivery to a positive pid we own; no memory is shared.
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
     }
 
     #[cfg(unix)]

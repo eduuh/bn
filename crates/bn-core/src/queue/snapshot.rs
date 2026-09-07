@@ -35,6 +35,8 @@ pub struct Snapshot {
     pub attention: Vec<AttnSignal>,
     /// Inline express items one pass may run — configurable, so a slow box can lower it.
     pub max_express: usize,
+    /// How many heavy jobs may run at once — `[queue].heavy`.
+    pub heavy_cap: usize,
     pub windows: Vec<crate::queue::window::PriorityWindow>,
     /// The pauses in force at capture — what makes a drained repo's work stay pending.
     pub pauses: crate::queue::pause::PauseState,
@@ -109,6 +111,7 @@ impl Snapshot {
                 })
                 .collect(),
             max_express: cfg.queue.express_per_tick(),
+            heavy_cap: cfg.queue.heavy_cap(),
             presence: Presence {
                 idle: crate::idle::is_idle(cfg, now, cfg.queue.opportunistic_idle_mins),
                 away_window: windows
@@ -143,6 +146,7 @@ impl Snapshot {
             goals: &self.goals,
             attention: &self.attention,
             max_express: self.max_express,
+            heavy_cap: self.heavy_cap,
             durations: &self.durations,
             horizon: self.horizon.as_ref(),
             windows: &self.windows,
@@ -167,7 +171,7 @@ fn eligible_entries(cfg: &Config, backlog: &backlog::Backlog) -> Vec<BacklogEntr
     backlog
         .entries()
         .iter()
-        .filter(|entry| cfg.queue_repo_allowed_here(&entry.repo))
+        .filter(|entry| cfg.repo_allowed_here(&entry.repo))
         .cloned()
         .collect()
 }
@@ -283,7 +287,6 @@ mod tests {
         for (repo, id) in [
             ("acme/unregistered", "blocked"),
             ("acme/registered", "registered"),
-            ("machine", "machine-job"),
         ] {
             backlog.apply(BacklogEntry::new(repo, id, &spec, 900));
         }
@@ -294,7 +297,7 @@ mod tests {
                 .iter()
                 .map(|entry| entry.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["registered", "machine-job"]
+            vec!["registered"]
         );
 
         let caps = Caps {
@@ -337,6 +340,7 @@ mod tests {
             goals: &[],
             attention: &[],
             max_express: 2,
+            heavy_cap: 1,
             windows: &[],
             pauses: &pauses,
             presence: Presence {
@@ -351,7 +355,7 @@ mod tests {
                 .iter()
                 .map(|dispatch| dispatch.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["registered", "machine-job"]
+            vec!["registered"]
         );
     }
 }

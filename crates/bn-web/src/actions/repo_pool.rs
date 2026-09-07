@@ -21,7 +21,7 @@ fn pool_warm_queue_args(repo: &str) -> Vec<String> {
         "add".to_string(),
         format!("Warm pool for {repo}"),
         "--repo".to_string(),
-        "machine".to_string(),
+        repo.to_string(),
         "--kind".to_string(),
         "cron".to_string(),
         "--job".to_string(),

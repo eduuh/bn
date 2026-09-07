@@ -35,7 +35,7 @@ pub use jobs::{
     JobConfig, JobRef, JobScope,
 };
 pub use queue_config::{
-    dispatcher_alive, dispatcher_heartbeat_age, dispatcher_heartbeat_path, dispatcher_pass_age,
-    dispatcher_pass_path, QueueConfig, ALL_PRODUCERS, DISPATCHER_STALL_SECS, DISPATCHER_TTL_SECS,
+    dispatcher_alive, dispatcher_pass_age, dispatcher_pass_path, QueueConfig, ALL_PRODUCERS,
+    DISPATCHER_STALL_SECS,
 };
 pub use tools_config::ToolsConfig;

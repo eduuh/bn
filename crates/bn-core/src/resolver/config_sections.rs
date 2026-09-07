@@ -390,6 +390,10 @@ pub(super) struct QueueSection {
     pub(super) kind_caps: Option<HashMap<String, usize>>,
     /// Inline express items one pass may run.
     pub(super) express_per_tick: Option<usize>,
+    /// How many heavy jobs (pool warms, builds, releases) may run at once. Default 1.
+    pub(super) heavy: Option<usize>,
+    /// `[queue.jobs]` — per-job overrides of the built-in classification.
+    pub(super) jobs: Option<JobClassSection>,
     /// Seconds a worktree agent may hold a lease before it is presumed dead.
     pub(super) agent_lease_ttl_secs: Option<i64>,
     /// Seconds headless work may hold a lease. Express work resolves in-tick, so this is short.
@@ -411,4 +415,23 @@ pub(super) struct WindowSection {
     pub(super) boost: Option<i64>,
     pub(super) matches: Option<Vec<String>>,
     pub(super) mode: Option<String>,
+}
+
+/// `[queue.jobs]` — which jobs are expensive, and how urgent each one is.
+///
+/// bn ships a classification in `queue::jobs`, and it is a statement about *bn's own* roster. A
+/// machine that adds a job, or that finds a shipped one cheaper than bn assumed, had to edit Rust
+/// and reinstall to say so.
+///
+/// Deliberately **not** here: `NEVER_CAPTURE`. Those are the jobs that drain the queue, and a
+/// config able to shrink that list could brick the machine — the dispatcher would queue its own
+/// tick and wait forever for something to run it. `RECOVERY_JOBS` is absent for a weaker version of
+/// the same reason: removing `agent-supervise` closes a documented cycle in the warming latch.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub(super) struct JobClassSection {
+    /// Jobs that cost like a build. Replaces the built-in list outright when given.
+    pub(super) heavy: Option<Vec<String>>,
+    /// Per-job priority, overriding the derived recovery/heavy/cron banding.
+    #[serde(default)]
+    pub(super) priority: std::collections::HashMap<String, i64>,
 }

@@ -5,9 +5,10 @@ use bn_core::agent::{
     release_agent_lease, AgentLease, AgentLeaseAcquireMode, AgentLeaseBegin, AgentLeaseKey,
     AgentLeaseKind, AgentLeaseRemovalReason, AgentLeaseReservation as CoreAgentLeaseReservation,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::Duration;
 
 pub(crate) struct AgentLeaseRequest<'a> {
     pub repo: &'a str,
@@ -352,16 +353,50 @@ pub(crate) fn live_agents_in(worktree: &Path) -> Vec<Occupant> {
     out
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HarnessPaneRow {
+    tmux_target: String,
+    command: String,
+    since: i64,
+    pane_pid: i32,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct NvimTerminal {
+    pid: i32,
+    #[allow(dead_code)]
+    name: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct NvimHostProbe {
+    pid: i32,
+    terminals: Vec<NvimTerminal>,
+}
+
+const NVIM_HOST_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+const NVIM_HOST_PROBE_EXPR: &str = r#"luaeval("vim.json.encode((function() local out={} for _,buf in ipairs(vim.api.nvim_list_bufs()) do if vim.api.nvim_buf_is_loaded(buf) and vim.bo[buf].buftype=='terminal' then local job=vim.b[buf].terminal_job_id if job and job > 0 then local pid = vim.fn.jobpid(job) if pid and pid > 0 then table.insert(out, { pid = pid, name = vim.api.nvim_buf_get_name(buf) }) end end end end return { pid = vim.fn.getpid(), terminals = out } end)())")"#;
+
 /// Live panes whose working directory is inside `worktree` and whose foreground command is a known
-/// agent harness — an agent bn never registered. Same signal the stale-agent reaper uses,
-/// read straight off tmux rather than the process table so it needs no `/proc` (which does not
-/// exist on macOS, where the pool's old in-use check therefore always answered "idle").
+/// agent harness — or whose nvim host is running one in a terminal buffer. This is still the
+/// unregistered-agent source: it catches an agent bn never leased or stamped before the launch
+/// guard or the pool makes a decision.
 fn harness_panes_in(worktree: &Path) -> Vec<Occupant> {
-    let format = "#{session_name}:#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{@bn_agent_since}\t#{pane_dead}";
+    let format = "#{session_name}:#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{@bn_agent_since}\t#{pane_dead}\t#{pane_pid}";
     let Some(output) = crate::proc::tmux_raw(&["list-panes", "-a", "-F", format]) else {
         return Vec::new();
     };
-    let mut panes = parse_harness_panes(&output, worktree, bn_core::util::now_epoch_secs());
+    let now = bn_core::util::now_epoch_secs();
+    let rows = parse_harness_pane_rows(&output, worktree, now);
+    let mut panes: Vec<Occupant> = rows.iter().filter_map(occupant_from_harness_pane).collect();
+    if let Some(hosted) = nvim_host_occupant(&rows, worktree) {
+        if !panes
+            .iter()
+            .any(|pane| pane.tmux_target == hosted.tmux_target)
+        {
+            panes.push(hosted);
+        }
+    }
     if panes.is_empty() {
         return panes;
     }
@@ -458,40 +493,119 @@ fn stamped_since(field: &str, now: i64) -> i64 {
 /// The pure half of [`harness_panes_in`], so the "is this pane an agent in this checkout?" rule is
 /// testable without a tmux server.
 fn parse_harness_panes(output: &str, worktree: &Path, now: i64) -> Vec<Occupant> {
+    parse_harness_pane_rows(output, worktree, now)
+        .iter()
+        .filter_map(occupant_from_harness_pane)
+        .collect()
+}
+
+fn parse_harness_pane_rows(output: &str, worktree: &Path, now: i64) -> Vec<HarnessPaneRow> {
     output
         .lines()
         .filter_map(|line| {
             let fields: Vec<&str> = line.split('\t').collect();
-            if fields.len() < 5 || fields[4] != "0" {
+            if fields.len() < 6 || fields[4] != "0" {
                 return None;
             }
             let cwd = Path::new(fields[1]);
             if !cwd.starts_with(worktree) {
                 return None;
             }
-            // Match the harness *binary* exactly rather than through `harness::normalize`, whose
-            // aliases include `gh` — someone running `gh pr view` in a slot is not an agent.
-            let command = fields[2].trim();
-            let harness = bn_core::harness::KNOWN_HARNESSES
-                .iter()
-                .find(|known| **known == command)
-                .copied()
-                // Claude Code sets its process title to its bare version number, so
-                // `#{pane_current_command}` reads "2.1.226", never "claude" — an exact-name
-                // match alone leaves every such pane invisible to occupancy, which is how a
-                // slot with a live agent typing in it got warm-reset. Nothing else titles a
-                // foreground process as a dotted version, so the shape is the identity.
-                .or_else(|| bare_version(command).then_some("claude"))?;
-            Some(Occupant {
-                repo: None,
-                branch: None,
-                session_id: None,
+            Some(HarnessPaneRow {
                 tmux_target: fields[0].to_string(),
-                kind: harness.to_string(),
+                command: fields[2].trim().to_string(),
                 since: stamped_since(fields[3], now),
+                pane_pid: fields[5].trim().parse().unwrap_or_default(),
             })
         })
         .collect()
+}
+
+fn occupant_from_harness_pane(row: &HarnessPaneRow) -> Option<Occupant> {
+    // Match the harness *binary* exactly rather than through `harness::normalize`, whose aliases
+    // include `gh` — someone running `gh pr view` in a slot is not an agent.
+    let harness = bn_core::harness::KNOWN_HARNESSES
+        .iter()
+        .find(|known| **known == row.command.as_str())
+        .copied()
+        // Claude Code sets its process title to its bare version number, so
+        // `#{pane_current_command}` reads "2.1.226", never "claude" — an exact-name
+        // match alone leaves every such pane invisible to occupancy, which is how a
+        // slot with a live agent typing in it got warm-reset. Nothing else titles a
+        // foreground process as a dotted version, so the shape is the identity.
+        .or_else(|| bare_version(&row.command).then_some("claude"))?;
+    Some(Occupant {
+        repo: None,
+        branch: None,
+        session_id: None,
+        tmux_target: row.tmux_target.clone(),
+        kind: harness.to_string(),
+        since: row.since,
+    })
+}
+
+fn nvim_host_occupant(rows: &[HarnessPaneRow], worktree: &Path) -> Option<Occupant> {
+    if !rows
+        .iter()
+        .any(|row| row.pane_pid > 0 && crate::edit::pane::is_nvim(&row.command))
+    {
+        return None;
+    }
+    let sock = bn_core::editor::socket_for(worktree);
+    let raw =
+        crate::edit::rpc::remote_expr(&sock, NVIM_HOST_PROBE_EXPR, NVIM_HOST_PROBE_TIMEOUT).ok()?;
+    let probe: NvimHostProbe = serde_json::from_str(raw.trim()).ok()?;
+    nvim_host_occupant_from(rows, &probe, &crate::reap::ps_all())
+}
+
+fn nvim_host_occupant_from(
+    rows: &[HarnessPaneRow],
+    probe: &NvimHostProbe,
+    procs: &[crate::reap::Proc],
+) -> Option<Occupant> {
+    let host = rows
+        .iter()
+        .find(|row| row.pane_pid == probe.pid && crate::edit::pane::is_nvim(&row.command))?;
+    let harness = nvim_host_harness(probe, procs)?;
+    Some(Occupant {
+        repo: None,
+        branch: None,
+        session_id: None,
+        tmux_target: host.tmux_target.clone(),
+        kind: harness.to_string(),
+        since: host.since,
+    })
+}
+
+fn nvim_host_harness<'a>(
+    probe: &'a NvimHostProbe,
+    procs: &'a [crate::reap::Proc],
+) -> Option<&'static str> {
+    let by_pid: BTreeMap<i32, &crate::reap::Proc> = procs.iter().map(|p| (p.pid, p)).collect();
+    let edges: Vec<(i32, i32)> = procs.iter().map(|p| (p.pid, p.ppid)).collect();
+    for terminal in &probe.terminals {
+        if terminal.pid <= 0 {
+            continue;
+        }
+        for pid in crate::reap::descendants(&edges, terminal.pid) {
+            let Some(proc) = by_pid.get(&pid) else {
+                continue;
+            };
+            if let Some(kind) = harness_in_process_command(&proc.command) {
+                return Some(kind);
+            }
+        }
+    }
+    None
+}
+
+fn harness_in_process_command(command: &str) -> Option<&'static str> {
+    crate::reap::is_harness_command(command).or_else(|| {
+        command.split_whitespace().find_map(|token| {
+            let name = token.rsplit('/').next().unwrap_or(token);
+            bare_version(name).then_some("claude")
+        })
+    })
 }
 
 /// Whether `s` is a bare dotted version number (`2.1.226`) — the process title Claude Code runs
@@ -888,7 +1002,7 @@ mod tests {
     fn an_unstamped_harness_pane_is_not_ancient() {
         // This zero is what `adopt_occupied_slots` copied into the pool ledger as the lease's `at`,
         // producing a slot that reported an age of 20673 days.
-        let row = "bn:feat\t/wt/bn/feat\tclaude\t\t0";
+        let row = "bn:feat\t/wt/bn/feat\tclaude\t\t0\t101";
         let panes = parse_harness_panes(row, Path::new("/wt/bn/feat"), NOW);
         assert_eq!(panes.len(), 1);
         assert_eq!(panes[0].since, NOW);
@@ -901,7 +1015,7 @@ mod tests {
     /// and stopped `wt pool return feat` matching it.
     #[test]
     fn a_named_pane_is_labelled_by_its_branch_not_its_window() {
-        let row = "bn:agent:bn:feat\t/wt/bn/feat\tclaude\t\t0";
+        let row = "bn:agent:bn:feat\t/wt/bn/feat\tclaude\t\t0\t101";
         let mut panes = parse_harness_panes(row, Path::new("/wt/bn/feat"), NOW);
         assert_eq!(panes.len(), 1);
 
@@ -919,17 +1033,95 @@ mod tests {
         // Claude Code's process title is its bare version, so the command column never says
         // "claude". The regression: every such pane was invisible to occupancy, and a slot with a
         // live agent typing in it was warm-reset underneath it.
-        let row = "bn:feat\t/wt/bn/feat\t2.1.226\t\t0";
+        let row = "bn:feat\t/wt/bn/feat\t2.1.226\t\t0\t101";
         let panes = parse_harness_panes(row, Path::new("/wt/bn/feat"), NOW);
         assert_eq!(panes.len(), 1);
         assert_eq!(panes[0].kind, "claude");
         // Non-version commands stay invisible: a build tool or shell is not an agent.
         for cmd in ["zsh", "node", "2", "gh", "1.2.x", "..", "2..3"] {
-            let row = format!("bn:feat\t/wt/bn/feat\t{cmd}\t\t0");
+            let row = format!("bn:feat\t/wt/bn/feat\t{cmd}\t\t0\t101");
             assert!(
                 parse_harness_panes(&row, Path::new("/wt/bn/feat"), NOW).is_empty(),
                 "{cmd} must not read as a harness"
             );
         }
+    }
+
+    #[test]
+    fn an_nvim_hosted_harness_is_an_occupant() {
+        let rows = parse_harness_pane_rows(
+            "bn:feat\t/wt/bn/feat\tnvim\t\t0\t101",
+            Path::new("/wt/bn/feat"),
+            NOW,
+        );
+        let probe = NvimHostProbe {
+            pid: 101,
+            terminals: vec![NvimTerminal {
+                pid: 200,
+                name: "term://...:zsh".to_string(),
+            }],
+        };
+        let procs = vec![
+            crate::reap::Proc {
+                pid: 200,
+                ppid: 10,
+                command: "zsh".to_string(),
+            },
+            crate::reap::Proc {
+                pid: 210,
+                ppid: 200,
+                command: "/opt/bin/copilot --resume abc".to_string(),
+            },
+        ];
+        let occupant = nvim_host_occupant_from(&rows, &probe, &procs).expect("occupant");
+        assert_eq!(occupant.tmux_target, "bn:feat");
+        assert_eq!(occupant.kind, "copilot");
+        assert_eq!(occupant.since, NOW);
+    }
+
+    #[test]
+    fn a_shell_only_nvim_terminal_is_not_an_occupant() {
+        let rows = parse_harness_pane_rows(
+            "bn:feat\t/wt/bn/feat\tnvim\t\t0\t101",
+            Path::new("/wt/bn/feat"),
+            NOW,
+        );
+        let probe = NvimHostProbe {
+            pid: 101,
+            terminals: vec![NvimTerminal {
+                pid: 200,
+                name: "term://...:zsh".to_string(),
+            }],
+        };
+        let procs = vec![crate::reap::Proc {
+            pid: 200,
+            ppid: 10,
+            command: "zsh".to_string(),
+        }];
+        assert!(nvim_host_occupant_from(&rows, &probe, &procs).is_none());
+    }
+
+    #[test]
+    fn a_version_titled_descendant_counts_as_claude_inside_nvim() {
+        let probe = NvimHostProbe {
+            pid: 101,
+            terminals: vec![NvimTerminal {
+                pid: 200,
+                name: "term://...:zsh".to_string(),
+            }],
+        };
+        let procs = vec![
+            crate::reap::Proc {
+                pid: 200,
+                ppid: 10,
+                command: "zsh".to_string(),
+            },
+            crate::reap::Proc {
+                pid: 210,
+                ppid: 200,
+                command: "2.1.226".to_string(),
+            },
+        ];
+        assert_eq!(nvim_host_harness(&probe, &procs), Some("claude"));
     }
 }

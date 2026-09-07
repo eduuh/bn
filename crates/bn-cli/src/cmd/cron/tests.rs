@@ -202,11 +202,9 @@ fn scheduler_enqueues_due_agents_and_queue_tick_runs_them() {
     make_repo_available(&mut cfg, temp.path(), "test-repo");
 
     std::fs::create_dir_all(&state).expect("state dir");
-    std::fs::write(
-        state.join("queue-daemon.heartbeat"),
-        bn_core::util::now_epoch_secs().to_string(),
-    )
-    .expect("queue heartbeat");
+    // Capture is only active while a dispatcher holds the lock, so the test has to hold it. Kept
+    // alive for the rest of the test: dropping the guard would release the machine mid-assertion.
+    let _dispatcher = bn_core::queue::daemon::DaemonLock::acquire().expect("hold the daemon lock");
 
     assert_eq!(run_job(&cfg, None, "agent-scheduler"), 0);
     assert_eq!(run_events("agent-scheduler").len(), 1);
@@ -245,6 +243,24 @@ fn scheduler_enqueues_due_agents_and_queue_tick_runs_them() {
             .map(|entry| entry.status),
         Some(bn_core::backlog::BacklogStatus::Done)
     );
+}
+
+#[test]
+fn queue_tick_is_a_successful_noop_when_queue_is_disabled() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut cfg = Config {
+        machine_profile: Some(bn_core::resolver::MachineProfile {
+            repos: vec!["bn".to_string()],
+            queue: false,
+            cron: true,
+            ..Default::default()
+        }),
+        hostname: "test-host".to_string(),
+        ..Default::default()
+    };
+
+    make_repo_available(&mut cfg, temp.path(), "bn");
+    assert_eq!(run_job(&cfg, None, "queue-tick"), 0);
 }
 
 #[test]
@@ -648,12 +664,9 @@ fn run_now_executes_in_place_instead_of_queueing() {
     let _jobs = bn_core::test_support::EnvGuard::set("BN_JOBS_DIR", temp.path().join("jobs"));
     let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", &state);
     // A live dispatcher is what makes capture active; without it the producer declines anyway and
-    // the test would pass for the wrong reason.
-    std::fs::write(
-        state.join("queue-daemon.heartbeat"),
-        bn_core::util::now_epoch_secs().to_string(),
-    )
-    .expect("heartbeat");
+    // the test would pass for the wrong reason. Holding the lock IS being a dispatcher, so the
+    // guard has to outlive the assertions below.
+    let _dispatcher = bn_core::queue::daemon::DaemonLock::acquire().expect("hold the daemon lock");
     let mut cfg = Config {
         personal_root: temp.path().join("personal"),
         work_root: temp.path().join("work"),

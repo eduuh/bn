@@ -6,24 +6,6 @@
 use super::Config;
 
 impl Config {
-    /// The repo scheduled, repo-less work is booked against.
-    ///
-    /// A queue entry is keyed `(repo, id)`, but a machine-wide cron belongs to no repo in
-    /// particular. Rather than invent a null repo — which every downstream join would then have to
-    /// handle — such work is booked against a stable sentinel, so it sorts, dedups and displays
-    /// like everything else.
-    pub fn queue_home_repo(&self) -> String {
-        "machine".to_string()
-    }
-
-    /// Whether queue work belongs to this machine.
-    ///
-    /// Repository-less automation is booked against [`Self::queue_home_repo`] and is
-    /// machine-scoped rather than subject to repository authorization.
-    pub fn queue_repo_allowed_here(&self, repo: &str) -> bool {
-        repo.eq_ignore_ascii_case(&self.queue_home_repo()) || self.repo_allowed_here(repo)
-    }
-
     /// The `[staff].home` pin as a value, so it can travel as an ordinary `home:<machine>`
     /// requirement rather than being re-checked by every scheduled job. Same pin
     /// `staff::home_gate` enforces.
@@ -54,6 +36,12 @@ pub struct QueueConfig {
     pub kind_caps: std::collections::HashMap<String, usize>,
     /// Inline express items one pass may run. `None` uses the built-in budget.
     pub express_per_tick: Option<usize>,
+    /// How many heavy jobs may run at once. `None` uses [`DEFAULT_HEAVY_CAP`].
+    pub heavy: Option<usize>,
+    /// Jobs this machine calls heavy, overriding [`crate::queue::jobs::HEAVY_JOBS`].
+    pub heavy_jobs: Option<Vec<String>>,
+    /// Per-job priority, overriding [`crate::queue::jobs::priority_for`].
+    pub job_priority: std::collections::HashMap<String, i64>,
     /// Seconds a worktree agent may hold a lease before it is presumed dead. `None` uses the
     /// built-in TTL. Raise it if you legitimately run agents longer than an hour — reclaiming a
     /// live one double-dispatches it.
@@ -66,15 +54,13 @@ pub struct QueueConfig {
     pub windows: Vec<crate::queue::window::PriorityWindow>,
 }
 
+/// Heavy jobs allowed to run at once when `[queue].heavy` says nothing.
+///
+/// One: the value it was hardcoded to, so an unconfigured machine behaves exactly as before.
+pub const DEFAULT_HEAVY_CAP: usize = 1;
+
 /// Every producer that can be routed through the queue — and, absent config, is.
 pub const ALL_PRODUCERS: [&str; 6] = ["review", "attn", "staff", "cron", "dispatch", "today"];
-
-/// How long after a tick the queue still counts as having a live dispatcher.
-///
-/// The tick runs every minute, so ten is generous. It has to be: the consequence of judging the
-/// dispatcher dead is that work launches directly, which is merely the old behaviour — whereas
-/// judging it alive when it is not means work is enqueued into something that never drains.
-pub const DISPATCHER_TTL_SECS: i64 = 600;
 
 impl QueueConfig {
     /// Read `[queue]` from config, with env overrides for the two lane caps.
@@ -82,12 +68,8 @@ impl QueueConfig {
     /// Assembled here rather than inline in `Config::load` so the table's growth — every producer
     /// the queue absorbs adds a key — costs lines in the file that owns it.
     pub(super) fn load(file: Option<&super::config_file::ConfigFile>) -> QueueConfig {
-        let (
-            express_per_tick,
-            agent_lease_ttl_secs,
-            express_lease_ttl_secs,
-            opportunistic_idle_mins,
-        ) = file.map(|f| f.queue_nums()).unwrap_or_default();
+        let nums = file.map(|f| f.queue_nums()).unwrap_or_default();
+        let job_classes = file.and_then(|f| f.queue_job_classes());
         QueueConfig {
             capture: file.and_then(|f| f.queue_capture()),
             coding: super::util::non_empty_env("BN_QUEUE_CODING")
@@ -97,15 +79,27 @@ impl QueueConfig {
                 .and_then(|v| v.trim().parse().ok())
                 .or_else(|| file.and_then(|f| f.queue_research())),
             heartbeat_ttl_secs: file.and_then(|f| f.queue_heartbeat_ttl_secs()),
-            express_per_tick,
-            agent_lease_ttl_secs,
-            express_lease_ttl_secs,
-            opportunistic_idle_mins: opportunistic_idle_mins.filter(|n| *n >= 0).unwrap_or(10),
+            express_per_tick: nums.express_per_tick,
+            heavy: nums.heavy,
+            heavy_jobs: job_classes.as_ref().and_then(|j| j.heavy.clone()),
+            job_priority: job_classes.map(|j| j.priority).unwrap_or_default(),
+            agent_lease_ttl_secs: nums.agent_lease_ttl_secs,
+            express_lease_ttl_secs: nums.express_lease_ttl_secs,
+            opportunistic_idle_mins: nums
+                .opportunistic_idle_mins
+                .filter(|n| *n >= 0)
+                .unwrap_or(10),
             kind_caps: file.map(|f| f.queue_kind_caps()).unwrap_or_default(),
+            // Configured windows are *added to* the built-in pool-warm pair, not swapped for it.
+            //
+            // They used to replace it outright, which made defining any window at all silently
+            // delete the lunch and after-work schedules — `wt_pool_refresh` already carried a
+            // workaround re-deriving the after-work deadline when it went missing. Now that
+            // `bn queue schedule add` exists, that trap would fire the first time anyone used it.
             windows: crate::queue::window::normalize_pool_warm_priority_windows(
-                file.map(|f| f.queue_windows())
-                    .filter(|windows| !windows.is_empty())
-                    .unwrap_or_else(crate::queue::window::default_pool_warm_priority_windows),
+                crate::queue::window::with_defaults(
+                    file.map(|f| f.queue_windows()).unwrap_or_default(),
+                ),
             ),
         }
     }
@@ -129,15 +123,18 @@ impl QueueConfig {
     /// Whether `producer` should enqueue **right now**.
     ///
     /// The guard that makes an on-by-default queue safe. Enqueueing is only correct if something
-    /// will later dequeue; on a machine where `queue-tick` was never registered, or where it has
-    /// stopped, capturing every producer would quietly halt all scheduled work — the worst possible
-    /// failure, because everything looks fine and nothing runs.
+    /// will later dequeue; on a machine whose dispatcher never started, or has stopped, capturing
+    /// every producer would quietly halt all scheduled work — the worst possible failure, because
+    /// everything looks fine and nothing runs.
     ///
-    /// So capture requires evidence: the resident dispatcher heartbeat is fresh within
-    /// [`DISPATCHER_TTL_SECS`].
-    /// No evidence means the producer launches inline, exactly as it did before the queue existed.
-    /// This also gives clean progressive enablement — a fresh machine behaves classically until the
-    /// tick is registered, then starts queueing on its own.
+    /// So capture requires evidence, and the evidence is a live one: a dispatcher is *holding the
+    /// daemon lock right now*. No evidence means the producer launches inline, exactly as it did
+    /// before the queue existed. This also gives clean progressive enablement — a fresh machine
+    /// behaves classically until a dispatcher starts, then begins queueing on its own.
+    ///
+    /// Every producer must come through here. The two that did not — the `bn tat` picker verbs and
+    /// the worktree-close pool reclaim — spent three and a half days filing work into a queue with
+    /// no dispatcher, reporting each one as `✓ queued`.
     pub fn capture_active(&self, producer: &str, now: i64) -> bool {
         self.captures(producer) && dispatcher_alive(now)
     }
@@ -149,6 +146,44 @@ impl QueueConfig {
             self.coding.filter(|n| *n > 0).unwrap_or(coding),
             self.research.filter(|n| *n > 0).unwrap_or(research),
         )
+    }
+
+    /// How many heavy jobs (pool warms, builds, releases) may run at once.
+    ///
+    /// One by default, which is what it was hardcoded to. A machine with cores to spare can raise
+    /// it without also raising the agent lanes — heavy work is sized by compile cost, agents by
+    /// memory, and conflating them is what made `[queue].coding` the only dial anyone had.
+    pub fn heavy_cap(&self) -> usize {
+        self.heavy.filter(|n| *n > 0).unwrap_or(DEFAULT_HEAVY_CAP)
+    }
+
+    /// Whether `job` costs like a build on this machine.
+    ///
+    /// `[queue.jobs].heavy` replaces the built-in list outright rather than adding to it, because
+    /// the interesting case is subtractive: a machine whose `build.sh` takes thirty seconds has a
+    /// reason to say `build` is not heavy, and a list that could only grow could not express it.
+    ///
+    /// Consulted where the answer is *stamped* onto an entry, never where one is read back — an
+    /// entry carries its own `heavy` bit from the moment it was queued, so changing this affects new
+    /// work and leaves what is already waiting classified as it was filed.
+    pub fn is_heavy(&self, job: &str) -> bool {
+        match &self.heavy_jobs {
+            Some(list) => list.iter().any(|j| j == job),
+            None => crate::queue::jobs::is_heavy(job),
+        }
+    }
+
+    /// How urgent `job` is on this machine.
+    ///
+    /// An explicit `[queue.jobs].priority` entry wins; otherwise the derived recovery/heavy/cron
+    /// banding. The bands are also spelled as literals in [`crate::rank`]'s table, so overriding a
+    /// priority across a band boundary changes which band the work reports in — the honest outcome,
+    /// since the machine has just said it is that urgent.
+    pub fn priority_for(&self, job: &str) -> i64 {
+        match self.job_priority.get(job) {
+            Some(p) => *p,
+            None => crate::queue::jobs::priority_for(job),
+        }
     }
 
     /// Inline express items one pass may run.
@@ -182,18 +217,17 @@ impl QueueConfig {
     }
 }
 
-/// Whether the resident dispatcher is alive enough to trust it will drain what producers enqueue.
+/// Whether a resident dispatcher is running, and will therefore drain what producers enqueue.
 ///
-/// This intentionally reads the daemon heartbeat, not the latest decision. The decision is written
-/// by every tick, including inline fallback ticks; treating it as liveness lets the fallback mask a
-/// dead resident daemon.
-pub fn dispatcher_alive(now: i64) -> bool {
-    dispatcher_heartbeat_age(now).is_some_and(|age| age <= DISPATCHER_TTL_SECS)
-}
-
-/// The resident dispatcher's liveness file — written by a timer thread inside `bn queue run`.
-pub fn dispatcher_heartbeat_path() -> std::path::PathBuf {
-    crate::resolver::state_dir().join("queue-daemon.heartbeat")
+/// Asks the kernel — [`crate::queue::daemon::is_running`] — rather than reading a timestamp. A
+/// heartbeat had to be generous enough to survive a slow pass, which left a window in which a dead
+/// dispatcher still read as alive; work filed in that window went nowhere. A held `flock` has no
+/// such window: it exists for exactly as long as the process does.
+///
+/// `now` is unused and kept so every caller keeps passing the clock it already has, rather than
+/// this becoming the one liveness question that reads the wall clock for itself.
+pub fn dispatcher_alive(_now: i64) -> bool {
+    crate::queue::daemon::is_running()
 }
 
 /// The stamp written when a dispatcher pass *completes*, as opposed to when the process last drew
@@ -203,18 +237,13 @@ pub fn dispatcher_pass_path() -> std::path::PathBuf {
     crate::resolver::state_dir().join("queue-daemon.pass")
 }
 
-/// Seconds since the resident dispatcher last said it was alive, or `None` if it never has.
-pub fn dispatcher_heartbeat_age(now: i64) -> Option<i64> {
-    read_stamp(&dispatcher_heartbeat_path()).map(|beat| now.saturating_sub(beat))
-}
-
 /// Seconds since a dispatcher pass last ran to completion, or `None` if none ever has.
 ///
-/// The companion to [`dispatcher_alive`], and the reason the heartbeat could move to its own
-/// thread without creating a new blind spot. A heartbeat proves the process exists; only this
-/// proves it is still *getting anywhere*. A dispatcher whose pass is blocked on a hung child now
-/// reports `alive` with a stale pass — which is the truth, and points at the stuck work rather than
-/// at a daemon that is running fine.
+/// The companion to [`dispatcher_alive`], and the half it deliberately does not answer. Holding the
+/// daemon lock proves the process exists; only this proves it is still *getting anywhere*. A
+/// dispatcher blocked inside a hung child holds its lock perfectly well, so it reports `alive` with
+/// a stale pass — which is the truth, and points at the stuck work rather than at a daemon that is
+/// running fine.
 pub fn dispatcher_pass_age(now: i64) -> Option<i64> {
     read_stamp(&dispatcher_pass_path()).map(|at| now.saturating_sub(at))
 }
@@ -228,27 +257,4 @@ fn read_stamp(path: &std::path::Path) -> Option<i64> {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|raw| raw.trim().parse::<i64>().ok())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::resolver::MachineProfile;
-
-    #[test]
-    fn machine_queue_repo_bypasses_repo_authorization_but_unassigned_repos_do_not() {
-        let cfg = Config {
-            machine_profile: Some(MachineProfile {
-                repos: vec!["acme/assigned".to_string()],
-                queue: true,
-                cron: false,
-                web: false,
-            }),
-            ..Config::default()
-        };
-
-        assert!(cfg.queue_repo_allowed_here(&cfg.queue_home_repo()));
-        assert!(cfg.queue_repo_allowed_here("acme/assigned"));
-        assert!(!cfg.queue_repo_allowed_here("acme/unassigned"));
-    }
 }

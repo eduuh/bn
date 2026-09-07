@@ -23,6 +23,13 @@ PLIST="$HOME/Library/LaunchAgents/com.bn.queue.plist"
 PLIST_BEFORE=$(md5 -q "$PLIST" 2>/dev/null || echo none)
 
 PASS=0; FAIL=0
+
+# The queue units an older bn could have installed. bn no longer writes any; this is here to prove
+# a run does not start.
+queue_units() {
+  ls "$HOME/.config/systemd/user" 2>/dev/null | grep -E '^bn-queue(-tick)?\.(service|timer)$' | sort | tr '\n' ' '
+}
+UNITS_BEFORE=$(queue_units)
 ok()   { PASS=$((PASS+1)); printf '  \033[32m✓\033[0m %s\n' "$1"; }
 no()   { FAIL=$((FAIL+1)); printf '  \033[31m✗ %s\033[0m\n' "$1"; }
 is()   { [ "$2" = "$3" ] && ok "$1" || no "$1 (want '$3', got '$2')"; }
@@ -160,74 +167,88 @@ sleep 5
 kill -0 $D 2>/dev/null && { no "a GOOD successor was refused — self-update would break"; kill $D 2>/dev/null; } \
                        || ok "still hands over to a good successor"
 
-sect "daemon: heartbeat is the liveness signal"
-rm -f "$SB/state/queue-daemon.heartbeat"
+sect "daemon: the lock is the liveness signal"
+# Liveness is a kernel-held flock now, not a timestamp. That removes the property the old heartbeat
+# could never have: there is no window in which a dead dispatcher still reads as alive, because the
+# lock is released by the kernel on ANY exit — including a SIGKILL that runs no cleanup.
+rm -f "$SB/state/queue-daemon.lock"
 "$SB/run/bn" queue run --interval 2 > "$SB/d3.log" 2>&1 & D=$!
-# The daemon beats on start and then every BEAT_SECS (30) — deliberately well inside the 600s TTL,
-# so one missed write is not "dead". This used to sample twice six seconds apart and require the
-# value to have CHANGED, which no correct dispatcher does: it asserted a thirty-second timer on a
-# six-second window. What is actually claimed is that a running daemon writes a fresh heartbeat,
-# and that it stops when it dies — the latter is the case below, which was always the real test.
-sleep 3; A=$(cat "$SB/state/queue-daemon.heartbeat" 2>/dev/null)
-AGE=$(( $(date +%s) - ${A:-0} ))
-[ -n "$A" ] && [ "$AGE" -ge 0 ] && [ "$AGE" -lt 120 ] \
-  && ok "the daemon beats while running" \
-  || no "no heartbeat (value '${A:-}', age ${AGE}s)"
-kill $D 2>/dev/null; wait $D 2>/dev/null
-sleep 3; C=$(cat "$SB/state/queue-daemon.heartbeat" 2>/dev/null)
-# Compared against the reading taken while it was alive: a dead daemon writes no further beats, so
-# the value must be exactly what it was. (This used to compare against a second live sample; with
-# the beat at 30s both samples were identical anyway, so the assertion held for the wrong reason.)
-is "the heartbeat freezes when it dies" "$A" "$C"
+sleep 3
+OUT=$("$SB/run/bn" queue status 2>&1)
+has "a running dispatcher reports live" "$OUT" "dispatcher live"
+is "and the lock names it" "$(cat "$SB/state/queue-daemon.lock" 2>/dev/null)" "$D"
 
-sect "self-repair: detects a dropped service, refuses a bad binary"
-# Hermetic: its own HOME, so the unit file it reasons about is one this test created. Depending on
-# the real machine's plist made this fail the moment the reconcile bug deleted it — and a test that
-# needs the host to be healthy cannot be the thing that tells you it is not.
-HSB=$(mktemp -d); mkdir -p "$HSB/Library/LaunchAgents"
-touch "$HSB/Library/LaunchAgents/com.bn.queue.plist"
-printf '#!/bin/sh\nexit 2\n' > "$SB/home/config/bn"; chmod +x "$SB/home/config/bn"
-rm -f "$SB/state/queue-tick-install-failed" "$SB/state/queue-daemon.heartbeat"
-# A FRESH decision file: the state that hid this failure before the heartbeat existed.
-echo "{\"at\":$(date +%s),\"outcome\":\"empty\",\"dry_run\":false,\"pending\":0,\"started\":0,\"lanes\":[],\"kinds\":[],\"deferred\":[],\"dispatched\":[]}" \
-  > "$SB/state/queue-decision.json"
+# A second dispatcher must be refused, not admitted alongside the first.
+OUT2=$("$SB/run/bn" queue run --interval 2 2>&1)
+has "a second dispatcher is refused" "$OUT2" "already running"
+
+# SIGKILL: no Drop, no cleanup, and the lock file is left on disk still naming the dead pid. Under
+# a heartbeat this read as alive for up to ten minutes, and producers filed work into it the whole
+# time. It must read as dead immediately.
+kill -9 $D 2>/dev/null; wait $D 2>/dev/null
+sleep 1
+[ -s "$SB/state/queue-daemon.lock" ] \
+  && ok "the killed dispatcher left its lock file behind" \
+  || no "expected a leftover lock file naming the dead pid"
+OUT3=$("$SB/run/bn" queue status 2>&1)
+has "a SIGKILLed dispatcher reads as gone at once" "$OUT3" "dispatcher NOT running"
+
+sect "self-repair: a dead dispatcher is replaced, a bad binary is refused"
+# No plist, no unit, no launchctl: bn supervises its own dispatcher, so this is answerable entirely
+# inside the sandbox — which is the point. The old version of this section could only run when the
+# HOST had no dispatcher loaded, because launchd domains are per-uid and HOME does not sandbox them.
+rm -f "$SB/state/queue-dispatcher-failed" "$SB/state/queue-daemon.lock"
 unset BN_NO_AUTO_TICK
-# `service_loaded` asks launchctl, and launchd domains are per-uid — HOME does not sandbox them.
-# So these two can only run when the host's own dispatcher is NOT loaded; otherwise bn correctly
-# concludes the service is fine and never reaches the branch under test. Skipped out loud rather
-# than asserted conditionally: a test that quietly changes meaning with the host is worse than one
-# that says it did not run.
-if launchctl print "gui/$(id -u)/com.bn.queue" >/dev/null 2>&1; then
-  printf '  \033[33m—\033[0m skipped (host dispatcher is loaded; launchd is not sandboxable by HOME): %s\n' \
-    "detects installed-but-not-running, refuses a bad binary"
-else
-  OUT=$(HOME="$HSB" "$SB/run/bn" status 2>&1)
-  has "detects installed-but-not-running" "$OUT" "installed but not running"
-  has "refuses to install a binary that cannot dispatch" "$OUT" "cannot run"
-  OUT2=$(HOME="$HSB" "$SB/run/bn" status 2>&1)
-  hasnt "backs off instead of re-diagnosing every command" "$OUT2" "installed but not running"
-fi
-rm -f "$SB/state/queue-tick-install-failed"; date +%s > "$SB/state/queue-daemon.heartbeat"
-OUT3=$(HOME="$HSB" "$SB/run/bn" status 2>&1)
-hasnt "silent while the daemon is beating" "$OUT3" "installed but not running"
-is "it never wrote a unit for a binary that cannot dispatch" "$(ls "$HSB/Library/LaunchAgents" | wc -l | tr -d ' ')" "1"
-export BN_NO_AUTO_TICK=1
-rm -rf "$HSB"
 
-sect "cron reconcile: the dispatcher is not a cron"
-# `bn cron register` reaps launchd agents whose job is in no manifest. The dispatcher's label maps
-# to the job name "queue", which is in none — so without an explicit exclusion the nightly
-# install.sh (via self-update) deleted the dispatcher outright. --dry-run, so nothing is touched.
+# An ordinary command finds no dispatcher and starts one.
+OUT=$("$SB/run/bn" status 2>&1)
+has "an ordinary command starts a missing dispatcher" "$OUT" "started the queue dispatcher"
+sleep 2
+pgrep -f "$SB/home/config/bn queue run" >/dev/null \
+  && ok "and it is actually running" \
+  || no "no dispatcher process after the start"
+
+# Kill it; the next command puts a new one back.
+pkill -9 -f "$SB/home/config/bn queue run" 2>/dev/null; sleep 1
+OUT2=$("$SB/run/bn" status 2>&1)
+has "a killed dispatcher is replaced" "$OUT2" "started the queue dispatcher"
+sleep 2
+pkill -f "$SB/home/config/bn queue run" 2>/dev/null
+
+# A binary that cannot dispatch must be refused BEFORE the spawn. Without that check the child
+# exits instantly, the next command finds the lock free and spawns again — a spawn loop paced by
+# the user's typing, which is what the init system's throttle used to absorb.
+rm -f "$SB/state/queue-dispatcher-failed" "$SB/state/queue-daemon.lock"
+printf '#!/bin/sh\nexit 2\n' > "$SB/home/config/bn.bad"; chmod +x "$SB/home/config/bn.bad"
+mv "$SB/home/config/bn.bad" "$SB/home/config/bn"
+OUT3=$("$SB/run/bn" status 2>&1)
+has "refuses a binary that cannot dispatch" "$OUT3" "cannot run"
+OUT4=$("$SB/run/bn" status 2>&1)
+hasnt "and backs off instead of retrying every command" "$OUT4" "cannot run"
+[ -s "$SB/state/queue-daemon.lock" ] && no "a refused start still took the lock" \
+                                     || ok "a refused start leaves the machine dispatcher-less, not wedged"
+export BN_NO_AUTO_TICK=1
+
+sect "isolation: a sandboxed run touches no init system at all"
+# This section used to be two, and both existed because the queue's dispatcher lived in launchd or
+# systemd — which are per-uid and per-user, and respect neither BN_HOME nor BN_STATE_DIR. One
+# guarded against `bn cron register` reaping the dispatcher's plist as an orphaned cron (the nightly
+# self-update did exactly that); the other checksummed the developer's real plist, because running
+# this suite used to DELETE it.
+#
+# bn supervises its own dispatcher now, so the whole class is gone: there is nothing to reap and
+# nothing outside the sandbox to damage. What remains is the assertion that this is true.
+is "the real launchd plist is untouched" "$(md5 -q "$PLIST" 2>/dev/null || echo none)" "$PLIST_BEFORE"
+
+# Before-and-after, like the plist checksum above, so a unit an OLDER bn left on this machine is
+# not mistaken for one this suite just wrote — the only thing under test is what the run changed.
+is "bn wrote no systemd unit for the queue" "$(queue_units)" "$UNITS_BEFORE"
+
 RSB=$(mktemp -d); mkdir -p "$RSB/Library/LaunchAgents" "$RSB/home/config" "$RSB/notes"
 printf '[personal]\nnotes_root = "%s/notes"\n' "$RSB" > "$RSB/home/config/config.toml"
-touch "$RSB/Library/LaunchAgents/com.bn.queue.plist"
-ORPH=$(HOME="$RSB" BN_HOME="$RSB/home" BN_NOTES_DIR="$RSB/notes" BN_NO_AUTO_TICK=1 "$SB/run/bn" cron register --dry-run --json 2>/dev/null |
-       python3 -c "import json,sys; print(','.join(json.load(sys.stdin).get('data',{}).get('orphans',[])))" 2>/dev/null)
-hasnt "the reconcile does not reap the queue dispatcher" "$ORPH" "queue"
+HOME="$RSB" BN_HOME="$RSB/home" BN_NOTES_DIR="$RSB/notes" BN_NO_AUTO_TICK=1 "$SB/run/bn" status >/dev/null 2>&1
+is "and no launchd plist in a fresh HOME" "$(ls "$RSB/Library/LaunchAgents" | wc -l | tr -d ' ')" "0"
 rm -rf "$RSB"
-
-sect "isolation"
-is "the real launchd plist is untouched" "$(md5 -q "$PLIST" 2>/dev/null || echo none)" "$PLIST_BEFORE"
 
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

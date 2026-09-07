@@ -201,6 +201,7 @@ fn plan_order(pending: &[BacklogEntry], windows: &[PriorityWindow], now: i64) ->
         goals: &[],
         attention: &[],
         pauses: &pauses,
+        heavy_cap: 1,
         max_express: 20,
         windows,
         presence: bn_core::queue::tick::Presence {

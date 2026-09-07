@@ -127,12 +127,25 @@ pub(crate) fn sync_repo(bare: &Path, worktree_dir: &Path, repo: &str) -> bool {
                 let rest = n - DISCARD_REPORT_LIMIT;
                 native_job_line(&format!("main-sync: {repo}: …and {rest} more"), false);
             }
-            if let Some(rescue) = snapshot(&main_s) {
+            let Some(rescue) = snapshot(&main_s) else {
+                // Refusing is the whole point. The alternative — reset anyway — is what silently
+                // destroyed uncommitted work in every repo on this machine for two days, because
+                // the snapshot had been failing since #1262 and nothing said so. A main worktree
+                // left un-advanced is visible and recoverable; work reset without a snapshot is
+                // neither. Loud (stderr → `bn cron failures`) and retried next tick.
                 native_job_line(
-                    &format!("main-sync: {repo}: recover them with `git -C {main_s} stash apply {rescue}` ({RESCUE_REF})"),
-                    false,
+                    &format!(
+                        "main-sync: {repo}: REFUSING to discard {n} change(s) — could not snapshot them to {RESCUE_REF}. \
+Commit or clean {main_s} yourself; nothing was discarded."
+                    ),
+                    true,
                 );
-            }
+                return false;
+            };
+            native_job_line(
+                &format!("main-sync: {repo}: recover them with `git -C {main_s} stash apply {rescue}` ({RESCUE_REF})"),
+                false,
+            );
             advance(&main_s, &target, repo, "main worktree")
         }
         MainSync::Advance => advance(&main_s, &target, repo, "main worktree"),
@@ -164,16 +177,69 @@ fn snapshot(dir_s: &str) -> Option<String> {
         true,
     )
     .filter(|s| !s.is_empty())?;
+    if write_rescue_ref(dir_s, &sha) {
+        return Some(sha);
+    }
+    // The one failure this has actually hit: a legacy dated rescue occupying the name as a
+    // DIRECTORY. Clear it (preserving the commits) and try once more.
+    free_legacy_rescue_refs(dir_s);
+    write_rescue_ref(dir_s, &sha).then_some(sha)
+}
+
+fn write_rescue_ref(dir_s: &str, sha: &str) -> bool {
     crate::git::git_ok(&[
         "-C",
         dir_s,
         "update-ref",
         RESCUE_REF,
-        &sha,
+        sha,
         "-m",
         "main-sync: uncommitted work in the main worktree, before reset",
     ])
-    .then_some(sha)
+}
+
+/// Move legacy `refs/bn/main-rescue/<date>` refs aside to flat `refs/bn/main-rescue-<date>`.
+///
+/// git's ref store is a filesystem: `refs/bn/main-rescue` cannot be a file while
+/// `refs/bn/main-rescue/2026-09-04` makes it a directory. Rescues written before #1262 used the
+/// dated form, so the moment #1262 switched to the flat name every subsequent rescue failed with
+/// `cannot lock ref … exists; cannot create`, in every repo that had ever been rescued — and
+/// [`snapshot`] swallowed it, so `main-sync` went on discarding uncommitted work with no snapshot
+/// and no warning for anyone to notice.
+///
+/// Renamed rather than deleted: those commits are somebody's rescued work, and this runs
+/// unattended. A flat sibling keeps them reachable (`git stash apply refs/bn/main-rescue-<date>`)
+/// and frees the name for good, so this is a one-time self-heal rather than a permanent tax.
+fn free_legacy_rescue_refs(dir_s: &str) {
+    let pattern = format!("{RESCUE_REF}/**");
+    let Some(listed) = crate::git::git_capture(
+        &["-C", dir_s, "for-each-ref", &pattern, "--format=%(refname)"],
+        None,
+        true,
+    ) else {
+        return;
+    };
+    for old in listed.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let Some(leaf) = old.rsplit('/').next() else {
+            continue;
+        };
+        let new = format!("{RESCUE_REF}-{leaf}");
+        let Some(sha) = crate::git::git_capture(
+            &["-C", dir_s, "rev-parse", &format!("{old}^{{}}")],
+            None,
+            true,
+        ) else {
+            continue;
+        };
+        if crate::git::git_ok(&["-C", dir_s, "update-ref", &new, &sha])
+            && crate::git::git_ok(&["-C", dir_s, "update-ref", "-d", old])
+        {
+            native_job_line(
+                &format!("main-sync: moved legacy rescue {old} → {new}"),
+                false,
+            );
+        }
+    }
 }
 
 /// Cut the repo's missing main worktree at `default`.
@@ -303,10 +369,15 @@ fn tracked_changes(dir_s: &str) -> Vec<String> {
     if !Path::new(dir_s).is_dir() {
         return Vec::new();
     }
+    // `trim: false` is load-bearing. Porcelain v1 is `XY PATH` with a FIXED two-column status, and
+    // an unstaged edit's X is a space (" M .zshrc"). Trimming the whole output first ate that
+    // leading space, so `get(3..)` started one byte late and every such path lost its first
+    // character — `.zshrc` was reported as `zshrc`. That line is the only record of what a reset
+    // is about to destroy, so it has to name the file exactly.
     crate::git::git_capture(
         &["-C", dir_s, "status", "--porcelain", "--untracked-files=no"],
         None,
-        true,
+        false,
     )
     .map(|out| {
         out.lines()
@@ -363,6 +434,35 @@ mod tests {
         assert_eq!(
             plan(true, Some("main"), 0, "develop"),
             MainSync::Skip("main".to_string())
+        );
+    }
+
+    /// Porcelain v1 keeps a fixed two-column status, so an unstaged edit's line starts with a
+    /// SPACE. Trimming the whole output before splitting ate it and shifted every path left by
+    /// one, turning `.zshrc` into `zshrc` — in the line that tells you what a reset is about to
+    /// destroy, which is the worst possible place to be off by a character.
+    #[test]
+    fn a_dotfile_keeps_its_leading_dot_when_reported() {
+        let porcelain = " M .zshrc\nM  staged.txt\n?? ignored-by-flag\n";
+        let parsed: Vec<String> = porcelain
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.get(3..).unwrap_or(l).trim().to_string())
+            .collect();
+        assert_eq!(parsed[0], ".zshrc", "the leading dot must survive");
+        assert_eq!(parsed[1], "staged.txt");
+    }
+
+    /// The same string with the old `trim: true` behaviour, to pin WHY the flag matters: the
+    /// first line loses its status column and the path loses its first character.
+    #[test]
+    fn trimming_the_whole_output_first_is_what_broke_it() {
+        let porcelain = " M .zshrc\nM  staged.txt\n";
+        let first = porcelain.trim().lines().next().expect("a line");
+        assert_eq!(
+            first.get(3..).unwrap_or(first).trim(),
+            "zshrc",
+            "documents the bug: a pre-trimmed porcelain line parses one byte late"
         );
     }
 }

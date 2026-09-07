@@ -287,6 +287,7 @@ fn project_backlog(pending: &[BacklogEntry], est: &Durations, horizon: i64) -> u
         kinds: None,
         goals: &goals,
         attention: &attention,
+        heavy_cap: 1,
         max_express: 20,
         windows: &[],
         presence: Presence {

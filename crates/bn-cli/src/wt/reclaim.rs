@@ -63,6 +63,18 @@ fn reclaim_cmd(path: &Path, confirmed: bool) -> String {
     cmd
 }
 
+/// Run the reclaim in this process, for a machine whose queue will not.
+///
+/// The same command the queue entry would have carried, so the two paths cannot drift: one shell
+/// string, executed here or executed by the tick.
+fn run_reclaim_now(cmd: &str) -> bool {
+    std::process::Command::new("/bin/sh")
+        .arg("-lc")
+        .arg(cmd)
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 /// The queue entry a deferred reclaim is. Pure over its two strings so the properties that make it
 /// cheap — the kind, and a shell executor rather than an agent — are pinned by a test.
 fn reclaim_spec(task: String, cmd: String) -> AddSpec {
@@ -87,7 +99,26 @@ pub(crate) fn defer(cfg: &Config, repo: &str, label: &str, path: &Path, confirme
     // Reclaiming a worktree is housekeeping the machine owes itself, never something you sat down
     // to do — 15 of these were on the day's list before it could say so.
     let task = crate::cmd::task_mint::task_for_machine_enqueue(cfg, repo, &item, "wt-close");
-    let spec = reclaim_spec(task, reclaim_cmd(path, confirmed));
+    let cmd = reclaim_cmd(path, confirmed);
+    // Only file it if something will pick it up. Every other producer asks this
+    // (`queue_producers::active_with_fallback`); this one did not, so on a machine with no
+    // dispatcher a closed worktree left a leased pool slot behind and an entry nobody would ever
+    // run — the slot silently never came back. Running it here instead costs the close a few
+    // seconds and actually reclaims the slot, which is the whole point of the call.
+    if !crate::cmd::queue_producers::active_with_fallback(
+        cfg,
+        crate::cmd::queue_producers::CRON,
+        "reclaiming inline",
+    ) {
+        return match run_reclaim_now(&cmd) {
+            true => format!("closed {repo}/{label} — reclaimed"),
+            false => format!(
+                "closed {repo}/{label} — the reclaim failed; run `bn wt close --reclaim --path {}`",
+                path.display()
+            ),
+        };
+    }
+    let spec = reclaim_spec(task, cmd);
     let now = bn_core::util::now_epoch_secs();
     match bn_core::queue::enqueue::enqueue(&backlog::backlog_path(), repo, &item, &spec, now) {
         Ok(q) if q.is_new() => format!("closed {repo}/{label} — reclaim queued"),

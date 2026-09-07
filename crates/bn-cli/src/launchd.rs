@@ -48,11 +48,7 @@ pub fn registered() -> Vec<RegisteredAgent> {
             // cron jobs — keep `com.bn.orchestrate*`, `com.bn.web`, and `com.bn.routine` out of
             // the cron reconcile so `bn cron register` never treats one as an orphaned cron and
             // unloads/deletes it.
-            if is_orchestrate_label(&label)
-                || is_web_label(&label)
-                || is_routine_label(&label)
-                || is_queue_label(&label)
-            {
+            if is_orchestrate_label(&label) || is_web_label(&label) || is_routine_label(&label) {
                 return None;
             }
             let job = crate::cron_gen::label_job(&label)?.to_string();
@@ -134,41 +130,6 @@ pub(crate) fn is_orchestrate_label(label: &str) -> bool {
         || label
             .strip_prefix(ORCHESTRATE_LABEL_PREFIX)
             .is_some_and(|rest| rest.starts_with('.'))
-}
-
-/// The label for the queue dispatcher daemon.
-pub(crate) const QUEUE_LABEL: &str = "com.bn.queue";
-
-/// The `bn queue run` daemon plist — a **resident loop**, not a timer.
-///
-/// A per-minute timer spawns a fresh process, does one pass, and exits: work that arrives at
-/// 12:00:05 waits until 12:01. A resident loop drains continuously and backs off when idle, which
-/// is what "keep the tick active" actually means. It is also cheaper — no process spawn per minute.
-///
-/// `KeepAlive` restarts it if it dies; `RunAtLoad` starts it at login; `ThrottleInterval` stops a
-/// crash-loop from becoming a spin.
-pub(crate) fn queue_daemon_plist(bn_path: &str) -> String {
-    format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-         <plist version=\"1.0\">\n\
-         <dict>\n\
-         \x20 <!-- bn queue dispatcher — a resident loop draining the machine-wide work queue. -->\n\
-         \x20 <key>Label</key>\n  <string>{QUEUE_LABEL}</string>\n\
-         \x20 <key>ProgramArguments</key>\n\
-         \x20 <array>\n\
-         \x20   <string>/bin/sh</string>\n\
-         \x20   <string>-lc</string>\n\
-         \x20   <string>exec \"{bn_path}\" queue run</string>\n\
-         \x20 </array>\n\
-         \x20 <key>RunAtLoad</key>\n  <true/>\n\
-         \x20 <key>KeepAlive</key>\n  <true/>\n\
-         \x20 <key>ThrottleInterval</key>\n  <integer>10</integer>\n\
-         \x20 <key>StandardOutPath</key>\n  <string>/tmp/{QUEUE_LABEL}.log</string>\n\
-         \x20 <key>StandardErrorPath</key>\n  <string>/tmp/{QUEUE_LABEL}.log</string>\n\
-         </dict>\n\
-         </plist>\n"
-    )
 }
 
 // #455: one cross-repo supervisor daemon that sweeps EVERY repo's session in a single loop, rather
@@ -267,19 +228,6 @@ pub(crate) fn web_uninstall() {
 // daemons above — and excluded from the cron reconcile (see `registered`) so `bn cron register`
 // never reaps it. It coexists with the `routine-tick` timer fallback: both share the same
 // transaction lock and at-least-once dedupe state, so running both is safe, just redundant.
-
-/// Whether a launchd label is the queue dispatcher — the cron reconcile must skip it.
-///
-/// It is a KeepAlive daemon, not a cron, but [`crate::cron_gen::label_job`] maps its label to the
-/// job name "queue", which appears in no cron manifest. Without this the reconcile classifies it as
-/// an orphaned cron and does to it what it does to orphans: boots it out and deletes its plist.
-///
-/// `install.sh` registers crons and `self-update` runs `install.sh`, so the nightly update was
-/// deleting the dispatcher outright — the same omission the orchestrate, web and routine daemons
-/// above each had to be spelled out to avoid.
-pub(crate) fn is_queue_label(label: &str) -> bool {
-    label == QUEUE_LABEL
-}
 
 /// The launchd label for the routine watcher daemon.
 pub(crate) const ROUTINE_LABEL: &str = "com.bn.routine";

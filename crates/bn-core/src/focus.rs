@@ -49,9 +49,9 @@ pub struct StartOutcome {
     pub duration_secs: i64,
 }
 
-/// Parse a human duration like `90m`, `2h`, `45`, `1h30m` into seconds. A bare number is taken
-/// as minutes (the common `bn focus start 90` case). Returns `None` for empty / malformed input
-/// or a non-positive result, so the CLI can reject it rather than open a zero-length block.
+/// Parse a human duration like `90m`, `2h`, `1d`, `45`, `1h30m` into seconds. A bare number is
+/// taken as minutes (the common `bn focus start 90` case). Returns `None` for empty / malformed
+/// input or a non-positive result, so the CLI can reject it rather than open a zero-length block.
 pub fn parse_duration(s: &str) -> Option<i64> {
     let s = s.trim();
     if s.is_empty() {
@@ -70,6 +70,9 @@ pub fn parse_duration(s: &str) -> Option<i64> {
             let n: i64 = num.parse().ok()?;
             num.clear();
             let unit = match ch.to_ascii_lowercase() {
+                // `d` was missing while `bn queue snooze --help` advertised `1d`, so the one
+                // example in the help text was the one input the parser rejected.
+                'd' => 86_400,
                 'h' => 3600,
                 'm' => 60,
                 's' => 1,

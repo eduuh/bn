@@ -1320,7 +1320,7 @@ fn schedule_warm(repo: &str) {
         "add",
         &format!("Warm pool for {repo}"),
         "--repo",
-        "machine",
+        repo,
         "--kind",
         "cron",
         "--job",

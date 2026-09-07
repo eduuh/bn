@@ -128,15 +128,27 @@ fn run_powershell(script: &str) -> Option<String> {
 
 /// Re-exec `bn cron refresh-windows` detached so the dashboard returns now and the cache is fresh
 /// for the next call. Fire-and-forget: the handle is dropped, orphaning the child to finish alone.
+///
+/// **Only when this process really is `bn`.** `current_exe()` is whatever is running, and under
+/// `cargo test` that is the test harness — which does not have subcommands, so `cron` and
+/// `refresh-windows` arrive as *test-name filters*. The child then runs every test matching them,
+/// including the ones that reach this function, and each of those spawns again: a self-replicating
+/// test run that turned a seven-second suite into an eight-minute one on the machine that found it.
+///
+/// Off WSL `registered()` returns before ever getting here, so this only ever bit local runs.
 fn spawn_background_refresh() {
-    if let Ok(exe) = std::env::current_exe() {
-        let _ = Command::new(exe)
-            .args(["cron", "refresh-windows"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    if exe.file_stem().and_then(|s| s.to_str()) != Some("bn") {
+        return;
     }
+    let _ = Command::new(exe)
+        .args(["cron", "refresh-windows"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
 }
 
 fn cache_path() -> PathBuf {

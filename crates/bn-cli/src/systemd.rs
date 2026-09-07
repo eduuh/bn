@@ -144,24 +144,6 @@ pub(crate) fn web_uninstall() {
 // The Linux twin of the launchd routine watcher daemon: an enabled `--user` unit with
 // `Restart=on-failure` (crash relaunches, clean stop stays down), coexisting safely with the
 // `routine-tick` timer fallback (both share the same transaction lock and dedupe state).
-
-/// The `bn queue run` systemd user service — a resident loop, not a timer.
-///
-/// `Restart=always` is the point: the dispatcher is meant to be up, so systemd's job is to keep it
-/// there rather than to poke it once a minute.
-pub(crate) fn queue_unit(bn_path: &str) -> String {
-    format!(
-        "[Unit]\n\
-         Description=bn queue dispatcher — resident loop draining the machine-wide work queue\n\
-         After=default.target\n\
-         \n\
-         [Service]\n\
-         Type=simple\n\
-         ExecStart={bn_path} queue run\n\
-         Restart=always\n\
-         RestartSec=10\n\
-         \n\
-         [Install]\n\
-         WantedBy=default.target\n"
-    )
-}
+//
+// The queue dispatcher used to have a unit here too. bn supervises its own now — see
+// `cmd::queue_daemon` — so nothing in this file knows about the queue.

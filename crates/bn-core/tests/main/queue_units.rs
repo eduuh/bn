@@ -837,3 +837,39 @@ fn only_a_leased_entry_can_fail_its_launch() {
         .fail_launch("repo", &id, 6_000, launch_retry_delay)
         .is_none());
 }
+
+/// `[queue.jobs]` replaces the built-in heavy list rather than adding to it.
+///
+/// Subtractive on purpose: the interesting case is a machine whose `build.sh` takes thirty seconds
+/// and has a reason to say `build` is not heavy. A list that could only grow could not say it.
+#[test]
+fn a_machine_can_say_which_jobs_are_expensive_for_it() {
+    let mut cfg = bn_core::resolver::QueueConfig::default();
+    assert!(cfg.is_heavy("pool-warm"), "the built-in list by default");
+    assert!(!cfg.is_heavy("some-cron"));
+
+    cfg.heavy_jobs = Some(vec!["some-cron".to_string()]);
+    assert!(cfg.is_heavy("some-cron"), "what the machine declared");
+    assert!(
+        !cfg.is_heavy("pool-warm"),
+        "and only that — the override replaces, so a cheap build can be declared cheap"
+    );
+}
+
+/// A per-job priority wins over the derived recovery/heavy/cron banding.
+#[test]
+fn a_machine_can_re_rate_one_job_without_touching_the_rest() {
+    let mut cfg = bn_core::resolver::QueueConfig::default();
+    assert_eq!(
+        cfg.priority_for("pool-warm"),
+        jobs::priority_for("pool-warm")
+    );
+
+    cfg.job_priority.insert("pool-warm".to_string(), 42);
+    assert_eq!(cfg.priority_for("pool-warm"), 42);
+    assert_eq!(
+        cfg.priority_for("agent-supervise"),
+        jobs::priority_for("agent-supervise"),
+        "an override names one job, not a policy"
+    );
+}

@@ -192,12 +192,26 @@ pub fn is_mandatory_pool_warming(entry: &BacklogEntry) -> bool {
 /// may hold everyone else back. Past it the warm has either started — and holds admission as
 /// `Leased`, which is the case this exists for — or it could not, and a sweep that cannot run has
 /// no claim on a machine that can.
+///
+/// The `Leased` case is bounded too, by [`crate::queue::tick::WARM_HOLD_MAX_SECS`]. See below.
 pub fn owns_admission(entry: &BacklogEntry, now: i64) -> bool {
     if !is_mandatory_pool_warming(entry) {
         return false;
     }
     match entry.status {
-        BacklogStatus::Leased => true,
+        // A *running* sweep holds admission, but not forever. This arm used to be a bare `true`,
+        // on the reasoning that a warm which has actually started will finish. It does not always:
+        // a warm wedged inside a build holds its lease until the reaper's TTL, and for that whole
+        // window every other entry on the machine — foreground agents included — was deferred
+        // `mandatory-warming`. Observed doing exactly that with three shell entries behind it.
+        //
+        // `updated_at` is the lease stamp, so this measures how long the warm has been *running*
+        // rather than how long ago it was filed, and it is the same clock the lease reaper reads.
+        // Past the bound the machine stops waiting: the warm keeps its lease and finishes, it
+        // simply stops holding everyone else back while it does.
+        BacklogStatus::Leased => {
+            now.saturating_sub(entry.updated_at) < crate::queue::tick::WARM_HOLD_MAX_SECS
+        }
         BacklogStatus::Pending => {
             now.saturating_sub(entry.added_at) < crate::queue::tick::WARM_DRAIN_GRACE_SECS
         }
@@ -267,13 +281,33 @@ mod mandatory_pool_warming_tests {
         assert!(!is_mandatory_pool_warming(&entry));
     }
 
-    /// A running sweep owns admission for as long as it runs — that is the case the gate exists
-    /// for, and it has no time bound because a warm that is working is not a warm that is stuck.
+    /// A running sweep owns admission while it runs — that is the case the gate exists for.
     #[test]
-    fn a_running_sweep_owns_admission_however_long_it_takes() {
+    fn a_running_sweep_owns_admission_while_it_works() {
         let mut entry = pool_warm("cron:pool-warm", None);
         entry.status = BacklogStatus::Leased;
-        assert!(owns_admission(&entry, entry.added_at + 30 * 24 * 3600));
+        entry.updated_at = 1000;
+        assert!(owns_admission(
+            &entry,
+            entry.updated_at + crate::queue::tick::WARM_HOLD_MAX_SECS - 1
+        ));
+    }
+
+    /// But not indefinitely. This arm was a bare `true`, on the reasoning that a warm which has
+    /// started will finish — and a warm wedged inside a build does not, holding machine-wide
+    /// admission until the hour-long lease TTL reclaimed it. Observed keeping three unrelated
+    /// entries at `mandatory-warming` with nothing else running.
+    ///
+    /// The warm keeps its lease and finishes past the bound; it simply stops holding everyone else.
+    #[test]
+    fn a_sweep_that_never_finishes_stops_owning_the_machine() {
+        let mut entry = pool_warm("cron:pool-warm", None);
+        entry.status = BacklogStatus::Leased;
+        entry.updated_at = 1000;
+        assert!(!owns_admission(
+            &entry,
+            entry.updated_at + crate::queue::tick::WARM_HOLD_MAX_SECS
+        ));
     }
 
     /// A waiting sweep owns admission only briefly. The gate used to fire on any active entry,

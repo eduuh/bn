@@ -77,6 +77,15 @@ pub fn launch_retry_delay(attempt: u32) -> Option<i64> {
 /// agent is a slower machine; warming that never happens is a stopped one.
 pub const WARM_DRAIN_GRACE_SECS: i64 = 30 * 60;
 
+/// How long a *running* mandatory warm may hold machine-wide admission.
+///
+/// A separate, longer bound from [`WARM_DRAIN_GRACE_SECS`], because it answers a different
+/// question: that one is how long to wait for a warm to *start*, this is how long to let a warm
+/// that is already running keep everyone else out. Generous enough to cover an ordinary warm (which
+/// cuts checkouts and runs each repo's build), short enough that a wedged one cannot hold the
+/// machine until the hour-long lease TTL reclaims it.
+pub const WARM_HOLD_MAX_SECS: i64 = 20 * 60;
+
 /// How long work may sit refused-for-not-fitting before it is started anyway.
 ///
 /// The fit gate is a preference with a timeout, not a wall. Work whose estimate exceeds every
@@ -149,6 +158,13 @@ pub struct TickInputs<'a> {
     /// hammered by whatever happened to be queued. The lane caps bound concurrency; this bounds a
     /// pass.
     pub max_express: usize,
+    /// How many heavy jobs may run at once — `[queue].heavy`, default 1.
+    ///
+    /// Separate from the lanes because heavy work is sized differently: a `pool-warm` or a `build`
+    /// costs a compile, not an agent's working set. Was a hardcoded singleton, which meant a
+    /// `build` you pressed in the picker waited out an unrelated pool warm however many cores the
+    /// machine had spare.
+    pub heavy_cap: usize,
     /// Times of day when some work is preferred — see [`crate::queue::window`].
     pub windows: &'a [crate::queue::window::PriorityWindow],
     /// Current presence/away state for opportunistic admission.
@@ -423,7 +439,14 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
                 plan.deferred.push(defer(
                     entry,
                     DeferReason::Snoozed,
-                    format!("snoozed until {not_before}"),
+                    // A wall clock, not the epoch second it is stored as. This line is the answer
+                    // to "when will this run", printed by `bn queue why` and carried into the
+                    // picker's row note, and `snoozed until 1788745804` answers it for nobody.
+                    format!(
+                        "snoozed until {} ({} away)",
+                        crate::util::clock_hm(not_before),
+                        crate::track::fmt_dur((not_before - inputs.now).max(0))
+                    ),
                 ));
                 continue;
             }
@@ -433,9 +456,15 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
         // this the warming latch closed a cycle on itself — the drain waits for the machine to
         // empty, and `agent-supervise`, the pass that would reclaim whatever is wedged in flight,
         // was itself deferred here. Nothing could clear the condition the warm was waiting for.
+        // Foreground work is exempt for a third reason, and it is the one a person notices:
+        // somebody is watching a row wait. A pool warm is the machine's own housekeeping, and
+        // housekeeping that outranks the thing you just asked for is indistinguishable from being
+        // broken. `bn queue class <id> foreground` is therefore also the manual escape hatch.
         if inputs.mandatory_warming
             && !crate::queue::classify::is_mandatory_pool_warming(entry)
             && !entry_is_recovery(entry)
+            && crate::queue::classify::classify(entry).mode
+                != crate::queue::classify::QueueMode::Foreground
         {
             plan.deferred.push(defer(
                 entry,
@@ -607,11 +636,18 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
             }
         }
 
-        if entry.heavy && heavy_used > 0 {
+        // Heavy work is capped separately from the lanes, because it is sized differently: a
+        // `pool-warm` or a `build` costs a full compile, not an agent's memory. The cap was a
+        // hardcoded singleton; it is `[queue].heavy` now, so a machine with cores to spare can run
+        // two builds without also raising the agent lanes.
+        if entry.heavy && heavy_used >= inputs.heavy_cap {
             plan.deferred.push(defer(
                 entry,
                 DeferReason::Capacity(Bind::LocalCap),
-                "another heavy queue job is already running".to_string(),
+                match inputs.heavy_cap {
+                    1 => "another heavy queue job is already running".to_string(),
+                    n => format!("all {n} heavy slots are in use"),
+                },
             ));
             continue;
         }
@@ -642,9 +678,10 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
             }
             express_used += 1;
             *kind_used.entry(entry.kind).or_default() += 1;
-            if entry.heavy {
-                heavy_used += 1;
-            }
+            // No heavy count here: `is_express()` is `!heavy && !needs_worktree()`, so heavy work
+            // cannot reach this branch. There *was* an increment here, and being unreachable is
+            // precisely why the heavy cap never bound within a pass. It is at the placement branch
+            // below, which is the only path heavy work takes.
             plan.start.push(dispatch(
                 entry,
                 lane,
@@ -673,6 +710,14 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
                 }
                 *lane_used.entry(lane).or_default() += 1;
                 *kind_used.entry(entry.kind).or_default() += 1;
+                // Counted here, and this is the only place it can be. The other increment sits in
+                // the express branch, which heavy work provably never reaches — `is_express()` is
+                // `!heavy && !needs_worktree()`. So the cap only ever bound against work that was
+                // *already* in flight, and two heavy entries in the same ranked wave could both
+                // start. Nothing tested it.
+                if entry.heavy {
+                    heavy_used += 1;
+                }
                 plan.start
                     .push(dispatch(entry, lane, target, harness, &chosen.rationale));
             }

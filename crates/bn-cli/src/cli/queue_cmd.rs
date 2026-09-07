@@ -76,6 +76,51 @@ pub(crate) enum QueueCmd {
         #[arg(long)]
         repo: Option<String>,
     },
+    /// Schedule one pending entry for a time: `bn queue at t42 12:30`, `… "in 2h"`, `… lunch`.
+    ///
+    /// Sets `not_before`, so the dispatcher holds it until then. A clock time always resolves
+    /// forward — `09:00` typed in the afternoon means tomorrow morning, never this morning.
+    At {
+        /// The entry id.
+        id: String,
+        /// A time (`12:30`, `5pm`), a delay (`in 2h`, `90m`), a day (`tomorrow`, `tonight`), or a
+        /// window name (`lunch`).
+        when: String,
+        /// Its repo (default: the current repo).
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Start one pending entry as soon as the machine can: `bn queue now t42`.
+    ///
+    /// Clears any snooze, marks it foreground and raises it above everything else pending — three
+    /// things because raising the priority alone does none of the others. A snoozed entry is held
+    /// before ranking ever happens, and an opportunistic one waits for an away window whatever its
+    /// number.
+    Now {
+        /// The entry id.
+        id: String,
+        /// Its repo (default: the current repo).
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Declare yourself away, so work that was waiting for you to leave can start: `bn queue away
+    /// --for 45m`. `--back` ends it early.
+    ///
+    /// The queue normally infers your absence from an idle event log, which means the first ten
+    /// minutes of a break are spent deciding whether you have really gone. This says so outright.
+    Away {
+        /// How long you will be gone (`45m`, `2h`, `1d`).
+        #[arg(long = "for", default_value = "60m")]
+        for_duration: String,
+        /// End the declared absence now — you came back.
+        #[arg(long, conflicts_with = "for_duration")]
+        back: bool,
+    },
+    /// What runs when: every configured window, its next firings, and what it applies to.
+    Schedule {
+        #[command(subcommand)]
+        action: Option<ScheduleCmd>,
+    },
     /// Override one pending task's derived queue class.
     Class {
         /// The entry id.
@@ -94,12 +139,16 @@ pub(crate) enum QueueCmd {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Run the event-driven dispatcher, with the `queue-tick` cron as the once-a-minute fallback.
+    /// Run the event-driven dispatcher in the foreground. bn starts one in the background on its
+    /// own; this is for watching it work, or for running it under your own supervisor.
     Run {
         /// Maximum seconds to wait while idle; filesystem events wake the dispatcher sooner.
         #[arg(long, default_value_t = 15)]
         interval: u64,
     },
+    /// Stop this machine's dispatcher. It stays stopped until the next `bn` command starts a new
+    /// one — to keep it off, set BN_NO_AUTO_TICK=1 or turn the queue off for this machine.
+    Stop,
     /// Why the last tick did what it did — the persisted decision, verbatim.
     /// Hold new work without stopping what is running — the drain.
     ///
@@ -248,4 +297,42 @@ pub(crate) struct AddCmd {
     /// instance alone, so a stale one lapses on its own deadline).
     #[arg(long, default_value = "coalesce")]
     pub(crate) recurrence: String,
+}
+
+/// Managing the machine's priority windows — the times of day when some work is preferred, or when
+/// opportunistic work is allowed to run at all.
+///
+/// These live in `[[queue.windows]]` in `config.toml`, and until now the only way to add one was to
+/// edit that file by hand: there was no CLI at all, and the single write path (the dashboard's pool
+/// form) could set exactly the two built-in pool-warm windows and nothing else.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum ScheduleCmd {
+    /// Add or replace a window: `bn queue schedule add lunch --at "Mon..Fri *-*-* 12:30" --for 90m
+    /// --mode away`.
+    Add {
+        /// What to call it. Adding a name that exists replaces it.
+        name: String,
+        /// When it opens, as an `OnCalendar` spec — the same grammar `[[cron]]` uses.
+        #[arg(long)]
+        at: String,
+        /// How long it stays open (`90m`, `2h`).
+        #[arg(long = "for")]
+        for_duration: String,
+        /// `prefer` (rank matching work higher), `away` (let opportunistic work run), `watched`
+        /// (boost foreground work), or `deadline` (both, plus a horizon the fit gate respects).
+        #[arg(long, default_value = "prefer")]
+        mode: String,
+        /// What it applies to: `*`, `kind:<k>`, `repo:<r>`, `source:<prefix>`, `class:<mode>`.
+        /// Repeatable.
+        #[arg(long = "match")]
+        matches: Vec<String>,
+        /// How much to raise matching work while open.
+        #[arg(long, default_value_t = 100, allow_hyphen_values = true)]
+        boost: i64,
+    },
+    /// Remove a window by name.
+    Rm {
+        /// The window's name.
+        name: String,
+    },
 }

@@ -197,7 +197,7 @@ pub(crate) fn map_pr_status(state: &str) -> PrStatus {
 // --- OS captures -----------------------------------------------------------
 
 /// The process table: `pid ppid command` for every process. Empty on failure.
-fn ps_all() -> Vec<Proc> {
+pub(crate) fn ps_all() -> Vec<Proc> {
     let out = std::process::Command::new("ps")
         .args(["-axo", "pid=,ppid=,command="])
         .output()

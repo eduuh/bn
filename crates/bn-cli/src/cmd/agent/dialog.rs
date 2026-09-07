@@ -18,10 +18,9 @@
 //!
 //! Every refusal sends nothing at all and exits non-zero.
 
-use super::{resolve_tmux_target, tmux_exact_target};
+use super::resolve_tmux_target;
 use crate::*;
-use bn_core::agent::AgentTransport as _;
-use bn_core::agent::{PendingPrompt, PromptSemantic, PROMPT_SCAN_LINES};
+use bn_core::agent::{AgentTransport as _, Key, PendingPrompt, PromptSemantic, PROMPT_SCAN_LINES};
 
 /// How long to wait for the pane to repaint after a digit, before re-reading it. A TUI redraws in
 /// well under this; the retry loop covers the slow case.
@@ -274,16 +273,15 @@ pub(crate) fn answer_option(cfg: &Config, target: &str, option: u8) -> bool {
 /// menu because the keystroke was swallowed also shows no spinner, and reporting that as delivered
 /// is exactly the lie this command exists to stop telling.
 fn send_answer(cfg: &Config, target: &str, option: u8) -> (bool, Option<PendingPrompt>) {
-    let exact = tmux_exact_target(&resolve_tmux_target(cfg, target));
-    let digit = option.to_string();
+    let transport = super::resolve_agent_transport(cfg, target);
     let mut last: Option<PendingPrompt> = None;
     for attempt in 0..ANSWER_ATTEMPTS {
         // The digit alone selects on most harness menus; the return commits it. Sent as separate
         // key events so a menu that acts on the digit immediately is not also given a stray return.
-        if !crate::proc::tmux_ok(&["send-keys", "-t", &exact, &digit]) {
+        if !transport.write_keys(&[Key::Digit(option)]) {
             return (false, None);
         }
-        crate::proc::tmux_ok(&["send-keys", "-t", &exact, "-H", "0d"]);
+        let _ = transport.write_keys(&[Key::Submit]);
         std::thread::sleep(std::time::Duration::from_millis(
             ANSWER_SETTLE_MS * (attempt as u64 + 1),
         ));

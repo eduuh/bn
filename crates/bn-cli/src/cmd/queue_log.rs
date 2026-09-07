@@ -36,7 +36,11 @@ pub(crate) fn emit_log(
         repo,
     })
     .into_iter()
-    .filter(|row| row.repo.is_empty() || cfg.queue_repo_allowed_here(&row.repo))
+    .filter(|row| {
+        row.repo.is_empty()
+            || row.repo.eq_ignore_ascii_case("machine")
+            || cfg.repo_allowed_here(&row.repo)
+    })
     .collect();
 
     if json {
@@ -54,7 +58,7 @@ pub(crate) fn emit_log(
         println!("no queue activity in the last {since}");
         // A silent dispatcher and an absent one look identical here, so say which this is.
         if !bn_core::resolver::dispatcher_alive(now) {
-            println!("  (and the dispatcher is not running — `bn queue status` for why)");
+            println!("  (and no dispatcher is running — `bn queue status` for why)");
         }
         return;
     }

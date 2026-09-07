@@ -579,8 +579,6 @@ fn observed_agent_session(
     }
     Some((wt, agent.harness.clone(), agent.session_id.clone()))
 }
-
-
 /// A `repo:branch` target as an exact-match tmux target — see [`bn_core::tmux::exact_target`],
 /// which anchors *both* halves so a missing window cannot prefix-match a neighbour.
 pub(crate) fn tmux_exact_target(target: &str) -> String {
@@ -678,9 +676,22 @@ pub(crate) fn resolve_tmux_target(cfg: &Config, target: &str) -> String {
         .as_deref()
         .map_or_else(|| tmux_exact_target(target), tmux_exact_target)
 }
-
-
-
+/// The transport that can write to `target`.
+///
+/// A resolved `repo:branch` goes through the channel join first so future non-tmux endpoints can
+/// hang off the same seam. Literal pane/window ids and anything the join cannot place fall back to
+/// the exact tmux target the legacy write paths used.
+pub(crate) fn resolve_agent_transport(cfg: &Config, target: &str) -> Box<dyn bn_core::agent::AgentTransport> {
+    if target.starts_with(['=', '%', '@', '$']) {
+        return Box::new(bn_core::agent::TmuxTransport::new(target));
+    }
+    if let Some((repo, branch)) = target.split_once(':') {
+        if let Some(endpoint) = resolve_agent_channel(cfg, repo, branch).endpoint() {
+            return bn_core::agent::transport_for(&endpoint);
+        }
+    }
+    Box::new(bn_core::agent::TmuxTransport::new(&resolve_tmux_target(cfg, target)))
+}
 /// `bn agent digest` — reconcile the branch's recorded agent sessions into proposed note lines.
 /// Reads the note + sessions (read-only), then: `--json` emits the digest and writes nothing;
 /// otherwise prints each proposed line and applies it on confirmation (or with `--yes`). Silent,
@@ -1099,8 +1110,6 @@ pub(crate) fn pick_copilot_resume<'a>(
     }
     best.map(|(_, id)| id.to_string())
 }
-
-
 /// One launched agent session, as the note and the cost log record it.
 pub(crate) struct LaunchedSession<'a> {
     pub(crate) ctx: &'a Resolved,
@@ -1350,10 +1359,7 @@ fn redirect_into_window_wanted() -> bool {
     if std::env::var_os("TMUX").is_some() {
         return false;
     }
-    if matches!(
-        std::env::var("BN_AGENT_TMUX_REDIRECT").as_deref().map(str::trim),
-        Ok("0")
-    ) {
+    if matches!(std::env::var("BN_AGENT_TMUX_REDIRECT").as_deref().map(str::trim), Ok("0")) {
         return false;
     }
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {

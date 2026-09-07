@@ -107,6 +107,8 @@ struct Fixture {
     kind_caps: KindCaps,
     observed: Observed,
     max_express: usize,
+    /// One by default — the value the cap was hardcoded to before `[queue].heavy` existed.
+    heavy_cap: usize,
     presence: Presence,
     pauses: PauseState,
     mandatory_warming: bool,
@@ -128,6 +130,7 @@ impl Default for Fixture {
             kind_caps: KindCaps(Default::default()),
             observed: Observed::default(),
             max_express: 20,
+            heavy_cap: 1,
             presence: Presence {
                 idle: true,
                 away_window: false,
@@ -161,6 +164,7 @@ impl Fixture {
             attention: &[],
             pauses: &self.pauses,
             max_express: self.max_express,
+            heavy_cap: self.heavy_cap,
             windows: &[],
             presence: self.presence,
             mandatory_warming: self.mandatory_warming,
@@ -418,9 +422,12 @@ fn a_pause_does_not_deadlock_mandatory_pool_warming() {
     };
     let plan = fx.plan();
     assert_eq!(started(&plan), vec!["pool-warm"]);
+    // Held by the *pause*, not by the warming latch. Foreground work is exempt from the latch now,
+    // so it falls through to the next real gate — which is the point of the exemption: the reason
+    // an entry is waiting should be the one that would actually have to change for it to run.
     assert_eq!(
         reason_for(&plan, "ordinary-work"),
-        Some(&DeferReason::MandatoryWarming)
+        Some(&DeferReason::Paused)
     );
 }
 
@@ -608,10 +615,14 @@ fn warming_still_waits_for_idle_or_an_away_window() {
     assert!(started(&plan).is_empty());
 }
 
+/// The latch still holds ordinary background work — that is what it is for.
+///
+/// `research` here is a plain `Cron` entry, which classifies autonomous rather than foreground, so
+/// it has no claim on a machine that has decided to warm.
 #[test]
 fn mandatory_warming_blocks_new_work_and_starts_the_warm() {
     let fx = Fixture {
-        pending: vec![agent("foreground", 100), heavy_job("pool-warm", -50)],
+        pending: vec![shell("research", 100), heavy_job("pool-warm", -50)],
         presence: Presence {
             idle: false,
             away_window: false,
@@ -622,8 +633,33 @@ fn mandatory_warming_blocks_new_work_and_starts_the_warm() {
     let plan = fx.plan();
     assert_eq!(started(&plan), vec!["pool-warm"]);
     assert_eq!(
-        reason_for(&plan, "foreground"),
+        reason_for(&plan, "research"),
         Some(&DeferReason::MandatoryWarming)
+    );
+}
+
+/// But it does not hold work somebody is watching.
+///
+/// The latch used to defer *everything* non-recovery, so a `Ship` agent at priority 100 lost to a
+/// `-50` pool warm — the machine's own housekeeping outranking the thing you had just asked for,
+/// which is indistinguishable from being broken. Foreground is exempt now, which also makes
+/// `bn queue class <id> foreground` the manual escape hatch.
+#[test]
+fn mandatory_warming_does_not_hold_work_someone_is_watching() {
+    let fx = Fixture {
+        pending: vec![agent("foreground", 100), heavy_job("pool-warm", -50)],
+        presence: Presence {
+            idle: false,
+            away_window: false,
+        },
+        mandatory_warming: true,
+        ..Default::default()
+    };
+    let plan = fx.plan();
+    assert!(
+        started(&plan).contains(&"foreground".to_string()),
+        "a foreground agent must not wait behind routine pool warming, got {:?}",
+        started(&plan)
     );
 }
 
@@ -689,10 +725,13 @@ fn mandatory_warming_drains_existing_work_without_starting_more() {
     };
     let plan = fx.plan();
     assert!(started(&plan).is_empty());
-    assert_eq!(
+    // The lane is full (one in flight against a cap of one), so the foreground agent is held on
+    // capacity rather than by the warming latch it is now exempt from. Nothing starts either way —
+    // which is what this test is about — but the reason names the condition that is really binding.
+    assert!(matches!(
         reason_for(&plan, "foreground"),
-        Some(&DeferReason::MandatoryWarming)
-    );
+        Some(DeferReason::Capacity(_))
+    ));
     assert!(matches!(
         reason_for(&plan, "pool-warm"),
         Some(DeferReason::Capacity(_))
@@ -859,4 +898,70 @@ fn a_snooze_that_has_expired_starts_normally() {
         ..Default::default()
     };
     assert_eq!(started(&f.plan()), vec!["waited"]);
+}
+
+/// The heavy cap binds *within* a pass, not only against work already in flight.
+///
+/// It did not. `heavy_used` was incremented in the express branch, which heavy work provably never
+/// reaches (`is_express()` is `!heavy && !needs_worktree()`), so two heavy entries in one ranked
+/// wave could both start — on a machine whose whole point was to run one compile at a time. No test
+/// covered it.
+#[test]
+fn two_heavy_jobs_in_one_wave_do_not_both_start() {
+    let fx = Fixture {
+        pending: vec![
+            targeted_pool_warm("warm-a", 10),
+            targeted_pool_warm("warm-b", 5),
+        ],
+        ..Default::default()
+    };
+    let plan = fx.plan();
+    assert_eq!(
+        started(&plan),
+        vec!["warm-a"],
+        "the second heavy job must wait for the first"
+    );
+    assert!(
+        matches!(
+            reason_for(&plan, "warm-b"),
+            Some(&DeferReason::Capacity(bn_core::scheduler::Bind::LocalCap))
+        ),
+        "and it must say so as a capacity bind, got {:?}",
+        reason_for(&plan, "warm-b")
+    );
+}
+
+/// And the cap is a number, so a machine with cores to spare can raise it.
+#[test]
+fn a_raised_heavy_cap_admits_more_than_one() {
+    let fx = Fixture {
+        pending: vec![
+            targeted_pool_warm("warm-a", 10),
+            targeted_pool_warm("warm-b", 5),
+        ],
+        heavy_cap: 2,
+        ..Default::default()
+    };
+    assert_eq!(started(&fx.plan()), vec!["warm-a", "warm-b"]);
+}
+
+/// A heavy job already running counts against the cap, so the seeding half still works.
+#[test]
+fn heavy_work_in_flight_counts_against_the_cap() {
+    let fx = Fixture {
+        pending: vec![targeted_pool_warm("warm-b", 5)],
+        in_flight: vec![InFlight {
+            repo: "repo".to_string(),
+            id: "warm-a".to_string(),
+            kind: BacklogKind::Cron,
+            work_class: WorkClass::Research,
+            heavy: true,
+            node: None,
+            touches: Vec::new(),
+            started_at: NOW - 60,
+            queue_owned: true,
+        }],
+        ..Default::default()
+    };
+    assert!(started(&fx.plan()).is_empty());
 }

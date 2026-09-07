@@ -4,6 +4,14 @@
 //! `.file-size-baseline`). The division is the same one the rows themselves draw: `tat.rs` answers
 //! "where can I go?", and this module answers "what can I do?". The roster of verbs lives further
 //! out still, in [`bn_core::wt_actions`], so the web board can render the same list.
+/// The queue actions `ctrl-o` offers on a command row. Declared here rather than in `tat.rs`
+/// because this is its only caller.
+pub(super) mod queue_actions;
+
+/// The `Queue settings…` row and its menu.
+pub(super) mod settings;
+
+use super::queue_view::{held_reasons, CmdState, CmdStates};
 use super::{pool_eligible, ref_repo, Roots};
 use bn_core::resolver::Config;
 use bn_core::wt_actions::When;
@@ -38,62 +46,6 @@ pub(super) struct CmdAvail {
     pub(super) at_ceiling: bool,
 }
 
-/// What the queue says about one verb right now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CmdState {
-    /// Running, and for how long. The row spins.
-    Running(i64),
-    /// Filed to run now, still waiting for capacity.
-    Queued,
-    /// Filed for the away window.
-    Away,
-}
-
-/// The queue state of every verb, keyed by action id.
-///
-/// Read once per paint rather than per row: one backlog load answers for the whole section.
-/// Deliberately reports work **this picker did not start** too — a `pool-warm` the cron began is
-/// still a pool warm, and a row that only admitted to your own keypresses would be lying about what
-/// the machine is doing.
-pub(super) type CmdStates = std::collections::BTreeMap<String, CmdState>;
-
-/// Build [`CmdStates`] for `repo` from the backlog.
-pub(super) fn command_states(repo: &str, now: i64) -> CmdStates {
-    use bn_core::backlog::{BacklogStatus, ExecSpec};
-    let backlog = bn_core::backlog::load(&bn_core::backlog::backlog_path());
-    let mut out = CmdStates::new();
-    for entry in backlog.entries() {
-        if !entry.status.is_active() {
-            continue;
-        }
-        // The entry's own `repo` is the queue's home (`machine`); the repo the work *targets* is
-        // inside the exec, which is what a row is asking about.
-        let ExecSpec::Job {
-            job, repo: target, ..
-        } = &entry.exec
-        else {
-            continue;
-        };
-        if target.as_deref() != Some(repo) {
-            continue;
-        }
-        let Some(action) = bn_core::wt_actions::all().iter().find(|a| a.job == *job) else {
-            continue;
-        };
-        let state = match entry.status {
-            // `updated_at` is stamped when the entry is leased, so on a running entry it is the
-            // start time — no separate clock to keep.
-            BacklogStatus::Leased => CmdState::Running((now - entry.updated_at).max(0)),
-            _ if entry.class_override == Some(bn_core::backlog::ClassOverride::Opportunistic) => {
-                CmdState::Away
-            }
-            _ => CmdState::Queued,
-        };
-        out.insert(action.id.to_string(), state);
-    }
-    out
-}
-
 /// The braille frame for a spinner at `elapsed` seconds.
 ///
 /// Derived from the clock rather than stored, which is the property that makes this cheap: each
@@ -119,7 +71,13 @@ fn brief_elapsed(secs: i64) -> String {
 ///
 /// Empty for a non-bare ref. A flat clone has no pool, no worktrees and no PR rows, so a commands
 /// header over nothing but noise is worse than no header.
-pub(super) fn command_rows(bare: bool, avail: CmdAvail, states: &CmdStates, now_ms: i64) -> String {
+pub(super) fn command_rows(
+    bare: bool,
+    avail: CmdAvail,
+    states: &CmdStates,
+    now_ms: i64,
+    settings_note: &str,
+) -> String {
     if !bare {
         return String::new();
     }
@@ -142,7 +100,24 @@ pub(super) fn command_rows(bare: bool, avail: CmdAvail, states: &CmdStates, now_
                 format!("running · {}", brief_elapsed(*secs)),
             ),
             Some(CmdState::Away) => ('⏾', "queued for when you're away".to_string()),
-            Some(CmdState::Queued) => ('⏳', "queued".to_string()),
+            // Name the reason when the dispatcher has recorded one. "queued" alone reads the same
+            // whether the entry starts in two seconds or never, which is precisely the ambiguity
+            // that let eight verbs sit for three days looking normal.
+            Some(CmdState::Queued(Some(held))) => (
+                '⏳',
+                match held.waiting_secs {
+                    // `in_words` rather than `brief_elapsed`: a spinner's elapsed time is seconds
+                    // and minutes, but a *held* entry can wait for hours, and `234m55s` is a number
+                    // the reader has to divide before it means anything.
+                    Some(secs) if secs >= 60 => format!(
+                        "held · {} · {}",
+                        held.reason,
+                        crate::cmd::queue_when::in_words(secs)
+                    ),
+                    _ => format!("held · {}", held.reason),
+                },
+            ),
+            Some(CmdState::Queued(None)) => ('⏳', "queued".to_string()),
             None => (CMD_GLYPH, availability),
         };
         // Labels are static and separator-free (pinned by a `wt_actions` test), but the note is
@@ -151,6 +126,12 @@ pub(super) fn command_rows(bare: bool, avail: CmdAvail, states: &CmdStates, now_
         let display = format!("  {glyph}  {:<30} {note}", action.label);
         rows.push_str(&format!("cmd|{}|{}\n", action.id, display.trim_end()));
     }
+    // Last, and its own kind: the verbs above are work, this is the machine's mind about the work.
+    // A separate kind keeps it out of `wt_actions`, which is a roster of *jobs* — a settings row
+    // there would need a job name it does not have.
+    let note = settings_note.replace(['\r', '\n', '|'], " ");
+    let row = format!("  \u{2699}  {:<30} {note}", "Queue settings…");
+    rows.push_str(&format!("qset||{}\n", row.trim_end()));
     rows
 }
 
@@ -169,7 +150,7 @@ pub(super) fn command_preview(cfg: &Config, roots: &Roots, project: &str, action
     println!("{}\n", describe(action.id));
     println!("Repo: {repo}");
     println!("Job:  {}", action.job);
-    if bn_core::queue::jobs::is_heavy(action.job) {
+    if cfg.queue.is_heavy(action.job) {
         println!("      heavy — admitted like an agent, built in its own tmux window");
     }
     if matches!(action.id, "pool-warm" | "pool-grow") && !pool_eligible(roots, project) {
@@ -177,16 +158,45 @@ pub(super) fn command_preview(cfg: &Config, roots: &Roots, project: &str, action
         println!("primary-root, untagged concept.");
         return;
     }
-    let queue_repo = cfg.queue_home_repo();
     let id = crate::cmd::wt_action_jobs::action_entry_id(action, repo, None);
-    let backlog = bn_core::backlog::load(&bn_core::backlog::backlog_path());
-    match backlog
-        .get(&queue_repo, &id)
+    // `latest` rather than `load`: this pane re-execs on every cursor move, and folding the whole
+    // append-only store to answer about one entry is the kind of cost a8f5776 spent 150ms of budget
+    // bounding elsewhere in this module.
+    match bn_core::backlog::latest(&bn_core::backlog::backlog_path(), repo, &id)
         .filter(|e| e.status.is_active())
     {
         Some(entry) => {
             println!("\nQueued as {} ({}).", entry.id, entry.status.label());
+            // Why it is waiting, from the dispatcher's own record of the last pass. A pane that
+            // said only "queued" left the reader with no way to tell work that is about to start
+            // from work that never will.
+            if let Some(held) = held_reasons().get(&entry.id) {
+                match held.waiting_secs {
+                    Some(secs) => println!(
+                        "Held: {} — waiting {}.",
+                        held.reason,
+                        brief_elapsed(secs.max(0))
+                    ),
+                    None => println!("Held: {}.", held.reason),
+                }
+                println!("`bn queue why` has the whole pass.");
+            }
             println!("\nEnter: take it back off the queue.");
+        }
+        // Say up front when Enter cannot do what the row implies. The pane is where someone looks
+        // before pressing a key, so a verb the machine cannot run should read as unavailable here
+        // rather than as a `✓ queued` that never becomes anything.
+        None if !bn_core::queue::daemon::is_running() => {
+            if !cfg.queue_enabled_here() {
+                println!(
+                    "\n\x1b[1;31mUnavailable:\x1b[0m the queue is off on this machine ('{}').",
+                    cfg.machine()
+                );
+                println!("Add `queue = true` under [machines.{}].", cfg.machine());
+            } else {
+                println!("\n\x1b[1;31mUnavailable:\x1b[0m no dispatcher is running.");
+                println!("Any `bn` command starts one, or run `bn queue run`.");
+            }
         }
         None => println!("\nEnter: queue it to run now."),
     }
@@ -238,6 +248,9 @@ pub(super) fn act_on_row(
         // The rule between the places and the verbs. Selecting it means nothing, so it does
         // nothing — but it must not drop you out of the picker either.
         (_, "cmdsep") => {}
+        // Both keys land on the same place: there is one thing to do to a settings row, and a
+        // person who reaches for ctrl-o on it has asked the same question Enter answers.
+        (_, "qset") => settings::menu(cfg),
         (_, "cmd") => run_command(cfg, roots, project, payload, When::Now),
         _ => return None,
     }
@@ -271,10 +284,20 @@ pub(super) fn defer_from_row(
 /// second interactive surface (see `open_project`'s loop): fzf's `execute()` cannot hand a value
 /// back, so a nested picker could not report what was chosen.
 pub(super) fn row_menu(cfg: &Config, roots: &Roots, project: &str, kind: &str, payload: &str) {
+    // A command row's menu is a different question: not "what can I do to this branch" but "when
+    // should this verb run". `ctrl-o` used to refuse here, which left the schedule with no way in.
+    if kind == "cmd" {
+        match bn_core::wt_actions::find(payload) {
+            Some(action) => queue_actions::menu(cfg, action, ref_repo(project)),
+            None => {
+                eprintln!("✗ no such command: {payload}");
+                crate::picker::hold();
+            }
+        }
+        return;
+    }
     let Some(scope) = scope_for_row(kind) else {
-        eprintln!(
-            "✗ {kind} rows are commands already — ctrl-o acts on a window, worktree, PR or slot"
-        );
+        eprintln!("✗ ctrl-o acts on a command, window, worktree, PR or slot row");
         crate::picker::hold();
         return;
     };
@@ -318,24 +341,37 @@ fn scope_for_row(kind: &str) -> Option<bn_core::wt_actions::Scope> {
 }
 
 /// Show the scoped verbs in a small fzf and return the chosen one.
-///
-/// `id \t label` with `--with-nth=2`, matching the hidden-column convention every picker here uses.
-/// No fzf on PATH is the same fallback the rest of the module takes: say so and do nothing.
 fn pick_action<'a>(
     actions: &[&'a bn_core::wt_actions::WtAction],
     branch: &str,
 ) -> Option<&'a bn_core::wt_actions::WtAction> {
+    let choices: Vec<(String, String)> = actions
+        .iter()
+        .map(|a| (a.id.to_string(), a.label.to_string()))
+        .collect();
+    let id = pick_one(&choices, branch)?;
+    actions.iter().copied().find(|a| a.id == id)
+}
+
+/// Show `choices` as `id \t label` in a small fzf and return the chosen id.
+///
+/// `--with-nth=2` hides the id, matching the hidden-column convention every picker here uses. A
+/// second fzf spawned by the parent once the first has exited, because fzf's `execute()` cannot
+/// hand a value back — which is why `ctrl-o` is in `--expect` rather than a `--bind`.
+///
+/// No fzf on PATH is the same fallback the rest of the module takes: say so and do nothing.
+pub(super) fn pick_one(choices: &[(String, String)], header: &str) -> Option<String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
-    let rows: String = actions
+    let rows: String = choices
         .iter()
-        .map(|a| format!("{}\t  {}\n", a.id, a.label))
+        .map(|(id, label)| format!("{id}\t  {label}\n"))
         .collect();
     let child = Command::new("fzf")
         .arg("--reverse")
         .arg("--delimiter=\t")
         .arg("--with-nth=2")
-        .arg(format!("--header={branch}"))
+        .arg(format!("--header={header}"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn();
@@ -350,8 +386,7 @@ fn pick_action<'a>(
     }
     let out = child.wait_with_output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
-    let id = text.lines().next()?.split('\t').next()?;
-    actions.iter().find(|a| a.id == id).copied()
+    Some(text.lines().next()?.split('\t').next()?.to_string())
 }
 
 /// The `runcmd` bindings' entry point: unpack fzf's `{1}~{2}` and act, or say why not.
@@ -412,13 +447,13 @@ pub(super) fn run_command(cfg: &Config, roots: &Roots, project: &str, action_id:
         crate::picker::hold();
         return;
     }
-    let queue_repo = cfg.queue_home_repo();
     let id = crate::cmd::wt_action_jobs::action_entry_id(action, repo, None);
-    let backlog = bn_core::backlog::load(&bn_core::backlog::backlog_path());
-    if backlog.is_active(&queue_repo, &id) {
+    let already_filed = bn_core::backlog::latest(&bn_core::backlog::backlog_path(), repo, &id)
+        .is_some_and(|e| e.status.is_active());
+    if already_filed {
         match bn_core::backlog::cancel(
             &bn_core::backlog::backlog_path(),
-            &queue_repo,
+            repo,
             &id,
             bn_core::util::now_epoch_secs(),
         ) {
@@ -542,22 +577,31 @@ impl Ticker {
     const INTERVAL_MS: u64 = 700;
 
     /// Start repainting, or return an inert ticker when there is nothing to watch.
+    /// `states` is the section the caller just painted, passed in rather than re-derived: asking
+    /// again would cost a second full backlog parse for an answer already in hand.
     pub(super) fn start(
         listen: Option<&Listen>,
         exe: &std::path::Path,
         project: &str,
         root_flag: &str,
+        states: &CmdStates,
     ) -> Ticker {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let repo = ref_repo(project);
-        let running = command_states(repo, bn_core::util::now_epoch_secs())
+        // Repaint while anything is *waiting* too, not only while something spins.
+        //
+        // The condition was `Running` alone, on the reasoning that a static row needs no animation.
+        // But a queued row's note now carries a reason and a wait time, and both go stale — and the
+        // state it most needs to show, "this finally started", is exactly the transition a frozen
+        // row cannot show. Affordable only because the repaint is `subtick` now; against the old
+        // `sublist` this would have meant rediscovering worktrees every 700ms for hours.
+        let watch = states
             .values()
-            .any(|s| matches!(s, CmdState::Running(_)));
-        let Some(listen) = listen.filter(|_| running) else {
+            .any(|s| matches!(s, CmdState::Running(_) | CmdState::Queued(_)));
+        let Some(listen) = listen.filter(|_| watch) else {
             return Ticker { stop };
         };
         let action = format!(
-            "reload-sync({} tat {}{} --pick-stage sublist)",
+            "reload-sync({} tat {}{} --pick-stage subtick)",
             crate::shq(&exe.display().to_string()),
             crate::shq(project),
             root_flag
@@ -598,6 +642,7 @@ impl Drop for Ticker {
 
 #[cfg(test)]
 mod command_row_tests {
+    use super::super::queue_view::Held;
     use super::*;
 
     fn kinds(rows: &str) -> Vec<&str> {
@@ -615,14 +660,14 @@ mod command_row_tests {
     #[test]
     fn a_non_bare_ref_gets_no_command_section() {
         assert_eq!(
-            command_rows(false, CmdAvail::default(), &CmdStates::new(), 0),
+            command_rows(false, CmdAvail::default(), &CmdStates::new(), 0, ""),
             ""
         );
     }
 
     #[test]
     fn the_section_leads_with_the_separator() {
-        let rows = command_rows(true, CmdAvail::default(), &CmdStates::new(), 0);
+        let rows = command_rows(true, CmdAvail::default(), &CmdStates::new(), 0, "");
         assert_eq!(kinds(&rows).first(), Some(&"cmdsep"));
     }
 
@@ -630,7 +675,7 @@ mod command_row_tests {
     /// tagged ref would advertise a key that can only refuse.
     #[test]
     fn an_unpooled_ref_is_offered_no_pool_verbs() {
-        let rows = command_rows(true, CmdAvail::default(), &CmdStates::new(), 0);
+        let rows = command_rows(true, CmdAvail::default(), &CmdStates::new(), 0, "");
         let ids = payloads(&rows);
         assert!(!ids.contains(&"pool-warm"), "{ids:?}");
         assert!(!ids.contains(&"pool-grow"), "{ids:?}");
@@ -644,7 +689,7 @@ mod command_row_tests {
             cold: 2,
             at_ceiling: false,
         };
-        let rows = command_rows(true, avail, &CmdStates::new(), 0);
+        let rows = command_rows(true, avail, &CmdStates::new(), 0, "");
         let ids = payloads(&rows);
         assert!(ids.contains(&"pool-warm"), "{ids:?}");
         assert!(ids.contains(&"pool-grow"), "{ids:?}");
@@ -658,7 +703,7 @@ mod command_row_tests {
             cold: 0,
             at_ceiling: true,
         };
-        let rows = command_rows(true, avail, &CmdStates::new(), 0);
+        let rows = command_rows(true, avail, &CmdStates::new(), 0, "");
         let ids = payloads(&rows);
         assert!(!ids.contains(&"pool-grow"), "{ids:?}");
         assert!(ids.contains(&"pool-warm"), "{ids:?}");
@@ -671,7 +716,7 @@ mod command_row_tests {
             cold: 3,
             at_ceiling: false,
         };
-        let rows = command_rows(true, avail, &CmdStates::new(), 0);
+        let rows = command_rows(true, avail, &CmdStates::new(), 0, "");
         let warm = rows
             .lines()
             .find(|l| l.starts_with("cmd|pool-warm|"))
@@ -687,6 +732,7 @@ mod command_row_tests {
             },
             &CmdStates::new(),
             0,
+            "",
         );
         let warm = none
             .lines()
@@ -704,7 +750,7 @@ mod command_row_tests {
             cold: 2,
             at_ceiling: false,
         };
-        for line in command_rows(true, avail, &CmdStates::new(), 0).lines() {
+        for line in command_rows(true, avail, &CmdStates::new(), 0, "").lines() {
             assert_eq!(line.matches('|').count(), 2, "{line}");
         }
     }
@@ -758,7 +804,7 @@ mod command_row_tests {
             cold: 1,
             at_ceiling: false,
         };
-        let rows = command_rows(true, avail, &CmdStates::new(), 0);
+        let rows = command_rows(true, avail, &CmdStates::new(), 0, "");
         for line in rows.lines().filter(|l| l.starts_with("cmd|")) {
             let id = line.split('|').nth(1).unwrap();
             let action = bn_core::wt_actions::find(id).expect(id);
@@ -796,6 +842,60 @@ mod command_row_tests {
     }
 
     /// What the queue is doing outranks what the pool looks like: a warm that is *running* has
+    /// A repo with a warm pool, so the pool verbs are offered at all.
+    fn pooled() -> CmdAvail {
+        CmdAvail {
+            pooled: true,
+            cold: 3,
+            at_ceiling: false,
+        }
+    }
+
+    /// A held row names the reason, so "waiting" and "never going to run" stop looking the same.
+    ///
+    /// This is the whole point of the note: eight verbs sat at a bare `⏳ queued` for three and a
+    /// half days on a machine with no dispatcher, and the row said exactly what it says for work
+    /// that is two seconds from starting.
+    #[test]
+    fn a_held_row_says_why_and_for_how_long() {
+        let mut states = CmdStates::new();
+        states.insert(
+            "pool-warm".to_string(),
+            CmdState::Queued(Some(Held {
+                reason: "mandatory-warming".to_string(),
+                waiting_secs: Some(272),
+            })),
+        );
+        let rows = command_rows(true, pooled(), &states, 0, "");
+        let row = rows
+            .lines()
+            .find(|l| l.starts_with("cmd|pool-warm|"))
+            .unwrap();
+        assert!(row.contains("held · mandatory-warming"), "{row}");
+        assert!(row.contains("4m"), "{row}");
+    }
+
+    /// A wait too short to be interesting drops the duration rather than flashing `0s` — the reason
+    /// is the useful half, and a row has one narrow column.
+    #[test]
+    fn a_briefly_held_row_names_the_reason_without_a_stopwatch() {
+        let mut states = CmdStates::new();
+        states.insert(
+            "pool-warm".to_string(),
+            CmdState::Queued(Some(Held {
+                reason: "capacity".to_string(),
+                waiting_secs: Some(3),
+            })),
+        );
+        let rows = command_rows(true, pooled(), &states, 0, "");
+        let row = rows
+            .lines()
+            .find(|l| l.starts_with("cmd|pool-warm|"))
+            .unwrap();
+        assert!(row.contains("held · capacity"), "{row}");
+        assert!(!row.contains("3s"), "{row}");
+    }
+
     /// already answered "how many are cold?".
     #[test]
     fn queue_state_replaces_the_availability_note() {
@@ -807,8 +907,8 @@ mod command_row_tests {
         let mut states = CmdStates::new();
         states.insert("pool-warm".to_string(), CmdState::Running(72));
         states.insert("wt-cleanup".to_string(), CmdState::Away);
-        states.insert("pull-prs".to_string(), CmdState::Queued);
-        let rows = command_rows(true, avail, &states, 0);
+        states.insert("pull-prs".to_string(), CmdState::Queued(None));
+        let rows = command_rows(true, avail, &states, 0, "");
 
         let warm = rows
             .lines()
