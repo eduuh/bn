@@ -402,6 +402,9 @@ pub(super) struct QueueSection {
     pub(super) opportunistic_idle_mins: Option<i64>,
     /// `[[queue.windows]]` — times of day when some work is preferred.
     pub(super) windows: Option<Vec<WindowSection>>,
+    /// `[queue].direct` — what a person's direct command does: `"immediate"` (the default) starts
+    /// it on the spot, `"queued"` files it for the dispatcher like everything else.
+    pub(super) direct: Option<String>,
 }
 
 /// One `[[queue.windows]]` entry: a recurring span during which matching work ranks higher.

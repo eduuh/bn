@@ -189,7 +189,7 @@ fn run_job_inner(
         }
         return 2;
     };
-    run_recorded_job(cfg, ctx, job, scope, || run_script(&script))
+    run_recorded_job(cfg, ctx, job, scope, || run_repo_script(cfg, ctx, &script))
 }
 
 /// Single-quote a string for safe embedding inside a shell command.
@@ -206,7 +206,7 @@ pub(crate) use retire::{emit_cron_retire, emit_cron_unregister};
 #[path = "cron/exec.rs"]
 mod exec;
 pub(crate) use exec::job_path;
-use exec::{run_custom_command, run_script};
+use exec::{run_custom_command, run_repo_script};
 
 #[path = "cron/scheduler.rs"]
 mod scheduler;

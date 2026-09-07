@@ -50,6 +50,65 @@ pub(crate) fn plan_pool_refresh(cfg: &Config, now: i64) -> PoolRefreshPlan {
     plan_refreshes(&assessments)
 }
 
+/// File one `pool-warm` per due pool, each under the repo it warms — never one machine-wide sweep.
+/// Returns how many were filed; zero when nothing is due, one is still active, or the job is
+/// pinned elsewhere.
+///
+/// The sweep was a single `pool-warm` with no repo, and a repo-less job has nowhere to live: the
+/// heavy path put its window in the `bn` session at bn's main slot, and from there the job warmed
+/// every pool on the machine. So BigMono's three-thousand-package build ran inside a window called
+/// `bn:pool-warm`, holding the one heavy slot for hours, with nothing in the BigMono session to say
+/// so. Filed per repo, each warm lands in its own session, holds the heavy slot in its own name,
+/// and can be cancelled, snoozed or read about without touching the others.
+///
+/// One producer for both doors — the dispatcher's own tick and a `pool-warm` cron firing captured
+/// into the queue — so the timer cannot file the sweep the tick no longer does.
+///
+/// The throttle event the sweep used to stamp when it *ran* is stamped when the set is *filed*,
+/// because there is no longer one run to stamp it: [`plan_pool_refresh`] reads it to keep the
+/// daily set from being filed again while these are still working through the heavy cap.
+pub(crate) fn enqueue_due_warms(cfg: &Config, now: i64) -> usize {
+    if !cfg.job_allowed_here("pool-warm") {
+        return 0;
+    }
+    let targets = match plan_pool_refresh(cfg, now) {
+        PoolRefreshPlan::Skip(_) => return 0,
+        PoolRefreshPlan::Warm(targets) => targets,
+    };
+    if bn_core::backlog::load(&bn_core::backlog::backlog_path())
+        .entries()
+        .iter()
+        .any(|entry| {
+            entry.status.is_active() && bn_core::queue::classify::is_mandatory_pool_warming(entry)
+        })
+    {
+        return 0;
+    }
+    let _ = bn_core::events::append("pool_refresh_attempt", serde_json::Map::new());
+    // A deadline, like every other scheduled firing. The sweep is daily, so a firing still
+    // waiting a day later has been superseded rather than merely delayed — and a firing that
+    // can never lapse is one that can hold admission forever.
+    let not_after = Some(now.saturating_add(bn_core::queue::jobs::MANDATORY_WARM_TTL_SECS));
+    let mut filed = 0;
+    for repo in targets {
+        if crate::cmd::queue_producers::capture_job_with_subject(
+            cfg,
+            "pool-warm",
+            &format!("run mandatory pool-warm — {repo}"),
+            bn_core::queue::kind::ExecSpec::Job {
+                job: "pool-warm".to_string(),
+                repo: Some(repo),
+                branch: None,
+            },
+            bn_core::queue::kind::Requirements::default(),
+            not_after,
+        ) {
+            filed += 1;
+        }
+    }
+    filed
+}
+
 /// Every repo the scheduled sweep warms: each bn-managed bare clone, full stop.
 ///
 /// This was `pooled_repos()` reading `~/.config/wt/pools` — the repos somebody had *written down* —

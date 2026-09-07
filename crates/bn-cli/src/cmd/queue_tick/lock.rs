@@ -32,7 +32,7 @@ pub(super) fn lock_path() -> PathBuf {
 }
 
 /// A non-blocking machine-wide tick lock, released when the holder's descriptor closes.
-pub(super) struct TickLock {
+pub(crate) struct TickLock {
     /// The open descriptor **is** the lock: `flock` binds to the open file description, so the
     /// kernel releases it when this closes. Holding the `File` for the guard's lifetime is
     /// therefore not bookkeeping — drop it early and the lock is gone.

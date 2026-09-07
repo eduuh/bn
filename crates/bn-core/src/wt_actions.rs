@@ -110,6 +110,10 @@ pub struct WtAction {
     /// False for a repo-scope verb, which needs only the repo. True for a row-scope verb, where
     /// the branch *is* the target — and mandatory for anything touching a pool slot, since a slot
     /// is a detached checkout and `git branch --show-current` is empty there.
+    ///
+    /// One repo-scope exception is built at runtime rather than listed here: a repo's own job
+    /// script (the picker's `script:<name>` rows) pins `main`, because `bn run --repo` refuses a
+    /// repo without a branch and the script tiers resolve through the pair.
     pub needs_branch: bool,
 }
 

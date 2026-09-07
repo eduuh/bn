@@ -206,9 +206,17 @@ fn normalize(repo: String, branch: String) -> Resolved {
     }
 }
 
-/// Resolve a target note: an explicit `repo`+`branch` pair (normalized via [`normalize`]), or
-/// — when neither is supplied — the context derived from `dir`. A partial target is rejected
-/// here so every caller gets the same all-or-nothing behavior instead of falling back to cwd.
+/// Resolve a target note: an explicit `repo`+`branch` pair (normalized via [`normalize`]), a
+/// `repo` alone — which means that repo's `main` — or, when neither is supplied, the context
+/// derived from `dir`. A branch with no repo is rejected here so every caller gets the same
+/// answer instead of one falling back to cwd.
+///
+/// A repo alone used to be a partial target too, and that refusal failed real work: the queue
+/// files a cron job against the repo it serves with no branch (`ExecSpec::Job { repo: Some(_),
+/// branch: None }`) and runs it as `bn run <job> --repo R`, so every such job — `watch` sixty
+/// times a day, `pr-observe`, `agent-observe` — exited 1 with "--repo and --branch must be given
+/// together" for work that only ever meant the repo. `main` is where the job tiers resolve and
+/// where the repo's main slot sits, so it is the branch a repo-only target means.
 pub fn resolve_target(
     cfg: &Config,
     dir: &Path,
@@ -217,8 +225,9 @@ pub fn resolve_target(
 ) -> Result<Resolved, ContextError> {
     match (repo, branch) {
         (Some(r), Some(b)) => Ok(normalize(r, b)),
+        (Some(r), None) => Ok(normalize(r, "main".to_string())),
         (None, None) => resolve(cfg, dir),
-        _ => Err(ContextError::PartialTarget),
+        (None, Some(_)) => Err(ContextError::PartialTarget),
     }
 }
 
@@ -227,4 +236,27 @@ pub fn resolve_target(
 /// `<root>/.bn/skills` without shelling out to git themselves.
 pub fn repo_root(dir: &Path) -> Option<PathBuf> {
     git_toplevel(dir).map(PathBuf::from)
+}
+
+#[cfg(test)]
+mod resolve_target_tests {
+    use super::*;
+
+    #[test]
+    fn a_repo_alone_means_its_main() {
+        let cfg = Config::default();
+        let got = resolve_target(&cfg, Path::new("/nowhere"), Some("BigMono".to_string()), None)
+            .expect("a repo alone is a whole target");
+        assert_eq!(got.repo, "bigmono", "normalized like any explicit pair");
+        assert_eq!(got.branch, "main");
+    }
+
+    #[test]
+    fn a_branch_without_a_repo_is_still_partial() {
+        let cfg = Config::default();
+        assert!(matches!(
+            resolve_target(&cfg, Path::new("/nowhere"), None, Some("feat".to_string())),
+            Err(ContextError::PartialTarget)
+        ));
+    }
 }

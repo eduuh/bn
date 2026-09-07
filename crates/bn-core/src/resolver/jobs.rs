@@ -420,3 +420,169 @@ pub fn list_jobs(cfg: &Config, ctx: Option<&Resolved>) -> Vec<JobRef> {
     }
     out
 }
+
+/// What a job script declares about itself, read from its leading comments.
+///
+/// Job scripts are plain `sh`, so the comments at the top are the only place for metadata a runner
+/// can act on. One directive so far — `# bn: latest-main`, which asks whoever runs the script to
+/// fetch and fast-forward the repo's main *before* starting it. The runner honours it, not the
+/// surface that queued the script, so a script gets latest main whether a cron, `bn run` or the
+/// picker asked; the picker's side pane reads the same header to say so up front.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScriptHeader {
+    /// `# bn: latest-main` — sync the repo's main checkout before running.
+    pub latest_main: bool,
+    /// The leading comment block, shebang and directive lines removed — what a side pane shows as
+    /// the script's own description. Capped at [`SCRIPT_HEADER_LINES`].
+    pub comments: Vec<String>,
+}
+
+/// How much of a script the header parser reads. A bound rather than the whole file, because the
+/// picker's side pane asks on every cursor move and a build script can carry a large heredoc.
+pub const SCRIPT_HEADER_BYTES: usize = 2048;
+
+/// How many comment lines a header keeps for display.
+pub const SCRIPT_HEADER_LINES: usize = 8;
+
+/// Read a script's header. A missing or unreadable file is an empty header, not an error: the
+/// caller already has a path it believed in, and "nothing declared" is the honest answer.
+pub fn script_header(path: &Path) -> ScriptHeader {
+    use std::io::Read;
+    let mut buf = vec![0u8; SCRIPT_HEADER_BYTES];
+    let mut n = 0;
+    if let Ok(mut file) = std::fs::File::open(path) {
+        while n < buf.len() {
+            match file.read(&mut buf[n..]) {
+                Ok(0) | Err(_) => break,
+                Ok(k) => n += k,
+            }
+        }
+    }
+    parse_script_header(&String::from_utf8_lossy(&buf[..n]))
+}
+
+/// The pure half of [`script_header`], over the text the bounded read produced.
+///
+/// A directive line counts wherever it appears in the read window — `set -eu` often precedes the
+/// first comment, and a rule that only honoured directives above it would be a rule nobody could
+/// see failing. The *comments* are only the leading block: the first non-blank, non-comment line
+/// ends them, because past that a `#` is as likely a commented-out command as a description.
+pub fn parse_script_header(text: &str) -> ScriptHeader {
+    let mut out = ScriptHeader::default();
+    let mut in_leading_block = true;
+    for (i, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if i == 0 && line.starts_with("#!") {
+            continue;
+        }
+        if let Some(directives) = line
+            .strip_prefix("# bn:")
+            .or_else(|| line.strip_prefix("#bn:"))
+        {
+            for token in directives.split(',').map(str::trim) {
+                if token.eq_ignore_ascii_case("latest-main") {
+                    out.latest_main = true;
+                }
+            }
+            continue;
+        }
+        if !in_leading_block {
+            continue;
+        }
+        match line.strip_prefix('#') {
+            Some(comment) if out.comments.len() < SCRIPT_HEADER_LINES => {
+                out.comments.push(comment.trim().to_string());
+            }
+            Some(_) => {}
+            // A blank line before any comment is still the top of the file; one after the block
+            // has started closes it, the same way a paragraph ends.
+            None if line.is_empty() && out.comments.is_empty() => {}
+            None => in_leading_block = false,
+        }
+    }
+    // A blank comment line (`#` alone) at either end is spacing, not a description.
+    while out.comments.last().is_some_and(String::is_empty) {
+        out.comments.pop();
+    }
+    while out.comments.first().is_some_and(String::is_empty) {
+        out.comments.remove(0);
+    }
+    out
+}
+
+#[cfg(test)]
+mod script_header_tests {
+    use super::*;
+
+    #[test]
+    fn a_directive_is_honoured_wherever_it_sits_in_the_window() {
+        let above = parse_script_header("#!/bin/sh\n# bn: latest-main\nset -eu\n");
+        assert!(above.latest_main);
+        let below = parse_script_header("#!/bin/sh\nset -eu\n\n# bn: latest-main\nyarn build\n");
+        assert!(
+            below.latest_main,
+            "a directive after `set -eu` still counts"
+        );
+        let none = parse_script_header("#!/bin/sh\n# builds the thing\nyarn build\n");
+        assert!(!none.latest_main);
+    }
+
+    #[test]
+    fn directives_are_a_comma_list_and_unknown_tokens_are_ignored() {
+        let h = parse_script_header("# bn: something-else, LATEST-MAIN\n");
+        assert!(h.latest_main);
+        assert!(
+            h.comments.is_empty(),
+            "a directive line is not a description"
+        );
+    }
+
+    #[test]
+    fn the_comments_are_the_leading_block_without_shebang_or_directives() {
+        let h = parse_script_header(
+            "#!/bin/sh\n# bn: latest-main\n# Builds the app.\n#\n# Idempotent.\nset -eu\n# not this\n",
+        );
+        assert_eq!(h.comments, vec!["Builds the app.", "", "Idempotent."]);
+    }
+
+    #[test]
+    fn a_script_whose_comments_follow_its_setup_line_has_no_description() {
+        // BigMono's `start.sh` is shaped exactly like this: the prose sits below `set -eu`.
+        let h = parse_script_header("#!/bin/sh\nset -eu\n\n# node/yarn may live under nvm\n");
+        assert!(h.comments.is_empty());
+    }
+
+    #[test]
+    fn the_description_is_capped() {
+        let text: String = (0..20).map(|i| format!("# line {i}\n")).collect();
+        assert_eq!(
+            parse_script_header(&text).comments.len(),
+            SCRIPT_HEADER_LINES
+        );
+    }
+
+    #[test]
+    fn a_missing_file_is_an_empty_header() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            script_header(&tmp.path().join("nope.sh")),
+            ScriptHeader::default()
+        );
+    }
+
+    #[test]
+    fn the_read_is_bounded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("big.sh");
+        let mut text = String::from("#!/bin/sh\n# top\n");
+        text.push_str(&"x".repeat(SCRIPT_HEADER_BYTES * 4));
+        text.push_str("\n# bn: latest-main\n");
+        std::fs::write(&path, text).unwrap();
+        let h = script_header(&path);
+        assert_eq!(h.comments, vec!["top"]);
+        assert!(
+            !h.latest_main,
+            "a directive past the window is not seen — by design"
+        );
+    }
+}

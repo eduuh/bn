@@ -312,13 +312,33 @@ pub fn supervise(cfg: &Config, idle_mins: i64, stuck_mins: i64) -> Fleet {
     // Last, so it covers the pending entries folded in above too: can bn actually write to each of
     // these, or is it only watching? Kept out of `supervise_from` for the same reason as roles —
     // it shells out to tmux, and that core stays a pure filesystem read.
-    stamp_control(cfg, &mut fleet.agents);
+    let windows = stamp_control(cfg, &mut fleet.agents);
+    mark_done(&mut fleet.agents, &windows);
     // `stamp_control` is the first pass that knows whether any live window still hosts each session,
     // so "this one is over" — and the counts that quote it — can only be settled after it.
     mark_ended(&mut fleet.agents);
     fleet = Fleet::from_agents(std::mem::take(&mut fleet.agents));
     stamp_tasks(cfg, &mut fleet.agents);
     fleet
+}
+
+/// Retire every agent whose hosting window says `@bn_agent=done`.
+///
+/// The idle thresholds cannot see this. A Copilot that ran `bn agent done` and is sitting at its
+/// prompt keeps a live process, a live window and a readable transcript, so by idle time alone it
+/// ages into `Stuck` and stays there until someone closes the window — and `Stuck` is running, so
+/// it holds a coding lane. Five of those on one box read as "coding 5/6 in flight" with one agent
+/// actually working, and the queue admitted nothing behind them. The window's own mark is the
+/// agent's word that it finished, and it outranks the transcript's silence.
+fn mark_done(agents: &mut [LiveAgent], windows: &[crate::agent::TmuxWindowRow]) {
+    for a in agents.iter_mut() {
+        let Some(target) = a.tmux_target.as_deref() else {
+            continue;
+        };
+        if windows.iter().any(|w| w.target == target && w.is_done()) {
+            a.health = AgentHealth::Ended;
+        }
+    }
 }
 
 /// Separate the finished sessions from the stalled ones, now that the window join has run.
@@ -440,7 +460,10 @@ fn stamp_launch_metadata(agents: &mut [LiveAgent], launches: &[LaunchRecord]) {
 /// id, by checkout, by its `@bn_*` stamps, and only last by name. Matching on name alone (as this
 /// did) misses every window called after a pooled slot or a reused directory, which is why the
 /// `Tmux` channel used to be unreachable in practice.
-fn stamp_control(cfg: &Config, agents: &mut [LiveAgent]) {
+///
+/// Returns the window rows it joined against, so the completion pass can read the same list
+/// rather than asking tmux a second time.
+fn stamp_control(cfg: &Config, agents: &mut [LiveAgent]) -> Vec<crate::agent::TmuxWindowRow> {
     let windows = crate::agent::parse_window_rows(
         &crate::tmux::tmux_raw(&["list-windows", "-a", "-F", crate::agent::WINDOW_FORMAT])
             .unwrap_or_default(),
@@ -486,6 +509,7 @@ fn stamp_control(cfg: &Config, agents: &mut [LiveAgent]) {
             },
         );
     }
+    windows
 }
 
 /// Whether a branch note's recorded `agent-session:` id names the live session in front of us.
@@ -829,6 +853,35 @@ mod tests {
             control: ControlChannel::None,
             task: None,
         }
+    }
+
+    fn window(target: &str, agent_state: &str) -> crate::agent::TmuxWindowRow {
+        crate::agent::TmuxWindowRow {
+            target: target.to_string(),
+            agent_state: agent_state.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// The failure this exists for: a Copilot that said done, still at its prompt, read as stuck
+    /// and held a lane for hours.
+    #[test]
+    fn a_window_stamped_done_retires_its_agent_whatever_the_idle_time_says() {
+        let mut agents = vec![
+            agent(AgentHealth::Stuck, 4 * 3600, Some("bn:finished")),
+            agent(AgentHealth::Active, 10, Some("bn:busy")),
+            agent(AgentHealth::Stuck, 4 * 3600, Some("bn:nomark")),
+        ];
+        let windows = vec![
+            window("bn:finished", "done"),
+            window("bn:busy", "working"),
+            window("bn:nomark", ""),
+        ];
+        mark_done(&mut agents, &windows);
+        assert_eq!(agents[0].health, AgentHealth::Ended);
+        assert!(!agents[0].health.is_running(), "a done agent holds no lane");
+        assert_eq!(agents[1].health, AgentHealth::Active);
+        assert_eq!(agents[2].health, AgentHealth::Stuck, "no mark, no claim");
     }
 
     #[test]

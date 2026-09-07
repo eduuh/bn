@@ -11,8 +11,113 @@
 //! registry line, not a new implementation.
 use crate::wt::{PoolCmd, WtCmd};
 use crate::*;
-use bn_core::backlog::{self, AddSpec, BacklogKind, ExecSpec};
+use bn_core::backlog::{self, AddSpec, BacklogKind, BacklogStatus, ExecSpec};
 use bn_core::wt_actions::{When, WtAction};
+
+/// How a direct command ended up, for the line the picker prints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Started {
+    /// Leased and running now, in the tmux window the heavy path opened.
+    Now,
+    /// Light work that ran to completion here, with this exit code. Not a picker verb's path —
+    /// every one is heavy — but `ctrl-o → now` can reach an entry somebody else filed light.
+    Ran { code: i32 },
+    /// It was already running — nothing to do but watch the row.
+    AlreadyRunning,
+    /// Filed for the dispatcher instead: `outcome` is the enqueue's own label, and `why` names
+    /// what stopped it starting here, when something did.
+    Queued {
+        outcome: &'static str,
+        why: Option<String>,
+    },
+}
+
+impl Started {
+    /// The tail of the picker's `✓ <verb> — …` line.
+    pub(crate) fn describe(&self) -> String {
+        match self {
+            Started::Now => "started".to_string(),
+            Started::Ran { code: 0 } => "ran here and finished".to_string(),
+            Started::Ran { code } => format!("ran here and exited {code}"),
+            Started::AlreadyRunning => "already running".to_string(),
+            Started::Queued { outcome, why: None } => format!("queued ({outcome})"),
+            Started::Queued {
+                outcome,
+                why: Some(why),
+            } => format!("queued ({outcome}) — could not start it here: {why}"),
+        }
+    }
+}
+
+/// Start one picker verb for `repo` right now, or file it if this machine cannot.
+///
+/// The door a person's keypress comes through when [`bn_core::resolver::DirectMode`] is immediate,
+/// which it is unless the machine opted out. The entry is filed exactly as [`enqueue_action`]
+/// would file it — same subject, same id, same heavy foreground spec — and then leased and started
+/// from *this* process through [`crate::cmd::queue_tick::dispatch_now`], so the row shows the same
+/// running state a dispatched entry shows, and nothing waits on a pass.
+///
+/// Filing and starting happen under the tick lock, because the dispatcher wakes on the append: a
+/// pass that planned the entry between the two would lease it as well, and the build would run
+/// twice. If the lock cannot be had in a few seconds the verb is queued the ordinary way, and the
+/// line says so.
+///
+/// An entry that is already filed is the *same* request being asked for again — `ctrl-o → now` on
+/// a verb parked for the away window — and is started if it is pending. One that is already
+/// running is left alone.
+pub(crate) fn start_action(
+    cfg: &Config,
+    action: &WtAction,
+    repo: &str,
+    branch: Option<&str>,
+) -> Result<Started, String> {
+    if !cfg.queue.direct.is_immediate() {
+        return enqueue_action(cfg, action, repo, branch, When::Now).map(|o| Started::Queued {
+            outcome: o.label(),
+            why: None,
+        });
+    }
+    let lock = match crate::cmd::queue_tick::hold_tick_lock() {
+        Ok(lock) => lock,
+        Err(why) => {
+            return enqueue_action(cfg, action, repo, branch, When::Now).map(|o| Started::Queued {
+                outcome: o.label(),
+                why: Some(why),
+            })
+        }
+    };
+    let subject = action_subject(action, repo, branch);
+    let now = bn_core::util::now_epoch_secs();
+    let spec = spec_for(cfg, action, repo, branch, When::Now);
+    let path = backlog::backlog_path();
+    let outcome = bn_core::queue::enqueue::enqueue(&path, repo, &subject, &spec, now)
+        .map_err(|e| format!("could not file {}: {e}", action.label))?;
+    let entry = outcome.entry();
+    if entry.status == BacklogStatus::Leased {
+        return Ok(Started::AlreadyRunning);
+    }
+    match crate::cmd::queue_tick::dispatch_now(cfg, &lock, entry, now) {
+        Ok(crate::cmd::queue_tick::DirectStart::Launched) => Ok(Started::Now),
+        Ok(crate::cmd::queue_tick::DirectStart::Ran { code }) => Ok(Started::Ran { code }),
+        // It could not start here and nothing will start it later either: take it back off rather
+        // than report a `queued` that never becomes anything — the exact failure `enqueue_action`'s
+        // guard exists to prevent.
+        Err(why)
+            if !cfg.queue_enabled_here() || !bn_core::queue::daemon::is_running() =>
+        {
+            let _ = backlog::cancel(&path, repo, &entry.id, bn_core::util::now_epoch_secs());
+            Err(format!(
+                "could not start {} here ({why}), and {}",
+                action.label,
+                dispatcher_down_message(cfg, action)
+            ))
+        }
+        Err(why) => Ok(Started::Queued {
+            outcome: outcome.label(),
+            why: Some(why),
+        }),
+    }
+}
 
 /// Queue one picker verb for `repo`, optionally against a specific `branch`.
 ///
@@ -57,7 +162,16 @@ pub(crate) fn enqueue_action(
     }
     let subject = action_subject(action, repo, branch);
     let now = bn_core::util::now_epoch_secs();
-    let spec = AddSpec {
+    let spec = spec_for(cfg, action, repo, branch, when);
+    bn_core::queue::enqueue::enqueue(&backlog::backlog_path(), repo, &subject, &spec, now)
+        .map_err(|e| format!("could not queue {}: {e}", action.label))
+}
+
+/// The queue entry one picker verb files — shared by the queued and the direct door, so the two
+/// cannot drift into filing different entries for the same keypress.
+fn spec_for(cfg: &Config, action: &WtAction, repo: &str, branch: Option<&str>, when: When) -> AddSpec {
+    let subject = action_subject(action, repo, branch);
+    AddSpec {
         kind: BacklogKind::Cron,
         priority: match when {
             // Above CRON_PRIORITY: a person is looking at the row waiting for it to stop spinning.
@@ -68,7 +182,9 @@ pub(crate) fn enqueue_action(
             // for a recovery job like `wt-cleanup` that is RECOVERY_PRIORITY — which would have
             // made "do it once I've gone" outrank "do it now", the one ordering the pair must never
             // produce. Deferring is a statement about *this request*, not a re-rating of the job.
-            When::Away => cfg.queue.priority_for(action.job)
+            When::Away => cfg
+                .queue
+                .priority_for(action.job)
                 .min(bn_core::queue::jobs::CRON_PRIORITY),
         },
         source: "queue".to_string(),
@@ -78,12 +194,20 @@ pub(crate) fn enqueue_action(
             repo: Some(repo.to_string()),
             branch: action.needs_branch.then(|| branch.unwrap_or("main").to_string()),
         },
-        heavy: cfg.queue.is_heavy(action.job),
+        // Every picker verb is heavy, whatever the job's own rating. Heavy is the dispatcher's
+        // "spawn it in a tmux window in the repo's session" path — the window closes on success
+        // and stays to be read on failure — and a person who pressed a key in a picker should
+        // never have to wonder *where* the thing they asked for is running. The express path
+        // would run a light verb inline in the tick, in the dispatcher's own cwd, with its output
+        // going only to the event log. A repo's own scripts need this doubly: their cwd is the
+        // window's, which is the repo's main checkout, and they are unknown-cost by definition.
+        //
+        // The price is that picker verbs share the heavy cap (`[queue].heavy`, default 1), so a
+        // long build holds a quick `fetch-prs` at `held · capacity` — which the row says.
+        heavy: true,
         class_override: Some(when.class_override()),
         ..Default::default()
-    };
-    bn_core::queue::enqueue::enqueue(&backlog::backlog_path(), repo, &subject, &spec, now)
-        .map_err(|e| format!("could not queue {}: {e}", action.label))
+    }
 }
 
 /// Why a verb could not be queued, and the one thing to change.
@@ -375,6 +499,40 @@ mod tests {
         assert!(
             err.contains("off on this machine") && err.contains("[machines.testbox]"),
             "the refusal should say what to change, got: {err}"
+        );
+    }
+
+    /// The opt-out: a machine that says `direct = "queued"` files the verb through the ordinary
+    /// door, guards and all, so a keypress there still refuses when nothing would run it.
+    #[test]
+    fn the_queued_opt_out_takes_the_ordinary_door() {
+        let mut cfg = machine(false);
+        cfg.queue.direct = bn_core::resolver::DirectMode::Queued;
+        let err = start_action(&cfg, action(), "bn", None)
+            .expect_err("queued mode inherits the queue-off refusal");
+        assert!(err.contains("off on this machine"), "{err}");
+    }
+
+    /// The direct door files the same entry the queued one does — same id, same class, same heavy
+    /// spawn — which is what lets the row, `bn queue why` and the finish callback treat the two
+    /// identically.
+    #[test]
+    fn the_direct_spec_is_the_queued_spec() {
+        // The spec mints a task line, which lands in `<personal_root>/tasks.txt` — a temp dir, or
+        // the test writes into the crate.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut cfg = machine(true);
+        cfg.personal_root = tmp.path().to_path_buf();
+        let spec = spec_for(&cfg, action(), "bn", None, When::Now);
+        assert!(spec.heavy);
+        assert_eq!(spec.priority, 0);
+        assert_eq!(spec.source, "queue");
+        assert_eq!(
+            spec.class_override,
+            Some(bn_core::backlog::ClassOverride::Foreground)
+        );
+        assert!(
+            matches!(&spec.exec, ExecSpec::Job { job, repo: Some(r), branch: None } if job == "pool-warm" && r == "bn")
         );
     }
 

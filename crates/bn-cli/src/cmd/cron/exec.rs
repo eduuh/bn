@@ -58,7 +58,7 @@ pub(crate) fn job_path() -> String {
 }
 
 /// A `<job>.sh` script from one of the job tiers.
-pub(crate) fn run_script(script: &std::path::Path) -> (i32, String) {
+fn run_script(script: &std::path::Path) -> (i32, String) {
     if cfg!(windows) {
         let error = "job scripts are unix-only (sh); not supported on native Windows";
         eprintln!("bn run: {error}");
@@ -67,6 +67,46 @@ pub(crate) fn run_script(script: &std::path::Path) -> (i32, String) {
     let mut command = std::process::Command::new("/bin/sh");
     command.arg(script).env("PATH", job_path());
     capture_command(command, &script.display().to_string())
+}
+
+/// A repo's own `<job>.sh`, with what its header asked for done first.
+///
+/// The one directive today is `# bn: latest-main` ([`resolver::ScriptHeader`]): fetch and
+/// fast-forward the repo's main checkout and main slot before the script starts. Honoured here,
+/// in the runner, rather than by whichever surface queued the script — a cron firing, `bn run`
+/// and the picker all reach this line, so the script gets the same precondition however it was
+/// asked for. The sync is [`crate::cmd::main_sync::sync_repo`], the same piece `build-main` uses.
+///
+/// A failed sync is a failed job: running a script that said "on latest main" against a stale
+/// main would report success for work that did not happen as declared.
+pub(crate) fn run_repo_script(
+    cfg: &Config,
+    ctx: Option<&Resolved>,
+    script: &std::path::Path,
+) -> (i32, String) {
+    if resolver::script_header(script).latest_main {
+        let Some(ctx) = ctx else {
+            let msg = format!(
+                "{} asks for latest main, but no repo is in scope to sync",
+                script.display()
+            );
+            eprintln!("bn run: {msg}");
+            return (2, msg);
+        };
+        let Some(bare) = crate::wt::bare_for(cfg, &ctx.repo) else {
+            let msg = format!("{} asks for latest main, but {} has no bare repo here", script.display(), ctx.repo);
+            eprintln!("bn run: {msg}");
+            return (1, msg);
+        };
+        let (_, worktree_dir) = crate::wt::layout(cfg);
+        println!("bn run: syncing {} to latest main first (# bn: latest-main)", ctx.repo);
+        if !crate::cmd::main_sync::sync_repo(&bare, &worktree_dir, &ctx.repo) {
+            let msg = format!("could not bring {} up to date", ctx.repo);
+            eprintln!("bn run: {msg}");
+            return (1, msg);
+        }
+    }
+    run_script(script)
 }
 
 /// An agent manifest's `run:` line, verbatim.

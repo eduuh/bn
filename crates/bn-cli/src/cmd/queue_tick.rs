@@ -8,6 +8,7 @@
 //! `bn queue tick` (a single pass, by hand or from the inline fallback). They interlock on a
 //! non-blocking lock file, so whichever wins the race runs and the other cleanly skips — one pass
 //! per machine, no matter how it was started.
+mod direct;
 mod event_fields;
 mod heavy;
 mod launch;
@@ -22,12 +23,14 @@ use bn_core::queue::tick::{plan_tick, Dispatch, TickPlan};
 use crate::cmd::queue_daemon::{Lifecycle, Supervision};
 use event_fields::{dispatch_fields, finish_fields, launch_failure_fields};
 use launch::{express_timeout, launch_timeout, wait_bounded, Launch};
-use lock::{LockDenied, TickLock};
+use lock::LockDenied;
 use progress::stamp_pass;
 use render::print_decision;
 use std::path::PathBuf;
 
+pub(crate) use direct::{dispatch_now, hold_tick_lock, DirectStart};
 pub(crate) use lock::pid_alive;
+pub(crate) use lock::TickLock;
 pub(crate) use render::emit_nodes;
 
 /// `bn queue tick` — one pass.
@@ -347,36 +350,7 @@ fn reconcile_producers(cfg: &Config) {
 }
 
 fn maybe_enqueue_spare_work(cfg: &Config, now: i64) {
-    if !cfg.job_allowed_here("pool-warm") {
-        return;
-    }
-    if !crate::wt_pool::pool_refresh_due(cfg, now) {
-        return;
-    }
-    if bn_core::backlog::load(&bn_core::backlog::backlog_path())
-        .entries()
-        .iter()
-        .any(|entry| {
-            entry.status.is_active() && bn_core::queue::classify::is_mandatory_pool_warming(entry)
-        })
-    {
-        return;
-    }
-    let _ = crate::cmd::queue_producers::capture_job_with_subject(
-        cfg,
-        "pool-warm",
-        "run mandatory pool-warm",
-        bn_core::queue::kind::ExecSpec::Job {
-            job: "pool-warm".to_string(),
-            repo: None,
-            branch: None,
-        },
-        bn_core::queue::kind::Requirements::default(),
-        // A deadline, like every other scheduled firing. The sweep is daily, so a firing still
-        // waiting a day later has been superseded rather than merely delayed — and a firing that
-        // can never lapse is one that can hold admission forever.
-        Some(now.saturating_add(bn_core::queue::jobs::MANDATORY_WARM_TTL_SECS)),
-    );
+    let _ = crate::wt_pool_refresh::enqueue_due_warms(cfg, now);
 }
 
 /// Record a dispatcher pass in the event log — but only a pass worth remembering.
@@ -594,65 +568,87 @@ fn realize(cfg: &Config, plan: &TickPlan, now: i64) {
                 );
             }
             Executed::Failed(err) => {
-                let finished_at = bn_core::util::now_epoch_secs();
-                // Released straight back to pending, this entry is picked again on the very next
-                // pass — seconds later — and fails for the same reason. Backing off fixed the
-                // spin; it did not fix the forever. `bn dispatch` refuses an item whose branch is
-                // already active, and a merged branch's leftover ref satisfies that test with no
-                // agent alive and nothing left to finish, so the condition the wait is waiting for
-                // never arrives. Counting the attempts is what turns that into an ending.
-                //
-                // `fail_launch` is one mutation: it counts the attempt and then either snoozes the
-                // entry past `launch_retry_delay` or, once the attempts run out, resolves it
-                // `Failed` — where a person and the queue page can both see it, instead of it
-                // sitting in HELD WORK reading `snoozed` for as long as the machine is up.
-                let outcome = backlog::fail_launch(
-                    &path,
-                    &d.repo,
-                    &d.id,
-                    finished_at,
-                    bn_core::queue::tick::launch_retry_delay,
-                )
-                .ok()
-                .flatten();
-                let (attempt, gave_up) = match outcome {
-                    Some(LaunchFailure::Retrying { attempt, retry_at }) => {
-                        eprintln!(
-                            "bn queue tick: {}/{} did not start (attempt {attempt}, retrying at \
-                             {}): {err}",
-                            d.repo,
-                            d.id,
-                            bn_core::util::clock_hm(retry_at)
-                        );
-                        (Some(attempt), false)
-                    }
-                    Some(LaunchFailure::GaveUp { attempt }) => {
-                        eprintln!(
-                            "bn queue tick: {}/{} did not start after {attempt} attempts — giving \
-                             up: {err}",
-                            d.repo, d.id
-                        );
-                        (Some(attempt), true)
-                    }
-                    None => {
-                        eprintln!("bn queue tick: {}/{} did not start: {err}", d.repo, d.id);
-                        (None, false)
-                    }
-                };
-                let _ = bn_core::events::append_at(
-                    "queue_finish",
-                    finished_at,
-                    launch_failure_fields(&d.repo, &d.id, &err, attempt, gave_up),
-                );
+                record_launch_failure(&path, d, &err, bn_core::queue::tick::launch_retry_delay)
             }
+            // Same record, no second chance: the count still goes up and the event still lands,
+            // but the retry schedule is "never".
+            Executed::Refused(err) => record_launch_failure(&path, d, &err, give_up),
         }
     }
+}
+
+/// Count a launch that did not start, and either snooze the entry per `delay` or resolve it failed.
+fn record_launch_failure(
+    path: &std::path::Path,
+    d: &Dispatch,
+    err: &str,
+    delay: fn(u32) -> Option<i64>,
+) {
+    let finished_at = bn_core::util::now_epoch_secs();
+    // Released straight back to pending, this entry is picked again on the very next
+    // pass — seconds later — and fails for the same reason. Backing off fixed the
+    // spin; it did not fix the forever. `bn dispatch` refuses an item whose branch is
+    // already active, and a merged branch's leftover ref satisfies that test with no
+    // agent alive and nothing left to finish, so the condition the wait is waiting for
+    // never arrives. Counting the attempts is what turns that into an ending.
+    //
+    // `fail_launch` is one mutation: it counts the attempt and then either snoozes the
+    // entry past `launch_retry_delay` or, once the attempts run out, resolves it
+    // `Failed` — where a person and the queue page can both see it, instead of it
+    // sitting in HELD WORK reading `snoozed` for as long as the machine is up.
+    let outcome = backlog::fail_launch(
+        path,
+        &d.repo,
+        &d.id,
+        finished_at,
+        delay,
+    )
+    .ok()
+    .flatten();
+    let (attempt, gave_up) = match outcome {
+        Some(LaunchFailure::Retrying { attempt, retry_at }) => {
+            eprintln!(
+                "bn queue tick: {}/{} did not start (attempt {attempt}, retrying at \
+                 {}): {err}",
+                d.repo,
+                d.id,
+                bn_core::util::clock_hm(retry_at)
+            );
+            (Some(attempt), false)
+        }
+        Some(LaunchFailure::GaveUp { attempt }) => {
+            eprintln!(
+                "bn queue tick: {}/{} did not start after {attempt} attempts — giving \
+                 up: {err}",
+                d.repo, d.id
+            );
+            (Some(attempt), true)
+        }
+        None => {
+            eprintln!("bn queue tick: {}/{} did not start: {err}", d.repo, d.id);
+            (None, false)
+        }
+    };
+    let _ = bn_core::events::append_at(
+        "queue_finish",
+        finished_at,
+        launch_failure_fields(&d.repo, &d.id, err, attempt, gave_up),
+    );
+}
+
+/// The retry schedule for a refusal: none.
+fn give_up(_attempt: u32) -> Option<i64> {
+    None
 }
 
 /// What happened when the tick tried to run a dispatch.
 enum Executed {
     /// A long-running agent was started; its terminal outcome is reconciled elsewhere.
     Launched,
+    /// `bn dispatch` said no for a reason that will not change ([`crate::EXIT_REFUSED`]). Resolved
+    /// failed at once rather than backed off: the backoff exists for a moment that may pass, and
+    /// this is not one.
+    Refused(String),
     /// A headless job ran to completion here, with this exit status.
     Finished { code: i32 },
     /// Capacity is temporarily unavailable; return the entry to pending without spending a retry.
@@ -742,6 +738,11 @@ fn launch_agent(
     cmd.args(inv.args());
     match wait_bounded(cmd, launch_timeout()) {
         Launch::Exited(st) if st.success() => Executed::Launched,
+        Launch::Exited(st) if st.code() == Some(crate::EXIT_REFUSED) => Executed::Refused(
+            "bn dispatch refused it, and retrying would not change the answer — see the \
+             dispatcher log"
+                .to_string(),
+        ),
         Launch::Exited(st) => {
             Executed::Failed(format!("bn dispatch exited {}", st.code().unwrap_or(-1)))
         }

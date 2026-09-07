@@ -45,7 +45,8 @@ Do not start coding before the evidence says what to change.
    and launches a fresh planner seeded with these findings. Report the finding count and stop; do
    not plan or implement in that context.
 
-   In an ad-hoc scout envelope, skip the pipeline handoff. If the findings show a bounded fix you
-   can verify, implement it in this same session, record decisions as you go, and open a PR. If
-   the right result is a recommendation, a person-blocked handoff, or nothing to fix, stay
-   report-only.
+   In an ad-hoc scout envelope, skip the pipeline handoff. Reproduce the issue first and record
+   how (`bn_add research`). Once the findings make the fix clear, implement it in this same
+   session, record decisions as you go, prove the fix against that reproduction, and open a PR.
+   Report-only is only for an issue you could not reproduce; a person-blocked handoff is a
+   blocker, not a finish.

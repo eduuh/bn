@@ -69,6 +69,7 @@ pub(crate) mod reviews;
 pub(crate) mod routes;
 pub(crate) mod seed_context;
 pub(crate) mod resume_fleet;
+pub(crate) mod self_update;
 pub(crate) mod self_update_check;
 pub(crate) mod sessions;
 pub(crate) mod setup;

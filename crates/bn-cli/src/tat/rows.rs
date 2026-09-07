@@ -206,15 +206,28 @@ pub(super) fn build_sub_rows(
         None => CmdAvail::default(),
     };
     let now = bn_core::util::now_epoch_secs();
-    let states = super::queue_view::command_states(repo, now);
+    let mut states = super::queue_view::command_states(repo, now);
     let settings_note = super::commands::settings::summary(cfg);
+    // The repo's own scripts. Only for an untagged ref: a `repo@win` checkout lives outside the
+    // configured layout that `bn run --repo` will resolve against, so a row there would queue work
+    // that runs somewhere else.
+    let scripts = if bare && super::ref_tag(name).is_empty() {
+        super::commands::scripts::repo_scripts(cfg, repo)
+    } else {
+        Vec::new()
+    };
     rows.push_str(&command_rows(
         bare,
         avail,
+        &scripts,
         &states,
         now_ms(),
         &settings_note,
     ));
+    // Only the rows that were drawn are worth watching. `command_states` keys every job the
+    // queue holds for this repo, including a cron's `keep-warm` no row shows — and the ticker
+    // repaints for as long as anything in here is active.
+    states.retain(|id, _| rows.contains(&format!("cmd|{id}|")));
 
     (rows, open_windows.len(), states)
 }

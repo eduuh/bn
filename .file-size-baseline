@@ -23,8 +23,8 @@
 1972	crates/bn-cli/src/cli.rs
 2176	crates/bn-cli/src/cmd/agent.rs
 1146	crates/bn-cli/src/cmd/attn.rs
-1902	crates/bn-cli/src/cmd/dispatch.rs
-1974	crates/bn-cli/src/cmd/jobs.rs
+1898	crates/bn-cli/src/cmd/dispatch.rs
+1818	crates/bn-cli/src/cmd/jobs.rs
 1589	crates/bn-cli/src/tat.rs
 1358	crates/bn-cli/src/wt/merge.rs
 2060	crates/bn-cli/src/wt_pool.rs

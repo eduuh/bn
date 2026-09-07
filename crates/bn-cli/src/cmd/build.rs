@@ -19,7 +19,7 @@ pub(crate) fn run_build_cmd(
     let ctx = match resolver::resolve_target(cfg, &cwd, repo, branch) {
         Ok(ctx) => ctx,
         Err(resolver::ContextError::PartialTarget) => {
-            eprintln!("bn build: --repo and --branch must be given together");
+            eprintln!("bn build: --branch needs --repo");
             return 2;
         }
         Err(resolver::ContextError::NotInGitRepo) => {
@@ -66,7 +66,7 @@ pub(crate) fn target_ctx(
     match target_ctx_result(cfg, repo, branch) {
         Ok(ctx) => Some(ctx),
         Err(resolver::ContextError::PartialTarget) => {
-            fail("bn: --repo and --branch must be given together")
+            fail("bn: --branch needs --repo")
         }
         Err(resolver::ContextError::NotInGitRepo) => None,
     }

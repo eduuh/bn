@@ -1364,16 +1364,16 @@ pub fn lease_controller_slot(cfg: &Config, repo: &str) -> Option<(PathBuf, bool)
 /// this returns `None` is a repo with no bn-managed bare clone, the one case a dispatch genuinely
 /// can't pool, and the caller cuts a cold worktree instead.
 fn resolve_dispatch_pool(cfg: &Config, repo: &str) -> Option<PoolCtx> {
-    let (bare_dir, worktree_dir) = wt::layout(cfg);
-    let bare = bare_dir.join(format!("{repo}.git"));
-    if !bare.is_dir() {
-        return None;
-    }
-    let size = pool_size(cfg, repo);
-    let pool_dir = pool_dir(&worktree_dir, repo);
+    let (_, worktree_dir) = wt::layout(cfg);
+    // Case-insensitive, and the pool goes by the clone's spelling: a queued `--repo BigMono` arrives
+    // lowercased, and `bigmono.git` read as "no bare clone — nothing to warm" on a case-sensitive fs.
+    let bare = wt::bare_for(cfg, repo)?;
+    let repo = bare.file_stem()?.to_string_lossy().to_string();
+    let size = pool_size(cfg, &repo);
+    let pool_dir = pool_dir(&worktree_dir, &repo);
     Some(PoolCtx {
         bare,
-        repo: repo.to_string(),
+        repo,
         pool_dir,
         worktree_dir,
         size,

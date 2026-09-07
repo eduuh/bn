@@ -110,7 +110,18 @@ pub fn decide(states: &[StageState], held: &[Stage], approved: bool) -> Advance 
 /// yet?" without keeping its own ledger. Same discipline as `today:<suggestion-id>`: the queue is
 /// the truth, and anything cached elsewhere is only a convenience.
 pub fn stage_source(task_id: &str, stage: Stage) -> String {
-    format!("pipeline:{task_id}:{}", stage.as_str())
+    format!("{STAGE_SOURCE_PREFIX}{task_id}:{}", stage.as_str())
+}
+
+/// The namespace every [`stage_source`] lives under.
+pub const STAGE_SOURCE_PREFIX: &str = "pipeline:";
+
+/// Whether a queue entry's `source` is a pipeline stage's — i.e. one of the rows the sweep reads
+/// as state. Backlog compaction keeps such rows even once they are terminal, because a `Done` or
+/// `Failed` stage that compaction had dropped reads back as "never ran", and the sweep would
+/// enqueue it again — the loop this predicate exists to prevent.
+pub fn is_stage_source(source: &str) -> bool {
+    source.starts_with(STAGE_SOURCE_PREFIX)
 }
 
 /// The workflow skill a stage runs when no config pins one.

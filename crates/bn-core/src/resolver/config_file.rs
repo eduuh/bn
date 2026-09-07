@@ -134,6 +134,11 @@ impl ConfigFile {
         }
     }
 
+    /// `[queue].direct` — the raw word, parsed by [`super::queue_config::DirectMode::parse`].
+    pub(super) fn queue_direct(&self) -> Option<String> {
+        self.queue.as_ref().and_then(|q| q.direct.clone())
+    }
+
     /// `[queue.jobs]` — the per-job classification overrides, if any.
     pub(super) fn queue_job_classes(&self) -> Option<super::config_sections::JobClassSection> {
         self.queue.as_ref().and_then(|q| q.jobs.clone())

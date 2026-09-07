@@ -236,10 +236,23 @@ pub(crate) fn fzf_select_multi(items: &[String], header: &str) -> Vec<String> {
 }
 
 /// The bare repo dir for `<repo>.git` under the active layout, or `None` if it doesn't exist.
+///
+/// Matched case-insensitively on a miss: a `Resolved.repo` is lowercased by the note resolver
+/// (`bigmono`) while the bare dir keeps the clone's case (`BigMono.git`), so a caller holding a resolved
+/// context would otherwise miss the repo on every case-sensitive filesystem.
 pub(crate) fn bare_for(cfg: &Config, repo: &str) -> Option<PathBuf> {
     let (bare_dir, _) = layout(cfg);
     let bare = bare_dir.join(format!("{repo}.git"));
-    bare.is_dir().then_some(bare)
+    if bare.is_dir() {
+        return Some(bare);
+    }
+    let want = format!("{repo}.git").to_lowercase();
+    std::fs::read_dir(&bare_dir).ok()?.find_map(|entry| {
+        let entry = entry.ok()?;
+        let path = entry.path();
+        (entry.file_name().to_string_lossy().to_lowercase() == want && path.is_dir())
+            .then_some(path)
+    })
 }
 
 // --- small helpers ---------------------------------------------------------
@@ -305,4 +318,30 @@ pub(crate) fn run_git(args: &[&str]) -> bool {
 /// Minimal single-quote shell escaping for embedding a path in a tmux command string.
 pub(crate) fn shq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod bare_for_tests {
+    use super::*;
+
+    fn cfg_at(root: &Path) -> Config {
+        Config {
+            worktree_dir: root.join("worktree"),
+            ..Config::default()
+        }
+    }
+
+    /// The name a queued job carries is lowercased by the target resolver; the clone keeps its
+    /// case. Both have to find the same bare repo, or a pool warm for `BigMono` reports "nothing to
+    /// warm" and exits 0.
+    #[test]
+    fn a_lowercased_repo_still_finds_its_bare_clone() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("bare/BigMono.git")).unwrap();
+        let cfg = cfg_at(tmp.path());
+        let want = tmp.path().join("bare/BigMono.git");
+        assert_eq!(bare_for(&cfg, "BigMono").as_deref(), Some(want.as_path()));
+        assert_eq!(bare_for(&cfg, "bigmono").as_deref(), Some(want.as_path()));
+        assert_eq!(bare_for(&cfg, "nope"), None);
+    }
 }

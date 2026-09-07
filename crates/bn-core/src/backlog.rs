@@ -599,10 +599,18 @@ impl Backlog {
 
     /// The compacted set: drop terminal entries, keeping the live (pending/leased) ones in order.
     /// What [`compact`] rewrites the file to.
+    ///
+    /// One class of terminal entry survives: a pipeline stage's row. The pipeline sweep keeps no
+    /// ledger of its own — a stage's queue entry *is* its state, and `Done`/`Failed` are the states
+    /// that stop it re-running (`crate::pipeline::sweep`). Compaction dropping those rows turned
+    /// every failed stage back into "never ran": five failed launches, `Failed`, compacted away,
+    /// enqueued again — 28 dispatches of one task in three days.
     pub fn compacted(&self) -> Vec<BacklogEntry> {
         self.entries
             .iter()
-            .filter(|e| !e.status.is_terminal())
+            .filter(|e| {
+                !e.status.is_terminal() || crate::pipeline::sweep::is_stage_source(&e.source)
+            })
             .cloned()
             .collect()
     }
@@ -771,6 +779,21 @@ mod tests {
             .expect("normalized entry");
         assert_eq!(entry.status, BacklogStatus::Leased);
         assert!(backlog.get("machine", "run-main-sync").is_none());
+    }
+
+    /// The pipeline sweep reads a stage's outcome from its queue row; if compaction dropped the
+    /// row, a `Failed` stage would read as "never ran" and be enqueued again, forever.
+    #[test]
+    fn compaction_keeps_terminal_pipeline_stage_rows() {
+        let lines = vec![
+            r#"{"id":"investigate-x","repo":"bn","item":"investigate x","kind":"investigate","added_at":1000,"source":"pipeline:t9:investigate","task":"t9","status":"failed","updated_at":1010,"exec":{"run":"agent"}}"#.to_string(),
+            r#"{"id":"run-main-sync","repo":"bn","item":"run main-sync","kind":"cron","added_at":1000,"source":"cron:main-sync","task":"t1","status":"done","updated_at":1010,"exec":{"run":"job","job":"main-sync","repo":"bn"}}"#.to_string(),
+            r#"{"id":"run-watch","repo":"bn","item":"run watch","kind":"cron","added_at":1000,"source":"cron:watch","task":"t1","status":"pending","updated_at":1010,"exec":{"run":"job","job":"watch","repo":"bn"}}"#.to_string(),
+        ];
+
+        let kept = Backlog::from_lines(lines).compacted();
+        let ids: Vec<&str> = kept.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["investigate-x", "run-watch"]);
     }
 
     #[test]

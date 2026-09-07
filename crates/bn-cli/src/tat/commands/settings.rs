@@ -36,6 +36,9 @@ pub(in crate::tat) fn summary(cfg: &Config) -> String {
     if cfg.queue.heavy_jobs.is_some() || !cfg.queue.job_priority.is_empty() {
         parts.push("custom job classes".to_string());
     }
+    if !cfg.queue.direct.is_immediate() {
+        parts.push("commands queued".to_string());
+    }
     match parts.is_empty() {
         true => String::new(),
         false => parts.join(" · "),
@@ -79,6 +82,16 @@ pub(in crate::tat) fn menu(cfg: &Config) {
         ),
         false => ("start".to_string(), "Start the dispatcher".to_string()),
     });
+    choices.push(match cfg.queue.direct.is_immediate() {
+        true => (
+            "direct-queued".to_string(),
+            "Commands start instantly — switch to queueing them for the dispatcher".to_string(),
+        ),
+        false => (
+            "direct-immediate".to_string(),
+            "Commands are queued — switch to starting them instantly".to_string(),
+        ),
+    });
     choices.push((
         "jobs".to_string(),
         "Job classes… — which jobs are expensive here".to_string(),
@@ -112,10 +125,31 @@ pub(in crate::tat) fn menu(cfg: &Config) {
             true => Ok("dispatcher started".to_string()),
             false => Err("could not start the dispatcher".to_string()),
         },
+        "direct-queued" => set_direct(bn_core::resolver::DirectMode::Queued),
+        "direct-immediate" => set_direct(bn_core::resolver::DirectMode::Immediate),
         "jobs" => return job_classes(cfg),
         _ => return,
     };
     report(outcome);
+}
+
+/// Write the direct-command setting, and say what it changes and what it does not.
+///
+/// Scheduled work is named in the message because that is the question the setting raises: it
+/// governs only what a *person's* keypress does. Crons, warms and `ctrl-s` deferrals go through
+/// admission either way.
+fn set_direct(mode: bn_core::resolver::DirectMode) -> Result<String, String> {
+    let path = bn_core::resolver::config_file_path();
+    bn_core::queue::config_edit::write_direct_mode(&path, mode)
+        .map(|()| match mode {
+            bn_core::resolver::DirectMode::Immediate => {
+                "commands you press now start instantly; scheduled work still queues".to_string()
+            }
+            bn_core::resolver::DirectMode::Queued => {
+                "commands you press now queue for the dispatcher, like scheduled work".to_string()
+            }
+        })
+        .map_err(|e| format!("could not write {}: {e}", path.display()))
 }
 
 fn declare_away(secs: i64, now: i64) -> Result<String, String> {
@@ -261,6 +295,19 @@ mod tests {
         let mut cfg = cfg();
         cfg.queue.heavy_jobs = Some(vec!["my-own-job".to_string()]);
         assert!(known_jobs(&cfg).contains(&"my-own-job".to_string()));
+    }
+
+    /// The opt-out is worth a word on the row: a person who wonders why Enter no longer starts
+    /// things should find the answer without opening the menu.
+    #[test]
+    fn the_summary_names_the_direct_command_opt_out() {
+        let mut cfg = cfg();
+        assert!(
+            !summary(&cfg).contains("commands queued"),
+            "the default is quiet"
+        );
+        cfg.queue.direct = bn_core::resolver::DirectMode::Queued;
+        assert!(summary(&cfg).contains("commands queued"));
     }
 
     /// The summary is quiet when nothing is overridden or held — a settings row that always shouts

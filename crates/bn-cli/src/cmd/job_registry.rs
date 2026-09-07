@@ -36,7 +36,7 @@ pub(crate) fn native_job(job: &str) -> Option<NativeJob> {
         "managed-repos" => Some(job_managed_repos),
         "main-sync" => Some(crate::cmd::main_sync::job_main_sync),
         "refresh-all" => Some(job_refresh_all),
-        "self-update" => Some(job_self_update),
+        "self-update" => Some(crate::cmd::self_update::job_self_update),
         "tools-reconcile" => Some(job_tools_reconcile),
         "tmux-reconcile" => Some(crate::cmd::tmux_reconcile::job_tmux_reconcile),
         "pool-warm" => Some(crate::wt_pool::job_pool_warm),

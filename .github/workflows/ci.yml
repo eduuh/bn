@@ -198,6 +198,9 @@ jobs:
       - name: Installer toolchain discovery
         run: bash scripts/check-install-toolchain.sh
 
+      - name: Installer tmux floor
+        run: bash scripts/check-install-tmux.sh
+
       # macOS-only bash/libc trap this Linux CI cannot reproduce; see the script header.
       - name: Shell multibyte adjacency
         run: sh scripts/check-shell-multibyte.sh

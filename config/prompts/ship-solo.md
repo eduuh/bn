@@ -28,13 +28,17 @@ Keep the branch note as your **evidence ledger** as you go (`bn_add research` / 
 2. **Investigate — subagent, read-only.** Delegate a bounded **investigation subagent** (your
    harness's Task/subagent tool, read-only) to answer exactly the scoping questions: where the
    change lives (`path:symbol`), how the affected code behaves, what the acceptance criteria are,
-   and what could break. It touches no source and returns evidence-backed findings. Record them with
+   and what could break — and how to REPRODUCE the problem (or demonstrate the missing behaviour):
+   a failing test, a command with its wrong output, or a behaviour in the running app. It touches
+   no source and returns evidence-backed findings, reproduction included. Record them with
    `bn_add research` / `decision`. Follow the evidence past the first plausible answer — being right
    beats being fast.
 
 3. **Decide, or ask.** From the findings, settle the approach and the **acceptance criteria** — the
    observable, checkable outcomes this repo can verify (its test gate green, a behavior a command
-   proves). If the findings leave a real fork, a risk, or an unknown only a person can resolve,
+   proves). The reproduction passing is always the first criterion. If the issue could not be
+   reproduced, that is the one outcome that ends without a PR: record the attempts and finish
+   report-only. If the findings leave a real fork, a risk, or an unknown only a person can resolve,
    `ask_user` now and wait. Otherwise record the chosen approach with `bn_add decision` (name the
    alternative you rejected) and continue. Do not write a plan artifact or open an editor on one.
 
@@ -47,8 +51,9 @@ Keep the branch note as your **evidence ledger** as you go (`bn_add research` / 
 
 5. **Review — subagent, fresh and adversarial.** When implementation reports green, delegate a
    **review subagent** with fresh context and the diff only (not the implementer's reasoning): it
-   re-runs `bn verify`, checks each acceptance criterion against the actual diff with evidence
-   (`path:line`, a command, a test), and tries to break the seams the tests miss. It returns a
+   re-runs `bn verify` and the reproduction on the branch head, checks each acceptance criterion
+   against the actual diff with evidence (`path:line`, a command, a test), and tries to break the
+   seams the tests miss. It returns a
    verdict — pass, or concrete reproducible findings.
 
 6. **Loop or ship.** On findings, hand them to a fresh implementation subagent to fix, then
@@ -57,5 +62,5 @@ Keep the branch note as your **evidence ledger** as you go (`bn_add research` / 
    `git add -A`), push, open the PR (`gh pr create`), and record it with `bn_pr <url>`. Then run
    `bn ingest` to fold the outcome back.
 
-7. **Report.** One line: *scoped · N criteria met · verify PASS · reviewed (K rounds) · PR <url>*,
+7. **Report.** One line: *scoped · repro PASS · N criteria met · verify PASS · reviewed (K rounds) · PR <url>*,
    then the single next action if anything remains. Never mark the goal done on vibes.

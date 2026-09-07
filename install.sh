@@ -103,6 +103,8 @@ esac
 slug="${BN_REPO_SLUG:-eduuh/bn}"
 # shellcheck source=scripts/install-toolchain.sh
 source "$repo/scripts/install-toolchain.sh"
+# shellcheck source=scripts/install-tmux.sh
+source "$repo/scripts/install-tmux.sh"
 
 # Atomically place a binary: copy to a temp in the destination dir, then rename over the target.
 # A rename on the same filesystem is atomic, so a process (e.g. a cron firing mid-install) that
@@ -241,6 +243,44 @@ if [ ! -x "$bindir/bn" ]; then
   exit 1
 fi
 ln -sfn "$bindir/bn" "$cfgdir/bn"
+
+# --- retire the supervised-dispatcher units of the old design -------------------------------------
+# #1322 made the queue dispatcher bn's own resident loop: any bn invocation that finds the lock
+# free spawns one, and a running one hands itself over when the binary changes. A unit left from
+# before then is not harmless — systemd restarts its copy every ten seconds into a lock it can
+# never take, and on a binary change the two supervisors race to hand over. Nothing writes these
+# units any more, so an install is the moment to take them away. Idempotent and quiet when there
+# is nothing to do.
+deregister_legacy_services() {
+  local unit_dir removed="" unit plist
+  unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+  if command -v systemctl >/dev/null 2>&1; then
+    for unit in bn-queue.service bn-queue-tick.timer bn-queue-tick.service; do
+      if [ -e "$unit_dir/$unit" ]; then
+        systemctl --user disable --now "$unit" >/dev/null 2>&1 || true
+        rm -f "$unit_dir/$unit"
+        removed="$removed $unit"
+      fi
+    done
+    if [ -n "$removed" ]; then
+      systemctl --user daemon-reload >/dev/null 2>&1 || true
+    fi
+    systemctl --user reset-failed bn-queue.service bn-queue-tick.service >/dev/null 2>&1 || true
+  fi
+  if command -v launchctl >/dev/null 2>&1; then
+    plist="$HOME/Library/LaunchAgents/com.bn.queue.plist"
+    if [ -e "$plist" ]; then
+      launchctl bootout "gui/$(id -u)/com.bn.queue" >/dev/null 2>&1 || true
+      rm -f "$plist"
+      removed="$removed com.bn.queue"
+    fi
+  fi
+  if [ -n "$removed" ]; then
+    echo "Retired legacy dispatcher unit(s):$removed — bn supervises its own queue loop now."
+  fi
+  return 0
+}
+deregister_legacy_services
 
 # Neutralize any older bn sitting earlier on PATH than the one just installed. Installing to a
 # dir that PATH resolves *after* another dir holding a bn means `bn` keeps running stale even
@@ -421,6 +461,13 @@ preflight_report() {
 }
 
 install_required_cli_deps "$mode"
+# The package manager's tmux only guarantees *a* tmux. The workflow layer has a version floor
+# (scripts/install-tmux.sh says why); build the pinned release over it when the box is below.
+# Runs after the dependency install so curl/tar are present and the distro tmux stays as the
+# fallback if the build cannot happen here. Same BN_INSTALL_DEPS=0 opt-out as the deps above.
+if [ "$mode" = "full" ] && [ "${BN_INSTALL_DEPS:-1}" != "0" ]; then
+  bn_install_ensure_tmux
+fi
 preflight_report "$mode"
 
 # --- agent layer (opt-in): global npm helpers for AXI-style agent workflows ------

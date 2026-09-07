@@ -372,6 +372,30 @@ pub(crate) fn fail(msg: &str) -> ! {
     std::process::exit(1);
 }
 
+/// Exit status for a refusal that retrying cannot change.
+///
+/// `bn dispatch` says no for two different kinds of reason. "No slot free" and "worktree occupied
+/// by a live agent" are about the moment, and a later attempt may get a different answer. "This
+/// item's branch is already active" is about the request: a merged branch's leftover ref satisfies
+/// that test with no agent alive and nothing left to finish, so every retry gets the same refusal.
+/// The dispatcher used to back off through five attempts over three hours toward that same answer,
+/// with the entry reading `snoozed` the whole time. A distinct exit status lets it fail the entry at
+/// once, where a person can see it.
+pub(crate) const EXIT_REFUSED: i32 = 3;
+
+/// [`fail_json`], exiting [`EXIT_REFUSED`]: the same envelope, a different verdict on retrying.
+pub(crate) fn refuse_json(json: bool, command: &str, code: &str, msg: &str) -> ! {
+    if json {
+        println!(
+            "{}",
+            bn_core::render::Envelope::failure(command, code, msg).to_json()
+        );
+    } else {
+        eprintln!("{msg}");
+    }
+    std::process::exit(EXIT_REFUSED);
+}
+
 /// Like [`fail`], but honors `--json`: on `json` it emits the stable `{ok:false,error}` envelope to
 /// **stdout** (so a `--json` consumer never gets empty output — #452) before exiting 1; otherwise
 /// it prints `msg` to stderr. `command` is the envelope's command tag, `code` a stable error code.

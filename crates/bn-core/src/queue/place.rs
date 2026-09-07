@@ -230,8 +230,136 @@ pub fn place_with_load(
                 {
                     Placement::Place(ExecutionTarget::Local)
                 }
-                None => Placement::Unplaced(no_capable_node_reason(required, excluded)),
+                None => Placement::Unplaced(local_refusal(nodes, item, caps, required, excluded)),
             }
         }
+    }
+}
+
+/// Why no local node took `item` — the reason that would actually have to change.
+///
+/// The candidate filter above tests four things, and the old text named only one of them: an
+/// item held because the box was under load read as "no READY node satisfies required capability:
+/// skill:investigate" against a node whose label list plainly included it. The pressure guard is
+/// the right call on a box building BigMono at load 50; blaming the capability sends the reader to
+/// fix the wrong thing.
+fn local_refusal(
+    nodes: &[NodeRecord],
+    item: &QueueItem,
+    caps: &Caps,
+    required: &[String],
+    excluded: &[String],
+) -> String {
+    let capable = nodes.iter().filter(|n| {
+        n.target.is_local()
+            && node_satisfies(n, required, excluded)
+            && node_owns_repo(n, &item.repo)
+    });
+    for n in capable {
+        if n.status != NodeStatus::Ready {
+            return format!("local node '{}' is {:?}, not Ready", n.node_id, n.status);
+        }
+        if !node_resources_allow(n, caps) {
+            let load = n
+                .capacity
+                .as_ref()
+                .and_then(|c| {
+                    c.loadavg1
+                        .map(|l| format!("load {l:.1} on {} cores", c.nproc))
+                })
+                .unwrap_or_else(|| "resource guard".to_string());
+            return format!(
+                "local node '{}' is under pressure ({load}) — waiting for it to ease",
+                n.node_id
+            );
+        }
+    }
+    no_capable_node_reason(required, excluded)
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+    use crate::worker::capacity::Capacity;
+
+    fn node(load: f64) -> NodeRecord {
+        NodeRecord {
+            node_id: "box".to_string(),
+            target: ExecutionTarget::Local,
+            status: NodeStatus::Ready,
+            slots: 1,
+            labels: vec!["skill:investigate".to_string()],
+            capacity: Some(Capacity {
+                mem_total_mb: Some(55_000),
+                mem_available_mb: Some(44_000),
+                swap_total_mb: Some(14_000),
+                swap_free_mb: Some(14_000),
+                loadavg1: Some(load),
+                nproc: 12,
+                disk_avail_mb: Some(600_000),
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn wants_investigate() -> QueueItem {
+        QueueItem {
+            repo: "bn".to_string(),
+            target: ExecutionTarget::Local,
+            required_capabilities: vec!["skill:investigate".to_string()],
+            ..Default::default()
+        }
+    }
+
+    fn caps() -> Caps {
+        Caps {
+            max_local: 6,
+            research: Some(3),
+            min_free_ram_mb: None,
+            max_loadavg: None,
+            max_swap_pct: None,
+            tokens_per_hour: None,
+            daily_cost_usd: None,
+            daily_cost_usd_coding: None,
+            daily_cost_usd_research: None,
+            plan_gated: false,
+            remote_overflow: false,
+            local_owned: true,
+        }
+    }
+
+    /// The case that sent a reader to the wrong fix: the node had the skill, and was under load.
+    #[test]
+    fn a_node_under_pressure_is_named_as_such_not_as_lacking_the_skill() {
+        let nodes = vec![node(48.7)];
+        let got = place_with_load(&wants_investigate(), &nodes, &caps(), None, &HashMap::new());
+        let Placement::Unplaced(reason) = got else {
+            panic!("load 48.7 on 12 cores must not place, got {got:?}");
+        };
+        assert!(reason.contains("under pressure"), "{reason}");
+        assert!(reason.contains("load 48.7 on 12 cores"), "{reason}");
+        assert!(!reason.contains("capability"), "{reason}");
+    }
+
+    #[test]
+    fn a_calm_node_with_the_skill_takes_the_item() {
+        let nodes = vec![node(1.0)];
+        let got = place_with_load(&wants_investigate(), &nodes, &caps(), None, &HashMap::new());
+        assert!(
+            matches!(got, Placement::Place(ExecutionTarget::Local)),
+            "{got:?}"
+        );
+    }
+
+    /// And when the skill really is missing, the old wording stands.
+    #[test]
+    fn a_missing_skill_is_still_named() {
+        let mut n = node(1.0);
+        n.labels.clear();
+        let got = place_with_load(&wants_investigate(), &[n], &caps(), None, &HashMap::new());
+        let Placement::Unplaced(reason) = got else {
+            panic!("{got:?}")
+        };
+        assert!(reason.contains("skill:investigate"), "{reason}");
     }
 }

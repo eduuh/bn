@@ -61,6 +61,7 @@ Config {
                 mode: Deadline,
             },
         ],
+        direct: Immediate,
     },
     coarse_sizes: CoarseSizes {
         s: 1800,

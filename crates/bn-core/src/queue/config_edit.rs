@@ -87,6 +87,86 @@ pub fn write_job_classes(path: &std::path::Path, classes: &JobClasses) -> std::i
 
 const HEADER: &str = "[queue.jobs]";
 
+/// The `[queue]` table's own header — the one `direct` lives in, as opposed to a sub-table.
+const QUEUE_HEADER: &str = "[queue]";
+
+/// Set `[queue].direct` in `content` to `mode`, leaving every other line untouched.
+///
+/// The default mode is written as *no key*, matching [`edit_job_classes`]: a machine that reverts
+/// to the default ends up with the file it started with. Only `queued` is spelled out.
+///
+/// Line-oriented for the same reason as the rest of this module. The key must land inside the
+/// `[queue]` table proper — after its header and before the first `[queue.…]` sub-table or any
+/// other header — so a file that has `[queue.jobs]` but no bare `[queue]` gets a new `[queue]`
+/// table appended, which TOML accepts wherever it appears as long as it appears once.
+pub fn edit_direct_mode(content: &str, mode: crate::resolver::DirectMode) -> String {
+    let value = (!mode.is_immediate()).then(|| format!("direct = \"{}\"", mode.label()));
+    let mut out: Vec<String> = Vec::new();
+    let mut lines = content.lines().peekable();
+    let mut placed = false;
+    while let Some(line) = lines.next() {
+        out.push(line.to_string());
+        if line.trim() != QUEUE_HEADER {
+            continue;
+        }
+        // Inside `[queue]`: copy its keys, dropping any existing `direct`, then add ours at the
+        // end of the table so a comment above the old key still describes what follows it.
+        while let Some(next) = lines.peek() {
+            if next.trim_start().starts_with('[') {
+                break;
+            }
+            let next = lines.next().unwrap_or_default();
+            if is_direct_key(next) {
+                continue;
+            }
+            out.push(next.to_string());
+        }
+        if let Some(value) = &value {
+            // Keep the blank line that separated this table from the next one *after* our key.
+            while out.last().is_some_and(|l| l.trim().is_empty()) {
+                out.pop();
+            }
+            out.push(value.clone());
+            if lines.peek().is_some() {
+                out.push(String::new());
+            }
+        }
+        placed = true;
+    }
+    if !placed {
+        if let Some(value) = &value {
+            while out.last().is_some_and(|l| l.trim().is_empty()) {
+                out.pop();
+            }
+            if !out.is_empty() {
+                out.push(String::new());
+            }
+            out.push(QUEUE_HEADER.to_string());
+            out.push(value.clone());
+        }
+    }
+    let mut text = out.join("\n");
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    text
+}
+
+/// Write `mode` into the config at `path`.
+pub fn write_direct_mode(
+    path: &std::path::Path,
+    mode: crate::resolver::DirectMode,
+) -> std::io::Result<()> {
+    let current = std::fs::read_to_string(path).unwrap_or_default();
+    std::fs::write(path, edit_direct_mode(&current, mode))
+}
+
+fn is_direct_key(line: &str) -> bool {
+    line.trim_start()
+        .strip_prefix("direct")
+        .is_some_and(|rest| rest.trim_start().starts_with('='))
+}
+
 fn escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
@@ -158,6 +238,56 @@ mod tests {
         assert!(
             text.contains("priority = { \"alpha\" = -5, \"zeta\" = 1 }"),
             "{text}"
+        );
+    }
+
+    fn direct_of(text: &str) -> Option<String> {
+        let parsed: toml::Value = toml::from_str(text).expect("valid TOML");
+        parsed
+            .get("queue")
+            .and_then(|q| q.get("direct"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    }
+
+    /// The key lands in `[queue]` itself, not in the `[queue.jobs]` sub-table that follows it —
+    /// a `direct` under `[queue.jobs]` would parse fine and mean nothing.
+    #[test]
+    fn direct_goes_into_the_queue_table_not_a_sub_table() {
+        let before = "[personal]\nx = 1\n\n[queue]\ncoding = 2  # low\n\n[queue.jobs]\nheavy = [\"build\"]\n";
+        let after = edit_direct_mode(before, crate::resolver::DirectMode::Queued);
+        assert_eq!(direct_of(&after).as_deref(), Some("queued"), "{after}");
+        assert!(after.contains("coding = 2  # low"), "{after}");
+        assert!(after.contains("heavy = [\"build\"]"), "{after}");
+        let parsed: toml::Value = toml::from_str(&after).unwrap();
+        assert!(parsed["queue"]["jobs"].get("direct").is_none(), "{after}");
+    }
+
+    /// A file with only sub-tables gets a `[queue]` table of its own rather than a key dropped
+    /// into whichever table happened to be last.
+    #[test]
+    fn a_missing_queue_table_is_added() {
+        let before = "[queue.jobs]\nheavy = []\n";
+        let after = edit_direct_mode(before, crate::resolver::DirectMode::Queued);
+        assert_eq!(direct_of(&after).as_deref(), Some("queued"), "{after}");
+        assert_eq!(after.matches("[queue]").count(), 1, "{after}");
+        let empty = edit_direct_mode("", crate::resolver::DirectMode::Queued);
+        assert_eq!(direct_of(&empty).as_deref(), Some("queued"), "{empty}");
+    }
+
+    /// Reverting to the default removes the key, and a second write replaces rather than repeats.
+    #[test]
+    fn immediate_is_spelled_as_no_key_and_rewrites_replace() {
+        let once = edit_direct_mode("[queue]\ncoding = 1\n", crate::resolver::DirectMode::Queued);
+        let twice = edit_direct_mode(&once, crate::resolver::DirectMode::Queued);
+        assert_eq!(once, twice);
+        assert_eq!(twice.matches("direct =").count(), 1, "{twice}");
+        let back = edit_direct_mode(&twice, crate::resolver::DirectMode::Immediate);
+        assert_eq!(direct_of(&back), None, "{back}");
+        assert!(back.contains("coding = 1"), "{back}");
+        assert_eq!(
+            edit_direct_mode("", crate::resolver::DirectMode::Immediate),
+            ""
         );
     }
 

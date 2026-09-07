@@ -431,6 +431,28 @@ fn a_pause_does_not_deadlock_mandatory_pool_warming() {
     );
 }
 
+/// A five-minute cron is a few hundred milliseconds of I/O; it does not compete with a build for
+/// the machine. Holding it behind a warm that runs for an hour meant every such cron expired unrun.
+#[test]
+fn the_warming_latch_holds_agents_and_heavy_work_but_not_light_crons() {
+    let fx = Fixture {
+        pending: vec![
+            agent("ordinary-work", 100),
+            shell("watch", -10),
+            heavy_job("pool-warm", -50),
+        ],
+        mandatory_warming: true,
+        ..Default::default()
+    };
+    let plan = fx.plan();
+    assert!(started(&plan).contains(&"watch".to_string()), "{plan:?}");
+    assert_ne!(
+        reason_for(&plan, "watch"),
+        Some(&DeferReason::MandatoryWarming),
+        "a light express job is not held by the latch"
+    );
+}
+
 #[test]
 fn an_expired_pause_is_not_in_historical_state() {
     let events = vec![pause_event(NOW - 100, "all", Some(NOW - 1))];
@@ -615,14 +637,27 @@ fn warming_still_waits_for_idle_or_an_away_window() {
     assert!(started(&plan).is_empty());
 }
 
-/// The latch still holds ordinary background work — that is what it is for.
+/// The latch still holds ordinary background work that would compete with the warm — that is
+/// what it is for.
 ///
-/// `research` here is a plain `Cron` entry, which classifies autonomous rather than foreground, so
-/// it has no claim on a machine that has decided to warm.
+/// `research` here is a heavy `Cron` job (a build), which classifies autonomous rather than
+/// foreground, so it has no claim on a machine that has decided to warm. A *light* cron is a
+/// different matter — see `the_warming_latch_holds_agents_and_heavy_work_but_not_light_crons`.
 #[test]
 fn mandatory_warming_blocks_new_work_and_starts_the_warm() {
+    let mut research = pending(
+        "research",
+        BacklogKind::Cron,
+        100,
+        ExecSpec::Job {
+            job: "verify".to_string(),
+            repo: Some("repo".to_string()),
+            branch: Some("main".to_string()),
+        },
+    );
+    research.heavy = true;
     let fx = Fixture {
-        pending: vec![shell("research", 100), heavy_job("pool-warm", -50)],
+        pending: vec![research, heavy_job("pool-warm", -50)],
         presence: Presence {
             idle: false,
             away_window: false,

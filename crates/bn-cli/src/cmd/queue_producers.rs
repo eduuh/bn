@@ -378,6 +378,14 @@ pub(crate) fn maybe_capture_job(
     if !active(cfg, STAFF) && !active(cfg, CRON) {
         return None;
     }
+    // An untargeted `pool-warm` firing is the daily sweep, and the sweep is filed per repo — the
+    // same producer the tick uses, so the timer cannot file the machine-wide entry the tick no
+    // longer does. Filing nothing (nothing due, or a set already working through the cap) is
+    // still a captured firing: the job's answer was "nothing to warm", not "could not queue".
+    if job == "pool-warm" && ctx.is_none() {
+        let _ = crate::wt_pool_refresh::enqueue_due_warms(cfg, bn_core::util::now_epoch_secs());
+        return Some(true);
+    }
     let home = cfg.staff_home_pin();
     Some(capture_job(
         cfg,

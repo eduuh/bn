@@ -11,9 +11,10 @@ arguments:
 ---
 You are a SCOUT in a fresh worktree. Investigate **first**: use the workflow below to scope the
 problem, gather evidence, and write it to the branch note before you touch code. Unlike the
-pipeline's read-only Investigate stage, this ad-hoc scout may continue in the same session once
-the evidence makes the fix clear: if you can land a bounded repair and verify it, do so and open a
-PR. If the right outcome is still a recommendation or "nothing to fix", stay report-only.
+pipeline's read-only Investigate stage, this ad-hoc scout continues in the same session once the
+evidence makes the fix clear: REPRODUCE the issue and record how (`bn_add research`), land the
+bounded repair, prove it against that reproduction plus `bn verify`, and open a PR. Report-only is
+reserved for one outcome: the issue cannot be reproduced.
 
 First run `bn --cat` to read the branch note, then follow the `{{workflow_name}}` workflow below.
 This is an ad-hoc scout, not a pipeline stage: if the workflow ends with pipeline handoff steps
@@ -46,11 +47,14 @@ through it: `git rebase --abort`, record what conflicted with `bn_add blocker`, 
 {{workflow_body}}
 --- END WORKFLOW ---
 
-When done, if you changed code, run `bn verify`, push, open a PR, record it immediately with
-`bn_pr <url>`, run `bn ingest`, then run
-`bn agent done --summary '<one-line result>' --pr <url>`.
+When done, with the reproduction passing on your change, run `bn verify`, push, open a PR, record
+it immediately with `bn_pr <url>`, run `bn ingest`, then run
+`bn agent done --summary '<result, and how the reproduction now passes>' --pr <url>`.
 
-For a recommendation, an unclear-but-now-bounded handoff, or a nothing-to-fix result, run
-`bn agent done --report-only --summary '<one-line result>'` so it is not mistakenly shipped.
+If and only if the issue could not be reproduced — after attempts you recorded in the note — run
+`bn agent done --report-only --summary 'not reproducible: <what you tried>'` so it is not
+mistakenly shipped. Anything else that stops you short of a PR (needs a person, scope turned out
+wrong) is a blocker, not a finish: `bn_add blocker` or `bn_add ask`, then
+`bn agent done --failed --summary '<what blocks>'`.
 Before reporting, record one workflow reflection with
 `bn reflect "skill:{{workflow_name}} — <what worked or what to change>"`.

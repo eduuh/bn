@@ -30,7 +30,7 @@ use std::path::Path;
 
 /// The `list-windows -F` format every join reads. One spawn per supervisor pass yields all of it;
 /// the parsing is [`parse_window_rows`].
-pub const WINDOW_FORMAT: &str = "#{session_name}:#{window_name}\t#{pane_current_path}\t#{@bn_worktree}\t#{@bn_repo}\t#{@bn_branch}\t#{@bn_session_id}\t#{@bn_nvim_sock}\t#{pane_dead}";
+pub const WINDOW_FORMAT: &str = "#{session_name}:#{window_name}\t#{pane_current_path}\t#{@bn_worktree}\t#{@bn_repo}\t#{@bn_branch}\t#{@bn_session_id}\t#{@bn_nvim_sock}\t#{pane_dead}\t#{@bn_agent}";
 
 /// One live tmux window, as [`WINDOW_FORMAT`] describes it. Unset `@bn_*` options come back as the
 /// empty string, which every tier treats as "no evidence" rather than a match.
@@ -47,6 +47,18 @@ pub struct TmuxWindowRow {
     /// every window whose agent is a plain pane — which is all of them until an editor-hosted
     /// shape exists.
     pub nvim_sock: String,
+    /// The window's `@bn_agent` Plane-A state — `working`, `waiting`, `done`, or empty. `done` is
+    /// the agent's own word that it has finished, and outranks whatever its transcript's idle
+    /// time says: a Copilot that reported done and is sitting at its prompt is not stuck, it is
+    /// over.
+    pub agent_state: String,
+}
+
+impl TmuxWindowRow {
+    /// Whether the agent hosted here has signalled completion.
+    pub fn is_done(&self) -> bool {
+        self.agent_state.trim() == "done"
+    }
 }
 
 impl TmuxWindowRow {
@@ -453,8 +465,13 @@ pub fn parse_window_rows(out: &str) -> Vec<TmuxWindowRow> {
                 branch: f.next().unwrap_or_default().trim().to_string(),
                 session_id: f.next().unwrap_or_default().trim().to_string(),
                 nvim_sock: f.next().unwrap_or_default().trim().to_string(),
+                agent_state: String::new(),
             };
             let dead = f.next().unwrap_or_default().trim() == "1";
+            let row = TmuxWindowRow {
+                agent_state: f.next().unwrap_or_default().trim().to_string(),
+                ..row
+            };
             (!dead).then_some(row)
         })
         .collect()
@@ -522,7 +539,21 @@ mod endpoint_tests {
 
     /// A row exactly as `list-windows -F WINDOW_FORMAT` would render it.
     fn row(session_id: &str, nvim_sock: &str, dead: &str) -> String {
-        format!("bn:feat\t/wt/bn/feat\t/wt/bn/feat\tbn\tfeat\t{session_id}\t{nvim_sock}\t{dead}")
+        format!("bn:feat\t/wt/bn/feat\t/wt/bn/feat\tbn\tfeat\t{session_id}\t{nvim_sock}\t{dead}\t")
+    }
+
+    /// The agent's own completion mark rides the last column, after `pane_dead`, so every
+    /// existing column keeps its position.
+    #[test]
+    fn the_done_mark_is_read_from_the_last_column() {
+        let rows = parse_window_rows("bn:feat\t/wt\t/wt\tbn\tfeat\ts\t\t0\tdone\n");
+        assert_eq!(rows[0].agent_state, "done");
+        assert!(rows[0].is_done());
+        let rows = parse_window_rows("bn:feat\t/wt\t/wt\tbn\tfeat\ts\t\t0\tworking\n");
+        assert!(!rows[0].is_done());
+        // A window with no stamp at all — the column is empty, and so is the claim.
+        let rows = parse_window_rows("bn:feat\t/wt\t/wt\tbn\tfeat\ts\t\t0\n");
+        assert!(!rows[0].is_done());
     }
 
     #[test]
@@ -532,7 +563,7 @@ mod endpoint_tests {
         // looking alive.
         let fields = WINDOW_FORMAT.split('\t').count();
         let parsed = parse_window_rows(&row("s1", "/run/bn/a.sock", "0"));
-        assert_eq!(fields, 8, "WINDOW_FORMAT field count changed");
+        assert_eq!(fields, 9, "WINDOW_FORMAT field count changed");
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].session_id, "s1");
         assert_eq!(parsed[0].nvim_sock, "/run/bn/a.sock");

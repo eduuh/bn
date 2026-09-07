@@ -32,7 +32,8 @@ pub(super) fn menu(cfg: &Config, action: &WtAction, repo: &str) {
     };
     let now = bn_core::util::now_epoch_secs();
     let outcome = match choice.as_str() {
-        "now" if filed.is_some() => {
+        // The opt-out machine: "now" on a filed verb can only move it to the front of the line.
+        "now" if filed.is_some() && !cfg.queue.direct.is_immediate() => {
             bn_core::backlog::start_next(&bn_core::backlog::backlog_path(), repo, &id, now)
                 .map(|done| match done {
                     true => format!("{} is next", action.label),
@@ -40,7 +41,10 @@ pub(super) fn menu(cfg: &Config, action: &WtAction, repo: &str) {
                 })
                 .map_err(|e| e.to_string())
         }
-        "now" => queue(cfg, action, repo, When::Now),
+        // Otherwise "now" means now: file it if it is not filed, and start it from here whether it
+        // was waiting for the away window or was just filed — `start_action` handles both.
+        "now" => crate::cmd::wt_action_jobs::start_action(cfg, action, repo, None)
+            .map(|started| format!("{} — {}", action.label, started.describe())),
         "away" => queue(cfg, action, repo, When::Away),
         "cancel" => bn_core::backlog::cancel(&bn_core::backlog::backlog_path(), repo, &id, now)
             .map(|_| format!("un-queued {}", action.label))
@@ -76,13 +80,13 @@ pub(super) fn menu(cfg: &Config, action: &WtAction, repo: &str) {
 /// may run, and holding a verb until a merely-preferred window would delay it for no benefit.
 fn options(cfg: &Config, filed: bool) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    out.push(match filed {
-        true => (
-            "now".to_string(),
-            "Start it now — jump the queue".to_string(),
-        ),
-        false => ("now".to_string(), "Queue it to run now".to_string()),
-    });
+    let now_label = match (cfg.queue.direct.is_immediate(), filed) {
+        (true, true) => "Start it now — skip the queue",
+        (true, false) => "Run it now",
+        (false, true) => "Start it now — jump the queue",
+        (false, false) => "Queue it to run now",
+    };
+    out.push(("now".to_string(), now_label.to_string()));
     out.push(("away".to_string(), "Run it when I'm away".to_string()));
     for w in cfg
         .queue
@@ -204,11 +208,20 @@ mod tests {
         assert!(ids(&options(&cfg, true)).contains(&"cancel"));
     }
 
-    /// And "now" reads differently either side of that line — queueing it, versus jumping a queue
-    /// it is already in.
+    /// And "now" reads differently either side of that line — and either side of the machine's
+    /// direct-command setting. By default it starts the verb from here; on a machine that opted
+    /// out it can only file it, or move a filed one to the front.
     #[test]
-    fn the_now_label_says_which_of_the_two_things_it_will_do() {
+    fn the_now_label_says_which_of_the_things_it_will_do() {
         let cfg = cfg_with(Vec::new());
+        assert!(cfg.queue.direct.is_immediate(), "immediate is the default");
+        let unfiled = options(&cfg, false);
+        let filed = options(&cfg, true);
+        assert!(unfiled[0].1.contains("Run it now"), "{:?}", unfiled[0]);
+        assert!(filed[0].1.contains("skip the queue"), "{:?}", filed[0]);
+
+        let mut cfg = cfg_with(Vec::new());
+        cfg.queue.direct = bn_core::resolver::DirectMode::Queued;
         let unfiled = options(&cfg, false);
         let filed = options(&cfg, true);
         assert!(unfiled[0].1.contains("Queue it"), "{:?}", unfiled[0]);

@@ -292,6 +292,23 @@ pub struct Dispatch {
     pub agent: crate::backlog::AgentSpec,
 }
 
+impl Dispatch {
+    /// The dispatch for an entry a person is starting by hand, outside any pass.
+    ///
+    /// Local, in the lane its kind implies, with no harness preference: a direct command is a heavy
+    /// job or a shell, never an agent, so placement has nothing to choose. The rationale rides onto
+    /// the `queue_dispatch` event so the log can tell a keypress from the dispatcher's own decision.
+    pub fn direct(entry: &BacklogEntry, rationale: &str) -> Dispatch {
+        dispatch(
+            entry,
+            WorkClass::from_kind(entry.kind),
+            ExecutionTarget::Local,
+            None,
+            rationale,
+        )
+    }
+}
+
 /// One entry that stayed pending this pass, and why.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Deferred {
@@ -460,9 +477,15 @@ pub fn plan_tick(inputs: &TickInputs) -> TickPlan {
         // somebody is watching a row wait. A pool warm is the machine's own housekeeping, and
         // housekeeping that outranks the thing you just asked for is indistinguishable from being
         // broken. `bn queue class <id> foreground` is therefore also the manual escape hatch.
+        // And light express work is exempt for a fourth: it does not compete with a build. The
+        // drain exists so a full-compile warm does not run beside agents and other builds. A
+        // five-minute `watch` or `attention-sync` is a few hundred milliseconds of I/O, and holding
+        // it behind a warm that takes an hour and a half meant every such cron on the machine
+        // expired unrun, fifteen at a time, for the length of every BigMono build.
         if inputs.mandatory_warming
             && !crate::queue::classify::is_mandatory_pool_warming(entry)
             && !entry_is_recovery(entry)
+            && competes_with_a_build(entry)
             && crate::queue::classify::classify(entry).mode
                 != crate::queue::classify::QueueMode::Foreground
         {
@@ -844,6 +867,16 @@ fn dispatch(
         rationale: rationale.to_string(),
         agent: entry.agent.clone(),
     }
+}
+
+/// Whether starting this entry would compete with a pool warm for the machine: an agent (a
+/// harness and a worktree), or anything declared heavy. A light headless job is neither.
+fn competes_with_a_build(entry: &BacklogEntry) -> bool {
+    entry.heavy
+        || !matches!(
+            entry.exec,
+            crate::backlog::ExecSpec::Job { .. } | crate::backlog::ExecSpec::Shell { .. }
+        )
 }
 
 fn defer(entry: &BacklogEntry, reason: DeferReason, detail: String) -> Deferred {

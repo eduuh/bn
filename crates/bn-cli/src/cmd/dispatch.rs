@@ -12,6 +12,8 @@ pub(crate) mod branch;
 pub(crate) mod invocation;
 mod item;
 pub(crate) mod policy;
+mod slot_reuse;
+use slot_reuse::may_reuse_occupied_worktree;
 use branch::dispatch_branch_occupied;
 pub(crate) use invocation::DispatchInvocation;
 pub(crate) use item::resolve_dispatch_item;
@@ -37,10 +39,6 @@ pub(crate) fn slugify(s: &str) -> String {
     }
     let capped: String = out.chars().take(40).collect();
     capped.trim_matches('-').to_string()
-}
-
-fn may_reuse_occupied_worktree(fresh: bool, launching_agent: bool) -> bool {
-    fresh && launching_agent
 }
 
 /// Queue `item` on `repo`'s orchestrate run because the warm pool has no free slot, then exit.
@@ -1036,7 +1034,10 @@ pub(crate) fn run_dispatch(
             |candidate| dispatch_branch_occupied(&bare, &cfg.worktree_dir, &repo, candidate, &base),
         ) {
             dp::DispatchBranchChoice::Use(branch) => branch,
-            dp::DispatchBranchChoice::AlreadyActive(branch) => fail_json(
+            // A refusal, not a failure: the leftover ref of a merged branch satisfies this test
+            // with no agent alive, so asking again later gets the same answer. `EXIT_REFUSED`
+            // tells the queue not to wait for one.
+            dp::DispatchBranchChoice::AlreadyActive(branch) => refuse_json(
                 json,
                 "dispatch",
                 "dispatch-already-active",
@@ -1101,33 +1102,28 @@ pub(crate) fn run_dispatch(
         };
         (wt_path, created)
     };
-    let (wt_path, comparison_path, created, used_pool) = match mode {
+    // Whether the agent lease below should evict whoever holds the slot. `--fresh` says so
+    // outright; a slot whose only occupants have signalled `done` says so on their behalf.
+    let (wt_path, comparison_path, created, used_pool, replace_prior) = match mode {
         bn_core::pool::WorktreeMode::Pool => match wt_pool::lease_for_dispatch_mode(
             cfg,
             &repo,
             &branch,
             with_main,
         ) {
-            // A same-branch pooled slot is reusable only for explicit --fresh recovery; the agent
-            // lease below reaps/replaces its prior owner before the new harness starts.
-            Some((slot, comparison, true)) => (slot, comparison, true, true),
-            Some((slot, comparison, false))
-                if may_reuse_occupied_worktree(fresh, agent_kind.is_some()) =>
-            {
-                (slot, comparison, false, true)
-            }
-            Some((slot, _, false)) => {
-                fail_json(
-                    json,
-                    "dispatch",
-                    "worktree-occupied",
-                    &format!(
-                        "bn dispatch: refusing to reuse occupied pooled worktree {} for branch \
-                         '{branch}' — choose another --branch or omit --branch to allocate a unique \
-                         dispatch branch",
-                        slot.display()
+            Some((slot, comparison, true)) => (slot, comparison, true, true, fresh),
+            // A same-branch slot that is already leased: reusable for `--fresh`, or when its only
+            // occupants have finished — see `slot_reuse`. Either way the lease below evicts them.
+            Some((slot, comparison, false)) => {
+                match slot_reuse::verdict(fresh, agent_kind.is_some(), &slot, &branch) {
+                    Some(replace) => (slot, comparison, false, true, replace),
+                    None => fail_json(
+                        json,
+                        "dispatch",
+                        "worktree-occupied",
+                        &slot_reuse::refusal(&slot, &branch),
                     ),
-                )
+                }
             }
             // Every worker slot is leased. Cutting a cold worktree here is what the code used to
             // do unconditionally, and it is unbounded — nothing ever reclaims those directories,
@@ -1157,7 +1153,7 @@ pub(crate) fn run_dispatch(
                          — falling back to a cold worktree."
                     );
                     let (p, c) = cold_worktree();
-                    (p, None, c, false)
+                    (p, None, c, false, fresh)
                 }
                 crate::cli::OnPoolFull::Fail => fail_json(
                     json,
@@ -1184,13 +1180,13 @@ pub(crate) fn run_dispatch(
                          `bn wt pool warm`, or pass --no-pool) — falling back to a cold worktree."
                     );
                     let (p, c) = cold_worktree();
-                    (p, None, c, false)
+                    (p, None, c, false, fresh)
                 }
             },
         },
         bn_core::pool::WorktreeMode::Cold => {
             let (p, c) = cold_worktree();
-            (p, None, c, false)
+            (p, None, c, false, fresh)
         }
     };
 
@@ -1724,7 +1720,7 @@ pub(crate) fn run_dispatch(
                 harness: kind,
                 kind: bn_core::agent::AgentLeaseKind::Dispatch,
                 tmux_target: &lease_target,
-                replace: fresh,
+                replace: replace_prior,
                 in_place: false,
             }) {
                 Ok(lease) => lease,

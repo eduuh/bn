@@ -461,13 +461,6 @@ fn run_bn_build(repo: &str, slot: &Path, jobs: Option<usize>) -> bool {
 /// This is the cheap predicate the queue tick uses before enqueueing mandatory warm work. The
 /// expensive build still runs through [`job_pool_warm`], which re-checks the same gate before doing
 /// anything; this only keeps the queue from filling with "wake up and skip" entries.
-pub(crate) fn pool_refresh_due(cfg: &Config, now: i64) -> bool {
-    matches!(
-        crate::wt_pool_refresh::plan_pool_refresh(cfg, now),
-        crate::wt_pool_refresh::PoolRefreshPlan::Warm(_)
-    )
-}
-
 /// `pool-warm` cron — refresh every due repo's warm-slot pool after its daily deadline, so a leased
 /// dispatch always lands on a ready checkout. When queued with `bn run pool-warm --repo <repo>`, the context
 /// scopes the refresh to that one repo so the Repos page can schedule a pool build without turning

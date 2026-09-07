@@ -52,6 +52,51 @@ pub struct QueueConfig {
     pub opportunistic_idle_mins: i64,
     /// Times of day when some work is preferred — see [`crate::queue::window`].
     pub windows: Vec<crate::queue::window::PriorityWindow>,
+    /// What a person's direct command — a picker verb pressed by hand — does. See [`DirectMode`].
+    pub direct: DirectMode,
+}
+
+/// What happens when a person triggers a command by hand, as opposed to a cron firing.
+///
+/// The queue exists to keep the *machine's* work from over-committing the box: crons, warms,
+/// reclaims, agents. A verb someone just pressed in the picker is a different thing — they are
+/// watching the row, and every admission gate between them and the work (the heavy cap, a warm
+/// that owns the machine, a pause, the dispatcher's next pass) reads as the keypress having failed.
+/// So a direct command starts on the spot, and the queue is only the fallback for a machine that
+/// cannot start it right then. The entry is still filed, which is what keeps the row honest: it
+/// carries the lease, the start time and the finish callback exactly as a dispatched one does.
+///
+/// `Queued` is the opt-out for a box where "start it now" is the wrong default — a laptop with one
+/// heavy slot that must not run two builds at once. Scheduled work is unaffected either way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DirectMode {
+    /// Lease and start the entry from the process that filed it; fall back to the queue only when
+    /// that cannot be done.
+    #[default]
+    Immediate,
+    /// File it for the dispatcher and let admission decide, like every other producer.
+    Queued,
+}
+
+impl DirectMode {
+    /// The config word. `Immediate` is the default, so an absent key reads as it.
+    pub fn parse(word: Option<&str>) -> DirectMode {
+        match word.map(|w| w.trim().to_ascii_lowercase()).as_deref() {
+            Some("queued") | Some("queue") => DirectMode::Queued,
+            _ => DirectMode::Immediate,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DirectMode::Immediate => "immediate",
+            DirectMode::Queued => "queued",
+        }
+    }
+
+    pub fn is_immediate(self) -> bool {
+        matches!(self, DirectMode::Immediate)
+    }
 }
 
 /// Heavy jobs allowed to run at once when `[queue].heavy` says nothing.
@@ -101,6 +146,7 @@ impl QueueConfig {
                     file.map(|f| f.queue_windows()).unwrap_or_default(),
                 ),
             ),
+            direct: DirectMode::parse(file.and_then(|f| f.queue_direct()).as_deref()),
         }
     }
 
@@ -257,4 +303,28 @@ fn read_stamp(path: &std::path::Path) -> Option<i64> {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|raw| raw.trim().parse::<i64>().ok())
+}
+
+#[cfg(test)]
+mod direct_mode_tests {
+    use super::DirectMode;
+
+    /// Absent, empty or unrecognised all read as the default: a typo in the opt-out must not
+    /// silently opt out of something else.
+    #[test]
+    fn the_default_is_immediate_and_only_queued_opts_out() {
+        assert_eq!(DirectMode::parse(None), DirectMode::Immediate);
+        assert_eq!(DirectMode::parse(Some("")), DirectMode::Immediate);
+        assert_eq!(DirectMode::parse(Some("immediate")), DirectMode::Immediate);
+        assert_eq!(DirectMode::parse(Some("later")), DirectMode::Immediate);
+        assert_eq!(DirectMode::parse(Some("queued")), DirectMode::Queued);
+        assert_eq!(DirectMode::parse(Some(" Queue ")), DirectMode::Queued);
+    }
+
+    #[test]
+    fn labels_round_trip_through_parse() {
+        for mode in [DirectMode::Immediate, DirectMode::Queued] {
+            assert_eq!(DirectMode::parse(Some(mode.label())), mode);
+        }
+    }
 }

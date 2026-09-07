@@ -98,8 +98,12 @@ pub(crate) fn command_states(repo: &str, now: i64) -> CmdStates {
         if target.as_deref() != Some(repo) {
             continue;
         }
-        let Some(action) = bn_core::wt_actions::all().iter().find(|a| a.job == *job) else {
-            continue;
+        // A job the roster does not know is one of the repo's own scripts, keyed the way its row
+        // is (`script:<name>`, see `commands::scripts`). Keyed rather than dropped so a script row
+        // can spin; the caller trims keys no row was drawn for.
+        let key = match bn_core::wt_actions::all().iter().find(|a| a.job == *job) {
+            Some(action) => action.id.to_string(),
+            None => super::commands::scripts::id(job),
         };
         let state = match entry.status {
             // `updated_at` is stamped when the entry is leased, so on a running entry it is the
@@ -110,7 +114,7 @@ pub(crate) fn command_states(repo: &str, now: i64) -> CmdStates {
             }
             _ => CmdState::Queued(held.get(&entry.id).cloned()),
         };
-        out.insert(action.id.to_string(), state);
+        out.insert(key, state);
     }
     out
 }

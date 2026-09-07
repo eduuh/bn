@@ -1,5 +1,9 @@
 //! CLI bridge between the durable core lease registry and tmux process/window liveness.
 
+/// The finished-occupant probe `bn dispatch` asks before refusing a same-branch pool slot.
+mod finished;
+pub(crate) use finished::only_finished_agents_in;
+
 use bn_core::agent::{
     agent_lease_registry_path, begin_agent_lease, load_agent_leases, reconcile_agent_leases,
     release_agent_lease, AgentLease, AgentLeaseAcquireMode, AgentLeaseBegin, AgentLeaseKey,
@@ -492,6 +496,10 @@ fn stamped_since(field: &str, now: i64) -> i64 {
 
 /// The pure half of [`harness_panes_in`], so the "is this pane an agent in this checkout?" rule is
 /// testable without a tmux server.
+///
+/// Test-only since #1324 moved the live path onto [`parse_harness_pane_rows`]: the wrapper kept the
+/// existing tests readable but had no non-test caller, and `-D warnings` refused to build `main`.
+#[cfg(test)]
 fn parse_harness_panes(output: &str, worktree: &Path, now: i64) -> Vec<Occupant> {
     parse_harness_pane_rows(output, worktree, now)
         .iter()
