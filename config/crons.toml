@@ -87,7 +87,7 @@ on_calendar = "*-*-* 0/6:00:00"
 persistent = true
 randomized_delay = "15m"
 network = true
-description = "bn — rebuild + reinstall the CLI when bn/main advances (never run a stale binary)"
+description = "bn — reinstall the CLI when bn/main advances: the publish-prod job when one resolves (source build, re-linked anchors), else install.sh --core (never run a stale binary)"
 
 [[cron]]
 job = "nightly-release"

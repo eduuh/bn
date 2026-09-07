@@ -56,7 +56,7 @@ they have to go find. Anchor on **`$TMUX_PANE`**, never on a bare `display-messa
 ```bash
 job=$(tmux split-window -d -t "$TMUX_PANE" -h -P -F '#{pane_id}' \
         -c ~/projects/worktree/bn/main \
-        './build.sh; echo "--- exited $? ---"; exec zsh')
+        'bn build build-to-local; echo "--- exited $? ---"; exec zsh')
 ```
 
 * `-t "$TMUX_PANE"` splits *your* pane, so the job lands in the window the user is
@@ -106,6 +106,33 @@ binary is installed. Pick one that becomes true only when the job really progres
 **5. Read the outcome from the pane**, then report what it says — including
 failure. Grep the whole scrollback (`-S -400`), not the last screen: an error that
 scrolled away still happened.
+
+## Builds and test runs — capture the outcome, do not scrape for it
+
+A build or a test suite is the long-running job you will run most, and it is the one you most want
+to *quote* afterwards: the failing test name, the compiler error, the pass count. The pane is for
+the user to watch; a log is what you read. Get both at once:
+
+```bash
+log=<scratchpad>/build.log
+tmux clear-history -t "$job"      # a rerun must not match the previous run's marker
+tmux send-keys -t "$job" \
+  "cargo build --release 2>&1 | tee $log; echo \"--- build exited \${pipestatus[1]} ---\"" Enter
+```
+
+* **`tee` to the scratchpad**, never `| tail`: the pane still streams, and afterwards you read the
+  log with `grep -E '^(error|test result)'` instead of paging through a capture.
+* **The build's exit code, not `tee`'s.** `$?` after a pipe belongs to `tee`. zsh has
+  `${pipestatus[1]}`, bash `${PIPESTATUS[0]}`; or run the pipeline under `set -o pipefail`.
+* **Wait on a marker the echoed command line cannot match.** `send-keys` prints your command into
+  the pane, `${pipestatus[1]}` and all — so poll for the *expanded* form, `exited [0-9]+ ---`, which
+  the typed line never satisfies.
+* **Never start a build with the hidden tool call "because it is only a build".** A release build
+  under load is ten minutes the user cannot see, cannot cancel, and cannot tell from a hang.
+  `run_in_background` on the tool call hides it just as well; it is not a substitute for the pane.
+* **bn itself:** from any bn worktree or pool slot, `bn build build-to-local` compiles that branch
+  into the shared cache and installs it as the live `bn` — that, in the pane, is how a bn change is
+  tried. Add `BN_SKIP_UI=1` for a Rust-only rebuild.
 
 ## Six ways this goes wrong
 

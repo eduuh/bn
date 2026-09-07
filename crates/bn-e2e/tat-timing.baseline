@@ -1,0 +1,18 @@
+# `bn tat` stage timings, in milliseconds — the best of three runs of a debug build in the
+# e2e sandbox (crates/bn-e2e/tests/tat_picker.rs). The lane fails when a stage exceeds
+# its line × 2 (floor 120ms). Regenerate after a deliberate cost change and commit:
+#   BN_E2E_TIMING_UPDATE=1 cargo test -p bn-e2e --test tat_picker -- --ignored --test-threads=1
+kill	30
+kill-missing	30
+list	30
+open-unknown	30
+preview	30
+preview-missing	30
+rmworktree-refused	20
+sublist	30
+subpreview-cmd	20
+subpreview-cmdsep	20
+subpreview-qset	30
+subpreview-window	30
+subpreview-worktree	40
+subtick	40

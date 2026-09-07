@@ -193,20 +193,21 @@ download_release() {
 # --from-build rather than wiring anything itself, so the anchors, layers, cron and MCP
 # registration below run in exactly one place however the binaries were obtained.
 install_built_binaries() {
-  local target_dir="${BN_INSTALL_TARGET_DIR:-$repo/target/bn-install}" bin
+  # build.sh exports the profile it compiled with; its default is Cargo.toml's `local`.
+  local target_dir="${BN_INSTALL_TARGET_DIR:-$repo/target/bn-install}/${BN_INSTALL_PROFILE:-local}" bin
   for bin in bn bn-web bn-mcp; do
-    if [ ! -x "$target_dir/release/$bin" ]; then
-      echo "error: $target_dir/release/$bin is missing." >&2
+    if [ ! -x "$target_dir/$bin" ]; then
+      echo "error: $target_dir/$bin is missing." >&2
       echo "       --from-build is internal; run ./build.sh to compile and install this checkout." >&2
       exit 1
     fi
   done
-  # Copy, don't symlink: a symlink into target/release breaks on `cargo clean`,
+  # Copy, don't symlink: a symlink into the target dir breaks on `cargo clean`,
   # silently bricking the live `bn`. Re-run ./build.sh after source changes to refresh.
   for bin in bn bn-web bn-mcp; do
-    atomic_install "$target_dir/release/$bin" "$bindir/$bin"
+    atomic_install "$target_dir/$bin" "$bindir/$bin"
   done
-  echo "Installed bn + bn-web + bn-mcp into $bindir from $target_dir/release (source build)."
+  echo "Installed bn + bn-web + bn-mcp into $bindir from $target_dir (source build)."
 }
 
 if [ "$from_build" = "1" ]; then
@@ -784,6 +785,81 @@ if "$bindir/bn" skills install >/dev/null 2>&1; then
   echo "Regenerated ~/.copilot/skills and ~/.claude/skills from bn skills (slash commands)"
 else
   echo "note: 'bn skills install' skipped/failed; native slash-command skills not refreshed" >&2
+fi
+
+# Upstream open-source skills (Agent Skills format) that cover what bn's own prompts do not:
+# plan interrogation, conversation handoff, merge-conflict resolution, git guardrails,
+# verify-before-done, and snapshot-based Playwright driving. `npx skills add -g` puts each under
+# ~/.agents/skills and symlinks it into ~/.claude/skills; Claude Code and Copilot CLI both read
+# those roots natively, so one install serves both harnesses. Best-effort: needs npx, and a
+# failed entry is reported, never fatal. Names must not collide with bn's own skills, because
+# `bn skills install` refuses to overwrite a skill it does not own. One `<owner/repo> <skill>` per
+# line. Set BN_SKIP_UPSTREAM_SKILLS=1 to skip.
+install_upstream_skills() {
+  local entries repo skill failed=""
+  entries="
+mattpocock/skills grill-me
+mattpocock/skills handoff
+mattpocock/skills resolving-merge-conflicts
+mattpocock/skills git-guardrails-claude-code
+obra/superpowers verification-before-completion
+microsoft/playwright-cli playwright-cli
+"
+  if [ "${BN_SKIP_UPSTREAM_SKILLS:-0}" = "1" ]; then
+    echo "Skipped upstream agent skills (BN_SKIP_UPSTREAM_SKILLS=1)."
+    return 0
+  fi
+  if ! command -v npx >/dev/null 2>&1; then
+    echo "note: npx not found; upstream agent skills not installed (install Node, re-run ./install.sh)." >&2
+    return 0
+  fi
+  echo "Installing upstream agent skills for Claude Code + Copilot CLI (npx skills add …)…"
+  while read -r repo skill; do
+    [ -n "$repo" ] || continue
+    if npx -y skills add "$repo" --skill "$skill" -g -a claude-code -a github-copilot -y </dev/null >/dev/null 2>&1 \
+       && [ -e "$HOME/.agents/skills/$skill" ]; then
+      echo "  ✓ $skill ($repo)"
+    else
+      echo "  ✗ $skill ($repo)" >&2
+      failed="$failed $skill"
+    fi
+  done <<EOF_SKILLS
+$entries
+EOF_SKILLS
+  if [ -n "$failed" ]; then
+    echo "warning: some upstream skills did not install:$failed" >&2
+    echo "         re-run: npx skills add <owner/repo> --skill <name> -g -a claude-code -a github-copilot -y" >&2
+  fi
+}
+install_upstream_skills
+
+# One global instructions file for both harnesses: config/AGENTS.md, read through the repo anchor
+# so it follows whichever bn build is live (link-build snapshots config/ into every build).
+# Copilot CLI reads ~/.copilot/copilot-instructions.md, so that becomes a symlink to it; Claude
+# Code reads ~/.claude/CLAUDE.md, which gets one idempotent `@` import line. A real
+# copilot-instructions.md the user wrote is never replaced.
+agents_md="$cfgdir/repo/config/AGENTS.md"
+if [ -f "$agents_md" ]; then
+  copilot_ci="$HOME/.copilot/copilot-instructions.md"
+  mkdir -p "$HOME/.copilot"
+  if [ -L "$copilot_ci" ] || [ ! -e "$copilot_ci" ]; then
+    ln -sfn "$agents_md" "$copilot_ci"
+    echo "Linked $copilot_ci -> $agents_md (Copilot CLI global instructions)"
+  else
+    echo "note: $copilot_ci is a regular file — not replaced; reference $agents_md from it by hand" >&2
+  fi
+  claude_md="$HOME/.claude/CLAUDE.md"
+  import_line="@$agents_md"
+  mkdir -p "$HOME/.claude"
+  [ -e "$claude_md" ] || : > "$claude_md"
+  if grep -qxF "$import_line" "$claude_md"; then
+    echo "Claude Code global CLAUDE.md already imports $agents_md"
+  else
+    printf '\n%s\n' "$import_line" >> "$claude_md"
+    echo "Added '$import_line' to $claude_md (Claude Code global instructions)"
+  fi
+else
+  echo "note: $agents_md missing — global agent instructions not linked" >&2
 fi
 
 # Review specialists (repo-scoped PR reviewers) are compiled to *native* Copilot/Claude custom

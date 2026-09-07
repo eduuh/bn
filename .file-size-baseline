@@ -25,7 +25,7 @@
 1146	crates/bn-cli/src/cmd/attn.rs
 1898	crates/bn-cli/src/cmd/dispatch.rs
 1818	crates/bn-cli/src/cmd/jobs.rs
-1589	crates/bn-cli/src/tat.rs
+1409	crates/bn-cli/src/tat.rs
 1358	crates/bn-cli/src/wt/merge.rs
 2060	crates/bn-cli/src/wt_pool.rs
 1400	crates/bn-core/src/daily.rs

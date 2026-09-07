@@ -16,6 +16,7 @@
 mod codespaces;
 mod commands;
 pub(crate) mod discovery;
+mod keys;
 mod paths;
 mod preview;
 mod queue_view;
@@ -28,11 +29,12 @@ use codespaces::{
 };
 use commands::{command_from_pick, Step};
 use discovery::{ordered_refs, remote_prs, remote_prs_fetch_blocking, spawn_remote_warm};
+use keys::{kill_from_line, release_pool, rm_worktree, warm_pool};
 use paths::{bare_repo_main_path, is_bare_repo, project_path, resolve_project_path};
 use preview::preview;
 use rows::build_sub_rows;
 
-use crate::proc::{tmux, tmux_command, tmux_ok, tmux_raw, tmux_run};
+use crate::proc::{tmux_command, tmux_ok, tmux_raw, tmux_run};
 use crate::wt;
 use bincode::Options;
 use bn_core::wt_actions::When;
@@ -849,23 +851,6 @@ fn build_list(roots: &Roots, refresh: bool) {
     }
 }
 
-// --- kill ------------------------------------------------------------------
-
-/// Kill `ref`'s session (passed via `{-1}`), unless it's the current one.
-fn kill_from_line(r: &str) {
-    if r.is_empty() {
-        return;
-    }
-    let sess = ref_session(r);
-    let current = tmux(&["display-message", "-p", "#S"]).unwrap_or_default();
-    if sess == current {
-        return;
-    }
-    if has_session(r) {
-        let _ = tmux_run(&["kill-session", "-t", &exact_session_target(&sess)]);
-    }
-}
-
 // --- dispatch --------------------------------------------------------------
 
 /// Does `<s>` look like a git remote URL we can clone?
@@ -994,7 +979,15 @@ fn resolve_and_open(cfg: &Config, roots: &Roots, sel: String, typed: bool) {
         goto_session(&ref_session(&sel));
         return;
     }
-    if typed && !is_bare_repo(roots, &sel) && !flat_git {
+    // Neither a bare repo nor a flat clone: nothing to open. A direct `bn tat <typo>` used to fall
+    // through to `open_project`, which created a tmux session named after the typo, rooted in a
+    // directory that does not exist, and recorded that path in zoxide. Say so instead; `hold()` so
+    // a typed query's message is read before the popup closes.
+    if !is_bare_repo(roots, &sel) && !flat_git {
+        eprintln!("No such project: {sel}");
+        if typed {
+            crate::picker::hold();
+        }
         return;
     }
     open_project(cfg, roots, &sel);
@@ -1128,8 +1121,11 @@ fn open_project_step(cfg: &Config, roots: &Roots, name: &str) -> Step {
     ensure_session(name, &start);
 
     // Build the rows once, in-process, for the initial paint; a post-action `reload()` re-runs the
-    // identical builder via `--pick-stage sublist` so the list refreshes in place.
-    let (rows, win_count, states) = build_sub_rows(cfg, roots, name, false);
+    // identical builder via `--pick-stage sublist` so the list refreshes in place. Identical means
+    // `refresh = true` here too: the worktree discovery cache is for the 700ms repaint (`subtick`),
+    // not for the open. Served from the cache, a worktree cut or removed in the last thirty seconds
+    // — exactly the one the person just acted on — was missing from, or still on, the first paint.
+    let (rows, win_count, states) = build_sub_rows(cfg, roots, name, true);
     // A quiet flat clone (≤ 1 window, no worktrees) just switches to its session.
     if !bare && win_count <= 1 {
         goto_session(&sess);
@@ -1138,9 +1134,9 @@ fn open_project_step(cfg: &Config, roots: &Roots, name: &str) -> Step {
     let worktree_dir = roots.worktree_dir(name);
 
     let header = if bare {
-        "Pick · type a branch · ctrl-o do to this row · ctrl-s do it when away · ctrl-d del · ctrl-w warm · ctrl-r release · ctrl-p pane"
+        "Pick · type a branch · ctrl-o do to this row · ctrl-s do it when away · ctrl-d del · ctrl-w warm · ctrl-r release · ctrl-p pane · Esc close"
     } else {
-        "Pick window/worktree (Esc: current)"
+        "Pick window/worktree (Esc: close)"
     };
 
     let exe = std::env::current_exe().unwrap_or_else(|_| "bn".into());
@@ -1201,8 +1197,9 @@ fn open_project_step(cfg: &Config, roots: &Roots, name: &str) -> Step {
         goto_session(&sess);
         return Step::Done;
     };
+    // Esc / ctrl-c closes the list and nothing else: it used to switch into the repo's session,
+    // so backing out of a list you opened by mistake landed you somewhere instead of nowhere.
     if out.status.code() == Some(130) {
-        goto_session(&sess);
         return Step::Done;
     }
     let text = String::from_utf8_lossy(&out.stdout);
@@ -1305,182 +1302,6 @@ fn prompt_branch(slot: &str) -> Option<String> {
         None
     } else {
         Some(t)
-    }
-}
-
-/// The guard for `ctrl-d` delete: an idle worktree row is only removable when it still exists, is
-/// clean, and has no unpushed commits. Returns `Err(reason)` (shown to the user) otherwise. Pure so
-/// it can be unit-tested without touching git.
-fn delete_block(kind: &str, exists: bool, dirty: usize, unpushed: u32) -> Result<(), String> {
-    if kind != "worktree" {
-        return Err(format!(
-            "ctrl-d deletes an idle worktree — a {} row can't be removed here",
-            if kind.is_empty() { "that" } else { kind }
-        ));
-    }
-    if !exists {
-        return Err("that worktree is already gone".into());
-    }
-    if dirty > 0 {
-        return Err(format!(
-            "{dirty} uncommitted change{} — commit or discard first",
-            if dirty == 1 { "" } else { "s" }
-        ));
-    }
-    if unpushed > 0 {
-        return Err(format!(
-            "{unpushed} unpushed commit{} — push or merge first",
-            if unpushed == 1 { "" } else { "s" }
-        ));
-    }
-    Ok(())
-}
-
-/// Count commits on the worktree's `HEAD` not yet on its remote, so `ctrl-d` won't silently drop
-/// unpushed work. Tries the configured upstream, then a same-named `origin/<branch>`, then the
-/// remote's default branch; returns 0 when no remote base resolves (a fresh local-only branch — the
-/// dirty guard still protects uncommitted work there).
-fn unpushed_commits(wt: &Path) -> u32 {
-    let count = |range: &str| {
-        crate::git::git_capture(&["rev-list", "--count", range], Some(wt), true)
-            .and_then(|s| s.trim().parse::<u32>().ok())
-    };
-    if let Some(n) = count("@{u}..HEAD") {
-        return n;
-    }
-    let branch = crate::git::git_capture(&["rev-parse", "--abbrev-ref", "HEAD"], Some(wt), true)
-        .unwrap_or_default();
-    if !branch.is_empty() && branch != "HEAD" {
-        let ob = format!("origin/{branch}");
-        if crate::git::git_capture(&["rev-parse", "--verify", "--quiet", &ob], Some(wt), true)
-            .is_some()
-        {
-            if let Some(n) = count(&format!("{ob}..HEAD")) {
-                return n;
-            }
-        }
-    }
-    if let Some(base) = crate::git::git_capture(
-        &["rev-parse", "--abbrev-ref", "origin/HEAD"],
-        Some(wt),
-        true,
-    ) {
-        if !base.is_empty() {
-            if let Some(n) = count(&format!("{base}..HEAD")) {
-                return n;
-            }
-        }
-    }
-    0
-}
-
-/// `ctrl-d` handler: remove the focused idle worktree after the [`delete_block`] guard clears. `arg`
-/// is fzf's `{1}~{2}` (`kind~payload`); only a `worktree` kind is removable. Refusals print a `✗`
-/// reason and `hold()` so the message survives the fzf `reload`.
-fn rm_worktree(cfg: &Config, roots: &Roots, project: &str, arg: &str) {
-    let (kind, payload) = arg.split_once('~').unwrap_or(("", arg));
-    let repo = ref_repo(project);
-    let wt_path = roots.worktree_dir(project).join(repo).join(payload);
-    let exists = wt_path.is_dir();
-    let wt_s = wt_path.to_string_lossy().to_string();
-    let dirty = if exists {
-        crate::wt::dirty_count(&wt_s)
-    } else {
-        0
-    };
-    let unpushed = if exists && dirty == 0 {
-        unpushed_commits(&wt_path)
-    } else {
-        0
-    };
-    if let Err(reason) = delete_block(kind, exists, dirty, unpushed) {
-        eprintln!("✗ {reason}");
-        crate::picker::hold();
-        return;
-    }
-    let Some(bare) = crate::wt::find_bare_repo(&wt_path) else {
-        eprintln!("✗ couldn't locate the bare repo for {repo}/{payload}");
-        crate::picker::hold();
-        return;
-    };
-    let ok = crate::wt::run_git(&[
-        "--git-dir",
-        &bare.to_string_lossy(),
-        "worktree",
-        "remove",
-        &wt_s,
-    ]);
-    if ok {
-        crate::wt::rmdir_if_empty_repo(&wt_path, &roots.worktree_dir(project));
-        let _ = bn_core::lifecycle::prune(cfg);
-        println!("✓ removed {repo}/{payload}");
-    } else {
-        eprintln!("✗ git refused to remove {repo}/{payload} (locked or raced dirty)");
-        crate::picker::hold();
-    }
-}
-
-/// `ctrl-w` handler: warm the focused repo's pool up to its configured size via `bn wt pool warm`
-/// (which, inside tmux, spawns a `pool-warm` window to build in — so this returns promptly and the
-/// picker can reload). Refuses only the refs pools don't apply to: tagged and `--root win` ones.
-fn warm_pool(roots: &Roots, project: &str) {
-    let repo = ref_repo(project);
-    if !pool_eligible(roots, project) {
-        eprintln!("✗ {repo} takes the cold path — pools are a primary-root, untagged concept");
-        crate::picker::hold();
-        return;
-    }
-    let exe = std::env::current_exe().unwrap_or_else(|_| "bn".into());
-    let ok = Command::new(&exe)
-        .args(["wt", "pool", "warm", "--repo", repo])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if !ok {
-        eprintln!("✗ pool warm failed for {repo}");
-        crate::picker::hold();
-    }
-}
-
-/// `ctrl-r` handler: release the focused *leased* slot back to the warm pool. `arg` is fzf's
-/// `{1}~{2}` (`kind~branch`); only a `poolbranch` row is releasable. Resolves the branch to its
-/// slot via [`bn_core::pool::pool_status`], then runs `bn wt pool return <slot-path>` *without*
-/// `--force`, so an uncommitted slot is refused (the message + `hold()` survive the reload).
-fn release_pool(cfg: &Config, roots: &Roots, project: &str, arg: &str) {
-    let (kind, branch) = arg.split_once('~').unwrap_or(("", arg));
-    if kind != "poolbranch" {
-        eprintln!("✗ ctrl-r releases a leased pool slot — focus a leased (◍) row");
-        crate::picker::hold();
-        return;
-    }
-    let repo = ref_repo(project);
-    let status = bn_core::pool::pool_status(cfg, repo);
-    let Some(slot) = status
-        .slots
-        .iter()
-        .find(|s| s.branch.as_deref() == Some(branch))
-    else {
-        eprintln!("✗ no leased slot found for {branch}");
-        crate::picker::hold();
-        return;
-    };
-    let slot_path = roots
-        .worktree_dir(project)
-        .join(repo)
-        .join("_pool")
-        .join(slot.n.to_string());
-    let exe = std::env::current_exe().unwrap_or_else(|_| "bn".into());
-    let ok = Command::new(&exe)
-        .args(["wt", "pool", "return", &slot_path.to_string_lossy()])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if !ok {
-        eprintln!(
-            "✗ release refused for {branch} — commit/stash, or `bn wt pool return {} --force`",
-            slot.n
-        );
-        crate::picker::hold();
     }
 }
 

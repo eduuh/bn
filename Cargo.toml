@@ -76,7 +76,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # version is the workspace's decision.
 base64 = "0.22"
 
-# Optimize source installs (`cargo build --release`, Codespaces):
+# The published binary (`cargo build --release`, and [profile.dist] below):
 # fat LTO + single codegen unit for a tight, fast-starting CLI; strip symbols and abort on
 # panic to roughly halve binary size. Released artifacts inherit this via [profile.dist].
 [profile.release]
@@ -102,3 +102,15 @@ lto = "thin"
 # the crate split is for.
 [profile.dev]
 debug = "line-tables-only"
+
+# Local installs (`bn build build-to-local` / `publish-prod`, and `./build.sh` by default). Same
+# optimisation level as release, but no cross-crate LTO, 16 codegen units and incremental
+# compilation: the release profile's fat LTO + one codegen unit serialises the whole ~175k-line
+# workspace through one LLVM thread at every install, which is the right trade for a published
+# binary and the wrong one for a build you redo after each commit. Binary is a few MB larger and
+# starts just as fast. `BN_INSTALL_PROFILE=release ./build.sh` still produces the tight one.
+[profile.local]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true

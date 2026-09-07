@@ -3,7 +3,10 @@
 //!
 //! Split out of `jobs.rs` (at the 1000-line ratchet) when the guard below was added. The job
 //! itself is unchanged in shape: fast-forward `bn/main`, and when HEAD has moved past the last
-//! install, delegate to `install.sh --core`, which downloads main's published release binaries.
+//! install, delegate to whatever installs bn on this machine. That is the `publish-prod` job
+//! when one resolves for bn/main (a script that compiles the checkout into the prod build dir
+//! and re-links every anchor, so nothing ends up pointing at a checkout), else `install.sh
+//! --core`, which downloads main's published release binaries and anchors at the checkout.
 //!
 //! The guard exists because "main moved" and "there is something newer to install" stopped being
 //! the same statement. install.sh installs the *published* release, and the release is built by a
@@ -63,19 +66,41 @@ fn resolve_bn_main_worktree() -> String {
         .unwrap_or_else(|| format!("{home}/projects/worktree/bn/main"))
 }
 
-/// `self-update` — keep the installed `bn` in lock-step with `bn/main` by re-running the repo's own
-/// `install.sh` whenever main advances. install.sh is the single source of truth for how bn is
-/// installed and wired (binaries, the `~/.config/bn` anchors, cron registration,
-/// MCP registration), so we delegate to it rather than reimplementing the download here — that
-/// would drift on a new cron/MCP/anchor a fresh main needs. Cheap to run often: it fast-forwards
-/// main and only re-installs when HEAD actually moved past the last install (tracked in a stamp
-/// file). No Rust toolchain is needed: install.sh downloads main's published release binaries, so
-/// this runs on a box that has never seen cargo. Native port of `jobs/self-update.sh`: the git
-/// fan-out and stamp bookkeeping run in-process; only the final install+wire step still delegates
-/// to `install.sh --core` (which stays shell — it bootstraps bn before bn exists). `--core` skips
-/// the tmux layer, whose helpers are symlinks into this worktree and so already track main without
-/// re-linking.
-pub(crate) fn job_self_update(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
+/// How the update is applied once main has moved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Updater {
+    /// A `publish-prod` job script resolved for bn/main (scope label, path). It compiles the
+    /// main checkout into the prod build dir and re-links the anchors there, so the release
+    /// guard does not apply: it always builds HEAD, never something older.
+    Job(String, PathBuf),
+    /// The repo's own `install.sh --core`: downloads main's published release.
+    Installer(PathBuf),
+}
+
+/// Prefer the machine's `publish-prod` job over `install.sh` when one resolves. Pure so the
+/// choice is unit-testable; the lookup itself happens in the caller.
+fn updater(job: Option<(String, PathBuf)>, main_wt: &Path) -> Updater {
+    match job {
+        Some((scope, path)) => Updater::Job(scope, path),
+        None => Updater::Installer(main_wt.join("install.sh")),
+    }
+}
+
+/// `self-update` — keep the installed `bn` in lock-step with `bn/main` whenever main advances.
+/// Cheap to run often: it fast-forwards main and only re-installs when HEAD actually moved past
+/// the last install (tracked in a stamp file).
+///
+/// The install step is delegated, never reimplemented here. When a `publish-prod` job resolves
+/// for bn/main (`jobs/bn/publish-prod.sh` in the notes tree, or a repo/global tier), it runs
+/// from the main worktree exactly as `bn build publish-prod` would: it compiles the checkout
+/// into the prod build dir and re-points every anchor (`~/.bn/config/{bn,repo,jobs,agents,
+/// crons.toml}`, `~/.tmux.conf`) at that self-contained build. Otherwise the repo's own
+/// `install.sh --core` remains the single source of truth: it downloads main's published release
+/// binaries and wires the anchors at the checkout, so a box that has never seen cargo still
+/// updates. Native port of `jobs/self-update.sh`: the git fan-out and stamp bookkeeping run
+/// in-process; only the final install+wire step is shell. `--core` skips the tmux layer, whose
+/// helpers are symlinks into the worktree and so already track main without re-linking.
+pub(crate) fn job_self_update(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     let home = wt::home_str();
 
     let bindir = std::env::var_os("BN_BIN_DIR")
@@ -129,30 +154,50 @@ pub(crate) fn job_self_update(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
         return 0;
     }
 
-    // Single source of truth: install.sh reinstalls the release binaries and re-wires everything.
-    // It is not a git/gh/tmux binary, so spawning it directly is fine (the subprocess guard only
-    // covers those).
-    if let Some(why) = release_not_newer(&main_wt, &bindir.join("bn")) {
-        native_job_line(&format!("self-update: {why} — leaving the installed bn alone"), false);
-        return 0;
-    }
-
-    let installer = Path::new(&main_wt).join("install.sh");
+    let bn_main = Resolved {
+        repo: "bn".to_string(),
+        branch: "main".to_string(),
+    };
+    let job = resolver::job_script(cfg, Some(&bn_main), "publish-prod")
+        .map(|(scope, path)| (scope.label().to_string(), path));
+    let (label, mut cmd) = match updater(job, Path::new(&main_wt)) {
+        Updater::Job(scope, script) => {
+            // Same invocation as `bn build publish-prod` from the main worktree: /bin/sh, never
+            // the shebang, and the cron runner's PATH so cargo/npm/git resolve without a login
+            // shell. No release guard: the job compiles HEAD, so it cannot install something older.
+            let mut c = std::process::Command::new("/bin/sh");
+            c.arg(&script)
+                .current_dir(&main_wt)
+                .env("PATH", crate::cmd::cron::job_path());
+            (format!("publish-prod ({scope}) {}", script.display()), c)
+        }
+        Updater::Installer(installer) => {
+            // install.sh reinstalls the *published* release, which can lag main: refuse to put an
+            // older build over the installed one. It is not a git/gh/tmux binary, so spawning it
+            // directly is fine (the subprocess guard only covers those).
+            if let Some(why) = release_not_newer(&main_wt, &bindir.join("bn")) {
+                native_job_line(
+                    &format!("self-update: {why} — leaving the installed bn alone"),
+                    false,
+                );
+                return 0;
+            }
+            let mut c = std::process::Command::new(&installer);
+            c.arg("--core").current_dir(&main_wt);
+            (format!("{} --core", installer.display()), c)
+        }
+    };
     // Capture rather than inherit: a cron has no terminal, so inherited output goes nowhere and a
     // failed build leaves `bn cron`/`bn doctor` showing a bare "FAIL" with no cause. Capturing lets
     // the compiler error ride into the run's `output_tail`, which is the only durable record of why
     // an unattended update stopped keeping `bn` in lock-step with main.
-    match std::process::Command::new(&installer)
-        .arg("--core")
-        .current_dir(&main_wt)
-        .output()
-    {
+    match cmd.output() {
         Ok(out) if out.status.success() => {}
         Ok(out) => {
             let mut combined = String::from_utf8_lossy(&out.stderr).into_owned();
             combined.push_str(&String::from_utf8_lossy(&out.stdout));
             native_job_line(
-                &format!("self-update: install.sh --core failed ({})", out.status),
+                &format!("self-update: {label} failed ({})", out.status),
                 true,
             );
             // The last few lines carry the actual installer error.
@@ -162,17 +207,14 @@ pub(crate) fn job_self_update(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
             return out.status.code().unwrap_or(1);
         }
         Err(e) => {
-            native_job_line(
-                &format!("self-update: cannot run {}: {e}", installer.display()),
-                true,
-            );
+            native_job_line(&format!("self-update: cannot run {label}: {e}"), true);
             return 1;
         }
     }
 
     let _ = stamp.parent().map(std::fs::create_dir_all);
     let _ = std::fs::write(&stamp, format!("{head}\n"));
-    native_job_line(&format!("self-update: ran install.sh --core @ {head}"), false);
+    native_job_line(&format!("self-update: ran {label} @ {head}"), false);
     crate::cmd::self_update_check::verify(&bindir.join("bn"))
 }
 
@@ -267,6 +309,20 @@ fn parse_release_sha(name: &str) -> Option<String> {
 #[cfg(test)]
 mod guard_tests {
     use super::*;
+
+    #[test]
+    fn publish_prod_job_wins_over_install_sh() {
+        let main = Path::new("/wt/bn/main");
+        let job = Some(("repo".to_string(), PathBuf::from("/notes/jobs/bn/publish-prod.sh")));
+        assert_eq!(
+            updater(job, main),
+            Updater::Job("repo".to_string(), PathBuf::from("/notes/jobs/bn/publish-prod.sh"))
+        );
+        assert_eq!(
+            updater(None, main),
+            Updater::Installer(PathBuf::from("/wt/bn/main/install.sh"))
+        );
+    }
 
     #[test]
     fn version_and_release_names_yield_their_shas() {
