@@ -406,7 +406,7 @@ pub(crate) enum CmdPlanning {
     },
     /// List open todos across all branches.
     Todo,
-    /// The task list — one global store for every repo (`<personal_root>/tasks.txt`, todo.txt
+    /// The task list — one global store for every repo (`<work_root>/tasks.txt`, todo.txt
     /// format). Bare `bn task` shows what's actionable today: work dated today or earlier, plus
     /// anything unscheduled. `--all` is the whole backlog; `--repo .` (or a name) narrows to one
     /// repo. No git repo needed — it works from anywhere. Distinct from `bn todo` (the
@@ -901,7 +901,7 @@ pub(crate) enum CmdMisc {
     /// Bare `bn links` opens the fzf picker, ranked by how often you actually use each link (and
     /// with the current repo's links first); `bn links <query>` skips the picker and opens the one
     /// match. `bn links add <url>` stores one, `bn links capture` harvests the note's PR and work
-    /// item. Stored cross-machine as `<personal_root>/links.md`, synced with your notes.
+    /// item. Stored cross-machine as `<work_root>/links.md`, synced with your notes.
     #[command(args_conflicts_with_subcommands = true)]
     Links {
         #[command(subcommand)]
@@ -912,7 +912,7 @@ pub(crate) enum CmdMisc {
     /// Reusable **reference** docs, in two scopes. Without `--repo` (#623): per-topic coding
     /// standards / preferences that shape how agents write code and how reviews check diffs — the
     /// sibling of `skills` (reusable *workflow* docs) for reusable *standards*, stored
-    /// cross-machine as `<personal_root>/references/<name>.md`. With `--repo`: this repo's
+    /// cross-machine as `<work_root>/references/<name>.md`. With `--repo`: this repo's
     /// **reference notes** — what past sessions discovered about it (how it builds, where the
     /// seams are, which failures mislead), stored beside its branch notes as
     /// `<notes>/<machine>/<repo>/reference/<name>.md` and outliving any one branch.

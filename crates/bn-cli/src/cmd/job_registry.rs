@@ -39,6 +39,7 @@ pub(crate) fn native_job(job: &str) -> Option<NativeJob> {
         "self-update" => Some(crate::cmd::self_update::job_self_update),
         "tools-reconcile" => Some(job_tools_reconcile),
         "tmux-reconcile" => Some(crate::cmd::tmux_reconcile::job_tmux_reconcile),
+        "keep-warm" => Some(crate::cmd::keep_warm::job_keep_warm),
         "pool-warm" => Some(crate::wt_pool::job_pool_warm),
         // The worktree-picker verbs (`bn_core::wt_actions`). Each is a queueable name for work
         // that already existed as a subcommand — which is what lets a picker row show its progress.

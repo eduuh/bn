@@ -214,6 +214,38 @@ fn deliver_via_keys(cfg: &Config, target: &str, msg: &str) -> (bool, bool) {
     (confirmed, pasted)
 }
 
+/// Refuse to type at an agent sitting on a **dialog**, and exit.
+///
+/// Pasting prose at a numbered menu is how a stray character becomes a menu selection nobody chose —
+/// and the message would be swallowed by the prompt rather than read. The refusal names the options
+/// and points at `bn agent answer`. `verb` is the `bn agent <verb>` being refused; it names both the
+/// human prefix and the `agent_<verb>` JSON envelope so `send` and `msg` report identically.
+fn refuse_if_dialog(cfg: &Config, verb: &str, target: &str, as_json: bool) {
+    let Some(prompt) = super::read_prompt(cfg, target, bn_core::agent::PROMPT_SCAN_LINES) else {
+        return;
+    };
+    let opts = prompt
+        .options
+        .iter()
+        .map(|o| format!("{}. {}", o.number, o.label))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let msg = format!(
+        "{target} is waiting on a dialog ({}) — answer it with `bn agent answer {target}`, \
+         not a message. {} Options: {opts}",
+        prompt.kind.label(),
+        prompt.question
+    );
+    if as_json {
+        let mut env = Envelope::failure(format!("agent_{verb}"), "prompt_pending", &msg);
+        env.data = serde_json::json!({ "target": target, "prompt": prompt });
+        println!("{}", env.to_json());
+    } else {
+        eprintln!("bn agent {verb}: {msg}");
+    }
+    std::process::exit(1);
+}
+
 /// Send a message to a running agent.
 ///
 /// `--channel auto` (the default) picks from the pane: a target with a live tmux window is steered
@@ -237,28 +269,7 @@ pub(crate) fn emit_agent_send(
     // Guard the dialog case before anything is sent. `--channel resume` is exempt: a resume turn is
     // a separate session that never touches the blocked pane, so it cannot mis-answer the menu.
     if channel != SteerChannel::Resume {
-        if let Some(prompt) = super::read_prompt(cfg, target, bn_core::agent::PROMPT_SCAN_LINES) {
-            let opts = prompt
-                .options
-                .iter()
-                .map(|o| format!("{}. {}", o.number, o.label))
-                .collect::<Vec<_>>()
-                .join("; ");
-            let msg = format!(
-                "{target} is waiting on a dialog ({}) — answer it with `bn agent answer {target}`, \
-                 not a message. {} Options: {opts}",
-                prompt.kind.label(),
-                prompt.question
-            );
-            if as_json {
-                let mut env = Envelope::failure("agent_send", "prompt_pending", &msg);
-                env.data = serde_json::json!({ "target": target, "prompt": prompt });
-                println!("{}", env.to_json());
-            } else {
-                eprintln!("bn agent send: {msg}");
-            }
-            std::process::exit(1);
-        }
+        refuse_if_dialog(cfg, "send", target, as_json);
     }
 
     let keys = choose_channel(cfg, target, channel) == SteerChannel::Keys;
@@ -376,5 +387,191 @@ pub(crate) fn emit_agent_send(
         fail(&format!(
             "bn agent send: pasted into '{target}' but could not confirm submission (the TUI may have eaten the Enter); no session id recorded to escalate to --resume"
         ));
+    }
+}
+
+/// The line a peer message is delivered as. One line on purpose: no steer has ever pasted an
+/// embedded newline, so a multi-line paste is unverified against either TUI. The sender's
+/// `repo:branch` is stated up front and the reply command is spelled out, so the receiving agent
+/// can answer without any store telling it who asked.
+pub(crate) fn peer_envelope(sender: &str, text: &str) -> String {
+    format!(
+        "[bn msg from {sender}] {} — reply: bn agent msg {sender} \"<your answer>\"",
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    )
+}
+
+/// `repo:branch` as the tiered join compares it: repo case-folded, branch slashes dashed — the same
+/// normalisation the resolver applies, so `bn:feat/x` and `bn:feat-x` name one agent.
+fn normalize_target(target: &str) -> String {
+    match target.split_once(':') {
+        Some((repo, branch)) => {
+            format!("{}:{}", repo.to_ascii_lowercase(), branch.replace('/', "-"))
+        }
+        None => target.to_ascii_lowercase(),
+    }
+}
+
+/// The validation `bn agent msg` runs before touching tmux. Pure so the refusals are testable:
+/// `Err((code, message))` is the failure envelope, `Ok(sender)` the resolved sender target.
+fn validate_msg(target: &str, sender: Option<&str>) -> Result<String, (&'static str, String)> {
+    if !target.contains(':') || target.starts_with(':') || target.ends_with(':') {
+        return Err((
+            "invalid_target",
+            format!("'{target}' is not a repo:branch target (see `bn agent live`)"),
+        ));
+    }
+    let sender = sender.ok_or_else(|| {
+        (
+            "no_sender_context",
+            "not inside a git worktree — pass --from <repo:branch>".to_string(),
+        )
+    })?;
+    if !sender.contains(':') || sender.starts_with(':') || sender.ends_with(':') {
+        return Err((
+            "invalid_sender",
+            format!("--from '{sender}' is not a repo:branch target"),
+        ));
+    }
+    if normalize_target(target) == normalize_target(sender) {
+        return Err((
+            "self_target",
+            format!("{target} is this agent — a message to yourself would land as your own next prompt"),
+        ));
+    }
+    Ok(sender.to_string())
+}
+
+fn fail_msg(code: &str, msg: &str, as_json: bool) -> ! {
+    if as_json {
+        println!("{}", Envelope::failure("agent_msg", code, msg).to_json());
+    } else {
+        eprintln!("bn agent msg: {msg}");
+    }
+    std::process::exit(1);
+}
+
+/// Message another live agent, peer to peer: `bn agent msg <repo:branch> "<text>"`.
+///
+/// Where `bn agent send` is a human (or the dashboard) steering an agent, this is one agent asking
+/// another for something — so the sender's own `repo:branch` rides in the delivered line, and the
+/// reply is just another `msg` back. The text lands in the target's live pane as its next prompt;
+/// a target mid-turn queues it and reads it when the turn ends.
+///
+/// Live-only, by design. There is no `-p --resume` fallback: that forks a headless turn the session
+/// on screen never sees, which for two agents talking is a phantom conversation. A target with no
+/// live window is refused instead, and `bn agent live` says who can be reached.
+pub(crate) fn emit_agent_msg(
+    cfg: &Config,
+    target: &str,
+    text: &str,
+    from: Option<&str>,
+    as_json: bool,
+) {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let resolved = bn_core::resolver::resolve(cfg, &cwd)
+        .ok()
+        .map(|ctx| format!("{}:{}", ctx.repo, ctx.branch));
+    let sender = match validate_msg(target, from.or(resolved.as_deref())) {
+        Ok(sender) => sender,
+        Err((code, msg)) => fail_msg(code, &msg, as_json),
+    };
+    refuse_if_dialog(cfg, "msg", target, as_json);
+    if !has_live_window(cfg, target) {
+        fail_msg(
+            "no_live_agent",
+            &format!("{target} has no live agent window — `bn agent live` lists who can be reached"),
+            as_json,
+        );
+    }
+
+    // Same verification caveat as `send`: on a pane that was already working, "a spinner is up"
+    // proves nothing, so an unconfirmed submit there is a *queued* message, not a lost one.
+    let was_working =
+        super::pane_state(cfg, target) == Some(bn_core::orchestrate::PaneState::Working);
+    let (confirmed, pasted) = deliver_via_keys(cfg, target, &peer_envelope(&sender, text));
+    let queued = was_working && pasted;
+    let delivered = confirmed || queued;
+
+    let mut fields = serde_json::Map::new();
+    fields.insert("from".into(), sender.clone().into());
+    fields.insert("to".into(), target.into());
+    fields.insert("text".into(), text.into());
+    fields.insert("delivered".into(), delivered.into());
+    fields.insert("confirmed".into(), confirmed.into());
+    fields.insert("queued".into(), queued.into());
+    let _ = bn_core::events::append("agent_msg", fields);
+
+    if as_json {
+        let data = serde_json::json!({
+            "from": sender, "to": target, "text": text,
+            "delivered": delivered, "pasted": pasted, "confirmed": confirmed, "queued": queued,
+        });
+        let env = if delivered {
+            Envelope::success("agent_msg", data)
+        } else if !pasted {
+            Envelope::failure("agent_msg", "send_failed", "no such tmux window, or tmux absent")
+        } else {
+            Envelope::failure(
+                "agent_msg",
+                "unconfirmed_submit",
+                "pasted into the input box but could not confirm submission (the TUI may have eaten the Enter)",
+            )
+        };
+        println!("{}", env.to_json());
+    } else if queued {
+        println!("→ {target} (queued): {text}");
+        println!("  the agent is mid-turn — it will read this when the turn ends");
+    } else if confirmed {
+        println!("→ {target}: {text}");
+    } else if !pasted {
+        fail_msg("send_failed", &format!("couldn't paste into '{target}' (no tmux window)"), as_json);
+    } else {
+        fail_msg(
+            "unconfirmed_submit",
+            &format!("pasted into '{target}' but could not confirm submission (the TUI may have eaten the Enter)"),
+            as_json,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn envelope_names_sender_and_reply_command_on_one_line() {
+        let line = peer_envelope("bn:feat-a", "please bump the schema");
+        assert_eq!(
+            line,
+            "[bn msg from bn:feat-a] please bump the schema — reply: bn agent msg bn:feat-a \"<your answer>\""
+        );
+        assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn envelope_flattens_multiline_text() {
+        let line = peer_envelope("bn:a", "first line\n  second line\n");
+        assert!(!line.contains('\n'));
+        assert!(line.contains("first line second line — reply:"));
+    }
+
+    #[test]
+    fn validate_accepts_a_distinct_peer() {
+        assert_eq!(validate_msg("bn:feat-b", Some("bn:feat-a")).unwrap(), "bn:feat-a");
+    }
+
+    #[test]
+    fn validate_refuses_self_after_normalisation() {
+        let err = validate_msg("bn:feat-a", Some("BN:feat/a")).unwrap_err();
+        assert_eq!(err.0, "self_target");
+    }
+
+    #[test]
+    fn validate_refuses_missing_sender_and_bad_shapes() {
+        assert_eq!(validate_msg("bn:feat-b", None).unwrap_err().0, "no_sender_context");
+        assert_eq!(validate_msg("feat-b", Some("bn:a")).unwrap_err().0, "invalid_target");
+        assert_eq!(validate_msg("bn:", Some("bn:a")).unwrap_err().0, "invalid_target");
+        assert_eq!(validate_msg("bn:b", Some("nocolon")).unwrap_err().0, "invalid_sender");
     }
 }

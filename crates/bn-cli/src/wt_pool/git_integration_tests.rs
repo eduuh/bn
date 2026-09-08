@@ -225,6 +225,71 @@ fn warm_reset_discards_tracked_but_keeps_ignored_deps() {
     assert_eq!(head_ref(&slot), "HEAD");
 }
 
+/// The reset must land on the base even when an untracked file sits where the base now puts a
+/// tracked one. `switch --discard-changes` refuses that ("would be overwritten by merge") and
+/// leaves the slot on its old commit with every tracked edit intact — which is how the BigMono slots
+/// stayed dirty through every warm and every self-healing lease after the incident.
+#[test]
+fn warm_reset_overwrites_an_untracked_file_the_base_now_tracks() {
+    let _env = bn_core::test_support::env_lock();
+    let (tmp, bare) = mk_bare();
+    let slot = tmp.path().join("slot2");
+    let slot_s = slot.to_string_lossy().to_string();
+    assert!(add_detached_slot(&bare, &slot_s));
+
+    // main gains `change.json` after the slot was cut…
+    let other = tmp.path().join("other");
+    let other_s = other.to_string_lossy().to_string();
+    assert!(git(&[
+        "--git-dir",
+        &bare,
+        "worktree",
+        "add",
+        &other_s,
+        "main"
+    ]));
+    std::fs::write(other.join("change.json"), "upstream\n").unwrap();
+    std::fs::write(other.join("a.txt"), "upstream\n").unwrap();
+    assert!(git(&["-C", &other_s, "add", "-A"]));
+    assert!(git(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "-C",
+        &other_s,
+        "commit",
+        "-qm",
+        "advance"
+    ]));
+    assert!(git(&[
+        "--git-dir",
+        &bare,
+        "worktree",
+        "remove",
+        "--force",
+        &other_s
+    ]));
+
+    // …while the slot holds its own untracked `change.json` and a tracked edit.
+    std::fs::write(slot.join("change.json"), "leftover\n").unwrap();
+    std::fs::write(slot.join("a.txt"), "DIRTY\n").unwrap();
+
+    warm_reset(&slot_s, &bare);
+
+    assert_eq!(head_ref(&slot), "HEAD");
+    assert_eq!(
+        std::fs::read_to_string(slot.join("change.json")).unwrap(),
+        "upstream\n",
+        "the untracked file in the way is replaced by the base's tracked one"
+    );
+    assert_eq!(
+        std::fs::read_to_string(slot.join("a.txt")).unwrap(),
+        "upstream\n"
+    );
+    assert_eq!(wt::dirty_count(&slot_s), 0, "the slot is clean at the base");
+}
+
 #[test]
 fn direct_open_leases_a_configured_warm_slot_and_never_spills_cold() {
     let _g = bn_core::test_support::env_lock();

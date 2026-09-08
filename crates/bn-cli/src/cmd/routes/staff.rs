@@ -64,7 +64,11 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
                 println!("bn run: skipping '{job}' — already ran successfully today (--if-stale)");
                 std::process::exit(0);
             }
-            let ctx = target_ctx(cfg, repo, branch);
+            let ctx = if job == "keep-warm" {
+                crate::cmd::keep_warm::run_target_ctx(cfg, repo, branch)
+            } else {
+                target_ctx(cfg, repo, branch)
+            };
             std::process::exit(run_job_now(cfg, ctx.as_ref(), &job, now));
         }
         CmdStaff::Machine { action } => match action {

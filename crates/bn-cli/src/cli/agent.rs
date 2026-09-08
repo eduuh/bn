@@ -150,6 +150,21 @@ pub(crate) enum AgentCmd {
         #[arg(long)]
         detach: bool,
     },
+    /// Message another LIVE agent, peer to peer — one agent asking another for something, and the
+    /// reply is just another `msg` back. Your own `repo:branch` (from the cwd, or `--from`) rides in
+    /// the delivered line as `[bn msg from <repo:branch>] …`, so the receiver knows who asked and how
+    /// to answer. The text lands in the target's live pane as its next prompt; a target mid-turn
+    /// queues it. Live-only: a target with no window is refused (never a headless `--resume` turn) —
+    /// `bn agent live` lists who can be reached. bn agent msg <repo:branch> "<text>".
+    Msg {
+        /// `repo:branch` of the agent to message (the `target` column of `bn agent live`).
+        target: String,
+        /// What to ask or answer. Keep it to one message; a reply comes back the same way.
+        text: String,
+        /// Who the message is from, as `repo:branch`. Defaults to the current worktree's.
+        #[arg(long, value_name = "REPO:BRANCH")]
+        from: Option<String>,
+    },
     /// Kill a running agent: its process tree, its tmux window, its agent lease and its warm pool
     /// slot (`repo:branch`, the `target` from `bn agent live`). The hard stop the web dashboard's
     /// kill button and the orchestrator's give-up path call — it genuinely frees the slot, rather

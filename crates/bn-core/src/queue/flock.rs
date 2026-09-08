@@ -92,6 +92,39 @@ pub fn try_lock(_file: &File) -> FlockOutcome {
     FlockOutcome::Failed("advisory file locking is unavailable on this platform".to_string())
 }
 
+/// Take an exclusive `flock` on `file`, **waiting** for any current holder to let go.
+///
+/// The blocking sibling of [`try_lock`], for a caller whose only correct answer to contention is
+/// to wait: the pool's per-slot lock, where a second process about to mutate the same checkout
+/// gains nothing by giving up and everything by going second. Never returns
+/// [`FlockOutcome::Held`].
+#[cfg(unix)]
+#[allow(
+    unsafe_code,
+    reason = "libc::flock is the portable advisory whole-file lock; the fd is owned by `file` and \
+              valid for the call"
+)]
+pub fn lock(file: &File) -> FlockOutcome {
+    use std::os::unix::io::AsRawFd;
+    loop {
+        // SAFETY: as in `try_lock` — `file` owns a valid descriptor for the call's duration.
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        if rc == 0 {
+            return FlockOutcome::Acquired;
+        }
+        let err = std::io::Error::last_os_error();
+        return match err.raw_os_error() {
+            Some(code) if code == libc::EINTR => continue,
+            _ => FlockOutcome::Failed(err.to_string()),
+        };
+    }
+}
+
+#[cfg(not(unix))]
+pub fn lock(_file: &File) -> FlockOutcome {
+    FlockOutcome::Failed("advisory file locking is unavailable on this platform".to_string())
+}
+
 /// Write the holding pid into the lock file, replacing whatever a previous holder left.
 ///
 /// Called only once the lock is ours, so the file always names its actual holder.

@@ -195,23 +195,29 @@ fn release_slot_core(cfg: &Config, worktree: &Path, policy: ReleasePolicy) -> Sl
             holder: "tmux pane rooted in the slot".to_string(),
         };
     }
+    // One status per slot, and its answer is reused by the reset below: a probe that refuses a
+    // dirty slot has also just listed the untracked paths a clean one needs removed (none).
+    let mut probed: BTreeMap<u32, Vec<String>> = BTreeMap::new();
     if !policy.force {
-        if let Some((dirty_slot, dirty)) = group.iter().find_map(|slot_n| {
-            let dirty = wt::dirty_count(&slot_path(&pdir, *slot_n).to_string_lossy());
-            (dirty > 0).then_some((*slot_n, dirty))
-        }) {
-            return SlotRelease::Dirty {
-                repo,
-                slot: dirty_slot,
-                dirty,
-            };
+        for slot_n in &group {
+            let slot_s = slot_path(&pdir, *slot_n).to_string_lossy().to_string();
+            let files = wt::dirty_files(&slot_s);
+            if !files.is_empty() {
+                return SlotRelease::Dirty {
+                    repo,
+                    slot: *slot_n,
+                    dirty: files.len(),
+                };
+            }
+            probed.insert(*slot_n, files);
         }
     }
     let branch = lease.map(|l| l.branch).unwrap_or_default();
     for slot_n in &group {
-        warm_reset(
+        warm_reset_with(
             &slot_path(&pdir, *slot_n).to_string_lossy(),
             &bare.to_string_lossy(),
+            probed.remove(slot_n),
         );
     }
     leases.slots.remove(&owner);

@@ -427,6 +427,14 @@ pub(crate) fn job_commit_notes(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     let host = cfg.machine();
     let stamp = bn_core::util::now_stamp();
 
+    // Person-scoped stores that predate the work-root layout may still be sitting under
+    // `personal_root`. Resolve them once up front so the first sync after upgrade moves them into
+    // the git-backed notes root before we inspect what needs committing.
+    let _ = cfg.tasks_file();
+    let _ = cfg.tasks_dir();
+    let _ = cfg.references_dir();
+    let _ = cfg.links_file();
+
     // `git -C <dir> <args...>` → (success, trimmed stdout), routed through the shared git seam
     // (`crate::git`) so it stays testable and the raw-subprocess guard is satisfied. A commit/push
     // that succeeds yields `(true, "")` (empty stdout); a failure yields `(false, "")`.

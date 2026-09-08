@@ -15,6 +15,10 @@ Shipped with bn. Claude Code reads this through an `@` import in `~/.claude/CLAU
 - Repo knowledge that will still be true next month goes in the reference notes: `bn ref --repo` to read the index, `bn ref append <name> --repo --section <s> "<fact> (src, date)"` to add one fact.
 - Find a workflow before improvising: `bn skills find "<what you are about to do>"`, then invoke it (`/bn:<name>` in Claude Code, `/<name>` in Copilot CLI).
 
+## Talk to other agents
+- Other live agents on this machine are listed by `bn agent live` (their `target` is `repo:branch`). Ask one for something with `bn agent msg <repo:branch> "..."`; it lands as that agent's next prompt.
+- A prompt starting `[bn msg from <repo:branch>]` is another agent asking you. Do what it asks, then answer with the same command, addressed to that sender. Keep both directions to one message each.
+
 ## Reach for these skills
 - `grill-me` before committing to a plan with open branches.
 - `verification-before-completion` before saying anything is done, fixed, or passing.

@@ -47,13 +47,47 @@ Reproduce it with `bn run {}`, inspect the cron/job implementation, and land a f
     prompt
 }
 
+fn looks_failure_shaped(line: &str) -> bool {
+    let lower = line.trim().to_ascii_lowercase();
+    [
+        "error",
+        "failed",
+        "failure",
+        "panic",
+        "could not",
+        "refusing",
+        "refused",
+        "not found",
+        "no such",
+        "no job",
+        "invalid",
+        "denied",
+        "timed out",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn repair_task_line(output_tail: &str) -> Option<&str> {
+    let mut first = None;
+    for line in output_tail.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if first.is_none() {
+            first = Some(line);
+        }
+        if looks_failure_shaped(line) {
+            return Some(line);
+        }
+    }
+    first
+}
+
 fn repair_task_text(status: &bn_core::events::CronJobStatus, output_tail: Option<&str>) -> String {
     let mut text = format!(
         "Fix failing cron {} repo:bn cron:{} failures:{} exit:{}",
         status.job, status.job, status.failures, status.last_exit
     );
     if let Some(tail) = output_tail.map(str::trim).filter(|tail| !tail.is_empty()) {
-        let one_line = tail.lines().next().unwrap_or(tail).trim();
+        let one_line = repair_task_line(tail).unwrap_or(tail).trim();
         if !one_line.is_empty() {
             text.push_str(" error:");
             text.push_str(&bn_core::todo::neutralize_meta(one_line));
@@ -518,6 +552,35 @@ mod tests {
             assert_eq!(closed, 0, "a still-failing cron keeps its repair task");
             assert_eq!(withdrawn, 0, "and keeps its queued repair agent");
         });
+    }
+
+    #[test]
+    fn repair_task_text_prefers_a_failure_line_over_earlier_progress() {
+        let tail = "main-sync: BigMono: main worktree → origin/main\n\
+                    main-sync: BigMono: main slot has uncommitted work — left alone\n\
+                    main-sync: WebApp: could not create main worktree\n\
+                    main-sync: telemetry-service: fetch failed (offline?)";
+        assert_eq!(
+            repair_task_line(tail),
+            Some("main-sync: WebApp: could not create main worktree")
+        );
+
+        let text = repair_task_text(&failing("main-sync"), Some(tail));
+        assert!(text.contains("could not create main worktree"));
+        assert!(!text.contains("error:main-sync- BigMono: main worktree → origin/main"));
+    }
+
+    #[test]
+    fn repair_task_text_falls_back_to_the_first_line_when_none_look_failing() {
+        let text = repair_task_text(
+            &failing("main-sync"),
+            Some(
+                "main-sync: BigMono: main worktree → origin/main\n\
+                 main-sync: BigMono: main slot has uncommitted work — left alone",
+            ),
+        );
+
+        assert!(text.contains("error:main-sync- BigMono: main worktree → origin/main"));
     }
 
 }

@@ -46,7 +46,7 @@ pub const DEFAULT_LIMIT: usize = 100;
 /// One open issue, as much of it as the reservoir needs to rank and convert into a task.
 ///
 /// Wider than [`crate::palette::IssueHit`]'s four fields: `labels` drive the exclusion policy that
-/// `bn task pull` reuses from [`crate::orchestrate::plan_keep_warm`], `updated_at` orders staleness,
+/// `bn task pull` reuses from [`crate::keep_warm::plan_keep_warm`], `updated_at` orders staleness,
 /// and `is_assigned` keeps already-owned work out of the pull.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IssueRef {

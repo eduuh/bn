@@ -19,7 +19,7 @@ const KINDS = [
   "cleanup",
 ];
 
-/** Admit one piece of planned work to the durable machine queue. */
+/** Admit one piece of planned work to the durable queue. */
 export function QueueAddForm() {
   const [item, setItem] = useState("");
   const [repo, setRepo] = useState("");

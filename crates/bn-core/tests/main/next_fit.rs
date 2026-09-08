@@ -1,7 +1,7 @@
 //! Sizing a plan against the time actually left — the one place bn already respects duration.
 //!
 //! `bn next --fit` hides today's goals that cannot finish before the next meeting. It is the only
-//! fit-to-window logic in the product, and the machine queue has no equivalent: the dispatcher will
+//! fit-to-window logic in the product, and the queue dispatcher has no equivalent: it will
 //! start a three-hour agent twenty minutes before a window it is supposed to leave free. These
 //! tests pin the behaviour before that logic is reused on the queue side, and in particular pin the
 //! two properties that make it safe to reuse — non-plan work is never filtered, and work that

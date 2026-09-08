@@ -8,7 +8,7 @@
 //! # Two locations, one resolver
 //!
 //! ```text
-//! <personal_root>/tasks/<id>.md                      staging — before pickup
+//! <work_root>/tasks/<id>.md                          staging — before pickup
 //! <personal_root>/<machine>/<repo>/<branch>/task.md  after pickup, beside the branch note
 //! ```
 //!
@@ -98,7 +98,7 @@ pub fn staging_name(id: &str) -> String {
     format!("{id}.md")
 }
 
-/// `<personal_root>/tasks/<name>` — where a doc lives before its task is picked up.
+/// `<work_root>/tasks/<name>` — where a doc lives before its task is picked up.
 pub fn staging_path(cfg: &Config, name: &str) -> PathBuf {
     cfg.tasks_dir().join(name)
 }

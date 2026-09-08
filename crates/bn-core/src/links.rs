@@ -4,7 +4,7 @@
 //! again, that today live in browser bookmarks or nowhere. The branch note holds exactly two
 //! ([`crate::commands::set_pr`], [`crate::commands::set_work_item`]) and both leave with the
 //! worktree, so this store sits beside `tasks.txt` and `references/` on the person axis —
-//! `<personal_root>/links.md`, no `<machine>` segment, because a link you need is not a link one
+//! `<work_root>/links.md`, no `<machine>` segment, because a link you need is not a link one
 //! laptop needs.
 //!
 //! Ranking is frecency, not raw count: a link opened today beats one opened fifty times last

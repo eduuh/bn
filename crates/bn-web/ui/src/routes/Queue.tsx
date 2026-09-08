@@ -112,7 +112,7 @@ function OperationsOverview({
   if (error) {
     return (
       <SectionCard eyebrow="live system" title="Operations">
-        <LoadError>Could not load the machine queue.</LoadError>
+        <LoadError>Could not load the queue.</LoadError>
       </SectionCard>
     );
   }

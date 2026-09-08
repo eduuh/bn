@@ -8,8 +8,8 @@
 //! # Beside the doc, always
 //!
 //! ```text
-//! <personal_root>/tasks/t42.md                        the doc, in staging
-//! <personal_root>/tasks/t42.files/screenshot.png      its attachments
+//! <work_root>/tasks/t42.md                            the doc, in staging
+//! <work_root>/tasks/t42.files/screenshot.png          its attachments
 //!
 //! <note_dir>/task.md                                  the doc, after pickup
 //! <note_dir>/task.files/screenshot.png                its attachments
@@ -22,7 +22,7 @@
 //! # Agents resolve paths by asking, never by reading one out of the doc
 //!
 //! The doc records attachment *names* in its `## Attachments` manifest, not paths. A path is a
-//! property of the machine that wrote it — `<personal_root>` differs per host, and the doc itself
+//! property of the machine that wrote it — `<work_root>` differs per host, and the doc itself
 //! moves on pickup — so a path baked into a synced document is a dangling reference waiting to
 //! happen. `bn task attach <id>` resolves the current location on the machine that asks, which is
 //! the same discipline the rest of bn uses: point at the record, let the reader resolve it.

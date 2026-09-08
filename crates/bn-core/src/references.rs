@@ -4,7 +4,7 @@
 //! * [`Scope::Global`] (#623) — per-topic coding standards / preferences that shape how agents
 //!   write code and how reviews check it, the sibling of `skills` (reusable *workflow* docs) for
 //!   reusable *standards* docs. Person-scoped and cross-machine, so the same standards apply on
-//!   every host (`<personal_root>/references`, see [`crate::resolver::references_dir`]).
+//!   every host (`<work_root>/references`, see [`crate::resolver::references_dir`]).
 //! * [`Scope::Repo`] — per-repo **reference notes**: what past sessions discovered about one
 //!   repository (how it builds, where the seams are, which failures mislead). Machine-scoped
 //!   beside the branch notes it outlives (`<notes>/<machine>/<repo>/reference`, see
@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 /// notes. Constructed by the CLI/MCP layer from `--repo` (absent → [`Scope::Global`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
-    /// `<personal_root>/references` — my coding standards, the same on every machine.
+    /// `<work_root>/references` — my coding standards, the same on every machine.
     Global,
     /// `<notes>/<machine>/<repo>/reference` — one repo's discovery notes.
     Repo(String),

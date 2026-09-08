@@ -1,6 +1,6 @@
 //! `bn task` — **the** task list (#996), one global store for every repo and every machine.
 //!
-//! The file is `<personal_root>/tasks.txt` (`Config::tasks_file`), in todo.txt grammar. It used to
+//! The file is `<work_root>/tasks.txt` (`Config::tasks_file`), in todo.txt grammar. It used to
 //! be a per-repo `TODO.txt` committed into each working tree, which made the list per-repo *and*
 //! per-branch — the opposite of a single source of truth. Consequences of going global:
 //!
@@ -407,29 +407,29 @@ pub(crate) fn emit_task_doc(cfg: &Config, id: &str, open: bool, as_json: bool) {
     }
 }
 
-/// The keep-warm policy a pull runs under: the low-water mark the caller asked for, over the
-/// exclusions the *user configured*.
-///
-/// Split out and pure so the wiring is testable. It was `KeepWarmPolicy { low_water,
-/// ..Default::default() }`, which silently discarded `[orchestrate] exclude_labels` /
-/// `exclude_titles` — the pull path advertised the shared policy and then ignored half of it. That
-/// made the exclusion list unusable as a gate: a repo whose findings are deliberately parked
-/// (an autonomous explore pass filing product-facing bugs as `needs-triage`, say) had them minted
-/// into the task list regardless, and from there they were executable work.
-fn pull_policy(cfg: &Config, low_water: usize) -> bn_core::orchestrate::KeepWarmPolicy {
-    bn_core::orchestrate::KeepWarmPolicy {
-        low_water,
-        exclude_titles: cfg.orchestrate_exclude_titles.clone(),
-        exclude_labels: cfg.orchestrate_exclude_labels.clone(),
-        ..Default::default()
+pub(crate) fn append_pulled_tasks(
+    file: &mut bn_core::todo::TodoFile,
+    issues: &[bn_core::issues::IssueRef],
+    today: &str,
+) -> Vec<serde_json::Value> {
+    let mut minted = Vec::new();
+    for issue in issues {
+        let id = file.next_id();
+        let task = bn_core::task_pull::task_from_issue(&id, issue, today);
+        minted.push(serde_json::json!({
+            "id": id, "repo": issue.repo, "issue": issue.number,
+            "url": issue.url, "title": issue.title,
+        }));
+        file.push_task(task);
     }
+    minted
 }
 
 /// `bn task pull` — top the task list back up from the GitHub-issue reservoir.
 ///
 /// Bounded by a low-water mark per repo, so the store stays a curated working set rather than a
 /// mirror of every open issue. Ranking, exclusions and the unassigned filter all come from
-/// `orchestrate::plan_keep_warm` — this is not a second replenisher, it is the same policy
+/// `keep_warm::plan_keep_warm` — this is not a second replenisher, it is the same policy
 /// realized as tasks. Idempotent: an issue already carrying a task is never minted again.
 ///
 /// Reads the #999 issue cache, so a stale cache still yields a pull (reported on stdout) rather
@@ -450,7 +450,7 @@ pub(crate) fn emit_task_pull(
         fail("bn task pull: no repos known — set [managed_repos].repos or create a branch note");
     }
 
-    let policy = pull_policy(cfg, low_water);
+    let policy = crate::cmd::keep_warm::configured_policy(cfg, low_water);
     let now = bn_core::util::now_epoch_secs();
     let today = today();
     let runner = bn_core::runner::RealRunner;
@@ -482,18 +482,7 @@ pub(crate) fn emit_task_pull(
         let depth = bn_core::task_pull::active_depth(&file, name, &today);
         let chosen =
             bn_core::task_pull::plan_pull(name, &policy, depth, &existing, &cached.issues, now);
-
-        for issue in chosen {
-            let id = file.next_id();
-            let task = bn_core::task_pull::task_from_issue(&id, &issue, &today);
-            minted.push(serde_json::json!({
-                "id": id, "repo": name, "issue": issue.number,
-                "url": issue.url, "title": issue.title,
-            }));
-            // Push even on a dry run, so the preview shows the ids and per-repo depths a real run
-            // would actually produce. Only the `save` below is skipped.
-            file.push_task(task);
-        }
+        minted.extend(append_pulled_tasks(&mut file, &chosen, &today));
     }
 
     if !dry_run && !minted.is_empty() {
@@ -687,7 +676,7 @@ mod tests {
             ..Config::default()
         };
 
-        let policy = pull_policy(&cfg, 4);
+        let policy = crate::cmd::keep_warm::configured_policy(&cfg, 4);
 
         assert_eq!(policy.low_water, 4);
         assert_eq!(policy.exclude_labels, ["blocked", "needs-triage"]);
@@ -704,7 +693,7 @@ mod tests {
             ..Config::default()
         };
 
-        let policy = pull_policy(&cfg, 1);
+        let policy = crate::cmd::keep_warm::configured_policy(&cfg, 1);
 
         assert!(policy.exclude_labels.is_empty());
         assert!(policy.exclude_titles.is_empty());

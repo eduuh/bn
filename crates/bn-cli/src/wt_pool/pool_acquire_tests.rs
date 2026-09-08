@@ -228,6 +228,59 @@ fn acquire_warm_hit_reuses_a_live_checkout() {
     assert_eq!(head_ref(&leased.slot), "feat");
 }
 
+/// A lease lands on the slot whose build completed, not the lowest-numbered checkout. In a
+/// monorepo pool the lowest idle slot was exactly the one warm kept skipping (dirty, or its
+/// install had failed), so every "warm hit" still paid the full install. The stamp is cleared when
+/// the checkout is recreated: a fresh `worktree add` has no deps whatever the slot number had.
+#[test]
+fn acquire_prefers_a_built_slot_over_a_lower_unbuilt_one() {
+    let _env = bn_core::test_support::env_lock();
+    let (tmp, bare) = mk_bare();
+    TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
+
+    let wt_root = tmp.path().join("wt");
+    let pdir = wt_root.join("bn").join("_pool");
+    std::fs::create_dir_all(&pdir).unwrap();
+
+    // Slots 2 and 3 are both live checkouts; only 3 has a completed build behind it.
+    for n in [2, 3] {
+        assert!(add_detached_slot(
+            &bare,
+            &slot_path(&pdir, n).to_string_lossy()
+        ));
+    }
+    write_warm_stamp(&pdir, 3, "abc123");
+    assert_eq!(
+        read_warm_stamps(&pdir),
+        [3u32].into_iter().collect::<BTreeSet<u32>>()
+    );
+
+    let ctx = PoolCtx {
+        bare: PathBuf::from(&bare),
+        repo: "bn".into(),
+        pool_dir: pdir.clone(),
+        worktree_dir: wt_root,
+        size: 4,
+    };
+    let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker, false).expect("lease");
+    assert!(leased.fresh);
+    assert_eq!(leased.slot, slot_path(&pdir, 3));
+    assert_eq!(head_ref(&leased.slot), "feat");
+
+    // Recreating a checkout forgets its build.
+    assert!(add_detached_slot(
+        &bare,
+        &slot_path(&pdir, 4).to_string_lossy()
+    ));
+    write_warm_stamp(&pdir, 4, "abc123");
+    force_remove_worktree(&bare, &slot_path(&pdir, 4));
+    assert!(add_detached_slot(
+        &bare,
+        &slot_path(&pdir, 4).to_string_lossy()
+    ));
+    assert!(!read_warm_stamps(&pdir).contains(&4));
+}
+
 /// Regression for the `--new` warm no-op: `pool_warm(--new)` must rebuild a *broken* stub
 /// (a dir with no `.git`, left by an interrupted create), not skip it as "existing". The old
 /// guard keyed off directory presence, so `warm --new` left a broken slot broken and the next
@@ -728,5 +781,118 @@ fn a_branch_whose_agent_is_live_still_gets_its_own_slot_back() {
     assert!(
         !leased.fresh,
         "a live agent's branch keeps its tenancy — this is a warm hit, not a new run"
+    );
+}
+
+/// A lease must not fail over a slot's leftover state. The slot below is idle and unoccupied but
+/// carries an uncommitted edit to a file the advanced base also changes — exactly what makes
+/// `git switch -c <new> main` refuse — and that is what every BigMono slot looked like after the
+/// concurrent-warm incident. Nobody owns that dirt, so get resets the slot and retries rather
+/// than reporting "branch checked out elsewhere?" to a caller who can do nothing about it.
+#[test]
+fn acquire_resets_a_dirty_idle_slot_and_retries_the_switch() {
+    let _env = bn_core::test_support::env_lock();
+    let (tmp, bare) = mk_bare();
+    TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
+
+    let wt_root = tmp.path().join("wt");
+    let pdir = wt_root.join("bn").join("_pool");
+    std::fs::create_dir_all(&pdir).unwrap();
+
+    // Slot 2 is a live checkout at main's first commit…
+    let slot = slot_path(&pdir, 2);
+    let slot_s = slot.to_string_lossy().to_string();
+    assert!(add_detached_slot(&bare, &slot_s));
+
+    // …then main moves on and rewrites a.txt…
+    let other = tmp.path().join("other");
+    let other_s = other.to_string_lossy().to_string();
+    assert!(git(&[
+        "--git-dir",
+        &bare,
+        "worktree",
+        "add",
+        &other_s,
+        "main"
+    ]));
+    std::fs::write(other.join("a.txt"), "upstream\n").unwrap();
+    assert!(git(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "-C",
+        &other_s,
+        "commit",
+        "-qam",
+        "advance"
+    ]));
+    assert!(git(&[
+        "--git-dir",
+        &bare,
+        "worktree",
+        "remove",
+        "--force",
+        &other_s
+    ]));
+
+    // …while the slot still holds an uncommitted edit to that same file.
+    std::fs::write(slot.join("a.txt"), "leftover\n").unwrap();
+    assert!(
+        !switch_into_slot(&slot_s, &bare, "probe"),
+        "precondition: the dirty slot refuses a plain switch onto the advanced base"
+    );
+
+    let ctx = PoolCtx {
+        bare: PathBuf::from(&bare),
+        repo: "bn".into(),
+        pool_dir: pdir,
+        worktree_dir: wt_root,
+        size: 4,
+    };
+    let leased = acquire_slot(&ctx, "new-work", None, SlotRole::Worker, false)
+        .expect("get self-heals a dirty idle slot instead of failing the lease");
+    assert_eq!(leased.slot, slot);
+    assert_eq!(head_ref(&slot), "new-work");
+    assert_eq!(
+        std::fs::read_to_string(slot.join("a.txt")).unwrap(),
+        "upstream\n",
+        "the leased checkout is at the advanced base, the leftover edit discarded"
+    );
+    assert_eq!(wt::dirty_count(&slot_s), 0);
+}
+
+/// Two warms on one pool at once is the race that emptied the BigMono slots of tracked files. The
+/// second one now yields to the first — reporting success, since the running warm is doing the
+/// job — instead of interleaving git calls with it.
+#[test]
+fn warm_yields_to_a_warm_already_running_on_the_pool() {
+    let _g = bn_core::test_support::env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+
+    let bare = root.join("bare").join("nvim.git");
+    build_repo_into(&root.join("nvim-src"), &bare);
+
+    let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
+    let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", root.join("state"));
+    TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
+
+    let pool_dir = root.join("worktree").join("nvim").join("_pool");
+    let _running = slot_lock::try_lock_warm(&pool_dir).expect("the first warm takes the lock");
+
+    let cfg = bn_core::test_support::config(root);
+    let ctx = bn_core::resolver::Resolved {
+        repo: "nvim".to_string(),
+        branch: "main".to_string(),
+    };
+    assert_eq!(
+        super::job_pool_warm(&cfg, Some(&ctx)),
+        0,
+        "yielding to a running warm is not a failed refresh"
+    );
+    assert!(
+        !is_live_slot(&slot_path(&pool_dir, 2)),
+        "the yielding warm must not have touched the pool"
     );
 }

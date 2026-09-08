@@ -422,13 +422,13 @@ impl Default for Config {
             default_harness: None,
             orchestrate_stuck_idle_secs: crate::agent::DEFAULT_STUCK_LANE_IDLE_SECS,
             orchestrate_keep_warm: false,
-            orchestrate_low_water: crate::orchestrate::DEFAULT_KEEP_WARM_LOW_WATER,
+            orchestrate_low_water: crate::keep_warm::DEFAULT_KEEP_WARM_LOW_WATER,
             orchestrate_owned_repos: Vec::new(),
             orchestrate_exclude_titles: vec!["gap(".to_string()],
             orchestrate_exclude_labels: vec!["blocked".to_string()],
-            orchestrate_brainstorm_count: crate::orchestrate::DEFAULT_KEEP_WARM_BRAINSTORM_COUNT,
+            orchestrate_brainstorm_count: crate::keep_warm::DEFAULT_KEEP_WARM_BRAINSTORM_COUNT,
             orchestrate_brainstorm_interval_secs:
-                crate::orchestrate::DEFAULT_KEEP_WARM_BRAINSTORM_INTERVAL_SECS,
+                crate::keep_warm::DEFAULT_KEEP_WARM_BRAINSTORM_INTERVAL_SECS,
             queue: QueueConfig::default(),
             orchestrate_min_free_ram_mb: None,
             orchestrate_max_loadavg: None,
@@ -783,7 +783,7 @@ impl Config {
             .unwrap_or(false);
         let orchestrate_low_water = file
             .and_then(|f| f.orchestrate_low_water())
-            .unwrap_or(crate::orchestrate::DEFAULT_KEEP_WARM_LOW_WATER)
+            .unwrap_or(crate::keep_warm::DEFAULT_KEEP_WARM_LOW_WATER)
             .max(1);
         let orchestrate_owned_repos = file
             .and_then(|f| f.orchestrate_owned_repos())
@@ -796,10 +796,10 @@ impl Config {
             .unwrap_or_else(|| vec!["blocked".to_string()]);
         let orchestrate_brainstorm_count = file
             .and_then(|f| f.orchestrate_brainstorm_count())
-            .unwrap_or(crate::orchestrate::DEFAULT_KEEP_WARM_BRAINSTORM_COUNT);
+            .unwrap_or(crate::keep_warm::DEFAULT_KEEP_WARM_BRAINSTORM_COUNT);
         let orchestrate_brainstorm_interval_secs = file
             .and_then(|f| f.orchestrate_brainstorm_interval_secs())
-            .unwrap_or(crate::orchestrate::DEFAULT_KEEP_WARM_BRAINSTORM_INTERVAL_SECS)
+            .unwrap_or(crate::keep_warm::DEFAULT_KEEP_WARM_BRAINSTORM_INTERVAL_SECS)
             .max(1);
 
         // `[orchestrate]` resource/budget caps (#377): env override wins, then config.toml; an

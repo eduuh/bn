@@ -21,10 +21,32 @@ pub(crate) fn cmd_list(cfg: &Config) -> bool {
 
 /// Count of uncommitted entries (modified + untracked) in a worktree — what `git worktree remove`
 /// refuses on without `--force`, so a non-zero count is exactly what blocks auto-cleanup.
+///
+/// Plain `git status`, not `--no-optional-locks`: on a repo with `core.untrackedCache` the cache
+/// is only persisted when status may write the index, and that cache is the difference between
+/// 12 s and 3 s per probe on a 450k-file checkout.
+///
+/// A probe that *fails* answers [`DIRTY_UNKNOWN`], which every `> 0` / `== 0` caller reads as
+/// dirty. It used to answer 0 — "clean" — so a warm or a reclaim that could not run git treated
+/// the slot as safe to reset and discarded whatever was in it.
 pub(crate) fn dirty_count(wt: &str) -> usize {
     git_out(&["-C", wt, "status", "--porcelain"])
         .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
-        .unwrap_or(0)
+        .unwrap_or(DIRTY_UNKNOWN)
+}
+
+/// What [`dirty_count`] returns when git could not answer: treated as dirty by every caller that
+/// decides whether a checkout may be reset or removed, and printed as "unknown" by the ones that
+/// show a count.
+pub(crate) const DIRTY_UNKNOWN: usize = usize::MAX;
+
+/// A dirty count for display: the number, or "unknown" when the probe failed.
+pub(crate) fn dirty_label(n: usize) -> String {
+    if n == DIRTY_UNKNOWN {
+        "unknown".to_string()
+    } else {
+        n.to_string()
+    }
 }
 
 /// The uncommitted entries (modified + untracked) in a worktree as a path list — the same set
@@ -72,6 +94,7 @@ pub(crate) fn cmd_status(cfg: &Config, all: bool, pr: bool) -> bool {
             // directory, which is the same label a reclaim files that worktree under.
             let label = label_for(Path::new(&wt), &branch);
             let changes = dirty_count(&wt);
+            let changes_label = dirty_label(changes);
             if changes == 0 {
                 clean += 1;
                 if all {
@@ -102,9 +125,9 @@ pub(crate) fn cmd_status(cfg: &Config, all: bool, pr: bool) -> bool {
                 };
                 // `mark` carries the escapes, so this needs the gated sink even though no
                 // colour constant appears in the format string itself.
-                cprintln!("{mark} {repo}/{label}  {changes} changes  — {verdict}");
+                cprintln!("{mark} {repo}/{label}  {changes_label} changes  — {verdict}");
             } else {
-                cprintln!("{YELLOW}•{NC} {repo}/{label}  {changes} changes — uncommitted");
+                cprintln!("{YELLOW}•{NC} {repo}/{label}  {changes_label} changes — uncommitted");
             }
         }
     }

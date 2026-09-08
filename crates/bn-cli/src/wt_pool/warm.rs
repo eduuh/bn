@@ -99,9 +99,22 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool) -> bool {
         return true;
     }
     let _ = std::fs::create_dir_all(&ctx.pool_dir);
+    // One warm per pool at a time. The cron timer and the queue's dispatch of the same job once
+    // ran together, and the loser's `status` + `clean -df` deleted the tracked files the winner's
+    // `switch` was still writing (see `slot_lock`). A warm is idempotent, so the one already
+    // running is the answer — yielding to it is a success, not a failed refresh.
+    let Some(_warm_lock) = slot_lock::try_lock_warm(&ctx.pool_dir) else {
+        println!(
+            "{YELLOW}Another warm is already running for {} — leaving the pool to it.{NC}",
+            ctx.repo
+        );
+        return true;
+    };
     let bare_s = ctx.bare.to_string_lossy().to_string();
 
-    let base = refresh_base(&ctx.repo, &bare_s);
+    let Some(base) = refresh_base(&ctx.repo, &bare_s) else {
+        return false;
+    };
 
     // Does this repo have a `build.sh`? Only to decide whether there's anything to build (and to
     // scaffold a template if absent) — the build itself is `bn build`, which resolves the script
@@ -162,6 +175,9 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool) -> bool {
     // or — under `--new` — already holding a *live* checkout; those are counted as skipped and
     // left untouched.
     let mut skipped = 0u32;
+    // Reported on the `pool_warm` event so `pool metrics` can name the slots warm can never
+    // touch — a dirty idle slot otherwise stays stale and unbuilt for as long as nobody notices.
+    let mut skipped_dirty: Vec<u32> = Vec::new();
     let mut failed = 0u32;
     let mut ready: Vec<(u32, PathBuf)> = Vec::new();
     for n in 1..=ctx.size as u32 {
@@ -197,6 +213,7 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool) -> bool {
         if exists && is_live_slot(&slot) && wt::dirty_count(&slot_s) > 0 {
             eprintln!("{YELLOW}[{n}] dirty — skipping{NC}");
             skipped += 1;
+            skipped_dirty.push(n);
             continue;
         }
         if is_live_slot(&slot) {
@@ -222,13 +239,24 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool) -> bool {
     // `.cargo/config.toml`), then build the rest in parallel: they compile the *same* base commit,
     // so they land as cache hits instead of repeating the work — collapsing a warm from N cold
     // builds to ~1 build + N-1 cache/link passes.
-    let warmed = match &build {
-        None => ready.len() as u32,
+    // What the pick must avoid until the next warm says otherwise.
+    write_dirty_marks(&ctx.pool_dir, &skipped_dirty);
+    let (warmed, build_skipped) = match &build {
+        None => {
+            // No build script means a live checkout is all there is to be warm; stamp them so the
+            // pick treats every checkout in such a pool alike.
+            for (n, _) in &ready {
+                write_warm_stamp(&ctx.pool_dir, *n, &base);
+            }
+            (ready.len() as u32, 0)
+        }
         Some(_) => build_slots_warm(&rctx.repo, &ready),
     };
     // A ready slot whose build.sh failed is still leasable, just not fully provisioned — count it
-    // separately (made) from the fully-warmed slots so the summary can distinguish the two.
-    let made = ready.len() as u32 - warmed;
+    // separately (made) from the fully-warmed slots so the summary can distinguish the two. A
+    // build that declined to run (busy toolchain) is neither: it joins the skipped count.
+    let skipped = skipped + build_skipped;
+    let made = ready.len() as u32 - warmed - build_skipped;
     let complete = warm_complete(ctx.size as u32, warmed, skipped, failed, made);
     // Record the refresh so `bn metrics` can surface pool freshness — how many slots warmed, and
     // when the pool was last refreshed (one event per `pool warm`, alongside pool_get/pool_return).
@@ -238,6 +266,15 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool) -> bool {
         f.insert("warmed".to_string(), warmed.into());
         f.insert("size".to_string(), (ctx.size as u64).into());
         f.insert("skipped".to_string(), skipped.into());
+        f.insert("build_skipped".to_string(), build_skipped.into());
+        f.insert(
+            "skipped_dirty".to_string(),
+            skipped_dirty
+                .iter()
+                .map(|n| (*n as u64).into())
+                .collect::<Vec<serde_json::Value>>()
+                .into(),
+        );
         f.insert("failed".to_string(), (failed + made).into());
         f.insert("complete".to_string(), complete.into());
         let _ = bn_core::events::append("pool_warm", f);
@@ -265,14 +302,33 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool) -> bool {
 ///
 /// Best-effort, the same posture [`crate::cmd::main_sync`] takes: being offline is a fact about the
 /// network, not a reason to skip the warm. Say so and carry on against the last-fetched refs — a
-/// slot warmed against a week-old base still beats no slot at all.
-fn refresh_base(repo: &str, bare_s: &str) -> String {
+/// slot warmed against a week-old base still beats no slot at all. But only when that last-fetched
+/// ref actually exists: a missing cached `origin/main` means there is no trustworthy warm base, so
+/// the cron must fail instead of silently warming whatever `default_base` would invent.
+fn refresh_base(repo: &str, bare_s: &str) -> Option<String> {
     if !git_quiet(&["--git-dir", bare_s, "fetch", "--quiet", "--prune", "origin"]) {
-        eprintln!(
-            "{YELLOW}Could not fetch origin for {repo} — warming against the last-fetched refs.{NC}"
-        );
+        match wt::git_out(&[
+            "--git-dir",
+            bare_s,
+            "rev-parse",
+            "--verify",
+            "refs/remotes/origin/main",
+        ]) {
+            Some(_) => {
+                eprintln!(
+                    "{YELLOW}Could not fetch origin for {repo} — warming against the last-fetched refs.{NC}"
+                );
+                return Some(default_base(bare_s));
+            }
+            None => {
+                eprintln!(
+                    "{RED}Could not fetch origin for {repo} and no cached origin/main exists{NC}"
+                );
+                return None;
+            }
+        }
     }
-    default_base(bare_s)
+    Some(default_base(bare_s))
 }
 
 /// Move an idle slot's existing checkout onto `base` and report which of the two it was.
@@ -324,22 +380,25 @@ fn warm_succeeded(checkout_failed: u32, build_failed: u32) -> bool {
 }
 
 /// Build every ready slot: prime the first at full parallelism (seeding the sccache cache), then
-/// build the rest concurrently sharing a job budget so the box isn't oversubscribed. Returns how
-/// many built cleanly.
-fn build_slots_warm(repo: &str, ready: &[(u32, PathBuf)]) -> u32 {
+/// build the rest concurrently sharing a job budget so the box isn't oversubscribed. Returns
+/// `(warmed, skipped)`: how many built cleanly (each now carrying a warm stamp), and how many
+/// declined to build this pass — a `build.sh` that exits [`BUILD_SKIPPED_EXIT`] because a sibling
+/// build already holds the shared toolchain. Those used to exit 0 and be counted as warm, which
+/// is how a pool reported "Warmed 3/6" with two slots that had never installed a dependency.
+fn build_slots_warm(repo: &str, ready: &[(u32, PathBuf)]) -> (u32, u32) {
     use std::sync::atomic::{AtomicU32, Ordering};
     let Some(((first_n, first_slot), rest)) = ready.split_first() else {
-        return 0;
+        return (0, 0);
     };
-    let mut warmed = 0u32;
+    let (mut warmed, mut skipped) = (0u32, 0u32);
     eprintln!("{BLUE}[{first_n}] building (priming cache)…{NC}");
-    if run_bn_build(repo, first_slot, None) {
-        warmed += 1;
-    } else {
-        eprintln!("{RED}[{first_n}] build failed{NC}");
+    match run_bn_build(repo, first_slot, None) {
+        BuildOutcome::Built => warmed += 1,
+        BuildOutcome::Skipped => skipped += 1,
+        BuildOutcome::Failed => eprintln!("{RED}[{first_n}] build failed{NC}"),
     }
     if rest.is_empty() {
-        return warmed;
+        return (warmed, skipped);
     }
     // Divide the cores across the concurrent builds (at least one each). sccache hits keep these
     // light, but an unprimed crate still compiles, so bound the fan-out rather than letting each
@@ -349,20 +408,30 @@ fn build_slots_warm(repo: &str, ready: &[(u32, PathBuf)]) -> u32 {
         .unwrap_or(4);
     let jobs = (cpus / rest.len()).max(1);
     let ok = AtomicU32::new(0);
+    let declined = AtomicU32::new(0);
     std::thread::scope(|s| {
         for (n, slot) in rest {
             let ok = &ok;
+            let declined = &declined;
             s.spawn(move || {
                 eprintln!("{BLUE}[{n}] building…{NC}");
-                if run_bn_build(repo, slot, Some(jobs)) {
-                    ok.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    eprintln!("{RED}[{n}] build failed{NC}");
+                match run_bn_build(repo, slot, Some(jobs)) {
+                    BuildOutcome::Built => {
+                        ok.fetch_add(1, Ordering::Relaxed);
+                    }
+                    BuildOutcome::Skipped => {
+                        eprintln!("{YELLOW}[{n}] build declined this pass (busy toolchain) — not warm{NC}");
+                        declined.fetch_add(1, Ordering::Relaxed);
+                    }
+                    BuildOutcome::Failed => eprintln!("{RED}[{n}] build failed{NC}"),
                 }
             });
         }
     });
-    warmed + ok.load(Ordering::Relaxed)
+    (
+        warmed + ok.load(Ordering::Relaxed),
+        skipped + declined.load(Ordering::Relaxed),
+    )
 }
 
 /// What [`grow_pool`] did.
@@ -431,7 +500,21 @@ pub(crate) fn grow_pool(cfg: &Config, repo: Option<String>) -> Grown {
 /// Warming the whole pool instead would rebuild every existing slot to provision one, so the honest
 /// primitive is "build this slot", which is what [`build_slots_warm`] does per slot anyway.
 pub(crate) fn build_one_slot(repo: &str, slot: &Path) -> bool {
-    run_bn_build(repo, slot, None)
+    matches!(run_bn_build(repo, slot, None), BuildOutcome::Built)
+}
+
+/// Exit status a repo's `build.sh` uses to say "not this time" — a sibling build already holds
+/// the shared toolchain, come back later. `EX_TEMPFAIL` from sysexits, so it can never be confused
+/// with a real failure (1) or a completed build (0). Warm counts it as skipped, never as warm.
+pub(crate) const BUILD_SKIPPED_EXIT: i32 = 75;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildOutcome {
+    /// Exit 0 — the slot's deps and build are in place; a warm stamp now records it.
+    Built,
+    /// [`BUILD_SKIPPED_EXIT`] — the script declined to run; the slot is exactly as warm as before.
+    Skipped,
+    Failed,
 }
 
 /// Warm one slot by running `bn build` in it (cwd = slot) — the same command a human runs by hand,
@@ -444,7 +527,7 @@ pub(crate) fn build_one_slot(repo: &str, slot: &Path) -> bool {
 /// and disabling it lets sccache cache the workspace crates too. `jobs` caps `cargo`'s parallelism
 /// (`CARGO_BUILD_JOBS`) so several slots building at once share the cores instead of each grabbing
 /// all of them.
-fn run_bn_build(repo: &str, slot: &Path, jobs: Option<usize>) -> bool {
+fn run_bn_build(repo: &str, slot: &Path, jobs: Option<usize>) -> BuildOutcome {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("bn"));
     let mut cmd = Command::new(exe);
     cmd.args(["build", "--repo", repo, "--branch", "main"])
@@ -453,7 +536,21 @@ fn run_bn_build(repo: &str, slot: &Path, jobs: Option<usize>) -> bool {
     if let Some(j) = jobs {
         cmd.env("CARGO_BUILD_JOBS", j.to_string());
     }
-    cmd.status().map(|s| s.success()).unwrap_or(false)
+    match cmd.status().ok().and_then(|s| s.code()) {
+        Some(0) => {
+            // The stamp is what the pick reads; write it only for a build that actually finished.
+            if let Some((_, n, pdir)) = slot_parts(slot) {
+                write_warm_stamp(
+                    &pdir,
+                    n,
+                    &head_sha(&slot.to_string_lossy()).unwrap_or_default(),
+                );
+            }
+            BuildOutcome::Built
+        }
+        Some(BUILD_SKIPPED_EXIT) => BuildOutcome::Skipped,
+        _ => BuildOutcome::Failed,
+    }
 }
 
 /// Whether a mandatory pool refresh has real work to do right now.
@@ -597,7 +694,7 @@ mod freshness_tests {
         assert_ne!(stale.as_deref(), Some(tip.as_str()));
 
         // … and after it, to the commit that just landed.
-        let base = refresh_base("bn", &bare_s);
+        let base = refresh_base("bn", &bare_s).expect("fresh base");
         assert_eq!(
             wt::git_out(&["--git-dir", &bare_s, "rev-parse", &base]).as_deref(),
             Some(tip.as_str()),
@@ -614,7 +711,7 @@ mod freshness_tests {
         let created_at = head_sha(&slot_s).expect("slot HEAD");
 
         let tip = commit_upstream(&src_s, "b.txt");
-        let base = refresh_base("bn", &bare_s);
+        let base = refresh_base("bn", &bare_s).expect("fresh base");
         advance_idle_slot(2, &slot_s, &bare_s, &base);
 
         assert_ne!(head_sha(&slot_s).as_deref(), Some(created_at.as_str()));
@@ -636,7 +733,7 @@ mod freshness_tests {
         std::fs::write(slot.join("target").join("cached"), "expensive\n").unwrap();
 
         commit_upstream(&src_s, "b.txt");
-        let base = refresh_base("bn", &bare_s);
+        let base = refresh_base("bn", &bare_s).expect("fresh base");
         advance_idle_slot(2, &slot_s, &bare_s, &base);
 
         assert!(slot.join("target").join("cached").exists());
@@ -657,7 +754,30 @@ mod freshness_tests {
             "/nonexistent/gone.git",
         ]));
 
-        let base = refresh_base("bn", &bare_s);
+        let base = refresh_base("bn", &bare_s).expect("fresh base");
         assert!(wt::git_out(&["--git-dir", &bare_s, "rev-parse", "--verify", &base]).is_some());
+    }
+
+    #[test]
+    fn a_missing_cached_origin_main_fails_the_refresh() {
+        let _env = bn_core::test_support::env_lock();
+        let (_tmp, _src_s, bare_s) = bn_clone();
+        assert!(git(&[
+            "--git-dir",
+            &bare_s,
+            "update-ref",
+            "-d",
+            "refs/remotes/origin/main",
+        ]));
+        assert!(git(&[
+            "--git-dir",
+            &bare_s,
+            "remote",
+            "set-url",
+            "origin",
+            "/nonexistent/gone.git",
+        ]));
+
+        assert!(refresh_base("bn", &bare_s).is_none());
     }
 }

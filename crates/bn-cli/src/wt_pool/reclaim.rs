@@ -131,10 +131,53 @@ pub(super) fn lease_facts(
     lease: &Lease,
     now: i64,
 ) -> bn_core::pool::LeaseFacts {
+    lease_facts_with(ctx, n, lease, now, pid_alive(lease.pid))
+}
+
+/// [`lease_facts`] with the holder's liveness supplied by the caller (`pool status` folds in the
+/// boot-aware verdict, which is stricter than a bare pid check).
+///
+/// The dirty check is **lazy**: `git status` on a monorepo checkout costs 12–22 s, and the only
+/// verdict it can change is "abandoned" → "kept because there is work in it". So it runs only when
+/// the tmux/process facts alone would already call the lease abandoned; a slot with someone in it,
+/// or a young lease with a live holder, is answered without touching git at all — which is what
+/// keeps a same-branch re-lease and a post-reboot sweep off the slow path.
+pub(super) fn lease_facts_with(
+    ctx: &PoolCtx,
+    n: u32,
+    lease: &Lease,
+    now: i64,
+    holder_alive: bool,
+) -> bn_core::pool::LeaseFacts {
+    let facts = lease_occupancy(ctx, n, lease, now, holder_alive);
+    if !bn_core::pool::lease_abandoned(facts, LEAKED_LEASE_GRACE_SECS) {
+        return facts;
+    }
     let slot = slot_path(&ctx.pool_dir, n);
     let comparison = lease.comparison_slot.map(|n| slot_path(&ctx.pool_dir, n));
     bn_core::pool::LeaseFacts {
-        holder_alive: pid_alive(lease.pid),
+        dirty: wt::dirty_count(&slot.to_string_lossy()) > 0
+            || comparison
+                .as_ref()
+                .is_some_and(|slot| wt::dirty_count(&slot.to_string_lossy()) > 0),
+        ..facts
+    }
+}
+
+/// The tmux/process half of [`lease_facts_with`] alone — `dirty` is reported `false` because git
+/// was never asked. For a view (`pool status`) that only needs "is anyone in there", and must
+/// not cost a `git status` per leased slot.
+pub(super) fn lease_occupancy(
+    ctx: &PoolCtx,
+    n: u32,
+    lease: &Lease,
+    now: i64,
+    holder_alive: bool,
+) -> bn_core::pool::LeaseFacts {
+    let slot = slot_path(&ctx.pool_dir, n);
+    let comparison = lease.comparison_slot.map(|n| slot_path(&ctx.pool_dir, n));
+    bn_core::pool::LeaseFacts {
+        holder_alive,
         age_secs: now - lease.at,
         // "Someone is here" is a fact about tmux, not about the ledger: an agent that registered, an
         // unregistered harness pane, or just a shell somebody left open in the checkout.
@@ -146,10 +189,7 @@ pub(super) fn lease_facts(
                     || crate::agent_lease::any_live_pane_in(slot)
                     || any_proc_in(slot)
             }),
-        dirty: wt::dirty_count(&slot.to_string_lossy()) > 0
-            || comparison
-                .as_ref()
-                .is_some_and(|slot| wt::dirty_count(&slot.to_string_lossy()) > 0),
+        dirty: false,
     }
 }
 

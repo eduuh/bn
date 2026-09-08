@@ -62,6 +62,7 @@ pub mod idle;
 pub mod inbox;
 pub mod insights;
 pub mod issues;
+pub mod keep_warm;
 pub mod launchable;
 pub mod learnings;
 pub mod lifecycle;

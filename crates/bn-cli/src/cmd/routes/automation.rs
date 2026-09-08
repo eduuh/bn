@@ -176,6 +176,9 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
                 detach,
                 json,
             ),
+            Some(AgentCmd::Msg { target, text, from }) => {
+                emit_agent_msg(cfg, &target, &text, from.as_deref(), json)
+            }
             Some(AgentCmd::Done {
                 summary,
                 pr,

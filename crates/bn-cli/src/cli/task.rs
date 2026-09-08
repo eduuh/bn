@@ -109,7 +109,7 @@ pub(crate) enum TaskCmd {
     /// verdict, so the gate routes them to the enhance agent before anything executes them.
     Pull {
         /// Tasks to keep actionable per repo (the low-water mark).
-        #[arg(long, short = 'n', default_value_t = bn_core::orchestrate::DEFAULT_KEEP_WARM_LOW_WATER)]
+        #[arg(long, short = 'n', default_value_t = bn_core::keep_warm::DEFAULT_KEEP_WARM_LOW_WATER)]
         low_water: usize,
         /// Show what would be pulled and write nothing.
         #[arg(long)]

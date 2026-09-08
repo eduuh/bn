@@ -303,6 +303,10 @@ fn default_base(bare_s: &str) -> String {
 
 /// Create one warm slot as a detached worktree off the default base.
 pub(crate) fn add_detached_slot(bare_s: &str, slot_s: &str) -> bool {
+    // A fresh checkout has no deps, whatever the previous tenant of this slot number had built.
+    if let Some((_, n, pdir)) = slot_parts(Path::new(slot_s)) {
+        clear_warm_stamp(&pdir, n);
+    }
     let base = default_base(bare_s);
     git_quiet(&[
         "--git-dir",
@@ -350,22 +354,51 @@ fn switch_into_slot(slot_s: &str, bare_s: &str, branch: &str) -> bool {
 /// then drop untracked files — but NEVER `-x`/`-X`, so ignored deps/build cache survive. This
 /// no-`-x` rule is the whole point of the pool.
 fn warm_reset(slot_s: &str, bare_s: &str) {
+    warm_reset_with(slot_s, bare_s, None)
+}
+
+/// [`warm_reset`] for a caller that has just probed the slot and knows its untracked paths —
+/// `return` runs `git status` to refuse a dirty slot, and running it a second time here was the
+/// bigger half of a 12 s return on a monorepo checkout. `None` probes.
+fn warm_reset_with(slot_s: &str, bare_s: &str, known_untracked: Option<Vec<String>>) {
     // A lease can outlive its checkout (manual cleanup, a botched prune). There is nothing to reset
     // then, and running git against a missing directory only prints `fatal: cannot change to …` over
     // the caller's output — the lease still gets dropped by whoever called us.
     if !Path::new(slot_s).is_dir() {
         return;
     }
+    // Never interleave with another bn process resetting or leasing this slot: the switch below
+    // writes tracked files that a concurrent `status` + `clean -df` (reading the index from before
+    // the switch) would delete as untracked. See `slot_lock`.
+    let _lock =
+        slot_parts(Path::new(slot_s)).and_then(|(_, n, pdir)| slot_lock::lock_slot(&pdir, n));
+    warm_reset_unlocked(slot_s, bare_s, known_untracked)
+}
+
+/// [`warm_reset_with`] for a caller that already holds the slot's lock — a second `flock` from the
+/// same process on a fresh descriptor would wait on itself.
+fn warm_reset_unlocked(slot_s: &str, bare_s: &str, known_untracked: Option<Vec<String>>) {
     let base = default_base(bare_s);
-    let _ = git_quiet(&[
-        "-C",
-        slot_s,
-        "switch",
-        "--detach",
-        "--discard-changes",
-        &base,
-    ]);
-    let _ = git_quiet(&["-C", slot_s, "clean", "-df"]);
+    // Detach first — no tree change, so nothing can refuse it — then `reset --hard` to the base.
+    // This used to be one `switch --detach --discard-changes <base>`, which git refuses whenever
+    // an *untracked* file stands where the new base puts a tracked one (a beachball change file a
+    // tenant left behind that upstream has since merged), leaving the slot on its old commit with
+    // every tracked edit intact. `reset --hard` overwrites such files; on a detached HEAD it moves
+    // no branch ref.
+    let _ = git_quiet(&["-C", slot_s, "switch", "--quiet", "--detach"]);
+    let _ = git_quiet(&["-C", slot_s, "reset", "--quiet", "--hard", &base]);
+    // `clean -df` walks every directory of the tree (5-6 s on a monorepo) even when there is
+    // nothing to remove. Ask status for the untracked paths instead — it uses the untracked cache
+    // when the repo has one — and clean only those.
+    let untracked = known_untracked.unwrap_or_else(|| wt::dirty_files(slot_s));
+    if !untracked.is_empty() {
+        let mut args: Vec<&str> = vec!["-C", slot_s, "clean", "-df", "--"];
+        args.extend(untracked.iter().map(String::as_str));
+        let _ = git_quiet(&args);
+    }
+    if let Some((_, n, pdir)) = slot_parts(Path::new(slot_s)) {
+        clear_dirty_mark(&pdir, n);
+    }
 }
 
 /// Whether `slot` is a usable warm checkout — a *real* git worktree, not just a directory left
@@ -520,6 +553,11 @@ thread_local! {
     static TEST_OCCUPANTS: std::cell::RefCell<Option<BTreeMap<PathBuf, Vec<crate::agent_lease::Occupant>>>> =
         const { std::cell::RefCell::new(None) };
 }
+
+pub(crate) mod health;
+pub(crate) use health::*;
+
+pub(crate) mod slot_lock;
 
 pub(crate) mod release;
 pub(crate) use release::*;
@@ -848,8 +886,24 @@ fn acquire_slot(
     // every slot is leased, and only for slots whose holder is genuinely gone (dead pid, nothing
     // running in them).
     let leased_set = |l: &Leases| l.reserved_slots();
+    // Built slots first: a checkout whose deps a warm actually installed is the only kind that
+    // makes the lease near-instant. Slot order alone kept choosing the lowest idle slot, which in
+    // a monorepo pool is exactly the one warm keeps skipping.
+    // …and never a slot the last warm found dirty: leasing it would carry somebody's uncommitted
+    // work onto the new branch. Both are files beside leases.json, so this costs no git call.
+    let dirty = read_dirty_marks(&ctx.pool_dir);
+    let built: BTreeSet<u32> = read_warm_stamps(&ctx.pool_dir)
+        .difference(&dirty)
+        .copied()
+        .collect();
     let pick = |l: &Leases| match class {
-        SlotRole::Worker => bn_core::pool::pick_slot(ctx.size, &leased_set(l)),
+        SlotRole::Worker => {
+            // A dirty slot is off the table while anything else is free — even an unbuilt
+            // checkout beats carrying a stranger's uncommitted work onto a new branch.
+            let avoid: BTreeSet<u32> = leased_set(l).union(&dirty).copied().collect();
+            bn_core::pool::pick_built_slot(ctx.size, &avoid, &built)
+                .or_else(|| bn_core::pool::pick_built_slot(ctx.size, &leased_set(l), &built))
+        }
         SlotRole::Controller => bn_core::pool::pick_controller_slot(&leased_set(l)),
     };
     let enough_worker_slots = |l: &Leases, needed: usize| {
@@ -949,11 +1003,27 @@ fn acquire_slot(
     }
     match class {
         SlotRole::Worker => {
+            // Hold the slot across the switch so a concurrent warm cannot reset it under us.
+            let _slot_lock = slot_lock::lock_slot(&ctx.pool_dir, n);
             if !switch_into_slot(&slot_s, &bare_s, branch) {
-                ceprintln!(
-                    "{RED}Failed to switch '{branch}' into slot {n} (branch checked out elsewhere?){NC}"
-                );
-                return None;
+                // An idle slot nobody occupies has no work anyone is keeping, so a refused
+                // switch is leftover state — a tenant's uncommitted edits, a reset cut short —
+                // and the caller can do nothing about it. Reset and try once more instead of
+                // failing the lease over a slot's dirt; the retry still fails honestly when the
+                // branch is checked out elsewhere.
+                let recoverable = slot_occupants(&slot).is_empty();
+                if recoverable {
+                    ceprintln!(
+                        "{YELLOW}Slot {n} refused '{branch}' — resetting it and retrying…{NC}"
+                    );
+                    warm_reset_unlocked(&slot_s, &bare_s, None);
+                }
+                if !recoverable || !switch_into_slot(&slot_s, &bare_s, branch) {
+                    ceprintln!(
+                        "{RED}Failed to switch '{branch}' into slot {n} (branch checked out elsewhere?){NC}"
+                    );
+                    return None;
+                }
             }
         }
         // The controller coordinates and ships nothing, so its slot stays **detached** at the base
@@ -1424,6 +1494,8 @@ fn pool_status(cfg: &Config, repo: Option<String>) -> bool {
     }
     let now = now_epoch();
     let current_boot = current_boot_id();
+    let built = read_warm_stamps(&ctx.pool_dir);
+    let dirty_marks = read_dirty_marks(&ctx.pool_dir);
     for n in 1..=ctx.size as u32 {
         // Slot 1 is `bn control`'s alone — label it so an idle controller slot doesn't read as
         // spare worker capacity.
@@ -1463,27 +1535,21 @@ fn pool_status(cfg: &Config, repo: Option<String>) -> bool {
                     ),
                     bn_core::pool::LeaseLiveness::Live
                 );
-                let dirty = wt::dirty_count(&slot_path(&ctx.pool_dir, n).to_string_lossy());
-                let facts = bn_core::pool::LeaseFacts {
-                    holder_alive: !holder_dead,
-                    ..reclaim::lease_facts(&ctx, n, l, now)
-                };
+                // Lazy on git: the facts probe runs `git status` only for a lease that tmux and
+                // the process table already call abandoned, and the count is fetched only for the
+                // one line that prints it. Status used to pay two full status runs per leased
+                // slot — minutes on a monorepo pool.
+                let facts = reclaim::lease_occupancy(&ctx, n, l, now, !holder_dead);
                 // Say what actually frees the slot: a dirty abandoned slot is deliberately *not*
                 // reclaimable, so pointing at `prune` there promises something it will refuse to do.
                 let flag = if owner != n {
                     "  (paired main comparison)".to_string()
                 } else if bn_core::pool::lease_abandoned(facts, LEAKED_LEASE_GRACE_SECS) {
-                    "  (nobody home — reclaimable)".to_string()
-                } else if bn_core::pool::lease_abandoned(
-                    bn_core::pool::LeaseFacts {
-                        dirty: false,
-                        ..facts
-                    },
-                    LEAKED_LEASE_GRACE_SECS,
-                ) {
+                    // Occupancy only — no git here. Whether uncommitted work holds it is for
+                    // `prune` (which refuses) or `return --force` (which discards) to decide.
                     format!(
-                        "  (nobody home, {dirty} uncommitted change(s) — `wt pool return {n} \
-                         --force` frees it)"
+                        "  (nobody home — `wt pool prune` reclaims it if clean, `wt pool return \
+                         {n} --force` regardless)"
                     )
                 } else {
                     String::new()
@@ -1500,10 +1566,16 @@ fn pool_status(cfg: &Config, repo: Option<String>) -> bool {
                 );
             }
             None => {
-                let state = if slot_path(&ctx.pool_dir, n).is_dir() {
+                // "warm" is only true once a build has completed in the slot; a bare checkout
+                // still costs the full install on lease, so say so.
+                let state = if !slot_path(&ctx.pool_dir, n).is_dir() {
+                    "—"
+                } else if dirty_marks.contains(&n) {
+                    "idle (dirty — warm skips it; commit the work or `wt pool return N --force`)"
+                } else if built.contains(&n) {
                     "idle (warm)"
                 } else {
-                    "—"
+                    "idle (checkout only — not built; `wt pool warm`)"
                 };
                 cprintln!("  {GREEN}[{n}] {state}{NC}{role}{occupancy}{crowded}");
             }
@@ -1615,66 +1687,6 @@ fn pool_metrics(cfg: &Config, path: Option<String>, repo: Option<String>) -> boo
     }
     print_pool_health(&ctx, &leases, &recovered, recoveries);
     true
-}
-
-/// The recovery + health tail of `pool metrics`: what this check just healed (prior-boot slots
-/// reclaimed now), the lifetime restart-recovery count, and any leased slot still needing a human
-/// (a prior-boot lease left dirty, or a same-boot lease whose holder pid has died). This is the
-/// "continuously maintain the health of the leasing worktree" surface — reading it also heals.
-fn print_pool_health(
-    ctx: &PoolCtx,
-    leases: &Leases,
-    recovered: &ReclaimReport,
-    lifetime_recoveries: u64,
-) {
-    use bn_core::pool::LeaseLiveness;
-    if !recovered.prior_boot.is_empty() {
-        println!(
-            "  recovered   : {} slot(s) reclaimed from a prior boot now — {}",
-            recovered.prior_boot.len(),
-            slot_list(&recovered.prior_boot)
-        );
-    }
-    if lifetime_recoveries > 0 {
-        println!("  boot recov. : {lifetime_recoveries} (lifetime restart recoveries)");
-    }
-
-    let current_boot = current_boot_id();
-    let mut attention: Vec<String> = Vec::new();
-    for (n, l) in &leases.slots {
-        let liveness = bn_core::pool::lease_liveness(
-            boot_opt(&l.boot_id),
-            current_boot.as_deref(),
-            pid_alive(l.pid),
-        );
-        let dirty = wt::dirty_count(&slot_path(&ctx.pool_dir, *n).to_string_lossy());
-        match liveness {
-            LeaseLiveness::Live => {}
-            LeaseLiveness::StalePriorBoot => attention.push(format!(
-                "[{n}] {} — from a prior boot{}; reset with `wt pool return {n} --force`",
-                l.branch,
-                if dirty > 0 {
-                    format!(" ({dirty} uncommitted change(s))")
-                } else {
-                    String::new()
-                }
-            )),
-            LeaseLiveness::DeadThisBoot => attention.push(format!(
-                "[{n}] {} — holder pid {} gone this boot; `wt pool return {n}{}`",
-                l.branch,
-                l.pid,
-                if dirty > 0 { " --force" } else { "" }
-            )),
-        }
-    }
-    if attention.is_empty() {
-        println!("  health      : ok");
-    } else {
-        println!("  health      : {} slot(s) need attention", attention.len());
-        for line in attention {
-            println!("    - {line}");
-        }
-    }
 }
 
 // --- removal: prune + destroy ----------------------------------------------

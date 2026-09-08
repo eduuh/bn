@@ -7,7 +7,7 @@
 //!
 //! # This is not a second replenisher
 //!
-//! [`crate::orchestrate::plan_keep_warm`] already is one, and a good one: pure, unit-tested, and
+//! [`crate::keep_warm::plan_keep_warm`] already is one, and a good one: pure, unit-tested, and
 //! carrying the exclusion policy (`exclude_labels` / `exclude_titles`), the unassigned filter, and
 //! the dedupe-against-active-work rule. This module **reuses it as the ranking brain** and only
 //! changes what its decision is realized as — a task, rather than an orchestrate backlog entry.
@@ -25,9 +25,15 @@
 //! and securing it later would be the wrong order.
 
 use crate::issues::IssueRef;
-use crate::orchestrate::{plan_keep_warm, KeepWarmIssue, KeepWarmPolicy};
+use crate::keep_warm::{plan_keep_warm, KeepWarmIssue, KeepWarmPolicy};
 use crate::todo::{Task, TodoFile};
 use std::collections::HashSet;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullPlan {
+    pub issues: Vec<IssueRef>,
+    pub brainstorm: Vec<String>,
+}
 
 /// The provenance value stamped on a pulled task's `src:`, and its dedupe key.
 ///
@@ -65,14 +71,15 @@ pub fn active_depth(file: &TodoFile, repo: &str, today: &str) -> usize {
 /// (low-water minus current depth), which are eligible (unassigned, not excluded by label or
 /// title), and which are already spoken for — all belong to [`plan_keep_warm`]; this maps its
 /// answer back onto the issues it chose.
-pub fn plan_pull(
+pub fn plan_pull_actions(
     repo: &str,
     policy: &KeepWarmPolicy,
     depth: usize,
     existing: &HashSet<String>,
     issues: &[IssueRef],
+    last_brainstorm_at: Option<i64>,
     now: i64,
-) -> Vec<IssueRef> {
+) -> PullPlan {
     // Issues already minted as tasks are filtered out *before* planning, so they consume none of
     // the deficit — otherwise a repo whose whole backlog is already pulled would look "topped up"
     // and never receive the genuinely new issue that arrived this morning.
@@ -93,9 +100,18 @@ pub fn plan_pull(
 
     // `plan_keep_warm`'s own dedupe is against *active backlog ids*; ours is the `src:` filter
     // above, so nothing extra is excluded here.
-    let plan = plan_keep_warm(repo, policy, depth, &HashSet::new(), &candidates, None, now);
+    let plan = plan_keep_warm(
+        repo,
+        policy,
+        depth,
+        &HashSet::new(),
+        &candidates,
+        last_brainstorm_at,
+        now,
+    );
 
-    plan.enqueue_issues
+    let issues = plan
+        .enqueue_issues
         .iter()
         .filter_map(|number| {
             fresh
@@ -103,7 +119,22 @@ pub fn plan_pull(
                 .find(|i| i.number.to_string() == *number)
                 .map(|i| (*i).clone())
         })
-        .collect()
+        .collect();
+    PullPlan {
+        issues,
+        brainstorm: plan.brainstorm,
+    }
+}
+
+pub fn plan_pull(
+    repo: &str,
+    policy: &KeepWarmPolicy,
+    depth: usize,
+    existing: &HashSet<String>,
+    issues: &[IssueRef],
+    now: i64,
+) -> Vec<IssueRef> {
+    plan_pull_actions(repo, policy, depth, existing, issues, None, now).issues
 }
 
 /// Build the task line for a pulled issue.

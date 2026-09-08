@@ -138,7 +138,7 @@ pub fn log_dir() -> PathBuf {
 }
 
 /// The reusable references/standards directory (`bn ref`, #623). `$BN_REFERENCES_DIR` wins
-/// (tests, explicit override); otherwise it resolves to `<personal_root>/references` inside the
+/// (tests, explicit override); otherwise it resolves to `<work_root>/references` inside the
 /// synced notes repo via [`Config::references_dir`]. Person-scoped and cross-machine (standards
 /// apply on every host), so it is NOT keyed by `<machine>`.
 pub fn references_dir() -> PathBuf {

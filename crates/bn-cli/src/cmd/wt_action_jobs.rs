@@ -24,12 +24,9 @@ pub(crate) enum Started {
     Ran { code: i32 },
     /// It was already running — nothing to do but watch the row.
     AlreadyRunning,
-    /// Filed for the dispatcher instead: `outcome` is the enqueue's own label, and `why` names
-    /// what stopped it starting here, when something did.
-    Queued {
-        outcome: &'static str,
-        why: Option<String>,
-    },
+    /// Filed for the dispatcher instead — only on a machine that opted out of direct starts with
+    /// `[queue] direct = "queued"`. `outcome` is the enqueue's own label.
+    Queued { outcome: &'static str },
 }
 
 impl Started {
@@ -40,16 +37,12 @@ impl Started {
             Started::Ran { code: 0 } => "ran here and finished".to_string(),
             Started::Ran { code } => format!("ran here and exited {code}"),
             Started::AlreadyRunning => "already running".to_string(),
-            Started::Queued { outcome, why: None } => format!("queued ({outcome})"),
-            Started::Queued {
-                outcome,
-                why: Some(why),
-            } => format!("queued ({outcome}) — could not start it here: {why}"),
+            Started::Queued { outcome } => format!("queued ({outcome})"),
         }
     }
 }
 
-/// Start one picker verb for `repo` right now, or file it if this machine cannot.
+/// Start one picker verb for `repo` right now.
 ///
 /// The door a person's keypress comes through when [`bn_core::resolver::DirectMode`] is immediate,
 /// which it is unless the machine opted out. The entry is filed exactly as [`enqueue_action`]
@@ -57,10 +50,16 @@ impl Started {
 /// from *this* process through [`crate::cmd::queue_tick::dispatch_now`], so the row shows the same
 /// running state a dispatched entry shows, and nothing waits on a pass.
 ///
+/// **It never falls back to the queue.** It used to: a tick lock that could not be had, or a
+/// spawn that failed, left the entry pending with the line reading `queued — could not start it
+/// here`, and on a busy machine the dispatcher then held it for as long as it held everything
+/// else. A keypress that reports "queued" and never runs is the failure this exists to remove, so
+/// what could not start here is taken back off and reported as the error it is — press again, or
+/// read why.
+///
 /// Filing and starting happen under the tick lock, because the dispatcher wakes on the append: a
 /// pass that planned the entry between the two would lease it as well, and the build would run
-/// twice. If the lock cannot be had in a few seconds the verb is queued the ordinary way, and the
-/// line says so.
+/// twice.
 ///
 /// An entry that is already filed is the *same* request being asked for again — `ctrl-o → now` on
 /// a verb parked for the away window — and is started if it is pending. One that is already
@@ -72,20 +71,11 @@ pub(crate) fn start_action(
     branch: Option<&str>,
 ) -> Result<Started, String> {
     if !cfg.queue.direct.is_immediate() {
-        return enqueue_action(cfg, action, repo, branch, When::Now).map(|o| Started::Queued {
-            outcome: o.label(),
-            why: None,
-        });
+        return enqueue_action(cfg, action, repo, branch, When::Now)
+            .map(|o| Started::Queued { outcome: o.label() });
     }
-    let lock = match crate::cmd::queue_tick::hold_tick_lock() {
-        Ok(lock) => lock,
-        Err(why) => {
-            return enqueue_action(cfg, action, repo, branch, When::Now).map(|o| Started::Queued {
-                outcome: o.label(),
-                why: Some(why),
-            })
-        }
-    };
+    let lock = crate::cmd::queue_tick::hold_tick_lock()
+        .map_err(|why| format!("could not start {} here: {why} — press it again", action.label))?;
     let subject = action_subject(action, repo, branch);
     let now = bn_core::util::now_epoch_secs();
     let spec = spec_for(cfg, action, repo, branch, When::Now);
@@ -99,23 +89,12 @@ pub(crate) fn start_action(
     match crate::cmd::queue_tick::dispatch_now(cfg, &lock, entry, now) {
         Ok(crate::cmd::queue_tick::DirectStart::Launched) => Ok(Started::Now),
         Ok(crate::cmd::queue_tick::DirectStart::Ran { code }) => Ok(Started::Ran { code }),
-        // It could not start here and nothing will start it later either: take it back off rather
-        // than report a `queued` that never becomes anything — the exact failure `enqueue_action`'s
-        // guard exists to prevent.
-        Err(why)
-            if !cfg.queue_enabled_here() || !bn_core::queue::daemon::is_running() =>
-        {
+        // It could not start here, and a person asked for it *here*: take it back off rather than
+        // leave a `queued` row that the dispatcher may sit on for an hour.
+        Err(why) => {
             let _ = backlog::cancel(&path, repo, &entry.id, bn_core::util::now_epoch_secs());
-            Err(format!(
-                "could not start {} here ({why}), and {}",
-                action.label,
-                dispatcher_down_message(cfg, action)
-            ))
+            Err(format!("could not start {} here: {why}", action.label))
         }
-        Err(why) => Ok(Started::Queued {
-            outcome: outcome.label(),
-            why: Some(why),
-        }),
     }
 }
 
@@ -518,7 +497,7 @@ mod tests {
     /// identically.
     #[test]
     fn the_direct_spec_is_the_queued_spec() {
-        // The spec mints a task line, which lands in `<personal_root>/tasks.txt` — a temp dir, or
+        // The spec mints a task line, which lands in `<work_root>/tasks.txt` — a temp dir, or
         // the test writes into the crate.
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut cfg = machine(true);

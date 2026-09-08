@@ -66,6 +66,20 @@ pub fn pick_slot(size: usize, leased: &BTreeSet<u32>) -> Option<u32> {
     (first_worker..=size as u32).find(|n| !leased.contains(n))
 }
 
+/// [`pick_slot`], but preferring a slot in `built` — one whose deps a warm has actually installed
+/// (the CLI records a stamp beside `leases.json` on every successful `build.sh`). The whole point
+/// of the pool is to hand out a checkout where the build is already paid for; picking by slot
+/// number alone kept handing out the lowest idle slot even when it was the one warm had never
+/// managed to build (skipped as dirty, or its install failed) while built slots sat idle beside
+/// it. Falls back to the lowest idle slot when no built slot is free, so a pool with no stamps at
+/// all behaves exactly as before.
+pub fn pick_built_slot(size: usize, leased: &BTreeSet<u32>, built: &BTreeSet<u32>) -> Option<u32> {
+    let first_worker = crate::agent::MAIN_POOL_SLOT + 1;
+    (first_worker..=size as u32)
+        .find(|n| !leased.contains(n) && built.contains(n))
+        .or_else(|| pick_slot(size, leased))
+}
+
 /// The reserved main slot, or `None` when it is already leased. `bn control start` is the only
 /// caller: the controller never rotates through the worker range, so this is a fixed-slot
 /// availability check rather than a search.
@@ -523,6 +537,36 @@ mod tests {
     fn pick_slot_none_when_full() {
         let leased: BTreeSet<u32> = [2, 3, 4].into_iter().collect();
         assert_eq!(pick_slot(4, &leased), None);
+    }
+
+    #[test]
+    fn pick_built_slot_prefers_a_built_slot_over_a_lower_unbuilt_one() {
+        let leased = BTreeSet::new();
+        let built: BTreeSet<u32> = [3, 4].into_iter().collect();
+        assert_eq!(pick_built_slot(6, &leased, &built), Some(3));
+    }
+
+    #[test]
+    fn pick_built_slot_skips_leased_built_slots() {
+        let leased: BTreeSet<u32> = [3].into_iter().collect();
+        let built: BTreeSet<u32> = [3, 4].into_iter().collect();
+        assert_eq!(pick_built_slot(6, &leased, &built), Some(4));
+    }
+
+    #[test]
+    fn pick_built_slot_falls_back_to_lowest_idle_when_no_built_slot_is_free() {
+        let leased: BTreeSet<u32> = [3, 4].into_iter().collect();
+        let built: BTreeSet<u32> = [3, 4].into_iter().collect();
+        assert_eq!(pick_built_slot(6, &leased, &built), Some(2));
+        // No stamps at all: identical to pick_slot.
+        assert_eq!(pick_built_slot(6, &leased, &BTreeSet::new()), Some(2));
+    }
+
+    #[test]
+    fn pick_built_slot_never_returns_the_controller() {
+        let built: BTreeSet<u32> = [1].into_iter().collect();
+        assert_eq!(pick_built_slot(1, &BTreeSet::new(), &built), None);
+        assert_eq!(pick_built_slot(2, &BTreeSet::new(), &built), Some(2));
     }
 
     #[test]

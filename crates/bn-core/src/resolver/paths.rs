@@ -5,6 +5,58 @@ use super::{Config, Resolved};
 use std::path::{Path, PathBuf};
 
 impl Config {
+    /// Root for person-scoped stores that promise cross-machine sync.
+    ///
+    /// These stores are global to the person rather than a single repo, but they still need to
+    /// live in a git-backed notes root so `commit-notes` can carry them between machines. Fall
+    /// back to `personal_root` only in minimal test configs that never populated `work_root`.
+    fn synced_person_store_root(&self) -> &Path {
+        if self.work_root.as_os_str().is_empty() {
+            &self.personal_root
+        } else {
+            &self.work_root
+        }
+    }
+
+    fn migrate_synced_person_store_file(&self, name: &str) {
+        if self.work_root.as_os_str().is_empty() || self.personal_root == self.work_root {
+            return;
+        }
+        let src = self.personal_root.join(name);
+        let dst = self.work_root.join(name);
+        if !src.is_file() || dst.exists() {
+            return;
+        }
+        let Some(parent) = dst.parent() else {
+            return;
+        };
+        let _ = std::fs::create_dir_all(parent);
+        if std::fs::rename(&src, &dst).is_ok() {
+            return;
+        }
+        let Ok(bytes) = std::fs::read(&src) else {
+            return;
+        };
+        if std::fs::write(&dst, bytes).is_ok() {
+            let _ = std::fs::remove_file(&src);
+        } else {
+            let _ = std::fs::remove_file(&dst);
+        }
+    }
+
+    fn migrate_synced_person_store_dir(&self, name: &str) {
+        if self.work_root.as_os_str().is_empty() || self.personal_root == self.work_root {
+            return;
+        }
+        let src = self.personal_root.join(name);
+        let dst = self.work_root.join(name);
+        if !src.is_dir() {
+            return;
+        }
+        let _ = migrate_dir_contents(&src, &dst);
+        let _ = std::fs::remove_dir(&src);
+    }
+
     /// Storage root for a repo: work dir if classified work (exact, case-sensitive),
     /// else personal. `repo` is expected already-lowercased (see [`resolve`]).
     pub fn notes_dir_for(&self, repo: &str) -> &Path {
@@ -78,7 +130,7 @@ impl Config {
             .map(|p| p.to_string_lossy().replace('\\', "/"))
     }
 
-    /// `<personal_root>/tasks.txt` — **the** task store (#995): one file holding every task, for
+    /// `<work_root>/tasks.txt` — **the** task store (#995): one file holding every task, for
     /// every repo, on every machine.
     ///
     /// **Person-scoped, not machine-scoped**, following [`Config::staff_feed_dir`] (#270) rather
@@ -88,14 +140,16 @@ impl Config {
     /// (see [`crate::todo::ensure_union_merge`]) and every line carries `uid:`/`mod:` so a
     /// concatenating merge is repaired on read rather than conflicting.
     pub fn tasks_file(&self) -> PathBuf {
-        self.personal_root.join("tasks.txt")
+        self.migrate_synced_person_store_file("tasks.txt");
+        self.synced_person_store_root().join("tasks.txt")
     }
 
-    /// `<personal_root>/tasks` — the staging area for task context docs, before a task is picked
+    /// `<work_root>/tasks` — the staging area for task context docs, before a task is picked
     /// up into a worktree and its doc moves next to the branch note. Person-scoped like
     /// [`Config::tasks_file`], and syncs with it.
     pub fn tasks_dir(&self) -> PathBuf {
-        self.personal_root.join("tasks")
+        self.migrate_synced_person_store_dir("tasks");
+        self.synced_person_store_root().join("tasks")
     }
 
     /// `<personal_root>/<machine>/daily` — the daily-goals subtree. Day-scoped and
@@ -298,22 +352,24 @@ impl Config {
             .join("reference")
     }
 
-    /// `<personal_root>/references` — the reusable standards/preferences store (`bn ref`, #623).
+    /// `<work_root>/references` — the reusable standards/preferences store (`bn ref`, #623).
     /// **Person-scoped, cross-machine** (mirrors `staff/`, NOT machine-scoped like `daily`/`state`):
     /// coding standards apply on every host, so the files live once under the synced notes root and
     /// every box reads the same references — no per-machine duplication. One markdown file per topic
     /// (`references/<name>.md`), synced via the branch-notes git repo like everything else. The free
     /// [`references_dir`](super::references_dir) delegates here once `$BN_REFERENCES_DIR` is unset.
     pub fn references_dir(&self) -> PathBuf {
-        self.personal_root.join("references")
+        self.migrate_synced_person_store_dir("references");
+        self.synced_person_store_root().join("references")
     }
 
-    /// `<personal_root>/links.md` — the store of links worth going back to (`bn links`).
+    /// `<work_root>/links.md` — the store of links worth going back to (`bn links`).
     /// **Person-scoped, cross-machine**, for the same reason as [`references_dir`](Self::references_dir):
     /// a PBI or a portal blade is yours, not one laptop's. Sits beside `tasks.txt` in the synced
     /// notes root rather than under `<machine>/`.
     pub fn links_file(&self) -> PathBuf {
-        self.personal_root.join("links.md")
+        self.migrate_synced_person_store_file("links.md");
+        self.synced_person_store_root().join("links.md")
     }
 
     /// Existing-roots in oracle order: personal first, then work (only if they exist).
@@ -333,5 +389,108 @@ impl Config {
             }
         }
         roots
+    }
+}
+
+fn migrate_dir_contents(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            migrate_dir_contents(&src_path, &dst_path)?;
+            let _ = std::fs::remove_dir(&src_path);
+            continue;
+        }
+        if dst_path.exists() {
+            continue;
+        }
+        if std::fs::rename(&src_path, &dst_path).is_ok() {
+            continue;
+        }
+        std::fs::copy(&src_path, &dst_path)?;
+        std::fs::remove_file(&src_path)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn synced_person_stores_use_work_root() {
+        let cfg = Config {
+            personal_root: PathBuf::from("/personal"),
+            work_root: PathBuf::from("/work"),
+            ..Default::default()
+        };
+
+        assert_eq!(cfg.tasks_file(), PathBuf::from("/work/tasks.txt"));
+        assert_eq!(cfg.tasks_dir(), PathBuf::from("/work/tasks"));
+        assert_eq!(cfg.references_dir(), PathBuf::from("/work/references"));
+        assert_eq!(cfg.links_file(), PathBuf::from("/work/links.md"));
+    }
+
+    #[test]
+    fn synced_person_stores_fall_back_to_personal_root_without_work_root() {
+        let cfg = Config {
+            personal_root: PathBuf::from("/personal"),
+            ..Default::default()
+        };
+
+        assert_eq!(cfg.tasks_file(), PathBuf::from("/personal/tasks.txt"));
+        assert_eq!(cfg.tasks_dir(), PathBuf::from("/personal/tasks"));
+        assert_eq!(cfg.references_dir(), PathBuf::from("/personal/references"));
+        assert_eq!(cfg.links_file(), PathBuf::from("/personal/links.md"));
+    }
+
+    #[test]
+    fn synced_person_store_getters_migrate_legacy_files_and_dirs() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let personal = tmp.path().join("personal");
+        let work = tmp.path().join("work");
+        std::fs::create_dir_all(personal.join("tasks")).expect("personal tasks dir");
+        std::fs::create_dir_all(personal.join("references")).expect("personal refs dir");
+        std::fs::write(personal.join("tasks.txt"), "t1").expect("legacy tasks file");
+        std::fs::write(personal.join("links.md"), "k1").expect("legacy links file");
+        std::fs::write(personal.join("tasks").join("t1.md"), "task").expect("legacy task doc");
+        std::fs::write(personal.join("references").join("style.md"), "ref")
+            .expect("legacy reference");
+
+        let cfg = Config {
+            personal_root: personal.clone(),
+            work_root: work.clone(),
+            ..Default::default()
+        };
+
+        assert_eq!(cfg.tasks_file(), work.join("tasks.txt"));
+        assert_eq!(cfg.tasks_dir(), work.join("tasks"));
+        assert_eq!(cfg.references_dir(), work.join("references"));
+        assert_eq!(cfg.links_file(), work.join("links.md"));
+
+        assert_eq!(
+            std::fs::read_to_string(work.join("tasks.txt")).expect("migrated tasks"),
+            "t1"
+        );
+        assert_eq!(
+            std::fs::read_to_string(work.join("links.md")).expect("migrated links"),
+            "k1"
+        );
+        assert_eq!(
+            std::fs::read_to_string(work.join("tasks").join("t1.md")).expect("migrated task doc"),
+            "task"
+        );
+        assert_eq!(
+            std::fs::read_to_string(work.join("references").join("style.md"))
+                .expect("migrated reference"),
+            "ref"
+        );
+        assert!(!personal.join("tasks.txt").exists());
+        assert!(!personal.join("links.md").exists());
+        assert!(!personal.join("tasks").exists());
+        assert!(!personal.join("references").exists());
     }
 }

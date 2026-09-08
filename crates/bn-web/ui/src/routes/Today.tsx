@@ -546,7 +546,7 @@ export function Today() {
             <SectionCard
               eyebrow="admit"
               title="Plan today’s work"
-              count="durable machine queue"
+              count="durable queue"
               tone="ready"
             >
               <p className="mb-3 text-sm text-muted-foreground">
