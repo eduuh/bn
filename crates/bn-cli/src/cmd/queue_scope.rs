@@ -60,7 +60,20 @@ pub(crate) fn emit_disabled_badge(cfg: &Config, json: bool) {
     }
 }
 
-pub(crate) fn emit_badge(cfg: &Config, now: i64, json: bool) {
+/// The queue badge's computed state: the compact text plus the counters `--json` reports.
+pub(crate) struct QueueBadge {
+    pub(crate) text: String,
+    stale: bool,
+    failed: usize,
+    foreground_pending: usize,
+    foreground_running: usize,
+    held: String,
+}
+
+/// Compute the queue badge — `Q !3` (failed) / `Q stale` / `Q !conflict` / `Q 2▶ 1·fg`, empty when
+/// the queue has nothing worth saying. Split out of `emit_badge` so `bn tat`'s status header can
+/// render the same text without shelling out to `bn queue badge` (#1349).
+pub(crate) fn badge(cfg: &Config, now: i64) -> QueueBadge {
     let decision = bn_core::queue::decision::QueueDecision::read();
     let stale = decision
         .as_ref()
@@ -90,12 +103,13 @@ pub(crate) fn emit_badge(cfg: &Config, now: i64, json: bool) {
         .as_ref()
         .filter(|d| d.outcome == "held" && d.pending > 0)
         .and_then(attention_hold)
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .to_string();
     let text = if failed > 0 {
         format!("Q !{failed}")
     } else if stale {
         "Q stale".to_string()
-    } else if matches!(held, "no-capable-node" | "cant-merge" | "conflict") {
+    } else if matches!(held.as_str(), "no-capable-node" | "cant-merge" | "conflict") {
         format!("Q !{held}")
     } else if foreground_running > 0 || foreground_pending > 0 {
         let mut parts = Vec::new();
@@ -109,24 +123,36 @@ pub(crate) fn emit_badge(cfg: &Config, now: i64, json: bool) {
     } else {
         String::new()
     };
+    QueueBadge {
+        text,
+        stale,
+        failed,
+        foreground_pending,
+        foreground_running,
+        held,
+    }
+}
+
+pub(crate) fn emit_badge(cfg: &Config, now: i64, json: bool) {
+    let b = badge(cfg, now);
     if json {
         println!(
             "{}",
             Envelope::success(
                 "queue-badge",
                 serde_json::json!({
-                    "text": text,
-                    "stale": stale,
-                    "failed": failed,
-                    "foreground_pending": foreground_pending,
-                    "foreground_running": foreground_running,
-                    "held": held,
+                    "text": b.text,
+                    "stale": b.stale,
+                    "failed": b.failed,
+                    "foreground_pending": b.foreground_pending,
+                    "foreground_running": b.foreground_running,
+                    "held": b.held,
                 }),
             )
             .to_json()
         );
-    } else if !text.is_empty() {
-        println!("{text}");
+    } else if !b.text.is_empty() {
+        println!("{}", b.text);
     }
 }
 

@@ -281,8 +281,14 @@ fn main() {
 ///
 /// Two families, same reason. The pickers (`tat`, `jump`, `connect`) are self-referencing: fzf's
 /// `--preview`, `reload()` and action binds all re-invoke `bn … --pick-stage <stage>`. And the
-/// tmux status line re-invokes seven of these commands from `#(...)` on every `status-interval`
-/// repaint — at 5s that is roughly 121k processes a day, none of them a user action.
+/// tmux status line re-invokes some of these commands from `#(...)` on every `status-interval`
+/// repaint — at 5s that was roughly 121k processes a day across seven segments, none of them a
+/// user action.
+///
+/// Three of those seven are left on the bar: `tmux-goal`, `tmux-git` and `tmux-status`. The other
+/// four — `attn badge`, `queue badge`, `tmux-mcp badge`, `cron running` — moved into `bn tat`'s
+/// header (#1349), which calls them in-process. They stay listed below because they are still
+/// commands a script or a `#()` can invoke, and the reasoning has not changed for them.
 ///
 /// Those processes exist only to print a fragment and exit, so they skip the once-per-invocation
 /// machine housekeeping in [`main`]: reconciling managed services, firing cron catch-up, repairing

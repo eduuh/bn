@@ -98,6 +98,24 @@ worktree creation. See `config/hooks/post-create` for a starting point.
 | Tab | `bn jump --next` (native; jump to top window needing you; repeat to cycle) |
 | m   | watch this window (silence → ✓) |
 
+## What the two top rows carry
+
+Row 0 (dashboard) shows only what changes with **where you are**: the goal (or the linked
+PR's title), the git segment (`⎇ <branch>`, ahead/behind, dirty count), this branch's open
+todo/blocker tally, one bell per agent waiting anywhere on the server, and the clock.
+
+Row 1 (tabs) shows the window **number** plus that window's bn badges — no branch name.
+Row 0's git segment already names the focused branch, so repeating it once per tab cost
+20-30 columns per window and overflowed the tab strip long before the windows ran out. The
+window's tmux *name* is still the sanitized branch, so ``prefix ` `` (`bn jump --session`)
+and right-clicking a tab still identify it.
+
+Four badges used to sit on row 0 and no longer do — attention (`bn attn badge`), queue
+(`bn queue badge`), bn-web health (`bn tmux-mcp badge`) and the running cron job
+(`bn cron running`). They were quiet on almost every 5s repaint. They are now the header of
+`bn tat` (`prefix C-o`), painted on open and on `ctrl-r`, and `bn tat` grew a row that
+starts and stops bn-web. The commands themselves still work.
+
 ## Live agent activity in the status bar
 
 Each window's status entry shows what Claude Code is doing in that worktree, so a

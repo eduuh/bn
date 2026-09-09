@@ -14,16 +14,25 @@ pub(super) fn keepalive_status(wintasks: &[winsched::WinTask]) -> Option<&'stati
     }
 }
 
-/// Render the compact running-job badge used by tmux.
-pub(crate) fn emit_cron_running(cfg: &Config) {
+/// The compact running-job badge — `⟳ <job>` / `⟳ <job>+N`, `None` when this machine runs no cron
+/// or nothing is in flight. A read_dir of `state_dir()/running`: no subprocess, no network. Split
+/// out of `emit_cron_running` so `bn tat`'s status header can reuse it in-process (#1349).
+pub(crate) fn running_badge(cfg: &Config) -> Option<String> {
     if !cfg.cron_enabled_here() {
-        return;
+        return None;
     }
     let jobs = bn_core::events::running_jobs();
     match jobs.split_first() {
-        None => {}
-        Some((first, [])) => println!("⟳ {first}"),
-        Some((first, rest)) => println!("⟳ {first}+{}", rest.len()),
+        None => None,
+        Some((first, [])) => Some(format!("⟳ {first}")),
+        Some((first, rest)) => Some(format!("⟳ {first}+{}", rest.len())),
+    }
+}
+
+/// Render the compact running-job badge used by tmux.
+pub(crate) fn emit_cron_running(cfg: &Config) {
+    if let Some(badge) = running_badge(cfg) {
+        println!("{badge}");
     }
 }
 

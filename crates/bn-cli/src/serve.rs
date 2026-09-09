@@ -322,7 +322,7 @@ fn reap_listeners(port: u16) -> Vec<i32> {
 /// signals it. It keeps the port, and a subsequently registered service crash-loops on
 /// `cannot bind 127.0.0.1:7770: Address already in use` — which from the outside is
 /// indistinguishable from nothing happening, while this command printed "stopped and unregistered".
-fn stop(json: bool) {
+pub(crate) fn stop(json: bool) {
     let port = resolved_port(None);
     let was_installed = crate::launchd::web_installed() || crate::systemd::web_installed();
     crate::launchd::web_uninstall();

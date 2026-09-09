@@ -453,47 +453,6 @@ pub(crate) fn emit_attn_ingest(source: &str, severity: &str, replace: bool, as_j
     }
 }
 
-/// Styled status-bar fragment for attention: ONE number — the total of everything that wants
-/// you — with a bell glyph. Sums raised attention (cron failures + urgent/other items, via
-/// `doctor::badge`) AND live agent windows (`waiting` needing input + `done`/ready, across all
-/// sessions — shared with `bn tmux-attn-count` via [`tmux_status::attn_window_tally`]). Red when
-/// anything is urgent (an urgent item, a cron failure, or a wait ignored 15+ minutes), amber
-/// otherwise; nothing when all quiet, so the bar stays clean. The single attention producer in
-/// status-format (the window tally used to be a separate `bn-attention-count.sh` fragment).
-pub(crate) fn emit_attn_badge() {
-    let today = today();
-    let b = bn_core::doctor::badge(&today);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let win = crate::proc::tmux_raw(&[
-        "list-windows",
-        "-a",
-        "-F",
-        "#{@bn_agent}\t#{@bn_done}\t#{@bn_agent_since}",
-    ])
-    .unwrap_or_default();
-    let tally = crate::cmd::tmux_status::attn_window_tally(&win, now);
-    if let Some(badge) =
-        crate::cmd::tmux_status::render_attn_badge(&b, &tally, notify_channel_is_dead(&today))
-    {
-        print!("{badge}");
-    }
-}
-
-/// Whether today's notifications all failed to reach a backend — i.e. the push channel is broken
-/// rather than deliberately quiet. The ledger is not rolled on load, so roll it first (as
-/// `bn doctor` does) or a stale day's tallies leak into today's answer.
-///
-/// This is the difference between "bn chose not to interrupt you" and "bn tried and could not
-/// reach you", which nothing on the bar could previously express.
-fn notify_channel_is_dead(today: &str) -> bool {
-    let mut ledger = bn_core::notify::policy::load_ledger();
-    ledger.roll(today);
-    ledger.sent_today == 0 && ledger.undeliverable() > 0
-}
-
 pub(crate) fn emit_attn_to_notify(as_json: bool) {
     let items = bn_core::attention::to_notify(&today());
     if as_json && json_ok("attn", payload::attn_list_data(&items)) {

@@ -7,7 +7,7 @@
 use crate::*;
 
 #[path = "cron/machine_scope.rs"]
-mod machine_scope;
+pub(crate) mod machine_scope;
 pub(crate) use machine_scope::emit_cron_running;
 use machine_scope::{desired_crons, keepalive_status};
 

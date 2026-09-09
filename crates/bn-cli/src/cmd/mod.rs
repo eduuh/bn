@@ -17,6 +17,7 @@ pub(crate) mod agent_run;
 pub(crate) mod agent_scope;
 pub(crate) mod agents;
 pub(crate) mod attn;
+pub(crate) mod attn_badge;
 pub(crate) mod attention_workflow;
 pub(crate) mod build;
 pub(crate) mod control;

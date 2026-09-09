@@ -167,23 +167,23 @@ pub(crate) fn emit_glyphs() {
     let n = ink.close();
     let inv = if ink.is_on() { "\x1b[7m" } else { "" };
     println!(
-        "  row 0   \u{1f4ee}2 {r}1⚠{n} {y}2{} 12m{n} {gr}1{}{n}  {} ship the glyph module  {d}│ {} 2m │ {}3 {}1 │ 14:07 Sat 05{n}",
-        g::BELL,
-        g::CHECK,
+        "  row 0   {} ship the glyph module   {d}│ ⎇ glyph-module {gr}●{n} {d}│{n} {y}{}3 {}1{n} {d}│{n} {y}{}{n} {d}│ 14:07 Sat 05{n}",
         g::TARGET,
-        g::CLOCK,
         g::PENCIL,
         g::BAN,
+        g::BELL,
     );
     println!(
-        "  row 1   {inv} main {n}  1 main   2 imoji-improve {r}{}1{n} {d}{}2{n} {y}{}{n}   3 api {gr}{}{n}",
+        "  row 1   {inv} bn {n}  1   2 {r}{}1{n} {d}{}2{n} {y}{}{n}   3 {gr}{}{n}",
         g::BAN,
         g::PENCIL,
         g::BELL,
         g::CHECK,
     );
     println!(
-        "\n  \u{1f4ee}N (row 0, far left) = unread staff briefing cards; hidden during focus."
+        "\n  row 1 tabs are the window NUMBER + badges — no branch name; row 0's git segment\n  \
+         already names the focused branch. Attention, queue, cron and bn-web left the bar for\n  \
+         `bn tat`'s header."
     );
     println!(
         "\ntofu above? your terminal font isn't a Nerd Font — mirrors: see bn-core/src/glyph.rs"

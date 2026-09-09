@@ -6,8 +6,9 @@
 //! the places — live windows, idle worktrees, open PRs, codespaces and warm pool slots.
 use super::commands::{command_rows, CmdAvail};
 use super::{
-    agent_dot, cs_for_repo, cs_window_name, discovery::remote_prs, discovery::scan_worktrees,
-    exact_session_target, is_bare_repo, pool_eligible, ref_repo, ref_session, split7, Roots,
+    agent_dot, codespaces, cs_auth_needed, cs_for_repo, cs_window_name, discovery::ordered_refs,
+    discovery::remote_prs, discovery::scan_worktrees, exact_session_target, is_bare_repo,
+    pool_eligible, ref_repo, ref_session, ref_tag, split7, tmux_sessions, Roots,
 };
 use crate::proc::tmux_raw;
 use crate::wt;
@@ -292,6 +293,58 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+// --- the project picker's own rows (the `--pick-stage list` feed) -----------
+
+/// Decorated list rows: `<display>\t<ref>`. fzf shows only `<display>` (`--with-nth=1`); the
+/// `<ref>` rides along as the hidden last field (`{-1}`) for preview/kill/selection.
+pub(super) fn build_list(cfg: &Config, roots: &Roots, refresh: bool) {
+    let refs = ordered_refs(roots, refresh);
+    let known_sessions: HashSet<String> = refs.iter().map(|r| ref_session(r)).collect();
+    let known_repos: HashSet<String> = refs.iter().map(|r| ref_repo(r).to_string()).collect();
+    let tmux = tmux_sessions();
+    for r in refs {
+        let sess = ref_session(&r);
+        let marker = if let Some(count) = tmux.count(&sess) {
+            format!("[*{count}w] ")
+        } else {
+            "      ".to_string()
+        };
+        let tag = ref_tag(&r);
+        let suffix = if tag.is_empty() {
+            String::new()
+        } else {
+            format!(" ({tag})")
+        };
+        println!("{marker}{}{suffix}\t{r}", ref_repo(&r));
+    }
+    for sess in tmux.orphans(&known_sessions) {
+        let count = tmux.count(&sess).unwrap_or(0);
+        println!("[*{count}w] {sess} (session)\t{sess}");
+    }
+    // Codespaces whose repo is NOT cloned locally — top-level rows, like orphans (a cloned repo's
+    // codespaces surface inside its worktree sub-picker instead). The hidden field is a `cs:` ref,
+    // routed by `is_cs_ref` before any `ref_*` call.
+    for cs in codespaces() {
+        if known_repos.contains(&cs.repo) {
+            continue;
+        }
+        println!(
+            "      {}-{} (codespace)\tcs:{}/{}/{}",
+            cs.repo, cs.branch, cs.repo, cs.branch, cs.name
+        );
+    }
+    // Codespace auth lapsed (scope expired / logged out): a single actionable row, Enter runs the
+    // gh remedy. Shown only when the cached list failed for auth.
+    if cs_auth_needed() {
+        println!("   ⚠  codespaces: gh auth expired — Enter to fix\tcs-auth");
+    }
+    // bn-web, the one service this picker can start and stop. Its health used to be a status-bar
+    // badge (`bn tmux-mcp badge`); a badge you cannot act on is worse than a row you can (#1349).
+    if let Some(row) = super::status::web_row(cfg) {
+        println!("{row}");
+    }
 }
 
 #[cfg(test)]

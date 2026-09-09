@@ -6,8 +6,8 @@
 //! the private items it asserts on.
 use super::codespaces::{cs_cache_fresh, cs_raw};
 use super::discovery::{
-    discovery_cache_fresh, discovery_cache_path, read_discovery_cache, scan_worktrees,
-    write_discovery_cache, CachedRemotePrs, DiscoveryCache,
+    discovery_cache_fresh, discovery_cache_path, ordered_refs, read_discovery_cache,
+    scan_worktrees, write_discovery_cache, CachedRemotePrs, DiscoveryCache,
 };
 use super::*;
 

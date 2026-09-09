@@ -21,6 +21,7 @@ mod paths;
 mod preview;
 mod queue_view;
 mod rows;
+mod status;
 
 use codespaces::{
     codespaces, cs_account, cs_account_cfg_path, cs_auth_cmd, cs_auth_needed, cs_auth_refresh,
@@ -28,11 +29,11 @@ use codespaces::{
     is_cs_ref, open_codespace,
 };
 use commands::{command_from_pick, Step};
-use discovery::{ordered_refs, remote_prs, remote_prs_fetch_blocking, spawn_remote_warm};
+use discovery::{remote_prs, remote_prs_fetch_blocking, spawn_remote_warm};
 use keys::{kill_from_line, release_pool, rm_worktree, warm_pool};
 use paths::{bare_repo_main_path, is_bare_repo, project_path, resolve_project_path};
 use preview::preview;
-use rows::build_sub_rows;
+use rows::{build_list, build_sub_rows};
 
 use crate::proc::{tmux_command, tmux_ok, tmux_raw, tmux_run};
 use crate::wt;
@@ -98,6 +99,11 @@ pub enum TatStage {
     /// in the background. Spawned detached by the picker so no paint ever waits on a forge.
     #[value(name = "warm-remote")]
     WarmRemote,
+    /// Emit the one-line status header — attention, queue, cron and bn-web, the badges that used to
+    /// sit in tmux's `status-format[0]` (#1349). Bound to `start` and `ctrl-r` on both pickers via
+    /// `transform-header`, and deliberately NOT to the 700ms `subtick` repaint.
+    #[value(name = "statusline")]
+    StatusLine,
 }
 
 // --- ref helpers -----------------------------------------------------------
@@ -804,53 +810,6 @@ fn open_or_select_window(session: &str, window: &str, wt_path: &Path) {
     }
 }
 
-// --- list (the --pick-stage list feed) -------------------------------------
-
-/// Decorated list rows: `<display>\t<ref>`. fzf shows only `<display>` (`--with-nth=1`); the
-/// `<ref>` rides along as the hidden last field (`{-1}`) for preview/kill/selection.
-fn build_list(roots: &Roots, refresh: bool) {
-    let refs = ordered_refs(roots, refresh);
-    let known_sessions: HashSet<String> = refs.iter().map(|r| ref_session(r)).collect();
-    let known_repos: HashSet<String> = refs.iter().map(|r| ref_repo(r).to_string()).collect();
-    let tmux = tmux_sessions();
-    for r in refs {
-        let sess = ref_session(&r);
-        let marker = if let Some(count) = tmux.count(&sess) {
-            format!("[*{count}w] ")
-        } else {
-            "      ".to_string()
-        };
-        let tag = ref_tag(&r);
-        let suffix = if tag.is_empty() {
-            String::new()
-        } else {
-            format!(" ({tag})")
-        };
-        println!("{marker}{}{suffix}\t{r}", ref_repo(&r));
-    }
-    for sess in tmux.orphans(&known_sessions) {
-        let count = tmux.count(&sess).unwrap_or(0);
-        println!("[*{count}w] {sess} (session)\t{sess}");
-    }
-    // Codespaces whose repo is NOT cloned locally — top-level rows, like orphans (a cloned repo's
-    // codespaces surface inside its worktree sub-picker instead). The hidden field is a `cs:` ref,
-    // routed by `is_cs_ref` before any `ref_*` call.
-    for cs in codespaces() {
-        if known_repos.contains(&cs.repo) {
-            continue;
-        }
-        println!(
-            "      {}-{} (codespace)\tcs:{}/{}/{}",
-            cs.repo, cs.branch, cs.repo, cs.branch, cs.name
-        );
-    }
-    // Codespace auth lapsed (scope expired / logged out): a single actionable row, Enter runs the
-    // gh remedy. Shown only when the cached list failed for auth.
-    if cs_auth_needed() {
-        println!("   ⚠  codespaces: gh auth expired — Enter to fix\tcs-auth");
-    }
-}
-
 // --- dispatch --------------------------------------------------------------
 
 /// Does `<s>` look like a git remote URL we can clone?
@@ -894,7 +853,9 @@ pub fn run(cfg: &Config, name: Option<&str>, root_opt: Option<&str>) {
                 .arg("--print-query")
                 .arg("--delimiter=\t")
                 .arg("--with-nth=1")
-                .arg("--header=Enter: open | ctrl-r: refresh | ctrl-x: kill | type repo/branch or paste a git URL")
+                // Two header lines: the status the tmux bar used to carry, over the key hints.
+                // ctrl-r repaints it — see `--bind=ctrl-r` below and `status::header`.
+                .arg(format!("--header={}", status::header(cfg)))
                 .arg(format!(
                     "--preview={bn} tat{root_flag} --pick-stage preview {{-1}}"
                 ))
@@ -906,7 +867,7 @@ pub fn run(cfg: &Config, name: Option<&str>, root_opt: Option<&str>) {
                     "--bind=ctrl-x:execute-silent({bn} tat{root_flag} --pick-stage kill {{-1}})+reload({bn} tat{root_flag} --pick-stage list)"
                 ))
                 .arg(format!(
-                    "--bind=ctrl-r:reload({bn} tat{root_flag} --pick-stage refresh)"
+                    "--bind=ctrl-r:reload({bn} tat{root_flag} --pick-stage refresh)+transform-header({bn} tat{root_flag} --pick-stage statusline)"
                 ))
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
@@ -915,7 +876,7 @@ pub fn run(cfg: &Config, name: Option<&str>, root_opt: Option<&str>) {
                 Ok(c) => c,
                 Err(_) => {
                     // No fzf on PATH — degrade to a plain list, then hold.
-                    build_list(&roots, false);
+                    build_list(cfg, &roots, false);
                     crate::picker::hold();
                     return;
                 }
@@ -955,6 +916,11 @@ pub fn run(cfg: &Config, name: Option<&str>, root_opt: Option<&str>) {
 fn resolve_and_open(cfg: &Config, roots: &Roots, sel: String, typed: bool) {
     if is_git_url(&sel) {
         clone_and_open(cfg, roots, &sel);
+        return;
+    }
+    // The bn-web control row: toggle the managed service, then pause so the outcome is read.
+    if sel == "webctl" {
+        status::toggle_web(cfg);
         return;
     }
     // The codespace auth-fix row: run the gh remedy, then pause so output is read.
@@ -1319,7 +1285,7 @@ pub fn stage(
     let row = name.unwrap_or("");
     let arg = pick_arg.unwrap_or("");
     match stage {
-        TatStage::List => build_list(&roots, false),
+        TatStage::List => build_list(cfg, &roots, false),
         TatStage::Refresh => {
             // ctrl-r is the one place a person asked for current data and can see it arrive, so it
             // is the one place the forge is worth waiting on.
@@ -1327,7 +1293,7 @@ pub fn stage(
             if let Some(name) = name.filter(|n| !n.is_empty()) {
                 remote_prs_fetch_blocking(&roots, name);
             }
-            build_list(&roots, true)
+            build_list(cfg, &roots, true)
         }
         TatStage::Preview => preview(&roots, row),
         TatStage::Kill => kill_from_line(row),
@@ -1351,6 +1317,7 @@ pub fn stage(
                 remote_prs_fetch_blocking(&roots, name);
             }
         }
+        TatStage::StatusLine => status::emit_status_line(cfg),
     }
 }
 

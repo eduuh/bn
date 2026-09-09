@@ -144,7 +144,7 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
                 emit_attn_dispatch(cfg, &id, repo.as_deref(), json)
             }
             Some(AttnCmd::Snooze { id, until }) => emit_attn_snooze(&id, &until, json),
-            Some(AttnCmd::Badge) => emit_attn_badge(),
+            Some(AttnCmd::Badge) => crate::cmd::attn_badge::emit_attn_badge(),
             Some(AttnCmd::ToNotify) => emit_attn_to_notify(json),
             Some(AttnCmd::Notified { id }) => emit_attn_notified(&id, json),
         },
