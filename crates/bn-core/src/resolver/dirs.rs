@@ -1,5 +1,5 @@
-//! Filesystem anchors for bn tooling: the `~/.bn` home, config/bin/jobs dirs, the
-//! `config.toml` path, and the state / managed-repos roots.
+//! Filesystem anchors for bn tooling: the `~/.bn` home, config/bin/jobs dirs, the config layer
+//! paths in the notes tree, and the state / managed-repos roots.
 
 use super::util::{home, non_empty_env};
 use super::Config;
@@ -17,34 +17,28 @@ pub fn bn_home() -> PathBuf {
     PathBuf::from(format!("{}/.bn", home()))
 }
 
-/// The config dir holding `config.toml` and the legacy `work-repos` plaintext file.
-/// Resolution, high → low: `$BN_CONFIG_DIR` wins; else `$BN_HOME/config`
-/// (the new `~/.bn` layout) when `BN_HOME` is set or that dir already exists; else the legacy
-/// `~/.config/bn` while it still exists (back-compat — pre-migration machines keep working);
-/// else default to the new `~/.bn/config` on a fresh machine.
+/// The config dir holding the files bn writes for itself — the machine pin, the web token,
+/// `approvals.toml` — and the install anchors (`jobs`, `agents`, `repo`). Settings do not live
+/// here; see [`config_layer_paths`].
+///
+/// `$BN_CONFIG_DIR` wins; else `<bn_home>/config`. Native Windows keeps its platform config
+/// directory (`%APPDATA%\bn`) when that is where bn was installed and `~/.bn` was never created.
 pub fn config_dir() -> PathBuf {
     if let Some(d) = non_empty_env("BN_CONFIG_DIR") {
         return PathBuf::from(d);
     }
     let home_cfg = bn_home().join("config");
-    if non_empty_env("BN_HOME").is_some() || home_cfg.is_dir() {
-        return home_cfg;
+    match dirs::config_dir().map(|p| p.join("bn")) {
+        Some(platform)
+            if cfg!(windows)
+                && non_empty_env("BN_HOME").is_none()
+                && !home_cfg.is_dir()
+                && platform.is_dir() =>
+        {
+            platform
+        }
+        _ => home_cfg,
     }
-    // `~/.config/bn` on unix — macOS included: install.sh anchors everything (the `jobs` symlink,
-    // the `repo` anchor, the `bn` binary link) at `~/.config/bn`, so the binary must read the same
-    // place. `dirs::config_dir()` would pick `~/Library/Application Support` on macOS, splitting
-    // the brain: the manifest lookup came up empty ("0 declared") while install kept wiring
-    // `~/.config/bn`. Windows keeps `%APPDATA%\bn` (via dirs).
-    #[cfg(windows)]
-    let legacy = dirs::config_dir()
-        .map(|p| p.join("bn"))
-        .unwrap_or_else(|| PathBuf::from(format!("{}/.config/bn", home())));
-    #[cfg(not(windows))]
-    let legacy = PathBuf::from(format!("{}/.config/bn", home()));
-    if legacy.is_dir() {
-        return legacy;
-    }
-    home_cfg
 }
 
 /// The persisted bn-web token, when one has already been generated. Reads `<config_dir>/web-token`
@@ -82,21 +76,78 @@ pub fn bin_dir() -> PathBuf {
     home_bin
 }
 
-/// Path to `config.toml`: `$BN_CONFIG` override, else `<config_dir>/config.toml`.
-pub fn config_file_path() -> PathBuf {
-    if let Some(d) = non_empty_env("BN_CONFIG") {
-        return PathBuf::from(d);
+/// The config files bn reads, lowest precedence first; a later one wins key by key.
+///
+/// `$BN_CONFIG` names one file and is the whole answer when set: a test sandbox saying exactly what
+/// to read. Otherwise the shared `<notes_root>/config.toml` every machine syncs, then this
+/// machine's own `<notes_root>/<machine>/config.toml`.
+pub fn config_layer_paths() -> Vec<PathBuf> {
+    match non_empty_env("BN_CONFIG") {
+        Some(path) => vec![PathBuf::from(path)],
+        None => vec![shared_config_path(), machine_config_path()],
     }
-    config_dir().join("config.toml")
+}
+
+/// `<notes_root>/config.toml`: the settings every machine shares.
+pub fn shared_config_path() -> PathBuf {
+    non_empty_env("BN_CONFIG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config_root().join("config.toml"))
+}
+
+/// `<notes_root>/<machine>/config.toml`: what this machine does differently, and where bn writes
+/// the choices it records for this machine (queue windows, direct mode, job classes). `$BN_CONFIG`
+/// when set, so a sandbox's writes land in the one file it reads.
+pub fn machine_config_path() -> PathBuf {
+    non_empty_env("BN_CONFIG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config_root().join(machine_name()).join("config.toml"))
+}
+
+/// The notes root that holds the config: the personal tree, or the work tree on a machine that has
+/// only that one.
+pub fn config_root() -> PathBuf {
+    let (personal, work) = notes_roots();
+    if !personal.is_dir() && work.is_dir() {
+        work
+    } else {
+        personal
+    }
+}
+
+/// `(personal_root, work_root)`, from the path anchors and the defaults alone. No setting can move
+/// them, because the settings live inside one of them. `$BN_NOTES_DIR` collapses both into one
+/// root for test sandboxes, and `$BN_NOTES_DIR_WORK` splits the work root back out.
+pub fn notes_roots() -> (PathBuf, PathBuf) {
+    if let Some(dir) = non_empty_env("BN_NOTES_DIR") {
+        let work = non_empty_env("BN_NOTES_DIR_WORK")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(&dir));
+        return (PathBuf::from(dir), work);
+    }
+    let home = home();
+    let work_primary = PathBuf::from(format!("{home}/projects/notes/bn"));
+    let work = if work_primary.is_dir() {
+        work_primary
+    } else {
+        PathBuf::from(format!("{home}/projects/branch-notes-work/bn"))
+    };
+    (PathBuf::from(format!("{home}/projects/branch-notes")), work)
+}
+
+/// This machine's name: `$BN_HOSTNAME`, else the pinned identity. Never empty, so a machine whose
+/// hostname cannot be read still gets a subtree of its own rather than writing into the notes root.
+pub fn machine_name() -> String {
+    Some(non_empty_env("BN_HOSTNAME").unwrap_or_else(super::util::stable_machine))
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "unknown-host".to_string())
 }
 
 /// Path to the pinned machine identity — one line naming this host, written once and reused
 /// forever after. `$BN_MACHINE_FILE` wins, else `<config_dir>/machine`.
 ///
-/// Its own file rather than a `config.toml` key because bn *writes* it: `config.toml` is a document
-/// a person owns and hand-edits, and rewriting it behind their back to record a detail they never
-/// set would be a surprise. The `hostname` key still overrides this when someone does want to say
-/// it explicitly.
+/// Its own file rather than a setting because bn *writes* it, and because the machine's own config
+/// file is found by this name: it cannot also be a key inside that file.
 pub fn machine_file_path() -> PathBuf {
     if let Some(p) = non_empty_env("BN_MACHINE_FILE") {
         return PathBuf::from(p);
@@ -131,8 +182,8 @@ pub fn state_dir() -> PathBuf {
 }
 
 /// The default directory for the opt-in verbose/debug action log (`bn-YYYY-MM-DD.jsonl` files).
-/// `<state_dir>/logs` unless `[log].dir` / `$BN_LOG_DIR` overrides it (resolved in
-/// [`Config::log`]). Machine-scoped like the state dir, so logs never git-collide across hosts.
+/// `<state_dir>/logs` unless `[log].dir` overrides it (resolved in [`Config::log`]).
+/// Machine-scoped like the state dir, so logs never git-collide across hosts.
 pub fn log_dir() -> PathBuf {
     state_dir().join("logs")
 }
@@ -184,25 +235,73 @@ pub fn link_tags() -> Vec<String> {
     link_tags_with_source().0
 }
 
-/// Directory of version-controlled cron job scripts. `$BN_JOBS_DIR` wins, else
-/// `<config_dir>/jobs` (which `install.sh` symlinks onto the repo's `jobs/` dir, so the
-/// jobs cron runs are the same scripts tracked in git). Jobs are scripts persisted in the
-/// repo — never inline crontab commands.
+/// `<worktree_dir>`: `$BN_WORKTREE_DIR`, else `~/projects/worktree`. Not a setting, for the same
+/// reason as the notes roots: nothing in a config file may move where bn looks for itself.
+pub fn worktree_dir() -> PathBuf {
+    non_empty_env("BN_WORKTREE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(format!("{}/projects/worktree", home())))
+}
+
+/// The bn checkout whose `config/` ships bn's own prompts, agents, jobs and cron manifest.
+///
+/// `<worktree_dir>/bn/main` when it holds one — every machine running bn keeps it, because
+/// self-update installs from it — so what a machine serves follows main, not whichever checkout
+/// last ran install.sh. That anchor used to be a leasable pool slot, and a dispatch that leased the
+/// slot swapped the whole machine's prompts for its branch's (#1291). Else the `<config_dir>/repo`
+/// anchor install.sh leaves. A sandbox that pins `$BN_HOME` or `$BN_CONFIG_DIR` never reads the
+/// real checkout: its anchors are its whole universe.
+pub fn shipped_root() -> Option<PathBuf> {
+    let sandboxed = non_empty_env("BN_HOME").is_some() || non_empty_env("BN_CONFIG_DIR").is_some();
+    let main = worktree_dir().join("bn").join("main");
+    if !sandboxed && main.join("config").is_dir() {
+        return Some(main);
+    }
+    let anchor = config_dir().join("repo");
+    anchor.is_dir().then_some(anchor)
+}
+
+/// One shipped item, `config/<relative>`, when it exists: from `<worktree_dir>/bn/main` first
+/// (outside a sandbox, see [`shipped_root`]), then the per-item anchor install.sh links
+/// (`<config_dir>/<relative>`, such as `<config_dir>/crons.toml`), then the `<config_dir>/repo`
+/// checkout anchor. The per-item anchor wins over the generic one because it is the more specific
+/// statement of what this install serves.
+pub fn shipped_config(relative: &str) -> Option<PathBuf> {
+    let sandboxed = non_empty_env("BN_HOME").is_some() || non_empty_env("BN_CONFIG_DIR").is_some();
+    let main = worktree_dir()
+        .join("bn")
+        .join("main")
+        .join("config")
+        .join(relative);
+    if !sandboxed && main.exists() {
+        return Some(main);
+    }
+    [
+        config_dir().join(relative),
+        config_dir().join("repo").join("config").join(relative),
+    ]
+    .into_iter()
+    .find(|path| path.exists())
+}
+
+/// Directory of version-controlled cron job scripts. `$BN_JOBS_DIR` wins, else the shipped
+/// `config/jobs` (see [`shipped_config`]), else `<config_dir>/jobs`. Jobs are scripts persisted in
+/// the repo — never inline crontab commands.
 pub fn jobs_dir() -> PathBuf {
     if let Some(d) = non_empty_env("BN_JOBS_DIR") {
         return PathBuf::from(d);
     }
-    config_dir().join("jobs")
+    shipped_config("jobs").unwrap_or_else(|| config_dir().join("jobs"))
 }
 
 /// Directory of self-describing agent definitions (`agents/<name>.md`). `$BN_AGENTS_DIR` wins,
-/// else `<config_dir>/agents` (which `install.sh` symlinks onto the repo's `agents/` dir, so the
-/// shipped agents are the same markdown tracked in git — the agent analogue of [`jobs_dir`]).
+/// else the shipped `config/agents` (see [`shipped_root`]), else `<config_dir>/agents` — the agent
+/// analogue of [`jobs_dir`].
 pub fn agents_dir() -> PathBuf {
     if let Some(d) = non_empty_env("BN_AGENTS_DIR") {
         return PathBuf::from(d);
     }
-    config_dir().join("agents")
+    shipped_config("agents").unwrap_or_else(|| config_dir().join("agents"))
 }
 
 /// Root for bn-managed repos: `$BN_MANAGED_REPOS_DIR`, else `<bn_home>/repos`. Cloned bare +
@@ -213,4 +312,43 @@ pub fn managed_repos_dir() -> PathBuf {
         return PathBuf::from(d);
     }
     bn_home().join("repos")
+}
+
+#[cfg(test)]
+mod shipped_tests {
+    use super::*;
+    use crate::test_support::{env_lock, EnvGuard};
+
+    /// Shipped content follows the bn/main checkout, so a pool slot leased to another branch can no
+    /// longer decide what the whole machine serves (#1291).
+    #[test]
+    fn shipped_content_comes_from_bn_main_before_any_anchor() {
+        let _lock = env_lock();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let main = temp.path().join("worktree").join("bn").join("main");
+        std::fs::create_dir_all(main.join("config").join("prompts")).expect("main checkout");
+        let _worktrees = EnvGuard::set("BN_WORKTREE_DIR", temp.path().join("worktree"));
+        let _home = EnvGuard::remove("BN_HOME");
+        let _config_dir = EnvGuard::remove("BN_CONFIG_DIR");
+
+        assert_eq!(shipped_root(), Some(main.clone()));
+        assert_eq!(
+            shipped_config("prompts"),
+            Some(main.join("config").join("prompts"))
+        );
+    }
+
+    /// A sandbox's anchors are its whole universe: it never reads the real bn/main checkout.
+    #[test]
+    fn a_sandbox_reads_only_its_own_anchor() {
+        let _lock = env_lock();
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("worktree/bn/main/config")).expect("main");
+        let _worktrees = EnvGuard::set("BN_WORKTREE_DIR", temp.path().join("worktree"));
+        let _config_dir = EnvGuard::set("BN_CONFIG_DIR", temp.path().join("cfg"));
+
+        assert_eq!(shipped_root(), None);
+        std::fs::create_dir_all(temp.path().join("cfg").join("repo")).expect("anchor");
+        assert_eq!(shipped_root(), Some(temp.path().join("cfg").join("repo")));
+    }
 }

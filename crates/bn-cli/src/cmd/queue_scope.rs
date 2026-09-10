@@ -3,12 +3,6 @@
 use crate::*;
 use bn_core::backlog::{self, BacklogEntry, BacklogStatus};
 
-pub(crate) fn disable_if_authorized(cfg: &Config, disable: impl FnOnce()) {
-    if cfg.destructive_reconcile_allowed() {
-        disable();
-    }
-}
-
 pub(crate) fn require_repo_allowed(cfg: &Config, repo: &str, json: bool) {
     if !cfg.repo_allowed_here(repo) {
         fail_json(
@@ -168,57 +162,4 @@ fn attention_hold(decision: &bn_core::queue::decision::QueueDecision) -> Option<
                 .map(|row| row.reason.as_str())
                 .find(|reason| matches!(*reason, "no-capable-node" | "cant-merge" | "conflict"))
         })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::cell::Cell;
-
-    #[test]
-    fn malformed_config_does_not_disable_queue_service() {
-        let _lock = bn_core::test_support::env_lock();
-        let temp = tempfile::tempdir().expect("tempdir");
-        let path = temp.path().join("config.toml");
-        std::fs::write(&path, "[machines.broken\nqueue = true").expect("write malformed config");
-        let _config = bn_core::test_support::EnvGuard::set("BN_CONFIG", &path);
-        let _hostname = bn_core::test_support::EnvGuard::set("BN_HOSTNAME", "broken");
-        let cfg = Config::load();
-        let disabled = Cell::new(false);
-
-        disable_if_authorized(&cfg, || disabled.set(true));
-
-        assert!(!cfg.queue_enabled_here());
-        assert!(!disabled.get());
-    }
-
-    #[test]
-    fn unreadable_config_does_not_disable_queue_service() {
-        let _lock = bn_core::test_support::env_lock();
-        let temp = tempfile::tempdir().expect("tempdir");
-        let path = temp.path().join("missing-config.toml");
-        let _config = bn_core::test_support::EnvGuard::set("BN_CONFIG", &path);
-        let _hostname = bn_core::test_support::EnvGuard::set("BN_HOSTNAME", "missing");
-        let cfg = Config::load();
-        let disabled = Cell::new(false);
-
-        disable_if_authorized(&cfg, || disabled.set(true));
-
-        assert!(!cfg.queue_enabled_here());
-        assert!(!disabled.get());
-    }
-
-    #[test]
-    fn loaded_disabled_config_reconciles_queue_service() {
-        let cfg = Config {
-            machine_profile: None,
-            config_file_loaded: true,
-            ..Config::default()
-        };
-        let disabled = Cell::new(false);
-
-        disable_if_authorized(&cfg, || disabled.set(true));
-
-        assert!(disabled.get());
-    }
 }

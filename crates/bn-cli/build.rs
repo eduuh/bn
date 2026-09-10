@@ -7,14 +7,30 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=GITHUB_SHA");
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+    println!("cargo:rerun-if-env-changed=BN_RELEASE_VERSION");
     track_git_head();
 
+    println!("cargo:rustc-env=BN_VERSION={}", release_version());
     println!("cargo:rustc-env=BN_GIT_SHA={}", git_short_sha());
     println!("cargo:rustc-env=BN_BUILD_DATE={}", build_date());
     println!(
         "cargo:rustc-env=BN_BUILD_TARGET={}",
         env::var("TARGET").unwrap_or_else(|_| "unknown".into())
     );
+}
+
+/// The version the binary reports. The git tag is the source of truth for a release, not a
+/// commit: the release workflow computes the next version and passes it in as
+/// `BN_RELEASE_VERSION`, so CI never has to push a version-bump commit back to main (which would
+/// re-trigger CI and release itself, forever). `Cargo.toml`'s workspace version is only the
+/// *floor* — bump it in an ordinary PR to cut a new minor or major; patches flow from the tags.
+/// A local build has no `BN_RELEASE_VERSION` and reports that floor, as it always did.
+fn release_version() -> String {
+    env::var("BN_RELEASE_VERSION")
+        .ok()
+        .filter(|version| !version.is_empty())
+        .or_else(|| env::var("CARGO_PKG_VERSION").ok())
+        .unwrap_or_else(|| "0.0.0".into())
 }
 
 fn git_short_sha() -> String {

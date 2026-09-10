@@ -140,7 +140,9 @@ worktrees.
 The dot is set by `bn tmux-agent <state>` (a per-window `@bn_agent` option, I/O-free,
 no-op outside tmux) and is the source of truth for Claude windows. It takes precedence
 over `@bn_done` — the silence-watch fallback (`bind m` / `bn tmux-done-badge`) that
-badges a `✓` on any non-Claude job (build/test) once its output goes quiet.
+badges a `✓` on any non-Claude job (build/test) once its output goes quiet. A pane that exits
+badges at once instead: `pane-died` passes its exit status, so a failed job gets a red mark rather
+than a quiet `✓`.
 
 Wire `@bn_agent` to Claude Code by adding these hooks to `~/.claude/settings.json`;
 they inherit `$TMUX_PANE` from the agent's pane, so the decoration lands on the right

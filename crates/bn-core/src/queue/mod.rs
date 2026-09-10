@@ -19,6 +19,7 @@ pub mod jobs;
 pub mod kind;
 pub mod log;
 pub mod nodes;
+pub mod off;
 pub mod pause;
 pub mod place;
 pub mod snapshot;

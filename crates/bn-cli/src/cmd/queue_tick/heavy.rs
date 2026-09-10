@@ -264,8 +264,7 @@ mod tests {
 
     #[test]
     fn a_job_that_names_no_repo_is_bns_own_bookkeeping() {
-        // Including `nightly-release`, which used to need a hardcode to get here.
-        for name in ["nightly-release", "pool-warm", "self-update"] {
+        for name in ["self-update", "pool-warm", "refresh-all"] {
             assert_eq!(tmux_target(&job(name, None), "", "id").0, BN_REPO);
         }
     }
@@ -290,7 +289,7 @@ mod tests {
         let execs = [
             job("pool-warm", None),
             job("pool-warm", Some("arena")),
-            job("nightly-release", None),
+            job("self-update", None),
             ExecSpec::Shell {
                 cmd: "true".to_string(),
             },

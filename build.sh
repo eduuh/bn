@@ -161,7 +161,7 @@ build_from_source() {
   # `bn mcp serve`, which execs the sibling `bn-mcp`. Omitting it left that launcher dead
   # ("could not exec bn-mcp") and silently cost Claude Code / Copilot every bn tool and
   # session-safe skill prompt — a failure only visible inside the client, never from `bn` itself.
-  # This build uses its own target dir so self-update/nightly-release/dev builds do not block each
+  # This build uses its own target dir so self-update and dev builds do not block each
   # other on Cargo's shared `target/.cargo-lock`. If that target is wedged by a dead prior build,
   # opt in to clearing it with BN_INSTALL_KILL_CARGO_LOCK_HOLDER=1.
   mkdir -p "$target_dir"

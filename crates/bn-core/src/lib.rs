@@ -32,6 +32,7 @@ pub mod capture;
 pub mod clock;
 pub mod commands;
 pub mod completed;
+pub mod config_migrate;
 pub mod controller;
 pub mod cost;
 pub mod crons;

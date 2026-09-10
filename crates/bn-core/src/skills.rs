@@ -174,11 +174,11 @@ pub struct NewSkillArg {
 /// The shipped (global-shared) skill directory for `base_dir`.
 ///
 /// `BN_MCP_SKILLS_DIR` wins when exported. Otherwise prefer `base_dir/config/prompts` — the
-/// committed tier as seen from a bn checkout — but fall back to the stable `config_dir()/repo`
-/// install anchor when that isn't a directory. The fallback is what makes this correct for
-/// **daemons**: `bn serve` runs under launchd/systemd with cwd `/`, so a `base_dir` of `.`
-/// resolved to `/config/prompts` and every shipped skill silently vanished from `/api/skills`.
-/// Same anchor [`global_skill_dirs`] already uses, so the HTTP server and the dashboard agree.
+/// committed tier as seen from a bn checkout — but fall back to the shipped prompts
+/// ([`resolver::shipped_root`]) when that isn't a directory. The fallback is what makes this
+/// correct for **daemons**: `bn serve` runs under launchd/systemd with cwd `/`, so a `base_dir` of
+/// `.` resolved to `/config/prompts` and every shipped skill silently vanished from `/api/skills`.
+/// Same source [`global_skill_dirs`] uses, so the HTTP server and the dashboard agree.
 fn shared_skills_dir(base_dir: &Path) -> PathBuf {
     if let Some(dir) = std::env::var_os("BN_MCP_SKILLS_DIR") {
         return PathBuf::from(dir);
@@ -187,14 +187,9 @@ fn shared_skills_dir(base_dir: &Path) -> PathBuf {
     if local.is_dir() {
         return local;
     }
-    let anchored = resolver::config_dir()
-        .join("repo")
-        .join("config")
-        .join("prompts");
-    if anchored.is_dir() {
-        return anchored;
-    }
-    local
+    resolver::shipped_config("prompts")
+        .filter(|dir| dir.is_dir())
+        .unwrap_or(local)
 }
 
 /// Skill source directories in precedence order (low → high), each tagged with its scope.
@@ -235,24 +230,17 @@ pub fn skill_dirs(cfg: &Config, base_dir: &Path) -> Vec<(SkillScope, PathBuf)> {
 /// The two **global** skill tiers (shared built-ins + personal), independent of any worktree.
 /// The central HTTP MCP server has no launch directory, so it seeds its prompt set
 /// from these alone: the shipped prompts (`BN_MCP_SKILLS_DIR` when exported, else the committed
-/// `config/prompts/` reached through the stable `config_dir()/repo` install anchor) plus the
-/// personal `BN_MCP_PERSONAL_SKILLS_DIR` / `config_dir()/skills`. Resolving the shipped tier via
-/// the anchor means `bn serve` serves those prompts in any launch mode (systemd unit,
-/// launchd, or a bare foreground run) with no per-process env or symlink to keep in sync. The
-/// per-repo tiers in [`skill_dirs`] are deliberately omitted — they require a git resolve the
-/// shared server can't do.
+/// `config/prompts/` of the checkout bn ships from, [`resolver::shipped_root`]) plus the personal
+/// `BN_MCP_PERSONAL_SKILLS_DIR` / `config_dir()/skills`. Resolving the shipped tier that way means
+/// `bn serve` serves those prompts in any launch mode (systemd unit, launchd, or a bare foreground
+/// run) with no per-process env or symlink to keep in sync. The per-repo tiers in [`skill_dirs`]
+/// are deliberately omitted — they require a git resolve the shared server can't do.
 pub fn global_skill_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(shared) = std::env::var_os("BN_MCP_SKILLS_DIR") {
         dirs.push(PathBuf::from(shared));
-    } else {
-        let anchored = resolver::config_dir()
-            .join("repo")
-            .join("config")
-            .join("prompts");
-        if anchored.is_dir() {
-            dirs.push(anchored);
-        }
+    } else if let Some(shipped) = resolver::shipped_config("prompts").filter(|dir| dir.is_dir()) {
+        dirs.push(shipped);
     }
     dirs.push(
         std::env::var_os("BN_MCP_PERSONAL_SKILLS_DIR")

@@ -49,10 +49,6 @@ pub const RECOVERY_JOBS: &[&str] = &[
 /// operator set throttled agents and nothing else. The heaviest workload on the machine was the one
 /// with no admission control, free to starve the agents the caps existed to protect.
 ///
-/// `nightly-release` is the same shape and then some: a release build of three crates plus the
-/// whole workspace test suite before it may upload anything. Inline, that is the dispatcher parked
-/// for the length of a cold `cargo test --workspace`.
-///
 /// Marked heavy, so they are admitted like an agent and spawned like one rather than running inline
 /// in the tick — where minutes of build would hold the dispatcher and make every pass behind it
 /// skip on the lock.
@@ -64,7 +60,6 @@ pub const RECOVERY_JOBS: &[&str] = &[
 pub const HEAVY_JOBS: &[&str] = &[
     "pool-warm",
     "keep-warm",
-    "nightly-release",
     "build",
     "build-main",
     "pool-grow",
@@ -74,8 +69,8 @@ pub const HEAVY_JOBS: &[&str] = &[
 /// The jobs that *are* pool warming — the work [`crate::queue::classify`] holds to idle and away
 /// windows.
 ///
-/// A subset of [`HEAVY_JOBS`] rather than the same list: `nightly-release` is every bit as
-/// expensive, but it is not warming and must not inherit warming's away-only admission.
+/// A subset of [`HEAVY_JOBS`] rather than the same list: the picker's build verbs are every bit as
+/// expensive, but they are not warming and must not inherit warming's away-only admission.
 ///
 /// It is a declared list because the alternative was a substring test on the entry's item text,
 /// which classified anything whose *subject* happened to say "warm" as pool warming — including a

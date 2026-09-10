@@ -95,6 +95,10 @@ fn clone_into(url: &str, name: Option<&str>, bare_dir: &Path, worktree_dir: &Pat
     ]) {
         return false;
     }
+    // A cloned repo's first worktree gets what `wt add` gives every new worktree: the BN-Note
+    // commit-trailer hook and the repo-tier skills.
+    crate::hooks::install_on_worktree_create(&wt_path);
+    seed_skills(&wt_path);
     cprintln!("{GREEN}Cloned to {}{NC}", bare.display());
     cprintln!("{GREEN}Worktree: {}{NC}", wt_path.display());
     println!("cd {}", wt_path.display());

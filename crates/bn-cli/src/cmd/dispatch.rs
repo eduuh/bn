@@ -946,7 +946,7 @@ pub(crate) fn run_dispatch(
     let task_name = bn_core::agent::derive_task_name(name, &title);
 
     // Resolve the launch stage's model + harness. The stage (Investigate/Plan/Execute from the
-    // scout/skill flags) selects `[pipeline.models.<stage>]`, whose `harness` is the stage-aware
+    // scout/skill flags) selects `[pipeline.stages.<stage>]`, whose `harness` is the stage-aware
     // default when the user didn't pin one with `--agent`. Precedence: pin > stage harness >
     // copilot, then the machine capability gate degrades an unavailable harness to copilot
     // (surfaced, never silent). A single dispatched run uses this one harness+model for its whole
@@ -966,7 +966,7 @@ pub(crate) fn run_dispatch(
                         "dispatch",
                         "bad-stage-harness",
                         &format!(
-                            "bn dispatch: unknown harness '{h}' in [pipeline.models.{}] (use: copilot | claude)",
+                            "bn dispatch: unknown harness '{h}' in [pipeline.stages.{}] (use: copilot | claude)",
                             stage.as_str()
                         ),
                     )

@@ -133,10 +133,6 @@ impl std::error::Error for AgentParseError {
 /// A path-qualified agent catalog failure.
 #[derive(Debug)]
 pub enum AgentCatalogError {
-    LegacyScheduleOverride {
-        path: PathBuf,
-        value: String,
-    },
     NonMarkdownAgent {
         path: PathBuf,
     },
@@ -157,8 +153,7 @@ pub enum AgentCatalogError {
 impl AgentCatalogError {
     pub fn path(&self) -> &Path {
         match self {
-            Self::LegacyScheduleOverride { path, .. }
-            | Self::NonMarkdownAgent { path }
+            Self::NonMarkdownAgent { path }
             | Self::ReadDirectory { path, .. }
             | Self::ReadFile { path, .. }
             | Self::InvalidAgent { path, .. } => path,
@@ -169,11 +164,6 @@ impl AgentCatalogError {
 impl fmt::Display for AgentCatalogError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::LegacyScheduleOverride { path, value } => write!(
-                f,
-                "{} still sets the legacy quarter-review schedule '{value}'; remove it and override config/agents/quarter-review.md in a higher-precedence agents/ tier",
-                path.display()
-            ),
             Self::NonMarkdownAgent { path } => write!(
                 f,
                 "{} is in an agents/ directory but is not a Markdown .md manifest",
@@ -193,7 +183,7 @@ impl fmt::Display for AgentCatalogError {
 impl std::error::Error for AgentCatalogError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::LegacyScheduleOverride { .. } | Self::NonMarkdownAgent { .. } => None,
+            Self::NonMarkdownAgent { .. } => None,
             Self::ReadDirectory { source, .. } | Self::ReadFile { source, .. } => Some(source),
             Self::InvalidAgent { source, .. } => Some(source),
         }

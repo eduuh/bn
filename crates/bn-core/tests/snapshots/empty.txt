@@ -8,11 +8,9 @@ Config {
     work_repos: [],
     hostname: "snapshot-host",
     machine_profile: None,
-    config_file_loaded: true,
     job_only_on: {},
     weekly_anchor: 1,
     sla_first_review_hours: 4.0,
-    sla_merge_hours: 24.0,
     review_harness: None,
     disabled_harnesses: [],
     attention_max_age_hours: 24.0,
@@ -91,7 +89,6 @@ Config {
     dispatch_plan_review_quorum: 2,
     review_diff_gate: false,
     review_diff_gate_reviews: 2,
-    orchestrate_agent: None,
     default_harness: None,
     orchestrate_stuck_idle_secs: 600,
     orchestrate_keep_warm: false,
@@ -114,7 +111,6 @@ Config {
     orchestrate_daily_cost_usd_research: None,
     orchestrate_remote_overflow: false,
     staff_home: None,
-    staff_mail: [],
     notify: NotifyConfig {
         enabled: true,
         bar: Blocking,
@@ -123,3 +119,36 @@ Config {
         source_budget: 4,
     },
 }
+
+--- JobConfig
+JobConfig {
+    wrap_enabled: false,
+    standup_enabled: false,
+    standup_fetch_delta: false,
+    dxi_enabled: false,
+    agents_enabled: [],
+}
+
+--- ToolsConfig
+ToolsConfig {
+    builtins: [],
+}
+
+--- link tags
+(
+    [
+        "domains",
+        "dri",
+        "telemetry",
+        "security",
+        "permissions",
+        "repos",
+        "pipelines",
+        "incidents",
+        "learning",
+    ],
+    Default,
+)
+
+--- mcp extras
+[]

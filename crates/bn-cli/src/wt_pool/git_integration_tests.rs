@@ -202,25 +202,41 @@ fn force_remove_recovers_a_broken_checkout() {
 }
 
 #[test]
-fn warm_reset_discards_tracked_but_keeps_ignored_deps() {
+fn warm_reset_discards_tracked_keeps_build_cache_and_trims_incremental() {
     let _env = bn_core::test_support::env_lock();
     let (tmp, bare) = mk_bare();
     let slot = tmp.path().join("slot2");
     assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
     assert!(switch_into_slot(&slot.to_string_lossy(), &bare, "feat"));
-    // A tracked edit, an untracked scratch file, and an ignored build artifact.
+    // A tracked edit, an untracked scratch file, a kept ignored artifact, and ignored incremental
+    // dirs that a returned idle slot no longer needs.
     std::fs::write(slot.join("a.txt"), "DIRTY\n").unwrap();
     std::fs::write(slot.join("untracked.txt"), "scratch\n").unwrap();
+    std::fs::create_dir_all(slot.join("target/debug/incremental/unit")).unwrap();
+    std::fs::create_dir_all(slot.join("target/bn-install/local/incremental/helper")).unwrap();
     std::fs::create_dir_all(slot.join("target")).unwrap();
     std::fs::write(slot.join("target/build-cache"), "expensive\n").unwrap();
+    std::fs::write(
+        slot.join("target/debug/incremental/unit/state"),
+        "throw me away\n",
+    )
+    .unwrap();
+    std::fs::write(
+        slot.join("target/bn-install/local/incremental/helper/state"),
+        "throw me away too\n",
+    )
+    .unwrap();
 
     warm_reset(&slot.to_string_lossy(), &bare);
 
     // Tracked change reverted, untracked scratch cleaned…
     assert_eq!(std::fs::read_to_string(slot.join("a.txt")).unwrap(), "hi\n");
     assert!(!slot.join("untracked.txt").exists());
-    // …but the ignored deps/build cache — the entire point of the pool — survive.
+    // …the kept ignored build output survives…
     assert!(slot.join("target/build-cache").exists());
+    // …while idle-slot incremental caches are reclaimed.
+    assert!(!slot.join("target/debug/incremental").exists());
+    assert!(!slot.join("target/bn-install/local/incremental").exists());
     // And the slot is detached (ready for the controller / next lease).
     assert_eq!(head_ref(&slot), "HEAD");
 }

@@ -5,7 +5,7 @@ This replaces release-plz's `release-pr` command.
 
 release-plz determines the next version by running `cargo package` on the tree at the last released
 tag, and this workspace can never be packaged: `bn-core`/`bn-cli` `include_str!` repo-root files
-(`config/config.toml`, `config/skills/staff/*.md`, `config/workflow/tmux.conf`,
+(`docs/config.md`, `config/skills/staff/*.md`, `config/workflow/tmux.conf`,
 `config/prompts/quarter-review.md`) that by definition cannot live inside a crate tarball. That is
 deliberate — bn is a single-repo private tool, never published to a registry (`release-plz.toml:
 git_only = true`) — so the packaging requirement is one this repo will never satisfy. Every

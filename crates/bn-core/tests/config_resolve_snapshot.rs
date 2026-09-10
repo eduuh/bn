@@ -1,10 +1,9 @@
-//! Characterization snapshots of [`Config::load`] — the regression gate for any change to the
-//! resolver's four layers (`config_sections` → `config_file` accessors → `resolve` → `Config`).
+//! Characterization snapshots of [`Config::load`] and the config readers beside it
+//! ([`JobConfig`], [`ToolsConfig`], the link tags, the MCP extras) — the regression gate for any
+//! change to how settings resolve.
 //!
-//! The resolver is ~4,300 lines whose whole job is turning one TOML file into one struct. That is
-//! a lot of hand-written precedence to refactor blind, and a precedence bug there is silent: the
-//! wrong default just quietly wins on one machine. These tests pin the *output* so the layers
-//! underneath can be rewritten freely.
+//! These pin the *output*, so the layers underneath can be rewritten freely: a precedence bug is
+//! silent otherwise, because the wrong default just quietly wins on one machine.
 //!
 //! Snapshots live in `tests/snapshots/` and are regenerated with:
 //!
@@ -14,15 +13,14 @@
 //!
 //! Review the diff before committing a regeneration — an unreviewed `--update` turns this file
 //! from a gate into a rubber stamp.
-use bn_core::resolver::Config;
+use bn_core::resolver::{self, Config, JobConfig, ToolsConfig};
 use bn_core::test_support::EnvGuard;
 use std::path::Path;
 
-/// Resolve `toml` in an isolated HOME and return the `Debug` rendering with every machine-specific
-/// path replaced by `<ROOT>`, so the snapshot is identical on any checkout.
+/// Resolve `toml` as the only config layer, in an isolated HOME.
 ///
-/// `HOME` and `BN_HOME` are pinned because the defaults tier derives most paths from them; the
-/// hostname is pinned because `[machines.<name>]` selection keys off it. Everything else is left
+/// `HOME` and `BN_HOME` are pinned because the defaults derive most paths from them; the hostname
+/// is pinned because the machine's name and its config file key off it. Everything else is left
 /// alone deliberately — the test asserts what the *file* resolves to, so an env override leaking
 /// in would be a real finding, not test noise.
 fn resolve_snapshot(toml: &str) -> String {
@@ -35,13 +33,22 @@ fn resolve_snapshot(toml: &str) -> String {
         let _config = EnvGuard::set("BN_CONFIG", &cfg_path);
         let _host = EnvGuard::set("BN_HOSTNAME", "snapshot-host");
 
-        let cfg = Config::load();
-        normalize(&format!("{cfg:#?}"), dir)
+        render(dir)
     })
 }
 
-fn normalize(rendered: &str, root: &Path) -> String {
-    rendered.replace(&root.to_string_lossy().into_owned(), "<ROOT>")
+/// The `Debug` rendering of every config reader, with each machine-specific path replaced by
+/// `<ROOT>` so the snapshot is identical on any checkout.
+fn render(root: &Path) -> String {
+    let cfg = Config::load();
+    let jobs = JobConfig::load();
+    let tools = ToolsConfig::load();
+    let links = resolver::link_tags_with_source();
+    let mcp = resolver::mcp_extras();
+    format!(
+        "{cfg:#?}\n\n--- JobConfig\n{jobs:#?}\n\n--- ToolsConfig\n{tools:#?}\n\n--- link tags\n{links:#?}\n\n--- mcp extras\n{mcp:#?}\n"
+    )
+    .replace(&root.to_string_lossy().into_owned(), "<ROOT>")
 }
 
 /// Compare against the committed snapshot, or write it when `BN_UPDATE_SNAPSHOTS=1`.
@@ -83,36 +90,50 @@ fn empty_config_resolves_to_defaults() {
     assert_snapshot("empty", &resolve_snapshot(""));
 }
 
-/// A broad, realistic file touching every section a refactor is likely to disturb: machine
-/// profiles, the review SLAs, work-repo visibility, capture dirs, harness policy, pipeline
+/// A broad, realistic file touching every section a refactor is likely to disturb: the machine
+/// table, the review SLAs, work-repo classification, capture dirs, harness policy, pipeline
 /// stages and a per-repo override.
 #[test]
 fn populated_config_resolves_every_section() {
     assert_snapshot("populated", &resolve_snapshot(POPULATED));
 }
 
-/// The `[windows]` overlay — the single field (`config_file.rs`'s `windows: Option<Box<ConfigFile>>`)
-/// that the ~89 hand-written accessors exist to merge.
-///
-/// On a non-Windows target `win()` short-circuits to `None`, so this currently pins the *inert*
-/// case: the overlay must be ignored and the root values must win. That is a real property worth
-/// holding — but note it does NOT exercise the merge itself, because the platform is decided by
-/// `cfg!(windows)` at compile time rather than passed in. Making the merge testable on any host is
-/// part of the resolver simplification; when it lands, add the mirrored `overlay applies` case
-/// here.
+/// A real machine's `config.toml` from before settings moved into the notes tree, migrated the way
+/// the first `bn` after the upgrade migrates it, must resolve exactly as it did in place. This is
+/// the snapshot that proves the move lost nothing.
 #[test]
-fn windows_overlay_is_inert_off_windows() {
-    let snapshot = resolve_snapshot(WINDOWS_OVERLAY);
-    if cfg!(windows) {
-        return;
-    }
-    assert_snapshot("windows_overlay_inert", &snapshot);
+fn the_live_config_resolves_the_same_after_migrating() {
+    bn_core::test_support::with_state_dir_path(|dir| {
+        let config_dir = dir.join("config");
+        std::fs::create_dir_all(&config_dir).expect("config dir");
+        std::fs::create_dir_all(dir.join("projects/branch-notes")).expect("notes root");
+        std::fs::write(
+            config_dir.join("config.toml"),
+            include_str!("fixtures/config-live.toml"),
+        )
+        .expect("seed the old file");
+
+        let _home = EnvGuard::set("HOME", dir);
+        let _bn_home = EnvGuard::set("BN_HOME", dir);
+        let _host = EnvGuard::set("BN_HOSTNAME", "snapshot-host");
+        let _config = EnvGuard::remove("BN_CONFIG");
+        let _config_dir = EnvGuard::remove("BN_CONFIG_DIR");
+        let _notes = EnvGuard::remove("BN_NOTES_DIR");
+
+        let report = bn_core::config_migrate::run().expect("the old file migrates");
+        assert!(report.backup.exists(), "the old file is kept as a backup");
+        assert!(!config_dir.join("config.toml").exists());
+        assert!(
+            bn_core::config_migrate::run().is_none(),
+            "a second run has nothing to move"
+        );
+
+        assert_snapshot("live", &render(dir));
+    })
 }
 
 const POPULATED: &str = r#"
-worktree_dir = "/srv/worktrees"
-
-[machines.snapshot-host]
+[machine]
 repos = ["bn", "arena"]
 queue = true
 cron = true
@@ -122,18 +143,12 @@ web = true
 default = "claude"
 disabled = ["claude"]
 
-[personal]
-notes_root = "/srv/personal-notes"
-
 [work]
-notes_root = "/srv/work-notes"
 work_repos = ["acme", "internal-tool"]
-only = true
 
 [review]
 weekly_anchor = "monday"
 sla_first_review_hours = 6
-sla_merge_hours = 36
 harness = "copilot"
 
 [attention]
@@ -155,17 +170,4 @@ effort = "high"
 
 [repo.bn]
 verify = "cargo test"
-"#;
-
-const WINDOWS_OVERLAY: &str = r#"
-worktree_dir = "/srv/worktrees"
-
-[capture]
-screenshot_dir = "/srv/shots"
-
-[windows]
-worktree_dir = "C:/worktrees"
-
-[windows.capture]
-screenshot_dir = "C:/shots"
 "#;

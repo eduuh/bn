@@ -13,6 +13,11 @@
 //! * **Job classes** change what the machine *believes*, and are written to `config.toml`. They
 //!   affect work queued from then on — an entry carries the classification it was filed with.
 //!
+//! The off switch belongs to the first group, and that is the point of it: *stop holding my work
+//! back* is a thing you decide at 4pm and undo at 5, not a belief about the hardware. With the queue
+//! off nothing is filed at all — every trigger, scheduled or pressed, runs on the spot. See
+//! [`bn_core::queue::off`].
+//!
 //! Deliberately absent: the lane and heavy caps, and the window schedule. Caps are a claim about
 //! the hardware that wants thinking about once, not mid-session; schedules have `bn queue schedule`
 //! and an `OnCalendar` grammar that a two-line fzf row cannot honestly capture.
@@ -22,21 +27,36 @@ use bn_core::queue::config_edit::{write_job_classes, JobClasses};
 
 /// The row's note — what the settings are, at a glance, without opening them.
 pub(in crate::tat) fn summary(cfg: &Config) -> String {
+    let now = bn_core::util::now_epoch_secs();
+    let off = bn_core::queue::off::active(now);
     let mut parts = Vec::new();
-    if bn_core::away::is_declared(bn_core::util::now_epoch_secs()) {
+    // Leads, because it subsumes everything below it: with the queue off, nothing else this row
+    // could say about what is being held back is true any more.
+    if let Some(off) = &off {
+        parts.push(match off.remaining(now) {
+            Some(left) => format!(
+                "queue off ({} left)",
+                crate::cmd::queue_when::in_words(left)
+            ),
+            None => "queue off".to_string(),
+        });
+    }
+    if bn_core::away::is_declared(now) {
         parts.push("away".to_string());
     }
-    let paused = bn_core::queue::pause::PauseState::load(bn_core::util::now_epoch_secs());
+    let paused = bn_core::queue::pause::PauseState::load(now);
     if !paused.pauses.is_empty() {
         parts.push("paused".to_string());
     }
-    if !bn_core::queue::daemon::is_running() {
+    // Worth saying only while something is meant to be draining: with the queue off, a machine
+    // with no dispatcher is behaving exactly as asked.
+    if off.is_none() && !bn_core::queue::daemon::is_running() {
         parts.push("no dispatcher".to_string());
     }
     if cfg.queue.heavy_jobs.is_some() || !cfg.queue.job_priority.is_empty() {
         parts.push("custom job classes".to_string());
     }
-    if !cfg.queue.direct.is_immediate() {
+    if !cfg.queue.direct_mode(off.is_some()).is_immediate() {
         parts.push("commands queued".to_string());
     }
     match parts.is_empty() {
@@ -49,12 +69,37 @@ pub(in crate::tat) fn summary(cfg: &Config) -> String {
 pub(in crate::tat) fn menu(cfg: &Config) {
     let now = bn_core::util::now_epoch_secs();
     let away = bn_core::away::active(now);
+    let off = bn_core::queue::off::active(now);
     let paused = !bn_core::queue::pause::PauseState::load(now)
         .pauses
         .is_empty();
     let running = bn_core::queue::daemon::is_running();
 
     let mut choices: Vec<(String, String)> = Vec::new();
+    // First, with the live controls rather than below them: it is the biggest of the switches on
+    // this menu, and the one whose effect the rest are conditional on.
+    choices.push(match &off {
+        None => (
+            "queue-off".to_string(),
+            "Switch the queue off — everything runs the moment it is triggered".to_string(),
+        ),
+        Some(off) => (
+            "queue-on".to_string(),
+            match off.remaining(now) {
+                Some(left) => format!(
+                    "Queue is off ({} left) — switch it back on now",
+                    crate::cmd::queue_when::in_words(left)
+                ),
+                None => "Queue is off, everything runs immediately — switch it back on".to_string(),
+            },
+        ),
+    });
+    if off.is_none() {
+        choices.push((
+            "queue-off-2h".to_string(),
+            "Switch the queue off for 2h — back on by itself".to_string(),
+        ));
+    }
     match &away {
         Some(open) => choices.push((
             "back".to_string(),
@@ -82,16 +127,21 @@ pub(in crate::tat) fn menu(cfg: &Config) {
         ),
         false => ("start".to_string(), "Start the dispatcher".to_string()),
     });
-    choices.push(match cfg.queue.direct.is_immediate() {
-        true => (
-            "direct-queued".to_string(),
-            "Commands start instantly — switch to queueing them for the dispatcher".to_string(),
-        ),
-        false => (
-            "direct-immediate".to_string(),
-            "Commands are queued — switch to starting them instantly".to_string(),
-        ),
-    });
+    // Only while there is a queue to file into. With it off, `direct_mode` reads `Immediate`
+    // whatever the config says, so offering the toggle would be offering a setting with no effect —
+    // the same reason `cancel` is not offered before a verb is filed.
+    if off.is_none() {
+        choices.push(match cfg.queue.direct_mode(false).is_immediate() {
+            true => (
+                "direct-queued".to_string(),
+                "Commands start instantly — switch to queueing them for the dispatcher".to_string(),
+            ),
+            false => (
+                "direct-immediate".to_string(),
+                "Commands are queued — switch to starting them instantly".to_string(),
+            ),
+        });
+    }
     choices.push((
         "jobs".to_string(),
         "Job classes… — which jobs are expensive here".to_string(),
@@ -125,6 +175,9 @@ pub(in crate::tat) fn menu(cfg: &Config) {
             true => Ok("dispatcher started".to_string()),
             false => Err("could not start the dispatcher".to_string()),
         },
+        "queue-off" => switch_off(None, now),
+        "queue-off-2h" => switch_off(Some(now + 2 * 3600), now),
+        "queue-on" => switch_on(now),
         "direct-queued" => set_direct(bn_core::resolver::DirectMode::Queued),
         "direct-immediate" => set_direct(bn_core::resolver::DirectMode::Immediate),
         "jobs" => return job_classes(cfg),
@@ -133,13 +186,46 @@ pub(in crate::tat) fn menu(cfg: &Config) {
     report(outcome);
 }
 
+/// Switch the queue off, and say what it does to work that is already waiting.
+///
+/// The message names the backlog because that is the question switching off raises and the answer
+/// is not the obvious one: this stops work being *filed*, it does not cancel what is already there.
+/// The dispatcher keeps running and keeps draining it, so somebody who switched off and then watched
+/// three queued builds start anyway would otherwise conclude the switch did nothing.
+fn switch_off(until: Option<i64>, now: i64) -> Result<String, String> {
+    bn_core::queue::off::off("switched off from the picker", until, now)
+        .map(|()| match until {
+            None => "the queue is off — everything you or a cron triggers now runs immediately; \
+                     work already queued still drains"
+                .to_string(),
+            Some(until) => format!(
+                "the queue is off until {} — triggers run immediately until then",
+                bn_core::util::clock_hm(until)
+            ),
+        })
+        .map_err(|e| format!("could not switch the queue off: {e}"))
+}
+
+/// Switch it back on, and say how long it was off for.
+fn switch_on(now: i64) -> Result<String, String> {
+    bn_core::queue::off::on(now)
+        .map(|since| match since {
+            Some(since) => format!(
+                "the queue is back on after {}m — triggers file work for the dispatcher again",
+                (now - since).max(0) / 60
+            ),
+            None => "the queue was already on".to_string(),
+        })
+        .map_err(|e| format!("could not switch the queue on: {e}"))
+}
+
 /// Write the direct-command setting, and say what it changes and what it does not.
 ///
 /// Scheduled work is named in the message because that is the question the setting raises: it
 /// governs only what a *person's* keypress does. Crons, warms and `ctrl-s` deferrals go through
 /// admission either way.
 fn set_direct(mode: bn_core::resolver::DirectMode) -> Result<String, String> {
-    let path = bn_core::resolver::config_file_path();
+    let path = bn_core::resolver::machine_config_path();
     bn_core::queue::config_edit::write_direct_mode(&path, mode)
         .map(|()| match mode {
             bn_core::resolver::DirectMode::Immediate => {
@@ -216,7 +302,7 @@ fn job_classes(cfg: &Config) {
             .map(|(k, v)| (k.clone(), *v))
             .collect(),
     };
-    let path = bn_core::resolver::config_file_path();
+    let path = bn_core::resolver::machine_config_path();
     report(
         write_job_classes(&path, &classes)
             .map(|()| {

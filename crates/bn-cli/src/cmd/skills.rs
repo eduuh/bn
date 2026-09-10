@@ -191,17 +191,13 @@ pub(crate) fn emit_skill_edit(
 /// files. Each harness installs independently, so a root that legitimately refuses (a name held by
 /// a skill bn does not own) doesn't stop the other from being maintained; the command reports the
 /// per-harness outcome and exits non-zero only if **every** root failed. The shipped tier resolves
-/// through the stable `config_dir()/repo` install anchor, so this works from any directory.
+/// from the checkout bn ships from (`resolver::shipped_root`), so this works from any directory.
 pub(crate) fn emit_skill_install(cfg: &Config, json: bool) {
     use bn_core::skills::{NativeHarness, NativeInstallAction as A, NativeScope};
 
     let home = dirs::home_dir().unwrap_or_default();
-    let anchor = bn_core::resolver::config_dir().join("repo");
-    let base = if anchor.is_dir() {
-        anchor
-    } else {
-        std::env::current_dir().unwrap_or_default()
-    };
+    let base = bn_core::resolver::shipped_root()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
     let mut rows = Vec::new();
     let mut errors = Vec::new();

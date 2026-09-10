@@ -81,7 +81,7 @@ There is no TUI. The bindings are the UI:
 <code>bn serve</code> is a launcher only — it resolves the sibling <code>bn-web</code> binary
 and execs it, gated on <code>cfg.web_enabled_here()</code>. Default bind is
 <code>127.0.0.1:7770</code>; <code>--lan</code> binds <code>0.0.0.0</code>.
-<span class="src">crates/bn-cli/src/serve.rs:35, :85 · config/config.toml:183-186</span>
+<span class="src">crates/bn-cli/src/serve.rs:35, :85 · docs/config.md</span>
 </p>
 
 <div class="note">
@@ -230,10 +230,10 @@ work. There is a written "Do NOT re-add these". The jobs still exist for manual
 </div>
 
 <p>
-Gating is layered: a <code>[machines.&lt;host&gt;]</code> entry must assign the repo and set
-<code>cron = true</code>; then <code>[[cron]].only_on</code> limits registration and
-<code>[jobs.only_on]</code> limits execution. With no machine entry at all, bn fails closed and
-reports <code>not_enabled</code> rather than erroring.
+Gating is layered: a machine runs cron for every repository it has cloned unless its
+<code>[machine]</code> table narrows <code>repos</code> or sets <code>cron = false</code>; then
+<code>[[cron]].only_on</code> limits registration and <code>[jobs.only_on]</code> limits execution.
+A machine that has switched cron off reports <code>not_enabled</code> rather than erroring.
 <span class="src">config/jobs/README.md:22-30</span>
 </p>
 
@@ -310,7 +310,7 @@ bn cost --by category --window 1</code></pre>
 <ul>
 <li><strong><code>bn dispatch</code>'s default lane is <code>ship-solo</code>, not the
 nine-stage pipeline.</strong> The pipeline is behind <code>$BN_DISPATCH_PIPELINE=1</code>.
-<span class="src">config/config.toml:200-204</span></li>
+<span class="src">crates/bn-cli/src/cmd/dispatch.rs · docs/config.md</span></li>
 
 <li><strong><code>bn today</code> runs an LLM agent by default.</strong> It is not a static
 list read, and it costs something each time.</li>

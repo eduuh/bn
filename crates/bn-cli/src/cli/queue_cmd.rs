@@ -171,6 +171,27 @@ pub(crate) enum QueueCmd {
         #[arg(long = "for", value_name = "DURATION")]
         for_: Option<String>,
     },
+    /// Switch the queue off — stop filing work and run every trigger on the spot.
+    ///
+    /// The opposite of `pause`, not a stronger version of it. A pause *holds* work: it keeps
+    /// accumulating and starts when the pause lifts. This stops work being filed at all, so a cron
+    /// firing, a review poll or a verb you press runs its work immediately, as it did before the
+    /// queue existed — and there is no backlog to catch up on afterwards.
+    ///
+    /// The dispatcher keeps running, so whatever is already queued still drains and `bn queue on`
+    /// takes effect at once.
+    /// bn queue off --for 2h --reason "shipping".
+    Off {
+        /// Switch back on automatically after this long (e.g. `90m`, `2h`). Omit to stay off until
+        /// `bn queue on`.
+        #[arg(long = "for", value_name = "DURATION")]
+        for_: Option<String>,
+        /// Why — shown by `bn queue status`, on the picker's settings row and in `bn queue log`.
+        #[arg(long, default_value = "")]
+        reason: String,
+    },
+    /// Switch the queue back on: triggers file work for the dispatcher again.
+    On,
     /// Lift the pause on a scope and start admitting its work again.
     /// bn queue resume --scope repo:bn.
     Resume {

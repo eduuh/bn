@@ -57,7 +57,7 @@ bn_install_tmux_from_source() {
   local jobs="${CARGO_BUILD_JOBS:-$(nproc 2>/dev/null || echo 2)}"
   tmp=$(mktemp -d) || return 1
   url="https://github.com/tmux/tmux/releases/download/${version}/tmux-${version}.tar.gz"
-  echo "Building tmux $version from $url…"
+  echo "Building tmux $version from ${url}…"
   if ! curl -fsSL "$url" -o "$tmp/tmux.tar.gz"; then
     echo "error: could not download tmux $version." >&2
     rm -rf "$tmp"

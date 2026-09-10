@@ -62,6 +62,14 @@ pub fn queue_data(cfg: &crate::resolver::Config, now: i64) -> Value {
         // which priority windows are open. They were computed for `bn queue status` and nowhere
         // else, so the terminal could answer the question and the dashboard could not.
         "machine": {
+            // The machine-wide switch, beside the dispatcher rather than beside the pauses: a
+            // reader asking "why is nothing being queued" is asking about this half of the page,
+            // and an off queue makes every capacity number below it beside the point.
+            "queue_off": crate::queue::off::active(now).map(|off| serde_json::json!({
+                "since": off.since,
+                "reason": off.reason,
+                "until": off.until,
+            })),
             "dispatcher_alive": crate::resolver::dispatcher_alive(now),
             // Alive and getting somewhere are different facts. A dispatcher blocked on a hung child
             // keeps heartbeating (the heartbeat is a timer thread, by design) — this is what makes

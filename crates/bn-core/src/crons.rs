@@ -117,11 +117,15 @@ pub fn parse_manifest(path: &Path) -> Result<Vec<CronEntry>, String> {
 /// a malformed one is skipped with a stderr warning rather than aborting discovery.
 pub fn discover(cfg: &Config, ctx: Option<&Resolved>) -> Vec<ResolvedCron> {
     let mut out: Vec<ResolvedCron> = Vec::new();
-    // The shipped/public manifest now lives at `config/crons.toml` (→ `config_dir()/crons.toml`
-    // at runtime, symlinked by install.sh). Append it as the lowest-precedence Global tier so a
-    // private note tier (`<note>/jobs/crons.toml`) still shadows it, first-tier-wins as before.
+    // The shipped manifest: `config/crons.toml` in the checkout bn ships from
+    // (`resolver::shipped_root`), else `<config_dir>/crons.toml`. Appended as the lowest-precedence
+    // Global tier so a private note tier (`<note>/jobs/crons.toml`) still shadows it,
+    // first-tier-wins as before.
     let mut tiers = job_dirs(cfg, ctx);
-    let shipped = (JobScope::Global, config_dir());
+    let shipped_dir = crate::resolver::shipped_config("crons.toml")
+        .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+        .unwrap_or_else(config_dir);
+    let shipped = (JobScope::Global, shipped_dir);
     if !tiers.iter().any(|(_, d)| *d == shipped.1) {
         tiers.push(shipped);
     }

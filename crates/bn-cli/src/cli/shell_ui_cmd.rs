@@ -16,9 +16,6 @@ pub(crate) enum CmdShellUi {
         #[command(subcommand)]
         action: Box<crate::edit::EditCmd>,
     },
-    /// Scaffold ~/.config/bn/config.toml (if absent) and regenerate the legacy plaintext
-    /// file (work-repos) config loading still falls back to, from the loaded config.
-    Setup,
     /// One-line status badge for the tmux status bar (replaces branch-note-status.sh).
     /// Resolves from the given path (tmux passes #{pane_current_path}) or cwd; prints
     /// nothing when there's no note or it's closed.
@@ -65,12 +62,20 @@ pub(crate) enum CmdShellUi {
     /// `ready`/done across ALL sessions, amber→red once something has waited 15+ min. Silent
     /// when all quiet so the bar stays clean.
     TmuxAttnCount,
-    /// Mark a watched window done when its output goes quiet (replaces
-    /// workflow/bin/tmux-done-badge.sh): invoked from the global alert-silence hook with the
-    /// window id. Sets @bn_done ✓, clears monitor-silence, fires a best-effort desktop toast.
+    /// Mark a finished window: from the global alert-silence hook when a watched window goes
+    /// quiet, or from the pane-died / pane-exited hooks when its pane exits. Sets @bn_done (✓, or
+    /// ✗ for a non-zero exit), clears monitor-silence, and fires a best-effort desktop toast.
     TmuxDoneBadge {
         /// The tmux window id (`#{hook_window}`) to badge.
         window: String,
+        /// The pane's exit status, as `pane-died` passes it (`#{pane_dead_status}`). Omit it for
+        /// the silence watch.
+        #[arg(long)]
+        status: Option<String>,
+        /// Called from `pane-exited`: the pane is already gone, so its status is unknown and only
+        /// a watched window is badged.
+        #[arg(long, conflicts_with = "status")]
+        exited: bool,
     },
     /// Orchestration roll-up popup (bound to prefix S; replaces workflow/bin/tmux-cockpit.sh):
     /// in-flight windows across every session (agent state / silence-watch), fleet health

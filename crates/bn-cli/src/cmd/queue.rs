@@ -6,14 +6,14 @@
 //! because each producer kept its own admission logic to itself.
 use crate::*;
 use bn_core::backlog::{self, AddSpec, BacklogEntry, BacklogKind, BacklogStatus};
-use bn_core::queue::kind::{ExecSpec, Requirements, WorkClass};
+use bn_core::queue::kind::{ExecSpec, Requirements};
 
 /// Dispatch a `bn queue` invocation.
 pub(crate) fn route(cfg: &Config, action: QueueCmd, json: bool) {
     use bn_core::clock::Clock;
     let now = bn_core::clock::RealClock.now_epoch_secs();
     if !cfg.queue_enabled_here() {
-        crate::cmd::queue_scope::disable_if_authorized(cfg, crate::cmd::queue_install::disable);
+        crate::cmd::queue_install::disable();
         if matches!(&action, QueueCmd::Status { .. }) {
             crate::cmd::queue_scope::emit_not_enabled_status(cfg, json);
             return;
@@ -27,14 +27,16 @@ pub(crate) fn route(cfg: &Config, action: QueueCmd, json: bool) {
             "queue",
             "not_enabled",
             &format!(
-                "bn queue: not enabled on this machine ('{}'); add queue = true under [machines.{}]",
+                "bn queue: switched off on this machine ('{}'); remove queue = false from [machine] in {}",
                 cfg.machine(),
-                cfg.machine()
+                bn_core::resolver::machine_config_path().display()
             ),
         );
     }
     match action {
-        QueueCmd::Status { repo } => emit_status(cfg, repo.as_deref(), now, json),
+        QueueCmd::Status { repo } => {
+            crate::cmd::queue_status::emit_status(cfg, repo.as_deref(), now, json)
+        }
         QueueCmd::List {
             kind,
             repo,
@@ -109,6 +111,10 @@ pub(crate) fn route(cfg: &Config, action: QueueCmd, json: bool) {
             for_,
         } => crate::cmd::queue_pause::emit_pause(&scope, &reason, for_.as_deref(), now, json),
         QueueCmd::Resume { scope } => crate::cmd::queue_pause::emit_resume(&scope, now, json),
+        QueueCmd::Off { for_, reason } => {
+            crate::cmd::queue_pause::emit_off(for_.as_deref(), &reason, now, json)
+        }
+        QueueCmd::On => crate::cmd::queue_pause::emit_on(now, json),
         QueueCmd::Why => crate::cmd::queue_tick::emit_why(json),
         QueueCmd::Badge => crate::cmd::queue_scope::emit_badge(cfg, now, json),
         QueueCmd::Log {
@@ -294,368 +300,6 @@ fn emit_class(cfg: &Config, id: &str, class: &str, repo: Option<&str>, now: i64,
 }
 
 // ---------------------------------------------------------------------------------------------
-// status
-// ---------------------------------------------------------------------------------------------
-
-/// `bn queue status` — pending work by kind and lane, and what each node offers.
-fn emit_status(cfg: &Config, repo: Option<&str>, now: i64, json: bool) {
-    let backlog = backlog::load(&backlog::backlog_path());
-    let pending: Vec<&BacklogEntry> = backlog
-        .entries()
-        .iter()
-        .filter(|e| cfg.repo_allowed_here(&e.repo))
-        .filter(|e| e.status == BacklogStatus::Pending)
-        .filter(|e| repo.is_none_or(|r| e.repo.eq_ignore_ascii_case(r)))
-        .collect();
-    let active: Vec<&BacklogEntry> = backlog
-        .entries()
-        .iter()
-        .filter(|e| cfg.repo_allowed_here(&e.repo))
-        .filter(|e| e.status == BacklogStatus::Leased)
-        .filter(|e| repo.is_none_or(|r| e.repo.eq_ignore_ascii_case(r)))
-        .collect();
-    let nodes = node_rows(cfg);
-
-    if json {
-        println!(
-            "{}",
-            Envelope::success(
-                "queue-status",
-                status_json(cfg, &pending, &active, &nodes, now)
-            )
-            .to_json()
-        );
-        return;
-    }
-
-    if backlog.unreadable > 0 {
-        // Entries that could not be read are entries that have vanished. Loud, because a queue
-        // quietly losing work is the failure that matters most.
-        println!(
-            "\u{f071} {} unreadable line(s) in backlog.jsonl — that many entries are lost",
-            backlog.unreadable
-        );
-    }
-    print_dispatcher(cfg, now);
-    print_active(&active, now);
-    print_pending(&pending);
-    print_nodes(&nodes);
-}
-
-/// Whether the queue is actually the path work takes right now, and what bounds it.
-///
-/// The first thing to print, because everything below it is conditional on this: capture without a
-/// live dispatcher means producers are quietly launching direct, and a reader who does not know
-/// that will misread every number under it.
-fn print_dispatcher(cfg: &Config, now: i64) {
-    let alive = bn_core::resolver::dispatcher_alive(now);
-    let (coding, research, why) = bn_core::queue::capacity::observe();
-    let captured: Vec<&str> = bn_core::resolver::ALL_PRODUCERS
-        .iter()
-        .copied()
-        .filter(|p| cfg.queue.captures(p))
-        .collect();
-
-    // A wedged dispatcher looks exactly as alive as a healthy one: it is holding its lock, and the
-    // kernel holds that for as long as the process exists however blocked it is. The pass stamp is
-    // what tells them apart, and the terminal says so in the same breath as the dashboard rather
-    // than leaving the two surfaces to disagree about a live-but-useless daemon.
-    let stalled = bn_core::resolver::dispatcher_pass_age(now)
-        .is_some_and(|age| age > bn_core::resolver::DISPATCHER_STALL_SECS);
-    if captured.is_empty() {
-        println!("\u{f05e} capture off — every producer launches directly");
-    } else if alive && stalled {
-        println!(
-            "\u{f071} dispatcher STUCK — alive, but no pass has finished in {}",
-            fmt_secs(bn_core::resolver::dispatcher_pass_age(now).unwrap_or(0))
-        );
-        println!(
-            "    it is blocked inside something it started — `bn queue why` has the last pass"
-        );
-    } else if alive {
-        // The pid is advisory (the flock is what owns the machine), but it is the thing an operator
-        // reaches for next — to `kill` it, or to find it in `ps`.
-        match bn_core::queue::daemon::holder_pid() {
-            Some(pid) => println!(
-                "\u{f0e7} dispatcher live (pid {pid}) · capturing {}",
-                captured.join(", ")
-            ),
-            None => println!(
-                "\u{f0e7} dispatcher live · capturing {}",
-                captured.join(", ")
-            ),
-        }
-    } else {
-        println!(
-            "\u{f071} dispatcher NOT running — {} would queue but are launching directly",
-            captured.join(", ")
-        );
-        println!("    start one with `bn queue run` — or any `bn` command will start it for you");
-    }
-    let open = bn_core::queue::window::open(&cfg.queue.windows, now);
-    if !open.is_empty() {
-        for w in &open {
-            let left = w
-                .closes_in(now)
-                .map(|s| format!(" · {} left", fmt_secs(s)))
-                .unwrap_or_default();
-            println!(
-                "    window '{}' open ({:?}) — {:+} to {}{left}",
-                w.name,
-                w.mode,
-                w.boost,
-                w.matches.join(", ")
-            );
-        }
-    }
-    let idle = bn_core::idle::is_idle(cfg, now, cfg.queue.opportunistic_idle_mins);
-    let away = cfg
-        .queue
-        .windows
-        .iter()
-        .any(|w| w.mode == bn_core::queue::window::WindowMode::Away && w.is_open(now));
-    println!(
-        "    presence: {}{} — opportunistic work {}",
-        if idle { "idle" } else { "active" },
-        if away { " · away window" } else { "" },
-        if idle || away { "allowed" } else { "waiting" }
-    );
-    let (c, r) = cfg.queue.lanes();
-    let derived = if cfg.queue.coding.is_some() || cfg.queue.research.is_some() {
-        format!("configured (machine would give {coding}/{research})")
-    } else {
-        why
-    };
-    println!("    lanes: {c} coding · {r} research — {derived}");
-    print_held(cfg);
-    print_builds(now);
-}
-
-/// Report pipeline work waiting on **you**.
-///
-/// The point of `/queue` and `bn queue status` is answering "why is nothing running" (#1135), and a
-/// held stage is now one of the real answers. Without this line a gate is indistinguishable from an
-/// empty queue: the machine is idle, the lanes are free, and the reason is a review sitting in
-/// someone's inbox. A hold nobody can see is the failure mode the gate must not have.
-fn print_held(cfg: &Config) {
-    let held: Vec<_> = crate::cmd::pipeline_sweep::sweep_tasks(cfg)
-        .into_iter()
-        .filter(|s| s.outcome == "held")
-        .collect();
-    if held.is_empty() {
-        return;
-    }
-    println!(
-        "    held: {} task(s) waiting on your plan review — `bn review` to decide",
-        held.len()
-    );
-    for s in &held {
-        println!(
-            "      {} · {} · {}",
-            s.task,
-            s.repo,
-            s.stage.as_deref().unwrap_or("-")
-        );
-    }
-}
-
-/// The build pool, printed beside the lanes because it is the same question — what bounds this
-/// machine — asked about a different resource.
-///
-/// Separate from the lanes on purpose: a verify gate saturates every core, where an agent mostly
-/// waits on the model, and a gate's caller blocks on the verdict where a dispatched agent's does
-/// not. See [`bn_core::queue::build`] for why sharing the lanes would deadlock.
-fn print_builds(now: i64) {
-    let cap = bn_core::queue::build::observe_slots();
-    let held = bn_core::queue::build::holders(now, &crate::cmd::queue_tick::pid_alive);
-    if held.is_empty() {
-        println!("    builds: 0/{cap} — no verify gate running");
-        return;
-    }
-    let who = held
-        .iter()
-        .map(|h| format!("{}/{}", h.repo, h.label))
-        .collect::<Vec<_>>()
-        .join(", ");
-    println!("    builds: {}/{cap} — {who}", held.len());
-}
-
-fn status_json(
-    cfg: &Config,
-    pending: &[&BacklogEntry],
-    active: &[&BacklogEntry],
-    nodes: &[NodeRow],
-    now: i64,
-) -> serde_json::Value {
-    let idle = bn_core::idle::is_idle(cfg, now, cfg.queue.opportunistic_idle_mins);
-    let away_window = cfg
-        .queue
-        .windows
-        .iter()
-        .any(|w| w.mode == bn_core::queue::window::WindowMode::Away && w.is_open(now));
-    serde_json::json!({
-        "now": now,
-        "accepting": true,
-        "pending": pending.len(),
-        "kinds": BacklogKind::ALL.iter().map(|k| serde_json::json!({
-            "kind": k.label(),
-            "lane": WorkClass::from_kind(*k).label(),
-            "pending": pending.iter().filter(|e| e.kind == *k).count(),
-        })).collect::<Vec<_>>(),
-        "active": active.iter().map(|e| serde_json::json!({
-            "entry": e,
-            "class": class_json(e),
-            "age_secs": now.saturating_sub(e.updated_at),
-        })).collect::<Vec<_>>(),
-        "lanes": WorkClass::ALL.iter().map(|lane| serde_json::json!({
-            "lane": lane.label(),
-            "pending": pending.iter()
-                .filter(|e| WorkClass::from_kind(e.kind) == *lane).count(),
-        })).collect::<Vec<_>>(),
-        "repos": repo_counts(pending).into_iter().map(|(repo, n)| serde_json::json!({
-            "repo": repo,
-            "pending": n,
-        })).collect::<Vec<_>>(),
-        "nodes": nodes,
-        "builds": {
-            "cap": bn_core::queue::build::observe_slots(),
-            "held": bn_core::queue::build::holders(now, &crate::cmd::queue_tick::pid_alive),
-        },
-        "presence": {
-            "idle": idle,
-            "away_window": away_window,
-            "opportunistic_allowed": idle || away_window,
-            "opportunistic_idle_mins": cfg.queue.opportunistic_idle_mins,
-        },
-    })
-}
-
-fn print_active(active: &[&BacklogEntry], now: i64) {
-    println!();
-    if active.is_empty() {
-        println!("\u{f04b} nothing running from the queue");
-        return;
-    }
-    println!("\u{f04b} {} running", active.len());
-    for e in active {
-        let node = e.assigned_to.as_deref().unwrap_or("local");
-        println!(
-            "  {:<13} {:<8} {:<8} {:<18} {:>5}  {}",
-            class_label(e),
-            e.exec.label(),
-            node,
-            format!("{}/{}", truncate(&e.repo, 8), truncate(&e.id, 9)),
-            fmt_secs(now.saturating_sub(e.updated_at)),
-            truncate(&e.title(), 44),
-        );
-    }
-}
-
-fn print_pending(pending: &[&BacklogEntry]) {
-    println!();
-    if pending.is_empty() {
-        println!("\u{f0ae} nothing pending");
-        return;
-    }
-    println!("\u{f0ae} {} pending", pending.len());
-    for kind in BacklogKind::ALL {
-        let n = pending.iter().filter(|e| e.kind == kind).count();
-        if n == 0 {
-            continue;
-        }
-        let lane = WorkClass::from_kind(kind).label();
-        println!("  {:<12} {n:>3}  ({lane})", kind.label());
-    }
-    let repos = repo_counts(pending);
-    if repos.len() > 1 {
-        println!(
-            "  across {} repos: {}",
-            repos.len(),
-            repos
-                .iter()
-                .map(|(repo, n)| format!("{repo} {n}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
-}
-
-fn print_nodes(nodes: &[NodeRow]) {
-    println!();
-    println!("\u{f013} {} node(s)", nodes.len());
-    for node in nodes {
-        println!(
-            "  {:<18} {:<8} {:<14} slots {}",
-            node.node_id, node.status, node.target, node.slots
-        );
-        if !node.harnesses.is_empty() {
-            println!("    harness  {}", node.harnesses.join(", "));
-        }
-        if node.skills.is_empty() {
-            println!("    skills   (none advertised)");
-        } else {
-            println!("    skills   {}", summarize(&node.skills, 8));
-        }
-    }
-}
-
-/// One registry node, flattened for display and JSON.
-#[derive(Debug, Clone, serde::Serialize)]
-struct NodeRow {
-    node_id: String,
-    target: String,
-    status: String,
-    slots: usize,
-    /// Whether this is the box the command ran on.
-    local: bool,
-    skills: Vec<String>,
-    harnesses: Vec<String>,
-    mcps: Vec<String>,
-    other: Vec<String>,
-}
-
-/// Every node the scheduler could place on, **including a synthesized row for this box**.
-///
-/// The local box has always been an implicit target with no registry record, which meant it
-/// advertised nothing and could therefore never satisfy a requirement. Synthesizing a row is what
-/// makes a single-machine setup — i.e. most of them — show its real skills instead of an empty
-/// table. Stage 3 promotes this from a display concern to a placement one.
-fn node_rows(cfg: &Config) -> Vec<NodeRow> {
-    let base = std::env::current_dir().unwrap_or_default();
-    let labels = bn_core::worker::advertise::advertised_labels(cfg, &base);
-    let axes = bn_core::worker::advertise::split_labels(&labels);
-    let mut rows = vec![NodeRow {
-        node_id: cfg.machine().to_string(),
-        target: "local".to_string(),
-        status: "ready".to_string(),
-        slots: 1,
-        local: true,
-        skills: axes.skills,
-        harnesses: axes.harnesses,
-        mcps: axes.mcps,
-        other: axes.other,
-    }];
-    for node in &cfg.nodes {
-        if node.node_id.eq_ignore_ascii_case(cfg.machine()) {
-            continue;
-        }
-        let axes = bn_core::worker::advertise::split_labels(&node.labels);
-        rows.push(NodeRow {
-            node_id: node.node_id.clone(),
-            target: node.target.label(),
-            status: format!("{:?}", node.status).to_lowercase(),
-            slots: 1,
-            local: false,
-            skills: axes.skills,
-            harnesses: axes.harnesses,
-            mcps: axes.mcps,
-            other: axes.other,
-        });
-    }
-    rows
-}
-
-// ---------------------------------------------------------------------------------------------
 // list
 // ---------------------------------------------------------------------------------------------
 
@@ -767,7 +411,7 @@ fn class_matches(entry: &BacklogEntry, want: &str) -> bool {
     }
 }
 
-fn class_label(entry: &BacklogEntry) -> &'static str {
+pub(super) fn class_label(entry: &BacklogEntry) -> &'static str {
     let class = bn_core::queue::classify::classify(entry);
     if class.subtype.label() != "foreground" {
         return class.subtype.label();
@@ -775,7 +419,7 @@ fn class_label(entry: &BacklogEntry) -> &'static str {
     class.mode.label()
 }
 
-fn class_json(entry: &BacklogEntry) -> serde_json::Value {
+pub(super) fn class_json(entry: &BacklogEntry) -> serde_json::Value {
     let class = bn_core::queue::classify::classify(entry);
     serde_json::json!({
         "mode": class.mode.label(),
@@ -787,7 +431,7 @@ fn class_json(entry: &BacklogEntry) -> serde_json::Value {
 
 /// The requirements suffix on a list row — empty when the entry runs anywhere, so an
 /// unconstrained queue stays quiet.
-fn describe_requirements(req: &Requirements) -> String {
+pub(super) fn describe_requirements(req: &Requirements) -> String {
     if req.is_empty() {
         return String::new();
     }
@@ -937,7 +581,7 @@ fn emit_add(cfg: &Config, item: &str, repo: Option<&str>, args: AddArgs, now: i6
 // helpers
 // ---------------------------------------------------------------------------------------------
 
-fn kind_choices() -> String {
+pub(super) fn kind_choices() -> String {
     BacklogKind::ALL
         .iter()
         .map(|k| k.label())
@@ -945,7 +589,7 @@ fn kind_choices() -> String {
         .join(", ")
 }
 
-fn parse_status(s: &str) -> Option<BacklogStatus> {
+pub(super) fn parse_status(s: &str) -> Option<BacklogStatus> {
     match s.trim().to_ascii_lowercase().as_str() {
         "pending" => Some(BacklogStatus::Pending),
         "leased" => Some(BacklogStatus::Leased),
@@ -955,7 +599,7 @@ fn parse_status(s: &str) -> Option<BacklogStatus> {
     }
 }
 
-fn repo_counts(pending: &[&BacklogEntry]) -> Vec<(String, usize)> {
+pub(super) fn repo_counts(pending: &[&BacklogEntry]) -> Vec<(String, usize)> {
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for e in pending {
         *counts.entry(e.repo.clone()).or_default() += 1;
@@ -965,14 +609,14 @@ fn repo_counts(pending: &[&BacklogEntry]) -> Vec<(String, usize)> {
     out
 }
 
-fn summarize(items: &[String], max: usize) -> String {
+pub(super) fn summarize(items: &[String], max: usize) -> String {
     if items.len() <= max {
         return items.join(", ");
     }
     format!("{}, +{} more", items[..max].join(", "), items.len() - max)
 }
 
-fn truncate(s: &str, max: usize) -> String {
+pub(super) fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }
@@ -982,7 +626,7 @@ fn truncate(s: &str, max: usize) -> String {
     )
 }
 
-fn fmt_secs(secs: i64) -> String {
+pub(super) fn fmt_secs(secs: i64) -> String {
     match secs {
         s if s < 60 => format!("{s}s"),
         s if s < 3600 => format!("{}m", s / 60),

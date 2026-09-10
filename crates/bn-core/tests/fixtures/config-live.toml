@@ -1,0 +1,231 @@
+# bn configuration.
+# Sensible defaults are active below. Machine/user-specific keys (paths, hostnames,
+# repos, nodes) stay commented — uncomment and fill them to opt in.
+# Precedence: defaults -> config.toml -> legacy files -> BN_* env vars.
+
+# worktree_dir = "/home/you/projects/worktree"  # absolute path; default ~/projects/worktree
+# hostname = "my-laptop"                         # default auto-detected
+
+[personal]
+# notes_root = "/home/you/projects/branch-notes"  # absolute path; default ~/projects/branch-notes
+
+[work]
+# notes_root = "/home/you/projects/notes/bn"  # absolute path; default ~/projects/notes/bn
+# work_repos = ["acme", "internal-tool"]      # repo names; default none
+# only = true                                 # default false
+
+[review]
+weekly_anchor = "monday"        # weekday name or 0=Sun..6=Sat
+sla_first_review_hours = 4
+sla_merge_hours = 24
+# harness = "copilot"           # copilot | claude; default current harness, then copilot
+
+# Pipeline models are left to the harness default (latest). Uncomment to pin a stage.
+# [pipeline.models.investigate]
+# model = "gpt-5.4"
+# effort = "high"               # effort tier
+# [pipeline.models.plan]
+# model = "gpt-5.4"
+# effort = "high"
+# [pipeline.models.execute]
+# model = "gpt-5.4-mini"
+# effort = "medium"
+# [pipeline.models.critique]
+# model = "gpt-5.4"
+# effort = "high"
+# [repo.my-repo.pipeline.models.execute]
+# model = "claude-sonnet-4.6"   # inherits omitted fields
+
+[attention]
+max_age_hours = 24              # widened over weekends
+
+[calib]
+s = "30m"
+m = "90m"
+l = "3h"
+
+[wrap]
+enabled = false
+
+[standup]
+enabled = false
+fetch_delta = false
+
+[dxi]
+enabled = false
+
+[night]
+enabled = false
+max_dispatch = 3
+window = "23:00-06:00"          # local HH:MM-HH:MM
+repos = []                      # repo allowlist; empty disables
+
+[sentinel]
+todo_age_days = 30
+# repos = ["bn"]                # repo allowlist; default [night].repos
+
+[quarter]
+enabled = false
+review_window_days = 7
+# review_cron = "Sun *-*-* 18:00:00"  # systemd OnCalendar; default weekly
+# harness = "copilot"                 # default [review].harness, then copilot
+
+[dojo]
+enabled = false
+daily_target = 5
+# repos = ["bn"]                # rotation allowlist; default all repos with cards
+
+[chief]
+enabled = false
+# am_time = "05:30"             # local HH:MM; timer-owned default
+# pm_time = "16:45"             # local HH:MM; timer-owned default
+
+[archivist]
+enabled = false
+time = "17:30"                  # local HH:MM Friday chronicle time
+
+[retro]
+enabled = false
+
+[mentor]
+enabled = true
+
+[eye]
+enabled = false
+review_interval_months = 12     # 6..12 months
+# last_review = "2026-01-15"    # YYYY-MM-DD; optional baseline
+
+[routine]
+enabled = false
+timezone = "local"              # IANA zone or local
+reminder_minutes_before = 10
+notify_on_start = true
+catchup_horizon_minutes = 30
+# [[routine.blocks]]
+# name = "Deep work"
+# id = "deep-work"
+# days = ["mon", "tue", "wed", "thu", "fri"]
+# start = "09:00"
+# end = "12:30"
+# kind = "work"                 # work | learning | family | recovery | exercise | sleep
+
+[today]
+enabled = false
+
+# [tools]
+# builtins = ["n8n"]            # managed tool names; default none
+
+[staff]
+# home = "my-laptop"            # host name; default runs anywhere
+# Draft the morning brief to Gmail as soon as its card lands. No-ops with a clear message until
+# the app password exists:
+mail = ["standup"]
+
+# [capture]
+# screenshot_dir = "/mnt/c/Users/you/Pictures/Screenshots"
+# gif_dir = "/mnt/c/Users/you/Pictures/ScreenToGif"
+
+# [mcp]
+# extras = ["sequential-thinking", "memory", "time"]  # curated MCP names; default none
+
+# [managed_repos]
+# repos = [
+#   "git@github.com:you/dotfiles.git",
+#   "git@github.com:you/another-repo.git",
+# ]
+
+[web]
+port = 7770
+bind = "127.0.0.1"              # loopback
+fleet_poll_secs = 2
+tmux_mcp_autostart = true
+tmux_mcp_badge = true
+
+[cockpit]
+ground_secs = 30                # cockpit grounding-loop redraw cadence (s); env $BN_COCKPIT_GROUND_SECS
+
+[dispatch]
+plan_review = false
+plan_reviewers = 3
+plan_review_quorum = 2
+
+[orchestrate]
+agent = "copilot"               # copilot | claude
+remote_overflow = false
+# Autonomous mode: the repos whose reproduced bugs may become work without being asked.
+# The explore pass files them (`bn issue file --kind bug --label autonomous-repro`); everything
+# downstream — task pull, enhance, queue, dispatch, gate, critic — already exists.
+own = ["bn"]
+# `needs-triage` is the gate on product-facing findings: wira360's explore pass files with that
+# label, and this keeps those issues out of the auto-pull until a human drops it. Keep "blocked"
+# — setting this key replaces the built-in default rather than adding to it.
+exclude_labels = ["blocked", "needs-triage"]
+# min_free_ram_mb = 3000        # MB; default disabled
+# max_loadavg = 8.0             # load average; default disabled
+# tokens_per_hour = 4000000     # tokens/hour; default disabled
+# daily_cost_usd = 25.0         # USD/day; default disabled
+# daily_cost_usd_coding = 20.0
+# daily_cost_usd_research = 5.0
+
+[jobs]
+tmux_window = false
+cron_global_layout = "window"   # window | pane
+# [jobs.only_on]: host allowlist per job. An unlisted job runs everywhere.
+# e.g. commit-notes = ["my-laptop"] / pr-observe = ["my-laptop", "work-pc"]
+[jobs.only_on]
+# nightly-release builds + uploads the binaries for the host's own platform: darwin here,
+# linux on fedora. Each uploads only its own <app>-<target>.tar.xz, so they fill the one
+# rolling release side by side. The timer registers on every host (crons.toml `only_on` is
+# not read by cron_gen); this is the gate that makes the run a no-op off the allowlist —
+# so the same line belongs in fedora's config.toml too.
+nightly-release = ["snapshot-host", "fedora"]
+
+# [repo.arena]
+# verify = "npm run validate"   # shell command; default bn build/test/lint jobs
+# requires = ["has-node"]
+# excludes = ["gpu"]
+# [repo.my-go-service]
+# verify = "go test ./... && golangci-lint run"
+
+# [hosts.workstation]
+# repo_root = "~/projects/worktree"
+# harness = "claude"            # copilot | claude; default dispatch harness
+# bn = true
+
+# [nodes.wsl-box]
+# target = "local"              # local or ssh:<alias>
+# labels = ["os:windows-wsl", "mt5-bridge", "has-node"]
+# ram_total_mb = 6400
+# [nodes.fedora-box]
+# target = "ssh:fedora"
+# labels = ["os:linux", "has-node", "has-copilot"]
+# ram_total_mb = 48000
+
+# [windows]
+# worktree_dir = "C:\projects\worktree"
+# [windows.personal]
+# notes_root = "C:\projects\branch-notes"
+# [windows.work]
+# notes_root = "C:\projects\notes\bn"
+# [windows.capture]
+# screenshot_dir = "C:\Users\you\Pictures\Screenshots"
+# gif_dir = "C:\Users\you\Pictures\ScreenToGif"
+
+[log]
+enabled = false
+level = "debug"                 # debug | info | warn | error
+retain_days = 14                # 0 keeps all
+# dir = "/home/you/.local/state/bn/logs"  # default <state_dir>/logs
+
+# This machine's runtime opt-ins. Without a [machines.<name>] entry bn treats the host as
+# unregistered: cron_enabled_here() is false, so `bn cron register` declares nothing and no
+# scheduler agent is ever written — which is how the darwin nightly-release went 8 days without
+# publishing. The machine name is the one in ~/.bn/config/machine ("snapshot-host"), not the hostname.
+# `queue` must be spelled out: it defaults to false, and ANY `bn queue ...` call on a profile with
+# queue = false runs queue_install::disable(), which deletes com.bn.queue.plist AND
+# com.bn.queue-tick.plist. The queue-tick cron fires every minute, so it would tear itself (and the
+# dispatcher that was already running here) down between every `bn cron register`.
+[machines.snapshot-host]
+repos = ["*"]
+cron = true
+queue = true

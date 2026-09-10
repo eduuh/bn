@@ -7,18 +7,42 @@
 
 use std::collections::HashMap;
 
-/// `[machines.<name>]`: the repositories and resident runtimes explicitly assigned to one stable
-/// machine identity. Every field is opt-in; omitted runtime flags deserialize to `false`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+/// `[machine]`: what a machine should do, for a machine that should do less than everything.
+///
+/// Usually set in that machine's own `<notes_root>/<machine>/config.toml`; set in the shared file
+/// it applies to every machine. With no `[machine]` table a machine works on every repository it
+/// has cloned and runs the queue, cron and web services. The table only narrows that: `repos`
+/// limits the repositories, and a runtime flag set to `false` switches that service off. An
+/// omitted field keeps its default, so `web = false` alone still runs the queue and cron.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct MachineProfile {
-    #[serde(default)]
+    #[serde(default = "every_repo")]
     pub repos: Vec<String>,
-    #[serde(default)]
+    #[serde(default = "on")]
     pub queue: bool,
-    #[serde(default)]
+    #[serde(default = "on")]
     pub cron: bool,
-    #[serde(default)]
+    #[serde(default = "on")]
     pub web: bool,
+}
+
+impl Default for MachineProfile {
+    fn default() -> Self {
+        MachineProfile {
+            repos: every_repo(),
+            queue: true,
+            cron: true,
+            web: true,
+        }
+    }
+}
+
+fn every_repo() -> Vec<String> {
+    vec!["*".to_string()]
+}
+
+fn on() -> bool {
+    true
 }
 
 /// `[mcp]`: per-repo MCP wiring options (#323). `extras` is the opt-in list of curated
@@ -98,13 +122,10 @@ pub(super) struct DispatchSection {
     pub(super) plan_review_quorum: Option<usize>,
 }
 
-/// `[orchestrate]`: defaults for `bn orchestrate` (#382). `agent` is the harness the daemon
-/// dispatches new agents under when `--agent` isn't passed (`claude` | `copilot`, plus the
-/// `bn dispatch` aliases); absent falls back to `copilot`. The usage-limit auto-fallback (switch a
-/// stalled lane to the other harness) is always on regardless of this default.
+/// `[orchestrate]`: the keep-warm supply of resident supervisors, and the resource/budget caps the
+/// scheduler pauses local dispatch on (#377).
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub(super) struct OrchestrateSection {
-    pub(super) agent: Option<String>,
     /// Seconds without pane or transcript activity before `working` is treated as stuck.
     pub(super) stuck_idle_secs: Option<i64>,
     /// Keep resident supervisors supplied from open GitHub issues.
@@ -135,12 +156,10 @@ pub(super) struct OrchestrateSection {
     pub(super) remote_overflow: Option<bool>,
 }
 
-/// `[wrap]`: the end-of-day digest job (#98). Disabled by default; `time` is the local
-/// `HH:MM` the systemd timer fires at (informative — the timer carries the real schedule).
+/// `[wrap]`: the end-of-day digest job (#98). Disabled by default.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub(super) struct WrapSection {
     pub(super) enabled: Option<bool>,
-    pub(super) time: Option<String>,
 }
 
 /// `[standup]`: the standup-autopilot job (#99). Disabled by default; `fetch_delta` gates the
@@ -148,23 +167,7 @@ pub(super) struct WrapSection {
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub(super) struct StandupSection {
     pub(super) enabled: Option<bool>,
-    pub(super) time: Option<String>,
     pub(super) fetch_delta: Option<bool>,
-}
-
-/// `[today]`: Today's agent (#577), the `today-agent` cron. Disabled by default — a scheduled run
-/// writes suggestions the owner reviews — so it stays opt-in. A manual `bn today` runs regardless.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub(super) struct TodaySection {
-    pub(super) enabled: Option<bool>,
-}
-
-/// `[attention_agent]`: the periodic LLM cron that reviews recent cron findings + cron health and
-/// writes a ranked attention list. Disabled by default (it spends a model call on a schedule) so
-/// it stays opt-in, like the other agentic crons.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub(super) struct AttentionAgentSection {
-    pub(super) enabled: Option<bool>,
 }
 
 /// `[dxi]`: the personal DXI micro-prompt (#110). Disabled by default; opt-in surfaces a
@@ -174,84 +177,14 @@ pub(super) struct DxiSection {
     pub(super) enabled: Option<bool>,
 }
 
-/// `[night]`: the nightly fleet planner (the `night-shift` job / `bn night run`). Disabled by
-/// default and opt-in per repo — nothing runs unless `enabled` is set AND repos are allowlisted.
-/// `max_dispatch` hard-caps how many promoted todos a single shift dispatches; `window` is the
-/// local `HH:MM-HH:MM` the shift may run in (a manual `bn night run` outside it declines unless
-/// `--force`); `repos` is the allowlist of bare repo names the shift may touch.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub(super) struct NightSection {
-    pub(super) enabled: Option<bool>,
-    pub(super) max_dispatch: Option<usize>,
-    pub(super) window: Option<String>,
-    pub(super) repos: Option<Vec<String>>,
-}
-
-/// `[sentinel]`: the Debt Sentinel — the 22:30 estate patrol (#259). `repos` is the allowlist of
-/// bare repo names it scans and may promote from; it defaults to the night-shift allowlist
-/// (`[night] repos`) so the two stay in lockstep unless overridden, and an empty allowlist makes
-/// the patrol a no-op. `todo_age_days` is how old a TODO/FIXME marker must be before it's flagged.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub(super) struct SentinelSection {
-    pub(super) repos: Option<Vec<String>>,
-    pub(super) todo_age_days: Option<i64>,
-}
-
-/// `[quarter]`: the recurring impact-agent review (#252). Disabled by default — it dispatches an
-/// LLM harness, so it stays opt-in. `review_cron` is retained only to emit a migration error;
-/// schedules now live in `agents/quarter-review.md`. `review_window_days` bounds the ground-truth
-/// window when there's no prior review; `harness` picks the CLI (copilot/claude).
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub(super) struct QuarterSection {
-    pub(super) enabled: Option<bool>,
-    pub(super) review_cron: Option<String>,
-    pub(super) review_window_days: Option<i64>,
-    pub(super) harness: Option<String>,
-}
-
-/// `[dojo]`: the gamified learning engine (#253, `bn dojo`). `repos` is the rotation allowlist of
-/// bare repo names the session and card-miner draw from (empty = every repo with cards).
-/// `daily_target` caps how many cards one session presents. `enabled` gates the nightly
-/// `dojo-cards` mining cron (off by default — mining is opt-in), but `bn dojo` itself always runs.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub(super) struct DojoSection {
-    pub(super) enabled: Option<bool>,
-    pub(super) repos: Option<Vec<String>>,
-    pub(super) daily_target: Option<usize>,
-}
-
-/// `[chief]`: legacy. `enabled` is folded onto `[agents] enabled` (see `config_file`); the two
-/// time fields are read and ignored, since a `staff-chief-*` agent's schedule is its manifest's
-/// `on_calendar` and always was — these only ever restated it.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub(super) struct ChiefSection {
-    pub(super) enabled: Option<bool>,
-}
-
-/// `[archivist]`: legacy. `enabled` is folded onto `[agents] enabled` (see `config_file`); the
-/// former `time` field is gone, since the schedule is the manifest's `on_calendar` and this only
-/// ever restated it (informative — the real schedule lived in
-/// `config/crons.toml`).
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub(super) struct ArchivistSection {
-    pub(super) enabled: Option<bool>,
-}
-
 /// `[staff]`: the agent-staff framework's multi-machine settings (#270). `home` names the single
-/// machine the staff runs on — `bn staff run` (and every `staff-<agent>` cron) no-ops loudly on
-/// any other box, so two laptops never duplicate-review the same PRs into the synced feed. Unset =
-/// the staff runs anywhere (a single-machine setup needs no homing). A per-agent `only_on` in
-/// `config/agents/*.md` overrides this for that one agent (e.g. a work-box-only agent). Env: `$BN_STAFF_HOME`.
-///
-/// `mail` names the agents whose card should be drafted to email the moment it lands
-/// (`bn staff mail`). Delivery follows the card rather than running on its own timer, so a brief
-/// can never be mailed before it exists or skipped because a second schedule drifted. Empty = no
-/// agent mails, which is the default: a card that leaves the machine is opt-in per agent.
+/// machine the staff runs on, so two laptops never duplicate-review the same PRs into the synced
+/// feed. Unset = the staff runs anywhere (a single-machine setup needs no homing). A per-agent
+/// `only_on` in `config/agents/*.md` overrides this for that one agent (e.g. a work-box-only
+/// agent).
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub(super) struct StaffSection {
     pub(super) home: Option<String>,
-    #[serde(default)]
-    pub(super) mail: Vec<String>,
 }
 
 /// `[scout]`: the Scout radar agent (#262). All optional. `watch` is the public `owner/repo`
@@ -263,23 +196,6 @@ pub(super) struct ScoutSection {
     pub(super) watch: Option<Vec<String>>,
     pub(super) tools: Option<Vec<String>>,
     pub(super) max_findings: Option<usize>,
-}
-
-/// `[retro]`: the Interviewer (#261) — the weekly subjective-retro pull agent. Disabled by
-/// default (it raises a weekly attention item), so it stays opt-in. Enabling registers the
-/// `staff-interviewer` cron, which raises the Friday item and escalates it once on Monday; the
-/// session itself is always run by hand (`bn retro chat`), never dispatched.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub(super) struct RetroSection {
-    pub(super) enabled: Option<bool>,
-}
-
-/// `[mentor]`: the Mentor (#258) — the Mon..Fri `staff-mentor` post-merge review-to-teach agent.
-/// Disabled by default (it dispatches an LLM harness and appends craft notes to your branch
-/// notes), so it stays opt-in. A manual `bn mentor` runs regardless.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub(super) struct MentorSection {
-    pub(super) enabled: Option<bool>,
 }
 
 /// `[agents]`: which opt-in agents are switched on, by name.
@@ -299,20 +215,10 @@ pub(super) struct JobsSection {
     pub(super) only_on: Option<HashMap<String, Vec<String>>>,
 }
 
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub(super) struct PersonalSection {
-    pub(super) notes_root: Option<String>,
-    /// `[personal].overlay_root`: the personal overlay layered on top for `agents/`+`skills/`
-    /// discovery (default `~/projects/personal-notes/bn`). Overridden by `$BN_OVERLAY_DIR`.
-    pub(super) overlay_root: Option<String>,
-}
-
+/// `[work]`: which repositories are work, so their notes go to the work notes tree.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub(super) struct WorkSection {
-    pub(super) notes_root: Option<String>,
     pub(super) work_repos: Option<Vec<String>>,
-    /// `[work].only`: this is a work machine — hide non-work repos from cross-repo views.
-    pub(super) only: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -321,8 +227,6 @@ pub(super) struct ReviewSection {
     pub(super) weekly_anchor: Option<String>,
     /// Review SLA: hours-to-first-review target (default 4).
     pub(super) sla_first_review_hours: Option<f64>,
-    /// Review SLA: open→merge target hours (default 24).
-    pub(super) sla_merge_hours: Option<f64>,
     /// Harness the auto-review agent launches: `claude` or `copilot`.
     pub(super) harness: Option<String>,
     /// `[review].diff_gate` (#607): enable the adversarial diff-only review gate on the ship-lane

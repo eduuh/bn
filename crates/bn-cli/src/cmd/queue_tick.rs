@@ -155,10 +155,12 @@ pub(crate) fn emit_run(cfg: &Config, interval: u64) {
     };
     let mut cfg = cfg.clone();
     let mut supervision = Supervision::start();
-    let mut watches = vec![
-        crate::event_loop::Watch::file(backlog::backlog_path()),
-        crate::event_loop::Watch::file(bn_core::resolver::config_file_path()),
-    ];
+    let mut watches = vec![crate::event_loop::Watch::file(backlog::backlog_path())];
+    watches.extend(
+        bn_core::resolver::config_layer_paths()
+            .into_iter()
+            .map(crate::event_loop::Watch::file),
+    );
     if let Some(path) = crate::cmd::queue_daemon::executable_path() {
         watches.push(crate::event_loop::Watch::file(path));
     }

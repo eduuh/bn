@@ -70,7 +70,7 @@ impl Sandbox {
             .keep();
 
         let port = free_port().context("allocate a dashboard port for this sandbox")?;
-        let mut env = env::contract(&root, port, FROZEN_NOW, FROZEN_TODAY);
+        let mut env = env::contract(&root, FROZEN_NOW, FROZEN_TODAY);
 
         let shim_dir = root.join("shims");
         let calls = root.join("calls.log");
@@ -99,8 +99,7 @@ impl Sandbox {
         std::fs::write(
             root.join("home/.bn/config/config.toml"),
             format!(
-                "[personal]\nnotes_root = \"{}\"\n\n[web]\nport = {port}\nbind = \"127.0.0.1\"\n\n[machines.e2ehost]\nrepos = [\"repo\"]\nqueue = true\ncron = true\nweb = true\n",
-                root.join("notes").display()
+                "[web]\nport = {port}\nbind = \"127.0.0.1\"\n\n[machine]\nrepos = [\"repo\"]\n"
             ),
         )
         .context("seed config.toml")?;

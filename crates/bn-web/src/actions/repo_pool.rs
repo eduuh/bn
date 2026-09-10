@@ -120,7 +120,7 @@ pub async fn repo_pool_schedule_set(
         let windows = windows.clone();
         move || {
             bn_core::queue::window::write_pool_warm_windows(
-                &bn_core::resolver::config_file_path(),
+                &bn_core::resolver::machine_config_path(),
                 &windows,
             )
         }

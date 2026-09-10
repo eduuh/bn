@@ -1,5 +1,5 @@
 //! cwd → (repo, branch) → note path. Port of `resolve_note_context`
-//! (config/scripts/tmux-lib.zsh:151) + `notes_dir_for` / work-repos classification (bn:101-116).
+//! (config/scripts/tmux-lib.zsh:151) + `notes_dir_for` / work classification (bn:101-116).
 //!
 //! Two derivation cases, kept distinct exactly as the oracle does:
 //!   A. cwd under `$WORKTREE_DIR/` → repo = first path segment (from the *directory*),
@@ -24,16 +24,17 @@ pub use config::{
     Config, ContextError, LogConfig, MachineProfile, PipelineConfig, PipelineModel, RepoBranch,
     RepoConfig, RepoPlacementPolicy, Resolved, StageConfig, WebConfig,
 };
+pub(crate) use config_file::merge_tables;
 pub use context::{repo_root, resolve, resolve_hint, resolve_target};
 pub use dirs::{
-    agents_dir, approvals_file_path, bin_dir, bn_home, config_dir, config_file_path, jobs_dir,
-    link_tags, link_tags_with_source, log_dir, managed_repos_dir, references_dir, state_dir,
-    web_token, TagSource,
+    agents_dir, approvals_file_path, bin_dir, bn_home, config_dir, config_layer_paths, config_root,
+    jobs_dir, link_tags, link_tags_with_source, log_dir, machine_config_path, machine_file_path,
+    machine_name, managed_repos_dir, notes_roots, references_dir, shared_config_path,
+    shipped_config, shipped_root, state_dir, web_token, worktree_dir, TagSource,
 };
 pub use jobs::{
-    agent_dirs, job_dirs, job_script, list_jobs, mcp_extras, parse_script_header,
-    quarter_review_cron_override, script_header, JobConfig, JobRef, JobScope, ScriptHeader,
-    SCRIPT_HEADER_LINES,
+    agent_dirs, job_dirs, job_script, list_jobs, mcp_extras, parse_script_header, script_header,
+    JobConfig, JobRef, JobScope, ScriptHeader, SCRIPT_HEADER_LINES,
 };
 pub use queue_config::{
     dispatcher_alive, dispatcher_pass_age, dispatcher_pass_path, DirectMode, QueueConfig,

@@ -1,16 +1,23 @@
 name: CI
 
 on:
-  # Verification is a *pull request* concern. This used to also run on every push to main,
-  # re-running the whole suite against the exact commit its PR had just proved green.
+  # Verification runs on every pull request, and again on `main` as the release gate — not by
+  # duplicating these jobs into release.yml, but by release.yml *calling* this file
+  # (`workflow_call` below). One definition of "green", used in both places.
   #
-  # Shipping from main is a separate chain and stays that way: release-plz.yml bumps the
-  # version on push to main and pushes a tag, which triggers release.yml (cargo-dist) to
-  # build the artifacts and upload them to a GitHub Release. That is also the only place a
-  # --release binary is actually wanted.
+  # Direct `push:` on main is deliberately absent: release.yml owns main, and a push trigger
+  # here would run the same jobs a second time alongside it for no added signal.
   pull_request:
   # Manual trigger, so any lane can be exercised on any ref without opening a PR first.
   workflow_dispatch:
+  # Called by release.yml as the merge gate on `main`. Strict release means a commit on main
+  # ships only if THESE jobs are green on that exact commit, and the only way to guarantee
+  # "the same CI" is to invoke this file rather than copy its jobs into the release workflow.
+  #
+  # A squash merge rewrites the commit, so the SHA the PR proved green is not the SHA that
+  # lands on main. Re-running the gate there is the difference between "a PR passed once" and
+  # "what we are about to publish passes".
+  workflow_call:
 
 # Cancel superseded runs on the same ref.
 concurrency:
@@ -149,11 +156,18 @@ jobs:
         with:
           set-safe-directory: false
 
+      # NO `cache: npm`. Its post-step uploads the npm cache to the Actions cache service after
+      # every run, and on this self-hosted runner that cost 135s and 252s on the two runs before
+      # it was removed — against 4s for the `npm ci` it exists to speed up, and 35s for the whole
+      # rest of this job. It was over half of CI's wall clock.
+      #
+      # The runner is a persistent machine that keeps `~/.npm` between runs, so the local cache
+      # `npm ci` actually reads is already warm without any of that. A GitHub-HOSTED runner gets
+      # a fresh VM and would genuinely want the cache; this one does not. See the release
+      # workflow, which enables it for its hosted Linux leg and not for its self-hosted mac leg.
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
-          cache-dependency-path: crates/bn-web/ui/package-lock.json
 
       - name: Install UI deps
         run: npm ci
@@ -205,8 +219,6 @@ jobs:
       - name: Shell multibyte adjacency
         run: sh scripts/check-shell-multibyte.sh
 
-      - name: Nightly release worktree safety
-        run: sh scripts/check-nightly-release-worktree.sh
 
   # End-to-end: the real `bn` binary against a real tmux server, in a hermetic sandbox.
   #

@@ -252,18 +252,14 @@ pub(crate) fn emit_agent_new(
 }
 
 /// Resolve the install `base` and `NativeScope`: repo-scoped uses the cwd (needs a git repo);
-/// global uses the stable `config_dir()/repo` install anchor (so `install.sh` is cwd-independent),
-/// falling back to the cwd.
+/// global uses the checkout bn ships from (`resolver::shipped_root`, so `install.sh` is
+/// cwd-independent), falling back to the cwd.
 fn install_base(repo_scope: bool) -> (std::path::PathBuf, NativeScope) {
     if repo_scope {
         (std::env::current_dir().unwrap_or_default(), NativeScope::Repo)
     } else {
-        let anchor = bn_core::resolver::config_dir().join("repo");
-        let base = if anchor.is_dir() {
-            anchor
-        } else {
-            std::env::current_dir().unwrap_or_default()
-        };
+        let base = bn_core::resolver::shipped_root()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         (base, NativeScope::Global)
     }
 }

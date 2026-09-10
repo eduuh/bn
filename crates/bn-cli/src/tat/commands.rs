@@ -234,7 +234,11 @@ pub(super) fn queue_state_lines(cfg: &Config, repo: &str, action: &bn_core::wt_a
         // rather than as a `✓ queued` that never becomes anything.
         // A direct command needs no dispatcher: Enter leases and starts it from the picker's own
         // process, and the queue is only the fallback for what could not be started here.
-        None if cfg.queue.direct.is_immediate() => {
+        None if cfg
+            .queue
+            .direct_mode(bn_core::queue::off::is_off(bn_core::util::now_epoch_secs()))
+            .is_immediate() =>
+        {
             println!("\nEnter: start it now, in a tmux window in the {repo} session.");
         }
         None if !bn_core::queue::daemon::is_running() => {
@@ -243,7 +247,10 @@ pub(super) fn queue_state_lines(cfg: &Config, repo: &str, action: &bn_core::wt_a
                     "\n\x1b[1;31mUnavailable:\x1b[0m the queue is off on this machine ('{}').",
                     cfg.machine()
                 );
-                println!("Add `queue = true` under [machines.{}].", cfg.machine());
+                println!(
+                    "Remove `queue = false` from [machine] in {}.",
+                    bn_core::resolver::machine_config_path().display()
+                );
             } else {
                 println!("\n\x1b[1;31mUnavailable:\x1b[0m no dispatcher is running.");
                 println!("Any `bn` command starts one, or run `bn queue run`.");

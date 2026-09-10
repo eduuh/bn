@@ -1,19 +1,54 @@
-//! The `config.toml` deserialization layer: [`ConfigFile`] + its `*Section` tables and
-//! windows-overlay accessors. Internal to the resolver — [`super::Config`] / [`super::JobConfig`]
-//! consume it and expose the resolved values.
+//! The config deserialization layer: [`ConfigFile`], one parse of every config layer merged
+//! together, and its accessors. Internal to the resolver — [`super::Config`] /
+//! [`super::JobConfig`] consume it and expose the resolved values.
 
-use super::config_file_path;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::Path;
 
-/// Parsed `config.toml`. All fields optional. A `[windows]` table overlays the unix-named
-/// tables field-by-field when running on native Windows, so one file serves WSL (unix paths)
-/// and native Windows (`C:\…`) — see the `win()`/accessor pattern below.
+/// One config layer as a raw table. `None` when the file is absent, unreadable or not valid TOML;
+/// the last two are reported, because a typo that silently changes nothing is exactly the failure
+/// a config resolver must not have.
+fn read_layer(path: &Path) -> Option<toml::Table> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            eprintln!("bn: could not read {}: {error}", path.display());
+            return None;
+        }
+    };
+    match text.parse::<toml::Table>() {
+        Ok(table) => Some(table),
+        Err(e) => {
+            eprintln!("bn: ignoring malformed {}: {e}", path.display());
+            None
+        }
+    }
+}
+
+/// Merge `over` into `base`: tables merge key by key, anything else is replaced whole. An array is
+/// one value, not a set to union — a layer that says `repos = ["bn"]` means exactly that.
+pub(crate) fn merge_tables(base: &mut toml::Table, over: toml::Table) {
+    for (key, value) in over {
+        match value {
+            toml::Value::Table(over_child) => match base.get_mut(&key) {
+                Some(toml::Value::Table(base_child)) => merge_tables(base_child, over_child),
+                _ => {
+                    base.insert(key, toml::Value::Table(over_child));
+                }
+            },
+            value => {
+                base.insert(key, value);
+            }
+        }
+    }
+}
+
+/// The settings bn reads, all optional: the shared `<notes_root>/config.toml` with this machine's
+/// `<notes_root>/<machine>/config.toml` merged on top. `crate::config_migrate::KNOWN_SECTIONS`
+/// lists these field names, and a test keeps the two equal.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub(super) struct ConfigFile {
-    worktree_dir: Option<String>,
-    hostname: Option<String>,
-    personal: Option<PersonalSection>,
     work: Option<WorkSection>,
     jobs: Option<JobsSection>,
     review: Option<ReviewSection>,
@@ -24,20 +59,10 @@ pub(super) struct ConfigFile {
     wrap: Option<WrapSection>,
     standup: Option<StandupSection>,
     dxi: Option<DxiSection>,
-    night: Option<NightSection>,
-    sentinel: Option<SentinelSection>,
-    quarter: Option<QuarterSection>,
-    dojo: Option<DojoSection>,
-    chief: Option<ChiefSection>,
-    today: Option<TodaySection>,
-    attention_agent: Option<AttentionAgentSection>,
-    archivist: Option<ArchivistSection>,
-    retro: Option<RetroSection>,
-    mentor: Option<MentorSection>,
     agents: Option<AgentsSection>,
     /// `[notify]` — the desktop-toast policy gate. Deserialized into the domain's own raw shape
-    /// for the same reason `routine` is: the clamping and the `bar` vocabulary belong next to the
-    /// policy that reads them. See [`crate::notify::policy`].
+    /// because the clamping and the `bar` vocabulary belong next to the policy that reads them.
+    /// See [`crate::notify::policy`].
     notify: Option<crate::notify::policy::NotifyFileConfig>,
     staff: Option<StaffSection>,
     mcp: Option<McpSection>,
@@ -52,8 +77,8 @@ pub(super) struct ConfigFile {
     orchestrate: Option<OrchestrateSection>,
     /// `[queue]`: the machine-wide work queue — which producers enqueue, and its ceilings.
     queue: Option<QueueSection>,
-    /// `[machines.<name>]`: synced machine registrations. Missing current profile is deny-all.
-    machines: Option<HashMap<String, MachineProfile>>,
+    /// `[machine]`: what this machine should do less of. Absent, it is allowed everything.
+    machine: Option<MachineProfile>,
     /// `[hosts.<alias>]`: ssh-host enrichment for `bn connect`. Keyed by
     /// the ssh-config `Host` alias; connection details stay in `~/.ssh/config`.
     pub(super) hosts: Option<HashMap<String, crate::hosts::HostExtra>>,
@@ -64,45 +89,45 @@ pub(super) struct ConfigFile {
     /// `[repo.<name>]`: per-repo verify, pipeline, and node-capability placement policy. Keyed by
     /// the repo's bn/local name; matched case-insensitively on the trailing path segment at use.
     pub(super) repo: Option<HashMap<String, super::RepoConfig>>,
-    windows: Option<Box<ConfigFile>>,
 }
 
 use super::config_sections::*;
 
-/// The pre-manifest per-agent switches, mapped to the agents they turn on.
-///
-/// Each of these was read by a native job named after its agent. Now that an agent is a manifest,
-/// the switch is `[agents] enabled = [...]` — but a config in the wild still says
-/// `[chief] enabled = true`, so keep honouring it. This table is the only place an agent name and
-/// a config key meet, and it exists to be deleted.
-type LegacySwitch = (fn(&ConfigFile) -> Option<bool>, &'static [&'static str]);
-
-const LEGACY_AGENT_SWITCHES: &[LegacySwitch] = &[
-    (
-        ConfigFile::chief_enabled,
-        &["staff-chief-am", "staff-chief-pm"],
-    ),
-    (ConfigFile::archivist_enabled, &["staff-archivist"]),
-    (ConfigFile::retro_enabled, &["staff-interviewer"]),
-    (ConfigFile::mentor_enabled, &["staff-mentor"]),
-    (ConfigFile::today_enabled, &["today-agent"]),
-    (ConfigFile::attention_agent_enabled, &["attention-agent"]),
-    (ConfigFile::quarter_enabled, &["quarter-review"]),
-];
-
 impl ConfigFile {
-    pub(super) fn machine_profile(&self, machine: &str) -> Option<MachineProfile> {
-        self.machines
-            .as_ref()
-            .and_then(|profiles| profiles.get(machine).cloned())
+    /// Read every config layer and merge them into one parse, a later layer winning key by key.
+    /// `None` when no layer exists. A layer that cannot be read or parsed is reported and skipped,
+    /// so resolution falls back to the defaults for whatever it would have set — and the defaults
+    /// switch nothing off.
+    pub(super) fn load() -> Option<ConfigFile> {
+        let mut merged: Option<toml::Table> = None;
+        let mut read = Vec::new();
+        for path in super::dirs::config_layer_paths() {
+            let Some(layer) = read_layer(&path) else {
+                continue;
+            };
+            read.push(path);
+            match merged.as_mut() {
+                Some(base) => merge_tables(base, layer),
+                None => merged = Some(layer),
+            }
+        }
+        match toml::Value::Table(merged?).try_into::<ConfigFile>() {
+            Ok(cf) => Some(cf),
+            Err(e) => {
+                let paths: Vec<String> = read.iter().map(|p| p.display().to_string()).collect();
+                eprintln!("bn: ignoring malformed config ({}): {e}", paths.join(", "));
+                None
+            }
+        }
+    }
+
+    pub(super) fn machine_profile(&self) -> Option<MachineProfile> {
+        self.machine.clone()
     }
 
     /// `[queue].capture` — the producers that enqueue instead of launching.
     pub(super) fn queue_capture(&self) -> Option<Vec<String>> {
-        self.win()
-            .and_then(|w| w.queue.as_ref())
-            .and_then(|q| q.capture.clone())
-            .or_else(|| self.queue.as_ref().and_then(|q| q.capture.clone()))
+        self.queue.as_ref().and_then(|q| q.capture.clone())
     }
 
     /// `[queue].coding` / `.research` / `.heartbeat_ttl_secs`.
@@ -185,209 +210,79 @@ impl ConfigFile {
             .unwrap_or_default()
     }
 
-    /// Read + parse `config.toml`. `None` when the file is absent or invalid; errors are reported
-    /// while ordinary config resolution remains fail-closed.
-    pub(super) fn load() -> Option<ConfigFile> {
-        Self::load_with_status().0
-    }
-
-    /// Read + parse `config.toml`, retaining whether a real file parsed successfully.
-    ///
-    /// Callers that reconcile managed services need this distinction: an absent or malformed file
-    /// must deny execution, but it must not be treated as an explicit instruction to uninstall
-    /// services.
-    pub(super) fn load_with_status() -> (Option<ConfigFile>, bool) {
-        let path = config_file_path();
-        let text = match std::fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return (None, false),
-            Err(error) => {
-                eprintln!("bn: could not read {}: {error}", path.display());
-                return (None, false);
-            }
-        };
-        match toml::from_str::<ConfigFile>(&text) {
-            Ok(cf) => (Some(cf), true),
-            Err(e) => {
-                eprintln!("bn: ignoring malformed {}: {e}", path.display());
-                (None, false)
-            }
-        }
-    }
-
-    /// The `[windows]` overlay, but only on native Windows; `None` elsewhere. Accessors read
-    /// the overlay first, then fall back to the base table — so a `[windows]` table that sets
-    /// only some keys still inherits the rest.
-    fn win(&self) -> Option<&ConfigFile> {
-        if cfg!(windows) {
-            self.windows.as_deref()
-        } else {
-            None
-        }
-    }
-
-    pub(super) fn worktree_dir(&self) -> Option<PathBuf> {
-        self.win()
-            .and_then(|w| w.worktree_dir.clone())
-            .or_else(|| self.worktree_dir.clone())
-            .map(PathBuf::from)
-    }
-
-    pub(super) fn hostname(&self) -> Option<String> {
-        self.win()
-            .and_then(|w| w.hostname.clone())
-            .or_else(|| self.hostname.clone())
-    }
-
-    pub(super) fn personal_notes_root(&self) -> Option<PathBuf> {
-        self.win()
-            .and_then(|w| w.personal.as_ref())
-            .and_then(|p| p.notes_root.clone())
-            .or_else(|| self.personal.as_ref().and_then(|p| p.notes_root.clone()))
-            .map(PathBuf::from)
-    }
-
-    pub(super) fn work_notes_root(&self) -> Option<PathBuf> {
-        self.win()
-            .and_then(|w| w.work.as_ref())
-            .and_then(|p| p.notes_root.clone())
-            .or_else(|| self.work.as_ref().and_then(|p| p.notes_root.clone()))
-            .map(PathBuf::from)
-    }
-
-    pub(super) fn overlay_root(&self) -> Option<PathBuf> {
-        self.win()
-            .and_then(|w| w.personal.as_ref())
-            .and_then(|p| p.overlay_root.clone())
-            .or_else(|| self.personal.as_ref().and_then(|p| p.overlay_root.clone()))
-            .map(PathBuf::from)
-    }
-
     pub(super) fn work_repos(&self) -> Option<Vec<String>> {
-        self.win()
-            .and_then(|w| w.work.as_ref())
-            .and_then(|p| p.work_repos.clone())
-            .or_else(|| self.work.as_ref().and_then(|p| p.work_repos.clone()))
+        self.work.as_ref().and_then(|w| w.work_repos.clone())
     }
 
-    /// `[managed_repos].repos`, windows-overlaid like the rest. The clone URLs bn keeps
-    /// checked out under the managed root.
+    /// `[managed_repos].repos`: the clone URLs bn keeps checked out under the managed root.
     pub(super) fn managed_repos(&self) -> Option<Vec<String>> {
-        self.win()
-            .and_then(|w| w.managed_repos.as_ref())
-            .and_then(|m| m.repos.clone())
-            .or_else(|| self.managed_repos.as_ref().and_then(|m| m.repos.clone()))
+        self.managed_repos.as_ref().and_then(|m| m.repos.clone())
     }
 
     pub(super) fn tools_builtins(&self) -> Option<Vec<String>> {
-        self.win()
-            .and_then(|w| w.tools.as_ref())
-            .and_then(|t| t.builtins.clone())
-            .or_else(|| self.tools.as_ref().and_then(|t| t.builtins.clone()))
+        self.tools.as_ref().and_then(|t| t.builtins.clone())
     }
 
     /// `[links].tags` — the curated tag vocabulary for `bn links`. `None` when unset.
     pub(super) fn links_tags(&self) -> Option<Vec<String>> {
-        self.win()
-            .and_then(|w| w.links.as_ref())
-            .and_then(|l| l.tags.clone())
-            .or_else(|| self.links.as_ref().and_then(|l| l.tags.clone()))
+        self.links.as_ref().and_then(|l| l.tags.clone())
     }
 
-    /// `[repo.<name>]` (#454): per-repo overrides, windows-overlaid like the rest (a
-    /// `[windows.repo]` table replaces `[repo]` on native Windows). `None` when unset.
+    /// `[repo.<name>]` (#454): per-repo overrides. `None` when unset.
     pub(super) fn repos(&self) -> Option<HashMap<String, super::RepoConfig>> {
-        self.win()
-            .and_then(|w| w.repo.clone())
-            .or_else(|| self.repo.clone())
+        self.repo.clone()
     }
 
-    /// `[nodes.<node_id>]` (#729): the declarative multi-node worker list, windows-overlaid like
-    /// the rest. `None` when unset.
+    /// `[nodes.<node_id>]` (#729): the declarative multi-node worker list. `None` when unset.
     pub(super) fn nodes(&self) -> Option<HashMap<String, crate::hosts::NodeConfig>> {
-        self.win()
-            .and_then(|w| w.nodes.clone())
-            .or_else(|| self.nodes.clone())
+        self.nodes.clone()
     }
 
-    /// `[jobs.only_on]`, windows-overlaid like the rest. Empty map when unset.
+    /// `[jobs.only_on]`. Empty map when unset.
     pub(super) fn job_only_on(&self) -> HashMap<String, Vec<String>> {
-        self.win()
-            .and_then(|w| w.jobs.as_ref())
+        self.jobs
+            .as_ref()
             .and_then(|j| j.only_on.clone())
-            .or_else(|| self.jobs.as_ref().and_then(|j| j.only_on.clone()))
             .unwrap_or_default()
     }
 
-    pub(super) fn work_only(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.work.as_ref())
-            .and_then(|p| p.only)
-            .or_else(|| self.work.as_ref().and_then(|p| p.only))
-    }
-
     pub(super) fn weekly_anchor(&self) -> Option<String> {
-        self.win()
-            .and_then(|w| w.review.as_ref())
-            .and_then(|p| p.weekly_anchor.clone())
-            .or_else(|| self.review.as_ref().and_then(|p| p.weekly_anchor.clone()))
+        self.review.as_ref().and_then(|r| r.weekly_anchor.clone())
     }
 
     pub(super) fn sla_first_review_hours(&self) -> Option<f64> {
-        self.win()
-            .and_then(|w| w.review.as_ref())
-            .and_then(|p| p.sla_first_review_hours)
-            .or_else(|| self.review.as_ref().and_then(|p| p.sla_first_review_hours))
-    }
-
-    pub(super) fn sla_merge_hours(&self) -> Option<f64> {
-        self.win()
-            .and_then(|w| w.review.as_ref())
-            .and_then(|p| p.sla_merge_hours)
-            .or_else(|| self.review.as_ref().and_then(|p| p.sla_merge_hours))
+        self.review.as_ref().and_then(|r| r.sla_first_review_hours)
     }
 
     pub(super) fn review_harness(&self) -> Option<String> {
-        self.win()
-            .and_then(|w| w.review.as_ref())
-            .and_then(|p| p.harness.clone())
-            .or_else(|| self.review.as_ref().and_then(|p| p.harness.clone()))
+        self.review.as_ref().and_then(|r| r.harness.clone())
     }
 
     pub(super) fn disabled_harnesses(&self) -> Option<Vec<String>> {
-        self.win()
-            .and_then(|w| w.harness.as_ref())
-            .and_then(|h| h.disabled.clone())
-            .or_else(|| self.harness.as_ref().and_then(|h| h.disabled.clone()))
+        self.harness.as_ref().and_then(|h| h.disabled.clone())
     }
 
     pub(super) fn default_harness(&self) -> Option<String> {
-        self.win()
-            .and_then(|w| w.harness.as_ref())
+        self.harness
+            .as_ref()
             .and_then(|h| h.default.clone())
-            .or_else(|| self.harness.as_ref().and_then(|h| h.default.clone()))
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
     }
 
     pub(super) fn attention_max_age_hours(&self) -> Option<f64> {
-        self.win()
-            .and_then(|w| w.attention.as_ref())
-            .and_then(|a| a.max_age_hours)
-            .or_else(|| self.attention.as_ref().and_then(|a| a.max_age_hours))
+        self.attention.as_ref().and_then(|a| a.max_age_hours)
     }
 
-    /// The coarse `--est S|M|L` durations. A per-key override (windows section first, then the
-    /// top-level `[calib]`) that parses to a positive duration wins; otherwise the built-in
-    /// default for that size stands, so a partial or malformed `[calib]` degrades per-key rather
-    /// than dropping the whole table.
+    /// The coarse `--est S|M|L` durations. A per-key override that parses to a positive duration
+    /// wins; otherwise the built-in default for that size stands, so a partial or malformed
+    /// `[calib]` degrades per-key rather than dropping the whole table.
     pub(super) fn coarse_sizes(&self) -> crate::calib::CoarseSizes {
         let d = crate::calib::CoarseSizes::default();
         let pick = |get: &dyn Fn(&CalibSection) -> Option<String>, fallback: i64| -> i64 {
-            self.win()
-                .and_then(|w| w.calib.as_ref())
+            self.calib
+                .as_ref()
                 .and_then(get)
-                .or_else(|| self.calib.as_ref().and_then(get))
                 .and_then(|s| crate::focus::parse_duration(&s))
                 .filter(|&n| n > 0)
                 .unwrap_or(fallback)
@@ -399,525 +294,194 @@ impl ConfigFile {
         }
     }
 
-    pub(super) fn screenshot_dir(&self) -> Option<PathBuf> {
-        self.win()
-            .and_then(|w| w.capture.as_ref())
+    pub(super) fn screenshot_dir(&self) -> Option<std::path::PathBuf> {
+        self.capture
+            .as_ref()
             .and_then(|c| c.screenshot_dir.clone())
-            .or_else(|| self.capture.as_ref().and_then(|c| c.screenshot_dir.clone()))
-            .map(PathBuf::from)
+            .map(std::path::PathBuf::from)
     }
 
-    pub(super) fn gif_dir(&self) -> Option<PathBuf> {
-        self.win()
-            .and_then(|w| w.capture.as_ref())
+    pub(super) fn gif_dir(&self) -> Option<std::path::PathBuf> {
+        self.capture
+            .as_ref()
             .and_then(|c| c.gif_dir.clone())
-            .or_else(|| self.capture.as_ref().and_then(|c| c.gif_dir.clone()))
-            .map(PathBuf::from)
+            .map(std::path::PathBuf::from)
     }
 
     pub(super) fn wrap_enabled(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.wrap.as_ref())
-            .and_then(|s| s.enabled)
-            .or_else(|| self.wrap.as_ref().and_then(|s| s.enabled))
-    }
-
-    pub(super) fn wrap_time(&self) -> Option<String> {
-        self.win()
-            .and_then(|w| w.wrap.as_ref())
-            .and_then(|s| s.time.clone())
-            .or_else(|| self.wrap.as_ref().and_then(|s| s.time.clone()))
+        self.wrap.as_ref().and_then(|s| s.enabled)
     }
 
     pub(super) fn standup_enabled(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.standup.as_ref())
-            .and_then(|s| s.enabled)
-            .or_else(|| self.standup.as_ref().and_then(|s| s.enabled))
-    }
-
-    pub(super) fn standup_time(&self) -> Option<String> {
-        self.win()
-            .and_then(|w| w.standup.as_ref())
-            .and_then(|s| s.time.clone())
-            .or_else(|| self.standup.as_ref().and_then(|s| s.time.clone()))
+        self.standup.as_ref().and_then(|s| s.enabled)
     }
 
     pub(super) fn standup_fetch_delta(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.standup.as_ref())
-            .and_then(|s| s.fetch_delta)
-            .or_else(|| self.standup.as_ref().and_then(|s| s.fetch_delta))
+        self.standup.as_ref().and_then(|s| s.fetch_delta)
     }
 
     pub(super) fn dxi_enabled(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.dxi.as_ref())
-            .and_then(|s| s.enabled)
-            .or_else(|| self.dxi.as_ref().and_then(|s| s.enabled))
-    }
-
-    pub(super) fn night_enabled(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.night.as_ref())
-            .and_then(|s| s.enabled)
-            .or_else(|| self.night.as_ref().and_then(|s| s.enabled))
-    }
-
-    pub(super) fn night_max_dispatch(&self) -> Option<usize> {
-        self.win()
-            .and_then(|w| w.night.as_ref())
-            .and_then(|s| s.max_dispatch)
-            .or_else(|| self.night.as_ref().and_then(|s| s.max_dispatch))
+        self.dxi.as_ref().and_then(|s| s.enabled)
     }
 
     pub(super) fn dispatch_plan_review(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.dispatch.as_ref())
-            .and_then(|s| s.plan_review)
-            .or_else(|| self.dispatch.as_ref().and_then(|s| s.plan_review))
+        self.dispatch.as_ref().and_then(|s| s.plan_review)
     }
 
     pub(super) fn dispatch_plan_reviewers(&self) -> Option<usize> {
-        self.win()
-            .and_then(|w| w.dispatch.as_ref())
-            .and_then(|s| s.plan_reviewers)
-            .or_else(|| self.dispatch.as_ref().and_then(|s| s.plan_reviewers))
+        self.dispatch.as_ref().and_then(|s| s.plan_reviewers)
     }
 
     pub(super) fn dispatch_plan_review_quorum(&self) -> Option<usize> {
-        self.win()
-            .and_then(|w| w.dispatch.as_ref())
-            .and_then(|s| s.plan_review_quorum)
-            .or_else(|| self.dispatch.as_ref().and_then(|s| s.plan_review_quorum))
+        self.dispatch.as_ref().and_then(|s| s.plan_review_quorum)
     }
 
     pub(super) fn pipeline(&self) -> Option<super::PipelineConfig> {
-        self.win()
-            .and_then(|w| w.pipeline.clone())
-            .or_else(|| self.pipeline.clone())
+        self.pipeline.clone()
     }
 
     pub(super) fn review_diff_gate(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.review.as_ref())
-            .and_then(|s| s.diff_gate)
-            .or_else(|| self.review.as_ref().and_then(|s| s.diff_gate))
+        self.review.as_ref().and_then(|s| s.diff_gate)
     }
 
     pub(super) fn review_diff_gate_reviews(&self) -> Option<usize> {
-        self.win()
-            .and_then(|w| w.review.as_ref())
-            .and_then(|s| s.diff_gate_reviews)
-            .or_else(|| self.review.as_ref().and_then(|s| s.diff_gate_reviews))
+        self.review.as_ref().and_then(|s| s.diff_gate_reviews)
     }
 
-    pub(super) fn orchestrate_agent(&self) -> Option<String> {
-        self.win()
-            .and_then(|w| w.orchestrate.as_ref())
-            .and_then(|s| s.agent.clone())
-            .or_else(|| self.orchestrate.as_ref().and_then(|s| s.agent.clone()))
+    fn orchestrate(&self) -> Option<&OrchestrateSection> {
+        self.orchestrate.as_ref()
     }
 
     pub(super) fn orchestrate_stuck_idle_secs(&self) -> Option<i64> {
-        self.win()
-            .and_then(|w| w.orchestrate.as_ref())
-            .and_then(|s| s.stuck_idle_secs)
-            .or_else(|| self.orchestrate.as_ref().and_then(|s| s.stuck_idle_secs))
+        self.orchestrate().and_then(|s| s.stuck_idle_secs)
     }
 
     pub(super) fn orchestrate_keep_warm(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.orchestrate.as_ref())
-            .and_then(|s| s.keep_warm)
-            .or_else(|| self.orchestrate.as_ref().and_then(|s| s.keep_warm))
+        self.orchestrate().and_then(|s| s.keep_warm)
     }
 
     pub(super) fn orchestrate_low_water(&self) -> Option<usize> {
-        self.win()
-            .and_then(|w| w.orchestrate.as_ref())
-            .and_then(|s| s.low_water)
-            .or_else(|| self.orchestrate.as_ref().and_then(|s| s.low_water))
+        self.orchestrate().and_then(|s| s.low_water)
     }
 
     pub(super) fn orchestrate_owned_repos(&self) -> Option<Vec<String>> {
-        self.win()
-            .and_then(|w| w.orchestrate.as_ref())
-            .and_then(|s| s.own.clone())
-            .or_else(|| self.orchestrate.as_ref().and_then(|s| s.own.clone()))
+        self.orchestrate().and_then(|s| s.own.clone())
     }
 
     pub(super) fn orchestrate_exclude_titles(&self) -> Option<Vec<String>> {
-        self.win()
-            .and_then(|w| w.orchestrate.as_ref())
-            .and_then(|s| s.exclude_titles.clone())
-            .or_else(|| {
-                self.orchestrate
-                    .as_ref()
-                    .and_then(|s| s.exclude_titles.clone())
-            })
+        self.orchestrate().and_then(|s| s.exclude_titles.clone())
     }
 
     pub(super) fn orchestrate_exclude_labels(&self) -> Option<Vec<String>> {
-        self.win()
-            .and_then(|w| w.orchestrate.as_ref())
-            .and_then(|s| s.exclude_labels.clone())
-            .or_else(|| {
-                self.orchestrate
-                    .as_ref()
-                    .and_then(|s| s.exclude_labels.clone())
-            })
+        self.orchestrate().and_then(|s| s.exclude_labels.clone())
     }
 
     pub(super) fn orchestrate_brainstorm_count(&self) -> Option<usize> {
-        self.win()
-            .and_then(|w| w.orchestrate.as_ref())
-            .and_then(|s| s.brainstorm_count)
-            .or_else(|| self.orchestrate.as_ref().and_then(|s| s.brainstorm_count))
+        self.orchestrate().and_then(|s| s.brainstorm_count)
     }
 
     pub(super) fn orchestrate_brainstorm_interval_secs(&self) -> Option<i64> {
-        self.win()
-            .and_then(|w| w.orchestrate.as_ref())
-            .and_then(|s| s.brainstorm_interval_secs)
-            .or_else(|| {
-                self.orchestrate
-                    .as_ref()
-                    .and_then(|s| s.brainstorm_interval_secs)
-            })
+        self.orchestrate().and_then(|s| s.brainstorm_interval_secs)
     }
 
     pub(super) fn orchestrate_min_free_ram_mb(&self) -> Option<u64> {
-        self.win()
-            .and_then(|w| w.orchestrate.as_ref())
-            .and_then(|s| s.min_free_ram_mb)
-            .or_else(|| self.orchestrate.as_ref().and_then(|s| s.min_free_ram_mb))
+        self.orchestrate().and_then(|s| s.min_free_ram_mb)
     }
 
     pub(super) fn orchestrate_max_loadavg(&self) -> Option<f64> {
-        self.win()
-            .and_then(|w| w.orchestrate.as_ref())
-            .and_then(|s| s.max_loadavg)
-            .or_else(|| self.orchestrate.as_ref().and_then(|s| s.max_loadavg))
+        self.orchestrate().and_then(|s| s.max_loadavg)
     }
 
     pub(super) fn orchestrate_max_swap_pct(&self) -> Option<f64> {
-        self.win()
-            .and_then(|w| w.orchestrate.as_ref())
-            .and_then(|s| s.max_swap_pct)
-            .or_else(|| self.orchestrate.as_ref().and_then(|s| s.max_swap_pct))
+        self.orchestrate().and_then(|s| s.max_swap_pct)
     }
 
     pub(super) fn orchestrate_tokens_per_hour(&self) -> Option<u64> {
-        self.win()
-            .and_then(|w| w.orchestrate.as_ref())
-            .and_then(|s| s.tokens_per_hour)
-            .or_else(|| self.orchestrate.as_ref().and_then(|s| s.tokens_per_hour))
+        self.orchestrate().and_then(|s| s.tokens_per_hour)
     }
 
     pub(super) fn orchestrate_daily_cost_usd(&self) -> Option<f64> {
-        self.win()
-            .and_then(|w| w.orchestrate.as_ref())
-            .and_then(|s| s.daily_cost_usd)
-            .or_else(|| self.orchestrate.as_ref().and_then(|s| s.daily_cost_usd))
+        self.orchestrate().and_then(|s| s.daily_cost_usd)
     }
 
     pub(super) fn orchestrate_daily_cost_usd_coding(&self) -> Option<f64> {
-        self.win()
-            .and_then(|w| w.orchestrate.as_ref())
-            .and_then(|s| s.daily_cost_usd_coding)
-            .or_else(|| {
-                self.orchestrate
-                    .as_ref()
-                    .and_then(|s| s.daily_cost_usd_coding)
-            })
+        self.orchestrate().and_then(|s| s.daily_cost_usd_coding)
     }
 
     pub(super) fn orchestrate_daily_cost_usd_research(&self) -> Option<f64> {
-        self.win()
-            .and_then(|w| w.orchestrate.as_ref())
-            .and_then(|s| s.daily_cost_usd_research)
-            .or_else(|| {
-                self.orchestrate
-                    .as_ref()
-                    .and_then(|s| s.daily_cost_usd_research)
-            })
+        self.orchestrate().and_then(|s| s.daily_cost_usd_research)
     }
 
     pub(super) fn orchestrate_remote_overflow(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.orchestrate.as_ref())
-            .and_then(|s| s.remote_overflow)
-            .or_else(|| self.orchestrate.as_ref().and_then(|s| s.remote_overflow))
+        self.orchestrate().and_then(|s| s.remote_overflow)
     }
 
-    pub(super) fn night_window(&self) -> Option<String> {
-        self.win()
-            .and_then(|w| w.night.as_ref())
-            .and_then(|s| s.window.clone())
-            .or_else(|| self.night.as_ref().and_then(|s| s.window.clone()))
-    }
-
-    pub(super) fn night_repos(&self) -> Option<Vec<String>> {
-        self.win()
-            .and_then(|w| w.night.as_ref())
-            .and_then(|s| s.repos.clone())
-            .or_else(|| self.night.as_ref().and_then(|s| s.repos.clone()))
-    }
-
-    pub(super) fn sentinel_repos(&self) -> Option<Vec<String>> {
-        self.win()
-            .and_then(|w| w.sentinel.as_ref())
-            .and_then(|s| s.repos.clone())
-            .or_else(|| self.sentinel.as_ref().and_then(|s| s.repos.clone()))
-    }
-
-    pub(super) fn sentinel_todo_age_days(&self) -> Option<i64> {
-        self.win()
-            .and_then(|w| w.sentinel.as_ref())
-            .and_then(|s| s.todo_age_days)
-            .or_else(|| self.sentinel.as_ref().and_then(|s| s.todo_age_days))
-    }
-
-    pub(super) fn quarter_enabled(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.quarter.as_ref())
-            .and_then(|s| s.enabled)
-            .or_else(|| self.quarter.as_ref().and_then(|s| s.enabled))
-    }
-
-    pub(super) fn quarter_review_cron(&self) -> Option<String> {
-        self.win()
-            .and_then(|w| w.quarter.as_ref())
-            .and_then(|s| s.review_cron.clone())
-            .or_else(|| self.quarter.as_ref().and_then(|s| s.review_cron.clone()))
-    }
-
-    pub(super) fn quarter_review_window_days(&self) -> Option<i64> {
-        self.win()
-            .and_then(|w| w.quarter.as_ref())
-            .and_then(|s| s.review_window_days)
-            .or_else(|| self.quarter.as_ref().and_then(|s| s.review_window_days))
-    }
-
-    pub(super) fn quarter_harness(&self) -> Option<String> {
-        self.win()
-            .and_then(|w| w.quarter.as_ref())
-            .and_then(|s| s.harness.clone())
-            .or_else(|| self.quarter.as_ref().and_then(|s| s.harness.clone()))
-    }
-
-    pub(super) fn dojo_enabled(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.dojo.as_ref())
-            .and_then(|s| s.enabled)
-            .or_else(|| self.dojo.as_ref().and_then(|s| s.enabled))
-    }
-
-    pub(super) fn dojo_repos(&self) -> Option<Vec<String>> {
-        self.win()
-            .and_then(|w| w.dojo.as_ref())
-            .and_then(|s| s.repos.clone())
-            .or_else(|| self.dojo.as_ref().and_then(|s| s.repos.clone()))
-    }
-
-    pub(super) fn dojo_daily_target(&self) -> Option<usize> {
-        self.win()
-            .and_then(|w| w.dojo.as_ref())
-            .and_then(|s| s.daily_target)
-            .or_else(|| self.dojo.as_ref().and_then(|s| s.daily_target))
-    }
-
-    pub(super) fn chief_enabled(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.chief.as_ref())
-            .and_then(|s| s.enabled)
-            .or_else(|| self.chief.as_ref().and_then(|s| s.enabled))
-    }
-
-    pub(super) fn today_enabled(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.today.as_ref())
-            .and_then(|s| s.enabled)
-            .or_else(|| self.today.as_ref().and_then(|s| s.enabled))
-    }
-
-    pub(super) fn attention_agent_enabled(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.attention_agent.as_ref())
-            .and_then(|s| s.enabled)
-            .or_else(|| self.attention_agent.as_ref().and_then(|s| s.enabled))
-    }
-
-    pub(super) fn archivist_enabled(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.archivist.as_ref())
-            .and_then(|s| s.enabled)
-            .or_else(|| self.archivist.as_ref().and_then(|s| s.enabled))
-    }
-
-    pub(super) fn retro_enabled(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.retro.as_ref())
-            .and_then(|s| s.enabled)
-            .or_else(|| self.retro.as_ref().and_then(|s| s.enabled))
-    }
-
-    /// `[agents].enabled` — the opt-in agents switched on, plus anything still named by a legacy
-    /// per-agent `[<agent>] enabled = true`.
-    ///
-    /// The legacy fold is a migration shim, not a design: those keys predate agents being Markdown
-    /// manifests, when each one had a native job in Rust to read its own switch. Honouring them
-    /// means an existing config keeps working; new agents use the list. Drop the fold once nobody
-    /// is on the old keys.
+    /// `[agents].enabled` — the opt-in agents switched on.
     pub(super) fn agents_enabled(&self) -> Option<Vec<String>> {
-        let listed = self
-            .win()
-            .and_then(|w| w.agents.as_ref())
-            .and_then(|s| s.enabled.clone())
-            .or_else(|| self.agents.as_ref().and_then(|s| s.enabled.clone()));
-        let legacy: Vec<String> = LEGACY_AGENT_SWITCHES
-            .iter()
-            .filter(|(read, _)| read(self).unwrap_or(false))
-            .flat_map(|(_, agents)| agents.iter().map(|a| a.to_string()))
-            .collect();
-        match (listed, legacy.is_empty()) {
-            (None, true) => None,
-            (None, false) => Some(legacy),
-            (Some(mut listed), _) => {
-                listed.extend(legacy);
-                Some(listed)
-            }
-        }
+        self.agents.as_ref().and_then(|s| s.enabled.clone())
     }
 
-    pub(super) fn mentor_enabled(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.mentor.as_ref())
-            .and_then(|s| s.enabled)
-            .or_else(|| self.mentor.as_ref().and_then(|s| s.enabled))
-    }
-
-    /// `[routine]` + `[[routine.blocks]]` (#801), windows-overlaid whole-table like `pipeline`
-    /// (the block list is structural, so a `[windows.routine]` table replaces the whole thing
-    /// rather than merging field-by-field).
-    /// `[notify]` — the toast policy gate, windows-overlaid like the rest (a Windows box may want
-    /// a different bar than a Linux one).
+    /// `[notify]` — the toast policy gate.
     pub(super) fn notify(&self) -> Option<crate::notify::policy::NotifyFileConfig> {
-        self.win()
-            .and_then(|w| w.notify.clone())
-            .or_else(|| self.notify.clone())
+        self.notify.clone()
     }
 
-    /// `[staff].home` — the machine the agent staff runs on (#270), windows-overlaid like the
-    /// rest. `None` (unset) leaves the staff running anywhere.
+    /// `[staff].home` — the machine the agent staff runs on (#270). `None` (unset) leaves the staff
+    /// running anywhere.
     pub(super) fn staff_home(&self) -> Option<String> {
-        self.win()
-            .and_then(|w| w.staff.as_ref())
-            .and_then(|s| s.home.clone())
-            .or_else(|| self.staff.as_ref().and_then(|s| s.home.clone()))
-    }
-
-    /// `[staff].mail` — the agents whose card is drafted to email as soon as it lands. Empty by
-    /// default: leaving the machine is opt-in per agent.
-    pub(super) fn staff_mail(&self) -> Vec<String> {
-        self.win()
-            .and_then(|w| w.staff.as_ref())
-            .map(|s| s.mail.clone())
-            .filter(|m| !m.is_empty())
-            .or_else(|| self.staff.as_ref().map(|s| s.mail.clone()))
-            .unwrap_or_default()
+        self.staff.as_ref().and_then(|s| s.home.clone())
     }
 
     pub(super) fn mcp_extras(&self) -> Option<Vec<String>> {
-        self.win()
-            .and_then(|w| w.mcp.as_ref())
-            .and_then(|s| s.extras.clone())
-            .or_else(|| self.mcp.as_ref().and_then(|s| s.extras.clone()))
+        self.mcp.as_ref().and_then(|s| s.extras.clone())
     }
 
     pub(super) fn web_port(&self) -> Option<u16> {
-        self.win()
-            .and_then(|w| w.web.as_ref())
-            .and_then(|s| s.port)
-            .or_else(|| self.web.as_ref().and_then(|s| s.port))
+        self.web.as_ref().and_then(|s| s.port)
     }
 
     pub(super) fn web_bind(&self) -> Option<String> {
-        self.win()
-            .and_then(|w| w.web.as_ref())
-            .and_then(|s| s.bind.clone())
-            .or_else(|| self.web.as_ref().and_then(|s| s.bind.clone()))
+        self.web.as_ref().and_then(|s| s.bind.clone())
     }
 
     pub(super) fn web_fleet_poll_secs(&self) -> Option<u64> {
-        self.win()
-            .and_then(|w| w.web.as_ref())
-            .and_then(|s| s.fleet_poll_secs)
-            .or_else(|| self.web.as_ref().and_then(|s| s.fleet_poll_secs))
+        self.web.as_ref().and_then(|s| s.fleet_poll_secs)
     }
 
     pub(super) fn web_tmux_mcp_autostart(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.web.as_ref())
-            .and_then(|s| s.tmux_mcp_autostart)
-            .or_else(|| self.web.as_ref().and_then(|s| s.tmux_mcp_autostart))
+        self.web.as_ref().and_then(|s| s.tmux_mcp_autostart)
     }
 
     pub(super) fn web_tmux_mcp_badge(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.web.as_ref())
-            .and_then(|s| s.tmux_mcp_badge)
-            .or_else(|| self.web.as_ref().and_then(|s| s.tmux_mcp_badge))
+        self.web.as_ref().and_then(|s| s.tmux_mcp_badge)
     }
 
     pub(super) fn log_enabled(&self) -> Option<bool> {
-        self.win()
-            .and_then(|w| w.log.as_ref())
-            .and_then(|s| s.enabled)
-            .or_else(|| self.log.as_ref().and_then(|s| s.enabled))
+        self.log.as_ref().and_then(|s| s.enabled)
     }
 
     pub(super) fn log_level(&self) -> Option<String> {
-        self.win()
-            .and_then(|w| w.log.as_ref())
-            .and_then(|s| s.level.clone())
-            .or_else(|| self.log.as_ref().and_then(|s| s.level.clone()))
+        self.log.as_ref().and_then(|s| s.level.clone())
     }
 
     pub(super) fn log_dir(&self) -> Option<String> {
-        self.win()
-            .and_then(|w| w.log.as_ref())
-            .and_then(|s| s.dir.clone())
-            .or_else(|| self.log.as_ref().and_then(|s| s.dir.clone()))
+        self.log.as_ref().and_then(|s| s.dir.clone())
     }
 
     pub(super) fn log_retain_days(&self) -> Option<i64> {
-        self.win()
-            .and_then(|w| w.log.as_ref())
-            .and_then(|s| s.retain_days)
-            .or_else(|| self.log.as_ref().and_then(|s| s.retain_days))
+        self.log.as_ref().and_then(|s| s.retain_days)
     }
 
     pub(super) fn scout_watch(&self) -> Option<Vec<String>> {
-        self.win()
-            .and_then(|w| w.scout.as_ref())
-            .and_then(|s| s.watch.clone())
-            .or_else(|| self.scout.as_ref().and_then(|s| s.watch.clone()))
+        self.scout.as_ref().and_then(|s| s.watch.clone())
     }
 
     pub(super) fn scout_tools(&self) -> Option<Vec<String>> {
-        self.win()
-            .and_then(|w| w.scout.as_ref())
-            .and_then(|s| s.tools.clone())
-            .or_else(|| self.scout.as_ref().and_then(|s| s.tools.clone()))
+        self.scout.as_ref().and_then(|s| s.tools.clone())
     }
 
     pub(super) fn scout_max_findings(&self) -> Option<usize> {
-        self.win()
-            .and_then(|w| w.scout.as_ref())
-            .and_then(|s| s.max_findings)
-            .or_else(|| self.scout.as_ref().and_then(|s| s.max_findings))
+        self.scout.as_ref().and_then(|s| s.max_findings)
     }
 }
 
@@ -929,4 +493,120 @@ pub(super) struct QueueNums {
     pub(super) agent_lease_ttl_secs: Option<i64>,
     pub(super) express_lease_ttl_secs: Option<i64>,
     pub(super) opportunistic_idle_mins: Option<i64>,
+}
+
+#[cfg(test)]
+mod layer_tests {
+    use super::{merge_tables, ConfigFile};
+
+    fn table(text: &str) -> toml::Table {
+        text.parse().expect("valid TOML")
+    }
+
+    fn get<'a>(table: &'a toml::Table, section: &str, key: &str) -> Option<&'a toml::Value> {
+        table.get(section).and_then(|s| s.get(key))
+    }
+
+    /// A later layer overrides only what it names: tables merge key by key, so a machine that sets
+    /// `[web] port` keeps the shared `bind`, and sections it never mentions survive untouched.
+    #[test]
+    fn a_later_layer_wins_key_by_key() {
+        let mut base =
+            table("[web]\nport = 7770\nbind = \"127.0.0.1\"\n\n[review]\nharness = \"claude\"\n");
+        merge_tables(&mut base, table("[web]\nport = 7791\n"));
+
+        assert_eq!(
+            get(&base, "web", "port").and_then(toml::Value::as_integer),
+            Some(7791)
+        );
+        assert_eq!(
+            get(&base, "web", "bind").and_then(toml::Value::as_str),
+            Some("127.0.0.1")
+        );
+        assert_eq!(
+            get(&base, "review", "harness").and_then(toml::Value::as_str),
+            Some("claude")
+        );
+    }
+
+    /// An array is one value: a later `repos = ["bn"]` replaces the list rather than adding to it,
+    /// or a machine could never narrow what the shared file allows.
+    #[test]
+    fn an_array_is_replaced_not_unioned() {
+        let mut base = table("[machine]\nrepos = [\"bn\", \"arena\"]\n");
+        merge_tables(&mut base, table("[machine]\nrepos = [\"bn\"]\n"));
+
+        assert_eq!(
+            get(&base, "machine", "repos")
+                .and_then(toml::Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+    }
+
+    /// A deserializer that answers one question — which field names a derived `Deserialize` struct
+    /// asks for — and refuses everything else.
+    struct FieldNames(Vec<&'static str>);
+
+    impl<'de> serde::Deserializer<'de> for &mut FieldNames {
+        type Error = serde::de::value::Error;
+
+        fn deserialize_any<V: serde::de::Visitor<'de>>(
+            self,
+            _: V,
+        ) -> Result<V::Value, Self::Error> {
+            Err(serde::de::Error::custom("only struct field names are read"))
+        }
+
+        fn deserialize_struct<V: serde::de::Visitor<'de>>(
+            self,
+            _name: &'static str,
+            fields: &'static [&'static str],
+            _visitor: V,
+        ) -> Result<V::Value, Self::Error> {
+            self.0.extend_from_slice(fields);
+            Err(serde::de::Error::custom("field names captured"))
+        }
+
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string bytes byte_buf
+            option unit unit_struct newtype_struct seq tuple tuple_struct map enum identifier
+            ignored_any
+        }
+    }
+
+    /// Every top-level section bn parses, read off the derive itself.
+    pub(crate) fn parsed_sections() -> Vec<&'static str> {
+        let mut names = FieldNames(Vec::new());
+        let _ = <ConfigFile as serde::Deserialize>::deserialize(&mut names);
+        names.0.sort_unstable();
+        names.0
+    }
+
+    /// The migration keeps what bn reads and drops everything else, so its list of sections must be
+    /// exactly the sections bn parses: one it missed would be silently thrown away on migration.
+    #[test]
+    fn the_migration_knows_every_section_bn_parses() {
+        let mut known = crate::config_migrate::KNOWN_SECTIONS.to_vec();
+        known.sort_unstable();
+        assert_eq!(parsed_sections(), known);
+    }
+
+    /// With no template to read, docs/config.md is where a setting is found, so every section bn
+    /// parses needs an entry there: a new section added without one fails here.
+    #[test]
+    fn docs_config_documents_every_section_bn_parses() {
+        let docs = include_str!("../../../../docs/config.md");
+        let missing: Vec<&str> = parsed_sections()
+            .into_iter()
+            .filter(|section| {
+                !docs.contains(&format!("`[{section}]`"))
+                    && !docs.contains(&format!("`[{section}."))
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "docs/config.md does not document: {missing:?}"
+        );
+    }
 }

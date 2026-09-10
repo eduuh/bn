@@ -131,7 +131,11 @@ pub(crate) fn active_with_fallback(cfg: &Config, producer: &str, fallback: &str)
     if cfg.queue.capture_active(producer, now) {
         return true;
     }
-    if cfg.queue.captures(producer) {
+    // Two different reasons reach here and only one of them is a fault. A dead dispatcher means
+    // work is launching direct while the operator believes it is queued — the failure the warning
+    // exists for. The queue being switched off means exactly what was asked for, so warning about
+    // it would train people to ignore the line that matters.
+    if cfg.queue.captures(producer) && !bn_core::queue::off::is_off(now) {
         warn_dispatcher_down(producer, fallback);
     }
     false

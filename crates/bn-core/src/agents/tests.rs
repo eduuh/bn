@@ -358,22 +358,6 @@ fn triggerable_catalog_keeps_runnable_kinds_and_excludes_specialists() {
 }
 
 #[test]
-fn legacy_quarter_schedule_requires_manifest_override() {
-    let _lock = crate::test_support::env_lock();
-    let _legacy =
-        crate::test_support::EnvGuard::set("BN_QUARTER_REVIEW_CRON", "Mon *-*-* 09:00:00");
-
-    let error = discover(&Config::default(), None).expect_err("legacy override must fail");
-    assert!(matches!(
-        error,
-        AgentCatalogError::LegacyScheduleOverride { .. }
-    ));
-    assert!(error
-        .to_string()
-        .contains("override config/agents/quarter-review.md"));
-}
-
-#[test]
 fn a_specialist_always_publishes_natively() {
     let agent =
         parse("---\nname: demo\nkind: specialist\nrepo: bn\n---\nBody.\n").expect("agent parses");

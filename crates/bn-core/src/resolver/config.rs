@@ -1,16 +1,14 @@
-//! The resolved [`Config`] model: layering (defaults → `config.toml` → legacy plaintext → env
-//! overrides), the [`Resolved`] context key, [`ContextError`], and the classification predicates.
+//! The resolved [`Config`] model: layering (compiled defaults → the config file layers), the
+//! [`Resolved`] context key, [`ContextError`], and the classification predicates.
 
 use super::config_file::ConfigFile;
 pub use super::config_sections::MachineProfile;
-use super::dirs::config_dir;
+use super::dirs::{machine_name, notes_roots};
 use super::queue_config::QueueConfig;
-use super::util::{
-    home, non_empty_env, parse_weekday, parse_work_repos, split_list, stable_machine,
-};
+use super::util::{home, non_empty_env, parse_weekday};
 use crate::pipeline::stage::Stage;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Resolved git context for the current directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,13 +59,13 @@ pub enum ContextError {
 /// --lan` overrides the bind to `0.0.0.0` at launch.
 #[derive(Debug, Clone)]
 pub struct WebConfig {
-    /// TCP port `bn serve` listens on. From `$BN_WEB_PORT` / config.toml `[web].port`; default 7770.
+    /// TCP port `bn serve` listens on. From `[web].port`; default 7770.
     pub port: u16,
-    /// Bind address. From `$BN_WEB_BIND` / config.toml `[web].bind`; default `127.0.0.1` (loopback).
-    /// `bn serve --lan` overrides this to `0.0.0.0` for the run.
+    /// Bind address. From `[web].bind`; default `127.0.0.1` (loopback). `bn serve --lan` overrides
+    /// this to `0.0.0.0` for the run.
     pub bind: String,
-    /// Fleet-snapshot poll cadence (seconds) for the SSE stream. From `$BN_WEB_FLEET_POLL_SECS` /
-    /// config.toml `[web].fleet_poll_secs`; default 2.
+    /// Fleet-snapshot poll cadence (seconds) for the SSE stream. From `[web].fleet_poll_secs`;
+    /// default 2.
     pub fleet_poll_secs: u64,
     /// Whether tmux lifecycle hooks ensure the managed bn-web service is running. Default true.
     pub tmux_mcp_autostart: bool,
@@ -88,10 +86,9 @@ impl Default for WebConfig {
 }
 
 /// `[log]` block: the opt-in verbose/debug **action log** (structured JSONL of every high-value
-/// action, for after-the-fact debugging). Resolved from env (`BN_VERBOSE`/`BN_LOG`, `BN_LOG_DIR`,
-/// `BN_LOG_RETAIN_DAYS`) layered over `config.toml [log]`. The global `--verbose/--debug` flag is
-/// applied on top at CLI init (it is not part of the file/env config). Off by default; see
-/// [`crate::log`] for the writer.
+/// action, for after-the-fact debugging). Resolved from `[log]`, which `BN_VERBOSE`/`BN_LOG` can
+/// switch on for one invocation. The global `--verbose/--debug` flag is applied on top at CLI init.
+/// Off by default; see [`crate::log`] for the writer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogConfig {
     /// Whether the action log is on (before the CLI `--verbose/--debug` override is applied).
@@ -151,7 +148,6 @@ pub struct StageConfig {
     /// Agent harness (`claude` | `copilot`) for a dispatch launched at this stage. `None` inherits
     /// the global/`--agent` default. The value is stored raw here; it's normalized/validated at the
     /// dispatch call site (this resolver is a hot, non-`Result` path).
-    #[serde(alias = "agent")]
     pub harness: Option<String>,
     /// Workflow skill this stage runs, by `bn skills` name. `None` inherits, ultimately falling
     /// back to the launcher's built-in default for the stage.
@@ -168,10 +164,8 @@ pub struct StageConfig {
 /// `[pipeline]` per-stage policy, also accepted below `[repo.<name>.pipeline]` for repo overrides.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct PipelineConfig {
-    /// Keyed by [`Stage`]. `models` is the pre-rename table name and is still accepted; a file
-    /// carrying *both* names is a serde duplicate-field error, which is the loud outcome we want
-    /// over silently merging two tables that disagree.
-    #[serde(default, alias = "models")]
+    /// Keyed by [`Stage`].
+    #[serde(default)]
     pub stages: HashMap<Stage, StageConfig>,
 }
 
@@ -186,72 +180,68 @@ pub struct PipelineModel {
     pub harness: Option<String>,
 }
 
-/// Storage + classification config, resolved from env + `config.toml` once (mirrors oracle
-/// startup). Layering, low → high precedence: hardcoded defaults → config.toml → legacy
-/// plaintext → env overrides. Env always wins, preserving the test contract.
+/// Storage + classification config, resolved once from the compiled defaults and the config file
+/// layers. The only environment it reads is the set of path anchors test sandboxes pin
+/// (`BN_NOTES_DIR`, `BN_WORKTREE_DIR`, `BN_HOSTNAME`, …) and the per-invocation `BN_VERBOSE` /
+/// `BN_LOG` switch: no setting has a second, invisible home in the environment.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub personal_root: PathBuf,
     pub work_root: PathBuf,
     /// Optional personal overlay root (`~/projects/personal-notes/bn` by default) layered on top
     /// of `work_root`/`personal_root`/shipped for `agents/` and `skills/` discovery — personal
-    /// overrides win. From `$BN_OVERLAY_DIR` or config.toml `[personal].overlay_root`. The tier is
-    /// harmless when the directory is absent (discovery skips unreadable dirs), so machines without
-    /// the overlay behave exactly as before. Backs the "move config into personal-notes" migration
-    /// (a layered overlay, not a wholesale move of the notes/references/state home).
+    /// overrides win. From `$BN_OVERLAY_DIR`, else `$BN_PERSONAL_NOTES_DIR/bn`, else the default.
+    /// The tier is harmless when the directory is absent (discovery skips unreadable dirs).
     pub overlay_root: Option<PathBuf>,
     pub worktree_dir: PathBuf,
+    /// `[work].work_repos`: the repositories whose notes go to the work notes tree.
     pub work_repos: Vec<String>,
+    /// This machine's name: `$BN_HOSTNAME`, else the pinned identity.
     pub hostname: String,
-    /// The `[machines.<machine>]` profile resolved for [`machine`](Self::machine). `None` means
-    /// this machine is unregistered and therefore has no repository or runtime permissions.
+    /// The `[machine]` table, if a config layer has one. `None` means no table: the machine may
+    /// work on every repository and runs every service. A table only narrows that.
     pub machine_profile: Option<MachineProfile>,
-    /// Whether the on-disk config file was read and parsed successfully. Service reconciliation
-    /// may only remove managed services when this is true.
-    pub config_file_loaded: bool,
     /// Per-job machine allowlist from `[jobs.only_on]`: job → machines it may run on. A job
     /// absent from the map runs everywhere. Backs `bn run`'s per-host gating.
     pub job_only_on: HashMap<String, Vec<String>>,
     /// Weekday the weekly 1-1 review window anchors to (`0=Sun .. 6=Sat`). `bn weekly`
-    /// reports since the most recent occurrence of this day. From `$BN_WEEKLY_ANCHOR`,
-    /// config.toml `[review].weekly_anchor`, else Monday.
+    /// reports since the most recent occurrence of this day. From `[review].weekly_anchor`, else
+    /// Monday.
     pub weekly_anchor: u32,
-    /// Review SLA thresholds (hours): time-to-first-review and open→merge. A PR awaiting your
-    /// review nears/breaches the first-review SLA as its wait time climbs; `bn next` bumps its
-    /// priority accordingly. From config.toml `[review].sla_first_review_hours` /
-    /// `sla_merge_hours` (or `$BN_SLA_FIRST_REVIEW_HOURS` / `$BN_SLA_MERGE_HOURS`); defaults 4h /
-    /// 24h, the healthy-review-latency reference.
+    /// Review SLA threshold (hours) for time-to-first-review. A PR awaiting your review
+    /// nears/breaches it as its wait time climbs; `bn next` bumps its priority accordingly. From
+    /// `[review].sla_first_review_hours`; default 4h, the healthy-review-latency reference.
     pub sla_first_review_hours: f64,
-    pub sla_merge_hours: f64,
-    /// Harness the auto-review agent launches (`claude` / `copilot`). From `$BN_REVIEW_HARNESS`
-    /// or config.toml `[review].harness`; `None` falls back to the harness currently driving bn.
+    /// Harness the auto-review agent launches (`claude` / `copilot`). From `[review].harness`;
+    /// `None` falls back to the harness currently driving bn.
     pub review_harness: Option<String>,
     /// Harnesses turned off on this machine (`claude` when the account is org-disabled —
-    /// *"organization has disabled Claude subscription access"*). From `[harness].disabled` or the
-    /// comma-separated `$BN_DISABLED_HARNESSES`. Copilot is never disable-able (the guaranteed
-    /// fallback), so a stray `copilot` entry is ignored. Backs [`crate::harness::availability`],
-    /// which the dashboard's per-agent harness switcher (#501) reads to render an unusable harness
-    /// disabled with a reason rather than failing a relaunch silently.
+    /// *"organization has disabled Claude subscription access"*). From `[harness].disabled`.
+    /// Copilot is never disable-able (the guaranteed fallback), so a stray `copilot` entry is
+    /// ignored. Backs [`crate::harness::availability`], which the dashboard's per-agent harness
+    /// switcher (#501) reads to render an unusable harness disabled with a reason rather than
+    /// failing a relaunch silently.
     pub disabled_harnesses: Vec<String>,
     /// `bn next` recency cutoff (hours): time-aged actions older than this drop off the attention
     /// list — it shows only what's recent enough to act on now. The effective window widens to
-    /// cover the weekend on Mondays (see [`crate::next`]). From config.toml
-    /// `[attention].max_age_hours` or `$BN_ATTENTION_MAX_AGE_HOURS`; default 24h.
+    /// cover the weekend on Mondays (see [`crate::next`]). From `[attention].max_age_hours`;
+    /// default 24h.
     pub attention_max_age_hours: f64,
     /// Folder the OS / capture tool drops new screenshots into (`bn shot` moves the freshest
-    /// into the branch note). From `$BN_SCREENSHOT_DIR` or config.toml `[capture].screenshot_dir`;
-    /// `None` if unconfigured (no portable default — the path is machine-specific).
+    /// into the branch note). From `[capture].screenshot_dir`; `None` if unconfigured (no portable
+    /// default — the path is machine-specific).
     pub screenshot_dir: Option<PathBuf>,
     /// Folder the GIF recorder (e.g. ScreenToGif) saves into; backs `bn shot --gif`. From
-    /// `$BN_GIF_DIR` or config.toml `[capture].gif_dir`.
+    /// `[capture].gif_dir`.
     pub gif_dir: Option<PathBuf>,
-    /// `[work].only` (or `$BN_WORK_ONLY`): this is a work machine — cross-repo views (branches,
-    /// next, summary, metrics) hide everything outside [`work_repos`] so personal work never
-    /// surfaces on a work screen. Default false. Backs [`is_visible_repo`](Config::is_visible_repo).
+    /// Whether this is a work machine: it has the work notes tree and no personal one. Cross-repo
+    /// views (branches, next, summary, metrics) then hide everything outside [`work_repos`], so
+    /// personal work never surfaces on a work screen. Derived, not configured. Backs
+    /// [`is_visible_repo`](Config::is_visible_repo).
     pub work_only: bool,
-    /// `[managed_repos].repos` (or `$BN_MANAGED_REPOS`): clone URLs bn keeps checked out under the
-    /// managed root ([`managed_repos_dir`]). The refresh-all job clones any missing one and
-    /// fetches/fast-forwards the rest. Empty by default. Backs the dotfiles-on-a-new-machine flow.
+    /// `[managed_repos].repos`: clone URLs bn keeps checked out under the managed root
+    /// ([`managed_repos_dir`]). The refresh-all job clones any missing one and fetches/fast-
+    /// forwards the rest. Empty by default. Backs the dotfiles-on-a-new-machine flow.
     pub managed_repos: Vec<String>,
     /// `[hosts.<alias>]`: per-host enrichment of `~/.ssh/config` for `bn connect` — what ssh config
     /// can't express (remote worktree root, default agent harness, whether bn is installed there).
@@ -268,7 +258,7 @@ pub struct Config {
     /// [`crate::backlog::ExecutionTarget`], capability labels, and RAM budget, resolved to
     /// [`crate::hosts::NodeRecord`]s (sorted by `node_id` for deterministic first-fit placement).
     /// Empty by default ⇒ the orchestrate scheduler places every lane `Local` (single-node
-    /// behavior). Config-file only; there is no env override for a whole table.
+    /// behavior).
     pub nodes: Vec<crate::hosts::NodeRecord>,
     /// `[queue]` — the machine-wide work queue's policy (#queue).
     pub queue: QueueConfig,
@@ -284,42 +274,35 @@ pub struct Config {
     /// [`crate::scout::ScoutConfig`].
     pub scout: crate::scout::ScoutConfig,
     /// `[log]`: the opt-in verbose/debug action log (structured JSONL of every high-value action,
-    /// for after-the-fact debugging). Resolved from env + config.toml; the CLI `--verbose/--debug`
-    /// flag layers on top at init. See [`LogConfig`] and [`crate::log`].
+    /// for after-the-fact debugging). The CLI `--verbose/--debug` flag layers on top at init. See
+    /// [`LogConfig`] and [`crate::log`].
     pub log: LogConfig,
-    /// `[dispatch].plan_review` (or `$BN_DISPATCH_PLAN_REVIEW`): make the plan-review gate (#349)
-    /// the default for `bn dispatch` — a dispatched ship agent proposes a plan, registers a
-    /// plan-review, and pauses until reviewer consensus or required human approval. `bn dispatch
-    /// --plan` opts in per-dispatch regardless. Default false.
+    /// `[dispatch].plan_review`: make the plan-review gate (#349) the default for `bn dispatch` — a
+    /// dispatched ship agent proposes a plan, registers a plan-review, and pauses until reviewer
+    /// consensus or required human approval. `bn dispatch --plan` opts in per-dispatch regardless.
+    /// Default false.
     pub dispatch_plan_review: bool,
-    /// `[dispatch].plan_reviewers` / `$BN_DISPATCH_PLAN_REVIEWERS`: fresh independent plan
-    /// reviewers launched by the plan-gate workflow. Default 3.
+    /// `[dispatch].plan_reviewers`: fresh independent plan reviewers launched by the plan-gate
+    /// workflow. Default 3.
     pub dispatch_plan_reviewers: usize,
-    /// `[dispatch].plan_review_quorum` / `$BN_DISPATCH_PLAN_REVIEW_QUORUM`: approvals required.
-    /// Defaults to a strict majority of `dispatch_plan_reviewers`.
+    /// `[dispatch].plan_review_quorum`: approvals required. Defaults to a strict majority of
+    /// `dispatch_plan_reviewers`.
     pub dispatch_plan_review_quorum: usize,
-    /// `[review].diff_gate` (or `$BN_REVIEW_DIFF_GATE`): enable the adversarial diff-only review
-    /// gate (#607) on the ship-lane land path. When on, a dispatched ship PR is skipped by
-    /// `bn wt merge --all` until [`review_diff_gate_reviews`](Self::review_diff_gate_reviews)
-    /// independent diff-only reviewers have approved its current head and every blocking finding is
-    /// resolved/waived. Default false.
+    /// `[review].diff_gate`: enable the adversarial diff-only review gate (#607) on the ship-lane
+    /// land path. When on, a dispatched ship PR is skipped by `bn wt merge --all` until
+    /// [`review_diff_gate_reviews`](Self::review_diff_gate_reviews) independent diff-only reviewers
+    /// have approved its current head and every blocking finding is resolved/waived. Default false.
     pub review_diff_gate: bool,
-    /// `[review].diff_gate_reviews` (or `$BN_REVIEW_DIFF_GATE_REVIEWS`): how many independent
-    /// approving diff-only reviews the gate requires. Default
-    /// [`crate::review_gate::DEFAULT_REQUIRED_REVIEWS`] (2).
+    /// `[review].diff_gate_reviews`: how many independent approving diff-only reviews the gate
+    /// requires. Default [`crate::review_gate::DEFAULT_REQUIRED_REVIEWS`] (2).
     pub review_diff_gate_reviews: usize,
-    /// `[orchestrate].agent` (or `$BN_ORCHESTRATE_AGENT`): the harness `bn orchestrate` dispatches
-    /// new agents under when `--agent` isn't passed (#382) — `claude` | `copilot` (aliases
-    /// `claudecode` / `cc` / `gh`, normalized at use). `None` ⇒ `copilot`, the prior hardcoded
-    /// default. The daemon still auto-switches a lane to the other harness on a usage-limit stall.
-    pub orchestrate_agent: Option<String>,
-    /// `[harness].default` (or `$BN_HARNESS`): the preferred harness every launcher uses when no
-    /// `--agent`/`--harness` is requested — `claude` | `copilot` (aliases normalized at use). `None`
-    /// ⇒ `copilot`, the guaranteed fallback. A configured harness that's org-disabled on this
-    /// machine ([`Config::disabled_harnesses`]) also falls back to copilot. Backs
+    /// `[harness].default`: the preferred harness every launcher uses when no `--agent`/`--harness`
+    /// is requested — `claude` | `copilot` (aliases normalized at use). `None` ⇒ `copilot`, the
+    /// guaranteed fallback. A configured harness that's org-disabled on this machine
+    /// ([`Config::disabled_harnesses`]) also falls back to copilot. Backs
     /// [`crate::harness::preferred_harness`].
     pub default_harness: Option<String>,
-    /// `[orchestrate].stuck_idle_secs` / `$BN_ORCH_STUCK_IDLE_SECS`.
+    /// `[orchestrate].stuck_idle_secs`.
     pub orchestrate_stuck_idle_secs: i64,
     /// `[orchestrate]` keep-warm defaults. Disabled unless config or `supervise --keep-warm`
     /// opts in; ownership limits which repos a box is allowed to feed.
@@ -332,48 +315,38 @@ pub struct Config {
     pub orchestrate_brainstorm_interval_secs: i64,
     /// `[orchestrate]` resource/budget caps (#377) — the guards the resource-aware scheduler
     /// ([`crate::scheduler::Caps`]) pauses local dispatch on. All `None`/off by default, so an
-    /// unconfigured run behaves exactly as the pre-#377 fixed-concurrency daemon. Env overrides:
-    /// `$BN_ORCH_MIN_FREE_RAM_MB`, `$BN_ORCH_MAX_LOADAVG`, `$BN_ORCH_MAX_SWAP_PCT`,
-    /// `$BN_ORCH_TOKENS_PER_HOUR`,
-    /// `$BN_ORCH_DAILY_COST_USD`, `$BN_ORCH_REMOTE_OVERFLOW`.
+    /// unconfigured run behaves exactly as the pre-#377 fixed-concurrency daemon.
     pub orchestrate_min_free_ram_mb: Option<u64>,
     pub orchestrate_max_loadavg: Option<f64>,
     /// Pause local dispatch (and hold the backlog pull) while swap usage percent is above this —
-    /// the #668 swap-pressure guard. `$BN_ORCH_MAX_SWAP_PCT`. Off by default.
+    /// the #668 swap-pressure guard. Off by default.
     pub orchestrate_max_swap_pct: Option<f64>,
     pub orchestrate_tokens_per_hour: Option<u64>,
     pub orchestrate_daily_cost_usd: Option<f64>,
     /// Per-work-class daily API-equiv `$` spend caps (#381 GAP 5) — pause just the coding /
     /// research lane once its own today's spend reaches the cap.
-    /// `$BN_ORCH_DAILY_COST_USD_CODING`, `$BN_ORCH_DAILY_COST_USD_RESEARCH`.
     pub orchestrate_daily_cost_usd_coding: Option<f64>,
     pub orchestrate_daily_cost_usd_research: Option<f64>,
     /// Whether `auto` items overflow to a GitHub-hosted runner when local is full/paused (#377).
     /// Off by default; an explicit `substrate: remote` item always fans out regardless.
     pub orchestrate_remote_overflow: bool,
-    /// `[staff].home` (or `$BN_STAFF_HOME`): the single machine the agent staff runs on (#270).
-    /// `bn staff run` — and every `staff-<agent>` cron — no-ops loudly on any other box so two
-    /// laptops never duplicate-review the same PRs into the synced feed. `None` (unset) = the
-    /// staff runs anywhere (a single-machine setup needs no homing). A per-agent `only_on` in
-    /// `config/agents/*.md` overrides this for that one agent. Backs [`crate::staff::home_gate`].
+    /// `[staff].home`: the single machine the agent staff runs on (#270), so two laptops never
+    /// duplicate-review the same PRs into the synced feed. `None` (unset) = the staff runs anywhere
+    /// (a single-machine setup needs no homing). A per-agent `only_on` in `config/agents/*.md`
+    /// overrides this for that one agent.
     pub staff_home: Option<String>,
-    /// `[staff].mail`: agents whose briefing card is drafted to email the moment it lands (see
-    /// `bn staff mail`). Delivery follows the card instead of running on its own timer, so a brief
-    /// cannot be mailed before it exists. Empty = nothing mails; a card leaving the machine is
-    /// opt-in per agent.
-    pub staff_mail: Vec<String>,
     /// `[notify]`: the desktop-toast policy gate — which classes may interrupt, the per-key
-    /// cooldown, and the daily/per-source budgets. Unlike [`Self::routine`] this is infallible:
-    /// a bad value clamps or falls back to the default, because a notification preference must
-    /// never break an unrelated command. See [`crate::notify::policy`].
+    /// cooldown, and the daily/per-source budgets. Infallible: a bad value clamps or falls back to
+    /// the default, because a notification preference must never break an unrelated command. See
+    /// [`crate::notify::policy`].
     pub notify: crate::notify::policy::NotifyConfig,
 }
 
 impl Default for Config {
     /// The hardcoded-defaults tier (lowest precedence in [`Config::resolve`]): empty roots +
     /// hostname, and the same documented fallbacks `resolve` lands on when nothing is configured
-    /// — Monday weekly anchor (`1`), 4h/24h review SLAs, a 24h attention window. Callers (and
-    /// tests) spell only the fields they care about via `Config { personal_root: ..,
+    /// — Monday weekly anchor (`1`), a 4h review SLA, a 24h attention window, no machine profile.
+    /// Callers (and tests) spell only the fields they care about via `Config { personal_root: ..,
     /// ..Default::default() }`.
     fn default() -> Config {
         Config {
@@ -383,19 +356,10 @@ impl Default for Config {
             worktree_dir: PathBuf::new(),
             work_repos: Vec::new(),
             hostname: String::new(),
-            // `Config::default()` is predominantly a test constructor. Keep those focused tests
-            // permissive; production `load()`/`from_env()` resolve a missing profile to `None`.
-            machine_profile: Some(MachineProfile {
-                repos: vec!["*".to_string()],
-                queue: true,
-                cron: true,
-                web: true,
-            }),
-            config_file_loaded: false,
+            machine_profile: None,
             job_only_on: HashMap::new(),
             weekly_anchor: 1,
             sla_first_review_hours: 4.0,
-            sla_merge_hours: 24.0,
             review_harness: None,
             disabled_harnesses: Vec::new(),
             attention_max_age_hours: 24.0,
@@ -418,7 +382,6 @@ impl Default for Config {
             ),
             review_diff_gate: false,
             review_diff_gate_reviews: crate::review_gate::DEFAULT_REQUIRED_REVIEWS,
-            orchestrate_agent: None,
             default_harness: None,
             orchestrate_stuck_idle_secs: crate::agent::DEFAULT_STUCK_LANE_IDLE_SECS,
             orchestrate_keep_warm: false,
@@ -439,24 +402,19 @@ impl Default for Config {
             orchestrate_daily_cost_usd_research: None,
             orchestrate_remote_overflow: false,
             staff_home: None,
-            staff_mail: Vec::new(),
             notify: crate::notify::policy::NotifyConfig::default(),
         }
     }
 }
 
 impl Config {
-    /// Production entry: layer defaults → `config.toml` → legacy plaintext → env overrides.
-    /// Reads the real config file (`$BN_CONFIG` or `<config_dir>/config.toml`).
+    /// Production entry: the compiled defaults, then the config file layers.
     pub fn load() -> Config {
-        let (file, config_file_loaded) = ConfigFile::load_with_status();
-        let mut cfg = Config::resolve(file.as_ref());
-        cfg.config_file_loaded = config_file_loaded;
-        cfg
+        Config::resolve(ConfigFile::load().as_ref())
     }
 
-    /// Build config from the environment only (no config file). Kept for the test contract
-    /// and callers that must not read on-disk config; `load()` is the production path.
+    /// Build config from the defaults and path anchors only (no config file). Kept for callers
+    /// that must not read on-disk config; `load()` is the production path.
     pub fn from_env() -> Config {
         Config::resolve(None)
     }
@@ -464,189 +422,107 @@ impl Config {
     pub(super) fn resolve(file: Option<&ConfigFile>) -> Config {
         let home = home();
 
-        // BN_NOTES_DIR collapses personal+work to one root for tests; BN_NOTES_DIR_WORK
-        // optionally re-splits. Otherwise config.toml roots, else the oracle defaults (bn:61-68).
-        let (personal_root, work_root) = match non_empty_env("BN_NOTES_DIR") {
-            Some(d) => {
-                let work = non_empty_env("BN_NOTES_DIR_WORK")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| PathBuf::from(&d));
-                (PathBuf::from(d), work)
-            }
-            None => {
-                let personal = file
-                    .and_then(|f| f.personal_notes_root())
-                    .unwrap_or_else(|| PathBuf::from(format!("{home}/projects/branch-notes")));
-                let work = file.and_then(|f| f.work_notes_root()).unwrap_or_else(|| {
-                    let work_primary = PathBuf::from(format!("{home}/projects/notes/bn"));
-                    if work_primary.is_dir() {
-                        work_primary
-                    } else {
-                        PathBuf::from(format!("{home}/projects/branch-notes-work/bn"))
-                    }
-                });
-                (personal, work)
-            }
-        };
+        // The notes roots come from the path anchors and defaults alone: the config lives inside
+        // one of them, so it cannot also be what chooses it.
+        let (personal_root, work_root) = notes_roots();
+        // A machine that has the work notes tree and no personal one is a work machine — there is
+        // nothing personal on it to surface.
+        let work_only = !personal_root.is_dir() && work_root.is_dir();
 
         // Optional personal overlay (`~/projects/personal-notes/bn` by default) layered on top of
-        // the notes roots for `agents/`+`skills/` discovery. Resolution mirrors the anchor
-        // `install.sh` uses for the private `config.toml`: `$BN_OVERLAY_DIR` wins, else config.toml
-        // `[personal].overlay_root`, else `$BN_PERSONAL_NOTES_DIR/bn` (the same personal-notes repo
-        // that holds config.toml), else the default anchor. Empty string / `off` / `-` disables it.
-        // The tier is inert when the directory is absent, so it's fully back-compat.
+        // the notes roots for `agents/`+`skills/` discovery: `$BN_OVERLAY_DIR` wins, else
+        // `$BN_PERSONAL_NOTES_DIR/bn`, else the default anchor. `off` / `-` disables it. The tier is
+        // inert when the directory is absent.
         let overlay_root = match non_empty_env("BN_OVERLAY_DIR") {
             Some(d) if d.eq_ignore_ascii_case("off") || d == "-" => None,
             Some(d) => Some(PathBuf::from(d)),
-            None => file.and_then(|f| f.overlay_root()).or_else(|| {
-                let anchor = non_empty_env("BN_PERSONAL_NOTES_DIR")
+            None => Some(
+                non_empty_env("BN_PERSONAL_NOTES_DIR")
                     .map(|d| PathBuf::from(d).join("bn"))
-                    .unwrap_or_else(|| PathBuf::from(format!("{home}/projects/personal-notes/bn")));
-                Some(anchor)
-            }),
+                    .unwrap_or_else(|| PathBuf::from(format!("{home}/projects/personal-notes/bn"))),
+            ),
         };
-        let worktree_dir = non_empty_env("BN_WORKTREE_DIR")
-            .map(PathBuf::from)
-            .or_else(|| file.and_then(|f| f.worktree_dir()))
-            .unwrap_or_else(|| PathBuf::from(format!("{home}/projects/worktree")));
+        let worktree_dir = super::dirs::worktree_dir();
 
-        // BN_WORK_REPOS_FILE (tests) wins; else config.toml's inline list; else the legacy file.
-        let work_repos = if let Some(f) = non_empty_env("BN_WORK_REPOS_FILE") {
-            parse_work_repos(Path::new(&f))
-        } else if let Some(list) = file.and_then(|f| f.work_repos()) {
-            list
-        } else {
-            parse_work_repos(&config_dir().join("work-repos"))
-        };
+        let work_repos = file.and_then(|f| f.work_repos()).unwrap_or_default();
 
-        // `$BN_HOSTNAME` and the config key stay authoritative; absent both, the pinned identity
-        // answers rather than the live hostname, which on macOS is not stable across networks.
-        let hostname = non_empty_env("BN_HOSTNAME")
-            .or_else(|| file.and_then(|f| f.hostname()))
-            .unwrap_or_else(stable_machine);
+        // The pinned identity rather than the live hostname, which on macOS is not stable across
+        // networks; `$BN_HOSTNAME` for sandboxes.
+        let hostname = machine_name();
         let machine_profile = file
-            .and_then(|f| f.machine_profile(&hostname))
+            .and_then(|f| f.machine_profile())
             .map(Self::normalize_machine_profile);
 
         let job_only_on = file.map(|f| f.job_only_on()).unwrap_or_default();
 
-        let weekly_anchor = non_empty_env("BN_WEEKLY_ANCHOR")
+        let weekly_anchor = file
+            .and_then(|f| f.weekly_anchor())
             .and_then(|s| parse_weekday(&s))
-            .or_else(|| {
-                file.and_then(|f| f.weekly_anchor())
-                    .and_then(|s| parse_weekday(&s))
-            })
             .unwrap_or(1); // Monday
 
-        let screenshot_dir = non_empty_env("BN_SCREENSHOT_DIR")
-            .map(PathBuf::from)
-            .or_else(|| file.and_then(|f| f.screenshot_dir()));
-        let gif_dir = non_empty_env("BN_GIF_DIR")
-            .map(PathBuf::from)
-            .or_else(|| file.and_then(|f| f.gif_dir()));
+        let screenshot_dir = file.and_then(|f| f.screenshot_dir());
+        let gif_dir = file.and_then(|f| f.gif_dir());
 
-        let work_only = non_empty_env("BN_WORK_ONLY")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .or_else(|| file.and_then(|f| f.work_only()))
-            .unwrap_or(false);
-
-        let sla_first_review_hours = non_empty_env("BN_SLA_FIRST_REVIEW_HOURS")
-            .and_then(|s| s.parse::<f64>().ok())
-            .or_else(|| file.and_then(|f| f.sla_first_review_hours()))
+        let sla_first_review_hours = file
+            .and_then(|f| f.sla_first_review_hours())
             .filter(|h| *h > 0.0)
             .unwrap_or(4.0);
-        let sla_merge_hours = non_empty_env("BN_SLA_MERGE_HOURS")
-            .and_then(|s| s.parse::<f64>().ok())
-            .or_else(|| file.and_then(|f| f.sla_merge_hours()))
-            .filter(|h| *h > 0.0)
-            .unwrap_or(24.0);
-        let review_harness = non_empty_env("BN_REVIEW_HARNESS")
-            .or_else(|| file.and_then(|f| f.review_harness()))
+        let review_harness = file
+            .and_then(|f| f.review_harness())
             .map(|s| s.trim().to_lowercase())
             .filter(|s| !s.is_empty());
-        let staff_mail = file.map(|f| f.staff_mail()).unwrap_or_default();
-        // `[harness].disabled` (#501): harnesses turned off on this box (org-disabled claude). Env
-        // `$BN_DISABLED_HARNESSES` is comma-separated and wins over the file list; each entry is
-        // trimmed + lowercased and blanks dropped. `copilot` is never disable-able, so it's filtered
-        // out here — the availability policy treats it as the guaranteed fallback regardless.
-        let disabled_harnesses = non_empty_env("BN_DISABLED_HARNESSES")
-            .map(|s| {
-                s.split(',')
-                    .map(|p| p.trim().to_string())
-                    .collect::<Vec<_>>()
-            })
-            .or_else(|| file.and_then(|f| f.disabled_harnesses()))
+        // `[harness].disabled` (#501): harnesses turned off on this box (org-disabled claude). Each
+        // entry is trimmed + lowercased and blanks dropped. `copilot` is never disable-able, so it's
+        // filtered out here — the availability policy treats it as the guaranteed fallback.
+        let disabled_harnesses = file
+            .and_then(|f| f.disabled_harnesses())
             .unwrap_or_default()
             .into_iter()
             .map(|s| s.trim().to_lowercase())
             .filter(|s| !s.is_empty() && s != "copilot")
             .collect::<Vec<_>>();
-        let attention_max_age_hours = non_empty_env("BN_ATTENTION_MAX_AGE_HOURS")
-            .and_then(|s| s.parse::<f64>().ok())
-            .or_else(|| file.and_then(|f| f.attention_max_age_hours()))
+        let attention_max_age_hours = file
+            .and_then(|f| f.attention_max_age_hours())
             .filter(|h| *h > 0.0)
             .unwrap_or(24.0);
 
-        // BN_MANAGED_REPOS (comma/space/newline-separated) wins, else config.toml's list, else none.
-        let managed_repos = match non_empty_env("BN_MANAGED_REPOS") {
-            Some(s) => split_list(&s),
-            None => file.and_then(|f| f.managed_repos()).unwrap_or_default(),
-        };
+        let managed_repos = file.and_then(|f| f.managed_repos()).unwrap_or_default();
 
         let hosts = file.and_then(|f| f.hosts.clone()).unwrap_or_default();
 
-        // `[nodes.<node_id>]` (#729): the declarative multi-node worker registry. Config file only.
-        // Empty ⇒ single-node behavior (placement always lands `Local`).
+        // `[nodes.<node_id>]` (#729): the declarative multi-node worker registry. Empty ⇒
+        // single-node behavior (placement always lands `Local`).
         let nodes = crate::hosts::resolve_nodes(&file.and_then(|f| f.nodes()).unwrap_or_default());
 
-        // `[repo.<name>]` (#454): per-repo overrides (currently the native verify command). Config
-        // file only — there's no env override for a whole table. Empty ⇒ every repo falls back to
-        // its bn `test`/`build` job (the bn repo's unchanged behavior).
+        // `[repo.<name>]` (#454): per-repo overrides (currently the native verify command). Empty ⇒
+        // every repo falls back to its bn `test`/`build` job (the bn repo's unchanged behavior).
         let repos = file.and_then(|f| f.repos()).unwrap_or_default();
         let pipeline = file.and_then(|f| f.pipeline()).unwrap_or_default();
 
         let coarse_sizes = file.map(|f| f.coarse_sizes()).unwrap_or_default();
 
-        // `[web]` (#388/#879): env overrides win, then config.toml, then defaults.
-        let web = {
-            let env_bool = |key: &str| {
-                non_empty_env(key).map(|value| {
-                    value == "1"
-                        || value.eq_ignore_ascii_case("true")
-                        || value.eq_ignore_ascii_case("on")
-                })
-            };
-            let port = non_empty_env("BN_WEB_PORT")
-                .and_then(|s| s.parse::<u16>().ok())
-                .or_else(|| file.and_then(|f| f.web_port()))
+        // `[web]` (#388/#879): config, then defaults.
+        let web = WebConfig {
+            port: file
+                .and_then(|f| f.web_port())
                 .filter(|p| *p > 0)
-                .unwrap_or(7770);
-            let bind = non_empty_env("BN_WEB_BIND")
-                .or_else(|| file.and_then(|f| f.web_bind()))
-                .unwrap_or_else(|| "127.0.0.1".to_string());
-            let fleet_poll_secs = non_empty_env("BN_WEB_FLEET_POLL_SECS")
-                .and_then(|s| s.parse::<u64>().ok())
-                .or_else(|| file.and_then(|f| f.web_fleet_poll_secs()))
+                .unwrap_or(7770),
+            bind: file
+                .and_then(|f| f.web_bind())
+                .unwrap_or_else(|| "127.0.0.1".to_string()),
+            fleet_poll_secs: file
+                .and_then(|f| f.web_fleet_poll_secs())
                 .filter(|s| *s > 0)
-                .unwrap_or(2);
-            let tmux_mcp_autostart = env_bool("BN_WEB_TMUX_MCP_AUTOSTART")
-                .or_else(|| file.and_then(|f| f.web_tmux_mcp_autostart()))
-                .unwrap_or(true);
-            let tmux_mcp_badge = env_bool("BN_WEB_TMUX_MCP_BADGE")
-                .or_else(|| file.and_then(|f| f.web_tmux_mcp_badge()))
-                .unwrap_or(true);
-            WebConfig {
-                port,
-                bind,
-                fleet_poll_secs,
-                tmux_mcp_autostart,
-                tmux_mcp_badge,
-            }
+                .unwrap_or(2),
+            tmux_mcp_autostart: file
+                .and_then(|f| f.web_tmux_mcp_autostart())
+                .unwrap_or(true),
+            tmux_mcp_badge: file.and_then(|f| f.web_tmux_mcp_badge()).unwrap_or(true),
         };
 
-        // `[log]`: the opt-in verbose/debug action log. Env wins over config.toml over the
-        // off-by-default. `BN_VERBOSE` is a bare on switch; `BN_LOG` may be `1`/`true` or a level
-        // name (`debug`/`info`/…) that both enables and sets the threshold.
+        // `[log]`: the opt-in verbose/debug action log, off by default. `BN_VERBOSE` / `BN_LOG`
+        // switch it on for one invocation — a cron or a job cannot pass `--verbose` — and `BN_LOG`
+        // may be a level name (`debug`/`info`/…) that both enables and sets the threshold.
         let log = {
             let env_verbose = non_empty_env("BN_VERBOSE").map(|v| {
                 v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("on")
@@ -667,115 +543,64 @@ impl Config {
                 .or_else(|| file.and_then(|f| f.log_enabled()))
                 .unwrap_or(false);
             let level = bn_log_level
-                .or_else(|| non_empty_env("BN_LOG_LEVEL"))
                 .or_else(|| file.and_then(|f| f.log_level()))
                 .and_then(|s| crate::log::LogLevel::parse(&s).map(|l| l.as_str().to_string()))
                 .unwrap_or_else(|| "debug".to_string());
-            let dir = non_empty_env("BN_LOG_DIR")
-                .or_else(|| file.and_then(|f| f.log_dir()))
-                .map(PathBuf::from);
-            let retain_days = non_empty_env("BN_LOG_RETAIN_DAYS")
-                .and_then(|s| s.parse::<i64>().ok())
-                .or_else(|| file.and_then(|f| f.log_retain_days()))
-                .unwrap_or(14);
             LogConfig {
                 enabled,
                 level,
-                dir,
-                retain_days,
+                dir: file.and_then(|f| f.log_dir()).map(PathBuf::from),
+                retain_days: file.and_then(|f| f.log_retain_days()).unwrap_or(14),
             }
         };
 
-        // `[scout]` (#262): env overrides win, then config.toml, then empty lists / the ≤ 5 cap.
-        let scout = {
-            let watch = match non_empty_env("BN_SCOUT_WATCH") {
-                Some(s) => split_list(&s),
-                None => file.and_then(|f| f.scout_watch()).unwrap_or_default(),
-            };
-            let tools = match non_empty_env("BN_SCOUT_TOOLS") {
-                Some(s) => split_list(&s),
-                None => file.and_then(|f| f.scout_tools()).unwrap_or_default(),
-            };
-            let max_findings = non_empty_env("BN_SCOUT_MAX_FINDINGS")
-                .and_then(|s| s.parse::<usize>().ok())
-                .or_else(|| file.and_then(|f| f.scout_max_findings()))
+        // `[scout]` (#262): config, then empty lists / the ≤ 5 cap.
+        let scout = crate::scout::ScoutConfig {
+            watch: file.and_then(|f| f.scout_watch()).unwrap_or_default(),
+            tools: file.and_then(|f| f.scout_tools()).unwrap_or_default(),
+            max_findings: file
+                .and_then(|f| f.scout_max_findings())
                 .filter(|n| *n > 0)
-                .unwrap_or(crate::scout::DEFAULT_MAX_FINDINGS);
-            crate::scout::ScoutConfig {
-                watch,
-                tools,
-                max_findings,
-            }
+                .unwrap_or(crate::scout::DEFAULT_MAX_FINDINGS),
         };
 
-        // `[dispatch].plan_review` (#349): env override wins, then config.toml, then off.
-        let dispatch_plan_review = non_empty_env("BN_DISPATCH_PLAN_REVIEW")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .or_else(|| file.and_then(|f| f.dispatch_plan_review()))
-            .unwrap_or(false);
-        let dispatch_plan_reviewers = non_empty_env("BN_DISPATCH_PLAN_REVIEWERS")
-            .and_then(|v| v.trim().parse::<usize>().ok())
-            .or_else(|| file.and_then(|f| f.dispatch_plan_reviewers()))
+        // `[dispatch].plan_review` (#349): off unless configured.
+        let dispatch_plan_review = file.and_then(|f| f.dispatch_plan_review()).unwrap_or(false);
+        let dispatch_plan_reviewers = file
+            .and_then(|f| f.dispatch_plan_reviewers())
             .filter(|n| *n > 0)
             .unwrap_or(crate::plan_review::DEFAULT_REVIEWER_COUNT);
-        let dispatch_plan_review_quorum = non_empty_env("BN_DISPATCH_PLAN_REVIEW_QUORUM")
-            .and_then(|v| v.trim().parse::<usize>().ok())
-            .or_else(|| file.and_then(|f| f.dispatch_plan_review_quorum()))
+        let dispatch_plan_review_quorum = file
+            .and_then(|f| f.dispatch_plan_review_quorum())
             .unwrap_or_else(|| crate::plan_review::majority_quorum(dispatch_plan_reviewers))
             .clamp(1, dispatch_plan_reviewers);
 
-        // `[review].diff_gate` (#607): env override wins, then config.toml, then off. The required
-        // review count clamps to at least 1 (a gate requiring zero reviews would be a no-op).
-        let review_diff_gate = non_empty_env("BN_REVIEW_DIFF_GATE")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .or_else(|| file.and_then(|f| f.review_diff_gate()))
-            .unwrap_or(false);
-        let review_diff_gate_reviews = non_empty_env("BN_REVIEW_DIFF_GATE_REVIEWS")
-            .and_then(|v| v.trim().parse::<usize>().ok())
-            .or_else(|| file.and_then(|f| f.review_diff_gate_reviews()))
+        // `[review].diff_gate` (#607): off unless configured. The required review count clamps to
+        // at least 1 (a gate requiring zero reviews would be a no-op).
+        let review_diff_gate = file.and_then(|f| f.review_diff_gate()).unwrap_or(false);
+        let review_diff_gate_reviews = file
+            .and_then(|f| f.review_diff_gate_reviews())
             .filter(|n| *n > 0)
             .unwrap_or(crate::review_gate::DEFAULT_REQUIRED_REVIEWS);
 
-        // `[staff].home` (#270): env override wins, then config.toml; trimmed, empty → None so a
-        // blank value never gates the staff off. `None` leaves the staff running anywhere.
-        let staff_home = non_empty_env("BN_STAFF_HOME")
-            .or_else(|| file.and_then(|f| f.staff_home()))
+        // `[staff].home` (#270): trimmed, empty → None so a blank value never gates the staff off.
+        let staff_home = file
+            .and_then(|f| f.staff_home())
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
         // `[notify]`: the desktop-toast policy gate. Infallible by design (a bad value clamps or
-        // falls back), so a notification preference can never break an unrelated command. The env
-        // overrides are the two a person reaches for on a specific machine — a kill switch, and
-        // the bar — matching how every other `BN_*` override layers over config.toml.
-        let mut notify =
-            crate::notify::policy::NotifyConfig::resolve(file.and_then(|f| f.notify()));
-        if let Some(raw) = non_empty_env("BN_NOTIFY_ENABLED") {
-            notify.enabled = raw == "1" || raw.eq_ignore_ascii_case("true");
-        }
-        if let Some(bar) = non_empty_env("BN_NOTIFY_BAR")
-            .as_deref()
-            .and_then(crate::notify::policy::Bar::parse)
-        {
-            notify.bar = bar;
-        }
+        // falls back), so a notification preference can never break an unrelated command.
+        let notify = crate::notify::policy::NotifyConfig::resolve(file.and_then(|f| f.notify()));
 
-        // `[orchestrate].agent` (#382): env override wins, then config.toml; trimmed, empty → None
-        // so a blank value falls back to the `copilot` default. Normalized to a canonical harness at
-        // use (it accepts the `bn dispatch` aliases), so an unparseable value degrades to the default.
-        let orchestrate_agent = non_empty_env("BN_ORCHESTRATE_AGENT")
-            .or_else(|| file.and_then(|f| f.orchestrate_agent()))
+        // `[harness].default`: trimmed, empty → None so a blank value falls back to the `copilot`
+        // default. Normalized + availability-gated at use by `crate::harness::preferred_harness`.
+        let default_harness = file
+            .and_then(|f| f.default_harness())
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
-        // `[harness].default`: env override wins, then config.toml; trimmed, empty → None so a blank
-        // value falls back to the `copilot` default. Normalized + availability-gated at use by
-        // `crate::harness::preferred_harness`.
-        let default_harness = non_empty_env("BN_HARNESS")
-            .or_else(|| file.and_then(|f| f.default_harness()))
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-        let orchestrate_stuck_idle_secs = non_empty_env("BN_ORCH_STUCK_IDLE_SECS")
-            .and_then(|v| v.trim().parse::<i64>().ok())
-            .or_else(|| file.and_then(|f| f.orchestrate_stuck_idle_secs()))
+        let orchestrate_stuck_idle_secs = file
+            .and_then(|f| f.orchestrate_stuck_idle_secs())
             .unwrap_or(crate::agent::DEFAULT_STUCK_LANE_IDLE_SECS)
             .max(1);
         let orchestrate_keep_warm = file
@@ -802,35 +627,7 @@ impl Config {
             .unwrap_or(crate::keep_warm::DEFAULT_KEEP_WARM_BRAINSTORM_INTERVAL_SECS)
             .max(1);
 
-        // `[orchestrate]` resource/budget caps (#377): env override wins, then config.toml; an
-        // unparseable / blank env is ignored (falls through to file, then off), so a stray value
-        // never silently disables a guard. All default off — an unconfigured run is unchanged.
         let queue = QueueConfig::load(file);
-        let orchestrate_min_free_ram_mb = non_empty_env("BN_ORCH_MIN_FREE_RAM_MB")
-            .and_then(|v| v.trim().parse::<u64>().ok())
-            .or_else(|| file.and_then(|f| f.orchestrate_min_free_ram_mb()));
-        let orchestrate_max_loadavg = non_empty_env("BN_ORCH_MAX_LOADAVG")
-            .and_then(|v| v.trim().parse::<f64>().ok())
-            .or_else(|| file.and_then(|f| f.orchestrate_max_loadavg()));
-        let orchestrate_max_swap_pct = non_empty_env("BN_ORCH_MAX_SWAP_PCT")
-            .and_then(|v| v.trim().parse::<f64>().ok())
-            .or_else(|| file.and_then(|f| f.orchestrate_max_swap_pct()));
-        let orchestrate_tokens_per_hour = non_empty_env("BN_ORCH_TOKENS_PER_HOUR")
-            .and_then(|v| v.trim().parse::<u64>().ok())
-            .or_else(|| file.and_then(|f| f.orchestrate_tokens_per_hour()));
-        let orchestrate_daily_cost_usd = non_empty_env("BN_ORCH_DAILY_COST_USD")
-            .and_then(|v| v.trim().parse::<f64>().ok())
-            .or_else(|| file.and_then(|f| f.orchestrate_daily_cost_usd()));
-        let orchestrate_daily_cost_usd_coding = non_empty_env("BN_ORCH_DAILY_COST_USD_CODING")
-            .and_then(|v| v.trim().parse::<f64>().ok())
-            .or_else(|| file.and_then(|f| f.orchestrate_daily_cost_usd_coding()));
-        let orchestrate_daily_cost_usd_research = non_empty_env("BN_ORCH_DAILY_COST_USD_RESEARCH")
-            .and_then(|v| v.trim().parse::<f64>().ok())
-            .or_else(|| file.and_then(|f| f.orchestrate_daily_cost_usd_research()));
-        let orchestrate_remote_overflow = non_empty_env("BN_ORCH_REMOTE_OVERFLOW")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .or_else(|| file.and_then(|f| f.orchestrate_remote_overflow()))
-            .unwrap_or(false);
 
         Config {
             personal_root,
@@ -840,14 +637,12 @@ impl Config {
             work_repos,
             hostname,
             machine_profile,
-            config_file_loaded: false,
             job_only_on,
             weekly_anchor,
             screenshot_dir,
             gif_dir,
             work_only,
             sla_first_review_hours,
-            sla_merge_hours,
             review_harness,
             disabled_harnesses,
             attention_max_age_hours,
@@ -865,7 +660,6 @@ impl Config {
             dispatch_plan_review_quorum,
             review_diff_gate,
             review_diff_gate_reviews,
-            orchestrate_agent,
             default_harness,
             orchestrate_stuck_idle_secs,
             orchestrate_keep_warm,
@@ -876,16 +670,21 @@ impl Config {
             orchestrate_brainstorm_count,
             orchestrate_brainstorm_interval_secs,
             queue,
-            orchestrate_min_free_ram_mb,
-            orchestrate_max_loadavg,
-            orchestrate_max_swap_pct,
-            orchestrate_tokens_per_hour,
-            orchestrate_daily_cost_usd,
-            orchestrate_daily_cost_usd_coding,
-            orchestrate_daily_cost_usd_research,
-            orchestrate_remote_overflow,
+            // `[orchestrate]` resource/budget caps (#377): all off unless configured, so an
+            // unconfigured run is unchanged.
+            orchestrate_min_free_ram_mb: file.and_then(|f| f.orchestrate_min_free_ram_mb()),
+            orchestrate_max_loadavg: file.and_then(|f| f.orchestrate_max_loadavg()),
+            orchestrate_max_swap_pct: file.and_then(|f| f.orchestrate_max_swap_pct()),
+            orchestrate_tokens_per_hour: file.and_then(|f| f.orchestrate_tokens_per_hour()),
+            orchestrate_daily_cost_usd: file.and_then(|f| f.orchestrate_daily_cost_usd()),
+            orchestrate_daily_cost_usd_coding: file
+                .and_then(|f| f.orchestrate_daily_cost_usd_coding()),
+            orchestrate_daily_cost_usd_research: file
+                .and_then(|f| f.orchestrate_daily_cost_usd_research()),
+            orchestrate_remote_overflow: file
+                .and_then(|f| f.orchestrate_remote_overflow())
+                .unwrap_or(false),
             staff_home,
-            staff_mail,
             notify,
         }
     }

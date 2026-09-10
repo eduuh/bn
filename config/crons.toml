@@ -87,16 +87,13 @@ on_calendar = "*-*-* 0/6:00:00"
 persistent = true
 randomized_delay = "15m"
 network = true
-description = "bn — reinstall the CLI when bn/main advances: the publish-prod job when one resolves (source build, re-linked anchors), else install.sh --core (never run a stale binary)"
+description = "bn — reinstall the CLI when bn/main advances: install.sh --core fetches the published release (never run a stale binary)"
 
-[[cron]]
-job = "nightly-release"
-on_calendar = "*-*-* 0/6:00:00"
-persistent = true
-randomized_delay = "20m"
-network = true
-only_on = ["mac.lan", "fedora"]
-description = "bn — build main and publish this machine's platform binaries to the rolling `nightly` prerelease (build + workspace tests must pass first). Per-target asset names, so the darwin and linux hosts fill the same release side by side."
+# There is deliberately NO release cron. Releases are built by CI on merge to main
+# (.github/workflows/release.yml), never by a workstation. The `nightly-release` job that used to
+# live here had each host build main and upload its own platform's assets to a rolling tag, which
+# meant the published release was only as fresh as the last machine that happened to be awake —
+# darwin sat two days behind linux the day this was removed. See docs/releases.md.
 
 [[cron]]
 job = "commit-notes"

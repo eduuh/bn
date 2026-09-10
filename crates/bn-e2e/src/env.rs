@@ -44,11 +44,11 @@ pub const REMOVED: &[&str] = &[
 
 /// The full sandbox environment for a bn universe rooted at `root`.
 ///
-/// `port` is the dashboard port this sandbox owns; it is set even for tests that never start
-/// bn-web, because `install.sh`'s `restart_bn_web` resolves the port from config and then
-/// `kill -9`s whatever holds it — falling back to the real default of 7770. A sandbox that leaves
-/// the port unpinned can therefore kill the developer's actual dashboard.
-pub fn contract(root: &Path, port: u16, now: i64, today: &str) -> BTreeMap<String, String> {
+/// The dashboard port is deliberately not here. `install.sh`'s `restart_bn_web` resolves the port
+/// from config and then `kill -9`s whatever holds it — falling back to the real default of 7770 —
+/// so a sandbox must pin its own port or it can kill the developer's actual dashboard. That pin
+/// lives in the sandbox's config file ([`crate::Sandbox::new`]), the only place bn reads it.
+pub fn contract(root: &Path, now: i64, today: &str) -> BTreeMap<String, String> {
     let home = root.join("home");
     let bn_home = home.join(".bn");
     let config = bn_home.join("config");
@@ -98,8 +98,6 @@ pub fn contract(root: &Path, port: u16, now: i64, today: &str) -> BTreeMap<Strin
     set("GIT_CONFIG_GLOBAL", &root.join("gitconfig"));
     set("GIT_CONFIG_SYSTEM", &root.join("gitconfig-system"));
 
-    env.insert("BN_WEB_PORT".into(), port.to_string());
-    env.insert("BN_WEB_BIND".into(), "127.0.0.1".into());
     env.insert("BN_HOSTNAME".into(), "e2ehost".into());
 
     // Determinism: a frozen clock, and no background dispatch racing the assertions.

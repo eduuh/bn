@@ -70,14 +70,18 @@ pub(crate) fn start_action(
     repo: &str,
     branch: Option<&str>,
 ) -> Result<Started, String> {
-    if !cfg.queue.direct.is_immediate() {
+    let now = bn_core::util::now_epoch_secs();
+    if !cfg
+        .queue
+        .direct_mode(bn_core::queue::off::is_off(now))
+        .is_immediate()
+    {
         return enqueue_action(cfg, action, repo, branch, When::Now)
             .map(|o| Started::Queued { outcome: o.label() });
     }
     let lock = crate::cmd::queue_tick::hold_tick_lock()
         .map_err(|why| format!("could not start {} here: {why} — press it again", action.label))?;
     let subject = action_subject(action, repo, branch);
-    let now = bn_core::util::now_epoch_secs();
     let spec = spec_for(cfg, action, repo, branch, When::Now);
     let path = backlog::backlog_path();
     let outcome = bn_core::queue::enqueue::enqueue(&path, repo, &subject, &spec, now)
@@ -196,12 +200,23 @@ fn spec_for(cfg: &Config, action: &WtAction, repo: &str, branch: Option<&str>, w
 /// away. Reporting "queued" for either — which is what this used to do — is the failure this
 /// message exists to replace.
 fn dispatcher_down_message(cfg: &Config, action: &WtAction) -> String {
+    // Checked before the machine-profile gate because it is the likelier of the two and the only
+    // one a person may have done to themselves a minute ago. "Deferring needs a queue" is also the
+    // whole of the answer: pressing Enter still starts the verb, which is what switching the queue
+    // off asked for.
+    if bn_core::queue::off::is_off(bn_core::util::now_epoch_secs()) {
+        return format!(
+            "{} cannot be deferred while the queue is switched off — press it to run it now, or \
+             switch the queue back on (`bn queue on`)",
+            action.label
+        );
+    }
     if !cfg.queue_enabled_here() {
         return format!(
-            "{} needs the queue, which is off on this machine ('{}') — add `queue = true` under [machines.{}]",
+            "{} needs the queue, which is off on this machine ('{}') — remove `queue = false` from [machine] in {}",
             action.label,
             cfg.machine(),
-            cfg.machine()
+            bn_core::resolver::machine_config_path().display()
         );
     }
     format!(
@@ -476,20 +491,80 @@ mod tests {
         let err = enqueue_action(&machine(false), action(), "bn", None, When::Now)
             .expect_err("a machine with no queue must not accept queued work");
         assert!(
-            err.contains("off on this machine") && err.contains("[machines.testbox]"),
+            err.contains("off on this machine") && err.contains("queue = false"),
             "the refusal should say what to change, got: {err}"
         );
     }
 
     /// The opt-out: a machine that says `direct = "queued"` files the verb through the ordinary
     /// door, guards and all, so a keypress there still refuses when nothing would run it.
+    ///
+    /// Under an isolated state dir because `start_action` now asks whether the queue is switched
+    /// off, and that answer lives in the machine-wide event log — without this the test would read
+    /// whatever position this developer's own switch happens to be in.
     #[test]
     fn the_queued_opt_out_takes_the_ordinary_door() {
-        let mut cfg = machine(false);
-        cfg.queue.direct = bn_core::resolver::DirectMode::Queued;
-        let err = start_action(&cfg, action(), "bn", None)
-            .expect_err("queued mode inherits the queue-off refusal");
-        assert!(err.contains("off on this machine"), "{err}");
+        bn_core::test_support::with_state_dir(|| {
+            let mut cfg = machine(false);
+            cfg.queue.direct = bn_core::resolver::DirectMode::Queued;
+            let err = start_action(&cfg, action(), "bn", None)
+                .expect_err("queued mode inherits the queue-off refusal");
+            assert!(err.contains("off on this machine"), "{err}");
+        });
+    }
+
+    /// Every verb in the roster, in both switch positions — the sweep, so a verb added later is
+    /// covered without anybody remembering to come back here.
+    ///
+    /// The two halves are the two doors a picker verb can take, and they answer differently on
+    /// purpose. **Enter still works with the queue off**: `start_action` leases and starts the
+    /// entry from the picker's own process, which is exactly what switching off asked for.
+    /// **Deferring does not**: "run it when I'm away" needs something to hold the entry and hand it
+    /// back later, and that is the queue. Refusing there, with a message naming `bn queue on`, is
+    /// the honest answer — the alternative is a row that says `⏳ queued` against a queue that will
+    /// never look at it, which is the failure `dispatcher_down_message` exists to prevent.
+    #[test]
+    fn every_verb_refuses_to_defer_while_the_queue_is_off() {
+        bn_core::test_support::with_state_dir(|| {
+            let _outside = bn_core::test_support::outside_a_dispatch();
+            let now = bn_core::util::now_epoch_secs();
+            bn_core::queue::off::off("testing", None, now).expect("switch the queue off");
+            let cfg = machine(true);
+            for action in bn_core::wt_actions::all() {
+                let err = enqueue_action(&cfg, action, "bn", Some("main"), When::Away)
+                    .expect_err("deferring needs a queue");
+                assert!(
+                    err.contains("cannot be deferred while the queue is switched off")
+                        && err.contains("bn queue on"),
+                    "{}: {err}",
+                    action.id
+                );
+                // And the message must not send them to the config file: nothing there is wrong.
+                assert!(!err.contains("queue = false"), "{}: {err}", action.id);
+            }
+        });
+    }
+
+    /// The switch does not change what a verb *is*. Same entry id either side of it, so a verb
+    /// pressed with the queue off and the same verb queued later are one row, not two.
+    #[test]
+    fn the_switch_does_not_change_a_verbs_identity() {
+        bn_core::test_support::with_state_dir(|| {
+            let now = bn_core::util::now_epoch_secs();
+            let ids: Vec<String> = bn_core::wt_actions::all()
+                .iter()
+                .map(|a| action_entry_id(a, "bn", Some("main")))
+                .collect();
+            bn_core::queue::off::off("testing", None, now).expect("switch the queue off");
+            for (action, before) in bn_core::wt_actions::all().iter().zip(&ids) {
+                assert_eq!(
+                    &action_entry_id(action, "bn", Some("main")),
+                    before,
+                    "{} changed identity when the queue went off",
+                    action.id
+                );
+            }
+        });
     }
 
     /// The direct door files the same entry the queued one does — same id, same class, same heavy
@@ -520,20 +595,23 @@ mod tests {
     /// at the wrong one is worse than saying nothing.
     ///
     /// Tested through the message rather than through `enqueue_action`, deliberately: the enqueue
-    /// path reads the machine-wide state directory, so a test of it would either see whatever
-    /// dispatcher this developer happens to be running or have to mutate `BN_STATE_DIR` — which is
-    /// process-global, and races every other test that spawns a child. `daemon::is_running`'s own
-    /// semantics are covered where they live, in `bn_core::queue::daemon`.
+    /// path reads the machine-wide state directory, so a test of it would see whatever dispatcher
+    /// this developer happens to be running. `daemon::is_running`'s own semantics are covered where
+    /// they live, in `bn_core::queue::daemon`. The isolated state dir is still needed for the
+    /// *third* fault this message now distinguishes — the queue being switched off, which is also
+    /// read from that directory.
     #[test]
     fn a_running_queue_with_no_dispatcher_names_the_command_not_the_config() {
-        let msg = dispatcher_down_message(&machine(true), action());
-        assert!(
-            msg.contains("no dispatcher is running") && msg.contains("bn queue run"),
-            "the refusal should name the command that fixes it, got: {msg}"
-        );
-        assert!(
-            !msg.contains("[machines."),
-            "the config is not the problem when the queue is already enabled, got: {msg}"
-        );
+        bn_core::test_support::with_state_dir(|| {
+            let msg = dispatcher_down_message(&machine(true), action());
+            assert!(
+                msg.contains("no dispatcher is running") && msg.contains("bn queue run"),
+                "the refusal should name the command that fixes it, got: {msg}"
+            );
+            assert!(
+                !msg.contains("queue = false"),
+                "the config is not the problem when the queue is already enabled, got: {msg}"
+            );
+        });
     }
 }

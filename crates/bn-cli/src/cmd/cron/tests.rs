@@ -3,7 +3,10 @@ use super::*;
 #[test]
 fn disabled_machine_has_no_desired_crons() {
     let cfg = Config {
-        machine_profile: None,
+        machine_profile: Some(bn_core::resolver::MachineProfile {
+            cron: false,
+            ..Default::default()
+        }),
         ..Config::default()
     };
 

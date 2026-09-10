@@ -39,24 +39,9 @@ sect() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
 fresh() {   # a clean sandbox + repo
   rm -rf "$SB"; mkdir -p "$SB/home/config" "$SB/notes" "$SB/state" "$SB/repo" "$SB/marks" "$SB/run"
-  # A pinned hostname and its machine profile, and both halves matter.
-  #
-  # Without a profile bn concludes the queue is disabled *on this host* — and then reconciles,
-  # which means removing the real machine's launchd service. BN_HOME, BN_STATE_DIR and
-  # BN_NOTES_DIR isolate bn's files; launchd is per-uid and isolates nothing. So a suite that
-  # believed it was sandboxed deleted the developer's dispatcher on every run.
-  #
-  # Pinned rather than auto-detected so the fixture is the same on every machine: the real
-  # hostname would have to be in the profile too, and the suite would pass or fail depending on
-  # what the laptop was called.
+  # The queue and cron are on by default, so the fixture only says what differs here. The machine
+  # name is pinned (BN_HOSTNAME below) so the `only_on` entries mean the same on every laptop.
   cat > "$SB/home/config/config.toml" <<EOF
-hostname = "bn-shakedown"
-[personal]
-notes_root = "$SB/notes"
-[machines.bn-shakedown]
-repos = ["*"]
-queue = true
-cron = true
 [queue]
 capture = ["cron"]
 coding = 2
@@ -73,10 +58,11 @@ EOF
   ( cd "$SB/repo" && git init -q . && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init )
   cp "$SRC" "$SB/run/bn"
   # BN_NOTES_DIR belongs in the isolation set: `bn queue add` mints a task per entry, and tasks
-  # live under the *notes* root, not the state dir. This sandbox wrote `root = ...`, which bn does
-  # not read (the key is `[personal].notes_root`), so the backlog was isolated and every shakedown
-  # fixture — `bulk item N`, `express-N`, `racy-N` — was appended to the real `tasks.txt`.
-  export BN_HOME="$SB/home" BN_STATE_DIR="$SB/state" BN_NOTES_DIR="$SB/notes" BN_NO_AUTO_TICK=1
+  # live under the *notes* root, not the state dir. Without it every shakedown fixture — `bulk item
+  # N`, `express-N`, `racy-N` — is appended to the real `tasks.txt`. BN_CONFIG makes the fixture
+  # file the whole config, so later appends to it take effect.
+  export BN_HOME="$SB/home" BN_STATE_DIR="$SB/state" BN_NOTES_DIR="$SB/notes" BN_NO_AUTO_TICK=1 \
+    BN_CONFIG="$SB/home/config/config.toml" BN_HOSTNAME="bn-shakedown"
   BN="$SB/run/bn"
   cd "$SB/repo" || exit 1
 }
@@ -245,7 +231,6 @@ is "the real launchd plist is untouched" "$(md5 -q "$PLIST" 2>/dev/null || echo 
 is "bn wrote no systemd unit for the queue" "$(queue_units)" "$UNITS_BEFORE"
 
 RSB=$(mktemp -d); mkdir -p "$RSB/Library/LaunchAgents" "$RSB/home/config" "$RSB/notes"
-printf '[personal]\nnotes_root = "%s/notes"\n' "$RSB" > "$RSB/home/config/config.toml"
 HOME="$RSB" BN_HOME="$RSB/home" BN_NOTES_DIR="$RSB/notes" BN_NO_AUTO_TICK=1 "$SB/run/bn" status >/dev/null 2>&1
 is "and no launchd plist in a fresh HOME" "$(ls "$RSB/Library/LaunchAgents" | wc -l | tr -d ' ')" "0"
 rm -rf "$RSB"

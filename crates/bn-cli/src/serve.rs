@@ -241,7 +241,7 @@ fn status(cfg: &Config, port: Option<u16>, json: bool) {
 /// Two stats decide it now. There is nothing to uninstall unless the unit file or the plist is on
 /// disk, and when one is, the real work runs exactly once and the next invocation is free again.
 pub(crate) fn reconcile(cfg: &Config) {
-    if cfg.web_enabled_here() || !cfg.destructive_reconcile_allowed() {
+    if cfg.web_enabled_here() {
         return;
     }
     if crate::launchd::web_installed() {

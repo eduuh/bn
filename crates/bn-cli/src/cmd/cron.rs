@@ -218,6 +218,10 @@ pub(crate) use schedule::schedule_text;
 mod drift;
 pub(crate) use drift::{cron_drift, print_cron_disabled_notice};
 use drift::{print_cron_health, push_cron_disabled_warning};
+#[path = "cron/reconcile.rs"]
+mod reconcile;
+pub(crate) use reconcile::maybe_reconcile_timers;
+use reconcile::registered_bn_path;
 
 pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json: bool) {
     if machine_scope::emit_disabled_dashboard(cfg, as_json) {
@@ -596,18 +600,7 @@ pub(crate) fn emit_cron_register(
             .unwrap_or_else(|error| fail(&format!("bn cron register: {error}")));
     }
 
-    // Prefer the bindir-independent stable anchor (`<config_dir>/bn`, which install.sh keeps
-    // pointed at the live binary) so the systemd units survive a bindir move; fall back to the
-    // resolved bin dir. Both are absolute, as ExecStart requires.
-    let anchor = resolver::config_dir().join("bn");
-    let bn_path = if anchor.exists() {
-        anchor.to_string_lossy().into_owned()
-    } else {
-        resolver::bin_dir()
-            .join("bn")
-            .to_string_lossy()
-            .into_owned()
-    };
+    let bn_path = registered_bn_path();
     let want = desired_crons(cfg, ctx);
 
     // Backend: systemd on Linux; launchd user agents on macOS. `have` and the on-disk artifact
@@ -881,6 +874,9 @@ pub(crate) fn emit_cron_register(
     }
     for e in &errors {
         eprintln!("error: {e}");
+    }
+    if !dry_run && errors.is_empty() {
+        reconcile::record_registered(cfg, ctx);
     }
 }
 

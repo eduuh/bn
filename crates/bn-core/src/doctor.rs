@@ -457,7 +457,7 @@ pub fn note_findings(cfg: &Config, today: &str, stale_days: i64) -> Vec<Finding>
 /// missed slot): this is the *whole* staff going quiet across machines. Silent when the staff has
 /// never run (nothing to be stale about) or ran recently enough; at most one finding.
 /// A cross-machine notes leak (the #leak guard). Fires only on a **work-classified** machine
-/// (one with `[work].work_repos` set or `[work].only` on) whose `personal_root` is a *separate*
+/// (one with `[work].work_repos` set, or holding only the work notes tree) whose `personal_root` is a *separate*
 /// repo from `work_root` and physically carries branch-note subtrees for machines other than this
 /// one. That is exactly the state where the whole-person views ([`Config::metrics_logs_all_machines`],
 /// [`Config::each_notes_root`]) pull another box's sessions/notes onto this work laptop. On a purely

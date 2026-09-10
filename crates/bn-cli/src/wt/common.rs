@@ -242,17 +242,36 @@ pub(crate) fn fzf_select_multi(items: &[String], header: &str) -> Vec<String> {
 /// context would otherwise miss the repo on every case-sensitive filesystem.
 pub(crate) fn bare_for(cfg: &Config, repo: &str) -> Option<PathBuf> {
     let (bare_dir, _) = layout(cfg);
-    let bare = bare_dir.join(format!("{repo}.git"));
-    if bare.is_dir() {
-        return Some(bare);
-    }
-    let want = format!("{repo}.git").to_lowercase();
-    std::fs::read_dir(&bare_dir).ok()?.find_map(|entry| {
-        let entry = entry.ok()?;
+    let want = format!("{repo}.git");
+    let want_lower = want.to_lowercase();
+
+    // Always resolve through the directory listing, never by probing `bare_dir/<repo>.git`
+    // directly. On a case-insensitive filesystem (macOS APFS is one) that probe SUCCEEDS for
+    // `bigmono.git` when only `BigMono.git` exists, and hands back the path as spelled rather than the
+    // one on disk — so the same call returned a different string on macOS than on Linux. Git
+    // does not care on macOS, but anything comparing or logging the path does, and it made this
+    // function's result depend on the filesystem underneath it.
+    //
+    // An exact match always wins; a case-insensitive one is the fallback, which is the point of
+    // the function: a queued job's repo name is lowercased by the target resolver while the
+    // clone keeps its case, and both have to find the same bare repo or a pool warm for `BigMono`
+    // reports "nothing to warm" and exits 0.
+    let mut insensitive = None;
+    for entry in std::fs::read_dir(&bare_dir).ok()?.flatten() {
         let path = entry.path();
-        (entry.file_name().to_string_lossy().to_lowercase() == want && path.is_dir())
-            .then_some(path)
-    })
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == want {
+            return Some(path);
+        }
+        if insensitive.is_none() && name.to_lowercase() == want_lower {
+            insensitive = Some(path);
+        }
+    }
+    insensitive
 }
 
 // --- small helpers ---------------------------------------------------------

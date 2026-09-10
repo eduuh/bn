@@ -109,9 +109,19 @@ pub(crate) fn sync_repo(bare: &Path, worktree_dir: &Path, repo: &str) -> bool {
     let target = remote_tip(&bare_s, &default);
     let main = crate::main_slot::main_worktree(worktree_dir, repo);
     let main_s = main.to_string_lossy().to_string();
+    let live_main = crate::wt_pool::is_live_slot(&main);
+    let head = if live_main {
+        head_branch(&main_s)
+    } else {
+        None
+    };
+    let tracked_dirty = if live_main { dirty(&main_s) } else { 0 };
 
-    let ok = match plan(main.is_dir(), head_branch(&main_s).as_deref(), dirty(&main_s), &default) {
-        MainSync::Create => create_main(&bare_s, &main_s, repo, &default),
+    let ok = match plan(live_main, head.as_deref(), tracked_dirty, &default) {
+        MainSync::Create => {
+            create_main(&bare_s, worktree_dir, &main, repo, &default)
+                && advance(&main_s, &target, repo, "main worktree")
+        }
         MainSync::Skip(head) => {
             native_job_line(
                 &format!("main-sync: {repo}: main worktree is on {head}, not {default} — left alone"),
@@ -243,11 +253,18 @@ fn free_legacy_rescue_refs(dir_s: &str) {
 }
 
 /// Cut the repo's missing main worktree at `default`.
-fn create_main(bare_s: &str, main_s: &str, repo: &str, default: &str) -> bool {
-    if let Some(parent) = Path::new(main_s).parent() {
+fn create_main(bare_s: &str, worktree_dir: &Path, main: &Path, repo: &str, default: &str) -> bool {
+    if let Some(parent) = main.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if wt::create_worktree(bare_s, default, main_s, false) {
+    if main.exists() && !crate::wt_pool::is_live_slot(main) {
+        crate::wt_pool::force_remove_worktree(bare_s, main);
+    }
+    if move_legacy_main_worktree(bare_s, worktree_dir, main, repo, default) {
+        return true;
+    }
+    let main_s = main.to_string_lossy().to_string();
+    if wt::create_worktree(bare_s, default, &main_s, false) {
         native_job_line(&format!("main-sync: {repo}: created main worktree"), false);
         true
     } else {
@@ -255,6 +272,43 @@ fn create_main(bare_s: &str, main_s: &str, repo: &str, default: &str) -> bool {
             &format!("main-sync: {repo}: could not create main worktree"),
             true,
         );
+        false
+    }
+}
+
+/// Move a clean legacy `<repo>/<default>` main worktree into the canonical `<repo>/main` path.
+///
+/// The directory name is always `main`, whatever branch it holds; older repos can still have a
+/// default-branch-named worktree (`…/master`). Creating `…/main` beside it fails when that older
+/// checkout still has the default branch checked out, because git will not check one branch out
+/// twice. A clean legacy checkout is the same main worktree under the old name, so move it
+/// in-place instead of trying to create a second copy.
+fn move_legacy_main_worktree(
+    bare_s: &str,
+    worktree_dir: &Path,
+    main: &Path,
+    repo: &str,
+    default: &str,
+) -> bool {
+    if default.eq_ignore_ascii_case("main") {
+        return false;
+    }
+    let legacy = worktree_dir.join(repo).join(default);
+    if legacy == main || !crate::wt_pool::is_live_slot(&legacy) {
+        return false;
+    }
+    let legacy_s = legacy.to_string_lossy().to_string();
+    if head_branch(&legacy_s).as_deref() != Some(default) || dirty(&legacy_s) > 0 {
+        return false;
+    }
+    let main_s = main.to_string_lossy().to_string();
+    if crate::git::git_ok(&["--git-dir", bare_s, "worktree", "move", &legacy_s, &main_s]) {
+        native_job_line(
+            &format!("main-sync: {repo}: moved legacy {default} worktree to main"),
+            false,
+        );
+        true
+    } else {
         false
     }
 }
@@ -396,6 +450,8 @@ fn dirty(dir_s: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
+    use std::process::{Command, Stdio};
 
     #[test]
     fn a_missing_main_worktree_is_created() {
@@ -464,5 +520,104 @@ mod tests {
             "zshrc",
             "documents the bug: a pre-trimmed porcelain line parses one byte late"
         );
+    }
+
+    fn git_bin() -> &'static str {
+        static BIN: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+        BIN.get_or_init(|| {
+            [
+                "/usr/bin/git",
+                "/bin/git",
+                "/usr/local/bin/git",
+                "/opt/homebrew/bin/git",
+            ]
+            .into_iter()
+            .find(|path| Path::new(path).exists())
+            .unwrap_or("git")
+        })
+    }
+
+    fn git(args: &[&str]) -> bool {
+        Command::new(git_bin())
+            .args(args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    fn git_capture(args: &[&str]) -> String {
+        let out = Command::new(git_bin()).args(args).output().unwrap();
+        assert!(out.status.success(), "{args:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn mk_bare(default: &str) -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let bare = tmp.path().join("bare").join("demo.git");
+        let src_s = src.to_string_lossy().to_string();
+        let bare_s = bare.to_string_lossy().to_string();
+        std::fs::create_dir_all(&src).unwrap();
+        assert!(git(&["init", "-q", &src_s]));
+        assert!(git(&["-C", &src_s, "config", "user.email", "t@t"]));
+        assert!(git(&["-C", &src_s, "config", "user.name", "t"]));
+        std::fs::write(src.join("a.txt"), "hi\n").unwrap();
+        assert!(git(&["-C", &src_s, "add", "-A"]));
+        assert!(git(&["-C", &src_s, "commit", "-qm", "init"]));
+        assert!(git(&["-C", &src_s, "branch", "-M", default]));
+        std::fs::create_dir_all(bare.parent().unwrap()).unwrap();
+        assert!(git(&["clone", "-q", "--bare", &src_s, &bare_s]));
+        (tmp, bare)
+    }
+
+    #[test]
+    fn sync_repo_moves_a_clean_legacy_default_branch_worktree_to_main() {
+        let _env = bn_core::test_support::env_lock();
+        let (tmp, bare) = mk_bare("master");
+        let bare_s = bare.to_string_lossy().to_string();
+        let worktree_dir = tmp.path().join("worktree");
+        let repo = "demo";
+        let legacy = worktree_dir.join(repo).join("master");
+        let legacy_s = legacy.to_string_lossy().to_string();
+        let main = crate::main_slot::main_worktree(&worktree_dir, repo);
+        let main_s = main.to_string_lossy().to_string();
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        assert!(git(&[
+            "-c",
+            "safe.bareRepository=all",
+            "--git-dir",
+            &bare_s,
+            "worktree",
+            "add",
+            &legacy_s,
+            "master"
+        ]));
+
+        assert!(sync_repo(&bare, &worktree_dir, repo));
+        assert!(crate::wt_pool::is_live_slot(&main));
+        assert!(!legacy.exists());
+        assert_eq!(git_capture(&["-C", &main_s, "branch", "--show-current"]), "master");
+        let listing = git_capture(&["--git-dir", &bare_s, "worktree", "list", "--porcelain"]);
+        assert!(listing.contains(&main_s), "{listing}");
+        assert!(!listing.contains(&legacy_s), "{listing}");
+    }
+
+    #[test]
+    fn sync_repo_recreates_a_broken_main_worktree() {
+        let _env = bn_core::test_support::env_lock();
+        let (tmp, bare) = mk_bare("main");
+        let worktree_dir = tmp.path().join("worktree");
+        let repo = "demo";
+        let main = crate::main_slot::main_worktree(&worktree_dir, repo);
+        let main_s = main.to_string_lossy().to_string();
+        std::fs::create_dir_all(&main).unwrap();
+        std::fs::write(main.join("stale.txt"), "broken\n").unwrap();
+
+        assert!(sync_repo(&bare, &worktree_dir, repo));
+        assert!(crate::wt_pool::is_live_slot(&main));
+        assert_eq!(git_capture(&["-C", &main_s, "branch", "--show-current"]), "main");
+        assert!(main.join("a.txt").exists());
     }
 }

@@ -1,12 +1,12 @@
 //! `self-update` — keep the installed `bn` in step with what is published, without ever going
 //! backwards.
 //!
-//! Split out of `jobs.rs` (at the 1000-line ratchet) when the guard below was added. The job
-//! itself is unchanged in shape: fast-forward `bn/main`, and when HEAD has moved past the last
-//! install, delegate to whatever installs bn on this machine. That is the `publish-prod` job
-//! when one resolves for bn/main (a script that compiles the checkout into the prod build dir
-//! and re-links every anchor, so nothing ends up pointing at a checkout), else `install.sh
-//! --core`, which downloads main's published release binaries and anchors at the checkout.
+//! Split out of `jobs.rs` (at the 1000-line ratchet) when the guard below was added. The shape:
+//! fast-forward `bn/main`, and when HEAD has moved past the last install, run the repo's own
+//! `install.sh --core`, which downloads main's published release binaries and anchors them at the
+//! checkout. That is the only install path. It used to prefer a machine-local `publish-prod` job
+//! that compiled the checkout instead; strict release retired it, because no machine should need
+//! a working cargo to run bn.
 //!
 //! The guard exists because "main moved" and "there is something newer to install" stopped being
 //! the same statement. install.sh installs the *published* release, and the release is built by a
@@ -17,7 +17,7 @@
 //! release what it is before installing it, and refuses to replace an installed bn with one that
 //! is the same or older.
 use crate::*;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Locate bn's `bn/main` worktree in `git worktree list --porcelain` output — the first
 /// `worktree <path>` line whose path ends in `/bn/main`. Pure so it's unit-testable.
@@ -45,14 +45,18 @@ fn is_executable_file(p: &std::path::Path) -> bool {
     }
 }
 
-/// Resolve bn's `bn/main` worktree from the install anchor (`~/.config/bn/repo`, a symlink to the
-/// checkout `install.sh` ran from), falling back to `$BN_MAIN_WORKTREE` and then the worktree-dir
-/// convention. Used by `self-update` so the committed `install.sh` is resolved regardless of the
-/// cron's arbitrary cwd, and it stays robust even when bn was installed from a feature worktree.
+/// Resolve bn's `bn/main` worktree: the conventional `<worktree_dir>/bn/main`, else the main
+/// worktree of the checkout the `<config_dir>/repo` install anchor points at, else
+/// `$BN_MAIN_WORKTREE`. Used by `self-update` so the committed `install.sh` is resolved regardless
+/// of the cron's arbitrary cwd, and it stays robust even when bn was installed from a feature
+/// worktree.
 fn resolve_bn_main_worktree() -> String {
-    let home = wt::home_str();
-    let anchor = std::fs::canonicalize(format!("{home}/.config/bn/repo")).ok();
-    anchor
+    let conventional = bn_core::resolver::worktree_dir().join("bn").join("main");
+    if conventional.is_dir() {
+        return conventional.to_string_lossy().into_owned();
+    }
+    std::fs::canonicalize(bn_core::resolver::config_dir().join("repo"))
+        .ok()
         .and_then(|a| {
             let a = a.to_string_lossy().into_owned();
             crate::git::git_capture(&["-C", &a, "worktree", "list", "--porcelain"], None, true)
@@ -63,57 +67,25 @@ fn resolve_bn_main_worktree() -> String {
                 .ok()
                 .filter(|s| !s.is_empty())
         })
-        .unwrap_or_else(|| format!("{home}/projects/worktree/bn/main"))
-}
-
-/// How the update is applied once main has moved.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Updater {
-    /// A `publish-prod` job script resolved for bn/main (scope label, path). It compiles the
-    /// main checkout into the prod build dir and re-links the anchors there, so the release
-    /// guard does not apply: it always builds HEAD, never something older.
-    Job(String, PathBuf),
-    /// The repo's own `install.sh --core`: downloads main's published release.
-    Installer(PathBuf),
-}
-
-/// Prefer the machine's `publish-prod` job over `install.sh` when one resolves. Pure so the
-/// choice is unit-testable; the lookup itself happens in the caller.
-fn updater(job: Option<(String, PathBuf)>, main_wt: &Path) -> Updater {
-    match job {
-        Some((scope, path)) => Updater::Job(scope, path),
-        None => Updater::Installer(main_wt.join("install.sh")),
-    }
+        .unwrap_or_else(|| conventional.to_string_lossy().into_owned())
 }
 
 /// `self-update` — keep the installed `bn` in lock-step with `bn/main` whenever main advances.
 /// Cheap to run often: it fast-forwards main and only re-installs when HEAD actually moved past
 /// the last install (tracked in a stamp file).
 ///
-/// The install step is delegated, never reimplemented here. When a `publish-prod` job resolves
-/// for bn/main (`jobs/bn/publish-prod.sh` in the notes tree, or a repo/global tier), it runs
-/// from the main worktree exactly as `bn build publish-prod` would: it compiles the checkout
-/// into the prod build dir and re-points every anchor (`~/.bn/config/{bn,repo,jobs,agents,
-/// crons.toml}`, `~/.tmux.conf`) at that self-contained build. Otherwise the repo's own
-/// `install.sh --core` remains the single source of truth: it downloads main's published release
-/// binaries and wires the anchors at the checkout, so a box that has never seen cargo still
-/// updates. Native port of `jobs/self-update.sh`: the git fan-out and stamp bookkeeping run
-/// in-process; only the final install+wire step is shell. `--core` skips the tmux layer, whose
-/// helpers are symlinks into the worktree and so already track main without re-linking.
-pub(crate) fn job_self_update(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
-    let home = wt::home_str();
-
-    let bindir = std::env::var_os("BN_BIN_DIR")
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(format!("{home}/.bin")));
-    // Stamp lives at the legacy `~/.config/bn/.built-at` (where install.sh anchors bn), matching
-    // the shell job so a first native run doesn't force a spurious rebuild.
-    let cfg_base = std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(format!("{home}/.config")));
-    let stamp = cfg_base.join("bn").join(".built-at");
+/// The install step is delegated, never reimplemented here: the repo's own `install.sh --core`
+/// downloads main's published release binaries and wires the anchors at the checkout, so a box
+/// that has never seen cargo still updates. Native port of `jobs/self-update.sh`: the git fan-out
+/// and stamp bookkeeping run in-process; only the final install+wire step is shell. `--core` skips
+/// the tmux layer, whose helpers are symlinks into the worktree and so already track main without
+/// re-linking.
+pub(crate) fn job_self_update(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
+    // The same anchors every other bn path resolves: `~/.bn/bin` for the binary and the config dir
+    // for the install stamp. This used to hardcode `~/.bin` and `~/.config/bn`, the pre-`~/.bn`
+    // layout, and only kept working where install.sh had left a compatibility symlink behind.
+    let bindir = bn_core::resolver::bin_dir();
+    let stamp = bn_core::resolver::config_dir().join(".built-at");
 
     // Resolve bn's main worktree — robust even when bn was installed
     // from a feature worktree.
@@ -154,39 +126,27 @@ pub(crate) fn job_self_update(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
         return 0;
     }
 
-    let bn_main = Resolved {
-        repo: "bn".to_string(),
-        branch: "main".to_string(),
-    };
-    let job = resolver::job_script(cfg, Some(&bn_main), "publish-prod")
-        .map(|(scope, path)| (scope.label().to_string(), path));
-    let (label, mut cmd) = match updater(job, Path::new(&main_wt)) {
-        Updater::Job(scope, script) => {
-            // Same invocation as `bn build publish-prod` from the main worktree: /bin/sh, never
-            // the shebang, and the cron runner's PATH so cargo/npm/git resolve without a login
-            // shell. No release guard: the job compiles HEAD, so it cannot install something older.
-            let mut c = std::process::Command::new("/bin/sh");
-            c.arg(&script)
-                .current_dir(&main_wt)
-                .env("PATH", crate::cmd::cron::job_path());
-            (format!("publish-prod ({scope}) {}", script.display()), c)
-        }
-        Updater::Installer(installer) => {
-            // install.sh reinstalls the *published* release, which can lag main: refuse to put an
-            // older build over the installed one. It is not a git/gh/tmux binary, so spawning it
-            // directly is fine (the subprocess guard only covers those).
-            if let Some(why) = release_not_newer(&main_wt, &bindir.join("bn")) {
-                native_job_line(
-                    &format!("self-update: {why} — leaving the installed bn alone"),
-                    false,
-                );
-                return 0;
-            }
-            let mut c = std::process::Command::new(&installer);
-            c.arg("--core").current_dir(&main_wt);
-            (format!("{} --core", installer.display()), c)
-        }
-    };
+    // One way to install bn, on every machine: download what CI published. This used to prefer a
+    // machine-local `publish-prod` job that compiled the checkout, which made the installed binary
+    // depend on whether that box had a working cargo — and meant a laptop was compiling bn to run
+    // it. Strict release removed the reason for it: main is published as a versioned release only
+    // after the full CI gate passes on that commit, so there is nothing a local build can offer
+    // that the release does not, except a way to drift.
+    let installer = Path::new(&main_wt).join("install.sh");
+
+    // install.sh reinstalls the *published* release, which can lag main by however long CI takes:
+    // refuse to put an older build over the installed one. It is not a git/gh/tmux binary, so
+    // spawning it directly is fine (the subprocess guard only covers those).
+    if let Some(why) = release_not_newer(&main_wt, &bindir.join("bn")) {
+        native_job_line(
+            &format!("self-update: {why} — leaving the installed bn alone"),
+            false,
+        );
+        return 0;
+    }
+    let mut cmd = std::process::Command::new(&installer);
+    cmd.arg("--core").current_dir(&main_wt);
+    let label = format!("{} --core", installer.display());
     // Capture rather than inherit: a cron has no terminal, so inherited output goes nowhere and a
     // failed build leaves `bn cron`/`bn doctor` showing a bare "FAIL" with no cause. Capturing lets
     // the compiler error ride into the run's `output_tail`, which is the only durable record of why
@@ -287,42 +247,47 @@ fn parse_version_sha(version: &str) -> Option<String> {
     (sha.len() >= 7).then_some(sha)
 }
 
-/// The commit the latest published release was built from, read off its name — the rolling
-/// release is named `nightly (<sha>)`. `None` when gh cannot answer (offline, unauthenticated, a
-/// release named some other way), which leaves the old rule in charge.
+/// The commit the latest published release was built from.
+///
+/// This used to be scraped out of the release *name*, back when the rolling release was titled
+/// `nightly (<sha>)`. Releases are versioned now (`v0.5.1`), so there is no sha in the name to
+/// read and the guard would have quietly gone dead — `parse_release_sha` returning `None` on
+/// every release means "the history cannot say", which installs unconditionally. Ask GitHub for
+/// the commit instead of inferring it from a title: `targetCommitish` is what the release
+/// workflow pinned with `gh release create --target <sha>`.
+///
+/// `None` when gh cannot answer (offline, unauthenticated, or a release pinned to a branch name
+/// rather than a commit), which leaves the old rule in charge.
 fn published_release_sha() -> Option<String> {
     let slug = std::env::var("BN_REPO_SLUG").unwrap_or_else(|_| "eduuh/bn".to_string());
-    let name = crate::gh::gh_capture_bounded(
-        &["release", "view", "-R", &slug, "--json", "name", "-q", ".name"],
+    let commitish = crate::gh::gh_capture_bounded(
+        &[
+            "release",
+            "view",
+            "-R",
+            &slug,
+            "--json",
+            "targetCommitish",
+            "-q",
+            ".targetCommitish",
+        ],
         std::time::Duration::from_secs(20),
     )?;
-    parse_release_sha(&name)
+    parse_release_sha(&commitish)
 }
 
-/// `nightly (8ba6942)` → `8ba6942`.
-fn parse_release_sha(name: &str) -> Option<String> {
-    let inner = name.rsplit('(').next()?.split(')').next()?.trim();
-    let ok = inner.len() >= 7 && inner.chars().all(|c| c.is_ascii_hexdigit());
-    ok.then(|| inner.to_string())
+/// A release's `targetCommitish` is only usable here when it is an actual commit. GitHub returns
+/// the branch name (`main`) for a release created without `--target`, and a branch tip is not the
+/// commit the assets were built from — comparing against it would be worse than not comparing.
+fn parse_release_sha(commitish: &str) -> Option<String> {
+    let sha = commitish.trim();
+    let ok = sha.len() >= 7 && sha.chars().all(|c| c.is_ascii_hexdigit());
+    ok.then(|| sha.to_string())
 }
 
 #[cfg(test)]
 mod guard_tests {
     use super::*;
-
-    #[test]
-    fn publish_prod_job_wins_over_install_sh() {
-        let main = Path::new("/wt/bn/main");
-        let job = Some(("repo".to_string(), PathBuf::from("/notes/jobs/bn/publish-prod.sh")));
-        assert_eq!(
-            updater(job, main),
-            Updater::Job("repo".to_string(), PathBuf::from("/notes/jobs/bn/publish-prod.sh"))
-        );
-        assert_eq!(
-            updater(None, main),
-            Updater::Installer(PathBuf::from("/wt/bn/main/install.sh"))
-        );
-    }
 
     #[test]
     fn version_and_release_names_yield_their_shas() {
@@ -331,7 +296,9 @@ mod guard_tests {
             Some("8ba69427374f")
         );
         assert_eq!(parse_version_sha("bn 0.5.0"), None);
-        assert_eq!(parse_release_sha("nightly (8ba6942)").as_deref(), Some("8ba6942"));
+        assert_eq!(parse_release_sha("8ba69427374f").as_deref(), Some("8ba69427374f"));
+        // A branch name, not a commit: refuse it rather than compare against a moving tip.
+        assert_eq!(parse_release_sha("main"), None);
         assert_eq!(parse_release_sha("v0.4.1"), None);
     }
 

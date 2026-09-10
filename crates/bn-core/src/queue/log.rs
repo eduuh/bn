@@ -17,13 +17,18 @@ use std::collections::HashMap;
 ///
 /// One table, so the filter, the renderer and the UI's legend cannot disagree about what belongs to
 /// the queue.
-pub const KINDS: [(&str, &str); 6] = [
+pub const KINDS: [(&str, &str); 8] = [
     ("queue_dispatch", "dispatch"),
     ("queue_tick", "tick"),
     ("queue_tick_skipped", "skipped"),
     ("queue_finish", "finish"),
     ("queue_expired", "expired"),
     ("queue_lease_reclaimed", "reclaimed"),
+    // The machine-wide switch. Carried here because "what happened while I was away" is exactly
+    // the question a queue that stopped filing work has to be able to answer — a log that shows
+    // nothing dispatched for four hours, and cannot say the queue was off, reads as a fault.
+    (crate::queue::off::OFF_EVENT, "off"),
+    (crate::queue::off::ON_EVENT, "on"),
 ];
 
 /// The short name for a raw event kind, or `None` if it is not the queue's.
@@ -197,6 +202,24 @@ fn row(e: &Event, kind: &'static str) -> Row {
             }
         }
         "queue_expired" => ("dropped — its window passed".to_string(), Tone::Bad),
+        crate::queue::off::OFF_EVENT => {
+            let why = match s("reason").is_empty() {
+                true => String::new(),
+                false => format!(" — {}", s("reason")),
+            };
+            let until = match n("until") {
+                Some(until) => format!(", back on at {}", crate::util::clock_hm(until)),
+                None => String::new(),
+            };
+            (
+                format!("queue switched OFF{why}{until} — triggers run immediately"),
+                Tone::Info,
+            )
+        }
+        crate::queue::off::ON_EVENT => (
+            "queue switched back on — triggers file work again".to_string(),
+            Tone::Info,
+        ),
         "queue_lease_reclaimed" => (
             "lease reclaimed — its executor was gone".to_string(),
             Tone::Bad,

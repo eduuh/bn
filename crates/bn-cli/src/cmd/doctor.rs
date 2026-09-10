@@ -137,7 +137,7 @@ pub(crate) fn emit_doctor(cfg: &Config, stale_days: i64, brief: bool, as_json: b
         println!("  {}", drift.join(", "));
     }
     // Pointing at `bn cron register` is only useful advice when register would do something. On a
-    // machine with no `[machines.<name>]` profile it would not, so name that instead.
+    // machine whose `[machine]` table says `cron = false` it would not, so name that instead.
     print_cron_disabled_notice(cfg, None);
     if !lease_violations.is_empty() {
         println!(
@@ -278,7 +278,7 @@ pub(crate) fn emit_doctor(cfg: &Config, stale_days: i64, brief: bool, as_json: b
                 );
                 println!("  {}", style::meta(&detail));
                 let fix = format!(
-                    "fix: set [personal].notes_root to your work notes repo ({}) or remove the clone",
+                    "fix: remove the personal notes clone from this work machine, or point BN_NOTES_DIR at the work notes repo ({})",
                     l.work_root
                 );
                 println!("  {}", style::meta(&fix));

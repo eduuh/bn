@@ -1,6 +1,10 @@
 //! `bn agent` — fleet supervise/recover/checkin/send/digest/handoff/switch.
 use crate::*;
 
+use super::agent_hooks::{
+    install_copilot_controller_hook, install_copilot_tmux_agent_hook, with_claude_launch_hooks,
+};
+
 mod dialog;
 mod instruct;
 mod kill;
@@ -977,103 +981,6 @@ fn controller_launch_env(controller_id: Option<&str>, worker_session_id: Option<
         && worker_session_id.is_none_or(|value| value.trim().is_empty())
 }
 
-fn controller_turn_end_hook_command() -> String {
-    let executable = std::env::current_exe()
-        .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "bn".to_string());
-    #[cfg(windows)]
-    {
-        format!(
-            "& '{}' control turn-end-guard",
-            executable.replace('\'', "''")
-        )
-    }
-    #[cfg(not(windows))]
-    {
-        format!(
-            "{} control turn-end-guard",
-            wt::shell_single_quote(&executable)
-        )
-    }
-}
-
-fn controller_hook_entry() -> serde_json::Value {
-    serde_json::json!({
-        "type": "command",
-        "command": controller_turn_end_hook_command(),
-        "timeout": 15,
-        "timeoutSec": 15,
-    })
-}
-
-fn copilot_controller_hook_config() -> serde_json::Value {
-    serde_json::json!({
-        "version": 1,
-        "hooks": {
-            "agentStop": [controller_hook_entry()],
-        },
-    })
-}
-
-fn claude_controller_settings() -> String {
-    serde_json::json!({
-        "hooks": {
-            "Stop": [{
-                "hooks": [controller_hook_entry()],
-            }],
-        },
-    })
-    .to_string()
-}
-
-fn with_claude_controller_hook(mut args: Vec<String>, enabled: bool) -> Vec<String> {
-    if enabled {
-        args.splice(
-            0..0,
-            ["--settings".to_string(), claude_controller_settings()],
-        );
-    }
-    args
-}
-
-fn copilot_hooks_dir() -> std::io::Result<std::path::PathBuf> {
-    if let Some(home) = std::env::var_os("COPILOT_HOME") {
-        return Ok(std::path::PathBuf::from(home).join("hooks"));
-    }
-    let home = std::env::var_os("HOME")
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "HOME is not set"))?;
-    Ok(std::path::PathBuf::from(home)
-        .join(".copilot")
-        .join("hooks"))
-}
-
-fn install_copilot_controller_hook_at(hooks_dir: &std::path::Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(hooks_dir)?;
-    let path = hooks_dir.join("bn-controller.json");
-    let body = serde_json::to_vec_pretty(&copilot_controller_hook_config())
-        .map_err(std::io::Error::other)?;
-    if std::fs::read(&path).ok().as_deref() == Some(body.as_slice()) {
-        return Ok(());
-    }
-    let temp_path = hooks_dir.join(format!(".bn-controller.{}.tmp", gen_uuid()));
-    let mut temp = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp_path)?;
-    if let Err(error) = std::io::Write::write_all(&mut temp, &body)
-        .and_then(|()| temp.sync_all())
-        .and_then(|()| std::fs::rename(&temp_path, &path))
-    {
-        let _ = std::fs::remove_file(&temp_path);
-        return Err(error);
-    }
-    Ok(())
-}
-
-fn install_copilot_controller_hook() -> std::io::Result<()> {
-    install_copilot_controller_hook_at(&copilot_hooks_dir()?)
-}
-
 /// The Claude project-transcript dirname for `cwd`: every non-alphanumeric byte becomes `-`
 /// (matching the zsh `sed 's/[^a-zA-Z0-9]/-/g'`). Transcripts live under
 /// `~/.claude/projects/<this>/`.
@@ -1601,9 +1508,10 @@ pub(crate) fn emit_agent_launch(
 
     match harness {
         Harness::Claude => {
-            let args = with_claude_controller_hook(
+            let args = with_claude_launch_hooks(
                 super::agent_scope::build_claude_args(&plan, has_transcripts),
                 controller_launch(),
+                std::env::var_os("TMUX").is_some(),
             );
             exec_harness(harness.bin(), &args)
         }
@@ -1614,6 +1522,12 @@ pub(crate) fn emit_agent_launch(
                         "bn agent launch: install controller turn-end hook: {error}"
                     ))
                 });
+            }
+            // The window badge follows the agent's turns with no hooks wired by hand. Copilot reads
+            // user hooks from one global directory, so this file also fires outside tmux, where
+            // `bn tmux-agent` is a no-op.
+            if std::env::var_os("TMUX").is_some() {
+                let _ = install_copilot_tmux_agent_hook();
             }
             // Never block a fresh launch on the folder-trust dialog — pre-trust this worktree
             // (#658). Best-effort; reuses `bn trust-folder`'s config writer. Ensure copilot's

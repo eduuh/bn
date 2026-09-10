@@ -189,7 +189,7 @@ fn row_for(f: &Finding) -> Row {
                 Warn,
                 "\u{2022} personal notes leak".to_string(),
                 format!(
-                    "{} foreign machine(s) under {} — repoint [personal].notes_root",
+                    "{} foreign machine(s) under {} — remove the personal notes clone",
                     l.foreign_machines.len(),
                     l.personal_root
                 ),

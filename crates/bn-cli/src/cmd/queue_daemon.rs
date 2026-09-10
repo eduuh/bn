@@ -323,8 +323,13 @@ impl Supervision {
     }
 }
 
+/// One fingerprint over every config layer — the newest modified time and the total length — so an
+/// edit to the shared file or to this machine's file reads as a change.
 fn config_stamp() -> Option<Stamp> {
-    stamp(&bn_core::resolver::config_file_path())
+    bn_core::resolver::config_layer_paths()
+        .iter()
+        .filter_map(|path| stamp(path))
+        .reduce(|a, b| (a.0.max(b.0), a.1 + b.1))
 }
 
 /// The running binary, resolved through any symlink so replacing the target of `~/.bn/config/bn`

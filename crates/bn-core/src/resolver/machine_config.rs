@@ -1,4 +1,8 @@
-//! Machine registration and repository authorization.
+//! What this machine may do: repository authorization and the resident runtimes.
+//!
+//! Everything is allowed by default. A `[machine]` table — usually in the machine's own
+//! `<notes_root>/<machine>/config.toml` — only narrows it, so a machine nobody configured still
+//! runs its queue, cron and dashboard instead of silently doing nothing.
 
 use super::{Config, MachineProfile};
 
@@ -19,19 +23,15 @@ impl Config {
             .any(|work| work == base || work == repo)
     }
 
-    /// Whether this machine has an explicit `[machines.<name>]` registration.
-    pub fn machine_registered(&self) -> bool {
-        self.machine_profile.is_some()
-    }
-
     /// Whether this machine may see or execute work for `repo`.
     ///
-    /// Full `owner/repo` grants win. A trailing-name grant is accepted only when that basename is
-    /// unique in the profile, so two owners' `foo` repositories cannot accidentally authorize one
+    /// With no `[machine]` table, or one that lists `*`, every repository is allowed. Otherwise
+    /// full `owner/repo` grants win, and a trailing-name grant is accepted only when that basename
+    /// is unique in the list, so two owners' `foo` repositories cannot accidentally authorize one
     /// another.
     pub fn repo_allowed_here(&self, repo: &str) -> bool {
         let Some(profile) = &self.machine_profile else {
-            return false;
+            return true;
         };
         if profile.repos.iter().any(|allowed| allowed == "*") {
             return true;
@@ -79,21 +79,20 @@ impl Config {
         crate::lifecycle::cloned_repos(self).contains(&base)
     }
 
+    /// Whether the machine-wide queue dispatcher runs here: on unless `[machine]` says
+    /// `queue = false`.
     pub fn queue_enabled_here(&self) -> bool {
-        self.machine_profile.as_ref().is_some_and(|p| p.queue)
+        self.machine_profile.as_ref().is_none_or(|p| p.queue)
     }
 
+    /// Whether scheduled jobs run here: on unless `[machine]` says `cron = false`.
     pub fn cron_enabled_here(&self) -> bool {
-        self.machine_profile.as_ref().is_some_and(|p| p.cron)
+        self.machine_profile.as_ref().is_none_or(|p| p.cron)
     }
 
+    /// Whether the bn-web dashboard runs here: on unless `[machine]` says `web = false`.
     pub fn web_enabled_here(&self) -> bool {
-        self.machine_profile.as_ref().is_some_and(|p| p.web)
-    }
-
-    /// Whether managed services may be destructively reconciled from this configuration.
-    pub fn destructive_reconcile_allowed(&self) -> bool {
-        self.config_file_loaded
+        self.machine_profile.as_ref().is_none_or(|p| p.web)
     }
 
     /// Whether a repo should appear in cross-repo views on this machine.
@@ -122,6 +121,7 @@ impl Config {
 mod tests {
     use super::*;
     use crate::resolver::config_file::ConfigFile;
+    use crate::test_support::EnvGuard;
 
     #[test]
     fn scheduled_repo_requires_assignment_and_a_local_clone() {
@@ -143,39 +143,54 @@ mod tests {
     }
 
     #[test]
-    fn missing_profile_denies_everything() {
+    fn no_profile_allows_every_repository_and_runtime() {
         let cfg = Config {
-            hostname: "unregistered".to_string(),
+            hostname: "unconfigured".to_string(),
             machine_profile: None,
             ..Config::default()
         };
 
-        assert!(!cfg.machine_registered());
-        assert!(!cfg.repo_allowed_here("owner/bn"));
-        assert!(!cfg.queue_enabled_here());
-        assert!(!cfg.cron_enabled_here());
-        assert!(!cfg.web_enabled_here());
+        assert!(cfg.repo_allowed_here("owner/bn"));
+        assert!(cfg.queue_enabled_here());
+        assert!(cfg.cron_enabled_here());
+        assert!(cfg.web_enabled_here());
     }
 
     #[test]
-    fn profile_flags_default_off_and_repos_are_normalized() {
+    fn profile_flags_default_on_and_repos_are_normalized() {
         let file: ConfigFile = toml::from_str(
             r#"
-            [machines.MyLaptop]
+            [machine]
             repos = [" bn ", "owner/arena/", "BN"]
             "#,
         )
-        .expect("machine profile parses");
+        .expect("machine table parses");
         let profile = file
-            .machine_profile("MyLaptop")
+            .machine_profile()
             .map(Config::normalize_machine_profile)
-            .expect("machine profile resolves");
+            .expect("machine table resolves");
 
         assert_eq!(profile.repos, vec!["bn", "owner/arena"]);
-        assert!(!profile.queue);
-        assert!(!profile.cron);
-        assert!(!profile.web);
-        assert!(file.machine_profile("mylaptop").is_none());
+        assert!(profile.queue);
+        assert!(profile.cron);
+        assert!(profile.web);
+    }
+
+    #[test]
+    fn a_profile_narrows_only_what_it_names() {
+        let file: ConfigFile =
+            toml::from_str("[machine]\nweb = false\n").expect("machine table parses");
+        let cfg = Config {
+            machine_profile: file
+                .machine_profile()
+                .map(Config::normalize_machine_profile),
+            ..Config::default()
+        };
+
+        assert!(cfg.repo_allowed_here("owner/bn"));
+        assert!(cfg.queue_enabled_here());
+        assert!(cfg.cron_enabled_here());
+        assert!(!cfg.web_enabled_here());
     }
 
     #[test]
@@ -204,34 +219,21 @@ mod tests {
     }
 
     #[test]
-    fn malformed_config_denies_permissions_without_destructive_reconcile() {
+    fn a_malformed_or_missing_config_switches_nothing_off() {
         let _lock = crate::test_support::env_lock();
         let temp = tempfile::tempdir().expect("tempdir");
-        let path = temp.path().join("config.toml");
-        std::fs::write(&path, "[machines.broken\nqueue = true").expect("write malformed config");
-        let _config = crate::test_support::EnvGuard::set("BN_CONFIG", &path);
-        let _hostname = crate::test_support::EnvGuard::set("BN_HOSTNAME", "broken");
+        let malformed = temp.path().join("config.toml");
+        std::fs::write(&malformed, "[machine\nqueue = false").expect("write malformed");
+        let _hostname = EnvGuard::set("BN_HOSTNAME", "broken");
 
-        let cfg = Config::load();
-
-        assert!(!cfg.machine_registered());
-        assert!(!cfg.queue_enabled_here());
-        assert!(!cfg.web_enabled_here());
-        assert!(!cfg.destructive_reconcile_allowed());
-    }
-
-    #[test]
-    fn parsed_unregistered_config_authorizes_destructive_reconcile() {
-        let _lock = crate::test_support::env_lock();
-        let temp = tempfile::tempdir().expect("tempdir");
-        let path = temp.path().join("config.toml");
-        std::fs::write(&path, "[machines.other]\nrepos = [\"acme/api\"]").expect("write config");
-        let _config = crate::test_support::EnvGuard::set("BN_CONFIG", &path);
-        let _hostname = crate::test_support::EnvGuard::set("BN_HOSTNAME", "this-machine");
-
-        let cfg = Config::load();
-
-        assert!(!cfg.machine_registered());
-        assert!(cfg.destructive_reconcile_allowed());
+        // A file bn cannot read says nothing, so every service stays on and nothing already
+        // installed is uninstalled on its account.
+        for path in [malformed, temp.path().join("missing.toml")] {
+            let _config = EnvGuard::set("BN_CONFIG", &path);
+            let cfg = Config::load();
+            assert!(cfg.queue_enabled_here(), "{}", path.display());
+            assert!(cfg.cron_enabled_here(), "{}", path.display());
+            assert!(cfg.web_enabled_here(), "{}", path.display());
+        }
     }
 }

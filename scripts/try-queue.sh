@@ -16,21 +16,8 @@ cleanup() { pkill -f "port $PORT" 2>/dev/null; rm -rf "$SB"; }
 trap cleanup EXIT INT TERM
 
 mkdir -p "$SB/home/config" "$SB/notes" "$SB/state" "$SB/repo"
+# The queue, cron and web are on by default, so the sandbox config only says what differs here.
 cat > "$SB/home/config/config.toml" <<EOF
-hostname = "bn-try-queue"
-
-[personal]
-notes_root = "$SB/notes"
-
-# The queue has to be enabled for this host or there is nothing to demonstrate. It is no longer a
-# safety matter: bn supervises its own dispatcher, whose lock lives under BN_STATE_DIR, so the
-# sandbox really is one. It used to reconcile a per-uid launchd agent, and "nothing here touches
-# your real machine" was not true.
-[machines.bn-try-queue]
-repos = ["*"]
-queue = true
-cron = true
-
 [queue]
 capture = ["cron"]
 coding = 2
@@ -38,13 +25,11 @@ research = 1
 EOF
 ( cd "$SB/repo" && git init -q . && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init )
 
-# BN_NOTES_DIR, not just the config key, because the notes root is what holds `tasks.txt` and
-# `bn queue add` mints a task for every entry it creates. This sandbox used to write `root = ...`,
-# which is not a key bn reads at all (it wants `[personal].notes_root`) — so the backlog was
-# isolated by BN_STATE_DIR while every demo entry's *task* landed in the real store. The env var is
-# the belt-and-braces version: it wins over config, so a future typo in the file cannot silently
-# re-point the store at your real one.
-export BN_HOME="$SB/home" BN_STATE_DIR="$SB/state" BN_NOTES_DIR="$SB/notes" BN_NO_AUTO_TICK=1
+# BN_NOTES_DIR because the notes root is what holds `tasks.txt`, and `bn queue add` mints a task
+# for every entry it creates: without it every demo entry's *task* lands in the real store.
+# BN_CONFIG makes the sandbox file the whole config, and BN_HOSTNAME pins the machine name.
+export BN_HOME="$SB/home" BN_STATE_DIR="$SB/state" BN_NOTES_DIR="$SB/notes" BN_NO_AUTO_TICK=1 \
+  BN_CONFIG="$SB/home/config/config.toml" BN_HOSTNAME="bn-try-queue"
 cd "$SB/repo" || exit 1
 
 # A few things to look at. Shell entries so nothing launches an agent.
@@ -91,7 +76,7 @@ Sandbox dashboard: http://127.0.0.1:$PORT/?experimental=queue
 
   Four demo entries are waiting. Nothing runs until a tick — in another terminal:
 
-    BN_HOME=$SB/home BN_STATE_DIR=$SB/state BN_NOTES_DIR=$SB/notes $BN queue tick
+    BN_HOME=$SB/home BN_STATE_DIR=$SB/state BN_NOTES_DIR=$SB/notes BN_CONFIG=$SB/home/config/config.toml BN_HOSTNAME=bn-try-queue $BN queue tick
 
   Run it a couple of times, then reload /queue/events. One entry exits 3 on purpose,
   so you can see a failure render.

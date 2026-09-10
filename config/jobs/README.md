@@ -4,30 +4,25 @@ Version-controlled scripts that cron triggers via `bn run <job>`. The script is 
 artifact — reviewable, diffable, in git — not an inline crontab command. This is the north
 star in practice: AI authors a script here once; cron runs it forever, for free.
 
-## Machine registration
+## Where a job may run
 
-The synced `config.toml` must explicitly register every machine and the repositories and resident
-runtimes it may use:
+A machine runs every job by default, and nothing needs registering. To make one machine do less,
+add a `[machine]` table to that machine's own `<notes_root>/<machine>/config.toml` (see
+`docs/config.md`):
 
 ```toml
-[machines.MyLaptop]
-repos = ["bn", "owner/arena"]
-queue = true
-cron = true
-web = true
+[machine]
+repos = ["bn", "owner/arena"]   # default ["*"]
+cron = false                     # default true, and likewise queue and web
 ```
 
-Use the exact identity reported by `bn machine`. A missing profile, repository, or flag is denied.
-This is an intentional migration requirement: after upgrading, add a profile on every machine
-before expecting cross-repo views, queue dispatch, cron jobs, or `bn-web` to run.
-
-Machine profiles are the outer boundary. `[nodes].owned_repos` still limits worker placement,
-`[jobs.only_on]` still limits individual job execution, and `[[cron]].only_on` still limits timer
-registration. A cron may also declare `repo = "name"` (or inherit a manifest-level `repo`): it is
-registered and run only while that repository is assigned to the machine and present in the local
-bare-repository inventory. Disabling cron and rerunning `bn cron register` prunes bn-managed
-timers; disabled queue/web services are unloaded by normal bn lifecycle reconciliation. Status
-commands remain available and report `not_enabled`.
+`[jobs.only_on]` limits individual jobs to named machines, `[[cron]].only_on` limits timer
+registration, and `[nodes.<id>].repos` limits worker placement. A cron may also declare
+`repo = "name"` (or inherit a manifest-level `repo`): it is registered and run only while that
+repository is allowed on the machine and present in the local bare-repository inventory. Setting
+`cron = false` and rerunning `bn cron register` prunes bn-managed timers; `queue = false` and
+`web = false` are unloaded by normal bn lifecycle reconciliation. Status commands stay available
+and report `not_enabled`.
 
 ## How it works
 
@@ -208,8 +203,6 @@ Agent resolution is first-match-wins by name:
 
 Overrides replace the whole manifest; they are not partial merges. To change a shipped prompt or
 schedule, copy that agent into a higher-precedence tier with the same `name` and edit the copy.
-For example, override `quarter-review` this way; the old `[quarter].review_cron` /
-`BN_QUARTER_REVIEW_CRON` setting is rejected so two schedule authorities cannot coexist.
 
 Use `bn agents validate` after editing a manifest, `bn agents` to inspect effective kinds and
 schedules, and `bn agents render <name> --args '{"key":"value"}'` to diagnose strict templates.

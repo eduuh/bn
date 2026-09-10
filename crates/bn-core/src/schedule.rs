@@ -551,3 +551,26 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod every_other_day_tests {
+    use super::*;
+
+    /// The `worktree-sweep` agent runs on a stepped day-of-month spec, so the scheduler has to
+    /// fire it on exactly the odd days and count the shape as supported, or the due check would
+    /// never see it.
+    #[test]
+    fn a_stepped_day_of_month_fires_on_odd_days_only() {
+        let spec = "*-*-01/2 09:00:00";
+        let on = |d: u32| fires_on(spec, NaiveDate::from_ymd_opt(2026, 9, d).unwrap());
+        assert!(on(1), "the 1st is the base of the step");
+        assert!(on(3));
+        assert!(on(5));
+        assert!(!on(2), "even days are between steps");
+        assert!(!on(4));
+        assert!(
+            calendar_supported(spec),
+            "the due check must understand this shape"
+        );
+    }
+}

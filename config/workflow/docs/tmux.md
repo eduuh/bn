@@ -108,7 +108,7 @@ Three exceptions, none of which is work:
 | `host:<alias>` | A `bn connect` attachment to another machine. The work it shows lives in that machine's repos. |
 | `-L orch` server | The dispatch worker server, a separate tmux server entirely — not on this namespace. |
 
-Scheduled jobs get windows, never sessions: a heavy cron (`pool-warm`, `keep-warm`, `nightly-release`) opens a detached window in the session of the repo it serves, which closes itself when the job succeeds. See `config/jobs/README.md`.
+Scheduled jobs get windows, never sessions: a heavy cron (`pool-warm`, `keep-warm`) opens a detached window in the session of the repo it serves, which closes itself when the job succeeds. See `config/jobs/README.md`.
 
 `bn tmux-prune` reports sessions that name no repo (dry run; `--force` kills them), sparing anything attached, busy, or hosting an agent. It is never a cron. `bn tmux-snapshot-filter` keeps orphans out of the tmux-resurrect snapshot so a killed one does not come back on the next restore — it is wired to resurrect's `post-save-layout` hook and kills nothing.
 

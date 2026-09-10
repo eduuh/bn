@@ -89,7 +89,7 @@ fn the_isolation_guard_refuses_when_tmux_leaks_to_the_host() -> anyhow::Result<(
     let before = proof::host_sessions().unwrap_or_default();
 
     let root = tempfile::tempdir()?;
-    let mut env = bn_e2e::env::contract(root.path(), 7999, 0, "2026-01-15");
+    let mut env = bn_e2e::env::contract(root.path(), 0, "2026-01-15");
     std::fs::create_dir_all(root.path().join("tmux"))?;
     // Re-introduce the leak the contract removes.
     env.insert("TMUX".into(), format!("{host_socket},1,0"));
@@ -136,7 +136,7 @@ fn kill_server_refuses_an_environment_that_could_reach_the_host() {
     let root = std::path::Path::new("/tmp/bn-e2e-killcheck");
 
     // A `TMUX` entry wins over the stripped inherited one and redirects the kill at the host.
-    let mut leaky = bn_e2e::env::contract(root, 7999, 0, "2026-01-15");
+    let mut leaky = bn_e2e::env::contract(root, 0, "2026-01-15");
     leaky.insert("TMUX".into(), "/private/tmp/tmux-502/default,1,0".into());
     let refused = proof::kill_server(&leaky).expect_err("must refuse a TMUX-carrying environment");
     assert!(
@@ -145,7 +145,7 @@ fn kill_server_refuses_an_environment_that_could_reach_the_host() {
     );
 
     // Without TMUX_TMPDIR the socket falls back to the shared default — also the host's server.
-    let mut rootless = bn_e2e::env::contract(root, 7999, 0, "2026-01-15");
+    let mut rootless = bn_e2e::env::contract(root, 0, "2026-01-15");
     rootless.remove("TMUX_TMPDIR");
     let refused = proof::kill_server(&rootless).expect_err("must refuse without TMUX_TMPDIR");
     assert!(
@@ -155,7 +155,7 @@ fn kill_server_refuses_an_environment_that_could_reach_the_host() {
 
     // And the checked door cannot be walked around: the general-purpose runner rejects the verb
     // outright, so a future caller cannot reintroduce the bug by reaching for `sandbox_tmux`.
-    let safe = bn_e2e::env::contract(root, 7999, 0, "2026-01-15");
+    let safe = bn_e2e::env::contract(root, 0, "2026-01-15");
     let refused = proof::sandbox_tmux(&safe, &["kill-server"])
         .expect_err("sandbox_tmux must not carry kill-server, even with a good environment");
     assert!(

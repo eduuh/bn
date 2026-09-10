@@ -513,7 +513,7 @@ mod tests {
     use super::{is_advisory_source, restated_subject};
 
     const COWORK: &str = "attn:cron-health:live-cowork-scrape";
-    const NIGHTLY: &str = "attn:cron-health:nightly-release";
+    const NIGHTLY: &str = "attn:cron-health:refresh-all";
 
     /// The observed duplication: three staff agents and the attention agent each re-worded the same
     /// failing job, so no two titles matched and every run minted another item.
@@ -551,7 +551,7 @@ mod tests {
     fn a_title_matches_only_its_own_subject() {
         assert_eq!(
             restated_subject(
-                "Investigate the nightly-release cron failures",
+                "Investigate the refresh-all cron failures",
                 &[COWORK, NIGHTLY]
             ),
             Some(NIGHTLY)

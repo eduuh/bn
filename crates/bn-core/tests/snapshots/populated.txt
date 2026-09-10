@@ -1,10 +1,10 @@
 Config {
-    personal_root: "/srv/personal-notes",
-    work_root: "/srv/work-notes",
+    personal_root: "<ROOT>/projects/branch-notes",
+    work_root: "<ROOT>/projects/branch-notes-work/bn",
     overlay_root: Some(
         "<ROOT>/projects/personal-notes/bn",
     ),
-    worktree_dir: "/srv/worktrees",
+    worktree_dir: "<ROOT>/projects/worktree",
     work_repos: [
         "acme",
         "internal-tool",
@@ -21,7 +21,6 @@ Config {
             web: true,
         },
     ),
-    config_file_loaded: true,
     job_only_on: {
         "refresh-all": [
             "snapshot-host",
@@ -29,7 +28,6 @@ Config {
     },
     weekly_anchor: 1,
     sla_first_review_hours: 6.0,
-    sla_merge_hours: 36.0,
     review_harness: Some(
         "copilot",
     ),
@@ -43,7 +41,7 @@ Config {
     gif_dir: Some(
         "/srv/gifs",
     ),
-    work_only: true,
+    work_only: false,
     managed_repos: [
         "git@github.com:eduuh/bn.git",
     ],
@@ -140,7 +138,6 @@ Config {
     dispatch_plan_review_quorum: 2,
     review_diff_gate: false,
     review_diff_gate_reviews: 2,
-    orchestrate_agent: None,
     default_harness: Some(
         "claude",
     ),
@@ -165,7 +162,6 @@ Config {
     orchestrate_daily_cost_usd_research: None,
     orchestrate_remote_overflow: false,
     staff_home: None,
-    staff_mail: [],
     notify: NotifyConfig {
         enabled: true,
         bar: Blocking,
@@ -174,3 +170,36 @@ Config {
         source_budget: 4,
     },
 }
+
+--- JobConfig
+JobConfig {
+    wrap_enabled: false,
+    standup_enabled: false,
+    standup_fetch_delta: false,
+    dxi_enabled: false,
+    agents_enabled: [],
+}
+
+--- ToolsConfig
+ToolsConfig {
+    builtins: [],
+}
+
+--- link tags
+(
+    [
+        "domains",
+        "dri",
+        "telemetry",
+        "security",
+        "permissions",
+        "repos",
+        "pipelines",
+        "incidents",
+        "learning",
+    ],
+    Default,
+)
+
+--- mcp extras
+[]

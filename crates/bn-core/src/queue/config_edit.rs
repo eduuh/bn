@@ -82,7 +82,17 @@ pub fn edit_job_classes(content: &str, classes: &JobClasses) -> String {
 /// Write `classes` into the config at `path`.
 pub fn write_job_classes(path: &std::path::Path, classes: &JobClasses) -> std::io::Result<()> {
     let current = std::fs::read_to_string(path).unwrap_or_default();
-    std::fs::write(path, edit_job_classes(&current, classes))
+    write_config(path, &edit_job_classes(&current, classes))
+}
+
+/// Replace a config file whole: create its directory, since the machine file bn records choices in
+/// may not exist yet, and write atomically, since the dispatcher re-reads config the moment it moves
+/// and must never parse half a file.
+pub(crate) fn write_config(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    crate::store::write_atomic(path, text.as_bytes())
 }
 
 const HEADER: &str = "[queue.jobs]";

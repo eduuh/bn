@@ -14,6 +14,7 @@
 use super::pick_one;
 use crate::*;
 use bn_core::queue::window::WindowMode;
+use bn_core::resolver::DirectMode;
 use bn_core::wt_actions::{When, WtAction};
 
 /// Offer the queue actions for `action` on `repo`, and carry out the chosen one.
@@ -22,7 +23,8 @@ pub(super) fn menu(cfg: &Config, action: &WtAction, repo: &str) {
     let id = crate::cmd::wt_action_jobs::action_entry_id(action, repo, None);
     let filed = bn_core::backlog::latest(&bn_core::backlog::backlog_path(), repo, &id)
         .filter(|e| e.status.is_active());
-    let choices = options(cfg, filed.is_some());
+    let opened = bn_core::util::now_epoch_secs();
+    let choices = options(cfg, filed.is_some(), direct(cfg, opened));
     let header = match &filed {
         Some(e) => format!("{} — {} ({})", action.label, repo, e.status.label()),
         None => format!("{} — {repo}", action.label),
@@ -33,7 +35,7 @@ pub(super) fn menu(cfg: &Config, action: &WtAction, repo: &str) {
     let now = bn_core::util::now_epoch_secs();
     let outcome = match choice.as_str() {
         // The opt-out machine: "now" on a filed verb can only move it to the front of the line.
-        "now" if filed.is_some() && !cfg.queue.direct.is_immediate() => {
+        "now" if filed.is_some() && !direct(cfg, now).is_immediate() => {
             bn_core::backlog::start_next(&bn_core::backlog::backlog_path(), repo, &id, now)
                 .map(|done| match done {
                     true => format!("{} is next", action.label),
@@ -78,9 +80,9 @@ pub(super) fn menu(cfg: &Config, action: &WtAction, repo: &str) {
 /// Windows come from config, so this list grows with the machine's schedule. Only `away` and
 /// `deadline` windows are offered: those are the two modes that decide *whether* opportunistic work
 /// may run, and holding a verb until a merely-preferred window would delay it for no benefit.
-fn options(cfg: &Config, filed: bool) -> Vec<(String, String)> {
+fn options(cfg: &Config, filed: bool, direct: DirectMode) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    let now_label = match (cfg.queue.direct.is_immediate(), filed) {
+    let now_label = match (direct.is_immediate(), filed) {
         (true, true) => "Start it now — skip the queue",
         (true, false) => "Run it now",
         (false, true) => "Start it now — jump the queue",
@@ -100,6 +102,15 @@ fn options(cfg: &Config, filed: bool) -> Vec<(String, String)> {
         out.push(("cancel".to_string(), "Take it off the queue".to_string()));
     }
     out
+}
+
+/// What Enter and "now" do here, given the machine's setting and the queue's off switch.
+///
+/// One read of the switch per menu, passed down: [`options`] stays pure so its labels are testable
+/// without an event log, which is the same reason [`bn_core::resolver::QueueConfig::direct_mode`]
+/// takes the fact rather than reading it.
+fn direct(cfg: &Config, now: i64) -> DirectMode {
+    cfg.queue.direct_mode(bn_core::queue::off::is_off(now))
 }
 
 /// `pool-warm-lunch` → `lunch`. The names are namespaced for the config file's sake; a menu is not
@@ -177,6 +188,11 @@ mod tests {
         choices.iter().map(|(id, _)| id.as_str()).collect()
     }
 
+    /// The default machine, with the queue on: commands start on the spot.
+    fn immediate() -> DirectMode {
+        DirectMode::Immediate
+    }
+
     /// The menu grows with the machine's schedule — a window someone adds shows up without this
     /// module being taught about it, which is the whole reason it reads config rather than a list.
     #[test]
@@ -186,7 +202,7 @@ mod tests {
             window("nightly", WindowMode::Deadline),
         ]);
         assert_eq!(
-            ids(&options(&cfg, false)),
+            ids(&options(&cfg, false, immediate())),
             vec!["now", "away", "pool-warm-lunch", "nightly"]
         );
     }
@@ -196,7 +212,7 @@ mod tests {
     #[test]
     fn preference_only_windows_are_not_offered_as_a_schedule() {
         let cfg = cfg_with(vec![window("busy-hours", WindowMode::Prefer)]);
-        assert_eq!(ids(&options(&cfg, false)), vec!["now", "away"]);
+        assert_eq!(ids(&options(&cfg, false, immediate())), vec!["now", "away"]);
     }
 
     /// A menu that offers what the CLI would refuse is a menu that lies: there is nothing to cancel
@@ -204,8 +220,8 @@ mod tests {
     #[test]
     fn cancel_is_offered_only_once_something_is_filed() {
         let cfg = cfg_with(Vec::new());
-        assert!(!ids(&options(&cfg, false)).contains(&"cancel"));
-        assert!(ids(&options(&cfg, true)).contains(&"cancel"));
+        assert!(!ids(&options(&cfg, false, immediate())).contains(&"cancel"));
+        assert!(ids(&options(&cfg, true, immediate())).contains(&"cancel"));
     }
 
     /// And "now" reads differently either side of that line — and either side of the machine's
@@ -214,18 +230,31 @@ mod tests {
     #[test]
     fn the_now_label_says_which_of_the_things_it_will_do() {
         let cfg = cfg_with(Vec::new());
-        assert!(cfg.queue.direct.is_immediate(), "immediate is the default");
-        let unfiled = options(&cfg, false);
-        let filed = options(&cfg, true);
+        assert!(
+            cfg.queue.direct_mode(false).is_immediate(),
+            "immediate is the default"
+        );
+        let unfiled = options(&cfg, false, immediate());
+        let filed = options(&cfg, true, immediate());
         assert!(unfiled[0].1.contains("Run it now"), "{:?}", unfiled[0]);
         assert!(filed[0].1.contains("skip the queue"), "{:?}", filed[0]);
 
-        let mut cfg = cfg_with(Vec::new());
-        cfg.queue.direct = bn_core::resolver::DirectMode::Queued;
-        let unfiled = options(&cfg, false);
-        let filed = options(&cfg, true);
+        let unfiled = options(&cfg, false, DirectMode::Queued);
+        let filed = options(&cfg, true, DirectMode::Queued);
         assert!(unfiled[0].1.contains("Queue it"), "{:?}", unfiled[0]);
         assert!(filed[0].1.contains("jump the queue"), "{:?}", filed[0]);
+    }
+
+    /// A machine that opted into queueing its commands still reads as immediate while the queue is
+    /// switched off — there is nothing left to queue into.
+    #[test]
+    fn the_off_switch_overrides_the_queue_commands_opt_out() {
+        let mut cfg = cfg_with(Vec::new());
+        cfg.queue.direct = DirectMode::Queued;
+        assert_eq!(cfg.queue.direct_mode(false), DirectMode::Queued);
+        assert_eq!(cfg.queue.direct_mode(true), DirectMode::Immediate);
+        let unfiled = options(&cfg, false, cfg.queue.direct_mode(true));
+        assert!(unfiled[0].1.contains("Run it now"), "{:?}", unfiled[0]);
     }
 
     #[test]

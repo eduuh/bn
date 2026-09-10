@@ -21,9 +21,9 @@ pub(crate) fn unregistered_jobs(
 /// declared (0 add, 0 update, 0 unchanged)". That is precisely what an unregistered machine used
 /// to look like, because drift filtered on `job_allowed_here` alone while register additionally
 /// requires `cron_enabled_here` (plus `repo_available_here` and the entry `only_on`). A machine
-/// with no `[machines.<name>]` profile has cron disabled, so register is right to want nothing —
-/// drift was the one advertising 23 jobs nothing would ever create. `cron_disabled_notice` names
-/// that state instead, so agreeing here hides nothing.
+/// whose `[machine]` table says `cron = false` has cron disabled, so register is right to want
+/// nothing — drift was the one advertising 23 jobs nothing would ever create.
+/// `cron_disabled_notice` names that state instead, so agreeing here hides nothing.
 pub(crate) fn cron_drift(cfg: &Config, ctx: Option<&Resolved>) -> Vec<String> {
     let registered: std::collections::HashSet<String> = timers::registered()
         .into_iter()
@@ -63,9 +63,9 @@ pub(crate) fn cron_disabled_notice(cfg: &Config, ctx: Option<&Resolved>) -> Opti
     }
     let machine = cfg.machine();
     Some(format!(
-        "cron is not enabled on this machine ('{machine}') — {declared} declared job(s) will \
-         never run. Add [machines.\"{machine}\"] with cron = true to config.toml, then re-run \
-         `bn cron register`."
+        "cron is switched off on this machine ('{machine}') — {declared} declared job(s) will \
+         never run. Remove `cron = false` from [machine] in {}, then re-run `bn cron register`.",
+        bn_core::resolver::machine_config_path().display()
     ))
 }
 
@@ -120,14 +120,22 @@ mod tests {
         assert_eq!(unregistered_jobs(&declared, &registered), vec!["alpha"]);
     }
 
-    /// A machine with no `[machines.<name>]` profile has cron disabled, so `bn cron register`
+    /// A profile that says `cron = false`.
+    fn cron_off() -> Option<bn_core::resolver::MachineProfile> {
+        Some(bn_core::resolver::MachineProfile {
+            cron: false,
+            ..Default::default()
+        })
+    }
+
+    /// A machine whose profile says `cron = false` has cron disabled, so `bn cron register`
     /// materializes nothing. Drift must agree, or `bn doctor` sends people to a command that
     /// answers "0 declared" — the loop this pairing exists to close.
     #[test]
     fn drift_is_empty_when_cron_is_disabled_on_this_machine() {
         let _lock = bn_core::test_support::env_lock();
         let temp = tempfile::tempdir().expect("tempdir");
-        let (cfg, _cfg_dir) = seed_manifest(temp.path(), &["alpha", "beta"], None);
+        let (cfg, _cfg_dir) = seed_manifest(temp.path(), &["alpha", "beta"], cron_off());
 
         assert!(cron_drift(&cfg, None).is_empty());
     }
@@ -136,7 +144,7 @@ mod tests {
     fn disabled_machine_notice_names_the_host_and_the_job_count() {
         let _lock = bn_core::test_support::env_lock();
         let temp = tempfile::tempdir().expect("tempdir");
-        let (cfg, _cfg_dir) = seed_manifest(temp.path(), &["alpha", "beta"], None);
+        let (cfg, _cfg_dir) = seed_manifest(temp.path(), &["alpha", "beta"], cron_off());
 
         let notice = cron_disabled_notice(&cfg, None).expect("a disabled machine explains itself");
 
@@ -170,6 +178,21 @@ mod tests {
         let (cfg, _cfg_dir) = seed_manifest(temp.path(), &[], None);
 
         assert!(cron_disabled_notice(&cfg, None).is_none());
+    }
+
+    /// The background reconcile re-registers only when what registration would install has moved:
+    /// the same manifest fingerprints the same, and one more cron changes it.
+    #[test]
+    fn the_timers_fingerprint_moves_only_with_the_declared_crons() {
+        let _lock = bn_core::test_support::env_lock();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (cfg, guard) = seed_manifest(temp.path(), &["alpha"], None);
+        let one = crate::cmd::cron::reconcile::timers_fingerprint(&cfg, None);
+        assert_eq!(one, crate::cmd::cron::reconcile::timers_fingerprint(&cfg, None));
+        drop(guard);
+
+        let (cfg, _guard) = seed_manifest(temp.path(), &["alpha", "beta"], None);
+        assert_ne!(one, crate::cmd::cron::reconcile::timers_fingerprint(&cfg, None));
     }
 
     /// Point `config_dir()` at a scratch `crons.toml` declaring `jobs`, and return a Config whose

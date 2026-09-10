@@ -3,7 +3,7 @@
 //!   - `bn tmux-git`        ← workflow/bin/bn-git-status.sh   (status-format[0] git segment)
 //!   - `bn tmux-goal`       ← workflow/bin/bn-goal-status.sh  (status-format[0] focus segment)
 //!   - `bn tmux-attn-count` ← workflow/bin/bn-attention-count.sh (global waiting/ready tally)
-//!   - `bn tmux-done-badge` ← workflow/bin/tmux-done-badge.sh  (alert-silence hook)
+//!   - `bn tmux-done-badge` ← workflow/bin/tmux-done-badge.sh  (now in `cmd/tmux_done.rs`)
 //!
 //! The parsing/formatting is factored into pure functions (unit-tested below) so the migration is
 //! verifiable byte-for-byte against the scripts' output; the `emit_*` wrappers do only the I/O
@@ -499,35 +499,6 @@ pub(crate) fn emit_tmux_attn_count() {
 }
 
 // ---- bn tmux-done-badge : mark a watched window done on silence --------------------------------
-
-/// `bn tmux-done-badge <window>` — invoked from the global `alert-silence` hook with the window id.
-/// Marks the window done (green ✓), clears `monitor-silence` so it stops re-firing, and fires a
-/// best-effort desktop notification. Never fails the hook on a missing notifier.
-pub(crate) fn emit_tmux_done_badge(win: &str) {
-    if win.is_empty() {
-        return;
-    }
-
-    let name = crate::proc::tmux_raw(&["display-message", "-p", "-t", win, "#{window_name}"])
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "window".to_string());
-
-    let _ = crate::proc::tmux_run(&["set-window-option", "-t", win, "@bn_done", "\u{2713}"]);
-    let _ = crate::proc::tmux_run(&["set-window-option", "-t", win, "monitor-silence", "0"]);
-
-    let msg = format!("{name} finished");
-    // Best-effort desktop toast through the policy gate; a missing backend is swallowed so the
-    // hook never fails. A completion duplicates the ✓ badge set just above, so under the default
-    // bar the badge is the whole notification.
-    let _ = crate::toast::toast(
-        crate::toast::Class::Completion,
-        &format!("tmux:{win}:silent"),
-        "tmux",
-        "tmux",
-        &msg,
-    );
-}
 
 // ---- bn tmux-cockpit : orchestration roll-up popup (prefix S) -----------------------------------
 

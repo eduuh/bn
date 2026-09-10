@@ -3,7 +3,7 @@
 //! The problem this solves: spinning up a fresh worktree for every agent task pays a cold
 //! `build.sh` / `npm install` each time. A *pool* keeps a small set of checkouts around with their
 //! deps and build cache intact; `pool get` leases an idle one and switches your branch into it,
-//! `pool return` resets it (without wiping ignored deps) so the next `get` is instant.
+//! `pool return` resets it (keeping ignored deps, minus Rust incremental dirs) so `get` is instant.
 //!
 //! Model (decided): **named-branch reuse**, not treehouse's anonymous detached pool — slots still
 //! hold a real branch, so `bn`'s branch-keyed notes/metrics keep working untouched. Every repo with
@@ -351,8 +351,9 @@ fn switch_into_slot(slot_s: &str, bare_s: &str, branch: &str) -> bool {
 }
 
 /// Reset a slot back to a clean warm-idle state: discard tracked changes and detach to the base,
-/// then drop untracked files — but NEVER `-x`/`-X`, so ignored deps/build cache survive. This
-/// no-`-x` rule is the whole point of the pool.
+/// then drop untracked files — but NEVER `-x`/`-X`, so ignored deps/build cache survive. The one
+/// ignored subtree we do trim is `target/**/incremental`: warm builds already run with
+/// `CARGO_INCREMENTAL=0`, so those dirs are dead weight once the slot is idle again.
 fn warm_reset(slot_s: &str, bare_s: &str) {
     warm_reset_with(slot_s, bare_s, None)
 }
@@ -396,9 +397,7 @@ fn warm_reset_unlocked(slot_s: &str, bare_s: &str, known_untracked: Option<Vec<S
         args.extend(untracked.iter().map(String::as_str));
         let _ = git_quiet(&args);
     }
-    if let Some((_, n, pdir)) = slot_parts(Path::new(slot_s)) {
-        clear_dirty_mark(&pdir, n);
-    }
+    idle::settle(Path::new(slot_s));
 }
 
 /// Whether `slot` is a usable warm checkout — a *real* git worktree, not just a directory left
@@ -557,6 +556,7 @@ thread_local! {
 pub(crate) mod health;
 pub(crate) use health::*;
 
+mod idle;
 pub(crate) mod slot_lock;
 
 pub(crate) mod release;

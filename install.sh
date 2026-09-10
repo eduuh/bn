@@ -12,6 +12,15 @@
 # re-enters this script with the internal --from-build flag so the wiring lives in one place.
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# Where the machine's shipped content (prompts, agents, jobs, the cron manifest, tmux.conf) is
+# anchored: the bn/main worktree of this repo, never the checkout that happens to run this script.
+# A pool slot or feature worktree is leased to other branches, and the machine would serve whatever
+# they hold (#1291). A plain clone with no main worktree anchors at itself.
+shipped=$( { git -C "$repo" worktree list --porcelain 2>/dev/null || true; } |
+  awk '/^worktree /{wt=substr($0, 10)} /^branch refs\/heads\/main$/{print wt; exit}')
+if [ -z "$shipped" ] || [ ! -d "$shipped/config" ]; then
+  shipped="$repo"
+fi
 
 mode="full"
 agents="${BN_INSTALL_AGENT_TOOLS:-0}"
@@ -95,11 +104,13 @@ esac
 # Rust bn is the only implementation: the zsh bn it grew out of is gone, so every command
 # lives in the binary and an unknown one is a clap error rather than a pass-through.
 #
-# Binaries come from the rolling GitHub release, never from a compile here. main publishes a tested
-# build after every push, so a new machine is wired up in the time three archives take to download
-# instead of the minutes a cold cargo build costs — the whole point of the split. When the binaries
-# you need are not in that release yet (an unmerged branch, a local patch, a platform the release
-# skips), run ./build.sh instead; it compiles and hands the result back here.
+# Binaries come from the latest versioned GitHub release, never from a compile here. Every merge
+# to main publishes one (`vX.Y.Z`, all platforms, only after the full CI gate passed on that exact
+# commit — see docs/releases.md), so a new machine is wired up in the time three archives take to
+# download instead of the minutes a cold cargo build costs. That is the whole point of the split:
+# no machine should need a working cargo to RUN bn. When the binaries you need are not in that
+# release yet (an unmerged branch, a local patch, a platform the release skips), run ./build.sh
+# instead; it compiles and hands the result back here.
 slug="${BN_REPO_SLUG:-eduuh/bn}"
 # shellcheck source=scripts/install-toolchain.sh
 source "$repo/scripts/install-toolchain.sh"
@@ -322,14 +333,14 @@ for candidate in ${path_dirs[@]+"${path_dirs[@]}"} "$HOME/.bin"; do
 done
 
 # Cron job scripts live in-repo (version-controlled); `bn run` resolves them via this path.
-ln -sfn "$repo/config/jobs" "$cfgdir/jobs"
-echo "Linked $cfgdir/jobs -> $repo/config/jobs"
+ln -sfn "$shipped/config/jobs" "$cfgdir/jobs"
+echo "Linked $cfgdir/jobs -> $shipped/config/jobs"
 
 # Strict self-describing agents (config/agents/<name>.md) live in-repo too; `bn` resolves the
 # shipped tier through this symlink. Every manifest declares command/staff/hosted/specialist;
 # `agent-scheduler` owns their `on_calendar` values, while static instructions stay in Markdown.
-ln -sfn "$repo/config/agents" "$cfgdir/agents"
-echo "Linked $cfgdir/agents -> $repo/config/agents"
+ln -sfn "$shipped/config/agents" "$cfgdir/agents"
+echo "Linked $cfgdir/agents -> $shipped/config/agents"
 
 # Invocable prompts (config/prompts/<name>.md) are the shipped tier the MCP prompt resolver serves
 # as slash commands. No symlink needed: `global_skill_dirs()` reaches them through the stable
@@ -337,26 +348,11 @@ echo "Linked $cfgdir/agents -> $repo/config/agents"
 # in any launch mode. `$cfgdir/skills` is left alone as the user's *personal* skill tier.
 
 # The shipped cron manifest (config/crons.toml) — resolved via config_dir()/crons.toml.
-ln -sfn "$repo/config/crons.toml" "$cfgdir/crons.toml"
-echo "Linked $cfgdir/crons.toml -> $repo/config/crons.toml"
+ln -sfn "$shipped/config/crons.toml" "$cfgdir/crons.toml"
+echo "Linked $cfgdir/crons.toml -> $shipped/config/crons.toml"
 
-# --- private config: link config.toml from personal-notes -----------------------
-# config.toml is sensitive (note roots, work-repo names, tracker URL), so it lives in the
-# private personal-notes repo — never in this one — and is symlinked here. personal-notes is
-# already checked out on each machine; BN_PERSONAL_NOTES_DIR points at it (default below).
-# If its bn/config.toml isn't there yet, a local config.toml is scaffolded so bn still works.
-config="$cfgdir/config.toml"
-personal_dir="${BN_PERSONAL_NOTES_DIR:-$HOME/projects/worktree/personal-notes/main}"
-if [ ! -e "$config" ]; then
-  src="$personal_dir/bn/config.toml"
-  if [ -f "$src" ]; then
-    ln -sf "$src" "$config"
-    echo "Linked $config -> $src"
-  else
-    "$bindir/bn" setup >/dev/null 2>&1 || true
-    echo "Scaffolded a local $config — move it to $src in personal-notes and re-run to sync it."
-  fi
-fi
+# No config step: bn runs on built-in defaults, and settings live in the notes tree
+# (docs/config.md). An old $cfgdir/config.toml moves there the first time the new bn runs.
 
 # --- external runtime dependencies --------------------------------------------
 # The Rust core has no tmux/fzf dependency, but the full workflow intentionally keeps those
@@ -523,7 +519,7 @@ fi
 if ! "$bindir/bn" agents validate; then
   echo "error: invalid Markdown agent catalog; fix the manifest above and re-run install.sh" >&2
   # Most often the manifest is fine and the *binary* is behind it. install.sh links this
-  # checkout's config/agents but installs bn from the rolling release, so a platform whose
+  # checkout's config/agents but installs bn from the published release, so a platform whose
   # release assets have gone stale gets a bn that has never heard of a field main added since.
   # Compare the two before editing anything the checkout is right about.
   echo "       If the manifest matches main, this is version skew: the installed bn is" >&2
@@ -772,8 +768,8 @@ echo "Installing the workflow layer (tmux + worktrees)…"
 # Canonical, location-independent anchor for the tmux config. tmux.conf resolves every
 # popup script through $HOME/.config/bn/repo/config/workflow/bin, so the config works wherever
 # this repo is cloned without baking in an absolute checkout path.
-ln -sfn "$repo" "$cfgdir/repo"
-echo "Linked $cfgdir/repo -> $repo"
+ln -sfn "$shipped" "$cfgdir/repo"
+echo "Linked $cfgdir/repo -> $shipped"
 
 # Copilot CLI and Claude Code both load *native* Agent Skills (~/.copilot/skills/<name>/SKILL.md,
 # ~/.claude/skills/<name>/SKILL.md), so (re)generate both roots here from the shipped prompts
@@ -834,7 +830,7 @@ EOF_SKILLS
 install_upstream_skills
 
 # One global instructions file for both harnesses: config/AGENTS.md, read through the repo anchor
-# so it follows whichever bn build is live (link-build snapshots config/ into every build).
+# so it follows the checkout bn was installed from.
 # Copilot CLI reads ~/.copilot/copilot-instructions.md, so that becomes a symlink to it; Claude
 # Code reads ~/.claude/CLAUDE.md, which gets one idempotent `@` import line. A real
 # copilot-instructions.md the user wrote is never replaced.
@@ -885,8 +881,8 @@ if [ -e "$tmux_conf" ] && [ ! -L "$tmux_conf" ]; then
   mv "$tmux_conf" "$tmux_conf.bak"
   echo "Backed up existing ~/.tmux.conf -> ~/.tmux.conf.bak"
 fi
-ln -sfn "$repo/config/workflow/tmux.conf" "$tmux_conf"
-echo "Linked ~/.tmux.conf -> $repo/config/workflow/tmux.conf"
+ln -sfn "$shipped/config/workflow/tmux.conf" "$tmux_conf"
+echo "Linked ~/.tmux.conf -> $shipped/config/workflow/tmux.conf"
 
 # tmux plugins are vendored in-repo (config/workflow/plugins/, sourced directly by tmux.conf) — no TPM,
 # no network fetch, nothing to bootstrap. A fresh machine works the moment ~/.tmux.conf is linked.

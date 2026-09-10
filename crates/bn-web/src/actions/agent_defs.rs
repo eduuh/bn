@@ -79,12 +79,8 @@ const DEFAULT_CREATE_SCOPE: &str = "global-personal";
 fn sync_native_agents_summary(cfg: &bn_core::resolver::Config) -> serde_json::Value {
     use bn_core::skills::{NativeHarness, NativeInstallAction as A, NativeScope};
     let home = dirs::home_dir().unwrap_or_default();
-    let anchor = bn_core::resolver::config_dir().join("repo");
-    let base = if anchor.is_dir() {
-        anchor
-    } else {
-        std::env::current_dir().unwrap_or_default()
-    };
+    let base = bn_core::resolver::shipped_root()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
     let ctx = bn_core::resolver::resolve(cfg, &base).ok();
     let report = bn_core::specialists::install_native_agents(
         cfg,

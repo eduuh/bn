@@ -170,7 +170,7 @@ pub(crate) fn emit_schedule(cfg: &Config, now: i64, json: bool) {
 
 /// `bn queue schedule add|rm` — edit the machine's windows.
 pub(crate) fn emit_schedule_edit(cfg: &Config, action: ScheduleCmd, json: bool) {
-    let path = bn_core::resolver::config_file_path();
+    let path = bn_core::resolver::machine_config_path();
     let mut windows = cfg.queue.windows.clone();
     let (name, verb) = match action {
         ScheduleCmd::Add {

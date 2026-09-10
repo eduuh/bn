@@ -1,5 +1,7 @@
+// `BN_VERSION` comes from build.rs: the release workflow's computed `vX.Y.Z` when it built
+// this binary, else Cargo.toml's workspace version for a local build. See build.rs.
 pub(crate) const VERSION: &str = concat!(
-    env!("CARGO_PKG_VERSION"),
+    env!("BN_VERSION"),
     " (git ",
     env!("BN_GIT_SHA"),
     ", built ",

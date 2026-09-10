@@ -17,6 +17,10 @@ impl Config {
 /// Every field is off/absent by default, so a machine that has not configured the queue behaves
 /// exactly as it did before the queue existed: nothing is captured, and the lane caps fall back to
 /// the dispatcher's own conservative defaults.
+///
+/// Pure configuration — the machine-wide *off switch* is deliberately not here. That is a live
+/// control somebody flipped a minute ago, not a belief about the hardware, so it lives in the event
+/// log with the rest of them: see [`crate::queue::off`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QueueConfig {
     /// Producers that enqueue instead of launching immediately.
@@ -108,7 +112,7 @@ pub const DEFAULT_HEAVY_CAP: usize = 1;
 pub const ALL_PRODUCERS: [&str; 6] = ["review", "attn", "staff", "cron", "dispatch", "today"];
 
 impl QueueConfig {
-    /// Read `[queue]` from config, with env overrides for the two lane caps.
+    /// Read `[queue]` from config.
     ///
     /// Assembled here rather than inline in `Config::load` so the table's growth — every producer
     /// the queue absorbs adds a key — costs lines in the file that owns it.
@@ -117,12 +121,8 @@ impl QueueConfig {
         let job_classes = file.and_then(|f| f.queue_job_classes());
         QueueConfig {
             capture: file.and_then(|f| f.queue_capture()),
-            coding: super::util::non_empty_env("BN_QUEUE_CODING")
-                .and_then(|v| v.trim().parse().ok())
-                .or_else(|| file.and_then(|f| f.queue_coding())),
-            research: super::util::non_empty_env("BN_QUEUE_RESEARCH")
-                .and_then(|v| v.trim().parse().ok())
-                .or_else(|| file.and_then(|f| f.queue_research())),
+            coding: file.and_then(|f| f.queue_coding()),
+            research: file.and_then(|f| f.queue_research()),
             heartbeat_ttl_secs: file.and_then(|f| f.queue_heartbeat_ttl_secs()),
             express_per_tick: nums.express_per_tick,
             heavy: nums.heavy,
@@ -150,10 +150,29 @@ impl QueueConfig {
         }
     }
 
+    /// What a person's direct command does, given whether the queue is switched off.
+    ///
+    /// Read this rather than the [`direct`](QueueConfig::direct) field. With the queue off there is
+    /// nothing to file into — a keypress that tried would land an entry no producer gate admits —
+    /// so `Queued` cannot mean anything and the answer is [`Immediate`](DirectMode::Immediate). The
+    /// field is left as written, so switching the queue back on restores the machine's own
+    /// preference rather than silently forgetting it.
+    ///
+    /// Takes the fact rather than reading it, which keeps this struct pure configuration and keeps
+    /// the picker's menu builders testable without an event log behind them. The caller reads it
+    /// once, from [`crate::queue::off::is_off`].
+    pub fn direct_mode(&self, queue_off: bool) -> DirectMode {
+        match queue_off {
+            false => self.direct,
+            true => DirectMode::Immediate,
+        }
+    }
+
     /// Whether `producer` is configured to enqueue rather than launch.
     ///
-    /// **Configuration only.** Whether it *actually* enqueues also depends on a dispatcher being
-    /// alive — see [`capture_active`](QueueConfig::capture_active), which is what producers call.
+    /// **Configuration only.** Whether it *actually* enqueues also depends on the queue being
+    /// switched on and a dispatcher being alive — see
+    /// [`capture_active`](QueueConfig::capture_active), which is what producers call.
     pub fn captures(&self, producer: &str) -> bool {
         match &self.capture {
             // Unconfigured: the queue is the default path for everything.
@@ -181,8 +200,12 @@ impl QueueConfig {
     /// Every producer must come through here. The two that did not — the `bn tat` picker verbs and
     /// the worktree-close pool reclaim — spent three and a half days filing work into a queue with
     /// no dispatcher, reporting each one as `✓ queued`.
+    /// The machine-wide off switch is checked here too, and here is the right place for the same
+    /// reason: this is the one door, so a producer cannot route around it by asking
+    /// [`captures`](QueueConfig::captures) directly. See [`crate::queue::off`] for what the switch
+    /// does and does not stop.
     pub fn capture_active(&self, producer: &str, now: i64) -> bool {
-        self.captures(producer) && dispatcher_alive(now)
+        self.captures(producer) && !crate::queue::off::is_off(now) && dispatcher_alive(now)
     }
 
     /// The lane caps: an explicit override, else derived from this machine's RAM and cores.
@@ -303,6 +326,34 @@ fn read_stamp(path: &std::path::Path) -> Option<i64> {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|raw| raw.trim().parse::<i64>().ok())
+}
+
+#[cfg(test)]
+mod off_switch_tests {
+    use super::{DirectMode, QueueConfig};
+
+    /// With nothing to file into, `direct = "queued"` cannot mean anything — so the accessor reads
+    /// `Immediate` while the queue is off, and the field keeps the machine's own preference for
+    /// when the queue comes back.
+    #[test]
+    fn the_direct_setting_is_held_not_forgotten_while_the_queue_is_off() {
+        let cfg = QueueConfig {
+            direct: DirectMode::Queued,
+            ..Default::default()
+        };
+        assert_eq!(cfg.direct_mode(false), DirectMode::Queued);
+        assert_eq!(cfg.direct_mode(true), DirectMode::Immediate);
+        assert_eq!(cfg.direct, DirectMode::Queued, "the preference is kept");
+    }
+
+    /// A machine that already starts commands instantly is unaffected either way — the off switch
+    /// can only ever make a direct command *more* immediate.
+    #[test]
+    fn an_immediate_machine_is_unaffected_by_the_switch() {
+        let cfg = QueueConfig::default();
+        assert_eq!(cfg.direct_mode(false), DirectMode::Immediate);
+        assert_eq!(cfg.direct_mode(true), DirectMode::Immediate);
+    }
 }
 
 #[cfg(test)]

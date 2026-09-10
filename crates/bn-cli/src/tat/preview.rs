@@ -489,6 +489,18 @@ fn settings_pane(cfg: &Config) {
         true => println!("Admission:  open"),
         false => println!("Admission:  paused ({})", paused.pauses.len()),
     }
+    // Last of the four, because it is the one that overrides the other three: with the queue off,
+    // what the dispatcher and admission are doing stops deciding whether your work starts.
+    match bn_core::queue::off::active(now) {
+        None => println!("Queue:      on — triggers file work for the dispatcher"),
+        Some(off) => println!(
+            "Queue:      OFF — every trigger runs immediately{}",
+            match off.remaining(now) {
+                Some(left) => format!(" ({} left)", crate::cmd::queue_when::in_words(left)),
+                None => String::new(),
+            }
+        ),
+    }
     println!("Heavy cap:  {}", cfg.queue.heavy_cap());
     let heavy: Vec<&str> = bn_core::wt_actions::all()
         .iter()

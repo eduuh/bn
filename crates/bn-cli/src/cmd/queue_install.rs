@@ -56,10 +56,10 @@ pub(crate) fn ensure(cfg: &Config) {
     {
         return;
     }
+    // Off only when a profile says `queue = false`: a missing or unreadable config switches nothing
+    // off, so it can never uninstall a dispatcher on its account.
     if !cfg.queue_enabled_here() {
-        if cfg.destructive_reconcile_allowed() {
-            disable();
-        }
+        disable();
         return;
     }
     // Nothing to keep alive if no producer would use it.

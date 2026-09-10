@@ -646,9 +646,6 @@ impl<'a> IntoIterator for &'a AgentCatalog {
 /// Every agent across all tiers for `ctx`, folded first-tier-wins by name (a branch `agents/`
 /// shadows a repo or shipped default), then sorted by name for deterministic dispatch order.
 pub fn discover(cfg: &Config, ctx: Option<&Resolved>) -> Result<AgentCatalog, AgentCatalogError> {
-    if let Some((path, value)) = resolver::quarter_review_cron_override() {
-        return Err(AgentCatalogError::LegacyScheduleOverride { path, value });
-    }
     discover_in(&resolver::agent_dirs(cfg, ctx))
 }
 

@@ -372,7 +372,7 @@ pub fn edit_windows(content: &str, windows: &[PriorityWindow]) -> String {
 /// Write `windows` back to the config at `path`, replacing every window block it holds.
 pub fn write_windows(path: &std::path::Path, windows: &[PriorityWindow]) -> std::io::Result<()> {
     let current = std::fs::read_to_string(path).unwrap_or_default();
-    std::fs::write(path, edit_windows(&current, windows))
+    crate::queue::config_edit::write_config(path, &edit_windows(&current, windows))
 }
 
 /// The TOML spelling of a mode — the inverse of [`WindowMode::parse`].

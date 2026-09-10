@@ -200,9 +200,37 @@ struct Cli {
 
 // Bare `bn cron` (no subcommand) emits the unified dashboard: see `emit_cron_dashboard`.
 
+/// The one line a migrated machine sees: where its settings went, and where the full account is.
+fn migration_notice(report: &bn_core::config_migrate::Report) -> String {
+    let mut into = Vec::new();
+    if let Some(shared) = &report.shared {
+        into.push(format!("{} (every machine)", shared.display()));
+    }
+    if let Some(machine) = &report.machine {
+        into.push(format!("{} (this machine)", machine.display()));
+    }
+    let into = if into.is_empty() {
+        "nowhere, because nothing in it is still read".to_string()
+    } else {
+        into.join(" and ")
+    };
+    format!(
+        "bn: moved your config into {into}. The old file is kept at {}; {} lists what moved.",
+        report.backup.display(),
+        bn_core::resolver::config_dir()
+            .join("config-migration.txt")
+            .display()
+    )
+}
+
 fn main() {
     reset_sigpipe();
     let cli = Cli::parse();
+    // The first bn after the upgrade moves an old `config.toml` into the notes tree, before
+    // anything reads config. Every later run costs one failed stat.
+    if let Some(report) = bn_core::config_migrate::run() {
+        eprintln!("{}", migration_notice(&report));
+    }
     let cfg = Config::load();
 
     // fzf re-execs `bn` for every picker callback — one process per cursor move for `--preview`,
@@ -227,6 +255,18 @@ fn main() {
     // `bn run`), so it never recurses.
     if !internal && !matches!(&cli.command, Some(Command::Staff(CmdStaff::Run { .. }))) {
         maybe_fire_catchup(&cfg);
+        // Timers follow the declared crons without anyone running `bn cron register`: a cheap,
+        // rate-limited check that registers in the background when the manifest moved. Never from
+        // `bn cron register` itself, which records what it registered.
+        if !matches!(
+            &cli.command,
+            Some(Command::Staff(CmdStaff::Cron {
+                action: Some(CronCmd::Register { .. }),
+                ..
+            }))
+        ) {
+            maybe_reconcile_timers(&cfg);
+        }
         // An enabled queue needs a dispatcher; a disabled one needs any old managed dispatcher
         // removed. One stat in the common enabled case; see `queue_install`.
         //

@@ -3,7 +3,6 @@ use crate::*;
 pub(super) fn route(cfg: &Config, action: CmdShellUi, json: bool) {
     match action {
         CmdShellUi::Edit { action } => crate::edit::route(cfg, *action, json),
-        CmdShellUi::Setup => emit_setup(cfg, json),
         CmdShellUi::TmuxStatus { path } => emit_tmux_status(cfg, path),
         CmdShellUi::TmuxMcp { action } => match action {
             TmuxMcpCmd::Ensure => emit_tmux_mcp_ensure(cfg),
@@ -14,7 +13,11 @@ pub(super) fn route(cfg: &Config, action: CmdShellUi, json: bool) {
         CmdShellUi::TmuxGit { path } => emit_tmux_git(path),
         CmdShellUi::TmuxGoal { path } => emit_tmux_goal(cfg, path),
         CmdShellUi::TmuxAttnCount => emit_tmux_attn_count(),
-        CmdShellUi::TmuxDoneBadge { window } => emit_tmux_done_badge(&window),
+        CmdShellUi::TmuxDoneBadge {
+            window,
+            status,
+            exited,
+        } => crate::cmd::tmux_done::emit(&window, status.as_deref(), exited),
         CmdShellUi::TmuxCockpit => emit_tmux_cockpit(cfg),
         CmdShellUi::TmuxHelp => emit_tmux_help(),
         CmdShellUi::TmuxNote => emit_tmux_note(cfg),

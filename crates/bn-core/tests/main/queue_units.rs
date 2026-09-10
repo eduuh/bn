@@ -363,9 +363,9 @@ fn heavy_headless_work_uses_the_long_running_ttl() {
     // for minutes like agents; using the short express TTL requeues the same build while it is
     // still waiting on Cargo's lock, and the duplicate nightly run kills the first tmux session.
     let entries = vec![leased_heavy(
-        "nightly-release",
+        "pool-warm",
         ExecSpec::Job {
-            job: "nightly-release".into(),
+            job: "pool-warm".into(),
             repo: None,
             branch: None,
         },
@@ -502,27 +502,23 @@ fn warming_is_read_from_what_the_entry_declares() {
 
 #[test]
 fn heavy_is_not_the_same_claim_as_warming() {
-    // `nightly-release` costs as much as a warm and is admitted the same way, but it is not warming
-    // and must not inherit warming's away-only admission — it would never run on a working day.
-    assert!(jobs::is_heavy("nightly-release"));
-    assert!(!jobs::is_warming("nightly-release"));
+    // `verify` costs as much as a warm and is admitted the same way, but it is not warming and
+    // must not inherit warming's away-only admission — it would never run on a working day, and
+    // it is a verb someone asked for from the picker and is watching.
+    assert!(jobs::is_heavy("verify"));
+    assert!(!jobs::is_warming("verify"));
     let spec = AddSpec {
         kind: BacklogKind::Cron,
-        source: "cron:nightly-release".to_string(),
+        source: "cron:verify".to_string(),
         exec: ExecSpec::Job {
-            job: "nightly-release".to_string(),
+            job: "verify".to_string(),
             repo: None,
             branch: None,
         },
         heavy: true,
         ..Default::default()
     };
-    let class = classify(&BacklogEntry::new(
-        "machine",
-        "run nightly-release",
-        &spec,
-        1000,
-    ));
+    let class = classify(&BacklogEntry::new("machine", "run verify", &spec, 1000));
     assert_eq!(class.subtype, QueueSubtype::Cron);
     assert_eq!(class.mode, QueueMode::Autonomous);
 }

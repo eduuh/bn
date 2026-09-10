@@ -72,7 +72,7 @@ pub(crate) fn run_critic_dispatch(
         );
     }
     // Harness precedence mirrors `bn dispatch`: an explicit `--agent` pin wins; else the Critique
-    // stage's configured harness (`[pipeline.models.critique].harness`); else copilot — then the
+    // stage's configured harness (`[pipeline.stages.critique].harness`); else copilot — then the
     // machine capability gate degrades an unavailable harness to copilot (surfaced, never silent).
     let model = cfg.pipeline_model(&repo, bn_core::pipeline::stage::Stage::Critique);
     let agent_kind = {
@@ -101,7 +101,7 @@ pub(crate) fn run_critic_dispatch(
                         "critic",
                         "bad-stage-harness",
                         &format!(
-                            "bn critic: unknown harness '{h}' in [pipeline.models.critique] (use: copilot | claude)"
+                            "bn critic: unknown harness '{h}' in [pipeline.stages.critique] (use: copilot | claude)"
                         ),
                     )
                 })
