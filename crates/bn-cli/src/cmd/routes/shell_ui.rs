@@ -20,6 +20,7 @@ pub(super) fn route(cfg: &Config, action: CmdShellUi, json: bool) {
         } => crate::cmd::tmux_done::emit(&window, status.as_deref(), exited),
         CmdShellUi::TmuxCockpit => emit_tmux_cockpit(cfg),
         CmdShellUi::TmuxHelp => emit_tmux_help(),
+        CmdShellUi::TmuxKeys { since } => crate::cmd::tmux_keys::emit_tmux_keys(since),
         CmdShellUi::TmuxNote => emit_tmux_note(cfg),
         CmdShellUi::Glyphs => emit_glyphs(),
         CmdShellUi::TmuxSync => {

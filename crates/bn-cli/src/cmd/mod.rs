@@ -84,6 +84,7 @@ pub(crate) mod task;
 pub(crate) mod task_workflow;
 pub(crate) mod task_capture;
 pub(crate) mod task_view;
+pub(crate) mod tmux_keys;
 pub(crate) mod tmux_reconcile;
 pub(crate) mod tmux_sessions;
 pub(crate) mod tmux_status;

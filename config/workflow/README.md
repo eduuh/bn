@@ -32,7 +32,7 @@ local worktree and the codespace. Needs `gh`; degrades silently without it. See
 
 The status-bar segments and popups are now **native `bn` subcommands** (`bn tmux-git`,
 `tmux-goal`, `tmux-attn-count`, `tmux-done-badge`, `tmux-cockpit`, `tmux-help`,
-`tmux-note`) — see `crates/bn-cli/src/cmd/tmux_status.rs`; quick-capture is `bn add
+`tmux-note`, `tmux-keys`) — see `crates/bn-cli/src/cmd/tmux_status.rs` and `tmux_keys.rs`; quick-capture is `bn add
 <section> --prompt` and `prefix e` inlines `nvim .`. (Worktree open/create/remove moved
 to native `bn wt`; `wt-clone` → `bn wt clone`, `wf-open` → `bn open`.)
 
@@ -92,25 +92,30 @@ worktree creation. See `config/hooks/post-create` for a starting point.
 | n   | `bn tmux-note` (native)    |
 | e   | `nvim .` (inlined)         |
 | A   | `bin/tmux-agent.sh` (spawn Copilot agent window — the default) |
-| G   | `bin/tmux-agent.sh … copilot` (spawn Copilot agent window, explicit) |
+| G   | `bin/tmux-agent.sh … claude` (spawn Claude agent window) |
 | S   | `bn tmux-cockpit` (native; orchestration roll-up) |
 | j   | `bn jump` (native; everything that needs you: windows + `bn next` queue) |
 | Tab | `bn jump --next` (native; jump to top window needing you; repeat to cycle) |
 | m   | watch this window (silence → ✓) |
 
-## What the two top rows carry
+## What the top row carries
 
-Row 0 (dashboard) shows only what changes with **where you are**: the goal (or the linked
-PR's title), the git segment (`⎇ <branch>`, ahead/behind, dirty count), this branch's open
-todo/blocker tally, one bell per agent waiting anywhere on the server, and the clock.
+The bar is one row. The left side holds the session pill and the tabs; the right side is the
+dashboard, which shows only what changes with **where you are**: the git segment
+(`⎇ <branch>`, ahead/behind, dirty count), this branch's open todo/blocker tally, one bell per
+agent waiting anywhere on the server, and the clock.
 
-Row 1 (tabs) shows the window **number** plus that window's bn badges — no branch name.
-Row 0's git segment already names the focused branch, so repeating it once per tab cost
+It used to be two rows, with the goal (or the linked PR's title) on the dashboard row. Once the
+tabs shrank to numbers they fit beside the dashboard, and the goal was dropped rather than keep
+a second row for it. `bn tmux-goal` still prints it, and it is in the note itself.
+
+The tabs show the window **number** plus that window's bn badges — no branch name.
+The git segment already names the focused branch, so repeating it once per tab cost
 20-30 columns per window and overflowed the tab strip long before the windows ran out. The
 window's tmux *name* is still the sanitized branch, so ``prefix ` `` (`bn jump --session`)
 and right-clicking a tab still identify it.
 
-Four badges used to sit on row 0 and no longer do — attention (`bn attn badge`), queue
+Four badges used to sit on the dashboard and no longer do — attention (`bn attn badge`), queue
 (`bn queue badge`), bn-web health (`bn tmux-mcp badge`) and the running cron job
 (`bn cron running`). They were quiet on almost every 5s repaint. They are now the header of
 `bn tat` (`prefix C-o`), painted on open and on `ctrl-r`, and `bn tat` grew a row that
@@ -132,9 +137,9 @@ windows wants you:
 `prefix m` silence watch, so a window running something that is not a hooked agent — a
 build, a test run, a non-Claude harness — still reports when it finishes.
 
-The dashboard row additionally carries one amber `` per agent **waiting anywhere on the
+The dashboard additionally carries one amber `` per agent **waiting anywhere on the
 server**, rendered with tmux's own `#{S:#{W:...}}` loop over every session and window. The
-tab bar cannot show this: a session is a repo, so row 1 only ever lists the current repo's
+tab bar cannot show this: a session is a repo, so the tabs only ever list the current repo's
 worktrees.
 
 The dot is set by `bn tmux-agent <state>` (a per-window `@bn_agent` option, I/O-free,

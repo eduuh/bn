@@ -48,6 +48,22 @@ window named after its worktree whose branch has since changed is **reported, no
 identity is what every other surface trusts, so a confident wrong answer there is worse than a
 blank one.
 
+## Which keys you actually use
+
+tmux writes every bound key press to its message log (`key C-o: display-popup …`) and nowhere
+else, and it forgets them on restart. The `tmux-keylog` job (part of the 5-minute `tick-5m` cron)
+drains that log into `<state_dir>/tmux-keys.jsonl`. `message-limit 10000` in `tmux.conf` keeps
+enough rows between runs. To see every curated binding with its press count, and the ones you
+never press:
+
+```
+bn tmux-keys              # last 7 days
+bn tmux-keys --since 30d
+```
+
+A `gap` in the header means the tmux server restarted or the log rolled over between runs, so the
+counts are a floor.
+
 The left pill shows the session name and **flips to reverse-video `PREFIX`** the moment you press `C-Space`, so you always know whether tmux is listening.
 
 **Tab menu.** Right-click (or double-click) a tab for an action menu — *Open note · Lazygit · Rename · Watch · Kill* — acting on the clicked window. (Some terminals swallow right-click; double-click always works.)

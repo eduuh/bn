@@ -1,7 +1,7 @@
 //! Native tmux status-bar segments (Phase 1 of the `.sh`→Rust migration, #). These replace the
 //! pure-logic shell scripts tmux invoked from `workflow/tmux.conf` via `#(...)`/hooks:
 //!   - `bn tmux-git`        ← workflow/bin/bn-git-status.sh   (status-format[0] git segment)
-//!   - `bn tmux-goal`       ← workflow/bin/bn-goal-status.sh  (status-format[0] focus segment)
+//!   - `bn tmux-goal`       ← workflow/bin/bn-goal-status.sh  (focus segment; no longer on the bar)
 //!   - `bn tmux-attn-count` ← workflow/bin/bn-attention-count.sh (global waiting/ready tally)
 //!   - `bn tmux-done-badge` ← workflow/bin/tmux-done-badge.sh  (now in `cmd/tmux_done.rs`)
 //!
@@ -630,35 +630,11 @@ pub(crate) fn emit_tmux_help() {
     println!("{hd}tmux cheat-sheet{n}  {d}prefix = C-Space{n}");
 
     for (table, label) in [("prefix", ""), ("copy-mode-vi", " (in copy mode)")] {
-        let Some(raw) = crate::proc::tmux_raw(&["list-keys", "-N", "-T", table]) else {
+        let Some(raw) = crate::proc::tmux_raw(&noted_keys_args(table)) else {
             eprintln!("bn: tmux is not reachable — no key table to read");
             return;
         };
-        // `list-keys -N` prints `<key><padding><note>`; the key never contains whitespace, so the
-        // first run of spaces is the split. Anything without a note is a binding nobody described.
-        let mut sections: Vec<(String, Vec<(String, String)>)> = Vec::new();
-        for line in raw.lines() {
-            let Some((k, note)) = line.split_once(char::is_whitespace) else {
-                continue;
-            };
-            let note = note.trim();
-            if note.is_empty() {
-                continue;
-            }
-            let (section, desc) = match note.split_once('·') {
-                Some((s, rest)) => (format!("{}{label}", s.trim()), rest.trim()),
-                None => (format!("Stock tmux{label}"), note),
-            };
-            let entry = (k.trim().to_string(), desc.to_string());
-            match sections.iter_mut().find(|(s, _)| *s == section) {
-                Some((_, rows)) => rows.push(entry),
-                None => sections.push((section, vec![entry])),
-            }
-        }
-        // Curated sections first, in the order tmux.conf introduces them; the stock dump last —
-        // it is reference material, not the daily loop.
-        sections.sort_by_key(|(s, _)| s.starts_with("Stock tmux"));
-        for (section, rows) in sections {
+        for (section, rows) in noted_key_sections(&raw, label) {
             println!("\n{hd}{section}{n}");
             for (k, desc) in rows {
                 println!("  {key}{k:<10}{n} {desc}");
@@ -670,6 +646,44 @@ pub(crate) fn emit_tmux_help() {
     let _ = std::io::Write::flush(&mut std::io::stdout());
     let mut buf = String::new();
     let _ = std::io::stdin().read_line(&mut buf);
+}
+
+/// `list-keys` argv for one table's noted bindings. `-P ""` is load-bearing: tmux 3.7 prints the
+/// prefix key in front of every row by default (`C-Space Tab  Agents · …`), in the copy-mode table
+/// too, and a parser that splits on the first space then files `C-Space` as every key and the real
+/// key as part of the section name. An empty prefix leaves one leading space, which
+/// [`parse_noted_key`] trims, and older tmux prints the same shape.
+pub(crate) fn noted_keys_args(table: &str) -> [&str; 6] {
+    ["list-keys", "-N", "-P", "", "-T", table]
+}
+
+/// One `list-keys -N` row as `(key, note)`. The key never contains whitespace, so the first run of
+/// spaces after it is the split. A row without a note is a binding nobody described: `None`.
+pub(crate) fn parse_noted_key(line: &str) -> Option<(&str, &str)> {
+    let (key, note) = line.trim_start().split_once(char::is_whitespace)?;
+    let note = note.trim();
+    (!note.is_empty()).then_some((key, note))
+}
+
+/// Group a table's noted bindings by the `Section · description` in their `-N` note, as
+/// `(section, [(key, description)])`. Curated sections come first, in the order tmux.conf
+/// introduces them; notes without a `·` (tmux's own) land under "Stock tmux", last, because they
+/// are reference material rather than the daily loop. `label` suffixes every section name.
+pub(crate) fn noted_key_sections(raw: &str, label: &str) -> Vec<(String, Vec<(String, String)>)> {
+    let mut sections: Vec<(String, Vec<(String, String)>)> = Vec::new();
+    for (k, note) in raw.lines().filter_map(parse_noted_key) {
+        let (section, desc) = match note.split_once('·') {
+            Some((s, rest)) => (format!("{}{label}", s.trim()), rest.trim()),
+            None => (format!("Stock tmux{label}"), note),
+        };
+        let entry = (k.to_string(), desc.to_string());
+        match sections.iter_mut().find(|(s, _)| *s == section) {
+            Some((_, rows)) => rows.push(entry),
+            None => sections.push((section, vec![entry])),
+        }
+    }
+    sections.sort_by_key(|(s, _)| s.starts_with("Stock tmux"));
+    sections
 }
 
 // ---- bn tmux-note : open the current branch note in $EDITOR (popup, prefix n) -------------------
@@ -911,5 +925,53 @@ mod pr_title_backoff_tests {
         assert_eq!(render_goal_seg("ship it", false), "#[fg=#c0caf5]ship it");
         assert_eq!(render_goal_seg("ship it", true), "#[fg=#565f89]ship it");
         assert_eq!(render_goal_seg("", true), "#[fg=#565f89]\u{25c6} set a goal");
+    }
+}
+
+#[cfg(test)]
+mod tmux_help_tests {
+    use super::*;
+
+    /// tmux 3.7c `list-keys -N -P "" -T prefix`, as captured on the machine that found the bug: one
+    /// leading space where the prefix used to be, a curated note, and one of tmux's own.
+    const EMPTY_PREFIX: &str = " Tab     Agents · jump straight to the top window needing you\n \
+                                Enter   Tools · scratch shell in this worktree\n \
+                                #       List all paste buffers\n";
+
+    /// The key-first shape older tmux prints for the same table.
+    const KEY_FIRST: &str = "Tab     Agents · jump straight to the top window needing you\n\
+                             Enter   Tools · scratch shell in this worktree\n\
+                             #       List all paste buffers\n";
+
+    /// The regression: without `-P ""`, 3.7c's prefix column made `C-Space` every row's key.
+    #[test]
+    fn the_argv_asks_tmux_for_no_prefix_column() {
+        assert_eq!(noted_keys_args("prefix"), ["list-keys", "-N", "-P", "", "-T", "prefix"]);
+    }
+
+    #[test]
+    fn both_row_shapes_file_the_real_key_under_its_section() {
+        for raw in [EMPTY_PREFIX, KEY_FIRST] {
+            assert_eq!(
+                noted_key_sections(raw, ""),
+                vec![
+                    (
+                        "Agents".to_string(),
+                        vec![("Tab".to_string(), "jump straight to the top window needing you".to_string())]
+                    ),
+                    ("Tools".to_string(), vec![("Enter".to_string(), "scratch shell in this worktree".to_string())]),
+                    ("Stock tmux".to_string(), vec![("#".to_string(), "List all paste buffers".to_string())]),
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn a_row_without_a_note_is_skipped_and_the_label_suffixes_sections() {
+        assert_eq!(parse_noted_key(" G   "), None);
+        assert_eq!(parse_noted_key(""), None);
+        let sections = noted_key_sections(" G   Copy mode · bottom of history\n", " (in copy mode)");
+        assert_eq!(sections[0].0, "Copy mode (in copy mode)");
+        assert_eq!(sections[0].1, vec![("G".to_string(), "bottom of history".to_string())]);
     }
 }

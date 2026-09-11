@@ -39,6 +39,7 @@ pub(crate) fn native_job(job: &str) -> Option<NativeJob> {
         "self-update" => Some(crate::cmd::self_update::job_self_update),
         "tools-reconcile" => Some(job_tools_reconcile),
         "tmux-reconcile" => Some(crate::cmd::tmux_reconcile::job_tmux_reconcile),
+        "tmux-keylog" => Some(crate::cmd::tmux_keys::job_tmux_keylog),
         "keep-warm" => Some(crate::cmd::keep_warm::job_keep_warm),
         "pool-warm" => Some(crate::wt_pool::job_pool_warm),
         // The worktree-picker verbs (`bn_core::wt_actions`). Each is a queueable name for work
@@ -65,8 +66,16 @@ pub(crate) fn native_job(job: &str) -> Option<NativeJob> {
 /// `notify` deliberately left this cluster: `bn watch` (the `*:0/2` cron) owns attention delivery,
 /// and running both meant every urgent item was toasted twice on two independent dedup ledgers.
 /// The job still exists for `bn run notify` — see [`crate::cmd::jobs::job_notify`].
-pub(crate) const TICK_5M: &[&str] =
-    &["tools-reconcile", "routine-tick", "attention-sync", "tmux-reconcile"];
+///
+/// `tmux-keylog` rides here because its window is set by tmux's `message-limit` (10000 rows, about
+/// 20 minutes of this machine's status polling): five minutes drains it well inside that.
+pub(crate) const TICK_5M: &[&str] = &[
+    "tools-reconcile",
+    "routine-tick",
+    "attention-sync",
+    "tmux-reconcile",
+    "tmux-keylog",
+];
 
 /// The `*:0/10` cadence cluster, in run order.
 pub(crate) const TICK_10M: &[&str] = &[

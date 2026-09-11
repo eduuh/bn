@@ -5,6 +5,9 @@
 #   --agents opt-in extra: global npm helpers for AXI-style agent workflows (gnhf,
 #            lavish-axi) plus the upstream Lavish agent-skill. Also enabled by
 #            BN_INSTALL_AGENT_TOOLS=1. Combines with either mode.
+#   --shell-clis opt-in extra: terminal productivity companions (zoxide, bat, eza, delta) that
+#            pair well with the workflow layer's worktrees/notes/diffs. Also enabled by
+#            BN_INSTALL_SHELL_CLIS=1. Combines with either mode.
 # The Rust crates have zero tmux dependency; the tmux layer is opt-in glue on top.
 #
 # This script never compiles anything: it installs main's published release binaries and wires
@@ -24,6 +27,7 @@ fi
 
 mode="full"
 agents="${BN_INSTALL_AGENT_TOOLS:-0}"
+shell_clis="${BN_INSTALL_SHELL_CLIS:-0}"
 # Internal, set by ./build.sh once it has compiled this checkout: take the binaries from its target
 # dir instead of the release. Not for hand use — on its own it finds nothing to install.
 from_build=0
@@ -31,9 +35,10 @@ for arg in "$@"; do
   case "$arg" in
     --core)       mode="core" ;;
     --agents)     agents=1 ;;
+    --shell-clis) shell_clis=1 ;;
     --from-build) from_build=1 ;;
     *)
-      echo "error: unknown flag '$arg' (use --core and/or --agents)" >&2
+      echo "error: unknown flag '$arg' (use --core, --agents, and/or --shell-clis)" >&2
       exit 1
       ;;
   esac
@@ -116,6 +121,8 @@ slug="${BN_REPO_SLUG:-eduuh/bn}"
 source "$repo/scripts/install-toolchain.sh"
 # shellcheck source=scripts/install-tmux.sh
 source "$repo/scripts/install-tmux.sh"
+# shellcheck source=scripts/install-shell-clis.sh
+source "$repo/scripts/install-shell-clis.sh"
 
 # Atomically place a binary: copy to a temp in the destination dir, then rename over the target.
 # A rename on the same filesystem is atomic, so a process (e.g. a cron firing mid-install) that
@@ -371,7 +378,7 @@ required_cli_deps() {
 optional_cli_deps() {
   local scope="$1"
   if [ "$scope" = "full" ]; then
-    echo "gh az zsh lazygit nvim workiq"
+    echo "gh az zsh lazygit nvim workiq zoxide bat eza delta"
   else
     echo "gh az"
   fi
@@ -464,6 +471,14 @@ install_required_cli_deps "$mode"
 # fallback if the build cannot happen here. Same BN_INSTALL_DEPS=0 opt-out as the deps above.
 if [ "$mode" = "full" ] && [ "${BN_INSTALL_DEPS:-1}" != "0" ]; then
   bn_install_ensure_tmux
+fi
+
+# --- shell CLIs (opt-in): terminal productivity companions -----------------------
+# Never runs by default — zoxide/bat/eza/delta are nice-to-haves, not requirements, so they're
+# opt-in via --shell-clis or BN_INSTALL_SHELL_CLIS=1 (scripts/install-shell-clis.sh says why).
+# Same BN_INSTALL_DEPS=0 opt-out as the required deps above.
+if [ "$shell_clis" = "1" ] && [ "${BN_INSTALL_DEPS:-1}" != "0" ]; then
+  bn_install_ensure_shell_clis
 fi
 preflight_report "$mode"
 

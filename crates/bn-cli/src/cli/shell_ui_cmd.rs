@@ -85,6 +85,13 @@ pub(crate) enum CmdShellUi {
     /// workflow/bin/tmux-help.sh). The workflow bindings worth remembering, grouped. Waits for
     /// Enter before closing.
     TmuxHelp,
+    /// How often each curated tmux binding was pressed, read from the key log the `tmux-keylog`
+    /// job drains out of tmux's message log every 5 minutes. Bindings never pressed show `never`.
+    TmuxKeys {
+        /// How far back to count, e.g. `7d`, `36h` (default 7d).
+        #[arg(long)]
+        since: Option<String>,
+    },
     /// Open the current dir's branch note in $EDITOR (bound to prefix n; replaces
     /// workflow/bin/tmux-note.sh). Execs the editor so closing it closes the popup.
     TmuxNote,
