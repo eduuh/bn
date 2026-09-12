@@ -101,19 +101,20 @@ worktree creation. See `config/hooks/post-create` for a starting point.
 ## What the top row carries
 
 The bar is one row. The left side holds the session pill and the tabs; the right side is the
-dashboard, which shows only what changes with **where you are**: the git segment
-(`⎇ <branch>`, ahead/behind, dirty count), this branch's open todo/blocker tally, one bell per
-agent waiting anywhere on the server, and the clock.
+dashboard, pushed to the far edge: the git segment (`⎇ <branch>`, ahead/behind, dirty count)
+and the clock. The todo/blocker tally and the waiting-agent bells left the bar; `bn jump`
+(`prefix f`) still shows them.
 
 It used to be two rows, with the goal (or the linked PR's title) on the dashboard row. Once the
 tabs shrank to numbers they fit beside the dashboard, and the goal was dropped rather than keep
 a second row for it. `bn tmux-goal` still prints it, and it is in the note itself.
 
-The tabs show the window **number** plus that window's bn badges — no branch name.
-The git segment already names the focused branch, so repeating it once per tab cost
-20-30 columns per window and overflowed the tab strip long before the windows ran out. The
-window's tmux *name* is still the sanitized branch, so ``prefix ` `` (`bn jump --session`)
-and right-clicking a tab still identify it.
+Inactive tabs show the window **number** plus attention badges; the active tab adds its name
+(`@bn_branch`, else the window name, cut to 20 columns). A name on every tab cost 20-30 columns
+per window and overflowed the strip long before the windows ran out. When tabs do overflow,
+amber `<` / `>` markers mark the hidden side (click them to step a window) and the strip scrolls
+to keep the active tab visible. `prefix f` (or ``prefix ` ``, both `bn jump --session`) finds a
+window by name.
 
 Four badges used to sit on the dashboard and no longer do — attention (`bn attn badge`), queue
 (`bn queue badge`), bn-web health (`bn tmux-mcp badge`) and the running cron job
@@ -123,24 +124,21 @@ starts and stops bn-web. The commands themselves still work.
 
 ## Live agent activity in the status bar
 
-Each window's status entry shows what Claude Code is doing in that worktree, so a
-glance at the bar (or the `prefix S` cockpit) tells you which of several parallel-agent
-windows wants you:
+Each window's tab badges the Claude Code states that need you, so a glance at the bar (or the
+`prefix S` cockpit) tells you which of several parallel-agent windows wants you. Busy states
+(`working`, `limited`) are not drawn:
 
 | Glyph | State | Meaning |
 |-------|-------|---------|
 | `●` amber | `waiting` | Agent needs your input/permission |
-| `◌` dim   | `working` | Agent is processing |
 | `✓` green  | `done`    | Agent finished its turn |
 
 `✓` is also raised by the **terminal bell** (`window_bell_flag`) and by the
 `prefix m` silence watch, so a window running something that is not a hooked agent — a
 build, a test run, a non-Claude harness — still reports when it finishes.
 
-The dashboard additionally carries one amber `` per agent **waiting anywhere on the
-server**, rendered with tmux's own `#{S:#{W:...}}` loop over every session and window. The
-tab bar cannot show this: a session is a repo, so the tabs only ever list the current repo's
-worktrees.
+Agents waiting in *other* sessions are not on the bar (a session is a repo, so the tabs only
+list this repo's worktrees); `prefix Tab` / `prefix j` reach them.
 
 The dot is set by `bn tmux-agent <state>` (a per-window `@bn_agent` option, I/O-free,
 no-op outside tmux) and is the source of truth for Claude windows. It takes precedence
