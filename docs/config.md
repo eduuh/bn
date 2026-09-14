@@ -1,14 +1,14 @@
 # Configuration
 
 bn needs no config file. Every setting below has a built-in default, and a machine with no config
-at all works on every repository it has cloned and runs the queue, cron and the dashboard.
+at all works on every repository it has cloned and runs cron and the dashboard.
 
 ## Where settings live
 
 | File | Holds |
 |---|---|
 | `<notes_root>/config.toml` | Settings every machine shares. It syncs with the rest of the notes tree. |
-| `<notes_root>/<machine>/config.toml` | What this machine does differently. A key here overrides the shared file, key by key. bn also records this machine's own choices here: queue windows, direct mode and job classes. |
+| `<notes_root>/<machine>/config.toml` | What this machine does differently. A key here overrides the shared file, key by key. |
 
 `<notes_root>` is `~/projects/branch-notes`, or the work notes tree (`~/projects/notes/bn`) on a
 machine that has only that one. `<machine>` is the name bn pinned in `~/.bn/config/machine` the
@@ -38,7 +38,6 @@ What a machine should do less of. Usually set in that machine's own file.
 | Key | Default | Meaning |
 |---|---|---|
 | `repos` | `["*"]` | Repositories this machine may work on, as `owner/repo` or a unique repo name. |
-| `queue` | `true` | Run the machine-wide queue dispatcher. `false` removes it. |
 | `cron` | `true` | Register and run scheduled jobs. |
 | `web` | `true` | Run the bn-web dashboard. |
 
@@ -211,21 +210,6 @@ inherits from the wider layer.
 | `min_free_ram_mb`, `max_loadavg`, `max_swap_pct`, `tokens_per_hour`, `daily_cost_usd`, `daily_cost_usd_coding`, `daily_cost_usd_research` | off | Pause local dispatch past these limits. |
 | `remote_overflow` | `false` | Send `auto` work to a hosted runner when local is full. |
 
-### `[queue]`
-
-| Key | Default | Meaning |
-|---|---|---|
-| `capture` | every producer | Producers that queue instead of launching. `[]` turns queueing off. |
-| `coding`, `research` | from RAM and cores | Concurrent agents per lane. |
-| `heavy` | `1` | Heavy jobs, such as builds and pool warms, at once. |
-| `direct` | `"immediate"` | What a keypress does: start now, or `"queued"`. |
-| `opportunistic_idle_mins` | `10` | Idle minutes before opportunistic work may start. |
-| `express_per_tick`, `heartbeat_ttl_secs`, `agent_lease_ttl_secs`, `express_lease_ttl_secs` | built in | Dispatcher pacing and lease lifetimes. |
-| `kind_caps` | none | Per-kind ceilings, such as `review-pr = 1`. |
-| `[queue.jobs] heavy` | bn's list | Jobs that cost like a build. Setting it replaces the list. |
-| `[queue.jobs] priority` | derived | Per-job priority. |
-| `[[queue.windows]]` | the lunch and after-work pool warms | Times of day when some work is preferred: `name`, `at`, `fore`, `mode`, `boost`, `matches`. |
-
 ### `[jobs.only_on]`
 
 | Key | Default | Meaning |
@@ -247,7 +231,7 @@ No setting is read from the environment. What bn does read:
 | `BN_HOME`, `BN_CONFIG_DIR`, `BN_CONFIG`, `BN_NOTES_DIR`, `BN_NOTES_DIR_WORK`, `BN_WORKTREE_DIR`, `BN_STATE_DIR`, `BN_JOBS_DIR`, `BN_AGENTS_DIR`, `BN_REFERENCES_DIR`, `BN_MANAGED_REPOS_DIR`, `BN_BIN_DIR`, `BN_MACHINE_FILE`, `BN_APPROVALS`, `BN_HOSTNAME`, `BN_OVERLAY_DIR`, `BN_PERSONAL_NOTES_DIR` | Path anchors. Test sandboxes use them to isolate a whole bn universe, and `BN_CONFIG` makes one file the entire config. |
 | `BN_VERBOSE`, `BN_LOG` | Turn the action log on for one run. `BN_LOG` may also name a level. |
 | `BN_COLOR` | `always` or `never` for terminal colour. `NO_COLOR` is honoured too. |
-| `BN_AGENT_GUARD=0`, `BN_DISPATCH_NOW`, `BN_NO_AUTO_TICK`, `BN_NO_CATCHUP` | One-run escape hatches: skip agent placement rules, skip queueing a dispatch, skip starting the dispatcher, skip cron catch-up. |
+| `BN_AGENT_GUARD=0`, `BN_NO_CATCHUP` | One-run escape hatches: skip agent placement rules, skip cron catch-up. |
 | `BN_DISPATCH_PIPELINE=1` | Make the legacy multi-stage pipeline the `bn dispatch` default. |
 
 Job scripts under `config/jobs/` read their own `BN_*` parameters, documented at the top of each

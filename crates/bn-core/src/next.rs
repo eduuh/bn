@@ -644,7 +644,6 @@ fn from_doctor(cfg: &Config, today: &str) -> Vec<Action> {
             // a per-repo task — keep it off the `bn next` action list. Inactive shell wrappers are
             // the same shape of problem: your shell's setup, not the next piece of work.
             Finding::NotesLeak(_) | Finding::ShellInit(_) => None,
-            Finding::Backlog(_) => None,
         })
         .collect()
 }

@@ -163,7 +163,7 @@ fn scheduler_isolates_sibling_failures_and_backs_off_retries() {
 }
 
 #[test]
-fn scheduler_enqueues_due_agents_and_queue_tick_runs_them() {
+fn scheduler_runs_due_agents_inline() {
     let _lock = bn_core::test_support::env_lock();
     let temp = tempfile::tempdir().expect("tempdir");
     // Isolate the shipped cron manifest. `crons::discover` appends `config_dir()/crons.toml` as a
@@ -176,94 +176,35 @@ fn scheduler_enqueues_due_agents_and_queue_tick_runs_them() {
     let state = temp.path().join("state");
     std::fs::create_dir_all(&agents).expect("agents dir");
     std::fs::write(
-        agents.join("queued-agent.md"),
-        "---\nname: queued-agent\nkind: command\nrequires_repo: test-repo\non_calendar: minutely\nrun: \"printf 'queued-agent-work\\\\n'\"\n---\n",
+        agents.join("due-agent.md"),
+        "---\nname: due-agent\nkind: command\nrequires_repo: test-repo\non_calendar: minutely\nrun: \"printf 'due-agent-work\\\\n'\"\n---\n",
     )
-    .expect("queued agent");
+    .expect("due agent");
 
     let _agents = bn_core::test_support::EnvGuard::set("BN_AGENTS_DIR", &agents);
     let _jobs = bn_core::test_support::EnvGuard::set("BN_JOBS_DIR", temp.path().join("jobs"));
     let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", &state);
-    // This test asserts the agent is *queued* rather than run, which is exactly what an inherited
-    // dispatch extent turns off — see `outside_a_dispatch` for why that leaks into agent sessions.
-    let _outside = bn_core::test_support::outside_a_dispatch();
     let mut cfg = Config {
         personal_root: temp.path().join("personal"),
         work_root: temp.path().join("work"),
         hostname: "test-host".to_string(),
         ..Default::default()
     };
-    // Keep `pool-warm` off this fixture machine. Pooling has no config and no opt-out any more —
-    // every bare clone is warmable — so without this the tick enqueues a mandatory pool-warm for
-    // `test-repo` and it takes the single start slot this test needs for its queued agent. The
-    // machine job allowlist is the honest way to say "not this box": the test is about agent
-    // scheduling, not warming.
-    cfg.job_only_on.insert(
-        "pool-warm".to_string(),
-        vec!["some-other-host".to_string()],
-    );
     make_repo_available(&mut cfg, temp.path(), "test-repo");
-
     std::fs::create_dir_all(&state).expect("state dir");
-    // Capture is only active while a dispatcher holds the lock, so the test has to hold it. Kept
-    // alive for the rest of the test: dropping the guard would release the machine mid-assertion.
-    let _dispatcher = bn_core::queue::daemon::DaemonLock::acquire().expect("hold the daemon lock");
 
     assert_eq!(run_job(&cfg, None, "agent-scheduler"), 0);
     assert_eq!(run_events("agent-scheduler").len(), 1);
-    assert!(run_events("queued-agent").is_empty());
 
-    let backlog = bn_core::backlog::load(&bn_core::backlog::backlog_path());
-    let entries = backlog.entries();
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].id, "run-queued-agent");
-    assert_eq!(entries[0].kind, bn_core::backlog::BacklogKind::Cron);
-    assert_eq!(
-        entries[0].exec,
-        bn_core::backlog::ExecSpec::Job {
-            job: "queued-agent".to_string(),
-            repo: None,
-            branch: None,
-        }
-    );
-
-    assert_eq!(crate::cmd::queue_tick::job_queue_tick(&cfg, None), 0);
-
-    let runs = run_events("queued-agent");
-    assert_eq!(runs.len(), 1);
+    let runs = run_events("due-agent");
+    assert_eq!(runs.len(), 1, "a due agent runs in the scheduler's own pass");
     assert_eq!(
         runs[0]
             .fields
             .get("output_tail")
             .and_then(serde_json::Value::as_str),
-        Some("queued-agent-work")
+        Some("due-agent-work")
     );
-    assert_eq!(
-        bn_core::backlog::load(&bn_core::backlog::backlog_path())
-            .entries()
-            .iter()
-            .find(|entry| entry.id == "run-queued-agent")
-            .map(|entry| entry.status),
-        Some(bn_core::backlog::BacklogStatus::Done)
-    );
-}
-
-#[test]
-fn queue_tick_is_a_successful_noop_when_queue_is_disabled() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let mut cfg = Config {
-        machine_profile: Some(bn_core::resolver::MachineProfile {
-            repos: vec!["bn".to_string()],
-            queue: false,
-            cron: true,
-            ..Default::default()
-        }),
-        hostname: "test-host".to_string(),
-        ..Default::default()
-    };
-
-    make_repo_available(&mut cfg, temp.path(), "bn");
-    assert_eq!(run_job(&cfg, None, "queue-tick"), 0);
 }
 
 #[test]
@@ -279,7 +220,7 @@ fn cron_job_path_prefers_current_executable_directory() {
 }
 
 #[test]
-fn cron_health_creates_repair_task_and_queues_agent() {
+fn cron_health_creates_repair_task_and_starts_one_agent() {
     let _lock = bn_core::test_support::env_lock();
     let temp = tempfile::tempdir().expect("tempdir");
     let state = temp.path().join("state");
@@ -328,21 +269,28 @@ fn cron_health_creates_repair_task_and_queues_agent() {
     assert_eq!(repair.meta("cron"), Some("broken-cron"));
     let task_id = repair.id().expect("task id").to_string();
 
-    let backlog = bn_core::backlog::load(&bn_core::backlog::backlog_path());
-    let entry = backlog
-        .entries()
-        .iter()
-        .find(|entry| entry.task == task_id)
-        .expect("repair queue entry");
-    assert_eq!(entry.repo, "bn");
-    assert_eq!(entry.kind, bn_core::backlog::BacklogKind::Ship);
-    assert_eq!(entry.priority, 4);
-    assert!(entry.item.contains("Fix failing cron job 'broken-cron'"));
-    assert!(entry.item.contains("panic: missing config"));
+    let launched = crate::cmd::dispatch::invocation::take_launched();
+    assert_eq!(launched.len(), 1, "one repair agent starts for the new task");
+    let args = &launched[0];
+    assert_eq!(args[0], "dispatch");
+    assert!(args[1].contains("Fix failing cron job 'broken-cron'"));
+    assert!(args[1].contains("panic: missing config"));
+    let flag = |name: &str| {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|at| args.get(at + 1))
+            .map(String::as_str)
+    };
+    assert_eq!(flag("--repo"), Some("bn"));
+    assert_eq!(flag("--task"), Some(task_id.as_str()));
 
     assert_eq!(
         crate::cmd::attention_workflow::job_cron_health(&cfg, None),
         0
+    );
+    assert!(
+        crate::cmd::dispatch::invocation::take_launched().is_empty(),
+        "an open repair task means the agent already started; the next pass starts no other"
     );
     let tasks_again = bn_core::todo::load(&cfg.tasks_file()).expect("tasks again");
     assert_eq!(
@@ -355,11 +303,10 @@ fn cron_health_creates_repair_task_and_queues_agent() {
 }
 
 /// The recovery half of the repair loop: once the cron goes green, the watchdog must fold out the
-/// work it minted. The attention row auto-acks via `replace=true`, but the repair task and the
-/// queued repair agent used to have no such path — which is how `scout` ended up green while
-/// `Fix failing cron scout` stayed open and a repair agent was still queued to reproduce it.
+/// work it minted. The attention row auto-acks via `replace=true`, but the repair task used to have
+/// no such path — which is how `scout` ended up green while `Fix failing cron scout` stayed open.
 #[test]
-fn cron_health_closes_the_repair_task_and_withdraws_the_agent_once_the_cron_recovers() {
+fn cron_health_closes_the_repair_task_once_the_cron_recovers() {
     let _lock = bn_core::test_support::env_lock();
     let temp = tempfile::tempdir().expect("tempdir");
     let jobs = temp.path().join("jobs");
@@ -400,14 +347,10 @@ fn cron_health_closes_the_repair_task_and_withdraws_the_agent_once_the_cron_reco
         .find(|task| task.meta("key") == Some("cron-repair:flaky-cron"))
         .expect("repair task");
     assert!(repair.is_open(&today), "the repair task starts open");
-    let task_id = repair.id().expect("task id").to_string();
-    assert!(
-        bn_core::backlog::load(&bn_core::backlog::backlog_path())
-            .entries()
-            .iter()
-            .any(|entry| entry.task == task_id
-                && entry.status == bn_core::backlog::BacklogStatus::Pending),
-        "a repair agent is queued while the cron is failing"
+    assert_eq!(
+        crate::cmd::dispatch::invocation::take_launched().len(),
+        1,
+        "a repair agent starts while the cron is failing"
     );
 
     // The cron recovers — exactly what the PATH-prelude fix did to `scout`.
@@ -433,12 +376,8 @@ fn cron_health_closes_the_repair_task_and_withdraws_the_agent_once_the_cron_reco
         "closed as cancelled-because-recovered, not as work someone completed"
     );
     assert!(
-        !bn_core::backlog::load(&bn_core::backlog::backlog_path())
-            .entries()
-            .iter()
-            .any(|entry| entry.task == task_id
-                && entry.status == bn_core::backlog::BacklogStatus::Pending),
-        "and withdraws the queued agent instead of letting it burn a worktree on a green job"
+        crate::cmd::dispatch::invocation::take_launched().is_empty(),
+        "a green cron starts no repair agent"
     );
 }
 
@@ -486,12 +425,8 @@ fn cron_health_withholds_repair_agent_for_a_cron_that_no_longer_resolves() {
             .any(|task| task.meta("key") == Some("cron-repair:renamed-away")),
         "an unresolvable cron is still worth a person's attention"
     );
-    let backlog = bn_core::backlog::load(&bn_core::backlog::backlog_path());
     assert!(
-        !backlog
-            .entries()
-            .iter()
-            .any(|entry| entry.item.contains("renamed-away")),
+        crate::cmd::dispatch::invocation::take_launched().is_empty(),
         "but no autonomous agent should be dispatched at a job that cannot be run"
     );
 }
@@ -545,10 +480,9 @@ fn retiring_a_cron_silences_the_watchdog_immediately() {
     );
 }
 
-/// `bn run <name>` used to enqueue any name at all, so a typo or a renamed job printed
-/// "queued …" and exited 0, then died exit 2 inside the queue executor where nobody saw it.
+/// A typo or a renamed job must fail where a person can read it, not exit 0.
 #[test]
-fn running_an_unresolvable_job_fails_fast_instead_of_queueing_it() {
+fn running_an_unresolvable_job_fails_fast() {
     let _lock = bn_core::test_support::env_lock();
     let temp = tempfile::tempdir().expect("tempdir");
     let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", temp.path().join("state"));
@@ -562,15 +496,7 @@ fn running_an_unresolvable_job_fails_fast_instead_of_queueing_it() {
     };
 
     assert_eq!(super::run_job(&cfg, None, "task-improve"), 2);
-
-    let backlog = bn_core::backlog::load(&bn_core::backlog::backlog_path());
-    assert!(
-        !backlog
-            .entries()
-            .iter()
-            .any(|entry| entry.item.contains("task-improve")),
-        "an unresolvable job must not reach the queue at all"
-    );
+    assert!(run_events("task-improve").is_empty());
 }
 
 #[test]
@@ -618,81 +544,3 @@ fn scheduler_catalog_failure_is_recorded_on_the_scheduler_row() {
         .is_some_and(|tail| tail.contains("missing required agent kind")));
 }
 
-/// The guard has to actually neutralize an inherited extent, not merely be present.
-///
-/// This is the property that matters for autonomous agents: they run with `BN_IN_QUEUE_TICK` set
-/// for their whole session, so a suite that only passes in a clean shell is a suite that always
-/// fails for them. Setting the variable here reproduces the agent's environment exactly.
-#[test]
-fn capture_tests_are_hermetic_against_an_inherited_dispatch_extent() {
-    let _lock = bn_core::test_support::env_lock();
-    let _inherited = bn_core::test_support::EnvGuard::set("BN_IN_QUEUE_TICK", "1");
-    assert!(std::env::var_os("BN_IN_QUEUE_TICK").is_some());
-
-    let outside = bn_core::test_support::outside_a_dispatch();
-    assert!(
-        std::env::var_os("BN_IN_QUEUE_TICK").is_none(),
-        "the guard must clear the ambient extent, or capture assertions test the shell"
-    );
-
-    drop(outside);
-    assert!(
-        std::env::var_os("BN_IN_QUEUE_TICK").is_some(),
-        "and must restore it, so one test cannot disarm the next"
-    );
-}
-
-/// `--now` is the escape hatch `bn run` never had.
-///
-/// Capture is on and the dispatcher is alive, so this job would normally be queued — the same
-/// state in which `bn run self-update` prints "queued …" and exits 0 while you wait for a result
-/// that is not coming. `--now` must run it here and leave nothing in the queue for a dispatcher to
-/// reconcile against a job that already ran.
-#[test]
-fn run_now_executes_in_place_instead_of_queueing() {
-    let _lock = bn_core::test_support::env_lock();
-    let _outside = bn_core::test_support::outside_a_dispatch();
-    let temp = tempfile::tempdir().expect("tempdir");
-    let agents = temp.path().join("agents");
-    let state = temp.path().join("state");
-    std::fs::create_dir_all(&agents).expect("agents dir");
-    std::fs::create_dir_all(&state).expect("state dir");
-    std::fs::write(
-        agents.join("now-agent.md"),
-        "---\nname: now-agent\nkind: command\nrequires_repo: test-repo\non_calendar: minutely\nrun: \"printf 'ran-inline\\\\n'\"\n---\n",
-    )
-    .expect("agent");
-
-    let _agents = bn_core::test_support::EnvGuard::set("BN_AGENTS_DIR", &agents);
-    let _jobs = bn_core::test_support::EnvGuard::set("BN_JOBS_DIR", temp.path().join("jobs"));
-    let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", &state);
-    // A live dispatcher is what makes capture active; without it the producer declines anyway and
-    // the test would pass for the wrong reason. Holding the lock IS being a dispatcher, so the
-    // guard has to outlive the assertions below.
-    let _dispatcher = bn_core::queue::daemon::DaemonLock::acquire().expect("hold the daemon lock");
-    let mut cfg = Config {
-        personal_root: temp.path().join("personal"),
-        work_root: temp.path().join("work"),
-        hostname: "test-host".to_string(),
-        ..Default::default()
-    };
-    make_repo_available(&mut cfg, temp.path(), "test-repo");
-
-    // Baseline: without --now this exact job is captured, not run.
-    assert_eq!(super::run_job(&cfg, None, "now-agent"), 0);
-    assert!(
-        run_events("now-agent").is_empty(),
-        "precondition: capture is active here, so the plain path must queue"
-    );
-
-    assert_eq!(super::run_job_now(&cfg, None, "now-agent", true), 0);
-    let runs = run_events("now-agent");
-    assert_eq!(runs.len(), 1, "--now must actually run the job");
-    assert_eq!(
-        runs[0]
-            .fields
-            .get("output_tail")
-            .and_then(serde_json::Value::as_str),
-        Some("ran-inline")
-    );
-}

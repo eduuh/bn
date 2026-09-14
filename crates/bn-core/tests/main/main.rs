@@ -13,20 +13,9 @@
 //! A test that needs to mutate the environment does not belong here; give it its own
 //! `tests/<name>.rs` target (and its own process) instead.
 
-mod advise_rank;
 mod agent_doc_dir;
 mod agent_opt_in;
 mod attn_staff_promotion;
-mod backlog_latest;
 mod events_concurrent_append;
 mod next_fit;
-mod queue_durations;
-mod queue_fit;
-mod queue_node_payload;
-mod queue_recurrence;
-mod queue_reservoir;
-mod queue_runs;
-mod queue_tick_policy;
-mod queue_units;
-mod queue_windows;
 mod task_ledger;

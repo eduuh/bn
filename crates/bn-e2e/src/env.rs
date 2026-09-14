@@ -1,11 +1,10 @@
 //! The isolation contract: every environment variable that must be redirected (or unset) before
 //! a `bn` subprocess may run against a sandbox.
 //!
-//! This is the *single* place the contract is written down. `scripts/try-queue.sh` and
-//! `scripts/queue-shakedown.sh` each hand-rolled a subset, and each carries a comment about a
-//! variable it forgot — in both cases `BN_NOTES_DIR`, which silently appended test fixtures to the
-//! real `tasks.txt`. A forgotten variable is not a hypothetical failure mode here; it is the
-//! observed one, twice.
+//! This is the *single* place the contract is written down. Two sandbox scripts once hand-rolled a
+//! subset, and each forgot `BN_NOTES_DIR`, which silently appended test fixtures to the real
+//! `tasks.txt`. A forgotten variable is not a hypothetical failure mode here; it is the observed
+//! one, twice.
 //!
 //! Two entries below are load-bearing in a way that is not obvious, and both were verified
 //! experimentally rather than assumed:
@@ -26,14 +25,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Variables that must be *removed* from a sandboxed child's environment.
-///
-/// `BN_IN_QUEUE_TICK` is bn's dispatch-extent marker: inherited, it flips every producer from
-/// queueing work to running it inline, so a suite that inherits it tests a different program than
-/// the one a person runs. An autonomous agent working in this repo has it set in every shell.
 pub const REMOVED: &[&str] = &[
     "TMUX",
     "TMUX_PANE",
-    "BN_IN_QUEUE_TICK",
     // Belt-and-braces against a developer's shell that already points bn somewhere: any of these
     // set in the ambient environment would otherwise win over the sandbox's own values only if we
     // failed to set them below. Removing first means the map built here is the whole truth.
@@ -100,10 +94,9 @@ pub fn contract(root: &Path, now: i64, today: &str) -> BTreeMap<String, String> 
 
     env.insert("BN_HOSTNAME".into(), "e2ehost".into());
 
-    // Determinism: a frozen clock, and no background dispatch racing the assertions.
+    // Determinism: a frozen clock.
     env.insert("BN_NOW".into(), now.to_string());
     env.insert("BN_TODAY".into(), today.into());
-    env.insert("BN_NO_AUTO_TICK".into(), "1".into());
 
     env
 }

@@ -78,13 +78,13 @@ impl ActionKind {
     }
 }
 
-/// How urgently the composer defaults to running the item: dispatch *now*, or add to the queue.
+/// How urgently the composer defaults to running the item: dispatch *now*, or as background work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Urgency {
-    /// Dispatch immediately (`POST /api/dispatch`) — the human's blocking queue.
+    /// Dispatch immediately (`POST /api/dispatch`).
     Urgent,
-    /// Enqueue for the next orchestrate tick (`POST /api/orchestrate/queue`) — background work.
+    /// Background work: nothing needs it started this minute.
     Queued,
 }
 
@@ -117,7 +117,7 @@ pub struct ActionItem {
     pub payload: Value,
     /// The pre-filled, editable agent prompt — a per-type template the owner tweaks before launch.
     pub suggested_prompt: String,
-    /// Whether the composer opens on *Urgent* (dispatch) or *Queue*.
+    /// Whether the composer opens on *Urgent* (dispatch) or as background work.
     pub default_urgency: Urgency,
     /// Epoch-seconds the underlying signal was raised — the recency tiebreaker.
     pub created: i64,
@@ -143,17 +143,6 @@ pub struct ActionSources<'a> {
     pub goals: &'a [Item],
     /// Every orchestrate queue item across live runs (flattened) — the stale-PR source.
     pub queue: &'a [QueueItem],
-    /// The work queue, for joining an accepted suggestion against what it produced.
-    ///
-    /// An accepted suggestion whose work is already in flight must not offer to start it again —
-    /// that CTA is how the same work got launched twice. The join has to be against the queue rather
-    /// than against the suggestion's own cached `queued_id`, because the cache cannot tell a live
-    /// entry from one that was cancelled or dropped, and a suggestion whose entry is gone *should*
-    /// get its CTA back.
-    ///
-    /// `None` for callers that pass no suggestions and so have nothing to join — cheaper than making
-    /// every one of them load a backlog it will not read.
-    pub backlog: Option<&'a crate::backlog::Backlog>,
     /// The current epoch-seconds clock.
     pub now: i64,
 }
@@ -625,8 +614,6 @@ pub struct CatalogItem {
     pub catch_up: bool,
     /// Agent only: also fired once when the tmux server starts.
     pub startup: bool,
-    /// Agent only: queue capture remains enabled.
-    pub queue: bool,
     /// Agent only: failure retry delay for scheduled attempts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_after_secs: Option<i64>,
@@ -694,7 +681,6 @@ fn cron_catalog_item(cron: &CronView) -> CatalogItem {
         network: cron.network,
         catch_up: cron.catch_up,
         startup: false,
-        queue: false,
         retry_after_secs: None,
         last_run: cron.last_run,
         last_exit: cron.last_exit,
@@ -724,7 +710,6 @@ fn agent_catalog_item(agent: &AgentDef, cron: Option<&CronView>) -> CatalogItem 
         network: agent.network,
         catch_up: false,
         startup: agent.is_startup(),
-        queue: agent.queue,
         retry_after_secs: agent.retry_after_secs,
         last_run: cron.and_then(|row| row.last_run),
         last_exit: cron.and_then(|row| row.last_exit),

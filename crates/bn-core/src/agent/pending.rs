@@ -43,8 +43,7 @@ pub(super) fn finished_session_ids(cfg: &Config) -> HashSet<String> {
 ///   *other* id. Harnesses do not always keep the id bn asks for — a `--resume`, a relaunch, a
 ///   compaction can each write a fresh one — and then the id half never matches, so the placeholder
 ///   sat beside the very agent it was waiting for until [`DEFAULT_STARTING_MINS`] retired it. One
-///   dispatch rendering as two rows is the same work counted twice, which is what the queue page
-///   reads as a duplicate.
+///   dispatch rendering as two rows is the same work counted twice.
 pub(super) struct Claimed {
     /// Canonical session ids that are live or already ingested.
     sessions: HashSet<String>,

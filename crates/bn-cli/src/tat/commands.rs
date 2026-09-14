@@ -4,20 +4,12 @@
 //! `.file-size-baseline`). The division is the same one the rows themselves draw: `tat.rs` answers
 //! "where can I go?", and this module answers "what can I do?". The roster of verbs lives further
 //! out still, in [`bn_core::wt_actions`], so the web board can render the same list.
-/// The queue actions `ctrl-o` offers on a command row. Declared here rather than in `tat.rs`
-/// because this is its only caller.
-pub(super) mod queue_actions;
-
-/// The `Queue settings…` row and its menu.
-pub(super) mod settings;
 
 /// The repo's own job scripts, as rows below the roster verbs.
 pub(in crate::tat) mod scripts;
 
-use super::queue_view::{held_reasons, CmdState, CmdStates};
 use super::{pool_eligible, ref_repo, Roots};
 use bn_core::resolver::Config;
-use bn_core::wt_actions::When;
 
 /// The glyph a command row leads with. Deliberately unlike the place rows' `+` / `PR` / `◍` / `○`,
 /// because the two halves of this list are different kinds of thing: a place row answers "go
@@ -32,6 +24,47 @@ pub(super) const CMD_GLYPH: char = '▸';
 /// row short-circuited before the normal payload parsing.
 pub(super) const CMD_SEPARATOR: &str =
     " ───────────────────────────  commands  ───────────────────────────";
+
+/// What one verb's window says right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CmdState {
+    /// Running in its window, and for how long when the run's marker says. The row spins.
+    Running(Option<i64>),
+    /// The last run failed and kept its window to be read, with its exit status when tmux has it.
+    Failed(Option<i32>),
+}
+
+/// The state of every verb that has a window in the repo's session, keyed by row id.
+pub(crate) type CmdStates = std::collections::BTreeMap<String, CmdState>;
+
+/// Build [`CmdStates`] for `repo` from the job windows in its session.
+///
+/// One `tmux list-panes` per paint answers for the whole section. A window named after a roster job
+/// keys that verb's row; any other name keys a script row (`script:<name>`), and the caller trims
+/// keys no row was drawn for. A success closes its window, so an idle verb simply has no entry.
+pub(crate) fn command_states(repo: &str, now: i64) -> CmdStates {
+    use crate::cmd::wt_action_run::WindowState;
+    let mut out = CmdStates::new();
+    for (name, window) in crate::cmd::wt_action_run::window_states(repo) {
+        let key = match bn_core::wt_actions::for_scope(bn_core::wt_actions::Scope::Repo)
+            .find(|a| crate::cmd::wt_action_run::window_name(a, None) == name)
+        {
+            Some(action) => action.id.to_string(),
+            None => scripts::id(&name),
+        };
+        let state = match window {
+            WindowState::Live => {
+                let job = bn_core::wt_actions::find(&key).map_or(name.as_str(), |a| a.job);
+                CmdState::Running(
+                    bn_core::events::running_since(job).map(|since| (now - since).max(0)),
+                )
+            }
+            WindowState::Dead(code) => CmdState::Failed(code),
+        };
+        out.insert(key, state);
+    }
+    out
+}
 
 /// What the repo's live state says about which verbs are worth offering, and how to annotate them.
 ///
@@ -80,7 +113,6 @@ pub(super) fn command_rows(
     scripts: &[scripts::RepoScript],
     states: &CmdStates,
     now_ms: i64,
-    settings_note: &str,
 ) -> String {
     if !bare {
         return String::new();
@@ -115,20 +147,13 @@ pub(super) fn command_rows(
             now_ms,
         ));
     }
-    // Last, and its own kind: the verbs above are work, this is the machine's mind about the work.
-    // A separate kind keeps it out of `wt_actions`, which is a roster of *jobs* — a settings row
-    // there would need a job name it does not have.
-    let note = settings_note.replace(['\r', '\n', '|'], " ");
-    let row = format!("  \u{2699}  {:<30} {note}", "Queue settings…");
-    rows.push_str(&format!("qset||{}\n", row.trim_end()));
     rows
 }
 
-/// One `cmd|<id>|<display>` row, with the queue's word on it winning the note column.
+/// One `cmd|<id>|<display>` row, with the run's state winning the note column.
 ///
-/// What the queue is doing beats what the pool looks like: a warm that is *running* has already
-/// answered the question "how many are cold?". `idle_note` is what to say when the queue says
-/// nothing.
+/// What a run is doing beats what the pool looks like: a warm that is *running* has already
+/// answered the question "how many are cold?". `idle_note` is what to say when there is no run.
 fn command_row(
     id: &str,
     label: &str,
@@ -137,29 +162,13 @@ fn command_row(
     now_ms: i64,
 ) -> String {
     let (glyph, note) = match states.get(id) {
-        Some(CmdState::Running(secs)) => (
+        Some(CmdState::Running(Some(secs))) => (
             spin_frame(now_ms),
             format!("running · {}", brief_elapsed(*secs)),
         ),
-        Some(CmdState::Away) => ('⏾', "queued for when you're away".to_string()),
-        // Name the reason when the dispatcher has recorded one. "queued" alone reads the same
-        // whether the entry starts in two seconds or never, which is precisely the ambiguity
-        // that let eight verbs sit for three days looking normal.
-        Some(CmdState::Queued(Some(held))) => (
-            '⏳',
-            match held.waiting_secs {
-                // `in_words` rather than `brief_elapsed`: a spinner's elapsed time is seconds
-                // and minutes, but a *held* entry can wait for hours, and `234m55s` is a number
-                // the reader has to divide before it means anything.
-                Some(secs) if secs >= 60 => format!(
-                    "held · {} · {}",
-                    held.reason,
-                    crate::cmd::queue_when::in_words(secs)
-                ),
-                _ => format!("held · {}", held.reason),
-            },
-        ),
-        Some(CmdState::Queued(None)) => ('⏳', "queued".to_string()),
+        Some(CmdState::Running(None)) => (spin_frame(now_ms), "running".to_string()),
+        Some(CmdState::Failed(Some(code))) => ('✗', format!("failed · exit {code} · window kept")),
+        Some(CmdState::Failed(None)) => ('✗', "failed · window kept".to_string()),
         None => (CMD_GLYPH, idle_note),
     };
     // Roster labels are static and separator-free (pinned by a `wt_actions` test) and a script
@@ -170,11 +179,7 @@ fn command_row(
     format!("cmd|{id}|{}\n", display.trim_end())
 }
 
-/// The side pane for a command row: what this verb will do, and whether it is already filed.
-///
-/// The queue state is the load-bearing half. Enter on a queued verb *cancels* it, so a pane that
-/// only described the verb would leave the one case where Enter does the opposite of what the row
-/// says unexplained.
+/// The side pane for a command row: what this verb will do, and whether a run is already going.
 pub(super) fn command_preview(cfg: &Config, roots: &Roots, project: &str, action_id: &str) {
     let repo = ref_repo(project);
     // A script row is described by its file, not by `describe()`, which knows only the roster.
@@ -195,68 +200,30 @@ pub(super) fn command_preview(cfg: &Config, roots: &Roots, project: &str, action
         println!("primary-root, untagged concept.");
         return;
     }
-    queue_state_lines(cfg, repo, action);
+    run_state_lines(repo, action);
 }
 
-/// The queue's word on one verb, for a side pane: filed or not, why it waits, what Enter will do.
+/// The run's word on one verb, for a side pane: running, failed, or what Enter will do.
 ///
-/// Shared by the roster pane and the script pane because it is the load-bearing half of both:
-/// Enter on a queued verb *cancels* it, so a pane that only described the verb would leave the one
-/// case where Enter does the opposite of what the row says unexplained.
-pub(super) fn queue_state_lines(cfg: &Config, repo: &str, action: &bn_core::wt_actions::WtAction) {
-    let id = crate::cmd::wt_action_jobs::action_entry_id(action, repo, None);
-    // `latest` rather than `load`: this pane re-execs on every cursor move, and folding the whole
-    // append-only store to answer about one entry is the kind of cost a8f5776 spent 150ms of budget
-    // bounding elsewhere in this module.
-    match bn_core::backlog::latest(&bn_core::backlog::backlog_path(), repo, &id)
-        .filter(|e| e.status.is_active())
-    {
-        Some(entry) => {
-            println!("\nQueued as {} ({}).", entry.id, entry.status.label());
-            // Why it is waiting, from the dispatcher's own record of the last pass. A pane that
-            // said only "queued" left the reader with no way to tell work that is about to start
-            // from work that never will.
-            if let Some(held) = held_reasons().get(&entry.id) {
-                match held.waiting_secs {
-                    Some(secs) => println!(
-                        "Held: {} — waiting {}.",
-                        held.reason,
-                        brief_elapsed(secs.max(0))
-                    ),
-                    None => println!("Held: {}.", held.reason),
+/// Shared by the roster pane and the script pane, so both say the same thing about the same window.
+pub(super) fn run_state_lines(repo: &str, action: &bn_core::wt_actions::WtAction) {
+    use crate::cmd::wt_action_run::WindowState;
+    let window = crate::cmd::wt_action_run::window_name(action, None);
+    match crate::cmd::wt_action_run::window_states(repo).get(&window) {
+        Some(WindowState::Live) => {
+            println!("\nRunning now in window `{window}` of the {repo} session.");
+            println!("Enter: nothing new starts while it runs.");
+        }
+        Some(WindowState::Dead(code)) => {
+            match code {
+                Some(code) => {
+                    println!("\nLast run failed (exit {code}); window `{window}` is kept.")
                 }
-                println!("`bn queue why` has the whole pass.");
+                None => println!("\nLast run failed; window `{window}` is kept."),
             }
-            println!("\nEnter: take it back off the queue.");
+            println!("Enter: clear that window and run it again.");
         }
-        // Say up front when Enter cannot do what the row implies. The pane is where someone looks
-        // before pressing a key, so a verb the machine cannot run should read as unavailable here
-        // rather than as a `✓ queued` that never becomes anything.
-        // A direct command needs no dispatcher: Enter leases and starts it from the picker's own
-        // process, and the queue is only the fallback for what could not be started here.
-        None if cfg
-            .queue
-            .direct_mode(bn_core::queue::off::is_off(bn_core::util::now_epoch_secs()))
-            .is_immediate() =>
-        {
-            println!("\nEnter: start it now, in a tmux window in the {repo} session.");
-        }
-        None if !bn_core::queue::daemon::is_running() => {
-            if !cfg.queue_enabled_here() {
-                println!(
-                    "\n\x1b[1;31mUnavailable:\x1b[0m the queue is off on this machine ('{}').",
-                    cfg.machine()
-                );
-                println!(
-                    "Remove `queue = false` from [machine] in {}.",
-                    bn_core::resolver::machine_config_path().display()
-                );
-            } else {
-                println!("\n\x1b[1;31mUnavailable:\x1b[0m no dispatcher is running.");
-                println!("Any `bn` command starts one, or run `bn queue run`.");
-            }
-        }
-        None => println!("\nEnter: queue it to run now."),
+        None => println!("\nEnter: start it now, in a tmux window in the {repo} session."),
     }
 }
 
@@ -287,7 +254,7 @@ pub(super) enum Step {
     Reopen,
 }
 
-/// Everything a row can do *without* leaving the picker: the two expect-keys, and the command rows
+/// Everything a row can do *without* leaving the picker: the expect-key, and the command rows
 /// themselves. `None` means this was an ordinary Enter on a place row — the caller's business.
 ///
 /// One entry point because they share the shape that distinguishes them from the Enter chain: each
@@ -301,39 +268,14 @@ pub(super) fn act_on_row(
     payload: &str,
 ) -> Option<Step> {
     match (key, kind) {
-        ("ctrl-s", _) => defer_from_row(cfg, roots, project, kind, payload),
         ("ctrl-o", _) => row_menu(cfg, roots, project, kind, payload),
         // The rule between the places and the verbs. Selecting it means nothing, so it does
         // nothing — but it must not drop you out of the picker either.
         (_, "cmdsep") => {}
-        // Both keys land on the same place: there is one thing to do to a settings row, and a
-        // person who reaches for ctrl-o on it has asked the same question Enter answers.
-        (_, "qset") => settings::menu(cfg),
-        (_, "cmd") => run_command(cfg, roots, project, payload, When::Now),
+        (_, "cmd") => run_command(cfg, roots, project, payload),
         _ => return None,
     }
     Some(Step::Reopen)
-}
-
-/// `ctrl-s` — file the focused command row for when you are idle or gone.
-///
-/// The end-of-day key. It is the same enqueue Enter performs, differing only in the class the entry
-/// carries ([`When::Away`] → opportunistic), which the existing away window already admits. Refuses
-/// a place row in one line rather than guessing: "later" is a statement about a verb, and a
-/// worktree is not one.
-pub(super) fn defer_from_row(
-    cfg: &Config,
-    roots: &Roots,
-    project: &str,
-    kind: &str,
-    payload: &str,
-) {
-    if let Some(why) = command_block(kind, payload) {
-        eprintln!("✗ {why}");
-        crate::picker::hold();
-        return;
-    }
-    run_command(cfg, roots, project, payload, When::Away);
 }
 
 /// `ctrl-o` — the verbs that act on *this* row, in a picker of their own.
@@ -342,16 +284,9 @@ pub(super) fn defer_from_row(
 /// second interactive surface (see `open_project`'s loop): fzf's `execute()` cannot hand a value
 /// back, so a nested picker could not report what was chosen.
 pub(super) fn row_menu(cfg: &Config, roots: &Roots, project: &str, kind: &str, payload: &str) {
-    // A command row's menu is a different question: not "what can I do to this branch" but "when
-    // should this verb run". `ctrl-o` used to refuse here, which left the schedule with no way in.
+    // A command row is already a verb: ctrl-o on it asks the same question Enter answers.
     if kind == "cmd" {
-        match scripts::resolve(payload) {
-            Some(action) => queue_actions::menu(cfg, action, ref_repo(project)),
-            None => {
-                eprintln!("✗ no such command: {payload}");
-                crate::picker::hold();
-            }
-        }
+        run_command(cfg, roots, project, payload);
         return;
     }
     let Some(scope) = scope_for_row(kind) else {
@@ -375,8 +310,13 @@ pub(super) fn row_menu(cfg: &Config, roots: &Roots, project: &str, kind: &str, p
     let Some(chosen) = pick_action(&actions, &branch) else {
         return; // dismissed
     };
-    match crate::cmd::wt_action_jobs::start_action(cfg, chosen, repo, Some(&branch)) {
-        Ok(started) => println!("✓ {} — {} — {}", chosen.label, branch, started.describe()),
+    match crate::cmd::wt_action_run::start_action(cfg, chosen, repo, Some(&branch)) {
+        Ok(started) => println!(
+            "✓ {} — {} — {}",
+            chosen.label,
+            branch,
+            started.describe(repo)
+        ),
         Err(e) => {
             eprintln!("✗ {e}");
             crate::picker::hold();
@@ -447,19 +387,19 @@ pub(super) fn pick_one(choices: &[(String, String)], header: &str) -> Option<Str
     Some(text.lines().next()?.split('\t').next()?.to_string())
 }
 
-/// The `runcmd` bindings' entry point: unpack fzf's `{1}~{2}` and act, or say why not.
+/// The `runcmd` binding's entry point: unpack fzf's `{1}~{2}` and act, or say why not.
 ///
 /// Guarded the way `ctrl-d` and `ctrl-r` are, and for the same reason — fzf fires a binding on
 /// whatever happens to be focused, so a stage that trusts its payload will one day be handed a
 /// window row. [`command_block`] is the pure half, so the refusal is testable without a picker.
-pub(super) fn command_from_pick(cfg: &Config, roots: &Roots, project: &str, arg: &str, when: When) {
+pub(super) fn command_from_pick(cfg: &Config, roots: &Roots, project: &str, arg: &str) {
     let (kind, id) = arg.split_once('~').unwrap_or(("", arg));
     if let Some(why) = command_block(kind, id) {
         eprintln!("✗ {why}");
         crate::picker::hold();
         return;
     }
-    run_command(cfg, roots, project, id, when);
+    run_command(cfg, roots, project, id);
 }
 
 /// Why this row cannot be run as a command, or `None` when it can.
@@ -481,20 +421,12 @@ pub(super) fn command_block(kind: &str, id: &str) -> Option<String> {
     None
 }
 
-/// Act on a `cmd` row: start the verb it names, or take it back if it is already filed.
+/// Act on a `cmd` row: start the verb it names, now, in a window in the repo's session.
 ///
-/// Filed either way, and that is the load-bearing choice. A row can only show progress for work
-/// something other than this short-lived process can see, and the queue's heavy path already opens
-/// a visible tmux window to build in — so the entry is what gives the row a state, a start time
-/// and a finish callback. What differs is who *starts* it: by default this process does, on the
-/// spot, and the dispatcher is only the fallback (`start_action`); a machine that opted out with
-/// `[queue] direct = "queued"` leaves that to the next pass, as `ctrl-s` always does.
-///
-/// **Selecting a verb that is already queued cancels it.** That is what makes the command section
-/// safe to put in a list you also type branch names into: "Build latest main" does fuzzy-match a
-/// typed `main`, so an accidental Enter is possible — and the answer is to make the mistake cost one
-/// keystroke to undo rather than to contort the labels until they stop matching.
-pub(super) fn run_command(cfg: &Config, roots: &Roots, project: &str, action_id: &str, when: When) {
+/// A verb that is already running is left alone and says so. That is what keeps the command section
+/// safe in a list you also type branch names into: "Build latest main" does fuzzy-match a typed
+/// `main`, and an accidental Enter on a running build must not start a second one.
+pub(super) fn run_command(cfg: &Config, roots: &Roots, project: &str, action_id: &str) {
     let Some(action) = scripts::resolve(action_id) else {
         // The row was painted by an older build of the binary whose roster still had this verb.
         eprintln!("✗ no such command: {action_id}");
@@ -502,8 +434,8 @@ pub(super) fn run_command(cfg: &Config, roots: &Roots, project: &str, action_id:
         return;
     };
     let repo = ref_repo(project);
-    // A script row can outlive its file. Refuse here, where it can be read, rather than filing an
-    // entry the dispatcher will fail with `no such job` in a window that closes.
+    // A script row can outlive its file. Refuse here, where it can be read, rather than opening a
+    // window that fails with `no such job` and closes.
     if let Some(name) = scripts::name_of(action_id) {
         if scripts::on_disk(cfg, repo, name).is_none() {
             eprintln!("✗ no `{name}.sh` for {repo} any more — ctrl-r reloads the list");
@@ -516,32 +448,8 @@ pub(super) fn run_command(cfg: &Config, roots: &Roots, project: &str, action_id:
         crate::picker::hold();
         return;
     }
-    let id = crate::cmd::wt_action_jobs::action_entry_id(action, repo, None);
-    let already_filed = bn_core::backlog::latest(&bn_core::backlog::backlog_path(), repo, &id)
-        .is_some_and(|e| e.status.is_active());
-    if already_filed {
-        match bn_core::backlog::cancel(
-            &bn_core::backlog::backlog_path(),
-            repo,
-            &id,
-            bn_core::util::now_epoch_secs(),
-        ) {
-            Ok(_) => println!("✓ un-queued {}", action.label),
-            Err(e) => {
-                eprintln!("✗ could not un-queue {}: {e}", action.label);
-                crate::picker::hold();
-            }
-        }
-        return;
-    }
-    let outcome = match when {
-        When::Now => crate::cmd::wt_action_jobs::start_action(cfg, action, repo, None)
-            .map(|started| started.describe()),
-        When::Away => crate::cmd::wt_action_jobs::enqueue_action(cfg, action, repo, None, when)
-            .map(|o| format!("queued for when you're away ({})", o.label())),
-    };
-    match outcome {
-        Ok(tail) => println!("✓ {} — {tail}", action.label),
+    match crate::cmd::wt_action_run::start_action(cfg, action, repo, None) {
+        Ok(started) => println!("✓ {} — {}", action.label, started.describe(repo)),
         Err(e) => {
             eprintln!("✗ {e}");
             crate::picker::hold();
@@ -647,7 +555,7 @@ impl Ticker {
 
     /// Start repainting, or return an inert ticker when there is nothing to watch.
     /// `states` is the section the caller just painted, passed in rather than re-derived: asking
-    /// again would cost a second full backlog parse for an answer already in hand.
+    /// again would cost a second tmux call for an answer already in hand.
     pub(super) fn start(
         listen: Option<&Listen>,
         exe: &std::path::Path,
@@ -656,16 +564,8 @@ impl Ticker {
         states: &CmdStates,
     ) -> Ticker {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        // Repaint while anything is *waiting* too, not only while something spins.
-        //
-        // The condition was `Running` alone, on the reasoning that a static row needs no animation.
-        // But a queued row's note now carries a reason and a wait time, and both go stale — and the
-        // state it most needs to show, "this finally started", is exactly the transition a frozen
-        // row cannot show. Affordable only because the repaint is `subtick` now; against the old
-        // `sublist` this would have meant rediscovering worktrees every 700ms for hours.
-        let watch = states
-            .values()
-            .any(|s| matches!(s, CmdState::Running(_) | CmdState::Queued(_)));
+        // Repaint only while something runs: a failed row is static until someone acts on it.
+        let watch = states.values().any(|s| matches!(s, CmdState::Running(_)));
         let Some(listen) = listen.filter(|_| watch) else {
             return Ticker { stop };
         };

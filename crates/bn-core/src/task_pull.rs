@@ -111,7 +111,7 @@ pub fn plan_pull_actions(
     );
 
     let issues = plan
-        .enqueue_issues
+        .start_issues
         .iter()
         .filter_map(|number| {
             fresh

@@ -91,24 +91,7 @@ pub fn with_state_and_notes_dir<T>(root: &Path, hostname: &str, f: impl FnOnce()
     // deciding a live machine's identity is exactly the surprise the pin exists to prevent.
     // `BN_HOSTNAME` above already wins for these tests; this just keeps the fallback hermetic.
     let _machine = EnvGuard::set("BN_MACHINE_FILE", dir.path().join("machine"));
-    // Isolate the dispatch extent for the same reason as the tiers above: inherited, it silently
-    // changes whether producers queue or run inline. See [`outside_a_dispatch`].
-    let _outside = outside_a_dispatch();
     f()
-}
-
-/// Neutralize an inherited dispatch extent for the returned guard's lifetime.
-///
-/// `BN_IN_QUEUE_TICK` tells a `bn` process it is running *inside* a queue dispatch, which switches
-/// every producer from queueing work to running it inline. The dispatcher sets it before spawning
-/// `bn dispatch`, and the agent session that spawns keeps it for its whole life — so an autonomous
-/// agent working in this repo has it set in every shell, `cargo test` included.
-///
-/// The effect is a test suite that passes for a person and fails for the agent, on assertions
-/// about queueing that the ambient variable quietly inverts. Any test asserting capture behaviour
-/// takes this guard so it tests bn rather than the environment bn happens to be running in.
-pub fn outside_a_dispatch() -> EnvGuard {
-    EnvGuard::remove("BN_IN_QUEUE_TICK")
 }
 
 /// Process-wide lock for tests that mutate global env vars (`BN_STATE_DIR`, `BN_JOBS_DIR`, …).
@@ -144,13 +127,6 @@ impl EnvGuard {
         let previous = std::env::var_os(key);
         std::env::remove_var(key);
         Self { key, previous }
-    }
-
-    /// Overwrite the current value of the guarded key without changing what gets restored on drop.
-    /// For tests that step one var through several values (e.g. advancing `BN_NOW`) under a single
-    /// guard.
-    pub fn set_value(&self, value: impl AsRef<OsStr>) {
-        std::env::set_var(self.key, value);
     }
 }
 

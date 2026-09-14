@@ -211,8 +211,8 @@ pub(super) fn lease_occupancy(
 /// Nothing then clears the lease. `reclaim_leaked_leases` would, but the acquisition path only runs
 /// it when the pool comes up *full*, and a pool with nine free slots never does — so the one dead
 /// lease is skipped by the sweep that would fix it and honoured by the lookup that must not. Every
-/// retry takes the same path, which for queued work means the dispatcher re-attempts it every pass,
-/// forever: three repos spent eight hours failing once a minute on a slot nobody was in.
+/// retry takes the same path, forever: three repos once spent eight hours failing once a minute on
+/// a slot nobody was in.
 ///
 /// So the lookup asks the same question the sweep asks — is anyone actually *in* there — rather
 /// than trusting that a lease implies a tenant. Proof, not a guess: [`bn_core::pool::lease_abandoned`]
@@ -305,19 +305,14 @@ fn existing_pools(cfg: &Config) -> Vec<PoolCtx> {
     out
 }
 
-/// Make every pool's ledger match who is actually in its slots — the queue tick's pool counterpart
-/// to its backlog-lease reclaim.
+/// Make every pool's ledger match who is actually in its slots. Called at the head of every
+/// `pool-warm` run.
 ///
 /// A slot is leased by `bn dispatch` and handed back by `bn agent kill`, and the second half only
 /// happens on that one path: an agent whose tmux window simply closes leaves its lease behind
 /// forever. Nothing noticed, because the recorded holder is the caller's parent — a tmux server or
 /// login shell that never exits — so a pool would sit at "7/7 worker slots leased" with three
 /// agents actually running, and every dispatch spilled into a cold worktree.
-///
-/// This runs at the head of a tick pass, before `realize` dispatches anything, so the pass that
-/// frees a slot is the pass that uses it. A separate cron would leave a window in which the
-/// dispatcher plans against a pool it wrongly believes is full and spills cold anyway — the drift
-/// has to be gone *before* the dispatch in the same pass, not merely bounded by some cadence.
 ///
 /// It is **not** the reclamation `config/crons.toml` deliberately keeps manual: it deletes no
 /// branch, removes no worktree, kills no session. It edits `leases.json` and detaches slots that
@@ -335,8 +330,8 @@ pub(crate) fn reconcile_pools(cfg: &Config, now: i64) {
         // sweeping it eagerly is how a live occupant every probe failed to recognize gets its
         // checkout warm-reset underneath it. When the pool *is* full, the acquisition path
         // (`acquire_slot`) already runs this same sweep itself at the moment it comes up empty,
-        // so a full pool still self-heals in the pass that needs the slot; this tick-head sweep
-        // only clears the backlog-visible drift in that same full-pool state.
+        // so a full pool still self-heals in the dispatch that needs the slot; this sweep only
+        // clears the visible drift in that same full-pool state.
         let leased = leases.reserved_slots();
         let freed = if bn_core::pool::pick_slot(ctx.size, &leased).is_some() {
             Vec::new()
@@ -347,14 +342,14 @@ pub(crate) fn reconcile_pools(cfg: &Config, now: i64) {
         // machine that keeps leaking them is worth noticing.
         if !adopted.is_empty() {
             eprintln!(
-                "bn queue tick: adopted {} slot(s) {adopted:?} held by a live agent the ledger \
+                "pool reconcile: adopted {} slot(s) {adopted:?} held by a live agent the ledger \
                  didn't name",
                 ctx.repo
             );
         }
         if !freed.is_empty() {
             eprintln!(
-                "bn queue tick: returned {} pool slot(s) {freed:?} — leased but nobody in them",
+                "pool reconcile: returned {} pool slot(s) {freed:?} — leased but nobody in them",
                 ctx.repo
             );
         }

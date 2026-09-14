@@ -4,7 +4,7 @@
 //! [`Schedule`]; [`previous_occurrence`] / [`next_occurrence`] / [`slots_on`] / [`fires_on`] answer
 //! "when did this last fire" and "when does it fire next" without shelling out to systemd.
 //!
-//! Used by the agent catalog (schedule validation), the queue's run windows, the pool refresher,
+//! Used by the agent catalog (schedule validation), the pool refresher,
 //! and the action center. Named `staff_schedule` while it lived under the staff roster; the roster
 //! is gone and the parser is not staff-specific, so it is just `schedule` now.
 

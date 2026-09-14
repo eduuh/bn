@@ -706,11 +706,10 @@ pub struct TaskAgentBody {
 
 /// Where a task agent stands when the task itself does not say.
 ///
-/// Enhance is the stage that runs *before* a task has a `repo:` — `pipeline::sweep` skips
-/// ungrounded tasks precisely because "the enhance pass owns it until it has a repo". A steerable
-/// agent still needs a worktree to live in, and these agents only ever touch the task and its
-/// context doc (both under the notes dir, not a product checkout), so the worktree is just a place
-/// to stand. bn is the one repo guaranteed to be present.
+/// Enhance is the stage that runs *before* a task has a `repo:`: the enhance pass owns a task until
+/// it has one. A steerable agent still needs a worktree to live in, and these agents only ever
+/// touch the task and its context doc (both under the notes dir, not a product checkout), so the
+/// worktree is just a place to stand. bn is the one repo guaranteed to be present.
 const AGENT_HOME_REPO: &str = "bn";
 
 /// The workflow each task agent is driven by, and the fleet name it launches under.
@@ -798,40 +797,33 @@ pub async fn task_agent(
     };
 
     let workflow = task_workflow(&agent);
-    let mut args = vec![
-        "queue".into(),
-        "add".into(),
-        subject,
+    // Enhance points the workflow at the bare id; triage takes no argument, since it covers the
+    // whole store, so it is seeded from the readable subject instead.
+    let item = if agent == "enhance" {
+        id.clone()
+    } else {
+        subject
+    };
+    // Fixed template: only validated fields are interpolated, each as its own argv element.
+    let args = vec![
+        "dispatch".into(),
         "--repo".into(),
-        repo,
-        "--kind".into(),
-        "enhance".into(),
-        "--priority".into(),
-        "25".into(),
+        repo.clone(),
+        "--agent".into(),
+        "auto".into(),
         "--skill".into(),
         workflow.to_string(),
         "--name".into(),
         format!("{id}-{agent}"),
         // Nobody is sitting in the pane at launch, so a permission prompt would simply stall it.
         "--yolo".into(),
+        // `--` ends option parsing, so the item is always the positional, never a flag.
+        "--".into(),
+        item,
     ];
-    if agent == "enhance" {
-        // Point the workflow at the bare id while the subject above stays human-readable. Triage
-        // takes no argument — it covers the whole store — so it is seeded from the subject.
-        args.push("--skill-arg".into());
-        args.push(id.clone());
-    }
-    // Nobody typed this. An enhance run is an agent grooming a task in the store, and a triage run
-    // is an agent ranking the store — machine bookkeeping in both cases, and doubly so when the
-    // task being groomed is itself machine-minted. Without the declaration the enqueue minted a
-    // person-scoped task, so `enhance t17: Run the today-agent daily coordination cron` and three
-    // more like it landed on a human's day list within minutes of the cron tasks being marked.
-    let result = run_bn_env(
-        args,
-        None,
-        vec![("BN_MACHINE_DISPATCH".to_string(), "1".to_string())],
-    )
-    .await;
+    // Declare the target as this dispatch's session so the CLI's cross-repo-session guard treats
+    // the launch as that repo's own (this server runs from its own worktree).
+    let result = run_bn_env(args, None, vec![("BN_WORKER_REPO".to_string(), repo)]).await;
     respond_process(&state, &format!("task-{agent}"), &id, addr, result)
 }
 

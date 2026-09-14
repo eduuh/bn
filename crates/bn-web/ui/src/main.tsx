@@ -18,8 +18,6 @@ import { NotFound, RootError, RouteError } from "./routes/NotFound";
 // The console is no longer the entry point (#1006) — the task-first home is — so it becomes a
 // lazy chunk like every other destination.
 const Console = lazyRoute(() => import("./routes/Console"), "Console");
-const Queue = lazyRoute(() => import("./routes/Queue"), "Queue");
-const QueueEvents = lazyRoute(() => import("./routes/QueueEvents"), "QueueEvents");
 const CommandCenter = lazyRoute(() => import("./routes/CommandCenter"), "CommandCenter");
 const Today = lazyRoute(() => import("./routes/Today"), "Today");
 const Nodes = lazyRoute(() => import("./routes/Nodes"), "Nodes");
@@ -71,8 +69,6 @@ const router = createBrowserRouter([
           // `/` is the task-first home (#1006). Work starts from a task or it does not start.
           { index: true, element: <Home /> },
           { path: "console", element: <Console /> },
-          { path: "queue", element: <Queue /> },
-          { path: "queue/events", element: <QueueEvents /> },
           // The classic action list keeps its home for the surfaces the console doesn't own yet
           // (the automation hub + the completed history).
           { path: "inbox", element: <CommandCenter /> },

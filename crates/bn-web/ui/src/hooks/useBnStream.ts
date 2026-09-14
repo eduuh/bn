@@ -113,54 +113,13 @@ export function useBnStream(): { status: StreamStatus } {
       }
     };
 
-    const onQueue = (e: MessageEvent<string>) => {
-      try {
-        qc.setQueryData(queryKeys.queue, JSON.parse(e.data));
-        // The queue moved, so the day's projection did too — but the timeline is a 24-hour fold
-        // that changes meaningfully once a minute, so invalidate rather than pushing a frame for it.
-        void qc.invalidateQueries({ queryKey: ["queue-timeline"] });
-        // The entry list is a different query (it carries every state, not just pending), so the
-        // frame that updates the live view has to invalidate it too or history goes stale.
-        void qc.invalidateQueries({ queryKey: ["queue", "entries"] });
-      } catch {
-        /* ignore a torn frame */
-      }
-    };
-
-    /**
-     * The event log, already streamed per line as a `log` frame — the events page was polling on a
-     * timer while the thing it renders was arriving live on a channel it did not listen to.
-     *
-     * Invalidate rather than append: the page folds `dispatch` + `finish` into runs and applies
-     * server-side filters, so a client-side push would have to reimplement both to stay consistent
-     * with what a refetch returns. A refetch of a few hundred rows is cheap; two implementations of
-     * the same fold that can disagree is not.
-     *
-     * Only the queue's own kinds — every note command writes a metric, and waking the page for
-     * those would make it noisier than the timer it replaces.
-     */
-    const onLog = (e: MessageEvent<string>) => {
-      try {
-        const kind = (JSON.parse(e.data) as { kind?: string }).kind ?? "";
-        if (kind.startsWith("queue_")) {
-          void qc.invalidateQueries({ queryKey: ["queue", "events"] });
-        }
-      } catch {
-        /* ignore a torn frame */
-      }
-    };
-
     es.addEventListener("fleet", onFleet);
-    es.addEventListener("log", onLog);
     es.addEventListener("orchestrate", onOrchestrate);
-    es.addEventListener("queue", onQueue);
 
     return () => {
       stopProbe();
       es.removeEventListener("fleet", onFleet);
-      es.removeEventListener("log", onLog);
       es.removeEventListener("orchestrate", onOrchestrate);
-      es.removeEventListener("queue", onQueue);
       es.close();
     };
   }, [qc]);

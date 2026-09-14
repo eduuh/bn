@@ -70,8 +70,8 @@ pub fn parse_duration(s: &str) -> Option<i64> {
             let n: i64 = num.parse().ok()?;
             num.clear();
             let unit = match ch.to_ascii_lowercase() {
-                // `d` was missing while `bn queue snooze --help` advertised `1d`, so the one
-                // example in the help text was the one input the parser rejected.
+                // `d` was once missing while a help text advertised `1d`, so the one example in
+                // the help was the one input the parser rejected.
                 'd' => 86_400,
                 'h' => 3600,
                 'm' => 60,

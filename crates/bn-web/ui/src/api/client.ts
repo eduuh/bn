@@ -6,13 +6,6 @@
 import { keepPreviousData } from "@tanstack/react-query";
 
 import type {
-  QueueEntriesView,
-  QueueEventsView,
-  TaskLedgerView,
-  QueueTimelineView,
-  QueueView,
-} from "./queue-types";
-import type {
   TasksView,
   TaskDetailView,
   IssuesView,
@@ -174,17 +167,6 @@ export const queryKeys = {
   catalog: ["agents-catalog"] as const,
   /** Today's scheduled crons (#575) — the crons whose schedule fires today. */
   todayCrons: ["today-crons"] as const,
-  /** The machine-wide work queue (#queue). */
-  queue: ["queue"] as const,
-  /** The dispatcher's recent history (#queue), keyed by its filters. */
-  queueEvents: (since: string, kind: string, repo: string) =>
-    ["queue", "events", since, kind, repo] as const,
-  /** Every backlog entry (#queue), keyed by its filters. */
-  queueEntries: (status: string, repo: string, kind: string, klass: string) =>
-    ["queue", "entries", status, repo, kind, klass] as const,
-  /** The day timeline (#queue), keyed by the date and class it renders. */
-  queueTimeline: (date?: string, klass?: string) =>
-    ["queue-timeline", date ?? "today", klass ?? ""] as const,
   /** Today's scheduled Markdown agents (#575). */
   todayAgents: ["today-agents"] as const,
   /** Today's one *hosted* agent — the live session the Today page streams and steers. */
@@ -520,73 +502,6 @@ export function todayCronsQuery() {
   };
 }
 
-/** The machine-wide work queue (#queue): pending by kind, nodes, and the last tick's
- * decision. Live via the `queue` SSE frame; the interval is the fallback. */
-export function queueQuery() {
-  return {
-    queryKey: queryKeys.queue,
-    queryFn: () => fetchEnvelope<QueueView>("/api/queue"),
-    refetchInterval: 30_000,
-  };
-}
-
-/** The dispatcher's recent history (#queue): every start, stall, reclaim and completion.
- *
- * `queueQuery` answers what is true now; this answers what happened. A queue's failures are mostly
- * things that already happened and left no mark on the current state, which is exactly why the
- * current state cannot show them.
- *
- * Live via the `log` SSE frame, which carries each event as the dispatcher writes it; the interval
- * is the fallback for a dropped stream, not the mechanism. */
-export function queueEventsQuery(opts: { since: string; kind: string; repo: string }) {
-  const params = new URLSearchParams({ since: opts.since, limit: "2000" });
-  if (opts.kind) params.set("kind", opts.kind);
-  if (opts.repo) params.set("repo", opts.repo);
-  return {
-    queryKey: queryKeys.queueEvents(opts.since, opts.kind, opts.repo),
-    queryFn: () => fetchEnvelope<QueueEventsView>(`/api/queue/events?${params.toString()}`),
-    refetchInterval: 60_000,
-  };
-}
-
-/** Every backlog entry, in any state (#queue).
- *
- * Separate from `queueQuery`, which carries only the pending set because it rides the SSE frame to
- * every browser on every change. History is asked for far less often than it would be pushed. */
-export function queueEntriesQuery(opts: {
-  status: string;
-  repo: string;
-  kind: string;
-  class?: string;
-}) {
-  const params = new URLSearchParams();
-  if (opts.status) params.set("status", opts.status);
-  if (opts.repo) params.set("repo", opts.repo);
-  if (opts.kind) params.set("kind", opts.kind);
-  if (opts.class) params.set("class", opts.class);
-  return {
-    queryKey: queryKeys.queueEntries(opts.status, opts.repo, opts.kind, opts.class ?? ""),
-    queryFn: () => fetchEnvelope<QueueEntriesView>(`/api/queue/entries?${params.toString()}`),
-    refetchInterval: 60_000,
-  };
-}
-
-/** The day timeline (#queue) — running / scheduled / projected / done, on one hour axis. The
- * projection replays the dispatcher forward, so it changes as capacity does; a minute is well
- * inside the resolution of a 20-minute mark. */
-export function queueTimelineQuery(date?: string, klass?: string) {
-  const params = new URLSearchParams();
-  if (date) params.set("date", date);
-  if (klass) params.set("class", klass);
-  const qs = params.toString();
-  return {
-    queryKey: queryKeys.queueTimeline(date, klass),
-    queryFn: () =>
-      fetchEnvelope<QueueTimelineView>(qs ? `/api/queue/timeline?${qs}` : "/api/queue/timeline"),
-    refetchInterval: 60_000,
-  };
-}
-
 /** Today's scheduled Markdown agents (#575), each re-triggered through its stable `bn run <name>`
  * identity. */
 export function todayAgentsQuery() {
@@ -837,54 +752,6 @@ export function tasksQuery(scope: "today" | "all" = "today") {
   return {
     queryKey: queryKeys.tasks(scope),
     queryFn: () => fetchEnvelope<TasksView>(`/api/tasks${scope === "all" ? "?all=1" : ""}`),
-    refetchInterval: 30_000,
-    placeholderData: keepPrevious<TasksView>,
-    ...TODAY_CACHE.work,
-  };
-}
-
-export type TaskLedgerState = "all" | "open" | "wip" | "snoozed" | "done" | "cancelled";
-
-/** The task store's complete history, bounded and searched on the server. */
-export function taskLedgerQuery(opts: {
-  state?: TaskLedgerState;
-  query?: string;
-  repo?: string;
-  offset?: number;
-  limit?: number;
-}) {
-  const params = new URLSearchParams({
-    status: "all",
-    limit: String(opts.limit ?? 50),
-    offset: String(opts.offset ?? 0),
-  });
-  if (opts.state && opts.state !== "all") params.set("state", opts.state);
-  if (opts.query) params.set("q", opts.query);
-  if (opts.repo) params.set("repo", opts.repo);
-  const scope = `ledger:${opts.state ?? "all"}:${opts.query ?? ""}:${opts.repo ?? ""}:${opts.offset ?? 0}`;
-  return {
-    queryKey: queryKeys.tasks(scope),
-    queryFn: () => fetchEnvelope<TaskLedgerView>(`/api/tasks?${params}`),
-    refetchInterval: 60_000,
-    placeholderData: keepPrevious<TaskLedgerView>,
-    ...TODAY_CACHE.work,
-  };
-}
-
-/** The queue's reservoir list — open tasks, narrowed by SMART verdict and repo.
- *
- * Separate from [`tasksQuery`] because the queue asks a different question than Today does: not
- * "what am I doing today" but "what is waiting, and how far is it from being runnable". `smart`
- * maps onto the gate's verdicts (`""` means every open task); the server filters, so a store with
- * thousands of unjudged tasks does not cross the wire to answer "how many are ready". */
-export function reservoirQuery(opts: { smart?: string; repo?: string } = {}) {
-  const params = new URLSearchParams({ all: "1" });
-  if (opts.smart) params.set("smart", opts.smart);
-  if (opts.repo) params.set("repo", opts.repo);
-  const qs = params.toString();
-  return {
-    queryKey: ["queue", "reservoir", opts.smart ?? "", opts.repo ?? ""] as const,
-    queryFn: () => fetchEnvelope<TasksView>(`/api/tasks?${qs}`),
     refetchInterval: 30_000,
     placeholderData: keepPrevious<TasksView>,
     ...TODAY_CACHE.work,

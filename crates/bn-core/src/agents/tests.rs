@@ -30,6 +30,16 @@ fn catch_up_frontmatter_parses() {
     assert!(agent.catch_up);
 }
 
+#[test]
+fn a_retired_frontmatter_key_still_parses() {
+    // `queue:` was removed with the machine queue; manifests that still carry it must load.
+    let agent = parse(
+        "---\nname: demo\nkind: command\nrequires_repo: bn\non_calendar: \"*:0/15\"\nqueue: false\n---\n",
+    )
+    .expect("agent parses");
+    assert_eq!(agent.kind, AgentKind::Command);
+}
+
 fn run_detail(ts: i64, exit_code: i32) -> CronRunDetail {
     CronRunDetail {
         job: "demo".to_string(),
@@ -278,7 +288,7 @@ fn shipped_agent_catalog_is_valid() {
 }
 
 #[test]
-fn manifest_schedules_have_one_common_cron_authority() {
+fn no_cron_fires_manifest_schedules_while_scheduled_agents_are_disabled() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let catalog = discover_in(&[(JobScope::Global, root.join("config/agents"))])
         .expect("shipped agent catalog");
@@ -293,13 +303,8 @@ fn manifest_schedules_have_one_common_cron_authority() {
         })
         .collect();
 
-    assert_eq!(
-        cron_jobs
-            .iter()
-            .filter(|job| **job == "agent-scheduler")
-            .count(),
-        1
-    );
+    // Scheduled agents are disabled: no timer may fire the scheduler.
+    assert!(!cron_jobs.contains(&"agent-scheduler"));
     for agent in catalog.iter().filter(|agent| agent.is_cron()) {
         assert!(
             !cron_jobs.iter().any(|job| *job == agent.name),

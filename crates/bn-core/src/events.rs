@@ -128,8 +128,8 @@ const RESERVED: [&str; 2] = ["kind", "ts"];
 /// [`Event`] carries `kind` and `ts` as real fields and `#[serde(flatten)]`s the rest, so a payload
 /// containing `kind` serializes **both** — one JSON object with two `"kind"` keys. Every parser
 /// takes the last, which is the payload's, so the event silently reports itself as something it is
-/// not: a `queue_dispatch` whose payload named the backlog kind read back as `kind: "cron"`, and no
-/// query filtering the log by kind could see it. Nothing errors; the audit trail just quietly is not
+/// not: an event whose payload named a work kind read back as `kind: "cron"`, and no query
+/// filtering the log by kind could see it. Nothing errors; the audit trail just quietly is not
 /// there.
 ///
 /// Renaming here rather than at the call sites because this is a trap every future producer walks
@@ -356,6 +356,14 @@ pub fn running_marker(job: &str) -> RunningGuard {
     let path = dir.join(job.replace(['/', '\\'], "_"));
     let _ = std::fs::write(&path, now_epoch_secs().to_string());
     RunningGuard { path }
+}
+
+/// When `job`'s running marker says it started, or `None` when no marker is present. Unlike
+/// [`running_jobs`] it does not age the marker out: a caller asking already knows the run is live.
+pub fn running_since(job: &str) -> Option<i64> {
+    std::fs::read_to_string(running_dir().join(job.replace(['/', '\\'], "_")))
+        .ok()
+        .and_then(|s| s.trim().parse::<i64>().ok())
 }
 
 /// Jobs currently marked running (oldest-started first), skipping stale markers from a crashed

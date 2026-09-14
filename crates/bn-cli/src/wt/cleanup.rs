@@ -353,7 +353,7 @@ pub(crate) fn commits_ahead(wt: &Path) -> u32 {
 /// Clean a single worktree: verify the PR, close the note, remove the worktree + branch, and
 /// kill its tmux window(s).
 ///
-/// **The one reclaim path.** `prefix x` (via the queued `cleanup` entry), `prefix D`, `bn wt
+/// **The one reclaim path.** `prefix x` (via `bn wt close --reclaim`), `prefix D`, `bn wt
 /// cleanup`, `bn close`, `wt merge` and the reaper all arrive here, and the two shapes of worktree
 /// fork exactly once: a `_pool/<n>` slot hands its *lease* back and keeps its checkout (warm-reset
 /// for the next tenant), while a conventional worktree is removed outright behind the merged-PR /
@@ -370,7 +370,7 @@ pub(crate) fn cleanup_one(
             println!("{msg}");
         }
         // A slot that is already free needed no reclaiming — that is the goal state, not a failure.
-        // The distinction matters because this runs from a queue entry: collapsing "already free"
+        // The distinction matters because this runs in the background: collapsing "already free"
         // into "refused" would log a failed cleanup every time a slot came back by another route
         // first, and a log that cries wolf is one nobody reads.
         return match outcome {

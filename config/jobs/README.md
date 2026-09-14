@@ -13,15 +13,15 @@ add a `[machine]` table to that machine's own `<notes_root>/<machine>/config.tom
 ```toml
 [machine]
 repos = ["bn", "owner/arena"]   # default ["*"]
-cron = false                     # default true, and likewise queue and web
+cron = false                     # default true, and likewise web
 ```
 
 `[jobs.only_on]` limits individual jobs to named machines, `[[cron]].only_on` limits timer
 registration, and `[nodes.<id>].repos` limits worker placement. A cron may also declare
 `repo = "name"` (or inherit a manifest-level `repo`): it is registered and run only while that
 repository is allowed on the machine and present in the local bare-repository inventory. Setting
-`cron = false` and rerunning `bn cron register` prunes bn-managed timers; `queue = false` and
-`web = false` are unloaded by normal bn lifecycle reconciliation. Status commands stay available
+`cron = false` and rerunning `bn cron register` prunes bn-managed timers; `web = false` is
+unloaded by normal bn lifecycle reconciliation. Status commands stay available
 and report `not_enabled`.
 
 ## How it works
@@ -73,25 +73,23 @@ shape into `bn attn ingest` instead of building a quoted command line:
 `--replace` makes the batch the source's current truth: keyed items no longer emitted by the job
 are resolved automatically, while repeated keys are skipped instead of duplicated.
 
-Crons never open a tmux **session**. `bn run <job>` executes the job in its own process and records
-the outcome, and a firing cron cannot steal your focus.
+Crons never open a tmux **session** or window. launchd/systemd fires `bn run <job>`, which executes
+the job inline in its own process and records the outcome, so a firing cron cannot steal your focus.
+Pool warming runs the same way, straight from the `pool-warm` cron.
 
-A job heavy enough to be spawned rather than run inline (`bn_core::queue::jobs::HEAVY_JOBS` — pool
-warming, release builds) does get a window, because minutes of build deserve somewhere to be
-watched. That window opens **in the session of the repository the job serves**, which must already
-be a repo's: bn creates no tmux session that is not named after a repository it manages, and work
-that names no repo of its own is bn's bookkeeping and lands in bn's session. The window is created
-detached, so it never takes your cursor, and it closes itself the moment the job succeeds. Only a
-failed run leaves its pane behind to be read, and the next run of that job clears it — so at most
-one stale window per job can exist, and a repo's session cannot silently fill up.
+A command you start from the `bn tat` picker (a verb or a repo script row, such as a pool warm or a
+release build) runs at once in a window, because minutes of build deserve somewhere to be watched.
+That window opens **in the session of the repository the command serves**, which must already be a
+repo's: bn creates no tmux session that is not named after a repository it manages, and work that
+names no repo of its own lands in bn's session. The window is created detached, so it never takes
+your cursor, and it closes itself when the command succeeds. Only a failed run leaves its pane
+behind to be read, and the next run of that command clears it, so a repo's session cannot silently
+fill up.
 
 Read a run's result from the event log rather than from a terminal — the pane is a live view, never
 the record:
 
 - `bn cron` — every scheduled job with its last-run health (ok/FAIL, duration, run + failure counts).
-- `bn queue badge` — the tmux status-bar signal for foreground queue attention, failures, or a
-  stale dispatcher. Healthy routine cron/autonomous work stays quiet; inspect it with
-  `bn queue timeline`.
 - `bn run <job>` by hand — the job's output goes straight to your stdout.
 
 The `class` field on a `[[cron]]` entry (`info` / `housekeeping`) is a descriptive dashboard label
@@ -188,7 +186,7 @@ frontmatter with an explicit `kind`:
 | `specialist` | Has a non-empty body plus `repo:` and compiles into a native reviewer; it cannot run or be scheduled. |
 
 Runnable kinds may declare `on_calendar`, `retry_after` (default `15m` when scheduled),
-`trigger: startup`, `network`, `queue`, and strict body `arguments`. Static role instructions and
+`trigger: startup`, `network`, and strict body `arguments`. Static role instructions and
 output contracts belong in the Markdown body; Rust keeps deterministic gathering, validation,
 security framing, routing, state, and structured-output parsing.
 
@@ -220,8 +218,11 @@ three **tick** crons — one timer each — that fan out to their cluster in ord
 | `tick-10m` | `*:0/10` | `auto-review-trigger`, `attention-auto-trigger`, `agent-supervise` |
 | `tick-15m` | `*:0/15` | `main-sync`, `auto-review-poll`, `cron-health` |
 
-`agent-scheduler` runs every minute and owns every `on_calendar` declared in
-`config/agents/*.md`; agent schedules do not belong in `crons.toml`.
+**Scheduled agents are disabled**, ahead of removing the feature. `crons.toml` has no
+`agent-scheduler` entry and first-activity catch-up skips agents, so nothing fires the
+`on_calendar` declared in `config/agents/*.md`. `bn run <agent>` still runs one by hand. The rest
+of this section describes how the scheduler behaved when enabled. Agent schedules do not belong in
+`crons.toml`.
 
 Every scheduled agent must also declare `requires_repo: <name>`. The scheduler, first-activity
 catch-up, and direct `bn run <agent>` path all skip it unless that repository is assigned to the

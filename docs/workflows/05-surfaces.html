@@ -48,7 +48,7 @@ never appear in help.
 <tr><td><strong>Note / review</strong></td><td><code>bn goal</code>, <code>bn done</code>, <code>bn cat</code>, <code>bn ingest</code>, <code>bn learned</code>, <code>bn reflect</code></td></tr>
 <tr><td><strong>Planning / time</strong></td><td><code>bn todo</code>, <code>bn task</code>, <code>bn daily</code>, <code>bn quarter</code>; the punch clock <code>bn in</code> / <code>bn out</code> / <code>bn track</code>; <code>bn wrap</code>, <code>bn calib</code></td></tr>
 <tr><td><strong>Insight</strong></td><td><code>bn next</code> (the ranked "what now"), <code>bn search</code>, <code>bn recall</code>, <code>bn metrics</code>, <code>bn doctor</code>, <code>bn today</code></td></tr>
-<tr><td><strong>Automation</strong></td><td><code>bn queue</code>, <code>bn jump</code>, <code>bn tat</code>, <code>bn attn</code>, <code>bn focus</code>, <code>bn sessions</code>, <code>bn resume</code></td></tr>
+<tr><td><strong>Automation</strong></td><td><code>bn jump</code>, <code>bn tat</code>, <code>bn attn</code>, <code>bn focus</code>, <code>bn sessions</code>, <code>bn resume</code></td></tr>
 <tr><td><strong>Staff / ops</strong></td><td><code>bn run &lt;job&gt;</code>, <code>bn cron</code>, <code>bn machine</code>, <code>bn estate</code>, <code>bn agents</code>, <code>bn mcp</code></td></tr>
 <tr><td><strong>Misc</strong></td><td><code>bn serve</code>, <code>bn cost</code>, <code>bn build</code>, <code>bn kill</code>, <code>bn links</code>, <code>bn ref</code>, <code>bn pipeline</code></td></tr>
 </tbody>
@@ -101,14 +101,14 @@ Reads fold <code>bn-core</code> in-process; <strong>writes shell out to <code>bn
 so the browser and the terminal share one implementation rather than two. Every write —
 accepted <em>and</em> rejected — appends a <code>web_action</code> event, which the SSE tailer
 fans back into the activity feed.
-<span class="src">crates/bn-web/src/queue_api.rs:6-7 · audit.rs:1-10</span>
+<span class="src">crates/bn-web/src/audit.rs:1-10</span>
 </p>
 
 <p>
-Mutating routes include <code>/api/dispatch</code>, <code>/api/queue/{add,cancel,priority,snooze,class}</code>,
+Mutating routes include <code>/api/dispatch</code>,
 <code>/api/agents/{target}/{send,relaunch,kill,answer,instruct}</code>, <code>/api/land</code>,
 <code>/api/reviews/{id}</code>, <code>/api/attention/{id}</code>, skills and agent-def CRUD,
-<code>/api/cron/run</code>, and the per-repo <code>drain</code> / <code>orchestrate</code> /
+<code>/api/cron/run</code>, and the per-repo <code>orchestrate</code> and
 <code>pool/warm</code> actions. The router also nests MCP at <code>/mcp</code> and
 <code>/mcp/orchestrate</code> — the same untokened surface.
 <span class="src">routes.rs:115-190, :232-233</span>
@@ -117,7 +117,7 @@ Mutating routes include <code>/api/dispatch</code>, <code>/api/queue/{add,cancel
 <div class="note note--gap">
 <span class="note__label">Most of the UI is hidden by default</span>
 <p>
-A fresh <code>bn serve</code> shows three rail entries: Today, Cron, Settings. Queue, Console,
+A fresh <code>bn serve</code> shows three rail entries: Today, Cron, Settings. Console,
 Nodes, Staff, Attention, Automation, Goals, Repos, Insights, Notes, Skills, Agents, Handoff
 and Research all need <code>?experimental=&lt;key&gt;</code> or a toggle on
 <code>/settings</code>. The routes resolve either way — they are simply not advertised.
@@ -125,56 +125,44 @@ and Research all need <code>?experimental=&lt;key&gt;</code> or a toggle on
 </p>
 </div>
 
-<h2>Queue, attention, today — three different things</h2>
+<h2>Attention and today: two different things</h2>
 
 <figure>
-<svg viewBox="0 0 900 250" role="img" aria-labelledby="lanes-title">
-  <title id="lanes-title">Queue, Attention and Today compared by producer and human verb</title>
+<svg viewBox="0 0 606 250" role="img" aria-labelledby="lanes-title">
+  <title id="lanes-title">Attention and Today compared by producer and human verb</title>
 
   <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10">
 
-    <!-- QUEUE -->
-    <rect x="8" y="20" width="278" height="200" rx="6" fill="var(--card)" stroke="var(--rule)" stroke-width="1.5"/>
-    <text x="22" y="42" font-size="11.5" fill="var(--accent)">QUEUE</text>
-    <text x="22" y="60" font-size="9.5" fill="var(--ink-muted)">machine-wide, every repo + agent kind</text>
-    <line x1="22" y1="70" x2="272" y2="70" stroke="var(--rule-soft)"/>
-    <text x="22" y="90" fill="var(--ink-mid)">in ← producers, bn queue add</text>
-    <text x="22" y="110" fill="var(--ink-mid)">out → queue-tick cron, when there is</text>
-    <text x="22" y="124" fill="var(--ink-mid)">      capacity AND a capable node</text>
-    <text x="22" y="150" font-size="9.5" fill="var(--ink-faint)">kinds: ship, scout, investigate,</text>
-    <text x="22" y="164" font-size="9.5" fill="var(--ink-faint)">research, enhance, review-pr, cron</text>
-    <text x="22" y="196" font-size="10.5" fill="var(--accent)">your verb: wait, or pause</text>
-
     <!-- ATTENTION -->
-    <rect x="302" y="20" width="278" height="200" rx="6" fill="var(--card)" stroke="var(--rule)" stroke-width="1.5"/>
-    <text x="316" y="42" font-size="11.5" fill="var(--teal)">ATTENTION</text>
-    <text x="316" y="60" font-size="9.5" fill="var(--ink-muted)">waiting on a decision from you</text>
-    <line x1="316" y1="70" x2="566" y2="70" stroke="var(--rule-soft)"/>
-    <text x="316" y="90" fill="var(--ink-mid)">in ← crons, bn attn add/ingest</text>
-    <text x="316" y="110" fill="var(--ink-mid)">     dedup on --key</text>
-    <text x="316" y="136" font-size="9.5" fill="var(--ink-faint)">three lanes: needs-you /</text>
-    <text x="316" y="150" font-size="9.5" fill="var(--ink-faint)">in-progress / to-start</text>
-    <text x="316" y="172" font-size="9.5" fill="var(--ink-faint)">mode: manual | assist | auto</text>
-    <text x="316" y="196" font-size="10.5" fill="var(--teal)">your verb: ack, snooze, start</text>
+    <rect x="8" y="20" width="278" height="200" rx="6" fill="var(--card)" stroke="var(--rule)" stroke-width="1.5"/>
+    <text x="22" y="42" font-size="11.5" fill="var(--teal)">ATTENTION</text>
+    <text x="22" y="60" font-size="9.5" fill="var(--ink-muted)">waiting on a decision from you</text>
+    <line x1="22" y1="70" x2="272" y2="70" stroke="var(--rule-soft)"/>
+    <text x="22" y="90" fill="var(--ink-mid)">in ← crons, bn attn add/ingest</text>
+    <text x="22" y="110" fill="var(--ink-mid)">     dedup on --key</text>
+    <text x="22" y="136" font-size="9.5" fill="var(--ink-faint)">three lanes: needs-you /</text>
+    <text x="22" y="150" font-size="9.5" fill="var(--ink-faint)">in-progress / to-start</text>
+    <text x="22" y="172" font-size="9.5" fill="var(--ink-faint)">mode: manual | assist | auto</text>
+    <text x="22" y="196" font-size="10.5" fill="var(--teal)">your verb: ack, snooze, start</text>
 
     <!-- TODAY -->
-    <rect x="596" y="20" width="296" height="200" rx="6" fill="var(--card)" stroke="var(--rule)" stroke-width="1.5"/>
-    <text x="610" y="42" font-size="11.5" fill="var(--warn)">TODAY</text>
-    <text x="610" y="60" font-size="9.5" fill="var(--ink-muted)">suggestions, NOT a task list</text>
-    <line x1="610" y1="70" x2="878" y2="70" stroke="var(--rule-soft)"/>
-    <text x="610" y="90" fill="var(--ink-mid)">in ← findings store</text>
-    <text x="610" y="110" fill="var(--ink-mid)">     (gather-findings cron)</text>
-    <text x="610" y="130" fill="var(--ink-mid)">via → an LLM agent that runs</text>
-    <text x="610" y="144" fill="var(--ink-mid)">      on every bn today</text>
-    <text x="610" y="170" font-size="9.5" fill="var(--ink-faint)">idempotent merge — a dismissed</text>
-    <text x="610" y="184" font-size="9.5" fill="var(--ink-faint)">proposal never returns</text>
-    <text x="610" y="208" font-size="10.5" fill="var(--warn)">your verb: accept, dismiss</text>
+    <rect x="302" y="20" width="296" height="200" rx="6" fill="var(--card)" stroke="var(--rule)" stroke-width="1.5"/>
+    <text x="316" y="42" font-size="11.5" fill="var(--warn)">TODAY</text>
+    <text x="316" y="60" font-size="9.5" fill="var(--ink-muted)">suggestions, NOT a task list</text>
+    <line x1="316" y1="70" x2="584" y2="70" stroke="var(--rule-soft)"/>
+    <text x="316" y="90" fill="var(--ink-mid)">in ← findings store</text>
+    <text x="316" y="110" fill="var(--ink-mid)">     (gather-findings cron)</text>
+    <text x="316" y="130" fill="var(--ink-mid)">via → an LLM agent that runs</text>
+    <text x="316" y="144" fill="var(--ink-mid)">      on every bn today</text>
+    <text x="316" y="170" font-size="9.5" fill="var(--ink-faint)">idempotent merge — a dismissed</text>
+    <text x="316" y="184" font-size="9.5" fill="var(--ink-faint)">proposal never returns</text>
+    <text x="316" y="208" font-size="10.5" fill="var(--warn)">your verb: accept, dismiss</text>
   </g>
 </svg>
 <figcaption>
-<code>bn next</code> is the thing that ranks across all three, with a momentum tiebreak toward
+<code>bn next</code> is the thing that ranks across both, with a momentum tiebreak toward
 the repo you are punched into.
-<span class="src">cli.rs:745-777, :799-807 · cli/queue_cmd.rs:1-30</span>
+<span class="src">cli.rs:745-777, :799-807</span>
 </figcaption>
 </figure>
 
@@ -277,12 +265,12 @@ bn today list                             # agent-proposed tasks from cron findi
 bn today accept s2
 
 # Ground the work, then cut a worktree for it
-bn task add "fix flaky queue-tick reconcile test" --repo bn
+bn task add "fix flaky pool-slot reconcile test" --repo bn
 bn task enhance T14                       # SMART-gate it
-bn dispatch T14 --repo bn --name queue-tick-flake
+bn dispatch T14 --repo bn --name pool-reconcile-flake
 
 # Punch in and set the branch's goal (now inside the new worktree)
-bn in "queue-tick flake" --tag dev
+bn in "pool reconcile flake" --tag dev
 bn goal "make the pool-slot reconcile test deterministic"
 bn add done-when "test passes 20x in a row"
 bn add todo "reproduce locally with a seeded clock"
@@ -291,7 +279,7 @@ bn add todo "reproduce locally with a seeded clock"
 bn q "leases.json holder can outlive every agent that held it"
 bn done t1
 bn notes "root cause: reconcile ran before the tmux server exited"
-bn learned "pool leases are reconciled at the head of every queue-tick"
+bn learned "reconcile the pool-slot ledger before trusting leases.json"
 
 # Ship
 bn build
@@ -339,7 +327,7 @@ todo id (e.g. <code>t3</code>)" while <code>bn task</code> uses its own ids — 
 versus <code>t14</code> was not confirmed at runtime.</li>
 <li>Claims about what each web screen <em>shows</em> come from <code>lib/nav.ts</code> blurbs
 and the route table. Only the first ~120 lines of <code>Today.tsx</code> were read;
-<code>Console</code>, <code>Queue</code>, <code>Attention</code>, <code>Insights</code> and
+<code>Console</code>, <code>Attention</code>, <code>Insights</code> and
 <code>Settings</code> were not.</li>
 <li>Whether a write path exists elsewhere that registers Windows tasks from Rust.
 <code>winsched.rs</code> is clearly read-only, and <code>install.ps1</code> was the only

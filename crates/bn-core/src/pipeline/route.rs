@@ -1,7 +1,7 @@
 //! How much pipeline a task gets — the complexity classifier.
 //!
-//! [`super::sweep::SWEPT`] runs the same three stages for every admitted task, so a one-line fix
-//! and an ambiguous rewrite cost the same. This module decides what a task *should* get: which
+//! The standard arc runs the same three stages (investigate, plan, execute) for every admitted
+//! task, so a one-line fix and an ambiguous rewrite cost the same. This module decides what a task *should* get: which
 //! stages, how many sub-investigators, how many plan reviewers, how many critique rounds.
 //!
 //! **Nothing reads the answer yet.** `bn pipeline route` reports it and stops there, deliberately:
@@ -21,8 +21,8 @@
 //!   the route, so an issue an attacker files can make bn spend *more* and never less.
 //!
 //! That asymmetry is the same one the gate ratchet enforces for `gate` in
-//! [`super::profile`], and it exists for the reason recorded in [`crate::queue::classify`]: a
-//! substring match on prompt text once froze a person's priority-100 work. The worst case for a
+//! [`super::profile`], and it exists for a reason learned the hard way: a substring match on
+//! prompt text once froze a person's priority-100 work. The worst case for a
 //! widening-only signal is a wasted investigation.
 //!
 //! Narrowing *spend* (model, fan-out) is a budget decision and is allowed from the task line.
@@ -135,7 +135,7 @@ pub struct RoutePlan {
     pub route: Route,
     /// A sensitive surface is in scope, so this task is reviewed whatever its size says.
     pub guarded: bool,
-    /// The stages to sweep, in flow order.
+    /// The stages to run, in flow order.
     pub stages: Vec<Stage>,
     /// Most sub-investigators the investigate stage may fan out to; `0` disables fan-out.
     pub fanout_cap: usize,
@@ -367,7 +367,10 @@ mod tests {
     fn standard_is_todays_pipeline_unchanged() {
         let plan = classify(&Signals::default());
         assert_eq!(plan.route, Route::Standard);
-        assert_eq!(plan.stages, super::super::sweep::SWEPT.to_vec());
+        assert_eq!(
+            plan.stages,
+            vec![Stage::Investigate, Stage::Plan, Stage::Execute]
+        );
         assert_eq!(plan.gate, GatePolicy::Auto);
         assert!(!plan.guarded);
     }

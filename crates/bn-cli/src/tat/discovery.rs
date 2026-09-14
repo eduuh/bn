@@ -197,7 +197,7 @@ pub(super) fn remote_prs(roots: &Roots, name: &str) -> Vec<wt::RemotePr> {
 /// Drop every cached PR list belonging to `repo`, so the next paint refetches instead of serving
 /// an answer a fetch has just invalidated.
 ///
-/// Takes a bare repo *name* rather than a [`Roots`]-derived key because the caller is a queued job,
+/// Takes a bare repo *name* rather than a [`Roots`]-derived key because the caller is a background job,
 /// which has a repo and no picker: it never resolved a root scope and should not have to. Every
 /// root holding that name is cleared, which is the conservative direction — clearing one entry too
 /// many costs a refetch, keeping one too long shows a PR that has since merged.

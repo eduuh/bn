@@ -7,10 +7,10 @@ test reports a failed expectation; the workspace-wide deny targets production co
 //! The fresh-machine lane: bn on a machine nobody configured.
 //!
 //! A machine used to need a registered machine profile before bn would run anything on it, and a
-//! missing one failed silently: cron registered nothing, the queue refused, and the dashboard would
-//! not start. On one real machine that was eight days of a release job never running. This pins
-//! the opposite default: a sandbox whose config names no machine still declares its crons, answers
-//! `bn queue`, and reports on `bn serve`.
+//! missing one failed silently: cron registered nothing and the dashboard would not start. On one
+//! real machine that was eight days of a release job never running. This pins the opposite
+//! default: a sandbox whose config names no machine still declares its crons and reports on
+//! `bn serve`.
 //!
 //! Run with: `cargo test -p bn-e2e --test fresh_machine -- --ignored --test-threads=1`
 
@@ -34,7 +34,7 @@ fn unconfigure(sb: &Sandbox) -> anyhow::Result<()> {
 
 #[test]
 #[ignore = "e2e: needs a built bn binary (cargo build --workspace)"]
-fn a_machine_with_no_profile_runs_cron_queue_and_web() -> anyhow::Result<()> {
+fn a_machine_with_no_profile_runs_cron_and_web() -> anyhow::Result<()> {
     let sb = Sandbox::new()?;
     unconfigure(&sb)?;
 
@@ -46,12 +46,6 @@ fn a_machine_with_no_profile_runs_cron_queue_and_web() -> anyhow::Result<()> {
     assert!(
         cron.contains("fresh-machine-probe"),
         "the declared cron is missing from a machine with no profile:\n{cron}"
-    );
-
-    let queue = sb.bn(["queue", "status", "--json"])?.output();
-    assert!(
-        !queue.contains("not_enabled"),
-        "the queue refused an unconfigured machine:\n{queue}"
     );
 
     let web = sb.bn(["serve", "status", "--json"])?.output();

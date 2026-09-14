@@ -867,7 +867,5 @@ pub fn sync_data(p: &crate::sync::Proposals) -> Value {
 
 pub mod agent_defs;
 pub use agent_defs::{agent_def_data, agent_defs_data};
-pub mod queue;
-pub use queue::queue_data;
 pub mod tasks;
 pub use tasks::task_ledger_data;

@@ -63,15 +63,14 @@ function Tag({
   );
 }
 
-/** Warm-pool trigger (#497): queue the repo's heavy `pool-warm` job instead of starting an uncapped
- * detached build. */
+/** Warm-pool trigger (#497): start the repo's `pool-warm` job now. */
 function WarmButton({ repo }: { repo: string }) {
-  // The slot counts move only once the queue has admitted and completed the warm, so there is
-  // nothing honest to patch optimistically.
+  // The slot counts move only once the warm has completed, so there is nothing honest to patch
+  // optimistically.
   const mut = useAppMutation({
     mutationFn: () => warmRepoPool(repo),
     invalidates: affects.pool,
-    toast: { success: `Queued pool warm for ${repo}`, error: `Could not queue ${repo} pool warm` },
+    toast: { success: `Warming ${repo}'s pool`, error: `Could not warm ${repo}'s pool` },
   });
   return (
     <Button
@@ -80,16 +79,14 @@ function WarmButton({ repo }: { repo: string }) {
       size="sm"
       className={TOUCH}
       disabled={mut.isPending}
-      title={`Queue ${repo}'s pool warm job`}
+      title={`Warm ${repo}'s pool now`}
       onClick={() => {
-        if (
-          window.confirm(`Queue a pool warm for ${repo}? Builds slots when the queue has capacity.`)
-        )
+        if (window.confirm(`Warm the pool for ${repo} now? Slots are built in the background.`))
           mut.mutate();
       }}
     >
       <Flame className="h-3.5 w-3.5" />
-      {mut.isPending ? "queueing…" : "queue warm"}
+      {mut.isPending ? "warming…" : "warm now"}
     </Button>
   );
 }
@@ -121,12 +118,12 @@ function SetupButton({ repo }: { repo: string }) {
   );
 }
 
-/** What to tell the user a setup request actually did. `bn dispatch` may launch the agent now or
- * file it in the queue for the tick to start; saying "starting…" for the second is the reason a
- * click could look like it had done nothing. */
+/** What to tell the user a setup request actually did. `bn dispatch` may launch the agent now or,
+ * when every warm slot is leased, schedule it on the repo's run; saying "starting…" for the second
+ * is the reason a click could look like it had done nothing. */
 function setupOutcome(result: RepoSetupAgentResult, repo: string): string {
   return result?.dispatched === false
-    ? `Queued repo setup for ${repo} — it starts when the queue has capacity`
+    ? `Scheduled repo setup for ${repo}. It starts when a pool slot frees.`
     : `Starting repo setup for ${repo}…`;
 }
 
@@ -175,8 +172,8 @@ function PoolPanel({ repo, pool, now }: { repo: string; pool: PolicyRepoPool; no
     <div className="space-y-2">
       {pool.enabled && (
         <div className="flex flex-wrap items-center gap-1.5">
-          <Tag title="pool-warm is queued automatically on enable, resize, and lease top-up">
-            auto queue
+          <Tag title="pool-warm runs automatically on enable, resize, and lease top-up">
+            auto warm
           </Tag>
           {poolNeedsTopUp(pool) && (
             <Tag

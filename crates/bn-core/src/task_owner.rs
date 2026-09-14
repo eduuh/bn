@@ -1,28 +1,26 @@
 //! Whose work a task is — yours, or the machine's own bookkeeping.
 //!
-//! Every enqueue must name a task (#1001). That invariant is what turns "work only ever starts from
-//! a task" from a convention into something a test can assert, and it is worth keeping. But it was
-//! read as though every enqueue were a person typing one, and almost none of them are: a cron
+//! Work names a task (#1001). That invariant is what turns "work only ever starts from a task" from
+//! a convention into something a test can assert, and it is worth keeping. But it was read as
+//! though every task were a person typing one, and almost none of them are: a cron
 //! firing, a worktree being reclaimed, a pool being warmed, a repo setup agent whose prompt the
 //! dashboard rendered from a template. Each minted a line indistinguishable from work you chose.
 //!
 //! The day's actionable list came back 96 rows deep — 55 crons, 15 reclaims, 12 generated setup
-//! prompts (each carrying its entire multi-paragraph prompt as its title), 11 queue jobs — and 3
+//! prompts (each carrying its entire multi-paragraph prompt as its title), 11 background jobs — and 3
 //! tasks that were actually a person's. A list that answers "what could I do today" that way has
 //! stopped answering.
 //!
-//! So the marker, and one predicate for it, read in three places that would otherwise each spell
-//! out the same string comparison:
+//! So the marker, and one predicate for it, read in the places that would otherwise each spell out
+//! the same string comparison:
 //!
 //! - `bn task`'s day view folds machine tasks out (`--all` still shows them);
-//! - [`crate::queue::classify`] calls the entry autonomous, so it stops competing for the watched
-//!   coding lane;
 //! - [`crate::pipeline::gate`] admits it without SMART judgement — a generated prompt has no author
 //!   to hand a refusal back to.
 //!
 //! **Marked at minting, never inferred.** The one previous attempt to infer this class of thing read
 //! the word "warm" out of a repo setup prompt's own instructions and froze priority-100 work a
-//! person had just clicked (see `queue::classify::is_warming`). A task is the machine's because the
+//! person had just clicked. A task is the machine's because the
 //! producer said so when it created it, and for no other reason.
 
 use crate::todo::Task;
@@ -36,7 +34,7 @@ pub const AUTO_VALUE: &str = "1";
 
 /// Whether the machine minted this task for its own bookkeeping.
 ///
-/// It stays in the store — the enqueue named it and the trail is the point — but it is not work a
+/// It stays in the store — its producer named it and the trail is the point — but it is not work a
 /// person chose, so the day view folds it out and the SMART gate does not judge it.
 pub fn is_machine(task: &Task) -> bool {
     task.meta(AUTO_KEY).is_some_and(|v| v.trim() == AUTO_VALUE)
@@ -74,7 +72,7 @@ mod tests {
     #[test]
     fn the_marker_is_read_never_guessed_from_the_words() {
         // A task is the machine's because it was *minted* that way. Inferring it from text is the
-        // mistake `queue::classify::is_warming` already made once, when the word "warm" inside a
+        // mistake an earlier classifier made once, when the word "warm" inside a
         // repo setup prompt's own instructions froze a person's priority-100 click for an away
         // window. "run keep-warm by hand" is a person's task and must stay on their list.
         let file = TodoFile::parse(concat!(

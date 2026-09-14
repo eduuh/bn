@@ -96,7 +96,7 @@ pub(crate) fn plan_gate_enabled(request: PlanGate, configured: bool, yolo: bool,
 
 /// The seed-routing predicate: a skill-less non-scout agent dispatch enters the multi-session task
 /// pipeline at its Investigate stage; a scout seeds the scout envelope; an explicit `--skill X`
-/// lane (queue skill lanes, the critic's execute re-dispatch) runs that skill under the ship
+/// lane (e.g. the critic's execute re-dispatch) runs that skill under the ship
 /// envelope — autonomy stance, verify gate, completion protocol, optional plan gate.
 ///
 /// `configured` (`$BN_DISPATCH_PIPELINE=1`, default false) is the master

@@ -30,7 +30,6 @@ export interface CatalogItem {
   network: boolean;
   catch_up: boolean;
   startup: boolean;
-  queue: boolean;
   retry_after_secs?: number | null;
   last_run?: number | null;
   last_exit?: number | null;
@@ -84,7 +83,6 @@ export interface AgentDefRow {
   repo?: string | null;
   network: boolean;
   catch_up: boolean;
-  queue: boolean;
   retry_after_secs?: number | null;
   skills: string[];
   mcps: string[];

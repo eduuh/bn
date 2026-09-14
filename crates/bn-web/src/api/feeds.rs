@@ -52,7 +52,6 @@ pub async fn actions(State(state): State<AppState>) -> Json<Envelope> {
                 .filter_map(|p| bn_core::orchestrate::OrchestrateState::load(&p))
                 .flat_map(|st| st.queue.into_iter())
                 .collect();
-            let backlog = bn_core::backlog::load(&bn_core::backlog::backlog_path());
 
             let sources = bn_core::action_center::ActionSources {
                 attn: &attn,
@@ -61,7 +60,6 @@ pub async fn actions(State(state): State<AppState>) -> Json<Envelope> {
                 notes: &notes,
                 goals: &goals,
                 queue: &queue,
-                backlog: Some(&backlog),
                 now: bn_core::util::now_epoch_secs(),
             };
             let actions = bn_core::action_center::build_actions(&sources);

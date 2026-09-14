@@ -401,8 +401,6 @@ pub struct AgentScheduleView {
     pub description: Option<String>,
     /// Whether the agent may use the network.
     pub network: bool,
-    /// Whether queue capture is enabled for this agent.
-    pub queue: bool,
     /// Whether the agent also declares `trigger: startup`.
     pub startup: bool,
     /// Failure retry delay declared by the manifest (scheduled default: 15 minutes).
@@ -515,7 +513,6 @@ pub fn agent_schedule_views(
                 schedule: agent.on_calendar.clone().unwrap_or_default(),
                 description: agent.description.clone(),
                 network: agent.network,
-                queue: agent.queue,
                 startup: agent.is_startup(),
                 retry_after_secs: agent
                     .retry_after_secs
@@ -714,7 +711,6 @@ mod tests {
             schedule: "daily".to_string(),
             description: None,
             network: false,
-            queue: false,
             startup: false,
             retry_after_secs: crate::agents::DEFAULT_RETRY_AFTER_SECS,
             due: false,

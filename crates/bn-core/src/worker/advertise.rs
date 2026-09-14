@@ -60,33 +60,3 @@ pub fn advertised_labels(cfg: &Config, base_dir: &std::path::Path) -> Vec<String
 fn mcp_names(_cfg: &Config) -> Vec<String> {
     vec!["bn".to_string()]
 }
-
-/// Split an advertised label set back out by axis for display: `(skills, harnesses, mcps, other)`.
-///
-/// The inverse of the flattening above. Status surfaces want the axes named; the matcher wants one
-/// flat list. Keeping the projection in one place means neither has to know the other's shape.
-pub fn split_labels(labels: &[String]) -> AdvertisedAxes {
-    let mut axes = AdvertisedAxes::default();
-    for label in labels {
-        if let Some(skill) = label.strip_prefix(SKILL_PREFIX) {
-            axes.skills.push(skill.to_string());
-        } else if let Some(harness) = label.strip_prefix(HARNESS_PREFIX) {
-            axes.harnesses.push(harness.to_string());
-        } else if let Some(mcp) = label.strip_prefix(MCP_PREFIX) {
-            axes.mcps.push(mcp.to_string());
-        } else {
-            axes.other.push(label.clone());
-        }
-    }
-    axes
-}
-
-/// An advertised label set, split by axis for display.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
-pub struct AdvertisedAxes {
-    pub skills: Vec<String>,
-    pub harnesses: Vec<String>,
-    pub mcps: Vec<String>,
-    /// Everything without a reserved prefix — `os:`, `arch:`, `home:`, and operator-defined tags.
-    pub other: Vec<String>,
-}

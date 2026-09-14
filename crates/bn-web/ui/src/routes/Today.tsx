@@ -19,7 +19,6 @@ import type { DailyGoal, QuarterGoal, Suggestion } from "../api/types";
 import { AgentActivity } from "../components/AgentActivity";
 import { ConfirmButton } from "../components/ConfirmButton";
 import { Empty, Hint, SectionCard } from "../components/SectionCard";
-import { QueueAddForm } from "../components/QueueAddForm";
 import { SteerPanel } from "../components/SteerPanel";
 import { StatGrid, StatTile } from "../components/StatTile";
 import { fmtAic, fmtUsd } from "../lib/format";
@@ -138,7 +137,7 @@ function SuggestionRow({
           <span className="font-mono text-xs text-muted-foreground/80">{s.source}</span>
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          <Hint label="Accept — queue it (mints a task, resolves its repo if needed)">
+          <Hint label="Accept (mints a task, resolves its repo if needed)">
             <Button
               variant="ghost"
               size="icon"
@@ -302,35 +301,20 @@ function TodayAgentCard() {
   );
 }
 
-/** One accepted proposal and what became of it — the round-trip half of the Today↔queue tie.
- *
- * Accepting is what queues the work, so an accepted suggestion has an outcome worth showing: an
- * `enhance` entry means it is still resolving *where* the work goes, a live entry means it is in
- * flight, and no entry at all means the queue never took it and `bn today sync` is the fix. Without
- * this the page showed proposals vanishing on accept and never said whether anything happened. */
+/** One accepted proposal and the task it minted. Without this the page showed proposals vanishing
+ * on accept and never said whether anything happened. */
 function AcceptedRow({ s }: { s: Suggestion }) {
-  const q = s.queue ?? null;
   return (
     <li>
       <Card className="flex items-start gap-2 border-border bg-muted/60 px-3 py-2 text-sm">
-        {q?.live ? (
-          <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-primary" aria-hidden />
-        ) : (
-          <Check className="mt-0.5 h-4 w-4 shrink-0 text-ok" aria-hidden />
-        )}
+        <Check className="mt-0.5 h-4 w-4 shrink-0 text-ok" aria-hidden />
         <div className="min-w-0 flex-1 space-y-0.5 lg:max-w-[88ch]">
           <span className="text-foreground/90">{s.title}</span>
-          <div className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
-            {s.task && <span className="font-mono">{s.task}</span>}
-            {q ? (
-              <span className="font-mono">
-                {q.repo}/{q.entry} · {q.kind} · {q.status}
-              </span>
-            ) : (
-              <span>not queued yet — run `bn today sync`</span>
-            )}
-            {q?.kind === "enhance" && <span>resolving where this happens</span>}
-          </div>
+          {s.task && (
+            <div className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+              <span className="font-mono">{s.task}</span>
+            </div>
+          )}
         </div>
       </Card>
     </li>
@@ -339,7 +323,7 @@ function AcceptedRow({ s }: { s: Suggestion }) {
 
 /** Suggested tasks (#577) — Today's agent synthesizes the cron findings into reviewable proposals.
  * A manual Run trigger fires `POST /api/today/run`; each proposal can be accepted or dismissed.
- * Accepting one queues it, so the accepted list below shows what the queue did with it. */
+ * Accepting one mints a task, so the accepted list below shows what each became. */
 function SuggestedTasks() {
   const suggestions = useQuery(suggestionsQuery("suggested"));
   const accepted = useQuery(suggestionsQuery("accepted"));
@@ -368,11 +352,10 @@ function SuggestedTasks() {
   >({
     mutationFn: (v) => setSuggestionStatus(v.id, v.status),
     optimistic: dropSuggestion<{ id: string; status: "accepted" | "dismissed" }>((v) => v.id),
-    // Accepting enqueues, so it changes the queue as well as the task store — invalidate both or the
-    // accepted row appears with no queue state until something else happens to refetch it.
+    // Accepting mints a task, so it changes the task store as well as the suggestion lists.
     invalidates: [...affects.task, ...suggested],
     toast: {
-      success: (r) => (r.status === "accepted" ? "Accepted — queued" : `Suggestion ${r.status}`),
+      success: (r) => (r.status === "accepted" ? "Accepted" : `Suggestion ${r.status}`),
       error: "Review failed",
     },
   });
@@ -428,7 +411,7 @@ function SuggestedTasks() {
       {inFlight.length > 0 && (
         <div className="mt-4 space-y-2 border-t border-border pt-3">
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            Accepted — {inFlight.length} in the queue
+            Accepted ({inFlight.length})
           </p>
           <ul className="space-y-2">
             {inFlight.map((s) => (
@@ -543,18 +526,6 @@ export function Today() {
           </div>
         ) : (
           <div className="mx-auto flex w-full max-w-6xl flex-col gap-3 p-3 pb-8">
-            <SectionCard
-              eyebrow="admit"
-              title="Plan today’s work"
-              count="durable queue"
-              tone="ready"
-            >
-              <p className="mb-3 text-sm text-muted-foreground">
-                Queue a concrete outcome here; Queue remains the place to operate and inspect it.
-              </p>
-              <QueueAddForm />
-            </SectionCard>
-
             <Column label="the day" className="order-2">
               <SectionCard
                 eyebrow="Intent"

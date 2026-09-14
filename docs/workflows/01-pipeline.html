@@ -25,7 +25,7 @@
 <h1>The pipeline and its gates</h1>
 
 <p class="standfirst">
-Nine stages are declared. Three are driven. Two unrelated mechanisms are both called
+Nine stages are declared. One is driven. Two unrelated mechanisms are both called
 "gate", and only one of them can stop a transition. Getting these three facts straight
 is most of what it takes to read the pipeline code correctly.
 </p>
@@ -46,10 +46,10 @@ comparisons and <code>next()</code> follow the flow. <code>Stage::DEFAULT</code>
 </thead>
 <tbody>
 <tr><td>1</td><td><code>pickup</code></td><td>Task leased into a fresh, uniquely-branched worktree</td><td>—</td></tr>
-<tr><td>2</td><td><code>investigate</code></td><td>Research problem + codebase; write findings for the planner</td><td><strong>sweep</strong></td></tr>
-<tr><td>3</td><td><code>plan</code></td><td>Consume findings, propose fix + done-when, submit for review</td><td><strong>sweep</strong></td></tr>
+<tr><td>2</td><td><code>investigate</code></td><td>Research problem + codebase; write findings for the planner</td><td>—</td></tr>
+<tr><td>3</td><td><code>plan</code></td><td>Consume findings, propose fix + done-when, submit for review</td><td>—</td></tr>
 <tr><td>4</td><td><code>consensus</code></td><td>Reviewer agents vote; quorum advances, no-consensus pulls in a human</td><td>—</td></tr>
-<tr><td>5</td><td><code>execute</code></td><td>Implement exactly the agreed plan</td><td><strong>sweep</strong></td></tr>
+<tr><td>5</td><td><code>execute</code></td><td>Implement exactly the agreed plan</td><td>—</td></tr>
 <tr><td>6</td><td><code>validate</code></td><td><code>bn verify</code> — build + test + lint, re-run after any rebase</td><td>—</td></tr>
 <tr><td>7</td><td><code>critique</code></td><td>Fresh-context adversarial diff review vs the acceptance criteria</td><td><strong>critic loop</strong></td></tr>
 <tr><td>8</td><td><code>ship</code></td><td>Open / mark-ready the PR; orchestrator lands it on merge</td><td>—</td></tr>
@@ -72,25 +72,26 @@ does not encode it.
 
 <p>
 Nothing in <code>Stage</code> says when a stage is finished. A stage changes when a caller
-invokes <code>stage::transition</code>. Only the <code>SWEPT</code> three have machinery
-deciding completion — their backlog entry reaching <code>Done</code> — and critique exits on
-the critic's verdict.
-<span class="src">crates/bn-core/src/pipeline/sweep.rs:40, :83-96 · critic.rs:42</span>
+invokes <code>stage::transition</code>. Only critique has machinery deciding completion: it
+exits on the critic's verdict.
+<span class="src">crates/bn-core/src/pipeline/critic.rs:42</span>
 </p>
 
 <p>
-The other five are reachable only by hand. <code>Stage::Consensus</code> appears exactly once
+The others advance only by hand, by the stage agent calling the transition itself, or, for
+execute, when the critic sends work back. <code>Stage::Consensus</code> appears exactly once
 outside <code>stage.rs</code>, mapping the <code>review</code> attention type; <code>Pickup</code>,
 <code>Validate</code>, <code>Ship</code> and <code>Learn</code> appear nowhere else at all.
 <span class="src">crates/bn-cli/src/cmd/attn.rs:669</span>
 </p>
 
 <div class="note">
-<span class="note__label">Why the sweep stops at execute</span>
+<span class="note__label">Why nothing walks the stages for you</span>
 <p>
-Not an oversight. Validate, critique and ship each own their own machinery; driving them
-from the sweep as well would give a single step two owners.
-<span class="src">crates/bn-core/src/pipeline/sweep.rs:36-40</span>
+Not an oversight. Validate, critique and ship each own their own machinery, and a second
+driver would give a single step two owners. Investigate, plan and execute once had one, a
+sweep that filed each stage as background work; it was removed, so they now move when you
+or the stage agent move them.
 </p>
 </div>
 
@@ -103,7 +104,7 @@ places, are checked by different code, and fail in different ways.
 
 <figure>
 <svg viewBox="0 0 900 300" role="img" aria-labelledby="gates-title">
-  <title id="gates-title">The SMART gate on entry to investigate, and the hold gate inside the sweep</title>
+  <title id="gates-title">The SMART gate on entry to investigate, and the hold gate that nothing enforces</title>
 
   <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11">
 
@@ -136,27 +137,27 @@ places, are checked by different code, and fail in different ways.
     <text x="70" y="164" font-size="9.5" fill="var(--ink-mid)">3 tries → smart:stuck → re-raised as manual</text>
 
     <!-- ============ GATE B ============ -->
-    <text x="8" y="212" font-size="10.5" fill="var(--teal)">GATE B — GatePolicy::Hold, inside sweep::decide</text>
+    <text x="8" y="212" font-size="10.5" fill="var(--teal)">GATE B — GatePolicy::Hold, in StageProfile</text>
 
     <rect x="8" y="226" width="126" height="46" rx="5" fill="var(--card)" stroke="var(--rule)"/>
-    <text x="71" y="254" text-anchor="middle" fill="var(--ink-mid)">sweep::decide</text>
+    <text x="71" y="254" text-anchor="middle" fill="var(--ink-mid)">profile::resolve</text>
 
     <path d="M134 249 L188 249" stroke="var(--rule)" stroke-width="1.5" fill="none"/>
 
     <rect x="190" y="230" width="16" height="38" rx="2" fill="var(--teal-soft)" stroke="var(--teal)" stroke-width="1.5"/>
     <text x="198" y="284" text-anchor="middle" font-size="9.5" fill="var(--teal)">hold</text>
 
-    <path d="M208 249 L262 249" stroke="var(--rule)" stroke-width="1.5" fill="none"/>
-    <rect x="264" y="226" width="126" height="46" rx="5" fill="var(--card)" stroke="var(--rule)"/>
-    <text x="327" y="254" text-anchor="middle" fill="var(--ink-mid)">enqueue stage</text>
+    <path d="M208 249 L262 249" stroke="var(--rule)" stroke-width="1.5" fill="none" stroke-dasharray="4 3"/>
+    <rect x="264" y="226" width="126" height="46" rx="5" fill="var(--card)" stroke="var(--rule)" stroke-dasharray="3 3"/>
+    <text x="327" y="254" text-anchor="middle" fill="var(--ink-faint)">no reader</text>
 
-    <text x="408" y="238" font-size="10" fill="var(--ink-muted)">released only by an approved plan review</text>
-    <text x="408" y="254" font-size="10" fill="var(--ink-muted)">blocks the sweep — and nothing else</text>
+    <text x="408" y="238" font-size="10" fill="var(--ink-muted)">resolved and ratcheted, then read by nothing</text>
+    <text x="408" y="254" font-size="10" fill="var(--ink-muted)">its only enforcer was the removed sweep</text>
     <text x="408" y="270" font-size="10" fill="var(--ink-faint)">a hand-typed bn dispatch walks straight past it</text>
   </g>
 </svg>
 <figcaption>
-Gate A refuses a write. Gate B refuses an enqueue. Only Gate A is enforced inside
+Gate A refuses a write. Gate B refuses nothing today. Only Gate A is enforced, inside
 <code>stage::transition</code>.
 </figcaption>
 </figure>
@@ -205,18 +206,21 @@ A real incident: one task accumulated 3,899 tries, driving roughly one store wri
 <h3>Gate B — the hold policy</h3>
 
 <p>
-<code>GatePolicy::{Auto, Hold}</code> is the human gate. It is enforced in exactly one place:
-<code>sweep::decide</code> refuses to enqueue a held stage until a plan review is approved,
-returning <code>Advance::HeldForReview</code>.
-<span class="src">pipeline/sweep.rs:92-94 · crates/bn-cli/src/cmd/pipeline_sweep.rs:63-68</span>
+<code>GatePolicy::{Auto, Hold}</code> is the human gate. It is resolved into every
+<code>StageProfile</code>, and <code>StageProfile::is_held</code> answers whether entering a
+stage waits for a human.
+<span class="src">crates/bn-core/src/pipeline/profile.rs:37-60, :160-164</span>
 </p>
 
+<div class="note note--gap">
+<span class="note__label">Nothing enforces it now</span>
 <p>
-So a hold blocks the sweep and nothing else — a hand-typed <code>bn dispatch</code> or
-<code>bn pipeline set</code> does not see it. A third de-facto filter sits alongside: the
-sweep only admits tasks already stamped <code>smart:ok</code>.
-<span class="src">pipeline_sweep.rs:203</span>
+Its only caller was the pipeline sweep, which refused to start a held stage until a plan
+review was approved. The sweep was removed along with the machine-wide queue, so a hold is
+computed, ratcheted and shown, but blocks nothing: a hand-typed <code>bn dispatch</code> or
+<code>bn pipeline set</code> never saw it, and nothing else asks.
 </p>
+</div>
 
 <h2>Routing and profiles</h2>
 
@@ -366,16 +370,6 @@ title, explicitly so that no attention-schema change was needed.
 <h2>Things that will mislead you</h2>
 
 <ul>
-<li><strong>The queue is the state machine.</strong> For the swept arc, a stage's backlog
-entry <em>is</em> its state; <code>pipeline_stage</code> events are a parallel ledger, not
-the source of truth. <code>Cancelled</code> reads as "never ran" and gets re-queued;
-<code>Failed</code> stops the walk. <span class="src">sweep.rs:11-16, :87-96</span></li>
-
-<li><strong>Two <code>default_skill</code> functions disagree, on purpose.</strong>
-<code>Stage::default_skill</code> maps plan→<code>plan-investigate</code> and
-execute→<code>execute</code>; <code>sweep::default_skill</code> maps plan→<code>plan</code>
-and execute→<code>plan-work</code>. <span class="src">stage.rs:103-112 vs sweep.rs:120-127</span></li>
-
 <li><strong>Two lowercase vocabularies.</strong> <code>Stage</code> (nine, durable) versus
 <code>status::Phase</code> (four, inferred, persisted nowhere). The JSON field is named
 <code>phase</code> precisely so <code>stage</code> stays unambiguous.

@@ -96,7 +96,7 @@ pub fn shared_config_path() -> PathBuf {
 }
 
 /// `<notes_root>/<machine>/config.toml`: what this machine does differently, and where bn writes
-/// the choices it records for this machine (queue windows, direct mode, job classes). `$BN_CONFIG`
+/// the choices it records for this machine. `$BN_CONFIG`
 /// when set, so a sandbox's writes land in the one file it reads.
 pub fn machine_config_path() -> PathBuf {
     non_empty_env("BN_CONFIG")

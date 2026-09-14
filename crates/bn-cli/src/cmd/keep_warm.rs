@@ -1,10 +1,9 @@
 //! `bn run keep-warm` — top up one repo's issue-derived task reservoir and seed brainstorm scouts.
 //!
 //! The ranking policy is shared with `bn task pull` in `bn_core::keep_warm`; this module is the
-//! CLI realization layer: repo targeting, task-file writes, backlog enqueues, and operator-facing
+//! CLI realization layer: repo targeting, task-file writes, scout launches, and operator-facing
 //! status lines.
 use crate::*;
-use bn_core::backlog::{self, BacklogKind};
 use bn_core::keep_warm::KeepWarmPolicy;
 use bn_core::orchestrate::OrchestrateState;
 use bn_core::runner::RealRunner;
@@ -123,7 +122,7 @@ pub(crate) fn job_keep_warm(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
             );
         }
         if !plan.brainstorm.is_empty() {
-            match enqueue_brainstorm(cfg, &state_path, repo, &plan.brainstorm, now) {
+            match start_brainstorm(&state_path, repo, &plan.brainstorm, now) {
                 Ok(0) => {}
                 Ok(launched) => crate::cmd::jobs::native_job_line(
                     &format!("keep-warm: {repo}: launched {launched} brainstorm scout(s)"),
@@ -213,34 +212,36 @@ fn plan_repo_pull(
     })
 }
 
-fn enqueue_brainstorm(
-    cfg: &Config,
+/// Start one brainstorm scout per prompt through `bn dispatch`, and stamp the brainstorm clock when
+/// any of them started. Returns how many started; a failed launch is reported once the rest have had
+/// their turn, so one refusal does not cost the others.
+fn start_brainstorm(
     state_path: &Path,
     repo: &str,
     brainstorm: &[String],
     now: i64,
 ) -> Result<usize, String> {
-    let spec = backlog::AddSpec {
-        kind: BacklogKind::Scout,
-        priority: -10,
-        source: "keep-warm-brainstorm".to_string(),
-        task: crate::cmd::task_mint::task_for_machine_enqueue(
-            cfg,
-            repo,
-            brainstorm.first().map(String::as_str).unwrap_or("brainstorm"),
-            "keep-warm-brainstorm",
-        ),
-        ..backlog::AddSpec::default()
-    };
-    let added = backlog::add(&backlog::backlog_path(), repo, brainstorm, &spec, now)
-        .map_err(|error| format!("keep-warm: brainstorm failed for {repo}: {error}"))?;
-    if !added.is_empty() {
+    let mut started = 0;
+    let mut failures = Vec::new();
+    for prompt in brainstorm {
+        match crate::cmd::dispatch::DispatchInvocation::new(prompt, repo, "auto")
+            .scout(true)
+            .launch()
+        {
+            Ok(()) => started += 1,
+            Err(error) => failures.push(error),
+        }
+    }
+    if started > 0 {
         bn_core::orchestrate::mutate(state_path, |state| {
             state.keep_warm_last_brainstorm_at = Some(now);
         })
         .map_err(|error| format!("keep-warm: could not update {repo} brainstorm timestamp: {error}"))?;
     }
-    Ok(added.len())
+    match failures.first() {
+        Some(error) => Err(format!("keep-warm: brainstorm failed for {repo}: {error}")),
+        None => Ok(started),
+    }
 }
 
 #[cfg(test)]

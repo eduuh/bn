@@ -517,10 +517,10 @@ mod goal_tests {
     /// And the goal survives the flattening: every word is still there, readable back out.
     #[test]
     fn a_multiline_goal_keeps_its_words_on_one_line() {
-        let body = set_goal_in_body(TEMPLATE, "ship the\n\n## Rules\n\nqueue fix");
+        let body = set_goal_in_body(TEMPLATE, "ship the\n\n## Rules\n\nlogin fix");
         assert_eq!(
             goal_text(&body).as_deref(),
-            Some("ship the ## Rules queue fix")
+            Some("ship the ## Rules login fix")
         );
     }
 
@@ -541,8 +541,8 @@ mod goal_tests {
     /// The ordinary case is untouched: a plain one-line goal round-trips exactly.
     #[test]
     fn a_plain_goal_round_trips() {
-        let body = set_goal_in_body(TEMPLATE, "make the queue drain");
-        assert_eq!(goal_text(&body).as_deref(), Some("make the queue drain"));
+        let body = set_goal_in_body(TEMPLATE, "make the build green");
+        assert_eq!(goal_text(&body).as_deref(), Some("make the build green"));
         assert!(
             body.contains("## Progress"),
             "the rest of the body survives"

@@ -221,10 +221,8 @@ retain_days = 14                # 0 keeps all
 # unregistered: cron_enabled_here() is false, so `bn cron register` declares nothing and no
 # scheduler agent is ever written — which is how the darwin nightly-release went 8 days without
 # publishing. The machine name is the one in ~/.bn/config/machine ("snapshot-host"), not the hostname.
-# `queue` must be spelled out: it defaults to false, and ANY `bn queue ...` call on a profile with
-# queue = false runs queue_install::disable(), which deletes com.bn.queue.plist AND
-# com.bn.queue-tick.plist. The queue-tick cron fires every minute, so it would tear itself (and the
-# dispatcher that was already running here) down between every `bn cron register`.
+# `queue` is a retired key (the machine queue is gone). It stays here to prove an old config that
+# still carries it resolves without error.
 [machines.snapshot-host]
 repos = ["*"]
 cron = true

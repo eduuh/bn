@@ -2,7 +2,7 @@
 # Drive the real `bn tat` picker — fzf and all — inside a tmux window with send-keys, and assert on
 # the screen plus real state (dirs, `bn wt pool status`, tmux windows, the event log). This is the
 # only way to reach the keypress → `execute`/`reload` path and the parent's `--expect` handling
-# (ctrl-o / ctrl-s menus), which no unit test and no `--pick-stage` call can.
+# (the ctrl-o menu), which no unit test and no `--pick-stage` call can.
 #
 # Every case creates and removes its own fixtures (`tat-zz-*` branches, leases, sessions, a
 # repo-tier script), and no key is sent unless the picker is confirmed open — a stray ctrl-d in a
@@ -14,7 +14,7 @@
 # sweep at the end and `bn wt pool status --repo bn`.
 #
 #   scripts/try-tat.sh                     # every case, against target/release/bn
-#   scripts/try-tat.sh menu-cmd cmd-away   # just these
+#   scripts/try-tat.sh menu-worktree script-row   # just these
 #   B=/path/to/bn scripts/try-tat.sh       # another binary
 set -u
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -23,7 +23,7 @@ REPO=bn
 BARE=$(git -C "$REPO_DIR" rev-parse --path-format=absolute --git-common-dir)
 WT="$(dirname "$(dirname "$BARE")")/worktree/$REPO"
 NOTE_DIR=$(bn --path 2>/dev/null); MACHINE_DIR=$(dirname "$(dirname "$NOTE_DIR")")
-JOBS="$(dirname "$MACHINE_DIR")/jobs/$REPO"; EVENTS="$MACHINE_DIR/state/events.jsonl"
+JOBS="$(dirname "$MACHINE_DIR")/jobs/$REPO"
 [ -x "$B" ] || { echo "build first:  cd $REPO_DIR && cargo build --release -p bn-cli" >&2; exit 1; }
 [ -d "$WT/_pool" ] || { echo "no warm pool at $WT/_pool — this harness needs one" >&2; exit 1; }
 USER_WIN=$(tmux display -p -t "${TMUX_PANE:?run me inside tmux}" '#{window_id}')
@@ -114,21 +114,6 @@ if [ -z "$wbr" ]; then echo "   skip: no idle worktree row to act on"; elif open
   key C-o; wait_for "$wbr" 15 && ok "menu opened with the branch as header" || bad "no action menu"
   key Escape; wait_for "$SUB_HDR" 15 && ok "back in the picker after Esc" || bad "picker did not reopen"; close_picker; fi; fi
 
-CASE=menu-cmd; if want "${ALL[@]}"; then say "$CASE: ctrl-o on a command row opens the queue-time menu; Esc returns"
-if open_sub; then typ "Fetch + refresh"; wait_for ' 1/[0-9]+' || bad "row not found"
-  key C-o; wait_for 'Run it now|Run it when' 15 && ok "queue-time menu opened" || bad "no queue menu"
-  key Escape; wait_for "$SUB_HDR" 15 && ok "back in the picker" || bad "picker did not reopen"; close_picker; fi; fi
-
-CASE=menu-settings; if want "${ALL[@]}"; then say "$CASE: Enter on Queue settings… opens the settings menu; Esc returns"
-if open_sub; then typ "Queue settings"; wait_for ' 1/[0-9]+' || bad "row not found"
-  key Enter; wait_for 'queue settings' 15 && ok "settings menu opened" || bad "no settings menu"
-  key Escape; wait_for "$SUB_HDR" 15 && ok "back in the picker" || bad "picker did not reopen"; close_picker; fi; fi
-
-CASE=cmd-away; if want "${ALL[@]}"; then say "$CASE: ctrl-s files fetch-prs for away (row shows ⏾); Enter on it un-queues (row back to ▸)"
-if open_sub; then typ "Fetch + refresh"; wait_for ' 1/[0-9]+' || bad "row not found"
-  key C-s; wait_for '⏾ +Fetch' 20 && ok "row shows the away glyph after reopen" || bad "no away glyph"
-  typ "Fetch + refresh"; wait_for ' 1/[0-9]+'; key Enter; wait_for '▸ +Fetch' 20 && ok "row back to idle after un-queue" || bad "row not idle"; close_picker; fi; fi
-
 CASE=typed-lease; if want "${ALL[@]}"; then say "$CASE: typing a new branch name and Enter leases a slot and opens its window"
 before=$(wins)
 if open_sub; then typ "tat-zz-typed"; wait_for ' 0/[0-9]+'; key Enter; picker_done 60 || bad "picker did not finish"
@@ -162,12 +147,9 @@ mark=$SCRATCH/tat-zz-echo.ran; mkdir -p "$JOBS"; printf '#!/bin/sh\necho "tat-zz
 sublist | grep -q 'cmd|script:tat-zz-echo|' && ok "script row appears" || bad "script row missing"
 before=$(wins)
 if open_sub; then typ "tat-zz-echo"; wait_for ' 1/[0-9]+' || bad "row not found"; key Enter
-  # A direct start runs it within seconds. When a dispatcher pass holds the tick lock (express work
-  # runs inline, bounded at five minutes) the verb is filed instead and the next pass runs it — so
-  # wait for either, and say which happened.
-  t0=$(date +%s); wait_until 300 test -f "$mark" && ok "script ran after $(( $(date +%s)-t0 ))s" || { bad "script did not run within 300s"; show 14; }
-  how=$(grep -a '"id":"tat-zz-echo-bn"' "$EVENTS" 2>/dev/null | grep -a queue_dispatch | tail -1 | grep -q "started by hand" && echo direct || echo "queue fallback (a pass held the tick lock)")
-  echo "   path: $how"
+  # The row starts the script at once in a tmux window in the repo's session, so it runs within
+  # seconds; the generous bound only covers a slow machine.
+  t0=$(date +%s); wait_until 60 test -f "$mark" && ok "script ran after $(( $(date +%s)-t0 ))s" || { bad "script did not run within 60s"; show 14; }
   wait_for "$SUB_HDR" 10; close_picker; fi
 rm -f "$JOBS/tat-zz-echo.sh"; sleep 2; kill_new_wins "$before" >/dev/null; fi
 

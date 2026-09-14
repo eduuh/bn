@@ -1,7 +1,7 @@
 //! Automation and orchestration commands: everything that drives agents rather than notes.
 //!
-//! Split out of [`crate::cli`] so this group can gain subcommands — `bn queue` is the first —
-//! without pushing `cli.rs` further past the 1000-line ratchet (see `.file-size-baseline`).
+//! Split out of [`crate::cli`] so this group can gain subcommands without pushing `cli.rs` further
+//! past the 1000-line ratchet (see `.file-size-baseline`).
 use crate::*;
 
 #[derive(Subcommand, Debug)]
@@ -13,12 +13,6 @@ pub(crate) enum CmdAutomation {
     Harness {
         #[command(subcommand)]
         action: HarnessCmd,
-    },
-    /// The machine-wide work queue: every agent waiting to run, what it needs, and whether the
-    /// dispatcher is paused. `bn orchestrate` drives one repo's run; this is the whole machine.
-    Queue {
-        #[command(subcommand)]
-        action: crate::cli::queue_cmd::QueueCmd,
     },
     /// Jump to whatever needs you (prefix `j`): an fzf popup stacking live tmux windows that need
     /// you (waiting / done / blocker badges) over the cross-repo `bn next` queue. ↵ switches to the

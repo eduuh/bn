@@ -41,7 +41,7 @@ pub struct KeepWarmIssue {
 /// Side effects the CLI executor should realize for one keep-warm pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KeepWarmPlan {
-    pub enqueue_issues: Vec<String>,
+    pub start_issues: Vec<String>,
     pub brainstorm: Vec<String>,
 }
 
@@ -75,7 +75,7 @@ pub fn plan_keep_warm(
                 .any(|excluded| label.eq_ignore_ascii_case(excluded))
         })
     };
-    let enqueue_issues: Vec<String> = issues
+    let start_issues: Vec<String> = issues
         .iter()
         .filter(|issue| !issue.assigned)
         .filter(|issue| !excluded_title(&issue.title))
@@ -84,9 +84,9 @@ pub fn plan_keep_warm(
         .filter(|id| !active_ids.contains(id))
         .take(deficit)
         .collect();
-    if !enqueue_issues.is_empty() || active_depth > 0 || policy.brainstorm_count == 0 {
+    if !start_issues.is_empty() || active_depth > 0 || policy.brainstorm_count == 0 {
         return KeepWarmPlan {
-            enqueue_issues,
+            start_issues,
             brainstorm: Vec::new(),
         };
     }
@@ -105,7 +105,7 @@ pub fn plan_keep_warm(
         })
         .collect();
     KeepWarmPlan {
-        enqueue_issues,
+        start_issues,
         brainstorm,
     }
 }
@@ -150,7 +150,7 @@ mod tests {
             7_200,
         );
 
-        assert_eq!(plan.enqueue_issues, ["1"]);
+        assert_eq!(plan.start_issues, ["1"]);
         assert!(plan.brainstorm.is_empty());
     }
 
@@ -170,7 +170,7 @@ mod tests {
             7_200,
         );
 
-        assert!(plan.enqueue_issues.is_empty());
+        assert!(plan.start_issues.is_empty());
         assert_eq!(plan.brainstorm.len(), 2);
         assert!(plan.brainstorm[0].contains("keep-warm brainstorm 2-1 for bn"));
     }
@@ -191,7 +191,7 @@ mod tests {
             7_200,
         );
 
-        assert!(plan.enqueue_issues.is_empty());
+        assert!(plan.start_issues.is_empty());
         assert!(plan.brainstorm.is_empty());
     }
 }

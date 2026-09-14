@@ -1,7 +1,6 @@
 //! Pre-dispatch decomposition of oversized GitHub issues into conflict-scoped children (#755).
 
 use crate::*;
-use bn_core::backlog::{self, AddSpec, BacklogKind, Substrate};
 use bn_core::runner::CommandRunner;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -283,7 +282,6 @@ pub(super) fn issue_decompose(
     repo_override: Option<&str>,
     issue: &str,
     raw_parts: &[String],
-    priority: i64,
     dry_run: bool,
     json: bool,
 ) -> bool {
@@ -437,27 +435,23 @@ pub(super) fn issue_decompose(
         );
     }
 
-    let path = backlog::backlog_path();
-    let now = bn_core::util::now_epoch_secs();
+    // Start the children, never the parent. Each goes through `bn dispatch`, whose branch guard
+    // refuses a child already running, so re-running a decomposition does not start a second lane.
     let source = format!("decomposed:{slug}#{}", parent.number);
+    let mut started = Vec::new();
+    let mut not_started = Vec::new();
     for child in &children {
-        let spec = AddSpec {
-            kind: BacklogKind::Ship,
-            priority,
-            touches: child.touches.clone(),
-            substrate: Substrate::Auto,
-            source: source.clone(),
-            controller_id: std::env::var("BN_CONTROLLER_ID").ok(),
-            task: crate::cmd::task_mint::task_for_enqueue(
-                cfg,
-                &repo,
-                &child.title,
-                &source,
-            ),
-            ..Default::default()
-        };
-        if let Err(error) = backlog::add(&path, &repo, &[child.number.to_string()], &spec, now) {
-            return fail("backlog-write", error.to_string());
+        let number = child.number.to_string();
+        let task = crate::cmd::task_mint::task_for_subject(cfg, &repo, &child.title, &source);
+        match crate::cmd::dispatch::DispatchInvocation::new(&number, &repo, "auto")
+            .task(Some(&task))
+            .launch()
+        {
+            Ok(()) => started.push(child.number),
+            Err(error) => not_started.push(serde_json::json!({
+                "number": child.number,
+                "error": error,
+            })),
         }
     }
 
@@ -471,18 +465,26 @@ pub(super) fn issue_decompose(
                     "parent": parent,
                     "children": children,
                     "parent_comment_linked": parent_comment_linked,
+                    "started": started,
+                    "not_started": not_started,
                 }),
             )
             .to_json()
         );
     } else {
         println!(
-            "orchestrate: decomposed #{} into {} child issues; enqueued children only",
+            "orchestrate: decomposed #{} into {} child issues; started {} of them",
             parent.number,
-            children.len()
+            children.len(),
+            started.len()
         );
         for child in &children {
-            let status = if child.reused { "reused" } else { "created" };
+            let status = match (child.reused, started.contains(&child.number)) {
+                (true, true) => "reused, started",
+                (false, true) => "created, started",
+                (true, false) => "reused, not started",
+                (false, false) => "created, not started",
+            };
             println!(
                 "  #{} {} ({status})  {{{}}}",
                 child.number,
@@ -490,8 +492,15 @@ pub(super) fn issue_decompose(
                 child.touches.join(", ")
             );
         }
+        for failure in &not_started {
+            eprintln!(
+                "bn orchestrate decompose: could not start #{}: {}",
+                failure["number"],
+                failure["error"].as_str().unwrap_or_default()
+            );
+        }
     }
-    true
+    not_started.is_empty()
 }
 
 

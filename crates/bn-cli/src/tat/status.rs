@@ -1,6 +1,6 @@
 //! The `bn tat` status header, and the bn-web control row that sits with it.
 //!
-//! These four badges — attention, queue, cron and bn-web health — used to be `#()` segments in
+//! These badges — attention, cron and bn-web health — used to be `#()` segments in
 //! tmux's `status-format[0]`. They were quiet on almost every 5s repaint, which is the worst thing
 //! a status bar can be: it teaches you to stop reading it. They live here instead, on the surface
 //! you already open to go somewhere (#1349). The bar kept only what changes with where you are.
@@ -11,8 +11,8 @@
 //!   (`#[fg=…]`), so this translates that to ANSI rather than growing a second set of colour rules.
 //!   `bn_core::glyph`'s module doc lists what the mirrored glyph tables cost when they drift; a
 //!   mirrored *colour* table would cost the same.
-//! * **Nothing here runs on the 700 ms `subtick` repaint.** `preview.rs` and `queue_view.rs` set
-//!   the cost rules for that path, and the bn-web probe is a TCP connect. The header is painted on
+//! * **Nothing here runs on the 700 ms `subtick` repaint.** `preview.rs` sets the cost rules for
+//!   that path, and the bn-web probe is a TCP connect. The header is painted on
 //!   open and on `ctrl-r`, which is as fresh as a picker you hold open for seconds needs to be.
 use bn_core::resolver::Config;
 use bn_core::style::{Ink, Tone};
@@ -25,7 +25,7 @@ pub(super) const HEADER_KEYS: &str =
 /// The project picker's full header: the status line over the key hints. Always two lines, so the
 /// list never shifts up and down as badges come and go.
 ///
-/// The project picker only — these badges are machine-wide (this host's queue, this host's cron,
+/// The project picker only — these badges are machine-wide (this host's attention, this host's cron,
 /// this host's bn-web), so they belong on the list of everything, not inside one project. The
 /// sub-picker also has no spare key to repaint on: its `ctrl-r` releases a pool slot.
 pub(super) fn header(cfg: &Config) -> String {
@@ -37,19 +37,14 @@ pub(super) fn emit_status_line(cfg: &Config) {
     println!("{}", header(cfg));
 }
 
-/// The assembled header: attention · queue · cron · bn-web, each omitted when it has nothing to
+/// The assembled header: attention · cron · bn-web, each omitted when it has nothing to
 /// say, and a dim `all quiet` when none of them do.
 pub(super) fn status_line(cfg: &Config) -> String {
     let ink = Ink::always();
-    let now = bn_core::util::now_epoch_secs();
     let mut parts: Vec<String> = Vec::new();
 
     if let Some(attn) = crate::cmd::attn_badge::attn_badge() {
         parts.push(tmux_to_ansi(trim_trailing_divider(&attn), ink));
-    }
-    let queue = crate::cmd::queue_scope::badge(cfg, now).text;
-    if !queue.is_empty() {
-        parts.push(ink.tone(queue_tone(&queue), &queue));
     }
     if let Some(cron) = crate::cmd::cron::machine_scope::running_badge(cfg) {
         parts.push(ink.tone(Tone::Accent, &cron));
@@ -78,18 +73,6 @@ fn trim_trailing_divider(markup: &str) -> &str {
     match head.rfind("#[") {
         Some(i) if head.ends_with(']') => head[..i].trim_end(),
         _ => head,
-    }
-}
-
-/// How loud the queue badge is. `Q !3` / `Q !conflict` is something failing, `Q stale` wants a
-/// look, and a foreground tally (`Q 2▶`) is just information.
-fn queue_tone(text: &str) -> Tone {
-    if text.starts_with("Q !") {
-        Tone::Danger
-    } else if text == "Q stale" {
-        Tone::Warn
-    } else {
-        Tone::Meta
     }
 }
 
@@ -285,13 +268,5 @@ mod tests {
     #[test]
     fn a_divider_not_preceded_by_a_directive_still_goes() {
         assert_eq!(trim_trailing_divider("12 \u{b7} "), "12");
-    }
-
-    #[test]
-    fn queue_tone_reads_the_badge_it_is_given() {
-        assert_eq!(queue_tone("Q !3"), Tone::Danger);
-        assert_eq!(queue_tone("Q !conflict"), Tone::Danger);
-        assert_eq!(queue_tone("Q stale"), Tone::Warn);
-        assert_eq!(queue_tone("Q 2▶ 1·fg"), Tone::Meta);
     }
 }

@@ -76,7 +76,7 @@ pub(crate) fn run_recorded_job(
     code
 }
 
-/// The refusal for a `bn run <name>` that resolves to nothing. Shared by the pre-capture guard and
+/// The refusal for a `bn run <name>` that resolves to nothing. Shared by the pre-run guard and
 /// the post-builtin fallback so the two wordings cannot drift apart.
 fn no_such_job(job: &str) -> String {
     format!("bn run: no job or agent '{job}' (looked branch → repo → global)")
@@ -86,31 +86,6 @@ fn no_such_job(job: &str) -> String {
 /// specialists are refused, explicit `run:` commands use the common wrapper, and absent `run:`
 /// resolves the same-name staff/native/script implementation without recursive `bn` spawning.
 pub(crate) fn run_job(cfg: &Config, ctx: Option<&Resolved>, job: &str) -> i32 {
-    run_job_inner(cfg, ctx, job, false, false)
-}
-
-/// `bn run <job> [--now]`. `now` runs the job in this process instead of queueing it.
-///
-/// The escape hatch `bn run` never had. `bn dispatch` has two — `--on-pool-full fail` and
-/// `$BN_DISPATCH_NOW` — but a job could only be forced inline by setting the dispatcher's own
-/// `BN_IN_QUEUE_TICK`, which was never a user-facing knob and stopped working once that marker
-/// began naming a live dispatcher rather than asserting a boolean. So a person waiting on a result
-/// had nothing to reach for.
-///
-/// Deliberately a separate flag rather than reusing the extent marker: this says *I want the
-/// result now*, which is a statement about the caller. Claiming to be a dispatcher would also
-/// silence the capture of everything the job goes on to spawn.
-pub(crate) fn run_job_now(cfg: &Config, ctx: Option<&Resolved>, job: &str, now: bool) -> i32 {
-    run_job_inner(cfg, ctx, job, false, now)
-}
-
-fn run_job_inner(
-    cfg: &Config,
-    ctx: Option<&Resolved>,
-    job: &str,
-    staff_json: bool,
-    now: bool,
-) -> i32 {
     if !machine_scope::run_enabled(cfg) {
         return 1;
     }
@@ -126,13 +101,7 @@ fn run_job_inner(
     // The scheduler must be able to record its own catalog-load failure. Resolving it through the
     // catalog first would return before the common wrapper could write the failing scheduler row.
     if job == "agent-scheduler" {
-        if let Some(queued) = (!now)
-            .then(|| crate::cmd::queue_producers::maybe_capture_job(cfg, ctx, job))
-            .flatten()
-        {
-            return i32::from(!queued);
-        }
-        return run_builtin_job(cfg, ctx, job, None, staff_json).unwrap_or(2);
+        return run_builtin_job(cfg, ctx, job, None, false).unwrap_or(2);
     }
 
     let catalog = match bn_core::agents::discover(cfg, ctx) {
@@ -148,26 +117,11 @@ fn run_job_inner(
         return code;
     }
 
-    // Resolve *before* capturing. A name nothing backs used to be enqueued regardless, and only
-    // died exit 2 later inside the queue executor where the diagnostic reached nobody — so
-    // `bn run task-improve` printed "queued machine/run-task-improve" and exited 0 for a job that
-    // had been renamed away. Refuse here, while a person is still watching the terminal.
+    // Refuse a name nothing backs here, while a person is still watching the terminal.
     let script = resolver::job_script(cfg, ctx, job);
     if agent.is_none() && native_job(job).is_none() && script.is_none() {
         eprintln!("{}", no_such_job(job));
         return 2;
-    }
-
-    // Captured agents retain their identity and re-enter this exact resolver when dequeued.
-    // `--now` skips the producer entirely rather than suppressing it downstream, so the queue never
-    // sees an entry it would have to reconcile against a job that already ran here.
-    let queued = match agent.as_ref() {
-        _ if now => None,
-        Some(agent) => crate::cmd::queue_producers::maybe_capture_agent(cfg, ctx, agent),
-        None => crate::cmd::queue_producers::maybe_capture_job(cfg, ctx, job),
-    };
-    if let Some(queued) = queued {
-        return i32::from(!queued);
     }
 
     if let Some((agent, command)) = agent
@@ -176,7 +130,7 @@ fn run_job_inner(
     {
         return run_recorded_job(cfg, ctx, job, agent.scope, || run_custom_command(command));
     }
-    if let Some(code) = run_builtin_job(cfg, ctx, job, agent.as_ref(), staff_json) {
+    if let Some(code) = run_builtin_job(cfg, ctx, job, agent.as_ref(), false) {
         return code;
     }
     let Some((scope, script)) = script else {
@@ -917,21 +871,9 @@ pub(crate) fn maybe_fire_catchup(cfg: &Config) {
         return;
     }
     let exe = std::env::current_exe().unwrap_or_else(|_| "bn".into());
-    // `catch_up` lives in two manifests: `[[cron]]` entries and agent frontmatter (the schedule
-    // moved to config/agents/, so the flag moved with it). Union both, deduped.
-    let mut jobs = bn_core::crons::catch_up_jobs(cfg, None);
-    if let Ok(catalog) = bn_core::agents::discover(cfg, None) {
-        for agent in catalog.iter() {
-            if agent.catch_up
-                && agent.is_cron()
-                && agent.repo_available_here(cfg)
-                && !jobs.contains(&agent.name)
-            {
-                jobs.push(agent.name.clone());
-            }
-        }
-    }
-    for job in jobs {
+    // Only `[[cron]]` entries. Agent frontmatter `catch_up` is ignored while scheduled agents are
+    // disabled: catching one up would fire the schedule the shipped manifest no longer runs.
+    for job in bn_core::crons::catch_up_jobs(cfg, None) {
         let _ = std::process::Command::new(&exe)
             .args(["run", &job, "--if-stale"])
             .env("BN_NO_CATCHUP", "1")

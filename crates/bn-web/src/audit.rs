@@ -14,8 +14,8 @@ use bn_core::events;
 use serde_json::{json, Map, Value};
 use std::net::SocketAddr;
 
-/// Record one web control action. `action` is the logical verb (`dispatch`, `queue-add`,
-/// `queue-remove`, `scale`, `stop`, `send`, `relaunch`, `kill`, `land`, `start`, `auth-reject`),
+/// Record one web control action. `action` is the logical verb (`dispatch`, `queue-remove`,
+/// `queue-reorder`, `scale`, `stop`, `send`, `relaunch`, `kill`, `land`, `start`, `auth-reject`),
 /// `target` its subject (repo, item id, or agent target), `remote_addr` the caller, and `ok`
 /// whether it was accepted. Best-effort: an audit-write failure is logged to stderr, never
 /// propagated — losing a log line must not fail the underlying action.

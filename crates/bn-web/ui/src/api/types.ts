@@ -762,12 +762,7 @@ export interface FindingsView {
 
 // --- Today's agent suggestions (Today's agent, #577) ---
 
-export type {
-  Suggestion,
-  SuggestionQueue,
-  SuggestionStatus,
-  SuggestionsView,
-} from "./suggestion-types";
+export type { Suggestion, SuggestionStatus, SuggestionsView } from "./suggestion-types";
 import type { Suggestion } from "./suggestion-types";
 
 /** What one Today's-agent run did — `bn_core::today_agent::RunReport` (#577). */

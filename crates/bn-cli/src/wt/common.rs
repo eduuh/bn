@@ -253,7 +253,7 @@ pub(crate) fn bare_for(cfg: &Config, repo: &str) -> Option<PathBuf> {
     // function's result depend on the filesystem underneath it.
     //
     // An exact match always wins; a case-insensitive one is the fallback, which is the point of
-    // the function: a queued job's repo name is lowercased by the target resolver while the
+    // the function: a job's repo name is lowercased by the target resolver while the
     // clone keeps its case, and both have to find the same bare repo or a pool warm for `BigMono`
     // reports "nothing to warm" and exits 0.
     let mut insensitive = None;
@@ -350,7 +350,7 @@ mod bare_for_tests {
         }
     }
 
-    /// The name a queued job carries is lowercased by the target resolver; the clone keeps its
+    /// The name a job carries is lowercased by the target resolver; the clone keeps its
     /// case. Both have to find the same bare repo, or a pool warm for `BigMono` reports "nothing to
     /// warm" and exits 0.
     #[test]

@@ -48,7 +48,7 @@ pub(super) fn read_hostname() -> String {
 
 /// This machine's identity, pinned on first use so it cannot drift.
 ///
-/// Everything machine-scoped hangs off this name — the state dir holding the event log, the queue,
+/// Everything machine-scoped hangs off this name — the state dir holding the event log, the stores,
 /// and metrics — so it has to answer "which machine am I?" the same way every time. A raw
 /// [`read_hostname`] does not: macOS hands out a DHCP name (`mac.lan`) or a Bonjour one
 /// (`vivs-MacBook-Pro.local`) depending on the network, and a host that answers differently after

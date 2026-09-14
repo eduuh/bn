@@ -67,7 +67,7 @@ export function Settings() {
             <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
               This is a per-browser preference, not a server setting. It sticks across reloads, and{" "}
               <code className="rounded bg-muted px-1 py-px font-mono text-[12px]">
-                ?experimental=fleet,queue
+                ?experimental=fleet,nodes
               </code>{" "}
               still overrides it from any URL.
             </p>

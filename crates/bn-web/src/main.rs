@@ -14,7 +14,6 @@ mod auth;
 mod bn_runner;
 mod cost;
 mod mcp;
-mod queue_api;
 mod repos;
 mod routes;
 mod state;

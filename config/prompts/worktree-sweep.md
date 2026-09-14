@@ -54,8 +54,8 @@ one of them. Run them from outside any repo so the all-repos scope applies.
 | registration with no directory | listed by `git worktree list`, path does not exist | `bn wt prune` |
 | leaked agent scratch | `.agent-<branch>-<token>`, clean, nobody in it, over a day old | `bn wt reap --all --yes` |
 | leaked agent scratch **holding work** | reap prints `hold <name> — leaked scratch worktree with dirty/unpushed work in it` | **keep** — step 5 |
-| orphaned agent process | in `bn agent live` with no window, or its worktree/PR is gone | `bn run fleet-reap --now` |
-| dead pane or window | `pane_dead=1` (a `remain-on-exit` corpse) | `bn run fleet-reap --now` |
+| orphaned agent process | in `bn agent live` with no window, or its worktree/PR is gone | `bn run fleet-reap` |
+| dead pane or window | `pane_dead=1` (a `remain-on-exit` corpse) | `bn run fleet-reap` |
 | finished cron window | in the `machine` session, named after a job, every pane at a shell | step 6 |
 | window outliving its worktree | its worktree path no longer exists | step 6 |
 | empty repo session | a repo session whose worktrees are all reclaimed, nobody attached | step 6 |
@@ -93,7 +93,7 @@ And in tmux specifically:
 Order matters: clear the dead processes first so nothing pulls a checkout out from under a live
 agent, then reclaim worktrees, then slots, then registrations.
 
-1. `bn run fleet-reap --now` — the fleet GC: orphaned agent process trees and dead tmux windows.
+1. `bn run fleet-reap` — the fleet GC: orphaned agent process trees and dead tmux windows.
    It **acts**; there is no dry run. It honors its own gates (never a working agent, an agent with
    uncommitted work, or the orchestrator). To stop one named agent instead, use
    `bn agent kill <repo>:<branch>`, which also frees its pool slot.
@@ -145,10 +145,10 @@ recurring hold means a pipeline stage is losing work, which is a bug worth a tas
 
 Reclaiming a worktree takes its window with it. Nothing takes the rest, and there are three kinds.
 
-**Finished cron windows.** A job queued against the `machine` repo runs in a window in the `machine`
-session. When it finishes, the window stays, holding panes parked at a shell prompt. They are not
-`remain-on-exit` corpses, so `fleet-reap`'s dead-pane prune never sees them, and they accumulate
-for as long as the crons tick. Count them first:
+**Finished cron windows.** Older bn ran cron jobs in windows in a `machine` session, and a machine
+that ran that version may still have them. When such a job finished, the window stayed, holding
+panes parked at a shell prompt. They are not `remain-on-exit` corpses, so `fleet-reap`'s dead-pane
+prune never sees them, and they accumulated for as long as the crons ticked. Count them first:
 
 ```
 tmux list-windows -t machine -F '#{window_name}' | sort | uniq -c | sort -rn
@@ -161,7 +161,7 @@ tmux list-panes -t machine -s -F '#{window_id} #{window_name} #{pane_current_com
 ```
 
 Kill only those, by id, one at a time — `tmux kill-window -t @<id>`. Never `kill-session` on
-`machine`: the session is real infrastructure and the queue keeps using it.
+`machine`: closing a session is never the sweep's call.
 
 **A window that outlived its worktree.** Its `pane_current_path` points at a directory that no
 longer exists, usually because a reclaim removed the worktree while the window was detached. Confirm

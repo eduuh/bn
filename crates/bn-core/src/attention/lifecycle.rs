@@ -133,12 +133,11 @@ pub fn mark_planned(id: &str, todo: &str) -> std::io::Result<bool> {
     Ok(true)
 }
 
-/// Mark item `id` as promoted into the orchestrate backlog as a task — folds it out of the open
-/// set (it's now tracked as queued work) and records the target `repo`, the backlog entry `id`,
-/// and the promotion `action` (`start-new` | `reprioritize` | `interrupt`) for the trail. Distinct
-/// from [`mark_planned`] (a branch todo) and [`ack`] so metrics can tell dispatched work from a
-/// plain resolution. Returns `false` (without writing) if `id` is unknown. Appends
-/// `attn_dispatched {ref:id, repo, backlog, action}`.
+/// Mark item `id` as dispatched to an agent — folds it out of the open set and records the target
+/// `repo`, the derived id of the dispatched subject (the `backlog` field, named for older events),
+/// and the `action` for the trail. Distinct from [`mark_planned`] (a branch todo) and [`ack`] so
+/// metrics can tell dispatched work from a plain resolution. Returns `false` (without writing) if
+/// `id` is unknown. Appends `attn_dispatched {ref:id, repo, backlog, action}`.
 pub fn mark_dispatched(id: &str, repo: &str, backlog: &str, action: &str) -> std::io::Result<bool> {
     if !exists(id) {
         return Ok(false);

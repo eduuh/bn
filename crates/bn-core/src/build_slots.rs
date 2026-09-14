@@ -1,31 +1,20 @@
 //! The build pool: admission for work that saturates the machine and whose caller must wait.
 //!
-//! Every other kind of queued work is *dispatched* — the tick decides it may start, launches it, and
-//! nobody blocks. A verify gate is the opposite: [`crate::backlog`] never sees it, because the
-//! process that wants it is already running and cannot continue until it has the verdict. `bn wt
-//! merge` must know whether the head is green before it lands; `bn verify` prints an exit code its
-//! caller acts on. Enqueueing it the way [`crate::queue::tick`] enqueues an agent would mean asking a
-//! blocked process to wait for a dispatcher to notice it — a new way for a merge to hang, in exchange
-//! for a throttle.
+//! A verify gate is not dispatched: the process that wants it is already running and cannot
+//! continue until it has the verdict. `bn wt merge` must know whether the head is green before it
+//! lands; `bn verify` prints an exit code its caller acts on. So the gate takes a **ticket** from a
+//! fixed-size pool, runs inline, and gives the ticket back. This is throttling, not scheduling.
 //!
-//! So the gate is not dispatched. It takes a **ticket** from a fixed-size pool, runs inline, and
-//! gives the ticket back. The queue's role here is throttling, not scheduling.
-//!
-//! # Why a pool of its own, and not a lane
-//!
-//! Two reasons, and the second one is a correctness argument rather than a taste argument.
+//! # Why a pool of its own
 //!
 //! **A build is not an agent.** An agent is overwhelmingly I/O-bound — it sits waiting on the model,
-//! on git, on the network — which is why [`crate::queue::capacity`] can put two of them on a core.
-//! A `cargo build` saturates every core it is given and peaks several GB in rustc and the linker.
-//! Sizing them from the same arithmetic would be wrong in both directions.
+//! on git, on the network. A `cargo build` saturates every core it is given and peaks several GB in
+//! rustc and the linker, so builds are sized by their own arithmetic.
 //!
-//! **Sharing the lanes would deadlock.** The caller of a gate is usually an agent that already holds
-//! a lane slot. If the gate needed a lane slot too, an agent holding the last one while waiting for
-//! a gate would be waiting for itself — hold-and-wait, with every lane occupied by agents all
-//! blocked on gates. Keeping the pools disjoint removes the cycle by construction: a build never
-//! waits on a lane, so a lane holder waiting on a build always has someone ahead of it that can
-//! finish. This is the one property here worth not breaking later.
+//! **Sharing a slot with agents would deadlock.** The caller of a gate is usually an agent. If the
+//! gate needed the same kind of slot the agent already holds, an agent holding the last one while
+//! waiting for a gate would be waiting for itself. Keeping the pool disjoint removes the cycle by
+//! construction. This is the one property here worth not breaking later.
 //!
 //! # Failure is bounded in the safe direction
 //!
@@ -36,10 +25,12 @@
 //!
 //! And a caller that cannot get a slot within its budget runs anyway: the gate is a correctness
 //! check, and delaying a land forever to protect throughput would trade the wrong one away. The
-//! worst case degrades to exactly today's behaviour — every build at once — rather than to a merge
-//! that never completes.
+//! worst case degrades to every build at once rather than to a merge that never completes.
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+
+/// RAM held back for the OS, the editor, the browser: everything that is not a build.
+pub const RESERVED_RAM_MB: u64 = 4096;
 
 /// RAM one build is assumed to occupy, MB. rustc's peak is per-codegen-unit and the link step is
 /// worse; 4 GB is the honest number for a workspace build, against 2 GB for an agent.
@@ -57,12 +48,11 @@ pub const MAX_BUILDS: usize = 3;
 /// How many concurrent builds this machine can hold — `min(usable RAM ÷ per-build RAM, cores ÷
 /// per-build cores)`, floored at 1.
 ///
-/// Floored rather than allowed to reach zero for the same reason the lanes are: a machine that can
+/// Floored rather than allowed to reach zero: a machine that can
 /// start no builds cannot land anything, which is broken rather than careful. Pure over its inputs,
-/// so a surprising number is answerable from `bn queue status` instead of being folklore.
+/// so a surprising number is answerable instead of being folklore.
 pub fn slots(ram_total_mb: u64, cores: usize) -> usize {
-    let by_ram =
-        ram_total_mb.saturating_sub(crate::queue::capacity::RESERVED_RAM_MB) / BUILD_RAM_MB;
+    let by_ram = ram_total_mb.saturating_sub(RESERVED_RAM_MB) / BUILD_RAM_MB;
     let by_cpu = cores / CORES_PER_BUILD;
     (by_ram as usize).min(by_cpu).clamp(1, MAX_BUILDS)
 }
@@ -104,7 +94,7 @@ pub fn pool_path() -> PathBuf {
 ///
 /// Generous: a workspace build plus `npm ci` is minutes, and reclaiming a slot from a build that is
 /// still running would put two of them on the machine — the exact thing this prevents. An hour is
-/// well past any honest gate, and matches [`crate::queue::reap::AGENT_LEASE_TTL_SECS`].
+/// well past any honest gate.
 pub const SLOT_TTL_SECS: i64 = 3600;
 
 /// Drop rows whose holder is gone.
@@ -187,10 +177,6 @@ pub fn try_acquire(
 
 /// Whether `pid` names a live process.
 ///
-/// In core because three surfaces ask it — the CLI's status line, the dashboard's payload, and the
-/// pool's own pruning — and a liveness check that disagreed with itself across them would make the
-/// build pool report a different occupancy depending on who looked.
-///
 /// Signal 0 checks existence without delivering anything. It reads a zombie as alive and cannot see
 /// pid reuse, which is exactly why [`prune`] also bounds by age.
 #[cfg(unix)]
@@ -210,16 +196,6 @@ pub fn pid_alive(pid: u32) -> bool {
 #[cfg(not(unix))]
 pub fn pid_alive(_pid: u32) -> bool {
     false
-}
-
-/// Current holders against the live process table — [`holders`] with the platform check supplied.
-pub fn holders_live(now: i64) -> Vec<Held> {
-    holders(now, &pid_alive)
-}
-
-/// Current holders, pruned. For `bn queue status` — a read, taking no slot.
-pub fn holders(now: i64, alive: &impl Fn(u32) -> bool) -> Vec<Held> {
-    prune(read_pool(&pool_path()).held, now, alive)
 }
 
 /// Give a slot back. Private: [`Ticket`]'s `Drop` is the only caller, so a slot cannot be released
@@ -255,4 +231,49 @@ fn next_id(now: i64) -> String {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
     format!("{}-{now}-{n}", std::process::id())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builds_are_sized_by_their_own_arithmetic() {
+        // 4 GB and 4 cores each: on 16 GB / 10 cores that is 2 builds.
+        assert_eq!(slots(16384, 10), 2);
+        assert_eq!(slots(1024, 1), 1);
+        assert_eq!(slots(1_048_576, 512), MAX_BUILDS);
+    }
+
+    fn held(id: &str, pid: u32, since: i64) -> Held {
+        Held {
+            id: id.to_string(),
+            pid,
+            label: "test".to_string(),
+            repo: "r".to_string(),
+            since,
+        }
+    }
+
+    #[test]
+    fn a_dead_holder_frees_its_slot_at_once() {
+        let rows = vec![held("a", 1, 1000), held("b", 2, 1000)];
+        let kept = prune(rows, 1000, &|pid| pid == 1);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].id, "a");
+    }
+
+    #[test]
+    fn a_live_pid_past_the_ttl_is_still_reclaimed() {
+        // A zombie or a reused pid answers `kill(pid, 0)` as alive; liveness alone would strand
+        // the slot.
+        let rows = vec![held("a", 1, 1000)];
+        assert!(prune(rows, 1000 + SLOT_TTL_SECS + 1, &|_| true).is_empty());
+    }
+
+    #[test]
+    fn a_holder_exactly_at_the_ttl_is_kept() {
+        let rows = vec![held("a", 1, 1000)];
+        assert_eq!(prune(rows, 1000 + SLOT_TTL_SECS, &|_| true).len(), 1);
+    }
 }

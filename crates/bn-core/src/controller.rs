@@ -592,7 +592,11 @@ pub fn enqueue(
         source: queue_key(controller_id),
         ..AddSpec::default()
     };
-    backlog::add(path, &queue_key(controller_id), requests, &spec, now)
+    let added = backlog::add(path, &queue_key(controller_id), requests, &spec, now)?;
+    // The store is append-only; trim terminal and superseded lines once they dominate. A failed
+    // trim loses nothing, so it never fails the add.
+    let _ = backlog::compact_if_needed(path);
+    Ok(added)
 }
 
 pub fn lease_next(

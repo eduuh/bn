@@ -400,7 +400,7 @@ fn seed_for_fresh(cfg: &Config, plan: &RelaunchPlan) -> Option<String> {
 /// have to be "lose it and re-dispatch by hand".
 ///
 /// Re-enters `bn agent relaunch` once per agent rather than looping the kill/lease/respawn sequence
-/// inline — the same choice the queue tick makes when it re-enters `bn dispatch`. That sequence has
+/// inline. That sequence has
 /// exactly one correct implementation and a second copy of it would drift; re-entering costs a
 /// process per agent and cannot.
 ///

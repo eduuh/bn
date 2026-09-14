@@ -64,11 +64,6 @@ const del = <T>(url: string) => request<T>("DELETE", url);
 
 // --- Endpoint wrappers (bodies mirror `bn_web::actions` exactly) ---
 
-export interface QueueAddResult {
-  repo: string;
-  added: string[];
-  counts: Counts;
-}
 export interface RemoveResult {
   repo: string;
   id: string;
@@ -84,11 +79,6 @@ export interface ScaleResult {
   repo: string;
   concurrency: number;
   effective: number;
-}
-
-/** `POST /api/orchestrate/queue` — append queued items to a live run. */
-export function apiQueueAdd(body: { repo?: string; items: string[] }) {
-  return post<QueueAddResult>("/api/orchestrate/queue", body);
 }
 
 /** `DELETE /api/orchestrate/queue/:id` — drop a still-queued item. */
@@ -117,7 +107,7 @@ export function apiStart(body: { repo?: string; items: string[]; concurrency?: n
   return post<unknown>("/api/orchestrate/start", body);
 }
 
-/** `POST /api/dispatch` — a one-off agent, skipping the queue. */
+/** `POST /api/dispatch` — a one-off agent, started now. */
 export function apiDispatch(body: { repo: string; item: string; harness: string; kind: string }) {
   return post<unknown>("/api/dispatch", body);
 }
@@ -315,26 +305,13 @@ export function setSuggestionStatus(
   return post(`/api/suggestions/${encodeURIComponent(id)}`, { status });
 }
 
-// --- Warm-worktree pool (#497) — schedule repo pool builds from the dashboard ---
+// --- Warm-worktree pool (#497) — build repo pool slots from the dashboard ---
 
-/** The `POST /api/repos/:repo/pool/warm` ack: the warm was queued as a heavy `pool-warm` job. */
-export interface WarmPoolResult {
-  added: number;
-  entries: unknown[];
-}
-
-/** `POST /api/repos/:repo/pool/warm` — enqueue `pool-warm` for a pooled repo. Warming is
- * long-running, so the machine-wide queue admits it as heavy work instead of the server spawning an
- * uncapped detached build; a `400` (invalid repo, or one bn has no clone of) throws `ApiError`. */
-export function warmRepoPool(repo: string): Promise<WarmPoolResult> {
-  return post<WarmPoolResult>(`/api/repos/${encodeURIComponent(repo)}/pool/warm`);
-}
-
-export function setRepoPoolSchedule(
-  repo: string,
-  body: { lunch_time: string; after_work_time: string; duration_mins: number },
-): Promise<unknown> {
-  return post(`/api/repos/${encodeURIComponent(repo)}/pool/schedule`, body);
+/** `POST /api/repos/:repo/pool/warm` — start the repo's `pool-warm` job now. The warm runs
+ * detached, so the ack returns before the slots are built; a `400` (invalid repo, or one bn has no
+ * clone of) throws `ApiError`. */
+export function warmRepoPool(repo: string): Promise<unknown> {
+  return post(`/api/repos/${encodeURIComponent(repo)}/pool/warm`);
 }
 
 /** `POST /api/repos/:repo/orchestrate {goal?, harness?}` (#556) — start a guarded main-branch
@@ -349,8 +326,8 @@ export function startRepoOrchestrator(
 }
 
 /** The dispatch envelope a setup-agent request returns. `dispatched: false` means `bn dispatch`
- * filed the work in the queue rather than launching it now — a success, but a different one, and
- * the caller must say which happened rather than always reporting a launch. */
+ * found every warm slot leased and scheduled the work on the repo's run rather than launching it
+ * now — a success, but a different one, and the caller must say which happened. */
 export interface RepoSetupAgentResult {
   dispatched?: boolean;
   queued?: boolean;
@@ -365,15 +342,6 @@ export function startRepoSetupAgent(
   body?: { harness?: string },
 ): Promise<RepoSetupAgentResult> {
   return post(`/api/repos/${encodeURIComponent(repo)}/setup-agent`, body ?? {});
-}
-
-/** `POST /api/repos/:repo/drain {resume?, reason?}` — hold new work for a repo, or release it.
- * Nothing is killed: in-flight agents finish, the queue simply stops admitting more. */
-export function drainRepo(
-  repo: string,
-  body?: { resume?: boolean; reason?: string },
-): Promise<unknown> {
-  return post(`/api/repos/${encodeURIComponent(repo)}/drain`, body ?? {});
 }
 
 /** Which of a repo's agents came back, and which did not. A partial restart is a real state, so
@@ -567,38 +535,6 @@ export function appendTaskDoc(id: string, text: string, section?: string): Promi
  * refused, not lost, so the caller keeps the operator's text and reloads to show what landed. */
 export function editTaskDoc(id: string, body: string, ifMatch: string): Promise<TaskDocResult> {
   return request("PUT", `/api/tasks/${encodeURIComponent(id)}/doc`, { body, if_match: ifMatch });
-}
-
-/** Enqueue work. Priority is first-class rather than advanced: "run this next" is the request
- * people actually have, and without it the only way to jump the order was to re-add the item and
- * know that a re-add raises. */
-export function queueAdd(body: {
-  item: string;
-  repo?: string;
-  kind?: string;
-  priority?: number;
-  job?: string;
-  skill?: string;
-}): Promise<unknown> {
-  return request("POST", "/api/queue/add", body);
-}
-
-/** Take pending work back out. Pending only — a leased entry has an executor running. */
-export function queueCancel(repo: string, id: string): Promise<unknown> {
-  return request("POST", "/api/queue/cancel", { repo, id });
-}
-
-/** Move queued work up or down the order — sets the priority exactly, in either direction. */
-export function queuePriority(repo: string, id: string, priority: number): Promise<unknown> {
-  return request("POST", "/api/queue/priority", { repo, id, priority });
-}
-
-export function queueSnooze(repo: string, id: string, forDuration: string): Promise<unknown> {
-  return request("POST", "/api/queue/snooze", { repo, id, for: forDuration });
-}
-
-export function queueClass(repo: string, id: string, klass: string): Promise<unknown> {
-  return request("POST", "/api/queue/class", { repo, id, class: klass });
 }
 
 /** Mark one briefing card read (`POST /api/staff/card/read`). This is the lever that resumes a

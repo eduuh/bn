@@ -1,7 +1,7 @@
 #!/bin/bash
 # Exercise every non-interactive `bn tat` stage the way fzf invokes it — the hidden `--pick-stage`
 # callbacks, one call per row kind the sub-picker paints, every guarded refusal, and `kill` on a
-# throwaway session. Read-only apart from that session: nothing here leases, removes or queues.
+# throwaway session. Read-only apart from that session: nothing here leases or removes.
 #
 # Runs against the bn repo itself, on a machine with the bare+worktree layout and a warm pool.
 # stdin is not a TTY, so `hold()` returns at once and a refusal cannot hang the run.
@@ -88,8 +88,6 @@ run runcmd-nosuch    0 "$B" tat $REPO --pick-stage runcmd --pick-arg "cmd~no-suc
 run runcmd-empty     0 "$B" tat $REPO --pick-stage runcmd
 run runcmd-script-gone 0 "$B" tat $REPO --pick-stage runcmd --pick-arg "cmd~script:no-such-script-zz"
 run runcmd-pool-win  0 "$B" tat $REPO --root win --pick-stage runcmd --pick-arg "cmd~pool-warm"
-run away-place       0 "$B" tat $REPO --pick-stage runcmd-away --pick-arg "worktree~main"
-run away-nosuch      0 "$B" tat $REPO --pick-stage runcmd-away --pick-arg "cmd~no-such-verb"
 
 echo "== direct open of an unknown name (TMUX unset so the attach fails harmlessly)"
 run open-unknown     0 env -u TMUX -u TMUX_PANE "$B" tat no-such-repo-zz

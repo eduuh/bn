@@ -390,12 +390,6 @@ function CatalogRow({ item, now }: { item: CatalogItem; now: number }) {
                 harness <span className="font-mono text-foreground/80">{item.harness}</span>
               </span>
             )}
-            {agent && (
-              <span>
-                queue{" "}
-                <span className="font-mono text-foreground/80">{item.queue ? "yes" : "no"}</span>
-              </span>
-            )}
             {agent && item.startup && <span>startup trigger</span>}
             {agent && item.retry_after_secs != null && (
               <span>{Math.round(item.retry_after_secs / 60)}m failure backoff</span>
@@ -630,7 +624,7 @@ function CompletedList() {
  * signal bn tracks — attention items, plan-reviews, open todos, blockers, failing crons, stale
  * in-flight PRs, today's goals — folds into one ranked list (`GET /api/actions`). From any row,
  * one click opens the [`StartAgentComposer`] pre-filled with a per-type suggested prompt the owner
- * edits before launching an agent (urgent → dispatch, or queue). A glance strip up top pins the
+ * edits before dispatching an agent. A glance strip up top pins the
  * live fleet + "needs you" count; a filter row narrows by kind. A second **Reviews** tab folds in
  * the plan-review inbox (#558) — the standalone `/reviews` page retired into this hub, `?tab=reviews`
  * deep-links straight to it. An **Automation** hub (#557) below the actions list shows recent cron

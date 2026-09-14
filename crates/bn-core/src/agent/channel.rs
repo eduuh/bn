@@ -486,7 +486,7 @@ mod tests {
         AgentKey {
             session_id,
             repo: "bn",
-            branch: "queue-duplicates",
+            branch: "dedupe-rows",
             worktree,
         }
     }
@@ -495,7 +495,7 @@ mod tests {
         AgentLease {
             key: AgentLeaseKey {
                 repo: "bn".to_string(),
-                branch: "queue-duplicates".to_string(),
+                branch: "dedupe-rows".to_string(),
                 worktree: "/tmp/bn-lease".to_string(),
             },
             session_id: session_id.to_string(),

@@ -19,7 +19,7 @@ pub const SWAP_WARN: f64 = 0.10;
 pub const SWAP_CRIT: f64 = 0.50;
 
 /// CPU load snapshot. Load figures are `Option` because they're best-effort — an unreadable signal
-/// reads as "unknown" (never a false alarm), matching the fail-open guard policy in [`crate::scheduler`].
+/// reads as "unknown" (never a false alarm), matching a fail-open guard policy.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct Cpu {
     /// 1-minute load average, or `None` if unreadable.
@@ -401,16 +401,4 @@ pub fn read_meminfo() -> MemInfo {
 /// macOS). `None` when the signal can't be read. Shared by `worker::capacity`.
 pub fn read_loadavg1() -> Option<f64> {
     read_loadavg().map(|(l1, ..)| l1)
-}
-
-/// Swap-in-use percent (0–100) from a [`MemInfo`]: `(total - free) / total * 100`. `None` when
-/// either figure is unknown or no swap is configured (`total == 0`) — the caller's guard then
-/// never binds (the #668 orchestrate swap gate). Pure so it is testable without a host.
-pub fn swap_used_pct(mem: &MemInfo) -> Option<f64> {
-    let total = mem.swap_total_mb?;
-    let free = mem.swap_free_mb?;
-    if total == 0 {
-        return None;
-    }
-    Some(total.saturating_sub(free) as f64 / total as f64 * 100.0)
 }

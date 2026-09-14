@@ -19,9 +19,9 @@ use std::path::{Path, PathBuf};
 /// makes merging meaningful: interleaving two hosts' lines by timestamp reconstructs the single
 /// history they should always have been.
 ///
-/// Deliberately excludes `state/backlog.jsonl`. That is the *live queue*, not history — folding a
-/// stale copy back in would resurrect entries the dispatcher already resolved and hand them to a
-/// worker as fresh work. Point-in-time snapshots (`attention.json`, `doctor.json`, leases) are out
+/// Deliberately excludes `state/backlog.jsonl`. That is a *live store*, not history — folding a
+/// stale copy back in would resurrect requests a controller already resolved and hand them out as
+/// fresh work. Point-in-time snapshots (`attention.json`, `doctor.json`, leases) are out
 /// for the same reason: they describe a moment, so there is no correct way to combine two of them.
 pub const MERGEABLE_LOGS: &[&str] = &[
     "state/events.jsonl",
@@ -278,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn the_live_queue_and_snapshots_are_never_merged() {
+    fn the_live_backlog_and_snapshots_are_never_merged() {
         // Folding a stale backlog back in would hand already-resolved entries to a worker as new.
         assert!(!MERGEABLE_LOGS.contains(&"state/backlog.jsonl"));
         assert!(!MERGEABLE_LOGS.iter().any(|l| l.ends_with(".json")));

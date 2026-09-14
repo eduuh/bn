@@ -42,8 +42,8 @@ pub(crate) fn native_job(job: &str) -> Option<NativeJob> {
         "tmux-keylog" => Some(crate::cmd::tmux_keys::job_tmux_keylog),
         "keep-warm" => Some(crate::cmd::keep_warm::job_keep_warm),
         "pool-warm" => Some(crate::wt_pool::job_pool_warm),
-        // The worktree-picker verbs (`bn_core::wt_actions`). Each is a queueable name for work
-        // that already existed as a subcommand — which is what lets a picker row show its progress.
+        // The worktree-picker verbs (`bn_core::wt_actions`). Each is a runnable name for work that
+        // already existed as a subcommand, which is what lets a picker row show its progress.
         "build" => Some(crate::cmd::wt_action_jobs::job_build),
         "verify" => Some(crate::cmd::wt_action_jobs::job_verify),
         "build-main" => Some(crate::cmd::wt_action_jobs::job_build_main),
@@ -53,7 +53,6 @@ pub(crate) fn native_job(job: &str) -> Option<NativeJob> {
         "wt-prune" => Some(crate::cmd::wt_action_jobs::job_wt_prune),
         "cron-health" => Some(crate::cmd::attention_workflow::job_cron_health),
         "agent-scheduler" => Some(crate::cmd::cron::job_agent_scheduler),
-        "queue-tick" => Some(crate::cmd::queue_tick::job_queue_tick),
         "tick-5m" => Some(job_tick_5m),
         "tick-10m" => Some(job_tick_10m),
         "tick-15m" => Some(job_tick_15m),

@@ -27,12 +27,8 @@
 //!
 //! # Why there is no eviction
 //!
-//! Deliberately in-process and never evicted, which is only safe because the key space is finite.
-//! Unparameterized views key on their `&'static str` name. Parameterized ones ([`Bounded`]) append
-//! request parameters, and that is the one place where a key could come from a query string — so
-//! [`Bounded`] exists to make "this parameter set is finite" an explicit, tested claim at each call
-//! site rather than an assumption. A view whose parameters fall outside its allowlist is served
-//! uncached; it never becomes a new permanent entry.
+//! Deliberately in-process and never evicted, which is only safe because the key space is finite:
+//! every view keys on its `&'static str` name, so no key can come from a query string.
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -110,21 +106,6 @@ pub const NODES: View = View {
     ttl: LIVE_TTL,
 };
 
-/// The Queue page's day-as-an-axis fold — at ~1.4s the slowest read in the app once the shell's
-/// were cached. Parameterized by date and class; see `queue_api::timeline_key` for the allowlist
-/// that bounds it. A minute is well inside the client's own 60s poll and far outside the cost.
-pub const QUEUE_TIMELINE: View = View {
-    key: "queue-timeline",
-    ttl: Duration::from_secs(60),
-};
-
-/// The filterable backlog listing. Parameterized by status and class; a repo filter is served
-/// uncached, since repo names are free text and would be the one unbounded key.
-pub const QUEUE_ENTRIES: View = View {
-    key: "queue-entries",
-    ttl: Duration::from_secs(15),
-};
-
 /// The completed-work record. Unparameterized, and by definition about work that has already
 /// finished, so it tolerates the longest window of any view here.
 pub const COMPLETED: View = View {
@@ -144,25 +125,6 @@ pub const ISSUES: View = View {
     key: "issues",
     ttl: Duration::from_secs(120),
 };
-
-/// A parameter set a caller has certified as finite, and therefore safe to put in a cache key.
-///
-/// The type carries no validation of its own — it cannot, since only the handler knows what its
-/// allowlist is. What it carries is the *obligation*: [`Bounded::new`] is the single point where a
-/// handler states "these values come from a fixed set", and every construction site in this crate
-/// has a test that feeds it hostile input and asserts it declines. Building one from a raw query
-/// string would defeat the whole arrangement — the point is that the compiler makes you stop and
-/// write the allowlist down.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct Bounded(String);
-
-impl Bounded {
-    /// Certify a parameter set as finite. `parts` are the already-validated components, joined in a
-    /// fixed order so equal parameters always produce one key.
-    pub fn new(parts: &[&str]) -> Bounded {
-        Bounded(parts.join("\u{1f}"))
-    }
-}
 
 /// One cached view: the value and the moment it was computed.
 struct Cached {
@@ -200,27 +162,6 @@ impl ViewCache {
         Arc::clone(slots.entry(key.to_string()).or_default())
     }
 
-    /// Serve a view whose payload depends on request parameters.
-    ///
-    /// The `Bounded` is the caller's certification that `params` ranges over a finite set — see its
-    /// docs for why that obligation is load-bearing here.
-    pub async fn get_or_compute_with<F>(
-        &self,
-        view: View,
-        params: &Bounded,
-        compute: F,
-    ) -> Option<Arc<Value>>
-    where
-        F: FnOnce() -> Value + Send + 'static,
-    {
-        self.serve(
-            &format!("{}\u{1f}{}", view.key, params.0),
-            view.ttl,
-            compute,
-        )
-        .await
-    }
-
     /// Serve `key` from cache, or compute it and store it.
     ///
     /// `compute` is synchronous, filesystem-heavy work, so it runs on the blocking pool rather than
@@ -233,15 +174,8 @@ impl ViewCache {
     where
         F: FnOnce() -> Value + Send + 'static,
     {
-        self.serve(view.key, view.ttl, compute).await
-    }
-
-    /// The shared body of both entry points.
-    async fn serve<F>(&self, key: &str, ttl: Duration, compute: F) -> Option<Arc<Value>>
-    where
-        F: FnOnce() -> Value + Send + 'static,
-    {
-        let slot = self.slot(key);
+        let ttl = view.ttl;
+        let slot = self.slot(view.key);
         let mut guard = slot.cached.lock().await;
 
         // `elapsed() < ttl` — a value exactly at the TTL is stale, so the window is a real bound.
@@ -264,22 +198,12 @@ impl ViewCache {
 
     /// Drop a cached view so the next read recomputes it. For writes whose effect the user expects
     /// to see immediately, rather than at the end of a TTL they cannot observe.
-    ///
-    /// Drops **every** parameterization of the view, not just the unparameterized slot. A write to
-    /// the backlog changes what `?status=pending` and `?status=done` both answer, and an
-    /// invalidation that cleared only one of them would leave the user staring at whichever filter
-    /// they happened to have selected, still showing the entry they just cancelled.
     pub async fn invalidate(&self, view: View) {
-        let prefix = format!("{}\u{1f}", view.key);
-        let slots: Vec<Arc<Slot>> = {
+        let slot = {
             let slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
-            slots
-                .iter()
-                .filter(|(k, _)| k.as_str() == view.key || k.starts_with(&prefix))
-                .map(|(_, slot)| Arc::clone(slot))
-                .collect()
+            slots.get(view.key).map(Arc::clone)
         };
-        for slot in slots {
+        if let Some(slot) = slot {
             *slot.cached.lock().await = None;
         }
     }
@@ -399,62 +323,6 @@ mod tests {
             "one computation, nine hits"
         );
         assert!(results.iter().all(|r| r.is_some()));
-    }
-
-    #[tokio::test]
-    async fn different_parameters_get_different_slots() {
-        let cache = ViewCache::new();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let (a, b) = (
-            Bounded::new(&["2026-08-09", ""]),
-            Bounded::new(&["2026-08-08", ""]),
-        );
-
-        cache.get_or_compute_with(V, &a, counting(&calls)).await;
-        cache.get_or_compute_with(V, &a, counting(&calls)).await;
-        cache.get_or_compute_with(V, &b, counting(&calls)).await;
-
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            2,
-            "one per distinct parameter set"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_parameterized_slot_never_collides_with_the_bare_one() {
-        let cache = ViewCache::new();
-        let calls = Arc::new(AtomicUsize::new(0));
-
-        cache.get_or_compute(V, counting(&calls)).await;
-        cache
-            .get_or_compute_with(V, &Bounded::new(&[""]), counting(&calls))
-            .await;
-
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-    }
-
-    #[tokio::test]
-    async fn invalidate_clears_every_parameterization() {
-        // The one that matters for writes: cancelling an entry must not leave `?status=done`
-        // serving the pre-write answer just because `?status=pending` was the slot that got cleared.
-        let cache = ViewCache::new();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let (pending, done) = (Bounded::new(&["pending"]), Bounded::new(&["done"]));
-
-        cache
-            .get_or_compute_with(V, &pending, counting(&calls))
-            .await;
-        cache.get_or_compute_with(V, &done, counting(&calls)).await;
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-
-        cache.invalidate(V).await;
-
-        cache
-            .get_or_compute_with(V, &pending, counting(&calls))
-            .await;
-        cache.get_or_compute_with(V, &done, counting(&calls)).await;
-        assert_eq!(calls.load(Ordering::SeqCst), 4, "both recomputed");
     }
 
     #[tokio::test]

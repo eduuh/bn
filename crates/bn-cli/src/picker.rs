@@ -169,21 +169,6 @@ fn row_for(f: &Finding) -> Row {
             link: String::new(),
             path: String::new(),
         },
-        Finding::Backlog(b) => Row {
-            display: disp(
-                Warn,
-                "\u{2022} queued work with no task".to_string(),
-                format!(
-                    "{} entry(s) predate the task invariant — `bn orchestrate status` to see them",
-                    b.untasked
-                ),
-            ),
-            kind: "backlog-untasked",
-            id: String::new(),
-            job: String::new(),
-            link: String::new(),
-            path: String::new(),
-        },
         Finding::NotesLeak(l) => Row {
             display: disp(
                 Warn,

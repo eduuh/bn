@@ -138,7 +138,7 @@ pub fn check_entry(
 ///
 /// The gate's body, reachable without a worktree. `check_entry` asks "may this worktree enter real
 /// work?" and has to find the task first; the `today` producer asks "is this task ready to be
-/// queued?" and already holds it — a task accepted on Today has no branch yet, so there is no
+/// started?" and already holds it — a task accepted on Today has no branch yet, so there is no
 /// `(repo, branch)` to look it up by.
 ///
 /// One body rather than two, because the consequences are the load-bearing half: the `smart:` stamp,

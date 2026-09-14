@@ -22,7 +22,7 @@ test reports a failed expectation; the workspace-wide deny targets production co
 //!
 //! The baseline is recorded with a **debug** build (what the CI lane runs); a release binary is
 //! faster and always passes. What is *not* here: the interactive path through fzf itself (keys,
-//! the ctrl-o / ctrl-s menus) — `scripts/try-tat.sh` drives that on a real machine — and the two
+//! the ctrl-o menu) — `scripts/try-tat.sh` drives that on a real machine — and the two
 //! stages that block on a forge by design (`refresh`, `warm-remote`).
 //!
 //! Run with: `cargo test -p bn-e2e --test tat_picker -- --ignored --test-threads=1`
@@ -216,14 +216,13 @@ fn tat_stages_answer_and_stay_within_budget() -> anyhow::Result<()> {
     )?;
     assert_says(&missing, "Directory not found")?;
 
-    // The sub-picker feed: a window row, the worktree, the command section and the settings row.
+    // The sub-picker feed: a window row, the worktree, and the command section.
     let sublist = t.stage(&sb, "sublist", &["tat", "repo", "--pick-stage", "sublist"])?;
     for needle in [
         "window|",
         "worktree|feature-a|",
         "cmdsep||",
         "cmd|build-main|",
-        "qset||",
     ] {
         assert_says(&sublist, needle)?;
     }
@@ -263,7 +262,7 @@ fn tat_stages_answer_and_stay_within_budget() -> anyhow::Result<()> {
         )?;
         run.expect_success()?;
     }
-    for kind in ["window", "worktree", "cmd", "qset", "cmdsep"] {
+    for kind in ["window", "worktree", "cmd", "cmdsep"] {
         assert!(
             seen.contains_key(kind),
             "the feed should paint a {kind} row"
@@ -347,15 +346,6 @@ fn tat_stages_answer_and_stay_within_budget() -> anyhow::Result<()> {
         "cmd~zz",
     ])?;
     assert_says(&cmd, "no such command")?;
-    let away = sb.bn([
-        "tat",
-        "repo",
-        "--pick-stage",
-        "runcmd-away",
-        "--pick-arg",
-        "worktree~x",
-    ])?;
-    assert_says(&away, "act on a command row")?;
     let warm = sb.bn(["tat", "repo@win", "--pick-stage", "warmpool"])?;
     assert_says(&warm, "cold path")?;
 

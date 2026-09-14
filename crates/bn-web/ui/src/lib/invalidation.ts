@@ -19,9 +19,6 @@ import { queryKeys } from "../api/client";
 
 const TASKS_ALL: QueryKey = ["tasks"];
 const PIPELINE_ALL: QueryKey = ["pipeline"];
-// `["queue"]` covers the view, its event history and its entry lists in one entry.
-const QUEUE_ALL: QueryKey = ["queue"];
-const QUEUE_TIMELINE_ALL: QueryKey = ["queue-timeline"];
 // The per-agent dialog read, as a prefix — an answer invalidates every agent's, not just the one
 // on screen, since the same dialog can be shown from the fleet strip and the agent's own panel.
 const PROMPT_ONE_ALL: QueryKey = ["agent-prompt"];
@@ -44,7 +41,7 @@ export const affects = {
     queryKeys.fleet,
   ] as QueryKey[],
 
-  /** An agent was started, queued or dispatched. */
+  /** An agent was started or dispatched. */
   agentLaunch: [
     queryKeys.fleet,
     queryKeys.orchestrate,
@@ -58,11 +55,6 @@ export const affects = {
 
   /** An orchestrate run's own backlog or concurrency changed (the per-repo queue on Fleet). */
   backlog: [queryKeys.orchestrate, queryKeys.fleet] as QueryKey[],
-
-  /** The machine-wide dispatcher queue had an entry added, cancelled, reprioritized
-   * or cancelled. The timeline is a different root key but the same underlying queue, so it goes
-   * stale on exactly the same events. */
-  queue: [QUEUE_ALL, QUEUE_TIMELINE_ALL] as QueryKey[],
 
   /** An agent's blocked dialog was answered. Both prompt reads are in here because answering from
    * the fleet strip and answering from the agent's own panel have to leave the *other* surface
@@ -89,9 +81,8 @@ export const affects = {
   /** A repo was registered, removed or re-scanned. */
   repos: [queryKeys.repos] as QueryKey[],
 
-  /** Pool config or warm scheduling changed. Pool work is a queue entry first, then repo state once
-   * the warm completes. */
-  pool: [queryKeys.repos, QUEUE_ALL, QUEUE_TIMELINE_ALL] as QueryKey[],
+  /** A pool warm was started. The slot counts move on the repo view once the warm completes. */
+  pool: [queryKeys.repos] as QueryKey[],
 
   /** A skill was created or edited. Pair with `queryKeys.skill(name)` for the open editor. */
   skills: [queryKeys.skills] as QueryKey[],

@@ -2,11 +2,11 @@ use super::run_job;
 use crate::*;
 
 /// Run one self-describing agent **headlessly** through the named execution boundary. The
-/// scheduler and startup paths only decide eligibility; resolution, queueing, gates, and ledger
-/// ownership all remain in [`run_job`].
+/// scheduler and startup paths only decide eligibility; resolution, gates, and ledger ownership all
+/// remain in [`run_job`].
 ///
-/// Returns true when the agent ran — or was intentionally skipped (not due at `now`, a prior run
-/// still in flight, or captured by the queue) — and false when the command could not be launched.
+/// Returns true when the agent ran — or was intentionally skipped (not due at `now`, or a prior run
+/// still in flight) — and false when the command could not be launched.
 pub(crate) fn run_agent(
     cfg: &Config,
     ctx: Option<&Resolved>,

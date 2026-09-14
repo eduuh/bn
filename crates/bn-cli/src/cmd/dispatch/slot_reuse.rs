@@ -7,8 +7,7 @@
 //! * A slot whose only occupants have reported done — a Copilot sitting at its prompt after
 //!   `bn agent done`, its window still open. That is not an occupant in any sense that should stop
 //!   the next stage of the same task from starting here; it is the slot waiting to be taken over.
-//!   The queue refused this for hours on end, backing off toward the same answer, while the
-//!   pipeline's own next agent for that branch was the thing being refused.
+//!   Refusing it once blocked the pipeline's own next agent for that branch for hours.
 //!
 //! An unstamped pane — a shell someone has open — still refuses.
 use std::path::Path;

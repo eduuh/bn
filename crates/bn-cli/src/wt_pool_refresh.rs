@@ -7,6 +7,10 @@ const POOL_REFRESH_MAX_AGE_SECS: i64 = 24 * 3600;
 /// Minimum gap between mandatory warm attempts.
 const POOL_REFRESH_ATTEMPT_MIN_AGE_SECS: i64 = 30 * 60;
 
+/// The daily deadline a pool must have been warmed after, as an `OnCalendar` spec. Every day, so
+/// slots are fresh for the next morning whatever day it is.
+const POOL_WARM_DAILY_DEADLINE: &str = "*-*-* 17:30:00";
+
 /// What a pool refresh should do this tick.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum PoolRefreshPlan {
@@ -39,7 +43,7 @@ pub(crate) fn plan_pool_refresh(cfg: &Config, now: i64) -> PoolRefreshPlan {
     if mandatory_sweep_attempted_recently(&events, now) {
         return PoolRefreshPlan::Skip("pool-warm attempted recently".to_string());
     }
-    let deadline = latest_pool_warm_deadline(&cfg.queue.windows, now);
+    let deadline = latest_pool_warm_deadline(POOL_WARM_DAILY_DEADLINE, now);
     let assessments = classify_pool_refreshes(
         &warmable_repos(cfg),
         &last_successful_pool_warm_by_repo(&events),
@@ -50,71 +54,12 @@ pub(crate) fn plan_pool_refresh(cfg: &Config, now: i64) -> PoolRefreshPlan {
     plan_refreshes(&assessments)
 }
 
-/// File one `pool-warm` per due pool, each under the repo it warms — never one machine-wide sweep.
-/// Returns how many were filed; zero when nothing is due, one is still active, or the job is
-/// pinned elsewhere.
-///
-/// The sweep was a single `pool-warm` with no repo, and a repo-less job has nowhere to live: the
-/// heavy path put its window in the `bn` session at bn's main slot, and from there the job warmed
-/// every pool on the machine. So BigMono's three-thousand-package build ran inside a window called
-/// `bn:pool-warm`, holding the one heavy slot for hours, with nothing in the BigMono session to say
-/// so. Filed per repo, each warm lands in its own session, holds the heavy slot in its own name,
-/// and can be cancelled, snoozed or read about without touching the others.
-///
-/// One producer for both doors — the dispatcher's own tick and a `pool-warm` cron firing captured
-/// into the queue — so the timer cannot file the sweep the tick no longer does.
-///
-/// The throttle event the sweep used to stamp when it *ran* is stamped when the set is *filed*,
-/// because there is no longer one run to stamp it: [`plan_pool_refresh`] reads it to keep the
-/// daily set from being filed again while these are still working through the heavy cap.
-pub(crate) fn enqueue_due_warms(cfg: &Config, now: i64) -> usize {
-    if !cfg.job_allowed_here("pool-warm") {
-        return 0;
-    }
-    let targets = match plan_pool_refresh(cfg, now) {
-        PoolRefreshPlan::Skip(_) => return 0,
-        PoolRefreshPlan::Warm(targets) => targets,
-    };
-    if bn_core::backlog::load(&bn_core::backlog::backlog_path())
-        .entries()
-        .iter()
-        .any(|entry| {
-            entry.status.is_active() && bn_core::queue::classify::is_mandatory_pool_warming(entry)
-        })
-    {
-        return 0;
-    }
-    let _ = bn_core::events::append("pool_refresh_attempt", serde_json::Map::new());
-    // A deadline, like every other scheduled firing. The sweep is daily, so a firing still
-    // waiting a day later has been superseded rather than merely delayed — and a firing that
-    // can never lapse is one that can hold admission forever.
-    let not_after = Some(now.saturating_add(bn_core::queue::jobs::MANDATORY_WARM_TTL_SECS));
-    let mut filed = 0;
-    for repo in targets {
-        if crate::cmd::queue_producers::capture_job_with_subject(
-            cfg,
-            "pool-warm",
-            &format!("run mandatory pool-warm — {repo}"),
-            bn_core::queue::kind::ExecSpec::Job {
-                job: "pool-warm".to_string(),
-                repo: Some(repo),
-                branch: None,
-            },
-            bn_core::queue::kind::Requirements::default(),
-            not_after,
-        ) {
-            filed += 1;
-        }
-    }
-    filed
-}
-
 /// Every repo the scheduled sweep warms: each bn-managed bare clone, full stop.
 ///
 /// This was `pooled_repos()` reading `~/.config/wt/pools` — the repos somebody had *written down* —
 /// which made the daily warm opt-in while leasing stayed universal. The two halves disagreeing was
 /// not a harmless asymmetry: a repo nobody registered still got slots on demand, and a dispatch
-/// that consumed one queued a single reactive `pool-warm` that never came back. On the machine
+/// that consumed one started a single reactive `pool-warm` that never came back. On the machine
 /// this was written for, three unregistered repos had been warmed exactly once, twenty-five days
 /// earlier, and three more never at all, while every registered repo had been refreshed that
 /// morning. Slots left at a month-old base are the opposite of warm.
@@ -131,28 +76,9 @@ fn mandatory_sweep_attempted_recently(events: &[bn_core::events::Event], now: i6
     })
 }
 
-/// Most recent daily pool-warm deadline at or before `now`.
-///
-/// A custom queue config may define unrelated windows and omit the built-in pool windows. Falling
-/// back here keeps a valid daily deadline authoritative instead of silently disabling freshness.
-fn latest_pool_warm_deadline(
-    windows: &[bn_core::queue::window::PriorityWindow],
-    now: i64,
-) -> Option<i64> {
-    windows
-        .iter()
-        .filter(|w| {
-            w.name == bn_core::queue::window::POOL_WARM_AFTER_WORK
-                && w.mode == bn_core::queue::window::WindowMode::Deadline
-        })
-        .filter_map(|w| bn_core::schedule::previous_occurrence(&w.at, now))
-        .max()
-        .or_else(|| {
-            bn_core::queue::window::default_pool_warm_priority_windows()
-                .iter()
-                .find(|w| w.name == bn_core::queue::window::POOL_WARM_AFTER_WORK)
-                .and_then(|w| bn_core::schedule::previous_occurrence(&w.at, now))
-        })
+/// Most recent daily pool-warm deadline (`at`, an `OnCalendar` spec) at or before `now`.
+fn latest_pool_warm_deadline(at: &str, now: i64) -> Option<i64> {
+    bn_core::schedule::previous_occurrence(at, now)
 }
 
 /// Freshest successful `pool_warm` timestamp per repo from the machine-local event log.
@@ -348,22 +274,16 @@ mod tests {
     }
 
     #[test]
-    fn machine_deadline_uses_its_configured_time_on_weekends() {
+    fn daily_deadline_applies_on_weekends() {
         let now = bn_core::track::parse_at("2026-08-29", "12:00")
             .expect("Saturday noon exists in local time");
-        let deadline = |hour: u32| bn_core::queue::window::PriorityWindow {
-            name: bn_core::queue::window::POOL_WARM_AFTER_WORK.to_string(),
-            at: format!("*-*-* {hour:02}:00:00"),
-            secs: 3600,
-            boost: 100,
-            matches: vec!["source:cron:pool-warm".to_string()],
-            mode: bn_core::queue::window::WindowMode::Deadline,
-        };
+        let deadline = |hour: u32| format!("*-*-* {hour:02}:00:00");
 
-        let eleven = latest_pool_warm_deadline(&[deadline(11)], now).unwrap();
-        let ten = latest_pool_warm_deadline(&[deadline(10)], now).unwrap();
+        let eleven = latest_pool_warm_deadline(&deadline(11), now).unwrap();
+        let ten = latest_pool_warm_deadline(&deadline(10), now).unwrap();
         assert_eq!(eleven - ten, 3600);
         assert_eq!(now - eleven, 3600);
+        assert!(latest_pool_warm_deadline(POOL_WARM_DAILY_DEADLINE, now).is_some());
     }
 
     #[test]

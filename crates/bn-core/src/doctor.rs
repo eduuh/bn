@@ -137,16 +137,6 @@ pub struct NotesLeakFinding {
     pub foreign_machines: Vec<String>,
 }
 
-/// Live orchestrate backlog entries that name no task (#1001) — work that predates the invariant
-/// and would therefore execute with no durable record behind it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BacklogFinding {
-    /// How many live entries carry no `task:`.
-    pub untasked: usize,
-    /// A sample of their subjects, for the one-line render.
-    pub sample: Vec<String>,
-}
-
 /// The `claude`/`copilot` shell wrappers from `bn shell-init` are not driving launches here, so a
 /// harness typed in this shell starts outside bn: unleased, unrecorded, and steerable only by
 /// whatever the window join can infer. Nothing installs the wrappers automatically (the rc file is
@@ -216,7 +206,6 @@ pub enum Finding {
     Inbox(InboxFinding),
     Mcp(McpFinding),
     NotesLeak(NotesLeakFinding),
-    Backlog(BacklogFinding),
     ShellInit(ShellInitFinding),
 }
 
@@ -245,8 +234,6 @@ impl Finding {
             // A cross-machine notes leak means another box's data is physically present and being
             // read here — an operational misconfig, on a par with the other WARN-band signals.
             Finding::NotesLeak(_) => action_rank::WARN,
-            // Passive: the work still runs, it just has no record. Worth clearing, not urgent.
-            Finding::Backlog(_) => action_rank::WARN,
             // Inactive wrappers mean every agent you start by hand lands outside bn's control
             // plane — a setup misconfig in the same band as an unusable MCP server.
             Finding::ShellInit(_) => action_rank::WARN,
@@ -269,7 +256,6 @@ impl Finding {
             Finding::Mcp(_) => 0,
             // The more foreign machines are leaking in, the higher within its band.
             Finding::NotesLeak(l) => l.foreign_machines.len() as i64,
-            Finding::Backlog(b) => b.untasked as i64,
             // A configuration state, not a duration — nothing to age within its band.
             Finding::ShellInit(_) => 0,
         }
@@ -292,33 +278,9 @@ impl Finding {
                 l.foreign_machines.len(),
                 l.personal_root
             ),
-            Finding::Backlog(b) => format!(
-                "{} queued item(s) with no task — work with no durable record",
-                b.untasked
-            ),
             Finding::ShellInit(s) => format!("{}: {}", s.shell, s.problem),
         }
     }
-}
-
-/// Live backlog entries that name no task (#1001) — work that predates the invariant.
-///
-/// Reported rather than deleted: an entry may be mid-flight, and an upgrade must never orphan
-/// running work. Goes quiet on its own as those entries reach a terminal state.
-fn backlog_findings() -> Vec<Finding> {
-    let backlog = crate::backlog::load(&crate::backlog::backlog_path());
-    let untasked = backlog.untasked();
-    if untasked.is_empty() {
-        return Vec::new();
-    }
-    Vec::from([Finding::Backlog(BacklogFinding {
-        untasked: untasked.len(),
-        sample: untasked
-            .iter()
-            .take(5)
-            .map(|e| format!("{}/{}", e.repo, e.item))
-            .collect(),
-    })])
 }
 
 /// The aggregated attention list, most-pressing first. Folds three sources: local notes with
@@ -337,7 +299,6 @@ pub fn doctor(
     out.extend(attn_findings(today));
     out.extend(inbox_findings(cfg, today));
     out.extend(notes_leak_findings(cfg));
-    out.extend(backlog_findings());
     if let Some((root, name)) = repo {
         out.extend(todo_findings(cfg, name, today));
         out.extend(mcp_findings(

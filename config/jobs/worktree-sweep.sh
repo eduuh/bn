@@ -2,8 +2,8 @@
 # worktree-sweep — the every-other-day reclamation pass. Rescues first, reclaims second.
 #
 # The per-lane settings live HERE rather than on the agent manifest's `run:` line, and that is the
-# whole point of this file: `bn run <job>` is captured by the queue and re-dispatched later in a
-# fresh process, which inherits none of the environment the original command line set.
+# whole point of this file: the lane is fired by a timer through the scheduler, never from a shell,
+# so the script is the one place its settings are always set and reviewable in git.
 #
 # Blast radius: this lane deletes no branch, removes no dirty worktree and kills no tmux session.
 # It reclaims only through `bn wt reap` and `bn wt pool prune`, both of which refuse a dirty tree on

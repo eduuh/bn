@@ -152,4 +152,4 @@ Record in the branch note, then close out:
 - `bn learned "…"` for anything non-obvious about booting or driving this app.
 - Close with `bn reflect "skill:explore — …"` so `evolve-skills` learns from the pass.
 
-Then stop. You do not dispatch the fixers — the queue does that. You do not open a PR.
+Then stop. You do not dispatch the fixers; the fix arm does that. You do not open a PR.

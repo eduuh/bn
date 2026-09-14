@@ -1430,8 +1430,7 @@ pub(crate) fn job_attention_auto_trigger(cfg: &Config, _ctx: Option<&Resolved>) 
     if !bn_core::idle::is_idle(cfg, now, idle_mins) {
         return 0; // active — don't interrupt
     }
-    // Fill every free slot in one idle sweep, highest-priority first. When captured, the queue's
-    // per-kind cap bounds this instead of BN_ATTN_AUTO_MAX.
+    // Fill every free slot in one idle sweep, highest-priority first.
     let batch = bn_core::attention::next_auto_batch(cfg, &today(), attn_auto_max());
     if batch.is_empty() {
         return 0; // at the concurrency cap, or nothing eligible
@@ -1439,10 +1438,6 @@ pub(crate) fn job_attention_auto_trigger(cfg: &Config, _ctx: Option<&Resolved>) 
     let mut rc = 0;
     for item in &batch {
         println!("attention-auto-trigger: {} — {}", item.id, item.title);
-        if crate::cmd::queue_producers::active(cfg, crate::cmd::queue_producers::ATTN) {
-            rc |= i32::from(!crate::cmd::queue_producers::capture_attn(cfg, item));
-            continue;
-        }
         match crate::cmd::attn::run_attn_start_attributed(
             cfg,
             item,

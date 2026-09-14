@@ -34,8 +34,6 @@ const EXACT: Record<string, PageWidth> = {
   "/inbox": "full",
   "/insights": "full",
   "/notes": "standard",
-  "/queue": "standard",
-  "/queue/events": "standard",
 
   // Forms and prose: a wide measure would make these worse, not better.
   "/settings": "document",

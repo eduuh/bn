@@ -67,8 +67,8 @@ export function AgentDetail() {
   return (
     <div className="space-y-5 pb-8">
       <Button asChild variant="ghost" size="sm" className="-ml-2 text-muted-foreground">
-        <Link to="/queue">
-          <ArrowLeft className="h-4 w-4" /> Queue
+        <Link to="/console">
+          <ArrowLeft className="h-4 w-4" /> Console
         </Link>
       </Button>
 
@@ -79,10 +79,10 @@ export function AgentDetail() {
           <AlertTriangle className="h-8 w-8 text-muted-foreground" />
           <h2 className="text-lg font-semibold">Agent not live</h2>
           <p className="max-w-sm text-sm text-muted-foreground">
-            No live agent with session <code className="font-mono">{id}</code>. It may have finished
-            — see the{" "}
-            <Link to="/queue" className="text-primary">
-              queue
+            No live agent with session <code className="font-mono">{id}</code>. It may have
+            finished. See the{" "}
+            <Link to="/console" className="text-primary">
+              console
             </Link>
             .
           </p>

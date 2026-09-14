@@ -2,7 +2,7 @@
 name: setup-bn
 description: Set up bn in a new repository with branch notes, agent integration, and build/verification commands; narrow what a machine runs only with approval
 when: Set up or onboard a new repo to bn, wire Copilot or Claude to its branch notes, configure its build/test/lint gate, or explicitly narrow what bn runs on one computer.
-keywords: [setup bn, setup-bn, configure bn, new repo, new repository, repo setup, onboard repository, initialize bn, branch notes, mcp init, copilot, claude, build scripts, verification, machine config, narrow machine, disable queue, disable cron, disable web]
+keywords: [setup bn, setup-bn, configure bn, new repo, new repository, repo setup, onboard repository, initialize bn, branch notes, mcp init, copilot, claude, build scripts, verification, machine config, narrow machine, disable cron, disable web]
 ---
 
 You are the **bn repository setup** workflow. Make the target repository usable with bn: resolve
@@ -22,8 +22,8 @@ Rerunning this skill must not duplicate entries, reset goals, or replace working
 Do not commit, push, launch an agent, warm a pool, or install persistent services just to prove
 setup works.
 
-**Before running bn commands:** loading configuration can reconcile managed queue and web
-services, even on a status command. Warn before the first such command. Use `tmux-run` for
+**Before running bn commands:** loading configuration can reconcile the managed web service,
+even on a status command. Warn before the first such command. Use `tmux-run` for
 mutations and long-running commands when tmux is available.
 
 ## Repository setup
@@ -170,7 +170,7 @@ Stop here unless machine configuration was requested or approved above.
 
 ## Machine configuration
 
-A machine works on every repository it has cloned and runs the queue, cron and bn-web by default.
+A machine works on every repository it has cloned and runs cron and bn-web by default.
 There is nothing to register. Change a machine only when the user asks it to do less, and change
 only that machine's own file. When reached from repository setup, return to the next repository
 step afterwards.
@@ -198,7 +198,7 @@ Read both files. Report the effective `[machine]` values, where a key in the mac
 the shared file:
 
 - `repos` (default `["*"]`, every cloned repository)
-- `queue`, `cron`, `web` (each default `true`)
+- `cron`, `web` (each default `true`)
 
 Do not confuse these settings with:
 
@@ -212,9 +212,8 @@ Use `ask_user` to collect all choices in one focused form:
 
 1. The repositories this machine may work on, as GitHub `owner/repo` slugs where the repository has
    a remote. Show the current list as the default.
-2. Whether the queue dispatcher should be switched off here.
-3. Whether cron jobs should be switched off here.
-4. Whether bn-web should be switched off here.
+2. Whether cron jobs should be switched off here.
+3. Whether bn-web should be switched off here.
 
 Explain that switching a runtime off stops or prunes its bn-managed service, and switching it back
 on starts it again. If the user declines the form, make no changes.
@@ -239,19 +238,15 @@ what background work can execute, so wait for explicit approval.
 
 ### 5. Validate and reconcile
 
-Every bn command loads the configuration and reconciles the managed queue and web services, so the
-change takes effect on the next command. Cron changes are applied by `bn cron register`.
+Every bn command loads the configuration and reconciles the managed web service, so the change
+takes effect on the next command. Cron changes are applied by `bn cron register`.
 
-1. Run `bn queue status --json` and confirm there is no config parsing error and the queue state
-   matches the chosen setting.
-2. If the queue is on and `repos` was narrowed, prove the boundary with a harmless probe:
-   `bn queue cancel __setup_probe_missing__ --repo owner/repo --json` should return a success
-   envelope with `"cancelled": false`, and the same probe against a locally cloned repository
-   outside the list should return `repo_not_enabled`. Do not use `bn dispatch` as a probe.
-3. Run `bn cron register --dry-run` and show the plan. If it removes any timer, require explicit
-   confirmation, then run `bn cron register`.
-4. If web is off, run `bn serve stop`. If web is on and not running, run `bn serve --daemon`.
-5. Read `bn queue status`, `bn cron`, and `bn serve status`.
+1. Run `bn status` and confirm there is no config parsing error.
+2. Run `bn cron register --dry-run` and show the plan. If `repos` was narrowed, confirm that crons
+   declaring a repository outside the list are not in it. Do not use `bn dispatch` as a probe. If
+   the plan removes any timer, require explicit confirmation, then run `bn cron register`.
+3. If web is off, run `bn serve stop`. If web is on and not running, run `bn serve --daemon`.
+4. Read `bn cron` and `bn serve status`.
 
 If anything is wrong, restore the previous table and run `bn status` again. Never remove unrelated
 systemd, launchd, or Windows services; use only bn's own lifecycle commands.
@@ -260,8 +255,8 @@ systemd, launchd, or Windows services; use only bn's own lifecycle commands.
 
 Report one compact table:
 
-| Machine | Repositories | Queue | Cron | Web |
-|---------|--------------|-------|------|-----|
+| Machine | Repositories | Cron | Web |
+|---------|--------------|------|-----|
 
 Then state the file changed and whether reconciliation succeeded. If anything failed, name the
 exact command and leave the file in the last configuration that parsed successfully.

@@ -33,10 +33,10 @@ You may inspect a linked issue for context.
 ## Your job: ground the task in bn
 
 "Grounded" means the task is connected to the things bn already knows, so every later stage — the
-gate, the queue, the fleet board, the quarter review — can find it and place it. Answer these, in
+gate, dispatch, the fleet board, the quarter review — can find it and place it. Answer these, in
 order, and stop at the first one you genuinely cannot:
 
-1. **Where does this happen?** `repo:` — nothing downstream can be placed without it. The queue cuts
+1. **Where does this happen?** `repo:` — nothing downstream can be placed without it. Dispatch cuts
    a worktree from `repo:`, and the tmux window the work runs in follows from that repo and its
    branch. If the packet's Placement section says `UNRESOLVED`, set `repo:` to one of the names it
    lists — **only those exist**, and a name outside the list fails the gate as `unknown_repo` and

@@ -378,7 +378,7 @@ pub(crate) fn compose_seed(body: &str, entry: &Launchable, instruction: &str) ->
 /// A warning, never a refusal: the agent's body is still worth running, and the person launching
 /// it is better served by knowing which skill is missing than by being stopped. Reuses the labels
 /// [`bn_core::worker::advertise`] already publishes, so "installed" means the same thing here as
-/// it does to queue placement.
+/// it does to a node's advertisement.
 fn warn_missing_skills(cfg: &Config, entry: &Launchable) {
     if entry.skills.is_empty() {
         return;

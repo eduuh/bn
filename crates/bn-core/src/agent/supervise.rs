@@ -328,7 +328,7 @@ pub fn supervise(cfg: &Config, idle_mins: i64, stuck_mins: i64) -> Fleet {
 /// prompt keeps a live process, a live window and a readable transcript, so by idle time alone it
 /// ages into `Stuck` and stays there until someone closes the window — and `Stuck` is running, so
 /// it holds a coding lane. Five of those on one box read as "coding 5/6 in flight" with one agent
-/// actually working, and the queue admitted nothing behind them. The window's own mark is the
+/// actually working, and nothing else could start behind them. The window's own mark is the
 /// agent's word that it finished, and it outranks the transcript's silence.
 fn mark_done(agents: &mut [LiveAgent], windows: &[crate::agent::TmuxWindowRow]) {
     for a in agents.iter_mut() {
@@ -834,8 +834,8 @@ mod tests {
             session_id: "s1".to_string(),
             harness: "copilot".to_string(),
             repo: "bn".to_string(),
-            branch: "queue-duplicates".to_string(),
-            target: "bn:queue-duplicates".to_string(),
+            branch: "dedupe-rows".to_string(),
+            target: "bn:dedupe-rows".to_string(),
             tmux_target: tmux_target.map(str::to_string),
             worktree: None,
             last_activity_ts: 100,

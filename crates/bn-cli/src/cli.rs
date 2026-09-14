@@ -155,8 +155,8 @@ pub(crate) enum CmdIntake {
         /// The pipeline stage this dispatch runs as (pickup|investigate|plan|consensus|execute|
         /// validate|critique|ship|learn). Selects `[pipeline.stages.<stage>]` — its model, effort
         /// and harness. Omit and bn infers it from `--scout`/`--skill`, which can only ever mean
-        /// investigate, plan or execute; the pipeline sweep passes it explicitly so the six other
-        /// stages run under their own profile instead of borrowing execute's.
+        /// investigate, plan or execute; pass it explicitly so the six other stages run under their
+        /// own profile instead of borrowing execute's.
         #[arg(long)]
         stage: Option<bn_core::pipeline::stage::Stage>,
         /// Attach specific references (coding standards, see `bn ref`) to the agent's seed, so it
@@ -675,14 +675,12 @@ pub(crate) mod automation_cmd;
 pub(crate) mod cron_cmd;
 pub(crate) mod links_cmd;
 pub(crate) mod machine_cmd;
-pub(crate) mod queue_cmd;
 pub(crate) mod shell_ui_cmd;
 pub(crate) mod staff_group;
 pub(crate) use automation_cmd::CmdAutomation;
 pub(crate) use cron_cmd::CronCmd;
 pub(crate) use links_cmd::LinksCmd;
 pub(crate) use machine_cmd::MachineCmd;
-pub(crate) use queue_cmd::QueueCmd;
 pub(crate) use shell_ui_cmd::CmdShellUi;
 pub(crate) use staff_group::CmdStaff;
 
@@ -1765,14 +1763,12 @@ pub(crate) enum AttnCmd {
         #[arg(long, default_value = "todo")]
         section: String,
     },
-    /// Promote an item into the orchestrate backlog as a new task, then resolve it off the list
-    /// (#460): bn attn dispatch <id> [--repo R]. The pure policy picks the lane — start-new (a
-    /// fresh task), reprioritize (bump an already-queued twin, never duplicate), or interrupt (an
-    /// urgent item onto the #378 priority lane). Targets the item's own repo when it carries one,
-    /// else `--repo` or the current worktree's.
+    /// Start an agent on an item through `bn dispatch`, then resolve it off the list (#460):
+    /// bn attn dispatch <id> [--repo R]. Targets the item's own repo when it carries one, else
+    /// `--repo` or the current worktree's.
     Dispatch {
         id: String,
-        /// Target repo for the backlog task (defaults to the item's repo, else the current one).
+        /// Target repo for the agent (defaults to the item's repo, else the current one).
         #[arg(long)]
         repo: Option<String>,
     },
@@ -1891,9 +1887,9 @@ pub(crate) enum IssueCmd {
         allow_duplicate: bool,
     },
     /// Split one oversized GitHub issue into independently shippable, conflict-scoped child
-    /// issues, then enqueue only those children. An agent first triages the bundle into repeated
-    /// `--part "TITLE::GLOB[,GLOB]"` specifications; bn rejects overlapping touch scopes, links
-    /// every child to the parent, and carries each scope into the backlog scheduler.
+    /// issues, then start an agent on each child (never the parent). An agent first triages the
+    /// bundle into repeated `--part "TITLE::GLOB[,GLOB]"` specifications; bn rejects overlapping
+    /// touch scopes and links every child to the parent.
     Decompose {
         /// Parent issue number or URL to split.
         issue: String,
@@ -1903,10 +1899,7 @@ pub(crate) enum IssueCmd {
         /// Target repo (default: the current repo).
         #[arg(long)]
         repo: Option<String>,
-        /// Priority stamped on every generated child backlog entry.
-        #[arg(long, default_value_t = 0, allow_hyphen_values = true)]
-        priority: i64,
-        /// Validate and print the decomposition without creating or enqueueing issues.
+        /// Validate and print the decomposition without creating issues or starting agents.
         #[arg(long)]
         dry_run: bool,
     },

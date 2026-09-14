@@ -49,9 +49,8 @@ impl Report {
 }
 
 /// Sections that describe one machine rather than the person, so they go to the machine file:
-/// what it may run, its queue (lane caps, windows, job classes), its capture folders, and which
-/// harnesses it can use.
-const MACHINE_SECTIONS: &[&str] = &["machine", "queue", "capture", "harness"];
+/// what it may run, its capture folders, and which harnesses it can use.
+const MACHINE_SECTIONS: &[&str] = &["machine", "capture", "harness"];
 
 /// Every top-level section bn still reads. Anything else in an old file belonged to a feature that
 /// is gone, and is dropped with a note rather than carried forward to mislead the next reader.
@@ -75,7 +74,6 @@ pub const KNOWN_SECTIONS: &[&str] = &[
     "notify",
     "orchestrate",
     "pipeline",
-    "queue",
     "repo",
     "review",
     "scout",
@@ -180,7 +178,7 @@ pub fn migrate_text(text: &str, root: &Path, work_repos_file: &Path) -> Report {
     if !machine_layer.is_empty() {
         let header = format!(
             "# bn settings for {machine} only. A key here overrides the shared ../config.toml,\n\
-             # and bn records this machine's own choices here (queue windows, job classes).\n\n"
+             # and bn records this machine's own choices here.\n\n"
         );
         match write_layer(&machine_path, &header, &machine_layer) {
             Ok(()) => report.machine = Some(machine_path),
@@ -481,7 +479,7 @@ mod tests {
             migrate_text(
                 "worktree_dir = \"/w\"\n\
                  [review]\nharness = \"claude\"\n\
-                 [queue]\ncoding = 2\n\
+                 [capture]\nscreenshot_dir = \"/shots\"\n\
                  [machines.mac]\nrepos = [\"*\"]\ncron = true\n\
                  [machines.old-laptop]\nweb = false\n",
                 root.path(),
@@ -492,8 +490,11 @@ mod tests {
         let shared = read(&root.path().join("config.toml"));
         let machine = read(&root.path().join("mac").join("config.toml"));
         assert_eq!(shared["review"]["harness"].as_str(), Some("claude"));
-        assert!(shared.get("queue").is_none() && shared.get("machines").is_none());
-        assert_eq!(machine["queue"]["coding"].as_integer(), Some(2));
+        assert!(shared.get("capture").is_none() && shared.get("machines").is_none());
+        assert_eq!(
+            machine["capture"]["screenshot_dir"].as_str(),
+            Some("/shots")
+        );
         assert_eq!(machine["machine"]["cron"].as_bool(), Some(true));
         let notes = report.notes.join("\n");
         assert!(notes.contains("worktree_dir"), "{notes}");

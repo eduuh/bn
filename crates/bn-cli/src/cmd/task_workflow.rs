@@ -6,7 +6,7 @@
 //! store's CRUD; this owns the two places bn spends a model on a task.
 //!
 //! The load-bearing rule here is that **a verdict is recorded, never merely reported.** Every
-//! producer downstream — the queue's admission test, the Today board, the pipeline sweep — reads
+//! reader downstream — the Today board, the pipeline gate — reads
 //! `smart:`, not this module's stdout. An enhance run that finds a task already passing and only
 //! prints so leaves it unjudged, which means unstartable, which means the next run picks the same
 //! task again. See [`emit_task_enhance`].
@@ -176,8 +176,8 @@ pub(crate) fn emit_task_enhance(
     let verdict = bn_core::smart::check(&task, doc.as_ref(), &known, &today);
     if verdict.ok {
         // Record the pass rather than only reporting it. An unstamped task is indistinguishable
-        // from an unjudged one to every producer downstream — the queue, the Today board and the
-        // gate all read `smart:`, not this line of output — so leaving it unwritten is what kept
+        // from an unjudged one to every producer downstream — the Today board and the gate all
+        // read `smart:`, not this line of output — so leaving it unwritten is what kept
         // ready work sitting in the enhance queue.
         if !dry_run {
             bn_core::pipeline::gate::mark_passing(cfg, &task_id);

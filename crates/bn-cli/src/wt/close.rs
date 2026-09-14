@@ -7,8 +7,7 @@
 //!   a conventional one. That half is not keystroke-sized — a warm reset re-checks-out the tree,
 //!   and the cleanup gates make a `gh pr view` round-trip — so the tmux bind runs the whole command
 //!   with `run-shell -b`, and the reclaim happens in that background process by re-entering `bn wt
-//!   close --reclaim`. It used to be filed on the machine queue instead; see [`reclaim`] for why
-//!   that stopped.
+//!   close --reclaim`; see [`reclaim`] for why the keystroke does the work itself.
 //!
 //! Slot occupancy is derived from live tmux windows, so releasing a lease before the window is
 //! gone is refused as "slot in use". The reclaim therefore waits for the killed window to be reaped

@@ -80,9 +80,6 @@ pub(crate) enum CmdStaff {
         /// without double-running when its systemd timer already covered it.
         #[arg(long = "if-stale")]
         if_stale: bool,
-        /// Run it here and now instead of queueing it — for when you are waiting on the result.
-        #[arg(long)]
-        now: bool,
     },
     /// Hosts this notes tree holds state for, and repairing a split between two of them.
     Machine {

@@ -10,7 +10,6 @@ use crate::agent_control;
 use crate::api;
 use crate::assets;
 use crate::mcp;
-use crate::queue_api;
 use crate::state::AppState;
 use crate::task_writes;
 use axum::{
@@ -95,20 +94,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/events", get(api::events))
         .route("/api/findings", get(api::findings))
         // Live stream (design §2.2) — SSE fed by the shared watcher broadcast.
-        .route("/api/queue", get(queue_api::queue))
-        .route("/api/queue/entries", get(queue_api::queue_entries))
-        .route("/api/queue/events", get(queue_api::queue_events))
-        .route("/api/queue/timeline", get(queue_api::queue_timeline))
         .route("/api/stream", get(api::stream))
         // Writes (design §2.3) — audited per handler. The server no longer gates on a web token
         // (#523); a loopback bind and a trusted LAN are the trust boundary.
         // Native state writes (in-process `orchestrate::mutate`):
-        .route("/api/queue/add", post(queue_api::queue_add))
-        .route("/api/queue/cancel", post(queue_api::queue_cancel))
-        .route("/api/queue/priority", post(queue_api::queue_priority))
-        .route("/api/queue/snooze", post(queue_api::queue_snooze))
-        .route("/api/queue/class", post(queue_api::queue_class))
-        .route("/api/orchestrate/queue", post(actions::queue_add))
         .route(
             "/api/orchestrate/queue/reorder",
             post(actions::queue_reorder),
@@ -125,8 +114,6 @@ pub fn router(state: AppState) -> Router {
             "/api/repos/{repo}/setup-agent",
             post(actions::repo_setup_agent_start),
         )
-        // Drain a repo: hold new work, let in-flight agents finish. Nothing is killed.
-        .route("/api/repos/{repo}/drain", post(actions::repo_drain))
         // Restart every agent in a repo in place — the repair a wedged session usually wants.
         .route(
             "/api/repos/{repo}/relaunch-session",
@@ -160,13 +147,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/cron/run", post(actions::cron_run))
         // Today's agent (#577) — offline re-synthesis + suggestion review (native in-process
         // store writes), then the hosted agent's lifecycle (shelled, like every other launch).
-        // Warm-worktree pool (#497) — schedule the heavy `pool-warm` job for a pooled repo.
-        // Long-running, so it goes through the machine-wide queue instead of an uncapped spawn.
+        // Warm-worktree pool (#497) — start the heavy `pool-warm` job for a pooled repo, detached.
         .route("/api/repos/{repo}/pool/warm", post(actions::repo_pool_warm))
-        .route(
-            "/api/repos/{repo}/pool/schedule",
-            post(actions::repo_pool_schedule_set),
-        )
         // Goal-note connect/disconnect (#564) — native in-process daily-goal writes:
         .route("/api/goals/{id}/notes", post(actions::goal_note_connect))
         .route(

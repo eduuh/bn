@@ -18,8 +18,6 @@ import {
   GraduationCap,
   HardDrive,
   LineChart,
-  ListOrdered,
-  ScrollText,
   ListTodo,
   type LucideIcon,
   Microscope,
@@ -97,20 +95,6 @@ const DESTINATIONS: {
   exp?: string;
 }[] = [
   { to: "/", label: "Console", Icon: SquareTerminal, keywords: "home queue index start work" },
-  {
-    to: "/queue",
-    label: "Queue",
-    Icon: ListOrdered,
-    keywords: "work backlog pending pause dispatch tick capacity skills",
-    exp: "queue",
-  },
-  {
-    to: "/queue/events",
-    label: "Queue events",
-    Icon: ScrollText,
-    keywords: "queue log history dispatch failed reclaimed expired audit",
-    exp: "queue",
-  },
   {
     to: "/nodes",
     label: "Nodes",
@@ -222,7 +206,7 @@ const DESTINATIONS: {
     to: "/start",
     label: "Start an agent",
     Icon: Rocket,
-    keywords: "dispatch new run queue daemon",
+    keywords: "dispatch new run",
     exp: "start",
   },
   // Ungated, like its rail row: the palette is the fastest way back to the screen that owns the

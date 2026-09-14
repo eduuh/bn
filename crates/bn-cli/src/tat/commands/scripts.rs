@@ -6,18 +6,18 @@
 //! [`bn_core::resolver::job_dirs`]. Until now the picker could not see them, so running BigMono's
 //! `start.sh` meant leaving the list and remembering the command.
 //!
-//! A script row queues like a roster row — the same `ExecSpec::Job`, the same entry id derivation,
-//! the same ctrl-o menu — with two things pinned that the roster gets from `job_registry.rs`:
+//! A script row runs like a roster row — `bn run <name>` in a window of its own
+//! ([`crate::cmd::wt_action_run`]) — with two things pinned that the roster gets from
+//! `job_registry.rs`:
 //!
-//! * **The branch is `main`.** The dispatcher runs `bn run <name> --repo R --branch B`, and
-//!   `--repo` without `--branch` is refused outright; a branch is also what lets `job_dirs` reach
-//!   the Repo and Project tiers at all. A native verb never noticed because it ignores its ctx.
-//! * **It runs in a tmux window at the repo's main checkout.** That is the heavy path, which
-//!   `enqueue_action` now takes for every picker verb; a script is the case that made it
-//!   mandatory, because it inherits the window's cwd and most of them `git rev-parse` from there.
+//! * **The branch is `main`.** The window runs `bn run <name> --repo R --branch B`, and `--repo`
+//!   without `--branch` is refused outright; a branch is also what lets `job_dirs` reach the Repo
+//!   and Project tiers at all. A native verb never noticed because it ignores its ctx.
+//! * **It runs in a tmux window at the repo's main checkout.** A script inherits the window's cwd,
+//!   and most of them `git rev-parse` from there.
 //!
 //! The verb itself is a [`WtAction`] built at runtime and leaked. Every picker callback — the side
-//! pane, Enter, `ctrl-o`, `ctrl-s` — is its own short-lived `bn` process, so the leak is one
+//! pane, Enter, `ctrl-o` — is its own short-lived `bn` process, so the leak is one
 //! struct and two strings freed at exit, and in exchange nothing that takes `&WtAction` changes and
 //! the roster in bn-core stays the pure static table its doc promises.
 use bn_core::resolver::{Config, JobScope};
@@ -49,7 +49,7 @@ pub(in crate::tat) fn name_of(id: &str) -> Option<&str> {
 }
 
 /// A name a row can carry. It rides fzf's `|`-delimited row and the `~`-joined `--pick-arg`, and
-/// becomes a tmux window name and half of a queue subject, so anything that could split a field or
+/// becomes a tmux window name, so anything that could split a field or
 /// escape a directory is refused here rather than discovered later.
 fn is_valid_name(name: &str) -> bool {
     !name.is_empty()
@@ -63,7 +63,7 @@ fn is_valid_name(name: &str) -> bool {
 ///
 /// Not offered: `build`, which "Build latest main" already runs (with a sync first) and which the
 /// pool warms with; any name a roster verb already answers to; and any name the native job
-/// registry claims — `run_job_inner` runs the builtin *before* looking for a script, so a
+/// registry claims — `run_job` runs the builtin *before* looking for a script, so a
 /// `verify.sh` would render as a script and run the native verify.
 fn offerable(name: &str) -> bool {
     is_valid_name(name)
@@ -78,7 +78,7 @@ fn offerable(name: &str) -> bool {
 ///
 /// The context is resolved the way `bn run --repo R --branch main` will resolve it at execution
 /// (`resolve_target` lowercases the repo), so the directories searched here are the directories
-/// the dispatcher will search then. Only the Repo and Project tiers are read: the three global
+/// the run will search then. Only the Repo and Project tiers are read: the three global
 /// tiers hold machine jobs, not this repo's verbs, and this runs on every 700ms repaint.
 pub(in crate::tat) fn repo_scripts(cfg: &Config, repo: &str) -> Vec<RepoScript> {
     let Some(ctx) = main_ctx(cfg, repo) else {
@@ -87,8 +87,8 @@ pub(in crate::tat) fn repo_scripts(cfg: &Config, repo: &str) -> Vec<RepoScript> 
     scripts_in(&bn_core::resolver::job_dirs(cfg, Some(&ctx)))
 }
 
-/// The `(repo, main)` context a script is queued against — one function so the preview, the
-/// existence check and the enqueue all resolve the same way.
+/// The `(repo, main)` context a script runs against — one function so the preview, the existence
+/// check and the run all resolve the same way.
 fn main_ctx(cfg: &Config, repo: &str) -> Option<bn_core::resolver::Resolved> {
     let cwd = std::env::current_dir().unwrap_or_default();
     bn_core::resolver::resolve_target(cfg, &cwd, Some(repo.to_string()), Some("main".to_string()))
@@ -133,10 +133,8 @@ fn scripts_in(dirs: &[(JobScope, PathBuf)]) -> Vec<RepoScript> {
 
 /// The verb for a script name, with the roster's shape and a `'static` lifetime.
 ///
-/// `needs_branch` is true so `enqueue_action` stamps `branch: main` — see the module doc for why
-/// that is mandatory rather than a convenience. The label is the bare name: it carries no
-/// whitespace, and every roster label does, so `action_subject` (and the entry id derived from it)
-/// cannot collide with a roster verb's.
+/// `needs_branch` is true so `start_action` passes `--branch main` — see the module doc for why
+/// that is mandatory rather than a convenience. The label is the bare name.
 pub(in crate::tat) fn verb(name: &str) -> &'static WtAction {
     let name: &'static str = Box::leak(name.to_string().into_boxed_str());
     let id: &'static str = Box::leak(id(name).into_boxed_str());
@@ -184,11 +182,11 @@ pub(in crate::tat) fn preview(cfg: &Config, repo: &str, name: &str) {
     if header.latest_main {
         println!("        after fetching and fast-forwarding main (# bn: latest-main)");
     }
-    println!("        heavy — holds a heavy slot while it runs; the window closes when it exits 0");
-    super::queue_state_lines(cfg, repo, verb(name));
+    println!("        the window closes when it exits 0");
+    super::run_state_lines(repo, verb(name));
 }
 
-/// The directory the heavy window opens in — the same answer the dispatcher gives itself.
+/// The directory the run's window opens in when the repo's session does not exist yet.
 fn run_dir(cfg: &Config, repo: &str) -> PathBuf {
     let (_, worktree_dir) = crate::wt::layout(cfg);
     crate::wt::respawn_fallback(&worktree_dir, repo)
@@ -274,7 +272,7 @@ mod tests {
         assert!(scripts_in(&dirs).is_empty());
     }
 
-    /// A name rides fzf's row and `--pick-arg`, names a tmux window, and is half a queue subject.
+    /// A name rides fzf's row and `--pick-arg` and names a tmux window.
     #[test]
     fn names_that_could_split_a_field_or_escape_a_dir_are_refused() {
         for bad in ["", "a|b", "a~b", "a/b", "a b", ".hidden", "a:b", "a\\b"] {

@@ -56,23 +56,6 @@ export function moveId(ids: string[], from: number, to: number): string[] {
   return next;
 }
 
-/** A synthetic queued item for an optimistic append — replaced by the real (id-derived) item on
- * the next SSE frame. The `tmp:` id prefix keeps it from colliding with a server id. */
-export function optimisticItem(item: string, seq: number, now: number): QueueItem {
-  return {
-    id: `tmp:${seq}:${item}`,
-    item,
-    status: "queued",
-    branch: null,
-    pr: null,
-    attempts: 0,
-    dispatched_at: 0,
-    last_relaunch_at: 0,
-    updated_at: now,
-    last_state: null,
-  };
-}
-
 /** Replace the run matching `repo` with `fn(run)`, returning a new view (unmatched runs untouched).
  * The single choke point every optimistic queue/lane patch flows through. */
 export function patchRun(

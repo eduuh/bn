@@ -133,7 +133,6 @@ pub(crate) fn emit_agents(cfg: &Config, base: &std::path::Path, json: bool) {
                     "schedule": a.on_calendar,
                     "retry_after_secs": a.retry_after_secs,
                     "startup": a.is_startup(),
-                    "queue": a.queue,
                     "network": a.network,
                     "repo": a.repo,
                     "description": a.description,

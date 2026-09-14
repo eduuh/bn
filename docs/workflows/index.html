@@ -25,8 +25,8 @@
 <h1>bn's workflow, as built rather than as designed</h1>
 
 <p class="standfirst">
-bn describes a nine-stage pipeline that carries a task from pickup to learn. Three of
-those stages are driven by code. The gap between the two is not decay — it is the most
+bn describes a nine-stage pipeline that carries a task from pickup to learn. One of
+those stages is driven by code. The gap between the two is not decay — it is the most
 useful thing to understand about the system, and this set of notes is organised around
 it.
 </p>
@@ -42,19 +42,15 @@ It reads like a workflow engine.
 
 <p>
 It is not one. The enum encodes no exit predicate for any stage. A stage changes when
-something calls <code>stage::transition</code>, and only three stages have machinery that
-decides when they are finished — the <code>SWEPT</code> set, whose completion is their
-backlog entry reaching <code>Done</code>.
-<span class="src">crates/bn-core/src/pipeline/sweep.rs:40</span>
+something calls <code>stage::transition</code>, and only critique has machinery that decides
+when it is finished: the critic's verdict. Every other stage moves when you or the stage agent
+move it.
+<span class="src">crates/bn-core/src/pipeline/critic.rs:42</span>
 </p>
 
 <figure>
 <svg viewBox="0 0 920 250" role="img" aria-labelledby="stagestrip-title">
-  <title id="stagestrip-title">The nine pipeline stages, with the three driven by the sweep highlighted</title>
-
-  <!-- driven bracket -->
-  <rect x="96" y="46" width="272" height="76" rx="8"
-        fill="var(--accent-soft)" stroke="var(--accent-line)" stroke-width="1.5"/>
+  <title id="stagestrip-title">The nine pipeline stages, with critique, the one driven stage, highlighted</title>
 
   <!-- boxes -->
   <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" text-anchor="middle">
@@ -65,14 +61,14 @@ backlog entry reaching <code>Done</code>.
     <text x="48" y="97" fill="var(--ink-faint)" font-size="9">1</text>
 
     <!-- investigate -->
-    <rect x="104" y="58" width="80" height="52" rx="5" fill="var(--card)" stroke="var(--accent)" stroke-width="1.5"/>
+    <rect x="104" y="58" width="80" height="52" rx="5" fill="var(--card)" stroke="var(--rule)" stroke-width="1.5"/>
     <text x="144" y="82" fill="var(--ink)">investig.</text>
-    <text x="144" y="97" fill="var(--accent)" font-size="9">2</text>
+    <text x="144" y="97" fill="var(--ink-muted)" font-size="9">2</text>
 
     <!-- plan -->
-    <rect x="192" y="58" width="80" height="52" rx="5" fill="var(--card)" stroke="var(--accent)" stroke-width="1.5"/>
+    <rect x="192" y="58" width="80" height="52" rx="5" fill="var(--card)" stroke="var(--rule)" stroke-width="1.5"/>
     <text x="232" y="82" fill="var(--ink)">plan</text>
-    <text x="232" y="97" fill="var(--accent)" font-size="9">3</text>
+    <text x="232" y="97" fill="var(--ink-muted)" font-size="9">3</text>
 
     <!-- consensus (inert) -->
     <rect x="280" y="58" width="80" height="52" rx="5" fill="var(--card)" stroke="var(--rule)" stroke-dasharray="3 3"/>
@@ -80,9 +76,9 @@ backlog entry reaching <code>Done</code>.
     <text x="320" y="97" fill="var(--ink-faint)" font-size="9">4</text>
 
     <!-- execute -->
-    <rect x="368" y="58" width="80" height="52" rx="5" fill="var(--card)" stroke="var(--accent)" stroke-width="1.5"/>
+    <rect x="368" y="58" width="80" height="52" rx="5" fill="var(--card)" stroke="var(--rule)" stroke-width="1.5"/>
     <text x="408" y="82" fill="var(--ink)">execute</text>
-    <text x="408" y="97" fill="var(--accent)" font-size="9">5</text>
+    <text x="408" y="97" fill="var(--ink-muted)" font-size="9">5</text>
 
     <!-- validate (inert) -->
     <rect x="456" y="58" width="80" height="52" rx="5" fill="var(--card)" stroke="var(--rule)" stroke-dasharray="3 3"/>
@@ -125,17 +121,14 @@ backlog entry reaching <code>Done</code>.
         font-size="10" fill="var(--teal)">FAIL @ 1,2 → re-execute (max 3)</text>
 
   <!-- labels -->
-  <text x="232" y="36" text-anchor="middle" font-family="ui-monospace, monospace"
-        font-size="10.5" fill="var(--accent)">SWEPT — driven by sweep::decide</text>
-
   <text x="8" y="196" font-family="ui-monospace, monospace" font-size="10" fill="var(--ink-muted)">
     ── dashed: named in the enum, entered by no Rust code path
   </text>
   <text x="8" y="214" font-family="ui-monospace, monospace" font-size="10" fill="var(--ink-muted)">
-    ── solid teal: driven, but by the critic loop rather than the sweep
+    ── solid teal: driven, by the critic loop
   </text>
   <text x="8" y="232" font-family="ui-monospace, monospace" font-size="10" fill="var(--ink-muted)">
-    ── the queue is the state machine; pipeline_stage events are a parallel ledger
+    ── solid grey: entered by the stage agent or by hand; nothing advances it for you
   </text>
 </svg>
 <figcaption>
@@ -147,10 +140,10 @@ mapping. They are reachable only by a hand-typed <code>bn pipeline set</code>.
 <div class="note">
 <span class="note__label">The load-bearing fact</span>
 <p>
-This is deliberate, not unfinished. Dropping the sweep at execute is a written decision:
-after execute, validate / critique / ship each have their own machinery, and driving them
-from the sweep too would give one step two owners.
-<span class="src">crates/bn-core/src/pipeline/sweep.rs:36-40</span>
+This is deliberate, not unfinished. Validate, critique and ship each have their own
+machinery, and a second driver would give one step two owners. The sweep that once walked
+investigate, plan and execute was removed, so those stages advance only by hand or by the
+stage agent.
 </p>
 </div>
 
@@ -178,7 +171,7 @@ answer different questions, and "both are right; they are not the same question.
     <a href="01-pipeline.html">
       <p class="eyebrow">02</p>
       <h3>The pipeline &amp; its gates</h3>
-      <p>Nine stages, three drivers. Two unrelated things called "gate", at their real
+      <p>Nine stages, one driver. Two unrelated things called "gate", at their real
       positions. Routing, profiles, and the ratchet that stops an agent releasing itself.</p>
     </a>
   </li>

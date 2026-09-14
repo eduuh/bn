@@ -85,7 +85,7 @@ impl Trigger {
 /// Whether a trigger should badge the window at all.
 ///
 /// `pane-died` only happens where `remain-on-exit` kept the pane, which bn sets on the windows it
-/// runs work in (agent windows, failed queue jobs), so a window that is still there always gets
+/// runs work in (agent windows, failed picker jobs), so a window that is still there always gets
 /// its outcome. `pane-exited` fires for every pane that closes, including a shell someone typed
 /// `exit` into, so it badges only a window that is still there and is being watched. The silence
 /// watch badges as it always has.

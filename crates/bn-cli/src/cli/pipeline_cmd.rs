@@ -1,18 +1,11 @@
 //! `bn pipeline` — the per-worktree stage machine's clap surface.
 //!
-//! Its own file rather than another block in `cli.rs`: the sweep verb needs a paragraph to explain
-//! that it enqueues one entry per stage and honours the review gate, and `cli.rs` is over the size
-//! ratchet and may not grow.
+//! Its own file rather than another block in `cli.rs`, which is over the size ratchet and may not
+//! grow.
 use clap::Subcommand;
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum PipelineCmd {
-    /// Advance every task in the pipeline by one stage: enqueue the next stage's work for each task
-    /// whose current stage has finished. One queue entry per stage, each running under that stage's
-    /// own model, effort and harness, and all of them pinned to the task's single worktree. A stage
-    /// configured `gate = "hold"` is not queued until its plan review is approved. Idempotent — the
-    /// backlog is the state, so re-running enqueues only what is actually missing.
-    Sweep,
     /// Show the target worktree's current stage + full transition history. Default subcommand.
     Status {
         /// Target repo (default: the current worktree's repo).

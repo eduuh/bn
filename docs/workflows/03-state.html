@@ -116,7 +116,7 @@ decisions:
   created: 2026-08-08
 research:
 - id: r4
-  text: 'Scheduled-agent UX smoke: /api/today/agents returned 7 queued agents.'
+  text: 'Scheduled-agent UX smoke: /api/today/agents returned 7 scheduled agents.'
   created: 2026-08-08
 collab:
 - id: c1
@@ -131,7 +131,7 @@ directives: []
 
 ## Goal
 
-Ensure scheduled Markdown agents work correctly through the queue system.
+Ensure scheduled Markdown agents work correctly through the agent scheduler.
 
 ## Progress</code></pre>
 
@@ -211,7 +211,7 @@ Same primitive, different meanings, different trees. Conflating them is the easy
 <table>
 <thead><tr><th>Log</th><th>Path</th><th>Kinds</th></tr></thead>
 <tbody>
-<tr><td>Machine-local runtime</td><td><code>&lt;personal_root&gt;/&lt;machine&gt;/state/events.jsonl</code></td><td><code>cron_run</code>, <code>queue_*</code>, <code>orchestrate_*</code>, <code>agent_session</code></td></tr>
+<tr><td>Machine-local runtime</td><td><code>&lt;personal_root&gt;/&lt;machine&gt;/state/events.jsonl</code></td><td><code>cron_run</code>, <code>orchestrate_*</code>, <code>agent_session</code></td></tr>
 <tr><td>Synced productivity metrics</td><td><code>&lt;personal_root&gt;/&lt;machine&gt;/metrics/events.jsonl</code></td><td><code>activity</code> (add / done / progress / goal), <code>pr_opened|merged|closed|review</code>, <code>note_closed</code></td></tr>
 </tbody>
 </table>

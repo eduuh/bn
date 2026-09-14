@@ -1,7 +1,7 @@
 //! Advisory locks for the git mutations bn performs in a pool checkout: one per slot, one per
 //! pool for `warm`.
 //!
-//! The incident. Two `pool warm` runs — the cron timer and the queue's dispatch of the same job —
+//! The incident. Two `pool warm` runs of the same job, started from two places at once,
 //! walked the BigMono pool at once. On each slot the first one's `git switch` was still writing the
 //! tracked files the new base had added when the second one's `git status` (its own `switch` had
 //! already died on the first one's `index.lock`) read the *old* index, saw those files on disk as
@@ -13,10 +13,10 @@
 //! [`lock_slot`] serialises the mutations per slot, so a second process waits for the first to
 //! finish the slot rather than interleaving git calls with it. [`try_lock_warm`] stops a whole
 //! second warm from starting while one runs: a warm is idempotent, so the running one already is
-//! the answer. Both are kernel `flock`s (see [`bn_core::queue::flock`]), released however the
+//! the answer. Both are kernel `flock`s (see [`bn_core::flock`]), released however the
 //! holder exits.
 
-use bn_core::queue::flock::{self, FlockOutcome};
+use bn_core::flock::{self, FlockOutcome};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 

@@ -266,10 +266,10 @@ export function TaskDetail() {
   return (
     <div className="space-y-4 pb-8">
       <Link
-        to="/queue"
+        to="/"
         className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
       >
-        <ArrowLeft className="h-4 w-4" /> Queue
+        <ArrowLeft className="h-4 w-4" /> Today
       </Link>
 
       {q.isLoading && (

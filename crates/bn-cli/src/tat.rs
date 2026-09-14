@@ -19,7 +19,6 @@ pub(crate) mod discovery;
 mod keys;
 mod paths;
 mod preview;
-mod queue_view;
 mod rows;
 mod status;
 
@@ -38,7 +37,6 @@ use rows::{build_list, build_sub_rows};
 use crate::proc::{tmux_command, tmux_ok, tmux_raw, tmux_run};
 use crate::wt;
 use bincode::Options;
-use bn_core::wt_actions::When;
 use bn_core::{resolver::Config, style};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -63,10 +61,10 @@ pub enum TatStage {
     #[value(name = "sublist")]
     SubList,
     /// As [`TatStage::SubList`], but serving worktrees from the discovery cache rather than
-    /// rescanning — the repaint feed, posted every 700ms while work is queued or running. `sublist`
+    /// rescanning — the repaint feed, posted every 700ms while a command is running. `sublist`
     /// passes `refresh = true`, so using it here meant a `read_dir`, a rewrite of
     /// `tat-discovery.json` and a `git worktree list` eighty-six times a minute (63ms vs 47ms per
-    /// paint on a 7-worktree repo). A repaint wants the queue's state, not a rediscovered disk.
+    /// paint on a 7-worktree repo). A repaint wants the running state, not a rediscovered disk.
     #[value(name = "subtick")]
     SubTick,
     /// Delete the focused worktree row (the `ctrl-d` binding). `--pick-arg` carries `kind~payload`;
@@ -86,20 +84,16 @@ pub enum TatStage {
     /// unlike the project picker's rows these differ in kind, and each kind wants a different panel.
     #[value(name = "subpreview")]
     SubPreview,
-    /// Queue the focused command row's verb, to run now. `--pick-arg` carries `kind~action-id`;
-    /// guarded — refuses a non-`cmd` row. Selecting a verb already queued takes it back.
+    /// Run the focused command row's verb now, in a tmux window in the repo's session.
+    /// `--pick-arg` carries `kind~action-id`; guarded — refuses a non-`cmd` row. A verb already
+    /// running is left alone.
     #[value(name = "runcmd")]
     RunCmd,
-    /// As [`TatStage::RunCmd`], but filed for when you are idle or away rather than now — the
-    /// end-of-day binding. A separate stage rather than a flag on one, matching the convention the
-    /// other bindings already follow: one stage per key.
-    #[value(name = "runcmd-away")]
-    RunCmdAway,
     /// Internal: refresh the network-backed caches (codespaces, and `<name>`'s open PRs when given)
     /// in the background. Spawned detached by the picker so no paint ever waits on a forge.
     #[value(name = "warm-remote")]
     WarmRemote,
-    /// Emit the one-line status header — attention, queue, cron and bn-web, the badges that used to
+    /// Emit the one-line status header — attention, cron and bn-web, the badges that used to
     /// sit in tmux's `status-format[0]` (#1349). Bound to `start` and `ctrl-r` on both pickers via
     /// `transform-header`, and deliberately NOT to the 700ms `subtick` repaint.
     #[value(name = "statusline")]
@@ -1100,7 +1094,7 @@ fn open_project_step(cfg: &Config, roots: &Roots, name: &str) -> Step {
     let worktree_dir = roots.worktree_dir(name);
 
     let header = if bare {
-        "Pick · type a branch · ctrl-o do to this row · ctrl-s do it when away · ctrl-d del · ctrl-w warm · ctrl-r release · ctrl-p pane · Esc close"
+        "Pick · type a branch · ctrl-o do to this row · ctrl-d del · ctrl-w warm · ctrl-r release · ctrl-p pane · Esc close"
     } else {
         "Pick window/worktree (Esc: close)"
     };
@@ -1117,7 +1111,7 @@ fn open_project_step(cfg: &Config, roots: &Roots, name: &str) -> Step {
         .arg("--with-nth=3")
         .arg("--print-query")
         // Handled in the parent: `execute()` can hand nothing back (see `commands::act_on_row`).
-        .arg("--expect=ctrl-o,ctrl-s")
+        .arg("--expect=ctrl-o")
         .arg(format!("--header={header}"))
         // The side pane. `{1}~{2}` (kind~payload) rather than the display column, because these
         // rows differ in kind: a window wants a live pane capture, a worktree its branch note.
@@ -1308,8 +1302,7 @@ pub fn stage(
         TatStage::RmWorktree => rm_worktree(cfg, &roots, row, arg),
         TatStage::WarmPool => warm_pool(&roots, row),
         TatStage::SubPreview => preview::row(cfg, &roots, row, arg),
-        TatStage::RunCmd => command_from_pick(cfg, &roots, row, arg, When::Now),
-        TatStage::RunCmdAway => command_from_pick(cfg, &roots, row, arg, When::Away),
+        TatStage::RunCmd => command_from_pick(cfg, &roots, row, arg),
         TatStage::ReleasePool => release_pool(cfg, &roots, row, arg),
         TatStage::WarmRemote => {
             cs_fetch_blocking();

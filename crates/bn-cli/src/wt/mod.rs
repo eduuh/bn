@@ -125,8 +125,7 @@ pub enum WtCmd {
     /// Prune stale worktree references (current repo, or all repos when outside one).
     Prune,
     /// Close **this worktree** — the `prefix x` binding. Drops the worktree's tmux window now and
-    /// files the reclaim (hand a pool slot's lease back, or run `cleanup`'s gates) on the machine
-    /// queue as a `cleanup` entry, for a moment the machine has to spare.
+    /// reclaims it (hand a pool slot's lease back, or run `cleanup`'s gates) in the background.
     ///
     /// Never closes a tmux session: a worktree owning its session's last window leaves that window
     /// respawned as a bare shell instead. Never prints on the happy path (tmux's `run-shell` would
@@ -146,8 +145,8 @@ pub enum WtCmd {
         #[arg(long)]
         confirmed: bool,
         /// Do the deferred half now: reclaim the (already window-less) worktree without touching
-        /// tmux and without queueing anything. This is what the queued `cleanup` entry runs; run it
-        /// by hand to reclaim a worktree immediately instead of waiting for the tick.
+        /// tmux. This is what the keystroke's background process runs; run it by hand to reclaim a
+        /// worktree whose background reclaim did not finish.
         #[arg(long)]
         reclaim: bool,
     },

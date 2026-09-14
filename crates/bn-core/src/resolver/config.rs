@@ -4,7 +4,6 @@
 use super::config_file::ConfigFile;
 pub use super::config_sections::MachineProfile;
 use super::dirs::{machine_name, notes_roots};
-use super::queue_config::QueueConfig;
 use super::util::{home, non_empty_env, parse_weekday};
 use crate::pipeline::stage::Stage;
 use std::collections::HashMap;
@@ -260,8 +259,6 @@ pub struct Config {
     /// Empty by default ⇒ the orchestrate scheduler places every lane `Local` (single-node
     /// behavior).
     pub nodes: Vec<crate::hosts::NodeRecord>,
-    /// `[queue]` — the machine-wide work queue's policy (#queue).
-    pub queue: QueueConfig,
     /// `[calib] s|m|l`: the coarse t-shirt-size estimate durations (`--est S|M|L`), so sizing —
     /// and `bn next --fit` — works before you have real per-item duration estimates. Defaults
     /// `s=30m m=90m l=3h`; see [`crate::calib::CoarseSizes`].
@@ -313,8 +310,8 @@ pub struct Config {
     pub orchestrate_exclude_labels: Vec<String>,
     pub orchestrate_brainstorm_count: usize,
     pub orchestrate_brainstorm_interval_secs: i64,
-    /// `[orchestrate]` resource/budget caps (#377) — the guards the resource-aware scheduler
-    /// ([`crate::scheduler::Caps`]) pauses local dispatch on. All `None`/off by default, so an
+    /// `[orchestrate]` resource/budget caps (#377) — the guards the orchestrate daemon pauses local
+    /// dispatch on. All `None`/off by default, so an
     /// unconfigured run behaves exactly as the pre-#377 fixed-concurrency daemon.
     pub orchestrate_min_free_ram_mb: Option<u64>,
     pub orchestrate_max_loadavg: Option<f64>,
@@ -392,7 +389,6 @@ impl Default for Config {
             orchestrate_brainstorm_count: crate::keep_warm::DEFAULT_KEEP_WARM_BRAINSTORM_COUNT,
             orchestrate_brainstorm_interval_secs:
                 crate::keep_warm::DEFAULT_KEEP_WARM_BRAINSTORM_INTERVAL_SECS,
-            queue: QueueConfig::default(),
             orchestrate_min_free_ram_mb: None,
             orchestrate_max_loadavg: None,
             orchestrate_max_swap_pct: None,
@@ -627,8 +623,6 @@ impl Config {
             .unwrap_or(crate::keep_warm::DEFAULT_KEEP_WARM_BRAINSTORM_INTERVAL_SECS)
             .max(1);
 
-        let queue = QueueConfig::load(file);
-
         Config {
             personal_root,
             work_root,
@@ -669,7 +663,6 @@ impl Config {
             orchestrate_exclude_labels,
             orchestrate_brainstorm_count,
             orchestrate_brainstorm_interval_secs,
-            queue,
             // `[orchestrate]` resource/budget caps (#377): all off unless configured, so an
             // unconfigured run is unchanged.
             orchestrate_min_free_ram_mb: file.and_then(|f| f.orchestrate_min_free_ram_mb()),

@@ -11,15 +11,13 @@ use std::collections::HashMap;
 ///
 /// Usually set in that machine's own `<notes_root>/<machine>/config.toml`; set in the shared file
 /// it applies to every machine. With no `[machine]` table a machine works on every repository it
-/// has cloned and runs the queue, cron and web services. The table only narrows that: `repos`
-/// limits the repositories, and a runtime flag set to `false` switches that service off. An
-/// omitted field keeps its default, so `web = false` alone still runs the queue and cron.
+/// has cloned and runs the cron and web services. The table only narrows that: `repos` limits the
+/// repositories, and a runtime flag set to `false` switches that service off. An omitted field
+/// keeps its default, so `web = false` alone still runs cron.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct MachineProfile {
     #[serde(default = "every_repo")]
     pub repos: Vec<String>,
-    #[serde(default = "on")]
-    pub queue: bool,
     #[serde(default = "on")]
     pub cron: bool,
     #[serde(default = "on")]
@@ -30,7 +28,6 @@ impl Default for MachineProfile {
     fn default() -> Self {
         MachineProfile {
             repos: every_repo(),
-            queue: true,
             cron: true,
             web: true,
         }
@@ -272,73 +269,4 @@ pub(super) struct CaptureSection {
     pub(super) screenshot_dir: Option<String>,
     /// Folder the GIF recorder saves into. `bn shot --gif` grabs from here.
     pub(super) gif_dir: Option<String>,
-}
-
-/// `[queue]`: the machine-wide work queue (#queue).
-///
-/// `capture` is the list of producers that **enqueue instead of launching**. It is a list rather
-/// than a bool so each one can be turned on — and rolled back — independently: switching every
-/// dispatch path at once is not a change anybody can safely evaluate.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub(super) struct QueueSection {
-    /// Producers that enqueue instead of launching: `review`, `attn`, `staff`, `cron`.
-    pub(super) capture: Option<Vec<String>>,
-    /// Concurrent coding-lane agents this machine will start.
-    pub(super) coding: Option<usize>,
-    /// Concurrent research-lane agents this machine will start.
-    pub(super) research: Option<usize>,
-    /// Seconds a node may go without a heartbeat before it stops being placeable.
-    pub(super) heartbeat_ttl_secs: Option<i64>,
-    /// `[queue.kind_caps]` — a nested table, so it belongs to this section rather than being a
-    /// top-level key with a dot in its name.
-    pub(super) kind_caps: Option<HashMap<String, usize>>,
-    /// Inline express items one pass may run.
-    pub(super) express_per_tick: Option<usize>,
-    /// How many heavy jobs (pool warms, builds, releases) may run at once. Default 1.
-    pub(super) heavy: Option<usize>,
-    /// `[queue.jobs]` — per-job overrides of the built-in classification.
-    pub(super) jobs: Option<JobClassSection>,
-    /// Seconds a worktree agent may hold a lease before it is presumed dead.
-    pub(super) agent_lease_ttl_secs: Option<i64>,
-    /// Seconds headless work may hold a lease. Express work resolves in-tick, so this is short.
-    pub(super) express_lease_ttl_secs: Option<i64>,
-    /// Idle minutes after which opportunistic work may run outside an explicit away window.
-    pub(super) opportunistic_idle_mins: Option<i64>,
-    /// `[[queue.windows]]` — times of day when some work is preferred.
-    pub(super) windows: Option<Vec<WindowSection>>,
-    /// `[queue].direct` — what a person's direct command does: `"immediate"` (the default) starts
-    /// it on the spot, `"queued"` files it for the dispatcher like everything else.
-    pub(super) direct: Option<String>,
-}
-
-/// One `[[queue.windows]]` entry: a recurring span during which matching work ranks higher.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub(super) struct WindowSection {
-    pub(super) name: Option<String>,
-    /// `OnCalendar` for when it opens — `Mon..Fri *-*-* 12:30:00`.
-    pub(super) at: Option<String>,
-    /// How long it stays open, in the `bn focus` duration grammar (`45m`, `2h`).
-    pub(super) fore: Option<String>,
-    pub(super) boost: Option<i64>,
-    pub(super) matches: Option<Vec<String>>,
-    pub(super) mode: Option<String>,
-}
-
-/// `[queue.jobs]` — which jobs are expensive, and how urgent each one is.
-///
-/// bn ships a classification in `queue::jobs`, and it is a statement about *bn's own* roster. A
-/// machine that adds a job, or that finds a shipped one cheaper than bn assumed, had to edit Rust
-/// and reinstall to say so.
-///
-/// Deliberately **not** here: `NEVER_CAPTURE`. Those are the jobs that drain the queue, and a
-/// config able to shrink that list could brick the machine — the dispatcher would queue its own
-/// tick and wait forever for something to run it. `RECOVERY_JOBS` is absent for a weaker version of
-/// the same reason: removing `agent-supervise` closes a documented cycle in the warming latch.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub(super) struct JobClassSection {
-    /// Jobs that cost like a build. Replaces the built-in list outright when given.
-    pub(super) heavy: Option<Vec<String>>,
-    /// Per-job priority, overriding the derived recovery/heavy/cron banding.
-    #[serde(default)]
-    pub(super) priority: std::collections::HashMap<String, i64>,
 }

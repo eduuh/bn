@@ -8,7 +8,7 @@
 # reproduces (`bn issue file --kind bug --label autonomous-repro`).
 #
 # It files; it does not fix. The existing fix arm takes it from there — `bn task pull` drains the
-# issue reservoir, `task enhance` makes each SMART, the queue dispatches a fixer, `bn gate` and
+# issue reservoir, `task enhance` makes each SMART, a supervisor dispatches a fixer, `bn gate` and
 # `bn critic` prove the fix, and a PR lands in the review queue. Merging stays a human act.
 #
 # This is the shared driver, and it lives under `lib/` because of it. Each repo gets a thin wrapper
@@ -16,10 +16,10 @@
 # manifest of the same name resolves straight to that wrapper. Run a lane, never the driver:
 #   bn run explore-bn
 #
-# The settings have to live in the wrapper rather than on a manifest `run:` line, because `bn run`
-# is captured by the queue and re-dispatched in a fresh process that inherits no environment: a
-# `run: "BN_EXPLORE_REPO=bn bn run explore"` reached this driver with nothing set and exited 2 while
-# the agent recorded `ok` for having queued it.
+# The settings live in the wrapper rather than on a manifest `run:` line. A lane is fired by a timer
+# through the scheduler, never from a shell, so the wrapper is the one place its settings are always
+# set and reviewable in git: a `run: "BN_EXPLORE_REPO=bn bn run explore"` reached this driver with
+# nothing set and exited 2.
 #
 # Sitting in `jobs/` was the second half of that bug. Job names resolve flat — `<jobs>/<name>.sh` —
 # so a driver parked there answers to `bn run explore`, exits 2 for the missing repo, and books the
@@ -91,7 +91,7 @@ if [ "$live" -gt 0 ]; then
 fi
 
 # --- backpressure -------------------------------------------------------------------------
-# The explorer is much cheaper than the fixers it feeds, so unchecked it buries the queue in
+# The explorer is much cheaper than the fixers it feeds, so unchecked it buries the fix arm in
 # reproduced bugs nobody is working yet. Stop filing while the backlog it already created is
 # undrained — a growing pile of open autonomous-repro issues means the fix arm, not discovery,
 # is the constraint.

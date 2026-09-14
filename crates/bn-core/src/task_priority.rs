@@ -318,7 +318,7 @@ mod tests {
         assert_eq!(pre_score(&sourced, "2026-08-09"), 30);
 
         let mut goal = task();
-        goal.set_meta_raw("q", "ship-the-queue");
+        goal.set_meta_raw("q", "ship-the-release");
         assert_eq!(pre_score(&goal, "2026-08-09"), 60);
 
         let mut plain_src = task();

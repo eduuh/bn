@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Check, Plus, Rocket } from "lucide-react";
-import { apiDispatch, apiQueueAdd, attnAction } from "../../api/writes";
+import { apiDispatch, attnAction } from "../../api/writes";
 import { useAppMutation } from "../../hooks/useAppMutation";
 import { affects } from "../../lib/invalidation";
 import { dropAttn, dropAction, dropActionForAttn } from "../../lib/optimistic";
@@ -46,14 +46,7 @@ function DispatchPanel({ item, action }: { item: WorkItem; action: ActionItem })
     toast: { success: "Dispatched an agent", error: "Could not dispatch" },
   });
 
-  const queue = useAppMutation({
-    mutationFn: () => apiQueueAdd({ repo: repo.trim() || undefined, items: [prompt.trim()] }),
-    optimistic: dropAction(action.id),
-    invalidates: affects.agentLaunch,
-    toast: { success: "Queued for the next tick", error: "Could not queue" },
-  });
-
-  const busy = dispatch.isPending || queue.isPending;
+  const busy = dispatch.isPending;
   const hasPrompt = prompt.trim().length > 0;
 
   return (
@@ -86,28 +79,14 @@ function DispatchPanel({ item, action }: { item: WorkItem; action: ActionItem })
         />
       </div>
 
-      {/* One primary action. "Queue instead" stays available as a quiet link rather than a second
-          equal-weight button — choosing between dispatch and queue is a decision the operator
-          shouldn't have to make on every item. */}
-      <div className="space-y-1.5">
-        <Button
-          className="w-full"
-          disabled={busy || !hasPrompt || !repo.trim()}
-          onClick={() => dispatch.mutate()}
-          title="dispatch an agent now"
-        >
-          <Rocket className="h-4 w-4" /> Send agent
-        </Button>
-        <button
-          type="button"
-          disabled={busy || !hasPrompt}
-          onClick={() => queue.mutate()}
-          className="w-full text-center text-[0.7rem] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
-          title="add to the orchestrate queue for the next tick"
-        >
-          or queue it for the next tick
-        </button>
-      </div>
+      <Button
+        className="w-full"
+        disabled={busy || !hasPrompt || !repo.trim()}
+        onClick={() => dispatch.mutate()}
+        title="dispatch an agent now"
+      >
+        <Rocket className="h-4 w-4" /> Send agent
+      </Button>
     </Card>
   );
 }

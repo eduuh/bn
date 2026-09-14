@@ -13,7 +13,7 @@ pub(crate) enum MachineCmd {
     /// Fold another host's append-only history into this machine's: bn machine merge <from>.
     ///
     /// Merges only the JSONL histories (event log, metrics, dojo decks), interleaved by timestamp
-    /// and deduped against what is already here. The live queue and point-in-time snapshots are
+    /// and deduped against what is already here. Live stores and point-in-time snapshots are
     /// left alone — there is no correct way to combine two of those — and the source directory is
     /// never modified or deleted.
     Merge {

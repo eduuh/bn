@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Minus, Plus, Rocket } from "lucide-react";
+import { Rocket } from "lucide-react";
 import { fleetQuery, orchestrateQuery } from "../api/client";
-import { apiDispatch, apiQueueAdd, apiStart } from "../api/writes";
+import { apiDispatch } from "../api/writes";
 import { parseItems } from "../lib/backlog";
 import { useAppMutation } from "../hooks/useAppMutation";
 import { affects } from "../lib/invalidation";
@@ -30,18 +30,11 @@ import { cn } from "../lib/utils";
 import { PageHead } from "../components/PageHead";
 import { RepoSelect } from "../components/RepoSelect";
 
-type Mode = "dispatch" | "queue" | "daemon";
 type Kind = "ship" | "scout";
 
 const HARNESS_OPTIONS: Harness[] = ["claude", "copilot"];
 
-const MODES: { value: Mode; label: string }[] = [
-  { value: "dispatch", label: "Dispatch now" },
-  { value: "queue", label: "Add to queue" },
-  { value: "daemon", label: "Daemon run" },
-];
-
-/** A segmented toggle option (mode / kind) built from a button, matching the Phase-1 composer. */
+/** A segmented toggle option (kind) built from a button, matching the Phase-1 composer. */
 function Segment({
   active,
   onClick,
@@ -71,67 +64,11 @@ function Segment({
   );
 }
 
-/** A clamped −/value/+ integer stepper (concurrency lanes). */
-function Stepper({
-  value,
-  min = 1,
-  max = 32,
-  disabled = false,
-  onChange,
-  label,
-}: {
-  value: number;
-  min?: number;
-  max?: number;
-  disabled?: boolean;
-  onChange: (v: number) => void;
-  label?: string;
-}) {
-  const set = (v: number) => {
-    const next = Math.max(min, Math.min(max, v));
-    if (next !== value) onChange(next);
-  };
-  return (
-    <div
-      role="group"
-      aria-label={label ?? "stepper"}
-      className="inline-flex items-center gap-1 rounded-lg bg-muted p-1"
-    >
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className="h-8 w-8"
-        disabled={disabled || value <= min}
-        onClick={() => set(value - 1)}
-        aria-label="decrease"
-      >
-        <Minus className="h-4 w-4" />
-      </Button>
-      <span className="min-w-8 text-center font-mono text-sm tabular-nums text-foreground">
-        {value}
-      </span>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className="h-8 w-8"
-        disabled={disabled || value >= max}
-        onClick={() => set(value + 1)}
-        aria-label="increase"
-      >
-        <Plus className="h-4 w-4" />
-      </Button>
-    </div>
-  );
-}
-
 /**
  * `/start` — the first-class intake (design §479, job 2: *Act*). Starting an agent is THE primary
  * action of the dashboard, so it gets its own prominent screen: one big form (task · repo · harness
- * · ship/scout) whose primary button dispatches a real agent (`POST /api/dispatch`), plus secondary
- * modes to queue for the daemon or start a daemon run. A paired web token authorizes the write;
- * success navigates to the Fleet so you watch it come alive.
+ * · ship/scout) whose primary button dispatches a real agent (`POST /api/dispatch`). A paired web
+ * token authorizes the write; success navigates to the console so you watch it come alive.
  */
 export function Start() {
   const orch = useQuery(orchestrateQuery());
@@ -142,12 +79,10 @@ export function Start() {
   const defaultRepo = computeDefaultRepo(runs, fleet.data);
   const runningHarnessName = runningHarness(fleet.data);
 
-  const [mode, setMode] = useState<Mode>("dispatch");
   const [text, setText] = useState("");
   const [repo, setRepo] = useState(defaultRepo);
   const [harness, setHarness] = useState<Harness>("claude");
   const [kind, setKind] = useState<Kind>("ship");
-  const [concurrency, setConcurrency] = useState(2);
 
   // Adopt the sole run's / live-fleet's repo once data hydrates, unless the user has already typed one.
   const repoTouched = useRef(false);
@@ -172,60 +107,34 @@ export function Start() {
 
   const items = parseItems(text);
   const badItem = items.find((i) => i.startsWith("-"));
-  const needsRepo = mode === "dispatch";
-  const canSubmit = items.length > 0 && !badItem && (!needsRepo || repo.trim().length > 0);
+  const canSubmit = items.length > 0 && !badItem && repo.trim().length > 0;
 
-  const started = (n: number, verb: string) =>
-    `${verb} ${n} agent${n === 1 ? "" : "s"} — watch the queue`;
-  // All three land on /queue, so the fleet has to be reconciled or you arrive at a list that
-  // predates what you just launched.
-  const onStarted = () => {
-    setText("");
-    navigate("/queue");
-  };
-  const launch = { invalidates: affects.agentLaunch, onSuccess: onStarted };
-
+  // Lands on the console, so the fleet has to be reconciled or you arrive at a list that predates
+  // what you just launched.
   const dispatchMut = useAppMutation({
     mutationFn: async () => {
       const r = repo.trim();
       await Promise.all(items.map((item) => apiDispatch({ repo: r, item, harness, kind })));
       return items.length;
     },
-    ...launch,
-    toast: { success: (n: number) => started(n, "Dispatched"), error: "Could not start" },
-  });
-  const queueMut = useAppMutation({
-    mutationFn: () => apiQueueAdd({ repo: repo.trim() || undefined, items }),
-    ...launch,
-    toast: { success: started(items.length, "Queued"), error: "Could not start" },
-  });
-  const daemonMut = useAppMutation({
-    mutationFn: () => apiStart({ repo: repo.trim() || undefined, items, concurrency }),
-    ...launch,
-    toast: { success: started(items.length, "Started a run of"), error: "Could not start" },
+    invalidates: affects.agentLaunch,
+    onSuccess: () => {
+      setText("");
+      navigate("/console");
+    },
+    toast: {
+      success: (n: number) => `Dispatched ${n} agent${n === 1 ? "" : "s"}`,
+      error: "Could not start",
+    },
   });
 
-  const busy = dispatchMut.isPending || queueMut.isPending || daemonMut.isPending;
+  const busy = dispatchMut.isPending;
   const submit = () => {
     if (!canSubmit || busy) return;
-    if (mode === "dispatch") dispatchMut.mutate();
-    else if (mode === "queue") queueMut.mutate();
-    else daemonMut.mutate();
+    dispatchMut.mutate();
   };
 
-  const primaryLabel =
-    mode === "dispatch"
-      ? `Start agent${items.length > 1 ? ` ×${items.length}` : ""}`
-      : mode === "queue"
-        ? `Add to queue${items.length > 1 ? ` (${items.length})` : ""}`
-        : `Start daemon run${items.length > 1 ? ` (${items.length})` : ""}`;
-
-  const hint =
-    mode === "dispatch"
-      ? "Dispatches immediately, skipping the queue — appears on the Fleet within a tick."
-      : mode === "queue"
-        ? "Appends to the running daemon's queue (start a daemon run first if none is live)."
-        : "Starts a launchd-daemonized run that works the queue at the chosen concurrency.";
+  const primaryLabel = `Start agent${items.length > 1 ? ` ×${items.length}` : ""}`;
 
   return (
     // No nested measure. This used to be `mx-auto max-w-2xl` *inside* the shell's own centred
@@ -233,21 +142,9 @@ export function Start() {
     // 170px right of the title on every other route. The shell now gives `/start` a `document`
     // width (see `lib/layout`), so the page just fills what it is given.
     <div className="space-y-5 pb-8">
-      <PageHead title="Start an agent" sub="dispatch · queue · daemon run" />
+      <PageHead title="Start an agent" sub="dispatch now" />
 
       <Card className="space-y-4 p-4">
-        <div
-          className="grid grid-cols-3 gap-1 rounded-lg bg-muted p-1"
-          role="group"
-          aria-label="start mode"
-        >
-          {MODES.map((m) => (
-            <Segment key={m.value} active={mode === m.value} onClick={() => setMode(m.value)}>
-              {m.label}
-            </Segment>
-          ))}
-        </div>
-
         <div className="space-y-1.5">
           <Label htmlFor="start-item" className="flex flex-wrap items-baseline gap-2">
             Task
@@ -271,77 +168,61 @@ export function Start() {
           <div className="space-y-1.5">
             <Label htmlFor="start-repo" className="flex items-baseline gap-2">
               Repo
-              {needsRepo && (
-                <span className="text-xs font-normal text-muted-foreground/80">required</span>
-              )}
+              <span className="text-xs font-normal text-muted-foreground/80">required</span>
             </Label>
-            <RepoSelect id="start-repo" value={repo} onChange={onRepo} required={needsRepo} />
+            <RepoSelect id="start-repo" value={repo} onChange={onRepo} required />
           </div>
-
-          {mode === "daemon" && (
-            <div className="space-y-1.5">
-              <Label>Concurrency</Label>
-              <Stepper
-                value={concurrency}
-                onChange={setConcurrency}
-                disabled={busy}
-                label="concurrency"
-              />
-            </div>
-          )}
         </div>
 
-        {mode === "dispatch" && (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label htmlFor="start-harness">Harness</Label>
-              <Select value={harness} onValueChange={(v) => onHarness(v as Harness)}>
-                <SelectTrigger id="start-harness">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {HARNESS_OPTIONS.map((h) => {
-                    const available = harnessAvailable(h, fleet.data);
-                    return (
-                      <SelectItem
-                        key={h}
-                        value={h}
-                        disabled={!available}
-                        title={available ? undefined : harnessReason(h, fleet.data)}
-                      >
-                        {h}
-                        {available ? "" : " (unavailable)"}
-                      </SelectItem>
-                    );
-                  })}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
-              <Label>Kind</Label>
-              <div
-                className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1"
-                role="group"
-                aria-label="ship or scout"
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label htmlFor="start-harness">Harness</Label>
+            <Select value={harness} onValueChange={(v) => onHarness(v as Harness)}>
+              <SelectTrigger id="start-harness">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {HARNESS_OPTIONS.map((h) => {
+                  const available = harnessAvailable(h, fleet.data);
+                  return (
+                    <SelectItem
+                      key={h}
+                      value={h}
+                      disabled={!available}
+                      title={available ? undefined : harnessReason(h, fleet.data)}
+                    >
+                      {h}
+                      {available ? "" : " (unavailable)"}
+                    </SelectItem>
+                  );
+                })}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Kind</Label>
+            <div
+              className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1"
+              role="group"
+              aria-label="ship or scout"
+            >
+              <Segment
+                active={kind === "ship"}
+                onClick={() => setKind("ship")}
+                title="a full ship (build → PR)"
               >
-                <Segment
-                  active={kind === "ship"}
-                  onClick={() => setKind("ship")}
-                  title="a full ship (build → PR)"
-                >
-                  ship
-                </Segment>
-                <Segment
-                  active={kind === "scout"}
-                  onClick={() => setKind("scout")}
-                  title="a scout (research / delegate-for-answers)"
-                >
-                  scout
-                </Segment>
-              </div>
+                ship
+              </Segment>
+              <Segment
+                active={kind === "scout"}
+                onClick={() => setKind("scout")}
+                title="a scout (research / delegate-for-answers)"
+              >
+                scout
+              </Segment>
             </div>
           </div>
-        )}
+        </div>
 
         {badItem && <p className="text-sm text-urgent">Tasks can’t start with “-” ({badItem}).</p>}
 
@@ -354,7 +235,9 @@ export function Start() {
         >
           <Rocket className="h-4 w-4" /> {primaryLabel}
         </Button>
-        <p className="text-xs text-muted-foreground">{hint}</p>
+        <p className="text-xs text-muted-foreground">
+          Dispatches immediately. The agent appears on the console within a tick.
+        </p>
       </Card>
 
       <ToastStack />

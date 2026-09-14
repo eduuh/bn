@@ -99,7 +99,7 @@ pub(super) fn append_plan_gate(
 /// (the default; opt in with `$BN_DISPATCH_PIPELINE=1`), a skill-less non-scout agent dispatch is
 /// *not* `pipeline_investigate`, so it lands here and runs `ship-solo`. With the pipeline flag on, that
 /// same dispatch routes to the Investigate stage instead and this default only applies to explicit
-/// `--skill` lanes (queue `ExecSpec::Skill`, the critic's execute re-dispatch).
+/// `--skill` lanes (e.g. the critic's execute re-dispatch).
 ///
 /// Deliberately **not** the same mapping as [`bn_core::pipeline::stage::Stage::default_skill`],
 /// which answers a different question. This one is "what does an ad-hoc `bn dispatch` run?" — a

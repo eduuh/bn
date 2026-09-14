@@ -42,7 +42,6 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
                 connect::run(cfg, host.as_deref(), window, read_only)
             }
         }
-        CmdAutomation::Queue { action } => cmd::queue::route(cfg, action, json),
         CmdAutomation::Harness { action } => match action {
             crate::cli::automation_cmd::HarnessCmd::Models { harness } => {
                 cmd::harness_models::emit_harness_models(harness.as_deref(), json)

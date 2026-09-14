@@ -2,10 +2,9 @@
 # explore-bn — the bn lane of the explore pass. Autonomous.
 #
 # The per-repo settings live HERE rather than on the agent manifest's `run:` line, and that is the
-# whole point of this file. `bn run <job>` is captured by the queue and re-dispatched later in a
-# fresh process, which inherits none of the environment the original command line set — so
-# `run: "BN_EXPLORE_REPO=bn … bn run explore"` reached the driver with nothing set and exited 2.
-# Settings inside the script survive that round trip; settings on the command line do not.
+# whole point of this file. The lane is fired by a timer through the scheduler, never from a shell,
+# so the script is the one place its settings are always set and reviewable in git. On a command
+# line, `run: "BN_EXPLORE_REPO=bn … bn run explore"` reached the driver with nothing set and exited 2.
 #
 # The agent manifest carries no `run:` at all now, so `bn run explore-bn` resolves straight to this
 # script by name.

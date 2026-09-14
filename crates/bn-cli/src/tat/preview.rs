@@ -263,7 +263,6 @@ pub(super) fn row(cfg: &Config, roots: &Roots, project: &str, arg: &str) {
     match kind {
         // The rule between the places and the verbs names nothing to describe.
         "cmdsep" => {}
-        "qset" => settings_pane(cfg),
         "cmd" => super::commands::command_preview(cfg, roots, project, payload),
         "window" => window_row(project, payload),
         "remotepr" => remote_pr_row(roots, project, payload),
@@ -462,62 +461,6 @@ fn note_panel(cfg: &Config, repo: &str, branch: &str) {
         }
         println!();
     }
-}
-
-/// The side pane for the `Queue settings…` row: what the machine currently believes, before you
-/// open the menu that changes it.
-///
-/// Reads only what is already on disk — the daemon lock, the folded pause and away events, and the
-/// resolved config. Nothing here spawns a process, which is the rule this whole module lives by.
-fn settings_pane(cfg: &Config) {
-    let now = bn_core::util::now_epoch_secs();
-    println!("\x1b[1;36mQueue settings\x1b[0m\n");
-    println!("What this machine is doing, and what it believes about the work.\n");
-    match bn_core::queue::daemon::is_running() {
-        true => println!("Dispatcher: running"),
-        false => println!("Dispatcher: not running"),
-    }
-    match bn_core::away::active(now) {
-        Some(open) => println!(
-            "Presence:   away until {}",
-            bn_core::util::clock_hm(open.ends_at)
-        ),
-        None => println!("Presence:   here"),
-    }
-    let paused = bn_core::queue::pause::PauseState::load(now);
-    match paused.pauses.is_empty() {
-        true => println!("Admission:  open"),
-        false => println!("Admission:  paused ({})", paused.pauses.len()),
-    }
-    // Last of the four, because it is the one that overrides the other three: with the queue off,
-    // what the dispatcher and admission are doing stops deciding whether your work starts.
-    match bn_core::queue::off::active(now) {
-        None => println!("Queue:      on — triggers file work for the dispatcher"),
-        Some(off) => println!(
-            "Queue:      OFF — every trigger runs immediately{}",
-            match off.remaining(now) {
-                Some(left) => format!(" ({} left)", crate::cmd::queue_when::in_words(left)),
-                None => String::new(),
-            }
-        ),
-    }
-    println!("Heavy cap:  {}", cfg.queue.heavy_cap());
-    let heavy: Vec<&str> = bn_core::wt_actions::all()
-        .iter()
-        .map(|a| a.job)
-        .filter(|job| cfg.queue.is_heavy(job))
-        .collect();
-    println!(
-        "\nExpensive verbs: {}",
-        match heavy.is_empty() {
-            true => "none".to_string(),
-            false => heavy.join(", "),
-        }
-    );
-    if cfg.queue.heavy_jobs.is_some() || !cfg.queue.job_priority.is_empty() {
-        println!("  (this machine overrides bn's defaults)");
-    }
-    println!("\nEnter: open the settings menu.");
 }
 
 #[cfg(test)]

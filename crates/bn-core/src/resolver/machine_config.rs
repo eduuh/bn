@@ -2,7 +2,7 @@
 //!
 //! Everything is allowed by default. A `[machine]` table — usually in the machine's own
 //! `<notes_root>/<machine>/config.toml` — only narrows it, so a machine nobody configured still
-//! runs its queue, cron and dashboard instead of silently doing nothing.
+//! runs its cron and dashboard instead of silently doing nothing.
 
 use super::{Config, MachineProfile};
 
@@ -79,12 +79,6 @@ impl Config {
         crate::lifecycle::cloned_repos(self).contains(&base)
     }
 
-    /// Whether the machine-wide queue dispatcher runs here: on unless `[machine]` says
-    /// `queue = false`.
-    pub fn queue_enabled_here(&self) -> bool {
-        self.machine_profile.as_ref().is_none_or(|p| p.queue)
-    }
-
     /// Whether scheduled jobs run here: on unless `[machine]` says `cron = false`.
     pub fn cron_enabled_here(&self) -> bool {
         self.machine_profile.as_ref().is_none_or(|p| p.cron)
@@ -151,7 +145,6 @@ mod tests {
         };
 
         assert!(cfg.repo_allowed_here("owner/bn"));
-        assert!(cfg.queue_enabled_here());
         assert!(cfg.cron_enabled_here());
         assert!(cfg.web_enabled_here());
     }
@@ -171,7 +164,6 @@ mod tests {
             .expect("machine table resolves");
 
         assert_eq!(profile.repos, vec!["bn", "owner/arena"]);
-        assert!(profile.queue);
         assert!(profile.cron);
         assert!(profile.web);
     }
@@ -188,7 +180,6 @@ mod tests {
         };
 
         assert!(cfg.repo_allowed_here("owner/bn"));
-        assert!(cfg.queue_enabled_here());
         assert!(cfg.cron_enabled_here());
         assert!(!cfg.web_enabled_here());
     }
@@ -202,7 +193,6 @@ mod tests {
                     "second/shared".to_string(),
                     "solo".to_string(),
                 ],
-                queue: true,
                 cron: false,
                 web: true,
             }),
@@ -213,7 +203,6 @@ mod tests {
         assert!(!cfg.repo_allowed_here("third/shared"));
         assert!(!cfg.repo_allowed_here("shared"));
         assert!(cfg.repo_allowed_here("owner/solo"));
-        assert!(cfg.queue_enabled_here());
         assert!(!cfg.cron_enabled_here());
         assert!(cfg.web_enabled_here());
     }
@@ -223,7 +212,7 @@ mod tests {
         let _lock = crate::test_support::env_lock();
         let temp = tempfile::tempdir().expect("tempdir");
         let malformed = temp.path().join("config.toml");
-        std::fs::write(&malformed, "[machine\nqueue = false").expect("write malformed");
+        std::fs::write(&malformed, "[machine\ncron = false").expect("write malformed");
         let _hostname = EnvGuard::set("BN_HOSTNAME", "broken");
 
         // A file bn cannot read says nothing, so every service stays on and nothing already
@@ -231,7 +220,6 @@ mod tests {
         for path in [malformed, temp.path().join("missing.toml")] {
             let _config = EnvGuard::set("BN_CONFIG", &path);
             let cfg = Config::load();
-            assert!(cfg.queue_enabled_here(), "{}", path.display());
             assert!(cfg.cron_enabled_here(), "{}", path.display());
             assert!(cfg.web_enabled_here(), "{}", path.display());
         }

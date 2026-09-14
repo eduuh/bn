@@ -263,13 +263,12 @@ if [ ! -x "$bindir/bn" ]; then
 fi
 ln -sfn "$bindir/bn" "$cfgdir/bn"
 
-# --- retire the supervised-dispatcher units of the old design -------------------------------------
-# #1322 made the queue dispatcher bn's own resident loop: any bn invocation that finds the lock
-# free spawns one, and a running one hands itself over when the binary changes. A unit left from
-# before then is not harmless — systemd restarts its copy every ten seconds into a lock it can
-# never take, and on a binary change the two supervisors race to hand over. Nothing writes these
-# units any more, so an install is the moment to take them away. Idempotent and quiet when there
-# is nothing to do.
+# --- retire the queue-dispatcher units of older installs -------------------------------------------
+# Older bn ran a machine-wide queue dispatcher, first under these systemd/launchd units and later as
+# a resident loop of its own. Both are gone: crons and scheduled agents fire through launchd/systemd
+# straight into `bn run <job>`. A unit left from an older install would keep restarting a `bn queue`
+# command that no longer exists, so an install is the moment to take it away. Idempotent and quiet
+# when there is nothing to do.
 deregister_legacy_services() {
   local unit_dir removed="" unit plist
   unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
@@ -295,7 +294,7 @@ deregister_legacy_services() {
     fi
   fi
   if [ -n "$removed" ]; then
-    echo "Retired legacy dispatcher unit(s):$removed — bn supervises its own queue loop now."
+    echo "Retired legacy queue dispatcher unit(s):$removed. bn has no queue now."
   fi
   return 0
 }
@@ -345,7 +344,7 @@ echo "Linked $cfgdir/jobs -> $shipped/config/jobs"
 
 # Strict self-describing agents (config/agents/<name>.md) live in-repo too; `bn` resolves the
 # shipped tier through this symlink. Every manifest declares command/staff/hosted/specialist;
-# `agent-scheduler` owns their `on_calendar` values, while static instructions stay in Markdown.
+# Their `on_calendar` values are not fired while scheduled agents are disabled (see crons.toml).
 ln -sfn "$shipped/config/agents" "$cfgdir/agents"
 echo "Linked $cfgdir/agents -> $shipped/config/agents"
 
@@ -544,7 +543,7 @@ if ! "$bindir/bn" agents validate; then
 fi
 
 # Pick up crons.toml additions/changes automatically — no manual `bn cron register` after an
-# install or update. One `agent-scheduler` timer owns every manifest schedule. Diffs against what's
+# install or update. Scheduled agents are disabled, so no timer fires manifest schedules. Diffs against what's
 # registered, so it only touches what changed; on a non-systemd host it just reports the plan.
 # Platform timer installation remains non-fatal; catalog validation above does not.
 "$bindir/bn" cron register || true

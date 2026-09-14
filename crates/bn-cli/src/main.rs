@@ -235,7 +235,7 @@ fn main() {
 
     // fzf re-execs `bn` for every picker callback — one process per cursor move for `--preview`,
     // one per `reload()` bind. Machine housekeeping (reconciling managed services, firing cron
-    // catch-up, repairing the queue dispatcher) is never the right thing to do on a keystroke, and
+    // catch-up) is never the right thing to do on a keystroke, and
     // any one of those growing a subprocess again would land straight back on the interactive
     // path. Gate the whole block on the callback so it cannot.
     let internal = is_internal_callback(&cli.command);
@@ -266,17 +266,6 @@ fn main() {
             }))
         ) {
             maybe_reconcile_timers(&cfg);
-        }
-        // An enabled queue needs a dispatcher; a disabled one needs any old managed dispatcher
-        // removed. One stat in the common enabled case; see `queue_install`.
-        //
-        // Skipped for `bn queue` itself: its fallback path can run a tick, and a tick triggered by
-        // the command that was about to tick is one tick too many.
-        if !matches!(
-            &cli.command,
-            Some(Command::Automation(CmdAutomation::Queue { .. }))
-        ) {
-            cmd::queue_install::ensure(&cfg);
         }
     }
 
@@ -326,14 +315,12 @@ fn main() {
 /// user action.
 ///
 /// Two of those seven are left on the bar: `tmux-git` and `tmux-status`. `tmux-goal` went when the
-/// bar folded to one row. The other four — `attn badge`, `queue badge`, `tmux-mcp badge`,
-/// `cron running` — moved into `bn tat`'s header (#1349), which calls them in-process. They stay
+/// bar folded to one row. The other three — `attn badge`, `tmux-mcp badge`, `cron running` — moved into `bn tat`'s header (#1349), which calls them in-process. They stay
 /// listed below because they are still commands a script or a `#()` can invoke, and the reasoning
 /// has not changed for them.
 ///
 /// Those processes exist only to print a fragment and exit, so they skip the once-per-invocation
-/// machine housekeeping in [`main`]: reconciling managed services, firing cron catch-up, repairing
-/// the queue dispatcher. Doing any of that on a status repaint is never right, and it is the path
+/// machine housekeeping in [`main`]: reconciling managed services and firing cron catch-up. Doing any of that on a status repaint is never right, and it is the path
 /// where an added subprocess would be least visible and most expensive.
 fn is_internal_callback(command: &Option<Command>) -> bool {
     matches!(
@@ -351,8 +338,6 @@ fn is_internal_callback(command: &Option<Command>) -> bool {
             } | CmdAutomation::Attn {
                 action: Some(AttnCmd::Badge),
                 ..
-            } | CmdAutomation::Queue {
-                action: QueueCmd::Badge,
             }
         )) | Some(Command::Staff(CmdStaff::Cron {
             action: Some(CronCmd::Running),
@@ -425,9 +410,7 @@ pub(crate) fn fail(msg: &str) -> ! {
 /// by a live agent" are about the moment, and a later attempt may get a different answer. "This
 /// item's branch is already active" is about the request: a merged branch's leftover ref satisfies
 /// that test with no agent alive and nothing left to finish, so every retry gets the same refusal.
-/// The dispatcher used to back off through five attempts over three hours toward that same answer,
-/// with the entry reading `snoozed` the whole time. A distinct exit status lets it fail the entry at
-/// once, where a person can see it.
+/// A distinct exit status lets a caller stop retrying at once.
 pub(crate) const EXIT_REFUSED: i32 = 3;
 
 /// [`fail_json`], exiting [`EXIT_REFUSED`]: the same envelope, a different verdict on retrying.

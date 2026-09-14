@@ -75,8 +75,6 @@ pub(super) struct ConfigFile {
     dispatch: Option<DispatchSection>,
     pipeline: Option<super::PipelineConfig>,
     orchestrate: Option<OrchestrateSection>,
-    /// `[queue]`: the machine-wide work queue — which producers enqueue, and its ceilings.
-    queue: Option<QueueSection>,
     /// `[machine]`: what this machine should do less of. Absent, it is allowed everything.
     machine: Option<MachineProfile>,
     /// `[hosts.<alias>]`: ssh-host enrichment for `bn connect`. Keyed by
@@ -123,91 +121,6 @@ impl ConfigFile {
 
     pub(super) fn machine_profile(&self) -> Option<MachineProfile> {
         self.machine.clone()
-    }
-
-    /// `[queue].capture` — the producers that enqueue instead of launching.
-    pub(super) fn queue_capture(&self) -> Option<Vec<String>> {
-        self.queue.as_ref().and_then(|q| q.capture.clone())
-    }
-
-    /// `[queue].coding` / `.research` / `.heartbeat_ttl_secs`.
-    pub(super) fn queue_coding(&self) -> Option<usize> {
-        self.queue.as_ref().and_then(|q| q.coding)
-    }
-
-    pub(super) fn queue_research(&self) -> Option<usize> {
-        self.queue.as_ref().and_then(|q| q.research)
-    }
-
-    pub(super) fn queue_heartbeat_ttl_secs(&self) -> Option<i64> {
-        self.queue.as_ref().and_then(|q| q.heartbeat_ttl_secs)
-    }
-
-    /// `[queue]`'s numeric knobs, in one read.
-    ///
-    /// A named struct rather than a tuple: it started as three fields and every knob the queue
-    /// grows adds another, at which point positional destructuring is one reordering away from
-    /// silently swapping a lease TTL for an idle threshold.
-    pub(super) fn queue_nums(&self) -> QueueNums {
-        let q = self.queue.as_ref();
-        QueueNums {
-            express_per_tick: q.and_then(|q| q.express_per_tick),
-            heavy: q.and_then(|q| q.heavy),
-            agent_lease_ttl_secs: q.and_then(|q| q.agent_lease_ttl_secs),
-            express_lease_ttl_secs: q.and_then(|q| q.express_lease_ttl_secs),
-            opportunistic_idle_mins: q.and_then(|q| q.opportunistic_idle_mins),
-        }
-    }
-
-    /// `[queue].direct` — the raw word, parsed by [`super::queue_config::DirectMode::parse`].
-    pub(super) fn queue_direct(&self) -> Option<String> {
-        self.queue.as_ref().and_then(|q| q.direct.clone())
-    }
-
-    /// `[queue.jobs]` — the per-job classification overrides, if any.
-    pub(super) fn queue_job_classes(&self) -> Option<super::config_sections::JobClassSection> {
-        self.queue.as_ref().and_then(|q| q.jobs.clone())
-    }
-
-    /// `[[queue.windows]]` — resolved into [`crate::queue::window::PriorityWindow`] by the caller,
-    /// which is where the duration grammar and the defaults live.
-    pub(super) fn queue_windows(&self) -> Vec<crate::queue::window::PriorityWindow> {
-        self.queue
-            .as_ref()
-            .and_then(|q| q.windows.clone())
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|w| {
-                let at = w.at?;
-                // A window with no clock or no span is not a window; dropping it beats silently
-                // treating it as always-open.
-                let secs = w
-                    .fore
-                    .as_deref()
-                    .and_then(crate::focus::parse_duration)
-                    .filter(|s| *s > 0)?;
-                Some(crate::queue::window::PriorityWindow {
-                    name: w.name.unwrap_or_else(|| at.clone()),
-                    at,
-                    secs,
-                    boost: w.boost.unwrap_or(100),
-                    matches: w.matches.unwrap_or_else(|| vec!["*".to_string()]),
-                    mode: w
-                        .mode
-                        .as_deref()
-                        .and_then(crate::queue::window::WindowMode::parse)
-                        .unwrap_or_default(),
-                })
-            })
-            .collect()
-    }
-
-    /// `[queue.kind_caps]` as raw `label -> cap` pairs; the kind labels are validated by the caller.
-    pub(super) fn queue_kind_caps(&self) -> HashMap<String, usize> {
-        self.queue
-            .as_ref()
-            .and_then(|q| q.kind_caps.clone())
-            .unwrap_or_default()
     }
 
     pub(super) fn work_repos(&self) -> Option<Vec<String>> {
@@ -483,16 +396,6 @@ impl ConfigFile {
     pub(super) fn scout_max_findings(&self) -> Option<usize> {
         self.scout.as_ref().and_then(|s| s.max_findings)
     }
-}
-
-/// The `[queue]` numeric knobs [`ConfigFile::queue_nums`] reads in one pass.
-#[derive(Default)]
-pub(super) struct QueueNums {
-    pub(super) express_per_tick: Option<usize>,
-    pub(super) heavy: Option<usize>,
-    pub(super) agent_lease_ttl_secs: Option<i64>,
-    pub(super) express_lease_ttl_secs: Option<i64>,
-    pub(super) opportunistic_idle_mins: Option<i64>,
 }
 
 #[cfg(test)]

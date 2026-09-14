@@ -110,7 +110,7 @@ pub struct SearchResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub route: Option<String>,
     /// When present, the result offers "work on this": the embedded action feeds the reused
-    /// StartAgentComposer verbatim (dispatch / queue an agent).
+    /// StartAgentComposer verbatim (dispatch an agent).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<ActionItem>,
     /// Relevance score (higher = better); the returned list is already sorted score-desc.

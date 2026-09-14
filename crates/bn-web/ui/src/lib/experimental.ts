@@ -8,7 +8,7 @@ import { useSyncExternalStore } from "react";
  * so a tab can come back the moment it is trusted instead of waiting for the whole set:
  *
  *     /?experimental=fleet        Today + Fleet
- *     /?experimental=fleet,queue  Today + Cron + Fleet + Queue
+ *     /?experimental=fleet,nodes  Today + Cron + Fleet + Nodes
  *     /?experimental=1            everything
  *     /?experimental=0            back to default tabs
  *

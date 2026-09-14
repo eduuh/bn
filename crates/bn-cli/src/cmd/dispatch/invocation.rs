@@ -1,8 +1,7 @@
 //! The canonical argv builder for agent-bearing `bn dispatch` invocations.
 //!
-//! Its own module because it is the last place a queued agent's identity can be lost, and because
-//! `dispatch.rs` is at the file-size ratchet's mercy — the tests that guard the invariant belong
-//! beside the builder, not wedged into the file it is trying not to grow.
+//! Its own module because `dispatch.rs` is at the file-size ratchet's mercy: the tests that guard the
+//! command shape belong beside the builder, not wedged into the file it is trying not to grow.
 
 /// Canonical argv builder for agent-bearing `bn dispatch` invocations.
 ///
@@ -13,15 +12,11 @@ pub(crate) struct DispatchInvocation<'a> {
     item: &'a str,
     repo: &'a str,
     agent: &'a str,
-    branch: Option<&'a str>,
     name: Option<&'a str>,
-    skill: Option<&'a str>,
+    task: Option<&'a str>,
     scout: bool,
     verify: bool,
     yolo: bool,
-    no_plan_review: bool,
-    with_main: bool,
-    stage: Option<bn_core::pipeline::stage::Stage>,
     fresh: bool,
     json: bool,
 }
@@ -32,23 +27,14 @@ impl<'a> DispatchInvocation<'a> {
             item,
             repo,
             agent,
-            branch: None,
             name: None,
-            skill: None,
+            task: None,
             scout: false,
             verify: false,
             yolo: false,
-            no_plan_review: false,
-            with_main: false,
-            stage: None,
             fresh: false,
             json: false,
         }
-    }
-
-    pub(crate) fn branch(mut self, branch: Option<&'a str>) -> Self {
-        self.branch = branch;
-        self
     }
 
     /// The fleet task name — how a running agent is recognised by the guards that stop a duplicate
@@ -58,8 +44,9 @@ impl<'a> DispatchInvocation<'a> {
         self
     }
 
-    pub(crate) fn skill(mut self, skill: Option<&'a str>) -> Self {
-        self.skill = skill;
+    /// Bind the launch to a task id (`--task`), so the fleet shows which task the agent is on.
+    pub(crate) fn task(mut self, task: Option<&'a str>) -> Self {
+        self.task = task.filter(|t| !t.trim().is_empty());
         self
     }
 
@@ -78,24 +65,6 @@ impl<'a> DispatchInvocation<'a> {
         self
     }
 
-    /// Decline the plan-review gate — the stance a queued entry recorded, replayed verbatim.
-    pub(crate) fn no_plan_review(mut self, no_plan_review: bool) -> Self {
-        self.no_plan_review = no_plan_review;
-        self
-    }
-
-    pub(crate) fn with_main(mut self, with_main: bool) -> Self {
-        self.with_main = with_main;
-        self
-    }
-
-    /// Declare the pipeline stage, so the launch resolves *that* stage's model/effort/harness rather
-    /// than the one dispatch would infer from `--scout`/`--skill`.
-    pub(crate) fn stage(mut self, stage: Option<bn_core::pipeline::stage::Stage>) -> Self {
-        self.stage = stage;
-        self
-    }
-
     pub(crate) fn json(mut self, json: bool) -> Self {
         self.json = json;
         self
@@ -110,17 +79,14 @@ impl<'a> DispatchInvocation<'a> {
             "--agent".to_string(),
             self.agent.to_string(),
         ];
-        if let Some(branch) = self.branch {
-            args.extend(["--branch".to_string(), branch.to_string()]);
-        }
         if let Some(name) = self.name {
             args.extend(["--name".to_string(), name.to_string()]);
         }
         if self.scout {
             args.push("--scout".to_string());
         }
-        if let Some(skill) = self.skill {
-            args.extend(["--skill".to_string(), skill.to_string()]);
+        if let Some(task) = self.task {
+            args.extend(["--task".to_string(), task.to_string()]);
         }
         if self.verify {
             args.push("--verify".to_string());
@@ -128,35 +94,69 @@ impl<'a> DispatchInvocation<'a> {
         if self.yolo {
             args.push("--yolo".to_string());
         }
-        if self.no_plan_review {
-            args.push("--no-plan-review".to_string());
-        }
-        if self.with_main {
-            args.push("--with-main".to_string());
-        }
-        if let Some(stage) = self.stage {
-            args.extend(["--stage".to_string(), stage.as_str().to_string()]);
-        }
         if self.fresh {
             args.push("--fresh".to_string());
         }
-        // The orchestrator *is* the queue: queueing an item it just pulled off that queue would
-        // loop. Its concurrency cap already bounds how many worktrees a run can grow, so the
-        // daemon keeps the historical cold fallback while interactive/dashboard dispatches get the
-        // queueing default.
+        // A machine-started launch must not park itself on the orchestrate queue when the pool is
+        // full: nothing would pick it up. The cold fallback starts it in a fresh checkout instead.
         args.extend(["--on-pool-full".to_string(), "cold".to_string()]);
         if self.json {
             args.push("--json".to_string());
         }
         args
     }
+
+    /// Run this `bn dispatch` as a child process and wait for it to return.
+    ///
+    /// The door for agents the machine starts on its own behalf: a cron's repair agent, keep-warm's
+    /// brainstorm scouts, an attention item, a decomposed issue's children. A child rather than
+    /// [`super::run_dispatch`] in-process, because dispatch exits the process on a refusal, and one
+    /// refused launch must not take the caller's remaining work with it.
+    ///
+    /// `BN_WORKER_REPO` declares the target as the child's session, the same declaration the web
+    /// dashboard and the orchestrator make, so the cross-repo session guard does not refuse work
+    /// the machine chose for that repo.
+    pub(crate) fn launch(&self) -> Result<(), String> {
+        #[cfg(test)]
+        {
+            // The unit-test executable is not the `bn` CLI; re-entering it would re-run the suite.
+            LAUNCHED.with(|launched| launched.borrow_mut().push(self.args()));
+            Ok(())
+        }
+        #[cfg(not(test))]
+        {
+            let exe = std::env::current_exe()
+                .map_err(|e| format!("cannot resolve the bn executable: {e}"))?;
+            let status = std::process::Command::new(exe)
+                .args(self.args())
+                .env("BN_WORKER_REPO", self.repo)
+                .stdin(std::process::Stdio::null())
+                .status()
+                .map_err(|e| format!("could not run bn dispatch: {e}"))?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("bn dispatch exited {}", status.code().unwrap_or(-1)))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static LAUNCHED: std::cell::RefCell<Vec<Vec<String>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The argv of every [`DispatchInvocation::launch`] this test thread made, drained.
+#[cfg(test)]
+pub(crate) fn take_launched() -> Vec<Vec<String>> {
+    LAUNCHED.with(|launched| std::mem::take(&mut *launched.borrow_mut()))
 }
 
 #[cfg(test)]
 mod invocation_tests {
-    //! The argv builder is the last place a queued agent's identity can be lost. Everything
-    //! upstream — the entry, the tick's plan — can carry a branch faithfully and the agent still
-    //! runs as the wrong work if the command line does not say so.
+    //! The argv builder is the last place an agent's identity can be lost: a caller can carry a
+    //! name faithfully and the agent still runs as the wrong work if the command line drops it.
     use super::*;
 
     fn args_of(inv: DispatchInvocation<'_>) -> Vec<String> {
@@ -169,33 +169,25 @@ mod invocation_tests {
     }
 
     #[test]
-    fn a_declared_branch_and_name_reach_the_command_line() {
+    fn a_declared_name_and_task_reach_the_command_line() {
         let args = args_of(
             DispatchInvocation::new("set up nvim", "nvim", "copilot")
-                .branch(Some("repo-setup"))
                 .name(Some("repo-setup"))
-                .yolo(true)
-                .no_plan_review(true)
-                .with_main(true),
+                .task(Some("t12"))
+                .yolo(true),
         );
-        assert_eq!(flag_value(&args, "--branch"), Some("repo-setup"));
         assert_eq!(flag_value(&args, "--name"), Some("repo-setup"));
+        assert_eq!(flag_value(&args, "--task"), Some("t12"));
         assert!(args.iter().any(|a| a == "--yolo"));
-        // A queued entry that declined the gate must be relaunched having declined it: rebuilding
-        // the command without this is how the tick would quietly reinstate a plan review.
-        assert!(args.iter().any(|a| a == "--no-plan-review"));
-        assert!(args.iter().any(|a| a == "--with-main"));
     }
 
     #[test]
     fn an_undeclared_identity_adds_no_flags() {
         // A bare dispatch must be byte-identical to what it always was: dispatch derives the branch
-        // from the item, and an accidental empty `--branch` would be a very confusing way to fail.
+        // and name from the item.
         let args = args_of(DispatchInvocation::new("338", "bn", "copilot"));
-        assert_eq!(flag_value(&args, "--branch"), None);
         assert_eq!(flag_value(&args, "--name"), None);
+        assert_eq!(flag_value(&args, "--task"), None);
         assert!(!args.iter().any(|a| a == "--yolo"));
-        assert!(!args.iter().any(|a| a == "--no-plan-review"));
-        assert!(!args.iter().any(|a| a == "--with-main"));
     }
 }

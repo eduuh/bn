@@ -39,9 +39,6 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
                     let ctx =
                         resolver::resolve(cfg, &std::env::current_dir().unwrap_or_default()).ok();
                     match action {
-                        PipelineCmd::Sweep => {
-                            crate::cmd::pipeline_sweep::emit_pipeline_sweep(cfg, json)
-                        }
                         PipelineCmd::Route { task, all } => {
                             pl::emit_pipeline_route(cfg, task.as_deref(), all, json)
                         }
@@ -126,7 +123,6 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
                 issue,
                 part,
                 repo,
-                priority,
                 dry_run,
             } => {
                 let ctx = resolver::resolve(cfg, &std::env::current_dir().unwrap_or_default()).ok();
@@ -136,7 +132,6 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
                     repo.as_deref(),
                     &issue,
                     &part,
-                    priority,
                     dry_run,
                     json,
                 ) {

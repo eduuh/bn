@@ -138,11 +138,10 @@ fn is_zero(value: &i64) -> bool {
     *value == 0
 }
 
-/// The concurrency lane moved to [`crate::queue::kind`], next to the [`crate::backlog::BacklogKind`]
-/// it projects from — so the kind→lane mapping stays exhaustive and a new kind cannot be added
-/// without deciding which pool pays for it. Re-exported so every `orchestrate::WorkClass` path
-/// still resolves.
-pub use crate::queue::kind::WorkClass;
+/// The concurrency lane lives in [`crate::backlog::kind`], next to the [`crate::backlog::BacklogKind`]
+/// it projects from, so the kind to lane mapping stays exhaustive. Re-exported so every
+/// `orchestrate::WorkClass` path still resolves.
+pub use crate::backlog::WorkClass;
 
 /// One item in the orchestration queue: the dispatch subject plus the live lifecycle it accretes.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -239,7 +238,7 @@ pub struct QueueItem {
     /// **Which node this item executes on** (#717) — a *separate axis* from [`substrate`]: substrate
     /// chooses local-worktree vs. GitHub fan-out, `target` chooses *the node* a local/auto item
     /// lands on (the implicit local box or a chosen SSH worker). Carried from the leased backlog
-    /// entry; the pure scheduler ([`crate::scheduler::pick`]) places a local/auto item on this
+    /// entry; the pure scheduler places a local/auto item on this
     /// target after a hard eligibility filter. Defaults to [`ExecutionTarget::Local`] on a pre-#717
     /// run's state, so the implicit-local-box behavior is preserved unchanged.
     #[serde(default, skip_serializing_if = "ExecutionTarget::is_local")]
@@ -556,9 +555,9 @@ pub struct OrchestrateState {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub boot_id: Option<String>,
     /// Why local dispatch was capped/paused on the last pass (#377) — the label of the binding cap
-    /// ([`crate::scheduler::Bind::label`]: `ram` / `load` / `tokens` / `cost` / `local-cap`), or
+    /// (`ram` / `load` / `tokens` / `cost` / `local-cap`), or
     /// `None` when nothing bound (slots free, or the queue is empty). Set by the CLI executor after
-    /// the resource-aware [`crate::scheduler::pick`], so `bn orchestrate status` shows *why* pending
+    /// the resource-aware scheduler, so `bn orchestrate status` shows *why* pending
     /// items aren't dispatching without re-observing the machine. Purely informational — the
     /// authoritative decision is always re-made live each pass.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -1109,17 +1108,6 @@ impl OrchestrateState {
         self.queue
             .iter()
             .filter(|i| i.occupies_local_dispatch_slot() && i.work_class == class)
-            .count()
-    }
-
-    /// How many in-flight items run on this daemon's own box in `class`. SSH worker attempts keep
-    /// their durable local-substrate lifecycle but consume worker capacity, not a local lane slot.
-    pub fn local_node_in_flight_class(&self, class: WorkClass) -> usize {
-        self.queue
-            .iter()
-            .filter(|i| {
-                i.occupies_local_dispatch_slot() && i.node.is_none() && i.work_class == class
-            })
             .count()
     }
 
@@ -1988,7 +1976,7 @@ impl OrchestrateState {
     }
 
     /// Record why local dispatch was capped/paused this pass (#377) — the binding-cap label, or
-    /// `None` when nothing bound. Set by the CLI executor after [`crate::scheduler::pick`] so
+    /// `None` when nothing bound. Set by the CLI executor after scheduler so
     /// `bn orchestrate status` can show it. Only bumps `updated_at` on a real change.
     pub fn set_dispatch_bind(&mut self, label: Option<&str>, now: i64) {
         let next = label.map(str::to_string);

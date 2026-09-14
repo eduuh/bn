@@ -160,7 +160,6 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let profile = bn_core::resolver::MachineProfile {
             repos: vec!["*".to_string()],
-            queue: false,
             cron: true,
             web: false,
         };

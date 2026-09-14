@@ -63,11 +63,10 @@ const SANDBOX_ANCHORS: [&str; 5] = [
     "BN_HOSTNAME",
 ];
 
-/// Whether the environment rules the background reconcile out: the queue dispatcher's opt-outs, or
-/// any sandbox anchor. `queue-shakedown.sh` unsets `BN_NO_AUTO_TICK` with the real `HOME`, so the
-/// opt-outs alone do not keep a sandbox away from the real timers.
+/// Whether the environment rules the background reconcile out: the catch-up opt-out, or any
+/// sandbox anchor.
 fn reconcile_blocked() -> bool {
-    ["BN_NO_AUTO_TICK", "BN_NO_CATCHUP", "BN_IN_QUEUE_TICK"]
+    ["BN_NO_CATCHUP"]
         .iter()
         .chain(SANDBOX_ANCHORS.iter())
         .any(|key| std::env::var_os(key).is_some())

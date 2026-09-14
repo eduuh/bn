@@ -16,7 +16,7 @@ parent and do not dispatch it whole.
    globs. Shared registration files belong to one child rather than being repeated across siblings.
 3. Run `bn issue decompose {{issue}} --part "<shippable title>::<glob>[,<glob>]" ...`.
    Use at least two parts. The command validates that sibling globs do not overlap, creates or
-   reuses parent-linked child issues, comments the parent with their checklist, and enqueues only
-   the children. Ensure a supervisor is running when the backlog should drain immediately.
+   reuses parent-linked child issues, comments the parent with their checklist, and starts work on the
+   children only, never the parent.
 4. Report the child issue numbers and their touches-globs. The parent remains a tracking bundle;
    investigate and plan run independently inside each child lane.

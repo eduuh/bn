@@ -62,20 +62,6 @@ fn ssh_command(options: &[&str]) -> Command {
     command
 }
 
-/// Fetch the typed worker-status data object over the same hardened SSH transport used by remote
-/// dispatch. `None` means the node is unreachable or returned an invalid status payload.
-pub(crate) fn worker_status(cfg: &Config, alias: &str) -> Option<serde_json::Value> {
-    let runner = bn_core::worker::transport::RealSshRunner;
-    let transport = bn_core::worker::transport::Transport::connect(
-        cfg,
-        alias,
-        bn_core::worker::transport::SshOptions::default(),
-        &runner,
-    )
-    .ok()?;
-    transport.poll_status().ok()
-}
-
 struct SshRun {
     status: ExitStatus,
     stdout: Vec<u8>,

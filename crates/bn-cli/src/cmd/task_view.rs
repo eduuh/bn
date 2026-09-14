@@ -78,9 +78,9 @@ fn day_bucket(task: &bn_core::todo::Task, today: &str) -> Option<u8> {
 /// bucket the sort is stable, so `open_sorted`'s priority → due → id ranking is preserved.
 ///
 /// Machine-minted tasks ([`bn_core::task_owner`]) fold out of the default view the way future-dated
-/// work does — present in the store, absent from the question "what could I do today". Every
-/// enqueue must name a task (#1001), and almost every enqueue is the machine's: crons firing,
-/// worktrees being reclaimed, pools being warmed, setup agents the dashboard generated. Left in,
+/// work does — present in the store, absent from the question "what could I do today". Work names
+/// a task (#1001), and most minted tasks are the machine's: crons firing, worktrees being
+/// reclaimed, pools being warmed, setup agents the dashboard generated. Left in,
 /// they were 93 of the 96 rows here, and the three that were actually a person's work were
 /// unfindable among them. `--all` still shows them, because hiding a record is not the same as not
 /// keeping one.
@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn the_backlog_view_still_holds_every_record() {
-        // Folding out of a view is not deletion. Every enqueue names a task (#1001) precisely so
+        // Folding out of a view is not deletion. Work names a task (#1001) precisely so
         // the trail exists; `--all` is where it stays readable.
         let file = store();
         let items = select_tasks(&file, TaskView::All, &RepoScope::Any, TODAY);

@@ -24,12 +24,7 @@ import {
   repoIssuesQuery,
   repoScriptQuery,
 } from "../api/client";
-import {
-  saveRepoScript,
-  setRepoPoolSchedule,
-  startRepoOrchestrator,
-  startRepoSetupAgent,
-} from "../api/writes";
+import { saveRepoScript, startRepoOrchestrator, startRepoSetupAgent } from "../api/writes";
 import { useAppMutation } from "../hooks/useAppMutation";
 import { affects } from "../lib/invalidation";
 import type {
@@ -276,11 +271,11 @@ function SetupPanel({
     mutationFn: () => startRepoSetupAgent(repo),
     invalidates: affects.agentLaunch,
     toast: {
-      // `bn dispatch` may queue rather than launch — report which, so a click that filed work in
-      // the backlog does not read as an agent that never appeared.
+      // `bn dispatch` may schedule on the repo's run rather than launch when the pool is full.
+      // Report which, so a scheduled click does not read as an agent that never appeared.
       success: (r) =>
         (r as { dispatched?: boolean })?.dispatched === false
-          ? `Queued repo setup for ${repo} — it starts when the queue has capacity`
+          ? `Scheduled repo setup for ${repo}. It starts when a pool slot frees.`
           : `Starting repo setup for ${repo}…`,
       error: "Could not start setup",
     },
@@ -298,16 +293,9 @@ function SetupPanel({
           </span>
           <span className="flex-1" />
           {running ? (
-            <>
-              <Button asChild variant="secondary" size="sm">
-                <Link to="/queue">Watch in Queue</Link>
-              </Button>
-              <Button asChild size="sm">
-                <Link to={`/agents/${encodeURIComponent(running.session_id)}`}>
-                  Open setup agent
-                </Link>
-              </Button>
-            </>
+            <Button asChild size="sm">
+              <Link to={`/agents/${encodeURIComponent(running.session_id)}`}>Open setup agent</Link>
+            </Button>
           ) : (
             <Button
               type="button"
@@ -456,88 +444,10 @@ function IssuesPanel({ repo, onStart }: { repo: string; onStart: (item: ActionIt
  * counts can't — *which* branch is holding a slot, who took it and how long ago, and which slots
  * have no checkout yet. An un-pooled repo gets the explanation instead: pooling is opt-in, and the
  * idle `pool-warm` cron is what keeps an enabled pool warm without anyone asking. */
-function warmTime(pool: RepoPool, name: string, fallback: string) {
-  const at = pool.policy.warm_windows.find((w) => w.name === name)?.at;
-  return at?.match(/(\d{2}:\d{2})(?::\d{2})?$/)?.[1] ?? fallback;
-}
-
-function warmDurationMins(pool: RepoPool) {
-  const fore = pool.policy.warm_windows[0]?.fore ?? "90m";
-  const mins = fore.endsWith("h") ? Number.parseInt(fore, 10) * 60 : Number.parseInt(fore, 10);
-  return Number.isFinite(mins) && mins > 0 ? mins : 90;
-}
-
-function PoolWarmSchedule({ repo, pool }: { repo: string; pool: RepoPool }) {
-  const [lunch, setLunch] = useState(() => warmTime(pool, "pool-warm-lunch", "12:30"));
-  const [afterWork, setAfterWork] = useState(() => warmTime(pool, "pool-warm-after-work", "17:30"));
-  const [duration, setDuration] = useState(() => String(warmDurationMins(pool)));
-  const save = useAppMutation({
-    mutationFn: () =>
-      setRepoPoolSchedule(repo, {
-        lunch_time: lunch,
-        after_work_time: afterWork,
-        duration_mins: Number.parseInt(duration, 10) || 90,
-      }),
-    invalidates: affects.pool,
-    toast: { success: "Saved pool warm schedule", error: "Could not save pool warm schedule" },
-  });
-
-  return (
-    <Card className="space-y-3 p-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <div>
-          <div className="text-sm font-medium">Warm schedule</div>
-          <div className="text-xs text-muted-foreground">
-            Lunch is a best-effort opportunity. At the daily deadline, warming owns new queue
-            admission until every due pool is refreshed. The hard freshness limit is{" "}
-            {pool.policy.max_freshness_hours} hours.
-          </div>
-        </div>
-        <span className="flex-1" />
-        <Button type="button" size="sm" disabled={save.isPending} onClick={() => save.mutate()}>
-          {save.isPending ? "saving…" : "Save schedule"}
-        </Button>
-      </div>
-      <div className="grid gap-2 sm:grid-cols-3">
-        <label className="space-y-1 text-xs text-muted-foreground">
-          Lunch opportunity
-          <input
-            type="time"
-            value={lunch}
-            onChange={(e) => setLunch(e.target.value)}
-            className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
-          />
-        </label>
-        <label className="space-y-1 text-xs text-muted-foreground">
-          Daily deadline
-          <input
-            type="time"
-            value={afterWork}
-            onChange={(e) => setAfterWork(e.target.value)}
-            className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
-          />
-        </label>
-        <label className="space-y-1 text-xs text-muted-foreground">
-          Opportunity window minutes
-          <input
-            type="number"
-            min={15}
-            max={240}
-            value={duration}
-            onChange={(e) => setDuration(e.target.value)}
-            className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
-          />
-        </label>
-      </div>
-    </Card>
-  );
-}
-
-function PoolPanel({ repo, pool, now }: { repo: string; pool: RepoPool; now: number }) {
+function PoolPanel({ pool, now }: { pool: RepoPool; now: number }) {
   return (
     <section className="space-y-3">
       <SectionHead icon={Flame} title="Warm pool" count={pool.total} />
-      <PoolWarmSchedule repo={repo} pool={pool} />
       <Card className="divide-y divide-border p-0">
         {pool.slots.map((s) => (
           <div key={s.n} className="flex items-center gap-3 px-4 py-2.5 text-sm">
@@ -730,7 +640,7 @@ export function RepoDetail() {
 
           <IssuesPanel repo={rollup.repo} onStart={setComposer} />
 
-          <PoolPanel repo={rollup.repo} pool={rollup.pool} now={now} />
+          <PoolPanel pool={rollup.pool} now={now} />
 
           <CostPanel aic={rollup.aic} usd={rollup.cost_usd} />
 

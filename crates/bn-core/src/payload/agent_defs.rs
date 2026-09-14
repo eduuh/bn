@@ -32,7 +32,6 @@ fn agent_def_row(a: &crate::agents::AgentDef) -> Value {
         "repo": a.repo,
         "network": a.network,
         "catch_up": a.catch_up,
-        "queue": a.queue,
         "retry_after_secs": a.retry_after_secs,
         "skills": a.skills,
         "mcps": a.mcps,

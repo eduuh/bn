@@ -249,22 +249,6 @@ pub(crate) fn emit_doctor(cfg: &Config, stale_days: i64, brief: bool, as_json: b
                 );
                 println!("  {}", style::meta(&format!("fix: {}", m.fix)));
             }
-            Finding::Backlog(b) => {
-                println!(
-                    "backlog  {} {} queued item(s) name no task",
-                    style::meta("[untasked]"),
-                    b.untasked
-                );
-                for subject in b.sample.iter().take(3) {
-                    println!("  {}", style::meta(subject));
-                }
-                println!(
-                    "  {}",
-                    style::meta(
-                        "these predate #1001 and will run with no durable record; they are left in place deliberately so nothing in flight is orphaned"
-                    )
-                );
-            }
             Finding::NotesLeak(l) => {
                 println!(
                     "notes  {} {} foreign machine subtree(s) under the personal notes root",

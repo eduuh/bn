@@ -13,10 +13,8 @@ use std::path::Path;
 /// live dispatch with the pointer a finished one leaves behind. A dispatch branch outlives its
 /// agent: the worktree is removed and the PR merges, but `refs/heads/dispatch/t17` stays until
 /// somebody prunes it. Under the ref-exists rule that dead pointer refused every future dispatch of
-/// the same item, forever — and because a failed launch returns the queue entry to pending, the
-/// dispatcher re-ran `bn dispatch` against it on a loop. Six of the eight items held on the machine
-/// this was written for were blocked by branches already merged into the base, one of them for over
-/// nine hours.
+/// the same item, forever. Six of the eight items held on the machine this was written for were
+/// blocked by branches already merged into the base, one of them for over nine hours.
 ///
 /// So occupancy is two live facts instead: a worktree has the branch checked out, or the ref
 /// carries commits the base does not. Both are true exactly while the work is real, and both stop
@@ -153,8 +151,7 @@ mod tests {
     }
 
     /// The regression. `dispatch/t17` shipped and merged hours ago; its ref is all that is left.
-    /// Under the old rule this refused every future dispatch of t17, and the queue retried it every
-    /// ten minutes for as long as the machine was up.
+    /// Under the old rule this refused every future dispatch of t17, for as long as the ref lived.
     #[test]
     fn a_merged_branch_is_not_occupied_by_its_leftover_ref() {
         let (tmp, work) = repo();

@@ -236,7 +236,7 @@ pub fn list_jobs(cfg: &Config, ctx: Option<&Resolved>) -> Vec<JobRef> {
 /// Job scripts are plain `sh`, so the comments at the top are the only place for metadata a runner
 /// can act on. One directive so far — `# bn: latest-main`, which asks whoever runs the script to
 /// fetch and fast-forward the repo's main *before* starting it. The runner honours it, not the
-/// surface that queued the script, so a script gets latest main whether a cron, `bn run` or the
+/// surface that started the script, so a script gets latest main whether a cron, `bn run` or the
 /// picker asked; the picker's side pane reads the same header to say so up front.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScriptHeader {

@@ -36,10 +36,10 @@ run.
 ## 3. Ground the task
 
 "Grounded" means the task is connected to the things bn already knows, so every later stage — the
-gate, the queue, the fleet board, the quarter review — can find it and place it. Answer these in
+gate, dispatch, the fleet board, the quarter review — can find it and place it. Answer these in
 order, recording each on the task and in its context doc (`bn task doc {{task}}`):
 
-1. **Where does this happen?** `repo:` — nothing downstream can be placed without it; the queue cuts
+1. **Where does this happen?** `repo:` — nothing downstream can be placed without it; dispatch cuts
    a worktree from it. Use **only** a repo the packet lists as existing. A name outside that list
    fails the gate as `unknown_repo`. If none is right, ask (step 4) rather than inventing one.
 2. **What does it belong with?** `+project` for the body of work it is part of, and `q:` for the

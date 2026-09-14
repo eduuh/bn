@@ -115,43 +115,6 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
             // best-effort (for todo-id resolution / closing the source todo) — `run_dispatch`
             // requires it only when no `--repo` is given, and then emits a `--repo` nudge.
             let ctx = resolver::resolve(cfg, &std::env::current_dir().unwrap_or_default()).ok();
-            // Captured (#queue): a typed `bn dispatch` enqueues like everything else, so one
-            // dispatcher decides what the machine runs and when. `--on-pool-full fail` and
-            // `$BN_DISPATCH_NOW` both mean "I want this now" and keep the direct path.
-            //
-            // Intercepted here rather than inside `run_dispatch`, because that function's job is to
-            // *launch* — teaching it to sometimes not launch would make its 23 parameters mean two
-            // different things depending on config.
-            if dispatch_captured(cfg, on_pool_full) {
-                let ok = crate::cmd::queue_producers::capture_dispatch(
-                    cfg,
-                    &crate::cmd::queue_producers::DispatchRequest {
-                        // Carried, not inferred: a `--stage` the caller typed must survive the
-                        // queue, or the entry comes back out as whichever stage the guess allows.
-                        stage,
-                        repo: repo.as_deref(),
-                        item: &item.join(" "),
-                        scout,
-                        skill: skill.as_deref(),
-                        harness: agent.as_deref(),
-                        branch: branch.as_deref(),
-                        name: name.as_deref(),
-                        yolo,
-                        fresh,
-                        verify,
-                        plan,
-                        no_plan_review,
-                        with_main,
-                        machine: crate::cmd::queue_producers::machine_owned(),
-                        orchestrator,
-                    },
-                    json,
-                );
-                if ok {
-                    return;
-                }
-                // Enqueue failed: fall through and launch, rather than dropping the work silently.
-            }
             run_dispatch(
                 cfg,
                 ctx.as_ref(),
@@ -245,19 +208,4 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
             }
         },
     }
-}
-
-/// Whether a typed `bn dispatch` should enqueue rather than launch.
-///
-/// Two escapes, both meaning "not this one": `--on-pool-full fail`, which already says *do not
-/// defer this, tell me if it cannot run now*, and `$BN_DISPATCH_NOW` for a shell alias. Reusing an
-/// existing flag beats minting a `--now` that would have to be explained alongside it.
-fn dispatch_captured(cfg: &Config, on_pool_full: crate::cli::OnPoolFull) -> bool {
-    if matches!(on_pool_full, crate::cli::OnPoolFull::Fail) {
-        return false;
-    }
-    if std::env::var("BN_DISPATCH_NOW").is_ok_and(|v| !v.trim().is_empty() && v.trim() != "0") {
-        return false;
-    }
-    crate::cmd::queue_producers::active(cfg, crate::cmd::queue_producers::DISPATCH)
 }

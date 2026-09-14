@@ -58,7 +58,6 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
             repo,
             branch,
             if_stale,
-            now,
         } => {
             if if_stale && ran_ok_today(&job) {
                 println!("bn run: skipping '{job}' — already ran successfully today (--if-stale)");
@@ -69,7 +68,7 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
             } else {
                 target_ctx(cfg, repo, branch)
             };
-            std::process::exit(run_job_now(cfg, ctx.as_ref(), &job, now));
+            std::process::exit(run_job(cfg, ctx.as_ref(), &job));
         }
         CmdStaff::Machine { action } => match action {
             MachineCmd::List => crate::cmd::machine::emit_machine_list(cfg, json),

@@ -8,29 +8,19 @@
 // react-query's structural sharing and stores a rebuilt object, so the comparison was always false.
 // `useAppMutation` claims its writes by timestamp instead — see the note in that file.
 
-import { useRef } from "react";
-import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { queryKeys } from "../api/client";
 import type { OrchestrateView } from "../api/types";
-import { applyQueuedOrder, optimisticItem, patchRun, recount } from "../lib/backlog";
+import { applyQueuedOrder, patchRun, recount } from "../lib/backlog";
 import { useAppMutation, optimistic } from "./useAppMutation";
 import { affects } from "../lib/invalidation";
 import {
   apiDispatch,
-  apiQueueAdd,
   apiQueueRemove,
   apiQueueReorder,
   apiScale,
   apiStart,
   apiStop,
 } from "../api/writes";
-
-/** Resolve the run an unscoped write targets: the explicit repo, else the sole live run's repo. */
-function soleRepo(qc: QueryClient, explicit?: string): string | undefined {
-  if (explicit) return explicit;
-  const runs = qc.getQueryData<OrchestrateView>(queryKeys.orchestrate)?.runs ?? [];
-  return runs.length === 1 ? runs[0].repo : undefined;
-}
 
 /** Patch one run inside `['orchestrate']`, resolving the target repo from the write's vars. */
 function patchRunOf<TVars>(
@@ -44,42 +34,18 @@ function patchRunOf<TVars>(
 }
 
 export interface BacklogActions {
-  addToQueue: (v: { repo?: string; items: string[] }) => void;
   removeItem: (repo: string, id: string) => void;
   reorderQueue: (repo: string, ids: string[]) => void;
   setConcurrency: (repo: string, concurrency: number) => void;
   stopRun: (repo: string) => void;
   startRun: (v: { repo?: string; items: string[]; concurrency?: number }) => void;
   dispatchNow: (v: { repo: string; items: string[]; harness: string; kind: string }) => void;
-  pending: Record<"add" | "remove" | "reorder" | "scale" | "stop" | "start" | "dispatch", boolean>;
+  pending: Record<"remove" | "reorder" | "scale" | "stop" | "start" | "dispatch", boolean>;
 }
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 export function useBacklogActions(): BacklogActions {
-  const qc = useQueryClient();
-  // Monotonic sequence for optimistic tmp-item ids so a same-second re-add can't collide.
-  const seq = useRef(0);
-
-  const add = useAppMutation<unknown, { repo?: string; items: string[] }>({
-    mutationFn: (v) => apiQueueAdd(v),
-    optimistic: patchRunOf(
-      (v) => soleRepo(qc, v.repo),
-      (run, v) => {
-        const now = Math.floor(Date.now() / 1000);
-        return recount({
-          ...run,
-          queue: [...run.queue, ...v.items.map((it) => optimisticItem(it, seq.current++, now))],
-        });
-      },
-    ),
-    invalidates: affects.backlog,
-    toast: {
-      success: (_d, v) => `Queued ${plural(v.items.length, "item")}`,
-      error: "Could not queue items",
-    },
-  });
-
   const remove = useAppMutation<unknown, { repo: string; id: string }>({
     mutationFn: (v) => apiQueueRemove(v.id, v.repo),
     optimistic: patchRunOf(
@@ -154,7 +120,6 @@ export function useBacklogActions(): BacklogActions {
   });
 
   return {
-    addToQueue: (v) => add.mutate(v),
     removeItem: (repo, id) => remove.mutate({ repo, id }),
     reorderQueue: (repo, ids) => reorder.mutate({ repo, ids }),
     setConcurrency: (repo, concurrency) => scale.mutate({ repo, concurrency }),
@@ -162,7 +127,6 @@ export function useBacklogActions(): BacklogActions {
     startRun: (v) => start.mutate(v),
     dispatchNow: (v) => dispatch.mutate(v),
     pending: {
-      add: add.isPending,
       remove: remove.isPending,
       reorder: reorder.isPending,
       scale: scale.isPending,

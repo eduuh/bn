@@ -27,8 +27,8 @@ description = "bn — wake reactor and sole owner of attention toasts: ONE batch
 # resurrect's post-save hook: it kills nothing, and only decides which sessions the saved layout
 # records. The worst it can do is fail to restore a session after a reboot.
 #
-# The pool-slot ledger is NOT this kind of reclamation and is reconciled automatically, at the head
-# of every dispatcher pass: it deletes no branch, removes no worktree and kills no session. It
+# The pool-slot ledger is NOT this kind of reclamation and is reconciled automatically by a
+# scheduled job: it deletes no branch, removes no worktree and kills no session. It
 # only makes each warm pool's `leases.json` agree with who is actually in its slots — otherwise a
 # lease outlives every agent that ever held it (the recorded holder is a tmux server or login shell
 # that never exits), the pool reads full, and `bn dispatch` silently spills into cold worktrees.
@@ -58,12 +58,9 @@ randomized_delay = "2m"
 network = true
 description = "bn — 10-minute tick: auto-review-trigger (prepare the next queued PR when idle), attention-auto-trigger (autonomous pickup of eligible auto items), agent-supervise (stuck detection across the live fleet)"
 
-[[cron]]
-job = "agent-scheduler"
-on_calendar = "*:0/5"
-persistent = true
-network = true
-description = "bn — common Markdown agent scheduler: every 5 minutes strictly load config/agents, run each due agent by name, catch up missed slots, and back off failed attempts per retry_after"
+# Scheduled Markdown agents are disabled, ahead of removing the feature. There is deliberately no
+# `agent-scheduler` entry, so `bn cron register` unloads its timer and nothing fires an agent's
+# `on_calendar`. `bn run <agent>` still runs one by hand.
 
 [[cron]]
 job = "tick-15m"

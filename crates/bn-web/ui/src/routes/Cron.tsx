@@ -153,7 +153,6 @@ function AgentSchedulesSection({ agents, now }: { agents: AgentSchedule[]; now: 
         agent.schedule,
         agent.description ?? "",
         agentStateLabel(agent, now),
-        agent.queue ? "queue" : "",
         agent.ok === false ? "failed" : "",
         agent.due ? "due" : "",
       ]
@@ -195,14 +194,13 @@ function AgentSchedulesSection({ agents, now }: { agents: AgentSchedule[]; now: 
               <TableHead>State</TableHead>
               <TableHead>Schedule</TableHead>
               <TableHead>Last run</TableHead>
-              <TableHead>Queue</TableHead>
               <TableHead className="text-right">Action</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {filtered.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
+                <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">
                   No scheduled agents match this filter.
                 </TableCell>
               </TableRow>
@@ -236,11 +234,6 @@ function AgentSchedulesSection({ agents, now }: { agents: AgentSchedule[]; now: 
                   <TableCell className="font-mono text-xs">{agent.schedule}</TableCell>
                   <TableCell className="text-muted-foreground">
                     {agent.last_run != null ? `${timeAgo(agent.last_run, now)} ago` : "never"}
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={agent.queue ? "ok" : "muted"}>
-                      {agent.queue ? "queued" : "direct"}
-                    </Badge>
                   </TableCell>
                   <TableCell className="text-right">
                     <RerunButton job={agent.job} />

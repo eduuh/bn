@@ -181,7 +181,6 @@ mod tests {
             hostname: "web-only".to_string(),
             machine_profile: Some(MachineProfile {
                 repos: vec!["acme/api".to_string()],
-                queue: false,
                 cron: false,
                 web: true,
             }),

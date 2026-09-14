@@ -5,7 +5,7 @@
 //! * **Native state writes** mutate the orchestrator's own `orchestrate-<repo>.json` in-process
 //!   through [`bn_core::orchestrate::mutate`] — a locked read-modify-write the running daemon shares,
 //!   so a queue edit lands within one tick with no restart and is never clobbered by a concurrent
-//!   tick (#392). Endpoints: queue add / remove / reorder, scale, stop.
+//!   tick (#392). Endpoints: orchestrate queue remove / reorder, scale, stop.
 //! * **Process writes** shell out to `bn --json <fixed args>` via [`crate::bn_runner`] and return the
 //!   command's [`Envelope`] — the current way to reach tmux/git/gh/launchd (dispatch,
 //!   send, relaunch, kill, land, start). Since #428 this is a boundary choice rather than a
@@ -41,7 +41,7 @@ mod prompts;
 mod repo_pool;
 #[path = "actions/repo_setup.rs"]
 mod repo_setup;
-pub use repo_pool::{repo_pool_schedule_set, repo_pool_warm};
+pub use repo_pool::repo_pool_warm;
 #[path = "actions/reviews.rs"]
 mod reviews;
 // The two Markdown-definition CRUD surfaces — one skill file, one agent file — each a validated
@@ -51,7 +51,7 @@ mod agent_defs;
 #[path = "actions/skills.rs"]
 mod skills;
 pub use agent_defs::{agent_def_create, agent_def_delete, agent_def_write};
-pub use kill::{agent_kill, repo_drain, repo_session_relaunch};
+pub use kill::{agent_kill, repo_session_relaunch};
 pub use plan::plan_promote;
 pub use repo_setup::{repo_orchestrate_start, repo_script_write, repo_setup_agent_start};
 pub use reviews::review_decide;
@@ -271,66 +271,6 @@ pub(crate) fn respond_process(
 // ---------------------------------------------------------------------------
 // Native state writes
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Default, Deserialize)]
-pub struct QueueAddBody {
-    #[serde(default)]
-    pub repo: Option<String>,
-    #[serde(default)]
-    pub items: Vec<String>,
-}
-
-/// `POST /api/orchestrate/queue {repo?, items:[…]}` — enqueue work (deduped by derived id).
-///
-/// Goes through `bn queue add` — the durable backlog — instead of injecting into a live run's
-/// ledger, which bypassed the ranking, the conflict hold and the names-a-task invariant, and
-/// needed a run to already be up. Shelling the CLI (as `POST /api/dispatch` does) keeps the
-/// browser and the terminal on one implementation.
-pub async fn queue_add(
-    State(state): State<AppState>,
-    MaybeAddr(addr): MaybeAddr,
-    raw: Bytes,
-) -> Response {
-    let cmd = "orchestrate-queue-add";
-    let body: QueueAddBody = match parse_body(cmd, &raw) {
-        Ok(b) => b,
-        Err(resp) => return resp,
-    };
-    let items: Vec<String> = body
-        .items
-        .into_iter()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-    if items.is_empty() {
-        return bad_request(cmd, "empty", "no items to queue");
-    }
-    let repo = match resolve_repo(cmd, body.repo) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
-    let (mut added, mut failed) = (Vec::new(), Vec::new());
-    for item in &items {
-        // Fixed template; `--` ends option parsing so an item starting with `-` is never a flag.
-        let args = ["queue", "add", "--repo", &repo, "--", item].map(str::to_string);
-        let env = vec![("BN_WORKER_REPO".to_string(), repo.clone())];
-        let result = run_bn_env(args.to_vec(), None, env).await;
-        match result.ok {
-            true => added.push(item.clone()),
-            false => failed.push(json!({ "item": item, "envelope": result.envelope })),
-        }
-    }
-    let ok = failed.is_empty();
-    audit::record(&state, "queue-add", &repo, addr, ok);
-    if !ok && added.is_empty() {
-        return unavailable(cmd, "could not enqueue any item");
-    }
-    Json(Envelope::success(
-        cmd,
-        json!({ "repo": repo, "added": added, "failed": failed }),
-    ))
-    .into_response()
-}
 
 #[derive(Debug, Deserialize)]
 pub struct RepoQuery {

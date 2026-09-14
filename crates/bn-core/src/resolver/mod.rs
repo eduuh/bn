@@ -16,7 +16,6 @@ mod dirs;
 mod jobs;
 mod machine_config;
 mod paths;
-mod queue_config;
 mod tools_config;
 mod util;
 
@@ -35,9 +34,5 @@ pub use dirs::{
 pub use jobs::{
     agent_dirs, job_dirs, job_script, list_jobs, mcp_extras, parse_script_header, script_header,
     JobConfig, JobRef, JobScope, ScriptHeader, SCRIPT_HEADER_LINES,
-};
-pub use queue_config::{
-    dispatcher_alive, dispatcher_pass_age, dispatcher_pass_path, DirectMode, QueueConfig,
-    ALL_PRODUCERS, DISPATCHER_STALL_SECS,
 };
 pub use tools_config::ToolsConfig;

@@ -6,7 +6,6 @@ export interface AgentSchedule {
   schedule: string;
   description?: string | null;
   network: boolean;
-  queue: boolean;
   startup: boolean;
   retry_after_secs: number;
   due: boolean;

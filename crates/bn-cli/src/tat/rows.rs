@@ -42,19 +42,14 @@ pub(super) fn remote_pr_rows(prs: &[wt::RemotePr], represented: &HashSet<String>
 /// slots.
 /// Returns the rows plus the live-window count (the caller's quiet-clone shortcut). Shared by the
 /// initial in-process paint and the `--pick-stage sublist` reload feed so the two stay identical.
-/// Returns the rows, the number of open PR rows, and the queue state the command section was built
-/// from.
-///
-/// The states come back rather than being recomputed by the caller because deriving them costs a
-/// full parse of the append-only backlog — 445 KB folding to 50 live entries on the machine this
-/// was measured on, and 100 MB on one that had stalled. The picker paid it twice on every open: once
-/// here, and again inside `Ticker::start` asking the same question.
+/// Returns the rows, the number of open PR rows, and the run state the command section was built
+/// from, so `Ticker::start` does not ask tmux the same question a second time.
 pub(super) fn build_sub_rows(
     cfg: &Config,
     roots: &Roots,
     name: &str,
     refresh_worktrees: bool,
-) -> (String, usize, super::queue_view::CmdStates) {
+) -> (String, usize, super::commands::CmdStates) {
     let sess = ref_session(name);
     let repo = ref_repo(name);
     let bare = is_bare_repo(roots, name);
@@ -207,27 +202,19 @@ pub(super) fn build_sub_rows(
         None => CmdAvail::default(),
     };
     let now = bn_core::util::now_epoch_secs();
-    let mut states = super::queue_view::command_states(repo, now);
-    let settings_note = super::commands::settings::summary(cfg);
+    let mut states = super::commands::command_states(repo, now);
     // The repo's own scripts. Only for an untagged ref: a `repo@win` checkout lives outside the
-    // configured layout that `bn run --repo` will resolve against, so a row there would queue work
+    // configured layout that `bn run --repo` will resolve against, so a row there would start work
     // that runs somewhere else.
     let scripts = if bare && super::ref_tag(name).is_empty() {
         super::commands::scripts::repo_scripts(cfg, repo)
     } else {
         Vec::new()
     };
-    rows.push_str(&command_rows(
-        bare,
-        avail,
-        &scripts,
-        &states,
-        now_ms(),
-        &settings_note,
-    ));
-    // Only the rows that were drawn are worth watching. `command_states` keys every job the
-    // queue holds for this repo, including a cron's `keep-warm` no row shows — and the ticker
-    // repaints for as long as anything in here is active.
+    rows.push_str(&command_rows(bare, avail, &scripts, &states, now_ms()));
+    // Only the rows that were drawn are worth watching. `command_states` keys every window in the
+    // repo's session, including branch and agent windows no command row shows — and the ticker
+    // repaints for as long as anything in here is running.
     states.retain(|id, _| rows.contains(&format!("cmd|{id}|")));
 
     (rows, open_windows.len(), states)

@@ -12,9 +12,8 @@ import { cn } from "../lib/utils";
  * Per-run steering: the count strip, the concurrency scale / stop control, and the queue
  * reorder / remove list, for every live orchestrate run.
  *
- * Extracted from `/fleet` because it was the only thing on that screen `/queue` could not already
- * do, and `/queue` is where the rest of the operational verbs live. Kept as one component used by
- * both rather than copied: these controls own a write path (scale, stop, reorder, remove) whose
+ * Extracted from `/fleet` when that screen retired. Kept as one component rather than copied into
+ * each page that shows runs: these controls own a write path (scale, stop, reorder, remove) whose
  * optimistic patching and rollback live in `useBacklogActions`, and two divergent copies of a write
  * surface is how a dashboard ends up with a button that works on one page and not the other.
  *

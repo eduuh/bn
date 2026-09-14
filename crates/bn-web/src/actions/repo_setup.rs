@@ -37,20 +37,13 @@ fn valid_script_name(s: &str) -> bool {
 }
 
 /// The fleet task name a repo setup agent runs under. Declared once: it is what the dispatch is
-/// launched with, what a running agent is recognised by, and what a queued entry carries in its
-/// [`bn_core::backlog::AgentSpec`], so all three cannot drift apart.
+/// launched with and what a running agent is recognised by, so the two cannot drift apart.
 pub const SETUP_TASK_NAME: &str = "repo-setup";
 
-/// Every repo that already has a setup agent — **running or waiting to run**.
-///
-/// It used to consult only the live fleet, which was right while a click launched an agent
-/// immediately. Once dispatch began enqueueing, a queued agent was invisible here: the guard saw no
-/// agent, so the next click enqueued a second one, and the one after that a third. Nothing capped
-/// it, and the duplicates would all start together the moment the queue found capacity.
-///
-/// A queue makes "is this already happening?" a question about two places, so it has to ask both.
+/// Every repo that already has a running setup agent. A click launches the agent immediately, so
+/// the live fleet is the whole answer.
 fn setup_agent_repos(cfg: &bn_core::resolver::Config) -> BTreeSet<String> {
-    let live = bn_core::agent::supervise(
+    bn_core::agent::supervise(
         cfg,
         bn_core::agent::DEFAULT_IDLE_MINS,
         bn_core::agent::DEFAULT_STUCK_MINS,
@@ -62,17 +55,7 @@ fn setup_agent_repos(cfg: &bn_core::resolver::Config) -> BTreeSet<String> {
             .is_some_and(|name| name == SETUP_TASK_NAME)
     })
     .map(|a| a.repo.to_ascii_lowercase())
-    .collect::<BTreeSet<String>>();
-
-    let backlog = bn_core::backlog::load(&bn_core::backlog::backlog_path());
-    let queued = backlog
-        .entries()
-        .iter()
-        .filter(|e| e.status.is_active())
-        .filter(|e| e.agent.name.as_deref() == Some(SETUP_TASK_NAME))
-        .map(|e| e.repo.to_ascii_lowercase());
-
-    live.into_iter().chain(queued).collect()
+    .collect()
 }
 
 async fn launch_repo_setup_agent(
@@ -126,15 +109,7 @@ async fn launch_repo_setup_agent(
     run_bn_env(
         args,
         None,
-        vec![
-            ("BN_WORKER_REPO".to_string(), repo.to_string()),
-            // Nobody typed this prompt — it was rendered from a template two functions ago. Without
-            // saying so, the enqueue minted a task on the human's day list carrying the whole
-            // prompt as its title, and the entry classified `foreground`, so a chore competed for
-            // the watched coding lane against the work its owner was sitting in front of. Six
-            // repos' setup agents sat pending behind that for five hours.
-            ("BN_MACHINE_DISPATCH".to_string(), "1".to_string()),
-        ],
+        vec![("BN_WORKER_REPO".to_string(), repo.to_string())],
     )
     .await
 }

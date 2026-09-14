@@ -60,7 +60,6 @@ pub async fn search(
                 notes: &notes_summary,
                 goals: &goals,
                 queue: &queue,
-                backlog: None,
                 now,
             });
 

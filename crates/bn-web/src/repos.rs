@@ -230,7 +230,7 @@ pub fn repos_view(cfg: &Config) -> Value {
         .iter()
         .map(|repo| {
             let st = bn_core::pool::pool_status(cfg, repo);
-            (repo.to_ascii_lowercase(), pool_json(cfg, &st))
+            (repo.to_ascii_lowercase(), pool_json(&st))
         })
         .collect();
 
@@ -241,7 +241,6 @@ pub fn repos_view(cfg: &Config) -> Value {
     let synthetic = synthetic_repos(cfg);
 
     assemble(
-        cfg,
         &managed,
         &cloned,
         &synthetic,
@@ -263,7 +262,7 @@ pub fn repos_view(cfg: &Config) -> Value {
 /// Slots ride along because the counts alone can't answer the question you actually have about a
 /// half-leased pool — *which* branch is holding a slot. The list is bounded by the configured size
 /// (at most `MAX_POOL_SIZE`) and only pooled repos have one, so this stays a small payload.
-fn pool_json(cfg: &Config, st: &bn_core::pool::PoolStatus) -> Value {
+fn pool_json(st: &bn_core::pool::PoolStatus) -> Value {
     // Slot 1 is the reserved main slot, never a worker — it is excluded from every count that
     // answers "can this pool take more work?".
     let controller = bn_core::agent::MAIN_POOL_SLOT;
@@ -290,7 +289,7 @@ fn pool_json(cfg: &Config, st: &bn_core::pool::PoolStatus) -> Value {
         "needs_top_up": needs_top_up,
         "full": full,
         "last_warmed_ts": st.last_warmed_ts,
-        "policy": pool_policy_json(cfg),
+        "policy": pool_policy_json(),
         "slots": st.slots.iter().map(|s| json!({
             "n": s.n,
             "leased": s.leased,
@@ -304,7 +303,7 @@ fn pool_json(cfg: &Config, st: &bn_core::pool::PoolStatus) -> Value {
 }
 
 /// The pool view for a repo with no pool configured — pooling disabled, no slots.
-fn pool_disabled(cfg: &Config) -> Value {
+fn pool_disabled() -> Value {
     json!({
         "enabled": false,
         "total": 0,
@@ -316,7 +315,7 @@ fn pool_disabled(cfg: &Config) -> Value {
         "needs_top_up": false,
         "full": false,
         "last_warmed_ts": null,
-        "policy": pool_policy_json(cfg),
+        "policy": pool_policy_json(),
         "slots": []
     })
 }
@@ -329,14 +328,10 @@ fn pool_disabled(cfg: &Config) -> Value {
 /// UI *computes* with: `min_ready`, which the optimistic pool update needs to recompute
 /// `needs_top_up` locally after a resize. The rest was documentation shipped down the wire on
 /// every 30s poll, once per repo.
-fn pool_policy_json(cfg: &Config) -> Value {
+fn pool_policy_json() -> Value {
     json!({
         "min_ready": POOL_MIN_READY,
         "max_freshness_hours": 24,
-        "warm_windows": bn_core::queue::window::read_pool_warm_windows(
-            &bn_core::resolver::machine_config_path(),
-            &cfg.queue.windows,
-        ),
     })
 }
 
@@ -353,7 +348,6 @@ struct RepoLookups<'a> {
 /// sinks the never-touched clones to the bottom; sessions within a repo sort in-flight-first, then
 /// most-recent.
 fn assemble(
-    cfg: &Config,
     managed: &[String],
     cloned: &[String],
     synthetic: &BTreeSet<String>,
@@ -436,7 +430,7 @@ fn assemble(
                     .pools
                     .get(&repo)
                     .cloned()
-                    .unwrap_or_else(|| pool_disabled(cfg)),
+                    .unwrap_or_else(pool_disabled),
                 "setup": lookups
                     .setup
                     .get(&repo)
@@ -646,10 +640,6 @@ mod tests {
         }
     }
 
-    fn cfg() -> Config {
-        Config::load()
-    }
-
     fn lookups<'a>(
         pools: &'a BTreeMap<String, Value>,
         links: &'a BTreeMap<String, Value>,
@@ -679,9 +669,7 @@ mod tests {
         let cost = CostView::default();
         let pools = BTreeMap::new();
         let links = BTreeMap::new();
-        let cfg = cfg();
         let v = assemble(
-            &cfg,
             &["managed".to_string(), "cloned".to_string()],
             &["cloned".to_string()],
             &BTreeSet::new(),
@@ -708,9 +696,7 @@ mod tests {
             ..CostView::default()
         };
         let seeds = vec![session("bn", "feat"), session("bn", "feat")];
-        let cfg = cfg();
         let v = assemble(
-            &cfg,
             &[],
             &["bn".to_string()],
             &BTreeSet::new(),
@@ -746,13 +732,11 @@ mod tests {
                 "needs_top_up": false,
                 "full": false,
                 "last_warmed_ts": null,
-                "policy": pool_policy_json(&cfg()),
+                "policy": pool_policy_json(),
                 "slots": [],
             }),
         );
-        let cfg = cfg();
         let v = assemble(
-            &cfg,
             &["bn".to_string()],
             &["bn".to_string(), "app".to_string()],
             &BTreeSet::new(),
@@ -815,8 +799,7 @@ mod tests {
                 },
             ],
         };
-        let cfg = cfg();
-        let v = pool_json(&cfg, &st);
+        let v = pool_json(&st);
         // The controller slot is warm, but it does not count as a ready worker.
         assert_eq!(v["ready"], serde_json::json!(0));
         assert_eq!(v["worker_idle"], serde_json::json!(1));
@@ -831,9 +814,7 @@ mod tests {
             "bn".to_string(),
             serde_json::json!({ "status": "ready", "needs_setup": false }),
         );
-        let cfg = cfg();
         let v = assemble(
-            &cfg,
             &[],
             &["bn".to_string(), "app".to_string()],
             &BTreeSet::new(),
@@ -850,12 +831,10 @@ mod tests {
 
     #[test]
     fn assemble_known_excludes_today() {
-        let cfg = cfg();
         let synthetic = "virtual".to_string();
         let synthetic_repos = BTreeSet::from([synthetic.clone()]);
         let seeds = vec![session(&synthetic, "2026-08-06")];
         let v = assemble(
-            &cfg,
             &["bn".to_string(), synthetic.clone()],
             &["bn".to_string(), synthetic.clone()],
             &synthetic_repos,
@@ -884,9 +863,7 @@ mod tests {
     #[test]
     fn assemble_excludes_note_only_pseudo_repos() {
         let seeds = vec![session("repo", "master"), session("bn", "main")];
-        let cfg = cfg();
         let v = assemble(
-            &cfg,
             &[],
             &["bn".to_string()],
             &BTreeSet::new(),
@@ -910,9 +887,7 @@ mod tests {
         let mut hot = session("zzz", "y");
         hot.in_flight = true;
         hot.last_activity_ts = 9_999;
-        let cfg = cfg();
         let v = assemble(
-            &cfg,
             &[],
             &[],
             &BTreeSet::new(),

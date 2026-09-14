@@ -38,7 +38,7 @@ pub struct TasksQuery {
 /// `GET /api/tasks` — the task store (#996), filtered.
 ///
 /// The normal path is the open actionable view, `status=done` is one day's immutable completion
-/// record, and `status=all` is the bounded all-time ledger used by Queue.
+/// record, and `status=all` is the bounded all-time ledger.
 pub async fn tasks(State(state): State<AppState>, Query(q): Query<TasksQuery>) -> Response {
     let cmd = "tasks";
     let today = bn_core::util::today();

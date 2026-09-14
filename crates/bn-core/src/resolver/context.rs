@@ -211,12 +211,11 @@ fn normalize(repo: String, branch: String) -> Resolved {
 /// derived from `dir`. A branch with no repo is rejected here so every caller gets the same
 /// answer instead of one falling back to cwd.
 ///
-/// A repo alone used to be a partial target too, and that refusal failed real work: the queue
-/// files a cron job against the repo it serves with no branch (`ExecSpec::Job { repo: Some(_),
-/// branch: None }`) and runs it as `bn run <job> --repo R`, so every such job — `watch` sixty
-/// times a day, `pr-observe`, `agent-observe` — exited 1 with "--repo and --branch must be given
-/// together" for work that only ever meant the repo. `main` is where the job tiers resolve and
-/// where the repo's main slot sits, so it is the branch a repo-only target means.
+/// A repo alone used to be a partial target too, and that refusal failed real work: a cron job
+/// bound to the repo it serves with no branch runs as `bn run <job> --repo R`, so every such job
+/// (`watch` sixty times a day, `pr-observe`, `agent-observe`) exited 1 with "--repo and --branch
+/// must be given together" for work that only ever meant the repo. `main` is where the job tiers
+/// resolve and where the repo's main slot sits, so it is the branch a repo-only target means.
 pub fn resolve_target(
     cfg: &Config,
     dir: &Path,

@@ -75,13 +75,22 @@ pub fn run_with_env(
 }
 
 /// Spawn `bn <args>` detached and reap it off the caller's request path.
+///
+/// The child gets its own process group, so a terminal closing or a Ctrl-C aimed at the caller
+/// does not take a long-running job down with it.
 pub fn spawn_detached(args: &[&str]) -> std::io::Result<u32> {
-    let mut child = Command::new(resolve_bn_bin())
+    let mut command = Command::new(resolve_bn_bin());
+    command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn()?;
     let pid = child.id();
     std::thread::spawn(move || {
         let _ = child.wait();

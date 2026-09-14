@@ -4,7 +4,7 @@
 //! specialist is installable, not runnable), *may it run here* (its repository is not on this
 //! machine), and *is it switched on* (an opt-in agent nobody has opted into).
 //!
-//! They live together, and outside `run_job_inner`, because the last of them used to be seven
+//! They live together, and outside `run_job`, because the last of them used to be seven
 //! copies of the same check scattered through seven agent-named native jobs — which is exactly
 //! what made an agent something Rust had to know about rather than something a manifest declares.
 use crate::*;

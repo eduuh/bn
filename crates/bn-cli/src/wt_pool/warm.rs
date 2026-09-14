@@ -99,8 +99,8 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool) -> bool {
         return true;
     }
     let _ = std::fs::create_dir_all(&ctx.pool_dir);
-    // One warm per pool at a time. The cron timer and the queue's dispatch of the same job once
-    // ran together, and the loser's `status` + `clean -df` deleted the tracked files the winner's
+    // One warm per pool at a time. Two runs of the same job, started from two places, once ran
+    // together, and the loser's `status` + `clean -df` deleted the tracked files the winner's
     // `switch` was still writing (see `slot_lock`). A warm is idempotent, so the one already
     // running is the answer — yielding to it is a success, not a failed refresh.
     let Some(_warm_lock) = slot_lock::try_lock_warm(&ctx.pool_dir) else {
@@ -553,21 +553,20 @@ fn run_bn_build(repo: &str, slot: &Path, jobs: Option<usize>) -> BuildOutcome {
     }
 }
 
-/// Whether a mandatory pool refresh has real work to do right now.
-///
-/// This is the cheap predicate the queue tick uses before enqueueing mandatory warm work. The
-/// expensive build still runs through [`job_pool_warm`], which re-checks the same gate before doing
-/// anything; this only keeps the queue from filling with "wake up and skip" entries.
 /// `pool-warm` cron — refresh every due repo's warm-slot pool after its daily deadline, so a leased
-/// dispatch always lands on a ready checkout. When queued with `bn run pool-warm --repo <repo>`, the context
-/// scopes the refresh to that one repo so the Repos page can schedule a pool build without turning
+/// dispatch always lands on a ready checkout. Run as `bn run pool-warm --repo <repo>`, the context
+/// scopes the refresh to that one repo so the Repos page can start a pool build without turning
 /// it into an all-pools sweep. Each repo's warm records a `pool_warm` event, so `bn metrics` shows
 /// when the pools were last refreshed (the "record when we refresh pools" ask).
+///
+/// Every run first makes the pool ledgers match who is actually in the slots
+/// ([`super::reclaim::reconcile_pools`]), so a warm never plans against leases nobody holds.
 pub(crate) fn job_pool_warm(cfg: &Config, ctx: Option<&bn_core::resolver::Resolved>) -> i32 {
+    let now = bn_core::util::now_epoch_secs();
+    super::reclaim::reconcile_pools(cfg, now);
     if let Some(ctx) = ctx {
         return warm_pool_for_cron(cfg, &ctx.repo);
     }
-    let now = bn_core::util::now_epoch_secs();
     match crate::wt_pool_refresh::plan_pool_refresh(cfg, now) {
         crate::wt_pool_refresh::PoolRefreshPlan::Skip(why) => {
             crate::cmd::jobs::native_job_line(&format!("pool-warm: {why}"), false);
@@ -597,12 +596,12 @@ pub(crate) fn job_pool_warm(cfg: &Config, ctx: Option<&bn_core::resolver::Resolv
 /// Resolved through [`resolve_dispatch_pool`], which takes the repo name straight rather than
 /// resolving a cwd — the cron has no worktree to stand in. Historically this mattered far more:
 /// `resolve_pool` refused any repo absent from `~/.config/wt/pools` while `bn dispatch` pooled
-/// every clone regardless, so a queued `pool-warm --repo <repo>` failed exit 1 on a pool that
+/// every clone regardless, so a `pool-warm --repo <repo>` failed exit 1 on a pool that
 /// plainly existed on disk. The config is gone and the two resolvers now agree by construction.
 ///
-/// A repo with no bare clone is a **skip, not a failure**: the only way to reach that is a queued
-/// warm outliving the clone it named, which is a stale queue entry rather than a broken cron, and
-/// paging for it buries the failures that mean something. Every line goes through
+/// A repo with no bare clone is a **skip, not a failure**: the only way to reach that is a warm
+/// requested for a clone that has since gone, which is a stale request rather than a broken cron,
+/// and paging for it buries the failures that mean something. Every line goes through
 /// [`crate::cmd::jobs::native_job_line`] so `bn cron show pool-warm` names the repo and the reason
 /// instead of reporting "(no output captured)".
 fn warm_pool_for_cron(cfg: &Config, repo: &str) -> i32 {

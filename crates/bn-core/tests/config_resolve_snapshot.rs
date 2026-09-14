@@ -135,9 +135,19 @@ fn the_live_config_resolves_the_same_after_migrating() {
 const POPULATED: &str = r#"
 [machine]
 repos = ["bn", "arena"]
+# `queue` and the `[queue]` table below are retired; they stay to prove an old config still resolves.
 queue = true
 cron = true
 web = true
+
+[queue]
+coding = 2
+capture = ["cron"]
+
+[[queue.windows]]
+name = "lunch"
+at = "Mon..Fri *-*-* 12:30:00"
+fore = "90m"
 
 [harness]
 default = "claude"

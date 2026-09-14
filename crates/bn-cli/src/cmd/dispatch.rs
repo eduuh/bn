@@ -1036,7 +1036,7 @@ pub(crate) fn run_dispatch(
             dp::DispatchBranchChoice::Use(branch) => branch,
             // A refusal, not a failure: the leftover ref of a merged branch satisfies this test
             // with no agent alive, so asking again later gets the same answer. `EXIT_REFUSED`
-            // tells the queue not to wait for one.
+            // tells a caller not to retry.
             dp::DispatchBranchChoice::AlreadyActive(branch) => refuse_json(
                 json,
                 "dispatch",

@@ -11,11 +11,9 @@
 //! * [`super::cleanup_one`] is the implementation — the gates, the note close, the removal, the
 //!   pool-lease hand-back. Every caller that reclaims a worktree goes through it.
 //! * [`run_now`] is that same work, re-entered as `bn wt close --reclaim` from the keystroke's own
-//!   backgrounded process. It used to be filed on the machine queue instead, and that is the
-//!   change: a queue under load holds everything, so a slot closed by hand stayed leased for as
-//!   long as the dispatcher stayed busy, with the status line saying "reclaim queued". Nothing a
-//!   person does by hand in tmux should wait on the queue — `run-shell -b` already keeps the UI
-//!   free, so the keystroke can afford to do the work itself.
+//!   backgrounded process. Nothing a person does by hand in tmux should wait on a background
+//!   scheduler — `run-shell -b` already keeps the UI free, so the keystroke can afford to do the
+//!   work itself.
 
 use super::*;
 

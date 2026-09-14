@@ -104,9 +104,6 @@ struct AgentFrontmatter {
     run: Option<String>,
     #[serde(default)]
     network: bool,
-    /// `queue: false` opts this agent out of the work queue; absent means yes.
-    #[serde(default = "yes")]
-    queue: bool,
     #[serde(default)]
     trigger: Option<TriggerSpec>,
     #[serde(default)]
@@ -172,11 +169,6 @@ struct AgentFrontmatter {
 }
 
 /// A resolved agent definition: its metadata, the tier it was discovered in, and its body text.
-/// Serde default for opt-in-by-absence booleans.
-fn yes() -> bool {
-    true
-}
-
 #[derive(Debug, Clone)]
 pub struct AgentDef {
     /// The `bn run <name>` job this agent gathers with.
@@ -265,12 +257,6 @@ pub struct AgentDef {
     pub model: Option<String>,
     /// Declared named arguments used by the Markdown body.
     pub arguments: Vec<AgentArgDef>,
-    /// Whether this agent goes through the work queue when `[queue].capture` includes `cron`.
-    ///
-    /// Defaults to true, so capturing is a single decision rather than one to re-make per agent;
-    /// `queue: false` in frontmatter is the opt-out for anything that genuinely must run inline
-    /// (a gate something else blocks on, a probe whose value is its immediacy).
-    pub queue: bool,
     /// Markdown body after the frontmatter fence — the prompt for gather agents.
     pub body: String,
     /// The tier this definition was discovered in (branch shadows repo shadows global).
@@ -456,7 +442,6 @@ pub fn parse_agent(
         retry_after_secs,
         run: front.run,
         network: front.network,
-        queue: front.queue,
         triggers,
         description: front.description,
         gather: front.gather,

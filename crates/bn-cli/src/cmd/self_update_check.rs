@@ -4,14 +4,10 @@
 //! drifts from main is a machine nobody can reason about — but it means an unattended job replaces
 //! the binary every long-running bn service on the box is executing.
 //!
-//! Which is how the dispatcher died: main predated the queue, so the freshly installed bn had no
-//! `queue` subcommand, and `bn queue run` became `unrecognized subcommand` on every restart until
-//! launchd stopped trying. Nothing failed loudly. `self-update` reported success, because from its
-//! point of view it had done exactly what it was asked.
-//!
-//! The queue now defends itself — it will not retire in favour of a binary that cannot replace it,
-//! and will not install a unit pointing at one. This is the other half: the update that *caused*
-//! it should say so, rather than leaving the discovery to whoever notices the machine is quiet.
+//! A service whose subcommand the new binary lacks fails on every restart until launchd or systemd
+//! stops trying, and nothing fails loudly: `self-update` reports success, because from its point of
+//! view it did exactly what it was asked. So the update that caused it says so, rather than leaving
+//! the discovery to whoever notices the machine is quiet.
 //!
 //! It reports rather than rolls back. By the time this runs `install.sh` has already replaced the
 //! binary, and a job that silently reverted the update you asked for would be its own surprise. A
@@ -21,15 +17,13 @@ use std::path::Path;
 
 /// The bn subcommand each supervised service needs, paired with the unit that would be installed
 /// for it. If the unit is on the box, the binary has to be able to run it.
-const SERVICES: [(&str, &str); 3] = [
-    ("com.bn.queue", "queue"),
+const SERVICES: [(&str, &str); 2] = [
     ("com.bn.web", "web"),
     ("com.bn.routine", "routine"),
 ];
 
 /// The systemd equivalents, by unit file name.
-const UNITS: [(&str, &str); 3] = [
-    ("bn-queue.service", "queue"),
+const UNITS: [(&str, &str); 2] = [
     ("bn-web.service", "web"),
     ("bn-routine.service", "routine"),
 ];

@@ -2,7 +2,7 @@
 //! a day's goals, extracted from `daily.rs` so the owner filter below has a testable home.
 //!
 //! **Machine work is not your work.** #1151 established `task_owner::is_machine` and taught
-//! `bn task`, the queue classifier and the SMART gate to respect it, but it never reached this
+//! `bn task` and the SMART gate to respect it, but it never reached this
 //! projection — so `bn task` hid the cron chores while `bn daily`, `/api/goals`, `bn next` and the
 //! standup packet went on listing "run tools-reconcile" and "run wt-cleanup" as the day's focus.
 //! Filtering here fixes every one of those readers at once, because they all come through
@@ -40,9 +40,8 @@ pub(super) fn task_as_goal(task: &crate::todo::Task, today: &str) -> Item {
 /// Whether a task belongs on a *person's* day at all.
 ///
 /// Ownership is read from the task's `auto:` marker via [`crate::task_owner::is_machine`], never
-/// inferred from its text or its `src:` link — `task_owner.rs` and the `is_warming` cautionary
-/// tale in `queue::classify` both make that a rule, because a machine task is not identifiable by
-/// how it happens to be worded.
+/// inferred from its text or its `src:` link — `task_owner.rs` makes that a rule, because a machine
+/// task is not identifiable by how it happens to be worded.
 pub(super) fn is_mine(task: &crate::todo::Task) -> bool {
     !crate::task_owner::is_machine(task)
 }

@@ -16,9 +16,9 @@ is the schedule and the blast radius.
 never start running on a machine just because that machine upgraded bn.
 
 No `run:` line, deliberately: the agent resolves to the same-named job script,
-`config/jobs/worktree-sweep.sh`, which holds the lane's settings. `bn run` is captured by the queue
-and re-dispatched in a fresh process that inherits no environment, so settings on a `run:` command
-line silently reach the driver unset.
+`config/jobs/worktree-sweep.sh`, which holds the lane's settings. The agent is fired by a timer
+through the scheduler, not from your shell, so the script is the one place its settings are always
+set and reviewable in git; settings on a `run:` command line silently reached the driver unset.
 
 **Why this is allowed to run unattended when `wt-cleanup` and `fleet-reap` are not.**
 `config/crons.toml` bans automated reclamation because it "can never delete a branch, remove a

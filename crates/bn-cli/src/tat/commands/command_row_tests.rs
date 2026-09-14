@@ -1,5 +1,4 @@
 //! Tests for the command section — split out of `commands.rs` for the 1000-line ratchet.
-use super::super::queue_view::Held;
 use super::*;
 
 fn kinds(rows: &str) -> Vec<&str> {
@@ -17,14 +16,14 @@ fn payloads(rows: &str) -> Vec<&str> {
 #[test]
 fn a_non_bare_ref_gets_no_command_section() {
     assert_eq!(
-        command_rows(false, CmdAvail::default(), &[], &CmdStates::new(), 0, ""),
+        command_rows(false, CmdAvail::default(), &[], &CmdStates::new(), 0),
         ""
     );
 }
 
 #[test]
 fn the_section_leads_with_the_separator() {
-    let rows = command_rows(true, CmdAvail::default(), &[], &CmdStates::new(), 0, "");
+    let rows = command_rows(true, CmdAvail::default(), &[], &CmdStates::new(), 0);
     assert_eq!(kinds(&rows).first(), Some(&"cmdsep"));
 }
 
@@ -32,7 +31,7 @@ fn the_section_leads_with_the_separator() {
 /// tagged ref would advertise a key that can only refuse.
 #[test]
 fn an_unpooled_ref_is_offered_no_pool_verbs() {
-    let rows = command_rows(true, CmdAvail::default(), &[], &CmdStates::new(), 0, "");
+    let rows = command_rows(true, CmdAvail::default(), &[], &CmdStates::new(), 0);
     let ids = payloads(&rows);
     assert!(!ids.contains(&"pool-warm"), "{ids:?}");
     assert!(!ids.contains(&"pool-grow"), "{ids:?}");
@@ -46,7 +45,7 @@ fn a_pooled_ref_is_offered_both_pool_verbs() {
         cold: 2,
         at_ceiling: false,
     };
-    let rows = command_rows(true, avail, &[], &CmdStates::new(), 0, "");
+    let rows = command_rows(true, avail, &[], &CmdStates::new(), 0);
     let ids = payloads(&rows);
     assert!(ids.contains(&"pool-warm"), "{ids:?}");
     assert!(ids.contains(&"pool-grow"), "{ids:?}");
@@ -60,7 +59,7 @@ fn growing_is_withheld_at_the_ceiling() {
         cold: 0,
         at_ceiling: true,
     };
-    let rows = command_rows(true, avail, &[], &CmdStates::new(), 0, "");
+    let rows = command_rows(true, avail, &[], &CmdStates::new(), 0);
     let ids = payloads(&rows);
     assert!(!ids.contains(&"pool-grow"), "{ids:?}");
     assert!(ids.contains(&"pool-warm"), "{ids:?}");
@@ -73,7 +72,7 @@ fn the_warm_row_says_how_much_is_cold() {
         cold: 3,
         at_ceiling: false,
     };
-    let rows = command_rows(true, avail, &[], &CmdStates::new(), 0, "");
+    let rows = command_rows(true, avail, &[], &CmdStates::new(), 0);
     let warm = rows
         .lines()
         .find(|l| l.starts_with("cmd|pool-warm|"))
@@ -90,7 +89,6 @@ fn the_warm_row_says_how_much_is_cold() {
         &[],
         &CmdStates::new(),
         0,
-        "",
     );
     let warm = none
         .lines()
@@ -108,7 +106,7 @@ fn no_row_smuggles_the_delimiter_into_its_display() {
         cold: 2,
         at_ceiling: false,
     };
-    for line in command_rows(true, avail, &[], &CmdStates::new(), 0, "").lines() {
+    for line in command_rows(true, avail, &[], &CmdStates::new(), 0).lines() {
         assert_eq!(line.matches('|').count(), 2, "{line}");
     }
 }
@@ -162,7 +160,7 @@ fn the_command_section_holds_only_repo_verbs() {
         cold: 1,
         at_ceiling: false,
     };
-    let rows = command_rows(true, avail, &two_scripts(), &CmdStates::new(), 0, "");
+    let rows = command_rows(true, avail, &two_scripts(), &CmdStates::new(), 0);
     for line in rows.lines().filter(|l| l.starts_with("cmd|")) {
         let id = line.split('|').nth(1).unwrap();
         let action = scripts::resolve(id).expect(id);
@@ -187,27 +185,26 @@ fn two_scripts() -> Vec<scripts::RepoScript> {
     ]
 }
 
-/// A repo's own scripts come after the roster — what every repo can do, then what this one
-/// can — and before the settings row, which is about the machine rather than the work.
+/// A repo's own scripts come after the roster — what every repo can do, then what this one can —
+/// and close the section.
 #[test]
-fn script_rows_sit_between_the_roster_and_the_settings_row() {
-    let rows = command_rows(true, pooled(), &two_scripts(), &CmdStates::new(), 0, "");
+fn script_rows_follow_the_roster_and_close_the_section() {
+    let rows = command_rows(true, pooled(), &two_scripts(), &CmdStates::new(), 0);
     let ids: Vec<&str> = rows.lines().filter_map(|l| l.split('|').nth(1)).collect();
     let last_roster = ids
         .iter()
         .rposition(|id| bn_core::wt_actions::find(id).is_some());
     let first_script = ids.iter().position(|id| id.starts_with("script:"));
-    let settings = rows.lines().position(|l| l.starts_with("qset|"));
     assert!(last_roster.unwrap() < first_script.unwrap(), "{ids:?}");
-    assert!(first_script.unwrap() < settings.unwrap(), "{ids:?}");
-    assert_eq!(kinds(&rows).last(), Some(&"qset"));
+    assert!(ids.last().unwrap().starts_with("script:"), "{ids:?}");
+    assert!(!rows.contains("qset|"), "the settings row is gone: {rows}");
 }
 
-/// The idle note names the tier, which is where to go to edit the thing; the queue's word
-/// still wins it, keyed the way `queue_view` keys a script entry.
+/// The idle note names the tier, which is where to go to edit the thing; a run's state still wins
+/// it, keyed the way `command_states` keys a script window.
 #[test]
-fn a_script_row_names_its_tier_until_the_queue_has_something_to_say() {
-    let idle = command_rows(true, pooled(), &two_scripts(), &CmdStates::new(), 0, "");
+fn a_script_row_names_its_tier_until_a_run_has_something_to_say() {
+    let idle = command_rows(true, pooled(), &two_scripts(), &CmdStates::new(), 0);
     let start = idle
         .lines()
         .find(|l| l.starts_with("cmd|script:start|"))
@@ -220,8 +217,8 @@ fn a_script_row_names_its_tier_until_the_queue_has_something_to_say() {
     assert!(e2e.contains("project script"), "{e2e}");
 
     let mut states = CmdStates::new();
-    states.insert(scripts::id("start"), CmdState::Running(9));
-    let busy = command_rows(true, pooled(), &two_scripts(), &states, 0, "");
+    states.insert(scripts::id("start"), CmdState::Running(Some(9)));
+    let busy = command_rows(true, pooled(), &two_scripts(), &states, 0);
     let start = busy
         .lines()
         .find(|l| l.starts_with("cmd|script:start|"))
@@ -233,7 +230,7 @@ fn a_script_row_names_its_tier_until_the_queue_has_something_to_say() {
 /// Script rows take the same delimiter discipline as the rest of the section.
 #[test]
 fn script_rows_hold_exactly_two_delimiters() {
-    let rows = command_rows(true, pooled(), &two_scripts(), &CmdStates::new(), 0, "");
+    let rows = command_rows(true, pooled(), &two_scripts(), &CmdStates::new(), 0);
     for line in rows.lines().filter(|l| l.starts_with("cmd|script:")) {
         assert_eq!(line.matches('|').count(), 2, "{line}");
     }
@@ -266,7 +263,6 @@ fn elapsed_reads_as_minutes_past_a_minute() {
     assert_eq!(brief_elapsed(3_600), "60m00s");
 }
 
-/// What the queue is doing outranks what the pool looks like: a warm that is *running* has
 /// A repo with a warm pool, so the pool verbs are offered at all.
 fn pooled() -> CmdAvail {
     CmdAvail {
@@ -276,64 +272,53 @@ fn pooled() -> CmdAvail {
     }
 }
 
-/// A held row names the reason, so "waiting" and "never going to run" stop looking the same.
-///
-/// This is the whole point of the note: eight verbs sat at a bare `⏳ queued` for three and a
-/// half days on a machine with no dispatcher, and the row said exactly what it says for work
-/// that is two seconds from starting.
+/// A failed run keeps its window, and the row says so — with the exit status when tmux has it —
+/// so a failure does not read as a verb that simply finished.
 #[test]
-fn a_held_row_says_why_and_for_how_long() {
+fn a_failed_row_says_it_failed_and_that_its_window_is_kept() {
     let mut states = CmdStates::new();
-    states.insert(
-        "pool-warm".to_string(),
-        CmdState::Queued(Some(Held {
-            reason: "mandatory-warming".to_string(),
-            waiting_secs: Some(272),
-        })),
-    );
-    let rows = command_rows(true, pooled(), &[], &states, 0, "");
-    let row = rows
+    states.insert("build-main".to_string(), CmdState::Failed(Some(2)));
+    states.insert("fetch-prs".to_string(), CmdState::Failed(None));
+    let rows = command_rows(true, pooled(), &[], &states, 0);
+    let build = rows
         .lines()
-        .find(|l| l.starts_with("cmd|pool-warm|"))
+        .find(|l| l.starts_with("cmd|build-main|"))
         .unwrap();
-    assert!(row.contains("held · mandatory-warming"), "{row}");
-    assert!(row.contains("4m"), "{row}");
+    assert!(build.contains("failed · exit 2 · window kept"), "{build}");
+    assert!(!build.contains(CMD_GLYPH), "{build}");
+    let fetch = rows
+        .lines()
+        .find(|l| l.starts_with("cmd|fetch-prs|"))
+        .unwrap();
+    assert!(fetch.contains("failed · window kept"), "{fetch}");
 }
 
-/// A wait too short to be interesting drops the duration rather than flashing `0s` — the reason
-/// is the useful half, and a row has one narrow column.
+/// A run with no marker to time it still spins; it just has no stopwatch.
 #[test]
-fn a_briefly_held_row_names_the_reason_without_a_stopwatch() {
+fn a_running_row_without_a_start_time_still_spins() {
     let mut states = CmdStates::new();
-    states.insert(
-        "pool-warm".to_string(),
-        CmdState::Queued(Some(Held {
-            reason: "capacity".to_string(),
-            waiting_secs: Some(3),
-        })),
-    );
-    let rows = command_rows(true, pooled(), &[], &states, 0, "");
+    states.insert("pull-prs".to_string(), CmdState::Running(None));
+    let rows = command_rows(true, pooled(), &[], &states, 0);
     let row = rows
         .lines()
-        .find(|l| l.starts_with("cmd|pool-warm|"))
+        .find(|l| l.starts_with("cmd|pull-prs|"))
         .unwrap();
-    assert!(row.contains("held · capacity"), "{row}");
-    assert!(!row.contains("3s"), "{row}");
+    assert!(row.contains(spin_frame(0)), "{row}");
+    assert!(row.trim_end().ends_with("running"), "{row}");
 }
 
-/// already answered "how many are cold?".
+/// What a run is doing outranks what the pool looks like: a warm that is *running* has already
+/// answered "how many are cold?".
 #[test]
-fn queue_state_replaces_the_availability_note() {
+fn run_state_replaces_the_availability_note() {
     let avail = CmdAvail {
         pooled: true,
         cold: 3,
         at_ceiling: false,
     };
     let mut states = CmdStates::new();
-    states.insert("pool-warm".to_string(), CmdState::Running(72));
-    states.insert("wt-cleanup".to_string(), CmdState::Away);
-    states.insert("pull-prs".to_string(), CmdState::Queued(None));
-    let rows = command_rows(true, avail, &[], &states, 0, "");
+    states.insert("pool-warm".to_string(), CmdState::Running(Some(72)));
+    let rows = command_rows(true, avail, &[], &states, 0);
 
     let warm = rows
         .lines()
@@ -342,19 +327,7 @@ fn queue_state_replaces_the_availability_note() {
     assert!(warm.contains("running · 1m12s"), "{warm}");
     assert!(!warm.contains("3 cold"), "{warm}");
 
-    let away = rows
-        .lines()
-        .find(|l| l.starts_with("cmd|wt-cleanup|"))
-        .unwrap();
-    assert!(away.contains("when you're away"), "{away}");
-
-    let queued = rows
-        .lines()
-        .find(|l| l.starts_with("cmd|pull-prs|"))
-        .unwrap();
-    assert!(queued.contains("queued"), "{queued}");
-
-    // A verb the queue says nothing about keeps its ordinary glyph.
+    // A verb with no run keeps its ordinary glyph.
     let idle = rows
         .lines()
         .find(|l| l.starts_with("cmd|build-main|"))

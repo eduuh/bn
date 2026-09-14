@@ -7,8 +7,7 @@ use std::path::Path;
 ///
 /// The question `bn dispatch` asks before refusing a same-branch pool slot as occupied. A Copilot
 /// that reported done keeps its process and its pane, so by [`any_live_pane_in`]'s test the slot
-/// is taken — and the queue's launch for that branch was refused, backed off and refused again for
-/// hours, while the only thing in the slot was a finished agent waiting for someone to close its
+/// is taken — and a launch for that branch was refused, retried and refused again for hours, while the only thing in the slot was a finished agent waiting for someone to close its
 /// window. `done` is the agent's own word that the slot is free to take over.
 ///
 /// `false` for an empty directory: nothing there is a different answer, and the lease ledger's.

@@ -3,14 +3,9 @@
 //! attention list. Both raise into the same attention store via `ingest(..., replace=true)`, so a
 //! recovered cron's / dropped item's alert is auto-acked on the next run.
 use crate::*;
-use bn_core::backlog::{self, AddSpec, BacklogKind, Recurrence};
 use bn_core::attention::{ingest, IngestItem};
-use bn_core::queue::kind::ExecSpec;
 
-
-/// The source stamped on everything the watchdog mints — the attention row, the repair task, and
-/// the queued repair agent. Shared because [`close_recovered_repairs`] matches backlog entries on
-/// it: a literal that drifted on one side would silently stop the sweep finding its own work.
+/// The source stamped on everything the watchdog mints: the attention row and the repair task.
 const REPAIR_SOURCE: &str = "cron-health";
 
 /// A short text summary of the crons currently in a chronic-failure state — the health half of the
@@ -96,12 +91,14 @@ fn repair_task_text(status: &bn_core::events::CronJobStatus, output_tail: Option
     text
 }
 
+/// The open `cron-repair:<job>` task for a failing cron, minting it when none is open. Returns the
+/// task id and whether this call minted it, which is what limits a repair agent to one per task.
 fn ensure_repair_task(
     cfg: &Config,
     status: &bn_core::events::CronJobStatus,
     output_tail: Option<&str>,
     today: &str,
-) -> Option<String> {
+) -> Option<(String, bool)> {
     let path = cfg.tasks_file();
     let _lock = bn_core::todo::lock(&path);
     if let Some(parent) = path.parent() {
@@ -114,7 +111,7 @@ fn ensure_repair_task(
         .find(|task| task.is_open(today) && task.meta("key") == Some(key.as_str()))
         .and_then(|task| task.id())
     {
-        return Some(existing.to_string());
+        return Some((existing.to_string(), false));
     }
 
     let id = file.next_id();
@@ -131,128 +128,76 @@ fn ensure_repair_task(
     task.set_meta_raw("cron", &status.job);
     file.push_task(task);
     bn_core::todo::save(&path, &file).ok()?;
-    Some(id)
+    Some((id, true))
 }
 
-/// Fold out the repair work for crons that are no longer alerting — the symmetric other half of
+/// Fold out the repair tasks for crons that are no longer alerting — the symmetric other half of
 /// [`ensure_repair_task`], and the reason a recovered cron stops costing anything.
 ///
 /// The attention row auto-acks itself, because [`ingest`] runs with `replace=true`. The repair
-/// *task* and the queued repair *agent* have no such mechanism: without this, `scout` recovering
-/// leaves `Fix failing cron scout` open in the task list forever, and any still-pending repair
-/// agent goes on to burn a worktree reproducing a job that is already green.
+/// *task* has no such mechanism: without this, `scout` recovering leaves `Fix failing cron scout`
+/// open in the task list forever.
 ///
 /// `alerting` is the raise set this pass computed, so "recovered" and "retired" collapse into one
 /// condition: a `cron-repair:<job>` task whose job the watchdog is no longer raising has nothing
 /// left to do. The task is [`cancel`](bn_core::todo::Task::cancel)led rather than completed — no
-/// one did the work, the cron stopped failing — which keeps it out of completion metrics. Only
-/// `Pending` queue entries are withdrawn; [`backlog::cancel`] leaves a leased agent alone, since a
-/// row flipped to cancelled under a live worktree would only misdescribe what is still running.
+/// one did the work, the cron stopped failing — which keeps it out of completion metrics. A repair
+/// agent already running is left alone; it is a live worktree a person can read and stop.
 ///
-/// The withdrawal set is derived from the *backlog*, not from the tasks cancelled on this pass,
-/// and that distinction is the whole bug it fixes. Keying it to this pass's cancellations made the
-/// sweep one-shot: an entry that happened to be `Leased` at that moment was skipped, and because
-/// its task was cancelled in the same breath it never appeared in a later pass's set either. The
-/// entry then outlived every mechanism meant to reap it — released back to `Pending`, dispatched,
-/// leased, released, forever. `task-improve` rode that loop through four dispatches after its cron
-/// was tombstoned. Re-deriving from the store each pass makes the sweep idempotent, so an entry
-/// caught mid-lease is simply withdrawn the next time it comes to rest.
-///
-/// Returns `(tasks_closed, agents_withdrawn)`.
+/// Returns how many tasks were closed.
 fn close_recovered_repairs(
     cfg: &Config,
     alerting: &[&bn_core::events::CronJobStatus],
     today: &str,
-) -> (usize, usize) {
+) -> usize {
     let raising: std::collections::HashSet<&str> =
         alerting.iter().map(|status| status.job.as_str()).collect();
     let path = cfg.tasks_file();
-    // Cancelled repair tasks stay in the map: an entry withdrawn on a later pass still has to
-    // resolve its job, and by then its task is exactly the one an earlier pass closed.
-    let (closed, repair_jobs) = {
-        let _lock = bn_core::todo::lock(&path);
-        let Ok(mut file) = bn_core::todo::load(&path) else {
-            return (0, 0);
-        };
-        let stale: Vec<String> = file
-            .tasks()
-            .filter(|task| task.is_open(today))
-            .filter(|task| {
-                task.meta("key")
-                    .and_then(|key| key.strip_prefix("cron-repair:"))
-                    .is_some_and(|job| !raising.contains(job))
-            })
-            .filter_map(|task| task.id().map(str::to_string))
-            .collect();
-        for id in &stale {
-            file.cancel(id, today, Some("cron-recovered"));
-        }
-        if !stale.is_empty() && bn_core::todo::save(&path, &file).is_err() {
-            return (0, 0);
-        }
-        let jobs: std::collections::HashMap<String, String> = file
-            .tasks()
-            .filter_map(|task| {
-                let job = task.meta("key")?.strip_prefix("cron-repair:")?;
-                Some((task.id()?.to_string(), job.to_string()))
-            })
-            .collect();
-        (stale.len(), jobs)
+    let _lock = bn_core::todo::lock(&path);
+    let Ok(mut file) = bn_core::todo::load(&path) else {
+        return 0;
     };
-
-    let backlog_path = backlog::backlog_path();
-    let now = bn_core::util::now_epoch_secs();
-    let withdrawable: Vec<(String, String)> = backlog::load(&backlog_path)
-        .entries()
-        .iter()
-        .filter(|entry| entry.status == backlog::BacklogStatus::Pending)
-        .filter(|entry| entry.source == REPAIR_SOURCE)
-        .filter(|entry| {
-            repair_jobs
-                .get(&entry.task)
-                .is_some_and(|job| !raising.contains(job.as_str()))
+    let stale: Vec<String> = file
+        .tasks()
+        .filter(|task| task.is_open(today))
+        .filter(|task| {
+            task.meta("key")
+                .and_then(|key| key.strip_prefix("cron-repair:"))
+                .is_some_and(|job| !raising.contains(job))
         })
-        .map(|entry| (entry.repo.clone(), entry.id.clone()))
+        .filter_map(|task| task.id().map(str::to_string))
         .collect();
-    let withdrawn = withdrawable
-        .iter()
-        .filter(|(repo, id)| backlog::cancel(&backlog_path, repo, id, now).unwrap_or(false))
-        .count();
-    (closed, withdrawn)
+    for id in &stale {
+        file.cancel(id, today, Some("cron-recovered"));
+    }
+    if !stale.is_empty() && bn_core::todo::save(&path, &file).is_err() {
+        return 0;
+    }
+    stale.len()
 }
 
-fn enqueue_repair_agent(
+/// Start the autonomous repair agent for a freshly minted repair task, through `bn dispatch`.
+fn start_repair_agent(
     status: &bn_core::events::CronJobStatus,
     task_id: &str,
     output_tail: Option<&str>,
-) -> Result<usize, String> {
+) -> Result<(), String> {
     let prompt = repair_prompt(status, output_tail);
-    let spec = AddSpec {
-        kind: BacklogKind::Ship,
-        priority: 4,
-        recurrence: Recurrence::Coalesce,
-        source: REPAIR_SOURCE.to_string(),
-        task: task_id.to_string(),
-        exec: ExecSpec::Agent,
-        ..Default::default()
-    };
-    let added = backlog::add(
-        &backlog::backlog_path(),
-        "bn",
-        std::slice::from_ref(&prompt),
-        &spec,
-        bn_core::util::now_epoch_secs(),
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(added.len())
+    let name = crate::wt::sanitize_branch(&format!("cron-repair-{}", status.job));
+    crate::cmd::dispatch::DispatchInvocation::new(&prompt, "bn", "auto")
+        .name(Some(&name))
+        .task(Some(task_id))
+        .launch()
 }
 
 /// `cron-health` — the deterministic failing-cron watchdog (no LLM). Raises an urgent attention
 /// item for every cron in a chronic-failure state (see [`bn_core::crons::alerting_crons`]) with the
 /// job name as the dedupe key, and — via `replace=true` — auto-acks the alert for any cron that has
-/// since recovered. It also mints one keyed repair task and queues one autonomous repair agent per
-/// failing cron, so the captured error turns into work instead of only a dashboard row — except
-/// for a cron nothing can resolve, where the repair prompt's `bn run <job>` has nothing to run.
+/// since recovered. It also mints one keyed repair task per failing cron and starts one autonomous
+/// repair agent when that task is minted, so the captured error turns into work instead of only a
+/// dashboard row — except for a cron nothing can resolve, where the repair prompt's `bn run <job>`
+/// has nothing to run. The agent starts once per task, not once per pass: the watchdog runs every
+/// fifteen minutes, and an open repair task already says the work is in hand.
 pub(crate) fn job_cron_health(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
     use bn_core::clock::Clock;
     let runs = bn_core::events::cron_status();
@@ -287,24 +232,24 @@ pub(crate) fn job_cron_health(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
         .collect();
     let n = items.len();
     let today = bn_core::clock::RealClock.today();
-    let (closed_repairs, withdrawn_repairs) = close_recovered_repairs(cfg, &alerting, &today);
+    let closed_repairs = close_recovered_repairs(cfg, &alerting, &today);
     let mut repair_tasks = 0usize;
-    let mut queued_repairs = 0usize;
+    let mut started_repairs = 0usize;
     let mut repair_errors = Vec::new();
     for (status, detail) in &details {
         let output_tail = detail.output_tail.trim();
         match ensure_repair_task(cfg, status, Some(output_tail), &today) {
-            Some(task_id) => {
+            Some((task_id, minted)) => {
                 repair_tasks += 1;
                 // An unresolvable job is still worth a person's attention row, but dispatching an
                 // autonomous agent at it only burns a worktree: the prompt tells that agent to
                 // reproduce with `bn run <job>`, which cannot resolve, so it can only ever report
                 // the same nothing. Retirement (the horizon) clears the row; this stops the spend.
-                if !live.contains(&status.job) {
+                if !minted || !live.contains(&status.job) {
                     continue;
                 }
-                match enqueue_repair_agent(status, &task_id, Some(output_tail)) {
-                    Ok(added) => queued_repairs += added,
+                match start_repair_agent(status, &task_id, Some(output_tail)) {
+                    Ok(()) => started_repairs += 1,
                     Err(error) => repair_errors.push(format!("{}: {error}", status.job)),
                 }
             }
@@ -317,16 +262,14 @@ pub(crate) fn job_cron_health(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
                 println!("cron-health: all crons healthy");
             } else {
                 println!(
-                    "cron-health: {n} failing cron(s) raised/refreshed; {repair_tasks} repair task(s), {queued_repairs} queued agent(s)"
+                    "cron-health: {n} failing cron(s) raised/refreshed; {repair_tasks} repair task(s), {started_repairs} agent(s) started"
                 );
                 for error in repair_errors {
                     eprintln!("cron-health repair: {error}");
                 }
             }
             if closed_repairs > 0 {
-                println!(
-                    "cron-health: {closed_repairs} repair task(s) closed on recovery, {withdrawn_repairs} queued agent(s) withdrawn"
-                );
+                println!("cron-health: {closed_repairs} repair task(s) closed on recovery");
             }
             0
         }
@@ -481,76 +424,42 @@ mod tests {
         }
     }
 
-    /// The four-dispatch loop, in miniature.
-    ///
-    /// `task-improve` was renamed away and tombstoned, so the watchdog stopped raising it — but its
-    /// queued repair agent happened to be *leased* on the pass that cancelled its task. The old
-    /// sweep drew its withdrawal set from that pass's cancellations, so the leased entry was
-    /// skipped once and then never reconsidered: its task was already closed, so no later pass
-    /// could rediscover it. The entry cycled leased → pending → dispatched forever.
-    ///
-    /// Asserting the *second* pass is the whole point. A sweep that only withdraws on the
-    /// transition pass leaves the entry pending here, and this fails.
+    /// A cron that stops raising closes its repair task once, and a later pass finds nothing left.
     #[test]
-    fn a_repair_agent_leased_when_its_cron_retires_is_withdrawn_on_a_later_pass() {
+    fn a_recovered_crons_repair_task_is_closed_once() {
         let root = tempfile::tempdir().expect("create test notes directory");
         test_support::with_testhost_state_and_notes_dir(root.path(), || {
             let cfg = test_support::config(root.path());
             let today = "2026-08-09";
             let status = failing("renamed-away");
 
-            let task_id = ensure_repair_task(&cfg, &status, Some("bn: command not found"), today)
-                .expect("mint the repair task");
-            enqueue_repair_agent(&status, &task_id, None).expect("queue the repair agent");
+            let (_, minted) =
+                ensure_repair_task(&cfg, &status, Some("bn: command not found"), today)
+                    .expect("mint the repair task");
+            assert!(minted, "the first pass mints the task");
 
-            let backlog_path = backlog::backlog_path();
-            let now = bn_core::util::now_epoch_secs();
-            let leased = backlog::lease(&backlog_path, "bn", 1, now).expect("lease the entry");
-            let entry_id = leased.first().expect("one entry was queued").id.clone();
-
-            // Pass 1: the cron is no longer raising. The task closes; the leased entry is left
-            // alone on purpose, because cancelling a row under a live worktree would misdescribe
-            // work that is still running.
-            let (closed, withdrawn) = close_recovered_repairs(&cfg, &[], today);
-            assert_eq!(closed, 1, "the repair task should be cancelled");
-            assert_eq!(withdrawn, 0, "a leased entry is not withdrawn mid-flight");
-
-            // The dispatch ends and the entry comes to rest.
-            backlog::release_many(&backlog_path, "bn", &[entry_id.as_str()], now)
-                .expect("release the lease");
-
-            // Pass 2: nothing was cancelled this pass, and the task is long closed. The entry must
-            // still be reaped — that is the regression.
-            let (closed, withdrawn) = close_recovered_repairs(&cfg, &[], today);
-            assert_eq!(closed, 0, "the task was already closed on pass 1");
-            assert_eq!(withdrawn, 1, "the released entry must be withdrawn, not re-dispatched");
-
-            let status = backlog::load(&backlog_path)
-                .get("bn", &entry_id)
-                .map(|entry| entry.status)
-                .expect("the entry is still on record");
-            assert_eq!(status, backlog::BacklogStatus::Cancelled, "{status:?}");
+            assert_eq!(close_recovered_repairs(&cfg, &[], today), 1);
+            assert_eq!(close_recovered_repairs(&cfg, &[], today), 0);
         });
     }
 
-    /// The other direction, so the sweep cannot be "fixed" by withdrawing everything: a cron that
-    /// is still failing keeps its repair task and its queued agent.
+    /// The other direction, so the sweep cannot be "fixed" by closing everything: a cron that is
+    /// still failing keeps its repair task, and a second pass reuses it rather than minting another.
     #[test]
-    fn a_still_failing_cron_keeps_its_repair_task_and_queued_agent() {
+    fn a_still_failing_cron_keeps_its_repair_task() {
         let root = tempfile::tempdir().expect("create test notes directory");
         test_support::with_testhost_state_and_notes_dir(root.path(), || {
             let cfg = test_support::config(root.path());
             let today = "2026-08-09";
             let status = failing("still-broken");
 
-            let task_id =
+            let (first, _) =
                 ensure_repair_task(&cfg, &status, None, today).expect("mint the repair task");
-            enqueue_repair_agent(&status, &task_id, None).expect("queue the repair agent");
-
-            let (closed, withdrawn) = close_recovered_repairs(&cfg, &[&status], today);
-
-            assert_eq!(closed, 0, "a still-failing cron keeps its repair task");
-            assert_eq!(withdrawn, 0, "and keeps its queued repair agent");
+            assert_eq!(close_recovered_repairs(&cfg, &[&status], today), 0);
+            let (again, minted) =
+                ensure_repair_task(&cfg, &status, None, today).expect("find the repair task");
+            assert_eq!(first, again);
+            assert!(!minted, "an open repair task is reused, so no second agent starts");
         });
     }
 

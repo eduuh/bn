@@ -123,10 +123,10 @@ pub(crate) fn cleanup_snapshot(run_path: &std::path::Path, original: &std::path:
 
 /// How long a build waits for a pool slot before running anyway.
 ///
-/// Generous, because a real workspace build is minutes and a queue of three drains well inside
+/// Generous, because a real workspace build is minutes and three waiting builds drain well inside
 /// this. Bounded at all, because the alternative to running ungated is not running — and a merge
 /// that never lands is a worse failure than a machine that is briefly too busy. See
-/// [`bn_core::queue::build`] for why this fails open.
+/// [`bn_core::build_slots`] for why this fails open.
 const BUILD_WAIT_MAX_SECS: u64 = 900;
 
 /// How often to re-ask for a slot while waiting. A build is minutes long, so half a second is far
@@ -142,14 +142,14 @@ const BUILD_POLL_MS: u64 = 500;
 ///
 /// Returns `None` when the wait budget ran out, meaning *run anyway*: the caller proceeds exactly as
 /// it did before this pool existed.
-fn build_slot(label: &str, cwd: &std::path::Path) -> Option<bn_core::queue::build::Ticket> {
-    use bn_core::queue::build::{self, Admission};
+fn build_slot(label: &str, cwd: &std::path::Path) -> Option<bn_core::build_slots::Ticket> {
+    use bn_core::build_slots::{self as build, Admission};
     let repo = repo_root(cwd)
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     let cap = build::observe_slots();
-    let alive = crate::cmd::queue_tick::pid_alive;
+    let alive = build::pid_alive;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(BUILD_WAIT_MAX_SECS);
     let mut announced = false;
     loop {

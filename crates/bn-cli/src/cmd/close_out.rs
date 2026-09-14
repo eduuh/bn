@@ -1,8 +1,8 @@
-//! Closing the loop when work lands — the far end of the Today↔queue tie.
+//! Closing the loop when work lands — the far end of the Today suggestion tie.
 //!
 //! `bn agent done` used to raise a review item and stop there, so the task that governed the work,
 //! and the Today suggestion that proposed it, stayed open forever. The next reconcile sweep would
-//! then find a proposal it believed still needed queueing, and re-queue work that had already
+//! then find a proposal it believed still needed starting, and start work that had already
 //! shipped. This is the write that prevents that.
 //!
 //! Its own module because it is a distinct concern from reporting a completion, and because
@@ -20,9 +20,9 @@ pub(crate) struct ClosedOut {
 
 /// Mark the task governing `(repo, branch)` done — and, if it came from Today, retire its suggestion.
 ///
-/// This is the far end of the tie: Today accepting a suggestion is what queued the work, so the work
-/// landing is what closes both. Without it an `accepted` suggestion stays accepted forever, and the
-/// reconcile sweep keeps finding a proposal it believes still needs queueing.
+/// This is the far end of the tie: Today accepting a suggestion is what started the work, so the
+/// work landing is what closes both. Without it an `accepted` suggestion stays accepted forever, and
+/// the reconcile sweep keeps finding a proposal it believes still needs starting.
 ///
 /// Two completions deliberately close **nothing**:
 ///

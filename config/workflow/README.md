@@ -116,9 +116,8 @@ amber `<` / `>` markers mark the hidden side (click them to step a window) and t
 to keep the active tab visible. `prefix f` (or ``prefix ` ``, both `bn jump --session`) finds a
 window by name.
 
-Four badges used to sit on the dashboard and no longer do — attention (`bn attn badge`), queue
-(`bn queue badge`), bn-web health (`bn tmux-mcp badge`) and the running cron job
-(`bn cron running`). They were quiet on almost every 5s repaint. They are now the header of
+Three badges used to sit on the dashboard and no longer do: attention (`bn attn badge`), bn-web
+health (`bn tmux-mcp badge`) and the running cron job (`bn cron running`). They were quiet on almost every 5s repaint. They are now the header of
 `bn tat` (`prefix C-o`), painted on open and on `ctrl-r`, and `bn tat` grew a row that
 starts and stops bn-web. The commands themselves still work.
 
@@ -190,13 +189,6 @@ otherwise, and stays empty (clean bar) when all is quiet. `working` agents aren'
 they don't need you. It's produced entirely by `bn attn badge` from `#(...)` in
 `status-format` (the native window tally — once `bn tmux-attn-count` — was folded into it),
 and it's the ambient nudge toward the attention cockpit.
-
-### Queue badge
-
-The status bar also calls `bn queue badge`, a compact queue-health signal. It stays empty when the
-queue is healthy and only routine cron/autonomous work is running, and appears for foreground work,
-recent queue failures, dispatcher staleness, or task-level blocks that need attention. Use
-`bn queue timeline` for the full cron/autonomous/foreground history and projection.
 
 ### Attention picker (`prefix j`)
 

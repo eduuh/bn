@@ -229,8 +229,8 @@ An agent manifest declares a contract a prompt cannot. <code>kind:</code> is req
 one of <code>command | staff | hosted | specialist</code>; <code>AgentDef</code> carries
 roughly 35 fields including <code>on_calendar</code>, <code>gather:</code>,
 <code>sinks[]</code>, <code>doc_dir</code>, <code>opt_in</code>, <code>harness</code>,
-<code>requires_repo</code>, <code>references[]</code>, <code>worlds[]</code>,
-<code>model</code> and <code>queue</code>.
+<code>requires_repo</code>, <code>references[]</code>, <code>worlds[]</code>
+and <code>model</code>.
 <span class="src">agents.rs:38-44, :181-280</span>
 </p>
 
@@ -308,9 +308,8 @@ the tmux and worktree layer, largely migrated into native <code>bn</code> subcom
 <code>auto-review-pr.md</code> and <code>triage.md</code> were not read in full; the Ship row
 in the stage table rests on descriptions plus <code>stage.rs</code>.</li>
 <li>Whether <code>Stage::Learn</code> is ever <em>auto</em>-dispatched.
-<code>default_skill</code> states the intent, but the sweep maps only investigate and plan
-(<code>pipeline/sweep.rs:122</code>) — so <code>evolve-skills</code> may in practice only run
-by hand.</li>
+<code>default_skill</code> states the intent, but stages advance only by hand or by the stage
+agent, so <code>evolve-skills</code> may in practice only run by hand.</li>
 <li>Which component appends the critic packets (<code>{{packet}}</code>,
 <code>{{verdict_commands}}</code>) — pipeline-internal, not covered by this slice.</li>
 <li>That <code>task-enhance</code>, <code>task-triage</code> and <code>quarter-review</code>

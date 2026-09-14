@@ -1024,18 +1024,18 @@ pub(crate) fn emit_attn_plan(cfg: &Config, id: &str, section: &str, as_json: boo
     }
 }
 
-/// `bn attn dispatch <id>` (#460) — promote attention item `id` into the orchestrate backlog as a
-/// task, then resolve it off the list. The pure [`bn_core::attention::promote_to_backlog`] policy
-/// picks the lane: start-new (a fresh pending task), reprioritize (bump an already-queued twin,
-/// never duplicate), or interrupt (an urgent item onto the #378 priority lane). Targets the item's
-/// own repo when it carries one, else `--repo`, else the current worktree's.
+/// `bn attn dispatch <id>` (#460) — start an agent on attention item `id` through `bn dispatch`,
+/// then resolve it off the list. The agent's item is the item's link when that names an issue or
+/// PR, else its title ([`bn_core::attention::dispatch_subject`]), bound to the task the item names
+/// when it names one. Targets the item's own repo when it carries one, else `--repo`, else the
+/// current worktree's.
 pub(crate) fn emit_attn_dispatch(
     cfg: &Config,
     id: &str,
     repo_override: Option<&str>,
     as_json: bool,
 ) {
-    use bn_core::attention::{self, PromotionAction};
+    use bn_core::attention;
 
     let Some(item) = attention::get(id) else {
         fail(&format!("bn attn dispatch: no item {id}"));
@@ -1058,48 +1058,26 @@ pub(crate) fn emit_attn_dispatch(
         }
     };
 
-    let now = bn_core::util::now_epoch_secs();
-    let path = bn_core::backlog::backlog_path();
-    let bl = bn_core::backlog::load(&path);
-    let out = attention::promote_to_backlog(&item, &bl, &repo, now);
-
-    // Apply the decision to the durable backlog: bump an existing twin, or append a new entry.
-    let persisted = match out.action {
-        PromotionAction::Reprioritize => {
-            bn_core::backlog::reprioritize(&path, &repo, &out.backlog_id, out.entry.priority, now)
-                .map(|_| ())
-        }
-        PromotionAction::StartNew | PromotionAction::Interrupt => {
-            let spec = bn_core::backlog::AddSpec::from_entry(&out.entry);
-            bn_core::backlog::add(&path, &repo, std::slice::from_ref(&out.subject), &spec, now)
-                .map(|_| ())
-        }
-    };
-    if let Err(e) = persisted {
-        fail(&format!("bn attn dispatch: could not update backlog: {e}"));
+    let subject = attention::dispatch_subject(&item);
+    let launched = crate::cmd::dispatch::DispatchInvocation::new(&subject, &repo, "auto")
+        .task(attention::task_id_of(&item))
+        .launch();
+    if let Err(e) = launched {
+        fail(&format!("bn attn dispatch: could not start an agent: {e}"));
     }
-    // Fold the item off the attention list, recording the backlog trail.
-    let _ = attention::mark_dispatched(id, &repo, &out.backlog_id, out.action.label());
+    // Fold the item off the attention list, recording where the work went.
+    let trail = bn_core::orchestrate::derive_id(&subject);
+    let _ = attention::mark_dispatched(id, &repo, &trail, "dispatch");
 
     if as_json {
         let data = serde_json::json!({
             "id": id,
-            "action": out.action.label(),
+            "action": "dispatch",
             "repo": repo,
-            "backlog_id": out.backlog_id,
-            "subject": out.subject,
-            "priority": out.entry.priority,
+            "subject": subject,
         });
         println!("{}", Envelope::success("attn", data).to_json());
     } else {
-        let verb = match out.action {
-            PromotionAction::StartNew => "queued new task",
-            PromotionAction::Reprioritize => "reprioritized queued task",
-            PromotionAction::Interrupt => "queued on the priority lane",
-        };
-        println!(
-            "Dispatched {id} → {repo} [{}] ({verb}, priority {}): {}",
-            out.backlog_id, out.entry.priority, out.subject
-        );
+        println!("Dispatched {id} → {repo}: {subject}");
     }
 }

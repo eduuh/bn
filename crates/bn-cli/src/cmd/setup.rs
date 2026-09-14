@@ -57,7 +57,7 @@ pub(crate) fn emit_glyphs() {
     );
     println!(
         "\n  tabs are the window NUMBER + badges — no branch name; the git segment already names\n  \
-         the focused branch. The goal, attention, queue, cron and bn-web left the bar; the badges\n  \
+         the focused branch. The goal, attention, cron and bn-web left the bar; the badges\n  \
          went to `bn tat`'s header."
     );
     println!(

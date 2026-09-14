@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # explore-wira360 — the wira360 lane of the explore pass. Gated.
 #
-# The per-repo settings live HERE rather than on the agent manifest's `run:` line: `bn run <job>` is
-# captured by the queue and re-dispatched later in a fresh process that inherits none of the
-# environment the original command line set. Settings inside the script survive that; settings on
-# the command line silently do not.
+# The per-repo settings live HERE rather than on the agent manifest's `run:` line: the lane is fired
+# by a timer through the scheduler, never from a shell, so the script is the one place its settings
+# are always set and reviewable in git. Settings on the command line were silently lost.
 #
 # Two gates, because wira360 is product-facing:
 #   * LOCAL stack only — `dev:forge:family` pins its own ports and a local seeded postgres. A bug

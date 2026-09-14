@@ -41,7 +41,6 @@ worktrees --json
 task --json --all
 daily --json
 focus --json
-queue --json
 reviews --json
 findings sources --json
 links --json

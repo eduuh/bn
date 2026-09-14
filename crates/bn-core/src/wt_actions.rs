@@ -49,44 +49,6 @@ impl Scope {
     }
 }
 
-/// How urgently the person wants it.
-///
-/// Both modes enqueue the identical work; they differ only in the class the queue entry carries,
-/// which is the whole reason "do this once I've left" costs nothing to offer. See
-/// [`crate::queue::window::WindowMode::Away`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum When {
-    /// Run it now. Enqueued foreground, which is also what lifts the away-only hold that
-    /// [`crate::queue::jobs::WARMING_JOBS`] otherwise puts on a pool warm — without it, "warm now"
-    /// would sit until you left, and read as the keypress having failed.
-    Now,
-    /// Run it once I'm idle or gone. Enqueued opportunistic, which the existing away window admits.
-    Away,
-}
-
-impl When {
-    /// The queue class this mode states outright.
-    ///
-    /// Stated rather than derived, because the derivation would get it wrong in both directions: a
-    /// `pool-warm` classifies as warming (away-only) whoever asked for it, and a person's "do this
-    /// later" would classify as foreground merely because a person filed it. The mode *is* the
-    /// answer, so it says so.
-    pub fn class_override(self) -> crate::backlog::ClassOverride {
-        match self {
-            Self::Now => crate::backlog::ClassOverride::Foreground,
-            Self::Away => crate::backlog::ClassOverride::Opportunistic,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Now => "now",
-            Self::Away => "away",
-        }
-    }
-}
-
 /// One verb, flattened across every surface that can offer it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct WtAction {
@@ -99,11 +61,6 @@ pub struct WtAction {
     pub scope: Scope,
     /// The native job that realizes it — the `job` of a [`crate::backlog::ExecSpec::Job`].
     ///
-    /// Every action goes through the queue rather than spawning its own child, because a row can
-    /// only show progress for work that is observable from *outside* the process that started it.
-    /// A detached child is observable only as "a process exists"; a queue entry has a state, a
-    /// start time and a finish callback. The side benefit is honesty: the row then reflects a warm
-    /// that cron started, not only one you asked for.
     pub job: &'static str,
     /// Whether the job wants the repo and branch of the focused row passed through.
     ///

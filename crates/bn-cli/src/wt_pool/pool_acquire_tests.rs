@@ -357,9 +357,9 @@ fn cron_warms_a_pool_for_a_repo_nobody_registered() {
     }
 }
 
-/// The other half of [`cron_warms_a_pool_dispatch_created_for_an_unregistered_repo`]: a queued warm
-/// can outlive the clone it named. That is a stale queue entry, not a broken cron, so it reports a
-/// skip and exits 0 rather than paging as a cron failure.
+/// The other half of [`cron_warms_a_pool_dispatch_created_for_an_unregistered_repo`]: a warm can
+/// be asked for a clone that has since gone. That is a stale request, not a broken cron, so it
+/// reports a skip and exits 0 rather than paging as a cron failure.
 #[test]
 fn cron_warm_skips_a_repo_with_no_bare_clone() {
     let _g = bn_core::test_support::env_lock();
@@ -378,7 +378,7 @@ fn cron_warm_skips_a_repo_with_no_bare_clone() {
     assert_eq!(super::job_pool_warm(&cfg, Some(&ctx)), 0);
 }
 
-/// The queue tick's pool reconcile must make a pool's ledger match its slots without a dispatch
+/// The pool reconcile a warm runs first must make a pool's ledger match its slots without a dispatch
 /// having to trip over the drift first: adopt the slot a live agent holds unnamed, and hand back
 /// the one whose lease outlived everybody.
 ///
@@ -472,9 +472,8 @@ fn reconcile_pools_adopts_occupied_and_returns_empty_slots() {
     );
 }
 
-/// The one reclaim path has to be safe to run twice, because it now runs from a queue entry that
-/// can be re-filed while an earlier reclaim (or `wt pool return`, or the reaper) is already in
-/// flight. An unleased slot is the goal state, so it reports success rather than "refused" — a
+/// The one reclaim path has to be safe to run twice, because a background reclaim can start while
+/// an earlier reclaim (or `wt pool return`, or the reaper) is already in flight. An unleased slot is the goal state, so it reports success rather than "refused" — a
 /// cleanup log that reports failure for work that is already done is a log nobody reads.
 #[test]
 fn cleaning_an_already_free_slot_succeeds_instead_of_reporting_a_refusal() {

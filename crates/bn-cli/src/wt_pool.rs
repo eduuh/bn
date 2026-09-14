@@ -1212,50 +1212,6 @@ pub fn lease_for_dispatch_mode(
     Some((leased.slot, leased.comparison, leased.fresh))
 }
 
-/// Whether a queued paired dispatch can reserve its required worker slots right now.
-///
-/// This preflight keeps ordinary capacity waits from counting as failed launches. Allocation still
-/// rechecks under the same lease lock, so this is scheduling guidance rather than authority.
-pub fn paired_capacity_available(cfg: &Config, repo: &str, branch: Option<&str>) -> bool {
-    let Some(ctx) = resolve_dispatch_pool(cfg, repo) else {
-        return false;
-    };
-    let _lock = lock_leases(&ctx.pool_dir);
-    let mut leases = read_leases(&ctx.pool_dir);
-    reclaim_stale(&ctx, &mut leases, ReclaimScope::PriorBootOnly);
-    adopt_occupied_slots(&ctx, &mut leases);
-
-    let enough = |leases: &Leases| {
-        let existing = branch.and_then(|branch| {
-            let want = bn_core::agent::normalized_branch(branch);
-            leases.slots.iter().find_map(|(&n, lease)| {
-                (bn_core::agent::normalized_branch(&lease.branch) == want).then_some(n)
-            })
-        });
-        let needed = existing
-            .and_then(|n| leases.slots.get(&n))
-            .map_or(2, |lease| usize::from(lease.comparison_slot.is_none()));
-        let mut reserved = leases.reserved_slots();
-        (0..needed).all(|_| {
-            let Some(n) = bn_core::pool::pick_slot(ctx.size, &reserved) else {
-                return false;
-            };
-            reserved.insert(n);
-            true
-        })
-    };
-
-    if enough(&leases) {
-        return true;
-    }
-    reclaim_stale(&ctx, &mut leases, ReclaimScope::AnyDeadHolder);
-    if enough(&leases) {
-        return true;
-    }
-    reclaim_leaked_leases(&ctx, &mut leases, now_epoch(), false);
-    enough(&leases)
-}
-
 /// The branch a pool slot is currently leased to, or `None` for a path that is not a leased slot.
 ///
 /// A slot's tenant isn't in its path the way a per-branch worktree's is (`_pool/3` names a slot,
@@ -1361,50 +1317,25 @@ fn ensure_spare_slot(ctx: &PoolCtx) -> SpareSlot {
     SpareSlot::Warming(n)
 }
 
-/// Queue a repo-scoped `pool-warm` job, so building a slot's checkout and deps never blocks the
-/// dispatch that revealed the need and still goes through the machine-wide heavy-work caps. Output
-/// is discarded: this is a best-effort top-up, and its failure is not the caller's problem.
+/// Start a repo-scoped `pool-warm` in the background, so building a slot's checkout and deps never
+/// blocks the dispatch that revealed the need. Detached and silent: this is a best-effort top-up,
+/// its failure is not the caller's problem, and the run records its own `cron_run` outcome.
 fn schedule_warm(repo: &str) {
     // Never under `cargo test`: `current_exe()` there is the *test binary*, so spawning it with
-    // `wt pool warm` argv would re-run the test suite as a subprocess. The Phase-8 integration
+    // `run pool-warm` argv would re-run the test suite as a subprocess. The Phase-8 integration
     // test drives the real `bn` binary out-of-process, where this is `false` and the warm runs.
     if cfg!(test) {
         return;
     }
-    // The bn binary, not whatever is running us — `$BN_BIN`, else a sibling of the current exe,
-    // else PATH. Same resolution the rest of bn uses to re-invoke itself.
-    let exe = std::env::var("BN_BIN")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .filter(|p| p.is_file())
-        .or_else(|| {
-            std::env::current_exe()
-                .ok()
-                .and_then(|e| e.parent().map(|d| d.join("bn")))
-                .filter(|p| p.is_file())
-        })
-        .unwrap_or_else(|| std::path::PathBuf::from("bn"));
-    let mut cmd = std::process::Command::new(exe);
-    cmd.args([
-        "queue",
-        "add",
-        &format!("Warm pool for {repo}"),
+    // A spawn failure just means no warm — the next lease still creates the slot cold.
+    let _ = bn_core::bn_subprocess::spawn_detached(&[
+        "run",
+        "pool-warm",
         "--repo",
         repo,
-        "--kind",
-        "cron",
-        "--job",
-        "pool-warm",
-        "--job-repo",
-        repo,
-        "--job-branch",
+        "--branch",
         "main",
-    ])
-    .stdin(std::process::Stdio::null())
-    .stdout(std::process::Stdio::null())
-    .stderr(std::process::Stdio::null());
-    // A spawn failure just means no queued warm — the next lease still creates the slot cold.
-    let _ = cmd.spawn();
+    ]);
 }
 
 /// The lease label the controller's slot carries in `leases.json` and `wt pool status`. It is not a
@@ -1429,13 +1360,13 @@ pub fn lease_controller_slot(cfg: &Config, repo: &str) -> Option<(PathBuf, bool)
 }
 
 /// Resolve the pool for a dispatch. Identical to [`resolve_pool`] except in how the repo is named:
-/// this takes it directly (the cron and the dispatcher both know it), while `resolve_pool` resolves
+/// this takes it directly (the cron and `bn dispatch` both know it), while `resolve_pool` resolves
 /// the cwd or an fzf pick. Neither consults a registry any more — there isn't one — so the only way
 /// this returns `None` is a repo with no bn-managed bare clone, the one case a dispatch genuinely
 /// can't pool, and the caller cuts a cold worktree instead.
 fn resolve_dispatch_pool(cfg: &Config, repo: &str) -> Option<PoolCtx> {
     let (_, worktree_dir) = wt::layout(cfg);
-    // Case-insensitive, and the pool goes by the clone's spelling: a queued `--repo BigMono` arrives
+    // Case-insensitive, and the pool goes by the clone's spelling: a job's `--repo BigMono` arrives
     // lowercased, and `bigmono.git` read as "no bare clone — nothing to warm" on a case-sensitive fs.
     let bare = wt::bare_for(cfg, repo)?;
     let repo = bare.file_stem()?.to_string_lossy().to_string();

@@ -73,7 +73,7 @@ fn run_script(script: &std::path::Path) -> (i32, String) {
 ///
 /// The one directive today is `# bn: latest-main` ([`resolver::ScriptHeader`]): fetch and
 /// fast-forward the repo's main checkout and main slot before the script starts. Honoured here,
-/// in the runner, rather than by whichever surface queued the script — a cron firing, `bn run`
+/// in the runner, rather than by whichever surface started the script — a cron firing, `bn run`
 /// and the picker all reach this line, so the script gets the same precondition however it was
 /// asked for. The sync is [`crate::cmd::main_sync::sync_repo`], the same piece `build-main` uses.
 ///

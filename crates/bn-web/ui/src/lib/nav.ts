@@ -1,5 +1,4 @@
 import {
-  ListOrdered,
   ArrowLeftRight,
   Bell,
   Bot,
@@ -64,15 +63,6 @@ export const NAV_GROUPS: NavGroup[] = [
         end: true,
         tone: "plain",
         blurb: "The task-first home. Always on — it is the default surface.",
-      },
-      {
-        to: "/queue",
-        label: "Queue",
-        Icon: ListOrdered,
-        tone: "hot",
-        exp: "queue",
-        blurb:
-          "The machine-wide work queue: what is waiting, why each held item is held, what each node can run, and the pause control.",
       },
       {
         to: "/console",
