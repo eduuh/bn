@@ -13,7 +13,7 @@
 //!   - [`ExternalState`] — the work already landed outside the daemon's own tracking, so recover
 //!     nothing and reconcile it done (#370 defect 2).
 
-use super::pane::{has_bare_prompt, PaneObservation, PaneState, SupervisorAction};
+use super::pane::{PaneState, SupervisorAction};
 use serde::{Deserialize, Serialize};
 
 // ===========================================================================
@@ -48,16 +48,6 @@ pub struct Liveness {
     /// exactly like a stall — worked, went quiet, no PR, clean tree — because reading an agent's
     /// output is precisely what produces a long, empty, clean idle.
     pub attended: bool,
-}
-
-/// Whether an agent's pane tail positively shows a **bare idle prompt** — an empty input box (`❯`,
-/// `┃`, `>`, `│`) with nothing typed. This distinguishes an `IdleClean` that came from a *real* idle
-/// prompt from one that came from [`classify`]'s ambiguous fallback (no prompt **and** no spinner
-/// captured). The #374 stall recovery gates on it: a fallback-idle pane might be a working agent
-/// mid-long-turn whose spinner scrolled off, so only a positively-observed idle prompt is ever
-/// eligible to be judged *stalled* — the ambiguous case is always left alone.
-pub fn shows_bare_prompt(obs: &PaneObservation) -> bool {
-    has_bare_prompt(obs.tail)
 }
 
 /// Refine an [`PaneState::IdleClean`] pane into its true action (#374) — the liveness half of the
@@ -260,13 +250,6 @@ pub struct ExternalState {
 }
 
 impl ExternalState {
-    /// Whether the item is already complete and should be reconciled to a terminal `merged`, even if
-    /// the daemon never opened its PR. Any one signal suffices — the fix for the infinite-relaunch
-    /// loop on an externally-finished item (#370 defect 2).
-    pub fn is_resolved(self) -> bool {
-        self.branch_pr_merged || self.issue_closed || self.worktree_gone
-    }
-
     /// The signal that resolved the item (for the recovery note / event log), or `None` if unresolved.
     /// Prefers the most specific evidence: a merged PR, then a closed issue, then a reaped worktree.
     pub fn via(self) -> Option<&'static str> {

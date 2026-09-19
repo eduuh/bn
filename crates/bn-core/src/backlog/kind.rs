@@ -42,7 +42,7 @@ pub enum BacklogKind {
 /// status surface.
 ///
 /// Lives here rather than in `orchestrate` because it is defined *by* the kind: keeping the enum
-/// next to the mapping is what makes [`from_kind`](WorkClass::from_kind) exhaustive, so a new kind
+/// next to the mapping is what makes `from_kind` exhaustive, so a new kind
 /// cannot be added without deciding which pool pays for it.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default,
@@ -62,21 +62,6 @@ impl WorkClass {
         match self {
             WorkClass::Coding => "coding",
             WorkClass::Research => "research",
-        }
-    }
-
-    /// The lane an entry of `kind` belongs to.
-    ///
-    /// Anything that opens a PR is a coding agent and costs a coding slot; everything else is
-    /// read-only and costs a research slot. Exhaustive on purpose — see the type's doc comment.
-    pub fn from_kind(kind: BacklogKind) -> WorkClass {
-        match kind {
-            BacklogKind::Ship | BacklogKind::Enhance | BacklogKind::ReviewPr => WorkClass::Coding,
-            BacklogKind::Scout
-            | BacklogKind::Investigate
-            | BacklogKind::Research
-            | BacklogKind::Cron
-            | BacklogKind::Cleanup => WorkClass::Research,
         }
     }
 }

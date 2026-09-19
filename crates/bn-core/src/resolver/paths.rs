@@ -133,7 +133,7 @@ impl Config {
     /// `<work_root>/tasks.txt` — **the** task store (#995): one file holding every task, for
     /// every repo, on every machine.
     ///
-    /// **Person-scoped, not machine-scoped**, following [`Config::staff_feed_dir`] (#270) rather
+    /// **Person-scoped, not machine-scoped**, following `Config::staff_feed_dir` (#270) rather
     /// than [`Config::note_dir`]. The `<machine>` segment exists so synced note repos never
     /// git-conflict on a shared `main` note — but a task list that differs per laptop is not a
     /// single source of truth, which is the whole point of the store. The file is `merge=union`
@@ -164,46 +164,10 @@ impl Config {
         self.daily_dir().join(format!("{date}.md"))
     }
 
-    /// `<personal_root>/staff/feed` — the agent-staff briefing-card store
-    /// (`feed/<YYYY-MM-DD>/<agent>.json` + rendered `.md`). **Person-scoped, not machine-scoped**
-    /// (#270): the staff is one team that runs on a single home machine (see [`Config::staff_home`]),
-    /// so the cards live once under the synced notes root and every box reads the same feed — no
-    /// duplicate reviews, no per-machine git-conflict. Append-only by date; read-marks stay in
-    /// machine-local state, so the cards travel but "seen" doesn't.
-    pub fn staff_feed_dir(&self) -> PathBuf {
-        self.personal_root.join("staff").join("feed")
-    }
-
-    /// The pre-#270 machine-scoped feed location (`<personal_root>/<machine>/feed`). Only the
-    /// best-effort one-time migration in [`crate::staff::migrate_feed_layout`] reads this, to
-    /// fold any cards written under the old layout into the person-scoped [`staff_feed_dir`].
-    pub fn staff_feed_legacy_dir(&self) -> PathBuf {
-        self.personal_root.join(self.machine()).join("feed")
-    }
-
     /// `<personal_root>/<machine>/inbox.md` — the global capture inbox (`bn q`). Cross-branch
     /// and machine-scoped like `daily/`, so captures ride the notes sync without git conflicts.
     pub fn inbox_file(&self) -> PathBuf {
         self.personal_root.join(self.machine()).join("inbox.md")
-    }
-
-    /// `<personal_root>/<machine>/dojo` — the `bn dojo` learning store (#253). Cross-branch and
-    /// machine-scoped like `daily/`, it holds the append-only `cards.jsonl` / `reviews.jsonl` /
-    /// `sessions.jsonl` logs so they sync across devices without git-colliding.
-    pub fn dojo_dir(&self) -> PathBuf {
-        self.personal_root.join(self.machine()).join("dojo")
-    }
-
-    /// `<personal_root>/<machine>/quarters` — the quarter-goals subtree. Like `daily/`, it's
-    /// cross-branch and lives in this machine's notes subtree so it syncs without git-colliding.
-    /// Holds one file per quarter (`<YYYY-Qn>.md`): the layer above daily/weekly goals.
-    pub fn quarters_dir(&self) -> PathBuf {
-        self.personal_root.join(self.machine()).join("quarters")
-    }
-
-    /// `<quarters_dir>/<YYYY-Qn>.md` — one file per quarter (e.g. `2026-Q3.md`).
-    pub fn quarter_file(&self, quarter: &str) -> PathBuf {
-        self.quarters_dir().join(format!("{quarter}.md"))
     }
 
     /// `<personal_root>/<machine>/track` — the time-tracking subtree. Like `daily/`, it's
@@ -259,35 +223,6 @@ impl Config {
     /// label from [`crate::util::iso_week`]). The `weekly-insights` cron writes here.
     pub fn insights_file(&self, week: &str) -> PathBuf {
         self.insights_dir().join(format!("{week}.md"))
-    }
-
-    /// `<personal_root>/<machine>/chronicle` — the Archivist's private weekly-chronicle archive
-    /// (#263). Like `insights/` it's cross-branch and per-machine so each device's chronicles sync
-    /// without git-colliding; history accumulates one file per ISO week (see
-    /// [`chronicle_file`](Self::chronicle_file)). Inside the private notes repo by construction — the
-    /// story of the week is never published.
-    pub fn chronicle_dir(&self) -> PathBuf {
-        self.personal_root.join(self.machine()).join("chronicle")
-    }
-
-    /// `<chronicle_dir>/<YYYY-Www>.md` — one weekly chronicle per ISO week (`week` is a `2026-W26`
-    /// label from [`crate::util::iso_week`]). The `staff-archivist` cron writes here Fridays.
-    pub fn chronicle_file(&self, week: &str) -> PathBuf {
-        self.chronicle_dir().join(format!("{week}.md"))
-    }
-
-    /// `<personal_root>/<machine>/retro` — the Interviewer's private subjective-retro transcript
-    /// store (#261). Like `insights/`, it's cross-branch and per-machine so each device's
-    /// transcripts sync without git-colliding; one file per ISO week. The transcript never leaves
-    /// the notes repo — only the synthesized card is mirrored to the feed.
-    pub fn retro_dir(&self) -> PathBuf {
-        self.personal_root.join(self.machine()).join("retro")
-    }
-
-    /// `<retro_dir>/<YYYY-Www>.md` — one Interviewer transcript per ISO week (`week` is a
-    /// `2026-W28` label from [`crate::util::iso_week`]).
-    pub fn retro_file(&self, week: &str) -> PathBuf {
-        self.retro_dir().join(format!("{week}.md"))
     }
 
     /// Every machine's metrics log under `personal_root` (`<personal_root>/*/metrics/events.jsonl`).

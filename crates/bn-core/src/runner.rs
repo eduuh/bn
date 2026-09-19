@@ -314,7 +314,7 @@ pub fn kill_process_tree(
 /// A runner that replays canned fixtures, for deterministic core tests. Each call is matched
 /// against registered `(program, args)` responses; an unmatched call returns a failed
 /// [`CommandOutput`] (mirroring "binary absent / command failed"). Match by exact arg vector, or
-/// register a program-wide default with [`Self::on_program`].
+/// register a program-wide default with `Self::on_program`.
 #[derive(Debug, Default)]
 pub struct FakeRunner {
     exact: Vec<(String, Vec<String>, CommandOutput)>,
@@ -332,31 +332,6 @@ impl FakeRunner {
         self.exact.push((
             program.to_string(),
             args.iter().map(|a| a.to_string()).collect(),
-            CommandOutput {
-                success: true,
-                stdout: stdout.to_string(),
-                stderr: String::new(),
-            },
-        ));
-        self
-    }
-
-    /// Register a fixture for an exact `(program, args)` invocation with a full [`CommandOutput`],
-    /// so tests can model a *failing* call (non-zero exit + stderr) that [`Self::on`] can't.
-    pub fn on_output(mut self, program: &str, args: &[&str], out: CommandOutput) -> Self {
-        self.exact.push((
-            program.to_string(),
-            args.iter().map(|a| a.to_string()).collect(),
-            out,
-        ));
-        self
-    }
-
-    /// Register a fallback fixture matched on `program` alone (any args), for cases that only
-    /// care which binary was invoked.
-    pub fn on_program(mut self, program: &str, stdout: &str) -> Self {
-        self.by_program.push((
-            program.to_string(),
             CommandOutput {
                 success: true,
                 stdout: stdout.to_string(),

@@ -224,14 +224,13 @@ window name — and only the branch-keyed tiers are allowed to degrade to
 </p>
 
 <p>
-"Stuck" for a controller is a narrower, pane-text question:
-<code>classify_stuck_lane</code> returns <code>McpLoading</code>,
-<code>InteractivePrompt</code>, <code>WorkingIdle</code> (600 s of no change) or
-<code>IdleWithWip</code>, keyed off a <code>pane_activity_fingerprint</code>.
-Separately, <code>agent_progress_for_cwd</code> measures cumulative output tokens regardless
-of quiet — that is how a stalled agent is distinguished from one that simply has not produced
-a turn yet.
-<span class="src">agent/stuck.rs:15, :142, :167 · agent/progress.rs:33</span>
+"Stuck" for a controller was a narrower, pane-text question — a classifier over the pane tail
+returning <code>McpLoading</code>, <code>InteractivePrompt</code>, <code>WorkingIdle</code>
+or <code>IdleWithWip</code>, plus a separate probe measuring cumulative output tokens to tell
+a stalled agent from one that simply had not produced a turn yet. Both were driven by the
+orchestrate daemon and were removed with it; only the <code>StuckLane</code> shape itself
+survives.
+<span class="src">agent/stuck.rs</span>
 </p>
 
 <h3>Reclamation policy</h3>

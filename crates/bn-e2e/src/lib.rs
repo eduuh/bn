@@ -252,18 +252,6 @@ impl Sandbox {
         self.finish(cmd, "git")
     }
 
-    /// Run `bn` from an explicit working directory inside the sandbox.
-    pub fn bn_in<I, S>(&self, dir: &Path, args: I) -> Result<Run>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<std::ffi::OsStr>,
-    {
-        let mut cmd = self.command(&self.bn_bin.clone());
-        cmd.current_dir(dir);
-        cmd.args(args);
-        self.finish(cmd, "bn")
-    }
-
     /// Replace a PATH shim with a scripted behaviour.
     pub fn fake_agent(&self, name: &str, behavior: &shims::Behavior) -> Result<()> {
         shims::write(&self.root.join("shims"), &self.calls, name, behavior)

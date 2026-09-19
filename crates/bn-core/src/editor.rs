@@ -114,9 +114,3 @@ pub fn socket_for(worktree: &Path) -> PathBuf {
 pub fn spec_file_for(worktree: &Path) -> PathBuf {
     runtime_dir().join(format!("{}.land.json", worktree_key(worktree)))
 }
-
-/// The advisory lock guarding create/hide/restore for one worktree, so two clients racing
-/// `bn edit toggle` cannot both decide the socket is stale and unlink each other's nvim.
-pub fn lock_file_for(worktree: &Path) -> PathBuf {
-    runtime_dir().join(format!("{}.lock", worktree_key(worktree)))
-}

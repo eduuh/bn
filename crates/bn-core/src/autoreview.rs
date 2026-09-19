@@ -173,15 +173,6 @@ impl Ledger {
         }
     }
 
-    /// Whether a reviewed PR has new commits since its last review (`current_sha` differs from
-    /// the reviewed sha). False for in-flight or unknown PRs.
-    pub fn needs_rereview(&self, repo: &str, number: i64, current_sha: &str) -> bool {
-        self.find(repo, number)
-            .filter(|e| e.stage == Stage::Reviewed)
-            .and_then(|e| e.reviewed_sha.as_deref())
-            .is_some_and(|reviewed| reviewed != current_sha)
-    }
-
     /// Drop a PR from the ledger (its PR completed or was abandoned and the worktree reclaimed).
     pub fn remove(&mut self, repo: &str, number: i64) {
         self.entries

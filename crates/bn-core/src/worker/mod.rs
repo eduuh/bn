@@ -117,34 +117,3 @@ pub mod status {
 
 /// Re-export the assembled status type at the module root for convenience.
 pub use status::{NodeInfo, WorkerStatus};
-
-/// Parse the `verdict` from a `bn worker start --json` envelope (#729) — `accepted`,
-/// `already_exists`, or `rejected_capacity`. The control-plane treats the first two as a
-/// successful (idempotent) admission and the last as a capacity rejection. `None` when the output
-/// isn't a well-formed envelope (unreachable node, non-JSON error). Pure so the remote-dispatch
-/// verdict handling is unit-testable without a live worker.
-pub fn parse_start_verdict(stdout: &str) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(stdout.trim()).ok()?;
-    v.get("data")?.get("verdict")?.as_str().map(str::to_string)
-}
-
-/// Whether a start verdict counts as a successful (idempotent) admission (#720/#729): `accepted`
-/// (fresh) or `already_exists` (a retry of the same `request_id`) — both mean the attempt is now
-/// live on the worker. `rejected_capacity` (or anything else) is not.
-pub fn start_admitted(verdict: &str) -> bool {
-    verdict == "accepted" || verdict == "already_exists"
-}
-
-/// Extract the state of attempt `attempt_id` from a `bn worker status --json` envelope (#729) —
-/// the value the control-plane mirrors into its per-item `worker_state`. `None` when the envelope
-/// is malformed or carries no such attempt (the caller then treats the attempt as `UNKNOWN`,
-/// blocking its redispatch until reconciled). Pure so the liveness fold is unit-testable.
-pub fn attempt_state(stdout: &str, attempt_id: &str) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(stdout.trim()).ok()?;
-    let attempts = v.get("data")?.get("attempts")?.as_array()?;
-    attempts
-        .iter()
-        .find(|a| a.get("attempt_id").and_then(|x| x.as_str()) == Some(attempt_id))
-        .and_then(|a| a.get("state").and_then(|x| x.as_str()))
-        .map(str::to_string)
-}

@@ -4,8 +4,6 @@
 use crate::commands::{AddOutcome, CloseOutcome, DoneOutcome, GoalOutcome, PrOutcome};
 use crate::daily::{self, Daily};
 use crate::doctor::Finding;
-use crate::events::CronJobStatus;
-use crate::metrics::Metrics;
 use crate::reports;
 use crate::resolver::{RepoBranch, Resolved};
 use crate::reviews::ReviewCache;
@@ -124,51 +122,6 @@ fn orchestrate_queue_item(
         }
     }
     v
-}
-
-/// The `rollups` monitoring block for `bn orchestrate watch` / `status --json` (#379): the pure
-/// throughput / ETA / recovery math from [`crate::orchestrate::Rollups`] (merged/hr, avg cycle,
-/// ETA, queue depth, recent recovery/failure counts) plus the cost burn the CLI layers on from the
-/// #381 `cost::rollup` surface — which is disk-bound, so it can't live in the pure core. The three
-/// cost keys (`cost_today_aic`, the real Copilot bill; `cost_today_usd`, the cache-aware API-equiv
-/// benchmark; `tokens_today`) are always present, `null`/`0` when nothing priceable ran today.
-/// Shared here so the CLI and web (#390) emit one byte-identical block.
-pub fn orchestrate_rollups_data(
-    rollups: &crate::orchestrate::Rollups,
-    cost_today_aic: Option<f64>,
-    cost_today_usd: Option<f64>,
-    tokens_today: i64,
-) -> Value {
-    let mut v = serde_json::to_value(rollups).unwrap_or_else(|_| json!({}));
-    if let Some(obj) = v.as_object_mut() {
-        obj.insert("cost_today_aic".to_string(), json!(cost_today_aic));
-        obj.insert("cost_today_usd".to_string(), json!(cost_today_usd));
-        obj.insert("tokens_today".to_string(), json!(tokens_today));
-    }
-    v
-}
-
-/// `orchestrate answers` → `{ "repo", "answers": [ { id, question, path, harvested_at } ] }` — the
-/// scout/ask deliverable surface (#378). Each element is one answered item's id plus its harvested
-/// [`crate::orchestrate::Answer`] (the question echoed back, the findings-write-up path, and the
-/// harvest time). Extracted from bn-cli's inline `answers` json (mirroring [`orchestrate_status_data`])
-/// so `bn orchestrate answers --json`, the web board, and any MCP surface emit one byte-identical
-/// shape. `answered` is the already-filtered set of items carrying an answer (an empty slice — no
-/// run, or nothing routed back yet — yields an empty `answers` array).
-pub fn orchestrate_answers_data(repo: &str, answered: &[&crate::orchestrate::QueueItem]) -> Value {
-    let items: Vec<Value> = answered
-        .iter()
-        .filter_map(|i| {
-            let a = i.answer.as_ref()?;
-            Some(json!({
-                "id": i.id,
-                "question": a.question,
-                "path": a.path,
-                "harvested_at": a.harvested_at,
-            }))
-        })
-        .collect();
-    json!({ "repo": repo, "answers": items })
 }
 
 /// `handoff write`/`read` → `{ "handoff": {...}, "rendered": "<orientation text>" }`. The packet
@@ -407,24 +360,6 @@ pub fn rollover_text(r: &daily::RolloverOutcome) -> String {
     out
 }
 
-/// `standup` → the full structured view plus a `rendered` text field for display.
-pub fn standup_data(s: &reports::Standup) -> Value {
-    let mut v = serde_json::to_value(s).unwrap_or_else(|_| json!({}));
-    if let Value::Object(ref mut m) = v {
-        m.insert("rendered".into(), json!(reports::render_standup(s)));
-    }
-    v
-}
-
-/// `stand` → the full structured view plus a `rendered` text field for display.
-pub fn stand_data(s: &reports::Stand) -> Value {
-    let mut v = serde_json::to_value(s).unwrap_or_else(|_| json!({}));
-    if let Value::Object(ref mut m) = v {
-        m.insert("rendered".into(), json!(reports::render_stand(s)));
-    }
-    v
-}
-
 /// `weekly` → the full structured view plus a `rendered` text field for display.
 pub fn weekly_data(w: &reports::Weekly) -> Value {
     let mut v = serde_json::to_value(w).unwrap_or_else(|_| json!({}));
@@ -604,11 +539,6 @@ pub fn archive_data(r: &crate::lifecycle::ArchiveReport) -> Value {
         "failed": r.failed,
         "dry_run": r.dry_run,
     })
-}
-
-/// `cron status` → `{ "jobs": [CronJobStatus, ...] }`. Object-wrapped (see `todos_data`).
-pub fn cron_status_data(jobs: &[CronJobStatus]) -> Value {
-    json!({ "jobs": jobs })
 }
 
 /// `GET /api/cron` → `{ "count", "jobs": [CronView, ...] }` — the machine-wide registry of
@@ -791,11 +721,6 @@ pub fn plan_reviews_data(reviews: &[crate::plan_review::Review]) -> Value {
 /// `review show`/`approve`/`request-changes`/`reject` → `{ "review": {...} }` — one record.
 pub fn plan_review_data(review: &crate::plan_review::Review) -> Value {
     json!({ "review": review.reviewer_view() })
-}
-
-/// `metrics` → the `Metrics` object (already a record).
-pub fn metrics_data(m: &Metrics) -> Value {
-    json!(m)
 }
 
 /// `next` → `{ "actions": [Action + category, ...] }`. Object-wrapped (see `todos_data`). The

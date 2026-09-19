@@ -208,20 +208,6 @@ pub fn resolve_nodes(nodes: &HashMap<String, NodeConfig>) -> Vec<NodeRecord> {
     records
 }
 
-/// The lifecycle state a node takes after a **BatchMode key-auth preflight** (#729). A node whose
-/// `ssh -o BatchMode=yes` probe succeeded (reachable *and* key auth works — no password prompt) is
-/// [`Ready`](NodeStatus::Ready) and placement-eligible; a probe that failed (unreachable, or
-/// password-only auth the unattended daemon can't answer) marks it [`Offline`](NodeStatus::Offline)
-/// so the scheduler never places on a node it can't actually reach. Pure so the mapping is
-/// unit-testable; the CLI supplies the live probe result.
-pub fn node_status_from_preflight(reachable_with_key_auth: bool) -> NodeStatus {
-    if reachable_with_key_auth {
-        NodeStatus::Ready
-    } else {
-        NodeStatus::Offline
-    }
-}
-
 /// ssh's first-obtained-value semantics.
 pub fn parse_ssh_config(text: &str) -> Vec<Host> {
     let mut hosts: Vec<Host> = Vec::new();

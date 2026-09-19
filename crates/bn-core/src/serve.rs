@@ -1,7 +1,7 @@
 //! Pure `bn serve` / bn-web policy (#499): the honest connection-state classifier the dashboard
 //! reads, and the managed-service status classifier the `bn serve status` command renders. No IO —
 //! callers (the UI health probe, the CLI service probe) feed observations in and get a verdict out,
-//! so the escalation rule lives in one tested place. The UI mirrors [`classify_conn`] in TypeScript
+//! so the escalation rule lives in one tested place. The UI mirrors `classify_conn` in TypeScript
 //! (`crates/bn-web/ui/src/lib/conn.ts`); keep [`DOWN_AFTER_FAILURES`] in sync there.
 
 use serde::Serialize;
@@ -42,20 +42,6 @@ impl ConnState {
             ConnState::Reconnecting => "lost",
             ConnState::Down => "down",
         }
-    }
-}
-
-/// Classify the dashboard connection from the live-stream state and the health-probe failure run.
-/// `stream_open` short-circuits to `Live`; otherwise the consecutive failed-probe count decides
-/// blip (`Reconnecting`) vs outage (`Down`) at the [`DOWN_AFTER_FAILURES`] threshold. Pure — the UI
-/// and any CLI status share this one rule.
-pub fn classify_conn(stream_open: bool, consecutive_probe_failures: u32) -> ConnState {
-    if stream_open {
-        ConnState::Live
-    } else if consecutive_probe_failures >= DOWN_AFTER_FAILURES {
-        ConnState::Down
-    } else {
-        ConnState::Reconnecting
     }
 }
 

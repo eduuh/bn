@@ -383,18 +383,6 @@ pub fn load_user_specs(path: &Path) -> Vec<ToolSpec> {
         .unwrap_or_default()
 }
 
-/// Persist user-declared tools to `tools.toml`, creating the parent directory as needed.
-pub fn save_user_specs(path: &Path, tools: &[ToolSpec]) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let file = RegistryFile {
-        tools: tools.to_vec(),
-    };
-    let body = toml::to_string_pretty(&file).map_err(|e| e.to_string())?;
-    std::fs::write(path, body).map_err(|e| e.to_string())
-}
-
 /// The effective tool set: enabled built-ins overlaid by any user tools of the same name, plus any
 /// user-only tools. Sorted by name for stable output. With no `[tools].builtins` / env opt-in and
 /// no `tools.toml`, this is empty.

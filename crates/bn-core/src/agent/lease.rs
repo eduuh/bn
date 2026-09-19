@@ -386,23 +386,6 @@ pub fn begin_agent_lease(
     }))
 }
 
-pub fn acquire_agent_lease(
-    path: &Path,
-    lease: AgentLease,
-    mode: AgentLeaseAcquireMode,
-    now: i64,
-    is_live: impl Fn(&AgentLease) -> bool,
-) -> std::io::Result<AgentLeaseAcquire> {
-    match begin_agent_lease(path, lease, mode, now, is_live)? {
-        AgentLeaseBegin::Held(owner) => Ok(AgentLeaseAcquire::Held(owner)),
-        AgentLeaseBegin::Reserved(reservation) => {
-            let replaced = reservation.replaced().to_vec();
-            reservation.commit();
-            Ok(AgentLeaseAcquire::Acquired { replaced })
-        }
-    }
-}
-
 /// Release only the reservation owned by `session_id`; another replacement owner is untouched.
 pub fn release_agent_lease(path: &Path, session_id: &str) -> std::io::Result<bool> {
     let _lock = FileLock::acquire_required(path)?;

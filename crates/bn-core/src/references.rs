@@ -423,11 +423,6 @@ pub fn read(query: &str) -> Option<(Reference, String)> {
     read_in(&Scope::Global, query)
 }
 
-/// Ensure a standards reference exists, scaffolding it if missing.
-pub fn ensure_file(name: &str) -> std::io::Result<(PathBuf, bool)> {
-    ensure_file_in(&Scope::Global, name)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

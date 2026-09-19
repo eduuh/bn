@@ -212,39 +212,6 @@ pub fn append_event_at(
     res
 }
 
-/// Like [`append_event_at`], but `fsync`s the file before returning (`sync_all`) — a durable
-/// append rather than a merely buffered one. Used by [`crate::routine`]'s locked transactions,
-/// where "the event line is flushed/synced" is the exact instant that makes a delivery/skip/
-/// migration durable (#801 amendment invariant 2/3): once this returns `Ok`, the write survives a
-/// crash immediately after, so at-least-once dedupe state is never lost to a buffered write that
-/// never made it to disk.
-pub fn append_event_at_synced(
-    path: &Path,
-    kind: &str,
-    ts: i64,
-    fields: Map<String, Value>,
-) -> std::io::Result<()> {
-    let ev = Event {
-        kind: kind.to_string(),
-        ts,
-        fields: unshadowed(fields),
-    };
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    // Single write, for the same reason as [`append_event_at`]: two `write` calls can interleave
-    // with a concurrent appender's.
-    let mut line = serde_json::to_string(&ev)?;
-    line.push('\n');
-    f.write_all(line.as_bytes())?;
-    f.sync_all()?;
-    Ok(())
-}
-
 /// Every event in a specific log file, in file order. Unparseable lines are skipped, so a torn
 /// append never poisons reads. Missing file → empty.
 pub fn read_events_at(path: &Path) -> Vec<Event> {
@@ -268,11 +235,6 @@ pub fn read_events_across(paths: &[PathBuf]) -> Vec<Event> {
 /// on demand.
 pub fn append_at(kind: &str, ts: i64, fields: Map<String, Value>) -> std::io::Result<()> {
     append_event_at(&log_path(), kind, ts, fields)
-}
-
-/// Durable ([`append_event_at_synced`]) twin of [`append_at`] for the machine-local log.
-pub fn append_at_synced(kind: &str, ts: i64, fields: Map<String, Value>) -> std::io::Result<()> {
-    append_event_at_synced(&log_path(), kind, ts, fields)
 }
 
 /// Append an event stamped with the current time to the machine-local cron/state log.
@@ -392,35 +354,6 @@ pub fn running_jobs() -> Vec<String> {
 /// skipped, so a torn append never poisons reads.
 pub fn read_all() -> Vec<Event> {
     read_events_at(&log_path())
-}
-
-/// Structured orchestrator events in file order. Other event kinds are excluded.
-pub fn orchestrator_events() -> Vec<OrchestratorEvent> {
-    read_all()
-        .iter()
-        .filter_map(OrchestratorEvent::from_event)
-        .collect()
-}
-
-/// Latest active degradation per `(repo, reason)`, oldest first. An event with `active: false`
-/// resolves the preceding warning without deleting history.
-pub fn active_orchestrator_degradations(
-    events: &[OrchestratorEvent],
-    repo: Option<&str>,
-) -> Vec<OrchestratorEvent> {
-    let mut latest: HashMap<(Option<String>, String), OrchestratorEvent> = HashMap::new();
-    for event in events {
-        if event.active.is_none() || repo.is_some_and(|want| event.repo.as_deref() != Some(want)) {
-            continue;
-        }
-        latest.insert((event.repo.clone(), event.reason.clone()), event.clone());
-    }
-    let mut active: Vec<_> = latest
-        .into_values()
-        .filter(|event| event.active == Some(true))
-        .collect();
-    active.sort_by(|a, b| a.ts.cmp(&b.ts).then_with(|| a.reason.cmp(&b.reason)));
-    active
 }
 
 /// Rolled-up status for one cron job, derived from its `cron_run` events. Identified by the

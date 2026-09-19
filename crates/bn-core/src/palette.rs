@@ -453,33 +453,6 @@ pub fn github_issues(runner: &dyn CommandRunner, query: &str, limit: usize) -> V
     gh_json::<Vec<IssueHit>>(runner, &args).unwrap_or_default()
 }
 
-/// Best-effort list of a *specific repo's* open GitHub issues, newest-first, through the injected
-/// runner (`gh issue list -R <nwo> --state open`). `nwo` is the `owner/repo` slug; unlike
-/// [`github_issues`] this is not a search — it drains the repo's open backlog so the per-repo
-/// command center (#556) can pick what a fleet should work on. Returns up to `limit`; empty on any
-/// gh failure — binary absent, not authed, or the repo unreachable. Deterministic under
-/// [`crate::runner::FakeRunner`].
-pub fn github_issues_repo(runner: &dyn CommandRunner, nwo: &str, limit: usize) -> Vec<IssueHit> {
-    let nwo = nwo.trim();
-    if nwo.is_empty() {
-        return Vec::new();
-    }
-    let limit_s = limit.to_string();
-    let args = [
-        "issue",
-        "list",
-        "-R",
-        nwo,
-        "--state",
-        "open",
-        "--limit",
-        &limit_s,
-        "--json",
-        "number,title,url,state",
-    ];
-    gh_json::<Vec<IssueHit>>(runner, &args).unwrap_or_default()
-}
-
 /// A synthetic [`ActionItem`] for "work on this GitHub issue" — the reused composer renders its
 /// `issue` badge and a fix-and-PR prompt, pre-filled with the issue's repo when the URL yields one.
 fn issue_action(i: &IssueHit) -> ActionItem {

@@ -230,16 +230,7 @@ pub fn ingest_with_mode(cfg: &Config, mode: IngestMode) -> std::io::Result<Inges
     )
 }
 
-/// [`ingest`] with explicit harness roots — the testable core.
-pub fn ingest_from(
-    cfg: &Config,
-    copilot_root: &Path,
-    claude_root: &Path,
-) -> std::io::Result<IngestReport> {
-    ingest_from_with_mode(cfg, copilot_root, claude_root, IngestMode::NewOnly)
-}
-
-/// [`ingest_from`] under an explicit [`IngestMode`].
+/// `ingest_from` under an explicit [`IngestMode`].
 pub fn ingest_from_with_mode(
     cfg: &Config,
     copilot_root: &Path,

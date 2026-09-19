@@ -157,12 +157,7 @@ pub struct StageProfile {
     pub gate_ratcheted_from: Option<Layer>,
 }
 
-impl StageProfile {
-    /// Whether entering this stage waits for a human.
-    pub fn is_held(&self) -> bool {
-        self.gate == GatePolicy::Hold
-    }
-}
+impl StageProfile {}
 
 /// The three non-config layers, gathered by the caller so [`layer`] stays pure.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

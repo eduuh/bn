@@ -1,7 +1,7 @@
 //! Who may launch an agent with nobody watching (#1003, EPIC #993).
 //!
 //! bn has exactly one rail against prompt injection reaching an unattended agent, and it is the
-//! `source` field: [`super::query::open_auto_eligible`] historically required `source == "manual"`,
+//! `source` field: `super::query::open_auto_eligible` historically required `source == "manual"`,
 //! meaning *self-authored*. Only text you wrote yourself could start a `--yolo` agent in a worktree
 //! with repo write access.
 //!

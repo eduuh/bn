@@ -209,16 +209,6 @@ pub fn fires_on(on_calendar: &str, date: NaiveDate) -> bool {
     }
 }
 
-/// Whether the `OnCalendar` spec fires on today's local date (honouring `$BN_TODAY` for
-/// deterministic tests). The date-only convenience wrapper over [`fires_on`].
-pub fn fires_today(on_calendar: &str) -> bool {
-    match NaiveDate::parse_from_str(&crate::util::today(), "%Y-%m-%d") {
-        Ok(date) => fires_on(on_calendar, date),
-        // An unparseable `$BN_TODAY` shouldn't hide the whole registry — fall back to local now.
-        Err(_) => fires_on(on_calendar, Local::now().date_naive()),
-    }
-}
-
 /// The clock slots (`hour`, `minute`, `second`) a spec fires at within any day it fires on.
 /// Covers the full `OnCalendar` subset the cron/agent manifests use: comma lists, ranges, stepped
 /// fields, optional weekday/date prefixes, and the `daily`/`hourly`/`minutely` keywords.

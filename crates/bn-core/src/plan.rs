@@ -63,14 +63,6 @@ pub fn ensure_dirs(cfg: &Config, ctx: &Resolved) -> Result<(), PlanError> {
     Ok(())
 }
 
-pub fn active_path(cfg: &Config, ctx: &Resolved) -> PathBuf {
-    cfg.active_plan_file(ctx)
-}
-
-pub fn agent_path(cfg: &Config, ctx: &Resolved, session_id: &str) -> PathBuf {
-    cfg.agent_plan_file(ctx, session_id)
-}
-
 pub fn init_active(cfg: &Config, ctx: &Resolved) -> Result<PathBuf, PlanError> {
     ensure_dirs(cfg, ctx)?;
     let path = cfg.active_plan_file(ctx);

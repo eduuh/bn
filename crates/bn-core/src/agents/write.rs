@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{parse_agent, AgentDef, AgentKind};
+use super::{parse_agent, AgentKind};
 use crate::resolver::{self, Config, JobScope};
 
 /// The tiers a dashboard create may write into, by keyword.
@@ -173,15 +173,6 @@ pub fn create_agent(
     crate::store::write_atomic(&path, source.as_bytes())
         .map_err(|error| format!("{}: {error}", path.display()))?;
     Ok(path)
-}
-
-/// Whether a written agent needs the native Copilot/Claude agent files re-materialized.
-///
-/// Only specialists compile into a native harness agent, so only a specialist write can leave one
-/// stale. Taken as an `Option<&AgentDef>` because a delete has no "after" state — the caller passes
-/// what the agent *was*.
-pub fn needs_native_sync(agent: Option<&AgentDef>) -> bool {
-    agent.is_some_and(AgentDef::is_specialist)
 }
 
 #[cfg(test)]

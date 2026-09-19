@@ -9,7 +9,7 @@
 //! the plan, `section_content` truncates.
 //!
 //! [`FenceScanner`] is the shared fix. Drive it one line at a time over a body and ask
-//! [`FenceScanner::in_code`] before treating a line as structure. Fence syntax follows CommonMark:
+//! `FenceScanner::in_code` before treating a line as structure. Fence syntax follows CommonMark:
 //! an opening fence is three-or-more backticks or tildes indented at most three spaces, and it
 //! closes on a fence of the same character that is at least as long and carries no info string.
 
@@ -26,13 +26,6 @@ pub struct FenceScanner {
 impl FenceScanner {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Whether the scanner is currently inside a fenced code block, i.e. whether the *next*
-    /// line to be observed is code. Prefer the return value of [`observe`](Self::observe),
-    /// which also accounts for the fence delimiter lines themselves.
-    pub fn in_code(&self) -> bool {
-        self.open.is_some()
     }
 
     /// Advance over one line, returning whether that line is part of a code block (including the

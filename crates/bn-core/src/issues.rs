@@ -2,7 +2,7 @@
 //!
 //! # The failure this module exists to fix
 //!
-//! [`crate::palette::github_issues_repo`] shells `gh issue list` and ends in `.unwrap_or_default()`,
+//! `crate::palette::github_issues_repo` shells `gh issue list` and ends in `.unwrap_or_default()`,
 //! so **every** failure — `gh` missing, not authenticated, rate-limited, offline, repo unreachable,
 //! or simply hung — collapses to an empty `Vec` that is *indistinguishable from "this repo has zero
 //! open issues"*. The dashboard duly renders "no open issues" and you believe it.
@@ -15,7 +15,7 @@
 //!    backlog.
 //! 2. **Bounded.** Fetches go through [`CommandRunner::run_with_timeout`]. The old path used the
 //!    unbounded `.output()`, so a hung `gh` hung the caller (in bn-web, an axum worker) forever.
-//! 3. **Cached with a TTL.** Not per-day. [`crate::scout::with_cache`] keys on the date, which is
+//! 3. **Cached with a TTL.** Not per-day. `crate::scout::with_cache` keys on the date, which is
 //!    right for a Saturday radar and wrong here: an issue filed at 10:00 would be invisible to a
 //!    "what can I do today" triage until tomorrow. This keys on `fetched_at + ttl`.
 //!

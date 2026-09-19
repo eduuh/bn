@@ -215,12 +215,7 @@ pub enum ControlChannel {
     None,
 }
 
-impl ControlChannel {
-    /// Whether a write can be aimed at exactly one agent.
-    pub fn is_steerable(self) -> bool {
-        matches!(self, ControlChannel::Resume | ControlChannel::Tmux)
-    }
-}
+impl ControlChannel {}
 
 /// Default minutes of quiet before an agent is *idle*.
 pub const DEFAULT_IDLE_MINS: i64 = 5;

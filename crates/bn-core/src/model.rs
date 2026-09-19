@@ -90,11 +90,6 @@ impl GoalNote {
         self.repo.as_deref().is_some_and(|r| !r.is_empty())
             && self.branch.as_deref().is_some_and(|b| !b.is_empty())
     }
-
-    /// True when this note carries attached free-text / uploaded content.
-    pub fn has_text(&self) -> bool {
-        self.text.as_deref().is_some_and(|t| !t.trim().is_empty())
-    }
 }
 
 /// Some legacy notes carry `work_item`/`pr` as bare integers or strings; null otherwise.

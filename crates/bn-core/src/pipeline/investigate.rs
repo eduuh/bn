@@ -89,23 +89,6 @@ pub fn next_after_investigation(
     }
 }
 
-/// Merge the primary investigation with focused answers in a stable, duplicate-free order.
-///
-/// Primary findings stay first. Sub-investigations are ordered by their trimmed question so the
-/// same set of asynchronously completed agents produces the same note regardless of finish order.
-pub fn merge_findings(primary: &[String], sub_investigations: &[SubInvestigation]) -> Vec<String> {
-    let mut ordered = sub_investigations.to_vec();
-    ordered.sort_by(|a, b| a.question.trim().cmp(b.question.trim()));
-
-    normalized(
-        primary.iter().map(String::as_str).chain(
-            ordered
-                .iter()
-                .flat_map(|sub| sub.findings.iter().map(String::as_str)),
-        ),
-    )
-}
-
 /// Build the deterministic task/findings packet appended to the Markdown plan workflow.
 pub fn plan_packet(goal: &str, findings: &[String]) -> String {
     let findings = normalized(findings.iter().map(String::as_str));

@@ -104,7 +104,6 @@ pub struct CarriedGoal {
 pub struct GoalAggregation {
     pub completed: usize,
     pub carried: Vec<CarriedGoal>,
-    pub slipped: usize,
 }
 
 /// Result of `add`. `scheduled` is `None` for a goal placed straight onto today; `Some(date)`
@@ -393,13 +392,8 @@ pub fn aggregate_goals(days: &[Daily]) -> GoalAggregation {
         .map(|(days, text)| CarriedGoal { text, days })
         .collect();
     carried.sort_by(|a, b| b.days.cmp(&a.days).then_with(|| a.text.cmp(&b.text)));
-    let slipped = carried.len();
 
-    GoalAggregation {
-        completed,
-        carried,
-        slipped,
-    }
+    GoalAggregation { completed, carried }
 }
 
 /// Outcome of `rollover`: whether today's file was freshly created, what carried forward
@@ -591,36 +585,7 @@ pub fn add(
     add_full(cfg, today, text, link, None, on, None)
 }
 
-/// [`add`] with an optional `--est` estimate (a `bn focus start` duration; validated by the
-/// caller). The estimate rides onto the landed goal, or onto the scheduled follow-up so it
-/// survives the drain. `est = None` is the plain `add` behaviour.
-pub fn add_est(
-    cfg: &Config,
-    today: &str,
-    text: &str,
-    link: Option<String>,
-    on: Option<&str>,
-    est: Option<String>,
-) -> Result<AddOutcome, CmdError> {
-    add_full(cfg, today, text, link, None, on, est)
-}
-
-/// Add a goal, optionally tagged to a quarter goal (`--q <key>`). With `on = None` it lands
-/// straight on today's list (creating the day with carry-over if needed) with a fresh `g<N>`
-/// id. With `on = Some(date)` it's queued as a follow-up for that day (a `schedule` call); a
-/// date already due drains onto today via `ensure_today`. Persists and reports where it landed.
-pub fn add_tagged(
-    cfg: &Config,
-    today: &str,
-    text: &str,
-    link: Option<String>,
-    q: Option<String>,
-    on: Option<&str>,
-) -> Result<AddOutcome, CmdError> {
-    add_full(cfg, today, text, link, q, on, None)
-}
-
-/// Shared implementation for [`add`], [`add_est`], and [`add_tagged`]: lands a goal on today
+/// Shared implementation for [`add`], `add_est`, and `add_tagged`: lands a goal on today
 /// (or schedules it when `on = Some(date)`), stamping an optional `est` estimate (#245) and/or
 /// `q` quarter-goal key (#252). All three optional inputs default to `None` on the plain path.
 #[allow(clippy::too_many_arguments)]
@@ -1276,11 +1241,6 @@ pub fn read_ratings(cfg: &Config) -> Vec<DxiRating> {
     crate::store::parse_frontmatter::<DxiFront>(&text)
         .map(|d| d.ratings)
         .unwrap_or_default()
-}
-
-/// The rating recorded for `date`, if any.
-pub fn rating_for(cfg: &Config, date: &str) -> Option<DxiRating> {
-    read_ratings(cfg).into_iter().find(|r| r.date == date)
 }
 
 /// Clamp a self-report score to the 1–5 scale (out-of-range input is pinned, never rejected —

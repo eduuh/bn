@@ -317,18 +317,6 @@ fn is_auto_eligible(cfg: &crate::resolver::Config, i: &AttnItem, today: &str) ->
     super::trust::auto_verdict(cfg, i, today).eligible()
 }
 
-/// The open, auto-eligible attention items — the promoted-todo queue that `bn attn promote` fuels
-/// — in board order (urgent-first then oldest, same as [`open_items`]). Uncapped and with no
-/// concurrency bookkeeping: the caller ranks and gates them (the night planner ranks by `bn next`,
-/// then applies its allowlist / dirty / live-session / overlap / cap rails). Eligibility is
-/// [`is_auto_eligible`], so the trust boundary (self-authored only) still holds.
-pub fn open_auto_eligible(cfg: &crate::resolver::Config, today: &str) -> Vec<AttnItem> {
-    open_items(today)
-        .into_iter()
-        .filter(|i| is_auto_eligible(cfg, i, today))
-        .collect()
-}
-
 /// The eligible attention items the autonomous loop should start *now*, highest-priority first,
 /// capped so that (already running + returned) never exceeds `max_running` — the concurrency knob.
 /// Eligibility is [`is_auto_eligible`]. Returns empty while the running set is already at the cap.

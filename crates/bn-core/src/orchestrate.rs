@@ -64,48 +64,6 @@ impl ItemStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LaneReset {
-    pub id: String,
-    pub item: String,
-    pub repo: String,
-    pub branch: String,
-    pub harness: Option<String>,
-    pub work_class: WorkClass,
-    pub previous_status: ItemStatus,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LaneResetError {
-    Missing(String),
-    Ambiguous(String),
-    Queued(String),
-    Merged(String),
-    NonLocal(String),
-    MissingBranch(String),
-}
-
-impl std::fmt::Display for LaneResetError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Missing(lane) => write!(f, "lane '{lane}' was not found by item id or branch"),
-            Self::Ambiguous(lane) => write!(
-                f,
-                "lane '{lane}' matches more than one item; use its unique item id"
-            ),
-            Self::Queued(lane) => write!(f, "lane '{lane}' has not been dispatched yet"),
-            Self::Merged(lane) => write!(f, "lane '{lane}' is already merged"),
-            Self::NonLocal(lane) => write!(
-                f,
-                "lane '{lane}' is not a local tmux/worktree lane and cannot be reset here"
-            ),
-            Self::MissingBranch(lane) => {
-                write!(f, "lane '{lane}' has no dispatched branch to re-seed")
-            }
-        }
-    }
-}
-
 /// Durable dispatch transaction phase for one queue item (#712).
 ///
 /// The lifecycle [`ItemStatus`] remains the operator-facing queue/dispatch/terminal state. This
@@ -132,10 +90,6 @@ impl DispatchPhase {
 
 fn is_false(value: &bool) -> bool {
     !*value
-}
-
-fn is_zero(value: &i64) -> bool {
-    *value == 0
 }
 
 /// The concurrency lane lives in [`crate::backlog::kind`], next to the [`crate::backlog::BacklogKind`]
@@ -187,30 +141,14 @@ pub struct QueueItem {
     /// The last pane state observed for this item, for `bn orchestrate status`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub last_state: Option<PaneState>,
-    /// Stable fingerprint of the latest observed pane tail + Plane-A state. The supervisor uses
-    /// this with the transcript clock to detect a `working` lane that has made no progress.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub pane_activity_fingerprint: Option<u64>,
-    /// Epoch seconds when [`QueueItem::pane_activity_fingerprint`] last changed.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub pane_activity_changed_at: i64,
     /// Current controller-actionable stuck state, shared by status and back-channel emission.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub stuck: Option<crate::agent::StuckLane>,
-    /// The stuck-state key successfully emitted to the owning controller. Kept distinct from
-    /// `stuck` so an append failure retries on the next tick instead of silently losing the wake.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub stuck_notified_key: Option<String>,
     /// The harness this item was dispatched under (`copilot` / `claude`), set once dispatched — so
     /// `bn orchestrate status` and the web board can show *what* is running in the window (#372).
     /// Flipped by the #382 usage-limit auto-fallback when the lane is switched to the other harness.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub harness: Option<String>,
-    /// Epoch secs of the last usage-limit harness switch (#382), 0 if never. Gates the switch
-    /// cooldown so a just-respawned harness gets time to boot before the lane could be flipped
-    /// again — a lingering limit banner in the old pane buffer never causes a flip-flop.
-    #[serde(default)]
-    pub last_switch_at: i64,
     /// Path globs this item is expected to touch — the conflict-aware scheduling hint (#376),
     /// carried over from its durable [`crate::backlog::BacklogEntry::touches`] when the daemon
     /// leases it into the run. Empty = no declared hint, so it's schedulable alongside anything
@@ -223,10 +161,10 @@ pub struct QueueItem {
     pub controller_id: Option<String>,
     /// While this item is queued, the id of the in-flight item whose touch-area it overlaps —
     /// *why* it's held rather than dispatched (#376). Refreshed each dispatch pass by
-    /// [`OrchestrateState::refresh_holds`] from the live [`conflicts`] policy, so `bn orchestrate
+    /// `OrchestrateState::refresh_holds` from the live [`conflicts`] policy, so `bn orchestrate
     /// status` and the web board show "held: conflicts with #NNN" without re-deriving, and a hold is
     /// logged once per episode. `None` = not held (or not queued). The authoritative scheduling
-    /// decision itself is always live ([`next_dispatchable`](OrchestrateState::next_dispatchable)).
+    /// decision itself is always live (`next_dispatchable`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_by: Option<String>,
     /// Where this item runs (#377): carried from its durable [`crate::backlog::BacklogEntry::substrate`]
@@ -243,28 +181,16 @@ pub struct QueueItem {
     /// run's state, so the implicit-local-box behavior is preserved unchanged.
     #[serde(default, skip_serializing_if = "ExecutionTarget::is_local")]
     pub target: ExecutionTarget,
-    /// Capability tags the placed node must advertise (#728), resolved from `[repo.<name>]` by the
-    /// orchestrator before each scheduler pass. Persisted so status snapshots explain the policy
-    /// used for a decision; empty preserves pre-affinity state files.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub required_capabilities: Vec<String>,
-    /// Capability tags that make a node ineligible for this repo (#728).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub excluded_capabilities: Vec<String>,
     /// Which typed concurrency lane this item is capped in (#385): `Coding` for a `ship` change,
     /// `Research` for a `scout` investigation, derived from the leased
-    /// [`crate::backlog::BacklogKind`] via [`WorkClass::from_kind`]. The resource-aware scheduler
+    /// [`crate::backlog::BacklogKind`] via `WorkClass::from_kind`. The resource-aware scheduler
     /// counts in-flight items **per lane** against that lane's cap, so coding and research scale
     /// independently. Defaults to `Coding` on a pre-#385 run's state and for every `--queue` item
     /// (which carries no kind), preserving the single-pool behavior.
     #[serde(default)]
     pub work_class: WorkClass,
-    /// Whether this local lane was launched by orchestrate as a trusted `--yolo` ship. Explicit and
-    /// fail-closed: adopted standalone lanes and pre-#618 state default to false, even when coding.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub command_approvals_trusted: bool,
     /// The harvested answer for a scout/ask item (#378), set once its findings are routed back —
-    /// see [`OrchestrateState::record_answer`]. A `ship` never carries one (it lands a PR, not an
+    /// see `OrchestrateState::record_answer`. A `ship` never carries one (it lands a PR, not an
     /// answer); a `scout`/`ask` produces findings, not a merge, so *this* — not a PR — is its
     /// deliverable. `bn orchestrate answers` / `ask --wait` read it straight off the state file the
     /// daemon already writes (no new IPC). `None` until harvested (or on any pre-#378 run's state).
@@ -287,8 +213,6 @@ pub struct QueueItem {
     pub request_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worker_state: Option<String>,
 }
 
 pub type QueueEntrySpec = (String, Vec<String>, Substrate, WorkClass, Option<String>);
@@ -309,8 +233,6 @@ pub struct Answer {
     /// The harvested findings file in the item's branch-note dir (a sibling write-up when the scout
     /// wrote one, else the note itself) — the link the notification and `answers` point a human at.
     pub path: String,
-    /// Epoch secs when the answer was harvested (the scout reached `Done`).
-    pub harvested_at: i64,
 }
 
 impl QueueItem {
@@ -328,27 +250,19 @@ impl QueueItem {
             last_relaunch_at: 0,
             updated_at: now,
             last_state: None,
-            pane_activity_fingerprint: None,
-            pane_activity_changed_at: 0,
             stuck: None,
-            stuck_notified_key: None,
             harness: None,
-            last_switch_at: 0,
             touches: Vec::new(),
             controller_id: None,
             held_by: None,
             substrate: Substrate::Auto,
             work_class: WorkClass::Coding,
             target: ExecutionTarget::Local,
-            required_capabilities: Vec::new(),
-            excluded_capabilities: Vec::new(),
             answer: None,
-            command_approvals_trusted: false,
             claimed_remote: false,
             node: None,
             request_id: None,
             attempt_id: None,
-            worker_state: None,
         }
     }
 
@@ -386,16 +300,6 @@ impl QueueItem {
     pub fn is_scout(&self) -> bool {
         self.work_class == WorkClass::Research
     }
-
-    /// Whether this scout/ask item has delivered its answer and is complete (#378) — its findings
-    /// were harvested and routed back ([`OrchestrateState::record_answer`]). A complete scout is
-    /// terminal with **no PR expected and no relaunch loop**: unlike a ship it doesn't merge, so the
-    /// moment its answer exists there is nothing left to supervise. Pure over the item, so the
-    /// scout-terminal-on-answer lifecycle is unit-testable in isolation.
-    pub fn answer_complete(&self) -> bool {
-        self.is_scout() && self.answer.is_some()
-    }
-
     /// This item's **`(repo, id)` key** (#453) — the tuple the orchestrate queue is addressed by,
     /// so two repos' identically-named items never alias. `id` alone was ambiguous across repos.
     pub fn key(&self) -> (&str, &str) {
@@ -403,10 +307,7 @@ impl QueueItem {
     }
 
     fn reset_stuck_tracking(&mut self) {
-        self.pane_activity_fingerprint = None;
-        self.pane_activity_changed_at = 0;
         self.stuck = None;
-        self.stuck_notified_key = None;
     }
 
     /// Whether the scheduler may begin a fresh dispatch transaction for this item.
@@ -418,11 +319,6 @@ impl QueueItem {
     /// restart cannot fill the same capacity with replacement work before reconciling the claim.
     pub fn occupies_dispatch_slot(&self) -> bool {
         self.status.in_flight() || self.dispatch_phase == DispatchPhase::Claimed
-    }
-
-    /// Whether this item currently occupies a local/SSH dispatch slot rather than GitHub capacity.
-    pub fn occupies_local_dispatch_slot(&self) -> bool {
-        self.occupies_dispatch_slot() && !self.claimed_remote && self.substrate != Substrate::Remote
     }
 
     /// The canonical single-string form of this item's [`key`](Self::key) — `<repo>/<id>` (#453),
@@ -463,32 +359,6 @@ pub struct LaneCapacity {
     pub saturated: bool,
 }
 
-/// One candidate that remained queued after the latest dispatch tick.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SkippedCandidate {
-    pub id: String,
-    pub item: String,
-    pub reason: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub held_by: Option<String>,
-    pub waiting_since: i64,
-}
-
-/// Persisted explanation of the latest dispatch decision.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DispatchDecision {
-    pub at: i64,
-    pub outcome: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gate: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-    pub attempted: usize,
-    pub launched: usize,
-    pub lanes: Vec<LaneCapacity>,
-    pub skipped: Vec<SkippedCandidate>,
-}
-
 /// The whole orchestration run: a repo-scoped queue plus its concurrency policy and recovery log.
 /// Persisted as one JSON file in the state dir so the daemon (and `bn orchestrate status`) share it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -518,7 +388,7 @@ pub struct OrchestrateState {
     pub stopped: bool,
     /// Set by `bn orchestrate supervise` — this run is a **standing, session-independent supervisor**
     /// (#426). Each tick it additionally *adopts* live standalone `bn dispatch` lanes for the repo
-    /// (see [`OrchestrateState::adopt_dispatched_lanes`]) so their green PRs land and dead/stalled
+    /// (see `OrchestrateState::adopt_dispatched_lanes`) so their green PRs land and dead/stalled
     /// lanes recover with nobody at the keyboard, it lands ready PRs every pass (not only when it has
     /// its own in-flight items), and it does **not** exit when the queue drains — it keeps standing to
     /// catch future lanes and PRs. A plain `--queue` run leaves this `false` and behaves as before.
@@ -540,7 +410,7 @@ pub struct OrchestrateState {
     #[serde(default)]
     pub self_feed: bool,
     /// The harness the daemon dispatches new agents under (`bn orchestrate --agent`, #382), or the
-    /// resolved config default. `None` on a pre-#382 run's state, which [`dispatch_harness`] reads as
+    /// resolved config default. `None` on a pre-#382 run's state, which `dispatch_harness` reads as
     /// [`DEFAULT_HARNESS`] (`copilot`) — the prior hardcoded behavior. A per-item [`QueueItem::harness`]
     /// still wins for a lane the usage-limit fallback has already switched.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -550,7 +420,7 @@ pub struct OrchestrateState {
     /// with the machine, so the fleet would classify `Dead` → hard-restart and each re-dispatch
     /// would burn a relaunch `attempt` toward the [`Backoff::max_attempts`] cap for a *machine*
     /// event, not the item's fault. Detecting the fresh boot lets the daemon reset the backoff for
-    /// in-flight items whose worktree survived (see [`OrchestrateState::boot_reset_candidates`]).
+    /// in-flight items whose worktree survived (see `OrchestrateState::boot_reset_candidates`).
     /// `None` on a pre-#380 run or before the first pass records one.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub boot_id: Option<String>,
@@ -569,10 +439,6 @@ pub struct OrchestrateState {
     /// last-tick decision instead of re-deriving it from a later snapshot.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub dispatch_reason: Option<String>,
-    /// Full evidence for the latest dispatch decision, surfaced only by `orchestrate status --why`.
-    /// Kept separate from the legacy summary fields so ordinary status output stays stable.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub dispatch_decision: Option<DispatchDecision>,
     /// The worker-node registry this run may place work on (#717, M1 foundation) — the identity +
     /// capacity stubs the pure scheduler filters when resolving a
     /// [`QueueItem::target`]/[`ExecutionTarget::SshHost`] to a concrete, placement-eligible node.
@@ -595,164 +461,6 @@ pub struct Counts {
     /// slot. `in_flight - remote` are the local agents.
     #[serde(default)]
     pub remote: usize,
-}
-
-// ===========================================================================
-// Durability at scale (#380) — bounded state, run-history eviction, reboot-safe backoff
-// ===========================================================================
-//
-// A daemon meant to run resident for weeks over huge queues must not let its per-tick atomic state
-// rewrite grow without bound. Three pure policies keep it small and correct, with the CLI as the
-// thin file/clock executor: a ring-buffer trim on the in-state recovery trail, an age-based
-// eviction of terminal items to an append-only `run-history.jsonl`, and a fresh-boot reset of the
-// relaunch backoff so a reboot (a machine event) never burns an item's failure budget.
-
-/// Ring-buffer cap for the in-state [`OrchestrateState::recovery`] trail (#380): the daemon keeps
-/// only the most recent this-many events on the persisted state. The complete, unbounded trail
-/// already lives in `events.jsonl` (mirrored by the CLI's `log_event`), so the state copy needs
-/// only enough for `bn orchestrate status` to show recent activity — which bounds the per-tick
-/// atomic rewrite regardless of how long the run has been going.
-pub const RECOVERY_CAP: usize = 200;
-
-/// How long a **terminal** (merged/failed) queue item stays in the live `queue` before the daemon
-/// evicts it to the append-only `run-history.jsonl` (#380). Two hours — comfortably past the 1-hour
-/// [`ROLLUP_WINDOW_SECS`] throughput window, so recent outcomes stay live for `status`, while older
-/// ones are moved out so a weeks-long run's state stays O(in-flight + recent) rather than accreting
-/// every landed item forever.
-pub const HISTORY_RETAIN_SECS: i64 = 2 * 3600;
-
-/// Whether a queue item is old enough to evict from the live `queue` into `run-history.jsonl`
-/// (#380): terminal (merged/failed) and untouched for at least `older_than_secs`. Pure — the single
-/// predicate both the read ([`OrchestrateState::evictable_terminal`]) and the write
-/// ([`OrchestrateState::evict_terminal`]) share, so the set written to history and the set removed
-/// from the queue can never diverge.
-fn is_evictable(item: &QueueItem, now: i64, older_than_secs: i64) -> bool {
-    item.status.is_terminal() && now.saturating_sub(item.updated_at) >= older_than_secs
-}
-
-/// One evicted terminal item, appended as a line to `run-history.jsonl` (#380). A compact,
-/// self-describing snapshot of a completed work item — its outcome, PR, relaunch attempts, and the
-/// dispatch→land timestamps — so the per-item results survive being trimmed from the live `queue`
-/// *and* survive a fresh `bn orchestrate --queue` overwriting the run state. `bn orchestrate status`
-/// reads recent records back so merged/failed context persists across daemon restarts.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct HistoryRecord {
-    /// The repo the item ran in — history is one shared log, so readers filter by it.
-    pub repo: String,
-    pub id: String,
-    pub item: String,
-    pub status: ItemStatus,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub branch: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub pr: Option<String>,
-    #[serde(default)]
-    pub attempts: u32,
-    #[serde(default)]
-    pub dispatched_at: i64,
-    #[serde(default)]
-    pub updated_at: i64,
-    /// When the item was evicted from the live queue into history (epoch secs).
-    pub evicted_at: i64,
-}
-
-impl HistoryRecord {
-    /// Snapshot a terminal queue `item` into a history record, stamped `evicted_at`.
-    pub fn from_item(repo: &str, item: &QueueItem, evicted_at: i64) -> HistoryRecord {
-        HistoryRecord {
-            repo: repo.to_string(),
-            id: item.id.clone(),
-            item: item.item.clone(),
-            status: item.status,
-            branch: item.branch.clone(),
-            pr: item.pr.clone(),
-            attempts: item.attempts,
-            dispatched_at: item.dispatched_at,
-            updated_at: item.updated_at,
-            evicted_at,
-        }
-    }
-
-    /// The dispatch→land cycle time in seconds for a merged item, or `None` (not merged, or the
-    /// timestamps are missing/inverted). Feeds the average-cycle rollup in [`summarize_history`].
-    pub fn cycle_secs(&self) -> Option<i64> {
-        (self.status == ItemStatus::Merged
-            && self.dispatched_at > 0
-            && self.updated_at >= self.dispatched_at)
-            .then_some(self.updated_at - self.dispatched_at)
-    }
-
-    /// Serialize to a single JSONL line (no trailing newline) for the append-only history log.
-    pub fn to_jsonl(&self) -> std::io::Result<String> {
-        crate::store::to_json_line(self)
-    }
-
-    /// Parse one JSONL history line, or `None` if unparseable (a torn append never poisons reads).
-    pub fn from_jsonl(line: &str) -> Option<HistoryRecord> {
-        serde_json::from_str(line).ok()
-    }
-}
-
-/// A pure rollup of `run-history.jsonl` records for one repo (#380) — the cross-restart outcome
-/// context `bn orchestrate status` surfaces. Deduped by id, newest (largest `evicted_at`) wins: the
-/// append-only log may hold a record twice if the daemon crashed between the history append and the
-/// queue removal, so the read side is tolerant of that.
-#[derive(Debug, Clone, PartialEq, Serialize, Default)]
-pub struct HistorySummary {
-    /// Distinct items that ended merged.
-    pub merged: usize,
-    /// Distinct items that ended failed.
-    pub failed: usize,
-    /// Mean dispatch→land cycle over merged records that carry timestamps; `None` if none do.
-    pub avg_cycle_secs: Option<i64>,
-    /// The most recent records, newest-first, capped to `recent_cap` — what `status` lists.
-    pub recent: Vec<HistoryRecord>,
-}
-
-/// Summarize the `run-history.jsonl` `records` for `repo` (#380): count distinct merged/failed
-/// outcomes, average the merged cycle times, and return the `recent_cap` newest records (newest
-/// first). Pure over its inputs — the CLI reads the file, this does the math — so it's unit-testable
-/// against a synthetic log. Dedup is by id (newest `evicted_at` wins) to absorb a crash-retry
-/// double-append.
-pub fn summarize_history(
-    records: &[HistoryRecord],
-    repo: &str,
-    recent_cap: usize,
-) -> HistorySummary {
-    // Keep the newest record per id (largest evicted_at), so a crash-retry duplicate collapses.
-    let mut latest: std::collections::HashMap<&str, &HistoryRecord> =
-        std::collections::HashMap::new();
-    for r in records.iter().filter(|r| r.repo == repo) {
-        latest
-            .entry(r.id.as_str())
-            .and_modify(|cur| {
-                if r.evicted_at >= cur.evicted_at {
-                    *cur = r;
-                }
-            })
-            .or_insert(r);
-    }
-    let mut deduped: Vec<&HistoryRecord> = latest.into_values().collect();
-    deduped.sort_by(|a, b| b.evicted_at.cmp(&a.evicted_at).then(a.id.cmp(&b.id)));
-
-    let merged = deduped
-        .iter()
-        .filter(|r| r.status == ItemStatus::Merged)
-        .count();
-    let failed = deduped
-        .iter()
-        .filter(|r| r.status == ItemStatus::Failed)
-        .count();
-    let cycles: Vec<i64> = deduped.iter().filter_map(|r| r.cycle_secs()).collect();
-    let avg_cycle_secs = (!cycles.is_empty())
-        .then(|| (cycles.iter().sum::<i64>() as f64 / cycles.len() as f64).round() as i64);
-    let recent = deduped.into_iter().take(recent_cap).cloned().collect();
-    HistorySummary {
-        merged,
-        failed,
-        avg_cycle_secs,
-        recent,
-    }
 }
 
 /// Derive a stable id from a dispatch subject: the issue/PR number from `#338`, `338`, or a GitHub
@@ -960,7 +668,6 @@ impl OrchestrateState {
             boot_id: None,
             dispatch_bind: None,
             dispatch_reason: None,
-            dispatch_decision: None,
             nodes: Vec::new(),
         }
     }
@@ -1025,42 +732,6 @@ impl OrchestrateState {
         added
     }
 
-    /// Adopt live standalone `bn dispatch` lanes into supervision (#426) — the session-independent
-    /// fix for the stalled drain. Given the branch names of worktree lanes observed **live** for this
-    /// repo (each with a running agent window), push a `Dispatched` [`QueueItem`] for every branch not
-    /// already tracked by an item's `branch`, so the daemon's existing land / recover / reconcile
-    /// machinery covers a lane that was dispatched *outside* this run — the drain's standalone lanes,
-    /// which otherwise get no background land-or-recover at all. Returns the branches newly adopted.
-    ///
-    /// Idempotent and safe to call every tick: a branch already tracked — this run's own dispatched
-    /// item, or a lane adopted on an earlier pass, **including one already merged/failed** — is
-    /// skipped, so a finished lane is never re-adopted and relaunch-looped. Pure over its input: the
-    /// caller supplies the observed live branches (this never touches tmux/git), so the adoption
-    /// decision is unit-testable in isolation from live-signal capture.
-    pub fn adopt_dispatched_lanes(&mut self, branches: &[String], now: i64) -> Vec<String> {
-        let repo = self.repo.clone();
-        let mut adopted = Vec::new();
-        for branch in branches {
-            if self
-                .queue
-                .iter()
-                .any(|i| i.repo == repo && i.branch.as_deref() == Some(branch.as_str()))
-            {
-                continue; // already tracked (dispatched by this run, or adopted earlier)
-            }
-            let mut item = QueueItem::new(&repo, branch, now);
-            item.status = ItemStatus::Dispatched;
-            item.branch = Some(branch.clone());
-            item.dispatched_at = now;
-            self.queue.push(item);
-            adopted.push(branch.clone());
-        }
-        if !adopted.is_empty() {
-            self.updated_at = now;
-        }
-        adopted
-    }
-
     /// The effective concurrency cap: 1 in solo mode, else the configured cap (min 1).
     pub fn effective_concurrency(&self) -> usize {
         if self.solo {
@@ -1068,47 +739,6 @@ impl OrchestrateState {
         } else {
             self.concurrency.max(1)
         }
-    }
-
-    /// The **coding-lane** local cap (#385): the ship agents' budget. Solo mode still collapses the
-    /// whole run to a single lane of 1, so a refactor wave never overlaps; otherwise it's the
-    /// configured `concurrency` (min 1). In an untyped run this is also the total local pool.
-    pub fn coding_cap(&self) -> usize {
-        self.effective_concurrency()
-    }
-
-    /// The **research-lane** local cap (#385), or `None` when no separate research lane is
-    /// configured (research then shares the coding pool — the pre-#385 single-knob behavior). Solo
-    /// mode folds every lane into the single coding slot, so it reports no separate research lane.
-    pub fn research_cap(&self) -> Option<usize> {
-        if self.solo {
-            None
-        } else {
-            self.research
-        }
-    }
-
-    /// Whether typed concurrency lanes are active (#385) — a distinct research lane is configured
-    /// (and not folded away by solo).
-    pub fn typed_lanes(&self) -> bool {
-        self.research_cap().is_some()
-    }
-
-    /// The **total** number of local slots the run wants filled across every lane (#385): the coding
-    /// cap plus the research cap when a research lane is configured. This is what the backlog
-    /// refill tops the working set up to, so a `--coding 5 --research 2` run leases enough to fill
-    /// both lanes. Untyped (or solo) runs report exactly the coding cap — the pre-#385 value.
-    pub fn total_local_cap(&self) -> usize {
-        self.coding_cap() + self.research_cap().unwrap_or(0)
-    }
-
-    /// How many **local** in-flight items belong to `class` (#385) — dispatched, non-remote items
-    /// in that typed lane. The per-lane occupancy the scheduler counts against each lane's cap.
-    pub fn local_in_flight_class(&self, class: WorkClass) -> usize {
-        self.queue
-            .iter()
-            .filter(|i| i.occupies_local_dispatch_slot() && i.work_class == class)
-            .count()
     }
 
     /// Live-adjust the typed concurrency lanes (#385) — the pure state mutation behind
@@ -1132,117 +762,12 @@ impl OrchestrateState {
 
     /// How many items currently occupy an in-flight slot (local **and** remote). Used for
     /// reconcile / status / "is there work in flight" — not the local concurrency cap, which counts
-    /// only [`local_in_flight`](Self::local_in_flight).
+    /// only `local_in_flight`.
     pub fn in_flight(&self) -> usize {
         self.queue
             .iter()
             .filter(|i| i.occupies_dispatch_slot())
             .count()
-    }
-
-    /// How many items occupy a **local** concurrency slot right now (#377): dispatched items that
-    /// are not on a remote substrate. This is what the resource-aware scheduler caps — a remote
-    /// fan-out runs on a GitHub-hosted runner and occupies no local slot.
-    pub fn local_in_flight(&self) -> usize {
-        self.queue
-            .iter()
-            .filter(|i| i.occupies_local_dispatch_slot())
-            .count()
-    }
-
-    /// How many in-flight items consume this daemon's own machine capacity rather than an SSH
-    /// worker or GitHub-hosted runner.
-    pub fn local_node_in_flight(&self) -> usize {
-        self.queue
-            .iter()
-            .filter(|i| i.occupies_local_dispatch_slot() && i.node.is_none())
-            .count()
-    }
-
-    /// How many items are in flight on a historical **remote** runner (#377), supervised by PR/issue
-    /// reconcile rather than the tmux pane machine.
-    pub fn remote_in_flight(&self) -> usize {
-        self.queue
-            .iter()
-            .filter(|i| {
-                i.occupies_dispatch_slot() && (i.claimed_remote || i.substrate == Substrate::Remote)
-            })
-            .count()
-    }
-
-    /// The non-terminal working set — queued plus in-flight items. The daemon leases only enough
-    /// from the durable backlog (#375) to top this up to the concurrency cap, so the run state
-    /// stays a small execution ledger regardless of how deep the backlog is.
-    pub fn working_set(&self) -> usize {
-        self.queue
-            .iter()
-            .filter(|i| !i.status.is_terminal())
-            .count()
-    }
-
-    /// The index of the next queued item to dispatch, or `None` if the cap is full or every queued
-    /// item is held. Honors the effective concurrency (and thus `--solo`) **and** conflict-aware
-    /// scheduling (#376): a queued candidate whose declared `touches` overlap an in-flight item's is
-    /// *skipped* rather than blocking the queue head, so non-overlapping items keep filling slots
-    /// while would-be colliders serialize. See [`conflict_holder`](Self::conflict_holder).
-    pub fn next_dispatchable(&self) -> Option<usize> {
-        if self.local_in_flight() >= self.effective_concurrency() {
-            return None;
-        }
-        self.queue
-            .iter()
-            .position(|i| i.is_dispatchable() && self.conflict_holder(i).is_none())
-    }
-
-    /// The in-flight item whose declared touch-area is predicted to overlap `candidate`'s, if any —
-    /// the reason a queued candidate is *held* instead of dispatched (#376). `None` ⇒ no predicted
-    /// conflict, so the candidate can fill an open slot. Drives both the skip in
-    /// [`next_dispatchable`](Self::next_dispatchable) and the "held: conflicts with #NNN" line in
-    /// `bn orchestrate status`. A candidate with no `touches` hint is never held (schedulable with
-    /// anything); an in-flight item with no hint holds nobody.
-    pub fn conflict_holder(&self, candidate: &QueueItem) -> Option<&QueueItem> {
-        if candidate.touches.is_empty() {
-            return None;
-        }
-        self.queue.iter().find(|i| {
-            i.occupies_dispatch_slot() && touches_conflict(&candidate.touches, &i.touches)
-        })
-    }
-
-    /// Refresh every queued item's [`held_by`](QueueItem::held_by) marker from the live conflict
-    /// policy and return the items that *newly* became held this pass (`(id, holder_id)`) — the
-    /// #376 observability half. Called once per dispatch pass (after slots are filled, so it reflects
-    /// the post-dispatch in-flight set), so `status`/web read *why* a candidate is held without
-    /// re-deriving, and the daemon logs each hold once per episode rather than every poll. Clearing:
-    /// a queued item whose holder has since landed (no longer conflicts) is un-held; a dispatched or
-    /// terminal item never carries the marker. Returns transitions *into* a hold only.
-    pub fn refresh_holds(&mut self, now: i64) -> Vec<(String, String)> {
-        // Resolve holders under a shared borrow, then apply under a mutable one — the two never overlap.
-        let holders: Vec<Option<String>> = self
-            .queue
-            .iter()
-            .map(|i| {
-                i.is_dispatchable()
-                    .then(|| self.conflict_holder(i).map(|h| h.id.clone()))
-                    .flatten()
-            })
-            .collect();
-        let mut newly = Vec::new();
-        let mut changed = false;
-        for (item, holder) in self.queue.iter_mut().zip(holders) {
-            if item.held_by == holder {
-                continue;
-            }
-            if let Some(h) = &holder {
-                newly.push((item.id.clone(), h.clone()));
-            }
-            item.held_by = holder;
-            changed = true;
-        }
-        if changed {
-            self.updated_at = now;
-        }
-        newly
     }
 
     /// Whether the run is complete: no queued and no in-flight items remain (all merged/failed).
@@ -1257,15 +782,6 @@ impl OrchestrateState {
     /// prompt. A bounded `--queue` run is not resident and finishes when drained.
     pub fn is_resident(&self) -> bool {
         self.supervise || self.self_feed
-    }
-
-    /// Whether the daemon loop should exit this pass (#368): the ledger has drained, the durable
-    /// backlog holds nothing pending for the repo, and this is **not** a resident run. A resident
-    /// run (supervisor / self-feeder) never reports complete on an empty backlog — it stays alive to
-    /// catch future work. Pure over its inputs, so the drain-and-exit vs stay-resident decision is
-    /// unit-testable without the daemon's side effects.
-    pub fn run_complete(&self, backlog_pending: usize) -> bool {
-        self.is_drained() && backlog_pending == 0 && !self.is_resident()
     }
 
     /// Rolled-up counts for status.
@@ -1290,23 +806,6 @@ impl OrchestrateState {
         c
     }
 
-    /// Find an item by id (mutable).
-    pub fn item_mut(&mut self, id: &str) -> Option<&mut QueueItem> {
-        self.queue.iter_mut().find(|i| i.id == id)
-    }
-
-    /// Find an item by its full **`(repo, id)` key** (#453) — the collision-free lookup for a
-    /// multi-repo run, where `id` alone is ambiguous across repos. [`item_mut`](Self::item_mut)
-    /// remains the single-repo convenience (first match by `id`).
-    pub fn item_for(&self, repo: &str, id: &str) -> Option<&QueueItem> {
-        self.queue.iter().find(|i| i.repo == repo && i.id == id)
-    }
-
-    /// Mutable [`item_for`](Self::item_for): find an item by its `(repo, id)` key (#453).
-    pub fn item_mut_for(&mut self, repo: &str, id: &str) -> Option<&mut QueueItem> {
-        self.queue.iter_mut().find(|i| i.repo == repo && i.id == id)
-    }
-
     /// Mark the item at `idx` dispatched onto `branch`.
     pub fn mark_dispatched(&mut self, idx: usize, branch: Option<String>, now: i64) {
         if let Some(it) = self.queue.get_mut(idx) {
@@ -1316,165 +815,6 @@ impl OrchestrateState {
             it.claimed_remote = false;
             it.branch = branch;
             it.dispatched_at = now;
-            it.updated_at = now;
-        }
-        self.updated_at = now;
-    }
-
-    /// Mark the item at `idx` dispatched to a **remote** runner (#377): in-flight, substrate pinned
-    /// to [`Substrate::Remote`], no local branch/worktree (the GitHub-hosted run owns its own
-    /// branch). Counts against no local slot ([`local_in_flight`](Self::local_in_flight) excludes
-    /// it) and is reconciled by PR/issue completion, not the tmux pane machine.
-    pub fn mark_dispatched_remote(&mut self, idx: usize, now: i64) {
-        if let Some(it) = self.queue.get_mut(idx) {
-            it.reset_stuck_tracking();
-            it.status = ItemStatus::Dispatched;
-            it.dispatch_phase = DispatchPhase::Dispatched;
-            it.claimed_remote = false;
-            it.substrate = Substrate::Remote;
-            it.dispatched_at = now;
-            it.updated_at = now;
-        }
-        self.updated_at = now;
-    }
-
-    /// Record the harness (`copilot` / `claude`) the item at `idx` was dispatched under — surfaced
-    /// by `bn orchestrate status` so a human/cockpit knows what's running in the window (#372).
-    /// Kept separate from [`mark_dispatched`] so the lifecycle transition stays harness-agnostic.
-    pub fn set_harness(&mut self, idx: usize, harness: &str, now: i64) {
-        if let Some(it) = self.queue.get_mut(idx) {
-            it.harness = Some(harness.to_string());
-            it.updated_at = now;
-        }
-        self.updated_at = now;
-    }
-
-    /// Mark the item at `idx` dispatched onto a **remote SSH worker node** (#729): in-flight, with
-    /// the `node_id` it landed on and the `request_id`/`attempt_id` the remote `bn worker start` was
-    /// admitted under (#720) persisted on this (control-plane) side, mirroring the worker's own
-    /// registry. `worker_state` starts `QUEUED` (the admission verdict) and is refreshed by the
-    /// liveness poll. Unlike [`mark_dispatched_remote`] this stays a *local*-substrate item (it
-    /// occupies a placement slot and is reconciled via `bn worker status`, not a GitHub PR).
-    pub fn mark_dispatched_worker(
-        &mut self,
-        idx: usize,
-        node_id: &str,
-        request_id: &str,
-        attempt_id: &str,
-        branch: Option<String>,
-        now: i64,
-    ) {
-        if let Some(it) = self.queue.get_mut(idx) {
-            it.reset_stuck_tracking();
-            it.status = ItemStatus::Dispatched;
-            it.dispatch_phase = DispatchPhase::Dispatched;
-            it.claimed_remote = false;
-            it.branch = branch;
-            it.node = Some(node_id.to_string());
-            it.request_id = Some(request_id.to_string());
-            it.attempt_id = Some(attempt_id.to_string());
-            it.worker_state = Some("QUEUED".to_string());
-            it.dispatched_at = now;
-            it.updated_at = now;
-        }
-        self.updated_at = now;
-    }
-
-    /// Persist stable identity before a dispatch side effect. Returns `true` only when this call
-    /// moved a pending queued item into `claimed`; repeated calls leave the original identity intact.
-    pub fn claim_dispatch(
-        &mut self,
-        idx: usize,
-        request_id: &str,
-        attempt_id: &str,
-        now: i64,
-    ) -> bool {
-        let Some(it) = self.queue.get_mut(idx) else {
-            return false;
-        };
-        if !it.is_dispatchable() {
-            return false;
-        }
-        it.dispatch_phase = DispatchPhase::Claimed;
-        if it.request_id.is_none() {
-            it.request_id = Some(request_id.to_string());
-        }
-        if it.attempt_id.is_none() {
-            it.attempt_id = Some(attempt_id.to_string());
-        }
-        it.updated_at = now;
-        self.updated_at = now;
-        true
-    }
-
-    /// Resolve a durable claim after observing whether its launch exists. An observed launch
-    /// promotes the item into the normal dispatched lifecycle; an absent launch returns it to
-    /// pending while retaining the stable IDs for an idempotent retry.
-    pub fn reconcile_claim(
-        &mut self,
-        idx: usize,
-        launched: bool,
-        branch: Option<String>,
-        now: i64,
-    ) -> bool {
-        let Some(it) = self.queue.get_mut(idx) else {
-            return false;
-        };
-        if it.status != ItemStatus::Queued || it.dispatch_phase != DispatchPhase::Claimed {
-            return false;
-        }
-        if launched {
-            it.reset_stuck_tracking();
-            it.status = ItemStatus::Dispatched;
-            it.dispatch_phase = DispatchPhase::Dispatched;
-            if branch.is_some() {
-                it.branch = branch;
-            }
-            it.dispatched_at = now;
-        } else {
-            it.dispatch_phase = DispatchPhase::Pending;
-            it.claimed_remote = false;
-        }
-        it.updated_at = now;
-        self.updated_at = now;
-        true
-    }
-
-    /// Update the last-observed remote worker attempt state for item `id` (#729) — the liveness
-    /// poll folds `bn worker status --json` (`RUNNING`/`SUCCEEDED`/`FAILED`) or, when the node is
-    /// unreachable, `UNKNOWN` (which blocks redispatch until reconciled) into the control-plane
-    /// mirror. No-op for an item with no remote attempt.
-    pub fn set_worker_state(&mut self, id: &str, state: &str, now: i64) {
-        if let Some(idx) = self.queue.iter().position(|i| i.id == id) {
-            self.set_worker_state_at(idx, state, now);
-        }
-    }
-
-    /// Index-addressed worker-state update for callers that already resolved the collision-free
-    /// `(repo, id)` key.
-    pub fn set_worker_state_at(&mut self, idx: usize, state: &str, now: i64) {
-        if let Some(it) = self.queue.get_mut(idx) {
-            it.worker_state = Some(state.to_string());
-            it.updated_at = now;
-        }
-        self.updated_at = now;
-    }
-
-    /// The harness the daemon dispatches new agents under (`bn orchestrate --agent`, #382), or
-    /// [`DEFAULT_HARNESS`] (`copilot`) when unset — the back-compat default so a pre-#382 run keeps
-    /// dispatching Copilot exactly as before.
-    pub fn dispatch_harness(&self) -> &str {
-        self.harness.as_deref().unwrap_or(DEFAULT_HARNESS)
-    }
-
-    /// Fall item `id` over to `harness` after a usage-limit stall (#382): record the new per-item
-    /// harness (so status/relaunch use it) and stamp `last_switch_at` for the cooldown gate. Called
-    /// after the in-place `bn switch` has respawned the lane's pane under the other harness.
-    pub fn switch_harness(&mut self, id: &str, harness: &str, now: i64) {
-        if let Some(it) = self.item_mut(id) {
-            it.reset_stuck_tracking();
-            it.harness = Some(harness.to_string());
-            it.last_switch_at = now;
             it.updated_at = now;
         }
         self.updated_at = now;
@@ -1492,337 +832,6 @@ impl OrchestrateState {
             item.repo.as_str()
         };
         item.tmux_window().map(|w| format!("{}:{}", repo, w))
-    }
-
-    /// Mark the item merged (terminal success), stamping its PR if known.
-    pub fn mark_merged(&mut self, id: &str, pr: Option<String>, now: i64) {
-        if let Some(it) = self.item_mut(id) {
-            it.reset_stuck_tracking();
-            it.status = ItemStatus::Merged;
-            it.dispatch_phase = DispatchPhase::Dispatched;
-            it.claimed_remote = false;
-            if pr.is_some() {
-                it.pr = pr;
-            }
-            it.updated_at = now;
-        }
-        self.updated_at = now;
-    }
-
-    /// Mark the item failed (terminal — surfaced for a human).
-    pub fn mark_failed(&mut self, id: &str, now: i64) {
-        if let Some(idx) = self.queue.iter().position(|i| i.id == id) {
-            self.mark_failed_at(idx, now);
-        }
-    }
-
-    /// Index-addressed terminal failure for callers that already resolved `(repo, id)`.
-    pub fn mark_failed_at(&mut self, idx: usize, now: i64) {
-        if let Some(it) = self.queue.get_mut(idx) {
-            it.reset_stuck_tracking();
-            it.status = ItemStatus::Failed;
-            it.dispatch_phase = DispatchPhase::Dispatched;
-            it.claimed_remote = false;
-            it.updated_at = now;
-        }
-        self.updated_at = now;
-    }
-
-    /// Restore a local dispatched/failed lane to a fresh in-flight state after the CLI has safely
-    /// recovered its WIP and re-seeded the agent process. Selection accepts either stable item id or
-    /// dispatched branch, while rejecting lifecycle states and execution targets that have no local
-    /// tmux/worktree lane to replace.
-    pub fn reset_lane(&mut self, lane: &str, now: i64) -> Result<LaneReset, LaneResetError> {
-        let matches: Vec<usize> = self
-            .queue
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, item)| {
-                (item.id == lane || item.branch.as_deref() == Some(lane)).then_some(idx)
-            })
-            .collect();
-        let idx = match matches.as_slice() {
-            [] => return Err(LaneResetError::Missing(lane.to_string())),
-            [idx] => *idx,
-            _ => return Err(LaneResetError::Ambiguous(lane.to_string())),
-        };
-
-        let item = &mut self.queue[idx];
-        match item.status {
-            ItemStatus::Queued => return Err(LaneResetError::Queued(lane.to_string())),
-            ItemStatus::Merged => return Err(LaneResetError::Merged(lane.to_string())),
-            ItemStatus::Dispatched | ItemStatus::Failed => {}
-        }
-        if item.substrate == Substrate::Remote || !item.target.is_local() || item.node.is_some() {
-            return Err(LaneResetError::NonLocal(lane.to_string()));
-        }
-        let Some(branch) = item.branch.clone() else {
-            return Err(LaneResetError::MissingBranch(lane.to_string()));
-        };
-        let reset = LaneReset {
-            id: item.id.clone(),
-            item: item.item.clone(),
-            repo: item.repo.clone(),
-            branch,
-            harness: item.harness.clone(),
-            work_class: item.work_class,
-            previous_status: item.status,
-        };
-        let observed = item.last_state.unwrap_or(PaneState::Dead);
-        item.status = ItemStatus::Dispatched;
-        item.dispatch_phase = DispatchPhase::Dispatched;
-        item.claimed_remote = false;
-        item.attempts = 0;
-        item.last_relaunch_at = 0;
-        item.last_state = None;
-        item.reset_stuck_tracking();
-        item.updated_at = now;
-        self.record_recovery(
-            &reset.id,
-            observed,
-            SupervisorAction::RelaunchToResume,
-            "manual lane reset: fresh agent re-seeded",
-            now,
-        );
-        self.updated_at = now;
-        Ok(reset)
-    }
-
-    /// Route a scout/ask item's answer back and complete it (#378) — the pure terminal transition
-    /// for the "delegate-for-answers" lane. Records the harvested findings `path` + the `question`
-    /// on the item and flips it to [`ItemStatus::Merged`] (terminal **success**): a scout produces
-    /// findings, not a PR, so answer-harvest *is* its completion — there is no PR to wait for and no
-    /// relaunch to resume. Applies only to a [`WorkClass::Research`] item that hasn't already been
-    /// answered, so it's idempotent (a re-harvest each poll is a no-op) and never fabricates an
-    /// answer for a `ship`. Returns whether it applied. The CLI does the note-dir file IO to find
-    /// `path`, then calls this to persist the outcome on the state file `answers`/`--wait` read.
-    pub fn record_answer(&mut self, id: &str, path: &str, question: &str, now: i64) -> bool {
-        let applied = if let Some(it) = self.item_mut(id) {
-            if it.work_class != WorkClass::Research || it.answer.is_some() {
-                false
-            } else {
-                it.reset_stuck_tracking();
-                it.answer = Some(Answer {
-                    question: question.to_string(),
-                    path: path.to_string(),
-                    harvested_at: now,
-                });
-                it.status = ItemStatus::Merged;
-                it.updated_at = now;
-                true
-            }
-        } else {
-            false
-        };
-        if applied {
-            self.updated_at = now;
-        }
-        applied
-    }
-
-    /// Record a relaunch attempt on the item, returning the new attempt count (for the backoff).
-    pub fn bump_attempts(&mut self, id: &str, now: i64) -> u32 {
-        let Some(idx) = self.queue.iter().position(|i| i.id == id) else {
-            self.updated_at = now;
-            return 0;
-        };
-        self.bump_attempts_at(idx, now)
-    }
-
-    /// Index-addressed relaunch accounting for callers that already resolved `(repo, id)`.
-    pub fn bump_attempts_at(&mut self, idx: usize, now: i64) -> u32 {
-        let n = if let Some(it) = self.queue.get_mut(idx) {
-            it.attempts += 1;
-            it.last_relaunch_at = now;
-            it.updated_at = now;
-            it.attempts
-        } else {
-            0
-        };
-        self.updated_at = now;
-        n
-    }
-
-    /// Note the last observed pane state for an item (for status).
-    pub fn set_state(&mut self, id: &str, state: PaneState, now: i64) {
-        if let Some(it) = self.item_mut(id) {
-            if it.last_state != Some(state) {
-                it.last_state = Some(state);
-                it.updated_at = now;
-            }
-        }
-    }
-
-    /// Fold one pane/transcript observation into the lane's durable no-change clock. Returns the
-    /// seconds since either source last changed.
-    pub fn observe_lane_activity(
-        &mut self,
-        id: &str,
-        fingerprint: u64,
-        transcript_activity_at: Option<i64>,
-        now: i64,
-    ) -> i64 {
-        let Some(item) = self.item_mut(id) else {
-            return 0;
-        };
-        if item.pane_activity_fingerprint != Some(fingerprint) {
-            item.pane_activity_fingerprint = Some(fingerprint);
-            item.pane_activity_changed_at = now;
-            item.updated_at = now;
-        } else if item.pane_activity_changed_at == 0 {
-            item.pane_activity_changed_at = now;
-            item.updated_at = now;
-        }
-        let latest = transcript_activity_at
-            .unwrap_or(0)
-            .max(item.pane_activity_changed_at)
-            .max(item.dispatched_at);
-        now.saturating_sub(latest)
-    }
-
-    /// Update the current stuck state. Clearing a state also clears its notification key so the
-    /// same condition can wake the controller again after a genuine recovery.
-    pub fn set_stuck_lane(&mut self, id: &str, stuck: Option<crate::agent::StuckLane>, now: i64) {
-        let Some(item) = self.item_mut(id) else {
-            return;
-        };
-        if item.stuck == stuck {
-            return;
-        }
-        item.stuck = stuck;
-        if item.stuck.is_none() {
-            item.stuck_notified_key = None;
-        }
-        item.updated_at = now;
-    }
-
-    /// Record successful back-channel delivery for the lane's current stuck state.
-    pub fn mark_stuck_notified(&mut self, id: &str, key: String, now: i64) {
-        if let Some(item) = self.item_mut(id) {
-            if item.stuck_notified_key.as_deref() != Some(key.as_str()) {
-                item.stuck_notified_key = Some(key);
-                item.updated_at = now;
-            }
-        }
-    }
-
-    /// Append a recovery/lifecycle event to the audit trail.
-    pub fn record_recovery(
-        &mut self,
-        id: &str,
-        state: PaneState,
-        action: SupervisorAction,
-        note: &str,
-        now: i64,
-    ) {
-        self.recovery.push(RecoveryEvent {
-            ts: now,
-            id: id.to_string(),
-            state,
-            action,
-            note: note.to_string(),
-        });
-        self.updated_at = now;
-    }
-
-    // -----------------------------------------------------------------------
-    // Durability at scale (#380) — pure state-trimming / eviction / boot-reset
-    // -----------------------------------------------------------------------
-
-    /// Cap the in-state recovery trail to its most recent `cap` events (#380) — a pure ring-buffer
-    /// trim that drops the oldest overflow from the front. Keeps the per-tick atomic state rewrite
-    /// bounded no matter how long the run has been recovering agents; the complete trail is
-    /// preserved in `events.jsonl`. Returns how many events were dropped (0 if already within cap).
-    pub fn trim_recovery(&mut self, cap: usize) -> usize {
-        if self.recovery.len() <= cap {
-            return 0;
-        }
-        let drop = self.recovery.len() - cap;
-        self.recovery.drain(0..drop);
-        drop
-    }
-
-    /// The terminal items eligible for eviction to `run-history.jsonl` (#380): merged/failed and
-    /// untouched for at least `older_than_secs`. Pure read — the CLI snapshots these to the history
-    /// log *before* calling [`evict_terminal`] to remove them, so an outcome is durable before it
-    /// leaves the queue. Shares [`is_evictable`] with the removal so the two sets never diverge.
-    pub fn evictable_terminal(&self, now: i64, older_than_secs: i64) -> Vec<&QueueItem> {
-        self.queue
-            .iter()
-            .filter(|i| is_evictable(i, now, older_than_secs))
-            .collect()
-    }
-
-    /// Remove the terminal items older than `older_than_secs` from the live `queue` (#380) — the
-    /// eviction other half of [`evictable_terminal`]. Returns how many were removed. Bounds the
-    /// state so a 500-item run's per-tick rewrite stays O(in-flight + recent) instead of carrying
-    /// every landed item for the life of the daemon. Idempotent: nothing old ⇒ no removal, no write.
-    pub fn evict_terminal(&mut self, now: i64, older_than_secs: i64) -> usize {
-        let before = self.queue.len();
-        self.queue
-            .retain(|i| !is_evictable(i, now, older_than_secs));
-        let removed = before - self.queue.len();
-        if removed > 0 {
-            self.updated_at = now;
-        }
-        removed
-    }
-
-    /// Whether `current` marks a **fresh boot** relative to the recorded [`boot_id`](Self::boot_id)
-    /// (#380): we have a previously-recorded marker and it differs. A first-ever run (`boot_id ==
-    /// None`) returns `false` — there were no in-flight windows a reboot could have killed yet — so
-    /// the daemon merely records the marker on its first pass and only resets backoff on a *later*
-    /// boot change. Pure over the caller-supplied marker (the CLI reads it from the OS).
-    pub fn is_fresh_boot(&self, current: &str) -> bool {
-        self.boot_id.as_deref().is_some_and(|prev| prev != current)
-    }
-
-    /// Adopt the current boot marker (#380) so the next pass compares against it. Idempotent — a
-    /// no-op (no `updated_at` bump) when it already matches.
-    pub fn record_boot(&mut self, current: &str, now: i64) {
-        if self.boot_id.as_deref() != Some(current) {
-            self.boot_id = Some(current.to_string());
-            self.updated_at = now;
-        }
-    }
-
-    /// The in-flight item ids eligible for a boot-triggered backoff reset (#380): dispatched items
-    /// that have made ≥1 relaunch attempt and whose worktree still exists (`worktree_live`, supplied
-    /// by the CLI — the filesystem check is the executor's job). After a reboot every window is gone
-    /// so the fleet will re-dispatch these `Dead` items; without a reset each re-dispatch burns an
-    /// `attempt` toward [`Backoff::max_attempts`] for a machine event, eventually marking a healthy
-    /// item `failed`. Pure over the live-worktree set, so the policy is unit-testable off-disk.
-    pub fn boot_reset_candidates(
-        &self,
-        worktree_live: &std::collections::HashSet<String>,
-    ) -> Vec<String> {
-        self.queue
-            .iter()
-            .filter(|i| i.status.in_flight() && i.attempts > 0 && worktree_live.contains(&i.id))
-            .map(|i| i.id.clone())
-            .collect()
-    }
-
-    /// Reset the relaunch backoff for the given item ids (#380): zero `attempts` and
-    /// `last_relaunch_at` on each still-in-flight item, so a reboot re-dispatch begins a fresh
-    /// backoff curve rather than inheriting a burned one. Returns the ids actually reset (those
-    /// in-flight with attempts made). Paired with [`boot_reset_candidates`](Self::boot_reset_candidates).
-    pub fn reset_backoff(&mut self, ids: &[String], now: i64) -> Vec<String> {
-        let mut reset = Vec::new();
-        for id in ids {
-            if let Some(it) = self.item_mut(id) {
-                if it.status.in_flight() && it.attempts > 0 {
-                    it.attempts = 0;
-                    it.last_relaunch_at = 0;
-                    it.updated_at = now;
-                    reset.push(id.clone());
-                }
-            }
-        }
-        if !reset.is_empty() {
-            self.updated_at = now;
-        }
-        reset
     }
 
     /// Deserialize from JSON text (for load / tests).
@@ -1920,220 +929,6 @@ impl OrchestrateState {
         self.updated_at = now;
         true
     }
-
-    /// Fold a daemon's post-tick copy (`worked`) back onto `self` (the *current* on-disk state,
-    /// which may carry web edits made while the tick ran) — the merge half of the #392 "lock/merge"
-    /// fix. `self` stays authoritative for run-level policy a web edit owns (`concurrency`, `solo`,
-    /// `stopped`) and for queue **membership/order** (adds, removes, reorders); `worked` is
-    /// authoritative for per-item lifecycle progress the daemon just made (dispatched / merged /
-    /// failed / attempts / observed state) and for the recovery trail. Because the web never mutates
-    /// an item's internal fields, any per-id difference is daemon-authored and safe to take.
-    pub fn merge_worked(&mut self, worked: &OrchestrateState, now: i64) {
-        for w in &worked.queue {
-            match self
-                .queue
-                .iter_mut()
-                .find(|d| d.repo == w.repo && d.id == w.id)
-            {
-                // Present in both: take the daemon's lifecycle if it differs (only it edits items).
-                Some(d) => {
-                    if d != w {
-                        // #712: a claim/finalize/reconcile write is persisted during the tick,
-                        // outside this stale `worked` snapshot. Never let a second daemon's older
-                        // copy roll that transaction backward (pending over claimed, claimed over
-                        // dispatched, or a different attempt). Equal timestamps are possible
-                        // because the state clock is second-granularity, so phase/identity are the
-                        // compare-and-set signal and `updated_at` only rejects genuinely older disk.
-                        let dispatch_transaction_changed =
-                            d.attempt_id != w.attempt_id || d.dispatch_phase != w.dispatch_phase;
-                        if dispatch_transaction_changed && d.updated_at >= w.updated_at {
-                            continue;
-                        }
-                        *d = w.clone();
-                    }
-                }
-                // Only in `worked`: the web removed it mid-tick. Respect the removal for a still
-                // -queued item, but re-adopt one the daemon has taken in-flight/terminal — dropping
-                // that would orphan a running agent (an in-flight item can't be queue-removed).
-                None => {
-                    if w.status != ItemStatus::Queued {
-                        self.queue.push(w.clone());
-                    }
-                }
-            }
-        }
-        // The daemon is the sole writer of the recovery trail, so `worked.recovery` is a superset of
-        // `self`'s — take it wholesale rather than diffing.
-        if worked.recovery.len() >= self.recovery.len() {
-            self.recovery = worked.recovery.clone();
-        }
-        // The binding cap (#377) is daemon-authored each pass and the web never edits it — take the
-        // tick's value so `status` reflects the reason dispatch was capped/paused on the last pass.
-        self.dispatch_bind = worked.dispatch_bind.clone();
-        self.dispatch_reason = worked.dispatch_reason.clone();
-        self.dispatch_decision = worked.dispatch_decision.clone();
-        self.updated_at = now;
-    }
-
-    /// Record why local dispatch was capped/paused this pass (#377) — the binding-cap label, or
-    /// `None` when nothing bound. Set by the CLI executor after scheduler so
-    /// `bn orchestrate status` can show it. Only bumps `updated_at` on a real change.
-    pub fn set_dispatch_bind(&mut self, label: Option<&str>, now: i64) {
-        let next = label.map(str::to_string);
-        if self.dispatch_bind != next {
-            self.dispatch_bind = next;
-            self.updated_at = now;
-        }
-    }
-
-    /// Record the concise result of a pass that launched no work. `None` means the pass dispatched
-    /// at least one item. Only bumps `updated_at` when the operator-facing reason changes.
-    pub fn set_dispatch_reason(&mut self, reason: Option<&str>, now: i64) {
-        let next = reason.map(str::to_string);
-        if self.dispatch_reason != next {
-            self.dispatch_reason = next;
-            self.updated_at = now;
-        }
-    }
-
-    /// Record the evidence from the latest scheduler pass.
-    pub fn set_dispatch_decision(&mut self, decision: DispatchDecision, now: i64) {
-        if self.dispatch_decision.as_ref() != Some(&decision) {
-            self.dispatch_decision = Some(decision);
-            self.updated_at = now;
-        }
-    }
-}
-
-// ===========================================================================
-// Live monitoring rollups (#379) — pure throughput / ETA / recovery math
-// ===========================================================================
-
-/// The default trailing window the "recent" fleet signals (throughput, recovery counts) cover.
-/// One hour: `merged_per_hour` reads directly off it, and it's short enough that the numbers track
-/// the *current* wave rather than the whole run's history.
-pub const ROLLUP_WINDOW_SECS: i64 = 3600;
-
-/// Fleet-level monitoring rollups derived **purely** from the timestamped orchestrate lifecycle
-/// events (`orchestrate_dispatch` / `_merged` / `_relaunch` / `_failed` in `events.jsonl`) plus a
-/// few scalars the caller reads off the live run (queue depth, in-flight, effective cap). The math
-/// is pure over its inputs — no disk, no clock beyond the `now` passed in — so throughput and ETA
-/// are unit-testable against synthetic event logs (#379). Cost / token burn is layered on at the
-/// CLI (it needs the #381 `cost::rollup` disk surface), so it rides in the payload block, not here.
-#[derive(Debug, Clone, PartialEq, Serialize, Default)]
-pub struct Rollups {
-    /// Everything still waiting to land: run-queued + durable-backlog pending (#375).
-    pub queue_depth: usize,
-    /// Items occupying an in-flight concurrency slot right now.
-    pub in_flight: usize,
-    /// The effective concurrency cap the ETA divides by (solo ⇒ 1).
-    pub effective_cap: usize,
-    /// `orchestrate_merged` events in the trailing window — landings this hour.
-    pub merged_recent: usize,
-    /// Throughput as merged/hour: the recent count normalized to a per-hour rate.
-    pub merged_per_hour: f64,
-    /// Mean dispatch→merged cycle time over every paired (dispatch, merged) on the same branch,
-    /// across all history; `None` until at least one item has landed.
-    pub avg_cycle_secs: Option<i64>,
-    /// Backlog burn-down estimate: `queue_depth × avg_cycle / effective_cap`, in seconds. `None`
-    /// while no cycle time is known (nothing has landed yet) — an honest "unknown", never a fake 0.
-    pub eta_secs: Option<i64>,
-    /// `orchestrate_relaunch` events in the trailing window — recent recovery activity.
-    pub relaunch_recent: usize,
-    /// `orchestrate_failed` events in the trailing window — recent give-ups needing a human.
-    pub failed_recent: usize,
-    /// The trailing window the `*_recent` counts cover, in seconds (echoed for the renderer).
-    pub window_secs: i64,
-}
-
-impl Rollups {
-    /// Compute the rollups from the repo's lifecycle `events`, the live run scalars, and `now`.
-    /// `window_secs` is the trailing window for the throughput / recovery counts (see
-    /// [`ROLLUP_WINDOW_SECS`]); events for other repos are ignored via their `repo` field.
-    ///
-    /// Cycle times fold **all** history (a stable estimate), while the `*_recent` counts honor the
-    /// window — so `avg_cycle_secs` stays meaningful even after a quiet hour. Pure: same inputs ⇒
-    /// same output, no I/O.
-    pub fn compute(
-        events: &[crate::events::Event],
-        repo: &str,
-        queue_depth: usize,
-        in_flight: usize,
-        effective_cap: usize,
-        window_secs: i64,
-        now: i64,
-    ) -> Rollups {
-        let window = window_secs.max(1);
-        let cutoff = now - window;
-        let cap = effective_cap.max(1);
-
-        let field = |e: &crate::events::Event, k: &str| -> Option<String> {
-            e.fields.get(k).and_then(|v| v.as_str()).map(str::to_string)
-        };
-
-        // Only this repo's events, oldest-first, so each branch's dispatch anchors the merge that
-        // follows it. `orchestrate_merged`/`_dispatch`/`_relaunch`/`_failed` all carry a `repo`.
-        let mut chron: Vec<&crate::events::Event> = events
-            .iter()
-            .filter(|e| field(e, "repo").as_deref() == Some(repo))
-            .collect();
-        chron.sort_by_key(|e| e.ts);
-
-        // Fold dispatch→merged pairs on the same branch → cycle times. Remember each branch's most
-        // recent dispatch ts; when it merges, that pair's elapsed time is one cycle sample.
-        let mut dispatched_at: std::collections::HashMap<String, i64> =
-            std::collections::HashMap::new();
-        let mut cycles: Vec<i64> = Vec::new();
-        let (mut merged_recent, mut relaunch_recent, mut failed_recent) = (0usize, 0usize, 0usize);
-        for e in &chron {
-            match e.kind.as_str() {
-                "orchestrate_dispatch" => {
-                    if let Some(b) = field(e, "branch") {
-                        dispatched_at.insert(b, e.ts);
-                    }
-                }
-                "orchestrate_merged" => {
-                    if let Some(d) = field(e, "branch").and_then(|b| dispatched_at.remove(&b)) {
-                        if e.ts >= d {
-                            cycles.push(e.ts - d);
-                        }
-                    }
-                    if e.ts >= cutoff {
-                        merged_recent += 1;
-                    }
-                }
-                "orchestrate_relaunch" if e.ts >= cutoff => relaunch_recent += 1,
-                "orchestrate_failed" if e.ts >= cutoff => failed_recent += 1,
-                _ => {}
-            }
-        }
-
-        let avg_cycle_secs = (!cycles.is_empty())
-            .then(|| (cycles.iter().sum::<i64>() as f64 / cycles.len() as f64).round() as i64);
-        let merged_per_hour = merged_recent as f64 * 3600.0 / window as f64;
-        // depth × avg_cycle / cap — the backlog burn-down at the observed cycle time. Zero once the
-        // queue is empty; unknown until a first cycle is measured.
-        let eta_secs = avg_cycle_secs.map(|c| {
-            if queue_depth == 0 {
-                0
-            } else {
-                (c as f64 * queue_depth as f64 / cap as f64).round() as i64
-            }
-        });
-
-        Rollups {
-            queue_depth,
-            in_flight,
-            effective_cap: cap,
-            merged_recent,
-            merged_per_hour,
-            avg_cycle_secs,
-            eta_secs,
-            relaunch_recent,
-            failed_recent,
-            window_secs: window,
-        }
-    }
 }
 
 /// Locked read-modify-write of a run's state file — the atomic primitive #392 shares between the
@@ -2195,41 +990,6 @@ pub fn state_path_for(repo: &str) -> PathBuf {
     crate::resolver::state_dir().join(state_file_name(repo))
 }
 
-/// The single-controller owner-lease path for a repo's run, beside its state file. Holds the
-/// [`ControllerOwner`] currently driving this repo so a second daemon defers instead of
-/// double-driving (see [`may_claim_owner`]).
-pub fn owner_path_for(repo: &str) -> PathBuf {
-    crate::resolver::state_dir().join(format!("orchestrate-{}.owner.json", sanitize_run_key(repo)))
-}
-
-/// The owner lease currently recorded for `repo`, if any. An absent or unparseable file reads as
-/// `None` (⇒ claimable), keeping the guard fail-open.
-pub fn read_owner(repo: &str) -> Option<ControllerOwner> {
-    let raw = std::fs::read_to_string(owner_path_for(repo)).ok()?;
-    serde_json::from_str(&raw).ok()
-}
-
-/// Persist `owner` as `repo`'s controller lease (best-effort — a write failure just means the next
-/// tick retries; a torn read fails open to claimable).
-pub fn write_owner(repo: &str, owner: &ControllerOwner) {
-    crate::util::best_effort(
-        crate::store::save_json_atomic(&owner_path_for(repo), owner),
-        "orchestrate: write owner lease",
-    );
-}
-
-/// Remove `repo`'s owner lease iff it is still `me`'s — never steal another controller's lease.
-pub fn clear_owner(repo: &str, me: &ControllerOwner) {
-    if read_owner(repo).is_some_and(|cur| cur.pid == me.pid && cur.host == me.host) {
-        let _ = std::fs::remove_file(owner_path_for(repo));
-    }
-}
-
-/// The pre-#395 machine-wide state file. Only read for migration — never written anymore.
-pub fn legacy_state_path() -> PathBuf {
-    crate::resolver::state_dir().join("orchestrate.json")
-}
-
 /// Every per-run state file in `dir` (`orchestrate-*.json`), sorted for deterministic listing.
 /// Excludes the legacy `orchestrate.json`, controller-owner leases, and atomic-save `*.json.tmp`
 /// siblings.
@@ -2253,91 +1013,6 @@ pub fn run_files_in(dir: &Path) -> Vec<PathBuf> {
 /// Every per-run state file in the state dir.
 pub fn run_paths() -> Vec<PathBuf> {
     run_files_in(&crate::resolver::state_dir())
-}
-
-// ---------------------------------------------------------------------------
-// Run history log (#380) — append-only per-item outcome trail in the state dir
-// ---------------------------------------------------------------------------
-
-/// The append-only run-history log path: `run-history.jsonl` in the state dir (#380). One line per
-/// evicted terminal item ([`HistoryRecord`]); records carry their `repo`, so a single machine-wide
-/// log serves every run and readers filter by repo (via [`summarize_history`]). Sibling to the
-/// per-run `orchestrate-<repo>.json` state files and `events.jsonl`.
-pub fn history_path() -> PathBuf {
-    crate::resolver::state_dir().join("run-history.jsonl")
-}
-
-/// Append history `records` as JSONL lines to `path`, creating the parent dir on demand (#380).
-/// Append-only: the durable outcome trail that outlives the live queue and a state overwrite. Each
-/// line is one [`HistoryRecord::to_jsonl`]; a torn line is skipped on read, never poisoning the log.
-pub fn append_history_at(path: &Path, records: &[HistoryRecord]) -> std::io::Result<()> {
-    use std::io::Write;
-    if records.is_empty() {
-        return Ok(());
-    }
-    let lines = records
-        .iter()
-        .map(HistoryRecord::to_jsonl)
-        .collect::<std::io::Result<Vec<_>>>()?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    for line in lines {
-        writeln!(f, "{line}")?;
-    }
-    Ok(())
-}
-
-/// Read every history record from `path`, in file order (#380). Unparseable lines are skipped, and a
-/// missing file reads as empty — a best-effort, never-panicking read of the append-only log.
-pub fn read_history_at(path: &Path) -> Vec<HistoryRecord> {
-    use std::io::BufRead;
-    let Ok(file) = std::fs::File::open(path) else {
-        return Vec::new();
-    };
-    std::io::BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .filter_map(|l| HistoryRecord::from_jsonl(&l))
-        .collect()
-}
-
-/// Append history records to the state dir's [`history_path`].
-pub fn append_history(records: &[HistoryRecord]) -> std::io::Result<()> {
-    append_history_at(&history_path(), records)
-}
-
-/// Read every history record from the state dir's [`history_path`].
-pub fn read_history() -> Vec<HistoryRecord> {
-    read_history_at(&history_path())
-}
-
-/// Migrate the legacy machine-wide `orchestrate.json` in `dir` to its per-repo path, preserving an
-/// in-flight wave across the #395 upgrade. If the per-repo file already exists (a straggling save
-/// from the old daemon racing the new layout), the copy with the **newer `updated_at`** wins.
-/// Returns the migrated run's `(repo, path)`, or `None` when there is nothing to migrate.
-pub fn migrate_legacy_state_in(dir: &Path) -> Option<(String, PathBuf)> {
-    let legacy = dir.join("orchestrate.json");
-    let st = OrchestrateState::load(&legacy)?;
-    let dest = dir.join(state_file_name(&st.repo));
-    let keep_legacy = match OrchestrateState::load(&dest) {
-        Some(existing) => st.updated_at > existing.updated_at,
-        None => true,
-    };
-    if keep_legacy && st.save(&dest).is_err() {
-        return None; // couldn't persist the migrated copy — leave the legacy file untouched
-    }
-    let _ = std::fs::remove_file(&legacy);
-    Some((st.repo, dest))
-}
-
-/// [`migrate_legacy_state_in`] against the state dir.
-pub fn migrate_legacy_state() -> Option<(String, PathBuf)> {
-    migrate_legacy_state_in(&crate::resolver::state_dir())
 }
 
 #[cfg(test)]

@@ -368,22 +368,6 @@ impl Task {
         }
     }
 
-    /// Drop a `key:value` meta entirely. `true` when one was present.
-    ///
-    /// Distinct from setting it empty: an absent key and a key with a blank value read very
-    /// differently (a cleared `smart:` verdict means "unjudged", `smart:` with nothing after it
-    /// means a bug).
-    pub fn remove_meta(&mut self, key: &str) -> bool {
-        let before = self.desc.len();
-        self.desc
-            .retain(|t| !matches!(t, Token::Meta(k, _) if k == key));
-        let removed = self.desc.len() != before;
-        if removed {
-            self.touch();
-        }
-        removed
-    }
-
     /// Mark in progress by adding the `@wip` context (idempotent — no duplicate).
     pub fn mark_wip(&mut self) {
         if !self.contexts().contains(&"wip") {

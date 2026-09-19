@@ -728,38 +728,6 @@ fn hit_from_search(h: SearchHit) -> RecallHit {
 // Chunking
 // ---------------------------------------------------------------------------------------------
 
-/// Chunk the whole corpus (all note roots). Exposed mainly for tests; the index build inlines an
-/// incremental version. Order: notes in path order, each note's chunks then its sibling docs.
-pub fn chunk_corpus(cfg: &Config) -> Vec<Chunk> {
-    let mut out = Vec::new();
-    for root in cfg.each_notes_root() {
-        let mut note_mds = Vec::new();
-        find_notes(root, &mut note_mds);
-        note_mds.sort();
-        for note_md in note_mds {
-            let Ok(note) = store::read(&note_md) else {
-                continue;
-            };
-            out.extend(chunk_note(&note, &note_md));
-            if let Some(dir) = note_md.parent() {
-                for doc in sibling_docs(dir) {
-                    out.extend(chunk_doc(
-                        &doc,
-                        &note.front.repo,
-                        &note.front.branch,
-                        &note.front.status,
-                        &note.front.created,
-                    ));
-                }
-            }
-        }
-        for (repo, path) in crate::references::notes_under_root(root) {
-            out.extend(chunk_doc(&path, &repo, "reference", "active", ""));
-        }
-    }
-    out
-}
-
 /// Chunk a single note: its Goal, each structured item (decision/research/todo/blocker/collab/
 /// ask) with the item's own date, and each non-Goal `##` body section.
 fn chunk_note(note: &crate::model::Note, note_md: &Path) -> Vec<Chunk> {

@@ -1,7 +1,7 @@
 //! SSH remote-exec transport (#718, epic #707 M1) — the reusable, hardened transport the
 //! orchestrator/daemon uses to reach a worker node. Factors the one-shot SSH shape that lived
 //! inside `bn connect`'s `dispatch_remote` into a library API the scheduler can call:
-//! [`exec`], [`probe`], and [`poll_status`].
+//! [`exec`], [`probe`], and `poll_status`.
 //!
 //! Design invariants (the hardening from epic #707 v4):
 //!
@@ -26,7 +26,7 @@
 //! - **3-way outcome, not binary.** [`ExecOutcome`] is `NotStarted | Completed | Indeterminate`.
 //!   A mid-exec disconnect (external timeout) is `Indeterminate` — the remote command may or may
 //!   not have run — so a *mutating* op is never blind-retried. Only non-mutating reads
-//!   ([`probe`]/[`poll_status`]) retry, and never on an auth/host-key/inventory error.
+//!   ([`probe`]/`poll_status`) retry, and never on an auth/host-key/inventory error.
 //!
 //! The ssh subprocess goes through the injectable [`SshRunner`] seam so the whole transport is
 //! unit-testable with a [`FakeSshRunner`] — no network, no real `ssh`.
@@ -104,7 +104,7 @@ pub struct SshOptions {
     pub identities_only: bool,
     /// `StrictHostKeyChecking=yes` — fail closed on an unknown/changed host key.
     pub strict_host_key_checking: bool,
-    /// How many *additional* attempts a non-mutating read op ([`probe`]/[`poll_status`]) makes
+    /// How many *additional* attempts a non-mutating read op ([`probe`]/`poll_status`) makes
     /// after a transient failure. Mutating [`exec`] ignores this (never auto-retries).
     pub read_retries: u32,
 }
@@ -607,7 +607,7 @@ fn ensure_control_master<R: SshRunner>(
 }
 
 /// The transport bound to a resolved host and an ssh runner. Constructed via [`Transport::connect`]
-/// (real ssh) or [`Transport::with_runner`] (a test runner). All ops resolve through the trusted
+/// (real ssh) or `Transport::with_runner` (a test runner). All ops resolve through the trusted
 /// inventory; there is no constructor that takes a raw hostname.
 pub struct Transport<'a, R: SshRunner> {
     host: Host,
@@ -632,12 +632,6 @@ impl<'a> Transport<'a, RealSshRunner> {
 }
 
 impl<'a, R: SshRunner> Transport<'a, R> {
-    /// Bind a transport to an already-resolved host with an arbitrary runner. The host MUST have
-    /// come from [`resolve_host`]; used by tests and by callers that resolved earlier.
-    pub fn with_runner(host: Host, opts: SshOptions, runner: &'a R) -> Self {
-        Transport { host, opts, runner }
-    }
-
     /// The bound host's alias.
     pub fn alias(&self) -> &str {
         &self.host.alias
@@ -732,35 +726,6 @@ impl<'a, R: SshRunner> Transport<'a, R> {
             ExecOutcome::Completed { exit_status, .. } => Ok(exit_status == 0),
             ExecOutcome::NotStarted => Err(TransportError::Connection(
                 "probe did not establish a connection".to_string(),
-            )),
-            ExecOutcome::Indeterminate { .. } => Err(TransportError::Timeout),
-        }
-    }
-
-    /// Poll the worker's `bn worker status --json` payload, returning the parsed JSON value (the
-    /// success envelope's `data`, or the raw document if it isn't enveloped). Retries as a
-    /// non-mutating read; a non-zero remote exit or non-JSON output is a typed [`TransportError`].
-    pub fn poll_status(&self) -> Result<serde_json::Value, TransportError> {
-        match self.read(&["bn", "worker", "status", "--json"])? {
-            ExecOutcome::Completed {
-                exit_status: 0,
-                stdout,
-                ..
-            } => {
-                let v: serde_json::Value = serde_json::from_str(stdout.trim())
-                    .map_err(|e| TransportError::Parse(e.to_string()))?;
-                Ok(v.get("data").cloned().unwrap_or(v))
-            }
-            ExecOutcome::Completed {
-                exit_status,
-                stderr,
-                ..
-            } => Err(TransportError::Parse(format!(
-                "remote `bn worker status` exited {exit_status}: {}",
-                first_line(&stderr)
-            ))),
-            ExecOutcome::NotStarted => Err(TransportError::Connection(
-                "status poll did not establish a connection".to_string(),
             )),
             ExecOutcome::Indeterminate { .. } => Err(TransportError::Timeout),
         }

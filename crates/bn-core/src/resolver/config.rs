@@ -248,7 +248,7 @@ pub struct Config {
     pub hosts: HashMap<String, crate::hosts::HostExtra>,
     /// `[repo.<name>]`: per-repo verify, pipeline, and node-capability placement policy. Empty by
     /// default; see [`repo_verify`](Config::repo_verify) and
-    /// [`repo_placement_policy`](Config::repo_placement_policy).
+    /// `repo_placement_policy`.
     pub repos: HashMap<String, RepoConfig>,
     /// `[pipeline.stages.<stage>]`: global per-stage agent model/effort overrides. Missing entries
     /// use the built-in stage-specific defaults.
@@ -407,12 +407,6 @@ impl Config {
     /// Production entry: the compiled defaults, then the config file layers.
     pub fn load() -> Config {
         Config::resolve(ConfigFile::load().as_ref())
-    }
-
-    /// Build config from the defaults and path anchors only (no config file). Kept for callers
-    /// that must not read on-disk config; `load()` is the production path.
-    pub fn from_env() -> Config {
-        Config::resolve(None)
     }
 
     pub(super) fn resolve(file: Option<&ConfigFile>) -> Config {
@@ -703,35 +697,6 @@ impl Config {
             .filter(|s| !s.is_empty())
     }
 
-    /// Resolve `[repo.<name>].requires` / `excludes` for scheduler placement (#728). Matching is
-    /// case-insensitive and tries the full slug before its trailing repo name, like
-    /// [`repo_verify`](Self::repo_verify). `mt5-data-api` always requires `mt5-bridge` as a
-    /// fail-closed built-in safety rule, even when no machine-local config declares it.
-    pub fn repo_placement_policy(&self, repo: &str) -> RepoPlacementPolicy {
-        let base = repo.rsplit(['/', '\\']).next().unwrap_or(repo);
-        let by = |want: &str| {
-            self.repos
-                .iter()
-                .find(|(key, _)| key.eq_ignore_ascii_case(want))
-                .map(|(_, value)| value)
-        };
-        let configured = by(repo).or_else(|| by(base));
-        let mut policy = RepoPlacementPolicy {
-            requires: configured
-                .map(|entry| Self::normalized_capabilities(&entry.requires))
-                .unwrap_or_default(),
-            excludes: configured
-                .map(|entry| Self::normalized_capabilities(&entry.excludes))
-                .unwrap_or_default(),
-        };
-        if base.eq_ignore_ascii_case("mt5-data-api")
-            && !policy.requires.iter().any(|cap| cap == "mt5-bridge")
-        {
-            policy.requires.push("mt5-bridge".to_string());
-        }
-        policy
-    }
-
     /// Resolve the agent model and reasoning effort for `stage`, layering built-in defaults →
     /// `[pipeline.stages.<stage>]` → `[repo.<name>.pipeline.stages.<stage>]`. Blank override values
     /// are ignored. Repo matching follows [`repo_verify`](Self::repo_verify): full slug first,
@@ -750,17 +715,6 @@ impl Config {
             effort: profile.effort,
             harness: profile.harness,
         }
-    }
-
-    fn normalized_capabilities(values: &[String]) -> Vec<String> {
-        let mut normalized = Vec::new();
-        for value in values {
-            let value = value.trim().to_ascii_lowercase();
-            if !value.is_empty() && !normalized.contains(&value) {
-                normalized.push(value);
-            }
-        }
-        normalized
     }
 
     /// This host's path segment for the machine-subtree layout. A blank hostname falls back

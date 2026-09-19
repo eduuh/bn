@@ -17,39 +17,6 @@ pub const WORKFLOW_REL_PATH: &str = ".github/workflows/claude-dispatch.yml";
 /// Historical API-key secret used by the old workflow.
 pub const SECRET_NAME: &str = "ANTHROPIC_API_KEY";
 
-/// A repo's historical remote-run wiring state: is the old workflow present, and is the API-key
-/// secret set?
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct RemoteReadiness {
-    /// `.github/workflows/claude-dispatch.yml` exists in the repo.
-    pub workflow_present: bool,
-    /// The `ANTHROPIC_API_KEY` secret is set (seen in `gh secret list`).
-    pub secret_set: bool,
-    /// Whether the secret state is actually known. We only probe `gh secret list` when the
-    /// workflow is present, and the probe can fail (gh missing / unauthed / repo unresolvable);
-    /// `false` means "unknown", which is what keeps an *unconfigured* repo from looking broken.
-    pub secret_checked: bool,
-}
-
-impl RemoteReadiness {
-    /// Fully wired: workflow scaffolded and the secret is set.
-    pub fn is_ready(&self) -> bool {
-        self.workflow_present && self.secret_checked && self.secret_set
-    }
-
-    /// Configured at all — the old workflow is scaffolded. Kept for legacy status/doctor callers.
-    pub fn is_configured(&self) -> bool {
-        self.workflow_present
-    }
-
-    /// The one doctor-worthy state: the workflow is in place but the secret is confirmed missing.
-    /// A dispatch here would fail auth, so it's worth a nudge — unlike an unconfigured repo, or one
-    /// whose secret state we couldn't determine.
-    pub fn is_misconfigured(&self) -> bool {
-        self.workflow_present && self.secret_checked && !self.secret_set
-    }
-}
-
 /// Does `.github/workflows/claude-dispatch.yml` exist under `repo_root`? Pure filesystem check,
 /// no network — the cheap gate that decides whether the `gh` probe is even worth running.
 pub fn workflow_present(repo_root: &Path) -> bool {
@@ -66,61 +33,6 @@ pub enum ScaffoldOutcome {
     Updated,
     /// The file already matched `content` byte-for-byte — nothing written.
     Unchanged,
-}
-
-/// Write `content` to `<repo_root>/.github/workflows/claude-dispatch.yml`, creating parent
-/// directories. Idempotent and drift-correcting: the workflow is bn-managed, so an existing file
-/// with different content is overwritten (reported as `Updated`); an identical file is left as-is
-/// (`Unchanged`); an absent file is `Created`.
-pub fn scaffold_workflow(repo_root: &Path, content: &str) -> std::io::Result<ScaffoldOutcome> {
-    let path = repo_root.join(WORKFLOW_REL_PATH);
-    let outcome = match std::fs::read_to_string(&path) {
-        Ok(existing) if existing == content => return Ok(ScaffoldOutcome::Unchanged),
-        Ok(_) => ScaffoldOutcome::Updated,
-        Err(_) => ScaffoldOutcome::Created,
-    };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&path, content)?;
-    Ok(outcome)
-}
-
-/// Is `name` among the secrets in `gh secret list` output? `gh secret list` prints one secret per
-/// line as `NAME<whitespace>UPDATED_AT` (no values — secrets are write-only), so we match the
-/// first whitespace-delimited column. A header row or blank lines can't false-positive.
-pub fn secret_in_list(output: &str, name: &str) -> bool {
-    output
-        .lines()
-        .any(|line| line.split_whitespace().next() == Some(name))
-}
-
-/// Probe a repo's remote-dispatch readiness. Always does the filesystem workflow check; only when
-/// the workflow is present does it run `gh secret list` (via `runner`, cwd-scoped so `gh`
-/// auto-detects the repo). Skipping the probe for unconfigured repos keeps `bn doctor` cheap and
-/// offline in the common case, and keeps `secret_checked = false` as the "unconfigured" signal.
-pub fn readiness(runner: &dyn CommandRunner, repo_root: &Path) -> RemoteReadiness {
-    if !workflow_present(repo_root) {
-        return RemoteReadiness {
-            workflow_present: false,
-            secret_set: false,
-            secret_checked: false,
-        };
-    }
-    let out = runner.gh(&["secret", "list"]);
-    if !out.success {
-        // gh missing / unauthed / repo unresolvable — configured, but state unknown.
-        return RemoteReadiness {
-            workflow_present: true,
-            secret_set: false,
-            secret_checked: false,
-        };
-    }
-    RemoteReadiness {
-        workflow_present: true,
-        secret_set: secret_in_list(&out.stdout, SECRET_NAME),
-        secret_checked: true,
-    }
 }
 
 // ── Remote-run tracking (#282) ─────────────────────────────────────────────────────────────────
@@ -156,11 +68,6 @@ impl PrRef {
     /// The PR is still open (the "PR link when open" surfacing case).
     pub fn is_open(&self) -> bool {
         self.state.eq_ignore_ascii_case("open")
-    }
-
-    /// The PR has been merged — the remote run's work landed.
-    pub fn is_merged(&self) -> bool {
-        self.state.eq_ignore_ascii_case("merged")
     }
 }
 

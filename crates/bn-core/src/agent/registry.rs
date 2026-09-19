@@ -114,7 +114,7 @@ pub fn resolve_session<'a>(
             return rows
                 .iter()
                 .filter(|row| {
-                    super::same_dir(Path::new(&row.worktree), Path::new(worktree))
+                    same_dir(Path::new(&row.worktree), Path::new(worktree))
                         && same_branch(&row.branch, branch)
                         && matches!(row.harness.as_str(), "copilot" | "claude")
                 })
@@ -419,4 +419,14 @@ pub fn session_registry(cfg: &Config) -> std::io::Result<Vec<SessionRecord>> {
     }
     rows.sort_by_key(|row| std::cmp::Reverse((row.updated_at, row.created_at)));
     Ok(rows)
+}
+
+/// Whether two paths point at the same directory — literal match first (the common case: the
+/// harness records the exact worktree path it was launched in), then canonicalized (tolerates a
+/// `/private` symlink or trailing slash on macOS).
+fn same_dir(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
 }

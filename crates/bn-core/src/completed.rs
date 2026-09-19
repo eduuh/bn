@@ -138,7 +138,7 @@ pub struct CompletedSources<'a> {
     /// Every orchestrate queue item across live runs (flattened) — only `Merged` ones become items.
     pub merged: &'a [QueueItem],
     /// PRs merged on GitHub, discovered from the metrics log's `pr_merged` events
-    /// ([`crate::merged_prs::discover_merged`]). This is the source that sees work done *outside* the
+    /// (`crate::merged_prs::discover_merged`). This is the source that sees work done *outside* the
     /// orchestrate queue — which is nearly all of it, so without this the fold reports a day of
     /// shipped PRs as "quiet". Entries already represented in [`Self::merged`] are dropped by
     /// [`build_completed`] rather than counted twice.

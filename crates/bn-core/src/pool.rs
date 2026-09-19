@@ -383,14 +383,6 @@ pub fn pool_status(cfg: &Config, repo: &str) -> PoolStatus {
     compute_status(cfg, repo, pool_size(cfg, repo))
 }
 
-/// Warm-pool status for every repo with a bn-managed bare clone, for a multi-repo rollup.
-pub fn all_pool_status(cfg: &Config) -> Vec<PoolStatus> {
-    pooled_repos(cfg)
-        .into_iter()
-        .map(|repo| compute_status(cfg, &repo, pool_size(cfg, &repo)))
-        .collect()
-}
-
 /// Every repo that pools: each bn-managed bare clone (`<bare_dir>/<repo>.git`), in name order.
 /// Membership is the clone — there is no register to be on.
 pub fn pooled_repos(cfg: &Config) -> Vec<String> {

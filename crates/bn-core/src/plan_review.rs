@@ -806,13 +806,6 @@ pub fn update_plan(id: &str, plan: &str, now: i64) -> Result<Review, DecideError
     }
 }
 
-/// The current status of review `id`, or `None` if unknown — the agent's poll read. Lock-free: the
-/// atomic write guarantees a whole-file read sees either the pre- or post-decision state, never a
-/// torn one.
-pub fn status_of(id: &str) -> Option<ReviewStatus> {
-    ReviewStore::load(&store_path()).get(id).map(|r| r.status)
-}
-
 /// Review `id`, if any.
 pub fn get(id: &str) -> Option<Review> {
     ReviewStore::load(&store_path()).get(id).cloned()

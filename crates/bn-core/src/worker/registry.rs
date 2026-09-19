@@ -5,7 +5,7 @@
 //!
 //! **State machine (epic #707 v4):** `QUEUED → RUNNING → SUCCEEDED | FAILED`. Only these four are
 //! *stored*. `LOST` is *derived* at reconcile — a `RUNNING` row whose tmux session is gone and
-//! that never wrote a finish (see [`DerivedState`] / [`derived_state`]); it is never a stored
+//! that never wrote a finish (see [`DerivedState`] / `derived_state`); it is never a stored
 //! state, so there is no 7-state machine.
 //!
 //! **Idempotency:** `attempt_id` is the primary key. A retried dispatch reuses the exact
@@ -83,20 +83,6 @@ pub enum DerivedState {
     /// A `RUNNING` row whose worker/tmux session is no longer alive and which never wrote a
     /// finish. Derived only — never persisted.
     Lost,
-}
-
-/// Derive the reconcile-time state of an attempt from its stored state plus a liveness verdict.
-/// `alive` is the caller's probe result (e.g. `tmux -L orch has-session` / `kill -0 <pid>`); it is
-/// only consulted for `RUNNING` rows. Pure so the LOST-derivation policy is unit-testable without
-/// tmux or a live process.
-pub fn derived_state(state: AttemptState, alive: bool) -> DerivedState {
-    match state {
-        AttemptState::Queued => DerivedState::Queued,
-        AttemptState::Running if !alive => DerivedState::Lost,
-        AttemptState::Running => DerivedState::Running,
-        AttemptState::Succeeded => DerivedState::Succeeded,
-        AttemptState::Failed => DerivedState::Failed,
-    }
 }
 
 /// The immutable identity of a new attempt, recorded at `QUEUED` (before ack). `node` is the
@@ -314,37 +300,6 @@ impl Registry {
         } else {
             EnqueueOutcome::AlreadyExists
         })
-    }
-
-    /// Lock a `QUEUED` attempt into `RUNNING`, persisting its runtime identity (tmux session, pid).
-    /// Rejects any non-`QUEUED` source state as an illegal transition.
-    pub fn mark_running(
-        &self,
-        attempt_id: &str,
-        tmux_session: Option<&str>,
-        pid: Option<i64>,
-    ) -> Result<()> {
-        // Atomic guard: the promotion only fires while the row is still `QUEUED`, so two racing
-        // callers can never both win — the `AND state = 'QUEUED'` predicate and the row write
-        // happen under one SQLite statement. A separate read-then-write (as this once was) could
-        // let both readers see `QUEUED` and both promote, spawning a second worktree/PR.
-        let changed = self.conn.execute(
-            "UPDATE attempts
-             SET state = 'RUNNING', tmux_session = ?2, pid = ?3, updated_ts = ?4
-             WHERE attempt_id = ?1 AND state = 'QUEUED'",
-            rusqlite::params![attempt_id, tmux_session, pid, now_iso()],
-        )?;
-        if changed == 0 {
-            // The row was absent or no longer `QUEUED`. Re-read to return the precise error the
-            // callers already distinguish (`NotFound` vs `IllegalTransition`).
-            let current = self.require_state(attempt_id)?;
-            return Err(RegistryError::IllegalTransition {
-                attempt_id: attempt_id.to_string(),
-                from: current,
-                to: AttemptState::Running,
-            });
-        }
-        Ok(())
     }
 
     /// Finish a `RUNNING` attempt into `SUCCEEDED`/`FAILED`, storing the command result + exit code

@@ -305,12 +305,6 @@ impl AgentDef {
     pub fn is_startup(&self) -> bool {
         self.triggers.contains(&Trigger::Startup)
     }
-
-    /// True when this agent runs through the LLM staff pipeline.
-    pub fn is_staff(&self) -> bool {
-        self.kind == AgentKind::Staff
-    }
-
     /// True when this agent is a repo-scoped review specialist — an agent with `repo:` set that
     /// compiles to native Copilot/Claude custom agents (and is skipped by every cron/staff path).
     pub fn is_specialist(&self) -> bool {
@@ -521,67 +515,6 @@ fn load_agent_files(dir: &Path, scope: JobScope) -> Result<Vec<AgentDef>, AgentC
         agents.push(parse_agent(&text, &stem, scope, path)?);
     }
     Ok(agents)
-}
-
-/// Rewrite one agent's `on_calendar:` frontmatter line in its source `.md` (the tier it was
-/// discovered from). `Some(expr)` sets or replaces the schedule after validating the systemd
-/// `OnCalendar` spec parses; `None` removes it (the agent becomes trigger/manual-only). The
-/// agent-scheduler reads the catalog every tick, so the change takes effect on the next pass —
-/// no re-registration needed. Returns the file rewritten.
-pub fn set_schedule(
-    cfg: &Config,
-    ctx: Option<&Resolved>,
-    agent: &str,
-    on_calendar: Option<&str>,
-) -> Result<PathBuf, String> {
-    if let Some(expr) = on_calendar {
-        if crate::schedule::Schedule::parse(expr).is_none() {
-            return Err(format!(
-                "'{expr}' is not a recognized OnCalendar spec (e.g. \"Mon..Fri *-*-* 14:50:00\")"
-            ));
-        }
-    }
-    let catalog = discover(cfg, ctx).map_err(|e| e.to_string())?;
-    let def = catalog
-        .iter()
-        .find(|a| a.name == agent)
-        .ok_or_else(|| format!("no agent named '{agent}'"))?;
-    if on_calendar.is_some() && def.requires_repo.is_none() {
-        return Err(format!(
-            "agent '{agent}' must declare requires_repo before it can be scheduled"
-        ));
-    }
-    let text = std::fs::read_to_string(&def.path).map_err(|e| e.to_string())?;
-    // The frontmatter is the leading `---` fence block; operate line-wise inside it only, so a
-    // body that mentions `on_calendar:` is never touched.
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let Some(end) = lines
-        .iter()
-        .enumerate()
-        .skip(1)
-        .find(|(_, l)| l.trim() == "---")
-        .map(|(i, _)| i)
-    else {
-        return Err(format!("{}: no frontmatter fence", def.path.display()));
-    };
-    let existing = lines[1..end]
-        .iter()
-        .position(|l| l.trim_start().starts_with("on_calendar:"))
-        .map(|i| i + 1);
-    match (existing, on_calendar) {
-        (Some(i), Some(expr)) => lines[i] = format!("on_calendar: \"{expr}\""),
-        (Some(i), None) => {
-            lines.remove(i);
-        }
-        (None, Some(expr)) => lines.insert(2.min(end), format!("on_calendar: \"{expr}\"")),
-        (None, None) => {}
-    }
-    let mut out = lines.join("\n");
-    if text.ends_with('\n') {
-        out.push('\n');
-    }
-    crate::store::write_atomic(&def.path, out.as_bytes()).map_err(|e| e.to_string())?;
-    Ok(def.path.clone())
 }
 
 /// The validated, precedence-folded agent roster.

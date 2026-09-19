@@ -199,11 +199,6 @@ pub(crate) fn to_json_pretty<T: serde::Serialize>(value: &T) -> std::io::Result<
     serde_json::to_string_pretty(value).map_err(std::io::Error::other)
 }
 
-/// Like [`to_json_pretty`] but compact (single line) — for JSONL append logs. See [`to_json_pretty`].
-pub(crate) fn to_json_line<T: serde::Serialize>(value: &T) -> std::io::Result<String> {
-    serde_json::to_string(value).map_err(std::io::Error::other)
-}
-
 /// Serialize `value` before touching the filesystem, then atomically replace `path`.
 pub(crate) fn save_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     let text = to_json_pretty(value)?;

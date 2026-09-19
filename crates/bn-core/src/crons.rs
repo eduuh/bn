@@ -214,17 +214,6 @@ on_calendar = "hourly"
     }
 }
 
-/// The declared [`CronClass`] for `job`, folded across the job tiers ([`discover`]). Jobs no
-/// `[[cron]]` entry declares default to [`CronClass::Housekeeping`] — an undeclared/ad-hoc `bn run`
-/// carries no special meaning beyond the dashboard label.
-pub fn job_class(cfg: &Config, ctx: Option<&Resolved>, job: &str) -> CronClass {
-    discover(cfg, ctx)
-        .into_iter()
-        .find(|rc| rc.entry.job == job)
-        .map(|rc| rc.entry.class)
-        .unwrap_or_default()
-}
-
 /// The minimum recorded failures before a still-failing cron is worth alerting on — a couple of
 /// transient failures stay quiet, a job that keeps failing does not.
 pub const ALERT_MIN_FAILURES: usize = 3;

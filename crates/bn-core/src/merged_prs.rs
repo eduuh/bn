@@ -11,12 +11,6 @@
 /// carries a full diff — the cap keeps a burst day from ballooning a packet.
 pub const DEFAULT_PR_CAP: usize = 3;
 
-/// The bare repo name (path segment) for a `owner/repo` slug, lowercased — the key notes and the
-/// dojo deck are stored under.
-pub fn bare_repo(slug: &str) -> String {
-    slug.rsplit('/').next().unwrap_or(slug).to_ascii_lowercase()
-}
-
 // --- offline discovery ---------------------------------------------------------------------------
 
 /// A candidate merged PR discovered offline from the metrics log — the material before any network
@@ -32,22 +26,13 @@ pub struct MergedRef {
     pub merged_ts: i64,
 }
 
-/// Discover *your* PRs merged on `reviewed_date` (local `YYYY-MM-DD`) from the metrics log's
-/// `pr_merged` events. Offline and deterministic: the `pr-observe` job only ever logs your own
-/// PRs, so no author filter is needed here; a PR is kept when the local date of its merge matches
-/// `reviewed_date`. De-duplicated by `(repo, number)` (a re-observed merge is the same PR) and
-/// returned newest-merge-first, then by repo/number, for a stable order independent of log order.
-pub fn discover_merged(events: &[crate::events::Event], reviewed_date: &str) -> Vec<MergedRef> {
-    merged_refs(events, |ts| crate::util::local_date_of(ts) == reviewed_date)
-}
-
-/// Every merged PR in the log, newest-first — [`discover_merged`] without the date narrowing, for
+/// Every merged PR in the log, newest-first — `discover_merged` without the date narrowing, for
 /// readers that want the whole history (the Completed feed) rather than one day (the Mentor).
 pub fn all_merged(events: &[crate::events::Event]) -> Vec<MergedRef> {
     merged_refs(events, |_| true)
 }
 
-/// Shared fold behind [`discover_merged`] and [`all_merged`]: pick `pr_merged` events whose
+/// Shared fold behind `discover_merged` and [`all_merged`]: pick `pr_merged` events whose
 /// timestamp passes `keep`, dedupe by `(repo, number)`, sort newest-merge-first.
 fn merged_refs(events: &[crate::events::Event], keep: impl Fn(i64) -> bool) -> Vec<MergedRef> {
     let mut seen = std::collections::HashSet::new();

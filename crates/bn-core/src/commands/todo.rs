@@ -46,39 +46,7 @@ pub fn add(
     add_full(cfg, ctx, section_kw, text, if_absent, None, None, today)
 }
 
-/// [`add`] with an optional `--est` estimate (a `bn focus start` duration, validated by the
-/// caller) stamped onto the new item — the estimate half of calibration (#245). `est = None` is
-/// the plain `add` behaviour, so every existing caller is unchanged.
-#[allow(clippy::too_many_arguments)]
-pub fn add_est(
-    cfg: &Config,
-    ctx: &Resolved,
-    section_kw: &str,
-    text: &str,
-    if_absent: Option<&str>,
-    est: Option<&str>,
-    today: &str,
-) -> Result<AddOutcome, CmdError> {
-    add_full(cfg, ctx, section_kw, text, if_absent, est, None, today)
-}
-
-/// Like [`add`], but tags the new item with a quarter-goal key (`bn add todo … --q <key>`),
-/// linking shipped work to a `bn quarter` goal so the impact agent can score it. `q` rides on
-/// the item's optional `q` field (omitted from YAML when absent), round-tripping through parsers.
-#[allow(clippy::too_many_arguments)]
-pub fn add_tagged(
-    cfg: &Config,
-    ctx: &Resolved,
-    section_kw: &str,
-    text: &str,
-    if_absent: Option<&str>,
-    q: Option<&str>,
-    today: &str,
-) -> Result<AddOutcome, CmdError> {
-    add_full(cfg, ctx, section_kw, text, if_absent, None, q, today)
-}
-
-/// Shared implementation for [`add`], [`add_est`], and [`add_tagged`]: appends an item,
+/// Shared implementation for [`add`], `add_est`, and `add_tagged`: appends an item,
 /// optionally stamping an `est` estimate (calibration, #245) and/or a `q` quarter-goal key
 /// (#252). Both default to `None`, so the plain `add` path is unchanged.
 #[allow(clippy::too_many_arguments)]

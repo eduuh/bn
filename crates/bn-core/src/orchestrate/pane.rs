@@ -66,12 +66,6 @@ impl PaneState {
             PaneState::Dead => "dead",
         }
     }
-
-    /// Whether this state is an outage the supervisor should retry with backoff (api / dns). Used
-    /// to decide when to consult the [`Backoff`] curve vs. act immediately.
-    pub fn is_outage(self) -> bool {
-        matches!(self, PaneState::ApiError | PaneState::DnsOutage)
-    }
 }
 
 /// The deterministic action a supervision pass takes for a [`PaneState`]. The whole #340 mapping is
@@ -133,17 +127,6 @@ pub fn action_for(state: PaneState) -> SupervisorAction {
 /// The harness the orchestrate daemon dispatches under when nothing else is configured — the
 /// back-compat default for a run whose state predates `bn orchestrate --agent` (#382).
 pub const DEFAULT_HARNESS: &str = "copilot";
-
-/// The other harness to fall a usage-limited lane over to (#382): `claude` ↔ `copilot`. An
-/// unknown/unset harness falls back to the safe [`DEFAULT_HARNESS`]. Pure — the fallback-selection
-/// policy, so the daemon's auto-switch target is unit-testable without any live fleet.
-pub fn other_harness(current: &str) -> &'static str {
-    match current {
-        "copilot" => "claude",
-        "claude" => "copilot",
-        _ => DEFAULT_HARNESS,
-    }
-}
 
 /// [`classify`] so the classifier needs no tmux/git — a `capture-pane` tail, the window's Plane-A
 /// `@bn_agent` option, whether a live window exists, and whether the worktree has WIP.

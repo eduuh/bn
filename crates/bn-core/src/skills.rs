@@ -107,16 +107,6 @@ impl SkillScope {
         }
     }
 
-    /// True for the private tiers (never committed to the project's public history).
-    pub fn is_personal(self) -> bool {
-        matches!(
-            self,
-            SkillScope::GlobalPersonal
-                | SkillScope::RepoPersonalNotes
-                | SkillScope::RepoPersonalLocal
-        )
-    }
-
     /// Parse a `--scope` / tool-argument label back into a scope.
     pub fn parse(s: &str) -> Option<SkillScope> {
         match s {
@@ -581,48 +571,6 @@ pub fn install_native_skills(
     }
 
     Ok(NativeSkillsReport { changes })
-}
-
-/// Remove only bn-managed `SKILL.md` files for the requested native harnesses. Any neighboring
-/// user files are preserved; the skill directory is removed only when it becomes empty.
-pub fn uninstall_native_skills(
-    base_dir: &Path,
-    home: &Path,
-    scope: NativeScope,
-    harnesses: &[NativeHarness],
-) -> Result<Vec<PathBuf>, String> {
-    let repo_root = match scope {
-        NativeScope::Repo => resolver::repo_root(base_dir).ok_or_else(|| {
-            "repo-scoped native skill uninstall must run inside a git repository".to_string()
-        })?,
-        NativeScope::Global => base_dir.to_path_buf(),
-    };
-    let mut removed = Vec::new();
-
-    for harness in harnesses {
-        let root = harness_target(*harness).root(scope, &repo_root, home);
-        let entries = match std::fs::read_dir(&root) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(format!("read {}: {e}", root.display())),
-        };
-        for entry in entries {
-            let entry = entry.map_err(|e| format!("read {}: {e}", root.display()))?;
-            let skill_path = entry.path().join("SKILL.md");
-            let content = match std::fs::read_to_string(&skill_path) {
-                Ok(content) => content,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(format!("read {}: {e}", skill_path.display())),
-            };
-            if !is_any_managed_skill(&content) {
-                continue;
-            }
-            remove_native_skill_file(&skill_path)?;
-            removed.push(skill_path);
-        }
-    }
-
-    Ok(removed)
 }
 
 /// Whether a target root currently contains at least one bn-managed native skill. Source-skill
