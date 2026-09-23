@@ -65,7 +65,12 @@ fn run_task_agent(cfg: &Config, label: &str, packet: &str, dry_run: bool) -> Tas
             "bn task {label}: unknown harness '{harness}' (use copilot | claude)"
         ));
     };
-    let (success, output, combined) = crate::harness_dispatch::dispatch_capture(cmd, None);
+    let session = agent.requires_repo.as_deref().unwrap_or("bn");
+    let (success, output, combined) = crate::harness_dispatch::dispatch_visible(
+        cmd,
+        None,
+        crate::harness_dispatch::AgentWindow::new(session, label),
+    );
     if !success {
         fail(&format!(
             "bn task {label}: harness failed: {}",

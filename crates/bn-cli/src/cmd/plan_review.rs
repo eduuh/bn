@@ -526,8 +526,7 @@ fn run_review_agents(
     model: Option<&str>,
 ) -> Vec<AgentReviewRun> {
     let mut runs = Vec::with_capacity(specs.len());
-    // Chunk the fan-out so at most REVIEWER_CONCURRENCY harnesses run at once; extra reviewers
-    // queue behind the current chunk instead of forking an unbounded thread pool.
+    // At most REVIEWER_CONCURRENCY harnesses at once; the rest queue, never an unbounded pool.
     for chunk in specs.chunks(REVIEWER_CONCURRENCY) {
         let chunk_runs = std::thread::scope(|scope| {
             let mut handles = Vec::new();
@@ -540,9 +539,10 @@ fn run_review_agents(
                     spec.reviewer.clone(),
                     command.map(|command| {
                         scope.spawn(move || {
-                            crate::harness_dispatch::dispatch_capture(
+                            crate::harness_dispatch::dispatch_visible(
                                 command,
                                 Some(Duration::from_secs(AGENT_REVIEW_WALL_SECS)),
+                                (&*review.repo, format!("review-{}", spec.reviewer)).into(),
                             )
                         })
                     }),

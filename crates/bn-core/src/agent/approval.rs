@@ -99,6 +99,10 @@ pub struct Rule {
     /// Command-line fragments (`cargo check`, `npm run lint`).
     #[serde(default)]
     pub commands: Vec<String>,
+    /// Path roots (`/Users/me/projects/`) for a path-access dialog. Matches only when **every**
+    /// path the dialog asks for sits under one of them; any path with `..` in it never matches.
+    #[serde(default)]
+    pub paths: Vec<String>,
     /// How far the approval extends. Ignored on a deny rule.
     #[serde(default)]
     pub answer: AnswerScope,
@@ -115,6 +119,26 @@ impl Rule {
         self.patterns()
             .filter(|p| !p.trim().is_empty())
             .find(|p| lower.contains(&p.to_ascii_lowercase()))
+    }
+
+    /// Whether every one of `requested` falls under this rule's path roots.
+    fn covers_paths(&self, requested: &[String]) -> Option<&String> {
+        let roots: Vec<&String> = self.paths.iter().filter(|r| !r.trim().is_empty()).collect();
+        if roots.is_empty() || requested.is_empty() {
+            return None;
+        }
+        let root_for = |p: &String| {
+            if p.split('/').any(|seg| seg == "..") {
+                return None;
+            }
+            roots.iter().copied().find(|r| p.starts_with(r.as_str()))
+        };
+        let mut first = None;
+        for p in requested {
+            let root = root_for(p)?;
+            first.get_or_insert(root);
+        }
+        first
     }
 }
 
@@ -187,10 +211,9 @@ impl ApprovalPolicy {
 #[derive(Debug, Clone, Copy)]
 pub struct PolicyCtx {
     pub lane: LaneKind,
-    /// Whether the lane carries the `--yolo` trust contract (an orchestrated coding/ship item).
-    ///
-    /// This is the historical gate, kept: research and scout lanes are not dispatched under a trust
-    /// contract, so their approvals are a human's call even when a rule would match.
+    /// Whether the lane carries a trust contract: an orchestrated `--yolo` item, or a `bn dispatch`
+    /// whose goal is your own words (recorded on its agent lease). A lane seeded from an external
+    /// link is never trusted, so its approvals stay a human's call even when a rule would match.
     pub trusted: bool,
 }
 
@@ -287,9 +310,10 @@ pub fn decide(
 
     // The text a rule is matched against: the subject when the dialog names one, plus the question,
     // which is where an unboxed harness puts the command ("Allow command: rm -rf build").
+    // Requested paths ride along uncapped, so a deny rule sees every one of them.
     let subject = match &prompt.subject {
-        Some(s) => format!("{s} {}", prompt.question),
-        None => prompt.question.clone(),
+        Some(s) => format!("{s} {} {}", prompt.question, prompt.paths.join(" ")),
+        None => format!("{} {}", prompt.question, prompt.paths.join(" ")),
     };
 
     // (3) Deny first and unconditionally.
@@ -310,12 +334,16 @@ pub fn decide(
         };
     }
 
-    let Some((rule, pattern)) = policy
-        .approve
-        .rules
-        .iter()
-        .find_map(|r| r.matches(&subject).map(|p| (r, p)))
-    else {
+    let Some((rule, pattern)) = policy.approve.rules.iter().find_map(|r| {
+        // A path-access dialog is judged by path rules alone: a command fragment like "bn "
+        // would otherwise substring-match a path ending in `/bn`.
+        if prompt.paths.is_empty() {
+            r.matches(&subject)
+        } else {
+            r.covers_paths(&prompt.paths)
+        }
+        .map(|p| (r, p))
+    }) else {
         return escalate("no allow rule matches this request");
     };
 
@@ -329,5 +357,161 @@ pub fn decide(
             "allow rule matched {pattern:?} but the dialog offers no {} option",
             rule.answer.semantic().label()
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::parse_pending_prompt;
+
+    /// Copilot's path-access dialog, shaped as captured from a wedged scout (2026-09-23).
+    fn dialog(paths: &[&str], remember: &str) -> Vec<String> {
+        let mut lines = vec![
+            "╭──────────────────────────────────────────────╮".to_string(),
+            "│ Allow path access                            │".to_string(),
+            "│ ──────────────────────────────────────────── │".to_string(),
+            "│ This action may read or write the following path outside the paths currently allowed for this session. │".to_string(),
+            "│                                              │".to_string(),
+            "│ ╭──────────────────────────────────────────╮ │".to_string(),
+        ];
+        lines.extend(paths.iter().map(|p| format!("│ │ {p:<40} │ │")));
+        lines.extend(
+            [
+                "│ ╰──────────────────────────────────────────╯ │",
+                "│                                              │",
+                "│ Do you want to allow this?                   │",
+                "│                                              │",
+                "│   1. Yes                                     │",
+            ]
+            .map(String::from),
+        );
+        lines.push(format!("│ ❯ 2. Yes, and {remember} for this session │"));
+        lines.extend(
+            [
+                "│   3. No (Esc)                                │",
+                "│                                              │",
+                "│ ↑/↓ to navigate · enter to select · esc to cancel │",
+                "╰──────────────────────────────────────────────╯",
+            ]
+            .map(String::from),
+        );
+        lines
+    }
+
+    fn policy() -> ApprovalPolicy {
+        toml::from_str(
+            r#"
+[approve]
+enabled = true
+scope = "dispatched"
+[[approve.rule]]
+paths = ["/Users/me/projects/", "/tmp/"]
+answer = "session"
+[[approve.rule]]
+commands = ["bn "]
+answer = "session"
+[deny]
+[[deny.rule]]
+commands = [".ssh/"]
+"#,
+        )
+        .unwrap()
+    }
+
+    fn decide_for(lines: &[String], trusted: bool) -> ApprovalDecision {
+        let prompt = parse_pending_prompt(lines, "", true, false).unwrap();
+        let ctx = PolicyCtx {
+            lane: LaneKind::Dispatched,
+            trusted,
+        };
+        decide(&prompt, &ctx, &policy())
+    }
+
+    fn approved(d: &ApprovalDecision) -> Option<u8> {
+        match d {
+            ApprovalDecision::Auto { option, .. } => Some(*option),
+            ApprovalDecision::Escalate { .. } => None,
+        }
+    }
+
+    #[test]
+    fn copilot_path_access_is_an_approval_carrying_its_paths() {
+        let lines = dialog(&["/Users/me/projects/worktree"], "remember this path");
+        let prompt = parse_pending_prompt(&lines, "", true, false).unwrap();
+        assert_eq!(prompt.kind, PaneState::CommandApproval, "{prompt:?}");
+        assert_eq!(prompt.resolve(PromptSemantic::ApproveSession), Some(2));
+        assert_eq!(prompt.paths, vec!["/Users/me/projects/worktree"]);
+    }
+
+    #[test]
+    fn trusted_dispatch_clears_paths_all_under_allowed_roots() {
+        let one = dialog(&["/Users/me/projects/worktree"], "remember this path");
+        assert_eq!(approved(&decide_for(&one, true)), Some(2));
+        let many = dialog(
+            &[
+                "/tmp/bn-fleet-help.$$",
+                "/Users/me/projects/worktree/bn/main",
+            ],
+            "remember these paths",
+        );
+        assert_eq!(approved(&decide_for(&many, true)), Some(2));
+    }
+
+    #[test]
+    fn one_path_outside_the_roots_escalates_the_whole_dialog() {
+        let lines = dialog(
+            &["/Users/me/projects/x", "/etc/hosts"],
+            "remember these paths",
+        );
+        assert_eq!(approved(&decide_for(&lines, true)), None);
+    }
+
+    #[test]
+    fn parent_traversal_never_matches_a_root() {
+        let lines = dialog(
+            &["/Users/me/projects/../.aws/config"],
+            "remember this path",
+        );
+        assert_eq!(approved(&decide_for(&lines, true)), None);
+    }
+
+    #[test]
+    fn deny_rule_sees_every_requested_path() {
+        let lines = dialog(
+            &["/Users/me/projects/a", "/Users/me/projects/.ssh/x"],
+            "remember these paths",
+        );
+        assert_eq!(approved(&decide_for(&lines, true)), None);
+    }
+
+    #[test]
+    fn command_rules_never_approve_a_path_dialog() {
+        let mut p = policy();
+        p.approve.rules.retain(|r| r.paths.is_empty());
+        let lines = dialog(&["/Users/me/projects/worktree/bn"], "remember this path");
+        let prompt = parse_pending_prompt(&lines, "", true, false).unwrap();
+        let ctx = PolicyCtx {
+            lane: LaneKind::Dispatched,
+            trusted: true,
+        };
+        assert!(!decide(&prompt, &ctx, &p).is_auto());
+    }
+
+    #[test]
+    fn agent_output_above_the_dialog_is_not_a_requested_path() {
+        let mut lines = vec![
+            " ○ Search \"x\" in /Users/me".to_string(),
+            "/etc/passwd".to_string(),
+        ];
+        lines.extend(dialog(&["/Users/me/projects/a"], "remember this path"));
+        let prompt = parse_pending_prompt(&lines, "", true, false).unwrap();
+        assert_eq!(prompt.paths, vec!["/Users/me/projects/a"]);
+    }
+
+    #[test]
+    fn untrusted_dispatch_still_escalates() {
+        let lines = dialog(&["/Users/me/projects/worktree"], "remember this path");
+        assert_eq!(approved(&decide_for(&lines, false)), None);
     }
 }

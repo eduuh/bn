@@ -288,7 +288,7 @@ fn shipped_agent_catalog_is_valid() {
 }
 
 #[test]
-fn no_cron_fires_manifest_schedules_while_scheduled_agents_are_disabled() {
+fn the_scheduler_alone_fires_manifest_schedules() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let catalog = discover_in(&[(JobScope::Global, root.join("config/agents"))])
         .expect("shipped agent catalog");
@@ -303,8 +303,8 @@ fn no_cron_fires_manifest_schedules_while_scheduled_agents_are_disabled() {
         })
         .collect();
 
-    // Scheduled agents are disabled: no timer may fire the scheduler.
-    assert!(!cron_jobs.contains(&"agent-scheduler"));
+    // One timer fires every manifest schedule; no agent also has a timer of its own.
+    assert!(cron_jobs.contains(&"agent-scheduler"));
     for agent in catalog.iter().filter(|agent| agent.is_cron()) {
         assert!(
             !cron_jobs.iter().any(|job| *job == agent.name),

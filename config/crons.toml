@@ -55,11 +55,14 @@ on_calendar = "*:0/10"
 persistent = true
 randomized_delay = "2m"
 network = true
-description = "bn — 10-minute tick: auto-review-trigger (prepare the next queued PR when idle), attention-auto-trigger (autonomous pickup of eligible auto items), agent-supervise (stuck detection across the live fleet)"
+description = "bn — 10-minute tick: auto-review-trigger (prepare the next queued PR when idle), attention-auto-trigger (autonomous pickup of eligible auto items), agent-supervise (stuck detection across the live fleet), forge-tick (release abandoned Forge claims, heartbeat live ones, dispatch newly assigned tasks)"
 
-# Scheduled Markdown agents are disabled, ahead of removing the feature. There is deliberately no
-# `agent-scheduler` entry, so `bn cron register` unloads its timer and nothing fires an agent's
-# `on_calendar`. `bn run <agent>` still runs one by hand.
+[[cron]]
+job = "agent-scheduler"
+on_calendar = "*:0/5"
+persistent = true
+network = true
+description = "bn — Markdown agent scheduler: every 5 minutes load config/agents and run each due agent by name, backing off failed attempts per retry_after"
 
 [[cron]]
 job = "tick-15m"

@@ -298,6 +298,7 @@ pub(crate) fn emit(
         tmux_target: &lease_target,
         replace: true,
         in_place: false,
+        trusted: false,
     }) {
         Ok(r) => r,
         Err(e) => fail(

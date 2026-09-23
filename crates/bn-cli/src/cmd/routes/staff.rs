@@ -214,6 +214,7 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
                 }
             }
         }
+        CmdStaff::Forge { action } => crate::cmd::forge::run(cfg, action, json),
         CmdStaff::Mcp { action } => match action {
             McpCmd::Init {
                 harness,

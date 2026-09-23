@@ -81,6 +81,9 @@ pub(crate) fn job_tick_15m(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
 /// newly needing you (agents waiting/blocked/stuck, agent completions, urgent attention) since the
 /// last run; quiet when nothing changed. Native so it toasts identically on every platform.
 pub(crate) fn job_watch(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
+    // Clear policy-allowed dialogs first, so an agent a rule covers never surfaces as "needs you".
+    // Nothing else ran this sweep, so unattended agents sat on their first prompt.
+    crate::cmd::agent_approve::sweep(cfg, false, false);
     emit_watch(cfg, true, 30, bn_core::agent::DEFAULT_STUCK_MINS, false);
     0
 }

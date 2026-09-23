@@ -145,6 +145,7 @@ pub(crate) fn launch_sub_investigator(
         tmux_target: &tmux_target,
         replace: false,
         in_place: false,
+        trusted: false,
     }) {
         Ok(reservation) => reservation,
         Err(error) => {
@@ -256,6 +257,7 @@ pub(crate) fn launch_plan_agent(
         tmux_target: &tmux_target,
         replace: false,
         in_place: false,
+        trusted: false,
     }) {
         Ok(lease) => lease,
         Err(error) => {

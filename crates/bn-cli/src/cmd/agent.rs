@@ -1194,16 +1194,14 @@ fn enforce_launch_placement(
         redirect_into_window(cfg, &ctx, &canonical, harness, pinned_session);
     }
 
-    // Lease under the caller's session id when it gave one (`bn dispatch --attach` passes
-    // `--session <sid>`), so that caller can release this exact lease when the foreground agent
-    // exits. A hand-typed launch has no id yet and mints one.
+    // Lease under the caller's session id (`bn dispatch --attach` passes `--session <sid>`) so it
+    // can release this exact lease when the agent exits. A hand-typed launch mints one.
     let session_id = session
         .map(str::to_string)
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(gen_uuid);
-    // Outside tmux there is no window to lease against, and inventing `repo:branch` would stamp
-    // `@bn_session_id` onto whatever unrelated window happens to bear that name. Lease with no
-    // target instead, and skip the stamping that would go with it.
+    // Outside tmux there is no window to lease against; inventing `repo:branch` would stamp
+    // `@bn_session_id` onto an unrelated window of that name. Lease with no target instead.
     let current_window =
         crate::proc::tmux_raw(&["display-message", "-p", "#{session_name}:#{window_name}"])
             .map(|t| t.trim().to_string())
@@ -1219,6 +1217,7 @@ fn enforce_launch_placement(
         tmux_target: &tmux_target,
         replace: false,
         in_place: true,
+        trusted: false,
     }) {
         Ok(reservation) => {
             if current_window.is_some() {
@@ -1306,6 +1305,7 @@ fn redirect_into_window(
         tmux_target: &tmux_target,
         replace: false,
         in_place: false,
+        trusted: false,
     }) {
         Ok(reservation) => reservation,
         Err(error) => {

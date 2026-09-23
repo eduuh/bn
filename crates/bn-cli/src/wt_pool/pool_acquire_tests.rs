@@ -43,7 +43,7 @@ fn acquire_repairs_a_lease_whose_checkout_vanished() {
         size: 4,
     };
 
-    let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker, false)
+    let leased = acquire_slot(&ctx, "feat", None, None, SlotRole::Worker, false)
         .expect("a vanished checkout must be rebuilt, not surfaced as a dead warm hit");
     // Same branch's tenancy predates this call, so it is not a fresh lease…
     assert!(!leased.fresh);
@@ -97,7 +97,7 @@ fn acquire_reclaims_leaked_leases_before_declaring_the_pool_full() {
         size: 4,
     };
 
-    let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker, false)
+    let leased = acquire_slot(&ctx, "feat", None, None, SlotRole::Worker, false)
         .expect("a pool of leases nobody is using must yield a slot, not read as full");
     assert!(leased.fresh);
     assert!(is_live_slot(&leased.slot));
@@ -167,7 +167,7 @@ fn acquire_grows_past_occupied_slots_rather_than_reclaiming_one() {
         size: 4,
     };
 
-    let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker, false)
+    let leased = acquire_slot(&ctx, "feat", None, None, SlotRole::Worker, false)
         .expect("a pool whose every slot is busy grows rather than refusing");
     assert_eq!(
         leased.slot,
@@ -199,7 +199,12 @@ fn acquire_warm_hit_reuses_a_live_checkout() {
     // Pre-build slot 2 as a live checkout on feat, and record its lease.
     let slot = slot_path(&pdir, 2);
     assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
-    assert!(switch_into_slot(&slot.to_string_lossy(), &bare, "feat"));
+    assert!(switch_into_slot_from(
+        &slot.to_string_lossy(),
+        &bare,
+        "feat",
+        None
+    ));
     let mut leases = Leases::default();
     leases.slots.insert(
         2,
@@ -221,11 +226,82 @@ fn acquire_warm_hit_reuses_a_live_checkout() {
         worktree_dir: wt_root,
         size: 4,
     };
-    let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker, false).expect("warm hit");
+    let leased = acquire_slot(&ctx, "feat", None, None, SlotRole::Worker, false).expect("warm hit");
     assert!(!leased.fresh);
     assert_eq!(leased.slot, slot);
     assert!(is_live_slot(&leased.slot));
     assert_eq!(head_ref(&leased.slot), "feat");
+}
+
+#[test]
+fn acquire_dispatch_branch_starts_from_requested_base() {
+    let _env = bn_core::test_support::env_lock();
+    let (tmp, bare) = mk_bare();
+    TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
+
+    let base_wt = tmp.path().join("base-worktree");
+    let base_wt_s = base_wt.to_string_lossy().to_string();
+    assert!(git(&[
+        "--git-dir",
+        &bare,
+        "worktree",
+        "add",
+        "-b",
+        "agent/forge-agent-cli",
+        &base_wt_s,
+        "main",
+    ]));
+    std::fs::write(base_wt.join("forge-skill.md"), "rich markdown skill\n").unwrap();
+    assert!(git(&["-C", &base_wt_s, "add", "forge-skill.md"]));
+    assert!(git(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "-C",
+        &base_wt_s,
+        "commit",
+        "-qm",
+        "add forge skill"
+    ]));
+    assert!(git(&[
+        "--git-dir",
+        &bare,
+        "worktree",
+        "remove",
+        "--force",
+        &base_wt_s
+    ]));
+
+    let wt_root = tmp.path().join("wt");
+    let pdir = wt_root.join("bn").join("_pool");
+    std::fs::create_dir_all(&pdir).unwrap();
+    let slot = slot_path(&pdir, 2);
+    assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
+
+    let ctx = PoolCtx {
+        bare: PathBuf::from(&bare),
+        repo: "bn".into(),
+        pool_dir: pdir,
+        worktree_dir: wt_root,
+        size: 4,
+    };
+    let leased = acquire_slot(
+        &ctx,
+        "dispatch/forge-smoke",
+        Some("agent/forge-agent-cli"),
+        None,
+        SlotRole::Worker,
+        false,
+    )
+    .expect("dispatch lease");
+
+    assert_eq!(leased.slot, slot);
+    assert_eq!(head_ref(&leased.slot), "dispatch/forge-smoke");
+    assert_eq!(
+        std::fs::read_to_string(leased.slot.join("forge-skill.md")).unwrap(),
+        "rich markdown skill\n"
+    );
 }
 
 /// A lease lands on the slot whose build completed, not the lowest-numbered checkout. In a
@@ -262,7 +338,7 @@ fn acquire_prefers_a_built_slot_over_a_lower_unbuilt_one() {
         worktree_dir: wt_root,
         size: 4,
     };
-    let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker, false).expect("lease");
+    let leased = acquire_slot(&ctx, "feat", None, None, SlotRole::Worker, false).expect("lease");
     assert!(leased.fresh);
     assert_eq!(leased.slot, slot_path(&pdir, 3));
     assert_eq!(head_ref(&leased.slot), "feat");
@@ -585,7 +661,7 @@ fn paired_dispatch_leases_and_returns_feature_and_main_slots_together() {
         worktree_dir: root.join("worktree"),
         size: 4,
     };
-    let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker, true)
+    let leased = acquire_slot(&ctx, "feat", None, None, SlotRole::Worker, true)
         .expect("two worker slots should be available");
     let comparison = leased.comparison.expect("comparison slot");
 
@@ -607,7 +683,7 @@ fn paired_dispatch_leases_and_returns_feature_and_main_slots_together() {
 
     let probe = comparison.join("comparison-probe.txt");
     std::fs::write(&probe, "keep me\n").unwrap();
-    let duplicate = acquire_slot(&ctx, "feat", None, SlotRole::Worker, true)
+    let duplicate = acquire_slot(&ctx, "feat", None, None, SlotRole::Worker, true)
         .expect("an idempotent lookup should return the existing pair");
     assert_eq!(duplicate.comparison.as_deref(), Some(comparison.as_path()));
     assert_eq!(
@@ -645,7 +721,7 @@ fn paired_dispatch_is_all_or_nothing_when_only_one_worker_slot_is_free() {
         worktree_dir: root.join("worktree"),
         size: 2,
     };
-    assert!(acquire_slot(&ctx, "feat", None, SlotRole::Worker, true).is_none());
+    assert!(acquire_slot(&ctx, "feat", None, None, SlotRole::Worker, true).is_none());
     assert!(
         read_leases(&ctx.pool_dir).slots.is_empty(),
         "a failed pair must not leave half a lease"
@@ -700,7 +776,7 @@ fn a_branch_whose_tenancy_died_can_be_dispatched_again() {
         size: 4,
     };
 
-    let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker, false)
+    let leased = acquire_slot(&ctx, "feat", None, None, SlotRole::Worker, false)
         .expect("a branch whose last tenancy ended must be leasable again");
     // `fresh` is the assertion that matters: it is what dispatch reads to decide between seeding a
     // new run and refusing an occupied worktree. Before the fix this was `false` and every retry
@@ -736,7 +812,12 @@ fn a_branch_whose_agent_is_live_still_gets_its_own_slot_back() {
 
     let slot = slot_path(&pdir, 2);
     assert!(add_detached_slot(&bare, &slot.to_string_lossy()));
-    assert!(switch_into_slot(&slot.to_string_lossy(), &bare, "feat"));
+    assert!(switch_into_slot_from(
+        &slot.to_string_lossy(),
+        &bare,
+        "feat",
+        None
+    ));
     let mut occupants = BTreeMap::new();
     occupants.insert(
         slot,
@@ -775,7 +856,7 @@ fn a_branch_whose_agent_is_live_still_gets_its_own_slot_back() {
     };
 
     let leased =
-        acquire_slot(&ctx, "feat", None, SlotRole::Worker, false).expect("its own slot back");
+        acquire_slot(&ctx, "feat", None, None, SlotRole::Worker, false).expect("its own slot back");
     assert_eq!(leased.slot, slot_path(&pdir, 2));
     assert!(
         !leased.fresh,
@@ -838,7 +919,7 @@ fn acquire_resets_a_dirty_idle_slot_and_retries_the_switch() {
     // …while the slot still holds an uncommitted edit to that same file.
     std::fs::write(slot.join("a.txt"), "leftover\n").unwrap();
     assert!(
-        !switch_into_slot(&slot_s, &bare, "probe"),
+        !switch_into_slot_from(&slot_s, &bare, "probe", None),
         "precondition: the dirty slot refuses a plain switch onto the advanced base"
     );
 
@@ -849,7 +930,7 @@ fn acquire_resets_a_dirty_idle_slot_and_retries_the_switch() {
         worktree_dir: wt_root,
         size: 4,
     };
-    let leased = acquire_slot(&ctx, "new-work", None, SlotRole::Worker, false)
+    let leased = acquire_slot(&ctx, "new-work", None, None, SlotRole::Worker, false)
         .expect("get self-heals a dirty idle slot instead of failing the lease");
     assert_eq!(leased.slot, slot);
     assert_eq!(head_ref(&slot), "new-work");
@@ -896,54 +977,6 @@ fn warm_yields_to_a_warm_already_running_on_the_pool() {
     );
 }
 
-/// The `wt-cleanup` sweep's merged-slot release: a stray uncommitted file must not pin the slot
-/// forever, and must not be discarded either. It lands as a commit on the slot's branch, which
-/// outlives the reset in the bare repo.
-#[test]
-fn release_merged_slot_rescues_dirty_work_onto_the_branch_then_returns() {
-    let _g = bn_core::test_support::env_lock();
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path();
-    let bare = root.join("bare").join("bn.git");
-    build_repo_into(&root.join("bn-src"), &bare);
-
-    let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
-    let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", root.join("state"));
-    TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
-
-    let cfg = bn_core::test_support::config(root);
-    let ctx = PoolCtx {
-        bare: bare.clone(),
-        repo: "bn".to_string(),
-        pool_dir: root.join("worktree").join("bn").join("_pool"),
-        worktree_dir: root.join("worktree"),
-        size: 2,
-    };
-    let leased = acquire_slot(&ctx, "feat", None, SlotRole::Worker, false).expect("a free slot");
-    std::fs::write(leased.slot.join("leftover.txt"), "keep me\n").unwrap();
-
-    assert!(matches!(
-        crate::wt_pool::release_slot(&cfg, &leased.slot, false),
-        SlotRelease::Dirty { .. }
-    ));
-    assert!(matches!(
-        crate::wt_pool::release_merged_slot(&cfg, &leased.slot),
-        SlotRelease::Returned { .. }
-    ));
-    assert!(read_leases(&ctx.pool_dir).slots.is_empty());
-    assert!(
-        !leased.slot.join("leftover.txt").exists(),
-        "the checkout is reset"
-    );
-    assert_eq!(
-        wt::git_out(&[
-            "--git-dir",
-            &bare.to_string_lossy(),
-            "show",
-            "feat:leftover.txt"
-        ])
-        .as_deref(),
-        Some("keep me"),
-        "the rescued file lives on the branch"
-    );
-}
+/// The merged-slot release tests (`wt-cleanup`), split out at the 1000-line ratchet.
+#[path = "pool_release_tests.rs"]
+mod release;

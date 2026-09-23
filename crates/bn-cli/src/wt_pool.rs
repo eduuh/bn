@@ -319,37 +319,6 @@ pub(crate) fn add_detached_slot(bare_s: &str, slot_s: &str) -> bool {
     ])
 }
 
-/// Switch `branch` into an existing slot checkout (reusing its warm deps). Mirrors the
-/// heads / remotes / new three-way logic in `create_worktree`, but via `git switch` in place.
-fn switch_into_slot(slot_s: &str, bare_s: &str, branch: &str) -> bool {
-    let exists = |kind: &str| {
-        wt::git_out(&[
-            "--git-dir",
-            bare_s,
-            "show-ref",
-            "--verify",
-            "--quiet",
-            &format!("refs/{kind}/{branch}"),
-        ])
-        .is_some()
-    };
-    if exists("heads") {
-        git_quiet(&["-C", slot_s, "switch", branch])
-    } else if exists("remotes/origin") {
-        git_quiet(&[
-            "-C",
-            slot_s,
-            "switch",
-            "-c",
-            branch,
-            &format!("origin/{branch}"),
-        ])
-    } else {
-        let base = default_base(bare_s);
-        git_quiet(&["-C", slot_s, "switch", "-c", branch, &base])
-    }
-}
-
 /// Reset a slot back to a clean warm-idle state: discard tracked changes and detach to the base,
 /// then drop untracked files — but NEVER `-x`/`-X`, so ignored deps/build cache survive. The one
 /// ignored subtree we do trim is `target/**/incremental`: warm builds already run with
@@ -558,6 +527,10 @@ pub(crate) use health::*;
 
 mod idle;
 pub(crate) mod slot_lock;
+mod switch;
+#[cfg(test)]
+use switch::switch_into_slot;
+use switch::switch_into_slot_from;
 
 pub(crate) mod release;
 pub(crate) use release::*;
@@ -754,7 +727,7 @@ fn pool_get(
         ceprintln!("{RED}Usage: wt pool get <branch>{NC}");
         return false;
     };
-    let Some(leased) = acquire_slot(&ctx, &branch, holder, SlotRole::Worker, false) else {
+    let Some(leased) = acquire_slot(&ctx, &branch, None, holder, SlotRole::Worker, false) else {
         return false;
     };
     finish_get(&ctx, &leased.slot, &branch, path_only, no_tmux)
@@ -798,6 +771,7 @@ impl SlotRole {
 fn acquire_slot(
     ctx: &PoolCtx,
     branch: &str,
+    base: Option<&str>,
     holder: Option<String>,
     class: SlotRole,
     with_main: bool,
@@ -847,7 +821,7 @@ fn acquire_slot(
             }
             match class {
                 SlotRole::Worker => {
-                    if !switch_into_slot(&slot_s, &bare_s, branch) {
+                    if !switch_into_slot_from(&slot_s, &bare_s, branch, base) {
                         ceprintln!(
                             "{RED}Failed to switch '{branch}' into rebuilt slot {n} (branch checked out elsewhere?){NC}"
                         );
@@ -1005,7 +979,7 @@ fn acquire_slot(
         SlotRole::Worker => {
             // Hold the slot across the switch so a concurrent warm cannot reset it under us.
             let _slot_lock = slot_lock::lock_slot(&ctx.pool_dir, n);
-            if !switch_into_slot(&slot_s, &bare_s, branch) {
+            if !switch_into_slot_from(&slot_s, &bare_s, branch, base) {
                 // An idle slot nobody occupies has no work anyone is keeping, so a refused
                 // switch is leftover state — a tenant's uncommitted edits, a reset cut short —
                 // and the caller can do nothing about it. Reset and try once more instead of
@@ -1018,7 +992,7 @@ fn acquire_slot(
                     );
                     warm_reset_unlocked(&slot_s, &bare_s, None);
                 }
-                if !recoverable || !switch_into_slot(&slot_s, &bare_s, branch) {
+                if !recoverable || !switch_into_slot_from(&slot_s, &bare_s, branch, base) {
                     ceprintln!(
                         "{RED}Failed to switch '{branch}' into slot {n} (branch checked out elsewhere?){NC}"
                     );
@@ -1147,7 +1121,7 @@ fn ensure_comparison_slot(
 /// a cold worktree. Leasing is the default dispatch path, so this pools *every* repo (see
 /// [`resolve_dispatch_pool`]).
 pub fn lease_for_dispatch(cfg: &Config, repo: &str, branch: &str) -> Option<(PathBuf, bool)> {
-    lease_for_dispatch_mode(cfg, repo, branch, false).map(|(slot, _, fresh)| (slot, fresh))
+    lease_for_dispatch_mode(cfg, repo, branch, None, false).map(|(slot, _, fresh)| (slot, fresh))
 }
 
 /// Outcome of a direct human request to open a branch.
@@ -1177,6 +1151,7 @@ pub fn lease_for_dispatch_mode(
     cfg: &Config,
     repo: &str,
     branch: &str,
+    base: Option<&str>,
     with_main: bool,
 ) -> Option<(PathBuf, Option<PathBuf>, bool)> {
     let ctx = resolve_dispatch_pool(cfg, repo)?;
@@ -1205,7 +1180,7 @@ pub fn lease_for_dispatch_mode(
             "--auto",
         ]);
     }
-    let leased = acquire_slot(&ctx, branch, None, SlotRole::Worker, with_main)?;
+    let leased = acquire_slot(&ctx, branch, base, None, SlotRole::Worker, with_main)?;
     // Taking a slot may have taken the *last* one. Refill behind ourselves so the next dispatch
     // finds capacity already waiting instead of discovering the pool is full.
     ensure_spare_slot(&ctx);
@@ -1352,6 +1327,7 @@ pub fn lease_controller_slot(cfg: &Config, repo: &str) -> Option<(PathBuf, bool)
     let leased = acquire_slot(
         &ctx,
         CONTROLLER_LEASE_LABEL,
+        None,
         Some("bn-control".into()),
         SlotRole::Controller,
         false,

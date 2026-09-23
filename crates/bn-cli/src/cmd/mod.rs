@@ -34,6 +34,7 @@ pub(crate) mod dispatch;
 pub(crate) mod doctor;
 pub(crate) mod findings;
 pub(crate) mod focus;
+pub(crate) mod forge;
 pub(crate) mod gitio;
 pub(crate) mod insights;
 pub(crate) mod issue;

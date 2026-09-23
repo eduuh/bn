@@ -307,6 +307,7 @@ mod tests {
             kind: AgentLeaseKind::Dispatch,
             tmux_target: "bn:feature-x".into(),
             acquired_at: at,
+            trusted: false,
         }
     }
 

@@ -431,7 +431,7 @@ pub fn known_repos(cfg: &Config) -> Vec<String> {
 }
 
 /// The bn repo name for a clone URL: the last path segment, minus `.git`, lowercased.
-fn repo_name_from_url(url: &str) -> Option<String> {
+pub(crate) fn repo_name_from_url(url: &str) -> Option<String> {
     let trimmed = url.trim().trim_end_matches('/');
     let last = trimmed.rsplit(['/', ':']).next()?;
     let name = last.strip_suffix(".git").unwrap_or(last).trim();

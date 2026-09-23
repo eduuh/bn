@@ -13,6 +13,8 @@ pub(crate) struct DispatchInvocation<'a> {
     repo: &'a str,
     agent: &'a str,
     name: Option<&'a str>,
+    base: Option<&'a str>,
+    skill: Option<&'a str>,
     task: Option<&'a str>,
     scout: bool,
     verify: bool,
@@ -28,6 +30,8 @@ impl<'a> DispatchInvocation<'a> {
             repo,
             agent,
             name: None,
+            base: None,
+            skill: None,
             task: None,
             scout: false,
             verify: false,
@@ -41,6 +45,16 @@ impl<'a> DispatchInvocation<'a> {
     /// starting.
     pub(crate) fn name(mut self, name: Option<&'a str>) -> Self {
         self.name = name;
+        self
+    }
+
+    pub(crate) fn base(mut self, base: Option<&'a str>) -> Self {
+        self.base = base.filter(|b| !b.trim().is_empty());
+        self
+    }
+
+    pub(crate) fn skill(mut self, skill: Option<&'a str>) -> Self {
+        self.skill = skill.filter(|s| !s.trim().is_empty());
         self
     }
 
@@ -81,6 +95,12 @@ impl<'a> DispatchInvocation<'a> {
         ];
         if let Some(name) = self.name {
             args.extend(["--name".to_string(), name.to_string()]);
+        }
+        if let Some(base) = self.base {
+            args.extend(["--base".to_string(), base.to_string()]);
+        }
+        if let Some(skill) = self.skill {
+            args.extend(["--skill".to_string(), skill.to_string()]);
         }
         if self.scout {
             args.push("--scout".to_string());
@@ -173,10 +193,14 @@ mod invocation_tests {
         let args = args_of(
             DispatchInvocation::new("set up nvim", "nvim", "copilot")
                 .name(Some("repo-setup"))
+                .base(Some("feature-base"))
+                .skill(Some("forge-task"))
                 .task(Some("t12"))
                 .yolo(true),
         );
         assert_eq!(flag_value(&args, "--name"), Some("repo-setup"));
+        assert_eq!(flag_value(&args, "--base"), Some("feature-base"));
+        assert_eq!(flag_value(&args, "--skill"), Some("forge-task"));
         assert_eq!(flag_value(&args, "--task"), Some("t12"));
         assert!(args.iter().any(|a| a == "--yolo"));
     }
@@ -188,6 +212,8 @@ mod invocation_tests {
         let args = args_of(DispatchInvocation::new("338", "bn", "copilot"));
         assert_eq!(flag_value(&args, "--name"), None);
         assert_eq!(flag_value(&args, "--task"), None);
+        assert_eq!(flag_value(&args, "--base"), None);
+        assert_eq!(flag_value(&args, "--skill"), None);
         assert!(!args.iter().any(|a| a == "--yolo"));
     }
 }

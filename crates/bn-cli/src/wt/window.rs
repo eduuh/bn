@@ -436,6 +436,7 @@ fn open_worktree_window_cmd_impl(
                 tmux_target: &format!("{session}:{window_name}"),
                 replace: false,
                 in_place: false,
+                trusted: false,
             }) {
                 Ok(reservation) => Some((resume, reservation)),
                 Err(_) => None,

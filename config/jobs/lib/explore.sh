@@ -72,17 +72,17 @@ command -v jq >/dev/null 2>&1 || { log "explore: jq not found — skipping (cann
 # `done`/`gone` are excluded because they are not driving anything. A finished explorer's harness
 # session stays resident long after its pass ends, so counting it would let one completed run block
 # every future one — the lane would fire once and then skip for as long as the session lingered.
-live="$("$BN" fleet --json 2>/dev/null \
+live="$("$BN" agent live --json 2>/dev/null \
   | jq -r --arg repo "$REPO" '
       [ .data.agents[]?
         | select(.repo == $repo)
         | select(.branch | test("^explore[-/]"))
-        | select(.agent_alive == true)
+        | select(.has_window == true)
         | select(.state != "done" and .state != "gone")
       ] | length' 2>/dev/null)" || live=""
 
 if [ -z "$live" ]; then
-  log "explore: could not read the fleet — skipping rather than risk a second explorer"
+  log "explore: could not read the live agents — skipping rather than risk a second explorer"
   exit 0
 fi
 if [ "$live" -gt 0 ]; then

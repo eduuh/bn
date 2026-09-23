@@ -396,6 +396,7 @@ fn start_controller(
         tmux_target: &record.target,
         replace: false,
         in_place: false,
+        trusted: false,
     }) {
         Ok(reservation) => reservation,
         Err(error) => {

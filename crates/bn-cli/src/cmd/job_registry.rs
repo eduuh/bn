@@ -29,6 +29,7 @@ pub(crate) fn native_job(job: &str) -> Option<NativeJob> {
         "auto-review-trigger" => Some(job_auto_review_trigger),
         "attention-auto-trigger" => Some(job_attention_auto_trigger),
         "agent-supervise" => Some(job_agent_supervise),
+        "forge-tick" => Some(crate::cmd::forge::job_forge_tick),
         "pr-observe" => Some(job_pr_observe),
         "commit-notes" => Some(job_commit_notes),
         "watch" => Some(job_watch),
@@ -81,6 +82,7 @@ pub(crate) const TICK_10M: &[&str] = &[
     "auto-review-trigger",
     "attention-auto-trigger",
     "agent-supervise",
+    "forge-tick",
 ];
 
 /// The `*:0/15` cadence cluster, in run order.

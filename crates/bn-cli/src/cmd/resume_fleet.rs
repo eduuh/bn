@@ -408,6 +408,7 @@ fn adopt_into_pane(row: &RestoreRow, target: &str, command: &str) -> Result<(), 
         tmux_target: target,
         replace: false,
         in_place: true,
+        trusted: false,
     })?;
     // `target` arrives raw from the restore row — no `=` at all, so BOTH halves fnmatch and this
     // send-keys could type a launch command line into someone else's agent. `--` additionally stops

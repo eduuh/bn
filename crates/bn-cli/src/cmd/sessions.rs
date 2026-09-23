@@ -139,6 +139,7 @@ fn launch_session_window(launch: &WindowLaunch<'_>, json: bool) -> Result<(), St
         tmux_target: &lease_target,
         replace: false,
         in_place: false,
+        trusted: false,
     })?;
     let launched = if json {
         wt::open_worktree_window_cmd_named_quiet(

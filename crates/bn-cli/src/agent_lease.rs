@@ -28,6 +28,7 @@ pub(crate) struct AgentLeaseRequest<'a> {
     /// that opens a fresh window leaves it false, so a live window at its target still means a
     /// leftover to clear (see [`remove_dead_launch_target`]).
     pub in_place: bool,
+    pub trusted: bool,
 }
 
 pub(crate) struct AgentLeaseReservation {
@@ -641,16 +642,12 @@ pub(crate) enum WorktreeHolder {
 /// Read the occupancy of `worktree` for the one-agent-per-worktree guard in `bn agent launch`.
 ///
 /// [`WorktreeHolder::Ours`] exists because a seeded launch runs *inside* the window its launcher
-/// just leased — without it every dispatched agent would refuse itself. But `Ours` describes the
-/// whole checkout, not one lease in it: a live agent in **any other** window wins, and only when
-/// this window is the sole occupant is the launch ours to make. Returning `Ours` on the first
-/// self-match (as this once did) meant a dispatched launch — which always holds a lease for its own
-/// window — could never refuse, so a slot handed out from under a running agent got a second one
-/// seeded straight into it.
+/// just leased; without it every dispatched agent would refuse itself. But a live agent in **any
+/// other** window wins: returning `Ours` on the first self-match once let a slot handed out from
+/// under a running agent get a second one seeded straight into it.
 ///
-/// Outside tmux there is no window to compare and pane liveness can't be read either, so the check
-/// degrades to `Free` — which is why the shell wrapper, not this, is the enforcing layer for a
-/// hand-typed launch on a bare terminal.
+/// Outside tmux there is no window to compare, so this degrades to `Free`, and the shell wrapper
+/// is the enforcing layer for a hand-typed launch on a bare terminal.
 pub(crate) fn worktree_holder(worktree: &Path) -> WorktreeHolder {
     let here = current_window_id();
     let occupants = live_agents_in(worktree);
@@ -677,6 +674,7 @@ pub(crate) fn reserve(request: AgentLeaseRequest<'_>) -> Result<AgentLeaseReserv
         kind: request.kind,
         tmux_target: request.tmux_target.to_string(),
         acquired_at: bn_core::util::now_epoch_secs(),
+        trusted: request.trusted,
     };
     let mode = if request.replace {
         AgentLeaseAcquireMode::Replace
@@ -783,6 +781,7 @@ fn parse_observed_agent_windows(output: &str, now: i64) -> Vec<ObservedAgentWind
                     },
                     tmux_target: target.to_string(),
                     acquired_at: stamped_since(fields[9], now),
+                    trusted: false,
                 },
                 window_id: window_id.to_string(),
                 created_at: stamped_since(fields[9], now),

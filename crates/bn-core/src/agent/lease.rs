@@ -178,6 +178,10 @@ pub struct AgentLease {
     /// Exact tmux target without the leading `=`, for example `bn:Plan bug · a1b2c3`.
     pub tmux_target: String,
     pub acquired_at: i64,
+    /// Launched from your own words (no external link), so the approvals policy may answer its
+    /// dialogs. Only `bn dispatch` sets it; older registries read as untrusted.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub trusted: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

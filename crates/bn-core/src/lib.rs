@@ -49,6 +49,7 @@ pub mod fleet_gc;
 pub mod flock;
 pub mod focus;
 pub mod forge;
+pub mod forge_local;
 pub mod gh_pin;
 pub mod gitbase;
 pub mod gitnet;

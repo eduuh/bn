@@ -285,7 +285,9 @@ pub(crate) const SESSION_ALLOW_MARKERS: &[&str] = &[
     "don’t ask again",
     "do not ask again",
     "always allow",
-    "allow for this session",
+    // Copilot: "Yes, and remember this path / these paths for this session". An option only
+    // counts as a session allow when it also approves, so a "No …" option cannot match.
+    "for this session",
 ];
 
 /// Option wording that grants a **one-shot** approval. Deliberately anchored: a bare "yes" prefix,

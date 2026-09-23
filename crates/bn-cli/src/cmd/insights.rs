@@ -513,7 +513,7 @@ pub(crate) fn parse_numstat(numstat: &str) -> (i64, i64, i64) {
 /// event. Read-only on git; the loop's closing move — what got done flows back to where it was
 /// planned. No commits vs base → nothing to ingest (no write).
 pub(crate) fn run_ingest(cfg: &Config, ctx: &Resolved, base: &str, json: bool) {
-    let wt = cfg.worktree_dir.join(&ctx.repo).join(&ctx.branch);
+    let wt = ingest_worktree(cfg, ctx);
     if !wt.is_dir() {
         fail(&format!(
             "bn ingest: no worktree at {} — nothing to ingest",
@@ -595,6 +595,32 @@ pub(crate) fn run_ingest(cfg: &Config, ctx: &Resolved, base: &str, json: bool) {
     );
 }
 
+fn ingest_worktree(cfg: &Config, ctx: &Resolved) -> std::path::PathBuf {
+    let cwd = std::env::current_dir().ok();
+    let current_ctx = cwd
+        .as_deref()
+        .and_then(|dir| bn_core::resolver::resolve(cfg, dir).ok());
+    select_ingest_worktree(cfg, ctx, cwd.as_deref(), current_ctx.as_ref())
+}
+
+fn select_ingest_worktree(
+    cfg: &Config,
+    ctx: &Resolved,
+    current_dir: Option<&std::path::Path>,
+    current_ctx: Option<&Resolved>,
+) -> std::path::PathBuf {
+    let conventional = cfg.worktree_dir.join(&ctx.repo).join(&ctx.branch);
+    if conventional.is_dir() {
+        return conventional;
+    }
+    match (current_dir, current_ctx) {
+        (Some(dir), Some(here)) if here.repo == ctx.repo && here.branch == ctx.branch => {
+            dir.to_path_buf()
+        }
+        _ => conventional,
+    }
+}
+
 pub(crate) fn emit_event(
     cfg: &Config,
     kind: &str,
@@ -640,5 +666,72 @@ pub(crate) fn dur(hours: f64) -> String {
         format!("{:.0}h", hours)
     } else {
         format!("{:.1}d", hours / 24.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg_at(root: &std::path::Path) -> Config {
+        Config {
+            worktree_dir: root.join("worktree"),
+            ..Config::default()
+        }
+    }
+
+    fn ctx(branch: &str) -> Resolved {
+        Resolved {
+            repo: "bn".to_string(),
+            branch: branch.to_string(),
+        }
+    }
+
+    #[test]
+    fn ingest_worktree_prefers_existing_conventional_checkout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_at(tmp.path());
+        let conventional = cfg.worktree_dir.join("bn").join("feature");
+        let pool = cfg.worktree_dir.join("bn").join("_pool").join("2");
+        std::fs::create_dir_all(&conventional).unwrap();
+        std::fs::create_dir_all(&pool).unwrap();
+
+        let got = select_ingest_worktree(&cfg, &ctx("feature"), Some(&pool), Some(&ctx("feature")));
+
+        assert_eq!(got, conventional);
+    }
+
+    #[test]
+    fn ingest_worktree_uses_matching_current_pool_checkout_when_conventional_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_at(tmp.path());
+        let pool = cfg.worktree_dir.join("bn").join("_pool").join("2");
+        std::fs::create_dir_all(&pool).unwrap();
+
+        let got = select_ingest_worktree(
+            &cfg,
+            &ctx("dispatch-forge-task"),
+            Some(&pool),
+            Some(&ctx("dispatch-forge-task")),
+        );
+
+        assert_eq!(got, pool);
+    }
+
+    #[test]
+    fn ingest_worktree_rejects_current_checkout_for_a_different_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_at(tmp.path());
+        let pool = cfg.worktree_dir.join("bn").join("_pool").join("2");
+        std::fs::create_dir_all(&pool).unwrap();
+
+        let got = select_ingest_worktree(
+            &cfg,
+            &ctx("target"),
+            Some(&pool),
+            Some(&ctx("other")),
+        );
+
+        assert_eq!(got, cfg.worktree_dir.join("bn").join("target"));
     }
 }

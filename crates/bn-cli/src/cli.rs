@@ -3,9 +3,7 @@
 //! `Cli` parser struct and the dispatch `match`. Glob-re-exported by `main.rs`.
 use crate::*;
 
-/// `bn dispatch`'s own value enums. Split out under the never-grow ratchet: this file is the clap
-/// declaration for every command, so the arguments of any one of them are the first thing that can
-/// live elsewhere without splitting a command's flags away from the command.
+/// `bn dispatch`'s value enums: under the never-grow ratchet, a command's args move out first.
 mod dispatch_args;
 pub(crate) use dispatch_args::OnPoolFull;
 
@@ -13,6 +11,8 @@ mod agent;
 pub(crate) use agent::AgentCmd;
 mod agents_cmd;
 pub(crate) use agents_cmd::AgentsCmd;
+mod forge_cmd;
+pub(crate) use forge_cmd::ForgeCmd;
 mod task;
 pub(crate) use task::TaskCmd;
 mod pipeline_cmd;

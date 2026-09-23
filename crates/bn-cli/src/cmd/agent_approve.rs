@@ -73,6 +73,15 @@ fn record(target: &str, prompt: &PendingPrompt, decision: &ApprovalDecision) {
     }
 }
 
+/// Whether the lease holding `target` was dispatched trusted. No lease means untrusted.
+fn lane_trusted(registry: &bn_core::agent::AgentLeaseRegistry, target: &str) -> bool {
+    let target = target.trim_start_matches('=');
+    registry
+        .leases
+        .iter()
+        .any(|l| l.trusted && l.tmux_target.trim_start_matches('=') == target)
+}
+
 /// Run the policy over every live agent that is currently blocked on a dialog.
 ///
 /// The orchestrate supervisor has always applied its rule to its own lanes. An agent started by a
@@ -92,6 +101,8 @@ pub(crate) fn sweep(cfg: &Config, dry_run: bool, as_json: bool) -> (usize, usize
     let mut answered = 0usize;
     let mut escalated = 0usize;
     let mut rows: Vec<serde_json::Value> = Vec::new();
+    let leases = bn_core::agent::load_agent_leases(&bn_core::agent::agent_lease_registry_path())
+        .unwrap_or_default();
 
     for agent in &fleet.agents {
         let target = agent.target.clone();
@@ -102,9 +113,9 @@ pub(crate) fn sweep(cfg: &Config, dry_run: bool, as_json: bool) -> (usize, usize
         ) else {
             continue;
         };
-        // Outside a wave bn has no trust contract to appeal to, so `trusted` is false and the
-        // built-in default never fires here — only an explicit, enabled policy can approve.
-        let ctx = PolicyCtx { lane: LaneKind::Dispatched, trusted: false };
+        // Trust comes from the agent's lease: `bn dispatch` marks a lane trusted when its goal is
+        // your own words (no external link). Anything else stays untrusted and escalates.
+        let ctx = PolicyCtx { lane: LaneKind::Dispatched, trusted: lane_trusted(&leases, &target) };
         let policy = ApprovalPolicy::load();
         let decision = decide_with_builtin_default(&prompt, &ctx, &policy);
         record(&target, &prompt, &decision);

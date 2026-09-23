@@ -125,6 +125,10 @@ pub struct PendingPrompt {
     pub fingerprint: u64,
     /// The unframed dialog text, for display.
     pub excerpt: Vec<String>,
+    /// Every path a path-access dialog asks for, uncapped. Empty unless the dialog's own title is
+    /// on screen, so a list whose top scrolled away is never judged on the half that is visible.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
 }
 
 impl PendingPrompt {
@@ -242,7 +246,30 @@ pub fn parse_pending_prompt(
             .cloned()
             .chain(dialog_lines(&tail[menu_start..]))
             .collect(),
+        paths: requested_paths(&tail[heading_start..menu_start]),
     })
+}
+
+/// The paths a harness's path-access dialog lists (Copilot's "Allow path access"), one per line
+/// in a box nested inside the dialog. Read from the raw lines, not the capped heading.
+fn requested_paths(lines: &[String]) -> Vec<String> {
+    let body = dialog_body_start(lines);
+    // The title sits just above the separator that starts the body. Without it on screen this is
+    // not a path dialog, or its top has scrolled away: either way, no paths.
+    let titled = lines[..body]
+        .iter()
+        .rev()
+        .take(3)
+        .any(|l| unframe(l).eq_ignore_ascii_case("allow path access"));
+    if !titled {
+        return Vec::new();
+    }
+    lines[body..]
+        .iter()
+        .map(|l| unframe(unframe(l)))
+        .filter(|l| l.starts_with('/') || l.starts_with("~/"))
+        .map(str::to_string)
+        .collect()
 }
 
 /// A trust menu that blocks before drawing a numbered list still needs reporting — it is the most
@@ -263,8 +290,30 @@ fn trust_menu_without_options(
             options: Vec::new(),
             fingerprint: super::pane_activity_fingerprint(tail, plane_a),
             excerpt: heading,
+            paths: Vec::new(),
         }
     })
+}
+
+/// Where the dialog's body starts: just past its own top border, stepping over any box nested
+/// inside it. Copilot's path-access dialog frames the paths in an inner box; taking that box's
+/// bottom rule as the border dropped the paths, so no path rule could ever match the request.
+fn dialog_body_start(lines: &[String]) -> usize {
+    let mut depth = 0usize;
+    for (i, l) in lines.iter().enumerate().rev() {
+        if !is_box_rule(l) {
+            continue;
+        }
+        let t = unframe(l);
+        if t.starts_with('╰') || t.starts_with('└') {
+            depth += 1;
+        } else if depth > 0 && (t.starts_with('╭') || t.starts_with('┌')) {
+            depth -= 1;
+        } else {
+            return i + 1;
+        }
+    }
+    0
 }
 
 /// The dialog's heading: the content lines above the option block, unframed, bounded.
@@ -273,14 +322,11 @@ fn trust_menu_without_options(
 /// prose, and pulling it in would make the last thing the agent *said* part of the subject a policy
 /// rule is matched against.
 fn heading_lines(lines: &[String]) -> Vec<String> {
-    let after_border = lines
-        .iter()
-        .rposition(|l| is_box_rule(l))
-        .map_or(0, |i| i + 1);
+    let after_border = dialog_body_start(lines);
     let content: Vec<String> = lines[after_border..]
         .iter()
-        .filter(|l| !is_frame_only(l))
-        .map(|l| unframe(l).to_string())
+        .filter(|l| !is_frame_only(l) && !is_box_rule(l))
+        .map(|l| unframe(unframe(l)).to_string())
         .collect();
     let start = content.len().saturating_sub(MAX_HEADING_LINES);
     content[start..].to_vec()

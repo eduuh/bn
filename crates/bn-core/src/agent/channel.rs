@@ -503,6 +503,7 @@ mod tests {
             kind: AgentLeaseKind::Dispatch,
             tmux_target: tmux_target.to_string(),
             acquired_at: 1,
+            trusted: false,
         }
     }
 
