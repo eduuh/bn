@@ -28,6 +28,7 @@ mod add;
 mod cleanup;
 mod close;
 mod common;
+mod local_commits;
 mod list;
 mod merge;
 mod reclaim;

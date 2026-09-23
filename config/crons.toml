@@ -13,15 +13,14 @@ persistent = false
 randomized_delay = "20s"
 description = "bn — wake reactor and sole owner of attention toasts: ONE batched toast for NEW blocking events (agents waiting/blocked/stuck/failed, urgent attention) via the notification policy gate; completions and warn items stay pull-only; quiet otherwise"
 
-# Worktree/branch/session reclamation is intentionally MANUAL — no cron.
-# The `wt-cleanup` and `fleet-reap` crons were removed so automated reclamation can never delete
-# a branch, remove a worktree, or kill a tmux session out from under active work. The jobs still
-# exist for on-demand use; run cleanup by hand when you actually want it:
-#   bn wt cleanup   — reclaim worktrees whose PR merged (local + remote branch)
-#   bn wt reap      — remove finished/clean scout worktrees
+# Merged-worktree reclamation runs on a schedule (`wt-cleanup`, below). It touches only a worktree
+# whose PR is confirmed MERGED, refuses a dirty conventional worktree, and handles a pool slot by
+# committing any uncommitted work onto its branch *before* returning it, so the reset has nothing
+# left to destroy. It still never evicts a working agent or a live pane.
+# The rest stays MANUAL — no cron — because it can kill or delete without a merged PR behind it:
 #   bn run fleet-reap — GC orphaned agent process trees + dead tmux windows
 #   bn tmux-prune   — remove tmux sessions that name no repository
-# Do NOT re-add these as [[cron]] entries.
+# Do NOT add those as [[cron]] entries.
 #
 # `bn tmux-snapshot-filter` is NOT this kind of reclamation, which is why it may run unattended from
 # resurrect's post-save hook: it kills nothing, and only decides which sessions the saved layout
@@ -135,6 +134,14 @@ persistent = true
 randomized_delay = "2m"
 network = true
 description = "bn — fold my PRs' GitHub lifecycle into the metrics log as pr_opened/pr_merged/pr_closed/pr_review (pr-observe)"
+
+[[cron]]
+job = "wt-cleanup"
+on_calendar = "*:5/30"
+persistent = true
+randomized_delay = "3m"
+network = true
+description = "bn — reclaim merged-PR worktrees across all repos: remove clean ones, rescue-commit then return merged pool slots, reap finished scouts (wt-cleanup)"
 
 [[cron]]
 job = "pool-warm"

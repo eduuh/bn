@@ -100,6 +100,7 @@ pub fn release_dispatch_slot(
         worktree,
         ReleasePolicy {
             force: false,
+            rescue: false,
             gone_session,
         },
     )
@@ -111,6 +112,11 @@ struct ReleasePolicy<'a> {
     /// Evict a provably-finished occupant, discard uncommitted changes, and reset a slot that isn't
     /// leased at all. The `wt pool return --force` valve; never set by an automatic path.
     force: bool,
+    /// Commit any uncommitted changes onto the slot's branch first, then release as `force` would
+    /// for a finished occupant — but still refuse a live pane or an agent `fleet_gc` calls working.
+    /// Nothing is discarded: the rescue commit outlives the checkout in the shared object store.
+    /// Only for a slot whose PR is confirmed merged ([`release_merged_slot`]).
+    rescue: bool,
     /// A session the caller has just killed, discounted when deciding whether anyone still occupies
     /// the slot. `None` means "trust the occupancy probe as-is".
     gone_session: Option<&'a str>,
@@ -151,6 +157,21 @@ fn release_slot_core(cfg: &Config, worktree: &Path, policy: ReleasePolicy) -> Sl
     if let Some(comparison) = lease.as_ref().and_then(|lease| lease.comparison_slot) {
         group.push(comparison);
     }
+    // Rescue before the occupant check: eviction refuses a dirty tree, and after the rescue there
+    // is nothing left in the tree for the reset to destroy.
+    if policy.rescue {
+        for slot_n in &group {
+            let slot_s = slot_path(&pdir, *slot_n).to_string_lossy().to_string();
+            let dirty = wt::dirty_files(&slot_s).len();
+            if dirty > 0 && !rescue_commit(&slot_s) {
+                return SlotRelease::Dirty {
+                    repo,
+                    slot: *slot_n,
+                    dirty,
+                };
+            }
+        }
+    }
     // Whose slot is it *really*? A kill knows which agent it stopped, not which checkout that agent
     // shared — and the worktree it resolves can belong to somebody else entirely (a stale lease
     // entry, or git's answer for a branch that has since moved). Anyone still working here keeps it.
@@ -168,7 +189,9 @@ fn release_slot_core(cfg: &Config, worktree: &Path, policy: ReleasePolicy) -> Sl
     }) {
         // `--force` may evict, but only an agent `fleet_gc::classify` calls finished. If it won't
         // go, the slot is still held and must report as held.
-        if !policy.force || !evict_occupant(cfg, &occupied_slot, &holder, owner, &repo) {
+        if !(policy.force || policy.rescue)
+            || !evict_occupant(cfg, &occupied_slot, &holder, owner, &repo)
+        {
             return SlotRelease::Occupied {
                 repo,
                 slot: owner,
@@ -304,9 +327,43 @@ pub(crate) fn release_slot(cfg: &Config, slot: &Path, force: bool) -> SlotReleas
         slot,
         ReleasePolicy {
             force,
+            rescue: false,
             gone_session: None,
         },
     )
+}
+
+/// Release a slot whose PR is confirmed merged, for the `wt-cleanup` sweep: commit whatever is
+/// uncommitted onto the slot's branch, evict a finished occupant, then reset. The middle ground
+/// between a plain release (a merged slot with one stray file stays leased forever) and `--force`
+/// (which deletes that file): the work is kept on the branch, only the checkout is recycled.
+pub(crate) fn release_merged_slot(cfg: &Config, slot: &Path) -> SlotRelease {
+    release_slot_core(
+        cfg,
+        slot,
+        ReleasePolicy {
+            force: false,
+            rescue: true,
+            gone_session: None,
+        },
+    )
+}
+
+/// Commit every uncommitted change in `slot_s` onto its checked-out branch. Refuses a detached
+/// HEAD: a commit there would be reachable from nothing once the slot resets.
+fn rescue_commit(slot_s: &str) -> bool {
+    let on_branch = crate::git::git_ok(&["-C", slot_s, "symbolic-ref", "-q", "HEAD"]);
+    on_branch
+        && crate::git::git_ok(&["-C", slot_s, "add", "-A"])
+        && crate::git::git_ok(&[
+            "-C",
+            slot_s,
+            "commit",
+            "--quiet",
+            "--no-verify",
+            "-m",
+            "wip: rescued by wt-cleanup before returning the pool slot",
+        ])
 }
 
 /// Reset and release a concrete pool slot path — the human-facing skin over [`release_slot_core`].
@@ -320,6 +377,7 @@ pub(crate) fn return_slot(cfg: &Config, slot: &Path, force: bool) -> bool {
         slot,
         ReleasePolicy {
             force,
+            rescue: false,
             gone_session: None,
         },
     ) {

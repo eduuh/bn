@@ -17,10 +17,11 @@ else** — merged into main, pushed to a PR, or written into the branch note. Un
 unpushed commits are not somewhere else. Where the evidence is missing, you keep the worktree and
 say why. A sweep that loses an hour of someone's work is worse than no sweep at all.
 
-This machine reclaims worktrees **by hand on purpose**. `config/crons.toml` says it outright: the
-`wt-cleanup` and `fleet-reap` crons were removed so automated reclamation can never delete a
-branch, remove a worktree, or kill a session out from under active work. You are that manual pass.
-Do not propose putting those crons back.
+The scheduled `wt-cleanup` cron only reclaims worktrees whose PR is confirmed merged (a merged
+pool slot's uncommitted work is committed onto its branch first). Everything else, including
+`fleet-reap`, stays **manual on purpose** so automated reclamation can never kill a session or
+remove unmerged work out from under someone. You are that manual pass. Do not propose a cron for
+`fleet-reap`.
 
 Scope: `{{scope}}` — a repo name, or empty/`all` for every repo. Dry-run: if `{{dry_run}}` is
 truthy (`true`/`yes`/`1`), do steps 1–3 and stop before anything removes.

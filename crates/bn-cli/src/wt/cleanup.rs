@@ -3,6 +3,7 @@
 //! wt.rs god file (issue #351).
 
 use super::*;
+use super::local_commits::local_only_commits;
 
 /// How long after a scout reports done (its note's last write) its worktree is left in place before
 /// an automatic sweep reclaims it. The grace exists purely for the human: without it a finished
@@ -97,7 +98,19 @@ pub(crate) fn cleanup_all(cfg: &Config, bare_dir: &Path, force: bool) -> bool {
             }
             let state = pr_state(&remote, &branch);
             if state == "MERGED" {
-                if cleanup_one(cfg, &wt_path, &worktree_dir, force).is_ok() {
+                if let Some(slot) = crate::wt_pool::pool_slot_root(&wt_path).filter(|_| !force) {
+                    // Merged is confirmed, so a slot left dirty or held by a finished agent is
+                    // rescued (committed onto its branch) and returned instead of pinned forever.
+                    let outcome = crate::wt_pool::release_merged_slot(cfg, &slot);
+                    if let Some(msg) = outcome.message() {
+                        println!("{msg}");
+                    }
+                    match outcome {
+                        crate::wt_pool::SlotRelease::Returned { .. }
+                        | crate::wt_pool::SlotRelease::NotLeased { .. } => cleaned += 1,
+                        _ => skipped += 1,
+                    }
+                } else if cleanup_one(cfg, &wt_path, &worktree_dir, force).is_ok() {
                     cleaned += 1;
                 } else {
                     skipped += 1;
@@ -198,25 +211,6 @@ fn age_secs(path: &Path) -> i64 {
         .and_then(|t| t.elapsed().ok())
         .map(|age| age.as_secs().min(i64::MAX as u64) as i64)
         .unwrap_or(0)
-}
-
-/// Commits reachable from HEAD that are on no remote — the work a detached scratch checkout would
-/// take with it. `commits_ahead` can't answer this: it counts against `main`, and a sub-agent's
-/// worktree is cut from an arbitrary HEAD. Unreadable output counts as 1 (something to lose), so a
-/// git failure keeps the worktree.
-fn local_only_commits(wt: &Path) -> usize {
-    match git_out(&[
-        "-C",
-        &wt.to_string_lossy(),
-        "rev-list",
-        "--count",
-        "HEAD",
-        "--not",
-        "--remotes",
-    ]) {
-        Some(n) => n.trim().parse().unwrap_or(1),
-        None => 1,
-    }
 }
 
 /// Sweep one `.agent-*` pipeline scratch checkout (see [`bn_core::scratch_gc`]).
@@ -958,4 +952,5 @@ fn merged_tip_reclaimable(
 fn should_refuse_dirty(force: bool, changes: usize) -> bool {
     !force && changes > 0
 }
+
 

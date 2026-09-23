@@ -87,11 +87,119 @@ pub(crate) fn slot_occupied_by_process(cwds: Option<&[(i32, PathBuf)]>, slot: &P
     }
 }
 
-/// Whether any running process has its cwd inside `slot`.
+/// The pids whose cwd is inside `slot`. `None` is an unreadable process table.
+fn pids_in(cwds: Option<&[(i32, PathBuf)]>, slot: &Path) -> Option<Vec<i32>> {
+    let rows = cwds?;
+    Some(
+        rows.iter()
+            .filter(|(_, cwd)| cwd.starts_with(slot))
+            .map(|(pid, _)| *pid)
+            .collect(),
+    )
+}
+
+/// Whether a process is a build daemon the checkout started rather than somebody working in it.
+///
+/// A tenant is reachable: an agent runs under a tmux pane and a person runs under a shell, so
+/// either way there is a controlling terminal and a parent that is not init. A build daemon
+/// double-forks and outlives whatever started it, landing on `ppid == 1` with no tty.
+///
+/// Deliberately a shape rather than a list of names. `nx`, `tsserver`, `vite`, `esbuild`,
+/// `watchman` and the next one all share this shape, and a name list would be stale the week after
+/// it was written.
+fn is_detached_daemon(ppid: i32, tty: &str) -> bool {
+    let detached = ppid <= 1;
+    let no_terminal = matches!(tty.trim(), "" | "?" | "??" | "-");
+    detached && no_terminal
+}
+
+/// `(pid, ppid, tty)` for each pid, or `None` when the lookup failed.
+///
+/// One `ps` for the handful of pids found in a slot, not a second full table scan. Empty output
+/// for a non-empty request is a failure, not an answer: every pid came from a table captured
+/// moments ago, so at least one should still resolve.
+fn process_kinds(pids: &[i32]) -> Option<Vec<(i32, i32, String)>> {
+    if pids.is_empty() {
+        return Some(Vec::new());
+    }
+    let list = pids
+        .iter()
+        .map(i32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let out = std::process::Command::new("ps")
+        .args(["-o", "pid=,ppid=,tty=", "-p", &list])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let rows = parse_ps_kinds(&String::from_utf8_lossy(&out.stdout));
+    if rows.is_empty() {
+        None
+    } else {
+        Some(rows)
+    }
+}
+
+/// Parses `ps -o pid=,ppid=,tty=` output. Split out so the fail-closed rule is tested.
+fn parse_ps_kinds(text: &str) -> Vec<(i32, i32, String)> {
+    text.lines()
+        .filter_map(|line| {
+            let mut f = line.split_whitespace();
+            let pid = f.next()?.parse().ok()?;
+            let ppid = f.next()?.parse().ok()?;
+            // A missing tty column means no controlling terminal.
+            Some((pid, ppid, f.next().unwrap_or("").to_string()))
+        })
+        .collect()
+}
+
+/// Whether anything in the slot is a tenant rather than a build daemon.
+///
+/// `None` kinds is a failed lookup and answers *occupied*, the same direction as an unreadable
+/// process table: see the module docs.
+fn tenants_among(pids: &[i32], kinds: Option<&[(i32, i32, String)]>) -> bool {
+    if pids.is_empty() {
+        return false;
+    }
+    let Some(kinds) = kinds else {
+        return true;
+    };
+    pids.iter().any(|pid| {
+        // A pid that exited between the two probes resolves to nothing. Treat it as gone rather
+        // than as a tenant: the slot it vanished from is genuinely free of it.
+        kinds
+            .iter()
+            .find(|(p, _, _)| p == pid)
+            .is_some_and(|(_, ppid, tty)| !is_detached_daemon(*ppid, tty))
+    })
+}
+
+/// Whether anybody is working inside `slot`.
 ///
 /// Answers on every platform, and reports *occupied* when the process table cannot be read.
+///
+/// Build daemons do not count. An Nx daemon (and every other watcher the build starts) detaches
+/// and keeps its cwd in the slot long after the agent that spawned it is gone, so counting it
+/// pinned the lease permanently: `wt pool return-unused` reported "someone is in it" forever and
+/// no sweep could ever free the slot. Four wira360 slots were held that way by daemons running for
+/// hours with no window and no agent.
 pub(crate) fn any_proc_in(slot: &Path) -> bool {
-    slot_occupied_by_process(process_cwds_cached().as_deref().map(Vec::as_slice), slot)
+    let table = process_cwds_cached();
+    let rows = table.as_deref().map(Vec::as_slice);
+
+    // Step one: is anything in the slot at all? Also the fail-closed gate — an unreadable table
+    // answers `true` here and again below, so "could not look" never reaches the daemon check.
+    if !slot_occupied_by_process(rows, slot) {
+        return false;
+    }
+    let Some(pids) = pids_in(rows, slot) else {
+        return true;
+    };
+
+    // Step two: is any of it a tenant rather than a daemon the build left behind?
+    tenants_among(&pids, process_kinds(&pids).as_deref())
 }
 
 #[cfg(test)]
@@ -104,6 +212,69 @@ mod tests {
             .enumerate()
             .map(|(i, p)| (i as i32 + 1, PathBuf::from(p)))
             .collect()
+    }
+
+    #[test]
+    fn a_detached_daemon_is_not_a_tenant() {
+        // The Nx daemon this fix exists for: ppid 1, no controlling terminal.
+        assert!(is_detached_daemon(1, "??"));
+        assert!(is_detached_daemon(1, "?"));
+        assert!(is_detached_daemon(1, "-"));
+        assert!(is_detached_daemon(1, ""));
+    }
+
+    #[test]
+    fn a_process_on_a_terminal_is_a_tenant() {
+        // An agent under a tmux pane, or a person in a shell.
+        assert!(!is_detached_daemon(1, "ttys004"));
+        assert!(!is_detached_daemon(4242, "??"));
+        assert!(!is_detached_daemon(4242, "ttys004"));
+    }
+
+    #[test]
+    fn a_slot_holding_only_daemons_is_free() {
+        let kinds = vec![(10, 1, "??".to_string()), (11, 1, "?".to_string())];
+        assert!(!tenants_among(&[10, 11], Some(&kinds)));
+    }
+
+    #[test]
+    fn one_tenant_among_daemons_still_occupies() {
+        let kinds = vec![(10, 1, "??".to_string()), (11, 900, "ttys004".to_string())];
+        assert!(tenants_among(&[10, 11], Some(&kinds)));
+    }
+
+    #[test]
+    fn a_failed_kind_lookup_reads_as_occupied() {
+        // Same direction as an unreadable process table: "could not look" is never "idle".
+        assert!(tenants_among(&[10], None));
+    }
+
+    #[test]
+    fn a_pid_that_exited_between_probes_does_not_occupy() {
+        assert!(!tenants_among(&[10], Some(&[])));
+    }
+
+    #[test]
+    fn ps_rows_without_a_tty_column_parse_as_no_terminal() {
+        let rows = parse_ps_kinds("  123     1 ??\n  456   123 ttys004\n  789     1\n");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0], (123, 1, "??".to_string()));
+        assert_eq!(rows[1], (456, 123, "ttys004".to_string()));
+        assert_eq!(rows[2], (789, 1, String::new()));
+    }
+
+    #[test]
+    fn pids_in_keeps_the_unreadable_table_distinct_from_an_empty_slot() {
+        let table = rows(&["/w/repo/_pool/7", "/elsewhere"]);
+        assert_eq!(
+            pids_in(Some(&table), Path::new("/w/repo/_pool/7")),
+            Some(vec![1])
+        );
+        assert_eq!(
+            pids_in(Some(&table), Path::new("/w/repo/_pool/9")),
+            Some(vec![])
+        );
+        assert_eq!(pids_in(None, Path::new("/w/repo/_pool/7")), None);
     }
 
     #[test]

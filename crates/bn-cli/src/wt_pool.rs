@@ -1716,32 +1716,27 @@ fn classify_slot(
     }
 }
 
-/// SIGTERM any process whose cwd is inside `slot` (graceful — parity with treehouse). Linux only.
-#[cfg(target_os = "linux")]
+/// SIGTERM any process whose cwd is inside `slot` (graceful — parity with treehouse).
+///
+/// Answers on every platform. This used to read `/proc` directly and compile to an empty body off
+/// Linux, so on macOS a removed slot kept its processes: the checkout went away under a still-live
+/// Nx daemon, which then held a cwd in a directory git had already removed. Reuses
+/// [`crate::reap::process_cwds`], the same cross-platform oracle occupancy asks, rather than
+/// keeping a second Linux-only copy.
 #[allow(
     unsafe_code,
-    reason = "libc::kill is required to signal processes discovered through /proc"
+    reason = "libc::kill is required to signal processes discovered through the cwd table"
 )]
 fn kill_procs_in(slot: &Path) {
-    let Ok(rd) = std::fs::read_dir("/proc") else {
-        return;
-    };
-    for e in rd.flatten() {
-        let Ok(pid) = e.file_name().to_string_lossy().parse::<i32>() else {
-            continue;
-        };
-        if let Ok(target) = std::fs::read_link(e.path().join("cwd")) {
-            if target.starts_with(slot) {
-                // SAFETY: kill(2) with SIGTERM is always safe; an ESRCH race is ignored.
-                unsafe {
-                    libc::kill(pid, libc::SIGTERM);
-                }
+    for (pid, cwd) in crate::reap::process_cwds() {
+        if cwd.starts_with(slot) {
+            // SAFETY: kill(2) with SIGTERM is always safe; an ESRCH race is ignored.
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
             }
         }
     }
 }
-#[cfg(not(target_os = "linux"))]
-fn kill_procs_in(_slot: &Path) {}
 
 /// Remove one slot: SIGTERM its processes, step our cwd out if we're inside it, `git worktree
 /// remove --force` (with an orphan fallback), drop its lease (caller persists), tidy the parent.

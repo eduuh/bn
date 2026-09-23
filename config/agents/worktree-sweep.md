@@ -20,10 +20,11 @@ No `run:` line, deliberately: the agent resolves to the same-named job script,
 through the scheduler, not from your shell, so the script is the one place its settings are always
 set and reviewable in git; settings on a `run:` command line silently reached the driver unset.
 
-**Why this is allowed to run unattended when `wt-cleanup` and `fleet-reap` are not.**
-`config/crons.toml` bans automated reclamation because it "can never delete a branch, remove a
-worktree, or kill a tmux session out from under active work," and that ban stands — this lane does
-none of those three things. It inverts the order instead: it *rescues first and reclaims second*,
+**Why this is allowed to run unattended when `fleet-reap` is not.**
+`config/crons.toml` keeps unmerged reclamation manual so nothing can delete a branch, remove a
+worktree, or kill a tmux session out from under active work (the scheduled `wt-cleanup` only
+touches merged PRs, and rescue-commits a merged pool slot before returning it). That rule stands, and
+this lane does none of those three things. It inverts the order instead: it *rescues first and reclaims second*,
 so the destructive step never has anything left to destroy.
 
 The rescue is the whole point. A slot that is "stale" by every signal — lease 12 days dead, nobody
