@@ -220,6 +220,24 @@ fn cron_job_path_prefers_current_executable_directory() {
 }
 
 #[test]
+fn cron_job_path_falls_back_to_the_discovered_home_when_home_is_unset() {
+    let _lock = bn_core::test_support::env_lock();
+    let _home = bn_core::test_support::EnvGuard::remove("HOME");
+    let home = dirs::home_dir().expect("home dir");
+    let path = super::job_path();
+    let local_bin = home.join(".local/bin").to_string_lossy().into_owned();
+    let dot_bin = home.join(".bin").to_string_lossy().into_owned();
+    assert!(
+        path.split(':').any(|entry| entry == local_bin),
+        "PATH should still include the user's local bin dir when HOME is unset"
+    );
+    assert!(
+        path.split(':').any(|entry| entry == dot_bin),
+        "PATH should still include the user's .bin dir when HOME is unset"
+    );
+}
+
+#[test]
 fn cron_health_creates_repair_task_and_starts_one_agent() {
     let _lock = bn_core::test_support::env_lock();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -543,4 +561,3 @@ fn scheduler_catalog_failure_is_recorded_on_the_scheduler_row() {
         .and_then(serde_json::Value::as_str)
         .is_some_and(|tail| tail.contains("missing required agent kind")));
 }
-

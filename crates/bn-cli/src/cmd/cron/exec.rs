@@ -38,7 +38,9 @@ fn capture_command(mut command: std::process::Command, launch_target: &str) -> (
 /// staff gathers, harness dispatches, and the `verify`/`build` gates — takes its PATH from here.
 /// Re-deriving the prelude at a call site is what produced that 127, so there is one of these.
 pub(crate) fn job_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = dirs::home_dir()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let path = std::env::var("PATH").unwrap_or_default();
     let exe_dir = std::env::current_exe()
         .ok()

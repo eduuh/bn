@@ -4,6 +4,7 @@
 use super::config_file::ConfigFile;
 use super::{agents_dir, jobs_dir, Config, Resolved};
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Resolved config for the autopilot jobs (#98 wrap, #99 standup, #110 DXI) and the opt-in agent
@@ -52,6 +53,21 @@ pub fn mcp_extras() -> Vec<String> {
     ConfigFile::load()
         .and_then(|f| f.mcp_extras())
         .unwrap_or_default()
+}
+
+/// The user-scoped MCP servers declared in `[mcp.servers.<name>]`, which `bn mcp sync-user` writes
+/// into every MCP client on this machine. Because they resolve through the normal config layering,
+/// the shared `<notes_root>/config.toml` declares the ones every machine should have and a
+/// machine's own file can add to (or override) them. Empty = nothing beyond what install.sh
+/// registers. See [`crate::mcp_user`].
+///
+/// Returned sorted so a sync run writes — and reports — in a stable order.
+pub fn mcp_user_servers() -> BTreeMap<String, crate::mcp_user::UserServer> {
+    ConfigFile::load()
+        .and_then(|f| f.mcp_servers())
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
 }
 
 /// Where a job script lives. Jobs resolve branch → project → repo → global, like PATH.

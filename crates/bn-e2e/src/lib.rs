@@ -34,7 +34,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// A frozen clock for every sandbox: 2026-01-15T12:00:00Z. Deterministic dates in output.
-const FROZEN_NOW: i64 = 1_768_478_400;
+/// A frozen clock for every sandbox. Public so a test that needs time to *move* — anything about
+/// ordering, cursors or "before/after" — can offset from the same instant the harness pins.
+pub const FROZEN_NOW: i64 = 1_768_478_400;
 const FROZEN_TODAY: &str = "2026-01-15";
 
 /// One isolated bn universe. Dropping it tears down the sandbox tmux server, any bn-web child,
@@ -199,6 +201,23 @@ impl Sandbox {
         S: AsRef<std::ffi::OsStr>,
     {
         let mut cmd = self.command(&self.bn_bin.clone());
+        cmd.args(args);
+        self.finish(cmd, "bn")
+    }
+
+    /// [`Sandbox::bn`] with the clock moved to `now` (epoch seconds) for this call only.
+    ///
+    /// The sandbox pins `BN_NOW` so output is deterministic, which also means time never passes:
+    /// two commands in a row are stamped the same second, and anything that decides "did this
+    /// happen before or after that" cannot be tested at all. Offsetting from [`FROZEN_NOW`] lets a
+    /// test lay events out on a timeline it controls, and keeps determinism.
+    pub fn bn_at<I, S>(&self, now: i64, args: I) -> Result<Run>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        let mut cmd = self.command(&self.bn_bin.clone());
+        cmd.env("BN_NOW", now.to_string());
         cmd.args(args);
         self.finish(cmd, "bn")
     }

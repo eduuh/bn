@@ -362,6 +362,10 @@ impl ConfigFile {
         self.mcp.as_ref().and_then(|s| s.extras.clone())
     }
 
+    pub(super) fn mcp_servers(&self) -> Option<HashMap<String, crate::mcp_user::UserServer>> {
+        self.mcp.as_ref().and_then(|s| s.servers.clone())
+    }
+
     pub(super) fn web_port(&self) -> Option<u16> {
         self.web.as_ref().and_then(|s| s.port)
     }

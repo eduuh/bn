@@ -706,6 +706,24 @@ register_mcp() {
 }
 register_mcp
 
+# --- your own user-scoped MCP servers, declared in config.toml -------------------------------
+# register_mcp above covers the two servers install.sh knows by name (bn, nvim-mcp). Anything
+# else personal — an authenticated remote endpoint, a private gateway — is declared under
+# [mcp.servers.<name>] in the shared <notes_root>/config.toml and wired by `bn mcp sync-user`,
+# which writes it into the same four client configs. Because that config.toml syncs between
+# machines, declaring a server once is what makes it exist on every machine you install on.
+#
+# --no-prompt is deliberate: installs run piped and unattended, so a server whose credential is
+# missing is reported and skipped rather than blocking the install waiting on a terminal. The
+# operator finishes those by running `bn mcp sync-user` interactively once per machine.
+register_user_mcp() {
+  local bn_cmd="$cfgdir/bn"
+  [ -x "$bn_cmd" ] || bn_cmd="$bindir/bn"
+  [ -x "$bn_cmd" ] || return 0
+  "$bn_cmd" mcp sync-user --no-prompt || echo "warning: bn mcp sync-user failed (continuing)" >&2
+}
+register_user_mcp
+
 # PIDs listening on a TCP port, via whichever tool the host actually has. lsof is present on
 # macOS by default and common on Linux; ss covers modern Linux without lsof; fuser is the last
 # resort. Prints nothing (success) when the port is free or nothing can inspect it.

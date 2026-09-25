@@ -242,6 +242,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "ureq",
 ]
 
 [[package]]
@@ -270,6 +271,8 @@ name = "bn-e2e"
 version = "0.6.0"
 dependencies = [
  "anyhow",
+ "bn-core",
+ "serde_json",
  "tempfile",
 ]
 

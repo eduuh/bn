@@ -224,6 +224,7 @@ pub(crate) fn emit_repo_kill(cfg: &Config, repo: &str, as_json: bool) {
         // A partial kill reports `ok: false` but keeps the data: which windows did go down, and
         // which slots came back, is exactly what the operator needs after a failure.
         let envelope = bn_core::render::Envelope {
+            v: bn_core::render::ENVELOPE_VERSION,
             ok,
             command: "agent_kill_repo".to_string(),
             data,

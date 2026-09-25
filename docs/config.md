@@ -122,6 +122,64 @@ What a machine should do less of. Usually set in that machine's own file.
 |---|---|---|
 | `extras` | `[]` | Curated MCP servers `bn mcp init` wires beside bn's own. |
 
+### `[mcp.servers.<name>]`
+
+Your own MCP servers, registered at **user** scope on every machine. `[mcp].extras` is a closed,
+vetted catalog written into *committable* per-repo configs; this is the opposite case — a personal
+server that belongs to you rather than to any repo, and that should exist in every MCP client
+wherever you sit down. `bn mcp sync-user` writes them into Claude Code, Claude Desktop, the VS Code
+Copilot extension, and the Copilot CLI, whichever are present. `install.sh` runs it too, so a new
+machine picks them up on install.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `command` | required | The executable to spawn. `~` and `$HOME` are expanded. |
+| `args` | `[]` | Arguments, each `~`/`$HOME`-expanded. |
+| `env` | `{}` | Extra environment for the server process. Configuration only — never credentials. |
+| `tools` | `["*"]` | The Copilot CLI tool allow-list. Other clients ignore it. |
+| `clients` | all | Restrict to `claude-code`, `claude-desktop`, `vscode`, `copilot-cli`. |
+
+Paths are expanded at write time because clients spawn servers with no shell in between, so a
+literal `~` would never resolve — and because expanding late is what lets one declaration serve a
+Mac (`/Users/you`) and a Linux box (`/home/you`).
+
+`~` expands only as a path *prefix* (a bare `~`, or a leading `~/`), exactly as a shell does; it is
+a legal character elsewhere. Inside a composed argument — such as mcp-remote's `@<path>` — use
+`$HOME`, which expands anywhere. Writing `@~/creds.json` is a **config error**, not a silent
+mis-expansion: sync refuses it and names the fix.
+
+Unlike `extras`, sync **overwrites** the entry under each declared name: this file is the source of
+truth, and an edit here is meant to reach every machine. Servers bn does not declare are untouched.
+
+#### `[mcp.servers.<name>.secret_file]`
+
+A credential the server needs, which must not live in this file — `config.toml` is a synced git
+repo. Declare only the *shape* of the secret; `bn mcp sync-user` prompts for the values once per
+machine, writes them as a flat JSON object, and `chmod 600`s it. An existing file is never read or
+rewritten, so re-running is a no-op. A server whose secret is missing is **skipped** rather than
+registered, since a client would otherwise show it as permanently failing instead of absent.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `path` | required | Where the credential file lives. `~`/`$HOME`-expanded. Keep it out of any git repo. |
+| `fields` | required | The JSON keys to prompt for, in order. |
+| `hidden` | `[]` | Which of `fields` to read with terminal echo off. |
+
+```toml
+[mcp.servers.forge]
+command = "npx"
+args = [
+    "-y", "mcp-remote@latest", "https://api.example.com/mcp",
+    "--protocol", "auto",
+    "--static-oauth-client-info", "@$HOME/.copilot/servers/forge-oauth-client.json",
+]
+
+[mcp.servers.forge.secret_file]
+path = "~/.copilot/servers/forge-oauth-client.json"
+fields = ["client_id", "client_secret"]
+hidden = ["client_secret"]
+```
+
 ### `[managed_repos]`
 
 | Key | Default | Meaning |

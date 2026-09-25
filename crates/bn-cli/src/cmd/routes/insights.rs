@@ -84,7 +84,7 @@ pub(super) fn route(cfg: &Config, action: CmdInsights, json: bool) {
             // Skipped on the fast/automated paths (--cached picker, --brief hook, --refresh cron,
             // --clear-cache) so those stay instant and side-effect-free.
             if !brief && !cached && !refresh && !clear_cache {
-                crate::reap::sweep(cfg);
+                crate::reap::launch_next_sweep();
             }
             emit_next(
                 cfg,

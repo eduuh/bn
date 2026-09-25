@@ -16,3 +16,7 @@ tempfile = "3"
 
 [dev-dependencies]
 tempfile = "3"
+# The JSON-contract lane asserts against the real envelope version and parses envelopes, rather
+# than hard-coding a number and a shape the production code could drift away from.
+bn-core = { workspace = true }
+serde_json = { workspace = true }

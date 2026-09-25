@@ -58,6 +58,8 @@ pub(crate) mod q_inbox;
 pub(crate) mod recall;
 pub(crate) mod links;
 pub(crate) mod repos;
+pub(crate) mod schema;
+pub(crate) mod on;
 pub(crate) mod references;
 pub(crate) mod release;
 pub(crate) mod remote_track;

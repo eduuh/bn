@@ -3,10 +3,17 @@
 //! from the former wt.rs god file (issue #351).
 
 use super::*;
+use std::collections::HashMap;
+use std::io::Write;
+use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 /// Azure DevOps' AAD resource id — passed to `az rest --resource` to acquire a token for
 /// `dev.azure.com` REST calls (works with an `az login` AAD session).
 pub(crate) const ADO_AAD_RESOURCE: &str = "499b84ac-1321-427f-aa17-267ca6975798";
+
+static ADO_CREATOR_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
 
 /// The hosting service a bare repo's origin points at — what `cleanup` queries for PR state and
 /// `merge` drives. ADO (`completed` == merged) is detected alongside GitHub so the poller catches
@@ -369,17 +376,18 @@ pub(crate) fn parse_gh_prs(json: &str) -> Vec<RemotePr> {
 }
 
 /// My active ADO PRs for `org/project/repo`, via the REST `pullrequests` API filtered by
-/// `searchCriteria.creatorId` (my identity from [`ado_creator`]). We use REST rather than
-/// `az repos pr list --creator`, whose identity-picker resolution is unreliable across projects
-/// (it rejects emails, GUIDs, and display names inconsistently). Empty — with a warning — on any
-/// failure, so the command degrades to "nothing to fetch" rather than aborting.
+/// `searchCriteria.creatorId` (my identity from [`ado_creator`]). We use direct REST with a GCM
+/// token from `git credential fill` rather than `az repos pr list --creator`, whose identity-picker
+/// resolution is unreliable across projects and whose Windows startup cost is slow. Empty — with a
+/// warning — on any failure, so the command degrades to "nothing to fetch" rather than aborting.
 pub(crate) fn ado_my_open_prs(t: AdoTarget<'_>) -> Vec<RemotePr> {
     let AdoTarget { org, project, .. } = t;
     let org_url = format!("https://dev.azure.com/{org}");
-    let Some(creator) = ado_creator(&org_url) else {
+    let repo_path = ado_repo_path(t);
+    let Some(creator) = ado_creator(&org_url, &repo_path) else {
         ceprintln!(
             "{YELLOW}remote PR: couldn't resolve your Azure DevOps identity — set \
-             BN_ADO_CREATOR=<identity-guid> or run `az login`{NC}"
+             BN_ADO_CREATOR=<identity-guid> or ensure `git credential fill` can reach dev.azure.com{NC}"
         );
         return Vec::new();
     };
@@ -388,6 +396,9 @@ pub(crate) fn ado_my_open_prs(t: AdoTarget<'_>) -> Vec<RemotePr> {
         "{org_url}/{project}/_apis/git/pullrequests\
          ?searchCriteria.creatorId={creator}&searchCriteria.status=active&api-version=7.1"
     );
+    if let Some(body) = ado_rest_json(&repo_path, &url) {
+        return parse_ado_prs(&body, t);
+    }
     let out = Command::new("az")
         .args([
             "rest",
@@ -487,35 +498,144 @@ pub(crate) fn prepare_remote_pr_branch(remote: &Remote, bare_s: &str, pr: &Remot
 }
 
 /// My Azure DevOps identity GUID, used to filter PRs (`searchCriteria.creatorId`): `BN_ADO_CREATOR`
-/// if set, else `authenticatedUser.id` from the org's `connectionData` (requires an `az login`
-/// session). `None` when neither is available.
-pub(crate) fn ado_creator(org_url: &str) -> Option<String> {
+/// if set, else `authenticatedUser.id` from the org's `connectionData` using the same GCM token
+/// as the other ADO REST calls. Cached per org for the life of the process. `None` when neither
+/// is available.
+pub(crate) fn ado_creator(org_url: &str, repo_path: &str) -> Option<String> {
     if let Ok(c) = std::env::var("BN_ADO_CREATOR") {
         let c = c.trim().to_string();
         if !c.is_empty() {
             return Some(c);
         }
     }
+    if let Ok(cache) = ADO_CREATOR_CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+        if let Some(id) = cache.get(org_url).cloned() {
+            return Some(id);
+        }
+    }
+    if let Some(cache) = read_ado_creator_cache()
+        .and_then(|cache| cache.get(org_url).cloned())
+    {
+        if let Ok(mut mem) = ADO_CREATOR_CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+            mem.insert(org_url.to_string(), cache.clone());
+        }
+        return Some(cache);
+    }
     let url = format!("{org_url}/_apis/connectionData?api-version=7.1-preview");
-    let out = Command::new("az")
-        .args([
-            "rest",
-            "--resource",
-            ADO_AAD_RESOURCE,
-            "--url",
-            &url,
-            "--query",
-            "authenticatedUser.id",
-            "--output",
-            "tsv",
-        ])
-        .output()
+    let body = ado_rest_json(repo_path, &url)?;
+    let id = parse_ado_creator(&body)?;
+    if let Ok(mut mem) = ADO_CREATOR_CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+        mem.insert(org_url.to_string(), id.clone());
+    }
+    upsert_ado_creator_cache(org_url, &id);
+    Some(id)
+}
+
+fn ado_repo_path(t: AdoTarget<'_>) -> String {
+    let AdoTarget { org, project, repo } = t;
+    format!("{org}/{project}/_git/{repo}")
+}
+
+fn ado_gcm_token(repo_path: &str) -> Option<String> {
+    static TOKEN_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    if let Ok(cache) = TOKEN_CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+        if let Some(token) = cache.get(repo_path).cloned() {
+            return Some(token);
+        }
+    }
+    let mut child = Command::new("git")
+        .args(["credential", "fill"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .ok()?;
+    let input = format!("protocol=https\nhost=dev.azure.com\npath={repo_path}\n\n");
+    child.stdin.as_mut()?.write_all(input.as_bytes()).ok()?;
+    let out = child.wait_with_output().ok()?;
     if !out.status.success() {
         return None;
     }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!s.is_empty()).then_some(s)
+    let token = parse_git_credential_fill(&String::from_utf8_lossy(&out.stdout))?;
+    if let Ok(mut cache) = TOKEN_CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+        cache.insert(repo_path.to_string(), token.clone());
+    }
+    Some(token)
+}
+
+fn parse_git_credential_fill(text: &str) -> Option<String> {
+    text.lines()
+        .find_map(|line| line.strip_prefix("password="))
+        .map(str::trim)
+        .map(str::to_string)
+        .filter(|s| !s.is_empty())
+}
+
+fn parse_ado_creator(json: &str) -> Option<String> {
+    let root: serde_json::Value = serde_json::from_str(json).ok()?;
+    root.get("authenticatedUser")
+        .and_then(|u| u.get("id"))
+        .and_then(|id| id.as_str())
+        .map(str::to_string)
+        .filter(|s| !s.is_empty())
+}
+
+fn read_ado_creator_cache() -> Option<HashMap<String, String>> {
+    let path = ado_creator_cache_path();
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn upsert_ado_creator_cache(org_url: &str, id: &str) {
+    let path = ado_creator_cache_path();
+    let mut cache = read_ado_creator_cache().unwrap_or_default();
+    if cache.get(org_url).map(|s| s.as_str()) == Some(id) {
+        return;
+    }
+    cache.insert(org_url.to_string(), id.to_string());
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(body) = serde_json::to_vec(&cache) {
+        if std::fs::write(&path, body).is_ok() {
+            set_private_permissions(&path);
+        }
+    }
+}
+
+fn ado_creator_cache_path() -> std::path::PathBuf {
+    bn_core::resolver::state_dir().join("ado-creator-cache.json")
+}
+
+#[cfg(unix)]
+fn set_private_permissions(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mut perms = meta.permissions();
+        perms.set_mode(0o600);
+        let _ = std::fs::set_permissions(path, perms);
+    }
+}
+
+#[cfg(not(unix))]
+fn set_private_permissions(_: &std::path::Path) {}
+
+fn ado_rest_json(repo_path: &str, url: &str) -> Option<String> {
+    let token = ado_gcm_token(repo_path)?;
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(10)))
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let resp = agent
+        .get(url)
+        .header("Authorization", &format!("Bearer {token}"))
+        .call()
+        .ok()?;
+    if resp.status().as_u16() >= 400 {
+        return None;
+    }
+    resp.into_body().read_to_string().ok()
 }
 
 /// Favourite an ADO branch via the Git Ref Favorites API (`_apis/git/repositories/{id}/
@@ -646,4 +766,35 @@ pub(crate) fn write_temp_json(value: &serde_json::Value) -> Option<PathBuf> {
     let path = dir.join("favourite-body.json");
     std::fs::write(&path, serde_json::to_vec(value).ok()?).ok()?;
     Some(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credential_fill_parser_reads_the_password_field() {
+        let text = "\
+protocol=https\n\
+host=dev.azure.com\n\
+username=git\n\
+password=secret-token\n";
+        assert_eq!(parse_git_credential_fill(text), Some("secret-token".to_string()));
+    }
+
+    #[test]
+    fn ado_creator_parser_reads_the_authenticated_user_guid() {
+        let json = r#"{"authenticatedUser":{"id":"abc-123"}}"#;
+        assert_eq!(parse_ado_creator(json), Some("abc-123".to_string()));
+    }
+
+    #[test]
+    fn ado_repo_path_matches_the_git_credential_input_shape() {
+        let path = ado_repo_path(AdoTarget {
+            org: "office",
+            project: "Office",
+            repo: "BigMono",
+        });
+        assert_eq!(path, "contoso/Project/_git/BigMono");
+    }
 }

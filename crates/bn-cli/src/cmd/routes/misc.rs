@@ -109,6 +109,18 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
         }
         CmdMisc::Control { action } => emit_control(cfg, action, json),
         CmdMisc::Version => println!("{}", version::line()),
+        CmdMisc::On { action } => {
+            let code = crate::cmd::on::emit_on(cfg, action, json);
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
+        CmdMisc::Schema { command } => {
+            let code = crate::cmd::schema::emit_schema(command, json);
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
         CmdMisc::Repos { action } => {
             let code = crate::cmd::repos::emit_repos(cfg, action, json);
             if code != 0 {

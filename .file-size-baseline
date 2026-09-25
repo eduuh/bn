@@ -21,7 +21,7 @@
 #
 #   scripts/check-file-size.sh --update
 1134	crates/bn-cli/src/agent_lease.rs
-1950	crates/bn-cli/src/cli.rs
+1852	crates/bn-cli/src/cli.rs
 2096	crates/bn-cli/src/cmd/agent.rs
 1083	crates/bn-cli/src/cmd/attn.rs
 1701	crates/bn-cli/src/cmd/dispatch.rs

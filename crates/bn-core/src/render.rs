@@ -8,9 +8,20 @@ use crate::model::{Note, Section};
 use serde::Serialize;
 use serde_json::Value;
 
+/// The envelope contract's version, emitted as `v` on every envelope.
+///
+/// A consumer that checks it gets a loud failure instead of a silent one: before this existed, a
+/// script parsing `data` had no way to tell "this field moved" from "this field is absent today",
+/// and bn had no way to say so. Bump it only when a change would break a reader that was correct
+/// under the previous number — adding a key to some command's `data` is not that.
+pub const ENVELOPE_VERSION: u32 = 1;
+
 /// The stable machine envelope shared by every command (architecture.md D2).
 #[derive(Debug, Serialize)]
 pub struct Envelope {
+    /// The contract version ([`ENVELOPE_VERSION`]), first so it is readable without parsing the
+    /// rest — `head -c 16` is enough to reject an envelope a script does not understand.
+    pub v: u32,
     pub ok: bool,
     pub command: String,
     pub data: Value,
@@ -26,6 +37,7 @@ pub struct EnvelopeError {
 impl Envelope {
     pub fn success(command: impl Into<String>, data: Value) -> Self {
         Envelope {
+            v: ENVELOPE_VERSION,
             ok: true,
             command: command.into(),
             data,
@@ -39,6 +51,7 @@ impl Envelope {
         message: impl Into<String>,
     ) -> Self {
         Envelope {
+            v: ENVELOPE_VERSION,
             ok: false,
             command: command.into(),
             data: Value::Null,
@@ -50,7 +63,8 @@ impl Envelope {
     }
 
     pub fn to_json(&self) -> String {
-        serde_json::to_string(self).unwrap_or_else(|_| "{\"ok\":false}".to_string())
+        serde_json::to_string(self)
+            .unwrap_or_else(|_| format!("{{\"v\":{ENVELOPE_VERSION},\"ok\":false}}"))
     }
 }
 

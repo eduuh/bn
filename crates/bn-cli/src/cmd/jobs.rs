@@ -320,6 +320,13 @@ pub(crate) fn job_fleet_reap(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     )
 }
 
+/// `next-sweep` — the detached helper launched by `bn next` so the opportunistic fleet sweep no
+/// longer blocks the user's decision path.
+pub(crate) fn job_next_sweep(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
+    reap::sweep(cfg);
+    0
+}
+
 /// `jobs/attention-sync.sh` — recompute + rewrite the attention cache (`bn next --refresh`).
 pub(crate) fn job_attention_sync(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     // Retire items whose PR has merged or closed before refreshing, so a dead PR's "ping

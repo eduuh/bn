@@ -15,6 +15,7 @@ pub(crate) fn native_job(job: &str) -> Option<NativeJob> {
     match job {
         "wt-cleanup" => Some(job_wt_cleanup),
         "fleet-reap" => Some(job_fleet_reap),
+        "next-sweep" => Some(job_next_sweep),
         "attention-sync" => Some(job_attention_sync),
         "daily-rollover" => Some(job_daily_rollover),
         "metrics-snapshot" => Some(job_metrics_snapshot),
@@ -54,6 +55,7 @@ pub(crate) fn native_job(job: &str) -> Option<NativeJob> {
         "wt-prune" => Some(crate::cmd::wt_action_jobs::job_wt_prune),
         "cron-health" => Some(crate::cmd::attention_workflow::job_cron_health),
         "agent-scheduler" => Some(crate::cmd::cron::job_agent_scheduler),
+        "reactor" => Some(crate::cmd::on::job_reactor),
         "tick-5m" => Some(job_tick_5m),
         "tick-10m" => Some(job_tick_10m),
         "tick-15m" => Some(job_tick_15m),

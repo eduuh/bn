@@ -464,6 +464,7 @@ impl ServerTarget {
 }
 
 /// A file the command created or modified.
+#[derive(Debug)]
 pub struct WrittenFile {
     pub path: PathBuf,
     pub action: &'static str, // "created" | "updated" | "unchanged"

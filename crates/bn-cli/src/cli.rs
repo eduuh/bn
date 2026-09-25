@@ -23,6 +23,12 @@ mod skills_cmd;
 pub(crate) use skills_cmd::SkillsCmd;
 mod repos_cmd;
 pub(crate) use repos_cmd::ReposCmd;
+mod critic_cmd;
+pub(crate) use critic_cmd::CriticCmd;
+mod on_cmd;
+pub(crate) use on_cmd::OnCmd;
+mod control_cmd;
+pub(crate) use control_cmd::ControlCmd;
 
 // The clap surface is split into flattened group sub-enums purely to bound the per-enum
 // stack frame that clap-derive's generated `augment_subcommands` allocates in unoptimized
@@ -1003,68 +1009,18 @@ pub(crate) enum CmdMisc {
         #[command(subcommand)]
         action: Option<ReposCmd>,
     },
-}
-
-#[derive(Subcommand, Debug)]
-pub(crate) enum ControlCmd {
-    /// Start a controller, or enqueue a request onto an already-running controller with --id.
-    Start {
-        /// Stable controller id. Omit to generate a new id.
-        #[arg(long)]
-        id: Option<String>,
-        /// Readable task name used by the session registry and tmux window.
-        #[arg(long)]
-        name: Option<String>,
-        /// Harness to launch: copilot or claude. Omit to use the configured default
-        /// (`[harness].default` / `$BN_HARNESS`, else copilot).
-        #[arg(long)]
-        harness: Option<String>,
-        /// The agent manifest whose body seeds the controller. Its name lives here rather than in
-        /// Rust so the seed can be swapped by editing `config/agents/`, not by a rebuild.
-        #[arg(long, default_value = "controller")]
-        agent: String,
-        /// Initial request to enqueue for this controller.
-        #[arg(value_name = "REQUEST")]
-        request: Vec<String>,
+    /// The `--json` contract: the envelope's fields, its version, and what each script-facing
+    /// command puts in `data`. `bn schema <command>` prints one command's shape.
+    Schema {
+        /// A command tag from `bn schema` (e.g. `repos`, `wt-list`).
+        command: Option<String>,
     },
-    /// Show controllers, their durable request queues, and worker lanes joined by controller_id.
-    Status {
-        /// Show one controller only.
-        #[arg(long)]
-        id: Option<String>,
-    },
-    /// Stop one controller and close its tmux window.
-    Stop {
-        #[arg(long)]
-        id: String,
-    },
-    /// Lease the next durable request. Internal controller-agent protocol.
-    #[command(hide = true)]
-    Lease {
-        #[arg(long)]
-        id: String,
-    },
-    /// Mark a leased request done or failed. Internal controller-agent protocol.
-    #[command(hide = true)]
-    Complete {
-        #[arg(long)]
-        id: String,
-        #[arg(long)]
-        request_id: String,
-        #[arg(long)]
-        failed: bool,
-    },
-    /// Tail owned-worker events and wake the controller. Internal controller-agent protocol.
-    #[command(hide = true)]
-    Watch {
-        #[arg(long)]
-        id: String,
-    },
-    /// Guard a controller turn from ending while live work has lost its watcher.
-    #[command(hide = true)]
-    TurnEndGuard {
-        #[arg(long)]
-        id: Option<String>,
+    /// React to the event log with your own commands: `bn on add pr_merged -- <cmd>`. Bare
+    /// `bn on` lists the rules; `bn on tick` is the pass the `reactor` cron runs.
+    #[command(args_conflicts_with_subcommands = true)]
+    On {
+        #[command(subcommand)]
+        action: Option<OnCmd>,
     },
 }
 
@@ -1133,60 +1089,6 @@ pub(crate) enum WorkerCmd {
     /// self-heal step of `start`. Run after a reboot to release attempts whose tmux session/pid is
     /// gone. Prints the cleared attempt ids.
     Reconcile,
-}
-
-/// The `bn critic` subcommands (#649 Phase 3).
-#[derive(Subcommand, Debug)]
-pub(crate) enum CriticCmd {
-    /// Cut a fresh critic worktree off the PR head and launch a `--fresh`, plan-free critic lane
-    /// over the branch's diff (base...head) + its done-when criteria.
-    Dispatch {
-        /// The execution branch under test (its head is the PR head; its note holds the done-when).
-        #[arg(long)]
-        branch: String,
-        /// Target repo by name (default: the current repo). Lets you critique from anywhere.
-        #[arg(long)]
-        repo: Option<String>,
-        /// The PR url under review, embedded in the critic's seed for reference.
-        #[arg(long)]
-        pr: Option<String>,
-        /// Diff base to compare the branch against (default: main) — the seed shows base...head.
-        #[arg(long, default_value = "main")]
-        base: String,
-        /// Critic harness: copilot (default) | claude. Claude is org-disabled here, so the critic
-        /// defaults to copilot; the Claude path is designed but inert until the org toggle flips.
-        #[arg(long)]
-        agent: Option<String>,
-        /// Don't open a tmux window / launch the agent — just cut the worktree and seed the note.
-        #[arg(long)]
-        no_tmux: bool,
-    },
-    /// Record the critic's ruling and drive the loop-back: PASS → shippable; FAIL → a
-    /// `task_type=critique` item + re-enter execution (bounded by `--max-iterations`), then a
-    /// `task_type=planning` human-steer escalation on exhaustion.
-    Verdict {
-        /// The execution repo the verdict is about (default: inferred from the current worktree).
-        #[arg(long)]
-        repo: Option<String>,
-        /// The execution branch the verdict is about (default: inferred from the current worktree).
-        #[arg(long)]
-        branch: Option<String>,
-        /// The diff passes every acceptance criterion — advance to shippable.
-        #[arg(long, conflicts_with = "fail")]
-        pass: bool,
-        /// The diff fails — loop back to execution with the findings (or escalate when exhausted).
-        #[arg(long)]
-        fail: bool,
-        /// The critic's findings text (what's wrong / unmet), forwarded to the re-executed lane.
-        #[arg(long)]
-        findings: Option<String>,
-        /// Read the findings from a file instead of `--findings` (for long, multi-line reports).
-        #[arg(long)]
-        findings_file: Option<String>,
-        /// Max critique rounds before escalating to a human-steer item (default 3).
-        #[arg(long, default_value_t = bn_core::pipeline::critic::DEFAULT_MAX_ITERATIONS)]
-        max_iterations: u32,
-    },
 }
 
 /// Top-level command: a thin `#[command(flatten)]` union of the thematic command-group enums above.
@@ -1453,6 +1355,24 @@ pub(crate) enum McpCmd {
         /// Serve the cross-worktree orchestrator tools instead of the scoped branch-note tools.
         #[arg(long)]
         orchestrate: bool,
+    },
+    /// Register the **user-scoped** MCP servers declared in `[mcp.servers.<name>]` into every MCP
+    /// client on this machine (Claude Code, Claude Desktop, VS Code Copilot, Copilot CLI).
+    ///
+    /// The counterpart to `init`: where that wires one repo with a committable config, this wires
+    /// one machine with your personal servers. Because the declarations live in the shared
+    /// `<notes_root>/config.toml`, which syncs between machines, declaring a server once and
+    /// running this on each machine is what makes it exist everywhere. install.sh runs it too, so
+    /// a new machine gets them on install.
+    ///
+    /// Credentials never live in config.toml: a server may declare a `secret_file` (a path plus
+    /// the field names it holds), and this prompts for those fields once per machine and writes
+    /// the file `0600`. Idempotent — an already-provisioned secret is left untouched.
+    SyncUser {
+        /// Never prompt for a missing credential; report it and skip that server instead. Implied
+        /// when stdin is not a terminal, so cron and piped installs behave this way already.
+        #[arg(long)]
+        no_prompt: bool,
     },
 }
 

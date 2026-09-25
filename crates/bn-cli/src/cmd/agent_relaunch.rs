@@ -491,6 +491,7 @@ pub(crate) fn emit_repo(cfg: &Config, repo: &str, hard: bool, harness: Option<&s
             "failed": failed,
         });
         let envelope = bn_core::render::Envelope {
+            v: bn_core::render::ENVELOPE_VERSION,
             ok,
             command: "agent_relaunch_repo".to_string(),
             data,

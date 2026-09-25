@@ -762,6 +762,49 @@ pub(crate) fn sweep(cfg: &Config) {
     );
 }
 
+/// Launch the opportunistic sweep in the background, so `bn next` keeps its read path under a
+/// second and the cleanup runs out of band.
+pub(crate) fn launch_next_sweep() {
+    if cfg!(test) {
+        return;
+    }
+    let now = bn_core::util::now_epoch_secs();
+    let path = next_sweep_launch_path();
+    let last = read_launch_stamp(&path);
+    if !should_launch_next_sweep(last, now) {
+        return;
+    }
+    if let Err(e) = std::fs::write(&path, now.to_string()) {
+        eprintln!(
+            "bn: could not record next-sweep launch time at {}: {e}",
+            path.display()
+        );
+    }
+    match bn_core::bn_subprocess::spawn_detached(&["run", "next-sweep"]) {
+        Ok(_) => {}
+        Err(e) => {
+            let _ = std::fs::remove_file(&path);
+            eprintln!("bn: could not schedule background fleet sweep: {e}");
+        }
+    }
+}
+
+const NEXT_SWEEP_LAUNCH_STALE_SECS: i64 = 60;
+
+fn next_sweep_launch_path() -> PathBuf {
+    bn_core::resolver::state_dir().join("next-sweep.last")
+}
+
+fn read_launch_stamp(path: &Path) -> Option<i64> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| text.trim().parse::<i64>().ok())
+}
+
+pub(crate) fn should_launch_next_sweep(last_launch: Option<i64>, now: i64) -> bool {
+    last_launch.is_none_or(|ts| now.saturating_sub(ts) >= NEXT_SWEEP_LAUNCH_STALE_SECS)
+}
+
 // --- output ----------------------------------------------------------------
 
 fn row_json(v: &Verdict) -> serde_json::Value {
@@ -867,5 +910,21 @@ mod orchestrator_guard_tests {
         assert!(is_controller_slot_path(Path::new(
             "/home/me/projects/worktree/BigMono/_pool/1"
         )));
+    }
+}
+
+#[cfg(test)]
+mod next_sweep_launch_tests {
+    use super::should_launch_next_sweep;
+
+    #[test]
+    fn a_recent_launch_is_throttled() {
+        assert!(!should_launch_next_sweep(Some(1_000), 1_030));
+    }
+
+    #[test]
+    fn an_old_or_missing_launch_is_allowed() {
+        assert!(should_launch_next_sweep(None, 1_030));
+        assert!(should_launch_next_sweep(Some(900), 1_030));
     }
 }

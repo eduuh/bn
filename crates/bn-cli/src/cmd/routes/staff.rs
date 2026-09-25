@@ -225,6 +225,7 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
                 )),
             },
             McpCmd::Serve { orchestrate } => mcp::serve(orchestrate),
+            McpCmd::SyncUser { no_prompt } => mcp::sync_user(no_prompt, json),
         },
     }
 }

@@ -42,12 +42,18 @@ fn on() -> bool {
     true
 }
 
-/// `[mcp]`: per-repo MCP wiring options (#323). `extras` is the opt-in list of curated
+/// `[mcp]`: MCP wiring options (#323). `extras` is the opt-in list of curated
 /// planning/productivity MCP servers (`crate::mcp::EXTRAS` names) that `bn mcp init` — and the
-/// dispatch setup path — wire alongside bn's own server. Empty/absent = bn only.
+/// dispatch setup path — wire alongside bn's own server into a *repo*. Empty/absent = bn only.
+///
+/// `servers` is the separate, *user*-scoped list: personal MCP servers `bn mcp sync-user` writes
+/// into every MCP client on this machine. Declared here rather than in the curated catalog because
+/// they are yours, not vetted-for-everyone, and never land in a committed file — see
+/// [`crate::mcp_user`].
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub(super) struct McpSection {
     pub(super) extras: Option<Vec<String>>,
+    pub(super) servers: Option<HashMap<String, crate::mcp_user::UserServer>>,
 }
 
 /// `[managed_repos]`: repos bn keeps cloned + refreshed under the bn home (`~/.bn/repos`). Each
