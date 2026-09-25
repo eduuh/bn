@@ -1,4 +1,4 @@
-//! What the `bn tat` sub-picker's rows *are* — the `kind|payload|display` builder for one project.
+//! What the `bn tat` rows *are* — typed for the native picker, and flattened only for fzf.
 //!
 //! Split out of `tat.rs` rather than grown inside it (the 1000-line ratchet; see
 //! `.file-size-baseline`), along the seam the module already had: `tat.rs` drives the picker,
@@ -15,10 +15,95 @@ use crate::wt;
 use bn_core::resolver::Config;
 use std::collections::HashSet;
 
+/// One top-level picker row: what the user sees, and the hidden `ref` that identifies it.
+pub(super) struct ListRow {
+    pub(super) display: String,
+    pub(super) r: String,
+}
+
+impl ListRow {
+    /// `<display>\t<ref>` — the fzf feed, where `--with-nth=1` shows the display and `{-1}` picks
+    /// the hidden ref back out.
+    pub(super) fn tsv(&self) -> String {
+        format!("{}\t{}", self.display, self.r)
+    }
+}
+
+/// What a sub-picker row *is*. Replaces the `kind|payload` string the fzf feed encodes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum SubRow {
+    Window(String),
+    Worktree(String),
+    RemotePr(String),
+    Codespace { name: String, branch: String },
+    PoolBranch(String),
+    PoolIdle(String),
+    CmdSep,
+    Cmd(String),
+    QueueSettings,
+}
+
+impl SubRow {
+    pub(super) fn kind(&self) -> &'static str {
+        match self {
+            SubRow::Window(_) => "window",
+            SubRow::Worktree(_) => "worktree",
+            SubRow::RemotePr(_) => "remotepr",
+            SubRow::Codespace { .. } => "codespace",
+            SubRow::PoolBranch(_) => "poolbranch",
+            SubRow::PoolIdle(_) => "poolidle",
+            SubRow::CmdSep => "cmdsep",
+            SubRow::Cmd(_) => "cmd",
+            SubRow::QueueSettings => "qset",
+        }
+    }
+
+    pub(super) fn payload(&self) -> String {
+        match self {
+            SubRow::Window(s)
+            | SubRow::Worktree(s)
+            | SubRow::RemotePr(s)
+            | SubRow::PoolBranch(s)
+            | SubRow::PoolIdle(s)
+            | SubRow::Cmd(s) => s.clone(),
+            SubRow::Codespace { name, branch } => format!("{name}\t{branch}"),
+            SubRow::CmdSep | SubRow::QueueSettings => String::new(),
+        }
+    }
+}
+
+/// One sub-picker row: the typed row and the line the user reads.
+pub(super) struct SubRowItem {
+    pub(super) row: SubRow,
+    pub(super) display: String,
+}
+
+impl SubRowItem {
+    /// `kind|payload|display` — the fzf feed, where `--with-nth=3` shows the display.
+    pub(super) fn piped(&self) -> String {
+        format!(
+            "{}|{}|{}",
+            self.row.kind(),
+            self.row.payload(),
+            self.display
+        )
+    }
+}
+
+/// The `kind|payload|display` feed fzf reads.
+pub(super) fn sub_rows_feed(rows: &[SubRowItem]) -> String {
+    rows.iter()
+        .map(|row| format!("{}\n", row.piped()))
+        .collect()
+}
+
 /// Render open PRs whose branch has no local representation. The payload is only the numeric PR id;
 /// branch names and titles are display data and may contain fzf's `|` delimiter.
-pub(super) fn remote_pr_rows(prs: &[wt::RemotePr], represented: &HashSet<String>) -> String {
-    let mut rows = String::new();
+pub(super) fn remote_pr_items(
+    prs: &[wt::RemotePr],
+    represented: &HashSet<String>,
+) -> Vec<SubRowItem> {
+    let mut rows = Vec::new();
     for pr in prs {
         let branch = wt::sanitize_branch(&pr.branch);
         if represented.contains(&branch) {
@@ -32,9 +117,17 @@ pub(super) fn remote_pr_rows(prs: &[wt::RemotePr], represented: &HashSet<String>
             format!("(#{} remote)", pr.number),
             title
         );
-        rows.push_str(&format!("remotepr|{}|{display}\n", pr.number));
+        rows.push(SubRowItem {
+            row: SubRow::RemotePr(pr.number.to_string()),
+            display,
+        });
     }
     rows
+}
+
+#[cfg(test)]
+pub(super) fn remote_pr_rows(prs: &[wt::RemotePr], represented: &HashSet<String>) -> String {
+    sub_rows_feed(&remote_pr_items(prs, represented))
 }
 
 /// Build the sub-picker's `kind|payload|display` rows for one project: live windows (each with an
@@ -49,7 +142,7 @@ pub(super) fn build_sub_rows(
     roots: &Roots,
     name: &str,
     refresh_worktrees: bool,
-) -> (String, usize, super::commands::CmdStates) {
+) -> (Vec<SubRowItem>, usize, super::commands::CmdStates) {
     let sess = ref_session(name);
     let repo = ref_repo(name);
     let bare = is_bare_repo(roots, name);
@@ -62,7 +155,7 @@ pub(super) fn build_sub_rows(
         "#{window_index}|#{window_name}|#{pane_current_command}|#{window_active}|#{@bn_agent}|#{@bn_agent_since}|#{pane_current_path}",
     ]);
     let mut open_windows = Vec::new();
-    let mut rows = String::new();
+    let mut rows = Vec::new();
     if let Some(raw) = &window_rows {
         for line in raw.lines() {
             if line.is_empty() {
@@ -75,7 +168,10 @@ pub(super) fn build_sub_rows(
             // waiting-on-you, dim ◌ idle, blank when no agent runs there.
             let dot = agent_dot(f[4], f[5]);
             let display = format!("{dot}{}{marker}: {:<14} {:<8} {}", f[0], f[1], f[2], f[6]);
-            rows.push_str(&format!("window|{}|{display}\n", f[0]));
+            rows.push(SubRowItem {
+                row: SubRow::Window(f[0].to_string()),
+                display,
+            });
         }
     }
 
@@ -97,7 +193,10 @@ pub(super) fn build_sub_rows(
                 .to_string_lossy()
                 .to_string();
             let display = format!(" +: {:<14} {:<8} {}", w, "(worktree)", short);
-            rows.push_str(&format!("worktree|{w}|{display}\n"));
+            rows.push(SubRowItem {
+                row: SubRow::Worktree(w.clone()),
+                display,
+            });
         }
     }
 
@@ -129,7 +228,7 @@ pub(super) fn build_sub_rows(
                 .map(wt::sanitize_branch),
         );
     }
-    rows.push_str(&remote_pr_rows(&remote_prs(roots, name), &represented));
+    rows.extend(remote_pr_items(&remote_prs(roots, name), &represented));
 
     // Codespace branches for this repo — "<branch> ☁" rows beside the worktrees, skipping any
     // already open as a window. The payload packs `csname\tbranch` (neither contains `|`).
@@ -144,7 +243,13 @@ pub(super) fn build_sub_rows(
             format!("({})", cs.state),
             cs.name
         );
-        rows.push_str(&format!("codespace|{}\t{}|{display}\n", cs.name, cs.branch));
+        rows.push(SubRowItem {
+            row: SubRow::Codespace {
+                name: cs.name,
+                branch: cs.branch,
+            },
+            display,
+        });
     }
 
     // Pool slots (#457): a leased warm slot is shown by its *leasing branch* (selectable → hands
@@ -175,14 +280,20 @@ pub(super) fn build_sub_rows(
                         "  ◍: {:<14} {:<8} pool#{}{warmed}{who}",
                         branch, "(leased)", slot.n
                     );
-                    rows.push_str(&format!("poolbranch|{branch}|{display}\n"));
+                    rows.push(SubRowItem {
+                        row: SubRow::PoolBranch(branch.to_string()),
+                        display,
+                    });
                 }
                 _ if slot.warm => {
                     let display = format!(
                         "  ○: {:<14} {:<8} pool#{}{warmed} · type a branch to lease",
                         "(idle)", "(pool)", slot.n
                     );
-                    rows.push_str(&format!("poolidle|{}|{display}\n", slot.n));
+                    rows.push(SubRowItem {
+                        row: SubRow::PoolIdle(slot.n.to_string()),
+                        display,
+                    });
                 }
                 _ => {} // cold slot (not on disk yet) — nothing to show.
             }
@@ -211,11 +322,20 @@ pub(super) fn build_sub_rows(
     } else {
         Vec::new()
     };
-    rows.push_str(&command_rows(bare, avail, &scripts, &states, now_ms()));
+    let command_feed = command_rows(bare, avail, &scripts, &states, now_ms());
+    let command_items = piped_items(&command_feed);
+    rows.extend(command_items.iter().map(|item| SubRowItem {
+        row: item.row.clone(),
+        display: item.display.clone(),
+    }));
     // Only the rows that were drawn are worth watching. `command_states` keys every window in the
     // repo's session, including branch and agent windows no command row shows — and the ticker
     // repaints for as long as anything in here is running.
-    states.retain(|id, _| rows.contains(&format!("cmd|{id}|")));
+    states.retain(|id, _| {
+        command_items
+            .iter()
+            .any(|item| matches!(&item.row, SubRow::Cmd(cmd_id) if cmd_id == id))
+    });
 
     (rows, open_windows.len(), states)
 }
@@ -286,11 +406,12 @@ fn now_ms() -> i64 {
 
 /// Decorated list rows: `<display>\t<ref>`. fzf shows only `<display>` (`--with-nth=1`); the
 /// `<ref>` rides along as the hidden last field (`{-1}`) for preview/kill/selection.
-pub(super) fn build_list(cfg: &Config, roots: &Roots, refresh: bool) {
+pub(super) fn list_rows(cfg: &Config, roots: &Roots, refresh: bool) -> Vec<ListRow> {
     let refs = ordered_refs(roots, refresh);
     let known_sessions: HashSet<String> = refs.iter().map(|r| ref_session(r)).collect();
     let known_repos: HashSet<String> = refs.iter().map(|r| ref_repo(r).to_string()).collect();
     let tmux = tmux_sessions();
+    let mut rows = Vec::new();
     for r in refs {
         let sess = ref_session(&r);
         let marker = if let Some(count) = tmux.count(&sess) {
@@ -304,11 +425,17 @@ pub(super) fn build_list(cfg: &Config, roots: &Roots, refresh: bool) {
         } else {
             format!(" ({tag})")
         };
-        println!("{marker}{}{suffix}\t{r}", ref_repo(&r));
+        rows.push(ListRow {
+            display: format!("{marker}{}{suffix}", ref_repo(&r)),
+            r,
+        });
     }
     for sess in tmux.orphans(&known_sessions) {
         let count = tmux.count(&sess).unwrap_or(0);
-        println!("[*{count}w] {sess} (session)\t{sess}");
+        rows.push(ListRow {
+            display: format!("[*{count}w] {sess} (session)"),
+            r: sess,
+        });
     }
     // Codespaces whose repo is NOT cloned locally — top-level rows, like orphans (a cloned repo's
     // codespaces surface inside its worktree sub-picker instead). The hidden field is a `cs:` ref,
@@ -317,21 +444,66 @@ pub(super) fn build_list(cfg: &Config, roots: &Roots, refresh: bool) {
         if known_repos.contains(&cs.repo) {
             continue;
         }
-        println!(
-            "      {}-{} (codespace)\tcs:{}/{}/{}",
-            cs.repo, cs.branch, cs.repo, cs.branch, cs.name
-        );
+        rows.push(ListRow {
+            display: format!("      {}-{} (codespace)", cs.repo, cs.branch),
+            r: format!("cs:{}/{}/{}", cs.repo, cs.branch, cs.name),
+        });
     }
     // Codespace auth lapsed (scope expired / logged out): a single actionable row, Enter runs the
     // gh remedy. Shown only when the cached list failed for auth.
     if cs_auth_needed() {
-        println!("   ⚠  codespaces: gh auth expired — Enter to fix\tcs-auth");
+        rows.push(ListRow {
+            display: "   ⚠  codespaces: gh auth expired — Enter to fix".to_string(),
+            r: "cs-auth".to_string(),
+        });
     }
     // bn-web, the one service this picker can start and stop. Its health used to be a status-bar
     // badge (`bn tmux-mcp badge`); a badge you cannot act on is worse than a row you can (#1349).
     if let Some(row) = super::status::web_row(cfg) {
-        println!("{row}");
+        if let Some((display, r)) = row.split_once('\t') {
+            rows.push(ListRow {
+                display: display.to_string(),
+                r: r.to_string(),
+            });
+        }
     }
+    rows
+}
+
+pub(super) fn build_list(cfg: &Config, roots: &Roots, refresh: bool) {
+    for row in list_rows(cfg, roots, refresh) {
+        println!("{}", row.tsv());
+    }
+}
+
+fn piped_items(feed: &str) -> Vec<SubRowItem> {
+    feed.lines().filter_map(parse_piped_item).collect()
+}
+
+fn parse_piped_item(line: &str) -> Option<SubRowItem> {
+    let mut parts = line.splitn(3, '|');
+    let kind = parts.next().unwrap_or("");
+    let payload = parts.next().unwrap_or("");
+    let display = parts.next().unwrap_or("").to_string();
+    let row = match kind {
+        "window" => SubRow::Window(payload.to_string()),
+        "worktree" => SubRow::Worktree(payload.to_string()),
+        "remotepr" => SubRow::RemotePr(payload.to_string()),
+        "codespace" => {
+            let (name, branch) = payload.split_once('\t').unwrap_or((payload, ""));
+            SubRow::Codespace {
+                name: name.to_string(),
+                branch: branch.to_string(),
+            }
+        }
+        "poolbranch" => SubRow::PoolBranch(payload.to_string()),
+        "poolidle" => SubRow::PoolIdle(payload.to_string()),
+        "cmdsep" => SubRow::CmdSep,
+        "cmd" => SubRow::Cmd(payload.to_string()),
+        "qset" => SubRow::QueueSettings,
+        _ => return None,
+    };
+    Some(SubRowItem { row, display })
 }
 
 #[cfg(test)]
@@ -363,5 +535,16 @@ mod tests {
         assert!(rows.contains("feat-remote"));
         assert!(rows.contains("Remote   work from laptop"));
         assert_eq!(rows.lines().count(), 1);
+    }
+
+    #[test]
+    fn command_rows_round_trip_back_into_typed_rows() {
+        let rows = piped_items(
+            "cmdsep||separator\ncmd|build-main|  ▸  Build latest main\nqset||  ⚙  Queue settings…",
+        );
+        assert_eq!(rows.len(), 3);
+        assert!(matches!(rows[0].row, SubRow::CmdSep));
+        assert!(matches!(rows[1].row, SubRow::Cmd(ref id) if id == "build-main"));
+        assert!(matches!(rows[2].row, SubRow::QueueSettings));
     }
 }

@@ -335,7 +335,7 @@ fn completed_by_day(
     end: &str,
 ) -> std::collections::HashMap<String, Vec<Item>> {
     let mut out: std::collections::HashMap<String, Vec<Item>> = Default::default();
-    let Ok(file) = crate::todo::load(&cfg.tasks_file()) else {
+    let Ok(file) = crate::task_store::task_store(cfg).load() else {
         return out;
     };
     for task in file.tasks() {

@@ -469,6 +469,39 @@ pub(crate) fn trailing_menu_block(tail: &[String]) -> Option<(usize, usize, usiz
     Some((heading_start, menu_start, last_option))
 }
 
+/// The `❯` option block of a **cursor menu** — Copilot's `ask_user` form, chosen by moving a
+/// cursor and pressing enter rather than by typing a number — as `(menu_start, last_option)`.
+///
+/// Only when it is the trailing thing on screen: a footer that says how to move and accept
+/// ("↑/↓ select · enter accept"), followed by nothing but frame rows. Options are the short lines
+/// directly above that footer, exactly one of them carrying the cursor. A plan the agent printed
+/// above the form is prose, not options: the walk stops at the first line that reads as a sentence
+/// or a question, so a numbered plan body never becomes the menu.
+pub fn cursor_menu_block(tail: &[String]) -> Option<(usize, usize)> {
+    let footer = tail.iter().rposition(|l| !is_frame_only(l))?;
+    let lower = unframe(&tail[footer]).to_lowercase();
+    if !(lower.contains('↑') && lower.contains("enter")) {
+        return None;
+    }
+    let is_option = |l: &str| {
+        let t = unframe(l).trim();
+        !t.is_empty()
+            && t.chars().count() <= 60
+            && !t.ends_with(['?', ':', '.'])
+            && !is_frame_only(l)
+    };
+    let mut start = footer;
+    while start > 0 && is_option(&tail[start - 1]) {
+        start -= 1;
+    }
+    let options = &tail[start..footer];
+    let cursors = options
+        .iter()
+        .filter(|l| unframe(l).trim_start().starts_with('❯'))
+        .count();
+    (options.len() >= 2 && cursors == 1).then_some((start, footer - 1))
+}
+
 /// Chrome a harness prints beneath a live dialog: keybinding hints and status footers. Bounded in
 /// length so a genuine new paragraph of agent output can never pass as a hint.
 fn is_footer_hint(line: &str) -> bool {
@@ -583,8 +616,11 @@ pub fn classify(obs: &PaneObservation) -> PaneState {
     // numbered list, because such a pane still shows the harness's input box below it — and an
     // input box is neither frame nor footer, so no trailing block is found at all. A real dialog
     // replaces that input box, which is exactly when the block does match.
-    let spinner_scan = match trailing_menu_block(obs.tail) {
-        Some((_, menu_start, _)) => &obs.tail[..menu_start],
+    let menu_start = trailing_menu_block(obs.tail)
+        .map(|(_, start, _)| start)
+        .or_else(|| cursor_menu_block(obs.tail).map(|(start, _)| start));
+    let spinner_scan = match menu_start {
+        Some(start) => &obs.tail[..start],
         None => obs.tail,
     };
     let has_spinner = spinner_scan
@@ -608,7 +644,10 @@ pub fn classify(obs: &PaneObservation) -> PaneState {
     if any_marker(obs.tail, USAGE_LIMIT_MARKERS) {
         return PaneState::Limited;
     }
-    if any_marker(obs.tail, QUESTION_MENU_MARKERS) || is_numbered_menu(obs.tail) {
+    if any_marker(obs.tail, QUESTION_MENU_MARKERS)
+        || is_numbered_menu(obs.tail)
+        || cursor_menu_block(obs.tail).is_some()
+    {
         return PaneState::QuestionMenu;
     }
     if has_bare_prompt(obs.tail) {

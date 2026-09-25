@@ -73,7 +73,7 @@ fn is_todays(task: &crate::todo::Task, today: &str) -> bool {
 /// work (not today's), snoozed work (deliberately out of view), anything finished on an earlier day
 /// (it belongs to that day's record), and machine-owned bookkeeping (see [`is_mine`]).
 pub fn task_goals(cfg: &Config, today: &str) -> Vec<Item> {
-    let Ok(file) = crate::todo::load(&cfg.tasks_file()) else {
+    let Ok(file) = crate::task_store::task_store(cfg).load() else {
         return Vec::new();
     };
     file.tasks()

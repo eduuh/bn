@@ -4,6 +4,89 @@
 
 use super::*;
 
+/// One row of `git worktree list --porcelain`.
+///
+/// Pool slots are checked out detached, so `branch` is `None` far more often than not — a shape
+/// that only shows up once you parse the porcelain instead of passing git's human table through.
+pub(crate) struct WorktreeRow {
+    pub(crate) path: std::path::PathBuf,
+    pub(crate) head: String,
+    pub(crate) branch: Option<String>,
+    pub(crate) bare: bool,
+}
+
+/// Parse `git worktree list --porcelain` for one bare repo. Empty when git could not answer.
+///
+/// Read from git rather than by walking the worktree root: a worktree may be registered anywhere
+/// on disk (an agent harness checks some out under its own session-state dir), so the layout is
+/// not the authority on what exists.
+pub(crate) fn worktree_rows(bare: &std::path::Path) -> Vec<WorktreeRow> {
+    let Some(raw) = git_out(&[
+        "--git-dir",
+        &bare.to_string_lossy(),
+        "worktree",
+        "list",
+        "--porcelain",
+    ]) else {
+        return Vec::new();
+    };
+    parse_worktree_porcelain(&raw)
+}
+
+/// The pure half of [`worktree_rows`], split out so the format is testable without a real repo.
+pub(crate) fn parse_worktree_porcelain(raw: &str) -> Vec<WorktreeRow> {
+    let mut rows: Vec<WorktreeRow> = Vec::new();
+    for line in raw.lines() {
+        if let Some(p) = line.strip_prefix("worktree ") {
+            rows.push(WorktreeRow {
+                path: std::path::PathBuf::from(p),
+                head: String::new(),
+                branch: None,
+                bare: false,
+            });
+        } else if let Some(row) = rows.last_mut() {
+            if let Some(h) = line.strip_prefix("HEAD ") {
+                row.head = h.to_string();
+            } else if let Some(b) = line.strip_prefix("branch ") {
+                row.branch = Some(b.strip_prefix("refs/heads/").unwrap_or(b).to_string());
+            } else if line.trim() == "bare" {
+                row.bare = true;
+            }
+        }
+    }
+    rows
+}
+
+fn rows_json(repo: &str, bare: &std::path::Path) -> serde_json::Value {
+    let worktrees: Vec<serde_json::Value> = worktree_rows(bare)
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "path": r.path.to_string_lossy(),
+                "head": r.head,
+                "branch": r.branch,
+                "bare": r.bare,
+                "detached": r.branch.is_none() && !r.bare,
+            })
+        })
+        .collect();
+    serde_json::json!({ "repo": repo, "git_dir": bare.to_string_lossy(), "worktrees": worktrees })
+}
+
+/// `bn wt list --json` — the structured form of the table `cmd_list` prints.
+pub(crate) fn cmd_list_json(cfg: &Config) -> bool {
+    let (bare_dir, _) = layout(cfg);
+    let repos = match find_bare_repo(&cwd()) {
+        Some(bare) => vec![rows_json(&repo_name(&bare), &bare)],
+        None => bare_repos(&bare_dir)
+            .into_iter()
+            .map(|bare| rows_json(&repo_name(&bare), &bare))
+            .collect(),
+    };
+    crate::json_ok("wt-list", serde_json::json!({ "repos": repos }));
+    true
+}
+
 pub(crate) fn cmd_list(cfg: &Config) -> bool {
     let (bare_dir, _) = layout(cfg);
     match find_bare_repo(&cwd()) {
@@ -503,4 +586,44 @@ pub(crate) fn cmd_prune(cfg: &Config) -> bool {
     }
     cprintln!("{GREEN}Pruned stale worktree references{NC}");
     true
+}
+
+#[cfg(test)]
+mod worktree_porcelain_tests {
+    use super::parse_worktree_porcelain;
+
+    /// Real `git worktree list --porcelain` output from a managed clone: the bare dir, a detached
+    /// pool slot, and the default-branch worktree.
+    const SAMPLE: &str = "worktree /p/bare/atlas.git\nbare\n\nworktree /p/worktree/atlas/_pool/1\nHEAD 7f5fb2b6\ndetached\n\nworktree /p/worktree/atlas/main\nHEAD abc1234\nbranch refs/heads/main\n";
+
+    #[test]
+    fn the_bare_entry_is_flagged_and_carries_no_branch() {
+        let rows = parse_worktree_porcelain(SAMPLE);
+        assert!(rows[0].bare);
+        assert_eq!(rows[0].branch, None);
+    }
+
+    /// The bug this parser exists to avoid: a pool slot is checked out DETACHED, so picking an
+    /// arbitrary `worktree list` entry finds no branch and reads as "this repo has no main
+    /// working copy" — which is how the default-branch worktree below gets missed.
+    #[test]
+    fn slot_is_detached_with_no_branch() {
+        let rows = parse_worktree_porcelain(SAMPLE);
+        assert_eq!(rows[1].branch, None);
+        assert_eq!(rows[1].head, "7f5fb2b6");
+        assert!(!rows[1].bare);
+    }
+
+    #[test]
+    fn the_default_branch_worktree_is_found_with_refs_heads_stripped() {
+        let rows = parse_worktree_porcelain(SAMPLE);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[2].branch.as_deref(), Some("main"));
+        assert_eq!(rows[2].path.to_string_lossy(), "/p/worktree/atlas/main");
+    }
+
+    #[test]
+    fn unreadable_or_empty_output_yields_no_rows() {
+        assert!(parse_worktree_porcelain("").is_empty());
+    }
 }

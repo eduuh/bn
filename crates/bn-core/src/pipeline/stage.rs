@@ -251,6 +251,15 @@ pub fn skill_for_note(note: &crate::model::Note) -> Option<String> {
     })
 }
 
+/// The progress note a stage transition leaves on its task.
+pub fn stage_note(stage: Stage, repo: &str, branch: &str) -> String {
+    format!(
+        "stage {}/{}: {stage} ({repo}:{branch})",
+        stage.position(),
+        Stage::ALL.len()
+    )
+}
+
 /// Persist the durable current stage and append its transition event — **through the SMART gate**.
 ///
 /// This is the single enforcement point for #998. Everything that starts work (`bn dispatch`,
@@ -290,6 +299,14 @@ pub fn transition(
     note.front.stage = Some(stage);
     crate::store::save(&note, note_path)?;
     record(&note.front.repo, &note.front.branch, stage)?;
+    // Beside the event, not inside `record`: the event writer stays a pure append, and only a
+    // transition that actually happened is reported to the task's store.
+    crate::task_store::note_governing(
+        cfg,
+        &note.front.repo,
+        &note.front.branch,
+        &stage_note(stage, &note.front.repo, &note.front.branch),
+    );
     Ok(decision)
 }
 

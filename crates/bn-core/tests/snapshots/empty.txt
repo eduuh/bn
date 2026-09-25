@@ -81,6 +81,8 @@ Config {
         daily_budget: 12,
         source_budget: 4,
     },
+    tasks_provider: File,
+    tasks_forge_url: "https://api.wira360.com/mcp",
 }
 
 --- JobConfig

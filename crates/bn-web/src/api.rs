@@ -544,7 +544,9 @@ pub async fn task_detail(State(state): State<AppState>, Path(id): Path<String>) 
         let today = bn_core::util::today();
         // An unreadable store is a real failure, not a missing task — a caller must be able to
         // tell "no such task" from "couldn't read the store".
-        let file = bn_core::todo::load(&st.cfg.tasks_file()).map_err(|e| e.to_string())?;
+        let file = bn_core::task_store::task_store(&st.cfg)
+            .load()
+            .map_err(|e| e.to_string())?;
         let Some(task) = file.tasks().find(|t| t.id() == Some(id.as_str())).cloned() else {
             return Ok(None);
         };

@@ -280,13 +280,16 @@ pub(super) fn act_on_row(
 
 /// `ctrl-o` — the verbs that act on *this* row, in a picker of their own.
 ///
-/// A second fzf spawned by the parent once the first has exited, which is how this codebase does a
-/// second interactive surface (see `open_project`'s loop): fzf's `execute()` cannot hand a value
-/// back, so a nested picker could not report what was chosen.
+/// A second picker spawned by the parent once the first has exited. The frontend follows
+/// `BN_PICKER`, so the row menu stays on the same backend as the list that opened it.
 pub(super) fn row_menu(cfg: &Config, roots: &Roots, project: &str, kind: &str, payload: &str) {
     // A command row is already a verb: ctrl-o on it asks the same question Enter answers.
     if kind == "cmd" {
         run_command(cfg, roots, project, payload);
+        return;
+    }
+    if kind == "poolidle" {
+        pool_slot_menu(cfg, project, payload);
         return;
     }
     let Some(scope) = scope_for_row(kind) else {
@@ -324,6 +327,108 @@ pub(super) fn row_menu(cfg: &Config, roots: &Roots, project: &str, kind: &str, p
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PoolSlotVerb {
+    Warm,
+    Rebuild,
+    Remove,
+}
+
+impl PoolSlotVerb {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Warm => "warm-slot",
+            Self::Rebuild => "rebuild-slot",
+            Self::Remove => "remove-slot",
+        }
+    }
+
+    fn label(self, status: &bn_core::pool::PoolStatus) -> String {
+        match self {
+            Self::Warm => "Warm just this slot".to_string(),
+            Self::Rebuild => "Rebuild this slot from scratch".to_string(),
+            Self::Remove => format!(
+                "Remove this slot — shrinks the pool to {}",
+                status.total.saturating_sub(1)
+            ),
+        }
+    }
+}
+
+fn pool_slot_menu(cfg: &Config, project: &str, payload: &str) {
+    let Ok(slot) = payload.parse::<u32>() else {
+        eprintln!("✗ invalid pool slot: {payload}");
+        crate::picker::hold();
+        return;
+    };
+    let repo = ref_repo(project);
+    let status = bn_core::pool::pool_status(cfg, repo);
+    let Some(actions) = idle_pool_slot_verbs(&status, slot) else {
+        eprintln!("✗ pool slot {slot} is no longer idle");
+        crate::picker::hold();
+        return;
+    };
+    let choices: Vec<(String, String)> = actions
+        .iter()
+        .map(|verb| (verb.id().to_string(), verb.label(&status)))
+        .collect();
+    let header = format!("pool#{slot}");
+    let Some(chosen_id) = pick_one(&choices, &header) else {
+        return;
+    };
+    let Some(chosen) = actions.into_iter().find(|verb| verb.id() == chosen_id) else {
+        return;
+    };
+    let label = chosen.label(&status);
+    let target = format!("pool#{slot}");
+    let cmd = pool_slot_command(chosen, repo, slot);
+    match crate::cmd::wt_action_jobs::start_shell_action(cfg, &label, repo, &target, &cmd) {
+        Ok(started) => println!("✓ {label} — {target} — {}", started.describe()),
+        Err(e) => {
+            eprintln!("✗ {e}");
+            crate::picker::hold();
+        }
+    }
+}
+
+fn idle_pool_slot_verbs(
+    status: &bn_core::pool::PoolStatus,
+    slot: u32,
+) -> Option<Vec<PoolSlotVerb>> {
+    let is_idle = status
+        .slots
+        .iter()
+        .any(|s| s.n == slot && !s.leased && s.warm);
+    if !is_idle {
+        return None;
+    }
+    let mut actions = vec![PoolSlotVerb::Warm];
+    if slot == bn_core::agent::MAIN_POOL_SLOT {
+        return Some(actions);
+    }
+    let removable_top =
+        status.total > bn_core::pool::DEFAULT_POOL_SIZE && slot == status.total as u32;
+    actions.push(if removable_top {
+        PoolSlotVerb::Remove
+    } else {
+        PoolSlotVerb::Rebuild
+    });
+    Some(actions)
+}
+
+fn pool_slot_command(verb: PoolSlotVerb, repo: &str, slot: u32) -> String {
+    let exe = std::env::current_exe().unwrap_or_else(|_| "bn".into());
+    let bn = crate::wt::shq(&exe.display().to_string());
+    let repo = crate::wt::shq(repo);
+    match verb {
+        PoolSlotVerb::Warm => format!("{bn} wt pool warm --repo {repo} --slot {slot} --here"),
+        PoolSlotVerb::Rebuild => format!(
+            "{bn} wt pool destroy {slot} --repo {repo} --yes && {bn} wt pool warm --repo {repo} --slot {slot} --here"
+        ),
+        PoolSlotVerb::Remove => format!("{bn} wt pool destroy {slot} --repo {repo} --yes"),
+    }
+}
+
 /// Which roster scope a place row belongs to, or `None` for the rows that *are* verbs.
 ///
 /// A window and a leased slot both stand in for a worktree — you act on the branch checked out
@@ -338,7 +443,7 @@ fn scope_for_row(kind: &str) -> Option<bn_core::wt_actions::Scope> {
     }
 }
 
-/// Show the scoped verbs in a small fzf and return the chosen one.
+/// Show the scoped verbs in a small picker and return the chosen one.
 fn pick_action<'a>(
     actions: &[&'a bn_core::wt_actions::WtAction],
     branch: &str,
@@ -351,14 +456,33 @@ fn pick_action<'a>(
     actions.iter().copied().find(|a| a.id == id)
 }
 
-/// Show `choices` as `id \t label` in a small fzf and return the chosen id.
+/// Show `choices` as `id \t label` in a small picker and return the chosen id.
 ///
-/// `--with-nth=2` hides the id, matching the hidden-column convention every picker here uses. A
-/// second fzf spawned by the parent once the first has exited, because fzf's `execute()` cannot
-/// hand a value back — which is why `ctrl-o` is in `--expect` rather than a `--bind`.
-///
-/// No fzf on PATH is the same fallback the rest of the module takes: say so and do nothing.
+/// The native path keeps only the label in its row body and returns the hidden id as the chosen
+/// value, matching the hidden-column convention the fzf path uses with `--with-nth=2`.
 pub(super) fn pick_one(choices: &[(String, String)], header: &str) -> Option<String> {
+    match crate::tui::backend() {
+        crate::tui::Backend::Native => native_pick_one(choices, header),
+        crate::tui::Backend::Fzf => fzf_pick_one(choices, header),
+    }
+}
+
+fn native_pick_one(choices: &[(String, String)], header: &str) -> Option<String> {
+    if !crate::tui::interactive() {
+        return None;
+    }
+    let items = choices
+        .iter()
+        .map(|(id, label)| crate::tui::Item::new(format!("  {label}"), id.clone()))
+        .collect();
+    let picker = crate::tui::Picker::new(header, items);
+    match crate::tui::run(picker) {
+        crate::tui::Outcome::Selected { items, .. } => items.into_iter().next(),
+        crate::tui::Outcome::Query(_) | crate::tui::Outcome::Cancelled => None,
+    }
+}
+
+fn fzf_pick_one(choices: &[(String, String)], header: &str) -> Option<String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
     let rows: String = choices

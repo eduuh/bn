@@ -173,9 +173,9 @@ pub struct LiveAgent {
     /// The task this agent is working on, when one is bound to its `(repo, branch)`.
     ///
     /// The fleet could always say an agent was *running*; it could not say what it was running.
-    /// Bound by [`crate::todo::claim`] (which `bn dispatch --task` and `bn task claim` call), and
-    /// absent — rendered as nothing, never as an error — for an agent whose worktree no task
-    /// governs. `#[serde(default)]` keeps older fleet JSON valid.
+    /// Bound by [`crate::task_store::TaskStore::claim`] (which `bn dispatch --task` and
+    /// `bn task claim` call), and absent — rendered as nothing, never as an error — for an agent
+    /// whose worktree no task governs. `#[serde(default)]` keeps older fleet JSON valid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<AgentTask>,
 }
@@ -374,7 +374,7 @@ fn stamp_tasks(cfg: &Config, agents: &mut [LiveAgent]) {
     if agents.is_empty() {
         return;
     }
-    let Ok(file) = crate::todo::load(&cfg.tasks_file()) else {
+    let Ok(file) = crate::task_store::task_store(cfg).load() else {
         return;
     };
     let tasks: Vec<crate::todo::Task> = file.tasks().cloned().collect();

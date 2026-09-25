@@ -49,6 +49,7 @@ pub mod fleet_gc;
 pub mod flock;
 pub mod focus;
 pub mod forge;
+pub mod forge_app;
 pub mod forge_local;
 pub mod gh_pin;
 pub mod gitbase;
@@ -120,6 +121,7 @@ pub mod task_doc;
 pub mod task_owner;
 pub mod task_priority;
 pub mod task_pull;
+pub mod task_store;
 pub mod template;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;

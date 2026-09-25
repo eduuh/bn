@@ -52,6 +52,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+mod ids;
+
 /// Meta key holding a task's immutable identity (see the module docs on union merges).
 pub const UID_KEY: &str = "uid";
 /// Meta key holding a task's last-modified epoch seconds.
@@ -368,6 +370,22 @@ impl Task {
         }
     }
 
+    /// Drop a `key:value` meta entirely. `true` when one was present.
+    ///
+    /// Distinct from setting it empty: an absent key and a key with a blank value read very
+    /// differently (a cleared `smart:` verdict means "unjudged", `smart:` with nothing after it
+    /// means a bug).
+    pub fn remove_meta(&mut self, key: &str) -> bool {
+        let before = self.desc.len();
+        self.desc
+            .retain(|t| !matches!(t, Token::Meta(k, _) if k == key));
+        let removed = self.desc.len() != before;
+        if removed {
+            self.touch();
+        }
+        removed
+    }
+
     /// Mark in progress by adding the `@wip` context (idempotent — no duplicate).
     pub fn mark_wip(&mut self) {
         if !self.contexts().contains(&"wip") {
@@ -556,6 +574,8 @@ enum Line {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TodoFile {
     lines: Vec<Line>,
+    /// See [`TodoFile::id_floor`].
+    id_floor: u64,
 }
 
 impl TodoFile {
@@ -571,7 +591,7 @@ impl TodoFile {
                 }
             })
             .collect();
-        TodoFile { lines }
+        TodoFile { lines, id_floor: 0 }
     }
 
     /// Render back to file text with a trailing newline (empty file ⇒ empty string).
@@ -607,18 +627,6 @@ impl TodoFile {
         })
     }
 
-    /// The next `t<N>` id: one past the highest ever assigned, so ids of done/cancelled tasks are
-    /// never reused (matching the note-section id discipline in [`crate::id`]).
-    pub fn next_id(&self) -> String {
-        let max = self
-            .tasks()
-            .filter_map(|t| t.id())
-            .filter_map(|id| id.strip_prefix('t').and_then(|n| n.parse::<u64>().ok()))
-            .max()
-            .unwrap_or(0);
-        format!("t{}", max + 1)
-    }
-
     /// Append a new task built from free `text` (which may inline `+project`/`@context`), stamped
     /// with a fresh id, `created` date, `branch:` scope, and `src:` provenance. Returns the id.
     pub fn add(
@@ -641,42 +649,6 @@ impl TodoFile {
     /// healed, so the corrected id numbering is written durably rather than re-derived on next read.
     pub fn push_task(&mut self, task: Task) {
         self.lines.push(Line::Task(task));
-    }
-
-    /// Make every task's `id:` unique and present. A union-merge of the shared file (see
-    /// `.gitattributes`) can concatenate two branches that each minted `t6`, and hand-added lines
-    /// may carry no `id:` at all. In file order, the first valid unique `t<N>` is kept; any
-    /// duplicate, malformed, or missing id is reassigned to a fresh `t<max+1>`. Deterministic, so
-    /// repeated read-only `list`s show stable ids; a later mutation persists the healed numbering.
-    pub fn heal_ids(&mut self) {
-        use std::collections::HashSet;
-        let parse = |id: &str| id.strip_prefix('t').and_then(|n| n.parse::<u64>().ok());
-        let mut max = self
-            .tasks()
-            .filter_map(|t| t.id().and_then(parse))
-            .max()
-            .unwrap_or(0);
-        let mut seen: HashSet<String> = HashSet::new();
-        for line in &mut self.lines {
-            let Line::Task(t) = line else { continue };
-            let keep = t
-                .id()
-                .filter(|id| parse(id).is_some() && !seen.contains(*id))
-                .map(str::to_string);
-            match keep {
-                Some(id) => {
-                    seen.insert(id);
-                }
-                None => {
-                    max += 1;
-                    let nid = format!("t{max}");
-                    // Raw: healing runs on every `load`, and stamping `mod:` here would make a
-                    // merely-listed stale copy outrank the real one in `dedupe_by_uid`.
-                    t.set_meta_raw("id", &nid);
-                    seen.insert(nid);
-                }
-            }
-        }
     }
 
     /// Collapse lines that a union merge duplicated, keeping each task's newest version.

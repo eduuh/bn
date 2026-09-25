@@ -13,6 +13,8 @@ use crate::resolver::Config;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
+pub mod forge;
+
 pub fn config(root: &Path) -> Config {
     config_with_hostname(root, "testhost")
 }

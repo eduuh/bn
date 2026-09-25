@@ -2,6 +2,9 @@ use crate::*;
 
 pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
     match action {
+        CmdAutomation::Forge { action } => {
+            std::process::exit(crate::cmd::forge_app::run(cfg, action, json))
+        }
         CmdAutomation::Jump {
             next,
             session,

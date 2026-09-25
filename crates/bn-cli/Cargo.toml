@@ -20,6 +20,8 @@ clap_complete.workspace = true
 dirs.workspace = true
 netstat2.workspace = true
 notify.workspace = true
+crossterm.workspace = true
+nucleo-matcher.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

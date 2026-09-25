@@ -192,7 +192,7 @@ fn task_tier(cfg: &Config, item: &AttnItem) -> AutoVerdict {
     let Some(id) = task_id_of(item) else {
         return AutoVerdict::Denied("item names no task");
     };
-    let Ok(file) = crate::todo::load(&cfg.tasks_file()) else {
+    let Ok(file) = crate::task_store::task_store(cfg).load() else {
         return AutoVerdict::Denied("task store unreadable");
     };
     let Some(task) = file.tasks().find(|t| t.id() == Some(id)).cloned() else {

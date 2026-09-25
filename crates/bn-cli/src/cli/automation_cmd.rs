@@ -6,6 +6,12 @@ use crate::*;
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum CmdAutomation {
+    /// The Forge app as bn's task store (`[tasks] provider = "forge"`). `bn forge login` mints the
+    /// agent member's key through your signed-in browser; `bn forge status` checks it.
+    Forge {
+        #[command(subcommand)]
+        action: crate::cli::ForgeAppCmd,
+    },
     /// What each agent harness serves — the model ids and reasoning-effort levels it accepts.
     /// Discovered from the harness itself (Copilot enumerates them in its shell completion) and
     /// cached for a day, so a pipeline stage is never configured with a model that will be silently
@@ -35,10 +41,12 @@ pub(crate) enum CmdAutomation {
         #[arg(hide = true, allow_hyphen_values = true)]
         pick_fields: Vec<String>,
     },
-    /// Project + worktree picker (prefix `C-o`): an fzf popup over your repos (bare + flat clones)
-    /// and live tmux sessions, frecency-sorted, with a git-status preview. ↵ opens the project (a
-    /// bare repo opens a window/worktree sub-picker); type `repo/branch` to create that worktree,
-    /// or paste a git URL to clone it; ctrl-x kills a session. Plain list when fzf is absent.
+    /// Project + worktree picker (prefix `C-o`): an interactive popup over your repos (bare + flat
+    /// clones) and live tmux sessions, frecency-sorted, with a git-status preview. ↵ opens the
+    /// project (a bare repo opens a window/worktree sub-picker); type `repo/branch` to create that
+    /// worktree, or paste a git URL to clone it; ctrl-x kills a session. `BN_PICKER=native`
+    /// switches to the crossterm/nucleo frontend; otherwise fzf stays the default. Plain list when
+    /// no interactive frontend is available.
     Tat {
         /// Open this project/worktree directly (`<name>`, `<repo>/<branch>`, or a git URL). Omit
         /// for the interactive picker. Also carries the hidden `ref` for `--pick-stage`.

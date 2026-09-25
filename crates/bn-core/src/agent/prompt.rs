@@ -129,6 +129,10 @@ pub struct PendingPrompt {
     /// on screen, so a list whose top scrolled away is never judged on the half that is visible.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
+    /// The options are chosen by moving a `❯` cursor and pressing enter (Copilot's `ask_user`
+    /// form), not by typing their number. Answering sends cursor keys instead of a digit.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cursor: bool,
 }
 
 impl PendingPrompt {
@@ -196,7 +200,10 @@ pub fn parse_pending_prompt(
     let block = orchestrate::trailing_menu_block(tail);
     let (heading_start, menu_start, last_option) = match block {
         Some(b) => b,
-        None => return trust_menu_without_options(state, tail, plane_a),
+        None => {
+            return cursor_menu_prompt(tail, plane_a)
+                .or_else(|| trust_menu_without_options(state, tail, plane_a))
+        }
     };
 
     let options: Vec<PromptOption> = tail[menu_start..=last_option]
@@ -247,6 +254,7 @@ pub fn parse_pending_prompt(
             .chain(dialog_lines(&tail[menu_start..]))
             .collect(),
         paths: requested_paths(&tail[heading_start..menu_start]),
+        cursor: false,
     })
 }
 
@@ -291,7 +299,51 @@ fn trust_menu_without_options(
             fingerprint: super::pane_activity_fingerprint(tail, plane_a),
             excerpt: heading,
             paths: Vec::new(),
+            cursor: false,
         }
+    })
+}
+
+/// A Copilot `ask_user` form ([`orchestrate::cursor_menu_block`]) as a question menu. The question
+/// is the nearest line above the options that asks one; the lines between it and the options are
+/// its description. Always [`PaneState::QuestionMenu`]: it is the agent asking for a decision, so
+/// no policy may answer it, but every surface can now see it and a person can answer it.
+fn cursor_menu_prompt(tail: &[String], plane_a: &str) -> Option<PendingPrompt> {
+    let (menu_start, last_option) = orchestrate::cursor_menu_block(tail)?;
+    let options = tail[menu_start..=last_option]
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let text = unframe(line).trim();
+            let selected = text.starts_with('❯');
+            let label = text.trim_start_matches('❯').trim().to_string();
+            PromptOption {
+                number: i as u8 + 1,
+                semantic: PromptSemantic::classify(&label),
+                label,
+                selected,
+            }
+        })
+        .collect();
+    let q = tail[..menu_start].iter().rposition(|l| l.contains('?'));
+    let question = q
+        .map(|i| unframe(&tail[i]).trim().trim_end_matches(':').to_string())
+        .unwrap_or_default();
+    let described = q.map_or(menu_start, |i| i + 1);
+    let subject: Vec<String> = tail[described..menu_start]
+        .iter()
+        .map(|l| unframe(l).trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    Some(PendingPrompt {
+        kind: PaneState::QuestionMenu,
+        question,
+        subject: (!subject.is_empty()).then(|| subject.join(" ")),
+        options,
+        fingerprint: super::pane_activity_fingerprint(tail, plane_a),
+        excerpt: dialog_lines(&tail[q.unwrap_or(menu_start)..]),
+        paths: Vec::new(),
+        cursor: true,
     })
 }
 
@@ -376,3 +428,7 @@ fn split_heading(heading: &[String]) -> (String, Option<String>) {
     };
     (question, (!subject.is_empty()).then_some(subject))
 }
+
+#[cfg(test)]
+#[path = "prompt_tests.rs"]
+mod tests;

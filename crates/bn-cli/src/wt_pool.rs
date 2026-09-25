@@ -37,7 +37,12 @@ pub fn run(cfg: &Config, action: wt::PoolCmd) -> bool {
         } => pool_get(cfg, branch, repo, holder, path, no_tmux),
         wt::PoolCmd::Return { target, force } => pool_return(cfg, target, force),
         wt::PoolCmd::Status { repo } => pool_status(cfg, repo),
-        wt::PoolCmd::Warm { repo, here, new } => pool_warm(cfg, repo, here, new),
+        wt::PoolCmd::Warm {
+            repo,
+            here,
+            new,
+            slot,
+        } => pool_warm(cfg, repo, here, new, slot),
         wt::PoolCmd::Metrics { path, repo } => pool_metrics(cfg, path, repo),
         wt::PoolCmd::Prune {
             repo,

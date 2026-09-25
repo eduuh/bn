@@ -180,9 +180,10 @@ pub(crate) fn load_task(
     cfg: &bn_core::resolver::Config,
     id: &str,
 ) -> Result<bn_core::todo::Task, String> {
-    let path = cfg.tasks_file();
-    let _lock = bn_core::todo::lock(&path);
-    bn_core::todo::load(&path)
+    let store = bn_core::task_store::task_store(cfg);
+    let _lock = store.lock();
+    store
+        .load()
         .map_err(|e| e.to_string())?
         .tasks()
         .find(|t| t.id() == Some(id))
@@ -302,13 +303,10 @@ pub async fn task_create(
     let cfg = state.cfg.clone();
     let audit_title = title.clone();
     let created = tokio::task::spawn_blocking(move || {
-        let path = cfg.tasks_file();
+        let store = bn_core::task_store::task_store(&cfg);
         let task = {
-            let _lock = bn_core::todo::lock(&path);
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let mut file = bn_core::todo::load(&path).map_err(|e| e.to_string())?;
+            let _lock = store.lock();
+            let mut file = store.load().map_err(|e| e.to_string())?;
             let today = bn_core::util::today();
             let id = file.next_id();
             // The title comes off the wire, so defang it before it becomes a description — a task
@@ -330,7 +328,7 @@ pub async fn task_create(
                 task.set_meta_raw("src", src);
             }
             file.push_task(task.clone());
-            bn_core::todo::save(&path, &file).map_err(|e| e.to_string())?;
+            store.save(&file).map_err(|e| e.to_string())?;
             task
         };
         // The store write is what makes the task exist, so it goes first and alone. Everything
@@ -443,9 +441,9 @@ pub async fn task_action(
     let cfg = state.cfg.clone();
     let (act, val, task_id) = (action.clone(), value.clone(), id.clone());
     let result = tokio::task::spawn_blocking(move || {
-        let path = cfg.tasks_file();
-        let _lock = bn_core::todo::lock(&path);
-        let mut file = bn_core::todo::load(&path).map_err(|e| e.to_string())?;
+        let store = bn_core::task_store::task_store(&cfg);
+        let _lock = store.lock();
+        let mut file = store.load().map_err(|e| e.to_string())?;
         let today = bn_core::util::today();
         // The Start gate. Enforced here rather than by hiding a button, because the dashboard is
         // not the only caller: the CLI and every agent hit this same endpoint, and a rule that
@@ -486,7 +484,7 @@ pub async fn task_action(
         if !ok {
             return Err(format!("no task {task_id}"));
         }
-        bn_core::todo::save(&path, &file).map_err(|e| e.to_string())?;
+        store.save(&file).map_err(|e| e.to_string())?;
         Ok::<(), String>(())
     })
     .await;
@@ -573,10 +571,10 @@ pub async fn task_doc_append(
     let cfg = state.cfg.clone();
     let task_id = id.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let path = cfg.tasks_file();
+        let store = bn_core::task_store::task_store(&cfg);
         let task = {
-            let _lock = bn_core::todo::lock(&path);
-            let file = bn_core::todo::load(&path).map_err(|e| e.to_string())?;
+            let _lock = store.lock();
+            let file = store.load().map_err(|e| e.to_string())?;
             let found = file
                 .tasks()
                 .find(|t| t.id() == Some(task_id.as_str()))
@@ -645,10 +643,10 @@ pub async fn task_doc_edit(
     let cfg = state.cfg.clone();
     let task_id = id.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let path = cfg.tasks_file();
+        let store = bn_core::task_store::task_store(&cfg);
         let task = {
-            let _lock = bn_core::todo::lock(&path);
-            let file = bn_core::todo::load(&path).map_err(|e| e.to_string())?;
+            let _lock = store.lock();
+            let file = store.load().map_err(|e| e.to_string())?;
             let found = file
                 .tasks()
                 .find(|t| t.id() == Some(task_id.as_str()))

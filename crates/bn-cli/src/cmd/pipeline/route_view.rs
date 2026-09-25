@@ -16,8 +16,9 @@ struct Row {
 
 /// `bn pipeline route [--task <id>] [--all]`.
 pub(crate) fn emit_pipeline_route(cfg: &Config, task: Option<&str>, all: bool, as_json: bool) {
-    let path = crate::cmd::task::task_path(cfg);
-    let file = bn_core::todo::load(&path).unwrap_or_else(|e| fail(&format!("bn pipeline route: {e}")));
+    let file = crate::cmd::task::task_store(cfg)
+        .load()
+        .unwrap_or_else(|e| fail(&format!("bn pipeline route: {e}")));
     let today = today();
 
     let selected: Vec<Task> = match task {

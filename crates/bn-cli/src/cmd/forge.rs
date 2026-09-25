@@ -158,6 +158,7 @@ fn run_with_client<C: ForgeMcpClient>(
                 skill.as_str(),
                 name.as_deref(),
                 verify,
+                false,
                 json_output,
             )
                 .map_err(|message| {
@@ -341,6 +342,7 @@ fn run_tick<C: ForgeMcpClient>(
                 req.skill.as_str(),
                 None,
                 false,
+                true,
                 req.json_output,
             ) {
                 Ok(()) => dispatched.push(task.id),
@@ -402,6 +404,10 @@ fn dispatch_claimed(
     skill: &str,
     name: Option<&str>,
     verify: bool,
+    // The poller's dispatch has no one watching: it gets the unattended stance (no `ask_user`, no
+    // live plan confirmation) and the consensus plan gate instead. A hand-run dispatch stays
+    // interactive. Without this, a Forge agent proposed a plan and sat waiting for a human.
+    unattended: bool,
     json_output: bool,
 ) -> Result<(), String> {
     let item = forge_dispatch_item(task, profile);
@@ -412,6 +418,7 @@ fn dispatch_claimed(
         .skill(Some(skill))
         .task(Some(&task.id))
         .verify(verify)
+        .yolo(unattended)
         .json(json_output)
         .launch()
 }

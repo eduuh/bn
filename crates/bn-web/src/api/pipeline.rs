@@ -92,7 +92,7 @@ pub async fn pipeline_stages(State(state): State<AppState>) -> Response {
             .await
             .unwrap_or_default();
 
-    let file = match bn_core::todo::load(&state.cfg.tasks_file()) {
+    let file = match bn_core::task_store::task_store(&state.cfg).load() {
         Ok(f) => f,
         // An unreadable store is a real failure, not an empty pipeline — the same honesty rule
         // `/api/tasks` and the issue cache follow.

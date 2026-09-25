@@ -186,13 +186,10 @@ fn plan_repo_pull(
     now: i64,
     today: &str,
 ) -> Result<RepoPullPlan, String> {
-    let path = crate::cmd::task::task_path(cfg);
-    let _lock = bn_core::todo::lock(&path);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("keep-warm: could not prepare task store: {error}"))?;
-    }
-    let mut file = bn_core::todo::load(&path)
+    let store = crate::cmd::task::task_store(cfg);
+    let _lock = store.lock();
+    let mut file = store
+        .load()
         .map_err(|error| format!("keep-warm: could not load task store: {error}"))?;
 
     let existing = bn_core::task_pull::existing_srcs(&file);
@@ -202,7 +199,8 @@ fn plan_repo_pull(
 
     if !plan.issues.is_empty() {
         crate::cmd::task::append_pulled_tasks(&mut file, &plan.issues, today);
-        bn_core::todo::save(&path, &file)
+        store
+            .save(&file)
             .map_err(|error| format!("keep-warm: could not save task store: {error}"))?;
     }
 

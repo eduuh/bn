@@ -58,6 +58,7 @@ mod systemd;
 mod tat;
 mod timers;
 mod toast;
+mod tui;
 mod version;
 mod winsched;
 #[rustfmt::skip]

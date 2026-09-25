@@ -198,10 +198,15 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
     let now = bn_core::util::now_epoch_secs();
     let catalog = bn_core::agents::discover(cfg, ctx)
         .unwrap_or_else(|error| fail(&format!("bn cron: {error}")));
-    let agent_views = bn_core::crons::agent_schedule_views(&catalog, &runs, now);
+    let declared = bn_core::crons::discover(cfg, ctx);
+    let scheduler_enabled = bn_core::crons::declares_job(&declared, "agent-scheduler");
+    let agent_views = if scheduler_enabled {
+        bn_core::crons::agent_schedule_views(&catalog, &runs, now)
+    } else {
+        Vec::new()
+    };
     let scheduled_agents: std::collections::HashSet<&str> =
         agent_views.iter().map(|agent| agent.job.as_str()).collect();
-    let declared = bn_core::crons::discover(cfg, ctx);
 
     // Job-name universe, scheduled first → scripted → run-only orphans (insertion order kept).
     let mut names: Vec<String> = Vec::new();
@@ -224,6 +229,9 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
     }
     for r in &runs {
         add(&r.job, &mut names);
+    }
+    if !scheduler_enabled {
+        names.retain(|name| name != "agent-scheduler");
     }
     names.retain(|name| !scheduled_agents.contains(name.as_str()));
 
@@ -287,7 +295,8 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
                 } else {
                     false
                 };
-                let agents: &[bn_core::crons::AgentScheduleView] = if name == "agent-scheduler" {
+                let agents: &[bn_core::crons::AgentScheduleView] =
+                    if scheduler_enabled && name == "agent-scheduler" {
                     &agent_views
                 } else {
                     &[]
@@ -396,7 +405,7 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
         };
         println!("{:<24} {last}", "");
 
-        if name == "agent-scheduler" && !agent_views.is_empty() {
+        if scheduler_enabled && name == "agent-scheduler" && !agent_views.is_empty() {
             for a in &agent_views {
                 let state = a
                     .retry_at

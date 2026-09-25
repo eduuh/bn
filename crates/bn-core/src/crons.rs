@@ -159,6 +159,11 @@ pub fn discover(cfg: &Config, ctx: Option<&Resolved>) -> Vec<ResolvedCron> {
     out
 }
 
+/// Whether the resolved cron manifest currently declares `job`.
+pub fn declares_job(declared: &[ResolvedCron], job: &str) -> bool {
+    declared.iter().any(|cron| cron.entry.job == job)
+}
+
 /// The job names marked `catch_up = true` in the resolved manifest — the jobs the day's first bn
 /// event should kick off (see [`CronEntry::catch_up`]). Deduped, in discovery order.
 pub fn catch_up_jobs(cfg: &Config, ctx: Option<&Resolved>) -> Vec<String> {
@@ -527,7 +532,11 @@ pub fn agent_schedule_views(
 /// job scripts ([`list_jobs`]) for `ctx`, then [`fold_cron_views`] them into the dashboard rows.
 /// Pass `ctx = None` for the machine-wide (global-tier) registry the web dashboard shows.
 pub fn status_views(cfg: &Config, ctx: Option<&Resolved>) -> Vec<CronView> {
-    let mut views = fold_cron_views(&discover(cfg, ctx), &cron_status(), &list_jobs(cfg, ctx));
+    let declared = discover(cfg, ctx);
+    let mut views = fold_cron_views(&declared, &cron_status(), &list_jobs(cfg, ctx));
+    if !declares_job(&declared, "agent-scheduler") {
+        views.retain(|view| view.job != "agent-scheduler");
+    }
     // Enrich a failing job with its last run's captured output tail (the exit code + time are
     // already folded above) so the dashboard can show *why* it broke without a shell. Kept off the
     // pure fold — it's an extra event-log read per failing job — and bounded to the persisted tail.
@@ -551,21 +560,27 @@ pub fn status_views_with_agents(
     cfg: &Config,
     ctx: Option<&Resolved>,
 ) -> Result<Vec<CronView>, crate::agents::AgentCatalogError> {
+    let views = status_views(cfg, ctx);
+    if !declares_job(&discover(cfg, ctx), "agent-scheduler") {
+        return Ok(views);
+    }
     let catalog = crate::agents::discover(cfg, ctx)?;
     let runs = cron_status();
     let children = agent_schedule_views(&catalog, &runs, crate::util::now_epoch_secs());
-    Ok(nest_agent_schedules(status_views(cfg, ctx), children))
+    Ok(nest_agent_schedules(views, children))
 }
 
 fn nest_agent_schedules(
     mut views: Vec<CronView>,
     children: Vec<AgentScheduleView>,
 ) -> Vec<CronView> {
-    let child_names: std::collections::HashSet<&str> =
-        children.iter().map(|agent| agent.job.as_str()).collect();
-    views.retain(|view| !child_names.contains(view.job.as_str()));
-    if let Some(scheduler) = views.iter_mut().find(|view| view.job == "agent-scheduler") {
-        scheduler.agents = children;
+    if views.iter().any(|view| view.job == "agent-scheduler") {
+        let child_names: std::collections::HashSet<&str> =
+            children.iter().map(|agent| agent.job.as_str()).collect();
+        views.retain(|view| !child_names.contains(view.job.as_str()));
+        if let Some(scheduler) = views.iter_mut().find(|view| view.job == "agent-scheduler") {
+            scheduler.agents = children;
+        }
     }
     views
 }
@@ -739,5 +754,42 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["alpha", "beta"]
         );
+    }
+
+    #[test]
+    fn child_rows_are_preserved_without_a_scheduler_row() {
+        let views = vec![cron("alpha"), cron("plain-cron"), cron("beta")];
+        let nested = nest_agent_schedules(views, vec![agent("alpha"), agent("beta")]);
+
+        assert_eq!(
+            nested
+                .iter()
+                .map(|view| view.job.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "plain-cron", "beta"]
+        );
+    }
+
+    #[test]
+    fn status_views_hide_scheduler_history_when_it_is_undeclared() {
+        let _lock = crate::test_support::env_lock();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _cfg_dir =
+            crate::test_support::EnvGuard::set("BN_CONFIG_DIR", temp.path().join("config"));
+        let _jobs = crate::test_support::EnvGuard::set("BN_JOBS_DIR", temp.path().join("jobs"));
+        let _state = crate::test_support::EnvGuard::set("BN_STATE_DIR", temp.path().join("state"));
+        let cfg = Config {
+            personal_root: temp.path().join("personal"),
+            work_root: temp.path().join("work"),
+            hostname: "test-host".to_string(),
+            ..Default::default()
+        };
+
+        crate::events::log_cron_run("agent-scheduler", "global", None, None, 1, 10, 0, "ok")
+            .expect("scheduler run");
+
+        assert!(!status_views(&cfg, None)
+            .iter()
+            .any(|view| view.job == "agent-scheduler"));
     }
 }

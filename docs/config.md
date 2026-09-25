@@ -210,6 +210,45 @@ inherits from the wider layer.
 | `min_free_ram_mb`, `max_loadavg`, `max_swap_pct`, `tokens_per_hour`, `daily_cost_usd`, `daily_cost_usd_coding`, `daily_cost_usd_research` | off | Pause local dispatch past these limits. |
 | `remote_overflow` | `false` | Send `auto` work to a hosted runner when local is full. |
 
+### `[tasks]`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `provider` | `"file"` | Where the task list lives. `"file"` is `<notes_root>/tasks.txt`. `"forge"` is the Forge app (forge.wira360.com), read and written through its MCP endpoint. It never falls back to the file. An unknown word is reported and uses `"file"`. |
+| `forge_url` | `"https://api.wira360.com/mcp"` | The Forge MCP endpoint that `provider = "forge"` and `bn forge` talk to. |
+
+With `provider = "forge"`, bn needs a Forge key for the family's agent member:
+
+- `BN_FORGE_TOKEN`, when set, wins.
+- Otherwise `<config_dir>/forge-token`, written with mode 0600 by `bn forge login`. The command
+  opens Forge in a browser through `playwright-cli` (install `@playwright/cli`), waits for you to
+  sign in, and mints the key inside the page. `bn forge login --paste` reads a key from stdin
+  instead.
+- Without a key, every task read and write fails and says to run `bn forge login`.
+
+`bn forge status` shows where the key comes from (never the key), whether the MCP session opens,
+the goals that carry a repository, and how many agent tasks are open and claimed.
+
+In Forge mode an activity maps to a task like this: the title is the description, `src:forge:<id>`
+links it back, `repo:` comes from the activity's meta or else the goal's repository, and
+Urgent/High/Medium are `(A)`/`(B)`/`(C)`. A save sends only the fields that changed, and a meta
+write that finds the activity changed since it was loaded fails instead of overwriting it. A new
+task is created under the goal whose repository matches its `repo:`, or else under the goal named
+Inbox. bn ids are never reused: the highest per endpoint is kept in `<state_dir>/forge-ids.json`.
+
+`bn forge sweep` runs the agent loop once in Forge mode (the `forge-agent` skill walks through it).
+Nothing runs it automatically: run it by hand, or from your own cron.
+
+- **Claim.** At most once a minute, an open task assigned to the agent member that nothing has
+  started is claimed when its repository is cloned here, `[machine] repos` allows it, and this
+  machine holds fewer than `--max` (default 1) claims without a PR. The claim writes
+  `repo:<local clone>`, comments `claimed by bn@<node>`, and starts the task with
+  `bn dispatch --task <id>`.
+- **Comments.** Stage transitions, SMART refusals and `bn agent done` comment on the task. A failed
+  comment is logged and never fails the step.
+- **Merge.** `bn agent done --pr <url>` stores `pr:` and leaves the task open. The sweep asks
+  `gh pr view` about it at most every ten minutes and completes the task once the PR is merged.
+
 ### `[jobs.only_on]`
 
 | Key | Default | Meaning |
@@ -233,6 +272,7 @@ No setting is read from the environment. What bn does read:
 | `BN_COLOR` | `always` or `never` for terminal colour. `NO_COLOR` is honoured too. |
 | `BN_AGENT_GUARD=0`, `BN_NO_CATCHUP` | One-run escape hatches: skip agent placement rules, skip cron catch-up. |
 | `BN_DISPATCH_PIPELINE=1` | Make the legacy multi-stage pipeline the `bn dispatch` default. |
+| `BN_FORGE_TOKEN` | The Forge key for `[tasks] provider = "forge"`. Wins over `<config_dir>/forge-token`. |
 
 Job scripts under `config/jobs/` read their own `BN_*` parameters, documented at the top of each
 script.

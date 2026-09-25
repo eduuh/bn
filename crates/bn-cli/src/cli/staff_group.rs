@@ -133,12 +133,6 @@ pub(crate) enum CmdStaff {
         #[arg(long)]
         pick: bool,
     },
-    /// Forge local-agent bridge. Uses `~/.config/wira360/agents/<agent>.json`, OAuth MCP only
-    /// (no API keys), side-effect-free list, exact-one claim, then existing `bn dispatch`.
-    Forge {
-        #[command(subcommand)]
-        action: ForgeCmd,
-    },
     /// MCP server helpers. `bn mcp init <claude|copilot>` wires the current repo: the
     /// project-scoped MCP config(s) plus an instruction block in the harness's memory file
     /// (copilot wires both the VS Code extension and the Copilot CLI). Idempotent and

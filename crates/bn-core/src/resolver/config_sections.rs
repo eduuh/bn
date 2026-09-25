@@ -75,6 +75,16 @@ pub(super) struct LinksSection {
     pub(super) tags: Option<Vec<String>>,
 }
 
+/// `[tasks]`: where the task list lives. `provider` is the raw word, parsed by
+/// [`crate::task_store::TaskProviderKind::parse`]: `"file"` (the default, `tasks.txt`) or
+/// `"forge"`. `forge_url` is the Forge MCP endpoint (default
+/// [`crate::forge_app::DEFAULT_FORGE_URL`]).
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub(super) struct TasksSection {
+    pub(super) provider: Option<String>,
+    pub(super) forge_url: Option<String>,
+}
+
 /// `[web]`: the `bn-web` dashboard server (#386/#388). All optional — absent falls back to the
 /// loopback / 7770 / 2s defaults resolved in [`super::WebConfig`].
 #[derive(Debug, Clone, Default, serde::Deserialize)]

@@ -99,12 +99,9 @@ fn ensure_repair_task(
     output_tail: Option<&str>,
     today: &str,
 ) -> Option<(String, bool)> {
-    let path = cfg.tasks_file();
-    let _lock = bn_core::todo::lock(&path);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let mut file = bn_core::todo::load(&path).ok()?;
+    let store = crate::cmd::task::task_store(cfg);
+    let _lock = store.lock();
+    let mut file = store.load().ok()?;
     let key = format!("cron-repair:{}", status.job);
     if let Some(existing) = file
         .tasks()
@@ -127,7 +124,7 @@ fn ensure_repair_task(
     task.set_meta_raw("key", &key);
     task.set_meta_raw("cron", &status.job);
     file.push_task(task);
-    bn_core::todo::save(&path, &file).ok()?;
+    store.save(&file).ok()?;
     Some((id, true))
 }
 
@@ -152,9 +149,9 @@ fn close_recovered_repairs(
 ) -> usize {
     let raising: std::collections::HashSet<&str> =
         alerting.iter().map(|status| status.job.as_str()).collect();
-    let path = cfg.tasks_file();
-    let _lock = bn_core::todo::lock(&path);
-    let Ok(mut file) = bn_core::todo::load(&path) else {
+    let store = crate::cmd::task::task_store(cfg);
+    let _lock = store.lock();
+    let Ok(mut file) = store.load() else {
         return 0;
     };
     let stale: Vec<String> = file
@@ -170,7 +167,7 @@ fn close_recovered_repairs(
     for id in &stale {
         file.cancel(id, today, Some("cron-recovered"));
     }
-    if !stale.is_empty() && bn_core::todo::save(&path, &file).is_err() {
+    if !stale.is_empty() && store.save(&file).is_err() {
         return 0;
     }
     stale.len()

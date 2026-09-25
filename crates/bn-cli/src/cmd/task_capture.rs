@@ -127,9 +127,10 @@ pub(crate) fn report(stored: &[String], problems: &[String]) {
 
 /// Find one task by id, or exit.
 fn task_by_id(cfg: &Config, id: &str) -> Task {
-    let path = cfg.tasks_file();
-    let _lock = bn_core::todo::lock(&path);
-    bn_core::todo::load(&path)
+    let store = crate::cmd::task::task_store(cfg);
+    let _lock = store.lock();
+    store
+        .load()
         .unwrap_or_else(|e| fail(&format!("bn task attach: {e}")))
         .tasks()
         .find(|t| t.id() == Some(id))

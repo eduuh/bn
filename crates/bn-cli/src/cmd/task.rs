@@ -19,9 +19,10 @@ pub(crate) enum TaskOp<'a> {
     Cancel(Option<&'a str>),
 }
 
-/// The global task store's path. No repo required — that is the point of the store.
-pub(crate) fn task_path(cfg: &Config) -> std::path::PathBuf {
-    cfg.tasks_file()
+/// The global task store, whichever provider `[tasks]` names. No repo required — that is the
+/// point of the store.
+pub(crate) fn task_store(cfg: &Config) -> Box<dyn bn_core::task_store::TaskStore> {
+    bn_core::task_store::task_store(cfg)
 }
 
 /// The current worktree's repo/branch, when there is one. `None` outside a git repo, which is a
@@ -56,8 +57,7 @@ pub(crate) fn emit_task_claim(
             ),
         },
     };
-    let path = task_path(cfg);
-    match bn_core::todo::claim(&path, id, &repo, &branch) {
+    match task_store(cfg).claim(id, &repo, &branch) {
         Ok(true) => {}
         Ok(false) => fail_json(
             as_json,
@@ -105,8 +105,9 @@ fn warn_legacy_todo() {
 pub(crate) fn emit_task_list(cfg: &Config, view: TaskView, repo: Option<&str>, as_json: bool) {
     warn_legacy_todo();
     let scope = repo_scope(cfg, repo);
-    let path = task_path(cfg);
-    let file = bn_core::todo::load(&path).unwrap_or_else(|e| fail(&format!("bn task: {e}")));
+    let file = task_store(cfg)
+        .load()
+        .unwrap_or_else(|e| fail(&format!("bn task: {e}")));
     let today = today();
 
     let items = select_tasks(&file, view, &scope, &today);
@@ -192,14 +193,14 @@ pub(crate) fn emit_task_add(
         }
     }
     warn_legacy_todo();
-    let path = task_path(cfg);
+    let store = task_store(cfg);
     let ctx = task_ctx_opt(cfg);
     // Serialize this read-modify-write against a concurrent mutate/ingest rewrite (held to fn end).
-    let _lock = bn_core::todo::lock(&path);
-    // Append-only: read just to mint the next id, then append one line — a concurrent add
-    // concatenates rather than clobbering, and existing lines are never reflowed.
-    let raw = std::fs::read_to_string(&path).unwrap_or_default();
-    let mut file = bn_core::todo::load(&path).unwrap_or_else(|e| fail(&format!("bn task: {e}")));
+    let _lock = store.lock();
+    // Read just to mint the next id; `append` then adds the one line without reflowing the rest.
+    let file = store
+        .load()
+        .unwrap_or_else(|e| fail(&format!("bn task: {e}")));
     let today = today();
     let id = file.next_id();
     let branch = ctx.as_ref().map(|c| c.branch.as_str()).unwrap_or("");
@@ -215,38 +216,18 @@ pub(crate) fn emit_task_add(
             task.set_meta("repo", &repo);
         }
     }
-    let is_new = !path.exists();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    // Read back before the task is handed to the file below — the append and the save paths both
-    // consume it, and the JSON envelope reports where it landed.
+    // Read back for the JSON envelope, which reports where the task landed.
     let stamped_repo = task.meta("repo").map(str::to_string);
-    // Kept for the capture pass below: `task` itself is consumed by whichever persist path runs.
-    let captured_task = task.clone();
-    if raw == file.render() {
-        // File is already normalized (unique ids, canonical form) — keep the concurrency-safe
-        // append: a parallel add concatenates instead of clobbering, and no line is reflowed.
-        bn_core::todo::append_task(&path, &task).unwrap_or_else(|e| fail(&format!("bn task: {e}")));
-    } else {
-        // `load` had to heal the file (duplicate/missing ids, e.g. after a union merge). Persist
-        // the healed numbering now, with the new task, so the ids the user just saw in `list` stay
-        // stable instead of being re-derived — and shifted — on the next read.
-        file.push_task(task);
-        bn_core::todo::save(&path, &file).unwrap_or_else(|e| fail(&format!("bn task: {e}")));
-    }
-    if is_new {
-        // Provision a union merge driver so two machines' appends concatenate instead of
-        // conflicting; `load` repairs the concatenation (#995).
-        if let Some(root) = path.parent() {
-            let _ = bn_core::todo::ensure_union_merge(root);
-        }
-    }
+    // A file store appends when the file is canonical and persists its healed numbering with the
+    // new task when it is not; it also provisions the union merge on first write (#995).
+    store
+        .append(&task)
+        .unwrap_or_else(|e| fail(&format!("bn task: {e}")));
     // Only once the line is durable: a capture that fails must cost context, never the task.
     let (stored, problems) = if capture.is_empty() {
         (Vec::new(), Vec::new())
     } else {
-        crate::cmd::task_capture::record(cfg, &captured_task, capture)
+        crate::cmd::task_capture::record(cfg, &task, capture)
     };
     if as_json {
         let data = serde_json::json!({
@@ -297,13 +278,11 @@ pub(crate) fn emit_task_import(
         })
         .unwrap_or_default();
 
-    let path = task_path(cfg);
-    let _lock = bn_core::todo::lock(&path);
-    let is_new = !path.exists();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let mut store = bn_core::todo::load(&path).unwrap_or_else(|e| fail(&format!("bn task: {e}")));
+    let backend = task_store(cfg);
+    let _lock = backend.lock();
+    let mut store = backend
+        .load()
+        .unwrap_or_else(|e| fail(&format!("bn task: {e}")));
 
     let seen: std::collections::HashSet<String> = store
         .tasks()
@@ -333,12 +312,9 @@ pub(crate) fn emit_task_import(
     }
 
     if added > 0 {
-        bn_core::todo::save(&path, &store).unwrap_or_else(|e| fail(&format!("bn task: {e}")));
-        if is_new {
-            if let Some(root) = path.parent() {
-                let _ = bn_core::todo::ensure_union_merge(root);
-            }
-        }
+        backend
+            .save(&store)
+            .unwrap_or_else(|e| fail(&format!("bn task: {e}")));
     }
 
     if as_json {
@@ -363,9 +339,11 @@ pub(crate) fn emit_task_import(
 /// Its location is resolved by `task_doc::doc_path` — beside the branch note once the task has
 /// been picked up, in staging before that — so the caller never has to know which.
 pub(crate) fn emit_task_doc(cfg: &Config, id: &str, open: bool, as_json: bool) {
-    let path = task_path(cfg);
-    let _lock = bn_core::todo::lock(&path);
-    let mut file = bn_core::todo::load(&path).unwrap_or_else(|e| fail(&format!("bn task: {e}")));
+    let store = task_store(cfg);
+    let _lock = store.lock();
+    let mut file = store
+        .load()
+        .unwrap_or_else(|e| fail(&format!("bn task: {e}")));
     let Some(task) = file.task_mut(id) else {
         fail(&format!("bn task doc: no task {id}"));
     };
@@ -384,7 +362,9 @@ pub(crate) fn emit_task_doc(cfg: &Config, id: &str, open: bool, as_json: bool) {
     let already = task.meta(bn_core::task_doc::DOC_KEY) == Some(name.as_str());
     if !already && !bn_core::task_doc::is_note_copy(&doc) {
         task.set_meta(bn_core::task_doc::DOC_KEY, &name);
-        bn_core::todo::save(&path, &file).unwrap_or_else(|e| fail(&format!("bn task: {e}")));
+        store
+            .save(&file)
+            .unwrap_or_else(|e| fail(&format!("bn task: {e}")));
     }
     drop(_lock);
 
@@ -455,12 +435,11 @@ pub(crate) fn emit_task_pull(
     let today = today();
     let runner = bn_core::runner::RealRunner;
 
-    let path = task_path(cfg);
-    let _lock = bn_core::todo::lock(&path);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let mut file = bn_core::todo::load(&path).unwrap_or_else(|e| fail(&format!("bn task: {e}")));
+    let store = task_store(cfg);
+    let _lock = store.lock();
+    let mut file = store
+        .load()
+        .unwrap_or_else(|e| fail(&format!("bn task: {e}")));
 
     let mut minted: Vec<serde_json::Value> = Vec::new();
     let mut stale_repos: Vec<String> = Vec::new();
@@ -486,7 +465,9 @@ pub(crate) fn emit_task_pull(
     }
 
     if !dry_run && !minted.is_empty() {
-        bn_core::todo::save(&path, &file).unwrap_or_else(|e| fail(&format!("bn task: {e}")));
+        store
+            .save(&file)
+            .unwrap_or_else(|e| fail(&format!("bn task: {e}")));
     }
     drop(_lock);
 
@@ -570,10 +551,12 @@ pub(crate) fn emit_task_mutate(cfg: &Config, op: TaskOp, id: &str, as_json: bool
         }
     }
     warn_legacy_todo();
-    let path = task_path(cfg);
+    let store = task_store(cfg);
     // Serialize the load→mutate→save against a concurrent append add (held to fn end).
-    let _lock = bn_core::todo::lock(&path);
-    let mut file = bn_core::todo::load(&path).unwrap_or_else(|e| fail(&format!("bn task: {e}")));
+    let _lock = store.lock();
+    let mut file = store
+        .load()
+        .unwrap_or_else(|e| fail(&format!("bn task: {e}")));
     let today = today();
     let (ok, verb) = match op {
         TaskOp::Do => (file.mark_done(id, &today), "Done"),
@@ -596,7 +579,9 @@ pub(crate) fn emit_task_mutate(cfg: &Config, op: TaskOp, id: &str, as_json: bool
         _ => None,
     };
 
-    bn_core::todo::save(&path, &file).unwrap_or_else(|e| fail(&format!("bn task: {e}")));
+    store
+        .save(&file)
+        .unwrap_or_else(|e| fail(&format!("bn task: {e}")));
     if as_json {
         let data = serde_json::json!({
             "id": id,
@@ -620,7 +605,7 @@ pub(crate) fn emit_task_ingest(
     as_json: bool,
 ) {
     use std::io::Read;
-    let path = task_path(cfg);
+    let store = task_store(cfg);
     let ctx = task_ctx_opt(cfg);
     let mut input = String::new();
     if std::io::stdin().read_to_string(&mut input).is_err() {
@@ -631,21 +616,16 @@ pub(crate) fn emit_task_ingest(
         .or(ctx.as_ref().map(|c| c.branch.as_str()))
         .unwrap_or("");
     // Serialize the load→ingest→save against a concurrent append add (held to fn end).
-    let _lock = bn_core::todo::lock(&path);
-    let is_new = !path.exists();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let mut file = bn_core::todo::load(&path).unwrap_or_else(|e| fail(&format!("bn task: {e}")));
+    let _lock = store.lock();
+    let mut file = store
+        .load()
+        .unwrap_or_else(|e| fail(&format!("bn task: {e}")));
     let out = file
         .ingest(&items, source, default_branch, replace, &today())
         .unwrap_or_else(|e| fail(&format!("bn task ingest: {e}")));
-    bn_core::todo::save(&path, &file).unwrap_or_else(|e| fail(&format!("bn task: {e}")));
-    if is_new {
-        if let Some(root) = path.parent() {
-            let _ = bn_core::todo::ensure_union_merge(root);
-        }
-    }
+    store
+        .save(&file)
+        .unwrap_or_else(|e| fail(&format!("bn task: {e}")));
     if as_json {
         let data = serde_json::json!({
             "added": out.added, "skipped": out.skipped, "resolved": out.resolved, "ids": out.ids,

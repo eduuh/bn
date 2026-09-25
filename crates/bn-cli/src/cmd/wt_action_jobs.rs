@@ -12,6 +12,46 @@
 use crate::wt::{PoolCmd, WtCmd};
 use crate::*;
 
+/// How a direct shell verb ended up, for the line the picker prints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Started {
+    /// Running in its own tmux window in the repo's session.
+    Now,
+    /// Its window already holds a live run; nothing new was started.
+    AlreadyRunning,
+}
+
+impl Started {
+    /// The tail of the picker's `✓ <verb> — …` line.
+    pub(crate) fn describe(&self) -> String {
+        match self {
+            Started::Now => "started".to_string(),
+            Started::AlreadyRunning => "already running".to_string(),
+        }
+    }
+}
+
+/// Start a raw shell command for one picker verb right now, in its own tmux window in `repo`'s
+/// session — the same window mechanism [`crate::cmd::wt_action_run::start_action`] uses for a job
+/// name, but for a verb (like a single pool slot's warm/rebuild) that is a shell command rather
+/// than a `bn run <job>` name.
+pub(crate) fn start_shell_action(
+    cfg: &Config,
+    label: &str,
+    repo: &str,
+    target: &str,
+    cmd: &str,
+) -> Result<Started, String> {
+    let window = crate::wt::sanitize_branch(target);
+    match crate::cmd::wt_action_run::open_window(cfg, repo, &window, cmd) {
+        crate::cmd::wt_action_run::WindowOpen::Opened => Ok(Started::Now),
+        crate::cmd::wt_action_run::WindowOpen::Live => Ok(Started::AlreadyRunning),
+        crate::cmd::wt_action_run::WindowOpen::Unavailable => {
+            Err(format!("could not start {label} here: tmux unavailable"))
+        }
+    }
+}
+
 /// `build` — run the repo's `build.sh` for one `(repo, branch)`.
 ///
 /// The registry had no entry for the one thing every warm slot already does. `wt pool warm` shells
@@ -113,6 +153,7 @@ pub(crate) fn job_pool_grow(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
                     repo,
                     here: true,
                     new: true,
+                    slot: None,
                 },
             },
         ),

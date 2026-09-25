@@ -647,7 +647,7 @@ fn http_endpoint_reachable(url: &str) -> bool {
 }
 
 fn todo_findings(cfg: &Config, repo: &str, today: &str) -> Vec<Finding> {
-    let Ok(file) = crate::todo::load(&cfg.tasks_file()) else {
+    let Ok(file) = crate::task_store::task_store(cfg).load() else {
         return Vec::new();
     };
     file.tasks()

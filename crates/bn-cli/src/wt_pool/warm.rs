@@ -36,7 +36,7 @@ fn in_tmux() -> bool {
 /// Spawn the warm in a `pool-warm` window in the repo's own tmux session (session-per-repo
 /// convention, same as `pool get`), so a long warm is visible. Returns false if tmux is
 /// unreachable so the caller falls back to inline.
-fn warm_in_window(ctx: &PoolCtx, new: bool) -> bool {
+fn warm_in_window(ctx: &PoolCtx, new: bool, slot: Option<u32>) -> bool {
     use std::io::IsTerminal;
     let session = ctx.repo.clone();
     let target = format!("={session}");
@@ -49,8 +49,9 @@ fn warm_in_window(ctx: &PoolCtx, new: bool) -> bool {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "bn".to_string());
     let new_flag = if new { " --new" } else { "" };
+    let slot_flag = slot.map(|n| format!(" --slot {n}")).unwrap_or_default();
     let runner = format!(
-        "{} wt pool warm --repo {}{new_flag} --here; echo; echo '── warm {} done — press enter to close ──'; read",
+        "{} wt pool warm --repo {}{new_flag}{slot_flag} --here; echo; echo '── warm {} done — press enter to close ──'; read",
         wt::shq(&self_exe),
         wt::shq(&ctx.repo),
         ctx.repo
@@ -80,22 +81,28 @@ fn warm_in_window(ctx: &PoolCtx, new: bool) -> bool {
 /// pooling stopped being a registration, [`resolve_pool`] and the cron's [`resolve_dispatch_pool`]
 /// differ only in how they learn the repo's name, and "that repo isn't pooled" has stopped being a
 /// possible answer.
-pub(crate) fn pool_warm(cfg: &Config, repo: Option<String>, here: bool, new: bool) -> bool {
+pub(crate) fn pool_warm(
+    cfg: &Config,
+    repo: Option<String>,
+    here: bool,
+    new: bool,
+    slot: Option<u32>,
+) -> bool {
     let Some(ctx) = resolve_pool(cfg, repo) else {
         return false;
     };
-    warm_pool(cfg, &ctx, here, new)
+    warm_pool(cfg, &ctx, here, new, slot)
 }
 
 /// Warm one already-resolved pool: ensure every non-skipped slot holds a live checkout, then build
 /// them. Split from [`pool_warm`] so the caller owns *how the pool is resolved* — the two callers
 /// disagree on that, and conflating them is what made the `pool-warm` cron fail on every pool
 /// `bn dispatch` created implicitly.
-fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool) -> bool {
+fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool, slot: Option<u32>) -> bool {
     // Warming is long (checkout + build per slot), so inside tmux run it in a window in the repo's
     // own session — you watch it live instead of it blocking/hiding. `--here` (and the window
     // itself) run inline.
-    if !here && in_tmux() && warm_in_window(ctx, new) {
+    if !here && in_tmux() && warm_in_window(ctx, new, slot) {
         return true;
     }
     let _ = std::fs::create_dir_all(&ctx.pool_dir);
@@ -165,10 +172,18 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool) -> bool {
     // slots with no checkout yet, so a re-warm after growing the pool fills only the freshly-added
     // slots and leaves every existing one (idle included) untouched.
     let leases = read_leases(&ctx.pool_dir);
-    println!(
-        "{BLUE}Warming {} slots for {} at {base}…{NC}",
-        ctx.size, ctx.repo
-    );
+    let targets = match target_slots(ctx.size, slot) {
+        Ok(targets) => targets,
+        Err(why) => {
+            eprintln!("{RED}pool-warm: {why}{NC}");
+            return false;
+        }
+    };
+    let scope = match slot {
+        Some(n) => format!("slot {n}"),
+        None => format!("{} slots", ctx.size),
+    };
+    println!("{BLUE}Warming {scope} for {} at {base}…{NC}", ctx.repo);
     // Phase 1 — ensure every non-skipped slot has a live checkout *at the current base*. Serial on
     // purpose: `git worktree add` takes the bare repo's lock, so parallel adds would only contend.
     // Never warm a slot that's leased (a running agent owns it), dirty (uncommitted local work),
@@ -180,7 +195,7 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool) -> bool {
     let mut skipped_dirty: Vec<u32> = Vec::new();
     let mut failed = 0u32;
     let mut ready: Vec<(u32, PathBuf)> = Vec::new();
-    for n in 1..=ctx.size as u32 {
+    for n in targets.iter().copied() {
         let slot = slot_path(&ctx.pool_dir, n);
         let slot_s = slot.to_string_lossy().to_string();
         let exists = slot.exists();
@@ -257,7 +272,7 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool) -> bool {
     // build that declined to run (busy toolchain) is neither: it joins the skipped count.
     let skipped = skipped + build_skipped;
     let made = ready.len() as u32 - warmed - build_skipped;
-    let complete = warm_complete(ctx.size as u32, warmed, skipped, failed, made);
+    let complete = warm_complete(targets.len() as u32, warmed, skipped, failed, made);
     // Record the refresh so `bn metrics` can surface pool freshness — how many slots warmed, and
     // when the pool was last refreshed (one event per `pool warm`, alongside pool_get/pool_return).
     {
@@ -503,6 +518,15 @@ pub(crate) fn build_one_slot(repo: &str, slot: &Path) -> bool {
     matches!(run_bn_build(repo, slot, None), BuildOutcome::Built)
 }
 
+fn target_slots(size: usize, slot: Option<u32>) -> Result<Vec<u32>, String> {
+    match slot {
+        None => Ok((1..=size as u32).collect()),
+        Some(0) => Err("slot numbers start at 1".to_string()),
+        Some(n) if n > size as u32 => Err(format!("slot {n} is outside this pool (1..={size})")),
+        Some(n) => Ok(vec![n]),
+    }
+}
+
 /// Exit status a repo's `build.sh` uses to say "not this time" — a sibling build already holds
 /// the shared toolchain, come back later. `EX_TEMPFAIL` from sysexits, so it can never be confused
 /// with a real failure (1) or a completed build (0). Warm counts it as skipped, never as warm.
@@ -617,7 +641,7 @@ fn warm_pool_for_cron(cfg: &Config, repo: &str) -> i32 {
         false,
     );
     // `here = true`: warm inline in this cron window instead of spawning a nested tmux one.
-    if warm_pool(cfg, &ctx, true, false) {
+    if warm_pool(cfg, &ctx, true, false, None) {
         return 0;
     }
 
@@ -627,7 +651,7 @@ fn warm_pool_for_cron(cfg: &Config, repo: &str) -> i32 {
 
 #[cfg(test)]
 mod completion_tests {
-    use super::{warm_complete, warm_succeeded};
+    use super::{target_slots, warm_complete, warm_succeeded};
 
     #[test]
     fn successful_safe_skips_advance_pool_freshness() {
@@ -642,6 +666,14 @@ mod completion_tests {
         assert!(warm_succeeded(0, 0));
         assert!(!warm_succeeded(1, 0));
         assert!(!warm_succeeded(0, 1));
+    }
+
+    #[test]
+    fn exact_slot_selection_is_validated() {
+        assert_eq!(target_slots(4, None).unwrap(), vec![1, 2, 3, 4]);
+        assert_eq!(target_slots(4, Some(2)).unwrap(), vec![2]);
+        assert!(target_slots(4, Some(0)).is_err());
+        assert!(target_slots(4, Some(5)).is_err());
     }
 }
 

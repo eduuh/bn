@@ -10,3 +10,6 @@ pub mod profile;
 pub mod route;
 pub mod stage;
 pub mod status;
+
+#[cfg(test)]
+mod forge_notes_tests;

@@ -21,6 +21,8 @@ mod ref_cmd;
 pub(crate) use ref_cmd::{RefCmd, RefScopeArg};
 mod skills_cmd;
 pub(crate) use skills_cmd::SkillsCmd;
+mod repos_cmd;
+pub(crate) use repos_cmd::ReposCmd;
 
 // The clap surface is split into flattened group sub-enums purely to bound the per-enum
 // stack frame that clap-derive's generated `augment_subcommands` allocates in unoptimized
@@ -673,16 +675,20 @@ pub(crate) enum CmdInsights {
 /// Automation and orchestration commands — see [`crate::cli::automation_cmd`].
 pub(crate) mod automation_cmd;
 pub(crate) mod cron_cmd;
+pub(crate) mod forge_app;
 pub(crate) mod links_cmd;
 pub(crate) mod machine_cmd;
 pub(crate) mod shell_ui_cmd;
 pub(crate) mod staff_group;
+pub(crate) mod tools_cmd;
 pub(crate) use automation_cmd::CmdAutomation;
 pub(crate) use cron_cmd::CronCmd;
+pub(crate) use forge_app::ForgeAppCmd;
 pub(crate) use links_cmd::LinksCmd;
 pub(crate) use machine_cmd::MachineCmd;
 pub(crate) use shell_ui_cmd::CmdShellUi;
 pub(crate) use staff_group::CmdStaff;
+pub(crate) use tools_cmd::ToolsCmd;
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum CmdGitPr {
@@ -989,6 +995,14 @@ pub(crate) enum CmdMisc {
     },
     /// Print the running binary's crate version and compile-time build provenance.
     Version,
+    /// Your repo fleet as one addressable thing: the inventory of every bare clone, and a
+    /// parallel fan-out that runs one command in all of them and reports each repo's own exit
+    /// code. `bn list` already spans repos on the notes side; this is the git side.
+    #[command(args_conflicts_with_subcommands = true)]
+    Repos {
+        #[command(subcommand)]
+        action: Option<ReposCmd>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1119,35 +1133,6 @@ pub(crate) enum WorkerCmd {
     /// self-heal step of `start`. Run after a reboot to release attempts whose tmux session/pid is
     /// gone. Prints the cleared attempt ids.
     Reconcile,
-}
-
-/// The `bn tools` subcommands (#653 — managed docker-backed services).
-#[derive(Subcommand, Debug)]
-pub(crate) enum ToolsCmd {
-    /// List every declared tool (opted-in built-ins overlaid by `<config_dir>/tools.toml`) with
-    /// its image.
-    List,
-    /// Report run-state + health for one tool, or all tools when the name is omitted.
-    Status {
-        /// Tool name (omit for every declared tool).
-        name: Option<String>,
-    },
-    /// Bring a tool up: create the container if absent, start it if stopped (idempotent).
-    Deploy {
-        /// Tool name.
-        name: String,
-    },
-    /// Re-assert the "up" desired state for one tool, or all tools when the name is omitted — the
-    /// keep-alive primitive the `tools-reconcile` cron job calls.
-    Reconcile {
-        /// Tool name (omit to reconcile every declared tool).
-        name: Option<String>,
-    },
-    /// Tear a tool down: `docker rm -f <name>` (idempotent — a missing container is not an error).
-    Down {
-        /// Tool name.
-        name: String,
-    },
 }
 
 /// The `bn critic` subcommands (#649 Phase 3).

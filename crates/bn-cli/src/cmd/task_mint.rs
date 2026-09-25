@@ -18,12 +18,9 @@ pub(crate) fn task_for_subject(cfg: &Config, repo: &str, subject: &str, src: &st
     // The `enqueue:` prefix is kept so tasks minted before the rename are still found.
     let key = format!("enqueue:{:016x}", h.finish());
 
-    let path = task_path(cfg);
-    let _lock = bn_core::todo::lock(&path);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let Ok(mut file) = bn_core::todo::load(&path) else {
+    let store = task_store(cfg);
+    let _lock = store.lock();
+    let Ok(mut file) = store.load() else {
         return String::new();
     };
     if let Some(existing) = file
@@ -43,7 +40,7 @@ pub(crate) fn task_for_subject(cfg: &Config, repo: &str, subject: &str, src: &st
     task.set_meta_raw("repo", repo);
     task.set_meta_raw("key", &key);
     file.push_task(task);
-    if bn_core::todo::save(&path, &file).is_err() {
+    if store.save(&file).is_err() {
         return String::new();
     }
     id

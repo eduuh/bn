@@ -5,6 +5,42 @@ fn kinds(rows: &str) -> Vec<&str> {
     rows.lines().filter_map(|l| l.split('|').next()).collect()
 }
 
+fn idle_slot(n: u32) -> bn_core::pool::PoolSlot {
+    bn_core::pool::PoolSlot {
+        n,
+        leased: false,
+        warm: true,
+        branch: None,
+        holder: None,
+        age_secs: None,
+        warmed_ts: None,
+    }
+}
+
+fn leased_slot(n: u32) -> bn_core::pool::PoolSlot {
+    bn_core::pool::PoolSlot {
+        leased: true,
+        branch: Some("busy".to_string()),
+        holder: Some("someone".to_string()),
+        ..idle_slot(n)
+    }
+}
+
+fn pool_status(total: usize, slots: Vec<bn_core::pool::PoolSlot>) -> bn_core::pool::PoolStatus {
+    let leased = slots.iter().filter(|s| s.leased).count();
+    let warm = slots.iter().filter(|s| !s.leased && s.warm).count();
+    bn_core::pool::PoolStatus {
+        repo: "bn".to_string(),
+        enabled: true,
+        total,
+        leased,
+        warm,
+        idle: total.saturating_sub(leased),
+        last_warmed_ts: None,
+        slots,
+    }
+}
+
 fn payloads(rows: &str) -> Vec<&str> {
     rows.lines()
         .filter(|l| l.starts_with("cmd|"))
@@ -167,6 +203,64 @@ fn the_command_section_holds_only_repo_verbs() {
         assert_eq!(action.scope, bn_core::wt_actions::Scope::Repo, "{id}");
     }
     assert!(!rows.contains("wt-verify"), "{rows}");
+}
+
+#[test]
+fn ctrl_o_on_the_controller_slot_offers_only_warm() {
+    let status = pool_status(
+        4,
+        vec![idle_slot(1), idle_slot(2), idle_slot(3), idle_slot(4)],
+    );
+    let actions = idle_pool_slot_verbs(&status, 1).expect("idle controller slot");
+    assert_eq!(actions, vec![PoolSlotVerb::Warm]);
+}
+
+#[test]
+fn ctrl_o_on_the_highest_extra_slot_offers_remove() {
+    let status = pool_status(
+        6,
+        vec![
+            idle_slot(1),
+            idle_slot(2),
+            leased_slot(3),
+            idle_slot(4),
+            leased_slot(5),
+            idle_slot(6),
+        ],
+    );
+    let actions = idle_pool_slot_verbs(&status, 6).expect("idle top slot");
+    assert_eq!(actions, vec![PoolSlotVerb::Warm, PoolSlotVerb::Remove]);
+    assert_eq!(
+        PoolSlotVerb::Remove.label(&status),
+        "Remove this slot — shrinks the pool to 5"
+    );
+}
+
+#[test]
+fn ctrl_o_on_other_idle_worker_slots_offers_rebuild() {
+    let status = pool_status(
+        6,
+        vec![
+            idle_slot(1),
+            idle_slot(2),
+            leased_slot(3),
+            idle_slot(4),
+            leased_slot(5),
+            idle_slot(6),
+        ],
+    );
+    let actions = idle_pool_slot_verbs(&status, 4).expect("idle worker slot");
+    assert_eq!(actions, vec![PoolSlotVerb::Warm, PoolSlotVerb::Rebuild]);
+}
+
+#[test]
+fn ctrl_o_refuses_a_slot_that_is_no_longer_idle() {
+    let status = pool_status(
+        4,
+        vec![idle_slot(1), leased_slot(2), idle_slot(3), idle_slot(4)],
+    );
+    assert_eq!(idle_pool_slot_verbs(&status, 2), None);
+    assert_eq!(idle_pool_slot_verbs(&status, 9), None);
 }
 
 fn two_scripts() -> Vec<scripts::RepoScript> {

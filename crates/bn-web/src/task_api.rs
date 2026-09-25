@@ -84,7 +84,7 @@ pub async fn tasks(State(state): State<AppState>, Query(q): Query<TasksQuery>) -
         }
     });
 
-    let file = match bn_core::todo::load(&state.cfg.tasks_file()) {
+    let file = match bn_core::task_store::task_store(&state.cfg).load() {
         Ok(file) => file,
         Err(error) => {
             return (

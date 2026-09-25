@@ -44,6 +44,7 @@ pub(crate) fn emit_links(cfg: &Config, action: Option<LinksCmd>, query: Option<S
             let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nvim".into());
             let _ = Command::new(editor).arg(&path).status();
         }
+        None if json && query.is_none() => list_links(cfg, None, None, true),
         None => open_one(cfg, query, json),
     }
 }

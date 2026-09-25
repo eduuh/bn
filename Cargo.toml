@@ -75,6 +75,17 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # and its files land in one atomic call. Already in the tree transitively; named here so the
 # version is the workspace's decision.
 base64 = "0.22"
+# The Forge task provider's MCP client (bn_core::forge_app::client): a small blocking HTTP client
+# with rustls, so the store stays synchronous like the file store it sits beside.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+# The native picker (`bn tat`, and the menus it opens). crossterm owns raw mode, key decoding and
+# resize events so the only hand-rolled termios in the tree stays `picker::hold_raw`, and
+# nucleo-matcher gives the native path fzf-grade scoring without owning any terminal UI.
+crossterm = { version = "0.29", default-features = false, features = [
+  "events",
+  "windows",
+] }
+nucleo-matcher = "0.3"
 
 # The published binary (`cargo build --release`, and [profile.dist] below):
 # fat LTO + single codegen unit for a tight, fast-starting CLI; strip symbols and abort on

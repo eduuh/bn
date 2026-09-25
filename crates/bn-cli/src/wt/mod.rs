@@ -310,6 +310,9 @@ pub enum PoolCmd {
         /// Only warm brand-new slots (no checkout yet); skip every existing slot, idle included.
         #[arg(long)]
         new: bool,
+        /// Exact slot to warm instead of the whole pool.
+        #[arg(long)]
+        slot: Option<u32>,
     },
     /// Pool usage + health metrics: utilization now, lifetime gets (warm-hit rate), returns,
     /// average lease duration, per-slot churn, and a health tail — slots recovered after a WSL/host
@@ -371,7 +374,14 @@ pub enum PoolCmd {
 }
 
 /// Entry point from main.rs. Exits the process with a non-zero code on failure (CLI semantics).
-pub fn run(cfg: &Config, action: WtCmd, _json: bool) {
+pub fn run(cfg: &Config, action: WtCmd, json: bool) {
+    // `run_code` is also the native cron entry point, which has no `--json` to honour; the one
+    // read-only verb that has a machine form is split out here rather than threaded through it.
+    if json {
+        if let WtCmd::List = action {
+            std::process::exit(i32::from(!cmd_list_json(cfg)));
+        }
+    }
     std::process::exit(run_code(cfg, action));
 }
 
@@ -457,5 +467,4 @@ pub fn run_code(cfg: &Config, action: WtCmd) -> i32 {
         1
     }
 }
-
 

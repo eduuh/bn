@@ -104,21 +104,11 @@ pub fn job_dirs(cfg: &Config, ctx: Option<&Resolved>) -> Vec<(JobScope, PathBuf)
         if c.branch != "main" {
             dirs.push((JobScope::Branch, cfg.note_dir(c).join("jobs")));
         }
-        // Project tier: this branch's own checkout, at the conventional `<worktree_dir>/<repo>/
-        // <branch>` path bn's own `wt` layout uses — no cwd needed, so cron/web/CLI callers all
-        // resolve it the same way regardless of process cwd. `c.repo` is always lowercased (note
-        // key normalization), but the on-disk worktree dir preserves its original case (e.g.
-        // `BigMono`, not `bigmono`) — a literal join would silently miss it on a case-sensitive fs, so
-        // look the entry up case-insensitively first and fall back to the literal join (covers
-        // case-insensitive filesystems and repos that happen to already be lowercase).
-        if let Some(project_root) = find_worktree_repo_dir(&cfg.worktree_dir, &c.repo)
-            .map(|d| d.join(&c.branch))
-            .filter(|d| d.is_dir())
-            .or_else(|| {
-                let literal = cfg.worktree_dir.join(&c.repo).join(&c.branch);
-                literal.is_dir().then_some(literal)
-            })
-        {
+        // Project tier: this branch's own checkout, preferably at the conventional
+        // `<worktree_dir>/<repo>/<branch>` path. When the branch lives in a warm pool slot or a
+        // reused checkout directory, that convention cannot name it; fall back to git's own
+        // `worktree list` answer in those cases so `.bn/jobs` still resolves from the live checkout.
+        if let Some(project_root) = project_root(cfg, c) {
             dirs.push((JobScope::Project, project_root.join(".bn").join("jobs")));
         }
         // Repo tier: `<notes_dir_for(repo)>/jobs/<repo>/` — no `machine()` segment, so every
@@ -144,6 +134,17 @@ pub fn job_dirs(cfg: &Config, ctx: Option<&Resolved>) -> Vec<(JobScope, PathBuf)
         }
     }
     dirs
+}
+
+fn project_root(cfg: &Config, ctx: &Resolved) -> Option<PathBuf> {
+    find_worktree_repo_dir(&cfg.worktree_dir, &ctx.repo)
+        .map(|d| d.join(&ctx.branch))
+        .filter(|d| d.is_dir())
+        .or_else(|| {
+            let literal = cfg.worktree_dir.join(&ctx.repo).join(&ctx.branch);
+            literal.is_dir().then_some(literal)
+        })
+        .or_else(|| crate::lifecycle::worktree_path(cfg, &ctx.repo, &ctx.branch))
 }
 
 /// Find `<worktree_dir>/<name>` case-insensitively — the physical worktree directory preserves
@@ -393,6 +394,89 @@ mod script_header_tests {
         assert!(
             !h.latest_main,
             "a directive past the window is not seen — by design"
+        );
+    }
+
+    fn git_bin() -> &'static str {
+        [
+            "/usr/bin/git",
+            "/bin/git",
+            "/usr/local/bin/git",
+            "/opt/homebrew/bin/git",
+        ]
+        .into_iter()
+        .find(|p| Path::new(p).exists())
+        .unwrap_or("git")
+    }
+
+    fn git(args: &[&str]) -> bool {
+        std::process::Command::new(git_bin())
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    fn build_repo_into(srcdir: &Path, bare: &Path) {
+        std::fs::create_dir_all(srcdir).unwrap();
+        let s = srcdir.to_string_lossy().to_string();
+        assert!(git(&["init", "-q", &s]));
+        assert!(git(&["-C", &s, "config", "user.email", "t@t"]));
+        assert!(git(&["-C", &s, "config", "user.name", "t"]));
+        std::fs::write(srcdir.join("a.txt"), "hi\n").unwrap();
+        assert!(git(&["-C", &s, "add", "-A"]));
+        assert!(git(&["-C", &s, "commit", "-qm", "init"]));
+        assert!(git(&["-C", &s, "branch", "-M", "main"]));
+        std::fs::create_dir_all(bare.parent().unwrap()).unwrap();
+        assert!(git(&["clone", "-q", "--bare", &s, &bare.to_string_lossy()]));
+    }
+
+    #[test]
+    fn project_job_dir_falls_back_to_a_pooled_checkout_when_conventional_path_is_missing() {
+        let _lock = crate::test_support::env_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree_dir = tmp.path().join("worktree");
+        std::fs::create_dir_all(&worktree_dir).unwrap();
+        let cfg = crate::test_support::config_with_roots(
+            tmp.path(),
+            tmp.path(),
+            &worktree_dir,
+            "testhost",
+        );
+        let bare = cfg.bare_dir().join("bn.git");
+        build_repo_into(&tmp.path().join("src"), &bare);
+
+        let pool = worktree_dir.join("bn").join("_pool").join("2");
+        std::fs::create_dir_all(pool.parent().unwrap()).unwrap();
+        let bare_s = bare.to_string_lossy().to_string();
+        let pool_s = pool.to_string_lossy().to_string();
+        assert!(git(&[
+            "--git-dir",
+            &bare_s,
+            "worktree",
+            "add",
+            "-b",
+            "explore/20260924-0202",
+            &pool_s,
+            "main",
+        ]));
+
+        let ctx = Resolved {
+            repo: "bn".to_string(),
+            branch: "explore/20260924-0202".to_string(),
+        };
+        let project = job_dirs(&cfg, Some(&ctx))
+            .into_iter()
+            .find(|(scope, _)| *scope == JobScope::Project)
+            .map(|(_, dir)| dir);
+
+        assert_eq!(
+            project
+                .as_deref()
+                .and_then(|dir| std::fs::canonicalize(dir).ok()),
+            std::fs::canonicalize(pool.join(".bn").join("jobs")).ok()
         );
     }
 }

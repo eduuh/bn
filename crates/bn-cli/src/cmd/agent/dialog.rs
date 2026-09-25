@@ -273,6 +273,9 @@ pub(crate) fn answer_option(cfg: &Config, target: &str, option: u8) -> bool {
 /// menu because the keystroke was swallowed also shows no spinner, and reporting that as delivered
 /// is exactly the lie this command exists to stop telling.
 fn send_answer(cfg: &Config, target: &str, option: u8) -> (bool, Option<PendingPrompt>) {
+    if let Some(prompt) = read_prompt(cfg, target, PROMPT_SCAN_LINES).filter(|p| p.cursor) {
+        return send_cursor_answer(cfg, target, &prompt, option);
+    }
     let transport = super::resolve_agent_transport(cfg, target);
     let mut last: Option<PendingPrompt> = None;
     for attempt in 0..ANSWER_ATTEMPTS {
@@ -292,3 +295,48 @@ fn send_answer(cfg: &Config, target: &str, option: u8) -> (bool, Option<PendingP
     }
     (false, last)
 }
+
+/// Answer a cursor menu (Copilot's `ask_user` form): move the `❯` from where it sits to `option`,
+/// then accept. A digit does nothing there. The form can carry a second, free-text tab
+/// ("Optional adjustments") that takes the same enter to submit, so while the pane still shows
+/// the form's accept footer with no options left, accept again with it empty.
+fn send_cursor_answer(
+    cfg: &Config,
+    target: &str,
+    prompt: &PendingPrompt,
+    option: u8,
+) -> (bool, Option<PendingPrompt>) {
+    let transport = super::resolve_agent_transport(cfg, target);
+    let from = prompt.options.iter().position(|o| o.selected).unwrap_or(0) as i32;
+    let to = prompt
+        .options
+        .iter()
+        .position(|o| o.number == option)
+        .map_or(from, |i| i as i32);
+    let step = if to > from { Key::Down } else { Key::Up };
+    let mut keys: Vec<Key> = (0..(to - from).abs()).map(|_| step.clone()).collect();
+    keys.push(Key::Submit);
+    if !transport.write_keys(&keys) {
+        return (false, None);
+    }
+    for attempt in 0..ANSWER_ATTEMPTS {
+        std::thread::sleep(std::time::Duration::from_millis(
+            ANSWER_SETTLE_MS * (attempt as u64 + 1),
+        ));
+        if let Some(still) = read_prompt(cfg, target, PROMPT_SCAN_LINES) {
+            return (false, Some(still));
+        }
+        let form_open = read_pane(cfg, target, PROMPT_SCAN_LINES).is_some_and(|(tail, _)| {
+            tail.iter()
+                .rev()
+                .find(|l| !bn_core::orchestrate::is_frame_only(l))
+                .is_some_and(|l| l.to_lowercase().contains("enter accept"))
+        });
+        if !form_open {
+            return (true, None);
+        }
+        let _ = transport.write_keys(&[Key::Submit]);
+    }
+    (false, None)
+}
+

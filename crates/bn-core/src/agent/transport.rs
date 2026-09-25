@@ -38,6 +38,9 @@ pub enum Key {
     Escape,
     /// A single digit, for answering a numbered prompt.
     Digit(u8),
+    /// Cursor keys, for a menu chosen by moving a `❯` rather than typing a number.
+    Up,
+    Down,
 }
 
 /// Whether an agent is still there.
@@ -120,6 +123,8 @@ impl AgentTransport for TmuxTransport {
                 Key::Digit(d) => {
                     crate::tmux::tmux_ok(&["send-keys", "-t", &self.target, &d.to_string()])
                 }
+                Key::Up => crate::tmux::tmux_ok(&["send-keys", "-t", &self.target, "Up"]),
+                Key::Down => crate::tmux::tmux_ok(&["send-keys", "-t", &self.target, "Down"]),
             };
         }
         ok

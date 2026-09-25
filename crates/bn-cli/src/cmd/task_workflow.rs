@@ -121,8 +121,10 @@ pub(crate) fn emit_task_enhance(
         0
     };
 
-    let path = task_path(cfg);
-    let file = bn_core::todo::load(&path).unwrap_or_else(|e| fail(&format!("bn task: {e}")));
+    let store = task_store(cfg);
+    let file = store
+        .load()
+        .unwrap_or_else(|e| fail(&format!("bn task: {e}")));
 
     let task = match (id, due) {
         (Some(id), _) => file
@@ -218,7 +220,8 @@ pub(crate) fn emit_task_enhance(
     // escalated to anyone.
     let outcome = (!dry_run && run.launched)
         .then(|| {
-            let fresh = bn_core::todo::load(&path)
+            let fresh = store
+                .load()
                 .ok()
                 .and_then(|f| f.tasks().find(|t| t.id() == Some(task_id.as_str())).cloned())?;
             Some(bn_core::pipeline::gate::judge(cfg, &fresh, &today))
@@ -286,8 +289,10 @@ pub(crate) fn emit_task_triage(
         fail("bn task triage: --day must be YYYY-MM-DD");
     }
 
-    let path = task_path(cfg);
-    let file = bn_core::todo::load(&path).unwrap_or_else(|e| fail(&format!("bn task: {e}")));
+    let store = task_store(cfg);
+    let file = store
+        .load()
+        .unwrap_or_else(|e| fail(&format!("bn task: {e}")));
     // Machine bookkeeping is never triaged onto a person's day. Without this the ranking agent
     // stamps `day:` on cron chores — `pre_score` even boosts them, since the gate auto-admits
     // machine tasks as `smart:ok` — and the store accretes dated `auto:1` rows forever after.

@@ -26,7 +26,7 @@
 use super::stage::Stage;
 use crate::resolver::Config;
 use crate::smart::{self, SmartVerdict};
-use crate::todo::Task;
+use crate::todo::{Task, TodoFile};
 
 /// How many times the enhance agent may try before a task is handed to a person.
 pub const MAX_IMPROVE_TRIES: i64 = 3;
@@ -105,13 +105,18 @@ pub fn is_smart_gated(stage: Stage) -> bool {
 /// match would be wrong: several tasks share a repo, and judging the wrong one is worse than
 /// judging none.
 pub fn governing_task(cfg: &Config, repo: &str, branch: &str) -> Option<Task> {
-    let file = crate::todo::load(&cfg.tasks_file()).ok()?;
-    let found = file.tasks().find(|t| {
+    let file = crate::task_store::task_store(cfg).load().ok()?;
+    governing_in(&file, repo, branch).cloned()
+}
+
+/// [`governing_task`] over a list already loaded, for a caller that goes on to write through the
+/// same store.
+pub fn governing_in<'a>(file: &'a TodoFile, repo: &str, branch: &str) -> Option<&'a Task> {
+    file.tasks().find(|t| {
         t.meta("repo").is_some_and(|r| r.eq_ignore_ascii_case(repo))
             && t.meta("branch")
                 .is_some_and(|b| b.eq_ignore_ascii_case(branch))
-    });
-    found.cloned()
+    })
 }
 
 /// Judge a transition, and realize its consequences.
@@ -221,9 +226,9 @@ pub fn judge(cfg: &Config, task: &Task, today: &str) -> GateDecision {
 pub fn stamp_passing(cfg: &Config, today: &str) -> usize {
     let known: std::collections::HashSet<String> =
         crate::issues::known_repos(cfg).into_iter().collect();
-    let path = cfg.tasks_file();
-    let _lock = crate::todo::lock(&path);
-    let Ok(mut file) = crate::todo::load(&path) else {
+    let store = crate::task_store::task_store(cfg);
+    let _lock = store.lock();
+    let Ok(mut file) = store.load() else {
         return 0;
     };
 
@@ -248,7 +253,7 @@ pub fn stamp_passing(cfg: &Config, today: &str) -> usize {
         }
     }
     if !passing.is_empty() {
-        let _ = crate::todo::save(&path, &file);
+        let _ = store.save(&file);
     }
     passing.len()
 }
@@ -260,9 +265,9 @@ pub fn mark_passing(cfg: &Config, id: &str) {
 
 /// Stamp a passing verdict, clearing any stale failure bookkeeping.
 fn mark_ok(cfg: &Config, id: &str) {
-    let path = cfg.tasks_file();
-    let _lock = crate::todo::lock(&path);
-    let Ok(mut file) = crate::todo::load(&path) else {
+    let store = crate::task_store::task_store(cfg);
+    let _lock = store.lock();
+    let Ok(mut file) = store.load() else {
         return;
     };
     let Some(task) = file.task_mut(id) else {
@@ -272,7 +277,22 @@ fn mark_ok(cfg: &Config, id: &str) {
     // Reset rather than delete, so a task that failed twice and then passed doesn't carry a
     // stale attempt count into its next judgement.
     task.set_meta(SMART_TRIES_KEY, "0");
-    let _ = crate::todo::save(&path, &file);
+    let _ = store.save(&file);
+}
+
+/// The refusal as one line for a Forge comment: each gap's message, and who acts next.
+fn refusal_reason(verdict: &SmartVerdict, stuck: bool) -> String {
+    let gaps = verdict
+        .gaps
+        .iter()
+        .map(|g| g.message.trim_end_matches('.').to_string())
+        .collect::<Vec<_>>()
+        .join("; ");
+    if stuck {
+        format!("{gaps}. bn cannot fill this in by itself; please add it to the task.")
+    } else {
+        format!("{gaps}. bn will try to fill this in.")
+    }
 }
 
 /// Stamp the failure and raise the (idempotent) attention item that gets it fixed.
@@ -284,20 +304,21 @@ fn record_refusal(
     stuck: bool,
     today: &str,
 ) {
-    let path = cfg.tasks_file();
+    let store = crate::task_store::task_store(cfg);
     {
-        let _lock = crate::todo::lock(&path);
-        if let Ok(mut file) = crate::todo::load(&path) {
+        let _lock = store.lock();
+        if let Ok(mut file) = store.load() {
             if let Some(task) = file.task_mut(id) {
                 task.set_meta(SMART_KEY, if stuck { "stuck" } else { "fail" });
                 task.set_meta(SMART_TRIES_KEY, &tries.to_string());
                 task.set_meta(SMART_AT_KEY, &crate::util::now_epoch_secs().to_string());
-                let _ = crate::todo::save(&path, &file);
+                let _ = store.save(&file);
             }
         }
     }
 
-    let task = crate::todo::load(&path)
+    let task = store
+        .load()
         .ok()
         .and_then(|f| f.tasks().find(|t| t.id() == Some(id)).cloned());
     let (repo, branch) = task
@@ -310,6 +331,13 @@ fn record_refusal(
         })
         .unwrap_or((None, None));
     let summary = task.as_ref().map(|t| t.summary()).unwrap_or_default();
+
+    // The person who assigned the task in Forge hears why it has not started. The file store has
+    // nowhere to put this, so it never gets here.
+    if store.kind() == crate::task_store::TaskProviderKind::ForgeApp {
+        let text = format!("needs more detail: {}", refusal_reason(verdict, stuck));
+        crate::task_store::note_best_effort(store.as_ref(), id, &text);
+    }
 
     let detail = verdict
         .gaps

@@ -386,10 +386,39 @@ fn pool_warm_new_rebuilds_a_broken_stub() {
 
     let cfg = bn_core::test_support::config(root);
     // here = true (stay inline, no tmux window), new = true.
-    assert!(pool_warm(&cfg, Some("bn".to_string()), true, true));
+    assert!(pool_warm(&cfg, Some("bn".to_string()), true, true, None));
 
     // The broken stub is now a real, live checkout — the whole point of the fix.
     assert!(is_live_slot(&pool_dir.join("2")));
+}
+
+#[test]
+fn pool_warm_single_slot_only_touches_that_slot() {
+    let _g = bn_core::test_support::env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+
+    let bare = root.join("bare").join("bn.git");
+    build_repo_into(&root.join("bn-src"), &bare);
+
+    let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
+    let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", root.join("state"));
+    TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
+
+    let cfg = bn_core::test_support::config(root);
+    assert!(pool_warm(
+        &cfg,
+        Some("bn".to_string()),
+        true,
+        false,
+        Some(2)
+    ));
+
+    let pool_dir = root.join("worktree").join("bn").join("_pool");
+    assert!(is_live_slot(&pool_dir.join("2")));
+    assert!(!pool_dir.join("1").exists(), "slot 1 should stay untouched");
+    assert!(!pool_dir.join("3").exists(), "slot 3 should stay untouched");
+    assert!(!pool_dir.join("4").exists(), "slot 4 should stay untouched");
 }
 
 /// Regression for the `pool-warm` cron failing on a pool `bn dispatch` created implicitly.

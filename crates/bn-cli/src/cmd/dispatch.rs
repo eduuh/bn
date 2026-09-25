@@ -1092,7 +1092,7 @@ pub(crate) fn run_dispatch(
     // so the very first supervisor poll after the launch already sees the binding. Not fatal: an
     // unknown id is worth a warning, not a refusal to start work that is otherwise ready.
     if let Some(id) = task_id {
-        match bn_core::todo::claim(&cfg.tasks_file(), id, &repo, &sanitized) {
+        match bn_core::task_store::task_store(cfg).claim(id, &repo, &sanitized) {
             Ok(true) => {}
             Ok(false) => eprintln!(
                 "bn dispatch: no task '{id}' in the store — dispatching anyway, but the fleet \

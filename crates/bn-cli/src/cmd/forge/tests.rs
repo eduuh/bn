@@ -328,6 +328,7 @@ fn dispatch_happens_only_after_claim() {
     assert!(launched[0].contains(&"--task".to_string()));
     assert!(launched[0].contains(&"task-1".to_string()));
     assert!(launched[0].contains(&"--verify".to_string()));
+    assert!(!launched[0].contains(&"--yolo".to_string()), "a hand-run dispatch stays interactive");
     assert!(launched[0].contains(&"--json".to_string()));
     assert_eq!(
         flag_value(&launched[0], "--base"),
@@ -396,3 +397,28 @@ fn tick_never_claims_a_task_it_cannot_route() {
     assert_eq!(unrouted.len(), 1, "{unrouted:?}");
     assert!(client.claim_calls.is_empty(), "an unroutable task is left for another agent");
 }
+
+#[test]
+fn the_poller_dispatches_unattended() {
+    let _lock = env_lock();
+    let temp = tempfile::tempdir().unwrap();
+    write_profile(temp.path());
+    let _home = EnvGuard::set("HOME", temp.path());
+    let profile = load_profile("mac-agent").unwrap();
+    let mut client = FakeClient::new();
+    let _ = crate::cmd::dispatch::invocation::take_launched();
+
+    let outcome = run_tick(&mut client, tick_req(profile, 2, false), &[], &[]).unwrap();
+
+    let ForgeOutcome::Tick { dispatched, .. } = outcome else {
+        panic!("expected tick outcome");
+    };
+    assert_eq!(dispatched.len(), 1);
+    let launched = crate::cmd::dispatch::invocation::take_launched();
+    assert!(
+        launched[0].contains(&"--yolo".to_string()),
+        "no one watches a poller dispatch, so it must not wait for plan confirmation: {:?}",
+        launched[0]
+    );
+}
+

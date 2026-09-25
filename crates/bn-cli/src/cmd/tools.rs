@@ -27,7 +27,12 @@ fn spec_or_report(name: &str, json: bool) -> Option<ToolSpec> {
             if json {
                 println!(
                     "{}",
-                    serde_json::json!({ "ok": false, "error": "unknown_tool", "name": name })
+                    Envelope::failure(
+                        "tools",
+                        "unknown_tool",
+                        format!("unknown tool '{name}' (see `bn tools list`)"),
+                    )
+                    .to_json()
                 );
             } else {
                 eprintln!("bn tools: unknown tool '{name}' (see `bn tools list`)");
@@ -40,7 +45,7 @@ fn spec_or_report(name: &str, json: bool) -> Option<ToolSpec> {
 fn list(json: bool) -> i32 {
     let specs = tools::all_specs();
     if json {
-        println!("{}", serde_json::json!({ "tools": specs }));
+        json_ok("tools", serde_json::json!({ "tools": specs }));
         return 0;
     }
     if specs.is_empty() {
@@ -87,7 +92,7 @@ fn status(name: Option<&str>, json: bool) -> i32 {
     };
     if specs.is_empty() {
         if json {
-            println!("{}", serde_json::json!({ "status": [] }));
+            json_ok("tools-status", serde_json::json!({ "status": [], "errors": [] }));
         } else {
             println!("No tools declared.");
         }
@@ -105,9 +110,9 @@ fn status(name: Option<&str>, json: bool) -> i32 {
         }
     }
     if json {
-        println!(
-            "{}",
-            serde_json::json!({ "status": statuses, "errors": errors })
+        json_ok(
+            "tools-status",
+            serde_json::json!({ "status": statuses, "errors": errors }),
         );
         return i32::from(!errors.is_empty());
     }
@@ -156,7 +161,7 @@ fn reconcile(name: Option<&str>, json: bool) -> i32 {
         }
     }
     if json {
-        println!("{}", serde_json::json!({ "reconcile": results }));
+        json_ok("tools-reconcile", serde_json::json!({ "reconcile": results }));
     }
     rc
 }
@@ -168,9 +173,9 @@ fn down(name: &str, json: bool) -> i32 {
     match tools::down(&RealRunner, &spec) {
         Ok(()) => {
             if json {
-                println!(
-                    "{}",
-                    serde_json::json!({ "ok": true, "name": spec.name, "action": "down" })
+                json_ok(
+                    "tools-down",
+                    serde_json::json!({ "name": spec.name, "action": "down" }),
                 );
             } else {
                 println!("{}: down", spec.name);
@@ -181,7 +186,8 @@ fn down(name: &str, json: bool) -> i32 {
             if json {
                 println!(
                     "{}",
-                    serde_json::json!({ "ok": false, "name": spec.name, "error": e })
+                    Envelope::failure("tools-down", "down_failed", format!("{}: {e}", spec.name))
+                        .to_json()
                 );
             } else {
                 eprintln!("bn tools: failed to tear down '{}': {e}", spec.name);
@@ -216,7 +222,7 @@ fn deploy_json(spec: &ToolSpec, outcome: &DeployOutcome) -> serde_json::Value {
 fn report_deploy(spec: &ToolSpec, outcome: DeployOutcome, json: bool) -> i32 {
     let ok = !matches!(outcome, DeployOutcome::Failed(_));
     if json {
-        println!("{}", deploy_json(spec, &outcome));
+        json_ok("tools-deploy", deploy_json(spec, &outcome));
     } else if ok {
         println!("{}: {}", spec.name, outcome_label(&outcome));
     } else {

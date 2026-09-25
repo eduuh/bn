@@ -67,6 +67,8 @@ pub(super) struct ConfigFile {
     staff: Option<StaffSection>,
     mcp: Option<McpSection>,
     managed_repos: Option<ManagedReposSection>,
+    /// `[tasks]`: which backend holds the task list. See [`crate::task_store`].
+    tasks: Option<TasksSection>,
     tools: Option<ToolsSection>,
     links: Option<LinksSection>,
     web: Option<WebSection>,
@@ -121,6 +123,17 @@ impl ConfigFile {
 
     pub(super) fn machine_profile(&self) -> Option<MachineProfile> {
         self.machine.clone()
+    }
+
+    /// `[tasks].provider` — the raw word, parsed by
+    /// [`crate::task_store::TaskProviderKind::parse`].
+    pub(super) fn tasks_provider(&self) -> Option<String> {
+        self.tasks.as_ref().and_then(|t| t.provider.clone())
+    }
+
+    /// `[tasks].forge_url` — the Forge MCP endpoint, raw.
+    pub(super) fn tasks_forge_url(&self) -> Option<String> {
+        self.tasks.as_ref().and_then(|t| t.forge_url.clone())
     }
 
     pub(super) fn work_repos(&self) -> Option<Vec<String>> {
@@ -408,6 +421,48 @@ mod layer_tests {
 
     fn get<'a>(table: &'a toml::Table, section: &str, key: &str) -> Option<&'a toml::Value> {
         table.get(section).and_then(|s| s.get(key))
+    }
+
+    /// `[tasks] provider` resolves onto `Config`: absent is the file, `"forge"` is the Forge app,
+    /// and an unknown word is reported and resolves to the file rather than failing the whole
+    /// config.
+    #[test]
+    fn tasks_provider_resolves_file_forge_and_unknown() {
+        use crate::task_store::TaskProviderKind;
+        let resolve = |text: &str| {
+            let file: ConfigFile = toml::from_str(text).expect("config parses");
+            super::super::Config::resolve(Some(&file)).tasks_provider
+        };
+        assert_eq!(resolve(""), TaskProviderKind::File);
+        assert_eq!(resolve("[tasks]\n"), TaskProviderKind::File);
+        assert_eq!(
+            resolve("[tasks]\nprovider = \"file\"\n"),
+            TaskProviderKind::File
+        );
+        assert_eq!(
+            resolve("[tasks]\nprovider = \"forge\"\n"),
+            TaskProviderKind::ForgeApp
+        );
+        assert_eq!(
+            resolve("[tasks]\nprovider = \"froge\"\n"),
+            TaskProviderKind::File
+        );
+    }
+
+    /// `[tasks] forge_url` defaults to production and a blank value is the default.
+    #[test]
+    fn tasks_forge_url_defaults_and_overrides() {
+        let resolve = |text: &str| {
+            let file: ConfigFile = toml::from_str(text).expect("config parses");
+            super::super::Config::resolve(Some(&file)).tasks_forge_url
+        };
+        let default = crate::forge_app::DEFAULT_FORGE_URL;
+        assert_eq!(resolve(""), default);
+        assert_eq!(resolve("[tasks]\nforge_url = \"  \"\n"), default);
+        assert_eq!(
+            resolve("[tasks]\nforge_url = \"http://localhost:5000/mcp\"\n"),
+            "http://localhost:5000/mcp"
+        );
     }
 
     /// A later layer overrides only what it names: tables merge key by key, so a machine that sets

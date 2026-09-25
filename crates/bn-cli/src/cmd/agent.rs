@@ -444,7 +444,7 @@ pub(crate) fn emit_agent_done(
     )
     .unwrap_or_else(|e| fail(&format!("bn agent done: controller event: {e}")));
     set_tmux_agent(outcome);
-    let closed = crate::cmd::close_out::run(cfg, &ctx, failed, report_only, as_json);
+    let closed = super::close_out::run(cfg, &ctx, &summary, &pr, failed, report_only, as_json);
     if notify {
         // A failure is blocking — the work stopped and it is yours again. A success is a
         // completion, which the default bar keeps off the toast channel; but `--notify` is an

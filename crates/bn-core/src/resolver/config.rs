@@ -337,6 +337,13 @@ pub struct Config {
     /// the default, because a notification preference must never break an unrelated command. See
     /// [`crate::notify::policy`].
     pub notify: crate::notify::policy::NotifyConfig,
+    /// `[tasks].provider`: which backend holds the task list — [`crate::task_store::task_store`]
+    /// reads it. Default [`File`](crate::task_store::TaskProviderKind::File). An unrecognised word
+    /// is reported on stderr and resolves to the default.
+    pub tasks_provider: crate::task_store::TaskProviderKind,
+    /// `[tasks].forge_url`: the Forge MCP endpoint the `forge` provider and `bn forge` talk to.
+    /// Default [`crate::forge_app::DEFAULT_FORGE_URL`]. A blank value is the default.
+    pub tasks_forge_url: String,
 }
 
 impl Default for Config {
@@ -399,6 +406,8 @@ impl Default for Config {
             orchestrate_remote_overflow: false,
             staff_home: None,
             notify: crate::notify::policy::NotifyConfig::default(),
+            tasks_provider: crate::task_store::TaskProviderKind::File,
+            tasks_forge_url: crate::forge_app::DEFAULT_FORGE_URL.to_string(),
         }
     }
 }
@@ -617,6 +626,16 @@ impl Config {
             .unwrap_or(crate::keep_warm::DEFAULT_KEEP_WARM_BRAINSTORM_INTERVAL_SECS)
             .max(1);
 
+        let tasks_provider = match crate::task_store::TaskProviderKind::parse(
+            file.and_then(|f| f.tasks_provider()).as_deref(),
+        ) {
+            Ok(kind) => kind,
+            Err(e) => {
+                eprintln!("bn: {e}; using the file provider");
+                crate::task_store::TaskProviderKind::File
+            }
+        };
+
         Config {
             personal_root,
             work_root,
@@ -673,6 +692,12 @@ impl Config {
                 .unwrap_or(false),
             staff_home,
             notify,
+            tasks_provider,
+            tasks_forge_url: file
+                .and_then(|f| f.tasks_forge_url())
+                .map(|u| u.trim().to_string())
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| crate::forge_app::DEFAULT_FORGE_URL.to_string()),
         }
     }
 

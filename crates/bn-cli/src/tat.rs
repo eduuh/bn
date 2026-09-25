@@ -18,6 +18,7 @@ mod commands;
 pub(crate) mod discovery;
 mod keys;
 mod paths;
+mod pick;
 mod preview;
 mod rows;
 mod status;
@@ -31,8 +32,9 @@ use commands::{command_from_pick, Step};
 use discovery::{remote_prs, remote_prs_fetch_blocking, spawn_remote_warm};
 use keys::{kill_from_line, release_pool, rm_worktree, warm_pool};
 use paths::{bare_repo_main_path, is_bare_repo, project_path, resolve_project_path};
+use pick::{sub as pick_sub, top_level as pick_top_level};
 use preview::preview;
-use rows::{build_list, build_sub_rows};
+use rows::{build_list, build_sub_rows, sub_rows_feed, SubRow};
 
 use crate::proc::{tmux_command, tmux_ok, tmux_raw, tmux_run};
 use crate::wt;
@@ -829,78 +831,12 @@ fn clone_name(url: &str) -> String {
 /// = the Windows root, the `tatw` replacement). Mirrors bash `resolve_and_open`.
 pub fn run(cfg: &Config, name: Option<&str>, root_opt: Option<&str>) {
     let roots = Roots::resolve(cfg, root_opt);
-    // Carry the scope into every fzf self-reinvocation so the callbacks stay rooted the same way.
-    let root_flag = if root_opt == Some("win") {
-        " --root win"
-    } else {
-        ""
-    };
     match name {
         Some(sel) if !sel.is_empty() => resolve_and_open(cfg, &roots, sel.to_string(), false),
         _ => {
-            // Interactive: stream the list into fzf, capture the typed query + selection.
-            let exe = std::env::current_exe().unwrap_or_else(|_| "bn".into());
-            let bn = crate::shq(&exe.display().to_string());
-            let child = Command::new("fzf")
-                .arg("--reverse")
-                .arg("--ansi")
-                .arg("--print-query")
-                .arg("--delimiter=\t")
-                .arg("--with-nth=1")
-                // Two header lines: the status the tmux bar used to carry, over the key hints.
-                // ctrl-r repaints it — see `--bind=ctrl-r` below and `status::header`.
-                .arg(format!("--header={}", status::header(cfg)))
-                .arg(format!(
-                    "--preview={bn} tat{root_flag} --pick-stage preview {{-1}}"
-                ))
-                .arg("--preview-window=right:50%:wrap")
-                .arg(format!(
-                    "--bind=start:reload({bn} tat{root_flag} --pick-stage list)"
-                ))
-                .arg(format!(
-                    "--bind=ctrl-x:execute-silent({bn} tat{root_flag} --pick-stage kill {{-1}})+reload({bn} tat{root_flag} --pick-stage list)"
-                ))
-                .arg(format!(
-                    "--bind=ctrl-r:reload({bn} tat{root_flag} --pick-stage refresh)+transform-header({bn} tat{root_flag} --pick-stage statusline)"
-                ))
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .spawn();
-            let child = match child {
-                Ok(c) => c,
-                Err(_) => {
-                    // No fzf on PATH — degrade to a plain list, then hold.
-                    build_list(cfg, &roots, false);
-                    crate::picker::hold();
-                    return;
-                }
-            };
-            let Ok(out) = child.wait_with_output() else {
-                return;
-            };
-            if out.status.code() == Some(130) {
-                return; // Esc / ctrl-c
+            if let Some((sel, typed)) = pick_top_level(cfg, &roots, root_opt) {
+                resolve_and_open(cfg, &roots, sel, typed);
             }
-            let text = String::from_utf8_lossy(&out.stdout);
-            let mut lines = text.lines();
-            let query = lines.next().unwrap_or("");
-            let selection = lines.next().unwrap_or("");
-            let (sel, typed) = if !selection.is_empty() {
-                (
-                    selection
-                        .rsplit('\t')
-                        .next()
-                        .unwrap_or(selection)
-                        .to_string(),
-                    false,
-                )
-            } else {
-                (query.to_string(), true)
-            };
-            if sel.is_empty() {
-                return;
-            }
-            resolve_and_open(cfg, &roots, sel, typed);
         }
     }
 }
@@ -1092,129 +1028,68 @@ fn open_project_step(cfg: &Config, roots: &Roots, name: &str) -> Step {
         return Step::Done;
     }
     let worktree_dir = roots.worktree_dir(name);
-
     let header = if bare {
-        "Pick · type a branch · ctrl-o do to this row · ctrl-d del · ctrl-w warm · ctrl-r release · ctrl-p pane · Esc close"
+        "Pick a branch, slot, window or command"
     } else {
-        "Pick window/worktree (Esc: close)"
+        "Pick window/worktree"
     };
+    let picked = pick_sub(
+        cfg,
+        roots,
+        name,
+        header,
+        roots.win_scoped.then_some("win"),
+        rows,
+        &states,
+    );
 
-    let exe = std::env::current_exe().unwrap_or_else(|_| "bn".into());
-    let bn = crate::shq(&exe.display().to_string());
-    let root_flag = if roots.win_scoped { " --root win" } else { "" };
-    let name_q = crate::shq(name);
-    let listen = commands::Listen::reserve();
-    let child = Command::new("fzf")
-        .arg("--reverse")
-        .arg("--ansi")
-        .arg("--delimiter=|")
-        .arg("--with-nth=3")
-        .arg("--print-query")
-        // Handled in the parent: `execute()` can hand nothing back (see `commands::act_on_row`).
-        .arg("--expect=ctrl-o")
-        .arg(format!("--header={header}"))
-        // The side pane. `{1}~{2}` (kind~payload) rather than the display column, because these
-        // rows differ in kind: a window wants a live pane capture, a worktree its branch note.
-        // ctrl-p toggles it away for anyone who wants the bare list back.
-        .arg(format!(
-            "--preview={bn} tat {name_q}{root_flag} --pick-stage subpreview --pick-arg {{1}}~{{2}}"
-        ))
-        .arg("--preview-window=right:50%:wrap")
-        .arg("--bind=ctrl-p:toggle-preview")
-        // ctrl-d: delete the focused *idle worktree* row (guarded: refuses a dirty tree, unpushed
-        // commits, or a non-worktree row), then reload in place so the removed row disappears.
-        .arg(format!(
-            "--bind=ctrl-d:execute({bn} tat {name_q}{root_flag} --pick-stage rmworktree --pick-arg {{1}}~{{2}})+reload({bn} tat {name_q}{root_flag} --pick-stage sublist)"
-        ))
-        // ctrl-w: warm this repo's pool to its configured size (spawns a `pool-warm` window to
-        // build in and returns), guarded to a pooled repo; reload picks up any freshly-cut slots.
-        .arg(format!(
-            "--bind=ctrl-w:execute({bn} tat {name_q}{root_flag} --pick-stage warmpool)+reload({bn} tat {name_q}{root_flag} --pick-stage sublist)"
-        ))
-        // ctrl-r: release the focused *leased* (◍) slot back to the warm pool (`wt pool return`),
-        // guarded — refuses a dirty slot; reload flips it back to an idle (○) row.
-        .arg(format!(
-            "--bind=ctrl-r:execute({bn} tat {name_q}{root_flag} --pick-stage releasepool --pick-arg {{1}}~{{2}})+reload({bn} tat {name_q}{root_flag} --pick-stage sublist)"
-        ))
-        .args(commands::listen_args(listen.as_ref()))
-        .envs(commands::listen_env(listen.as_ref()))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn();
-    let mut child = match child {
-        Ok(c) => c,
-        Err(_) => {
-            goto_session(&sess);
-            return Step::Done;
-        }
-    };
-    if let Some(stdin) = child.stdin.take() {
-        let mut stdin = stdin;
-        let _ = stdin.write_all(rows.as_bytes());
+    if picked.row.is_none() && !picked.query.is_empty() && bare {
+        open_worktree(cfg, roots, name, &picked.query);
+        return Step::Done;
     }
-    let _ticker = commands::Ticker::start(listen.as_ref(), &exe, name, root_flag, &states);
-    let Ok(out) = child.wait_with_output() else {
+    let Some(row) = picked.row else {
         goto_session(&sess);
         return Step::Done;
     };
-    // Esc / ctrl-c closes the list and nothing else: it used to switch into the repo's session,
-    // so backing out of a list you opened by mistake landed you somewhere instead of nowhere.
-    if out.status.code() == Some(130) {
-        return Step::Done;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut lines = text.lines();
-    let query = lines.next().unwrap_or("");
-    // `--expect` inserts a line naming the key that accepted — empty for a plain Enter.
-    let key = lines.next().unwrap_or("");
-    let selection = lines.next().unwrap_or("");
-
-    if selection.is_empty() && !query.is_empty() && bare {
-        open_worktree(cfg, roots, name, query);
-        return Step::Done;
-    }
-    if selection.is_empty() {
-        goto_session(&sess);
-        return Step::Done;
-    }
-
-    let mut parts = selection.splitn(3, '|');
-    let kind = parts.next().unwrap_or("");
-    let payload = parts.next().unwrap_or("");
+    let payload = row.payload();
 
     // Acting on a row without leaving the list; what follows takes you somewhere instead.
-    if let Some(step) = commands::act_on_row(cfg, roots, name, key, kind, payload) {
+    if let Some(step) = commands::act_on_row(cfg, roots, name, &picked.key, row.kind(), &payload) {
         return step;
     }
-    if kind == "window" {
-        goto_session(&format!("{sess}:{payload}"));
-    } else if kind == "remotepr" {
-        open_remote_pr(cfg, roots, name, payload);
-    } else if kind == "codespace" {
-        // payload packs `csname\tbranch`.
-        let (cn, cb) = payload.split_once('\t').unwrap_or((payload, ""));
-        open_codespace(&format!("cs:{repo}/{cb}/{cn}"));
-    } else if kind == "poolbranch" {
-        // A leased pool slot — payload is the real leasing branch; open_worktree hands back its
-        // warm slot (idempotent lease) and opens the window there.
-        open_worktree(cfg, roots, name, payload);
-    } else if kind == "poolidle" {
-        // An idle warm slot → lease it to a branch. Typing a branch name in fzf filters this row
-        // out (the query won't fuzzy-match the "(idle)" display), so the natural flow is
-        // select-then-name: use the typed query when it survived, else prompt for the branch here.
-        let branch = if query.is_empty() {
-            prompt_branch(payload)
-        } else {
-            Some(query.to_string())
-        };
-        match branch {
-            Some(b) if !b.trim().is_empty() => open_worktree(cfg, roots, name, b.trim()),
-            _ => goto_session(&sess),
+    match row {
+        SubRow::Window(index) => goto_session(&format!("{sess}:{index}")),
+        SubRow::RemotePr(number) => open_remote_pr(cfg, roots, name, &number),
+        SubRow::Codespace {
+            name: cn,
+            branch: cb,
+        } => {
+            open_codespace(&format!("cs:{repo}/{cb}/{cn}"));
         }
-    } else {
-        let wt_path = worktree_dir.join(repo).join(payload);
-        open_or_select_window(&sess, payload, &wt_path);
-        goto_session(&sess);
+        SubRow::PoolBranch(branch) => {
+            // A leased pool slot — payload is the real leasing branch; open_worktree hands back its
+            // warm slot (idempotent lease) and opens the window there.
+            open_worktree(cfg, roots, name, &branch);
+        }
+        SubRow::PoolIdle(slot) => {
+            // An idle warm slot → lease it to a branch. Typing a branch name filters this row out,
+            // so the natural flow is still select-then-name when the query is empty.
+            let branch = if picked.query.is_empty() {
+                prompt_branch(&slot)
+            } else {
+                Some(picked.query.clone())
+            };
+            match branch {
+                Some(b) if !b.trim().is_empty() => open_worktree(cfg, roots, name, b.trim()),
+                _ => goto_session(&sess),
+            }
+        }
+        SubRow::Worktree(branch) => {
+            let wt_path = worktree_dir.join(repo).join(&branch);
+            open_or_select_window(&sess, &branch, &wt_path);
+            goto_session(&sess);
+        }
+        SubRow::CmdSep | SubRow::Cmd(_) | SubRow::QueueSettings => return Step::Reopen,
     }
     Step::Done
 }
@@ -1293,11 +1168,11 @@ pub fn stage(
         TatStage::Kill => kill_from_line(row),
         TatStage::SubList => {
             let (rows, _, _) = build_sub_rows(cfg, &roots, row, true);
-            print!("{rows}");
+            print!("{}", sub_rows_feed(&rows));
         }
         TatStage::SubTick => {
             let (rows, _, _) = build_sub_rows(cfg, &roots, row, false);
-            print!("{rows}");
+            print!("{}", sub_rows_feed(&rows));
         }
         TatStage::RmWorktree => rm_worktree(cfg, &roots, row, arg),
         TatStage::WarmPool => warm_pool(&roots, row),

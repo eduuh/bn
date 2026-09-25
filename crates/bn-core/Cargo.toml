@@ -19,6 +19,7 @@ chrono.workspace = true
 chrono-tz.workspace = true
 iana-time-zone.workspace = true
 rusqlite.workspace = true
+ureq.workspace = true
 tempfile = { version = "3", optional = true }
 
 [features]
