@@ -391,9 +391,9 @@ pub(crate) fn emit_agent_send(
 }
 
 /// The line a peer message is delivered as. One line on purpose: no steer has ever pasted an
-/// embedded newline, so a multi-line paste is unverified against either TUI. The sender's
-/// `repo:branch` is stated up front and the reply command is spelled out, so the receiving agent
-/// can answer without any store telling it who asked.
+/// embedded newline, so a multi-line paste is unverified against either TUI. The sender's live
+/// tmux window identity is stated up front and the reply command is spelled out, so the receiving
+/// agent can answer without any store telling it who asked.
 pub(crate) fn peer_envelope(sender: &str, text: &str) -> String {
     format!(
         "[bn msg from {sender}] {} — reply: bn agent msg {sender} \"<your answer>\"",
@@ -451,6 +451,20 @@ fn fail_msg(code: &str, msg: &str, as_json: bool) -> ! {
     std::process::exit(1);
 }
 
+fn sender_target(from: Option<&str>, launch: Option<&str>, cwd: Option<&str>) -> Option<String> {
+    from.map(ToString::to_string)
+        .or_else(|| launch.map(ToString::to_string))
+        .or_else(|| cwd.map(ToString::to_string))
+}
+
+fn current_sender_target(cfg: &Config) -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    let ctx = bn_core::resolver::resolve(cfg, &cwd).ok()?;
+    super::resolve_agent_channel(cfg, &ctx.repo, &ctx.branch)
+        .tmux_target
+        .or_else(|| Some(format!("{}:{}", ctx.repo, ctx.branch)))
+}
+
 /// Message another live agent, peer to peer: `bn agent msg <repo:branch> "<text>"`.
 ///
 /// Where `bn agent send` is a human (or the dashboard) steering an agent, this is one agent asking
@@ -472,7 +486,10 @@ pub(crate) fn emit_agent_msg(
     let resolved = bn_core::resolver::resolve(cfg, &cwd)
         .ok()
         .map(|ctx| format!("{}:{}", ctx.repo, ctx.branch));
-    let sender = match validate_msg(target, from.or(resolved.as_deref())) {
+    let sender = match validate_msg(
+        target,
+        sender_target(from, current_sender_target(cfg).as_deref(), resolved.as_deref()).as_deref(),
+    ) {
         Ok(sender) => sender,
         Err((code, msg)) => fail_msg(code, &msg, as_json),
     };
@@ -565,6 +582,17 @@ mod tests {
     fn validate_refuses_self_after_normalisation() {
         let err = validate_msg("bn:feat-a", Some("BN:feat/a")).unwrap_err();
         assert_eq!(err.0, "self_target");
+    }
+
+    #[test]
+    fn launch_sender_identity_wins_over_the_current_cwd_branch() {
+        let sender = sender_target(
+            None,
+            Some("bn:bn-agent-msg-confirm"),
+            Some("bn:feat-b"),
+        )
+        .expect("sender resolved");
+        assert_eq!(sender, "bn:bn-agent-msg-confirm");
     }
 
     #[test]

@@ -13,7 +13,7 @@
 //! maintained was a cache of stale code.
 use super::*;
 
-mod backfill;
+pub(crate) mod backfill;
 mod report;
 use report::{Outcome, WarmReport};
 

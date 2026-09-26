@@ -437,3 +437,27 @@ keeps per-consumer acknowledgements for `watch`, controller ids, and orchestrato
 touches `wake-queue.signal`. Resident `bn watch`, `bn control watch`, and `bn orchestrate` processes
 sleep on that signal instead of polling; their existing intervals remain fallback deadlines for
 quiet agents becoming stuck or platforms where filesystem notifications are unavailable.
+
+## Reaching another machine over SSH (Dev Tunnels)
+
+Two jobs make one machine reachable from another over SSH, through an authenticated Microsoft Dev
+Tunnel. Nothing is exposed anonymously, and no port is opened on the host's network.
+
+| where | run | what it does |
+|---|---|---|
+| the machine you connect **to** | `bn run tunnel-host` | starts a key-only, user-level `sshd` on `127.0.0.1:2222`, authorizes published client keys, and hosts a tunnel labelled `bn-host-<machine>` in a tmux window `tunnel` |
+| the machine you connect **from** | `BN_TUNNEL_TO=<machine> bn run tunnel-connect` | publishes its public key to `<notes_root>/ssh-keys/`, finds the tunnel by label, runs `devtunnel connect` in a tmux window, and writes a managed `Host <machine>` block in `~/.ssh/config` |
+
+Both machines sign in to Dev Tunnels with the same account, so the client finds the host's tunnel
+by its label; there is no shared config to keep in sync. Client public keys travel through the
+git-synced notes tree (`ssh-keys/` in the first notes root that is a git repo, e.g.
+`~/projects/branch-notes-work/bn`): `tunnel-connect` commits and pushes the key, and `tunnel-host`
+pulls before authorizing. So run `tunnel-connect` on the client, then re-run `tunnel-host` on the
+host. After that, `ssh <machine>` and `bn connect <machine>` work.
+
+The devtunnel CLI binary is downloaded into `~/bin` on first run when missing (directly, not via
+the installer script, which needs sudo), and at a terminal the
+scripts start a GitHub device-code sign-in (`devtunnel user login -g -d`; set `BN_TUNNEL_LOGIN=microsoft` for a Microsoft account); every machine must use the same account. Unattended runs stop with that
+command instead of prompting. On the host, install the `sshd` binary once yourself:
+`sudo apt-get install -y openssh-server` (the system service is not needed). Settings are env vars documented at the top of
+each script (`BN_TUNNEL_TO`, `BN_TUNNEL_SSH_PORT`, `BN_TUNNEL_USER`, `BN_TUNNEL_KEYS_DIR`).

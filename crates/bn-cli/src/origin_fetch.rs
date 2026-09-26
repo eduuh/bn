@@ -31,16 +31,53 @@ fn has_fetch_refspec(bare_s: &str) -> bool {
     .is_some_and(|s| !s.trim().is_empty())
 }
 
+const MAIN_SPEC: &str = "+refs/heads/main:refs/remotes/origin/main";
+
+fn is_shallow(bare_s: &str) -> bool {
+    wt::git_out(&["--git-dir", bare_s, "rev-parse", "--is-shallow-repository"])
+        .is_some_and(|s| s.trim() == "true")
+}
+
+fn is_partial(bare_s: &str) -> bool {
+    wt::git_out(&[
+        "--git-dir",
+        bare_s,
+        "config",
+        "--get",
+        "remote.origin.promisor",
+    ])
+    .is_some_and(|s| s.trim() == "true")
+}
+
 /// Bring `origin/main` (on a normal clone: every remote-tracking ref) up to date. `Err` carries
 /// git's own last words, for a job log that says why rather than "offline?".
+///
+/// A clone that is both shallow and blobless (BigMono) fetches `main` at `--depth=1
+/// --filter=blob:none` first. A plain fetch there negotiates fine, yet ADO still sends every new
+/// commit's full tree set: 1.3M objects for nine hours of BigMono `main`, which never finished on a
+/// link that drops long transfers. The tip alone was 142K objects, 24 MiB, 18s. `main` itself is
+/// all the warm and `main-sync` need; the plain fetch stays as the fallback.
 pub(crate) fn refresh_origin(bare_s: &str) -> Result<(), String> {
+    if is_shallow(bare_s) && is_partial(bare_s) {
+        let tip = fetch(
+            bare_s,
+            &["--depth=1", "--filter=blob:none", "origin", MAIN_SPEC],
+        );
+        let Err(tip_err) = tip else {
+            return Ok(());
+        };
+        eprintln!("shallow fetch of main failed ({tip_err}) — trying a plain fetch");
+        return plain_refresh(bare_s)
+            .map_err(|plain_err| format!("{tip_err}; plain fetch: {plain_err}"));
+    }
+    plain_refresh(bare_s)
+}
+
+fn plain_refresh(bare_s: &str) -> Result<(), String> {
     if has_fetch_refspec(bare_s) {
         fetch(bare_s, &["--prune", "origin"])
     } else {
-        fetch(
-            bare_s,
-            &["origin", "+refs/heads/main:refs/remotes/origin/main"],
-        )
+        fetch(bare_s, &["origin", MAIN_SPEC])
     }
 }
 
@@ -181,6 +218,51 @@ mod tests {
         refresh_origin(&bare_s).expect("fetched");
 
         assert_eq!(rev(&bare_s, "refs/remotes/origin/main"), Some(tip));
+    }
+
+    /// A shallow blobless clone gets main's new tip at depth 1, and stays shallow and blobless.
+    #[test]
+    fn a_shallow_blobless_clone_fetches_main_at_depth_one() {
+        let _env = bn_core::test_support::env_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let src_s = src.to_string_lossy().to_string();
+        assert!(git(&["init", "-q", "-b", "main", &src_s]));
+        assert!(git(&[
+            "-C",
+            &src_s,
+            "config",
+            "uploadpack.allowFilter",
+            "true"
+        ]));
+        for i in 0..3 {
+            commit(&src_s, &format!("f{i}"));
+        }
+        let bare_s = tmp.path().join("bare.git").to_string_lossy().to_string();
+        let url = format!("file://{src_s}");
+        assert!(git(&[
+            "clone",
+            "-q",
+            "--bare",
+            "--depth=1",
+            "--filter=blob:none",
+            &url,
+            &bare_s,
+        ]));
+        assert!(is_shallow(&bare_s) && is_partial(&bare_s));
+        commit(&src_s, "m1");
+        let tip = commit(&src_s, "m2");
+
+        refresh_origin(&bare_s).expect("fetched");
+
+        assert_eq!(rev(&bare_s, "refs/remotes/origin/main"), Some(tip.clone()));
+        assert!(is_shallow(&bare_s), "still shallow");
+        let parents = wt::git_out(&["--git-dir", &bare_s, "log", "-1", "--format=%P", &tip]);
+        assert_eq!(
+            parents.as_deref(),
+            Some(""),
+            "only the tip came down: {parents:?}"
+        );
     }
 
     #[test]

@@ -318,6 +318,9 @@ fn move_legacy_main_worktree(
 /// this runs every fifteen minutes across every repo, and "already current" is not news.
 fn advance(dir_s: &str, target: &str, repo: &str, what: &str) -> bool {
     let before = head_sha(dir_s);
+    if !prefetch_blobs(dir_s, target, repo, what) {
+        return false;
+    }
     if !crate::git::git_ok(&["-C", dir_s, "reset", "--hard", "--quiet", target]) {
         native_job_line(
             &format!("main-sync: {repo}: could not reset {what} to {target}"),
@@ -330,6 +333,29 @@ fn advance(dir_s: &str, target: &str, repo: &str, what: &str) -> bool {
         native_job_line(&format!("main-sync: {repo}: {what} → {target}"), false);
     }
     true
+}
+
+/// In a blobless partial clone, fetch the files `target` needs before the reset or checkout that
+/// moves onto it. Left to the reset, they come down as one lazy fetch that can't resume — on BigMono,
+/// 54k blobs over a link that drops long transfers, and the tick sat in it for 15+ minutes. The
+/// backfill goes in resumable batches, and on failure the checkout stays where it was, untouched,
+/// for the next tick to retry. A no-op when the checkout is already there or the clone is whole.
+fn prefetch_blobs(dir_s: &str, target: &str, repo: &str, what: &str) -> bool {
+    use crate::wt_pool::warm::backfill;
+    let at_target = crate::wt::git_out(&["-C", dir_s, "rev-parse", target]);
+    if at_target.is_none() || at_target == head_sha(dir_s) || !backfill::is_partial_checkout(dir_s) {
+        return true;
+    }
+    match backfill::prefetch(dir_s, target) {
+        Ok(()) => true,
+        Err(why) => {
+            native_job_line(
+                &format!("main-sync: {repo}: could not fetch the files for {what} → {target}, left where it was: {why}"),
+                true,
+            );
+            false
+        }
+    }
 }
 
 /// Create the repo's main slot if it hasn't got one, then advance it to the same commit.
@@ -356,6 +382,9 @@ fn sync_main_slot(bare: &Path, worktree_dir: &Path, repo: &str, target: &str) ->
         return true;
     }
     let before = head_sha(&slot_s);
+    if !prefetch_blobs(&slot_s, target, repo, "main slot") {
+        return false;
+    }
     if !crate::git::git_ok(&["-C", &slot_s, "checkout", "--quiet", "--detach", target]) {
         native_job_line(
             &format!("main-sync: {repo}: could not advance the main slot to {target}"),
