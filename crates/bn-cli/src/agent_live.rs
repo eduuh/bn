@@ -460,10 +460,11 @@ pub(crate) const SUBMIT_BACKOFF: SubmitBackoff = SubmitBackoff {
 };
 
 /// Decide from a pane tail whether a just-submitted steer was accepted: a live spinner means the
-/// turn started, so the message was submitted. A spinner-less pane still sitting at a primed input
-/// means the harness's compose/autocomplete TUI ate the submit key. Pure over the tail → testable.
+/// turn started, and a bare empty Claude Code prompt means the box cleared after submission. A
+/// spinner-less pane still showing typed text means the harness's compose/autocomplete TUI ate the
+/// submit key. Pure over the tail → testable.
 fn tail_confirms_submit(tail: &[String]) -> bool {
-    tail_has_spinner(tail)
+    tail_has_spinner(tail) || tail_has_bare_prompt(tail)
 }
 
 /// Verify a `bn agent send --keys` submit landed in pane `target`: after the carriage return, poll
@@ -596,5 +597,30 @@ pub fn run(cfg: &Config, idle: i64, stuck: i64, as_json: bool) {
         for v in &remote {
             println!("{}", crate::cmd::remote_track::render_line(v));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bare_claude_prompt_confirms_submit() {
+        let tail = vec![
+            "some prior output".to_string(),
+            "\u{276f}\u{00a0}".to_string(),
+            "  auto mode on (shift+tab to cycle) · esc to interrupt · ← for agents".to_string(),
+        ];
+        assert!(tail_confirms_submit(&tail));
+    }
+
+    #[test]
+    fn text_still_in_box_does_not_confirm_submit() {
+        let tail = vec![
+            "some prior output".to_string(),
+            "\u{276f} Please keep typing".to_string(),
+            "  auto mode on (shift+tab to cycle) · ← for agents".to_string(),
+        ];
+        assert!(!tail_confirms_submit(&tail));
     }
 }

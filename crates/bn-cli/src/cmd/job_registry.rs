@@ -44,6 +44,7 @@ pub(crate) fn native_job(job: &str) -> Option<NativeJob> {
         "tmux-keylog" => Some(crate::cmd::tmux_keys::job_tmux_keylog),
         "keep-warm" => Some(crate::cmd::keep_warm::job_keep_warm),
         "pool-warm" => Some(crate::wt_pool::job_pool_warm),
+        "pool-build" => Some(crate::wt_pool::warm::job_pool_build),
         // The worktree-picker verbs (`bn_core::wt_actions`). Each is a runnable name for work that
         // already existed as a subcommand, which is what lets a picker row show its progress.
         "build" => Some(crate::cmd::wt_action_jobs::job_build),

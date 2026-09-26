@@ -46,7 +46,8 @@ pub(crate) fn effective_launch_harness(
     stage_harness: Option<&str>,
 ) -> bn_core::harness::DispatchHarness {
     let resolved = bn_core::harness::resolve_dispatch_harness(cfg, pinned.or(stage_harness));
-    if dispatch_copilot_only_window_open(bn_core::util::now_epoch_secs())
+    if pinned.is_none()
+        && dispatch_copilot_only_window_open(bn_core::util::now_epoch_secs())
         && resolved.harness != "copilot"
     {
         return bn_core::harness::DispatchHarness {
@@ -187,5 +188,14 @@ mod tests {
     fn malformed_clock_time_does_not_force_copilot() {
         assert!(!before_copilot_only_cutoff(""));
         assert!(!before_copilot_only_cutoff("9:00"));
+    }
+
+    #[test]
+    fn pinned_claude_overrides_the_copilot_only_window() {
+        let _now = bn_core::test_support::EnvGuard::set("BN_NOW", "0");
+        let cfg = Config::default();
+        let resolved = effective_launch_harness(&cfg, Some("claude"), None);
+        assert_eq!(resolved.harness, "claude");
+        assert!(resolved.fallback_from.is_none());
     }
 }

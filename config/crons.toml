@@ -154,6 +154,17 @@ randomized_delay = "5m"
 network = true
 description = "bn — refresh warm worktree pools for every pooled repo while the device is idle (off-peak, idle-gated + per-repo staleness); records pool_warm so bn metrics shows pool freshness"
 
+# Repos in `[pool] scheduled` are rebuilt here at fixed times instead of by the idle sweep above:
+# a full rebuild overnight, then a top-up before the workday. Not persistent: a missed 02:00 run
+# should wait for 07:30, not start a multi-hour build the moment the machine wakes.
+[[cron]]
+job = "pool-build"
+on_calendar = ["*-*-* 02:00:00", "*-*-* 07:30:00"]
+persistent = false
+randomized_delay = "2m"
+network = true
+description = "bn — rebuild the worktree pools of [pool] scheduled repos at fixed times: every worker slot reset to one freshly fetched origin/main commit, then built; reports each slot's commit and outcome, and any skip that leaves a slot unbuilt fails the run (pool-build)"
+
 [[cron]]
 job = "recall-index"
 on_calendar = "*-*-* 0/3:20:00"

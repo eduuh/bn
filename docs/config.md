@@ -217,6 +217,12 @@ hidden = ["client_secret"]
 | `dir` | `<state_dir>/logs` | Where log files go. |
 | `retain_days` | `14` | Daily files kept. `0` keeps all. |
 
+### `[pool]`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `scheduled` | `[]` | Repos whose worktree pool the `pool-build` cron rebuilds at fixed times (02:00 and 07:30) instead of the idle-gated `pool-warm` sweep. Each run resets every free worker slot to one freshly fetched `origin/main` commit, builds it, and reports each slot's commit and outcome. |
+
 ### `[scout]`
 
 | Key | Default | Meaning |

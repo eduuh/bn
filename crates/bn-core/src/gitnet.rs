@@ -35,6 +35,15 @@ const SSH_ALIVE_COUNT: u32 = 3;
 const HTTP_LOW_SPEED_LIMIT: u32 = 1;
 /// Seconds an HTTPS transfer may stay under the limit before git aborts it.
 const HTTP_LOW_SPEED_TIME: u32 = 45;
+/// Bytes/second under which a big fetch counts as stalled: 1 KiB/s.
+///
+/// The 45s / 1 B/s default treats a link that crawls as alive for as long as it moves at all; a
+/// BigMono pack crawled at a few KiB/s for two hours before the connection finally reset. Paired with
+/// [`STALL_TIME`] and a retry, a crawl is started over instead of waited out.
+const STALL_LIMIT: u32 = 1024;
+/// Seconds a big fetch may stay under [`STALL_LIMIT`] before git aborts it. With `--progress` the
+/// server keeps talking while it counts, so this only fires on a transfer that has really stalled.
+const STALL_TIME: u32 = 120;
 
 /// Apply the network bounds to a `git` command about to be spawned.
 ///
@@ -52,8 +61,12 @@ pub fn bound(cmd: &mut Command) {
             ),
         );
     }
+    // Each knob on its own: guarding both on LIMIT alone wrote TIME=45 over an operator's
+    // exported TIME, so the one override a slow server actually needs was silently discarded.
     if std::env::var_os("GIT_HTTP_LOW_SPEED_LIMIT").is_none() {
         cmd.env("GIT_HTTP_LOW_SPEED_LIMIT", HTTP_LOW_SPEED_LIMIT.to_string());
+    }
+    if std::env::var_os("GIT_HTTP_LOW_SPEED_TIME").is_none() {
         cmd.env("GIT_HTTP_LOW_SPEED_TIME", HTTP_LOW_SPEED_TIME.to_string());
     }
     // A prompt is only answerable when someone is there to answer it. With no terminal — cron,
@@ -61,6 +74,18 @@ pub fn bound(cmd: &mut Command) {
     // read, which is the exact failure this module exists to end.
     if std::env::var_os("GIT_TERMINAL_PROMPT").is_none() && !stdin_is_terminal() {
         cmd.env("GIT_TERMINAL_PROMPT", "0");
+    }
+}
+
+/// Swap the stall guard on a command already [`bound`] for the one a large, progress-reporting
+/// fetch wants (see `origin_fetch`). An operator's own `GIT_HTTP_LOW_SPEED_*` still wins, each
+/// knob on its own.
+pub fn stall_only(cmd: &mut Command) {
+    if std::env::var_os("GIT_HTTP_LOW_SPEED_LIMIT").is_none() {
+        cmd.env("GIT_HTTP_LOW_SPEED_LIMIT", STALL_LIMIT.to_string());
+    }
+    if std::env::var_os("GIT_HTTP_LOW_SPEED_TIME").is_none() {
+        cmd.env("GIT_HTTP_LOW_SPEED_TIME", STALL_TIME.to_string());
     }
 }
 
@@ -104,6 +129,43 @@ mod tests {
         assert!(env
             .iter()
             .any(|(k, v)| k == "GIT_HTTP_LOW_SPEED_TIME" && v.as_deref() == Some("45")));
+    }
+
+    #[test]
+    fn a_big_fetch_gets_the_stall_only_guard() {
+        let _lock = crate::test_support::env_lock();
+        let _limit = crate::test_support::EnvGuard::remove("GIT_HTTP_LOW_SPEED_LIMIT");
+        let _time = crate::test_support::EnvGuard::remove("GIT_HTTP_LOW_SPEED_TIME");
+        let mut cmd = Command::new("git");
+        bound(&mut cmd);
+        stall_only(&mut cmd);
+        let env = applied(&cmd);
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "GIT_HTTP_LOW_SPEED_TIME" && v.as_deref() == Some("120")));
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "GIT_HTTP_LOW_SPEED_LIMIT" && v.as_deref() == Some("1024")));
+    }
+
+    /// An operator who exports only the stall window keeps it: neither `bound` nor
+    /// `stall_only` may write over it, and the child inherits the operator's value.
+    #[test]
+    fn an_exported_stall_window_alone_survives() {
+        let _lock = crate::test_support::env_lock();
+        let _limit = crate::test_support::EnvGuard::remove("GIT_HTTP_LOW_SPEED_LIMIT");
+        let _time = crate::test_support::EnvGuard::set("GIT_HTTP_LOW_SPEED_TIME", "7200");
+        let mut cmd = Command::new("git");
+        bound(&mut cmd);
+        stall_only(&mut cmd);
+        let env = applied(&cmd);
+        assert!(
+            !env.iter().any(|(k, _)| k == "GIT_HTTP_LOW_SPEED_TIME"),
+            "the operator's TIME must reach git untouched: {env:?}"
+        );
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "GIT_HTTP_LOW_SPEED_LIMIT" && v.as_deref() == Some("1024")));
     }
 
     /// The floor must never become an override — a configured transport survives untouched.

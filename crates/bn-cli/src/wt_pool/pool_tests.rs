@@ -35,6 +35,20 @@ fn prune_never_touches_protected_slots() {
     assert_eq!(prune_decision(c), Action::Skip("uncommitted changes"));
 }
 
+#[test]
+fn prune_renders_in_size_warm_slots() {
+    let leases = Leases::default();
+    let line = action_line(
+        &leases,
+        3,
+        &slot(false, false),
+        &Action::Skip("in-size warm slot"),
+        false,
+    );
+    assert!(line.contains("[3] keep"));
+    assert!(line.contains("in-size warm slot"));
+}
+
 // --- destroy_decision -------------------------------------------------
 
 #[test]

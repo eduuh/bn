@@ -435,6 +435,28 @@ commands = [".ssh/"]
         }
     }
 
+    /// `bn agent prompt` and `bn agent answer` read the pane at different moments. The same
+    /// dialog must fingerprint the same across them even when output above the box or the
+    /// window's `@bn_agent` state changed, or `--expect` refuses every answer.
+    #[test]
+    fn the_fingerprint_follows_the_dialog_not_the_pane_around_it() {
+        let lines = dialog(&["/tmp/a"], "remember this path");
+        let read = parse_pending_prompt(&lines, "", true, false).unwrap();
+
+        let mut scrolled = vec!["● Bash(yarn build)".to_string(), "  ⎿  done".to_string()];
+        scrolled.extend(lines.iter().cloned());
+        let again = parse_pending_prompt(&scrolled, "waiting", true, false).unwrap();
+        assert_eq!(read.fingerprint, again.fingerprint);
+
+        let other =
+            parse_pending_prompt(&dialog(&["/tmp/b"], "remember this path"), "", true, false)
+                .unwrap();
+        assert_ne!(
+            read.fingerprint, other.fingerprint,
+            "a different request is a different dialog"
+        );
+    }
+
     #[test]
     fn copilot_path_access_is_an_approval_carrying_its_paths() {
         let lines = dialog(&["/Users/me/projects/worktree"], "remember this path");

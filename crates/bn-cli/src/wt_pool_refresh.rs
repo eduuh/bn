@@ -65,8 +65,17 @@ pub(crate) fn plan_pool_refresh(cfg: &Config, now: i64) -> PoolRefreshPlan {
 /// morning. Slots left at a month-old base are the opposite of warm.
 ///
 /// With the config gone there is no register to be on, so membership is simply "has a bare clone".
+///
+/// Less the `[pool] scheduled` repos: the `pool-build` cron owns those, at fixed times.
 fn warmable_repos(cfg: &Config) -> Vec<String> {
     bn_core::pool::pooled_repos(cfg)
+        .into_iter()
+        .filter(|repo| {
+            !cfg.pool_scheduled
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(repo))
+        })
+        .collect()
 }
 
 fn mandatory_sweep_attempted_recently(events: &[bn_core::events::Event], now: i64) -> bool {

@@ -1668,6 +1668,18 @@ fn classify_slot(
 ) -> SlotClass {
     let slot = slot_path(&ctx.pool_dir, n);
     let exists = slot.is_dir();
+    let leased = leases.owner_slot(n).is_some();
+    let over_size = n > ctx.size as u32;
+    let orphan = !ctx.bare.is_dir() || (exists && !registered.contains(&n));
+    if leased || over_size || orphan {
+        return SlotClass {
+            leased,
+            dirty: false,
+            in_use: false,
+            over_size,
+            orphan,
+        };
+    }
     let group = leases
         .owner_slot(n)
         .and_then(|owner| leases.slots.get(&owner).map(|lease| (owner, lease)))
@@ -1678,23 +1690,33 @@ fn classify_slot(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_else(|| vec![n]);
+    // A live agent in the slot is the in-use signal that matters; the cwd scan is the backstop
+    // that also catches a plain shell or a build somebody left in the checkout.
+    let in_use = group.iter().any(|slot_n| {
+        let slot = slot_path(&ctx.pool_dir, *slot_n);
+        !slot_occupants(&slot).is_empty()
+            || crate::agent_lease::any_live_pane_in(&slot)
+            || any_proc_in(&slot)
+    });
+    let dirty = if in_use {
+        false
+    } else {
+        group
+            .iter()
+            .any(|slot_n| slot_is_dirty(&ctx.pool_dir, *slot_n))
+    };
     SlotClass {
-        leased: leases.owner_slot(n).is_some(),
-        dirty: group.iter().any(|slot_n| {
-            let slot = slot_path(&ctx.pool_dir, *slot_n);
-            slot.is_dir() && wt::dirty_count(&slot.to_string_lossy()) > 0
-        }),
-        // A live agent in the slot is the in-use signal that matters; the cwd scan is the backstop
-        // that also catches a plain shell or a build somebody left in the checkout.
-        in_use: group.iter().any(|slot_n| {
-            let slot = slot_path(&ctx.pool_dir, *slot_n);
-            !slot_occupants(&slot).is_empty()
-                || crate::agent_lease::any_live_pane_in(&slot)
-                || any_proc_in(&slot)
-        }),
-        over_size: n > ctx.size as u32,
-        orphan: !ctx.bare.is_dir() || (exists && !registered.contains(&n)),
+        leased,
+        dirty,
+        in_use,
+        over_size,
+        orphan,
     }
+}
+
+fn slot_is_dirty(pool_dir: &Path, slot_n: u32) -> bool {
+    let slot = slot_path(pool_dir, slot_n);
+    slot.is_dir() && wt::dirty_count(&slot.to_string_lossy()) > 0
 }
 
 /// SIGTERM any process whose cwd is inside `slot` (graceful — parity with treehouse).
@@ -1775,7 +1797,13 @@ fn slot_tag(leases: &Leases, n: u32) -> String {
 }
 
 /// Print one slot's planned/applied action.
-fn print_action(leases: &Leases, n: u32, class: &SlotClass, action: &Action, executed: bool) {
+fn action_line(
+    leases: &Leases,
+    n: u32,
+    class: &SlotClass,
+    action: &Action,
+    executed: bool,
+) -> String {
     let tag = slot_tag(leases, n);
     match action {
         Action::Remove => {
@@ -1791,10 +1819,14 @@ fn print_action(leases: &Leases, n: u32, class: &SlotClass, action: &Action, exe
             } else {
                 "would remove"
             };
-            cprintln!("  {YELLOW}[{n}] {verb}{NC}  {tag}  ({reason})");
+            format!("  {YELLOW}[{n}] {verb}{NC}  {tag}  ({reason})")
         }
-        Action::Skip(why) => cprintln!("  {GREEN}[{n}] keep        {NC}  {tag}  ({why})"),
+        Action::Skip(why) => format!("  {GREEN}[{n}] keep        {NC}  {tag}  ({why})"),
     }
+}
+
+fn print_action(leases: &Leases, n: u32, class: &SlotClass, action: &Action, executed: bool) {
+    cprintln!("{}", action_line(leases, n, class, action, executed));
 }
 
 fn pool_prune(cfg: &Config, repo: Option<String>, yes: bool, all: bool, verbose: bool) -> bool {
@@ -1819,7 +1851,7 @@ fn pool_prune(cfg: &Config, repo: Option<String>, yes: bool, all: bool, verbose:
     ok
 }
 
-fn prune_one(ctx: &PoolCtx, yes: bool, verbose: bool) {
+fn prune_one(ctx: &PoolCtx, yes: bool, _verbose: bool) {
     let mut leases = read_leases(&ctx.pool_dir);
     let (repo, size) = (&ctx.repo, ctx.size);
     cprintln!("{BLUE}{repo} pool prune — {size} slots configured{NC}");
@@ -1852,8 +1884,6 @@ fn prune_one(ctx: &PoolCtx, yes: bool, verbose: bool) {
                 to_remove.push(n);
                 print_action(&leases, n, &class, &action, yes);
             }
-            // Quietly keep in-size warm slots unless --verbose; always show protected skips.
-            Action::Skip("in-size warm slot") if !verbose => {}
             Action::Skip(_) => print_action(&leases, n, &class, &action, yes),
         }
     }

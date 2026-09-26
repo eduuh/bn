@@ -270,6 +270,10 @@ pub struct Config {
     /// repos, and the findings cap. Empty watch/tools = the collectors idle. See
     /// [`crate::scout::ScoutConfig`].
     pub scout: crate::scout::ScoutConfig,
+    /// `[pool] scheduled`: repos whose worktree pool the `pool-build` cron rebuilds at fixed times
+    /// (BigMono: nightly, then a top-up before the workday). The idle-gated `pool-warm` sweep leaves
+    /// them alone so the two never warm the same pool. Matched case-insensitively.
+    pub pool_scheduled: Vec<String>,
     /// `[log]`: the opt-in verbose/debug action log (structured JSONL of every high-value action,
     /// for after-the-fact debugging). The CLI `--verbose/--debug` flag layers on top at init. See
     /// [`LogConfig`] and [`crate::log`].
@@ -378,6 +382,7 @@ impl Default for Config {
             coarse_sizes: crate::calib::CoarseSizes::default(),
             web: WebConfig::default(),
             scout: crate::scout::ScoutConfig::default(),
+            pool_scheduled: Vec::new(),
             log: LogConfig::default(),
             dispatch_plan_review: false,
             dispatch_plan_reviewers: crate::plan_review::DEFAULT_REVIEWER_COUNT,
@@ -661,6 +666,7 @@ impl Config {
             coarse_sizes,
             web,
             scout,
+            pool_scheduled: file.and_then(|f| f.pool_scheduled()).unwrap_or_default(),
             log,
             dispatch_plan_review,
             dispatch_plan_reviewers,

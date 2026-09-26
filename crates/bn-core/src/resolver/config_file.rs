@@ -74,6 +74,7 @@ pub(super) struct ConfigFile {
     web: Option<WebSection>,
     log: Option<LogSection>,
     scout: Option<ScoutSection>,
+    pool: Option<PoolSection>,
     dispatch: Option<DispatchSection>,
     pipeline: Option<super::PipelineConfig>,
     orchestrate: Option<OrchestrateSection>,
@@ -412,6 +413,10 @@ impl ConfigFile {
 
     pub(super) fn scout_max_findings(&self) -> Option<usize> {
         self.scout.as_ref().and_then(|s| s.max_findings)
+    }
+
+    pub(super) fn pool_scheduled(&self) -> Option<Vec<String>> {
+        self.pool.as_ref().and_then(|s| s.scheduled.clone())
     }
 }
 

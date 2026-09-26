@@ -47,7 +47,9 @@ pub fn render_systemd(rc: &ResolvedCron, bn_path: &str) -> (String, String) {
     let mut timer = String::from("[Unit]\n");
     timer.push_str(&format!("Description=bn {} timer (generated)\n", e.job));
     timer.push_str("\n[Timer]\n");
-    timer.push_str(&format!("OnCalendar={}\n", e.on_calendar));
+    for spec in e.on_calendar.entries() {
+        timer.push_str(&format!("OnCalendar={spec}\n"));
+    }
     timer.push_str(&format!("Persistent={}\n", e.persistent));
     if let Some(rd) = &e.randomized_delay {
         timer.push_str(&format!("RandomizedDelaySec={rd}\n"));
@@ -152,6 +154,26 @@ pub enum LaunchdSchedule {
 /// per-minute calendar entries), `daily`, `*-*-* HH:MM:SS`, `*-*-* H/S:MM:SS` (hour-stepped), and
 /// an optional `Www` / `Www..Www` weekday prefix on the dated forms. Anything else is an error —
 /// better to refuse a schedule than silently fire at the wrong time.
+/// [`launchd_schedule`] over every spec of a multi-time cron. Calendar entries simply concatenate;
+/// a `StartInterval` repeat has no way to share a plist with anything else, so it must stand alone.
+pub fn launchd_schedules(specs: &[String]) -> Result<LaunchdSchedule, String> {
+    if let [one] = specs {
+        return launchd_schedule(one);
+    }
+    let mut all = Vec::new();
+    for spec in specs {
+        match launchd_schedule(spec)? {
+            LaunchdSchedule::Calendar(entries) => all.extend(entries),
+            LaunchdSchedule::Interval(_) => {
+                return Err(format!(
+                    "'{spec}' is an interval; launchd can't combine it with other times"
+                ))
+            }
+        }
+    }
+    Ok(LaunchdSchedule::Calendar(all))
+}
+
 pub fn launchd_schedule(on_calendar: &str) -> Result<LaunchdSchedule, String> {
     let s = on_calendar.trim();
     let unsupported = || format!("unsupported OnCalendar '{s}' for launchd");
@@ -245,7 +267,7 @@ pub fn launchd_schedule(on_calendar: &str) -> Result<LaunchdSchedule, String> {
 /// closest launchd gets to `Persistent=`). `Err` when the schedule doesn't translate.
 pub fn render_launchd(rc: &ResolvedCron, bn_path: &str) -> Result<String, String> {
     let label = launchd_label(rc);
-    let schedule = match launchd_schedule(&rc.entry.on_calendar)? {
+    let schedule = match launchd_schedules(rc.entry.on_calendar.entries())? {
         LaunchdSchedule::Interval(secs) => {
             format!("  <key>StartInterval</key>\n  <integer>{secs}</integer>\n")
         }

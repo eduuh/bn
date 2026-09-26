@@ -340,8 +340,9 @@ the daemon misclassify its own lanes as dead. <span class="src">cmd/dispatch.rs:
 <code>main</code> out twice — and is shared by the controller and by you.
 <span class="src">wt_pool.rs:~1005 · lease.rs:84-89</span></li>
 
-<li><strong>A copilot-only dispatch window is hardcoded until 21:00.</strong> Before that, any
-harness choice is overridden to Copilot. <span class="src">cmd/dispatch/policy.rs:25-60</span></li>
+<li><strong>A copilot-only dispatch window is hardcoded until 21:00.</strong> Before that, an
+implicit harness choice is overridden to Copilot, but an explicit <code>--agent claude</code> pin
+wins. <span class="src">cmd/dispatch/policy.rs:25-60</span></li>
 
 <li><strong><code>Fleet::running_count()</code> is <code>agents − ended</code></strong>, not
 <code>agents.len()</code>. Capacity supervises with <code>stuck_mins = 0</code>, and reading

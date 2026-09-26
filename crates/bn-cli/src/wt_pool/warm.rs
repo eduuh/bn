@@ -13,6 +13,10 @@
 //! maintained was a cache of stale code.
 use super::*;
 
+mod backfill;
+mod report;
+use report::{Outcome, WarmReport};
+
 /// Template written when a repo has no `build.sh` yet — the user fills in the install/build.
 const BUILD_TEMPLATE: &str = "#!/bin/sh
 # `bn build` runs this (cwd = the repo checkout) to install deps / build. `bn wt pool warm` runs
@@ -119,8 +123,27 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool, slot: Option<u3
     };
     let bare_s = ctx.bare.to_string_lossy().to_string();
 
-    let Some(base) = refresh_base(&ctx.repo, &bare_s) else {
+    let Some((base, fetch_error)) = refresh_base(&ctx.repo, &bare_s) else {
         return false;
+    };
+    // Resolved to a commit once, here: every slot in this run ends on exactly this one, even if
+    // another job fetches while the warm is still building.
+    let Some(base_sha) = wt::git_out(&[
+        "--git-dir",
+        &bare_s,
+        "rev-parse",
+        &format!("{base}^{{commit}}"),
+    ]) else {
+        crate::cmd::jobs::native_job_line(
+            &format!("pool-warm: {base} does not resolve to a commit"),
+            true,
+        );
+        return false;
+    };
+    let mut report = WarmReport {
+        base: base_sha.clone(),
+        fetch_error,
+        slots: Vec::new(),
     };
 
     // Does this repo have a `build.sh`? Only to decide whether there's anything to build (and to
@@ -189,12 +212,11 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool, slot: Option<u3
     // Never warm a slot that's leased (a running agent owns it), dirty (uncommitted local work),
     // or — under `--new` — already holding a *live* checkout; those are counted as skipped and
     // left untouched.
-    let mut skipped = 0u32;
     // Reported on the `pool_warm` event so `pool metrics` can name the slots warm can never
     // touch — a dirty idle slot otherwise stays stale and unbuilt for as long as nobody notices.
     let mut skipped_dirty: Vec<u32> = Vec::new();
-    let mut failed = 0u32;
     let mut ready: Vec<(u32, PathBuf)> = Vec::new();
+    let partial = backfill::is_partial_clone(&bare_s);
     for n in targets.iter().copied() {
         let slot = slot_path(&ctx.pool_dir, n);
         let slot_s = slot.to_string_lossy().to_string();
@@ -206,13 +228,18 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool, slot: Option<u3
         // Fall through to the recreate below.
         if new && is_live_slot(&slot) {
             eprintln!("{BLUE}[{n}] existing — skipping (--new){NC}");
-            skipped += 1;
+            report.record(
+                n,
+                head_sha(&slot_s),
+                Outcome::Skipped("existing (--new)".into()),
+            );
             continue;
         }
         if let Some(owner) = leases.owner_slot(n) {
             let l = &leases.slots[&owner];
             eprintln!("{YELLOW}[{n}] leased {} — skipping{NC}", l.branch);
-            skipped += 1;
+            let why = format!("leased by {} ({})", l.holder, l.branch);
+            report.record(n, head_sha(&slot_s), Outcome::Skipped(why));
             continue;
         }
         // A slot can hold a live agent without holding a lease (one launched in place, or one whose
@@ -222,14 +249,28 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool, slot: Option<u3
                 "{YELLOW}[{n}] in use by a live {} — skipping{NC}",
                 occupant.describe()
             );
-            skipped += 1;
+            let why = format!("in use by a live {}", occupant.describe());
+            report.record(n, head_sha(&slot_s), Outcome::Skipped(why));
             continue;
         }
         if exists && is_live_slot(&slot) && wt::dirty_count(&slot_s) > 0 {
             eprintln!("{YELLOW}[{n}] dirty — skipping{NC}");
-            skipped += 1;
             skipped_dirty.push(n);
+            report.record(n, head_sha(&slot_s), Outcome::NotBuilt("dirty".into()));
             continue;
+        }
+        // A blobless clone fetches the files first, in resumable batches, so the reset below
+        // runs offline instead of as one lazy fetch that a dropped link restarts from zero.
+        if partial {
+            if exists && !is_live_slot(&slot) {
+                force_remove_worktree(&bare_s, &slot);
+            }
+            eprintln!("{BLUE}[{n}] fetching files for {base_sha}…{NC}");
+            if let Err(why) = backfill::stage_slot(&bare_s, &slot, &base_sha) {
+                eprintln!("{RED}[{n}] {why}{NC}");
+                report.record(n, head_sha(&slot_s), Outcome::Failed(why));
+                continue;
+            }
         }
         if is_live_slot(&slot) {
             advance_idle_slot(n, &slot_s, &bare_s, &base);
@@ -242,9 +283,26 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool, slot: Option<u3
             }
             if !add_detached_slot(&bare_s, &slot.to_string_lossy()) {
                 eprintln!("{RED}[{n}] failed to create checkout{NC}");
-                failed += 1;
+                report.record(
+                    n,
+                    None,
+                    Outcome::Failed("could not create the checkout".into()),
+                );
                 continue;
             }
+        }
+        // Advance and create both re-resolve the base; pin the slot to this run's commit.
+        if head_sha(&slot_s).as_deref() != Some(base_sha.as_str()) {
+            let _ = git_quiet(&["-C", &slot_s, "reset", "--quiet", "--hard", &base_sha]);
+        }
+        if head_sha(&slot_s).as_deref() != Some(base_sha.as_str()) {
+            eprintln!("{RED}[{n}] could not move to {base_sha}{NC}");
+            report.record(
+                n,
+                head_sha(&slot_s),
+                Outcome::Failed(format!("could not move to {base_sha}")),
+            );
+            continue;
         }
         ready.push((n, slot));
     }
@@ -256,32 +314,41 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool, slot: Option<u3
     // builds to ~1 build + N-1 cache/link passes.
     // What the pick must avoid until the next warm says otherwise.
     write_dirty_marks(&ctx.pool_dir, &skipped_dirty);
-    let (warmed, build_skipped) = match &build {
+    match &build {
         None => {
             // No build script means a live checkout is all there is to be warm; stamp them so the
             // pick treats every checkout in such a pool alike.
             for (n, _) in &ready {
                 write_warm_stamp(&ctx.pool_dir, *n, &base);
+                report.record(*n, Some(base_sha.clone()), Outcome::CheckedOut);
             }
-            (ready.len() as u32, 0)
         }
-        Some(_) => build_slots_warm(&rctx.repo, &ready),
-    };
-    // A ready slot whose build.sh failed is still leasable, just not fully provisioned — count it
-    // separately (made) from the fully-warmed slots so the summary can distinguish the two. A
-    // build that declined to run (busy toolchain) is neither: it joins the skipped count.
-    let skipped = skipped + build_skipped;
-    let made = ready.len() as u32 - warmed - build_skipped;
-    let complete = warm_complete(targets.len() as u32, warmed, skipped, failed, made);
+        Some(_) => {
+            for (n, outcome) in build_slots_warm(&rctx.repo, &ready) {
+                let slot_s = slot_path(&ctx.pool_dir, n).to_string_lossy().to_string();
+                report.record(n, head_sha(&slot_s), outcome);
+            }
+        }
+    }
+    let warmed = report.count(|o| matches!(o, Outcome::Built | Outcome::CheckedOut));
+    let skipped = report.count(|o| matches!(o, Outcome::Skipped(_) | Outcome::NotBuilt(_)));
+    let failed = report.count(|o| matches!(o, Outcome::Failed(_)));
+    let ok = report.ok();
     // Record the refresh so `bn metrics` can surface pool freshness — how many slots warmed, and
     // when the pool was last refreshed (one event per `pool warm`, alongside pool_get/pool_return).
     {
         let mut f = serde_json::Map::new();
         f.insert("repo".to_string(), ctx.repo.clone().into());
+        f.insert("commit".to_string(), report.base.clone().into());
         f.insert("warmed".to_string(), warmed.into());
         f.insert("size".to_string(), (ctx.size as u64).into());
         f.insert("skipped".to_string(), skipped.into());
-        f.insert("build_skipped".to_string(), build_skipped.into());
+        f.insert(
+            "build_skipped".to_string(),
+            report
+                .count(|o| matches!(o, Outcome::NotBuilt(why) if why != "dirty"))
+                .into(),
+        );
         f.insert(
             "skipped_dirty".to_string(),
             skipped_dirty
@@ -290,22 +357,27 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool, slot: Option<u3
                 .collect::<Vec<serde_json::Value>>()
                 .into(),
         );
-        f.insert("failed".to_string(), (failed + made).into());
-        f.insert("complete".to_string(), complete.into());
+        f.insert("failed".to_string(), failed.into());
+        f.insert("fetch_error".to_string(), report.fetch_error.clone().into());
+        f.insert("slots".to_string(), report.slots_json());
+        // Complete means the pool really is fresh: anything that makes the run not ok leaves it
+        // due, so the next sweep tries again.
+        f.insert("complete".to_string(), ok.into());
         let _ = bn_core::events::append("pool_warm", f);
     }
-    let mut summary = format!("Warmed {warmed}/{} slots for {}", ctx.size, ctx.repo);
-    if made > 0 {
-        summary += &format!(" · {made} checked out but build failed");
+    for line in report.lines() {
+        crate::cmd::jobs::native_job_line(&format!("pool-warm: {} {line}", ctx.repo), false);
     }
-    if failed > 0 {
-        summary += &format!(" · {failed} checkout failures");
-    }
-    if skipped > 0 {
-        summary += &format!(" · {skipped} skipped (leased/dirty/existing)");
-    }
-    println!("{GREEN}{summary}.{NC}");
-    warm_succeeded(failed, made)
+    let verdict = if ok { "ok" } else { "NOT ok" };
+    crate::cmd::jobs::native_job_line(
+        &format!(
+            "pool-warm: {} {verdict} — {warmed} warm, {skipped} skipped, {failed} failed @ {}",
+            ctx.repo,
+            &report.base[..report.base.len().min(10)]
+        ),
+        !ok,
+    );
+    ok
 }
 
 /// Fetch origin, then resolve the base every slot in this warm is created at or advanced onto.
@@ -317,33 +389,41 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool, slot: Option<u3
 ///
 /// Best-effort, the same posture [`crate::cmd::main_sync`] takes: being offline is a fact about the
 /// network, not a reason to skip the warm. Say so and carry on against the last-fetched refs — a
-/// slot warmed against a week-old base still beats no slot at all. But only when that last-fetched
+/// slot warmed against a week-old base still beats no slot at all — but hand the error back, so the
+/// run is reported as not ok. But only when that last-fetched
 /// ref actually exists: a missing cached `origin/main` means there is no trustworthy warm base, so
 /// the cron must fail instead of silently warming whatever `default_base` would invent.
-fn refresh_base(repo: &str, bare_s: &str) -> Option<String> {
-    if !git_quiet(&["--git-dir", bare_s, "fetch", "--quiet", "--prune", "origin"]) {
-        match wt::git_out(&[
+///
+/// The fetch itself is [`crate::origin_fetch::refresh_origin`], which is what gets a shallow,
+/// refspec-less clone like BigMono an `origin/main` at all.
+///
+/// Both notices go through [`crate::cmd::jobs::native_job_line`] with git's own error attached, so
+/// `bn cron show pool-warm` says *why* the refresh failed instead of just that it did.
+fn refresh_base(repo: &str, bare_s: &str) -> Option<(String, Option<String>)> {
+    let fetched = crate::origin_fetch::refresh_origin(bare_s);
+    if let Err(why) = fetched {
+        let cached = wt::git_out(&[
             "--git-dir",
             bare_s,
             "rev-parse",
             "--verify",
             "refs/remotes/origin/main",
-        ]) {
-            Some(_) => {
-                eprintln!(
-                    "{YELLOW}Could not fetch origin for {repo} — warming against the last-fetched refs.{NC}"
-                );
-                return Some(default_base(bare_s));
-            }
-            None => {
-                eprintln!(
-                    "{RED}Could not fetch origin for {repo} and no cached origin/main exists{NC}"
-                );
-                return None;
-            }
+        ])
+        .is_some();
+        if cached {
+            crate::cmd::jobs::native_job_line(
+                &format!("pool-warm: could not fetch origin for {repo} ({why}) — warming against the last-fetched refs"),
+                false,
+            );
+            return Some((default_base(bare_s), Some(why)));
         }
+        crate::cmd::jobs::native_job_line(
+            &format!("pool-warm: could not fetch origin for {repo} and no cached origin/main exists ({why})"),
+            true,
+        );
+        return None;
     }
-    Some(default_base(bare_s))
+    Some((default_base(bare_s), None))
 }
 
 /// Move an idle slot's existing checkout onto `base` and report which of the two it was.
@@ -378,75 +458,67 @@ fn head_sha(slot_s: &str) -> Option<String> {
     wt::git_out(&["-C", slot_s, "rev-parse", "HEAD"])
 }
 
-fn warm_complete(
-    size: u32,
-    warmed: u32,
-    skipped: u32,
-    checkout_failed: u32,
-    build_failed: u32,
-) -> bool {
-    warmed + skipped == size && checkout_failed == 0 && build_failed == 0
-}
-
-/// Whether the attempted refresh itself succeeded. Safe skips are not job failures: warming cannot
-/// and must not touch leased, occupied, dirty, or deliberately excluded existing slots.
-fn warm_succeeded(checkout_failed: u32, build_failed: u32) -> bool {
-    checkout_failed == 0 && build_failed == 0
-}
-
 /// Build every ready slot: prime the first at full parallelism (seeding the sccache cache), then
-/// build the rest concurrently sharing a job budget so the box isn't oversubscribed. Returns
-/// `(warmed, skipped)`: how many built cleanly (each now carrying a warm stamp), and how many
-/// declined to build this pass — a `build.sh` that exits [`BUILD_SKIPPED_EXIT`] because a sibling
-/// build already holds the shared toolchain. Those used to exit 0 and be counted as warm, which
-/// is how a pool reported "Warmed 3/6" with two slots that had never installed a dependency.
-fn build_slots_warm(repo: &str, ready: &[(u32, PathBuf)]) -> (u32, u32) {
-    use std::sync::atomic::{AtomicU32, Ordering};
+/// build the rest concurrently sharing a job budget so the box isn't oversubscribed. Returns each
+/// slot's outcome.
+///
+/// A build that declined to run because a sibling held the toolchain (BigMono's `build.sh` refuses to
+/// start a second `lage build`) is retried once more, one slot at a time, after the parallel pass:
+/// in a pool whose builds guard each other, a parallel pass alone leaves every slot but one cold.
+/// Only a slot still declined after that is reported as not built.
+fn build_slots_warm(repo: &str, ready: &[(u32, PathBuf)]) -> Vec<(u32, Outcome)> {
     let Some(((first_n, first_slot), rest)) = ready.split_first() else {
-        return (0, 0);
+        return Vec::new();
     };
-    let (mut warmed, mut skipped) = (0u32, 0u32);
     eprintln!("{BLUE}[{first_n}] building (priming cache)…{NC}");
-    match run_bn_build(repo, first_slot, None) {
-        BuildOutcome::Built => warmed += 1,
-        BuildOutcome::Skipped => skipped += 1,
-        BuildOutcome::Failed => eprintln!("{RED}[{first_n}] build failed{NC}"),
-    }
-    if rest.is_empty() {
-        return (warmed, skipped);
-    }
+    let mut results = vec![(*first_n, run_bn_build(repo, first_slot, None))];
     // Divide the cores across the concurrent builds (at least one each). sccache hits keep these
     // light, but an unprimed crate still compiles, so bound the fan-out rather than letting each
     // `cargo` grab every core.
     let cpus = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    let jobs = (cpus / rest.len()).max(1);
-    let ok = AtomicU32::new(0);
-    let declined = AtomicU32::new(0);
+    let jobs = (cpus / rest.len().max(1)).max(1);
+    let parallel = std::sync::Mutex::new(Vec::new());
     std::thread::scope(|s| {
         for (n, slot) in rest {
-            let ok = &ok;
-            let declined = &declined;
+            let parallel = &parallel;
             s.spawn(move || {
                 eprintln!("{BLUE}[{n}] building…{NC}");
-                match run_bn_build(repo, slot, Some(jobs)) {
-                    BuildOutcome::Built => {
-                        ok.fetch_add(1, Ordering::Relaxed);
-                    }
-                    BuildOutcome::Skipped => {
-                        eprintln!("{YELLOW}[{n}] build declined this pass (busy toolchain) — not warm{NC}");
-                        declined.fetch_add(1, Ordering::Relaxed);
-                    }
-                    BuildOutcome::Failed => eprintln!("{RED}[{n}] build failed{NC}"),
-                }
+                let outcome = run_bn_build(repo, slot, Some(jobs));
+                parallel
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((*n, outcome));
             });
         }
     });
-    (
-        warmed + ok.load(Ordering::Relaxed),
-        skipped + declined.load(Ordering::Relaxed),
-    )
+    results.extend(parallel.into_inner().unwrap_or_else(|e| e.into_inner()));
+    for (n, outcome) in results.iter_mut() {
+        if *outcome == BuildOutcome::Skipped {
+            let slot = &ready.iter().find(|(m, _)| m == n).expect("ready slot").1;
+            eprintln!("{BLUE}[{n}] build declined — retrying on its own…{NC}");
+            *outcome = run_bn_build(repo, slot, None);
+        }
+    }
+    results.sort_by_key(|(n, _)| *n);
+    results
+        .into_iter()
+        .map(|(n, outcome)| {
+            let outcome = match outcome {
+                BuildOutcome::Built => Outcome::Built,
+                BuildOutcome::Skipped => {
+                    eprintln!("{YELLOW}[{n}] build declined (another build holds the toolchain) — not warm{NC}");
+                    Outcome::NotBuilt("build skipped: another build was running".into())
+                }
+                BuildOutcome::Failed => {
+                    eprintln!("{RED}[{n}] build failed{NC}");
+                    Outcome::Failed("build failed".into())
+                }
+            };
+            (n, outcome)
+        })
+        .collect()
 }
 
 /// What [`grow_pool`] did.
@@ -536,7 +608,8 @@ pub(crate) const BUILD_SKIPPED_EXIT: i32 = 75;
 enum BuildOutcome {
     /// Exit 0 — the slot's deps and build are in place; a warm stamp now records it.
     Built,
-    /// [`BUILD_SKIPPED_EXIT`] — the script declined to run; the slot is exactly as warm as before.
+    /// [`BUILD_SKIPPED_EXIT`], or a `SKIPPED:` line on stderr — the script declined to run; the
+    /// slot is exactly as warm as before.
     Skipped,
     Failed,
 }
@@ -560,7 +633,24 @@ fn run_bn_build(repo: &str, slot: &Path, jobs: Option<usize>) -> BuildOutcome {
     if let Some(j) = jobs {
         cmd.env("CARGO_BUILD_JOBS", j.to_string());
     }
-    match cmd.status().ok().and_then(|s| s.code()) {
+    // Stream the build's stderr through, watching for a skip. BigMono's `build.sh` declines a second
+    // concurrent `lage build` with exit 0 and a `SKIPPED:` line (exit 75 read as a failure in an
+    // older bn), so the exit code alone reports a build that never ran as built.
+    cmd.stderr(std::process::Stdio::piped());
+    let Ok(mut child) = cmd.spawn() else {
+        return BuildOutcome::Failed;
+    };
+    let said_skipped = child.stderr.take().is_some_and(|err| {
+        use std::io::BufRead;
+        let mut skipped = false;
+        for line in std::io::BufReader::new(err).lines().map_while(Result::ok) {
+            eprintln!("{line}");
+            skipped |= line.contains("] SKIPPED:");
+        }
+        skipped
+    });
+    match child.wait().ok().and_then(|s| s.code()) {
+        Some(0) if said_skipped => BuildOutcome::Skipped,
         Some(0) => {
             // The stamp is what the pick reads; write it only for a build that actually finished.
             if let Some((_, n, pdir)) = slot_parts(slot) {
@@ -615,6 +705,26 @@ pub(crate) fn job_pool_warm(cfg: &Config, ctx: Option<&bn_core::resolver::Resolv
     }
 }
 
+/// `pool-build` cron — rebuild every `[pool] scheduled` repo's pool at fixed times.
+///
+/// The idle-gated `pool-warm` sweep refreshes a pool whenever it goes stale and the machine is
+/// quiet, which for a monorepo like BigMono means a multi-hour build could start mid-afternoon or not
+/// at all. A scheduled repo is built at the times this cron's `on_calendar` names instead (BigMono:
+/// 02:00, then a 07:30 top-up), every slot on one freshly fetched commit, and the sweep skips it.
+pub(crate) fn job_pool_build(cfg: &Config, _ctx: Option<&bn_core::resolver::Resolved>) -> i32 {
+    if cfg.pool_scheduled.is_empty() {
+        crate::cmd::jobs::native_job_line("pool-build: no repos in [pool] scheduled", false);
+        return 0;
+    }
+    super::reclaim::reconcile_pools(cfg, bn_core::util::now_epoch_secs());
+    let failed = cfg
+        .pool_scheduled
+        .iter()
+        .filter(|repo| warm_pool_for_cron(cfg, repo) != 0)
+        .count();
+    i32::from(failed > 0)
+}
+
 /// Warm one repo's pool on behalf of the `pool-warm` cron.
 ///
 /// Resolved through [`resolve_dispatch_pool`], which takes the repo name straight rather than
@@ -651,22 +761,7 @@ fn warm_pool_for_cron(cfg: &Config, repo: &str) -> i32 {
 
 #[cfg(test)]
 mod completion_tests {
-    use super::{target_slots, warm_complete, warm_succeeded};
-
-    #[test]
-    fn successful_safe_skips_advance_pool_freshness() {
-        assert!(warm_complete(3, 3, 0, 0, 0));
-        assert!(warm_complete(3, 2, 1, 0, 0));
-        assert!(!warm_complete(3, 2, 0, 1, 0));
-        assert!(!warm_complete(3, 2, 0, 0, 1));
-    }
-
-    #[test]
-    fn safe_skips_do_not_fail_the_warm_job() {
-        assert!(warm_succeeded(0, 0));
-        assert!(!warm_succeeded(1, 0));
-        assert!(!warm_succeeded(0, 1));
-    }
+    use super::target_slots;
 
     #[test]
     fn exact_slot_selection_is_validated() {
@@ -725,7 +820,7 @@ mod freshness_tests {
         assert_ne!(stale.as_deref(), Some(tip.as_str()));
 
         // … and after it, to the commit that just landed.
-        let base = refresh_base("bn", &bare_s).expect("fresh base");
+        let (base, _) = refresh_base("bn", &bare_s).expect("fresh base");
         assert_eq!(
             wt::git_out(&["--git-dir", &bare_s, "rev-parse", &base]).as_deref(),
             Some(tip.as_str()),
@@ -742,7 +837,7 @@ mod freshness_tests {
         let created_at = head_sha(&slot_s).expect("slot HEAD");
 
         let tip = commit_upstream(&src_s, "b.txt");
-        let base = refresh_base("bn", &bare_s).expect("fresh base");
+        let (base, _) = refresh_base("bn", &bare_s).expect("fresh base");
         advance_idle_slot(2, &slot_s, &bare_s, &base);
 
         assert_ne!(head_sha(&slot_s).as_deref(), Some(created_at.as_str()));
@@ -764,7 +859,7 @@ mod freshness_tests {
         std::fs::write(slot.join("target").join("cached"), "expensive\n").unwrap();
 
         commit_upstream(&src_s, "b.txt");
-        let base = refresh_base("bn", &bare_s).expect("fresh base");
+        let (base, _) = refresh_base("bn", &bare_s).expect("fresh base");
         advance_idle_slot(2, &slot_s, &bare_s, &base);
 
         assert!(slot.join("target").join("cached").exists());
@@ -785,8 +880,12 @@ mod freshness_tests {
             "/nonexistent/gone.git",
         ]));
 
-        let base = refresh_base("bn", &bare_s).expect("fresh base");
+        let (base, fetch_error) = refresh_base("bn", &bare_s).expect("fresh base");
         assert!(wt::git_out(&["--git-dir", &bare_s, "rev-parse", "--verify", &base]).is_some());
+        assert!(
+            fetch_error.is_some_and(|e| e.contains("gone.git")),
+            "the run must not read ok"
+        );
     }
 
     #[test]
@@ -809,6 +908,52 @@ mod freshness_tests {
             "/nonexistent/gone.git",
         ]));
 
+        crate::cmd::jobs::reset_native_job_output();
         assert!(refresh_base("bn", &bare_s).is_none());
+        let log = crate::cmd::jobs::take_native_job_output();
+        assert!(log.contains("no cached origin/main"), "{log}");
+        assert!(
+            log.contains("gone.git"),
+            "git's own error is in the job log: {log}"
+        );
+    }
+
+    /// A bare clone with no fetch refspec (how BigMono was cloned) still ends up with an `origin/main`
+    /// to warm from, instead of a fetch that only writes `FETCH_HEAD`.
+    #[test]
+    fn a_clone_without_a_fetch_refspec_still_gets_origin_main() {
+        let _env = bn_core::test_support::env_lock();
+        let (_tmp, src_s, bare_s) = bn_clone();
+        assert!(git(&[
+            "--git-dir",
+            &bare_s,
+            "config",
+            "--unset-all",
+            "remote.origin.fetch"
+        ]));
+        assert!(git(&[
+            "--git-dir",
+            &bare_s,
+            "update-ref",
+            "-d",
+            "refs/remotes/origin/main"
+        ]));
+        let tip = commit_upstream(&src_s, "b.txt");
+
+        let (base, _) = refresh_base("bn", &bare_s).expect("fresh base");
+        assert_eq!(
+            wt::git_out(&[
+                "--git-dir",
+                &bare_s,
+                "rev-parse",
+                "refs/remotes/origin/main"
+            ])
+            .as_deref(),
+            Some(tip.as_str()),
+        );
+        assert_eq!(
+            wt::git_out(&["--git-dir", &bare_s, "rev-parse", &base]).as_deref(),
+            Some(tip.as_str()),
+        );
     }
 }

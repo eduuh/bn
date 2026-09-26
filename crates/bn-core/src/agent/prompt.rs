@@ -116,10 +116,10 @@ pub struct PendingPrompt {
     pub subject: Option<String>,
     /// Every numbered choice, in the order the harness listed them.
     pub options: Vec<PromptOption>,
-    /// A fingerprint of the pane this was read from — [`crate::agent::pane_activity_fingerprint`].
+    /// A fingerprint of the dialog itself — [`dialog_fingerprint`].
     ///
-    /// Carried through every answer path as an `--expect` token. A pane that has moved on produces
-    /// a different fingerprint, so an answer computed against *this* dialog is refused rather than
+    /// Carried through every answer path as an `--expect` token. A different dialog produces a
+    /// different fingerprint, so an answer computed against *this* dialog is refused rather than
     /// landing on whatever replaced it. Without it, a stale browser tab or a slow menu could
     /// approve a command nobody ever read.
     pub fingerprint: u64,
@@ -201,8 +201,7 @@ pub fn parse_pending_prompt(
     let (heading_start, menu_start, last_option) = match block {
         Some(b) => b,
         None => {
-            return cursor_menu_prompt(tail, plane_a)
-                .or_else(|| trust_menu_without_options(state, tail, plane_a))
+            return cursor_menu_prompt(tail).or_else(|| trust_menu_without_options(state, tail))
         }
     };
 
@@ -219,7 +218,7 @@ pub fn parse_pending_prompt(
         })
         .collect();
     if options.is_empty() {
-        return trust_menu_without_options(state, tail, plane_a);
+        return trust_menu_without_options(state, tail);
     }
 
     let approval_shaped = options
@@ -242,12 +241,12 @@ pub fn parse_pending_prompt(
     let heading = heading_lines(&tail[heading_start..menu_start]);
     let (question, subject) = split_heading(&heading);
 
-    Some(PendingPrompt {
+    Some(with_fingerprint(PendingPrompt {
         kind,
         question,
         subject,
         options,
-        fingerprint: super::pane_activity_fingerprint(tail, plane_a),
+        fingerprint: 0,
         excerpt: heading
             .iter()
             .cloned()
@@ -255,7 +254,41 @@ pub fn parse_pending_prompt(
             .collect(),
         paths: requested_paths(&tail[heading_start..menu_start]),
         cursor: false,
-    })
+    }))
+}
+
+/// Hash what the dialog asks, not the pane around it.
+///
+/// This used to be [`super::pane_activity_fingerprint`] over the whole scanned tail plus the
+/// window's `@bn_agent` state. Anything outside the box — a line scrolling in above it, a
+/// lifecycle hook flipping `@bn_agent` — moved the hash while the same dialog sat on screen, so
+/// `bn agent prompt` and `bn agent answer` disagreed and every `--expect` was refused. The cursor
+/// position is left out for the same reason: the answer sends an option number, not the cursor.
+pub fn dialog_fingerprint(p: &PendingPrompt) -> u64 {
+    let mut key = format!(
+        "{}\0{}\0{}\0",
+        p.kind.label(),
+        p.question,
+        p.subject.as_deref().unwrap_or("")
+    );
+    for o in &p.options {
+        key.push_str(&format!(
+            "{}\0{}\0{}\0",
+            o.number,
+            o.label,
+            o.semantic.label()
+        ));
+    }
+    for path in &p.paths {
+        key.push_str(path);
+        key.push('\0');
+    }
+    crate::hash::fnv1a64(key.as_bytes())
+}
+
+fn with_fingerprint(mut p: PendingPrompt) -> PendingPrompt {
+    p.fingerprint = dialog_fingerprint(&p);
+    p
 }
 
 /// The paths a harness's path-access dialog lists (Copilot's "Allow path access"), one per line
@@ -283,24 +316,20 @@ fn requested_paths(lines: &[String]) -> Vec<String> {
 /// A trust menu that blocks before drawing a numbered list still needs reporting — it is the most
 /// common thing a fresh non-`--yolo` dispatch parks on. Every other option-less state is not a
 /// dialog, and returns `None`.
-fn trust_menu_without_options(
-    state: PaneState,
-    tail: &[String],
-    plane_a: &str,
-) -> Option<PendingPrompt> {
+fn trust_menu_without_options(state: PaneState, tail: &[String]) -> Option<PendingPrompt> {
     (state == PaneState::TrustMenu).then(|| {
         let heading = heading_lines(tail);
         let (question, subject) = split_heading(&heading);
-        PendingPrompt {
+        with_fingerprint(PendingPrompt {
             kind: state,
             question,
             subject,
             options: Vec::new(),
-            fingerprint: super::pane_activity_fingerprint(tail, plane_a),
+            fingerprint: 0,
             excerpt: heading,
             paths: Vec::new(),
             cursor: false,
-        }
+        })
     })
 }
 
@@ -308,7 +337,7 @@ fn trust_menu_without_options(
 /// is the nearest line above the options that asks one; the lines between it and the options are
 /// its description. Always [`PaneState::QuestionMenu`]: it is the agent asking for a decision, so
 /// no policy may answer it, but every surface can now see it and a person can answer it.
-fn cursor_menu_prompt(tail: &[String], plane_a: &str) -> Option<PendingPrompt> {
+fn cursor_menu_prompt(tail: &[String]) -> Option<PendingPrompt> {
     let (menu_start, last_option) = orchestrate::cursor_menu_block(tail)?;
     let options = tail[menu_start..=last_option]
         .iter()
@@ -335,16 +364,16 @@ fn cursor_menu_prompt(tail: &[String], plane_a: &str) -> Option<PendingPrompt> {
         .map(|l| unframe(l).trim().to_string())
         .filter(|l| !l.is_empty())
         .collect();
-    Some(PendingPrompt {
+    Some(with_fingerprint(PendingPrompt {
         kind: PaneState::QuestionMenu,
         question,
         subject: (!subject.is_empty()).then(|| subject.join(" ")),
         options,
-        fingerprint: super::pane_activity_fingerprint(tail, plane_a),
+        fingerprint: 0,
         excerpt: dialog_lines(&tail[q.unwrap_or(menu_start)..]),
         paths: Vec::new(),
         cursor: true,
-    })
+    }))
 }
 
 /// Where the dialog's body starts: just past its own top border, stepping over any box nested

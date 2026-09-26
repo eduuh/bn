@@ -44,9 +44,10 @@ pub struct CronEntry {
     /// estate work, the default). A dashboard label only. See [`CronClass`].
     #[serde(default)]
     pub class: CronClass,
-    /// Canonical schedule = systemd `OnCalendar` spec (e.g. `*:0/15`). Mapped to cron / launchd
-    /// at generation time.
-    pub on_calendar: String,
+    /// Canonical schedule = systemd `OnCalendar` spec (e.g. `*:0/15`), or a list of them for a job
+    /// that fires at unrelated times (BigMono's pool builds at 02:00 and 07:30). Mapped to cron /
+    /// launchd at generation time.
+    pub on_calendar: Calendar,
     /// Machines this cron should register on; empty = everywhere. (The per-run host gate is the
     /// existing `[jobs.only_on]`; this drives generation only.)
     #[serde(default)]
@@ -76,6 +77,51 @@ pub struct CronEntry {
 
 fn default_true() -> bool {
     true
+}
+
+/// One or more systemd `OnCalendar` specs. A timer takes any number of `OnCalendar=` lines and
+/// fires on each; one string stays the common case, so a manifest may write either
+/// `on_calendar = "*:0/15"` or `on_calendar = ["*-*-* 02:00", "*-*-* 07:30"]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Calendar(Vec<String>);
+
+impl Calendar {
+    pub fn entries(&self) -> &[String] {
+        &self.0
+    }
+}
+
+impl From<&str> for Calendar {
+    fn from(spec: &str) -> Self {
+        Calendar(vec![spec.to_string()])
+    }
+}
+
+impl std::fmt::Display for Calendar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0.join(", "))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Calendar {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum OneOrMany {
+            One(String),
+            Many(Vec<String>),
+        }
+        let specs = match OneOrMany::deserialize(d)? {
+            OneOrMany::One(s) => vec![s],
+            OneOrMany::Many(v) => v,
+        };
+        if specs.is_empty() || specs.iter().any(|s| s.trim().is_empty()) {
+            return Err(serde::de::Error::custom(
+                "on_calendar needs at least one non-empty spec",
+            ));
+        }
+        Ok(Calendar(specs))
+    }
 }
 
 /// A [`CronEntry`] tagged with the tier it came from — drives unit naming and precedence.
@@ -191,6 +237,38 @@ pub fn job_repo(cfg: &Config, ctx: Option<&Resolved>, job: &str) -> Option<Strin
 #[cfg(test)]
 mod repo_tests {
     use super::*;
+
+    #[test]
+    fn on_calendar_takes_one_spec_or_a_list() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("crons.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[cron]]
+job = "one"
+on_calendar = "daily"
+
+[[cron]]
+job = "two"
+on_calendar = ["*-*-* 02:00:00", "*-*-* 07:30:00"]
+"#,
+        )
+        .expect("write manifest");
+        let entries = parse_manifest(&path).expect("parses");
+        assert_eq!(entries[0].on_calendar.entries(), ["daily"]);
+        assert_eq!(
+            entries[1].on_calendar.entries(),
+            ["*-*-* 02:00:00", "*-*-* 07:30:00"]
+        );
+        assert_eq!(
+            entries[1].on_calendar.to_string(),
+            "*-*-* 02:00:00, *-*-* 07:30:00"
+        );
+
+        std::fs::write(&path, "[[cron]]\njob = \"none\"\non_calendar = []\n").expect("write");
+        assert!(parse_manifest(&path).is_err(), "an empty list is refused");
+    }
 
     #[test]
     fn manifest_repo_is_inherited_unless_an_entry_overrides_it() {
@@ -459,7 +537,7 @@ pub fn fold_cron_views(
                 scope,
                 class: decl.map(|d| d.entry.class.label().to_string()),
                 declared: decl.is_some(),
-                schedule: decl.map(|d| d.entry.on_calendar.clone()),
+                schedule: decl.map(|d| d.entry.on_calendar.to_string()),
                 description: decl.and_then(|d| d.entry.description.clone()),
                 network: decl.map(|d| d.entry.network).unwrap_or(false),
                 catch_up: decl.map(|d| d.entry.catch_up).unwrap_or(false),

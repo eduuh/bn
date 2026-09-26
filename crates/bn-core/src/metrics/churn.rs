@@ -92,7 +92,13 @@ pub fn impact_mix_of(subjects: &[String]) -> ImpactMix {
 /// `YYYY-MM-DD`. Surfaces only the bn-cli/metrics layer — stays out of `reports.rs`.
 pub fn impact_mix(runner: &dyn CommandRunner, since: &str) -> ImpactMix {
     let since_arg = format!("--since={since}");
-    let out = runner.git(&["log", &since_arg, "--no-merges", "--pretty=format:%s"]);
+    let mut args = vec!["log".to_string(), since_arg, "--no-merges".to_string()];
+    if let Some(author) = author_arg(runner) {
+        args.push(author);
+    }
+    args.push("--pretty=format:%s".to_string());
+    let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let out = runner.git(&refs);
     let subjects: Vec<String> = out
         .ok_stdout()
         .map(|s| {
@@ -324,18 +330,32 @@ pub fn churn(
     churn_days: i64,
 ) -> Churn {
     let since_arg = format!("--since={since}");
-    let out = runner.git(&[
-        "log",
-        &since_arg,
-        "--no-merges",
-        "--numstat",
-        "--pretty=format:C%H%x09%ct",
-    ]);
+    let mut args = vec![
+        "log".to_string(),
+        since_arg,
+        "--no-merges".to_string(),
+        "--numstat".to_string(),
+    ];
+    if let Some(author) = author_arg(runner) {
+        args.push(author);
+    }
+    args.push("--pretty=format:C%H%x09%ct".to_string());
+    let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let out = runner.git(&refs);
     let commits = out
         .ok_stdout()
         .map(|s| parse_numstat(&s))
         .unwrap_or_default();
     churn_of(commits, agent_windows, churn_days * DAY, churn_days)
+}
+
+fn author_arg(runner: &dyn CommandRunner) -> Option<String> {
+    runner
+        .git(&["config", "--get", "user.email"])
+        .ok_stdout()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("--author={s}"))
 }
 
 /// The agent-session windows for `repo` from the metrics events, for churn attribution. Each
@@ -370,6 +390,7 @@ pub fn agent_windows_for_repo(events: &[Event], repo: &str) -> Vec<AgentWindow> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runner::FakeRunner;
 
     #[test]
     fn generated_artefacts_are_not_authored_code() {
@@ -430,5 +451,15 @@ mod tests {
         );
         assert_eq!(c.churn_rate, Some(0.5));
         assert!(c.counted);
+    }
+
+    #[test]
+    fn author_arg_uses_the_local_git_email() {
+        let runner =
+            FakeRunner::new().on("git", &["config", "--get", "user.email"], "me@example.com");
+        assert_eq!(
+            author_arg(&runner),
+            Some("--author=me@example.com".to_string())
+        );
     }
 }

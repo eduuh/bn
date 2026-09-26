@@ -200,6 +200,13 @@ pub(super) struct StaffSection {
     pub(super) home: Option<String>,
 }
 
+/// `[pool]`: `scheduled` names the repos whose worktree pool is rebuilt by the `pool-build` cron at
+/// fixed times, instead of the idle-gated `pool-warm` sweep.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub(super) struct PoolSection {
+    pub(super) scheduled: Option<Vec<String>>,
+}
+
 /// `[scout]`: the Scout radar agent (#262). All optional. `watch` is the public `owner/repo`
 /// upstream watchlist the Scout scans for help-wanted / good-first issues; `tools` the public tool
 /// repos in your stack whose changelogs it tracks; `max_findings` overrides the ≤ 5 cap. All three

@@ -113,12 +113,12 @@ fn is_detached_daemon(ppid: i32, tty: &str) -> bool {
     detached && no_terminal
 }
 
-/// `(pid, ppid, tty)` for each pid, or `None` when the lookup failed.
+/// `(pid, ppid, tty, command)` for each pid, or `None` when the lookup failed.
 ///
 /// One `ps` for the handful of pids found in a slot, not a second full table scan. Empty output
 /// for a non-empty request is a failure, not an answer: every pid came from a table captured
 /// moments ago, so at least one should still resolve.
-fn process_kinds(pids: &[i32]) -> Option<Vec<(i32, i32, String)>> {
+fn process_kinds(pids: &[i32]) -> Option<Vec<(i32, i32, String, String)>> {
     if pids.is_empty() {
         return Some(Vec::new());
     }
@@ -128,7 +128,7 @@ fn process_kinds(pids: &[i32]) -> Option<Vec<(i32, i32, String)>> {
         .collect::<Vec<_>>()
         .join(",");
     let out = std::process::Command::new("ps")
-        .args(["-o", "pid=,ppid=,tty=", "-p", &list])
+        .args(["-o", "pid=,ppid=,tty=,command=", "-p", &list])
         .output()
         .ok()?;
     if !out.status.success() {
@@ -142,15 +142,17 @@ fn process_kinds(pids: &[i32]) -> Option<Vec<(i32, i32, String)>> {
     }
 }
 
-/// Parses `ps -o pid=,ppid=,tty=` output. Split out so the fail-closed rule is tested.
-fn parse_ps_kinds(text: &str) -> Vec<(i32, i32, String)> {
+/// Parses `ps -o pid=,ppid=,tty=,command=` output. Split out so the fail-closed rule is tested.
+fn parse_ps_kinds(text: &str) -> Vec<(i32, i32, String, String)> {
     text.lines()
         .filter_map(|line| {
             let mut f = line.split_whitespace();
             let pid = f.next()?.parse().ok()?;
             let ppid = f.next()?.parse().ok()?;
             // A missing tty column means no controlling terminal.
-            Some((pid, ppid, f.next().unwrap_or("").to_string()))
+            let tty = f.next().unwrap_or("").to_string();
+            let command = f.collect::<Vec<_>>().join(" ");
+            Some((pid, ppid, tty, command))
         })
         .collect()
 }
@@ -159,7 +161,7 @@ fn parse_ps_kinds(text: &str) -> Vec<(i32, i32, String)> {
 ///
 /// `None` kinds is a failed lookup and answers *occupied*, the same direction as an unreadable
 /// process table: see the module docs.
-fn tenants_among(pids: &[i32], kinds: Option<&[(i32, i32, String)]>) -> bool {
+fn tenants_among(pids: &[i32], kinds: Option<&[(i32, i32, String, String)]>) -> bool {
     if pids.is_empty() {
         return false;
     }
@@ -171,9 +173,23 @@ fn tenants_among(pids: &[i32], kinds: Option<&[(i32, i32, String)]>) -> bool {
         // than as a tenant: the slot it vanished from is genuinely free of it.
         kinds
             .iter()
-            .find(|(p, _, _)| p == pid)
-            .is_some_and(|(_, ppid, tty)| !is_detached_daemon(*ppid, tty))
+            .find(|(p, _, _, _)| p == pid)
+            .is_some_and(|(_, ppid, tty, command)| {
+                !is_bn_tmux_git(command) && !is_detached_daemon(*ppid, tty)
+            })
     })
+}
+
+/// Whether the process is bn's own tmux-git poller.
+fn is_bn_tmux_git(command: &str) -> bool {
+    let mut parts = command.split_whitespace();
+    match (parts.next(), parts.next()) {
+        (Some(bin), Some("tmux-git")) => bin
+            .rsplit('/')
+            .next()
+            .is_some_and(|base| base.ends_with("bn")),
+        _ => false,
+    }
 }
 
 /// Whether anybody is working inside `slot`.
@@ -233,13 +249,19 @@ mod tests {
 
     #[test]
     fn a_slot_holding_only_daemons_is_free() {
-        let kinds = vec![(10, 1, "??".to_string()), (11, 1, "?".to_string())];
+        let kinds = vec![
+            (10, 1, "??".to_string(), "nx".to_string()),
+            (11, 1, "?".to_string(), "nx".to_string()),
+        ];
         assert!(!tenants_among(&[10, 11], Some(&kinds)));
     }
 
     #[test]
     fn one_tenant_among_daemons_still_occupies() {
-        let kinds = vec![(10, 1, "??".to_string()), (11, 900, "ttys004".to_string())];
+        let kinds = vec![
+            (10, 1, "??".to_string(), "nx".to_string()),
+            (11, 900, "ttys004".to_string(), "nx".to_string()),
+        ];
         assert!(tenants_among(&[10, 11], Some(&kinds)));
     }
 
@@ -255,12 +277,28 @@ mod tests {
     }
 
     #[test]
+    fn the_bn_tmux_git_poller_is_not_a_tenant() {
+        let kinds = vec![(
+            10,
+            900,
+            "ttys004".to_string(),
+            "bn tmux-git /home/me/projects/worktree/BigMono/_pool/2".to_string(),
+        )];
+        assert!(!tenants_among(&[10], Some(&kinds)));
+    }
+
+    #[test]
     fn ps_rows_without_a_tty_column_parse_as_no_terminal() {
-        let rows = parse_ps_kinds("  123     1 ??\n  456   123 ttys004\n  789     1\n");
+        let rows = parse_ps_kinds(
+            "  123     1 ?? bn tmux-git /tmp\n  456   123 ttys004 nx\n  789     1  nx\n",
+        );
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0], (123, 1, "??".to_string()));
-        assert_eq!(rows[1], (456, 123, "ttys004".to_string()));
-        assert_eq!(rows[2], (789, 1, String::new()));
+        assert_eq!(
+            rows[0],
+            (123, 1, "??".to_string(), "bn tmux-git /tmp".to_string())
+        );
+        assert_eq!(rows[1], (456, 123, "ttys004".to_string(), "nx".to_string()));
+        assert_eq!(rows[2], (789, 1, "nx".to_string(), String::new()));
     }
 
     #[test]

@@ -48,6 +48,7 @@ mod launchd;
 mod main_slot;
 mod mcp;
 mod mobile;
+mod origin_fetch;
 mod picker;
 mod proc;
 mod reap;

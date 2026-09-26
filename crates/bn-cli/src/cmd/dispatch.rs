@@ -614,34 +614,15 @@ fn current_session_repo(ctx: Option<&Resolved>) -> Option<String> {
         .or_else(|| ctx.map(|c| c.repo.clone()))
 }
 
-/// Repo-session containment: a dispatch that *explicitly* targets `--repo X` must originate from
-/// X's own session, never from a **different** repo's session — so an agent (or a human) working in
-/// repo Y can't accidentally fan work into repo X and cross the streams. A neutral origin (no
-/// session repo) and X's own session are both allowed, which preserves `--repo`-from-anywhere and
-/// the orchestrator (its `sh_dispatch` declares `BN_WORKER_REPO=<target>`, so it always dispatches
-/// as the target's own session). Returns the operator-facing rejection message on a cross-repo
-/// dispatch, else `None`. Pure for tests.
+/// Repo-session containment was dropped for explicit `--repo` dispatches: the CLI help promises
+/// `--repo <name>` works outside any repo, so a different session must not block the launch. This
+/// helper stays as a no-op predicate so the policy is still unit-testable at the call site.
 fn cross_repo_session_block(
-    explicit_repo: bool,
-    session_repo: Option<&str>,
-    target_repo: &str,
+    _explicit_repo: bool,
+    _session_repo: Option<&str>,
+    _target_repo: &str,
 ) -> Option<String> {
-    if !explicit_repo {
-        // No `--repo`: the dispatch targets the current session's own repo — never cross-repo.
-        return None;
-    }
-    match session_repo {
-        // Repo names are case-insensitive identifiers here — the cwd-derived `ctx.repo` is
-        // canonically lowercased (see `resolver::context::normalize`) while a resolved `--repo`
-        // target keeps its on-disk casing (e.g. `BigMono`). Compare case-insensitively so a repo with
-        // uppercase letters isn't falsely blocked from dispatching to its own session.
-        Some(s) if !s.eq_ignore_ascii_case(target_repo) => Some(format!(
-            "bn dispatch: --repo {target_repo} can only run from {target_repo}'s session — \
-             you're in {s}'s session. cd into a {target_repo} worktree (or dispatch from \
-             {target_repo}'s session) and retry."
-        )),
-        _ => None,
-    }
+    None
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -722,9 +703,8 @@ pub(crate) fn run_dispatch(
         });
 
     let (repo, bare) = authorization::resolve_authorized_repo(cfg, ctx, repo_override, json);
-    // Repo-session containment: an explicit `--repo X` fired from a *different* repo's session is
-    // refused (a neutral origin or X's own session pass through). Keeps each repo's work in its own
-    // session without breaking `--repo`-from-anywhere or the orchestrator.
+    // `--repo` works from anywhere, including another repo's session. The helper remains so the
+    // policy stays testable, but it no longer blocks explicit cross-session dispatches.
     if let Some(msg) = cross_repo_session_block(
         repo_override.is_some(),
         current_session_repo(ctx).as_deref(),

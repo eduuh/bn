@@ -320,7 +320,7 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
                     "next_run": next_run,
                     "schedule": declared.iter()
                         .find(|cron| cron.entry.job == *name)
-                        .map(|cron| cron.entry.on_calendar.clone())
+                        .map(|cron| cron.entry.on_calendar.to_string())
                         .or_else(|| t.and_then(|timer| timer.schedule.clone())),
                     "timer_unit": t.map(|t| t.timer_unit.clone()),
                     "task_name": w.map(|w| w.task_name.clone()),

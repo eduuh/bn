@@ -41,6 +41,7 @@ Config {
         tools: [],
         max_findings: 5,
     },
+    pool_scheduled: [],
     log: LogConfig {
         enabled: false,
         level: "debug",

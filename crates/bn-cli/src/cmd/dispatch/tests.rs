@@ -175,3 +175,10 @@ fn ungated_plan_work_seed_keeps_the_bootstrap() {
     assert!(s.contains("Markdown execution contract"));
     assert!(s.contains("bn plan init"));
 }
+
+#[test]
+fn explicit_repo_dispatch_is_not_blocked_by_a_different_session_repo() {
+    assert!(cross_repo_session_block(true, Some("bigmono"), "bn").is_none());
+    assert!(cross_repo_session_block(true, Some("bn"), "bn").is_none());
+    assert!(cross_repo_session_block(false, Some("bigmono"), "bn").is_none());
+}

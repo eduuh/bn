@@ -94,10 +94,11 @@ pub(crate) fn job_main_sync(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
 /// hardcoded the branch name and gave up silently on the dirty checkouts this exists to fix.
 pub(crate) fn sync_repo(bare: &Path, worktree_dir: &Path, repo: &str) -> bool {
     let bare_s = bare.to_string_lossy().to_string();
-    if !crate::git::git_ok(&["--git-dir", &bare_s, "fetch", "--quiet", "--prune", "origin"]) {
-        // Offline, or a repo with no reachable remote. Everything below still works against
-        // whatever was last fetched, so carry on rather than skipping the repo entirely.
-        native_job_line(&format!("main-sync: {repo}: fetch failed (offline?)"), false);
+    if let Err(why) = crate::origin_fetch::refresh_origin(&bare_s) {
+        // Offline, an auth failure, or a repo with no reachable remote. Everything below still
+        // works against whatever was last fetched, so carry on rather than skipping the repo — but
+        // say what git said. "offline?" hid a GitHub auth failure and BigMono's shallow-clone trap.
+        native_job_line(&format!("main-sync: {repo}: fetch failed: {why}"), false);
     }
     let Some(default) = default_branch(&bare_s) else {
         native_job_line(
