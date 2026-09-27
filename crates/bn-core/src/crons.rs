@@ -70,7 +70,9 @@ pub struct CronEntry {
     #[serde(default)]
     pub catch_up: bool,
     /// Repository required by this cron. Entry-level values override the manifest's top-level
-    /// `repo`; absent means the cron is genuinely machine-global.
+    /// `repo`; absent means the cron is genuinely machine-global. `repo = ""` on an entry opts it
+    /// out of the manifest's repo: machine-global even in a repo-owned manifest (bn's own tunnel
+    /// keepalive must run on build machines that do not list the `bn` repo).
     #[serde(default)]
     pub repo: Option<String>,
 }
@@ -150,8 +152,10 @@ pub fn parse_manifest(path: &Path) -> Result<Vec<CronEntry>, String> {
     let mut manifest: CronManifest =
         toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
     for entry in &mut manifest.crons {
-        if entry.repo.is_none() {
-            entry.repo.clone_from(&manifest.repo);
+        match entry.repo.as_deref() {
+            None => entry.repo.clone_from(&manifest.repo),
+            Some("") => entry.repo = None,
+            Some(_) => {}
         }
     }
     Ok(manifest.crons)
@@ -294,6 +298,27 @@ on_calendar = "hourly"
         let entries = parse_manifest(&path).expect("parse manifest");
         assert_eq!(entries[0].repo.as_deref(), Some("bn"));
         assert_eq!(entries[1].repo.as_deref(), Some("arena"));
+    }
+
+    #[test]
+    fn an_empty_entry_repo_opts_out_of_the_manifest_repo() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("crons.toml");
+        std::fs::write(
+            &path,
+            r#"
+repo = "bn"
+
+[[cron]]
+job = "everywhere"
+repo = ""
+on_calendar = "*:0/5"
+"#,
+        )
+        .expect("write manifest");
+
+        let entries = parse_manifest(&path).expect("parse manifest");
+        assert_eq!(entries[0].repo, None);
     }
 }
 

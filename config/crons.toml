@@ -180,3 +180,14 @@ persistent = true
 randomized_delay = "2m"
 description = "bn — gather findings (#897): snapshot the local morning-planning caches (PR review queue, your open PRs, inbound feed, stale/blocked branches, night-shift reviewables, failing crons, sentinel, quarter goals, dojo cards) into the append-only findings store, one durable run per non-empty source. Offline/additive: reuses the warm caches (no network, no re-fetch) and touches no feed/attention/daily side effect; feeds today-agent (#577)."
 
+# Machine-global (`repo = ""`): every machine that has hosted or connected a bn tunnel, including
+# build machines that do not list the bn repo. Brings Dev Tunnels and a tmux server back after a
+# reboot or WSL restart with nobody signed in (linger), and keeps the one-minute watchdog alive.
+# A machine with no tunnels exits at once.
+[[cron]]
+job = "tunnel-auto"
+repo = ""
+on_calendar = "*:0/5"
+persistent = true
+network = true
+description = "tunnels — keep this machine's Dev Tunnels (and a tmux server) up; restores them after a reboot with nobody signed in"

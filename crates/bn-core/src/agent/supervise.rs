@@ -1,5 +1,5 @@
 use super::parse::{
-    events_json, first_line_of_message, is_quiet, note_key, read_yaml, ts_of, ws_str,
+    events_json, first_line_of_id, is_quiet, note_key, parse_iso, read_yaml, ts_of, ws_str,
 };
 use super::pending::{finished_session_ids, pending_agents, Claimed};
 use crate::cost::{canonical_session_id, LaunchRecord, WorkClass};
@@ -601,32 +601,24 @@ fn parse_live_claude(
     idle_mins: i64,
     stuck_mins: i64,
 ) -> Option<LiveAgent> {
-    let lines = events_json(path);
+    // Typed, not `events_json`: only a handful of keys matter here, and building a `Value` tree
+    // for every line of a multi-megabyte transcript was most of the live view's cost.
+    let lines = super::live_line::read_lines(path);
     if lines.is_empty() {
         return None;
     }
-    let typ = |v: &Value| {
-        v.get("type")
-            .and_then(|t| t.as_str())
-            .unwrap_or("")
-            .to_string()
-    };
 
     let session_id = lines
         .iter()
-        .find_map(|v| {
-            v.get("sessionId")
-                .and_then(|s| s.as_str())
-                .map(String::from)
-        })
+        .find_map(|l| l.session_id.0.clone())
         .or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()))?;
 
     let (mut cwd, mut branch_hint) = (String::new(), String::new());
-    for v in &lines {
-        if let Some(b) = v.get("gitBranch").and_then(|x| x.as_str()) {
+    for l in &lines {
+        if let Some(b) = l.git_branch.0.as_deref() {
             if !b.is_empty() {
                 branch_hint = b.to_string();
-                if let Some(c) = v.get("cwd").and_then(|x| x.as_str()) {
+                if let Some(c) = l.cwd.0.as_deref() {
                     cwd = c.to_string();
                 }
             }
@@ -638,7 +630,7 @@ fn parse_live_claude(
     // already know is recent, since the file isn't quiet).
     let last_activity_ts = lines
         .iter()
-        .filter_map(ts_of)
+        .filter_map(|l| l.timestamp.0.as_deref().and_then(parse_iso))
         .max()
         .or_else(|| file_mtime(path))
         .unwrap_or(now);
@@ -650,36 +642,22 @@ fn parse_live_claude(
     // transcript lines, each repeating the whole response's `usage`, so a live board that summed
     // per line would show a burn rate inflated by blocks-per-response. See [`first_line_of_message`].
     let mut counted: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for v in &lines {
-        if typ(v) != "assistant" {
+    for l in &lines {
+        if l.typ.0.as_deref() != Some("assistant") {
             continue;
         }
-        let msg = v.get("message");
-        let fresh_response = msg.is_some_and(|m| first_line_of_message(m, &mut counted));
+        let msg = &l.message;
+        let fresh_response = msg.present && first_line_of_id(msg.id.as_deref(), &mut counted);
         if fresh_response {
             turns += 1;
+            if let Some(u) = msg.usage {
+                input += u.input;
+                output += u.output;
+                cache_read += u.cache_read;
+                cache_write += u.cache_write;
+            }
         }
-        if let Some(u) = msg.filter(|_| fresh_response).and_then(|m| m.get("usage")) {
-            input += u.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-            output += u.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-            cache_read += u
-                .get("cache_read_input_tokens")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            cache_write += u
-                .get("cache_creation_input_tokens")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-        }
-        if let Some(content) = msg
-            .and_then(|m| m.get("content"))
-            .and_then(|c| c.as_array())
-        {
-            tools += content
-                .iter()
-                .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
-                .count() as i64;
-        }
+        tools += msg.tool_uses.unwrap_or(0);
     }
 
     Some(LiveAgent {

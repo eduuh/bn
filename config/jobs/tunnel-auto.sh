@@ -8,6 +8,11 @@
 #     reconnects to every bn host on the account.
 # A machine that has done neither is left alone.
 #
+# bn's own cron (config/crons.toml, machine-global) also runs it every 5 minutes, so after a
+# reboot or a WSL restart the tunnels come back with nobody signed in: with linger on, the user's
+# systemd starts at boot, and bn_tunnel_session gives a tmux server started from there a scope of
+# its own.
+#
 # It then keeps a watchdog window `tunnel-watch` in the tmux session `bn-tunnels` that runs
 # `tunnel-auto.sh --once` every BN_TUNNEL_WATCH_SECONDS (default 60). Each pass is a cheap health
 # check: this host's sshd is listening and its tunnel window exists, and a plain `ssh <host> true`
@@ -25,7 +30,9 @@
 # Output: ~/.cache/bn/tunnel-auto.log (repairs and failures only; kept to its last 2000 lines).
 set -u
 
-dir=$(cd "$(dirname "$0")" && pwd)
+# Physical path: the same script reached through ~/.config/bn/repo (a symlink) or bn/main must give
+# the same watchdog command, or the one-watchdog check below sees two different watchdogs.
+dir=$(cd "$(dirname "$0")" && pwd -P)
 cache="$HOME/.cache/bn"
 log="$cache/tunnel-auto.log"
 status="$cache/tunnels.status"
@@ -67,15 +74,47 @@ health() {
   return "$_bad"
 }
 
-repair_due=0
-[ "${1:-}" = --once ] || repair_due=1
-[ -z "$(find "$stamp" -mmin -15 2>/dev/null)" ] && repair_due=1
-health || repair_due=1
+# One check-and-repair pass at a time: the watchdog, a tmux-start run and a hand run can overlap
+# (seen 2026-09-27: two repairs 14s apart). A pass that loses the race skips straight to the
+# watchdog part. A lock older than 20 minutes is from a pass that died and is taken over.
+lock="$cache/tunnel-auto.lock"
+have_lock=0
+take_lock() { mkdir "$lock" 2>/dev/null && echo $$ > "$lock/pid" && have_lock=1; }
+if ! take_lock; then
+  # The holder's pid is in the lock. A holder that is gone (killed before its cleanup ran) or a
+  # lock older than 20 minutes is taken over, so one dead pass cannot stall every later one
+  # (2026-09-27: a lock left at 07:54 stopped every repair for ten minutes).
+  holder=$(cat "$lock/pid" 2>/dev/null)
+  if { [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; } || [ -n "$(find "$lock" -maxdepth 0 -mmin +20 2>/dev/null)" ]; then
+    rm -rf "$lock" && take_lock
+  fi
+fi
+[ "$have_lock" = 1 ] && trap 'rm -rf "$lock"' EXIT && trap 'exit 1' HUP INT TERM
 
-if [ "$repair_due" = 1 ]; then
+# A repair runs when a check fails or the last one is 15 minutes old, whoever runs this: the
+# watchdog, tmux at server start, or the tunnel-auto timer (every 5 minutes, so tunnels come back
+# after a reboot or WSL restart even before anyone opens tmux).
+repair_due=0
+[ -z "$(find "$stamp" -mmin -15 2>/dev/null)" ] && repair_due=1
+[ "$have_lock" = 1 ] && { health || repair_due=1; }
+
+if [ "$have_lock" = 1 ] && [ "$repair_due" = 1 ]; then
   if [ -f "$log" ] && [ "$(wc -l < "$log")" -gt 4000 ]; then
     tail -n 2000 "$log" > "$log.tmp" && mv "$log.tmp" "$log"
   fi
+  # A client whose ssh check failed gets its `devtunnel connect` restarted: the local listener can
+  # stay up while the process behind it has hung (2026-09-27: 127.0.0.1:2222 listening with 12
+  # connections queued and none accepted), and tunnel-connect only restarts a window whose port is
+  # not listening. At most once per host every 5 minutes, so a host that is really down is not
+  # churned every pass.
+  for _h in $(awk '$2 == "down" && $1 != "host" {print $1}' "$status"); do
+    _mark="$cache/tunnel-restarted.$_h"
+    [ -n "$(find "$_mark" -mmin -5 2>/dev/null)" ] && continue
+    for _w in $(tmux list-windows -a -F '#{session_name}:#{window_name}' 2>/dev/null | grep ":tunnel-$_h\$"); do
+      tmux kill-window -t "$_w" 2>/dev/null && echo "--- $(date '+%F %T') restarted $_w (ssh check failed)" >> "$log"
+    done
+    touch "$_mark"
+  done
   {
     echo "--- $(date '+%F %T') tunnel-auto repair ($(tr '\n' ' ' < "$status"))"
     [ "$is_host" = 1 ] && { sh "$dir/tunnel-host.sh" || echo "tunnel-auto: tunnel-host failed ($?)"; }

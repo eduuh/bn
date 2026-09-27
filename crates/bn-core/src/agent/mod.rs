@@ -22,6 +22,7 @@ mod approval;
 mod channel;
 mod digest;
 mod lease;
+mod live_line;
 mod parse;
 mod pending;
 mod prompt;

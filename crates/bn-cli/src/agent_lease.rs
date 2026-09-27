@@ -304,58 +304,95 @@ impl Occupant {
 ///
 /// Liveness is the same tmux pane check throughout, so "occupied" means one thing everywhere.
 pub(crate) fn live_agents_in(worktree: &Path) -> Vec<Occupant> {
-    let key = AgentLeaseKey::new("", "", worktree);
-    let mut found: BTreeMap<String, Occupant> = BTreeMap::new();
+    OccupancySnapshot::new().live_agents_in(worktree)
+}
 
-    // (1) Registered and live.
-    if let Ok(registry) = bn_core::agent::load_agent_leases(&agent_lease_registry_path()) {
-        for lease in registry.leases {
-            if lease.key.worktree != key.worktree || !lease_is_live(&lease) {
+/// The tmux and registry state [`live_agents_in`] reads, read once and shared across many
+/// worktrees. `wt pool status` asks about every slot, twice; reading `list-windows -a` and
+/// `list-panes -a` afresh for each question was two dozen tmux round-trips per status. Taken on
+/// first use, so a caller that never asks (a test with stubbed occupancy) never touches tmux.
+#[derive(Default)]
+pub(crate) struct OccupancySnapshot {
+    inner: std::cell::OnceCell<SnapshotInner>,
+}
+
+struct SnapshotInner {
+    registry: Option<bn_core::agent::AgentLeaseRegistry>,
+    windows: Vec<ObservedAgentWindow>,
+    harness_panes: Option<String>,
+}
+
+impl OccupancySnapshot {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    fn inner(&self) -> &SnapshotInner {
+        self.inner.get_or_init(|| SnapshotInner {
+            registry: bn_core::agent::load_agent_leases(&agent_lease_registry_path()).ok(),
+            windows: observed_agent_windows(),
+            harness_panes: crate::proc::tmux_raw(&["list-panes", "-a", "-F", HARNESS_PANE_FORMAT]),
+        })
+    }
+
+    /// [`live_agents_in`] against this snapshot.
+    pub(crate) fn live_agents_in(&self, worktree: &Path) -> Vec<Occupant> {
+        let snap = self.inner();
+        let key = AgentLeaseKey::new("", "", worktree);
+        let mut found: BTreeMap<String, Occupant> = BTreeMap::new();
+
+        // (1) Registered and live.
+        if let Some(registry) = &snap.registry {
+            for lease in &registry.leases {
+                if lease.key.worktree != key.worktree || !lease_is_live(lease) {
+                    continue;
+                }
+                found.insert(
+                    lease.tmux_target.clone(),
+                    Occupant {
+                        repo: Some(lease.key.repo.clone()),
+                        branch: Some(lease.key.branch.clone()),
+                        session_id: Some(lease.session_id.clone()),
+                        tmux_target: lease.tmux_target.clone(),
+                        kind: lease.kind.label().to_string(),
+                        since: lease.acquired_at,
+                    },
+                );
+            }
+        }
+
+        // (2) Stamped windows the registry missed.
+        for window in &snap.windows {
+            if window.lease.key.worktree != key.worktree {
                 continue;
             }
-            found.insert(
-                lease.tmux_target.clone(),
-                Occupant {
-                    repo: Some(lease.key.repo.clone()),
-                    branch: Some(lease.key.branch.clone()),
-                    session_id: Some(lease.session_id.clone()),
-                    tmux_target: lease.tmux_target.clone(),
-                    kind: lease.kind.label().to_string(),
-                    since: lease.acquired_at,
-                },
-            );
+            found
+                .entry(window.lease.tmux_target.clone())
+                .or_insert_with(|| Occupant {
+                    repo: Some(window.lease.key.repo.clone()),
+                    branch: Some(window.lease.key.branch.clone()),
+                    session_id: Some(window.lease.session_id.clone()),
+                    tmux_target: window.lease.tmux_target.clone(),
+                    kind: window.lease.kind.label().to_string(),
+                    since: window.created_at,
+                });
         }
-    }
 
-    // (2) Stamped windows the registry missed.
-    for window in observed_agent_windows() {
-        if window.lease.key.worktree != key.worktree {
-            continue;
+        // (3) Unregistered harness panes rooted in the checkout.
+        if let Some(output) = &snap.harness_panes {
+            for pane in harness_panes_in(output, Path::new(&key.worktree)) {
+                found.entry(pane.tmux_target.clone()).or_insert(pane);
+            }
         }
-        found
-            .entry(window.lease.tmux_target.clone())
-            .or_insert_with(|| Occupant {
-                repo: Some(window.lease.key.repo.clone()),
-                branch: Some(window.lease.key.branch.clone()),
-                session_id: Some(window.lease.session_id.clone()),
-                tmux_target: window.lease.tmux_target.clone(),
-                kind: window.lease.kind.label().to_string(),
-                since: window.created_at,
-            });
-    }
 
-    // (3) Unregistered harness panes rooted in the checkout.
-    for pane in harness_panes_in(Path::new(&key.worktree)) {
-        found.entry(pane.tmux_target.clone()).or_insert(pane);
+        let mut out: Vec<Occupant> = found.into_values().collect();
+        out.sort_by(|a, b| {
+            a.since
+                .cmp(&b.since)
+                .then_with(|| a.tmux_target.cmp(&b.tmux_target))
+        });
+        out
     }
-
-    let mut out: Vec<Occupant> = found.into_values().collect();
-    out.sort_by(|a, b| {
-        a.since
-            .cmp(&b.since)
-            .then_with(|| a.tmux_target.cmp(&b.tmux_target))
-    });
-    out
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -382,17 +419,17 @@ struct NvimHostProbe {
 const NVIM_HOST_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 const NVIM_HOST_PROBE_EXPR: &str = r#"luaeval("vim.json.encode((function() local out={} for _,buf in ipairs(vim.api.nvim_list_bufs()) do if vim.api.nvim_buf_is_loaded(buf) and vim.bo[buf].buftype=='terminal' then local job=vim.b[buf].terminal_job_id if job and job > 0 then local pid = vim.fn.jobpid(job) if pid and pid > 0 then table.insert(out, { pid = pid, name = vim.api.nvim_buf_get_name(buf) }) end end end end return { pid = vim.fn.getpid(), terminals = out } end)())")"#;
 
-/// Live panes whose working directory is inside `worktree` and whose foreground command is a known
-/// agent harness — or whose nvim host is running one in a terminal buffer. This is still the
+/// The `list-panes -a` format [`harness_panes_in`] parses.
+const HARNESS_PANE_FORMAT: &str = "#{session_name}:#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{@bn_agent_since}\t#{pane_dead}\t#{pane_pid}";
+
+/// Live panes (from a `list-panes -a` in [`HARNESS_PANE_FORMAT`]) whose working directory is inside
+/// `worktree` and whose foreground command is a known agent harness — or whose nvim host is
+/// running one in a terminal buffer. This is still the
 /// unregistered-agent source: it catches an agent bn never leased or stamped before the launch
 /// guard or the pool makes a decision.
-fn harness_panes_in(worktree: &Path) -> Vec<Occupant> {
-    let format = "#{session_name}:#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{@bn_agent_since}\t#{pane_dead}\t#{pane_pid}";
-    let Some(output) = crate::proc::tmux_raw(&["list-panes", "-a", "-F", format]) else {
-        return Vec::new();
-    };
+fn harness_panes_in(output: &str, worktree: &Path) -> Vec<Occupant> {
     let now = bn_core::util::now_epoch_secs();
-    let rows = parse_harness_pane_rows(&output, worktree, now);
+    let rows = parse_harness_pane_rows(output, worktree, now);
     let mut panes: Vec<Occupant> = rows.iter().filter_map(occupant_from_harness_pane).collect();
     if let Some(hosted) = nvim_host_occupant(&rows, worktree) {
         if !panes

@@ -390,11 +390,19 @@ use occupancy::any_proc_in;
 
 /// Live agents working in `slot`, oldest first. Empty for an idle slot.
 fn slot_occupants(slot: &Path) -> Vec<crate::agent_lease::Occupant> {
+    slot_occupants_in(&crate::agent_lease::OccupancySnapshot::new(), slot)
+}
+
+/// [`slot_occupants`] against a shared snapshot, for a caller asking about many slots at once.
+fn slot_occupants_in(
+    snapshot: &crate::agent_lease::OccupancySnapshot,
+    slot: &Path,
+) -> Vec<crate::agent_lease::Occupant> {
     #[cfg(test)]
     if let Some(stubbed) = test_occupants(slot) {
         return stubbed;
     }
-    crate::agent_lease::live_agents_in(slot)
+    snapshot.live_agents_in(slot)
 }
 
 /// The tenant label the ledger records for an occupant: its branch, except in the controller's
@@ -415,6 +423,16 @@ fn occupant_label(occupant: &crate::agent_lease::Occupant, n: u32) -> String {
 /// Deliberately *adopting* rather than refusing: a slot with a live agent is held, and saying so —
 /// with the tenant's name — is what makes `wt pool status` legible and the next lease correct.
 fn adopt_occupied_slots(ctx: &PoolCtx, leases: &mut Leases) -> Vec<u32> {
+    adopt_occupied_slots_in(ctx, leases, &crate::agent_lease::OccupancySnapshot::new())
+}
+
+/// [`adopt_occupied_slots`] reading occupancy from `snapshot`, which one tmux read serves for
+/// every slot.
+fn adopt_occupied_slots_in(
+    ctx: &PoolCtx,
+    leases: &mut Leases,
+    snapshot: &crate::agent_lease::OccupancySnapshot,
+) -> Vec<u32> {
     let mut adopted = Vec::new();
     for n in 1..=ctx.size as u32 {
         // A comparison checkout is reserved by its feature lease but deliberately has no agent of
@@ -426,7 +444,7 @@ fn adopt_occupied_slots(ctx: &PoolCtx, leases: &mut Leases) -> Vec<u32> {
         if !slot.is_dir() {
             continue;
         }
-        let occupants = slot_occupants(&slot);
+        let occupants = slot_occupants_in(snapshot, &slot);
         let labels: Vec<String> = occupants
             .iter()
             .map(|occupant| occupant_label(occupant, n))
@@ -1343,7 +1361,9 @@ fn pool_status(cfg: &Config, repo: Option<String>) -> bool {
     // And the other direction: claim any slot a live agent is working in, so the status is the
     // ledger reconciled against reality rather than the ledger's own opinion. Status is where you
     // look when the pool is confusing, so it is also where the record catches up.
-    let adopted = adopt_occupied_slots(&ctx, &mut leases);
+    // One tmux read answers every slot, for the adoption pass and the listing below alike.
+    let snapshot = crate::agent_lease::OccupancySnapshot::new();
+    let adopted = adopt_occupied_slots_in(&ctx, &mut leases, &snapshot);
     cprintln!(
         "{BLUE}{} pool — {} slots ({} worker + 1 controller){NC}",
         ctx.repo,
@@ -1378,7 +1398,7 @@ fn pool_status(cfg: &Config, repo: Option<String>) -> bool {
         };
         // Who is *actually* in the slot, beside what the ledger claims — the two disagreeing is
         // the failure this view exists to make visible.
-        let agents = slot_occupants(&slot_path(&ctx.pool_dir, n));
+        let agents = slot_occupants_in(&snapshot, &slot_path(&ctx.pool_dir, n));
         let occupancy = match agents.first() {
             Some(occupant) => format!("  agent={}", occupant.tmux_target),
             None => String::new(),
@@ -1411,7 +1431,7 @@ fn pool_status(cfg: &Config, repo: Option<String>) -> bool {
                 // the process table already call abandoned, and the count is fetched only for the
                 // one line that prints it. Status used to pay two full status runs per leased
                 // slot — minutes on a monorepo pool.
-                let facts = reclaim::lease_occupancy(&ctx, n, l, now, !holder_dead);
+                let facts = reclaim::lease_occupancy_in(&ctx, n, l, now, !holder_dead, &snapshot);
                 // Say what actually frees the slot: a dirty abandoned slot is deliberately *not*
                 // reclaimable, so pointing at `prune` there promises something it will refuse to do.
                 let flag = if owner != n {

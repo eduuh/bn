@@ -177,6 +177,25 @@ pub(super) fn lease_occupancy(
     now: i64,
     holder_alive: bool,
 ) -> bn_core::pool::LeaseFacts {
+    lease_occupancy_in(
+        ctx,
+        n,
+        lease,
+        now,
+        holder_alive,
+        &crate::agent_lease::OccupancySnapshot::new(),
+    )
+}
+
+/// [`lease_occupancy`] reading agent occupancy from a shared `snapshot`.
+pub(super) fn lease_occupancy_in(
+    ctx: &PoolCtx,
+    n: u32,
+    lease: &Lease,
+    now: i64,
+    holder_alive: bool,
+    snapshot: &crate::agent_lease::OccupancySnapshot,
+) -> bn_core::pool::LeaseFacts {
     let slot = slot_path(&ctx.pool_dir, n);
     let comparison = lease.comparison_slot.map(|n| slot_path(&ctx.pool_dir, n));
     bn_core::pool::LeaseFacts {
@@ -186,11 +205,11 @@ pub(super) fn lease_occupancy(
         // unregistered harness pane, or just a shell somebody left open in the checkout.
         // A pinned lease is spoken for until `wt pool return`, whoever is or isn't in the slot.
         occupied: lease.pinned
-            || !slot_occupants(&slot).is_empty()
+            || !slot_occupants_in(snapshot, &slot).is_empty()
             || crate::agent_lease::any_live_pane_in(&slot)
             || any_proc_in(&slot)
             || comparison.as_ref().is_some_and(|slot| {
-                !slot_occupants(slot).is_empty()
+                !slot_occupants_in(snapshot, slot).is_empty()
                     || crate::agent_lease::any_live_pane_in(slot)
                     || any_proc_in(slot)
             }),

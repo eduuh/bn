@@ -15,6 +15,7 @@ use super::*;
 
 pub(crate) mod backfill;
 mod report;
+mod retry;
 use report::{Outcome, WarmReport};
 
 /// Template written when a repo has no `build.sh` yet — the user fills in the install/build.
@@ -463,9 +464,10 @@ fn head_sha(slot_s: &str) -> Option<String> {
 /// slot's outcome.
 ///
 /// A build that declined to run because a sibling held the toolchain (BigMono's `build.sh` refuses to
-/// start a second `lage build`) is retried once more, one slot at a time, after the parallel pass:
-/// in a pool whose builds guard each other, a parallel pass alone leaves every slot but one cold.
-/// Only a slot still declined after that is reported as not built.
+/// start a second `lage build`) is retried after the parallel pass, one slot at a time, waiting
+/// between tries while something outside the warm holds it (see [`retry`]): in a pool whose builds
+/// guard each other, a parallel pass alone leaves every slot but one cold. Only a slot still
+/// declined when the retry budget runs out is reported as not built.
 fn build_slots_warm(repo: &str, ready: &[(u32, PathBuf)]) -> Vec<(u32, Outcome)> {
     let Some(((first_n, first_slot), rest)) = ready.split_first() else {
         return Vec::new();
@@ -494,14 +496,18 @@ fn build_slots_warm(repo: &str, ready: &[(u32, PathBuf)]) -> Vec<(u32, Outcome)>
         }
     });
     results.extend(parallel.into_inner().unwrap_or_else(|e| e.into_inner()));
-    for (n, outcome) in results.iter_mut() {
-        if *outcome == BuildOutcome::Skipped {
-            let slot = &ready.iter().find(|(m, _)| m == n).expect("ready slot").1;
+    let mut waiter = retry::RealWaiter(std::time::Instant::now());
+    retry::retry_declined(
+        &mut results,
+        retry::budget(),
+        retry::PAUSE,
+        &mut waiter,
+        |n| {
+            let slot = &ready.iter().find(|(m, _)| *m == n).expect("ready slot").1;
             eprintln!("{BLUE}[{n}] build declined — retrying on its own…{NC}");
-            *outcome = run_bn_build(repo, slot, None);
-        }
-    }
-    results.sort_by_key(|(n, _)| *n);
+            run_bn_build(repo, slot, None)
+        },
+    );
     results
         .into_iter()
         .map(|(n, outcome)| {

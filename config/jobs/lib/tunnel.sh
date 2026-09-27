@@ -110,7 +110,15 @@ bn_tunnel_sync_push() {
 # `tmux kill-server` and restart) must not strand a tunnel, and tunnel-auto can find the windows.
 bn_tunnel_session() {
   command -v tmux >/dev/null 2>&1 || return 1
-  tmux has-session -t bn-tunnels 2>/dev/null || tmux new-session -d -s bn-tunnels -n home || return 1
+  tmux has-session -t bn-tunnels 2>/dev/null && { echo bn-tunnels; return 0; }
+  # Started from a systemd unit (the tunnel-auto timer after a reboot, before anyone opened tmux),
+  # a tmux server started here would live in the unit's cgroup and be killed when the job exits.
+  # A scope of its own keeps it: `--scope` runs tmux in this environment under a new transient unit.
+  if [ -n "${INVOCATION_ID:-}" ] && ! tmux list-sessions >/dev/null 2>&1 && command -v systemd-run >/dev/null 2>&1; then
+    systemd-run --user --scope --quiet --collect --unit="bn-tmux-$$" tmux new-session -d -s bn-tunnels -n home >/dev/null 2>&1 || return 1
+  else
+    tmux new-session -d -s bn-tunnels -n home || return 1
+  fi
   echo bn-tunnels
 }
 

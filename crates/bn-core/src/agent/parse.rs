@@ -269,11 +269,12 @@ fn parse_claude_session(cfg: &Config, path: &Path) -> Option<AgentSession> {
 /// it counts — under-reporting a session is the worse failure, and synthetic lines carry no usage
 /// to inflate anyway.
 pub(crate) fn first_line_of_message(msg: &Value, counted: &mut HashSet<String>) -> bool {
-    match msg
-        .get("id")
-        .and_then(|x| x.as_str())
-        .filter(|s| !s.is_empty())
-    {
+    first_line_of_id(msg.get("id").and_then(|x| x.as_str()), counted)
+}
+
+/// [`first_line_of_message`] for a message whose `id` has already been read out.
+pub(crate) fn first_line_of_id(id: Option<&str>, counted: &mut HashSet<String>) -> bool {
+    match id.filter(|s| !s.is_empty()) {
         Some(id) => counted.insert(id.to_string()),
         None => true,
     }
@@ -431,7 +432,7 @@ pub(crate) fn ts_of(v: &Value) -> Option<i64> {
 }
 
 /// Parse an ISO8601 / RFC3339 timestamp to epoch seconds.
-fn parse_iso(s: &str) -> Option<i64> {
+pub(crate) fn parse_iso(s: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(s)
         .ok()
         .map(|dt| dt.timestamp())

@@ -461,6 +461,12 @@ GitHub. The first `tunnel-connect` on a new machine asks gh for the `admin:publi
 browser code) to add its key. Keys published to `ssh-keys/` in the git-synced notes tree, the
 older exchange, are still authorized.
 
+**WSL itself stays up.** On Windows, run `bn run wsl-keepalive` once per machine: it registers a
+hidden Windows sign-in task (`bn-wsl-keepalive`) that holds the distro open with a `wsl.exe` that
+never exits, and inside WSL starts tunnel-auto and a `main` tmux session. Without it, Windows stops
+the distro, and tmux and the tunnels with it, once the last WSL terminal closes.
+(`sh wsl-keepalive.sh status|remove`.)
+
 **It comes back by itself.** bn's tmux config runs `tunnel-auto` once at server start: a machine
 that has hosted re-runs `tunnel-host`, and one that has connected re-runs `tunnel-connect`, and it leaves a watchdog
 window `bn-tunnels:tunnel-watch` repeating those checks every 5 minutes. A reboot, a WSL restart,
