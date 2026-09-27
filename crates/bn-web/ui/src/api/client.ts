@@ -277,12 +277,16 @@ export function costQuery(windowDays: number) {
 }
 
 /** One agent's detail header (fleet entry + latest recorded session + last request). The SSE `fleet`
- * frame keeps the underlying fleet fresh, so this only needs a slow fallback poll. */
+ * frame keeps the underlying fleet fresh, so this only needs a slow fallback poll.
+ *
+ * A stale deep link deterministically 404s; retrying only keeps the skeleton up longer and doubles
+ * the browser-console noise before the route can render its not-found card. */
 export function agentDetailQuery(id: string) {
   return {
     queryKey: queryKeys.agent(id),
     queryFn: () => fetchEnvelope<AgentDetailView>(`/api/agents/${encodeURIComponent(id)}`),
     refetchInterval: 15_000,
+    retry: 0,
   };
 }
 
@@ -738,12 +742,16 @@ const keepPrevious = <T>(prev: T | undefined) => prev;
 /** Today's tasks — `day:` today-or-earlier plus unscheduled, mirroring the CLI's bare view so the
  * dashboard and `bn task` never disagree about what "today" means. */
 /** One task plus everything already joined to it: the live agent on its worktree, its branch note,
- * and its context doc. Polls at the read cadence — a task page is a place you sit and watch. */
+ * and its context doc. Polls at the read cadence — a task page is a place you sit and watch.
+ *
+ * Missing or invalid task ids are deterministic 4xxs, so the detail page should render its empty
+ * state on the first failure instead of retrying the same request. */
 export function taskQuery(id: string) {
   return {
     queryKey: queryKeys.task(id),
     queryFn: () => fetchEnvelope<TaskDetailView>(`/api/tasks/${encodeURIComponent(id)}`),
     refetchInterval: 15_000,
+    retry: 0,
     ...TODAY_CACHE.work,
   };
 }

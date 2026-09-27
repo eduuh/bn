@@ -104,3 +104,50 @@ bn_tunnel_sync_push() {
       || echo "tunnel: committed $(basename "$2") but could not push; the next notes sync will" >&2
   fi
 }
+
+# bn_tunnel_session -- echo the tmux session tunnel windows live in, creating it detached when
+# missing. A dedicated session, not whichever one the caller is in: killing a work session (or a
+# `tmux kill-server` and restart) must not strand a tunnel, and tunnel-auto can find the windows.
+bn_tunnel_session() {
+  command -v tmux >/dev/null 2>&1 || return 1
+  tmux has-session -t bn-tunnels 2>/dev/null || tmux new-session -d -s bn-tunnels -n home || return 1
+  echo bn-tunnels
+}
+
+# bn_tunnel_port_for <machine> -- the SSH port a host uses, derived from its name so hosts never
+# clash on a client (devtunnel connect forwards each port to the same local port and cannot remap).
+# 2300-2999, stable for a name; BN_TUNNEL_SSH_PORT overrides it on the host.
+bn_tunnel_port_for() {
+  _sum=$(printf '%s' "$1" | tr 'A-Z' 'a-z' | cksum | cut -d' ' -f1)
+  echo $((2300 + _sum % 700))
+}
+
+# bn_tunnel_github_user -- the GitHub account whose public keys may SSH in (tunnel-host) and that a
+# client's key must belong to (tunnel-connect). BN_TUNNEL_GITHUB_USER, else `git config
+# bn.tunnelGithubUser`, else the account gh is signed in as. Empty when none can be found.
+bn_tunnel_github_user() {
+  [ -n "${BN_TUNNEL_GITHUB_USER:-}" ] && { echo "$BN_TUNNEL_GITHUB_USER"; return 0; }
+  _u=$(git config --global bn.tunnelGithubUser 2>/dev/null || true)
+  [ -n "$_u" ] || _u=$(gh api user --jq .login 2>/dev/null || true)
+  echo "$_u"
+}
+
+# bn_tunnel_github_keys <user> -- that account's public SSH keys, one per line (public endpoint,
+# no sign-in). Fails when GitHub cannot be reached, so a caller never mistakes "offline" for "none".
+bn_tunnel_github_keys() {
+  curl -fsS --max-time 20 "https://github.com/$1.keys" 2>/dev/null | grep -E '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-)'
+}
+
+# bn_tunnel_hosts <devtunnel> -- every bn host tunnel on this account, one "<tunnel-id> <machine>"
+# per line. The machine name rides in the tunnel description (labels are lowercased).
+bn_tunnel_hosts() {
+  "$1" list --labels bn-host -j 2>/dev/null | awk -F'"' '
+    /"tunnelId"/ { id = $4 }
+    /"description"/ { if (id != "" && $4 != "") print id, $4; id = "" }'
+}
+
+# bn_tunnel_ports <devtunnel> <tunnel-id> -- the ports the tunnel forwards, one per line. A bn
+# host tunnel carries exactly one: the host's SSH port.
+bn_tunnel_ports() {
+  "$1" port list "$2" -j 2>/dev/null | awk -F: '/"portNumber"/ { gsub(/[ ,]/, "", $2); print $2 }'
+}

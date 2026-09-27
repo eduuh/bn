@@ -495,4 +495,15 @@ mod script_header_tests {
             std::fs::canonicalize(pool.join(".bn").join("jobs")).ok()
         );
     }
+
+    #[test]
+    fn bn_checkout_ships_local_build_jobs() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        for job in ["build-to-local.sh", "publish-prod.sh"] {
+            assert!(
+                repo_root.join(".bn").join("jobs").join(job).is_file(),
+                "missing committed job script: {job}"
+            );
+        }
+    }
 }

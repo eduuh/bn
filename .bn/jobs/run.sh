@@ -57,12 +57,20 @@ fi
 echo "== serving $url =="
 mkdir -p "$repo/target"
 nohup "$bin" serve --port "$PORT" >"$logfile" 2>&1 &
-echo $! >"$pidfile"
+child=$!
+echo $child >"$pidfile"
 
 # Health-gate the handoff. Returning a URL that isn't up yet makes the first thing an agent does
-# load the page, a false failure, and it would file that as a bug.
+# load the page, a false failure, and another worktree's listener must never satisfy this check.
+sleep 1
 i=0
 while [ "$i" -lt "$TIMEOUT" ]; do
+  if ! kill -0 "$child" 2>/dev/null; then
+    rm -f "$pidfile"
+    echo "bn run: server process exited before becoming healthy — last log lines:" >&2
+    tail -20 "$logfile" >&2 || true
+    exit 1
+  fi
   if curl -sf -o /dev/null "$url/" 2>/dev/null; then
     cat <<EOF
 
@@ -81,6 +89,10 @@ EOF
   sleep 1
 done
 
+if kill -0 "$child" 2>/dev/null; then
+  kill "$child" 2>/dev/null || true
+fi
+rm -f "$pidfile"
 echo "bn run: $url did not come up within ${TIMEOUT}s — last log lines:" >&2
 tail -20 "$logfile" >&2 || true
 exit 1

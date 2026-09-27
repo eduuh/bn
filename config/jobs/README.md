@@ -445,22 +445,36 @@ Tunnel. Nothing is exposed anonymously, and no port is opened on the host's netw
 
 | where | run | what it does |
 |---|---|---|
-| the machine you connect **to** | `bn run tunnel-host` | starts a key-only, user-level `sshd` on `127.0.0.1:2222`, authorizes published client keys, and hosts a tunnel labelled `bn-host-<machine>` in a tmux window `tunnel` |
-| the machine you connect **from** | `BN_TUNNEL_TO=<machine> bn run tunnel-connect` | publishes its public key to `<notes_root>/ssh-keys/`, finds the tunnel by label, runs `devtunnel connect` in a tmux window, and writes a managed `Host <machine>` block in `~/.ssh/config` |
+| the machine you connect **to** | `bn run tunnel-host` | starts a key-only, user-level `sshd` on a loopback port derived from the machine name (2300-2999, so hosts never clash), authorizes the SSH keys on a GitHub account (`github.com/<user>.keys`), and hosts a tunnel labelled `bn-host` in window `tunnel` of the tmux session `bn-tunnels` |
+| the machine you connect **from** | `bn run tunnel-connect` | picks an SSH key that is on that GitHub account (or creates `~/.ssh/bn_tunnel_ed25519` and adds it with `gh ssh-key add`), then for every bn host on the account runs `devtunnel connect` in `bn-tunnels` and writes a managed `Host <machine>` block in `~/.ssh/config` |
 
-Both machines sign in to Dev Tunnels with the same account, so the client finds the host's tunnel
-by its label; there is no shared config to keep in sync. Client public keys travel through the
-git-synced notes tree (`ssh-keys/` in the first notes root that is a git repo, e.g.
-`~/projects/branch-notes-work/bn`): `tunnel-connect` commits and pushes the key, and `tunnel-host`
-pulls before authorizing. So run `tunnel-connect` on the client, then re-run `tunnel-host` on the
-host. After that, `ssh <machine>` and `bn connect <machine>` work.
+That is the whole setup: one command on each machine. Both sign in to Dev Tunnels with the same
+account, so the client finds every host by its `bn-host` label and reads the host's port from its
+tunnel; there is no shared config to keep in sync. `BN_TUNNEL_TO=<machine>` limits the client to
+one host.
+
+**Which keys may log in.** The GitHub account is `BN_TUNNEL_GITHUB_USER`, else
+`git config --global bn.tunnelGithubUser`, else the account gh is signed in as. Its keys sit in a
+managed block of `~/.ssh/authorized_keys` that each `tunnel-host` run rewrites, so a key removed on
+GitHub stops working at the next run. Every key on that account can log in, so prune old ones on
+GitHub. The first `tunnel-connect` on a new machine asks gh for the `admin:public_key` scope (a
+browser code) to add its key. Keys published to `ssh-keys/` in the git-synced notes tree, the
+older exchange, are still authorized.
+
+**It comes back by itself.** bn's tmux config runs `tunnel-auto` once at server start: a machine
+that has hosted re-runs `tunnel-host`, and one that has connected re-runs `tunnel-connect`, and it leaves a watchdog
+window `bn-tunnels:tunnel-watch` repeating those checks every 5 minutes. A reboot, a WSL restart,
+`tmux kill-server`, an sshd that stopped listening or a dropped connection needs nothing from you
+(log: `~/.cache/bn/tunnel-auto.log`). The host keeps the port it already uses, so an unattended
+re-run never moves it. A signed-out Dev Tunnels CLI is the exception: the log names the
+sign-in command to run.
 
 The devtunnel CLI binary is downloaded into `~/bin` on first run when missing (directly, not via
 the installer script, which needs sudo), and at a terminal the
 scripts start a GitHub device-code sign-in (`devtunnel user login -g -d`; set `BN_TUNNEL_LOGIN=microsoft` for a Microsoft account); every machine must use the same account. Unattended runs stop with that
 command instead of prompting. On the host, install the `sshd` binary once yourself:
 `sudo apt-get install -y openssh-server` (the system service is not needed). Settings are env vars documented at the top of
-each script (`BN_TUNNEL_TO`, `BN_TUNNEL_SSH_PORT`, `BN_TUNNEL_USER`, `BN_TUNNEL_KEYS_DIR`).
+each script (`BN_TUNNEL_TO`, `BN_TUNNEL_SSH_PORT`, `BN_TUNNEL_GITHUB_USER`, `BN_TUNNEL_USER`, `BN_TUNNEL_KEY`).
 
 `BN_TUNNEL_FORWARD_AGENT=1 bn run tunnel-connect` adds `ForwardAgent yes` to the `Host` block
 (opt-in). Use it when the target must reach GitHub with a key only this machine has, e.g. to

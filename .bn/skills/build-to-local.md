@@ -19,8 +19,8 @@ BN_SKIP_UI=1 bn build <either>      # Rust-only (dashboard untouched)
 Both compile the checkout the cwd is in, whatever branch that is, and differ only in which dir
 receives the build. Prod is "the build I run day to day" and can be promoted from any checkout,
 not only main. Run either from anywhere inside a bn checkout: a `wt` worktree or a `_pool/N`
-slot both work. They are jobs in the notes tier (`jobs/bn/*.sh`, shared routine in
-`jobs/bn/lib/link-build.sh`), so they resolve from any bn checkout without setup.
+slot both work. They are committed project-tier jobs in `.bn/jobs/`, so they resolve from a plain
+checkout with no bn-notes setup.
 
 ## Layout: builds are files, the live bn is a link
 

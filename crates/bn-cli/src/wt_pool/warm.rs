@@ -614,6 +614,27 @@ enum BuildOutcome {
     Failed,
 }
 
+/// The bn to re-execute for a slot build: this binary, even when it was reinstalled mid-run.
+///
+/// A warm runs for minutes to hours, and reinstalling bn replaces the file under the running
+/// process. On Linux `current_exe` then reads `<path> (deleted)`, which cannot be spawned. That
+/// failed every slot build of the 2026-09-27 02:01 pool-build: bn was reinstalled the same second
+/// the run started. The file now at `<path>` is the newly installed bn, which is the one to run.
+/// Falls back to `bn` on PATH when there is no usable path at all.
+fn self_exe(current: Option<PathBuf>) -> PathBuf {
+    let Some(p) = current else {
+        return PathBuf::from("bn");
+    };
+    if p.exists() {
+        return p;
+    }
+    let s = p.to_string_lossy();
+    match s.strip_suffix(" (deleted)") {
+        Some(orig) if Path::new(orig).exists() => PathBuf::from(orig),
+        _ => PathBuf::from("bn"),
+    }
+}
+
 /// Warm one slot by running `bn build` in it (cwd = slot) — the same command a human runs by hand,
 /// so the pool builds exactly the way `bn build` does and the two can't drift. `--repo/--branch
 /// main` is required, not a nicety: a pool slot is a *detached* checkout, so `bn build`'s cwd
@@ -625,8 +646,8 @@ enum BuildOutcome {
 /// (`CARGO_BUILD_JOBS`) so several slots building at once share the cores instead of each grabbing
 /// all of them.
 fn run_bn_build(repo: &str, slot: &Path, jobs: Option<usize>) -> BuildOutcome {
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("bn"));
-    let mut cmd = Command::new(exe);
+    let exe = self_exe(std::env::current_exe().ok());
+    let mut cmd = Command::new(&exe);
     cmd.args(["build", "--repo", repo, "--branch", "main"])
         .current_dir(slot)
         .env("CARGO_INCREMENTAL", "0");
@@ -637,8 +658,17 @@ fn run_bn_build(repo: &str, slot: &Path, jobs: Option<usize>) -> BuildOutcome {
     // concurrent `lage build` with exit 0 and a `SKIPPED:` line (exit 75 read as a failure in an
     // older bn), so the exit code alone reports a build that never ran as built.
     cmd.stderr(std::process::Stdio::piped());
-    let Ok(mut child) = cmd.spawn() else {
-        return BuildOutcome::Failed;
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            // Say why: a bare "build failed" here once hid that bn itself never started.
+            eprintln!(
+                "{RED}[{}] could not start `{} build`: {e}{NC}",
+                slot.display(),
+                exe.display()
+            );
+            return BuildOutcome::Failed;
+        }
     };
     let said_skipped = child.stderr.take().is_some_and(|err| {
         use std::io::BufRead;
@@ -769,6 +799,31 @@ mod completion_tests {
         assert_eq!(target_slots(4, Some(2)).unwrap(), vec![2]);
         assert!(target_slots(4, Some(0)).is_err());
         assert!(target_slots(4, Some(5)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod self_exe_tests {
+    use super::self_exe;
+    use std::path::PathBuf;
+
+    #[test]
+    fn a_reinstalled_binary_resolves_to_its_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let bn = dir.path().join("bn");
+        std::fs::write(&bn, b"").unwrap();
+        let deleted = PathBuf::from(format!("{} (deleted)", bn.display()));
+        assert_eq!(self_exe(Some(deleted)), bn);
+        assert_eq!(self_exe(Some(bn.clone())), bn);
+    }
+
+    #[test]
+    fn no_usable_path_falls_back_to_bn_on_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let gone = dir.path().join("bn");
+        let deleted = PathBuf::from(format!("{} (deleted)", gone.display()));
+        assert_eq!(self_exe(Some(deleted)), PathBuf::from("bn"));
+        assert_eq!(self_exe(None), PathBuf::from("bn"));
     }
 }
 

@@ -194,17 +194,25 @@ pub(crate) fn reconcile_controller_liveness() -> std::io::Result<()> {
     })
 }
 
-fn controller_window_exists(target: &str) -> bool {
+/// The id of the window `target` names, or `None` when there is no such window.
+///
+/// `list-panes`, not `display-message`: for an `=session:=window` target whose window is gone,
+/// tmux 3.7's `display-message` falls back to the session's *current* window and exits 0 — so a
+/// stale controller target resolved to whatever window you were looking at, and the kill below
+/// took that window down. `list-panes` fails on a missing window.
+fn controller_window_id(target: &str) -> Option<String> {
     let target = crate::proc::exact_target(target);
-    proc::tmux(&["display-message", "-p", "-t", &target, "#{window_id}"]).is_some()
+    proc::tmux(&["list-panes", "-t", &target, "-F", "#{window_id}"])
+        .and_then(|out| out.lines().next().map(|id| id.trim().to_string()))
+        .filter(|id| !id.is_empty())
+}
+
+fn controller_window_exists(target: &str) -> bool {
+    controller_window_id(target).is_some()
 }
 
 fn kill_controller_window(target: &str) -> bool {
-    let target = crate::proc::exact_target(target);
-    let Some(window_id) = proc::tmux(&["display-message", "-p", "-t", &target, "#{window_id}"])
-        .map(|id| id.trim().to_string())
-        .filter(|id| !id.is_empty())
-    else {
+    let Some(window_id) = controller_window_id(target) else {
         return false;
     };
     crate::reap::kill_window_trees(std::slice::from_ref(&window_id));
