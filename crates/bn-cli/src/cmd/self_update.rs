@@ -179,10 +179,20 @@ pub(crate) fn job_self_update(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
 }
 
 /// Why the published release must not replace the installed `bn`, or `None` when installing it is
-/// the right move (it is newer, or nothing about it can be determined and the old rule stands).
+/// the right move (it is newer, or there is no bn with a known commit installed to protect).
+///
+/// When the release's commit cannot be learned, this refuses. It used to install then, and that
+/// is how source builds got replaced by an older release: a timer runs without the terminal's gh
+/// sign-in, gh cannot answer, and v0.6.2 went over a newer build (seen 2026-09-27 on
+/// cloud-pc-AB12C, whose `bn run` then queued jobs instead of running them).
 fn release_not_newer(main_wt: &str, installed: &Path) -> Option<String> {
     let installed_sha = installed_sha(installed)?;
-    let release_sha = published_release_sha()?;
+    let Some(release_sha) = published_release_sha() else {
+        return Some(format!(
+            "cannot tell which commit the published release is (gh offline or signed out), \
+             so it may be older than installed {installed_sha}"
+        ));
+    };
     let ancestor = |older: &str, newer: &str| {
         crate::git::git_ok(&[
             "-C",
@@ -257,7 +267,7 @@ fn parse_version_sha(version: &str) -> Option<String> {
 /// workflow pinned with `gh release create --target <sha>`.
 ///
 /// `None` when gh cannot answer (offline, unauthenticated, or a release pinned to a branch name
-/// rather than a commit), which leaves the old rule in charge.
+/// rather than a commit), which makes [`release_not_newer`] leave the installed bn alone.
 fn published_release_sha() -> Option<String> {
     let slug = std::env::var("BN_REPO_SLUG").unwrap_or_else(|_| "eduuh/bn".to_string());
     let commitish = crate::gh::gh_capture_bounded(

@@ -65,9 +65,12 @@ pub(super) fn reclaim_stale(
                 pid_alive(l.pid),
             );
             let prior_boot = matches!(liveness, LeaseLiveness::StalePriorBoot);
+            // A pinned lease (`wt pool get`) is held until returned: only a reboot frees it.
             let dead_holder = match scope {
                 ReclaimScope::PriorBootOnly => prior_boot,
-                ReclaimScope::AnyDeadHolder => !matches!(liveness, LeaseLiveness::Live),
+                ReclaimScope::AnyDeadHolder => {
+                    !matches!(liveness, LeaseLiveness::Live) && (!l.pinned || prior_boot)
+                }
             };
             // Never clobber a live agent, a live process's cwd, or uncommitted work — even for a
             // prior-boot lease: the working tree survives a reboot, so a dirty slot is preserved
@@ -181,7 +184,9 @@ pub(super) fn lease_occupancy(
         age_secs: now - lease.at,
         // "Someone is here" is a fact about tmux, not about the ledger: an agent that registered, an
         // unregistered harness pane, or just a shell somebody left open in the checkout.
-        occupied: !slot_occupants(&slot).is_empty()
+        // A pinned lease is spoken for until `wt pool return`, whoever is or isn't in the slot.
+        occupied: lease.pinned
+            || !slot_occupants(&slot).is_empty()
             || crate::agent_lease::any_live_pane_in(&slot)
             || any_proc_in(&slot)
             || comparison.as_ref().is_some_and(|slot| {

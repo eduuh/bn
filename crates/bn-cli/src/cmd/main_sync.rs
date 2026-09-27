@@ -322,6 +322,7 @@ fn advance(dir_s: &str, target: &str, repo: &str, what: &str) -> bool {
         return false;
     }
     if !crate::git::git_ok(&["-C", dir_s, "reset", "--hard", "--quiet", target]) {
+        restore_head(dir_s, before.as_deref());
         native_job_line(
             &format!("main-sync: {repo}: could not reset {what} to {target}"),
             true,
@@ -370,6 +371,17 @@ fn sync_main_slot(bare: &Path, worktree_dir: &Path, repo: &str, target: &str) ->
         // already reported by whoever cares. Not a failure of this job.
         return true;
     };
+    // The main slot is pool slot 1, and a pool warm stages, resets and builds it too. Moving it
+    // while a warm holds the pool turned a BigMono build into a build of two commits. Yield to the
+    // warm (the next tick catches up), and hold the lock while moving so no warm starts mid-move.
+    let pool_dir = slot.parent().unwrap_or(worktree_dir);
+    let Some(_warm) = crate::wt_pool::slot_lock::try_lock_warm(pool_dir) else {
+        native_job_line(
+            &format!("main-sync: {repo}: main slot is being warmed — left alone"),
+            false,
+        );
+        return true;
+    };
     let slot_s = slot.to_string_lossy().to_string();
     if dirty(&slot_s) > 0 {
         native_job_line(
@@ -382,10 +394,17 @@ fn sync_main_slot(bare: &Path, worktree_dir: &Path, repo: &str, target: &str) ->
         return true;
     }
     let before = head_sha(&slot_s);
+    // Detach first — no tree change — so the soft reset in the prefetch can never move a branch.
+    let _ = crate::git::git_ok(&["-C", &slot_s, "switch", "--quiet", "--detach"]);
     if !prefetch_blobs(&slot_s, target, repo, "main slot") {
         return false;
     }
-    if !crate::git::git_ok(&["-C", &slot_s, "checkout", "--quiet", "--detach", target]) {
+    // `reset --hard`, not `checkout`: the prefetch has already pointed HEAD at the target, and a
+    // checkout of the commit HEAD is on changes nothing — it left BigMono's slot with HEAD on the new
+    // commit and the old tree in the index and on disk, which the next tick read as ~1,000
+    // uncommitted changes.
+    if !crate::git::git_ok(&["-C", &slot_s, "reset", "--hard", "--quiet", target]) {
+        restore_head(&slot_s, before.as_deref());
         native_job_line(
             &format!("main-sync: {repo}: could not advance the main slot to {target}"),
             true,
@@ -396,6 +415,16 @@ fn sync_main_slot(bare: &Path, worktree_dir: &Path, repo: &str, target: &str) ->
         native_job_line(&format!("main-sync: {repo}: main slot → {target}"), false);
     }
     true
+}
+
+/// Put HEAD back on `before` without touching files, after a move failed past the prefetch's soft
+/// reset. Otherwise HEAD sits on the target over the old tree, and that reads as uncommitted work.
+fn restore_head(dir_s: &str, before: Option<&str>) {
+    if let Some(before) = before {
+        if head_sha(dir_s).as_deref() != Some(before) {
+            let _ = crate::git::git_ok(&["-C", dir_s, "reset", "--quiet", "--soft", before]);
+        }
+    }
 }
 
 /// The repo's default branch as a plain local branch name (`main`), from the shared base-ref
@@ -649,5 +678,62 @@ mod tests {
         assert!(crate::wt_pool::is_live_slot(&main));
         assert_eq!(git_capture(&["-C", &main_s, "branch", "--show-current"]), "main");
         assert!(main.join("a.txt").exists());
+    }
+
+    /// A blobless bare clone of a one-commit `main`, its main slot created at that commit, and a
+    /// second commit fetched into `origin/main` whose file the slot has never downloaded.
+    /// Returns `(tempdir, bare, worktree_dir, slot, old_sha, new_sha)`.
+    fn blobless_main_slot() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, String, String) {
+        let (tmp, _) = mk_bare("main");
+        let src_s = tmp.path().join("src").to_string_lossy().to_string();
+        assert!(git(&["-C", &src_s, "config", "uploadpack.allowFilter", "true"]));
+        let bare = tmp.path().join("bare").join("blobless.git");
+        let bare_s = bare.to_string_lossy().to_string();
+        let url = format!("file://{src_s}");
+        assert!(git(&["clone", "-q", "--bare", "--filter=blob:none", &url, &bare_s]));
+        let spec = "+refs/heads/main:refs/remotes/origin/main";
+        assert!(git(&["--git-dir", &bare_s, "fetch", "-q", "origin", spec]));
+        let old = git_capture(&["--git-dir", &bare_s, "rev-parse", "origin/main"]);
+        let worktree_dir = tmp.path().join("worktree");
+        let slot = crate::main_slot::ensure(&bare, &worktree_dir, "blobless").expect("main slot");
+        let slot_s = slot.to_string_lossy().to_string();
+        assert!(git(&["-C", &slot_s, "reset", "-q", "--hard", &old]));
+        std::fs::write(Path::new(&src_s).join("b.txt"), "new\n").unwrap();
+        assert!(git(&["-C", &src_s, "add", "-A"]));
+        assert!(git(&["-C", &src_s, "commit", "-qm", "b"]));
+        assert!(git(&["--git-dir", &bare_s, "fetch", "-q", "origin", spec]));
+        let new = git_capture(&["--git-dir", &bare_s, "rev-parse", "origin/main"]);
+        (tmp, bare, worktree_dir, slot, old, new)
+    }
+
+    /// The prefetch points HEAD at the target before the move, and a `checkout` of the commit HEAD
+    /// already names changes nothing. The slot must end on the target with the target's files, not
+    /// with HEAD moved over the old tree (which reads as a pile of uncommitted changes).
+    #[test]
+    fn a_blobless_main_slot_really_moves_to_the_target() {
+        let _env = bn_core::test_support::env_lock();
+        let (_tmp, bare, worktree_dir, slot, _old, new) = blobless_main_slot();
+        let slot_s = slot.to_string_lossy().to_string();
+
+        assert!(sync_main_slot(&bare, &worktree_dir, "blobless", "origin/main"));
+
+        assert_eq!(git_capture(&["-C", &slot_s, "rev-parse", "HEAD"]), new);
+        assert_eq!(git_capture(&["-C", &slot_s, "status", "--porcelain"]), "");
+        assert!(slot.join("b.txt").exists());
+    }
+
+    /// A warm holding the pool owns slot 1 until it is done: main-sync leaves it alone.
+    #[test]
+    fn a_main_slot_being_warmed_is_left_alone() {
+        let _env = bn_core::test_support::env_lock();
+        let (_tmp, bare, worktree_dir, slot, old, _new) = blobless_main_slot();
+        let slot_s = slot.to_string_lossy().to_string();
+        let _warm = crate::wt_pool::slot_lock::try_lock_warm(slot.parent().unwrap())
+            .expect("the warm takes the pool");
+
+        assert!(sync_main_slot(&bare, &worktree_dir, "blobless", "origin/main"));
+
+        assert_eq!(git_capture(&["-C", &slot_s, "rev-parse", "HEAD"]), old);
+        assert_eq!(git_capture(&["-C", &slot_s, "status", "--porcelain"]), "");
     }
 }

@@ -21,7 +21,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 
 /// Held for as long as the value lives; the kernel releases it on drop or process death.
-pub(super) struct PoolLock {
+pub(crate) struct PoolLock {
     _file: File,
 }
 
@@ -46,7 +46,7 @@ pub(super) fn lock_slot(pool_dir: &Path, n: u32) -> Option<PoolLock> {
 /// The pool-wide warm lock, taken without waiting. `None` means another warm holds it and the
 /// caller should yield to it. A lock that cannot be taken for any other reason is returned as
 /// held-in-name-only, so a platform without advisory locking still warms — unguarded, as before.
-pub(super) fn try_lock_warm(pool_dir: &Path) -> Option<PoolLock> {
+pub(crate) fn try_lock_warm(pool_dir: &Path) -> Option<PoolLock> {
     let file = flock::open_lock_file(&lock_file_path(pool_dir, "warm")).ok()?;
     match flock::try_lock(&file) {
         FlockOutcome::Held => None,

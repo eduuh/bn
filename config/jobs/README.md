@@ -461,3 +461,23 @@ scripts start a GitHub device-code sign-in (`devtunnel user login -g -d`; set `B
 command instead of prompting. On the host, install the `sshd` binary once yourself:
 `sudo apt-get install -y openssh-server` (the system service is not needed). Settings are env vars documented at the top of
 each script (`BN_TUNNEL_TO`, `BN_TUNNEL_SSH_PORT`, `BN_TUNNEL_USER`, `BN_TUNNEL_KEYS_DIR`).
+
+`BN_TUNNEL_FORWARD_AGENT=1 bn run tunnel-connect` adds `ForwardAgent yes` to the `Host` block
+(opt-in). Use it when the target must reach GitHub with a key only this machine has, e.g. to
+sync a notes repo owned by another account: with an `ssh-agent` holding that key, the target
+borrows it while you are connected. The key never leaves this machine, but anyone with root on the
+target can use it during the session.
+
+### Staying connected: attach, forward, remote jobs
+
+| run (on the client) | what it does |
+|---|---|
+| `BN_TUNNEL_TO=<machine> bn run tunnel-attach` | attaches to (or creates) tmux session `bn` on the host and re-attaches after a drop (5s, backing off to 30s); detaching normally ends it |
+| `BN_TUNNEL_TO=<machine> BN_TUNNEL_PORTS=3000,3001 bn run tunnel-forward` | keeps those host ports forwarded to the same local ports, reconnecting on drops, in a tmux window `fwd-<machine>` |
+| `sh remote-job.sh <machine> start <name> <command...>` then `follow <name>` | runs a long command detached in the host's tmux session `bn-jobs` with a log, and follows it from here; `follow` resumes after a drop and exits with the job's exit code |
+
+`BN_TUNNEL_PORTS` on `tunnel-connect` instead adds `LocalForward` lines, so every `ssh <machine>`
+carries the ports. `devtunnel host` and `devtunnel connect` run in restart loops, sshd has SFTP
+(so `scp` and VS Code Remote-SSH work) and drops dead sessions after ~90s, and a config change
+reloads the running sshd. Remote jobs get the PATH an interactive login shell on the host would
+have (bn, nvm, yarn), without that shell's startup noise in the log.

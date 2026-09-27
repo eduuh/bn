@@ -43,6 +43,9 @@ KEYS_DIR=$(bn_tunnel_keys_dir)
 mkdir -p "$STATE" "$HOME/.ssh"
 chmod 700 "$HOME/.ssh" "$STATE"
 [ -f "$STATE/host_ed25519" ] || ssh-keygen -q -t ed25519 -N '' -f "$STATE/host_ed25519"
+# internal-sftp: modern scp and VS Code Remote-SSH speak SFTP; without it `scp` just closes.
+# ClientAlive*: drop a dead tunnel session in ~90s instead of holding it open forever.
+old_cfg=$(cat "$STATE/sshd_config" 2>/dev/null || true)
 cat > "$STATE/sshd_config" <<EOF
 # Written by bn tunnel-host. Loopback only: the Dev Tunnel is the one way in.
 Port $PORT
@@ -56,10 +59,20 @@ KbdInteractiveAuthentication no
 UsePAM no
 PermitRootLogin no
 AllowUsers $(id -un)
+Subsystem sftp internal-sftp
+ClientAliveInterval 30
+ClientAliveCountMax 3
+AllowTcpForwarding local
 EOF
 
 if [ -f "$STATE/sshd.pid" ] && kill -0 "$(cat "$STATE/sshd.pid")" 2>/dev/null; then
-  say "sshd already running on 127.0.0.1:$PORT (pid $(cat "$STATE/sshd.pid"))"
+  if [ "$old_cfg" != "$(cat "$STATE/sshd_config")" ]; then
+    # A running sshd re-reads its config on SIGHUP; existing sessions are kept.
+    "$SSHD" -t -f "$STATE/sshd_config" || die "sshd rejected $STATE/sshd_config"
+    kill -HUP "$(cat "$STATE/sshd.pid")" && say "sshd config changed; reloaded (pid $(cat "$STATE/sshd.pid"))"
+  else
+    say "sshd already running on 127.0.0.1:$PORT (pid $(cat "$STATE/sshd.pid"))"
+  fi
 else
   "$SSHD" -t -f "$STATE/sshd_config" || die "sshd rejected $STATE/sshd_config"
   "$SSHD" -f "$STATE/sshd_config" || die "sshd failed to start on port $PORT"
@@ -100,11 +113,12 @@ if [ -n "${TMUX:-}" ] && [ "${BN_TUNNEL_FOREGROUND:-0}" != 1 ]; then
   if tmux list-windows -t "$sess" -F '#W' | grep -qx tunnel; then
     say "already hosting in tmux window $sess:tunnel"
   else
-    tmux new-window -d -t "$sess" -n tunnel "$DT host $ID; exec \${SHELL:-sh}"
-    say "hosting $ID in tmux window $sess:tunnel"
+    # Restart loop: `devtunnel host` exits when the relay drops for good; come straight back.
+    tmux new-window -d -t "$sess" -n tunnel "while :; do $DT host $ID; echo 'tunnel-host: devtunnel host exited; restarting in 5s (Ctrl-C twice to stop)'; sleep 5; done"
+    say "hosting $ID in tmux window $sess:tunnel (restarts itself if it drops)"
   fi
   say "connect from another machine:  BN_TUNNEL_TO=$NAME bn run tunnel-connect"
 else
-  say "hosting $ID in the foreground (Ctrl-C stops it)"
-  exec "$DT" host "$ID"
+  say "hosting $ID in the foreground (restarts if it drops; Ctrl-C twice stops it)"
+  while :; do "$DT" host "$ID" || true; say "devtunnel host exited; restarting in 5s"; sleep 5; done
 fi

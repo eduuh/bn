@@ -428,6 +428,7 @@ fn wt_cleanup_inside_pool_slot_returns_the_slot() {
             at: now_epoch(),
             boot_id: String::new(),
             comparison_slot: None,
+            pinned: false,
         },
     );
     write_leases(&pdir, &leases).unwrap();
@@ -438,4 +439,39 @@ fn wt_cleanup_inside_pool_slot_returns_the_slot() {
     assert!(slot.is_dir(), "cleanup should keep the warm slot checkout");
     assert!(read_leases(&pdir).slots.is_empty());
     assert_eq!(head_ref(&slot), "HEAD");
+}
+
+/// Two warms on one pool at once is the race that emptied the BigMono slots of tracked files. The
+/// second one now yields to the first — reporting success, since the running warm is doing the
+/// job — instead of interleaving git calls with it.
+#[test]
+fn warm_yields_to_a_warm_already_running_on_the_pool() {
+    let _g = bn_core::test_support::env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+
+    let bare = root.join("bare").join("nvim.git");
+    build_repo_into(&root.join("nvim-src"), &bare);
+
+    let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
+    let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", root.join("state"));
+    TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
+
+    let pool_dir = root.join("worktree").join("nvim").join("_pool");
+    let _running = slot_lock::try_lock_warm(&pool_dir).expect("the first warm takes the lock");
+
+    let cfg = bn_core::test_support::config(root);
+    let ctx = bn_core::resolver::Resolved {
+        repo: "nvim".to_string(),
+        branch: "main".to_string(),
+    };
+    assert_eq!(
+        super::job_pool_warm(&cfg, Some(&ctx)),
+        0,
+        "yielding to a running warm is not a failed refresh"
+    );
+    assert!(
+        !is_live_slot(&slot_path(&pool_dir, 2)),
+        "the yielding warm must not have touched the pool"
+    );
 }

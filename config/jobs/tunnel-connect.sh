@@ -15,12 +15,18 @@
 # Env: BN_TUNNEL_TO (target machine name), BN_TUNNEL_SSH_PORT (default 2222; must match the host),
 #      BN_TUNNEL_USER (remote user, default: yours), BN_TUNNEL_KEY (default ~/.ssh/id_ed25519),
 #      BN_TUNNEL_KEYS_DIR (default: ssh-keys/ in the git-synced notes tree, see
-#      bn_tunnel_keys_dir).
+#      bn_tunnel_keys_dir), BN_TUNNEL_FORWARD_AGENT=1 to add `ForwardAgent yes` (opt-in; see below),
+#      BN_TUNNEL_PORTS=3000,3001 to forward those remote ports to the same local ports on every
+#      ssh to <machine> (LocalForward). For forwards without a session, see tunnel-forward.sh.
+#      BN_TUNNEL_PERSIST (default 10m): how long the shared connection stays open after its last
+#      ssh ends; see step 4.
 set -eu
 
 TO="${1:-${BN_TUNNEL_TO:-}}"
 [ -n "$TO" ] || { echo "tunnel-connect: which machine? BN_TUNNEL_TO=<machine> bn run tunnel-connect" >&2; exit 2; }
 PORT="${BN_TUNNEL_SSH_PORT:-2222}"
+PERSIST="${BN_TUNNEL_PERSIST:-10m}"
+case "$PERSIST" in ''|*[!0-9smhdwyeno]*) echo "tunnel-connect: bad BN_TUNNEL_PERSIST '$PERSIST' (e.g. 10m, 1h, no)" >&2; exit 2 ;; esac
 RUSER="${BN_TUNNEL_USER:-$(id -un)}"
 KEY="${BN_TUNNEL_KEY:-$HOME/.ssh/id_ed25519}"
 ME="$(hostname -s 2>/dev/null || hostname)"
@@ -54,13 +60,34 @@ if ss -tln 2>/dev/null | grep -q "127.0.0.1:$PORT "; then
   say "127.0.0.1:$PORT already forwarded"
 elif [ -n "${TMUX:-}" ]; then
   sess=$(tmux display-message -p '#S')
-  tmux list-windows -t "$sess" -F '#W' | grep -qx "tunnel-$TO" || tmux new-window -d -t "$sess" -n "tunnel-$TO" "$DT connect $ID; exec \${SHELL:-sh}"
-  say "connecting to $ID in tmux window $sess:tunnel-$TO"
+  # Restart loop: `devtunnel connect` reconnects on its own through short relay drops, but exits
+  # when the host is gone for a while (Cloud PC asleep); come back once it is up again.
+  tmux list-windows -t "$sess" -F '#W' | grep -qx "tunnel-$TO" || tmux new-window -d -t "$sess" -n "tunnel-$TO" "while :; do $DT connect $ID; echo 'tunnel-connect: devtunnel connect exited; retrying in 10s (Ctrl-C twice to stop)'; sleep 10; done"
+  say "connecting to $ID in tmux window $sess:tunnel-$TO (retries itself if it drops)"
 else
   die "run inside tmux, or start the forward yourself in another terminal: $DT connect $ID"
 fi
 
 # --- 4. managed ~/.ssh/config block -------------------------------------------
+# ForwardAgent is opt-in. It lets the target use this machine's ssh-agent keys while connected,
+# e.g. to reach a GitHub repo only this machine's key can access (the host's notes sync). The key
+# never leaves this machine, but anyone with root on the target can use it during the session.
+FWD=""
+[ "${BN_TUNNEL_FORWARD_AGENT:-0}" = 1 ] && FWD="
+  ForwardAgent yes"
+# Port forwards ride every ssh to the host; a port already in use locally is skipped, not fatal.
+for p in $(printf '%s' "${BN_TUNNEL_PORTS:-}" | tr ',' ' '); do
+  case "$p" in *[!0-9]*|'') say "skipping port '$p' (not a number)"; continue ;; esac
+  FWD="$FWD
+  LocalForward $p 127.0.0.1:$p"
+done
+[ -n "${BN_TUNNEL_PORTS:-}" ] && FWD="$FWD
+  ExitOnForwardFailure no"
+# One shared connection: the first ssh to <machine> opens a master and every later one (remote-job,
+# tunnel-attach, git, scp) rides it, skipping the Dev Tunnel channel setup and the SSH handshake.
+# %C is a hash, so the socket path stays short. After a drop the master dies with the link (the
+# ServerAlive settings find a dead link within a minute) and the next ssh opens a new one.
+# Close it by hand: ssh -O exit <machine>.
 CFG="$HOME/.ssh/config"
 touch "$CFG"; chmod 600 "$CFG"
 begin="# >>> bn tunnel $TO >>>"; end="# <<< bn tunnel $TO <<<"
@@ -74,7 +101,12 @@ Host $TO
   User $RUSER
   IdentityFile $KEY
   HostKeyAlias bn-tunnel-$TO
-  ServerAliveInterval 30
+  ServerAliveInterval 15
+  ServerAliveCountMax 4
+  TCPKeepAlive yes
+  ControlMaster auto
+  ControlPath ~/.ssh/cm-%C
+  ControlPersist $PERSIST$FWD
 $end
 EOF
 cat "$tmp" > "$CFG"; rm -f "$tmp"

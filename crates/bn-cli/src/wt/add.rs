@@ -54,17 +54,25 @@ fn clone_into(url: &str, name: Option<&str>, bare_dir: &Path, worktree_dir: &Pat
     let _ = std::fs::create_dir_all(bare_dir);
     let _ = std::fs::create_dir_all(worktree_dir);
 
-    cprintln!("{BLUE}Cloning {url} as bare repo...{NC}");
-    if !run_git(&["clone", "--bare", url, &bare.to_string_lossy()]) {
+    let filter = env_nonempty("WT_CLONE_FILTER");
+    let refspec = bare_fetch_refspec(env_nonempty("WT_FETCH_REFSPEC").as_deref());
+    match &filter {
+        Some(f) => cprintln!("{BLUE}Cloning {url} as bare repo (partial: {f})...{NC}"),
+        None => cprintln!("{BLUE}Cloning {url} as bare repo...{NC}"),
+    }
+    let dest = bare.to_string_lossy().to_string();
+    let args = bare_clone_args(url, &dest, filter.as_deref());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    if !run_git(&args) {
         return false;
     }
-    let bare_s = bare.to_string_lossy().to_string();
+    let bare_s = dest;
     run_git(&[
         "--git-dir",
         &bare_s,
         "config",
         "remote.origin.fetch",
-        "+refs/heads/*:refs/remotes/origin/*",
+        &refspec,
     ]);
     run_git(&["--git-dir", &bare_s, "fetch", "origin"]);
 
@@ -109,6 +117,33 @@ fn clone_into(url: &str, name: Option<&str>, bare_dir: &Path, worktree_dir: &Pat
 /// actually exists, else `main`/`master`, else the first branch present. Mirrors the bash
 /// `clone_repo` fallback so a repo whose HEAD is unset (or isn't main/master) still gets a
 /// worktree. `None` only when the clone has no branches at all.
+/// An environment variable's value, or None when unset or empty.
+fn env_nonempty(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|v| !v.is_empty())
+}
+
+/// `git clone --bare` arguments. `filter` (from `WT_CLONE_FILTER`, e.g. `blob:none`) makes a
+/// partial clone: every commit and tree, file contents fetched on first use. Machine setup sets it
+/// per repo (dotfiles `PARTIAL_CLONE_FILTER`) for monorepos whose full history is too big to clone.
+fn bare_clone_args(url: &str, dest: &str, filter: Option<&str>) -> Vec<String> {
+    let mut args = vec!["clone".to_string(), "--bare".to_string()];
+    if let Some(f) = filter {
+        args.push(format!("--filter={f}"));
+    }
+    args.push(url.to_string());
+    args.push(dest.to_string());
+    args
+}
+
+/// The bare repo's `remote.origin.fetch`: `WT_FETCH_REFSPEC` when set (dotfiles `FETCH_REFSPEC`,
+/// e.g. `+refs/heads/main:refs/remotes/origin/main` for a repo with tens of thousands of
+/// branches), else every branch.
+fn bare_fetch_refspec(from_env: Option<&str>) -> String {
+    from_env
+        .unwrap_or("+refs/heads/*:refs/remotes/origin/*")
+        .to_string()
+}
+
 fn resolve_default_branch(bare_s: &str) -> Option<String> {
     let has = |b: &str| run_git(&["--git-dir", bare_s, "show-ref", "--verify", "--quiet", b]);
     if let Some(def) = git_out(&["--git-dir", bare_s, "symbolic-ref", "--short", "HEAD"]) {
@@ -318,12 +353,16 @@ fn seed_skills(wt: &Path) {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return;
     };
-    let report = bn_core::skills::seed_worktree_skills(&bn_core::resolver::Config::load(), wt, &home);
+    let report =
+        bn_core::skills::seed_worktree_skills(&bn_core::resolver::Config::load(), wt, &home);
     if report.nothing_to_seed {
         return;
     }
     if !report.is_empty() {
-        cprintln!("{BLUE}Seeded {} repo skill file(s){NC}", report.changes.len());
+        cprintln!(
+            "{BLUE}Seeded {} repo skill file(s){NC}",
+            report.changes.len()
+        );
     }
     for skip in &report.skipped {
         cprintln!(
@@ -453,3 +492,41 @@ pub(crate) fn run_clone_all(cfg: &Config, manifest: &str) -> bool {
     true
 }
 
+#[cfg(test)]
+mod partial_clone_tests {
+    use super::*;
+
+    #[test]
+    fn clone_args_without_filter_are_a_plain_bare_clone() {
+        assert_eq!(
+            bare_clone_args("https://x/r", "/b/r.git", None),
+            ["clone", "--bare", "https://x/r", "/b/r.git"]
+        );
+    }
+
+    #[test]
+    fn clone_args_with_filter_make_a_partial_clone() {
+        assert_eq!(
+            bare_clone_args("https://x/r", "/b/r.git", Some("blob:none")),
+            [
+                "clone",
+                "--bare",
+                "--filter=blob:none",
+                "https://x/r",
+                "/b/r.git"
+            ]
+        );
+    }
+
+    #[test]
+    fn fetch_refspec_defaults_to_every_branch() {
+        assert_eq!(
+            bare_fetch_refspec(None),
+            "+refs/heads/*:refs/remotes/origin/*"
+        );
+        assert_eq!(
+            bare_fetch_refspec(Some("+refs/heads/main:refs/remotes/origin/main")),
+            "+refs/heads/main:refs/remotes/origin/main"
+        );
+    }
+}

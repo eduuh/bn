@@ -18,7 +18,7 @@
 
 use crate::wt;
 use bn_core::resolver::Config;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -96,59 +96,8 @@ pub(crate) fn pool_size(cfg: &Config, repo: &str) -> usize {
 
 // --- lease store (leases.json) ---------------------------------------------
 
-#[derive(Serialize, Deserialize, Default)]
-struct Leases {
-    slots: BTreeMap<u32, Lease>,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-struct Lease {
-    branch: String,
-    holder: String,
-    /// PID of the process that took the lease — the *caller* (parent of the `bn` invocation, e.g.
-    /// the agent or shell), not the ephemeral `bn` process which exits immediately. This is what
-    /// makes the lease durable yet recoverable: a slot is only reclaimable once this process is
-    /// gone. See [`caller_pid`].
-    pid: u32,
-    /// Epoch seconds when the lease was taken.
-    at: i64,
-    /// The boot id of the machine when the lease was taken (see [`current_boot_id`]). A lease whose
-    /// id differs from the current boot's was taken *before* a restart (WSL shutdown / reboot), so
-    /// its holder is provably gone even if the recycled `pid` now reads as alive — this is what lets
-    /// the pool recover its slots after WSL dies and comes back. Empty for leases written before
-    /// boot-scoping (treated as an unknown boot → falls back to the pid check), hence `default`.
-    #[serde(default)]
-    boot_id: String,
-    /// A second worker slot reserved by this lease as a detached primary-branch comparison tree.
-    /// The relationship is stored only on the owning feature lease, so it cannot become a
-    /// half-written pair.
-    #[serde(default)]
-    comparison_slot: Option<u32>,
-}
-
-impl Leases {
-    fn reserved_slots(&self) -> BTreeSet<u32> {
-        self.slots
-            .iter()
-            .flat_map(|(&owner, lease)| [Some(owner), lease.comparison_slot])
-            .flatten()
-            .collect()
-    }
-
-    fn owner_slot(&self, n: u32) -> Option<u32> {
-        self.slots.contains_key(&n).then_some(n).or_else(|| {
-            self.slots
-                .iter()
-                .find_map(|(&owner, lease)| (lease.comparison_slot == Some(n)).then_some(owner))
-        })
-    }
-
-    fn comparison_owner(&self, n: u32) -> Option<u32> {
-        self.slots
-            .iter()
-            .find_map(|(&owner, lease)| (lease.comparison_slot == Some(n)).then_some(owner))
-    }
-}
+mod lease_store;
+use lease_store::{Lease, Leases};
 
 /// This boot's unique id: a value that changes on every (re)boot, so a lease tagged with a
 /// *different* id predates the current boot and its holder process cannot still exist — WSL
@@ -500,6 +449,7 @@ fn adopt_occupied_slots(ctx: &PoolCtx, leases: &mut Leases) -> Vec<u32> {
                 at: occupant.since.max(0),
                 boot_id: current_boot_id().unwrap_or_default(),
                 comparison_slot: None,
+                pinned: false,
             },
         );
         adopted.push(n);
@@ -735,6 +685,7 @@ fn pool_get(
     let Some(leased) = acquire_slot(&ctx, &branch, None, holder, SlotRole::Worker, false) else {
         return false;
     };
+    lease_store::pin(&ctx.pool_dir, &leased.slot);
     finish_get(&ctx, &leased.slot, &branch, path_only, no_tmux)
 }
 
@@ -1020,6 +971,7 @@ fn acquire_slot(
             at: now_epoch(),
             boot_id: current_boot_id().unwrap_or_default(),
             comparison_slot: None,
+            pinned: false,
         },
     );
     let comparison = if with_main {
