@@ -71,6 +71,15 @@ Config {
             },
         },
     },
+    forge_agent: ForgeAgentConfig {
+        enabled: None,
+        server: None,
+        max_concurrent: 1,
+        lease_secs: 900,
+        max_runtime_mins: 120,
+        harness: None,
+        mcp_config: None,
+    },
     nodes: [],
     coarse_sizes: CoarseSizes {
         s: 1800,

@@ -170,7 +170,7 @@ mod schedule;
 pub(crate) use schedule::schedule_text;
 #[path = "cron/drift.rs"]
 mod drift;
-pub(crate) use drift::{cron_drift, print_cron_disabled_notice};
+pub(crate) use drift::{cron_drift, cron_drift_against, print_cron_disabled_notice};
 use drift::{print_cron_health, push_cron_disabled_warning};
 #[path = "cron/reconcile.rs"]
 mod reconcile;
@@ -352,7 +352,20 @@ pub(crate) fn emit_cron_dashboard(cfg: &Config, ctx: Option<&Resolved>, as_json:
 
     // Drift: declared crons with no timer here — the silent "fresh box" case. Surface before the
     // empty/keepalive checks so a machine that registered nothing still gets the nudge.
-    let drift = cron_drift(cfg, ctx);
+    // The timers and tasks were listed above; drift reuses them rather than listing them again.
+    let registered_jobs: std::collections::HashSet<String> = registered
+        .iter()
+        .map(|timer| timer.job.clone())
+        .chain(wintasks.iter().map(|task| task.job.clone()))
+        .chain(if launchd_on {
+            launchd_registered.iter().cloned().collect::<Vec<_>>()
+        } else if launchd::have_launchctl() {
+            launchd::registered().into_iter().map(|agent| agent.job).collect()
+        } else {
+            Vec::new()
+        })
+        .collect();
+    let drift = cron_drift_against(cfg, ctx, &registered_jobs);
     print_cron_health(cfg, ctx, &drift);
 
     if names.is_empty() {

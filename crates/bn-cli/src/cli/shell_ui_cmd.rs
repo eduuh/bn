@@ -51,8 +51,14 @@ pub(crate) enum CmdShellUi {
     /// Themed git segment for the tmux status bar (replaces workflow/bin/bn-git-status.sh):
     /// `⎇ <branch> ↑ahead ↓behind ●dirty` from one `git status --porcelain=v2 --branch`.
     /// Resolves from the given path (tmux passes #{pane_current_path}) or cwd; silent outside
-    /// a git repo so the segment collapses.
-    TmuxGit { path: Option<String> },
+    /// a git repo so the segment collapses. Served from a short-lived cache; a stale entry is
+    /// printed at once and refreshed by a detached `--refresh` run.
+    TmuxGit {
+        path: Option<String>,
+        /// Internal: recompute the cached segment for `path` (the detached background refresh).
+        #[arg(long, hide = true)]
+        refresh: bool,
+    },
     /// Focus segment for the tmux status bar (replaces workflow/bin/bn-goal-status.sh): the
     /// linked PR's title (preferred, cached 5 min via gh) or the branch goal, truncated. Prints
     /// a dim "set a goal" nudge when there's a note but no goal/PR; silent outside a repo.

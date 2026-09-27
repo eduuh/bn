@@ -303,6 +303,7 @@ fn warm_reset_with(slot_s: &str, bare_s: &str, known_untracked: Option<Vec<Strin
 /// same process on a fresh descriptor would wait on itself.
 fn warm_reset_unlocked(slot_s: &str, bare_s: &str, known_untracked: Option<Vec<String>>) {
     let base = default_base(bare_s);
+    let before = wt::git_out(&["-C", slot_s, "rev-parse", "HEAD"]);
     // Detach first — no tree change, so nothing can refuse it — then `reset --hard` to the base.
     // This used to be one `switch --detach --discard-changes <base>`, which git refuses whenever
     // an *untracked* file stands where the new base puts a tracked one (a beachball change file a
@@ -319,6 +320,12 @@ fn warm_reset_unlocked(slot_s: &str, bare_s: &str, known_untracked: Option<Vec<S
         let mut args: Vec<&str> = vec!["-C", slot_s, "clean", "-df", "--"];
         args.extend(untracked.iter().map(String::as_str));
         let _ = git_quiet(&args);
+    }
+    // What the move deleted upstream, `clean -df` cannot finish: the package's ignored build output
+    // keeps its directory, and the probe above may predate the move. See `orphans`.
+    if let (Some(before), Some(after)) = (before, wt::git_out(&["-C", slot_s, "rev-parse", "HEAD"]))
+    {
+        orphans::sweep_deleted_packages(slot_s, &before, &after);
     }
     idle::settle(Path::new(slot_s));
 }
@@ -481,6 +488,7 @@ pub(crate) mod health;
 pub(crate) use health::*;
 
 mod idle;
+mod orphans;
 pub(crate) mod slot_lock;
 mod switch;
 #[cfg(test)]

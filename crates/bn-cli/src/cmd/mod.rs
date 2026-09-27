@@ -41,6 +41,7 @@ pub(crate) mod insights;
 pub(crate) mod issue;
 pub(crate) mod job_registry;
 pub(crate) mod jobs;
+pub(crate) mod forge_agent;
 pub(crate) mod keep_warm;
 pub(crate) mod wt_action_jobs;
 pub(crate) mod wt_action_run;

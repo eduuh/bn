@@ -20,7 +20,9 @@ path = "src/main.rs"
 
 [dependencies]
 bn-core.workspace = true
-rmcp.workspace = true
+# `client` + the reqwest Streamable-HTTP client back `bn-mcp --forge-call` (forge_call.rs), the
+# one place bn talks to a remote MCP server. Kept out of the `bn` binary on purpose.
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest", "reqwest"] }
 # Read the per-request HTTP scope (repo/branch headers/query) that the shared Streamable-HTTP
 # transport injects into each tool call's `RequestContext` as `http::request::Parts` (epic #637 P2).
 # Pinned to the same `http` 1.x rmcp/axum resolve to, so the injected `Parts` type matches.

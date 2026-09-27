@@ -421,7 +421,7 @@ pub fn cron_status() -> Vec<CronJobStatus> {
 
 /// One cron run's detail, including its captured output tail — the substrate for
 /// `bn cron show` and the failure listing.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CronRunDetail {
     pub job: String,
     pub repo: Option<String>,
@@ -453,6 +453,34 @@ pub fn last_run(job: &str) -> Option<CronRunDetail> {
         .filter(|e| e.kind == "cron_run" && field_str(e, "job").as_deref() == Some(job))
         .max_by_key(|e| e.ts)
         .map(|e| run_detail(&e))
+}
+
+/// The most recent run of every job, from one read of the log: for each job the same run
+/// [`last_run`] picks. For callers that look up many jobs, which would otherwise re-read and
+/// re-parse the whole (multi-megabyte) log once per job.
+pub fn last_runs() -> HashMap<String, CronRunDetail> {
+    latest_runs(read_all())
+}
+
+/// Fold events to the latest `cron_run` per job. On a timestamp tie the later line wins, as
+/// `max_by_key` does in [`last_run`].
+fn latest_runs(events: Vec<Event>) -> HashMap<String, CronRunDetail> {
+    let mut latest: HashMap<String, Event> = HashMap::new();
+    for e in events {
+        if e.kind != "cron_run" {
+            continue;
+        }
+        let Some(job) = field_str(&e, "job") else {
+            continue;
+        };
+        if latest.get(&job).is_none_or(|prev| e.ts >= prev.ts) {
+            latest.insert(job, e);
+        }
+    }
+    latest
+        .into_iter()
+        .map(|(job, e)| (job, run_detail(&e)))
+        .collect()
 }
 
 /// The event kind that tombstones a cron name — see [`retire_cron`].
@@ -515,4 +543,35 @@ fn field_str(ev: &Event, key: &str) -> Option<String> {
 
 fn field_i64(ev: &Event, key: &str) -> Option<i64> {
     ev.fields.get(key).and_then(Value::as_i64)
+}
+
+#[cfg(test)]
+mod latest_runs_tests {
+    use super::*;
+
+    fn ev(kind: &str, ts: i64, job: &str, exit: i64) -> Event {
+        let mut fields = Map::new();
+        fields.insert("job".into(), json!(job));
+        fields.insert("exit_code".into(), json!(exit));
+        Event {
+            kind: kind.into(),
+            ts,
+            fields,
+        }
+    }
+
+    #[test]
+    fn keeps_the_newest_run_per_job_and_the_later_line_on_a_tie() {
+        let runs = latest_runs(vec![
+            ev("cron_run", 10, "a", 1),
+            ev("cron_run", 30, "a", 2),
+            ev("cron_run", 20, "a", 3),
+            ev("cron_run", 5, "b", 0),
+            ev("cron_run", 5, "b", 7),
+            ev("cron_retired", 99, "a", 0),
+        ]);
+        assert_eq!(runs.len(), 2);
+        assert_eq!((runs["a"].ts, runs["a"].exit_code), (30, 2));
+        assert_eq!((runs["b"].ts, runs["b"].exit_code), (5, 7));
+    }
 }

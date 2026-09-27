@@ -208,6 +208,22 @@ hidden = ["client_secret"]
 | `tmux_mcp_autostart` | `true` | Start the dashboard from tmux hooks. |
 | `tmux_mcp_badge` | `true` | Show the dashboard health badge in tmux. |
 
+### `[forge_agent]`
+
+Works Forge activities assigned to a family's agent member. The machine opts in by having an HTTP MCP server in `~/.claude.json` whose `Authorization` header carries an agent `fam_` key (Forge Settings → Family → Create agent key). The `forge-agent` job runs every five minutes from `tick-5m`. Each tick heartbeats or reports the runs this machine holds, then claims at most one task whose project repo URL matches a repo cloned here and runs `bn dispatch --agent` on it.
+
+A claim is a lease, not a lock. While the agent runs, the tick renews it. If the machine dies, the lease expires and another machine can claim the task. When the agent runs `bn agent done`, bn kills its window and completes the activity, with the branch's PR in a comment. If the window disappears first, or the run passes `max_runtime_mins`, bn marks the activity Blocked instead. Use `bn forge-agent status`, `run-once` and `release <id>` to inspect or steer it by hand.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | automatic | `false` turns the loop off even when a Forge entry exists. |
+| `server` | first `fam_` entry | The `mcpServers` entry name to use. |
+| `max_concurrent` | `1` | Forge tasks this machine works at once. |
+| `lease_secs` | `900` | Lease asked for on claim and each heartbeat. |
+| `max_runtime_mins` | `120` | Kill a run older than this and report it blocked. |
+| `harness` | dispatch's choice | `claude` or `copilot` for the dispatched agent. |
+| `mcp_config` | `~/.claude.json` | JSON file with an `mcpServers` map to find the Forge entry in. Use a separate file so your own Claude sessions don't act as the agent. `BN_FORGE_AGENT_MCP_CONFIG` overrides it. |
+
 ### `[log]`
 
 | Key | Default | Meaning |

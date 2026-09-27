@@ -112,15 +112,52 @@ pub(crate) fn render_git_seg(seg: &GitSeg) -> Option<String> {
     Some(out)
 }
 
+/// A cached segment younger than this is printed as is. Older, it is still printed, and a detached
+/// `bn tmux-git --refresh` recomputes it for the next tick. Just under tmux's default 5s
+/// `status-interval`, so every tick starts one refresh and the bar is never more than a tick
+/// behind.
+const GIT_SEG_TTL_SECS: u64 = 4;
+/// A refresh lock older than this belongs to a refresh that died; it is taken over.
+const GIT_SEG_LOCK_STALE_SECS: u64 = 60;
+
 /// `bn tmux-git [path]` — emit the git segment for `path` (tmux passes `#{pane_current_path}`)
 /// or cwd. Silent outside a git repo so the segment collapses.
-pub(crate) fn emit_tmux_git(path: Option<String>) {
+///
+/// The segment is one `git status` including the untracked walk, which on a BigMono-sized monorepo
+/// takes 1.5–3s, and tmux reruns it every `status-interval` for every client. So the result is
+/// cached per path: a fresh entry prints with no git call, a stale one prints at once and a
+/// detached `--refresh` run recomputes it (one at a time per path, behind a lock). Only a cold
+/// miss pays the git call inline. tmux already shows the previous run's output while a `#()` job
+/// runs, so serving the last result is what the bar did before — minus the blocked process.
+pub(crate) fn emit_tmux_git(path: Option<String>, refresh: bool) {
     let dir = path
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
     if !dir.is_dir() {
         return;
     }
+    let cache = git_seg_cache_path(&dir);
+    if refresh {
+        refresh_git_seg(&dir, &cache);
+        return;
+    }
+    match std::fs::read_to_string(&cache) {
+        Ok(seg) => {
+            print!("{seg}");
+            if age_secs(&cache).is_none_or(|age| age >= GIT_SEG_TTL_SECS) {
+                spawn_git_seg_refresh(&dir);
+            }
+        }
+        Err(_) => {
+            let seg = compute_git_seg(&dir);
+            write_git_seg_cache(&cache, &seg);
+            print!("{seg}");
+        }
+    }
+}
+
+/// Run `git status` for `dir` and render the segment; empty outside a git repo.
+fn compute_git_seg(dir: &std::path::Path) -> String {
     // `--no-optional-locks`: this is a read-only display segment that reruns every
     // status-interval, and a plain `git status` takes a write lock to refresh the index —
     // racing the automated commits agents make in the same worktree. (The documented
@@ -129,16 +166,79 @@ pub(crate) fn emit_tmux_git(path: Option<String>) {
     // `git_capture` prepends stays valid. Cost: a stat-dirty-but-identical file keeps showing
     // in `dirty` until some other git command refreshes the index — a cosmetic overcount on a
     // counter that is only ever a count.
-    let Some(status) = crate::git::git_capture(
+    crate::git::git_capture(
         &["--no-optional-locks", "status", "--porcelain=v2", "--branch"],
-        Some(&dir),
+        Some(dir),
         false,
-    ) else {
+    )
+    .and_then(|status| render_git_seg(&parse_git_status(&status)))
+    .unwrap_or_default()
+}
+
+/// Cache file for `dir`'s segment: `$TMPDIR/bn-tmuxgit/<hash of the path>`.
+pub(crate) fn git_seg_cache_path(dir: &std::path::Path) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    dir.hash(&mut h);
+    std::env::temp_dir()
+        .join("bn-tmuxgit")
+        .join(format!("{:016x}", h.finish()))
+}
+
+/// Write the cache atomically (temp file + rename), so a concurrent reader never sees half a
+/// segment.
+fn write_git_seg_cache(cache: &std::path::Path, seg: &str) {
+    let Some(parent) = cache.parent() else {
         return;
     };
-    if let Some(out) = render_git_seg(&parse_git_status(&status)) {
-        print!("{out}");
+    let _ = std::fs::create_dir_all(parent);
+    let tmp = cache.with_extension(format!("tmp{}", std::process::id()));
+    if std::fs::write(&tmp, seg).is_ok() && std::fs::rename(&tmp, cache).is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
+}
+
+/// The detached refresh: take the per-path lock (or leave, when another refresh holds it),
+/// recompute, write, release.
+fn refresh_git_seg(dir: &std::path::Path, cache: &std::path::Path) {
+    let lock = cache.with_extension("lock");
+    if let Some(parent) = lock.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if age_secs(&lock).is_some_and(|age| age >= GIT_SEG_LOCK_STALE_SECS) {
+        let _ = std::fs::remove_file(&lock);
+    }
+    if std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock)
+        .is_err()
+    {
+        return;
+    }
+    let seg = compute_git_seg(dir);
+    write_git_seg_cache(cache, &seg);
+    let _ = std::fs::remove_file(&lock);
+}
+
+/// Re-exec `bn tmux-git --refresh <dir>` detached. Only when this process really is `bn`: under
+/// `cargo test` `current_exe()` is the test harness, which would read the arguments as test
+/// filters (see `winsched::spawn_background_refresh`).
+fn spawn_git_seg_refresh(dir: &std::path::Path) {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    if exe.file_stem().and_then(|s| s.to_str()) != Some("bn") {
+        return;
+    }
+    let _ = std::process::Command::new(exe)
+        .arg("tmux-git")
+        .arg("--refresh")
+        .arg(dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 // ---- bn tmux-goal : focus (PR title or goal) segment -------------------------------------------
@@ -973,5 +1073,39 @@ mod tmux_help_tests {
         let sections = noted_key_sections(" G   Copy mode · bottom of history\n", " (in copy mode)");
         assert_eq!(sections[0].0, "Copy mode (in copy mode)");
         assert_eq!(sections[0].1, vec![("G".to_string(), "bottom of history".to_string())]);
+    }
+}
+
+#[cfg(test)]
+mod git_seg_cache_tests {
+    use super::*;
+
+    #[test]
+    fn cache_path_is_stable_per_dir_and_distinct_across_dirs() {
+        let a = git_seg_cache_path(std::path::Path::new("/w/BigMono/_pool/2"));
+        let b = git_seg_cache_path(std::path::Path::new("/w/BigMono/_pool/3"));
+        assert_eq!(a, git_seg_cache_path(std::path::Path::new("/w/BigMono/_pool/2")));
+        assert_ne!(a, b);
+        assert!(a.parent().is_some_and(|p| p.ends_with("bn-tmuxgit")));
+    }
+
+    #[test]
+    fn refresh_writes_the_segment_and_releases_the_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache").join("seg");
+        // Not a git repo: the segment renders empty, but the cache is still written so the next
+        // tick costs no git call.
+        refresh_git_seg(tmp.path(), &cache);
+        assert_eq!(std::fs::read_to_string(&cache).unwrap(), "");
+        assert!(!cache.with_extension("lock").exists());
+    }
+
+    #[test]
+    fn refresh_backs_off_while_another_holds_the_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("seg");
+        std::fs::write(cache.with_extension("lock"), "").unwrap();
+        refresh_git_seg(tmp.path(), &cache);
+        assert!(!cache.exists(), "a held lock means another refresh is running");
     }
 }

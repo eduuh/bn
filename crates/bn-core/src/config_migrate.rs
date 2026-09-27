@@ -62,6 +62,7 @@ pub const KNOWN_SECTIONS: &[&str] = &[
     "capture",
     "dispatch",
     "dxi",
+    "forge_agent",
     "harness",
     "hosts",
     "jobs",

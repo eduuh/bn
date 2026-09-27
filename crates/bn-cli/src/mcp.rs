@@ -30,7 +30,7 @@ fn bn_mcp_name() -> &'static str {
 /// beside the *anchor* instead of beside the real binary and died with "could not exec bn-mcp",
 /// taking every MCP client down with it. Falling back to the uncanonicalized sibling keeps a
 /// non-symlinked install working even if canonicalize() fails.
-fn resolve_bn_mcp() -> PathBuf {
+pub(crate) fn resolve_bn_mcp() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         if let Ok(real) = std::fs::canonicalize(&exe) {
             let sibling = real.with_file_name(bn_mcp_name());

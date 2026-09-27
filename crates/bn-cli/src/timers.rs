@@ -22,13 +22,21 @@ pub fn registered() -> Vec<RegisteredTimer> {
     let Some(entries) = list_timers_json() else {
         return Vec::new();
     };
+    // One `systemctl show` for every timer and service, not two per timer: with ~20 timers the
+    // per-unit calls were 41 processes and most of `bn cron`'s wall time.
+    let units: Vec<&str> = entries
+        .iter()
+        .flat_map(|e| [e.unit.as_str(), e.activates.as_str()])
+        .collect();
+    let props = show_props(&units, &["ExecStart", "TimersCalendar"]);
+    let prop = |unit: &str, key: &str| props.get(unit).and_then(|p| p.get(key)).cloned();
     entries
         .into_iter()
         .filter_map(|e| {
-            let job = service_job(&e.activates)?;
+            let job = parse_exec_job(&prop(&e.activates, "ExecStart")?)?;
             Some(RegisteredTimer {
                 job,
-                schedule: timer_schedule(&e.unit),
+                schedule: prop(&e.unit, "TimersCalendar").and_then(|c| parse_oncalendar(&c)),
                 next_epoch: us_to_secs(e.next),
                 timer_unit: e.unit,
             })
@@ -72,18 +80,50 @@ fn list_timers_json() -> Option<Vec<TimerEntry>> {
     Some(entries)
 }
 
-/// The bn job a service runs, from its `ExecStart`. `None` if it isn't a `bn run` invocation.
-fn service_job(service: &str) -> Option<String> {
-    parse_exec_job(&show_value(service, "ExecStart")?)
+/// `systemctl --user show -p Id -p <prop>… <units>…` in one call, as `unit → prop → value`.
+/// Empty when systemd is unavailable.
+fn show_props(
+    units: &[&str],
+    props: &[&str],
+) -> std::collections::HashMap<String, std::collections::HashMap<String, String>> {
+    if units.is_empty() {
+        return Default::default();
+    }
+    let mut args = vec!["show", "-p", "Id"];
+    for p in props {
+        args.extend(["-p", p]);
+    }
+    args.extend_from_slice(units);
+    run(&args).map(|out| parse_show(&out)).unwrap_or_default()
 }
 
-/// The `OnCalendar` spec of a timer, from its `TimersCalendar` property.
-fn timer_schedule(timer: &str) -> Option<String> {
-    parse_oncalendar(&show_value(timer, "TimersCalendar")?)
-}
-
-fn show_value(unit: &str, prop: &str) -> Option<String> {
-    run(&["show", unit, "-p", prop, "--value"]).map(|s| s.trim().to_string())
+/// Parse multi-unit `systemctl show` output: one `Key=value` block per unit, blank-line
+/// separated, each naming its unit in `Id=`. A property repeated within a block (several
+/// `ExecStart=` lines) keeps its first value, which is what the per-unit `--value` read used.
+fn parse_show(
+    out: &str,
+) -> std::collections::HashMap<String, std::collections::HashMap<String, String>> {
+    let mut all = std::collections::HashMap::new();
+    for block in out.split("\n\n") {
+        let mut id = None;
+        let mut props = std::collections::HashMap::new();
+        for line in block.lines() {
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
+            if k == "Id" {
+                id = Some(v.trim().to_string());
+            } else {
+                props
+                    .entry(k.to_string())
+                    .or_insert_with(|| v.trim().to_string());
+            }
+        }
+        if let Some(id) = id {
+            all.insert(id, props);
+        }
+    }
+    all
 }
 
 fn run(args: &[&str]) -> Option<String> {
@@ -145,4 +185,27 @@ fn field<'a>(s: &'a str, key: &str) -> Option<&'a str> {
     let rest = &s[s.find(key)? + key.len()..];
     let end = rest.find(" ;").unwrap_or(rest.len());
     Some(rest[..end].trim())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_show_maps_each_block_to_its_unit() {
+        let out = "Id=bn-pool-warm.timer\n\
+            TimersCalendar={ OnCalendar=*-*-* 00/2:40:00 ; next_elapse=Sun 2026-09-27 08:40:00 PDT }\n\
+            \n\
+            Id=bn-pool-warm.service\n\
+            ExecStart={ path=/home/u/bn ; argv[]=/home/u/bn run pool-warm ; ignore_errors=no }\n\
+            ExecStart={ path=/bin/true ; argv[]=/bin/true ; ignore_errors=no }\n\
+            \n\
+            Id=gone.service\n";
+        let props = parse_show(out);
+        let exec = &props["bn-pool-warm.service"]["ExecStart"];
+        assert_eq!(parse_exec_job(exec).as_deref(), Some("pool-warm"));
+        let cal = &props["bn-pool-warm.timer"]["TimersCalendar"];
+        assert_eq!(parse_oncalendar(cal).as_deref(), Some("*-*-* 00/2:40:00"));
+        assert!(props["gone.service"].is_empty());
+    }
 }

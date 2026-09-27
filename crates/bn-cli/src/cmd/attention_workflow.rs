@@ -91,6 +91,62 @@ fn repair_task_text(status: &bn_core::events::CronJobStatus, output_tail: Option
     text
 }
 
+fn repair_task_key(status: &bn_core::events::CronJobStatus) -> String {
+    let mut key = format!("cron-repair:{}", status.job);
+    let repo = status.repo.as_deref().map(str::trim).filter(|r| !r.is_empty());
+    let branch = status
+        .branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|b| !b.is_empty());
+    if repo.is_some() || branch.is_some() {
+        key.push(':');
+        key.push_str(&repo.unwrap_or_default().to_ascii_lowercase());
+        if let Some(branch) = branch {
+            key.push(':');
+            key.push_str(&branch.to_ascii_lowercase());
+        }
+    }
+    key
+}
+
+fn repair_task_parts(key: &str) -> Option<(&str, Option<&str>, Option<&str>)> {
+    let key = key.strip_prefix("cron-repair:")?;
+    let mut parts = key.split(':');
+    let job = parts.next()?;
+    let repo = parts.next();
+    let branch = parts.next();
+    Some((job, repo, branch))
+}
+
+fn repair_task_matches_key(key: &str, status: &bn_core::events::CronJobStatus) -> bool {
+    let Some((job, repo, branch)) = repair_task_parts(key) else {
+        return false;
+    };
+    if job != status.job {
+        return false;
+    }
+    if let Some(status_repo) = status.repo.as_deref() {
+        if let Some(task_repo) = repo {
+            if !task_repo.eq_ignore_ascii_case(status_repo) {
+                return false;
+            }
+        }
+    }
+    if let Some(status_branch) = status.branch.as_deref() {
+        if let Some(task_branch) = branch {
+            if !task_branch.eq_ignore_ascii_case(status_branch) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn recovered_repair_task_job(key: &str) -> Option<&str> {
+    repair_task_parts(key).map(|(job, _, _)| job)
+}
+
 /// The open `cron-repair:<job>` task for a failing cron, minting it when none is open. Returns the
 /// task id and whether this call minted it, which is what limits a repair agent to one per task.
 fn ensure_repair_task(
@@ -102,13 +158,24 @@ fn ensure_repair_task(
     let store = crate::cmd::task::task_store(cfg);
     let _lock = store.lock();
     let mut file = store.load().ok()?;
-    let key = format!("cron-repair:{}", status.job);
-    if let Some(existing) = file
+    let mut open: Vec<String> = file
         .tasks()
-        .find(|task| task.is_open(today) && task.meta("key") == Some(key.as_str()))
-        .and_then(|task| task.id())
-    {
-        return Some((existing.to_string(), false));
+        .filter(|task| task.is_open(today))
+        .filter(|task| {
+            task.meta("key")
+                .is_some_and(|key| repair_task_matches_key(key, status))
+        })
+        .filter_map(|task| task.id().map(str::to_string))
+        .collect();
+    if let Some(existing) = open.first().cloned() {
+        let had_duplicates = open.len() > 1;
+        for stale in open.drain(1..) {
+            let _ = file.cancel(&stale, today, Some("cron-duplicate"));
+        }
+        if had_duplicates && store.save(&file).is_err() {
+            return None;
+        }
+        return Some((existing, false));
     }
 
     let id = file.next_id();
@@ -121,7 +188,7 @@ fn ensure_repair_task(
         today,
     );
     task.set_meta_raw("repo", "bn");
-    task.set_meta_raw("key", &key);
+    task.set_meta_raw("key", &repair_task_key(status));
     task.set_meta_raw("cron", &status.job);
     file.push_task(task);
     store.save(&file).ok()?;
@@ -157,11 +224,7 @@ fn close_recovered_repairs(
     let stale: Vec<String> = file
         .tasks()
         .filter(|task| task.is_open(today))
-        .filter(|task| {
-            task.meta("key")
-                .and_then(|key| key.strip_prefix("cron-repair:"))
-                .is_some_and(|job| !raising.contains(job))
-        })
+        .filter(|task| task.meta("key").and_then(recovered_repair_task_job).is_some_and(|job| !raising.contains(job)))
         .filter_map(|task| task.id().map(str::to_string))
         .collect();
     for id in &stale {
@@ -187,15 +250,16 @@ fn start_repair_agent(
         .launch()
 }
 
-/// `cron-health` — the deterministic failing-cron watchdog (no LLM). Raises an urgent attention
-/// item for every cron in a chronic-failure state (see [`bn_core::crons::alerting_crons`]) with the
-/// job name as the dedupe key, and — via `replace=true` — auto-acks the alert for any cron that has
-/// since recovered. It also mints one keyed repair task per failing cron and starts one autonomous
-/// repair agent when that task is minted, so the captured error turns into work instead of only a
-/// dashboard row — except for a cron nothing can resolve, where the repair prompt's `bn run <job>`
-/// has nothing to run. The agent starts once per task, not once per pass: the watchdog runs every
-/// fifteen minutes, and an open repair task already says the work is in hand.
-pub(crate) fn job_cron_health(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
+fn should_dispatch_repair_agents() -> bool {
+    use std::io::IsTerminal;
+    !std::io::stdin().is_terminal()
+}
+
+fn job_cron_health_with_dispatch(
+    cfg: &Config,
+    ctx: Option<&Resolved>,
+    dispatch_repair_agents: bool,
+) -> i32 {
     use bn_core::clock::Clock;
     let runs = bn_core::events::cron_status();
     let live = bn_core::crons::LiveJobs::discover(cfg, ctx);
@@ -238,11 +302,10 @@ pub(crate) fn job_cron_health(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
         match ensure_repair_task(cfg, status, Some(output_tail), &today) {
             Some((task_id, minted)) => {
                 repair_tasks += 1;
-                // An unresolvable job is still worth a person's attention row, but dispatching an
-                // autonomous agent at it only burns a worktree: the prompt tells that agent to
-                // reproduce with `bn run <job>`, which cannot resolve, so it can only ever report
-                // the same nothing. Retirement (the horizon) clears the row; this stops the spend.
-                if !minted || !live.contains(&status.job) {
+                // A health check run by hand should not launch fresh repair agents unless the
+                // caller is headless. The alert row still refreshes, but the repair work stays
+                // queued for the cron scheduler rather than spawning from a terminal.
+                if !dispatch_repair_agents || !minted || !live.contains(&status.job) {
                     continue;
                 }
                 match start_repair_agent(status, &task_id, Some(output_tail)) {
@@ -275,6 +338,18 @@ pub(crate) fn job_cron_health(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
             1
         }
     }
+}
+
+/// `cron-health` — the deterministic failing-cron watchdog (no LLM). Raises an urgent attention
+/// item for every cron in a chronic-failure state (see [`bn_core::crons::alerting_crons`]) with the
+/// job name as the dedupe key, and — via `replace=true` — auto-acks the alert for any cron that has
+/// since recovered. It also mints one keyed repair task per failing cron and starts one autonomous
+/// repair agent when that task is minted, so the captured error turns into work instead of only a
+/// dashboard row — except for a cron nothing can resolve, where the repair prompt's `bn run <job>`
+/// has nothing to run. The agent starts once per task, not once per pass: the watchdog runs every
+/// fifteen minutes, and an open repair task already says the work is in hand.
+pub(crate) fn job_cron_health(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
+    job_cron_health_with_dispatch(cfg, ctx, should_dispatch_repair_agents())
 }
 
 
@@ -421,6 +496,25 @@ mod tests {
         }
     }
 
+    fn failing_scoped(
+        job: &str,
+        repo: Option<&str>,
+        branch: Option<&str>,
+    ) -> bn_core::events::CronJobStatus {
+        bn_core::events::CronJobStatus {
+            job: job.to_string(),
+            scope: "global".to_string(),
+            repo: repo.map(str::to_string),
+            branch: branch.map(str::to_string),
+            last_run: bn_core::util::now_epoch_secs(),
+            ok: false,
+            last_exit: 127,
+            runs: 7,
+            failures: 7,
+            last_duration_ms: 4,
+        }
+    }
+
     /// A cron that stops raising closes its repair task once, and a later pass finds nothing left.
     #[test]
     fn a_recovered_crons_repair_task_is_closed_once() {
@@ -460,6 +554,76 @@ mod tests {
         });
     }
 
+    /// Repo names can arrive in different case from different hosts, but the repair key must stay
+    /// canonical so the same failing cron does not mint duplicate tasks.
+    #[test]
+    fn a_case_only_repo_variant_reuses_the_same_repair_task() {
+        let root = tempfile::tempdir().expect("create test notes directory");
+        test_support::with_testhost_state_and_notes_dir(root.path(), || {
+            let cfg = test_support::config(root.path());
+            let today = "2026-08-09";
+            let upper = failing_scoped("pool-warm", Some("BigMono"), Some("main"));
+            let lower = failing_scoped("pool-warm", Some("bigmono"), Some("main"));
+
+            let (first, minted) =
+                ensure_repair_task(&cfg, &upper, None, today).expect("mint the repair task");
+            assert!(minted, "the first pass mints the task");
+
+            let (again, minted) =
+                ensure_repair_task(&cfg, &lower, None, today).expect("find the repair task");
+            assert_eq!(first, again);
+            assert!(!minted, "case-only repo variants must reuse the same task");
+
+            let tasks = bn_core::todo::load(&cfg.tasks_file()).expect("tasks");
+            assert_eq!(
+                tasks
+                    .tasks()
+                    .filter(|task| task.meta("key") == Some(&repair_task_key(&upper)))
+                    .count(),
+                1
+            );
+        });
+    }
+
+    /// A hand-run health check should refresh the alert rows without firing repair agents.
+    #[test]
+    fn a_manual_health_check_can_skip_dispatch() {
+        let _lock = bn_core::test_support::env_lock();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", temp.path().join("state"));
+        let _jobs = bn_core::test_support::EnvGuard::set("BN_JOBS_DIR", temp.path().join("jobs"));
+        let _agents = bn_core::test_support::EnvGuard::set("BN_AGENTS_DIR", temp.path().join("agents"));
+        let cfg = Config {
+            personal_root: temp.path().join("personal"),
+            work_root: temp.path().join("work"),
+            hostname: "test-host".to_string(),
+            ..Default::default()
+        };
+        let now = bn_core::util::now_epoch_secs();
+        for i in 0..3 {
+            bn_core::events::log_cron_run(
+                "broken-cron",
+                "global",
+                None,
+                None,
+                now - (3 - i) * 60,
+                10,
+                7,
+                "panic: missing config\nstack tail",
+            )
+            .expect("cron event");
+        }
+
+        assert_eq!(
+            job_cron_health_with_dispatch(&cfg, None, false),
+            0
+        );
+        assert!(
+            crate::cmd::dispatch::invocation::take_launched().is_empty(),
+            "manual health checks should not launch repair agents"
+        );
+    }
+
     #[test]
     fn repair_task_text_prefers_a_failure_line_over_earlier_progress() {
         let tail = "main-sync: BigMono: main worktree → origin/main\n\
@@ -488,5 +652,4 @@ mod tests {
 
         assert!(text.contains("error:main-sync- BigMono: main worktree → origin/main"));
     }
-
 }

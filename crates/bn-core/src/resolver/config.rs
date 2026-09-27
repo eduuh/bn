@@ -253,6 +253,8 @@ pub struct Config {
     /// `[pipeline.stages.<stage>]`: global per-stage agent model/effort overrides. Missing entries
     /// use the built-in stage-specific defaults.
     pub pipeline: PipelineConfig,
+    /// `[forge_agent]`: the Forge task loop's limits. Defaults when absent.
+    pub forge_agent: crate::forge_agent::ForgeAgentConfig,
     /// `[nodes.<node_id>]` (#729): the declarative multi-node worker registry — each node's
     /// [`crate::backlog::ExecutionTarget`], capability labels, and RAM budget, resolved to
     /// [`crate::hosts::NodeRecord`]s (sorted by `node_id` for deterministic first-fit placement).
@@ -378,6 +380,7 @@ impl Default for Config {
             hosts: HashMap::new(),
             repos: HashMap::new(),
             pipeline: PipelineConfig::default(),
+            forge_agent: crate::forge_agent::ForgeAgentConfig::default(),
             nodes: Vec::new(),
             coarse_sizes: crate::calib::CoarseSizes::default(),
             web: WebConfig::default(),
@@ -502,6 +505,7 @@ impl Config {
         // every repo falls back to its bn `test`/`build` job (the bn repo's unchanged behavior).
         let repos = file.and_then(|f| f.repos()).unwrap_or_default();
         let pipeline = file.and_then(|f| f.pipeline()).unwrap_or_default();
+        let forge_agent = file.and_then(|f| f.forge_agent()).unwrap_or_default();
 
         let coarse_sizes = file.map(|f| f.coarse_sizes()).unwrap_or_default();
 
@@ -662,6 +666,7 @@ impl Config {
             hosts,
             repos,
             pipeline,
+            forge_agent,
             nodes,
             coarse_sizes,
             web,

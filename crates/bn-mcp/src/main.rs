@@ -15,9 +15,16 @@ use bn_mcp::Scope;
 use rmcp::ServiceExt;
 
 mod discovery;
+mod forge_call;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // `--forge-call`: a one-shot MCP *client* call to the Forge app for `bn forge-agent`
+    // (see forge_call.rs). Checked first because it serves nothing.
+    if std::env::args().any(|a| a == "--forge-call") {
+        return forge_call::run().await;
+    }
+
     // `--orchestrate` selects the opt-in CROSS-WORKTREE server (the "friend"): it composes the `bn`
     // CLI to manage every worktree from anywhere. Without the flag we serve the default scoped
     // server, locked to the launch worktree — the safety boundary an agent-in-a-repo relies on.

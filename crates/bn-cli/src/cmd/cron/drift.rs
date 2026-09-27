@@ -38,11 +38,21 @@ pub(crate) fn cron_drift(cfg: &Config, ctx: Option<&Resolved>) -> Vec<String> {
             Vec::new()
         })
         .collect();
+    cron_drift_against(cfg, ctx, &registered)
+}
+
+/// [`cron_drift`] against an already-read set of registered job names, for a caller that has
+/// just listed the timers/tasks itself and should not pay for listing them again.
+pub(crate) fn cron_drift_against(
+    cfg: &Config,
+    ctx: Option<&Resolved>,
+    registered: &std::collections::HashSet<String>,
+) -> Vec<String> {
     let declared: Vec<String> = desired_crons(cfg, ctx)
         .into_iter()
         .map(|cron| cron.entry.job)
         .collect();
-    unregistered_jobs(&declared, &registered)
+    unregistered_jobs(&declared, registered)
 }
 
 /// Why this machine will register nothing, while the manifest nevertheless declares jobs for it.

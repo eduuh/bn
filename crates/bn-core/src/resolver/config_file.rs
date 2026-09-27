@@ -77,6 +77,8 @@ pub(super) struct ConfigFile {
     pool: Option<PoolSection>,
     dispatch: Option<DispatchSection>,
     pipeline: Option<super::PipelineConfig>,
+    /// `[forge_agent]`: the Forge task loop. See [`crate::forge_agent`].
+    forge_agent: Option<crate::forge_agent::ForgeAgentConfig>,
     orchestrate: Option<OrchestrateSection>,
     /// `[machine]`: what this machine should do less of. Absent, it is allowed everything.
     machine: Option<MachineProfile>,
@@ -265,6 +267,10 @@ impl ConfigFile {
 
     pub(super) fn pipeline(&self) -> Option<super::PipelineConfig> {
         self.pipeline.clone()
+    }
+
+    pub(super) fn forge_agent(&self) -> Option<crate::forge_agent::ForgeAgentConfig> {
+        self.forge_agent.clone()
     }
 
     pub(super) fn review_diff_gate(&self) -> Option<bool> {

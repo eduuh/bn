@@ -43,6 +43,7 @@ pub(crate) fn native_job(job: &str) -> Option<NativeJob> {
         "tmux-reconcile" => Some(crate::cmd::tmux_reconcile::job_tmux_reconcile),
         "tmux-keylog" => Some(crate::cmd::tmux_keys::job_tmux_keylog),
         "keep-warm" => Some(crate::cmd::keep_warm::job_keep_warm),
+        "forge-agent" => Some(crate::cmd::forge_agent::job_forge_agent),
         "pool-warm" => Some(crate::wt_pool::job_pool_warm),
         "pool-build" => Some(crate::wt_pool::warm::job_pool_build),
         // The worktree-picker verbs (`bn_core::wt_actions`). Each is a runnable name for work that
@@ -78,6 +79,7 @@ pub(crate) const TICK_5M: &[&str] = &[
     "attention-sync",
     "tmux-reconcile",
     "tmux-keylog",
+    "forge-agent",
 ];
 
 /// The `*:0/10` cadence cluster, in run order.

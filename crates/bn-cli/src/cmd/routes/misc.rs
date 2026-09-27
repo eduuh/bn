@@ -25,6 +25,9 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
         } => serve::run_cmd(cfg, action, port, lan, daemon, json),
         CmdMisc::Cost { by, window, live } => emit_cost(cfg, by.as_deref(), window, live, json),
         CmdMisc::Worker { action } => std::process::exit(emit_worker(cfg, action, json)),
+        CmdMisc::ForgeAgent { action } => std::process::exit(
+            crate::cmd::forge_agent::emit_forge_agent(cfg, action, json),
+        ),
         CmdMisc::Tools { action } => std::process::exit(emit_tools(action, json)),
         CmdMisc::Pipeline {
             repo,

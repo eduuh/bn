@@ -561,11 +561,12 @@ pub fn agent_schedule_views(
     runs: &[CronJobStatus],
     now: i64,
 ) -> Vec<AgentScheduleView> {
+    let last_runs = crate::events::last_runs();
     catalog
         .iter()
         .filter(|agent| agent.is_cron() && !agent.is_specialist())
         .map(|agent| {
-            let last = crate::events::last_run(&agent.name);
+            let last = last_runs.get(&agent.name).cloned();
             let status = runs.iter().find(|run| run.job == agent.name);
             let due = agent.due(last.as_ref(), now);
             let retry_at = agent

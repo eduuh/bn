@@ -253,7 +253,7 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool, slot: Option<u3
             report.record(n, head_sha(&slot_s), Outcome::Skipped(why));
             continue;
         }
-        if exists && is_live_slot(&slot) && wt::dirty_count(&slot_s) > 0 {
+        if exists && is_live_slot(&slot) && !super::orphans::clear_leftovers(n, &slot_s) {
             eprintln!("{YELLOW}[{n}] dirty — skipping{NC}");
             skipped_dirty.push(n);
             report.record(n, head_sha(&slot_s), Outcome::NotBuilt("dirty".into()));

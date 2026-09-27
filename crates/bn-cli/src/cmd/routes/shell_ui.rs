@@ -10,7 +10,7 @@ pub(super) fn route(cfg: &Config, action: CmdShellUi, json: bool) {
         },
         CmdShellUi::TmuxPrune { force } => emit_tmux_prune(cfg, force, json),
         CmdShellUi::TmuxSnapshotFilter { path } => emit_snapshot_filter(cfg, &path),
-        CmdShellUi::TmuxGit { path } => emit_tmux_git(path),
+        CmdShellUi::TmuxGit { path, refresh } => emit_tmux_git(path, refresh),
         CmdShellUi::TmuxGoal { path } => emit_tmux_goal(cfg, path),
         CmdShellUi::TmuxAttnCount => emit_tmux_attn_count(),
         CmdShellUi::TmuxDoneBadge {

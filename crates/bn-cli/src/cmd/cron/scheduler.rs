@@ -28,11 +28,13 @@ pub(crate) fn due_agents(
     ctx: Option<&Resolved>,
     now: i64,
 ) -> Result<Vec<bn_core::agents::AgentDef>, bn_core::agents::AgentCatalogError> {
-    Ok(bn_core::agents::discover(cfg, ctx)?
+    let catalog = bn_core::agents::discover(cfg, ctx)?;
+    let last_runs = bn_core::events::last_runs();
+    Ok(catalog
         .into_iter()
         .filter(|agent| agent.is_cron() && !agent.is_specialist())
         .filter(|agent| agent.repo_available_here(cfg))
-        .filter(|agent| agent.due(bn_core::events::last_run(&agent.name).as_ref(), now))
+        .filter(|agent| agent.due(last_runs.get(&agent.name), now))
         .collect())
 }
 
