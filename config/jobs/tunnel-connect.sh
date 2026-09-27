@@ -67,9 +67,15 @@ if [ -z "$KEY" ] && [ -n "$GH_USER" ] && gh_keys=$(bn_tunnel_github_keys "$GH_US
   fi
 fi
 if [ -z "$KEY" ]; then
-  # No GitHub account to go by (offline, or gh signed out): the older default.
-  KEY="$HOME/.ssh/id_ed25519"
-  [ -f "$KEY" ] || ssh-keygen -q -t ed25519 -N '' -f "$KEY"
+  # GitHub could not be asked (offline, a slow keys fetch, gh signed out). Keep the key this
+  # machine already uses for tunnels rather than switching: falling back to id_ed25519 here
+  # re-published a different key on every flaky pass, a notes commit each time (2026-09-27).
+  if [ -f "$HOME/.ssh/bn_tunnel_ed25519" ]; then
+    KEY="$HOME/.ssh/bn_tunnel_ed25519"
+  else
+    KEY="$HOME/.ssh/id_ed25519"
+    [ -f "$KEY" ] || ssh-keygen -q -t ed25519 -N '' -f "$KEY"
+  fi
 fi
 say "using key $KEY"
 

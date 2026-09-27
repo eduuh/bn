@@ -55,15 +55,21 @@ fn clone_into(url: &str, name: Option<&str>, bare_dir: &Path, worktree_dir: &Pat
     let _ = std::fs::create_dir_all(worktree_dir);
 
     let filter = env_nonempty("WT_CLONE_FILTER");
+    let depth = env_nonempty("WT_CLONE_DEPTH");
     let refspec = bare_fetch_refspec(env_nonempty("WT_FETCH_REFSPEC").as_deref());
-    match &filter {
-        Some(f) => cprintln!("{BLUE}Cloning {url} as bare repo (partial: {f})...{NC}"),
-        None => cprintln!("{BLUE}Cloning {url} as bare repo...{NC}"),
+    match (&filter, &depth) {
+        (None, None) => cprintln!("{BLUE}Cloning {url} as bare repo...{NC}"),
+        _ => cprintln!(
+            "{BLUE}Cloning {url} as bare repo ({}{}{})...{NC}",
+            filter.as_deref().map(|f| format!("partial: {f}")).unwrap_or_default(),
+            if filter.is_some() && depth.is_some() { ", " } else { "" },
+            depth.as_deref().map(|d| format!("depth {d}")).unwrap_or_default(),
+        ),
     }
     let dest = bare.to_string_lossy().to_string();
-    let args = bare_clone_args(url, &dest, filter.as_deref());
+    let args = bare_clone_args(url, &dest, filter.as_deref(), depth.as_deref());
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    if !run_git(&args) {
+    if !clone_with_retries(&args, &bare) {
         return false;
     }
     let bare_s = dest;
@@ -122,13 +128,44 @@ fn env_nonempty(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.is_empty())
 }
 
+/// Run a bare clone the way a huge monorepo on a flaky link survives it: `--progress` keeps the
+/// server talking while it counts objects, and the big-fetch stall guard
+/// ([`bn_core::gitnet::stall_only`]: under 1 KiB/s for 120s) replaces the 45s / 1 B/s default that
+/// killed a BigMono clone after 12 GB (2026-09-27, "Operation too slow"). A stalled pack cannot be
+/// resumed, so a failed attempt's half-written repo is removed and the clone retried, 3 times in
+/// all. `bare` did not exist before the clone (the caller checked), so removing it discards only
+/// this clone's own partial output.
+fn clone_with_retries(args: &[&str], bare: &Path) -> bool {
+    const ATTEMPTS: u32 = 3;
+    let mut full: Vec<&str> = vec![args[0], "--progress"];
+    full.extend_from_slice(&args[1..]);
+    for attempt in 1..=ATTEMPTS {
+        let mut cmd = crate::git::git_command(&full);
+        bn_core::gitnet::stall_only(&mut cmd);
+        if cmd.status().is_ok_and(|s| s.success()) {
+            return true;
+        }
+        let _ = std::fs::remove_dir_all(bare);
+        if attempt < ATTEMPTS {
+            ceprintln!("{RED}clone attempt {attempt}/{ATTEMPTS} failed — retrying{NC}");
+        }
+    }
+    ceprintln!("{RED}Error: clone failed after {ATTEMPTS} attempts{NC}");
+    false
+}
+
 /// `git clone --bare` arguments. `filter` (from `WT_CLONE_FILTER`, e.g. `blob:none`) makes a
 /// partial clone: every commit and tree, file contents fetched on first use. Machine setup sets it
 /// per repo (dotfiles `PARTIAL_CLONE_FILTER`) for monorepos whose full history is too big to clone.
-fn bare_clone_args(url: &str, dest: &str, filter: Option<&str>) -> Vec<String> {
+/// `depth` (from `WT_CLONE_DEPTH`) makes it shallow as well, which also limits it to the default
+/// branch: a build machine that only ever builds main needs neither the history nor the branches.
+fn bare_clone_args(url: &str, dest: &str, filter: Option<&str>, depth: Option<&str>) -> Vec<String> {
     let mut args = vec!["clone".to_string(), "--bare".to_string()];
     if let Some(f) = filter {
         args.push(format!("--filter={f}"));
+    }
+    if let Some(d) = depth {
+        args.push(format!("--depth={d}"));
     }
     args.push(url.to_string());
     args.push(dest.to_string());
@@ -499,7 +536,7 @@ mod partial_clone_tests {
     #[test]
     fn clone_args_without_filter_are_a_plain_bare_clone() {
         assert_eq!(
-            bare_clone_args("https://x/r", "/b/r.git", None),
+            bare_clone_args("https://x/r", "/b/r.git", None, None),
             ["clone", "--bare", "https://x/r", "/b/r.git"]
         );
     }
@@ -507,11 +544,26 @@ mod partial_clone_tests {
     #[test]
     fn clone_args_with_filter_make_a_partial_clone() {
         assert_eq!(
-            bare_clone_args("https://x/r", "/b/r.git", Some("blob:none")),
+            bare_clone_args("https://x/r", "/b/r.git", Some("blob:none"), None),
             [
                 "clone",
                 "--bare",
                 "--filter=blob:none",
+                "https://x/r",
+                "/b/r.git"
+            ]
+        );
+    }
+
+    #[test]
+    fn clone_args_with_depth_make_a_shallow_clone() {
+        assert_eq!(
+            bare_clone_args("https://x/r", "/b/r.git", Some("blob:none"), Some("1")),
+            [
+                "clone",
+                "--bare",
+                "--filter=blob:none",
+                "--depth=1",
                 "https://x/r",
                 "/b/r.git"
             ]

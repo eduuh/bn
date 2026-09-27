@@ -3,7 +3,7 @@
 #
 # Reads the status file the tunnel-auto watchdog writes every minute (~/.cache/bn/tunnels.status,
 # "<name> ok|down" per line) and never checks anything itself, so the bar stays instant. Names are
-# shortened to their last dash-separated part; `host` is this machine's own hosting. A file older
+# shown by their last dash-separated part (cloud-pc-AB12C → AB12C; the prefix says nothing); `host` is
 # than 10 minutes means the watchdog stopped, shown as `⇄ ?`. A machine with no tunnels prints
 # nothing.
 f="$HOME/.cache/bn/tunnels.status"
