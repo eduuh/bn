@@ -91,6 +91,20 @@ pub struct Handoff {
     /// packet written before the layer existed valid.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub directives: Vec<String>,
+    /// The author-supplied questions alone (layer 4 minus the note's asks). `open_questions` folds
+    /// both together for reading; this keeps the author's half separate so the next write can
+    /// carry it forward without also carrying asks the note has since closed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_questions: Vec<String>,
+    /// Whether `priority_queue` was set by an author, rather than defaulted from the open todos.
+    /// Only an explicit queue is carried forward; a defaulted one is recomposed from the note.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub queue_explicit: bool,
+    /// When some author layer was carried forward from an earlier packet rather than written this
+    /// time, the date it was first written. Lets a reader see that a narrative or deferred list is
+    /// older than the `written` stamp suggests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carried: Option<String>,
 }
 
 /// The author-supplied layers — what an agent writing its own handoff fills in. Everything else is
@@ -105,6 +119,53 @@ pub struct HandoffInput {
     pub questions: Vec<String>,
     /// An explicit priority queue (layer 5). When empty, defaults to the note's open todos.
     pub priority_queue: Vec<String>,
+    /// Write exactly these layers and drop whatever the previous packet's author wrote. Without
+    /// it, [`write`] carries forward any author layer this input leaves empty (see [`merge`]).
+    pub replace: bool,
+}
+
+/// Fill the author layers `input` leaves empty from the `prior` packet, so a write that only has
+/// something to say about one layer doesn't erase the others. `bn agent relaunch --hard` is the
+/// case that needs it: it writes a narrative and nothing else, and used to wipe the previous
+/// session's deferred decisions, questions and explicit queue at exactly the moment the next
+/// session needs them.
+///
+/// A non-empty field in `input` replaces the prior one; `input.replace` (or no prior packet)
+/// skips the merge. Returns the effective input and, when anything was carried, the date the
+/// carried layers were first written. Pure.
+pub fn merge(prior: Option<&Handoff>, input: &HandoffInput) -> (HandoffInput, Option<String>) {
+    let mut out = input.clone();
+    let Some(prior) = prior.filter(|_| !input.replace) else {
+        return (out, None);
+    };
+    let mut carried = false;
+    let blank = input
+        .narrative
+        .as_deref()
+        .is_none_or(|n| n.trim().is_empty());
+    if blank && !prior.narrative.is_empty() {
+        out.narrative = Some(prior.narrative.clone());
+        carried = true;
+    }
+    if out.deferred.is_empty() && !prior.decisions.deferred.is_empty() {
+        out.deferred = prior.decisions.deferred.clone();
+        carried = true;
+    }
+    if out.questions.is_empty() && !prior.extra_questions.is_empty() {
+        out.questions = prior.extra_questions.clone();
+        carried = true;
+    }
+    if out.priority_queue.is_empty() && prior.queue_explicit {
+        out.priority_queue = prior.priority_queue.clone();
+        carried = true;
+    }
+    let since = carried.then(|| {
+        prior
+            .carried
+            .clone()
+            .unwrap_or_else(|| prior.written.clone())
+    });
+    (out, since)
 }
 
 /// How many trailing `## Progress` bullets the snapshot keeps — enough to orient, not the whole log.
@@ -130,7 +191,15 @@ pub fn compose(note: &Note, written: &str, input: &HandoffInput) -> Handoff {
     };
 
     let mut open_questions: Vec<String> = note.front.ask.iter().map(|a| a.text.clone()).collect();
-    open_questions.extend(input.questions.iter().cloned());
+    // An author question the note now asks itself is not "extra" any more; listing it twice is
+    // how an editor pre-filled with `open_questions` would otherwise double every ask per save.
+    let extra_questions: Vec<String> = input
+        .questions
+        .iter()
+        .filter(|q| !open_questions.contains(q))
+        .cloned()
+        .collect();
+    open_questions.extend(extra_questions.iter().cloned());
 
     // Priority queue: an explicit list wins; otherwise the open todos are the default ordering.
     let priority_queue = if input.priority_queue.is_empty() {
@@ -162,6 +231,9 @@ pub fn compose(note: &Note, written: &str, input: &HandoffInput) -> Handoff {
             .iter()
             .map(|d| d.text.clone())
             .collect(),
+        extra_questions,
+        queue_explicit: !input.priority_queue.is_empty(),
+        carried: None,
     }
 }
 
@@ -189,7 +261,8 @@ fn progress_tail(body: &str) -> Vec<String> {
     all[start..].to_vec()
 }
 
-/// Compose the handoff from the note at `ctx`, write `handoff.json` + `handoff.md` beside it, and
+/// Compose the handoff from the note at `ctx`, carrying forward the previous packet's author layers
+/// where `input` leaves them empty ([`merge`]), write `handoff.json` + `handoff.md` beside it, and
 /// return the composed packet. Errors if the note can't be read or the files can't be written.
 pub fn write(
     cfg: &Config,
@@ -199,7 +272,10 @@ pub fn write(
 ) -> Result<Handoff, std::io::Error> {
     let note = store::read(&cfg.note_file(ctx))
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e.to_string()))?;
-    let handoff = compose(&note, written, input);
+    let prior = if input.replace { None } else { read(cfg, ctx) };
+    let (effective, carried) = merge(prior.as_ref(), input);
+    let mut handoff = compose(&note, written, &effective);
+    handoff.carried = carried;
 
     let dir = cfg.note_dir(ctx);
     std::fs::create_dir_all(&dir)?;
@@ -245,6 +321,11 @@ pub fn is_empty(h: &Handoff) -> bool {
 /// The markdown mirror written to `handoff.md` — the five layers, read-aloud friendly.
 pub fn render_markdown(h: &Handoff) -> String {
     let mut out = format!("# Handoff — {} / {}\n_{}_\n", h.repo, h.branch, h.written);
+    if let Some(since) = &h.carried {
+        out.push_str(&format!(
+            "_Some author notes below are carried from {since}; re-write any that no longer hold._\n"
+        ));
+    }
 
     // Directives lead. They are constraints on everything below, and a session that reads them
     // after the task list has already started planning against the wrong rules.
@@ -317,6 +398,9 @@ pub fn render_orientation(h: &Handoff) -> String {
         return format!("Handoff — {} / {}: (none recorded)\n", h.repo, h.branch);
     }
     let mut out = format!("Handoff — {} / {} ({})\n", h.repo, h.branch, h.written);
+    if let Some(since) = &h.carried {
+        out.push_str(&format!("  (author notes carried from {since})\n"));
+    }
     if let Some(g) = &h.state.goal {
         out.push_str(&format!("  Goal: {g}\n"));
     }
@@ -352,4 +436,130 @@ fn first_line(s: &str) -> &str {
         .map(str::trim)
         .find(|l| !l.is_empty())
         .unwrap_or("")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Item, Note};
+    use crate::resolver::{RepoBranch, Resolved};
+
+    fn note() -> Note {
+        Note::new(
+            RepoBranch {
+                repo: "repo",
+                branch: "feat",
+            },
+            "2026-09-01",
+            "host",
+        )
+    }
+
+    fn item(id: &str, text: &str) -> Item {
+        serde_json::from_value(serde_json::json!({"id": id, "text": text, "created": "2026-09-01"}))
+            .expect("item")
+    }
+
+    fn authored() -> HandoffInput {
+        HandoffInput {
+            narrative: Some("why it looks this way".into()),
+            deferred: vec!["pick a storage engine".into()],
+            questions: vec!["is the cache shared?".into()],
+            priority_queue: vec!["land A0".into()],
+            replace: false,
+        }
+    }
+
+    fn packet(input: &HandoffInput, written: &str) -> Handoff {
+        compose(&note(), written, input)
+    }
+
+    #[test]
+    fn a_narrative_only_write_keeps_the_other_author_layers() {
+        // The `relaunch --hard` shape: a narrative and nothing else.
+        let prior = packet(&authored(), "2026-09-20");
+        let relaunch = HandoffInput {
+            narrative: Some("relaunched: context wall".into()),
+            ..Default::default()
+        };
+        let (eff, carried) = merge(Some(&prior), &relaunch);
+        assert_eq!(eff.narrative.as_deref(), Some("relaunched: context wall"));
+        assert_eq!(eff.deferred, vec!["pick a storage engine"]);
+        assert_eq!(eff.questions, vec!["is the cache shared?"]);
+        assert_eq!(eff.priority_queue, vec!["land A0"]);
+        assert_eq!(carried.as_deref(), Some("2026-09-20"));
+    }
+
+    #[test]
+    fn replace_drops_the_prior_author_layers() {
+        let prior = packet(&authored(), "2026-09-20");
+        let input = HandoffInput {
+            replace: true,
+            ..Default::default()
+        };
+        let (eff, carried) = merge(Some(&prior), &input);
+        assert!(eff.narrative.is_none() && eff.deferred.is_empty() && eff.questions.is_empty());
+        assert!(eff.priority_queue.is_empty());
+        assert_eq!(carried, None);
+    }
+
+    #[test]
+    fn a_defaulted_queue_is_recomposed_not_carried() {
+        let prior = packet(&HandoffInput::default(), "2026-09-20");
+        assert!(!prior.queue_explicit);
+        let (eff, carried) = merge(Some(&prior), &HandoffInput::default());
+        assert!(eff.priority_queue.is_empty());
+        assert_eq!(carried, None, "nothing authored, nothing carried");
+    }
+
+    #[test]
+    fn the_carried_date_is_the_oldest_write_not_the_last() {
+        let mut prior = packet(&authored(), "2026-09-20");
+        prior.carried = Some("2026-09-10".into());
+        let (_, carried) = merge(Some(&prior), &HandoffInput::default());
+        assert_eq!(carried.as_deref(), Some("2026-09-10"));
+    }
+
+    #[test]
+    fn an_author_question_the_note_now_asks_is_not_listed_twice() {
+        let mut n = note();
+        n.front.ask.push(item("a1", "is the cache shared?"));
+        let h = compose(&n, "2026-09-20", &authored());
+        assert_eq!(h.open_questions, vec!["is the cache shared?"]);
+        assert!(h.extra_questions.is_empty());
+    }
+
+    #[test]
+    fn a_packet_written_before_the_new_fields_still_loads() {
+        let old = r#"{"repo":"r","branch":"b","written":"2026-01-01","state":{},
+            "decisions":{"deferred":["x"]},"open_questions":["q"]}"#;
+        let h: Handoff = serde_json::from_str(old).expect("old packet parses");
+        assert!(h.extra_questions.is_empty() && !h.queue_explicit && h.carried.is_none());
+        // Its deferred list still carries forward.
+        let (eff, _) = merge(Some(&h), &HandoffInput::default());
+        assert_eq!(eff.deferred, vec!["x"]);
+    }
+
+    #[test]
+    fn write_carries_forward_through_the_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cfg = crate::test_support::config(temp.path());
+        let ctx = Resolved {
+            repo: "repo".into(),
+            branch: "feat".into(),
+        };
+        std::fs::create_dir_all(cfg.note_dir(&ctx)).expect("note dir");
+        store::save(&note(), &cfg.note_file(&ctx)).expect("save note");
+
+        write(&cfg, &ctx, "2026-09-20", &authored()).expect("first write");
+        let relaunch = HandoffInput {
+            narrative: Some("relaunched".into()),
+            ..Default::default()
+        };
+        let h = write(&cfg, &ctx, "2026-09-24", &relaunch).expect("second write");
+        assert_eq!(h.decisions.deferred, vec!["pick a storage engine"]);
+        assert_eq!(h.carried.as_deref(), Some("2026-09-20"));
+        assert!(render_orientation(&h).contains("carried from 2026-09-20"));
+        assert_eq!(read(&cfg, &ctx).expect("read back"), h);
+    }
 }

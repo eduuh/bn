@@ -12,6 +12,7 @@ mod assets;
 mod audit;
 mod auth;
 mod bn_runner;
+mod coord_api;
 mod cost;
 mod mcp;
 mod repos;

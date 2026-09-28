@@ -154,6 +154,7 @@ pub(super) fn pending_agents(
                 // Stamped by `stamp_control` once the whole fleet is assembled.
                 control: ControlChannel::None,
                 task: None,
+                context: None,
             })
         })
         .collect()
@@ -188,6 +189,7 @@ mod tests {
             cache_write_tokens: 0,
             control: ControlChannel::None,
             task: None,
+            context: None,
         }
     }
 

@@ -292,6 +292,55 @@ pub fn read_in(scope: &Scope, query: &str) -> Option<(Reference, String)> {
     Some((r, body))
 }
 
+/// Split `name#section` into its parts. No `#` means the whole document.
+pub fn split_ref(query: &str) -> (&str, Option<&str>) {
+    match query.split_once('#') {
+        Some((name, section)) if !section.trim().is_empty() => (name.trim(), Some(section.trim())),
+        Some((name, _)) => (name.trim(), None),
+        None => (query.trim(), None),
+    }
+}
+
+/// A body's `## ` sections in order: the heading text and the section's text (heading line
+/// included, up to the next `## ` or `# `). Headings inside fenced code are not sections.
+pub fn sections(body: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut current: Option<(String, String)> = None;
+    for (line, code) in crate::markdown::scan(body) {
+        let heading = (!code).then(|| line.strip_prefix("## ")).flatten();
+        let top = !code && line.starts_with("# ");
+        if heading.is_some() || top {
+            out.extend(current.take());
+        }
+        if let Some(h) = heading {
+            current = Some((h.trim().to_string(), String::new()));
+        }
+        if let Some((_, text)) = current.as_mut() {
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
+    out.extend(current);
+    out
+}
+
+/// The section of `body` whose heading matches `section`, ignoring case and treating `-`, `_`
+/// and spaces alike (`key-files` finds `## Key Files`).
+pub fn section_of(body: &str, section: &str) -> Option<String> {
+    let norm = |s: &str| {
+        s.trim()
+            .trim_start_matches('#')
+            .trim()
+            .to_lowercase()
+            .replace(['-', '_'], " ")
+    };
+    let want = norm(section);
+    sections(body)
+        .into_iter()
+        .find(|(h, _)| norm(h) == want)
+        .map(|(_, text)| text)
+}
+
 /// Ensure a reference file exists for `name` in `scope`, scaffolding it from [`template`] if
 /// missing, and return its path — the create-if-missing target for `bn ref edit` / `bn ref add`.
 /// `existed` reports whether the file was already there (so `add` can flag a no-op).
@@ -425,6 +474,24 @@ pub fn read(query: &str) -> Option<(Reference, String)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sections_are_addressable_and_fences_are_not_headings() {
+        let body = "---\ntype: reference\n---\n# build\n\nintro\n\n## Facts\n- a\n\n```md\n## Not a heading\n```\n\n## Key Files\n- b\n";
+        let secs = super::sections(body);
+        let names: Vec<&str> = secs.iter().map(|(h, _)| h.as_str()).collect();
+        assert_eq!(names, ["Facts", "Key Files"]);
+        let facts = super::section_of(body, "facts").unwrap();
+        assert!(facts.starts_with("## Facts") && facts.contains("## Not a heading"));
+        assert!(!facts.contains("Key Files"));
+        assert!(super::section_of(body, "key-files")
+            .unwrap()
+            .contains("- b"));
+        assert_eq!(super::section_of(body, "gotchas"), None);
+        assert_eq!(super::split_ref("build#facts"), ("build", Some("facts")));
+        assert_eq!(super::split_ref("build#"), ("build", None));
+        assert_eq!(super::split_ref("build"), ("build", None));
+    }
+
     use super::*;
 
     /// Point the global store at a scratch dir. `$BN_REFERENCES_DIR` is the documented override

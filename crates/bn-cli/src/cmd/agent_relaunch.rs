@@ -284,6 +284,9 @@ pub(crate) fn emit(
 
     // --- seed (fresh only) -----------------------------------------------------------------
     let seed_file = plan.fresh().then(|| seed_for_fresh(cfg, &plan)).flatten();
+    if plan.fresh() {
+        log_fresh_start(cfg, &plan, seed_file.is_some());
+    }
 
     // --- lease + respawn -------------------------------------------------------------------
     let dashed = plan.branch.replace('/', "-");
@@ -393,6 +396,29 @@ fn seed_for_fresh(cfg: &Config, plan: &RelaunchPlan) -> Option<String> {
 }
 
 
+/// Record a hard relaunch in the branch's compaction log as the restore it is: a fresh session,
+/// seeded from the handoff (`fresh-primed`) or not (`fresh`). Best-effort.
+fn log_fresh_start(cfg: &Config, plan: &RelaunchPlan, seeded: bool) {
+    use bn_core::compact::{Entry, Outcome, Phase};
+    let ctx = bn_core::resolver::Resolved {
+        repo: plan.repo.clone(),
+        branch: plan.branch.clone(),
+    };
+    let entry = Entry {
+        ts: bn_core::util::now_epoch_secs(),
+        phase: Phase::Restore,
+        session: None,
+        trigger: Some("relaunch".into()),
+        ctx_pct: None,
+        recap: false,
+        outcome: Some(if seeded {
+            Outcome::FreshPrimed
+        } else {
+            Outcome::Fresh
+        }),
+    };
+    bn_core::util::best_effort(bn_core::compact::append(cfg, &ctx, &entry), "relaunch: log");
+}
 
 /// `bn agent relaunch-repo <repo> [--hard] [--harness <h>]` — restart every agent in a repo.
 ///

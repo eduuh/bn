@@ -139,8 +139,3 @@ pub(crate) fn web_uninstall() {
 // {SuccessfulExit=false}` plist; on Linux it's an enabled `--user` unit with `Restart=on-failure`.
 // `bn orchestrate` prefers launchd, then systemd here, then a detached child — so a Linux run
 // survives the launching shell, a crash (Restart=on-failure), AND a reboot (WantedBy=default.target).
-
-// --- `bn routine watch` managed daemon (#801 amendment) ----------------------
-// The Linux twin of the launchd routine watcher daemon: an enabled `--user` unit with
-// `Restart=on-failure` (crash relaunches, clean stop stays down), coexisting safely with the
-// `routine-tick` timer fallback (both share the same transaction lock and dedupe state).

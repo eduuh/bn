@@ -224,10 +224,9 @@ pub(crate) fn web_uninstall() {
 }
 
 // --- `bn routine watch` managed daemon (#801 amendment) ----------------------
-// The watcher is a long-running daemon (RunAtLoad + KeepAlive), same shape as the orchestrate/web
-// daemons above — and excluded from the cron reconcile (see `registered`) so `bn cron register`
-// never reaps it. It coexists with the `routine-tick` timer fallback: both share the same
-// transaction lock and at-least-once dedupe state, so running both is safe, just redundant.
+// The watcher was a long-running daemon (RunAtLoad + KeepAlive), same shape as the orchestrate/web
+// daemons above. The routine layer itself went in #1297; the label is still excluded from the cron
+// reconcile (see `registered`) so `bn cron register` leaves a machine's leftover plist alone.
 
 /// The launchd label for the routine watcher daemon.
 pub(crate) const ROUTINE_LABEL: &str = "com.bn.routine";

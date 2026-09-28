@@ -52,6 +52,7 @@ pub(super) struct ConfigFile {
     work: Option<WorkSection>,
     jobs: Option<JobsSection>,
     review: Option<ReviewSection>,
+    proof: Option<ProofSection>,
     harness: Option<HarnessSection>,
     attention: Option<AttentionSection>,
     calib: Option<CalibSection>,
@@ -279,6 +280,10 @@ impl ConfigFile {
 
     pub(super) fn review_diff_gate_reviews(&self) -> Option<usize> {
         self.review.as_ref().and_then(|s| s.diff_gate_reviews)
+    }
+
+    pub(super) fn proof(&self) -> ProofSection {
+        self.proof.clone().unwrap_or_default()
     }
 
     fn orchestrate(&self) -> Option<&OrchestrateSection> {

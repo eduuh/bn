@@ -178,6 +178,10 @@ pub struct LiveAgent {
     /// whose worktree no task governs. `#[serde(default)]` keeps older fleet JSON valid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<AgentTask>,
+    /// How full the session's context window is (Claude only; see
+    /// [`crate::agent::context_usage`]). `None` for Copilot and for sessions not parsed live.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<crate::agent::context_usage::ContextUsage>,
 }
 
 /// The task an agent is working on, as much of it as a fleet card needs: enough to recognize the
@@ -684,6 +688,7 @@ fn parse_live_claude(
         cache_write_tokens: cache_write,
         control: ControlChannel::None,
         task: None,
+        context: Some(crate::agent::context_usage::from_live_lines(&lines)),
     })
 }
 
@@ -784,6 +789,7 @@ fn parse_live_copilot(
         cache_write_tokens: 0,
         control: ControlChannel::None,
         task: None,
+        context: None,
     })
 }
 
@@ -825,6 +831,7 @@ mod tests {
             cache_write_tokens: 0,
             control: ControlChannel::None,
             task: None,
+            context: None,
         }
     }
 

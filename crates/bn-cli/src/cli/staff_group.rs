@@ -142,3 +142,41 @@ pub(crate) enum CmdStaff {
         action: McpCmd,
     },
 }
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum HandoffCmd {
+    /// Capture the resume packet (markdown + JSON) beside the note from its current state, plus
+    /// any author-supplied forward-looking layers: bn handoff write.
+    Write {
+        /// The narrative (layer 2): a few sentences on why it looks this way. Repeatable words
+        /// are joined.
+        #[arg(long, value_name = "TEXT", num_args = 1..)]
+        narrative: Vec<String>,
+        /// A decision deferred to the next session (layer 3). Repeat the flag for several.
+        #[arg(long = "defer", value_name = "TEXT")]
+        defer: Vec<String>,
+        /// An extra open question beyond the note's asks (layer 4). Repeat for several.
+        #[arg(long = "question", value_name = "TEXT")]
+        question: Vec<String>,
+        /// An explicit priority-queue entry (layer 5), in order. Repeat for the queue; when
+        /// omitted the queue defaults to the note's open todos.
+        #[arg(long = "next", value_name = "TEXT")]
+        next: Vec<String>,
+        /// Drop the previous packet's author layers instead of carrying forward the ones this
+        /// write leaves empty (narrative, deferred decisions, questions, an explicit queue).
+        #[arg(long)]
+        replace: bool,
+        #[arg(long)]
+        repo: Option<String>,
+        #[arg(long)]
+        branch: Option<String>,
+    },
+    /// Print the session-start orientation from the stored packet (default — same as bare
+    /// `bn handoff`). Falls back to composing one from the note when none was written.
+    Read {
+        #[arg(long)]
+        repo: Option<String>,
+        #[arg(long)]
+        branch: Option<String>,
+    },
+}

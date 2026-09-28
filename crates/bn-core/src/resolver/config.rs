@@ -299,6 +299,14 @@ pub struct Config {
     /// `[review].diff_gate_reviews`: how many independent approving diff-only reviews the gate
     /// requires. Default [`crate::review_gate::DEFAULT_REQUIRED_REVIEWS`] (2).
     pub review_diff_gate_reviews: usize,
+    /// `[proof].freshness`: `exact` (default) | `ancestor` | `any` — how current accepted
+    /// evidence must be for a done-when criterion to count as met.
+    pub proof_freshness: String,
+    /// `[proof].done_requires`: `off` | `warn` (default) | `refuse` — what `bn done w<N>` does
+    /// when the criterion has no accepted evidence.
+    pub proof_done_requires: String,
+    /// `[proof].capture`: keep `bn verify` / `bn gate` runs as proof. Default true.
+    pub proof_capture: bool,
     /// `[harness].default`: the preferred harness every launcher uses when no `--agent`/`--harness`
     /// is requested — `claude` | `copilot` (aliases normalized at use). `None` ⇒ `copilot`, the
     /// guaranteed fallback. A configured harness that's org-disabled on this machine
@@ -394,6 +402,9 @@ impl Default for Config {
             ),
             review_diff_gate: false,
             review_diff_gate_reviews: crate::review_gate::DEFAULT_REQUIRED_REVIEWS,
+            proof_freshness: "exact".into(),
+            proof_done_requires: "warn".into(),
+            proof_capture: true,
             default_harness: None,
             orchestrate_stuck_idle_secs: crate::agent::DEFAULT_STUCK_LANE_IDLE_SECS,
             orchestrate_keep_warm: false,
@@ -590,6 +601,7 @@ impl Config {
             .and_then(|f| f.review_diff_gate_reviews())
             .filter(|n| *n > 0)
             .unwrap_or(crate::review_gate::DEFAULT_REQUIRED_REVIEWS);
+        let proof = file.map(|f| f.proof()).unwrap_or_default();
 
         // `[staff].home` (#270): trimmed, empty → None so a blank value never gates the staff off.
         let staff_home = file
@@ -678,6 +690,9 @@ impl Config {
             dispatch_plan_review_quorum,
             review_diff_gate,
             review_diff_gate_reviews,
+            proof_freshness: proof.freshness.unwrap_or_else(|| "exact".into()),
+            proof_done_requires: proof.done_requires.unwrap_or_else(|| "warn".into()),
+            proof_capture: proof.capture.unwrap_or(true),
             default_harness,
             orchestrate_stuck_idle_secs,
             orchestrate_keep_warm,

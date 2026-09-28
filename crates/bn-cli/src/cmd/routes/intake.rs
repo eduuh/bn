@@ -158,9 +158,11 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
                 .unwrap_or_else(|| fail("bn promote: not in a git repo — pass --repo/--branch"));
             emit_promote(cfg, &ctx, json);
         }
-        CmdIntake::Verify { job, no_ui } => emit_verify(cfg, job, json, no_ui),
-        CmdIntake::Gate { job, no_ui } => {
-            if !wt::cmd_gate(cfg, job, json, no_ui) {
+        CmdIntake::Verify(VerifyArgs { job, no_ui, for_ }) => {
+            emit_verify(cfg, job, json, no_ui, for_)
+        }
+        CmdIntake::Gate(VerifyArgs { job, no_ui, for_ }) => {
+            if !wt::cmd_gate(cfg, job, json, no_ui, &for_) {
                 std::process::exit(1);
             }
         }

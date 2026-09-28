@@ -77,8 +77,22 @@ pub(super) fn route(cfg: &Config, action: CmdReview, json: bool) {
         }
         CmdReview::Done { query, pct } => {
             let ctx = resolve_or_exit(cfg);
-            let res = commands::done(cfg, &ctx, &query.join(" "), &today(), pct);
+            let query = query.join(" ");
+            // A done-when criterion wants accepted evidence first (`[proof].done_requires`).
+            let check = if pct.is_some_and(|p| p < 100) {
+                bn_core::proof::DoneCheck::Clear
+            } else {
+                bn_core::proof::check_done(cfg, &ctx, &query)
+            };
+            if let bn_core::proof::DoneCheck::Refuse(why) = &check {
+                fail_json(json, "done", "unproven", &format!("not ticked: {why}"));
+            }
+            let res = commands::done(cfg, &ctx, &query, &today(), pct);
+            let ticked = res.is_ok();
             emit_done(res, json);
+            if let (true, bn_core::proof::DoneCheck::Warn(why)) = (ticked, &check) {
+                eprintln!("⚠ ticked, but unproven: {why}");
+            }
             sync_tmux(cfg, &ctx);
         }
         CmdReview::Ingest { branch, base } => {

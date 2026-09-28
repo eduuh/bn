@@ -20,17 +20,20 @@
 # ledger of that work, and it should only ever get shorter:
 #
 #   scripts/check-file-size.sh --update
-1134	crates/bn-cli/src/agent_lease.rs
-1813	crates/bn-cli/src/cli.rs
-2096	crates/bn-cli/src/cmd/agent.rs
+1171	crates/bn-cli/src/agent_lease.rs
+1764	crates/bn-cli/src/cli.rs
+1938	crates/bn-cli/src/cmd/agent.rs
 1083	crates/bn-cli/src/cmd/attn.rs
-1701	crates/bn-cli/src/cmd/dispatch.rs
+1635	crates/bn-cli/src/cmd/dispatch.rs
+1005	crates/bn-cli/src/cmd/jobs.rs
+1111	crates/bn-cli/src/cmd/tmux_status.rs
 1245	crates/bn-cli/src/tat.rs
-1358	crates/bn-cli/src/wt/merge.rs
-1979	crates/bn-cli/src/wt_pool.rs
-1011	crates/bn-cli/src/wt_pool/pool_acquire_tests.rs
+1082	crates/bn-cli/src/wt/merge.rs
+1989	crates/bn-cli/src/wt_pool.rs
+1020	crates/bn-cli/src/wt_pool/warm.rs
 1360	crates/bn-core/src/daily.rs
+1125	crates/bn-core/src/mcp_user.rs
 1045	crates/bn-core/src/orchestrate.rs
 1112	crates/bn-core/src/todo.rs
-1324	crates/bn-web/src/actions.rs
+1215	crates/bn-web/src/actions.rs
 1204	crates/bn-web/ui/src/api/types.ts

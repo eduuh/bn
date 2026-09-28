@@ -1,4 +1,5 @@
-//! The standing context every freshly-dispatched agent is seeded with.
+//! The standing context every freshly-dispatched agent is seeded with: the `ship` (or `scout`)
+//! context profile.
 //!
 //! Three kinds, all "things that outlive any one session":
 //!
@@ -13,75 +14,86 @@
 //! (as [`crate::cmd::agent`]'s handoff half does for `--hard` relaunch) makes "I already told it
 //! that" true across restarts.
 //!
+//! The pieces are atoms of [`bn_core::context`], so a repo can reshape what its agents start with
+//! in `.bn/context.toml` (a `ship` or `scout` profile there replaces the built-in one). Each seed
+//! is logged as served — which is not the same as read.
+//!
 //! Kept out of `dispatch.rs`, which is at its file-size ratchet and cannot grow.
 
 use bn_core::resolver::{Config, Resolved};
 
-/// The seed suffix carrying both kinds of standing context. Empty when there is nothing to say, so
-/// a caller can append it unconditionally.
-///
-/// A scout may graduate into code once its investigation narrows the change, so it gets the same
-/// coding-standards references as a ship. Directives apply either way: "don't touch the vendored
-/// directory" constrains an investigation exactly as much as a ship.
-pub(crate) fn section(
+/// The seed suffix: the `ship` profile (or `scout`) composed for this branch, with `refs` as the
+/// dispatch's `--ref` selection. Empty when there is nothing to say, so a caller can append it
+/// unconditionally. A profile that can't compose (a broken manifest) falls back to the built-in,
+/// because a dispatch must not fail over its seed.
+pub(crate) fn section(cfg: &Config, repo: &str, branch: &str, scout: bool, refs: &[String]) -> String {
+    let ctx = Resolved {
+        repo: repo.to_string(),
+        branch: branch.to_string(),
+    };
+    let profile = if scout { "scout" } else { "ship" };
+    let composed = crate::cmd::context::compose(cfg, &ctx, profile, refs, None, false)
+        .or_else(|_| builtin(cfg, &ctx, profile, refs));
+    match composed {
+        Ok(c) => {
+            let text = c.text();
+            if !text.is_empty() {
+                let atoms: Vec<String> = c.pieces.iter().map(|p| p.atom.clone()).collect();
+                bn_core::util::best_effort(
+                    bn_core::context::served::record(cfg, &ctx, profile, &atoms, &text, "dispatch"),
+                    "seed: log served context",
+                );
+            }
+            text
+        }
+        Err(e) => {
+            eprintln!("bn dispatch: seed context not composed ({e})");
+            String::new()
+        }
+    }
+}
+
+fn builtin(
     cfg: &Config,
-    repo: &str,
-    branch: &str,
-    _scout: bool,
+    ctx: &Resolved,
+    profile: &str,
     refs: &[String],
-) -> String {
-    let mut out = String::new();
-    if let Some(s) = super::dispatch::references_section(refs) {
-        out.push_str(&s);
-    }
-    // Repo notes go to scouts too: a scout changes no code, so the coding standards don't apply,
-    // but "what we already know about this repo" is exactly what an investigation should start from.
-    if let Some(s) = repo_references_section(repo) {
-        out.push_str(&s);
-    }
-    if let Some(s) = directives_section(cfg, repo, branch) {
-        out.push_str(&s);
-    }
-    out
+) -> Result<bn_core::context::Composed, String> {
+    let inputs = bn_core::context::AtomInputs {
+        cfg,
+        ctx,
+        root: None,
+        global_refs: refs,
+    };
+    bn_core::context::compose(&Default::default(), profile, &inputs, None, false)
 }
 
-/// The repo's reference notes, **by name only**, with the command to read one. `None` when the
-/// repo has no notes yet.
-///
-/// Names only is the whole point: an index of a few dozen notes costs a couple of hundred tokens,
-/// so every agent can afford to know what exists, and pays for a body only when it decides it
-/// needs that body. Inlining the notes themselves would blow the seed on the first repo that
-/// accumulates real knowledge.
-pub(crate) fn repo_references_section(repo: &str) -> Option<String> {
-    let names = bn_core::references::names_in(&bn_core::references::Scope::repo(repo));
-    if names.is_empty() {
-        return None;
-    }
-    Some(format!(
-        "\n\nThis repo's reference notes — what past sessions discovered about it (how it builds, \
-         where the seams are, which failures mislead). Read the one that bears on your task with \
-         `bn ref <name> --repo`, and when you learn something durable, record it with \
-         `bn ref append <name> --repo --section gotchas \"<fact> (src: …, <date>)\"`: {}.",
-        names.join(", ")
-    ))
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// The branch note's standing directives, rendered for a seed. `None` when there are none.
-pub(crate) fn directives_section(cfg: &Config, repo: &str, branch: &str) -> Option<String> {
-    let ctx = Resolved { repo: repo.to_string(), branch: branch.to_string() };
-    let note = bn_core::store::read(&cfg.note_file(&ctx)).ok()?;
-    let items: Vec<String> = note.front.directives.iter().map(|d| d.text.clone()).collect();
-    if items.is_empty() {
-        return None;
+    /// The seed an agent gets is exactly what it got before profiles existed: standards pointer,
+    /// repo note index, then directives, in that order and wording.
+    #[test]
+    fn the_builtin_ship_profile_is_the_old_seed_byte_for_byte() {
+        let temp = tempfile::tempdir().unwrap();
+        let cfg = bn_core::test_support::config(temp.path());
+        let ctx = Resolved {
+            repo: "zz-no-such-repo".into(),
+            branch: "feat".into(),
+        };
+        std::fs::create_dir_all(cfg.note_dir(&ctx)).unwrap();
+        bn_core::commands::add(&cfg, &ctx, "directive", "never touch vendor/", None, "2026-09-25")
+            .unwrap();
+        let refs = vec!["-".to_string()];
+        let text = builtin(&cfg, &ctx, "ship", &refs).unwrap().text();
+        assert_eq!(
+            text,
+            "\n\nSTANDING INSTRUCTIONS for this branch — follow these for everything you do here. \
+             They were recorded with `bn agent instruct` and live in this branch's note under \
+             `## Directives`, so they apply to every session on this branch, not just this \
+             one:\n- never touch vendor/\n"
+        );
+        assert_eq!(builtin(&cfg, &ctx, "scout", &refs).unwrap().text(), text);
     }
-    let list = items
-        .iter()
-        .map(|d| format!("\n- {d}"))
-        .collect::<Vec<_>>()
-        .join("");
-    Some(format!(
-        "\n\nSTANDING INSTRUCTIONS for this branch — follow these for everything you do here. They \
-         were recorded with `bn agent instruct` and live in this branch's note under \
-         `## Directives`, so they apply to every session on this branch, not just this one:{list}\n"
-    ))
 }

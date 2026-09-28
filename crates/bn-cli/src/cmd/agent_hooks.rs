@@ -59,11 +59,35 @@ fn copilot_tmux_agent_hook_config() -> serde_json::Value {
 }
 
 /// The hooks a Claude launch carries in `--settings`: the tmux activity badge when it runs inside
-/// tmux, and the turn-end guard when it is a controller. `None` when there are none, so a plain
-/// launch outside tmux passes no settings at all. Claude merges these with the user's own settings
+/// tmux, the turn-end guard when it is a controller, and — unless `BN_COMPACT_HOOKS=0` — the
+/// compaction pair: `compact prep` before a compaction and `compact audit` when the session comes
+/// back from one. `None` when there are none. Claude merges these with the user's own settings
 /// files, so hooks someone already wired by hand keep running.
 fn claude_launch_settings(controller: bool, tmux: bool) -> Option<String> {
+    let compact = compact_hooks_on(std::env::var("BN_COMPACT_HOOKS").ok().as_deref());
+    claude_launch_settings_with(controller, tmux, compact)
+}
+
+/// The compaction hooks are on by default; only `BN_COMPACT_HOOKS=0` turns them off.
+fn compact_hooks_on(env: Option<&str>) -> bool {
+    env != Some("0")
+}
+
+fn claude_launch_settings_with(controller: bool, tmux: bool, compact: bool) -> Option<String> {
     let mut hooks = serde_json::Map::new();
+    if compact {
+        // A hook that stalls blocks the compaction, so both are short and neither touches the
+        // network.
+        hooks.insert(
+            "PreCompact".to_string(),
+            serde_json::json!([{ "hooks": [hook_entry("compact prep --hook", 30)] }]),
+        );
+        hooks.insert(
+            "SessionStart".to_string(),
+            serde_json::json!([{ "matcher": "compact",
+                "hooks": [hook_entry("compact audit --hook", 15)] }]),
+        );
+    }
     if tmux {
         hooks.insert(
             "UserPromptSubmit".to_string(),
@@ -84,7 +108,15 @@ fn claude_launch_settings(controller: bool, tmux: bool) -> Option<String> {
     if !stop.is_empty() {
         hooks.insert("Stop".to_string(), serde_json::json!([{ "hooks": stop }]));
     }
-    (!hooks.is_empty()).then(|| serde_json::json!({ "hooks": hooks }).to_string())
+    if hooks.is_empty() {
+        return None;
+    }
+    let mut settings = serde_json::json!({ "hooks": hooks });
+    if compact {
+        // Tells the repo's own SessionStart memory hook that the audit is handled here.
+        settings["env"] = serde_json::json!({ "BN_COMPACT_HOOKS": "1" });
+    }
+    Some(settings.to_string())
 }
 
 pub(super) fn with_claude_launch_hooks(
@@ -172,18 +204,48 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_launch_outside_tmux_passes_no_settings() {
-        assert_eq!(claude_launch_settings(false, false), None);
-        assert_eq!(
-            with_claude_launch_hooks(vec!["--x".to_string()], false, false),
-            vec!["--x".to_string()]
-        );
+    fn a_plain_launch_outside_tmux_without_compact_hooks_passes_no_settings() {
+        assert_eq!(claude_launch_settings_with(false, false, false), None);
+    }
+
+    /// Every launch brackets a compaction: prep before it, the audit when the session comes back,
+    /// and the env marker that keeps the repo's own SessionStart hook from printing it twice.
+    #[test]
+    fn a_launch_carries_the_compaction_pair() {
+        let settings = claude_launch_settings_with(false, false, true).expect("compact hooks");
+        assert_eq!(events(&settings), ["PreCompact", "SessionStart"]);
+        let parsed: serde_json::Value = serde_json::from_str(&settings).expect("JSON");
+        assert_eq!(parsed["hooks"]["SessionStart"][0]["matcher"], "compact");
+        assert!(settings.contains("compact prep --hook"), "{settings}");
+        assert!(settings.contains("compact audit --hook"), "{settings}");
+        assert_eq!(parsed["env"]["BN_COMPACT_HOOKS"], "1");
     }
 
     /// Inside tmux the window badge follows the agent's turns without anyone wiring hooks by hand.
+    /// Unset (the default for every `bn agent launch`) means on; only an explicit `0` opts out.
+    #[test]
+    fn compact_hooks_default_on_and_only_zero_opts_out() {
+        assert!(compact_hooks_on(None));
+        assert!(compact_hooks_on(Some("1")));
+        assert!(compact_hooks_on(Some("")));
+        assert!(!compact_hooks_on(Some("0")));
+    }
+
+    /// The default launch settings (what `with_claude_launch_hooks` passes as `--settings`) carry
+    /// the compaction pair plus the env marker the repo's memory hook reads.
+    #[test]
+    fn a_default_launch_carries_the_compaction_pair_and_env_marker() {
+        let settings = claude_launch_settings_with(false, false, compact_hooks_on(None))
+            .expect("compact hooks are on by default");
+        let parsed: serde_json::Value = serde_json::from_str(&settings).unwrap();
+        assert_eq!(parsed["env"]["BN_COMPACT_HOOKS"], "1");
+        assert_eq!(events(&settings), vec!["PreCompact", "SessionStart"]);
+        assert!(claude_launch_settings_with(false, false, compact_hooks_on(Some("0"))).is_none());
+    }
+
     #[test]
     fn a_launch_inside_tmux_carries_the_activity_hooks() {
-        let settings = claude_launch_settings(false, true).expect("tmux hooks");
+        let settings = claude_launch_settings_with(false, true, false).expect("tmux hooks");
         assert_eq!(
             events(&settings),
             ["Notification", "Stop", "UserPromptSubmit"]
@@ -196,7 +258,7 @@ mod tests {
     /// A controller inside tmux keeps its turn-end guard beside the badge: one Stop list, both.
     #[test]
     fn a_controller_keeps_its_turn_end_guard_beside_the_badge() {
-        let settings = claude_launch_settings(true, true).expect("hooks");
+        let settings = claude_launch_settings_with(true, true, false).expect("hooks");
         let parsed: serde_json::Value = serde_json::from_str(&settings).expect("JSON");
         let stop = parsed["hooks"]["Stop"][0]["hooks"]
             .as_array()

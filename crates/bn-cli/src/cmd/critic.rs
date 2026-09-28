@@ -12,7 +12,7 @@
 
 use crate::*;
 use bn_core::pipeline::critic::{
-    critic_packet, critique_title, next_after_verdict, parse_iteration, CriticNext, Verdict,
+    critic_packet_with_evidence, critique_title, next_after_verdict, parse_iteration, CriticNext, Verdict,
 };
 
 /// The attention-item key for a branch's critique findings — one live record per lane, refreshed
@@ -182,10 +182,14 @@ pub(crate) fn run_critic_dispatch(
     // or execution session id is forwarded.
     let workflow = bn_core::skills::render_required(cfg, &wt_path, "critique-fresh", None)
         .unwrap_or_else(|error| fail(&format!("bn critic: {error}")));
-    let packet = critic_packet(&diff, &done_when, pr);
+    let evidence = evidence_lines(cfg, &exec_ctx);
+    let packet =
+        critic_packet_with_evidence(&diff, &done_when, pr, &evidence);
     let verdict_commands = format!(
         "PASS: `bn critic verdict --repo {repo} --branch {branch} --pass`\n\
-         FAIL: `bn critic verdict --repo {repo} --branch {branch} --fail --findings-file <path>`"
+         FAIL: `bn critic verdict --repo {repo} --branch {branch} --fail --findings-file <path>`\n\
+         EVIDENCE (judge each proof you checked; never your own): \
+         `bn proof judge <p> accept|reject --reason \"…\" --repo {repo} --branch {branch}`"
     );
     let mut envelope_args = serde_json::Map::new();
     envelope_args.insert(
@@ -505,4 +509,38 @@ fn emit_verdict(
         ),
         _ => {}
     }
+}
+
+/// The branch's evidence as packet lines: each criterion's proof standing, then each proof.
+fn evidence_lines(cfg: &Config, ctx: &Resolved) -> Vec<String> {
+    let (r, _) = bn_core::proof::readiness_now(cfg, ctx, None);
+    let listing = bn_core::proof::list(cfg, ctx);
+    let mut out: Vec<String> = r
+        .items
+        .iter()
+        .map(|i| {
+            let state = serde_json::to_value(&i.state)
+                .ok()
+                .and_then(|v| v.get("state").and_then(|s| s.as_str()).map(str::to_string))
+                .unwrap_or_default();
+            format!("{} {}: {state}", i.id, i.text)
+        })
+        .collect();
+    for p in &listing.proofs {
+        let exit = p.exit.map(|c| format!(", exit {c}")).unwrap_or_default();
+        let file = p
+            .attachment
+            .as_deref()
+            .map(|a| format!(", file proof/{a}"))
+            .unwrap_or_default();
+        out.push(format!(
+            "{} ({}{exit}) for {} by {}: {}{file}",
+            p.id,
+            p.kind,
+            if p.for_.is_empty() { "-".to_string() } else { p.for_.join(",") },
+            p.author,
+            p.title
+        ));
+    }
+    out
 }

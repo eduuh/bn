@@ -27,7 +27,7 @@
 //! store, the wake queue and the orchestrate state, and `bn notify status` reports exactly what
 //! was held back and why.
 //!
-//! **Concurrency disclosure** (the same explicitness [`crate::routine::DUPLICATE_RISK`] uses):
+//! **Concurrency disclosure**:
 //! the ledger is a plain load-modify-save with no lock, matching [`crate::staff_backpressure`].
 //! Two processes delivering the same key in the same instant can therefore both see an empty
 //! ledger and both toast. The window is milliseconds and the worst case is one duplicate — the

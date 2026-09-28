@@ -8,7 +8,7 @@
 #   1. starts a user-level sshd on 127.0.0.1:<port> (key-only, no root daemon). The port comes
 #      from this machine's name (bn_tunnel_port_for), so no two hosts clash on a client;
 #   2. authorizes the public SSH keys of a GitHub account (github.com/<user>.keys, see
-#      bn_tunnel_github_user), plus any keys published to the synced notes tree;
+#      bn_tunnel_github_user). Nothing else: no notes repo, no key files to sync;
 #   3. finds or creates a Dev Tunnel labelled bn-host-<machine> and bn-host (authenticated, never
 #      anonymous) carrying only that port, and hosts it in window `tunnel` of the tmux session
 #      `bn-tunnels` (foreground without tmux). tmux runs tunnel-auto at server start, which
@@ -22,8 +22,7 @@
 #
 # Env: BN_TUNNEL_NAME (default: short hostname), BN_TUNNEL_SSH_PORT (default: derived from the
 #      name, or the port it already uses), BN_TUNNEL_GITHUB_USER (whose GitHub keys may log in; default: gh's signed-in
-#      account), BN_TUNNEL_KEYS_DIR (default: ssh-keys/ in the git-synced notes tree, see
-#      bn_tunnel_keys_dir), BN_TUNNEL_FOREGROUND=1 to host in this terminal.
+#      account), BN_TUNNEL_FOREGROUND=1 to host in this terminal.
 set -eu
 
 NAME="${BN_TUNNEL_NAME:-$(hostname -s 2>/dev/null || hostname)}"
@@ -41,7 +40,6 @@ SSHD=$(command -v sshd 2>/dev/null || true)
 . "$(dirname "$0")/lib/tunnel.sh"
 DT=$(bn_tunnel_devtunnel) || exit 1
 bn_tunnel_login "$DT" || exit 1
-KEYS_DIR=$(bn_tunnel_keys_dir)
 # The port sticks: the one the running config uses wins over the derived default, so an
 # unattended re-run (tunnel-auto) never moves a host that was set up with BN_TUNNEL_SSH_PORT.
 PORT="${BN_TUNNEL_SSH_PORT:-$(awk '$1 == "Port" {print $2; exit}' "$STATE/sshd_config" 2>/dev/null)}"
@@ -123,18 +121,6 @@ elif gh_keys=$(bn_tunnel_github_keys "$GH_USER"); then
   say "authorized $(printf '%s\n' "$gh_keys" | wc -l | tr -d ' ') keys of github.com/$GH_USER"
 else
   say "could not fetch github.com/$GH_USER.keys; keeping the keys already authorized"
-fi
-
-# Keys published to the synced notes tree (older clients). Public keys only. A client commits and pushes its key as $KEYS_DIR/<machine>.pub; pull first so
-# a key published minutes ago is here without waiting for a notes-sync cron.
-bn_tunnel_sync_pull "$KEYS_DIR"
-if [ -d "$KEYS_DIR" ]; then
-  for k in "$KEYS_DIR"/*.pub; do
-    [ -f "$k" ] || continue
-    line=$(head -n 1 "$k")
-    case "$line" in ssh-ed25519\ *|ssh-rsa\ *|ecdsa-sha2-*) ;; *) say "skipping $k (not a public key)"; continue ;; esac
-    grep -qxF "$line" "$HOME/.ssh/authorized_keys" || { printf '%s\n' "$line" >> "$HOME/.ssh/authorized_keys"; say "authorized $(basename "$k")"; }
-  done
 fi
 
 # --- 3. find or create the tunnel --------------------------------------------

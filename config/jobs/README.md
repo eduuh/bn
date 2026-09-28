@@ -214,7 +214,7 @@ three **tick** crons — one timer each — that fan out to their cluster in ord
 
 | Tick | Schedule | Runs |
 |---|---|---|
-| `tick-5m` | `*:0/5` | `tools-reconcile`, `routine-tick`, `attention-sync` |
+| `tick-5m` | `*:0/5` | `tools-reconcile`, `coord-tick`, `attention-sync`, `tmux-reconcile`, `tmux-keylog` |
 | `tick-10m` | `*:0/10` | `auto-review-trigger`, `attention-auto-trigger`, `agent-supervise` |
 | `tick-15m` | `*:0/15` | `main-sync`, `auto-review-poll`, `cron-health` |
 
@@ -458,8 +458,8 @@ one host.
 managed block of `~/.ssh/authorized_keys` that each `tunnel-host` run rewrites, so a key removed on
 GitHub stops working at the next run. Every key on that account can log in, so prune old ones on
 GitHub. The first `tunnel-connect` on a new machine asks gh for the `admin:public_key` scope (a
-browser code) to add its key. Keys published to `ssh-keys/` in the git-synced notes tree, the
-older exchange, are still authorized.
+browser code) to add its key. That is the only trust mechanism: no notes repo or key files are
+involved, so a machine needs nothing but bn and a sign-in.
 
 **WSL itself stays up.** On Windows, run `bn run wsl-keepalive` once per machine: it registers a
 hidden Windows sign-in task (`bn-wsl-keepalive`) that holds the distro open with a `wsl.exe` that

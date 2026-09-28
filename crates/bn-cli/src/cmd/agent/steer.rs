@@ -214,6 +214,35 @@ fn deliver_via_keys(cfg: &Config, target: &str, msg: &str) -> (bool, bool) {
     (confirmed, pasted)
 }
 
+/// What a best-effort live delivery did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LiveDelivery {
+    /// Pasted into the pane (confirmed, or queued behind a turn already in flight).
+    Delivered,
+    /// No live window for the target.
+    NotLive,
+    /// The agent is waiting on a dialog; typing would answer it.
+    Dialog,
+    /// A window exists but the paste did not land.
+    Failed,
+}
+
+/// Paste `text` into `target`'s live pane, or report why not. Unlike `bn agent send` it never
+/// falls back to a headless `--resume` turn and never exits: for the queue's nudge, reaching a
+/// live agent is a courtesy, and the row is the record whether or not it lands.
+pub(crate) fn try_deliver_live(cfg: &Config, target: &str, text: &str) -> LiveDelivery {
+    if !has_live_window(cfg, target) {
+        return LiveDelivery::NotLive;
+    }
+    if super::read_prompt(cfg, target, bn_core::agent::PROMPT_SCAN_LINES).is_some() {
+        return LiveDelivery::Dialog;
+    }
+    match deliver_via_keys(cfg, target, text) {
+        (_, true) => LiveDelivery::Delivered,
+        (_, false) => LiveDelivery::Failed,
+    }
+}
+
 /// Refuse to type at an agent sitting on a **dialog**, and exit.
 ///
 /// Pasting prose at a numbered menu is how a stray character becomes a menu selection nobody chose —

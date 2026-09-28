@@ -14,6 +14,7 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
                 defer,
                 question,
                 next,
+                replace,
                 repo,
                 branch,
             }) => {
@@ -25,6 +26,7 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
                     deferred: defer,
                     questions: question,
                     priority_queue: next,
+                    replace,
                 };
                 emit_handoff_write(cfg, &ctx, &input, json);
             }

@@ -752,7 +752,7 @@ fn sample_from_agent_session(
 }
 
 /// Normalize one `staff_run` ledger event (#267) into a [`RunSample`]. Staff runs are `scheduled`
-/// by construction; their token figure is the [`crate::staff::estimate_tokens`] estimate (headless
+/// by construction; their token figure is the staff runner's own estimate (headless
 /// `-p` surfaces no metered count), folded as output tokens — the headline usage signal — and
 /// priced from the run's model. Headless runs carry no AIC.
 fn sample_from_staff_run(e: &Event, machine: &str) -> RunSample {

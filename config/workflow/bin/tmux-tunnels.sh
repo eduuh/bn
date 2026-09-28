@@ -8,7 +8,9 @@
 # nothing.
 f="$HOME/.cache/bn/tunnels.status"
 [ -f "$f" ] || exit 0
-if [ -n "$(find "$f" -mmin +10 2>/dev/null)" ]; then
+# Stale when older than 10 minutes, or dated in the future (a WSL clock that jumped).
+m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null); age=$(( $(date +%s) - ${m:-0} ))
+if [ "$age" -lt 0 ] || [ "$age" -ge 600 ]; then
   printf '#[fg=#565f89]⇄ ? '
   exit 0
 fi

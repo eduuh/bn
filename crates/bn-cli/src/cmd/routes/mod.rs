@@ -1,6 +1,7 @@
 use crate::*;
 
 mod automation;
+mod coord;
 mod git_pr;
 mod insights;
 mod intake;
@@ -23,6 +24,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::ShellUi(_) => "shell-ui",
         Command::GitPr(_) => "git-pr",
         Command::Misc(_) => "misc",
+        Command::Coord(_) => "coord",
     }
 }
 
@@ -50,6 +52,7 @@ pub(crate) fn route_command(cfg: &Config, command: Command, json: bool) {
         Command::ShellUi(action) => shell_ui::route(cfg, action, json),
         Command::GitPr(action) => git_pr::route(cfg, action, json),
         Command::Misc(action) => misc::route(cfg, action, json),
+        Command::Coord(action) => coord::route(cfg, action, json),
     }
     if let Some(timer) = timer {
         bn_core::log::record(

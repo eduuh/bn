@@ -9,6 +9,7 @@ use crate::actions;
 use crate::agent_control;
 use crate::api;
 use crate::assets;
+use crate::coord_api;
 use crate::mcp;
 use crate::state::AppState;
 use crate::task_writes;
@@ -93,6 +94,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/reviews", get(api::reviews))
         .route("/api/events", get(api::events))
         .route("/api/findings", get(api::findings))
+        .route("/api/queue", get(coord_api::queue))
+        .route("/api/queue/{id}", get(coord_api::queue_row))
+        .route("/api/watchdogs", get(coord_api::watchdogs))
+        .route("/api/watchdogs/{id}/evals", get(coord_api::watchdog_evals))
         // Live stream (design §2.2) — SSE fed by the shared watcher broadcast.
         .route("/api/stream", get(api::stream))
         // Writes (design §2.3) — audited per handler. The server no longer gates on a web token

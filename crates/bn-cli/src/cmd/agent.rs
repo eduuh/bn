@@ -5,14 +5,18 @@ use super::agent_hooks::{
     install_copilot_controller_hook, install_copilot_tmux_agent_hook, with_claude_launch_hooks,
 };
 
+mod checkin;
 mod dialog;
 mod instruct;
 mod kill;
+mod memory_hook;
 mod read;
 mod steer;
+pub(crate) use checkin::*;
 pub(crate) use dialog::*;
 pub(crate) use instruct::*;
 pub(crate) use kill::*;
+pub(crate) use memory_hook::*;
 pub(crate) use read::*;
 pub(crate) use steer::*;
 
@@ -80,101 +84,6 @@ pub(crate) fn emit_agent_supervise(cfg: &Config, idle: i64, stuck: i64, as_json:
             ago(a.idle_secs),
             a.turns
         );
-    }
-}
-
-/// Schedule the check-in via a systemd `--user` transient timer (`--on-active=Nmin`, fires once).
-/// `--` guards `target`/`note` so a leading-dash value can't smuggle a flag into `bn agent send`.
-pub(crate) fn schedule_checkin_systemd(bn: &str, mins: i64, target: &str, note: &str) -> bool {
-    let on_active = format!("--on-active={mins}min");
-    let unit = format!("--unit=bn-checkin-{}", bn_core::util::now_epoch_secs());
-    std::process::Command::new("systemd-run")
-        .args([
-            "--user", "--quiet", &on_active, &unit, bn, "agent", "send", "--", target, note,
-        ])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Schedule the check-in as a DETACHED one-shot for platforms without systemd (macOS): a background
-/// `sleep <secs>; bn agent send -- <target> <note>`. `target`/`note` are passed as positional argv
-/// (`$1..$4`) — never interpolated into the script — so there is no shell injection. It survives the
-/// `checkin` process exiting (the child reparents) but not a reboot, which is fine for a short nudge.
-pub(crate) fn schedule_checkin_detached(bn: &str, mins: i64, target: &str, note: &str) -> bool {
-    let secs = (mins * 60).to_string();
-    std::process::Command::new("sh")
-        .args([
-            "-c",
-            "sleep \"$1\"; exec \"$2\" agent send -- \"$3\" \"$4\"",
-            "bn-checkin", // $0
-            &secs,        // $1
-            bn,           // $2
-            target,       // $3
-            note,         // $4
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .is_ok()
-}
-
-/// `bn agent checkin <mins> "<note>"` — self-schedule a nudge that, in `<mins>` minutes, runs
-/// `bn agent send <target> "<note>"`: a systemd `--user` transient timer where systemd exists, else
-/// a detached one-shot (macOS). The native analogue of the orchestrator's `schedule_with_note.sh`.
-/// Target defaults to the current worktree's window.
-pub(crate) fn emit_agent_checkin(
-    cfg: &Config,
-    mins: i64,
-    note: &str,
-    target: Option<String>,
-    as_json: bool,
-) {
-    if mins <= 0 {
-        fail("bn agent checkin: <mins> must be a positive number of minutes");
-    }
-    let target = target.unwrap_or_else(|| match target_ctx(cfg, None, None) {
-        Some(ctx) => format!("{}:{}", ctx.repo, ctx.branch),
-        None => fail("bn agent checkin: not in a git repo — pass --target repo:branch"),
-    });
-    if cfg!(windows) {
-        fail("bn agent checkin: self-scheduling is unix-only");
-    }
-    let bn = std::env::current_exe()
-        .ok()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "bn".into());
-    // macOS has no systemd; use a detached one-shot there. systemd-run is preferred where it
-    // exists (survives more), so only fall to the detached path when there's no systemctl.
-    let scheduled = if cfg!(target_os = "macos") || !have_systemctl() {
-        schedule_checkin_detached(&bn, mins, &target, note)
-    } else {
-        schedule_checkin_systemd(&bn, mins, &target, note)
-    };
-    if as_json {
-        let data = serde_json::json!({
-            "scheduled": scheduled,
-            "target": target,
-            "mins": mins,
-            "note": note,
-        });
-        let env = if scheduled {
-            Envelope::success("agent_checkin", data)
-        } else {
-            Envelope::failure(
-                "agent_checkin",
-                "schedule_failed",
-                "could not schedule the check-in",
-            )
-        };
-        println!("{}", env.to_json());
-        return;
-    }
-    if scheduled {
-        println!("Check-in scheduled in {mins}m → {target}: {note}");
-    } else {
-        fail("bn agent checkin: could not schedule the check-in (no systemd-run/sh available)");
     }
 }
 
@@ -833,73 +742,6 @@ pub(crate) fn emit_handoff_read(cfg: &Config, ctx: &Resolved, as_json: bool) {
             }
         }
     }
-}
-
-/// `bn agent memory-hook` — the Claude Code SessionStart hook, ported from `scripts/wt-memory.sh`.
-/// Points this worktree's auto-memory at `<root>/.claude/memory` (so it travels with the worktree)
-/// by writing `autoMemoryDirectory` into the gitignored `<root>/.claude/settings.local.json` — the
-/// checked-in `settings.json` is ignored for this key by a Claude Code security rule. Idempotent:
-/// only rewrites when the value differs. Then prints the branch's handoff packet to orient the
-/// session. Best-effort throughout: never fails the hook, and stays quiet when there's no note.
-pub(crate) fn emit_memory_hook(cfg: &Config) {
-    let root = std::env::var_os("CLAUDE_PROJECT_DIR")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            crate::git::git_capture(&["rev-parse", "--show-toplevel"], None, true)
-                .map(std::path::PathBuf::from)
-        })
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_default();
-
-    let mem = root.join(".claude").join("memory");
-    let settings = root.join(".claude").join("settings.local.json");
-    let _ = std::fs::create_dir_all(&mem);
-    let mem_str = mem.to_string_lossy().to_string();
-
-    // Merge autoMemoryDirectory into the local settings, preserving any existing keys. Only write
-    // when the value actually changes, so we don't churn the file on every session.
-    let current = std::fs::read_to_string(&settings).ok();
-    if let Some(text) = merge_auto_memory_dir(current.as_deref(), &mem_str) {
-        let _ = std::fs::write(&settings, text);
-    }
-
-    // Orient the session: print the structured resume packet for this worktree's branch, quietly.
-    if let Ok(ctx) = resolver::resolve(cfg, &root) {
-        let handoff = bn_core::handoff::read(cfg, &ctx).or_else(|| {
-            bn_core::store::read(&cfg.note_file(&ctx))
-                .ok()
-                .map(|note| bn_core::handoff::compose(&note, &today(), &Default::default()))
-        });
-        if let Some(h) = handoff {
-            print!("{}", bn_core::handoff::render_orientation(&h));
-        }
-    }
-}
-
-/// Merge `autoMemoryDirectory = <mem>` into the `settings.local.json` body, preserving every other
-/// key. Returns the new file text to write, or `None` when the value is already set (so the caller
-/// skips the write and doesn't churn the file). Unparseable/absent input starts from `{}`.
-fn merge_auto_memory_dir(current: Option<&str>, mem: &str) -> Option<String> {
-    let parsed = current.and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
-    if parsed
-        .as_ref()
-        .and_then(|v| v.get("autoMemoryDirectory"))
-        .and_then(|v| v.as_str())
-        == Some(mem)
-    {
-        return None;
-    }
-    let mut obj = match parsed {
-        Some(serde_json::Value::Object(m)) => m,
-        _ => serde_json::Map::new(),
-    };
-    obj.insert(
-        "autoMemoryDirectory".to_string(),
-        serde_json::Value::String(mem.to_string()),
-    );
-    serde_json::to_string_pretty(&serde_json::Value::Object(obj))
-        .ok()
-        .map(|t| format!("{t}\n"))
 }
 
 // --- bn agent launch (ports workflow/bin/agent) ----------------------------

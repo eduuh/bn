@@ -63,6 +63,9 @@ pub struct LiveView {
     /// window-only row whose session log isn't attributable yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens: Option<i64>,
+    /// Context-window use, 0–100, when measured (Claude only; never guessed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ctx_pct: Option<u8>,
 }
 
 /// The join key for a repo/branch pair: lowercased `repo:branch`, so Plane A (raw-case session
@@ -102,6 +105,7 @@ fn join(wins: &[WinState], fleet: &Fleet) -> Vec<LiveView> {
                 session_id: Some(a.session_id.clone()),
                 turns: Some(a.turns),
                 tokens: Some(a.output_tokens),
+                ctx_pct: a.context.as_ref().and_then(|c| c.pct),
             },
         );
     }
@@ -146,6 +150,7 @@ fn join(wins: &[WinState], fleet: &Fleet) -> Vec<LiveView> {
                         session_id: None,
                         turns: None,
                         tokens: None,
+                        ctx_pct: None,
                     },
                 );
             }
@@ -589,7 +594,8 @@ pub fn run(cfg: &Config, idle: i64, stuck: i64, as_json: bool) {
                 Some(t) if t > 0 => format!("  {} tok", fmt_tokens(t)),
                 _ => String::new(),
             };
-            println!("  {mark}  {:<24} {:<7}{tok}{win}", r.target, harness);
+            let ctx = r.ctx_pct.map(|p| format!("  ctx {p}%")).unwrap_or_default();
+            println!("  {mark}  {:<24} {:<7}{tok}{ctx}{win}", r.target, harness);
         }
     }
     if !remote.is_empty() {

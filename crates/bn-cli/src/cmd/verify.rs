@@ -194,6 +194,21 @@ pub(crate) fn run_verify_gate(
     stream: bool,
     cargo_target_dir: Option<&std::path::Path>,
 ) -> Result<i32, String> {
+    run_verify_gate_to(gate, cwd, stream, cargo_target_dir, None)
+}
+
+/// A shared, bounded copy of a gate's output, kept to attach as proof.
+pub(crate) type GateLog = std::sync::Arc<std::sync::Mutex<bn_core::proof::tee::CappedLog>>;
+
+/// [`run_verify_gate`], also teeing every step's output into `log` when given. The terminal sees
+/// exactly what it did before; the log gets a bounded copy.
+pub(crate) fn run_verify_gate_to(
+    gate: &VerifyGate,
+    cwd: &std::path::Path,
+    stream: bool,
+    cargo_target_dir: Option<&std::path::Path>,
+    log: Option<&GateLog>,
+) -> Result<i32, String> {
     let _slot = build_slot(&gate.label(), cwd);
     let gate_path = crate::cmd::cron::job_path();
     let aggregate = gate.targets.len() > 1;
@@ -201,6 +216,10 @@ pub(crate) fn run_verify_gate(
     for target in &gate.targets {
         if aggregate {
             eprintln!("→ verify {}", target.label());
+        }
+        if let Some(log) = log {
+            let line = format!("$ {} ({})\n", target.label(), cwd.display());
+            log.lock().unwrap_or_else(|e| e.into_inner()).push(line.as_bytes());
         }
         let mut cmd = std::process::Command::new("/bin/sh");
         let snapshot = match target {
@@ -221,7 +240,9 @@ pub(crate) fn run_verify_gate(
         if let Some(target_dir) = cargo_target_dir {
             cmd.env("CARGO_TARGET_DIR", target_dir);
         }
-        let result = if stream {
+        let result = if let Some(log) = log {
+            run_teed(&mut cmd, stream, log)
+        } else if stream {
             cmd.status().map(|status| status.code().unwrap_or(1))
         } else {
             cmd.output().map(|output| {
@@ -240,6 +261,38 @@ pub(crate) fn run_verify_gate(
         }
     }
     Ok(0)
+}
+
+/// Run `cmd` with its stdout and stderr piped through to the terminal (stdout to stdout when
+/// `stream`, else to stderr so JSON stdout stays clean) and into `log`.
+fn run_teed(cmd: &mut std::process::Command, stream: bool, log: &GateLog) -> std::io::Result<i32> {
+    use std::io::{Read, Write};
+    use std::process::Stdio;
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let pump = |mut from: Box<dyn Read + Send>, to_stdout: bool, log: GateLog| {
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            while let Ok(n) = from.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                let chunk = &buf[..n];
+                if to_stdout {
+                    let _ = std::io::stdout().write_all(chunk);
+                } else {
+                    let _ = std::io::stderr().write_all(chunk);
+                }
+                log.lock().unwrap_or_else(|e| e.into_inner()).push(chunk);
+            }
+        })
+    };
+    let out = child.stdout.take().map(|s| pump(Box::new(s), stream, log.clone()));
+    let err = child.stderr.take().map(|s| pump(Box::new(s), false, log.clone()));
+    let status = child.wait()?;
+    for t in [out, err].into_iter().flatten() {
+        let _ = t.join();
+    }
+    Ok(status.code().unwrap_or(1))
 }
 
 /// The branch's changed files (repo-relative), mirroring the `test` job's rustfmt-on-changed set:
@@ -350,7 +403,13 @@ fn spawn_failed(label: &str, e: std::io::Error) -> i32 {
 /// step's status so an agent (or a caller) can gate "done" on a green run.
 /// When the branch changed the bn-web SPA (`crates/bn-web/ui/**`) the UI gate (npm ci + build +
 /// vitest) also runs after a green Rust gate (#505); `skip_ui` (`--no-ui`) opts out.
-pub(crate) fn emit_verify(cfg: &Config, job: Option<String>, as_json: bool, skip_ui: bool) {
+pub(crate) fn emit_verify(
+    cfg: &Config,
+    job: Option<String>,
+    as_json: bool,
+    skip_ui: bool,
+    for_: Vec<String>,
+) {
     let cwd = std::env::current_dir().unwrap_or_default();
     let Ok(ctx) = resolver::resolve(cfg, &cwd) else {
         fail("bn verify: not in a git repo");
@@ -370,7 +429,8 @@ pub(crate) fn emit_verify(cfg: &Config, job: Option<String>, as_json: bool, skip
         Err(msg) => fail(&format!("bn verify: {msg}")),
     };
     let job_name = target.label();
-    let code = run_verify_gate(&target, &cwd, !as_json, None)
+    let log = GateLog::default();
+    let code = run_verify_gate_to(&target, &cwd, !as_json, None, Some(&log))
         .unwrap_or_else(|e| fail(&format!("bn verify: {e}")));
     // #505: additionally gate the bn-web SPA when the branch touched it. Only after a green Rust
     // gate — a red gate already blocks, so we don't pay the npm cost — and never for a pure-Rust
@@ -382,18 +442,33 @@ pub(crate) fn emit_verify(cfg: &Config, job: Option<String>, as_json: bool, skip
     };
     let pass = code == 0;
 
-    // Record the outcome in the note's Progress — no new store, same append log-progress uses.
+    // Keep the run as proof, then record the outcome in the note's Progress pointing at it.
+    let head = bn_core::proof::head(cfg, &ctx);
+    let proof = crate::cmd::proof::record_run(
+        cfg,
+        &ctx,
+        crate::cmd::proof::Run {
+            kind: bn_core::proof::Kind::Verify,
+            job: &job_name,
+            code,
+            log: &log,
+            sha: head.sha,
+            dirty: head.dirty,
+            for_: &for_,
+        },
+    );
     let bullet = format!(
-        "{} — verify {job_name}: {}",
+        "{} — verify {job_name}: {}{}",
         bn_core::util::now_stamp(),
-        if pass { "PASS ✓" } else { "FAIL ✗" }
+        if pass { "PASS ✓" } else { "FAIL ✗" },
+        proof.as_deref().map(|p| format!(" → proof {p}")).unwrap_or_default()
     );
     let _ = commands::append_body(cfg, &ctx, "progress", &bullet, &today());
 
     if as_json {
         // The command succeeded in *determining* the result; the gate outcome is `pass` (and the
         // process exit code below), so the envelope always carries the data — never drops `pass`.
-        let data = serde_json::json!({ "job": job_name, "pass": pass, "code": code });
+        let data = serde_json::json!({ "job": job_name, "pass": pass, "code": code, "proof": proof });
         println!("{}", Envelope::success("verify", data).to_json());
     } else if pass {
         println!("verify {job_name}: PASS ✓ (recorded to note)");
@@ -406,6 +481,29 @@ pub(crate) fn emit_verify(cfg: &Config, job: Option<String>, as_json: bool, skip
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A teed run keeps both streams and the step header in the log, and still reports the
+    /// step's own exit code.
+    #[test]
+    fn a_teed_gate_captures_both_streams_and_the_exit_code() {
+        let _lock = bn_core::test_support::env_lock();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", temp.path().join("state"));
+        let gate = VerifyGate {
+            targets: vec![VerifyTarget::Command {
+                label: "noisy".to_string(),
+                cmd: "echo to-out; echo to-err >&2; exit 3".to_string(),
+            }],
+        };
+        let log = GateLog::default();
+        let code = run_verify_gate_to(&gate, temp.path(), false, None, Some(&log)).expect("runs");
+        assert_eq!(code, 3);
+        let (bytes, truncated) = log.lock().unwrap().finish();
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(!truncated);
+        assert!(text.starts_with("$ noisy"), "{text}");
+        assert!(text.contains("to-out") && text.contains("to-err"), "{text}");
+    }
 
     /// A verify gate runs the user's own script, which routinely shells out to `bn`. It must get
     /// the same PATH every other job process gets — the one whose leading entry is bn's own

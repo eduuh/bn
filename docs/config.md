@@ -57,6 +57,14 @@ What a machine should do less of. Usually set in that machine's own file.
 | `diff_gate` | `false` | Require diff-only reviews before a dispatched ship PR lands. |
 | `diff_gate_reviews` | `2` | Approving diff-only reviews the gate requires. |
 
+### `[proof]`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `freshness` | `"exact"` | How current accepted evidence must be: `exact` (at HEAD), `ancestor`, or `any`. |
+| `done_requires` | `"warn"` | What `bn done w<N>` does without accepted evidence: `off`, `warn`, or `refuse`. |
+| `capture` | `true` | Keep `bn verify` and `bn gate` runs as proof, with their output attached. |
+
 ### `[harness]`
 
 | Key | Default | Meaning |

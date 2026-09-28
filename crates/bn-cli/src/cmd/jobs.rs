@@ -85,6 +85,9 @@ pub(crate) fn job_watch(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     // Nothing else ran this sweep, so unattended agents sat on their first prompt.
     crate::cmd::agent_approve::sweep(cfg, false, false);
     emit_watch(cfg, true, 30, bn_core::agent::DEFAULT_STUCK_MINS, false);
+    // Watchdogs ride the 2-minute cron too, so a timer lands within ~2m instead of ~5m.
+    let db = bn_core::coord::CoordDb::open_default();
+    crate::cmd::watchdog::tick_opened(cfg, db, bn_core::util::now_epoch_secs());
     0
 }
 

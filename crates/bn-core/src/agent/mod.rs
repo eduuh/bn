@@ -20,6 +20,7 @@
 mod activity;
 mod approval;
 mod channel;
+pub mod context_usage;
 mod digest;
 mod lease;
 mod live_line;

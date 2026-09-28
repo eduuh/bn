@@ -277,52 +277,6 @@ pub(crate) fn run_post_create_hook(
 }
 
 
-/// The references section folded into a dispatched ship agent's seed (#623): the selected coding
-/// standards by name, with a hint to run `bn ref <name>` for each one's full text — so the seed
-/// stays small but the agent knows to consult them and write to your standards. Selection: an
-/// empty `refs` attaches ALL references; explicit names (repeatable or comma-separated) pin a
-/// subset; a literal `-` (or empty value) attaches none. Comma-splits and resolves each name
-/// against the store (fuzzy), dedups, and preserves order. `None` when nothing is attached (no
-/// references exist, or `-` was passed) so the caller appends nothing.
-pub(crate) fn references_section(refs: &[String]) -> Option<String> {
-    // Flatten comma-separated values; a `-` or empty token means "attach none".
-    let mut tokens: Vec<String> = Vec::new();
-    for r in refs {
-        for part in r.split(',') {
-            let t = part.trim();
-            if t == "-" {
-                return None;
-            }
-            if !t.is_empty() {
-                tokens.push(t.to_string());
-            }
-        }
-    }
-    let names: Vec<String> = if tokens.is_empty() {
-        // Default: every reference in the store.
-        bn_core::references::names()
-    } else {
-        // Explicit subset: resolve each (fuzzy) to its canonical name, dedup, keep order.
-        let mut out: Vec<String> = Vec::new();
-        for t in &tokens {
-            if let Some(r) = bn_core::references::resolve(t) {
-                if !out.contains(&r.name) {
-                    out.push(r.name);
-                }
-            }
-        }
-        out
-    };
-    if names.is_empty() {
-        return None;
-    }
-    Some(format!(
-        "\n\nApply these references (my coding standards) when writing code, and check your \
-         changes against them — run `bn ref <name>` for the full text of each: {}.",
-        names.join(", ")
-    ))
-}
-
 /// A fresh lowercase UUID (via `uuidgen`, universal on macOS/Linux) to pin an agent's session id so
 /// `bn agent send` can steer it via `-p --resume`. Falls back to a self-generated UUIDv4 when
 /// `uuidgen` is absent (#646): copilot ≥1.0.71 rejects a `--session-id` that isn't a valid UUID, so

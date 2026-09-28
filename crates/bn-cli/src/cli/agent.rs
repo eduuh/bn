@@ -64,8 +64,8 @@ pub(crate) enum AgentCmd {
         stuck: i64,
     },
     /// Self-schedule a check-in nudge: in `<mins>` minutes, deliver `<note>` to this worktree's
-    /// agent pane (the `schedule_with_note.sh` analogue). Uses a transient systemd `--user` timer
-    /// so it survives the agent going idle. bn agent checkin <mins> "<note>".
+    /// agent pane. A one-shot reminder watchdog, so it survives a reboot and is listed and
+    /// stopped with `bn watchdog`. bn agent checkin <mins> "<note>".
     Checkin {
         /// Minutes from now to fire the nudge.
         mins: i64,

@@ -110,6 +110,9 @@ Config {
     dispatch_plan_review_quorum: 2,
     review_diff_gate: false,
     review_diff_gate_reviews: 2,
+    proof_freshness: "exact",
+    proof_done_requires: "warn",
+    proof_capture: true,
     default_harness: Some(
         "claude",
     ),

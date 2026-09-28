@@ -9,8 +9,7 @@
 #   1. picks this machine's SSH key: one already on the trusted GitHub account (see
 #      bn_tunnel_github_user), else ~/.ssh/bn_tunnel_ed25519, created and added to that account
 #      with `gh ssh-key add` (first time only; needs gh's admin:public_key scope, which it asks
-#      for at a terminal). tunnel-host authorizes that account's keys. The key is also published
-#      to the synced notes tree, for hosts still on the older key exchange;
+#      for at a terminal). tunnel-host authorizes that account's keys; nothing else is needed;
 #   2. for each host, runs `devtunnel connect` in window `tunnel-<machine>` of the tmux session
 #      `bn-tunnels`, forwarding the host's SSH port (derived from its name, read from its tunnel)
 #      to the same port on 127.0.0.1 here;
@@ -20,8 +19,7 @@
 #
 # Env: BN_TUNNEL_TO (only this machine), BN_TUNNEL_USER (remote user, default: yours),
 #      BN_TUNNEL_KEY (use this key instead of choosing one), BN_TUNNEL_GITHUB_USER,
-#      BN_TUNNEL_KEYS_DIR (default: ssh-keys/ in the git-synced notes tree, see
-#      bn_tunnel_keys_dir), BN_TUNNEL_FORWARD_AGENT=1 to add `ForwardAgent yes` (opt-in; see below),
+#      BN_TUNNEL_FORWARD_AGENT=1 to add `ForwardAgent yes` (opt-in; see below),
 #      BN_TUNNEL_PORTS=3000,3001 to forward those remote ports to the same local ports on every
 #      ssh to a host (LocalForward). For forwards without a session, see tunnel-forward.sh.
 #      BN_TUNNEL_PERSIST (default 10m): how long the shared connection stays open after its last
@@ -78,16 +76,6 @@ if [ -z "$KEY" ]; then
   fi
 fi
 say "using key $KEY"
-
-# Publish it to the synced notes tree as well, committed and pushed right away: hosts that have
-# not re-run tunnel-host since the GitHub-keys change authorize keys from there.
-KEYS_DIR=$(bn_tunnel_keys_dir)
-mkdir -p "$KEYS_DIR"
-if ! cmp -s "$KEY.pub" "$KEYS_DIR/$ME.pub" 2>/dev/null; then
-  cp "$KEY.pub" "$KEYS_DIR/$ME.pub"
-  say "published $KEY.pub as $KEYS_DIR/$ME.pub"
-fi
-bn_tunnel_sync_push "$KEYS_DIR" "$KEYS_DIR/$ME.pub"
 
 # --- 2 + 3. connect to each host --------------------------------------------------
 SESS=$(bn_tunnel_session) || die "tmux is needed to keep the tunnel connections running"

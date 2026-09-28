@@ -58,6 +58,7 @@ pub(crate) fn native_job(job: &str) -> Option<NativeJob> {
         "cron-health" => Some(crate::cmd::attention_workflow::job_cron_health),
         "agent-scheduler" => Some(crate::cmd::cron::job_agent_scheduler),
         "reactor" => Some(crate::cmd::on::job_reactor),
+        "coord-tick" => Some(crate::cmd::queue::sweep::job_coord_tick),
         "tick-5m" => Some(job_tick_5m),
         "tick-10m" => Some(job_tick_10m),
         "tick-15m" => Some(job_tick_15m),
@@ -75,7 +76,7 @@ pub(crate) fn native_job(job: &str) -> Option<NativeJob> {
 /// 20 minutes of this machine's status polling): five minutes drains it well inside that.
 pub(crate) const TICK_5M: &[&str] = &[
     "tools-reconcile",
-    "routine-tick",
+    "coord-tick",
     "attention-sync",
     "tmux-reconcile",
     "tmux-keylog",
@@ -96,3 +97,18 @@ pub(crate) const TICK_10M: &[&str] = &[
 /// current, so the rest of the tick — and anything cut from main before the next one — reads a
 /// fresh base rather than whatever the checkout drifted to.
 pub(crate) const TICK_15M: &[&str] = &["main-sync", "auto-review-poll", "cron-health"];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A tick child with no native implementation falls through `run_job` to the agent catalog
+    /// and the `.sh` lookup, and fails every run — which is how `routine-tick` outlived the
+    /// routine layer (#1297) and turned every `tick-5m` red. Every child must be native.
+    #[test]
+    fn every_tick_child_is_a_native_job() {
+        for job in TICK_5M.iter().chain(TICK_10M).chain(TICK_15M) {
+            assert!(native_job(job).is_some(), "tick child `{job}` has no native job");
+        }
+    }
+}

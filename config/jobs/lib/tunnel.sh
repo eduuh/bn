@@ -1,5 +1,5 @@
 # Sourced helper for tunnel-host.sh / tunnel-connect.sh: find or install the devtunnel CLI, make
-# sure it is signed in, and move client public keys through the synced notes tree.
+# sure it is signed in, keep the tunnel tmux session, and look up hosts, ports and GitHub keys.
 # Source it from a job:  . "$(dirname "$0")/lib/tunnel.sh"
 #
 # POSIX sh; never run directly. User-level only: the CLI goes into ~/bin and nothing needs sudo.
@@ -64,45 +64,6 @@ bn_tunnel_login() {
   fi
   echo "tunnel: not signed in to Dev Tunnels. Run: $1 user login $_how" >&2
   return 1
-}
-
-# bn_tunnel_keys_dir -- echo the directory client public keys are exchanged through.
-# It must live in a notes tree that actually syncs between machines, i.e. one inside a git repo:
-# on this setup ~/projects/branch-notes is machine-local, while ~/projects/branch-notes-work is the
-# git-synced tree (2026-09-26). Order: $BN_TUNNEL_KEYS_DIR, $BN_NOTES_ROOT, then the first of the
-# usual roots that is inside a git work tree. Falls back to ~/projects/branch-notes (unsynced).
-bn_tunnel_keys_dir() {
-  if [ -n "${BN_TUNNEL_KEYS_DIR:-}" ]; then echo "$BN_TUNNEL_KEYS_DIR"; return 0; fi
-  if [ -n "${BN_NOTES_ROOT:-}" ]; then echo "$BN_NOTES_ROOT/ssh-keys"; return 0; fi
-  for _root in "$HOME/projects/branch-notes-work/bn" "$HOME/projects/branch-notes"; do
-    [ -d "$_root" ] || continue
-    git -C "$_root" rev-parse --is-inside-work-tree >/dev/null 2>&1 && { echo "$_root/ssh-keys"; return 0; }
-  done
-  echo "tunnel: no git-synced notes tree found; keys stay local in ~/projects/branch-notes/ssh-keys" >&2
-  echo "$HOME/projects/branch-notes/ssh-keys"
-}
-
-# bn_tunnel_sync_pull <keys_dir> -- fetch keys other machines published (fast-forward only).
-# Runs in the keys dir's parent: on a fresh host ssh-keys/ does not exist until this pull brings it.
-bn_tunnel_sync_pull() {
-  _repo=$(dirname "$1")
-  [ -d "$_repo" ] || return 0
-  git -C "$_repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
-  git -C "$_repo" pull --ff-only --quiet >/dev/null 2>&1 \
-    || echo "tunnel: could not pull the notes repo; using the keys already here" >&2
-}
-
-# bn_tunnel_sync_push <keys_dir> <file> -- commit and push one published PUBLIC key, so the host
-# picks it up without waiting for the commit-notes cron (which may be off on that machine).
-bn_tunnel_sync_push() {
-  git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
-  git -C "$1" add -- "$2" >/dev/null 2>&1 || return 0
-  git -C "$1" diff --cached --quiet -- "$2" 2>/dev/null && return 0
-  if git -C "$1" commit --quiet -m "ssh-keys: publish $(basename "$2")" -- "$2" >/dev/null 2>&1; then
-    git -C "$1" push --quiet >/dev/null 2>&1 \
-      && echo "tunnel: pushed $(basename "$2") to the notes repo" >&2 \
-      || echo "tunnel: committed $(basename "$2") but could not push; the next notes sync will" >&2
-  fi
 }
 
 # bn_tunnel_session -- echo the tmux session tunnel windows live in, creating it detached when

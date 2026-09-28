@@ -76,6 +76,7 @@ pub const KNOWN_SECTIONS: &[&str] = &[
     "orchestrate",
     "pipeline",
     "pool",
+    "proof",
     "repo",
     "review",
     "scout",

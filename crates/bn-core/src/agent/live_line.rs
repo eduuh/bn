@@ -25,11 +25,21 @@ pub(crate) struct LiveLine {
     pub cwd: LenientStr,
     pub timestamp: LenientStr,
     pub message: MessageField,
+    /// `subtype` (`compact_boundary` marks a compaction) — for the context-usage read.
+    pub subtype: LenientStr,
+    /// `isSidechain`, when it is a boolean.
+    pub is_sidechain: LenientBool,
+    /// `compactMetadata.preTokens`, when it is an integer.
+    pub compact_pre_tokens: Option<i64>,
 }
 
 /// A string value, or `None` for any other JSON type — `Value::as_str`.
 #[derive(Debug, Default)]
 pub(crate) struct LenientStr(pub Option<String>);
+
+/// A boolean value, or `None` for any other JSON type — `Value::as_bool`.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct LenientBool(pub Option<bool>);
 
 /// An integer value, or `None` for any other JSON type (floats included) — `Value::as_i64`.
 #[derive(Debug, Default, Clone, Copy)]
@@ -42,6 +52,8 @@ pub(crate) struct LenientI64(pub Option<i64>);
 pub(crate) struct MessageField {
     pub present: bool,
     pub id: Option<String>,
+    /// `model`, when it is a string.
+    pub model: Option<String>,
     /// `Some` when the message object has a `usage` key, of any type.
     pub usage: Option<Usage>,
     /// Count of `tool_use` blocks when `content` is an array; `None` otherwise.
@@ -170,6 +182,89 @@ impl<'de> Deserialize<'de> for LenientI64 {
     }
 }
 
+impl<'de> Deserialize<'de> for LenientBool {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = LenientBool;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("any JSON value")
+            }
+            fn visit_bool<E>(self, b: bool) -> Result<Self::Value, E> {
+                Ok(LenientBool(Some(b)))
+            }
+            fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
+                Ok(LenientBool(None))
+            }
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(LenientBool(None))
+            }
+            fn visit_none<E>(self) -> Result<Self::Value, E> {
+                Ok(LenientBool(None))
+            }
+            fn visit_some<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+                d.deserialize_any(self)
+            }
+            fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
+                Ok(LenientBool(None))
+            }
+            fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
+                Ok(LenientBool(None))
+            }
+            fn visit_str<E>(self, _: &str) -> Result<Self::Value, E> {
+                Ok(LenientBool(None))
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+                skip_seq(seq).map(|_| LenientBool(None))
+            }
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+                skip_map(map).map(|_| LenientBool(None))
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+/// `compactMetadata`: its `preTokens` when it is an object with an integer there.
+struct PreTokens(Option<i64>);
+
+impl<'de> Deserialize<'de> for PreTokens {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = PreTokens;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("any JSON value")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut pre = None;
+                while let Some(key) = map.next_key::<LenientKey>()? {
+                    if key.0 == "preTokens" {
+                        pre = map.next_value::<LenientI64>()?.0;
+                    } else {
+                        map.next_value::<IgnoredAny>()?;
+                    }
+                }
+                Ok(PreTokens(pre))
+            }
+            fn visit_str<E>(self, _: &str) -> Result<Self::Value, E> {
+                Ok(PreTokens(None))
+            }
+            fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
+                Ok(PreTokens(None))
+            }
+            fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
+                Ok(PreTokens(None))
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+                skip_seq(seq).map(|_| PreTokens(None))
+            }
+            ignore_other_types!(PreTokens(None));
+        }
+        d.deserialize_any(V)
+    }
+}
+
 impl<'de> Deserialize<'de> for Usage {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         struct V;
@@ -241,6 +336,11 @@ impl<'de> Deserialize<'de> for LiveLine {
                         "cwd" => l.cwd = map.next_value()?,
                         "timestamp" => l.timestamp = map.next_value()?,
                         "message" => l.message = map.next_value()?,
+                        "subtype" => l.subtype = map.next_value()?,
+                        "isSidechain" => l.is_sidechain = map.next_value()?,
+                        "compactMetadata" => {
+                            l.compact_pre_tokens = map.next_value::<PreTokens>()?.0;
+                        }
                         _ => {
                             map.next_value::<IgnoredAny>()?;
                         }
@@ -359,6 +459,7 @@ impl<'de> Deserialize<'de> for MessageField {
                 while let Some(key) = map.next_key::<LenientKey>()? {
                     match key.0.as_str() {
                         "id" => m.id = map.next_value::<LenientStr>()?.0,
+                        "model" => m.model = map.next_value::<LenientStr>()?.0,
                         "usage" => m.usage = Some(map.next_value::<Usage>()?),
                         "content" => m.tool_uses = map.next_value::<ToolUses>()?.0,
                         _ => {

@@ -189,17 +189,23 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
                 failed,
                 repo,
                 branch,
-            }) => emit_agent_done(
-                cfg,
-                summary,
-                pr,
-                notify,
-                report_only,
-                failed,
-                repo,
-                branch,
-                json,
-            ),
+            }) => {
+                // Finishing with queue rows still open leaves them to look like a crash.
+                if let Some(ctx) = target_ctx(cfg, repo.clone(), branch.clone()) {
+                    crate::cmd::queue::warn_open_rows(&ctx);
+                }
+                emit_agent_done(
+                    cfg,
+                    summary,
+                    pr,
+                    notify,
+                    report_only,
+                    failed,
+                    repo,
+                    branch,
+                    json,
+                )
+            }
             Some(AgentCmd::Recover {
                 repo,
                 branch,

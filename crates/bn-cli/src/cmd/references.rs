@@ -4,6 +4,7 @@
 //! [`bn_core::references`].
 
 use crate::*;
+use bn_core::tokens;
 use bn_core::references::{self, Scope};
 
 /// Turn the `--repo [NAME]` switch into a store scope. Absent means the global standards store;
@@ -81,7 +82,8 @@ pub(crate) fn emit_ref(
 
 /// `bn ref <name>` — print the matching reference's full body.
 fn emit_get(scope: &Scope, query: &str, json: bool) {
-    let Some((r, body)) = references::read_in(scope, query) else {
+    let (name, section) = references::split_ref(query);
+    let Some((r, body)) = references::read_in(scope, name) else {
         let flag = repo_flag(scope);
         fail_json(
             json,
@@ -93,7 +95,26 @@ fn emit_get(scope: &Scope, query: &str, json: bool) {
             ),
         );
     };
+    let body = match section {
+        None => body,
+        Some(sec) => references::section_of(&body, sec).unwrap_or_else(|| {
+            let have: Vec<String> = references::sections(&body)
+                .into_iter()
+                .map(|(h, _)| h)
+                .collect();
+            fail_json(
+                json,
+                "ref",
+                "no_section",
+                &format!("{} has no section '{sec}' (has: {})", r.name, have.join(", ")),
+            )
+        }),
+    };
     if json {
+        let sections: Vec<_> = references::sections(&body)
+            .into_iter()
+            .map(|(h, t)| serde_json::json!({"heading": h, "tokens": tokens::estimate(&t)}))
+            .collect();
         println!(
             "{}",
             Envelope::success(
@@ -101,8 +122,11 @@ fn emit_get(scope: &Scope, query: &str, json: bool) {
                 serde_json::json!({
                     "scope": scope.label(),
                     "name": r.name,
+                    "section": section,
                     "summary": r.summary,
                     "path": r.path.display().to_string(),
+                    "tokens": tokens::estimate(&body),
+                    "sections": sections,
                     "body": body,
                 }),
             )
@@ -125,6 +149,7 @@ fn emit_list(scope: &Scope, json: bool) {
                     "name": r.name,
                     "summary": r.summary,
                     "path": r.path.display().to_string(),
+                    "tokens": ref_tokens(r),
                 })
             })
             .collect();
@@ -157,8 +182,21 @@ fn emit_list(scope: &Scope, json: bool) {
     }
     let width = refs.iter().map(|r| r.name.len()).max().unwrap_or(20).max(20);
     for r in &refs {
-        println!("{:<width$} {}", r.name, r.summary, width = width);
+        println!(
+            "{:<width$} {:>6}  {}",
+            r.name,
+            format!("~{}", ref_tokens(r)),
+            r.summary,
+            width = width
+        );
     }
+}
+
+/// Estimated tokens in a reference's body — what reading it costs.
+fn ref_tokens(r: &references::Reference) -> usize {
+    std::fs::read_to_string(&r.path)
+        .map(|b| tokens::estimate(&b))
+        .unwrap_or(0)
 }
 
 /// `bn ref add <name>` — scaffold from the scope's template, never overwriting.

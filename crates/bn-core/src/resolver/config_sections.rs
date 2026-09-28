@@ -257,6 +257,17 @@ pub(super) struct ReviewSection {
     pub(super) diff_gate_reviews: Option<usize>,
 }
 
+/// `[proof]`: how evidence for done-when criteria is kept and enforced (see [`crate::proof`]).
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub(super) struct ProofSection {
+    /// `exact` | `ancestor` | `any`: how current accepted evidence must be.
+    pub(super) freshness: Option<String>,
+    /// `off` | `warn` | `refuse`: what `bn done w<N>` does without accepted evidence.
+    pub(super) done_requires: Option<String>,
+    /// Keep `bn verify` / `bn gate` runs as proof.
+    pub(super) capture: Option<bool>,
+}
+
 /// `[harness]` (#501): per-machine harness availability + preference. `disabled` lists harnesses
 /// turned off on this box — currently only `claude`, when the account is org-disabled ("organization
 /// has disabled Claude subscription access"). Copilot is the guaranteed fallback and can't be

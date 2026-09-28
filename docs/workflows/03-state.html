@@ -182,6 +182,52 @@ failing — MCP, CLI and web alike. Only a genuinely missing <em>note</em> fails
 </p>
 </div>
 
+<h2>Queue rows: work handed between seats</h2>
+
+<p>
+<code>bn queue</code> rows (<code>q&lt;N&gt;</code>) live in SQLite at
+<code>~/.bn/coord/coord.db</code> (<code>$BN_COORD_DB</code>) — machine-local, like the agents
+they coordinate, and never in the synced notes tree. A row is addressed to a seat
+(<code>repo:branch</code> or <code>human:&lt;name&gt;</code>), is claimed with a deadline from
+its tier, and keeps an append-only history in <code>qtransitions</code>. Every close and handoff
+needs a note, and a handoff closes the source and opens the destination in one transaction.
+<span class="src">crates/bn-core/src/coord/db.rs · coord/queue.rs</span>
+</p>
+
+<p>
+A row for an agent seat is mirrored as a <code>[q&lt;N&gt;] …</code> todo in that branch's note,
+and ticked when the row closes. The DB is the record and the todo a projection: the mirror is
+written after the row commits, and never creates a note that isn't there.
+<span class="src">crates/bn-core/src/coord/mirror.rs</span>
+</p>
+
+<h2>Proof: evidence for done-when</h2>
+
+<p>
+<code>bn proof</code> keeps evidence under <code>&lt;note_dir&gt;/proof/</code>: one
+<code>p&lt;N&gt;-&lt;slug&gt;.md</code> per proof, with frontmatter written only from flags
+(kind, the <code>w&lt;N&gt;</code> criteria it speaks to, commit, author, command and exit code),
+an optional attachment beside it, and an append-only <code>verdicts.jsonl</code>. A verdict from
+anyone but the author accepts or rejects a proof; only the author may withdraw one. Readiness per
+criterion is derived from both at the current head and never stored. <code>PROOF.md</code> beside
+the note is a generated view and is never read back. A file dropped into <code>proof/</code> by
+hand stays unregistered and never counts.
+<span class="src">crates/bn-core/src/proof/</span>
+</p>
+
+<h2>Compaction: recap, log, audit</h2>
+
+<p>
+<code>bn compact prep</code> writes <code>RECAP.md</code> beside the note (the seat's own words,
+then a state block composed from the note, readiness and HEAD), archives a copy under
+<code>recaps/</code>, writes a handoff that keeps earlier author notes, and logs a
+<code>prep</code> line in <code>compactions.jsonl</code>. <code>bn compact audit</code> prints the
+note, recap and unproven criteria for the compacted session to check itself against, and logs a
+<code>restore</code> with an honest outcome: <code>resumed</code> onto a fresh recap, else
+<code>rebuilt</code> from the note.
+<span class="src">crates/bn-core/src/compact/ · crates/bn-cli/src/cmd/compact/</span>
+</p>
+
 <h2>Reference notes: knowledge that outlives the branch</h2>
 
 <p>

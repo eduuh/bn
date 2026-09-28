@@ -42,6 +42,8 @@ pub(super) fn route(cfg: &Config, action: CmdShellUi, json: bool) {
         }
         CmdShellUi::Close { achievement, force } => {
             let ctx = resolve_or_exit(cfg);
+            // Read readiness before closing: the worktree may be reclaimed right after.
+            let (proof, _) = bn_core::proof::readiness_now(cfg, &ctx, None);
             match commands::close(cfg, &ctx, &today(), achievement.as_deref()) {
                 Ok(o) => {
                     if json {
@@ -65,6 +67,20 @@ pub(super) fn route(cfg: &Config, action: CmdShellUi, json: bool) {
                             for c in &o.unmet_criteria {
                                 eprintln!("  - [ ] {c}");
                             }
+                        }
+                        let unproven: Vec<&str> = proof
+                            .items
+                            .iter()
+                            .filter(|i| {
+                                !matches!(i.state, bn_core::proof::ItemState::Accepted { .. })
+                            })
+                            .map(|i| i.id.as_str())
+                            .collect();
+                        if !unproven.is_empty() {
+                            eprintln!(
+                                "⚠ no accepted evidence for: {} (see `bn proof`)",
+                                unproven.join(", ")
+                            );
                         }
                         if !o.uncaptured_links.is_empty() {
                             eprintln!(

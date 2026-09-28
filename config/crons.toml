@@ -47,7 +47,7 @@ job = "tick-5m"
 on_calendar = "*:0/5"
 persistent = true
 randomized_delay = "30s"
-description = "bn — 5-minute tick: tools-reconcile (restart downed managed tools), routine-tick (personal schedule coach), attention-sync (refresh the prefix-J attention cache)"
+description = "bn — 5-minute tick: tools-reconcile (restart downed managed tools), coord-tick (queue nudges + overdue alerts), attention-sync (refresh the prefix-J attention cache), tmux-reconcile, tmux-keylog"
 
 [[cron]]
 job = "tick-10m"

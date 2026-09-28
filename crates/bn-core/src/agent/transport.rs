@@ -136,7 +136,10 @@ impl AgentTransport for TmuxTransport {
     }
 
     fn liveness(&self) -> Liveness {
-        if crate::tmux::tmux_ok(&["display-message", "-p", "-t", &self.target, "#{window_id}"]) {
+        // `list-panes`, not `display-message`: for `=session:=window` naming a window that doesn't
+        // exist, tmux 3.7's `display-message` falls back to the session's *current* window and
+        // exits 0, so every name in a live session read as Live. `list-panes` fails as it should.
+        if crate::tmux::tmux_ok(&["list-panes", "-t", &self.target, "-F", "#{pane_id}"]) {
             Liveness::Live
         } else {
             Liveness::Unreachable

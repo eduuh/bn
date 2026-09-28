@@ -176,7 +176,7 @@ schedule language is systemd <code>OnCalendar</code> — everywhere, including m
 
 <p>
 Several ticks fold multiple jobs behind one timer to cut timer churn:
-<code>tick-5m</code> runs tools-reconcile, routine-tick, attention-sync and tmux-reconcile;
+<code>tick-5m</code> runs tools-reconcile, coord-tick, attention-sync, tmux-reconcile and tmux-keylog;
 <code>tick-10m</code> runs auto-review-trigger, attention-auto-trigger and agent-supervise;
 <code>tick-15m</code> runs main-sync, auto-review-poll and cron-health. Each child still records
 its own <code>cron_run</code> event, so per-job rows survive.

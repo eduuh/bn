@@ -29,6 +29,12 @@ mod on_cmd;
 pub(crate) use on_cmd::OnCmd;
 mod control_cmd;
 pub(crate) use control_cmd::ControlCmd;
+mod verify_args;
+pub(crate) use verify_args::VerifyArgs;
+pub(crate) mod coord_group;
+pub(crate) use coord_group::{CmdCoord, CompactCmd, ContextCmd, ProofCmd, QueueCmd, WatchdogCmd};
+mod issue_kind;
+pub(crate) use issue_kind::IssueKindArg;
 
 // The clap surface is split into flattened group sub-enums purely to bound the per-enum
 // stack frame that clap-derive's generated `augment_subcommands` allocates in unoptimized
@@ -246,28 +252,14 @@ pub(crate) enum CmdIntake {
     /// Run this worktree's verification gate (all available `build`, `test`, and `lint` jobs) and record the
     /// PASS/FAIL to the branch note's Progress. Exits non-zero on failure, so an agent can gate
     /// "done" on it (see `bn dispatch --verify`). Runs in the current worktree, like `bn build`.
-    Verify {
-        /// Job to run instead of the aggregate default gate.
-        #[arg(long)]
-        job: Option<String>,
-        /// Skip the bn-web UI gate (npm ci + build + vitest) even when `crates/bn-web/ui` changed.
-        #[arg(long)]
-        no_ui: bool,
-    },
+    Verify(VerifyArgs),
     /// The no-mistake pre-land gate: rebase this worktree's HEAD onto a freshly-fetched
     /// `origin/main` in a *disposable* worktree, then run the repo's aggregate verify gate on THAT
     /// rebased head. Exits non-zero unless green, so an agent self-gates before
     /// reporting done and `bn wt merge` refuses to land a red or stale-base PR. Kills the "green on
     /// a stale base" class: the suite runs against current main + your changes, in an isolated
     /// checkout — your own worktree is never touched.
-    Gate {
-        /// Job to run instead of the aggregate default gate.
-        #[arg(long)]
-        job: Option<String>,
-        /// Skip the bn-web UI gate (npm ci + build + vitest) even when `crates/bn-web/ui` changed.
-        #[arg(long)]
-        no_ui: bool,
-    },
+    Gate(VerifyArgs),
     /// Why does this code exist? Blame a file (or inspect a commit) and resolve its `BN-Note:`
     /// trailers back to the branch notes that produced it — goal, decisions, matching done
     /// todos — including closed and archived notes. The read side of `bn hooks install`.
@@ -694,7 +686,7 @@ pub(crate) use forge_app::ForgeAppCmd;
 pub(crate) use links_cmd::LinksCmd;
 pub(crate) use machine_cmd::MachineCmd;
 pub(crate) use shell_ui_cmd::CmdShellUi;
-pub(crate) use staff_group::CmdStaff;
+pub(crate) use staff_group::{CmdStaff, HandoffCmd};
 pub(crate) use tools_cmd::ToolsCmd;
 pub(crate) use worker_cmd::WorkerCmd;
 
@@ -1058,6 +1050,8 @@ pub(crate) enum Command {
     GitPr(CmdGitPr),
     #[command(flatten)]
     Misc(CmdMisc),
+    #[command(flatten)]
+    Coord(CmdCoord),
 }
 
 #[derive(Subcommand, Debug)]
@@ -1750,49 +1744,6 @@ pub(crate) enum IssueCmd {
         /// Validate and print the decomposition without creating issues or starting agents.
         #[arg(long)]
         dry_run: bool,
-    },
-}
-
-/// The problem kind for `bn issue file`, each mapping to a canonical label.
-#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum IssueKindArg {
-    Bug,
-    Friction,
-    Blocker,
-    Enhancement,
-}
-
-#[derive(Subcommand, Debug)]
-pub(crate) enum HandoffCmd {
-    /// Capture the resume packet (markdown + JSON) beside the note from its current state, plus
-    /// any author-supplied forward-looking layers: bn handoff write.
-    Write {
-        /// The narrative (layer 2): a few sentences on why it looks this way. Repeatable words
-        /// are joined.
-        #[arg(long, value_name = "TEXT", num_args = 1..)]
-        narrative: Vec<String>,
-        /// A decision deferred to the next session (layer 3). Repeat the flag for several.
-        #[arg(long = "defer", value_name = "TEXT")]
-        defer: Vec<String>,
-        /// An extra open question beyond the note's asks (layer 4). Repeat for several.
-        #[arg(long = "question", value_name = "TEXT")]
-        question: Vec<String>,
-        /// An explicit priority-queue entry (layer 5), in order. Repeat for the queue; when
-        /// omitted the queue defaults to the note's open todos.
-        #[arg(long = "next", value_name = "TEXT")]
-        next: Vec<String>,
-        #[arg(long)]
-        repo: Option<String>,
-        #[arg(long)]
-        branch: Option<String>,
-    },
-    /// Print the session-start orientation from the stored packet (default — same as bare
-    /// `bn handoff`). Falls back to composing one from the note when none was written.
-    Read {
-        #[arg(long)]
-        repo: Option<String>,
-        #[arg(long)]
-        branch: Option<String>,
     },
 }
 

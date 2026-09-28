@@ -39,7 +39,10 @@ case "$DISTRO" in *[!A-Za-z0-9._-]*) die "unexpected distro name '$DISTRO'" ;; e
 TASK=bn-wsl-keepalive
 # The keeper, as it runs inside WSL. A login shell so bn and nvm are on PATH; `exec sleep` keeps
 # exactly one long-lived process holding the distro.
-KEEPER="sh \$HOME/.config/bn/repo/config/jobs/tunnel-auto.sh; tmux has-session -t main 2>/dev/null || tmux new-session -d -s main; exec sleep infinity"
+# `main` first, then a pause for tmux-continuum's restore, then the tunnels: whichever session
+# exists first is the one the restore reuses, and a `bn-tunnels` made first collected the restored
+# `bn` agent windows (2026-09-27).
+KEEPER="tmux has-session -t main 2>/dev/null || tmux new-session -d -s main; sleep 60; sh \$HOME/.config/bn/repo/config/jobs/tunnel-auto.sh; exec sleep infinity"
 
 keeper_running() {
   ps "Get-CimInstance Win32_Process -Filter \"Name='wsl.exe'\" | Where-Object { \$_.CommandLine -like '*tunnel-auto.sh*sleep infinity*' } | Measure-Object | Select-Object -ExpandProperty Count" | tail -n 1 | tr -dc '0-9'

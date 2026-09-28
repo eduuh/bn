@@ -32,6 +32,10 @@ use serde_json::json;
 
 use bn_core::skills::{load_skill_set, Skill};
 
+mod context_tools;
+mod proof_tools;
+mod queue_tools;
+
 pub struct BnServer {
     cfg: Config,
     /// How each call decides which branch note to act on: a shared HTTP transport hands the
@@ -119,6 +123,10 @@ struct RefArgs {
     /// `all` (both). Defaults to `all`.
     #[serde(default)]
     scope: Option<String>,
+    /// Read only this `## ` section of the named reference (e.g. `gotchas`), not the whole body.
+    /// `name#section` works too.
+    #[serde(default)]
+    section: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -150,6 +158,10 @@ struct HandoffWriteArgs {
     /// Explicit priority queue, in order. Omit to default to the note's open todos.
     #[serde(default)]
     priority_queue: Vec<String>,
+    /// Drop the previous packet's author layers. By default any layer left empty here is carried
+    /// forward from the last packet, so writing only a narrative keeps the deferred decisions.
+    #[serde(default)]
+    replace: bool,
 }
 
 #[tool_router]
@@ -161,6 +173,12 @@ impl BnServer {
             skill_dirs,
             write_lock: std::sync::Mutex::new(()),
         }
+    }
+
+    /// Every tool this server serves: the note tools here plus the queue tools in
+    /// [`queue_tools`], which live apart to keep this file under the size ratchet.
+    fn all_tools() -> rmcp::handler::server::router::tool::ToolRouter<Self> {
+        Self::tool_router() + Self::queue_router() + Self::proof_router() + Self::context_router()
     }
 
     /// Every effective skill, freshly merged from `skill_dirs` (higher tiers override lower ones
@@ -263,11 +281,25 @@ impl BnServer {
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let ctx = self.resolve(&ctx)?;
+        let check = match a.pct {
+            Some(p) if p < 100 => bn_core::proof::DoneCheck::Clear,
+            _ => bn_core::proof::check_done(&self.cfg, &ctx, &a.query),
+        };
+        if let bn_core::proof::DoneCheck::Refuse(why) = &check {
+            return Err(ErrorData::invalid_params(
+                format!("not ticked: {why}"),
+                None,
+            ));
+        }
         let out = {
             let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
             commands::done(&self.cfg, &ctx, &a.query, &today(), a.pct).map_err(cmd_err)?
         };
-        Ok(CallToolResult::structured(payload::done_data(&out)))
+        let mut data = payload::done_data(&out);
+        if let bn_core::proof::DoneCheck::Warn(why) = check {
+            data["unproven"] = serde_json::Value::String(why);
+        }
+        Ok(CallToolResult::structured(data))
     }
 
     #[tool(
@@ -334,11 +366,11 @@ impl BnServer {
         let ctx = self.resolve(&ctx)?;
         let note = store::read(&self.cfg.note_file(&ctx)).ok();
         let handoff_available = bn_core::handoff::read(&self.cfg, &ctx).is_some();
-        Ok(CallToolResult::structured(payload::context_data(
-            note.as_ref(),
-            &ctx,
-            handoff_available,
-        )))
+        let mut data = payload::context_data(note.as_ref(), &ctx, handoff_available);
+        if let Some(queue) = queue_tools::summary(&ctx) {
+            data["queue"] = queue;
+        }
+        Ok(CallToolResult::structured(data))
     }
 
     #[tool(
@@ -394,6 +426,7 @@ impl BnServer {
             deferred: a.deferred,
             questions: a.questions,
             priority_queue: a.priority_queue,
+            replace: a.replace,
         };
         let handoff = {
             let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -449,14 +482,34 @@ impl BnServer {
 
         // With a name: the first scope that has a match wins, so a repo note shadows a global
         // standard of the same name -- the more specific knowledge is the one you asked for.
-        if let Some(name) = a.name.as_deref() {
+        if let Some(query) = a.name.as_deref() {
+            let (name, inline) = references::split_ref(query);
+            let section = a.section.as_deref().or(inline);
             for scope in &scopes {
                 if let Some((r, body)) = references::read_in(scope, name) {
+                    let sections: Vec<_> = references::sections(&body)
+                        .into_iter()
+                        .map(
+                            |(h, t)| json!({"heading": h, "tokens": bn_core::tokens::estimate(&t)}),
+                        )
+                        .collect();
+                    let body = match section {
+                        None => body,
+                        Some(sec) => references::section_of(&body, sec).ok_or_else(|| {
+                            ErrorData::invalid_params(
+                                format!("{} has no section '{sec}' -- see `sections`", r.name),
+                                None,
+                            )
+                        })?,
+                    };
                     return Ok(CallToolResult::structured(json!({
                         "scope": scope.label(),
                         "name": r.name,
+                        "section": section,
                         "summary": r.summary,
                         "path": r.path.display().to_string(),
+                        "tokens": bn_core::tokens::estimate(&body),
+                        "sections": sections,
                         "body": body,
                     })));
                 }
@@ -473,10 +526,15 @@ impl BnServer {
         let mut references_out = Vec::new();
         for scope in &scopes {
             for r in references::list_in(scope) {
+                // What reading it would cost, so a caller can budget before it asks.
+                let tokens = std::fs::read_to_string(&r.path)
+                    .map(|b| bn_core::tokens::estimate(&b))
+                    .unwrap_or(0);
                 references_out.push(json!({
                     "scope": scope.label(),
                     "name": r.name,
                     "summary": r.summary,
+                    "tokens": tokens,
                 }));
             }
         }
@@ -517,7 +575,7 @@ impl BnServer {
     }
 }
 
-#[tool_handler]
+#[tool_handler(router = Self::all_tools())]
 impl ServerHandler for BnServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(
@@ -543,6 +601,18 @@ impl ServerHandler for BnServer {
              again — a PR, a work item or PBI, a portal blade, a dashboard, a docs page — \
              without waiting to be asked, and especially as a pull request completes, when those \
              links are about to leave with the worktree. \
+             Work handed between agents goes through the queue, not a message: a message \
+             informs, a queue row is owned. bn_queue_create asks another seat (repo:branch or \
+             human:<name>) for work; bn_queue_list shows this seat's rows; claim before starting \
+             (bn_queue_claim); finish with bn_queue_close, whose note must say where the work \
+             went, or pass it on with bn_queue_handoff; park blocked work with bn_queue_block \
+             and a wake trigger rather than sitting on it. These act as this branch's seat -- \
+             only a row's destination may name another. bn_watchdog_checkin schedules a durable \
+             check-in to yourself. bn_proof_show reports done-when readiness from recorded \
+             evidence; bn_proof_add attaches evidence, which counts only once someone else \
+             accepts it. bn_context_profile composes a token-budgeted context profile for this \
+             branch; bn_context_get serves one piece (a reference section, a skill, a file \
+             section). \
              Two tools are repo-scoped rather than branch-scoped, because the knowledge \
              outlives the branch: bn_ref reads this repo's reference notes (call it with no \
              name for the cheap index before assuming anything about how the repo builds or \

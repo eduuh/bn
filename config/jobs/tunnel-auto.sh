@@ -40,6 +40,17 @@ stamp="$cache/tunnel-auto.repaired"
 mkdir -p "$cache"
 exec < /dev/null
 
+# fresh <file> <seconds> -- the file was touched within the last <seconds>. A timestamp in the
+# future counts as stale: WSL's clock drifts while a laptop sleeps and jumps when corrected, and a
+# `find -mmin -5` on a future-dated marker stayed true for hours, so a hung forwarder was never
+# restarted (2026-09-27).
+fresh() {
+  [ -e "$1" ] || return 1
+  _m=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null) || return 1
+  _age=$(( $(date +%s) - _m ))
+  [ "$_age" -ge 0 ] && [ "$_age" -lt "$2" ]
+}
+
 is_host=0; [ -f "$HOME/.ssh/bn-sshd/sshd_config" ] && is_host=1
 hosts=$(awk '/^# >>> bn tunnel /{print $5}' "$HOME/.ssh/config" 2>/dev/null)
 if [ "$is_host" = 0 ] && [ -z "$hosts" ]; then
@@ -85,7 +96,7 @@ if ! take_lock; then
   # lock older than 20 minutes is taken over, so one dead pass cannot stall every later one
   # (2026-09-27: a lock left at 07:54 stopped every repair for ten minutes).
   holder=$(cat "$lock/pid" 2>/dev/null)
-  if { [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; } || [ -n "$(find "$lock" -maxdepth 0 -mmin +20 2>/dev/null)" ]; then
+  if { [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; } || ! fresh "$lock" 1200; then
     rm -rf "$lock" && take_lock
   fi
 fi
@@ -95,7 +106,7 @@ fi
 # watchdog, tmux at server start, or the tunnel-auto timer (every 5 minutes, so tunnels come back
 # after a reboot or WSL restart even before anyone opens tmux).
 repair_due=0
-[ -z "$(find "$stamp" -mmin -15 2>/dev/null)" ] && repair_due=1
+fresh "$stamp" 900 || repair_due=1
 [ "$have_lock" = 1 ] && { health || repair_due=1; }
 
 if [ "$have_lock" = 1 ] && [ "$repair_due" = 1 ]; then
@@ -109,7 +120,7 @@ if [ "$have_lock" = 1 ] && [ "$repair_due" = 1 ]; then
   # churned every pass.
   for _h in $(awk '$2 == "down" && $1 != "host" {print $1}' "$status"); do
     _mark="$cache/tunnel-restarted.$_h"
-    [ -n "$(find "$_mark" -mmin -5 2>/dev/null)" ] && continue
+    fresh "$_mark" 300 && continue
     for _w in $(tmux list-windows -a -F '#{session_name}:#{window_name}' 2>/dev/null | grep ":tunnel-$_h\$"); do
       tmux kill-window -t "$_w" 2>/dev/null && echo "--- $(date '+%F %T') restarted $_w (ssh check failed)" >> "$log"
     done

@@ -348,6 +348,7 @@ mod tests {
             cache_write_tokens: 0,
             control: Default::default(),
             task: None,
+            context: None,
         }
     }
 
