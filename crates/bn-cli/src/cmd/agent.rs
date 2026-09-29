@@ -589,6 +589,108 @@ pub(crate) fn resolve_tmux_target(cfg: &Config, target: &str) -> String {
         .as_deref()
         .map_or_else(|| tmux_exact_target(target), tmux_exact_target)
 }
+
+fn ssh_tmux_command(args: &[&str]) -> String {
+    std::iter::once("tmux".to_string())
+        .chain(args.iter().map(|a| wt::shq(a)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn ssh_tmux_output(host: &str, args: &[&str]) -> Option<std::process::Output> {
+    let remote_cmd = ssh_tmux_command(args);
+    std::process::Command::new("ssh")
+        .args(["-tt", "-o", "ControlPath=none", host, remote_cmd.as_str()])
+        .output()
+        .ok()
+}
+
+fn ssh_tmux_ok(host: &str, args: &[&str]) -> bool {
+    ssh_tmux_output(host, args).is_some_and(|out| out.status.success())
+}
+
+/// A tmux transport that reaches a remote host over SSH first, then speaks to the remote tmux
+/// server there. Used for `bn agent launch --host` and the live steering path it unlocks.
+struct SshTmuxTransport {
+    host: String,
+    target: String,
+}
+
+impl SshTmuxTransport {
+    fn new(host: &str, target: &str) -> Self {
+        Self {
+            host: host.to_string(),
+            target: tmux_exact_target(target),
+        }
+    }
+
+    fn buffer_name(&self) -> String {
+        format!(
+            "bn-{}-{}",
+            self.host.replace(['=', ':', '/', '.'], "-"),
+            self.target
+                .trim_start_matches('=')
+                .replace(['=', ':', '/', '.'], "-")
+        )
+    }
+}
+
+impl bn_core::agent::AgentTransport for SshTmuxTransport {
+    fn write_keys(&self, keys: &[bn_core::agent::Key]) -> bool {
+        let mut ok = true;
+        for key in keys {
+            ok &= match key {
+                bn_core::agent::Key::Text(text) => {
+                    let buf = self.buffer_name();
+                    ssh_tmux_ok(
+                        &self.host,
+                        &["set-buffer", "-b", &buf, "--", text],
+                    ) && ssh_tmux_ok(
+                        &self.host,
+                        &["paste-buffer", "-d", "-b", &buf, "-t", &self.target],
+                    )
+                }
+                bn_core::agent::Key::Submit => {
+                    ssh_tmux_ok(&self.host, &["send-keys", "-t", &self.target, "-H", "0d"])
+                }
+                bn_core::agent::Key::Escape => {
+                    ssh_tmux_ok(&self.host, &["send-keys", "-t", &self.target, "Escape"])
+                }
+                bn_core::agent::Key::Digit(d) => ssh_tmux_ok(
+                    &self.host,
+                    &["send-keys", "-t", &self.target, &d.to_string()],
+                ),
+                bn_core::agent::Key::Up => {
+                    ssh_tmux_ok(&self.host, &["send-keys", "-t", &self.target, "Up"])
+                }
+                bn_core::agent::Key::Down => {
+                    ssh_tmux_ok(&self.host, &["send-keys", "-t", &self.target, "Down"])
+                }
+            };
+        }
+        ok
+    }
+
+    fn read_screen(&self, lines: usize) -> Option<Vec<String>> {
+        let raw = ssh_tmux_output(&self.host, &["capture-pane", "-p", "-t", &self.target])?;
+        if !raw.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&raw.stdout);
+        Some(bn_core::agent::tail(stdout.as_ref(), lines))
+    }
+
+    fn liveness(&self) -> bn_core::agent::Liveness {
+        if ssh_tmux_ok(
+            &self.host,
+            &["list-panes", "-t", &self.target, "-F", "#{pane_id}"],
+        ) {
+            bn_core::agent::Liveness::Live
+        } else {
+            bn_core::agent::Liveness::Unreachable
+        }
+    }
+}
 /// The transport that can write to `target`.
 ///
 /// A resolved `repo:branch` goes through the channel join first so future non-tmux endpoints can
@@ -599,6 +701,10 @@ pub(crate) fn resolve_agent_transport(cfg: &Config, target: &str) -> Box<dyn bn_
         return Box::new(bn_core::agent::TmuxTransport::new(target));
     }
     if let Some((repo, branch)) = target.split_once(':') {
+        if let Some(host) = recorded_host(cfg, repo, branch) {
+            let tmux = resolve_tmux_target(cfg, target);
+            return Box::new(SshTmuxTransport::new(&host, &tmux));
+        }
         if let Some(endpoint) = resolve_agent_channel(cfg, repo, branch).endpoint() {
             return bn_core::agent::transport_for(&endpoint);
         }
@@ -812,6 +918,62 @@ impl LaunchPlan {
     }
 }
 
+fn launch_argv(harness: Harness, plan: &LaunchPlan) -> Vec<String> {
+    let mut args = vec!["agent".to_string(), "launch".to_string(), harness.bin().to_string()];
+    if let Some(seed) = &plan.seed {
+        args.push("--seed".to_string());
+        args.push(seed.clone());
+    }
+    if plan.yolo_force {
+        args.push("--yolo".to_string());
+    }
+    if plan.fresh {
+        args.push("--fresh".to_string());
+    }
+    if let Some(session) = &plan.session {
+        args.push("--session".to_string());
+        args.push(session.clone());
+    }
+    if let Some(resume) = &plan.resume_session {
+        args.push("--resume-session".to_string());
+        args.push(resume.clone());
+    }
+    for dir in &plan.add_dirs {
+        args.push("--add-dir".to_string());
+        args.push(dir.clone());
+    }
+    if !plan.passthrough.is_empty() {
+        args.push("--".to_string());
+        args.extend(plan.passthrough.clone());
+    }
+    args
+}
+
+fn shell_join(parts: impl IntoIterator<Item = String>) -> String {
+    parts.into_iter().collect::<Vec<_>>().join(" ")
+}
+
+fn remote_launch_ssh_args(
+    host: &str,
+    remote_worktree: &std::path::Path,
+    harness: Harness,
+    plan: &LaunchPlan,
+) -> Vec<String> {
+    let bn_args = launch_argv(harness, plan);
+    let remote_cmd = format!(
+        "cd {} && {}",
+        wt::shq(&remote_worktree.to_string_lossy()),
+        shell_join(bn_args.into_iter().map(|a| wt::shq(&a)))
+    );
+    vec![
+        "-tt".to_string(),
+        "-o".to_string(),
+        "ControlPath=none".to_string(),
+        host.to_string(),
+        remote_cmd,
+    ]
+}
+
 fn controller_launch() -> bool {
     let controller_id = std::env::var("BN_CONTROLLER_ID").ok();
     let worker_session_id = std::env::var("BN_WORKER_SESSION_ID").ok();
@@ -865,6 +1027,7 @@ pub(crate) struct LaunchedSession<'a> {
     pub(crate) harness: &'a str,
     pub(crate) session_id: &'a str,
     pub(crate) worktree: &'a str,
+    pub(crate) host: Option<&'a str>,
     pub(crate) work_class: bn_core::cost::WorkClass,
     pub(crate) task_name: Option<&'a str>,
     pub(crate) controller_id: Option<&'a str>,
@@ -884,6 +1047,10 @@ pub(crate) fn record_launched_session(cfg: &Config, s: LaunchedSession<'_>) {
     // Idempotent on the exact line: `bn dispatch --attach` records, then execs a launcher that
     // reaches this same writer, and one session should leave one record.
     let _ = commands::add(cfg, s.ctx, "collab", &line, Some(&line), &today());
+    if let Some(host) = s.host {
+        let line = format!("agent-host: {host}");
+        let _ = commands::add(cfg, s.ctx, "collab", &line, Some(&line), &today());
+    }
     bn_core::cost::attribute_session(bn_core::cost::SessionLaunch {
         session_id: s.session_id,
         work_class: s.work_class,
@@ -894,6 +1061,19 @@ pub(crate) fn record_launched_session(cfg: &Config, s: LaunchedSession<'_>) {
         worktree: Some(s.worktree),
         controller_id: s.controller_id,
     });
+}
+
+fn recorded_host(cfg: &Config, repo: &str, branch: &str) -> Option<String> {
+    let ctx = Resolved {
+        repo: repo.to_string(),
+        branch: branch.to_string(),
+    };
+    let note = bn_core::store::read(&cfg.note_file(&ctx)).ok()?;
+    note.front.collab.iter().rev().find_map(|it| {
+        let rest = it.text.trim().strip_prefix("agent-host:")?;
+        let host = rest.trim();
+        (!host.is_empty()).then(|| host.to_string())
+    })
 }
 
 /// Whether the user's own harness arguments already decide which session this launch runs in.
@@ -1076,6 +1256,7 @@ fn enforce_launch_placement(
                         harness: harness.bin(),
                         session_id: sid,
                         worktree: &canonical.to_string_lossy(),
+                        host: None,
                         // A human typing `claude` in a worktree is shipping work, not running the
                         // fleet — the same class `bn dispatch` gives a worker.
                         work_class: bn_core::cost::WorkClass::Coding,
@@ -1194,6 +1375,7 @@ fn redirect_into_window(
             harness: harness.bin(),
             session_id: pinned_session,
             worktree: &worktree.to_string_lossy(),
+            host: None,
             work_class: bn_core::cost::WorkClass::Coding,
             task_name: None,
             controller_id: None,
@@ -1274,6 +1456,7 @@ fn redirect_from_main(worktree: &std::path::Path, harness: Harness) -> ! {
 pub(crate) fn emit_agent_launch(
     cfg: &Config,
     harness: Option<String>,
+    host: Option<&str>,
     seed: Option<String>,
     seed_file: Option<String>,
     yolo: bool,
@@ -1298,6 +1481,11 @@ pub(crate) fn emit_agent_launch(
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
+    let canonical = std::fs::canonicalize(&cwd).unwrap_or_else(|_| std::path::PathBuf::from(&cwd));
+    let ctx = resolve_launch_context(cfg, &canonical).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(1);
+    });
 
     // Pin a session id when the caller didn't give one, exactly as `bn dispatch` does. Without it a
     // fresh hand-typed launch takes whatever id the harness invents, which bn never learns — and an
@@ -1342,11 +1530,45 @@ pub(crate) fn emit_agent_launch(
 
     enforce_launch_placement(
         cfg,
-        std::path::Path::new(&cwd),
+        &canonical,
         harness,
         effective.as_deref(),
         &pinned_session,
     );
+
+    if let Some(host) = host {
+        let Some(extra) = cfg.hosts.get(host) else {
+            eprintln!("bn agent launch: unknown host '{host}' (add it under [hosts.{host}] or ~/.ssh/config)");
+            std::process::exit(1);
+        };
+        let Some(repo_root) = extra.repo_root.as_deref() else {
+            eprintln!("bn agent launch: host '{host}' is missing hosts.{host}.repo_root");
+            std::process::exit(1);
+        };
+        let remote_worktree = std::path::Path::new(repo_root).join(&ctx.repo).join(&ctx.branch);
+        if !remote_worktree.is_dir() {
+            eprintln!(
+                "bn agent launch: remote worktree missing: {}",
+                remote_worktree.display()
+            );
+            std::process::exit(1);
+        }
+        record_launched_session(
+            cfg,
+            LaunchedSession {
+                ctx: &ctx,
+                harness: harness.bin(),
+                session_id: effective.as_deref().unwrap_or(&pinned_session),
+                worktree: &canonical.to_string_lossy(),
+                host: Some(host),
+                work_class: bn_core::cost::WorkClass::Coding,
+                task_name: None,
+                controller_id: None,
+            },
+        );
+        let ssh_args = remote_launch_ssh_args(host, &remote_worktree, harness, &plan);
+        exec_harness("ssh", &ssh_args)
+    }
 
     match harness {
         Harness::Claude => {

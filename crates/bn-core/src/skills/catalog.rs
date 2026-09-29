@@ -517,6 +517,7 @@ mod tests {
             "bn_handoff_write",
             "bn_handoff_read",
             "bn_links_add",
+            "bn_links_list",
             "bn_ref",
             "bn_ref_append",
         ];

@@ -29,6 +29,109 @@ pub(crate) fn copy_to_clipboard(text: &str) -> bool {
     false
 }
 
+/// Copy rich HTML (with `plain` as the text alternative) so a paste into Teams, Outlook or a
+/// browser editor keeps the hyperlinks. Returns false when no HTML-capable tool exists; the
+/// caller then falls back to [`copy_to_clipboard`] with the plain text.
+///
+/// WSL goes first through Windows PowerShell, because the Windows clipboard is where Teams
+/// reads from. Both payloads travel base64-encoded inside the command, so no quoting or console
+/// codepage can mangle a non-ASCII name; the CF_HTML bytes go in as a stream so the byte offsets
+/// in its header stay exact.
+pub(crate) fn copy_html(html: &str, plain: &str) -> bool {
+    let script = format!(
+        "Add-Type -AssemblyName System.Windows.Forms;\
+         $h=[Convert]::FromBase64String('{}');\
+         $t=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{}'));\
+         $d=New-Object System.Windows.Forms.DataObject;\
+         $d.SetData('HTML Format',(New-Object IO.MemoryStream(,$h)));\
+         $d.SetData([System.Windows.Forms.DataFormats]::UnicodeText,$t);\
+         [System.Windows.Forms.Clipboard]::SetDataObject($d,$true)",
+        base64(cf_html(html).as_bytes()),
+        base64(plain.as_bytes()),
+    );
+    for ps in [
+        "powershell.exe",
+        "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+    ] {
+        let ok = std::process::Command::new(ps)
+            .args(["-NoProfile", "-NonInteractive", "-STA", "-Command", &script])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            return true;
+        }
+    }
+    let candidates: [(&str, &[&str]); 2] = [
+        ("wl-copy", &["--type", "text/html"]),
+        ("xclip", &["-selection", "clipboard", "-t", "text/html"]),
+    ];
+    for (cmd, args) in candidates {
+        if let Ok(mut child) = std::process::Command::new(cmd)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+        {
+            use std::io::Write;
+            if let Some(stdin) = child.stdin.as_mut() {
+                let _ = stdin.write_all(html.as_bytes());
+            }
+            if child.wait().map(|s| s.success()).unwrap_or(false) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Wrap an HTML fragment in the Windows `CF_HTML` clipboard format: a header of byte offsets
+/// (fixed ten-digit width, so the header's own length is known before the numbers are) followed
+/// by a document whose fragment is marked with `StartFragment`/`EndFragment` comments.
+pub(crate) fn cf_html(fragment: &str) -> String {
+    const HEADER: &str = "Version:0.9\r\nStartHTML:{sh}\r\nEndHTML:{eh}\r\n\
+                          StartFragment:{sf}\r\nEndFragment:{ef}\r\n";
+    let pad = |n: usize| format!("{n:010}");
+    let header_len = HEADER
+        .replace("{sh}", &pad(0))
+        .replace("{eh}", &pad(0))
+        .replace("{sf}", &pad(0))
+        .replace("{ef}", &pad(0))
+        .len();
+    let pre = "<html><body>\r\n<!--StartFragment-->";
+    let post = "<!--EndFragment-->\r\n</body></html>";
+    let start_fragment = header_len + pre.len();
+    let end_fragment = start_fragment + fragment.len();
+    let end_html = end_fragment + post.len();
+    let header = HEADER
+        .replace("{sh}", &pad(header_len))
+        .replace("{eh}", &pad(end_html))
+        .replace("{sf}", &pad(start_fragment))
+        .replace("{ef}", &pad(end_fragment));
+    format!("{header}{pre}{fragment}{post}")
+}
+
+/// Standard base64 (with padding). Only used to carry clipboard payloads into PowerShell, so a
+/// dependency would be more weight than these dozen lines.
+fn base64(bytes: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(A[(n >> (18 - 6 * i)) as usize & 63] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
 /// Open a URL in the default browser, trying each platform opener in the oracle's order.
 pub(crate) fn open_url(url: &str) -> bool {
     for (cmd, background) in [
@@ -322,4 +425,40 @@ pub(crate) fn git_capture(args: &[&str]) -> Option<String> {
 /// other than the one bn is running in, which is the whole point of `--path`/`--repo`.
 pub(crate) fn git_capture_in(args: &[&str], dir: &std::path::Path) -> Option<String> {
     crate::git::git_capture(args, Some(dir), false)
+}
+
+#[cfg(test)]
+mod clipboard_tests {
+    use super::*;
+
+    fn field(doc: &str, key: &str) -> usize {
+        let line = doc.lines().find(|l| l.starts_with(key)).unwrap();
+        line[key.len() + 1..].trim().parse().unwrap()
+    }
+
+    #[test]
+    fn cf_html_offsets_slice_back_to_the_fragment() {
+        let frag = r#"<a href="https://x.test/é">Ünïcode — name</a>"#;
+        let doc = cf_html(frag);
+        let bytes = doc.as_bytes();
+        let (sf, ef) = (field(&doc, "StartFragment"), field(&doc, "EndFragment"));
+        assert_eq!(&bytes[sf..ef], frag.as_bytes());
+        assert_eq!(field(&doc, "EndHTML"), bytes.len());
+        assert!(doc[field(&doc, "StartHTML")..].starts_with("<html>"));
+    }
+
+    #[test]
+    fn base64_matches_the_rfc_vectors() {
+        for (input, want) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64(input.as_bytes()), want);
+        }
+    }
 }

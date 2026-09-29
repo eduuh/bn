@@ -160,7 +160,7 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
                 }
             }
         },
-        CmdMisc::Links { action, query } => emit_links(cfg, action, query, json),
+        CmdMisc::Links(a) => emit_links(cfg, a.action, a.query, a.tag, json),
         CmdMisc::Ref {
             action,
             name,

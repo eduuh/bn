@@ -346,6 +346,7 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
             Some(AgentCmd::MemoryHook) => emit_memory_hook(cfg),
             Some(AgentCmd::Launch {
                 harness,
+                host,
                 seed,
                 seed_file,
                 yolo,
@@ -357,6 +358,7 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
             }) => cmd::agent::emit_agent_launch(
                 cfg,
                 harness,
+                host.as_deref(),
                 seed,
                 seed_file,
                 yolo,

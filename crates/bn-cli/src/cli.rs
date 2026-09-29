@@ -683,7 +683,7 @@ pub(crate) mod worker_cmd;
 pub(crate) use automation_cmd::CmdAutomation;
 pub(crate) use cron_cmd::CronCmd;
 pub(crate) use forge_app::ForgeAppCmd;
-pub(crate) use links_cmd::LinksCmd;
+pub(crate) use links_cmd::{LinksArgs, LinksCmd};
 pub(crate) use machine_cmd::MachineCmd;
 pub(crate) use shell_ui_cmd::CmdShellUi;
 pub(crate) use staff_group::{CmdStaff, HandoffCmd};
@@ -905,14 +905,11 @@ pub(crate) enum CmdMisc {
     /// Bare `bn links` opens the fzf picker, ranked by how often you actually use each link (and
     /// with the current repo's links first); `bn links <query>` skips the picker and opens the one
     /// match. `bn links add <url>` stores one, `bn links capture` harvests the note's PR and work
-    /// item. Stored cross-machine as `<work_root>/links.md`, synced with your notes.
+    /// item, `bn links copy` puts one on the clipboard as a hyperlink ready to paste into Teams.
+    /// In the picker, ctrl-y copies instead of opening and tab selects several. Stored
+    /// cross-machine as `<work_root>/links.md`, synced with your notes.
     #[command(args_conflicts_with_subcommands = true)]
-    Links {
-        #[command(subcommand)]
-        action: Option<LinksCmd>,
-        /// Enough of a link's name, tag or URL to identify it. Omit to open the picker.
-        query: Option<String>,
-    },
+    Links(LinksArgs),
     /// Reusable **reference** docs, in two scopes. Without `--repo` (#623): per-topic coding
     /// standards / preferences that shape how agents write code and how reviews check diffs — the
     /// sibling of `skills` (reusable *workflow* docs) for reusable *standards*, stored

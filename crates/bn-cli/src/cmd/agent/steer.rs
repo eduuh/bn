@@ -12,10 +12,10 @@
 //! unchanged.
 
 use super::{
-    resolve_agent_session, resolve_agent_transport, resolve_tmux_target, tmux_exact_target,
+    resolve_agent_session, resolve_agent_transport,
 };
 use crate::*;
-use bn_core::agent::{AgentTransport as _, Key};
+use bn_core::agent::Key;
 
 /// Build the `-p --resume` command for a harness (shared by the sync + detached steer paths).
 /// `None` for an unknown harness.
@@ -166,8 +166,20 @@ fn choose_channel(cfg: &Config, target: &str, requested: SteerChannel) -> SteerC
 }
 
 fn has_live_window(cfg: &Config, target: &str) -> bool {
-    let exact = tmux_exact_target(&resolve_tmux_target(cfg, target));
-    bn_core::agent::TmuxTransport::new(&exact).liveness() == bn_core::agent::Liveness::Live
+    resolve_agent_transport(cfg, target).liveness() == bn_core::agent::Liveness::Live
+}
+
+fn steer_landed_transport(transport: &dyn bn_core::agent::AgentTransport) -> bool {
+    for delay_ms in agent_live::SUBMIT_BACKOFF.verify_delays_ms() {
+        std::thread::sleep(std::time::Duration::from_millis(*delay_ms));
+        let Some(tail) = transport.read_screen(agent_live::TAIL_SCAN_LINES) else {
+            continue;
+        };
+        if agent_live::tail_confirms_submit(&tail) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Deliver `text` to `target` over the auto-selected channel, quietly. The shared primitive behind
@@ -192,9 +204,6 @@ pub(crate) fn deliver_instruction(cfg: &Config, target: &str, text: &str) -> boo
 /// Returns `(confirmed, pasted)` so a caller can tell "no such window" from "typed it but the TUI
 /// swallowed the Enter" — two failures with different fixes.
 fn deliver_via_keys(cfg: &Config, target: &str, msg: &str) -> (bool, bool) {
-    // Resolve both layers once: the window we verify against, and the transport that owns the
-    // actual write.
-    let window = resolve_tmux_target(cfg, target);
     let transport = resolve_agent_transport(cfg, target);
     let pasted =
         transport.write_keys(&[Key::Text(msg.to_string())]) && transport.write_keys(&[Key::Escape]);
@@ -205,7 +214,7 @@ fn deliver_via_keys(cfg: &Config, target: &str, msg: &str) -> (bool, bool) {
             if !transport.write_keys(&[Key::Submit]) {
                 break;
             }
-            if agent_live::steer_landed(&window) {
+            if steer_landed_transport(&*transport) {
                 confirmed = true;
                 break;
             }

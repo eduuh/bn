@@ -292,6 +292,7 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool, slot: Option<u3
                 continue;
             }
         }
+        crate::cmd::promote::apply_folder_trust(&slot_s, "copilot");
         // Advance and create both re-resolve the base; pin the slot to this run's commit.
         if head_sha(&slot_s).as_deref() != Some(base_sha.as_str()) {
             let _ = git_quiet(&["-C", &slot_s, "reset", "--quiet", "--hard", &base_sha]);

@@ -1085,6 +1085,7 @@ fn ensure_comparison_slot(
         }
     }
     warm_reset(&slot.to_string_lossy(), &bare_s);
+    crate::cmd::promote::apply_folder_trust(&slot.to_string_lossy(), "copilot");
     leases.slots.get_mut(&owner)?.comparison_slot = Some(n);
     log_pool_event(
         "pool_get",
@@ -1343,6 +1344,7 @@ fn resolve_dispatch_pool(cfg: &Config, repo: &str) -> Option<PoolCtx> {
 /// Open the slot's tmux window (unless suppressed) and print its path on stdout for the shell
 /// wrapper / agent to `cd` into.
 fn finish_get(ctx: &PoolCtx, slot: &Path, branch: &str, path_only: bool, no_tmux: bool) -> bool {
+    crate::cmd::promote::apply_folder_trust(&slot.to_string_lossy(), "copilot");
     if !path_only && !no_tmux {
         wt::open_worktree_window(&ctx.repo, &wt::sanitize_branch(branch), slot, false);
     }

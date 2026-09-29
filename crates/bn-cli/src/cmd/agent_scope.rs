@@ -148,12 +148,13 @@ mod tests {
     }
 
     /// `--allow-all-paths` is documented by Copilot as "disable file path verification" — the
-    /// same hole, spelled differently. `--allow-all-tools` must survive; that half is wanted.
+    /// same hole, spelled differently. `--allow-all` is the yolo launch flag bn now uses once the
+    /// slot has already been pre-trusted.
     #[test]
-    fn an_autonomous_copilot_launch_keeps_tools_but_not_paths() {
+    fn an_autonomous_copilot_launch_uses_allow_all_but_not_paths() {
         let args = build_copilot_args(&plan(None, false), None);
         assert!(!args.iter().any(|a| a == "--allow-all-paths"), "{args:?}");
-        assert!(args.iter().any(|a| a == "--allow-all-tools"), "{args:?}");
+        assert!(args.iter().any(|a| a == "--allow-all"), "{args:?}");
     }
 
     #[test]

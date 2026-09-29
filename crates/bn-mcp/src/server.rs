@@ -92,6 +92,23 @@ struct GoalArgs {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct LinksListArgs {
+    /// Only links carrying this tag, e.g. "icm", "permissions", "docs", "security".
+    #[serde(default)]
+    tag: Option<String>,
+    /// Only links belonging to this repo. Omit for every repo (this worktree's repo sorts first).
+    #[serde(default)]
+    repo: Option<String>,
+    /// Case-insensitive substring of the name, tags or URL.
+    #[serde(default)]
+    query: Option<String>,
+    /// At most this many links, best-ranked first. Default 20.
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct LinksAddArgs {
     /// The http(s) URL to store. Anything else is rejected — a stored link is handed straight
     /// to a browser.
@@ -99,7 +116,8 @@ struct LinksAddArgs {
     /// What to call it in the picker. Omit and it becomes the host plus the last path segment.
     #[serde(default)]
     name: Option<String>,
-    /// Tags to file it under, e.g. ["dri", "telemetry"]. Unlisted tags are kept, not rejected.
+    /// Tags to file it under, e.g. ["icm", "security"]. Unlisted tags are kept, not rejected.
+    /// Omit and tags are guessed from the host (ICM → icm, learn.microsoft.com → docs).
     #[serde(default)]
     tags: Vec<String>,
     /// Repository this link belongs to. Omit to use this worktree's repo; pass "" for none.
@@ -252,11 +270,17 @@ impl BnServer {
         };
         let out = {
             let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+            // Untagged: file it by host, the same guess the CLI makes.
+            let tags = if a.tags.is_empty() {
+                links::guess_tags(&a.url, &bn_core::resolver::link_tags())
+            } else {
+                a.tags.clone()
+            };
             links::add(
                 &self.cfg,
                 &a.url,
                 a.name.as_deref(),
-                &a.tags,
+                &tags,
                 repo.as_deref(),
                 &today(),
             )
@@ -269,6 +293,47 @@ impl BnServer {
             "tags": out.tags,
             "repo": out.repo,
         })))
+    }
+
+    #[tool(
+        name = "bn_links_list",
+        description = "Find links in the person-scoped link store, ranked the way the user's picker ranks them (this repo first, then by how often and how recently each was used). Filter by tag (icm, permissions, docs, security, ...), repo, or a substring of name/tags/URL. Each item carries a ready-to-paste `markdown` link. Read-only, and like bn_links_add it does not fail closed when no branch resolves. Use it before asking the user for a URL they have probably saved; for a paste into Teams, point them at `bn links copy <id>`, which copies a rich hyperlink."
+    )]
+    async fn bn_links_list(
+        &self,
+        Parameters(a): Parameters<LinksListArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let here = self.resolve(&ctx).ok().map(|c| c.repo);
+        let items = links::read(&self.cfg);
+        let tag = a.tag.map(|t| t.to_lowercase());
+        let query = a.query.map(|q| q.to_lowercase());
+        let out: Vec<_> = links::ranked(&items, here.as_deref(), &today())
+            .into_iter()
+            .filter(|l| tag.as_ref().is_none_or(|t| l.tags.contains(t)))
+            .filter(|l| a.repo.as_ref().is_none_or(|r| l.repo.as_ref() == Some(r)))
+            .filter(|l| {
+                query.as_ref().is_none_or(|q| {
+                    format!("{} {} {}", l.name, l.tags.join(" "), l.url)
+                        .to_lowercase()
+                        .contains(q)
+                })
+            })
+            .take(a.limit.unwrap_or(20))
+            .map(|l| {
+                serde_json::json!({
+                    "id": l.id,
+                    "url": l.url,
+                    "name": l.name,
+                    "tags": l.tags,
+                    "repo": l.repo,
+                    "markdown": format!("[{}]({})", l.name.replace(']', "\\]"), l.url),
+                })
+            })
+            .collect();
+        Ok(CallToolResult::structured(
+            serde_json::json!({ "items": out }),
+        ))
     }
 
     #[tool(
@@ -591,7 +656,7 @@ impl ServerHandler for BnServer {
              directory, so no per-call headers are needed; the shared HTTP transport instead \
              derives it per request (X-Bn-Repo/X-Bn-Branch headers or ?repo=&branch= query). \
              Either way, a call that resolves to no branch fails closed — with one deliberate \
-             exception, bn_links_add, described below. Start a session with \
+             exception, the link tools bn_links_add and bn_links_list, described below. Start a session with \
              bn_context (compact orientation: goal, counts, top todos, blockers, PR, next-step \
              hints), then use only the current-branch tools: bn_goal, bn_add, bn_done, bn_pr, \
              bn_cat, bn_status, bn_sync, bn_handoff_read, and bn_handoff_write. bn_links_add is \
@@ -600,7 +665,9 @@ impl ServerHandler for BnServer {
              then stored without a repo). Call it whenever a URL surfaces that will be wanted \
              again — a PR, a work item or PBI, a portal blade, a dashboard, a docs page — \
              without waiting to be asked, and especially as a pull request completes, when those \
-             links are about to leave with the worktree. \
+             links are about to leave with the worktree. bn_links_list finds stored links by \
+             tag (icm, permissions, docs, security, ...), repo or substring — check it before \
+             asking the user for a URL they have likely saved. \
              Work handed between agents goes through the queue, not a message: a message \
              informs, a queue row is owned. bn_queue_create asks another seat (repo:branch or \
              human:<name>) for work; bn_queue_list shows this seat's rows; claim before starting \

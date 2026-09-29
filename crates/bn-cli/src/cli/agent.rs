@@ -363,6 +363,9 @@ pub(crate) enum AgentCmd {
         /// Harness to launch: `copilot` (default) or `claude`.
         #[arg(value_name = "HARNESS")]
         harness: Option<String>,
+        /// Launch on a remote host alias from `[hosts]` / `~/.ssh/config`.
+        #[arg(long)]
+        host: Option<String>,
         /// Seed the first turn of a FRESH session with this prompt (ignored when resuming).
         #[arg(long)]
         seed: Option<String>,

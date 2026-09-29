@@ -356,9 +356,10 @@ impl Harness {
     ///
     /// So Claude takes `acceptEdits`: an agent still works freely inside its worktree, but a
     /// `Read` — or a `cat` shelled out to dodge one — outside it is refused. Copilot reaches the
-    /// same place by keeping `--allow-all-tools` and dropping `--allow-all-paths`, whose own help
-    /// text is "disable file path verification". Widen either deliberately with `--add-dir`, which
-    /// both CLIs spell the same way; see [`crate::agent`]'s launch path for what bn adds by default.
+    /// same place by using `--allow-all` once folder trust has already been granted; Copilot's
+    /// `--allow-all-paths` is the wider path bypass bn does not use. Widen either deliberately
+    /// with `--add-dir`, which both CLIs spell the same way; see [`crate::agent`]'s launch path
+    /// for what bn adds by default.
     ///
     /// SECURITY: these still grant a blanket *tool* bypass and must only be applied to trusted,
     /// self-authored runs — never to a launch that ingests untrusted content (e.g. a review of an
@@ -366,7 +367,7 @@ impl Harness {
     /// worktree. The gate stays with the caller; this only defines *what* the autonomy is.
     pub fn autonomy_args(self) -> &'static [&'static str] {
         match self {
-            Harness::Copilot => &["--allow-all-tools"],
+            Harness::Copilot => &["--allow-all"],
             Harness::Claude => &["--permission-mode", "acceptEdits"],
         }
     }

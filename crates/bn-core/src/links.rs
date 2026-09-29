@@ -25,7 +25,9 @@ use serde::{Deserialize, Serialize};
 /// Absent and empty mean different things: a machine whose config predates the setting should
 /// still get a working vocabulary, while an explicit `tags = []` is someone saying they want
 /// none. Kept short on purpose — six tags you use beat twenty you don't.
-pub const DEFAULT_TAGS: [&str; 9] = [
+pub const DEFAULT_TAGS: [&str; 11] = [
+    "icm",
+    "docs",
     "domains",
     "dri",
     "telemetry",
@@ -332,6 +334,68 @@ pub fn default_name(url: &str) -> String {
     }
 }
 
+/// Host → tag rules for [`guess_tags`]. A rule matches the host exactly, as a `.suffix`, or as a
+/// `prefix.`/`prefix*` start. Kept small and obvious: a wrong guess is a tag you have to clean up.
+const GUESS_RULES: [(&str, &[&str]); 4] = [
+    ("icm", &[".example-incidents.com", "icm."]),
+    (
+        "docs",
+        &[
+            "learn.microsoft.com",
+            "docs.microsoft.com",
+            "docs.example.com",
+            "docs.",
+            ".readthedocs.io",
+        ],
+    ),
+    (
+        "permissions",
+        &[
+            "myaccess.microsoft.com",
+            "groups.example*",
+            "identity.example.com",
+        ],
+    ),
+    (
+        "security",
+        &["security.microsoft.com", ".sdl.example.com"],
+    ),
+];
+
+/// The URL's host, lowercased, without port or credentials.
+fn host(url: &str) -> String {
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let authority = authority.rsplit('@').next().unwrap_or(authority);
+    authority.split(':').next().unwrap_or("").to_lowercase()
+}
+
+/// Tags suggested by the URL's host, restricted to the active vocabulary so a config that
+/// dropped a tag never gets it back through a guess. Callers apply this only when no tags were
+/// given; `capture` never does, since its links are grouped by repo already.
+pub fn guess_tags(url: &str, vocab: &[String]) -> Vec<String> {
+    let host = host(url);
+    let known: Vec<String> = vocab.iter().map(|t| t.to_lowercase()).collect();
+    GUESS_RULES
+        .iter()
+        .filter(|(tag, _)| known.iter().any(|k| k == tag))
+        .filter(|(_, pats)| {
+            pats.iter().any(|p| {
+                if let Some(suffix) = p.strip_prefix('.') {
+                    host.ends_with(&format!(".{suffix}")) || host == suffix
+                } else if let Some(prefix) = p.strip_suffix('*') {
+                    host.starts_with(prefix)
+                } else if p.ends_with('.') {
+                    host.starts_with(p)
+                } else {
+                    host == *p
+                }
+            })
+        })
+        .map(|(tag, _)| tag.to_string())
+        .collect()
+}
+
 /// Split a comma-separated `--tags` value against the configured vocabulary.
 ///
 /// Returns `(accepted, unknown)` — both are stored. An unlisted tag is a warning, never a
@@ -414,6 +478,44 @@ pub fn tag_counts(items: &[Link]) -> std::collections::BTreeMap<String, usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn vocab() -> Vec<String> {
+        DEFAULT_TAGS.iter().map(|t| t.to_string()).collect()
+    }
+
+    #[test]
+    fn guess_tags_by_host() {
+        let v = vocab();
+        let g = |u: &str| guess_tags(u, &v);
+        assert_eq!(
+            g("https://portal.example-incidents.com/imp/v3/incidents/1"),
+            ["icm"]
+        );
+        assert_eq!(g("https://incidents.example.net/x"), ["icm"]);
+        assert_eq!(g("https://learn.microsoft.com/en-us/azure"), ["docs"]);
+        assert_eq!(g("https://docs.example.com/docs/x"), ["docs"]);
+        assert_eq!(g("https://docs.rs/serde"), ["docs"]);
+        assert_eq!(g("https://tokio.readthedocs.io/"), ["docs"]);
+        assert_eq!(
+            g("https://myaccess.microsoft.com/@x#/access-packages"),
+            ["permissions"]
+        );
+        assert_eq!(g("https://groups.example/GroupManagement"), ["permissions"]);
+        assert_eq!(g("https://security.microsoft.com:443/alerts"), ["security"]);
+        assert!(g("https://github.com/eduuh/bn/pull/1").is_empty());
+        // `.suffix` must match on a label boundary, not any substring.
+        assert!(g("https://notexample-incidents.com/").is_empty());
+    }
+
+    #[test]
+    fn guess_tags_respects_vocabulary() {
+        let v = vec!["security".to_string()];
+        assert!(guess_tags("https://portal.example-incidents.com/x", &v).is_empty());
+        assert_eq!(
+            guess_tags("https://security.microsoft.com/", &v),
+            ["security"]
+        );
+    }
 
     fn link(name: &str, uses: u32, last: Option<&str>) -> Link {
         Link {

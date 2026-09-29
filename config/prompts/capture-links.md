@@ -28,7 +28,9 @@ actually opened.
      subscription access request" beats "Microsoft Azure".
    - `tags` from the configured vocabulary (`bn links tags` prints it, with counts). A link takes
      as many as apply. An unlisted tag is kept, not rejected, so reach for a new one when nothing
-     fits — but check the set first, because six tags you use beat twenty you don't.
+     fits — but check the set first, because six tags you use beat twenty you don't. Omit `tags`
+     and they are guessed from the host: an ICM incident gets `icm`, learn.microsoft.com gets
+     `docs`, myaccess gets `permissions`, security.microsoft.com gets `security`.
    - the `repo`, when the link belongs to one. Those sort first when you are in that repo.
 
 4. **Don't fetch anything.** Names are written, never scraped. If you cannot say what a link is

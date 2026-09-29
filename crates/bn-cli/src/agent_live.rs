@@ -350,7 +350,7 @@ fn capture_tail(target: &str, n: usize) -> Vec<String> {
 
 /// How many non-empty tail lines to scan for the pane's live signal — enough to cover the input
 /// box (top border / prompt / bottom border) plus the footer/spinner line beneath it.
-const TAIL_SCAN_LINES: usize = 6;
+pub(crate) const TAIL_SCAN_LINES: usize = 6;
 
 /// A pane tail's read on what the agent is doing *right now*, for when Plane A stayed silent. The
 /// fleet board and `bn agent live` already glance at the live pane; this classifies that glance so
@@ -454,7 +454,7 @@ impl SubmitBackoff {
         self.submit_attempts
     }
 
-    fn verify_delays_ms(self) -> &'static [u64] {
+    pub(crate) fn verify_delays_ms(self) -> &'static [u64] {
         self.verify_delays_ms
     }
 }
@@ -468,7 +468,7 @@ pub(crate) const SUBMIT_BACKOFF: SubmitBackoff = SubmitBackoff {
 /// turn started, and a bare empty Claude Code prompt means the box cleared after submission. A
 /// spinner-less pane still showing typed text means the harness's compose/autocomplete TUI ate the
 /// submit key. Pure over the tail → testable.
-fn tail_confirms_submit(tail: &[String]) -> bool {
+pub(crate) fn tail_confirms_submit(tail: &[String]) -> bool {
     tail_has_spinner(tail) || tail_has_bare_prompt(tail)
 }
 
@@ -477,6 +477,7 @@ fn tail_confirms_submit(tail: &[String]) -> bool {
 /// false after [`SUBMIT_BACKOFF`]'s verification window — the signal that the TUI swallowed the
 /// Enter and the message is sitting unsent in the box (#306), so the caller can retry or escalate
 /// to `--resume`.
+#[allow(dead_code)]
 pub(crate) fn steer_landed(target: &str) -> bool {
     for delay_ms in SUBMIT_BACKOFF.verify_delays_ms() {
         std::thread::sleep(std::time::Duration::from_millis(*delay_ms));

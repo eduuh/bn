@@ -564,6 +564,7 @@ pub(crate) fn emit_run(
             cfg,
             harness,
             None,
+            None,
             Some(path.display().to_string()),
             yolo,
             true,
@@ -578,6 +579,7 @@ pub(crate) fn emit_run(
         None => crate::cmd::agent::emit_agent_launch(
             cfg,
             harness,
+            None,
             Some(seed),
             None,
             yolo,

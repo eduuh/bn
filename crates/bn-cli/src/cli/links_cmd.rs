@@ -6,6 +6,18 @@
 //! variant carries `args_conflicts_with_subcommands` (the `bn ref` shape).
 use crate::*;
 
+/// `bn links`' own arguments: bare, a query, a tag filter, or one of [`LinksCmd`].
+#[derive(clap::Args, Debug)]
+pub(crate) struct LinksArgs {
+    #[command(subcommand)]
+    pub(crate) action: Option<LinksCmd>,
+    /// Enough of a link's name, tag or URL to identify it. Omit to open the picker.
+    pub(crate) query: Option<String>,
+    /// Show only links carrying this tag in the picker, e.g. `--tag icm`.
+    #[arg(long)]
+    pub(crate) tag: Option<String>,
+}
+
 #[derive(Subcommand, Debug)]
 pub(crate) enum LinksCmd {
     /// Store a link. The name defaults to the host plus the last path segment; re-adding a URL
@@ -23,6 +35,20 @@ pub(crate) enum LinksCmd {
         /// Defaults to the repo you are standing in; `--repo ""` stores it repo-agnostic.
         #[arg(long)]
         repo: Option<String>,
+    },
+    /// Copy links to the clipboard as hyperlinks, ready to paste into Teams or Outlook: the name
+    /// shows, the URL is behind it. A paste into plain text gets `name url` instead. Several
+    /// links copy as a bulleted list.
+    Copy {
+        /// Id or enough of a link's name, tag or URL. Omit with `--tag` to copy every link
+        /// carrying that tag.
+        needle: Option<String>,
+        /// Copy every link with this tag, in picker order.
+        #[arg(long)]
+        tag: Option<String>,
+        /// Copy plain `name url` text only, no HTML.
+        #[arg(long)]
+        plain: bool,
     },
     /// Drop a link by id or by enough of its name.
     Rm { needle: String },

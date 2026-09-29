@@ -19,9 +19,9 @@ while read -r name state; do
   [ -n "$name" ] || continue
   short=${name##*-}
   if [ "$state" = ok ]; then
-    out="$out #[fg=#9ece6a]$short✓"
+    out="$out #[fg=#9ece6a]${short}✓"
   else
-    out="$out #[fg=#f7768e,bold]$short✗#[nobold]"
+    out="$out #[fg=#f7768e,bold]${short}✗#[nobold]"
   fi
 done < "$f"
 [ -n "$out" ] && printf '#[fg=#7aa2f7]⇄%s ' "$out"

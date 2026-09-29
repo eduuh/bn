@@ -165,6 +165,8 @@ ToolsConfig {
 --- link tags
 (
     [
+        "icm",
+        "docs",
         "domains",
         "dri",
         "telemetry",
