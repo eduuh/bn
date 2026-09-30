@@ -533,11 +533,26 @@ pub(crate) fn emit_agent_msg(
     };
     refuse_if_dialog(cfg, "msg", target, as_json);
     if !has_live_window(cfg, target) {
-        fail_msg(
-            "no_live_agent",
-            &format!("{target} has no live agent window — `bn agent live` lists who can be reached"),
-            as_json,
-        );
+        // Not here: the agent may be live on another machine of the tunnel mesh (mesh.rs).
+        let (code, why) = match super::mesh::relay(target, text, &sender, as_json) {
+            Some(super::mesh::Relay::Sent { code }) => std::process::exit(code),
+            Some(super::mesh::Relay::Ambiguous { hosts }) => (
+                "ambiguous_target",
+                format!("{target} is live on several machines ({}); message it from one of them", hosts.join(", ")),
+            ),
+            Some(super::mesh::Relay::NotFound { searched }) => (
+                "no_live_agent",
+                format!(
+                    "{target} has no live agent window here or on {} — `bn agent live` lists who can be reached",
+                    searched.join(", ")
+                ),
+            ),
+            None => (
+                "no_live_agent",
+                format!("{target} has no live agent window — `bn agent live` lists who can be reached"),
+            ),
+        };
+        fail_msg(code, &why, as_json);
     }
 
     // Same verification caveat as `send`: on a pane that was already working, "a spinner is up"

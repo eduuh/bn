@@ -127,7 +127,7 @@ fi
 
 # --- 5. tunnel ----------------------------------------------------------------------
 if sh "$dir/tunnel-host.sh" < /dev/null > /tmp/bn-setup-tunnel.$$ 2>&1; then
-  ok "hosting the Dev Tunnel ($(grep -o 'port [0-9]*\|127.0.0.1:[0-9]*' /tmp/bn-setup-tunnel.$$ | head -n 1))"
+  ok "hosting the Dev Tunnel ($(grep -o 'port [0-9]*\|127.0.0.1:[0-9]*\|0.0.0.0:[0-9]*' /tmp/bn-setup-tunnel.$$ | head -n 1))"
 else
   needs "tunnel-host: $(tail -n 1 /tmp/bn-setup-tunnel.$$) (sign-in: ~/bin/devtunnel user login -g -d)"
 fi

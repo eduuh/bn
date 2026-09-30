@@ -10,6 +10,7 @@ mod dialog;
 mod instruct;
 mod kill;
 mod memory_hook;
+mod mesh;
 mod read;
 mod steer;
 pub(crate) use checkin::*;
@@ -597,10 +598,25 @@ fn ssh_tmux_command(args: &[&str]) -> String {
         .join(" ")
 }
 
+/// Short tmux calls share one SSH connection per host instead of a handshake each: a remote
+/// `bn agent msg` is three calls, and through a Dev Tunnel every new connection costs seconds.
+/// The socket path is the one tunnel-connect writes into `~/.ssh/config`, so a tunnel host's
+/// existing master is reused; any other host gets one on first use.
+pub(crate) const SSH_SHARED_CONNECTION: [&str; 6] = [
+    "-o",
+    "ControlMaster=auto",
+    "-o",
+    "ControlPath=~/.ssh/cm-%C",
+    "-o",
+    "ControlPersist=10m",
+];
+
 fn ssh_tmux_output(host: &str, args: &[&str]) -> Option<std::process::Output> {
     let remote_cmd = ssh_tmux_command(args);
     std::process::Command::new("ssh")
-        .args(["-tt", "-o", "ControlPath=none", host, remote_cmd.as_str()])
+        .arg("-tt")
+        .args(SSH_SHARED_CONNECTION)
+        .args([host, remote_cmd.as_str()])
         .output()
         .ok()
 }

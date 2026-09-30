@@ -453,6 +453,53 @@ account, so the client finds every host by its `bn-host` label and reads the hos
 tunnel; there is no shared config to keep in sync. `BN_TUNNEL_TO=<machine>` limits the client to
 one host.
 
+**A new machine takes one command.** `bn run tunnel-setup` installs what is missing (sshd, tmux,
+nc, curl, ss and gh through apt-get, and the devtunnel CLI), runs the Dev Tunnels sign-in, turns on
+linger, the timers and the WSL keeper, then hosts and connects. Each step prints ok, done or NEEDS
+YOU with the command to run, so re-running it is also how you check a machine.
+`BN_TUNNEL_LAN=1 bn run tunnel-setup` also turns on local network mode for that machine.
+
+**A signed-in machine enrols itself.** Signing the devtunnel CLI in to the shared account is the
+opt-in: `tunnel-auto` (every 5 minutes on every bn machine) then hosts the machine when the `sshd`
+binary is installed and connects it to every other host, so a new machine shows up on the others
+within minutes and nobody has to run `tunnel-host` on it. A new host also gets what keeps it up:
+linger and, on WSL, the keeper below. `git config --global bn.tunnelAuto off` turns this off for a
+machine, which then only repeats what was run on it by hand. A machine with no devtunnel CLI, or a
+signed-out one, is left alone.
+
+**A machine nobody needs to reach** can connect without hosting:
+`git config --global bn.tunnelHost off` (or `BN_TUNNEL_HOST=0 bn run tunnel-setup`, which also
+skips installing sshd). The next tunnel-auto pass stops its sshd and deletes its tunnel, and the
+other machines drop its ssh config on their next pass, so it no longer shows as down anywhere.
+Unset it to host again; the port and host key stay the same.
+
+**Local network mode.** Two machines on the same network need not go through the relay. On a
+host, `git config --global bn.tunnelLan on` (then `bn run tunnel-host`, or wait for tunnel-auto)
+makes its sshd listen on every interface, still key-only, and puts its LAN address on the tunnel as
+a `bn-lan-<address>` label. A client that can reach that address gets a `Match ... exec` probe in
+front of the host's block in `~/.ssh/config`: `ssh <machine>` then connects straight to the host,
+and falls back to the tunnel within a second when the probe fails (another network, the host's
+firewall). The host key is checked under the same alias on both routes. It is off by default, so a
+laptop on public wifi exposes nothing. A WSL host with mirrored networking also needs the port
+allowed through Windows once; `tunnel-host` prints the command. A WSL host with NAT networking is
+not reachable from the LAN, so clients stay on the tunnel.
+
+**Seeing the mesh.** `bn tunnels` lists every host on the Dev Tunnels account, not only the ones
+this machine already connects to, with the route ssh takes (LAN or tunnel), whether anything is
+hosting its tunnel, and a reason for each one that is down. It also says whether this machine
+hosts and when the watchdog last checked. It takes about ten seconds, most of it the account
+listing.
+
+**Each machine says why, itself.** On every pass that changes something, and every 15 minutes
+regardless, tunnel-auto publishes a few lines about this machine (role, host health, the reason
+when broken, such as "devtunnel is signed out") to the work-notes repo as
+`refs/heads/bn-status/<machine>`: a one-commit ref that only that machine writes and replaces
+(force-pushed, so it never grows a history), made with git plumbing so the notes checkout is never
+touched. `bn tunnels` fetches them into `refs/bn-status/*` and prefers a host's own words to a
+guess from outside. A report older than 25 minutes reads as "silent since <time>", which is how an
+off or sleeping machine shows. Git rather than the Dev Tunnels account, because a signed-out
+machine cannot write to the account, and signed out is the failure most worth reporting.
+
 **Which keys may log in.** The GitHub account is `BN_TUNNEL_GITHUB_USER`, else
 `git config --global bn.tunnelGithubUser`, else the account gh is signed in as. Its keys sit in a
 managed block of `~/.ssh/authorized_keys` that each `tunnel-host` run rewrites, so a key removed on
@@ -464,13 +511,23 @@ involved, so a machine needs nothing but bn and a sign-in.
 **WSL itself stays up.** On Windows, run `bn run wsl-keepalive` once per machine: it registers a
 hidden Windows sign-in task (`bn-wsl-keepalive`) that holds the distro open with a `wsl.exe` that
 never exits, and inside WSL starts tunnel-auto and a `main` tmux session. Without it, Windows stops
-the distro, and tmux and the tunnels with it, once the last WSL terminal closes.
+the distro, and tmux and the tunnels with it, once the last WSL terminal closes. It also stops
+Windows sleeping or hibernating on AC power, since a sleeping machine drops every tunnel; battery
+is left alone, and `BN_WSL_AWAKE=0` skips the power plan. `status` shows the task, the keeper and
+the AC sleep timeout. That task starts at sign-in, so a host that reboots overnight stays down
+until someone signs in; `sh wsl-keepalive.sh boot` adds a second task that starts the keeper at
+boot, as you, with no stored password (S4U). It needs admin rights once, through a UAC prompt, and
+starts the task straight away to prove it works; a task Windows will not start is removed again.
+It did not start on an Entra-joined laptop signed in with a REDMOND domain account (2026-09-30,
+never ran), since S4U needs a domain controller to vouch for the account. `tunnel-setup` offers it
+on a host at a terminal.
 (`sh wsl-keepalive.sh status|remove`.)
 
 **It comes back by itself.** bn's tmux config runs `tunnel-auto` once at server start: a machine
 that has hosted re-runs `tunnel-host`, and one that has connected re-runs `tunnel-connect`, and it leaves a watchdog
 window `bn-tunnels:tunnel-watch` repeating those checks every 5 minutes. A reboot, a WSL restart,
-`tmux kill-server`, an sshd that stopped listening or a dropped connection needs nothing from you
+`tmux kill-server`, an sshd that stopped listening, a host whose tunnel lost its relay connection
+or a dropped connection needs nothing from you
 (log: `~/.cache/bn/tunnel-auto.log`). The host keeps the port it already uses, so an unattended
 re-run never moves it. A signed-out Dev Tunnels CLI is the exception: the log names the
 sign-in command to run.

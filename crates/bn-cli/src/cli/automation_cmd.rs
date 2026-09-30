@@ -93,6 +93,10 @@ pub(crate) enum CmdAutomation {
         /// Host alias to connect to (as named in ~/.ssh/config).
         host: String,
     },
+    /// How the tunnel mesh looks from this machine: every host on the Dev Tunnels account, the
+    /// route ssh takes to it (LAN or tunnel), whether it answers, and why not. Runs the `tunnels`
+    /// job (config/jobs/tunnels.sh); reads only.
+    Tunnels,
     /// commits since the note was last touched, `bn done` for todos a commit closed, and (on a
     /// MERGED PR) `bn close` + `wt cleanup`. Interactive confirm by default; nothing is written
     /// without confirm or `--yes`. Silent when already in sync.

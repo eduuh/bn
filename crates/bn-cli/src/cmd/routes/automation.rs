@@ -51,6 +51,7 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
             }
         },
         CmdAutomation::Mobile { host } => mobile::run(cfg, &host),
+        CmdAutomation::Tunnels => std::process::exit(cmd::cron::run_job(cfg, None, "tunnels")),
         CmdAutomation::Notify { action } => match action {
             None | Some(NotifyCmd::Status) => cmd::notify::emit_notify_status(cfg, json),
         },

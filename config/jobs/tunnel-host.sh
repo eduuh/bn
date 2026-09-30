@@ -2,6 +2,7 @@
 # tunnel-host -- make this machine reachable over SSH through an authenticated Dev Tunnel.
 #
 # Run on the machine others connect TO (e.g. a Cloud PC's WSL):  bn run tunnel-host
+# tunnel-auto runs it unasked on a machine whose devtunnel CLI is already signed in.
 # Pair: tunnel-connect.sh on the machine you connect FROM.
 #
 # What it does, idempotently:
@@ -17,6 +18,15 @@
 # Discovery needs no shared config: both machines sign in to Dev Tunnels with the same account,
 # so `bn run tunnel-connect` finds every host by the bn-host label.
 #
+# A machine that should never be reached (connect-only): `git config --global bn.tunnelHost off`.
+# This then stops what an earlier run started and deletes this machine's tunnel, so the others stop
+# listing it; the host key is kept, so turning hosting back on does not change it.
+#
+# Local network mode, opt-in per host: `git config --global bn.tunnelLan on` makes sshd listen on
+# every interface (still key-only) and puts this machine's LAN address on the tunnel as a label, so
+# a client on the same network connects straight to it and keeps the tunnel as the fallback
+# (tunnel-connect). Off, sshd is loopback only and the Dev Tunnel is the one way in.
+#
 # Prereqs (once per machine): `sudo apt-get install -y openssh-server` (for the sshd binary; the
 # system service is not needed). The devtunnel CLI and its GitHub sign-in are set up on first run.
 #
@@ -28,21 +38,49 @@ set -eu
 NAME="${BN_TUNNEL_NAME:-$(hostname -s 2>/dev/null || hostname)}"
 LABEL="bn-host-$(printf '%s' "$NAME" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9-\n' '-')"
 STATE="$HOME/.ssh/bn-sshd"
+LISTEN=127.0.0.1; NOTE="Loopback only: the Dev Tunnel is the one way in."
+case "$(git config --global bn.tunnelLan 2>/dev/null | tr 'A-Z' 'a-z')" in
+  on|true|yes|1) LISTEN=0.0.0.0; NOTE="Local network mode (bn.tunnelLan): also reachable on the LAN." ;;
+esac
 
 say() { echo "tunnel-host: $*"; }
 die() { echo "tunnel-host: $*" >&2; exit 1; }
+. "$(dirname "$0")/lib/tunnel.sh"
+
+case "$(git config --global bn.tunnelHost 2>/dev/null | tr 'A-Z' 'a-z')" in off|false|no|0)
+  for w in $(tmux list-windows -a -F '#{session_name}:#{window_name}' 2>/dev/null | grep ':tunnel$' || true); do
+    tmux kill-window -t "$w" 2>/dev/null || true
+  done
+  pid=$(cat "$STATE/sshd.pid" 2>/dev/null || true)
+  [ -z "$pid" ] || kill "$pid" 2>/dev/null || true
+  DT=$(command -v devtunnel 2>/dev/null || true)
+  [ -n "$DT" ] || [ ! -x "$HOME/bin/devtunnel" ] || DT="$HOME/bin/devtunnel"
+  # sshd_config is what marks a machine as a host, so it is set aside only once the tunnel is gone:
+  # signed out, the next tunnel-auto pass tries again.
+  if [ -n "$DT" ] && bn_tunnel_signed_in "$DT"; then
+    for id in $("$DT" list --labels "$LABEL" 2>/dev/null | awk 'NR>1 && $1 ~ /\./ {print $1}'); do
+      "$DT" delete "$id" -f >/dev/null 2>&1 && say "deleted tunnel $id" || say "could not delete tunnel $id"
+    done
+    [ ! -f "$STATE/sshd_config" ] || mv "$STATE/sshd_config" "$STATE/sshd_config.off"
+    say "not hosting (bn.tunnelHost off)"
+  else
+    say "not hosting (bn.tunnelHost off); sign in to Dev Tunnels to take this machine's tunnel off the account"
+  fi
+  exit 0 ;;
+esac
 
 # --- prerequisites -----------------------------------------------------------
 SSHD=$(command -v sshd 2>/dev/null || true)
 [ -n "$SSHD" ] || [ ! -x /usr/sbin/sshd ] || SSHD=/usr/sbin/sshd
 [ -n "$SSHD" ] || die "sshd not found. Install it once: sudo apt-get install -y openssh-server"
 # devtunnel CLI (installed into ~/bin when missing) and its sign-in: see lib/tunnel.sh.
-. "$(dirname "$0")/lib/tunnel.sh"
 DT=$(bn_tunnel_devtunnel) || exit 1
 bn_tunnel_login "$DT" || exit 1
 # The port sticks: the one the running config uses wins over the derived default, so an
 # unattended re-run (tunnel-auto) never moves a host that was set up with BN_TUNNEL_SSH_PORT.
-PORT="${BN_TUNNEL_SSH_PORT:-$(awk '$1 == "Port" {print $2; exit}' "$STATE/sshd_config" 2>/dev/null)}"
+# `|| true`: on a first run there is no config to read, and under `set -e` awk's failure ended the
+# script here without a word, so a new machine never became a host.
+PORT="${BN_TUNNEL_SSH_PORT:-$(cat "$STATE/sshd_config" "$STATE/sshd_config.off" 2>/dev/null | awk '$1 == "Port" {print $2; exit}')}"
 [ -n "$PORT" ] || PORT=$(bn_tunnel_port_for "$NAME")
 
 # --- 1. user-level sshd -------------------------------------------------------
@@ -53,9 +91,9 @@ chmod 700 "$HOME/.ssh" "$STATE"
 # ClientAlive*: drop a dead tunnel session in ~90s instead of holding it open forever.
 old_cfg=$(cat "$STATE/sshd_config" 2>/dev/null || true)
 cat > "$STATE/sshd_config" <<EOF
-# Written by bn tunnel-host. Loopback only: the Dev Tunnel is the one way in.
+# Written by bn tunnel-host. $NOTE
 Port $PORT
-ListenAddress 127.0.0.1
+ListenAddress $LISTEN
 HostKey $STATE/host_ed25519
 PidFile $STATE/sshd.pid
 AuthorizedKeysFile .ssh/authorized_keys
@@ -72,17 +110,13 @@ AllowTcpForwarding local
 EOF
 
 # Healthy means listening on the port, not just alive: on 2026-09-27 cloud-pc-AB12C's sshd stayed
-# up after a port-change reload but never answered on the new port, and nothing noticed. Without
-# `ss` there is no way to tell, so alive has to do.
-listening() {
-  command -v ss >/dev/null 2>&1 || return 0
-  ss -tln 2>/dev/null | grep -q "127.0.0.1:$PORT "
-}
+# up after a port-change reload but never answered on the new port, and nothing noticed.
+listening() { bn_tunnel_listening "$PORT" "$LISTEN"; }
 wait_listening() { _i=0; until listening; do _i=$((_i + 1)); [ "$_i" -ge 10 ] && return 1; sleep 1; done; }
 start_sshd() {
   "$SSHD" -f "$STATE/sshd_config" || die "sshd failed to start on port $PORT"
-  wait_listening || die "sshd started but is not listening on 127.0.0.1:$PORT"
-  say "sshd started on 127.0.0.1:$PORT"
+  wait_listening || die "sshd started but is not listening on $LISTEN:$PORT"
+  say "sshd started on $LISTEN:$PORT"
 }
 
 "$SSHD" -t -f "$STATE/sshd_config" || die "sshd rejected $STATE/sshd_config"
@@ -91,14 +125,14 @@ if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
   if [ "$old_cfg" != "$(cat "$STATE/sshd_config")" ]; then
     # A running sshd re-reads its config on SIGHUP; existing sessions are kept.
     kill -HUP "$pid" && say "sshd config changed; reloaded (pid $pid)"
-    wait_listening || { say "sshd is not listening on 127.0.0.1:$PORT after the reload; restarting it"; kill "$pid" 2>/dev/null; sleep 1; start_sshd; }
+    wait_listening || { say "sshd is not listening on $LISTEN:$PORT after the reload; restarting it"; kill "$pid" 2>/dev/null; sleep 1; start_sshd; }
   elif ! listening; then
     # Only the listener is restarted; open sessions are separate processes and stay up.
-    say "sshd (pid $pid) is not listening on 127.0.0.1:$PORT; restarting it"
+    say "sshd (pid $pid) is not listening on $LISTEN:$PORT; restarting it"
     kill "$pid" 2>/dev/null; sleep 1
     start_sshd
   else
-    say "sshd already running on 127.0.0.1:$PORT (pid $pid)"
+    say "sshd already running on $LISTEN:$PORT (pid $pid)"
   fi
 else
   start_sshd
@@ -133,6 +167,25 @@ if [ -z "$ID" ]; then
   say "created tunnel $ID ($LABEL)"
 fi
 "$DT" update "$ID" --add-labels bn-host -d "$NAME" >/dev/null 2>&1 || say "could not label $ID for discovery"
+# The LAN address, or none, as the tunnel's one bn-lan label; a stale one (mode turned off, or a
+# new address) is removed so no client keeps trying it.
+lan_label=""
+if [ "$LISTEN" = 0.0.0.0 ]; then
+  lan_ip=$(bn_tunnel_lan_ip)
+  [ -n "$lan_ip" ] && lan_label="bn-lan-$(printf '%s' "$lan_ip" | tr . -)" || say "local network mode is on but this machine has no LAN address"
+fi
+have_lan=0
+for l in $(bn_tunnel_lan_labels "$DT" "$ID"); do
+  if [ "$l" = "$lan_label" ]; then have_lan=1; else "$DT" update "$ID" --remove-labels "$l" >/dev/null 2>&1 || true; fi
+done
+if [ -n "$lan_label" ]; then
+  [ "$have_lan" = 1 ] || "$DT" update "$ID" --add-labels "$lan_label" >/dev/null 2>&1 || say "could not publish $lan_ip on $ID"
+  say "local network mode: reachable at $lan_ip:$PORT from the same network"
+  # WSL with mirrored networking shares the Windows address, and Windows blocks inbound by default.
+  if grep -qi microsoft /proc/version 2>/dev/null; then
+    say "on WSL, allow the port once from an elevated PowerShell: New-NetFirewallHyperVRule -Name bn-ssh-$PORT -DisplayName 'bn ssh $PORT' -Direction Inbound -VMCreatorId '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -Protocol TCP -LocalPorts $PORT"
+  fi
+fi
 # Only this port on the tunnel: a client forwards every tunnel port, and a stale one (from an
 # earlier port) would clash with another host's. A port change needs the host restarted.
 restart=0
@@ -148,6 +201,14 @@ fi
 if [ "${BN_TUNNEL_FOREGROUND:-0}" != 1 ] && sess=$(bn_tunnel_session); then
   # A `tunnel` window in any session counts: older runs hosted in whatever session they ran in.
   running=$(tmux list-windows -a -F '#{session_name}:#{window_name}' 2>/dev/null | grep ':tunnel$' || true)
+  # A window can outlive its connection: `devtunnel host` hung or looping on an error still has a
+  # window, and the relay then shows no host. Only a reported 0 counts; no answer (offline) is
+  # not a reason to restart.
+  if [ -n "$running" ] && [ "$restart" = 0 ] \
+      && [ "$("$DT" show "$ID" -j 2>/dev/null | awk -F: '/"hostConnections"/ {gsub(/[ ,]/, "", $2); print $2; exit}')" = 0 ]; then
+    say "$ID has no host connection although its tmux window is up; restarting it"
+    restart=1
+  fi
   if [ -n "$running" ] && [ "$restart" = 0 ]; then
     say "already hosting in tmux window $(echo "$running" | head -n 1)"
   else

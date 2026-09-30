@@ -5,8 +5,10 @@
 # `tmux kill-server` puts things back as they were:
 #   - a machine that has hosted before (tunnel-host left ~/.ssh/bn-sshd/sshd_config) hosts again;
 #   - a machine that has connected before (a managed `# >>> bn tunnel` block in ~/.ssh/config)
-#     reconnects to every bn host on the account.
-# A machine that has done neither is left alone.
+#     reconnects to every bn host on the account;
+#   - a machine whose devtunnel CLI is signed in does both without being asked (auto-enrolment,
+#     below; `git config --global bn.tunnelAuto off` turns that off).
+# A machine that has done none of these is left alone.
 #
 # bn's own cron (config/crons.toml, machine-global) also runs it every 5 minutes, so after a
 # reboot or a WSL restart the tunnels come back with nobody signed in: with linger on, the user's
@@ -51,20 +53,80 @@ fresh() {
   [ "$_age" -ge 0 ] && [ "$_age" -lt "$2" ]
 }
 
+. "$dir/lib/tunnel.sh"
+
 is_host=0; [ -f "$HOME/.ssh/bn-sshd/sshd_config" ] && is_host=1
 hosts=$(awk '/^# >>> bn tunnel /{print $5}' "$HOME/.ssh/config" 2>/dev/null)
-if [ "$is_host" = 0 ] && [ -z "$hosts" ]; then
+connects=0; [ -n "$hosts" ] && connects=1
+
+# signed_in -- the devtunnel CLI is already on this machine and signed in. Never downloads it: a
+# machine nobody set up for tunnels stays untouched. `user show` costs a second of CPU, so a yes
+# is remembered for 15 minutes.
+signed_in() {
+  fresh "$cache/tunnel-auto.signed-in" 900 && return 0
+  _dt=$(command -v devtunnel 2>/dev/null || true)
+  [ -n "$_dt" ] || [ ! -x "$HOME/bin/devtunnel" ] || _dt="$HOME/bin/devtunnel"
+  [ -n "$_dt" ] && bn_tunnel_signed_in "$_dt" && touch "$cache/tunnel-auto.signed-in"
+}
+
+# Auto-enrolment: signing in to Dev Tunnels is the opt-in. A machine that has done one half, or
+# that is signed in, does both: it hosts when the sshd binary is installed and connects to every
+# other host, so a new machine shows up on the others without anyone running tunnel-host on it
+# (2026-09-30: two new machines were signed in and never appeared). Off per machine with
+# `git config --global bn.tunnelAuto off`, which goes back to repeating only what was run by hand.
+auto=1
+case "$(git config --global bn.tunnelAuto 2>/dev/null | tr 'A-Z' 'a-z')" in off|false|no|0) auto=0 ;; esac
+if [ "$auto" = 1 ] && { [ "$is_host" = 0 ] || [ "$connects" = 0 ]; } \
+    && { [ "$is_host" = 1 ] || [ "$connects" = 1 ] || signed_in; }; then
+  if [ "$is_host" = 0 ] && { command -v sshd >/dev/null 2>&1 || [ -x /usr/sbin/sshd ]; }; then
+    is_host=1
+  fi
+  connects=1
+fi
+# A connect-only machine (`git config --global bn.tunnelHost off`) never hosts. One that hosted
+# before gets tunnel-host run once more, which stops it and deletes its tunnel.
+host_off=0; host_stop=0
+case "$(git config --global bn.tunnelHost 2>/dev/null | tr 'A-Z' 'a-z')" in off|false|no|0) host_off=1 ;; esac
+if [ "$host_off" = 1 ]; then
+  [ -f "$HOME/.ssh/bn-sshd/sshd_config" ] && host_stop=1
+  is_host=0
+fi
+# Without sshd this machine reaches the others but none can reach it back; said once a day.
+no_sshd=0; [ "$auto" = 1 ] && [ "$host_off" = 0 ] && [ "$is_host" = 0 ] && [ "$connects" = 1 ] && no_sshd=1
+if [ "$is_host" = 0 ] && [ "$connects" = 0 ] && [ "$host_stop" = 0 ]; then
   rm -f "$status"
   exit 0
 fi
 
+# keep_up -- once per host, what keeps it reachable with nobody at it: linger, so the user's systemd
+# and this job's timer run with nobody signed in, and on WSL the Windows keeper (wsl-keepalive),
+# which holds the distro open and stops Windows sleeping on AC power. The keeper is retried at
+# each repair until it installs; a linger that needs sudo is asked for once.
+keep_up() {
+  [ -f "$HOME/.ssh/bn-sshd/kept-up" ] && return 0
+  if command -v loginctl >/dev/null 2>&1 \
+      && [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" != yes ] \
+      && ! loginctl enable-linger "$(id -un)" 2>/dev/null; then
+    fresh "$cache/tunnel-auto.linger-asked" 86400 || echo "tunnel-auto: enable linger once: sudo loginctl enable-linger $(id -un)"
+    touch "$cache/tunnel-auto.linger-asked"
+  fi
+  if grep -qi microsoft /proc/version 2>/dev/null; then
+    sh "$dir/wsl-keepalive.sh" install || return 1
+  fi
+  touch "$HOME/.ssh/bn-sshd/kept-up"
+}
+
 # health -- check everything once, write the status file, and fail if anything is down.
 health() {
-  _out=""; _bad=0
+  _out=""; _bad=0; host_why=""
   if [ "$is_host" = 1 ]; then
-    _port=$(awk '$1 == "Port" {print $2; exit}' "$HOME/.ssh/bn-sshd/sshd_config")
-    if ss -tln 2>/dev/null | grep -q "127.0.0.1:$_port " \
-        && tmux list-windows -a -F '#{window_name}' 2>/dev/null | grep -qx tunnel; then
+    _port=$(awk '$1 == "Port" {print $2; exit}' "$HOME/.ssh/bn-sshd/sshd_config" 2>/dev/null)
+    if [ -z "$_port" ] || ! bn_tunnel_listening "$_port"; then
+      host_why="sshd is not listening${_port:+ on port $_port}"
+    elif ! tmux list-windows -a -F '#{window_name}' 2>/dev/null | grep -qx tunnel; then
+      host_why="no tmux window is running devtunnel host"
+    fi
+    if [ -z "$host_why" ]; then
       _out="${_out}host ok
 "
     else
@@ -73,7 +135,7 @@ health() {
     fi
   fi
   for _h in $hosts; do
-    if timeout 25 ssh -o BatchMode=yes -o ConnectTimeout=15 "$_h" true >/dev/null 2>&1; then
+    if bn_tunnel_timeout 25 ssh -o BatchMode=yes -o ConnectTimeout=15 "$_h" true >/dev/null 2>&1; then
       _out="${_out}$_h ok
 "
     else
@@ -101,6 +163,9 @@ if ! take_lock; then
   fi
 fi
 [ "$have_lock" = 1 ] && trap 'rm -rf "$lock"' EXIT && trap 'exit 1' HUP INT TERM
+if [ "$have_lock" = 1 ] && [ "$host_stop" = 1 ]; then
+  { echo "--- $(date '+%F %T') bn.tunnelHost off: stopping the host"; sh "$dir/tunnel-host.sh"; } >> "$log" 2>&1
+fi
 
 # A repair runs when a check fails or the last one is 15 minutes old, whoever runs this: the
 # watchdog, tmux at server start, or the tunnel-auto timer (every 5 minutes, so tunnels come back
@@ -128,8 +193,23 @@ if [ "$have_lock" = 1 ] && [ "$repair_due" = 1 ]; then
   done
   {
     echo "--- $(date '+%F %T') tunnel-auto repair ($(tr '\n' ' ' < "$status"))"
-    [ "$is_host" = 1 ] && { sh "$dir/tunnel-host.sh" || echo "tunnel-auto: tunnel-host failed ($?)"; }
-    [ -n "$hosts" ] && { sh "$dir/tunnel-connect.sh" || echo "tunnel-auto: tunnel-connect failed ($?)"; }
+    [ "$is_host" = 1 ] && [ ! -f "$HOME/.ssh/bn-sshd/sshd_config" ] \
+      && echo "tunnel-auto: signed in to Dev Tunnels, so hosting this machine (off: git config --global bn.tunnelAuto off)"
+    if [ "$no_sshd" = 1 ] && ! fresh "$cache/tunnel-auto.sshd-asked" 86400; then
+      echo "tunnel-auto: other machines cannot connect back to this one; install sshd once: sudo apt-get install -y openssh-server (or: bn run tunnel-setup)"
+      touch "$cache/tunnel-auto.sshd-asked"
+    fi
+    if [ "$is_host" = 1 ]; then
+      # Its last line is kept while it fails: that is the reason this machine reports.
+      if sh "$dir/tunnel-host.sh" > "$cache/tunnel-host.out" 2>&1; then
+        cat "$cache/tunnel-host.out"; rm -f "$cache/tunnel-host.failed"
+        [ "$auto" = 0 ] || keep_up || echo "tunnel-auto: wsl-keepalive failed; run: sh $dir/wsl-keepalive.sh install"
+      else
+        cat "$cache/tunnel-host.out"; echo "tunnel-auto: tunnel-host failed"
+        tail -n 1 "$cache/tunnel-host.out" > "$cache/tunnel-host.failed"
+      fi
+    fi
+    [ "$connects" = 1 ] && { sh "$dir/tunnel-connect.sh" || echo "tunnel-auto: tunnel-connect failed ($?)"; }
   } >> "$log" 2>&1
   touch "$stamp"
   # tunnel-connect may have added hosts; re-read them and record the result of the repair.
@@ -137,10 +217,42 @@ if [ "$have_lock" = 1 ] && [ "$repair_due" = 1 ]; then
   health || echo "--- $(date '+%F %T') still down after repair: $(grep ' down$' "$status" | tr '\n' ' ')" >> "$log"
 fi
 
+# Publish this machine's report (lib/tunnel.sh) when it changed, and every 15 minutes anyway so
+# the others can tell "silent since 20:10" from "fine". A push that fails is logged once an hour.
+if [ "$have_lock" = 1 ]; then
+  me="${BN_TUNNEL_NAME:-$(hostname -s 2>/dev/null || hostname)}"
+  if [ "$host_off" = 1 ]; then role=off
+  elif [ "$is_host" = 1 ]; then role=host
+  else role=client; fi
+  why=""
+  _dt=$(command -v devtunnel 2>/dev/null || true)
+  [ -n "$_dt" ] || [ ! -x "$HOME/bin/devtunnel" ] || _dt="$HOME/bin/devtunnel"
+  if [ -z "$_dt" ] || ! signed_in; then
+    why="devtunnel is signed out; run: devtunnel user login -g -d"
+  elif [ "$role" = host ] && [ -n "${host_why:-}" ]; then
+    why=$host_why
+  elif [ "$role" = host ] && [ -s "$cache/tunnel-host.failed" ]; then
+    why="tunnel-host failed: $(cat "$cache/tunnel-host.failed")"
+  elif [ "$role" = client ] && [ "$no_sshd" = 1 ]; then
+    why="not hosting: no sshd (bn run tunnel-setup)"
+  fi
+  body="role=$role
+host=$(awk '$1 == "host" {print $2}' "$status" 2>/dev/null)
+reason=$why"
+  if [ "$body" != "$(cat "$cache/tunnel-report.last" 2>/dev/null)" ] || ! fresh "$cache/tunnel-report.pushed" 900; then
+    printf 'at=%s\n%s\n' "$(date +%s)" "$body" > "$cache/tunnel-report"
+    if bn_tunnel_report_push "$me" "$cache/tunnel-report" >/dev/null 2>&1; then
+      printf '%s' "$body" > "$cache/tunnel-report.last"; touch "$cache/tunnel-report.pushed"
+    elif ! fresh "$cache/tunnel-report.failed" 3600; then
+      echo "--- $(date '+%F %T') could not publish this machine's report to the notes repo" >> "$log"
+      touch "$cache/tunnel-report.failed"
+    fi
+  fi
+fi
+
 [ "${1:-}" = --once ] && exit 0
 every="${BN_TUNNEL_WATCH_SECONDS:-60}"
 case "$every" in ''|*[!0-9]*) every=60 ;; esac
-. "$dir/lib/tunnel.sh"
 sess=$(bn_tunnel_session) || exit 0
 want="while :; do sleep $every; sh '$dir/tunnel-auto.sh' --once; done"
 # Exactly one watchdog: keep the first window running this command, close every other

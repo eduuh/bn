@@ -109,10 +109,108 @@ bn_tunnel_github_keys() {
 
 # bn_tunnel_hosts <devtunnel> -- every bn host tunnel on this account, one "<tunnel-id> <machine>"
 # per line. The machine name rides in the tunnel description (labels are lowercased).
+# Fails when the account could not be listed, so a caller never mistakes "offline" for "no hosts".
 bn_tunnel_hosts() {
-  "$1" list --labels bn-host -j 2>/dev/null | awk -F'"' '
+  _list=$("$1" list --labels bn-host -j 2>/dev/null) || return 1
+  printf '%s\n' "$_list" | grep -q '"tunnels"' || return 1
+  printf '%s\n' "$_list" | awk -F'"' '
     /"tunnelId"/ { id = $4 }
     /"description"/ { if (id != "" && $4 != "") print id, $4; id = "" }'
+}
+
+# bn_tunnel_lan_ip -- this machine's address on the local network: the source address of its
+# default route (`ip` on Linux; on macOS, the address of the default route's interface). Empty
+# when there is none.
+bn_tunnel_lan_ip() {
+  if command -v ip >/dev/null 2>&1; then
+    ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "src") {print $(i + 1); exit}}'
+  elif command -v ipconfig >/dev/null 2>&1; then
+    _if=$(route -n get default 2>/dev/null | awk '$1 == "interface:" {print $2; exit}')
+    [ -z "$_if" ] || ipconfig getifaddr "$_if" 2>/dev/null
+  fi
+}
+
+# Portability. macOS has no `ss` and no `timeout`, and without these two helpers every health
+# check there failed, so a working Mac host would always have shown as down.
+
+# bn_tunnel_listening <port> [address...] -- something listens on TCP <port> at one of the
+# addresses (default 127.0.0.1 and 0.0.0.0; a wildcard listener counts as 0.0.0.0). `ss` on Linux,
+# `netstat` elsewhere. With neither there is no way to tell, and it answers yes: a check that
+# cannot look must not report a working host as down.
+bn_tunnel_listening() {
+  _p=$1; shift
+  [ $# -gt 0 ] || set -- 127.0.0.1 0.0.0.0
+  if command -v ss >/dev/null 2>&1; then
+    _l=$(ss -tln 2>/dev/null | awk 'NR > 1 {print $4}')
+  elif command -v netstat >/dev/null 2>&1; then
+    # Linux: 127.0.0.1:2400 / 0.0.0.0:2400; macOS: 127.0.0.1.2400 / *.2400.
+    _l=$(netstat -an 2>/dev/null | awk '/LISTEN/ && $1 ~ /^tcp/ {print $4}')
+  else
+    return 0
+  fi
+  printf '%s\n' "$_l" | awk -v p="$_p" -v want=" $* " '
+    { n = match($0, /[:.][0-9]+$/); if (!n) next
+      port = substr($0, n + 1); host = substr($0, 1, n - 1)
+      if (host == "*") host = "0.0.0.0"
+      if (port == p && index(want, " " host " ")) f = 1 }
+    END { exit !f }'
+}
+
+# bn_tunnel_timeout <seconds> <command...> -- run it, killed after <seconds>. `timeout` (Linux),
+# `gtimeout` (Homebrew coreutils), else perl's alarm, which macOS always has.
+bn_tunnel_timeout() {
+  if command -v timeout >/dev/null 2>&1; then timeout "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$@"
+  elif command -v perl >/dev/null 2>&1; then perl -e 'alarm shift; exec @ARGV or exit 127' "$@"
+  else shift; "$@"; fi
+}
+
+# bn_tunnel_lan_labels <devtunnel> <tunnel-id> -- the tunnel's bn-lan-* labels, one per line. A host
+# in local network mode publishes its address as one (a label cannot hold dots):
+# bn-lan-192-168-1-20.
+bn_tunnel_lan_labels() {
+  "$1" show "$2" -j 2>/dev/null | awk -F'"' '$2 ~ /^bn-lan-[0-9-]+$/ {print $2}'
+}
+
+# Machine reports. Each machine publishes a few lines about its own tunnel state (tunnel-auto) as
+# a one-commit ref, refs/heads/bn-status/<machine>, in the synced work-notes repo, and every other
+# machine can read them (bn tunnels). Git rather than the Dev Tunnels account because the failure
+# worth reporting most (devtunnel signed out) is the one that stops a machine writing to the
+# account; and a machine that is off still has its last report, with its time.
+
+# bn_tunnel_notes_git -- the git work tree of the work-notes root (bn's notes_roots()), or fail.
+bn_tunnel_notes_git() {
+  if [ -n "${BN_NOTES_DIR:-}" ]; then _r="${BN_NOTES_DIR_WORK:-$BN_NOTES_DIR}"
+  elif [ -d "$HOME/projects/notes/bn" ]; then _r="$HOME/projects/notes/bn"
+  else _r="$HOME/projects/branch-notes-work/bn"; fi
+  [ -d "$_r" ] && git -C "$_r" rev-parse --show-toplevel 2>/dev/null
+}
+
+# bn_tunnel_git <dir> <git args...> -- git over the network that never waits for a person.
+bn_tunnel_git() {
+  _d=$1; shift
+  GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=15" \
+    bn_tunnel_timeout 60 git -C "$_d" "$@"
+}
+
+# bn_tunnel_report_push <machine> <file> -- publish <file> as that machine's report. Plumbing only,
+# so the notes checkout and index are never touched. The ref belongs to that one machine and holds
+# one commit, replaced each time (forced), so it never grows a history.
+bn_tunnel_report_push() {
+  _g=$(bn_tunnel_notes_git) || return 1
+  _b=$(git -C "$_g" hash-object -w "$2") || return 1
+  _t=$(printf '100644 blob %s\ttunnels.status\n' "$_b" | git -C "$_g" mktree) || return 1
+  _c=$(GIT_AUTHOR_NAME=bn GIT_AUTHOR_EMAIL=bn@localhost GIT_COMMITTER_NAME=bn GIT_COMMITTER_EMAIL=bn@localhost \
+    git -C "$_g" commit-tree "$_t" -m "tunnel report: $1") || return 1
+  bn_tunnel_git "$_g" push -q --force origin "${_c}:refs/heads/bn-status/$1"
+}
+
+# bn_tunnel_reports_fetch -- bring every machine's report into refs/bn-status/* (outside the
+# branches, so nothing else sees them); echoes the notes work tree.
+bn_tunnel_reports_fetch() {
+  _g=$(bn_tunnel_notes_git) || return 1
+  bn_tunnel_git "$_g" fetch -q --prune origin '+refs/heads/bn-status/*:refs/bn-status/*' || return 1
+  echo "$_g"
 }
 
 # bn_tunnel_ports <devtunnel> <tunnel-id> -- the ports the tunnel forwards, one per line. A bn

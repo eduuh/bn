@@ -183,7 +183,8 @@ description = "bn — gather findings (#897): snapshot the local morning-plannin
 # Machine-global (`repo = ""`): every machine that has hosted or connected a bn tunnel, including
 # build machines that do not list the bn repo. Brings Dev Tunnels and a tmux server back after a
 # reboot or WSL restart with nobody signed in (linger), and keeps the one-minute watchdog alive.
-# A machine with no tunnels exits at once.
+# A machine with no tunnels and no signed-in devtunnel CLI exits at once; a signed-in one enrols
+# itself (tunnel-auto.sh, auto-enrolment).
 [[cron]]
 job = "tunnel-auto"
 repo = ""

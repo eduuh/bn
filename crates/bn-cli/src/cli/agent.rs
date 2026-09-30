@@ -155,7 +155,9 @@ pub(crate) enum AgentCmd {
     /// the delivered line as `[bn msg from <repo:branch>] …`, so the receiver knows who asked and how
     /// to answer. The text lands in the target's live pane as its next prompt; a target mid-turn
     /// queues it. Live-only: a target with no window is refused (never a headless `--resume` turn) —
-    /// `bn agent live` lists who can be reached. bn agent msg <repo:branch> "<text>".
+    /// `bn agent live` lists who can be reached. A target not live here is looked for on the other
+    /// machines of the tunnel mesh and delivered by that machine's bn, so an agent on a Cloud PC can
+    /// answer the laptop the same way. bn agent msg <repo:branch> "<text>".
     Msg {
         /// `repo:branch` of the agent to message (the `target` column of `bn agent live`).
         target: String,
