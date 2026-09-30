@@ -225,8 +225,43 @@ fn migration_notice(report: &bn_core::config_migrate::Report) -> String {
     )
 }
 
+/// Give bn, and every tmux it runs, a UTF-8 character type when the caller's locale is not one.
+///
+/// tmux prints a tab inside a `-F` format as `_` unless the locale is UTF-8, and bn's tmux formats
+/// are tab-separated. An ssh session on a machine with no `LANG` (every bn call a remote machine
+/// makes, e.g. `ssh <machine> bn agent live`) therefore parsed no windows at all: remote agents
+/// showed as windowless and cross-machine messages could not find them (2026-09-30). Runs first
+/// in `main`, before any thread exists.
+fn ensure_utf8_ctype() {
+    let set = |v: &str| std::env::var(v).ok().filter(|x| !x.is_empty());
+    let effective = set("LC_ALL")
+        .or_else(|| set("LC_CTYPE"))
+        .or_else(|| set("LANG"));
+    let utf8 = effective
+        .as_deref()
+        .is_some_and(|v| v.to_ascii_lowercase().replace('-', "").contains("utf8"));
+    if !utf8 {
+        let value = if cfg!(target_os = "macos") {
+            "UTF-8"
+        } else {
+            "C.UTF-8"
+        };
+        // LC_ALL overrides LC_CTYPE, so a non-UTF-8 LC_ALL has to be the one replaced.
+        let var = if set("LC_ALL").is_some() {
+            "LC_ALL"
+        } else {
+            "LC_CTYPE"
+        };
+        // Production, single-threaded at the top of `main`: the sanctioned raw call (issue #358
+        // is about tests).
+        #[allow(clippy::disallowed_methods)]
+        std::env::set_var(var, value);
+    }
+}
+
 fn main() {
     reset_sigpipe();
+    ensure_utf8_ctype();
     let cli = Cli::parse();
     // The first bn after the upgrade moves an old `config.toml` into the notes tree, before
     // anything reads config. Every later run costs one failed stat.

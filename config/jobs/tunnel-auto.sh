@@ -7,7 +7,7 @@
 #   - a machine that has connected before (a managed `# >>> bn tunnel` block in ~/.ssh/config)
 #     reconnects to every bn host on the account;
 #   - a machine whose devtunnel CLI is signed in does both without being asked (auto-enrolment,
-#     below; `git config --global bn.tunnelAuto off` turns that off).
+#     below; `bn run tunnel-setup with BN_TUNNEL_AUTO=0` turns that off).
 # A machine that has done none of these is left alone.
 #
 # bn's own cron (config/crons.toml, machine-global) also runs it every 5 minutes, so after a
@@ -73,20 +73,20 @@ signed_in() {
 # that is signed in, does both: it hosts when the sshd binary is installed and connects to every
 # other host, so a new machine shows up on the others without anyone running tunnel-host on it
 # (2026-09-30: two new machines were signed in and never appeared). Off per machine with
-# `git config --global bn.tunnelAuto off`, which goes back to repeating only what was run by hand.
+# `bn run tunnel-setup with BN_TUNNEL_AUTO=0`, which goes back to repeating only what was run by hand.
 auto=1
-case "$(git config --global bn.tunnelAuto 2>/dev/null | tr 'A-Z' 'a-z')" in off|false|no|0) auto=0 ;; esac
+case "$(bn_tunnel_flag tunnelAuto)" in off|false|no|0) auto=0 ;; esac
 if [ "$auto" = 1 ] && { [ "$is_host" = 0 ] || [ "$connects" = 0 ]; } \
     && { [ "$is_host" = 1 ] || [ "$connects" = 1 ] || signed_in; }; then
-  if [ "$is_host" = 0 ] && { command -v sshd >/dev/null 2>&1 || [ -x /usr/sbin/sshd ]; }; then
+  if [ "$is_host" = 0 ] && bn_tunnel_sshd >/dev/null; then
     is_host=1
   fi
   connects=1
 fi
-# A connect-only machine (`git config --global bn.tunnelHost off`) never hosts. One that hosted
+# A connect-only machine (`BN_TUNNEL_HOST=0 bn run tunnel-setup`) never hosts. One that hosted
 # before gets tunnel-host run once more, which stops it and deletes its tunnel.
 host_off=0; host_stop=0
-case "$(git config --global bn.tunnelHost 2>/dev/null | tr 'A-Z' 'a-z')" in off|false|no|0) host_off=1 ;; esac
+case "$(bn_tunnel_flag tunnelHost)" in off|false|no|0) host_off=1 ;; esac
 if [ "$host_off" = 1 ]; then
   [ -f "$HOME/.ssh/bn-sshd/sshd_config" ] && host_stop=1
   is_host=0
@@ -138,9 +138,11 @@ health() {
     if bn_tunnel_timeout 25 ssh -o BatchMode=yes -o ConnectTimeout=15 "$_h" true >/dev/null 2>&1; then
       _out="${_out}$_h ok
 "
+      rm -f "$cache/tunnel-down-since.$_h"
     else
       _out="${_out}$_h down
 "; _bad=1
+      [ -e "$cache/tunnel-down-since.$_h" ] || touch "$cache/tunnel-down-since.$_h"
     fi
   done
   printf '%s' "$_out" > "$status.tmp" && mv "$status.tmp" "$status"
@@ -182,10 +184,13 @@ if [ "$have_lock" = 1 ] && [ "$repair_due" = 1 ]; then
   # stay up while the process behind it has hung (2026-09-27: 127.0.0.1:2222 listening with 12
   # connections queued and none accepted), and tunnel-connect only restarts a window whose port is
   # not listening. At most once per host every 5 minutes, so a host that is really down is not
-  # churned every pass.
+  # churned every pass. And only after it has failed for 2.5 minutes: one slow check is usually a
+  # busy host, not a hung forward (2026-09-30: AB12C at load 54 during a pool build missed the
+  # 15s ssh banner, and each restart dropped every open session to it).
   for _h in $(awk '$2 == "down" && $1 != "host" {print $1}' "$status"); do
     _mark="$cache/tunnel-restarted.$_h"
     fresh "$_mark" 300 && continue
+    fresh "$cache/tunnel-down-since.$_h" 150 && continue
     for _w in $(tmux list-windows -a -F '#{session_name}:#{window_name}' 2>/dev/null | grep ":tunnel-$_h\$"); do
       tmux kill-window -t "$_w" 2>/dev/null && echo "--- $(date '+%F %T') restarted $_w (ssh check failed)" >> "$log"
     done
@@ -194,7 +199,7 @@ if [ "$have_lock" = 1 ] && [ "$repair_due" = 1 ]; then
   {
     echo "--- $(date '+%F %T') tunnel-auto repair ($(tr '\n' ' ' < "$status"))"
     [ "$is_host" = 1 ] && [ ! -f "$HOME/.ssh/bn-sshd/sshd_config" ] \
-      && echo "tunnel-auto: signed in to Dev Tunnels, so hosting this machine (off: git config --global bn.tunnelAuto off)"
+      && echo "tunnel-auto: signed in to Dev Tunnels, so hosting this machine (off: bn run tunnel-setup with BN_TUNNEL_AUTO=0)"
     if [ "$no_sshd" = 1 ] && ! fresh "$cache/tunnel-auto.sshd-asked" 86400; then
       echo "tunnel-auto: other machines cannot connect back to this one; install sshd once: sudo apt-get install -y openssh-server (or: bn run tunnel-setup)"
       touch "$cache/tunnel-auto.sshd-asked"
@@ -215,6 +220,13 @@ if [ "$have_lock" = 1 ] && [ "$repair_due" = 1 ]; then
   # tunnel-connect may have added hosts; re-read them and record the result of the repair.
   hosts=$(awk '/^# >>> bn tunnel /{print $5}' "$HOME/.ssh/config" 2>/dev/null)
   health || echo "--- $(date '+%F %T') still down after repair: $(grep ' down$' "$status" | tr '\n' ' ')" >> "$log"
+fi
+
+# This machine's nickname leads the tmux status bar, so a remote session viewed inside a local
+# one says which machine it is. Nothing when there is no nickname.
+if command -v tmux >/dev/null 2>&1 && tmux list-sessions >/dev/null 2>&1; then
+  _nick=$(bn_tunnel_nick)
+  if [ -n "$_nick" ]; then tmux set -g @bn_machine "$_nick" 2>/dev/null; else tmux set -gu @bn_machine 2>/dev/null; fi
 fi
 
 # Publish this machine's report (lib/tunnel.sh) when it changed, and every 15 minutes anyway so

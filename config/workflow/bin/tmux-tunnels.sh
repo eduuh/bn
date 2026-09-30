@@ -14,10 +14,14 @@ if [ "$age" -lt 0 ] || [ "$age" -ge 600 ]; then
   printf '#[fg=#565f89]⇄ ? '
   exit 0
 fi
+# A host's nickname (the second name on its `Host` line in tunnel-connect's block) wins over the
+# hostname's last part.
+nicks=$(awk '/^# >>> bn tunnel /{inb=1} inb && $1 == "Host" && NF >= 3 {print $2, $3} /^# <<< bn tunnel /{inb=0}' "$HOME/.ssh/config" 2>/dev/null)
 out=""
 while read -r name state; do
   [ -n "$name" ] || continue
-  short=${name##*-}
+  short=$(printf '%s\n' "$nicks" | awk -v n="$name" '$1 == n {print $2; exit}')
+  [ -n "$short" ] || short=${name##*-}
   if [ "$state" = ok ]; then
     out="$out #[fg=#9ece6a]${short}✓"
   else

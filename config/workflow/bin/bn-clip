@@ -1,0 +1,53 @@
+#!/bin/sh
+# bn-clip copy|paste -- this machine's system clipboard, one command on every platform.
+#
+#   printf 'text' | bn-clip copy       bn-clip paste > file
+#
+# tmux (copy mode, mouse selection, prefix p) and nvim ("+y, "+p) both go through here, so a copy
+# lands in the same place however it was made. On WSL that is the Windows clipboard, reached
+# directly (win32yank, else clip.exe and PowerShell) instead of through WSLg: tmux piped copies to
+# xclip and nvim used wl-copy, and the WSLg clipboard bridge they depend on stops syncing now and
+# then (after sleep, after a WSL restart), which is why copy and paste worked only sometimes.
+# win32yank is the fast one (0.1s against PowerShell's 0.8s): `scoop install win32yank`.
+#
+# In a session on another machine, the copy that reaches this laptop is tmux's OSC 52 (set-clipboard
+# on), not this script: bn-clip there writes that machine's own clipboard.
+set -u
+
+mode="${1:-}"
+case "$mode" in copy|paste) ;; *) echo "usage: bn-clip copy|paste" >&2; exit 2 ;; esac
+
+if grep -qi microsoft /proc/version 2>/dev/null; then
+  y=$(command -v win32yank.exe 2>/dev/null || true)
+  if [ -z "$y" ]; then
+    for c in /mnt/c/Users/*/scoop/shims/win32yank.exe; do [ -x "$c" ] && y=$c && break; done
+  fi
+  if [ -n "$y" ]; then
+    # CRLF for Windows apps on the way out, LF for Linux on the way in.
+    [ "$mode" = copy ] && exec "$y" -i --crlf
+    exec "$y" -o --lf
+  fi
+  PS=$(command -v powershell.exe 2>/dev/null || echo /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe)
+  if [ "$mode" = copy ]; then
+    exec "$(command -v clip.exe 2>/dev/null || echo /mnt/c/Windows/System32/clip.exe)"
+  fi
+  "$PS" -NoProfile -NonInteractive -Command '[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-Clipboard -Raw' | tr -d '\r'
+  exit 0
+fi
+
+case "$(uname -s)" in
+  Darwin)
+    [ "$mode" = copy ] && exec pbcopy
+    exec pbpaste ;;
+esac
+if [ -n "${WAYLAND_DISPLAY:-}" ] && command -v wl-copy >/dev/null 2>&1; then
+  [ "$mode" = copy ] && exec wl-copy
+  exec wl-paste -n
+fi
+if [ -n "${DISPLAY:-}" ] && command -v xclip >/dev/null 2>&1; then
+  [ "$mode" = copy ] && exec xclip -in -selection clipboard
+  exec xclip -o -selection clipboard
+fi
+echo "bn-clip: no clipboard on this machine (no display); tmux still copies through OSC 52" >&2
+[ "$mode" = copy ] && cat >/dev/null
+exit 1

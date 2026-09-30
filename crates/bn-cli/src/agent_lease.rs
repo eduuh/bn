@@ -827,9 +827,17 @@ fn parse_observed_agent_windows(output: &str, now: i64) -> Vec<ObservedAgentWind
         .collect()
 }
 
+/// The window this process runs in: `-t $TMUX_PANE`, or tmux answers with the client's active
+/// window instead (see [`current_window_argv`]).
 fn current_target() -> Option<String> {
     std::env::var_os("TMUX").and_then(|_| {
-        crate::proc::tmux_raw(&["display-message", "-p", "#{session_name}:#{window_name}"])
+        let pane = std::env::var("TMUX_PANE").ok().filter(|p| !p.is_empty());
+        let mut argv = vec!["display-message", "-p"];
+        if let Some(pane) = pane.as_deref() {
+            argv.extend(["-t", pane]);
+        }
+        argv.push("#{session_name}:#{window_name}");
+        crate::proc::tmux_raw(&argv)
             .map(|target| target.trim().to_string())
             .filter(|target| !target.is_empty())
     })

@@ -40,6 +40,7 @@ pub(crate) fn tunnel_hosts_in(ssh_config: &str) -> Vec<String> {
         .lines()
         .filter_map(|line| line.strip_prefix("# >>> bn tunnel "))
         .filter_map(|rest| rest.split_whitespace().next())
+        .filter(|h| super::safe_ssh_host(h))
         .map(str::to_string)
         .collect()
 }
@@ -59,7 +60,15 @@ pub(crate) fn live_in(envelope: &str, target: &str) -> bool {
     };
     v["data"]["agents"].as_array().is_some_and(|agents| {
         agents.iter().any(|a| {
-            a["target"].as_str() == Some(target) && a["has_window"].as_bool().unwrap_or(false)
+            // `target` is the tmux `session:window` once a window is joined, which is often not
+            // `repo:branch` (a pooled slot, a window named by hand), so the stamps decide too.
+            let stamped = format!(
+                "{}:{}",
+                a["repo"].as_str().unwrap_or(""),
+                a["branch"].as_str().unwrap_or("")
+            );
+            (a["target"].as_str() == Some(target) || stamped.eq_ignore_ascii_case(target))
+                && a["has_window"].as_bool().unwrap_or(false)
         })
     })
 }
@@ -170,6 +179,7 @@ mod tests {
                    Host CPC-b\n# <<< bn tunnel CPC-b <<<\n";
         assert_eq!(tunnel_hosts_in(cfg), vec!["CPC-a", "CPC-b"]);
         assert!(tunnel_hosts_in("Host x\n").is_empty());
+        assert!(tunnel_hosts_in("# >>> bn tunnel -oProxyCommand=x >>>\n").is_empty());
     }
 
     #[test]
@@ -181,6 +191,8 @@ mod tests {
         assert!(!live_in(env, "bn:done"));
         assert!(!live_in(env, "bn:mai"));
         assert!(!live_in("not json", "bn:main"));
+        let joined = r#"{"data":{"agents":[{"repo":"bn","branch":"feat-x","target":"bn-edit:home","has_window":true}]}}"#;
+        assert!(live_in(joined, "bn:feat-x"), "a window joined under another name still counts");
     }
 
     #[test]

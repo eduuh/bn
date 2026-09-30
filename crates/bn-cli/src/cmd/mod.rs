@@ -53,6 +53,7 @@ pub(crate) mod lifecycle;
 pub(crate) mod notify;
 pub(crate) mod pipeline;
 pub(crate) mod plan;
+pub(crate) mod plan_view;
 pub(crate) mod plan_review;
 pub(crate) mod pr_link;
 pub(crate) mod pr_observe_gh;

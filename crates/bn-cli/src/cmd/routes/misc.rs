@@ -324,6 +324,19 @@ agency() {
   fi
   bn dispatch --agent "$_bn_h" --yolo --scout --pool --attach -- "$@"
 }
+
+# Opening WSL starts tmux. A new WSL tab (the Ubuntu profile, `wsl` from a prompt) used to land in
+# a bare shell while the work lives in the tmux session `main`, which the WSL keeper keeps running.
+# Only an interactive shell in WSL, outside tmux, not over ssh (bn connect and the remote agent view
+# attach tmux themselves) and not inside nvim or a VS Code terminal. Not `exec`: detaching drops
+# you back at this shell. BN_TMUX_AUTOSTART=0 turns it off.
+case $- in *i*)
+  if [ -n "${WSL_DISTRO_NAME-}" ] && [ -z "${TMUX-}" ] && [ -z "${SSH_CONNECTION-}" ] \
+      && [ -z "${NVIM-}" ] && [ "${TERM_PROGRAM-}" != vscode ] && [ "${BN_TMUX_AUTOSTART:-1}" != 0 ] \
+      && command -v tmux >/dev/null 2>&1; then
+    tmux new-session -A -s main
+  fi ;;
+esac
 "#;
 
 /// Emit the shell wrappers to stdout — source them with `source <(bn shell-init zsh)`.

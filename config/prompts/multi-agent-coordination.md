@@ -35,6 +35,10 @@ Give each worker a bounded slice. A UI bug, a test gap, and a deployment concern
 4. If a worker is blocked, either narrow the task or ask the human.
 5. When the work is done, close the loop: summarize what changed, what was verified, and what remains.
 
+## Workers on other machines
+
+A worker can run on a Cloud PC or another PC as easily as here: `bn agent launch claude --host <machine>` from the branch's worktree. It runs in a tmux window on that machine and survives dropped connections. `bn agent msg` reaches it, and it can answer back, whichever machine each side is on. `bn tunnels` shows which machines are up. The `multi-device` skill has the setup and the troubleshooting.
+
 ## Cleanup
 
 - Stop or close worker views once their work is done.

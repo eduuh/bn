@@ -130,14 +130,21 @@ connect_one() { # <tunnel-id> <machine>
   # the Match. The host key is checked under the same alias either way, so another machine
   # holding that address is refused.
   lan=""
-  lan_ip=$(bn_tunnel_lan_labels "$DT" "$id" | head -n 1 | sed 's/^bn-lan-//' | tr - .)
+  info=$("$DT" show "$id" -j 2>/dev/null)
+  # The host's nickname (tunnel-host, bn.tunnelNick) becomes a second alias: ssh <nick> works too.
+  nick=$(printf '%s\n' "$info" | awk -F'"' '$2 ~ /^bn-nick-[a-z0-9-]+$/ {print substr($2, 9); exit}')
+  lan_ip=$(printf '%s\n' "$info" | awk -F'"' '$2 ~ /^bn-lan-[0-9-]+$/ {print $2; exit}' | sed 's/^bn-lan-//' | tr - .)
   if [ -n "$lan_ip" ] && command -v nc >/dev/null 2>&1 && nc -z -w 1 "$lan_ip" "$port" >/dev/null 2>&1; then
-    lan="Match originalhost $to exec \"nc -z -w 1 $lan_ip $port >/dev/null 2>&1\"
+    lan="Match originalhost $to${nick:+,$nick} exec \"nc -z -w 1 $lan_ip $port >/dev/null 2>&1\"
   HostName $lan_ip
 "
     say "$to: on this network at $lan_ip:$port; ssh goes direct, the tunnel is the fallback"
   fi
 
+  # accept-new: the first connection records the host's key without asking, since nothing asks on
+  # an unattended machine and BatchMode then failed with "Host key verification failed" until
+  # someone ssh'd in by hand (2026-09-30, AB12C to AB12C). A key that later changes is still
+  # refused. The tunnel itself only reaches hosts on this Dev Tunnels account.
   # One shared connection: the first ssh to the host opens a master and every later one
   # (remote-job, tunnel-attach, git, scp) rides it, skipping the Dev Tunnel channel setup and the
   # SSH handshake. %C is a hash of host, port and user, so the socket path stays short and a port
@@ -150,12 +157,13 @@ connect_one() { # <tunnel-id> <machine>
   awk -v b="$begin" -v e="$end" '$0==b{skip=1} !skip{print} $0==e{skip=0}' "$cfg" > "$tmp"
   cat >> "$tmp" <<EOF
 $begin
-${lan}Host $to
+${lan}Host $to${nick:+ $nick}
   HostName 127.0.0.1
   Port $port
   User $RUSER
 $IDS
   HostKeyAlias bn-tunnel-$to
+  StrictHostKeyChecking accept-new
   ServerAliveInterval 15
   ServerAliveCountMax 4
   TCPKeepAlive yes

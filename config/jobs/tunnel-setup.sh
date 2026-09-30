@@ -16,9 +16,9 @@
 #      after a reboot before anyone signs in (one UAC prompt, at a terminal only);
 #   8. host this machine and connect it to every other host.
 # A machine nobody needs to reach: `BN_TUNNEL_HOST=0 bn run tunnel-setup` makes it connect-only
-# (git config --global bn.tunnelHost off; BN_TUNNEL_HOST=1 undoes it), and sshd is not installed.
+# (BN_TUNNEL_HOST=1 undoes it), and sshd is not installed.
 # Local network mode is opt-in: `BN_TUNNEL_LAN=1 bn run tunnel-setup` turns it on for this machine
-# (git config --global bn.tunnelLan on; BN_TUNNEL_LAN=0 turns it off) and, on WSL, checks the two
+# (BN_TUNNEL_LAN=0 turns it off) and, on WSL, checks the two
 # things Windows needs for it: mirrored networking and the firewall rule for the port.
 # It ends with the things left for a person, if any, and exits 1 when there are some.
 #
@@ -39,16 +39,34 @@ left=""
 # as_root <command...> -- sudo that asks only when someone is there to answer.
 as_root() { if bn_tunnel_interactive; then sudo "$@"; else sudo -n "$@" < /dev/null; fi; }
 echo "tunnel-setup: $ME"
+[ -z "$(bn_tunnel_nick)" ] || echo "  nickname $(bn_tunnel_nick)"
 
 case "${BN_TUNNEL_HOST:-}" in
-  0) git config --global bn.tunnelHost off ;;
-  1) git config --global --unset bn.tunnelHost 2>/dev/null ;;
+  0) bn_tunnel_set tunnelHost off ;;
+  1) bn_tunnel_set tunnelHost "" ;;
 esac
+case "${BN_TUNNEL_AUTO:-}" in
+  0) bn_tunnel_set tunnelAuto off ;;
+  1) bn_tunnel_set tunnelAuto "" ;;
+esac
+# A nickname for this machine: what bn tunnels, the tmux status bar and `ssh <nick>` use on every
+# machine. The hostname stays the real name. BN_TUNNEL_NICK= (empty) clears it.
+if [ -n "${BN_TUNNEL_NICK+set}" ]; then
+  n=$BN_TUNNEL_NICK
+  if [ -z "$n" ] || printf '%s' "$n" | grep -qE '^[A-Za-z0-9][A-Za-z0-9-]{0,19}$'; then
+    bn_tunnel_set tunnelNick "$n"
+    bn_tunnel_record_nick "$n" || true
+  else
+    needs "a nickname is 1-20 letters, digits or dashes: '$BN_TUNNEL_NICK' is not"
+  fi
+fi
 host_off=0
-case "$(git config --global bn.tunnelHost 2>/dev/null | tr 'A-Z' 'a-z')" in off|false|no|0) host_off=1 ;; esac
+case "$(bn_tunnel_flag tunnelHost)" in off|false|no|0) host_off=1 ;; esac
+
+tmpd=$(mktemp -d); trap 'rm -rf "$tmpd"' EXIT
 
 # --- 1. packages --------------------------------------------------------------------
-has_sshd() { command -v sshd >/dev/null 2>&1 || [ -x /usr/sbin/sshd ]; }
+has_sshd() { bn_tunnel_sshd >/dev/null; }
 pkgs=""
 [ "$host_off" = 1 ] || has_sshd || pkgs="$pkgs openssh-server"
 command -v tmux >/dev/null 2>&1 || pkgs="$pkgs tmux"
@@ -56,6 +74,8 @@ command -v nc   >/dev/null 2>&1 || pkgs="$pkgs netcat-openbsd"
 command -v curl >/dev/null 2>&1 || pkgs="$pkgs curl"
 command -v ss   >/dev/null 2>&1 || pkgs="$pkgs iproute2"
 command -v gh   >/dev/null 2>&1 || pkgs="$pkgs gh"
+# devtunnel is a .NET program and needs libicu; without it bn wraps it to run without (lib/tunnel.sh).
+command -v ldconfig >/dev/null 2>&1 && ! ldconfig -p 2>/dev/null | grep -q libicuuc && pkgs="$pkgs libicu-dev"
 if [ -z "$pkgs" ]; then
   ok "packages (sshd tmux nc curl ss gh)"
 elif ! command -v apt-get >/dev/null 2>&1; then
@@ -67,13 +87,18 @@ else
       || { as_root apt-get update >/dev/null 2>&1 && as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y $pkgs >/dev/null 2>&1; }; then
     done_ "installed$pkgs"
   else
-    needs "sudo apt-get install -y$pkgs"
+    # sshd does not need root: without sudo, unpack bn's own copy and install the rest later.
+    if [ "$host_off" = 0 ] && ! has_sshd && bn_tunnel_sshd_unpack; then
+      done_ "sshd unpacked for this user ($BN_TUNNEL_SSHD_HOME), no root needed"
+      pkgs=$(printf '%s\n' $pkgs | grep -vx openssh-server | tr '\n' ' ')
+    fi
+    [ -z "$(printf '%s' "$pkgs" | tr -d ' ')" ] || needs "sudo apt-get install -y $pkgs"
   fi
 fi
 
 # --- 2 + 3. devtunnel CLI and sign-in --------------------------------------------------
 DT=""
-if DT=$(bn_tunnel_devtunnel 2>/dev/null); then
+if DT=$(bn_tunnel_devtunnel 2>"$tmpd/dt.err"); then
   ok "devtunnel CLI ($DT)"
   if bn_tunnel_signed_in "$DT"; then
     ok "Dev Tunnels sign-in ($("$DT" user show 2>/dev/null | head -n 1))"
@@ -84,7 +109,7 @@ if DT=$(bn_tunnel_devtunnel 2>/dev/null); then
   fi
 else
   DT=""
-  needs "the devtunnel CLI could not be downloaded into ~/bin (curl and a network are needed)"
+  needs "the devtunnel CLI could not be installed into ~/bin: $(tail -n 1 "$tmpd/dt.err" 2>/dev/null)"
 fi
 
 # --- 4. whose keys may log in -----------------------------------------------------------
@@ -122,8 +147,13 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
     ok "WSL keeper ($ks)"
     # A host must also come back after a reboot nobody signs in after (Windows Update overnight).
     # That task needs admin rights once, so it is asked for only at a terminal.
+    # A machine where Windows would not start the boot task (wsl-keepalive boot says why) is not
+    # asked again: it needs a sign-in after a reboot, and re-running setup would only repeat the
+    # UAC prompt (2026-10-01: the Entra-joined laptop and cloud-pc-AB12C both refused S4U).
     case "$ks" in *"boot task: not registered"*)
-      if [ "$host_off" = 0 ] && has_sshd; then
+      if [ -f "$HOME/.config/bn/boot-task.unsupported" ]; then
+        echo "  ...   no boot task: Windows will not start one for this account, so after a reboot this host waits for a sign-in"
+      elif [ "$host_off" = 0 ] && has_sshd; then
         if bn_tunnel_interactive && sh "$dir/wsl-keepalive.sh" boot; then
           done_ "boot task: this host comes back after a reboot, before anyone signs in"
         else
@@ -138,11 +168,11 @@ fi
 
 # --- local network mode (opt-in) ----------------------------------------------------
 case "${BN_TUNNEL_LAN:-}" in
-  1) git config --global bn.tunnelLan on ;;
-  0) git config --global --unset bn.tunnelLan 2>/dev/null ;;
+  1) bn_tunnel_set tunnelLan on ;;
+  0) bn_tunnel_set tunnelLan "" ;;
 esac
 lan=0
-case "$(git config --global bn.tunnelLan 2>/dev/null | tr 'A-Z' 'a-z')" in on|true|yes|1) lan=1 ;; esac
+case "$(bn_tunnel_flag tunnelLan)" in on|true|yes|1) lan=1 ;; esac
 
 # --- 8. host and connect ------------------------------------------------------------
 out=$(mktemp)

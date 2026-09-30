@@ -12,6 +12,7 @@ mod kill;
 mod memory_hook;
 mod mesh;
 mod read;
+pub(crate) mod remote;
 mod steer;
 pub(crate) use checkin::*;
 pub(crate) use dialog::*;
@@ -718,7 +719,9 @@ pub(crate) fn resolve_agent_transport(cfg: &Config, target: &str) -> Box<dyn bn_
     }
     if let Some((repo, branch)) = target.split_once(':') {
         if let Some(host) = recorded_host(cfg, repo, branch) {
-            let tmux = resolve_tmux_target(cfg, target);
+            // The window a remote launch made there (agent/remote.rs): session <repo>, window named
+            // after the branch. Resolving it against this machine's windows could pick a local one.
+            let tmux = format!("{repo}:{}", bn_core::orchestrate::tmux_window_name(branch));
             return Box::new(SshTmuxTransport::new(&host, &tmux));
         }
         if let Some(endpoint) = resolve_agent_channel(cfg, repo, branch).endpoint() {
@@ -934,62 +937,6 @@ impl LaunchPlan {
     }
 }
 
-fn launch_argv(harness: Harness, plan: &LaunchPlan) -> Vec<String> {
-    let mut args = vec!["agent".to_string(), "launch".to_string(), harness.bin().to_string()];
-    if let Some(seed) = &plan.seed {
-        args.push("--seed".to_string());
-        args.push(seed.clone());
-    }
-    if plan.yolo_force {
-        args.push("--yolo".to_string());
-    }
-    if plan.fresh {
-        args.push("--fresh".to_string());
-    }
-    if let Some(session) = &plan.session {
-        args.push("--session".to_string());
-        args.push(session.clone());
-    }
-    if let Some(resume) = &plan.resume_session {
-        args.push("--resume-session".to_string());
-        args.push(resume.clone());
-    }
-    for dir in &plan.add_dirs {
-        args.push("--add-dir".to_string());
-        args.push(dir.clone());
-    }
-    if !plan.passthrough.is_empty() {
-        args.push("--".to_string());
-        args.extend(plan.passthrough.clone());
-    }
-    args
-}
-
-fn shell_join(parts: impl IntoIterator<Item = String>) -> String {
-    parts.into_iter().collect::<Vec<_>>().join(" ")
-}
-
-fn remote_launch_ssh_args(
-    host: &str,
-    remote_worktree: &std::path::Path,
-    harness: Harness,
-    plan: &LaunchPlan,
-) -> Vec<String> {
-    let bn_args = launch_argv(harness, plan);
-    let remote_cmd = format!(
-        "cd {} && {}",
-        wt::shq(&remote_worktree.to_string_lossy()),
-        shell_join(bn_args.into_iter().map(|a| wt::shq(&a)))
-    );
-    vec![
-        "-tt".to_string(),
-        "-o".to_string(),
-        "ControlPath=none".to_string(),
-        host.to_string(),
-        remote_cmd,
-    ]
-}
-
 fn controller_launch() -> bool {
     let controller_id = std::env::var("BN_CONTROLLER_ID").ok();
     let worker_session_id = std::env::var("BN_WORKER_SESSION_ID").ok();
@@ -1079,6 +1026,15 @@ pub(crate) fn record_launched_session(cfg: &Config, s: LaunchedSession<'_>) {
     });
 }
 
+/// Whether `host` is safe to hand to ssh as a destination: an ssh-config alias or a plain
+/// `user@host`. A host read from a note (synced, and writable by any agent) that began with `-`
+/// would be taken as an ssh option, and `-oProxyCommand=…` runs a command.
+pub(crate) fn safe_ssh_host(host: &str) -> bool {
+    !host.is_empty()
+        && !host.starts_with('-')
+        && host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '@'))
+}
+
 fn recorded_host(cfg: &Config, repo: &str, branch: &str) -> Option<String> {
     let ctx = Resolved {
         repo: repo.to_string(),
@@ -1088,7 +1044,7 @@ fn recorded_host(cfg: &Config, repo: &str, branch: &str) -> Option<String> {
     note.front.collab.iter().rev().find_map(|it| {
         let rest = it.text.trim().strip_prefix("agent-host:")?;
         let host = rest.trim();
-        (!host.is_empty()).then(|| host.to_string())
+        safe_ssh_host(host).then(|| host.to_string())
     })
 }
 
@@ -1240,10 +1196,18 @@ fn enforce_launch_placement(
         .unwrap_or_else(gen_uuid);
     // Outside tmux there is no window to lease against; inventing `repo:branch` would stamp
     // `@bn_session_id` onto an unrelated window of that name. Lease with no target instead.
-    let current_window =
-        crate::proc::tmux_raw(&["display-message", "-p", "#{session_name}:#{window_name}"])
-            .map(|t| t.trim().to_string())
-            .filter(|t| !t.is_empty() && std::env::var_os("TMUX").is_some());
+    // `-t $TMUX_PANE`: without it tmux answers with the client's *active* window, so a launch in a
+    // detached or background window (every `--host` launch) leased and stamped whichever window
+    // happened to be in front, and its own window was never joined to it (2026-09-30).
+    let pane = std::env::var("TMUX_PANE").unwrap_or_default();
+    let mut query = vec!["display-message", "-p"];
+    if !pane.is_empty() {
+        query.extend(["-t", pane.as_str()]);
+    }
+    query.push("#{session_name}:#{window_name}");
+    let current_window = crate::proc::tmux_raw(&query)
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty() && std::env::var_os("TMUX").is_some());
     let tmux_target = current_window.clone().unwrap_or_default();
     match agent_lease::reserve(agent_lease::AgentLeaseRequest {
         repo: &ctx.repo,
@@ -1503,6 +1467,39 @@ pub(crate) fn emit_agent_launch(
         std::process::exit(1);
     });
 
+    if let Some(host) = host {
+        // The agent runs on `host`, and its own bn decides resume-or-fresh and placement there, so
+        // only what the caller asked for travels. It is started in a tmux window on that machine,
+        // then attached from here, and survives the connection (remote.rs).
+        let mut launch: Vec<String> = ["bn", "agent", "launch", harness.bin()].map(String::from).into();
+        if let Some(s) = &seed {
+            launch.extend(["--seed".to_string(), s.clone()]);
+        }
+        if yolo {
+            launch.push("--yolo".to_string());
+        }
+        if fresh {
+            launch.push("--fresh".to_string());
+        }
+        for (flag, value) in [("--session", &session), ("--resume-session", &resume_session)] {
+            if let Some(v) = value {
+                launch.extend([flag.to_string(), v.clone()]);
+            }
+        }
+        for dir in &add_dirs {
+            launch.extend(["--add-dir".to_string(), dir.clone()]);
+        }
+        if !passthrough.is_empty() {
+            launch.push("--".to_string());
+            launch.extend(passthrough);
+        }
+        remote::start(cfg, host, &ctx.repo, &ctx.branch, &launch);
+        // Steering (`bn agent send/msg`) finds the agent through this line.
+        let line = format!("agent-host: {host}");
+        let _ = commands::add(cfg, &ctx, "collab", &line, Some(&line), &today());
+        remote::attach(host, &ctx.repo, &ctx.branch)
+    }
+
     // Pin a session id when the caller didn't give one, exactly as `bn dispatch` does. Without it a
     // fresh hand-typed launch takes whatever id the harness invents, which bn never learns — and an
     // id bn doesn't know is an agent bn cannot resume. Skipped when the user drove the session
@@ -1551,40 +1548,6 @@ pub(crate) fn emit_agent_launch(
         effective.as_deref(),
         &pinned_session,
     );
-
-    if let Some(host) = host {
-        let Some(extra) = cfg.hosts.get(host) else {
-            eprintln!("bn agent launch: unknown host '{host}' (add it under [hosts.{host}] or ~/.ssh/config)");
-            std::process::exit(1);
-        };
-        let Some(repo_root) = extra.repo_root.as_deref() else {
-            eprintln!("bn agent launch: host '{host}' is missing hosts.{host}.repo_root");
-            std::process::exit(1);
-        };
-        let remote_worktree = std::path::Path::new(repo_root).join(&ctx.repo).join(&ctx.branch);
-        if !remote_worktree.is_dir() {
-            eprintln!(
-                "bn agent launch: remote worktree missing: {}",
-                remote_worktree.display()
-            );
-            std::process::exit(1);
-        }
-        record_launched_session(
-            cfg,
-            LaunchedSession {
-                ctx: &ctx,
-                harness: harness.bin(),
-                session_id: effective.as_deref().unwrap_or(&pinned_session),
-                worktree: &canonical.to_string_lossy(),
-                host: Some(host),
-                work_class: bn_core::cost::WorkClass::Coding,
-                task_name: None,
-                controller_id: None,
-            },
-        );
-        let ssh_args = remote_launch_ssh_args(host, &remote_worktree, harness, &plan);
-        exec_harness("ssh", &ssh_args)
-    }
 
     match harness {
         Harness::Claude => {

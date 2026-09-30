@@ -18,11 +18,11 @@
 # Discovery needs no shared config: both machines sign in to Dev Tunnels with the same account,
 # so `bn run tunnel-connect` finds every host by the bn-host label.
 #
-# A machine that should never be reached (connect-only): `git config --global bn.tunnelHost off`.
+# A machine that should never be reached (connect-only): `BN_TUNNEL_HOST=0 bn run tunnel-setup`.
 # This then stops what an earlier run started and deletes this machine's tunnel, so the others stop
 # listing it; the host key is kept, so turning hosting back on does not change it.
 #
-# Local network mode, opt-in per host: `git config --global bn.tunnelLan on` makes sshd listen on
+# Local network mode, opt-in per host: `BN_TUNNEL_LAN=1 bn run tunnel-setup` makes sshd listen on
 # every interface (still key-only) and puts this machine's LAN address on the tunnel as a label, so
 # a client on the same network connects straight to it and keeps the tunnel as the fallback
 # (tunnel-connect). Off, sshd is loopback only and the Dev Tunnel is the one way in.
@@ -38,16 +38,16 @@ set -eu
 NAME="${BN_TUNNEL_NAME:-$(hostname -s 2>/dev/null || hostname)}"
 LABEL="bn-host-$(printf '%s' "$NAME" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9-\n' '-')"
 STATE="$HOME/.ssh/bn-sshd"
+. "$(dirname "$0")/lib/tunnel.sh"
 LISTEN=127.0.0.1; NOTE="Loopback only: the Dev Tunnel is the one way in."
-case "$(git config --global bn.tunnelLan 2>/dev/null | tr 'A-Z' 'a-z')" in
+case "$(bn_tunnel_flag tunnelLan)" in
   on|true|yes|1) LISTEN=0.0.0.0; NOTE="Local network mode (bn.tunnelLan): also reachable on the LAN." ;;
 esac
 
 say() { echo "tunnel-host: $*"; }
 die() { echo "tunnel-host: $*" >&2; exit 1; }
-. "$(dirname "$0")/lib/tunnel.sh"
 
-case "$(git config --global bn.tunnelHost 2>/dev/null | tr 'A-Z' 'a-z')" in off|false|no|0)
+case "$(bn_tunnel_flag tunnelHost)" in off|false|no|0)
   for w in $(tmux list-windows -a -F '#{session_name}:#{window_name}' 2>/dev/null | grep ':tunnel$' || true); do
     tmux kill-window -t "$w" 2>/dev/null || true
   done
@@ -70,9 +70,8 @@ case "$(git config --global bn.tunnelHost 2>/dev/null | tr 'A-Z' 'a-z')" in off|
 esac
 
 # --- prerequisites -----------------------------------------------------------
-SSHD=$(command -v sshd 2>/dev/null || true)
-[ -n "$SSHD" ] || [ ! -x /usr/sbin/sshd ] || SSHD=/usr/sbin/sshd
-[ -n "$SSHD" ] || die "sshd not found. Install it once: sudo apt-get install -y openssh-server"
+SSHD=$(bn_tunnel_sshd) || { bn_tunnel_sshd_unpack && SSHD=$(bn_tunnel_sshd); } \
+  || die "sshd not found. Install it once: sudo apt-get install -y openssh-server"
 # devtunnel CLI (installed into ~/bin when missing) and its sign-in: see lib/tunnel.sh.
 DT=$(bn_tunnel_devtunnel) || exit 1
 bn_tunnel_login "$DT" || exit 1
@@ -108,18 +107,25 @@ ClientAliveInterval 30
 ClientAliveCountMax 3
 AllowTcpForwarding local
 EOF
+# An unpacked sshd (OpenSSH 9.8 and later) looks for its session and auth helpers at the system
+# path unless told where they are.
+case "$SSHD" in "$BN_TUNNEL_SSHD_HOME"/*)
+  for _h in sshd-session:SshdSessionPath sshd-auth:SshdAuthPath; do
+    [ -x "$BN_TUNNEL_SSHD_HOME/usr/lib/openssh/${_h%%:*}" ] && echo "${_h#*:} $BN_TUNNEL_SSHD_HOME/usr/lib/openssh/${_h%%:*}" >> "$STATE/sshd_config"
+  done ;;
+esac
 
 # Healthy means listening on the port, not just alive: on 2026-09-27 cloud-pc-AB12C's sshd stayed
 # up after a port-change reload but never answered on the new port, and nothing noticed.
 listening() { bn_tunnel_listening "$PORT" "$LISTEN"; }
 wait_listening() { _i=0; until listening; do _i=$((_i + 1)); [ "$_i" -ge 10 ] && return 1; sleep 1; done; }
 start_sshd() {
-  "$SSHD" -f "$STATE/sshd_config" || die "sshd failed to start on port $PORT"
+  LD_LIBRARY_PATH="$(bn_tunnel_sshd_libs "$SSHD")" "$SSHD" -f "$STATE/sshd_config" || die "sshd failed to start on port $PORT"
   wait_listening || die "sshd started but is not listening on $LISTEN:$PORT"
   say "sshd started on $LISTEN:$PORT"
 }
 
-"$SSHD" -t -f "$STATE/sshd_config" || die "sshd rejected $STATE/sshd_config"
+LD_LIBRARY_PATH="$(bn_tunnel_sshd_libs "$SSHD")" "$SSHD" -t -f "$STATE/sshd_config" || die "sshd rejected $STATE/sshd_config"
 pid=$(cat "$STATE/sshd.pid" 2>/dev/null || true)
 if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
   if [ "$old_cfg" != "$(cat "$STATE/sshd_config")" ]; then
@@ -186,6 +192,14 @@ if [ -n "$lan_label" ]; then
     say "on WSL, allow the port once from an elevated PowerShell: New-NetFirewallHyperVRule -Name bn-ssh-$PORT -DisplayName 'bn ssh $PORT' -Direction Inbound -VMCreatorId '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -Protocol TCP -LocalPorts $PORT"
   fi
 fi
+# The nickname, or none, as the tunnel's one bn-nick label: the other machines show it and add it
+# as an ssh alias beside the hostname.
+nick_label=""; nick=$(bn_tunnel_nick | tr 'A-Z' 'a-z'); [ -z "$nick" ] || nick_label="bn-nick-$nick"
+have_nick=0
+for l in $("$DT" show "$ID" -j 2>/dev/null | awk -F'"' '$2 ~ /^bn-nick-/ {print $2}'); do
+  if [ "$l" = "$nick_label" ]; then have_nick=1; else "$DT" update "$ID" --remove-labels "$l" >/dev/null 2>&1 || true; fi
+done
+[ -z "$nick_label" ] || [ "$have_nick" = 1 ] || "$DT" update "$ID" --add-labels "$nick_label" >/dev/null 2>&1 || say "could not publish the nickname $nick"
 # Only this port on the tunnel: a client forwards every tunnel port, and a stale one (from an
 # earlier port) would clash with another host's. A port change needs the host restarted.
 restart=0

@@ -453,6 +453,16 @@ pub(crate) enum PlanCmd {
     },
     /// Open the active plan in $EDITOR.
     Open,
+    /// Open this branch's newest plan HTML in the local browser. With `--host`, the one an agent on
+    /// that machine made (copied over ssh); with `--port`, a live page forwarded from it instead.
+    View {
+        /// The machine the plan is on, as `ssh <machine>` knows it (see `bn tunnels`).
+        #[arg(long)]
+        host: Option<String>,
+        /// Forward this port from `--host` and open http://localhost:<port> (a live page).
+        #[arg(long)]
+        port: Option<u16>,
+    },
     /// Show plan artifact status for the current branch.
     Status,
     /// Promote a draft relative path or session id to plans/active.md.

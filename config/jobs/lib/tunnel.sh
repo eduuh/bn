@@ -10,11 +10,67 @@
 
 bn_tunnel_interactive() { [ -t 0 ]; }
 
+# Per-machine settings (bn.tunnelHost, bn.tunnelLan, bn.tunnelAuto, bn.tunnelNick) live in a file
+# of this machine, never in ~/.gitconfig: dotfiles sync that one to every machine, so a setting
+# meant for one machine applied to all of them, or vanished on the next dotfiles pull (2026-09-30:
+# the laptop's bn.tunnelLan disappeared that way). A value still in ~/.gitconfig is read as a
+# fallback, so nothing that was set before stops working.
+BN_TUNNEL_CONF="${BN_TUNNEL_CONF:-$HOME/.config/bn/tunnel.conf}"
+
+# bn_tunnel_flag <name> -- a per-machine setting (bn.<name>), lowercased; empty when unset.
+bn_tunnel_flag() {
+  { git config --file "$BN_TUNNEL_CONF" --get "bn.$1" 2>/dev/null || git config --global --get "bn.$1" 2>/dev/null; } | tr 'A-Z' 'a-z'
+}
+
+# bn_tunnel_set <name> <value> -- set it for this machine; an empty value unsets it.
+bn_tunnel_set() {
+  mkdir -p "$(dirname "$BN_TUNNEL_CONF")"
+  if [ -n "$2" ]; then
+    git config --file "$BN_TUNNEL_CONF" "bn.$1" "$2"
+  else
+    git config --file "$BN_TUNNEL_CONF" --unset "bn.$1" 2>/dev/null || true
+  fi
+  # Unset the old shared copy too, or it would keep answering for every machine.
+  git config --global --unset "bn.$1" 2>/dev/null || true
+}
+
+# bn_tunnel_nick -- this machine's nickname (bn.tunnelNick) as it was set, when it is a valid one:
+# letters, digits and dashes, 1-20 of them. It shows as set on this machine's own status bar; on the
+# tunnel it rides as a label, which Dev Tunnels lowercases, so the other machines show it (and take
+# it as an ssh alias) in lowercase. The hostname stays the machine's real name.
+#
+# Nicknames are also kept in the synced work-notes repo (bn/tunnel.conf, one `[machine "<host>"]`
+# section each), so a machine that is rebuilt or set up again gets its name back without anyone
+# retyping it. The machine's own file wins; the notes copy is the record.
+bn_tunnel_nick() {
+  { git config --file "$BN_TUNNEL_CONF" --get bn.tunnelNick 2>/dev/null \
+      || { _nf=$(bn_tunnel_notes_conf) && git config --file "$_nf" --get "machine.$(hostname -s 2>/dev/null || hostname).nick" 2>/dev/null; } \
+      || git config --global --get bn.tunnelNick 2>/dev/null; } \
+    | grep -E '^[A-Za-z0-9][A-Za-z0-9-]{0,19}$' || true
+}
+
+# bn_tunnel_notes_conf -- the shared nickname record in the work-notes repo; fails without one.
+bn_tunnel_notes_conf() {
+  if [ -n "${BN_NOTES_DIR:-}" ]; then _r="${BN_NOTES_DIR_WORK:-$BN_NOTES_DIR}"
+  elif [ -d "$HOME/projects/notes/bn" ]; then _r="$HOME/projects/notes/bn"
+  else _r="$HOME/projects/branch-notes-work/bn"; fi
+  [ -d "$_r" ] && echo "$_r/tunnel.conf"
+}
+
+# bn_tunnel_record_nick <nick> -- write this machine's nickname into the notes record (empty
+# removes it). The notes sync commits and pushes it with everything else.
+bn_tunnel_record_nick() {
+  _nf=$(bn_tunnel_notes_conf) || return 1
+  _key="machine.$(hostname -s 2>/dev/null || hostname).nick"
+  if [ -n "$1" ]; then git config --file "$_nf" "$_key" "$1"; else git config --file "$_nf" --unset "$_key" 2>/dev/null || true; fi
+}
+
 # bn_tunnel_devtunnel -- echo the path of a working devtunnel CLI, downloading it into ~/bin when
 # missing. The binary is fetched directly and made executable here: the official installer script
 # ends with a sudo step, which failed unattended and left ~/bin/devtunnel non-executable
 # (2026-09-26).
 bn_tunnel_devtunnel() {
+  bn_tunnel_devtunnel_icu
   _dt=$(command -v devtunnel 2>/dev/null || true)
   [ -n "$_dt" ] || [ ! -x "$HOME/bin/devtunnel" ] || _dt="$HOME/bin/devtunnel"
   [ -n "$_dt" ] && { echo "$_dt"; return 0; }
@@ -26,18 +82,39 @@ bn_tunnel_devtunnel() {
     Darwin-arm64) _asset=osx-arm64-devtunnel ;;
     *) echo "tunnel: no devtunnel build known for $(uname -s)-$(uname -m); install it by hand" >&2; return 1 ;;
   esac
-  command -v curl >/dev/null 2>&1 || { echo "tunnel: curl is required to download devtunnel" >&2; return 1; }
   echo "tunnel: downloading the devtunnel CLI ($_asset) into ~/bin ..." >&2
   mkdir -p "$HOME/bin"
-  if curl -fsSL -o "$HOME/bin/devtunnel.part" "https://tunnelsassetsprod.blob.core.windows.net/cli/$_asset"; then
+  # curl, else wget, else python3: a fresh machine whose package install still waits for sudo has
+  # no curl yet, and the download is what everything else needs (2026-10-01, cloud-pc-AB12C).
+  _url="https://tunnelsassetsprod.blob.core.windows.net/cli/$_asset"; _out="$HOME/bin/devtunnel.part"
+  if { command -v curl >/dev/null 2>&1 && curl -fsSL -o "$_out" "$_url"; } \
+      || { command -v wget >/dev/null 2>&1 && wget -q -O "$_out" "$_url"; } \
+      || { command -v python3 >/dev/null 2>&1 && python3 -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' "$_url" "$_out"; }; then
     chmod +x "$HOME/bin/devtunnel.part" && mv "$HOME/bin/devtunnel.part" "$HOME/bin/devtunnel"
   else
     rm -f "$HOME/bin/devtunnel.part"
     echo "tunnel: devtunnel download failed" >&2
     return 1
   fi
-  "$HOME/bin/devtunnel" --version >/dev/null 2>&1 || { echo "tunnel: downloaded devtunnel does not run" >&2; return 1; }
+  bn_tunnel_devtunnel_icu
+  "$HOME/bin/devtunnel" --version >/dev/null 2>&1 || { echo "tunnel: downloaded devtunnel does not run: $("$HOME/bin/devtunnel" --version 2>&1 | head -n 2 | tail -n 1)" >&2; return 1; }
   echo "$HOME/bin/devtunnel"
+}
+
+# bn_tunnel_devtunnel_icu -- make ~/bin/devtunnel run on a machine without libicu. devtunnel is a
+# .NET program and dies at start ("Couldn't find a valid ICU package") where libicu is missing, as
+# on a fresh Cloud PC whose package install still waits for sudo (2026-10-01, cloud-pc-AB12C). The
+# binary moves to devtunnel.bin behind a two-line wrapper that runs it without globalization
+# support, so every caller, including the tmux windows that host and connect, gets a working CLI
+# by the same path. Nothing to do when libicu is there or the wrapper already is.
+bn_tunnel_devtunnel_icu() {
+  [ -x "$HOME/bin/devtunnel" ] && [ ! -e "$HOME/bin/devtunnel.bin" ] || return 0
+  if command -v ldconfig >/dev/null 2>&1 && ldconfig -p 2>/dev/null | grep -q 'libicuuc'; then return 0; fi
+  "$HOME/bin/devtunnel" --version 2>&1 | grep -q 'ICU' || return 0
+  mv "$HOME/bin/devtunnel" "$HOME/bin/devtunnel.bin" || return 0
+  printf '#!/bin/sh\n# bn: no libicu on this machine, so devtunnel runs without globalization support.\nDOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 exec "$HOME/bin/devtunnel.bin" "$@"\n' > "$HOME/bin/devtunnel"
+  chmod +x "$HOME/bin/devtunnel"
+  echo "tunnel: no libicu here; devtunnel now runs without it (sudo apt-get install -y libicu-dev puts it back)" >&2
 }
 
 # bn_tunnel_signed_in <devtunnel> -- true only when `user show` reports a signed-in account.
@@ -116,6 +193,42 @@ bn_tunnel_hosts() {
   printf '%s\n' "$_list" | awk -F'"' '
     /"tunnelId"/ { id = $4 }
     /"description"/ { if (id != "" && $4 != "") print id, $4; id = "" }'
+}
+
+# User-level sshd. Hosting needs only the sshd binary, never the system service, and on Debian and
+# Ubuntu the package can be unpacked without root: `apt-get download` and `dpkg -x` into bn's own
+# directory. So a machine where sudo wants a password (this laptop, 2026-09-30) can still host,
+# which is what lets the other machines reach it back.
+BN_TUNNEL_SSHD_HOME="${BN_TUNNEL_SSHD_HOME:-$HOME/.local/share/bn/openssh}"
+
+# bn_tunnel_sshd -- echo the sshd to run: the system's, else bn's unpacked copy. Fails when
+# there is neither.
+bn_tunnel_sshd() {
+  _s=$(command -v sshd 2>/dev/null || true)
+  [ -n "$_s" ] || [ ! -x /usr/sbin/sshd ] || _s=/usr/sbin/sshd
+  [ -n "$_s" ] || [ ! -x "$BN_TUNNEL_SSHD_HOME/usr/sbin/sshd" ] || _s="$BN_TUNNEL_SSHD_HOME/usr/sbin/sshd"
+  [ -n "$_s" ] && echo "$_s"
+}
+
+# bn_tunnel_sshd_unpack -- put an sshd into $BN_TUNNEL_SSHD_HOME without root (apt only). The
+# copy is only used when there is no system sshd. libwrap0 comes along: sshd-session links it and
+# a desktop install often lacks it, so every login failed right after the key exchange.
+bn_tunnel_sshd_unpack() {
+  command -v apt-get >/dev/null 2>&1 && command -v dpkg >/dev/null 2>&1 || return 1
+  _tmp=$(mktemp -d) || return 1
+  if (cd "$_tmp" && apt-get download openssh-server libwrap0 >/dev/null 2>&1) \
+      && mkdir -p "$BN_TUNNEL_SSHD_HOME" \
+      && for _d in "$_tmp"/*.deb; do dpkg -x "$_d" "$BN_TUNNEL_SSHD_HOME" || return 1; done \
+      && "$BN_TUNNEL_SSHD_HOME/usr/sbin/sshd" -V >/dev/null 2>&1; then
+    rm -rf "$_tmp"; return 0
+  fi
+  rm -rf "$_tmp"; return 1
+}
+
+# bn_tunnel_sshd_libs <sshd> -- the LD_LIBRARY_PATH that sshd needs: its own unpacked libraries
+# for bn's copy, nothing for a system sshd.
+bn_tunnel_sshd_libs() {
+  case "$1" in "$BN_TUNNEL_SSHD_HOME"/*) echo "$BN_TUNNEL_SSHD_HOME/usr/lib/x86_64-linux-gnu:$BN_TUNNEL_SSHD_HOME/usr/lib/aarch64-linux-gnu" ;; esac
 }
 
 # bn_tunnel_lan_ip -- this machine's address on the local network: the source address of its

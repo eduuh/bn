@@ -16,7 +16,6 @@ dir=$(cd "$(dirname "$0")" && pwd -P)
 ME=$(hostname -s 2>/dev/null || hostname)
 cache="$HOME/.cache/bn"
 lower() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
-flag() { git config --global "$1" 2>/dev/null | tr 'A-Z' 'a-z'; }
 
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
@@ -27,10 +26,11 @@ DT=$(command -v devtunnel 2>/dev/null || true)
 # starts now and everything local is worked out while it runs. It carries all that is needed per
 # host: "<tunnel-id> <machine> <host connections> <lan address or ->".
 [ -z "$DT" ] || "$DT" list --labels bn-host -j 2>/dev/null | awk -F'"' '
-  /"tunnelId"/ { id = $4; hc = "?"; lan = "-" }
+  /"tunnelId"/ { id = $4; hc = "?"; lan = "-"; nick = "-" }
+  $2 ~ /^bn-nick-[a-z0-9-]+$/ { nick = substr($2, 9) }
   /"hostConnections"/ { hc = $3; gsub(/[^0-9]/, "", hc) }
   $2 ~ /^bn-lan-[0-9-]+$/ { lan = substr($2, 8); gsub(/-/, ".", lan) }
-  /"description"/ { if (id != "" && $4 != "") print id, $4, hc, lan; id = "" }' > "$tmp/list" &
+  /"description"/ { if (id != "" && $4 != "") print id, $4, hc, lan, nick; id = "" }' > "$tmp/list" &
 # The other machines' reports come from the notes repo, fetched alongside.
 bn_tunnel_reports_fetch > "$tmp/notes" 2>/dev/null &
 if [ -z "$DT" ]; then
@@ -42,10 +42,10 @@ else
 fi
 
 port=$(awk '$1 == "Port" {print $2; exit}' "$HOME/.ssh/bn-sshd/sshd_config" 2>/dev/null)
-case "$(flag bn.tunnelHost)" in off|false|no|0) host_off=1 ;; *) host_off=0 ;; esac
+case "$(bn_tunnel_flag tunnelHost)" in off|false|no|0) host_off=1 ;; *) host_off=0 ;; esac
 if [ "$host_off" = 1 ]; then
   hosting="not hosting (bn.tunnelHost off)"
-elif ! command -v sshd >/dev/null 2>&1 && [ ! -x /usr/sbin/sshd ]; then
+elif ! bn_tunnel_sshd >/dev/null; then
   hosting="not hosting: no sshd (bn run tunnel-setup)"
 elif [ -z "$port" ]; then
   hosting="not hosting yet"
@@ -56,8 +56,8 @@ elif ! tmux list-windows -a -F '#{window_name}' 2>/dev/null | grep -qx tunnel; t
 else
   hosting="hosting on port $port"
 fi
-case "$(flag bn.tunnelLan)" in on|true|yes|1) hosting="$hosting, local network mode on" ;; esac
-case "$(flag bn.tunnelAuto)" in off|false|no|0) hosting="$hosting, auto-enrol off" ;; esac
+case "$(bn_tunnel_flag tunnelLan)" in on|true|yes|1) hosting="$hosting, local network mode on" ;; esac
+case "$(bn_tunnel_flag tunnelAuto)" in off|false|no|0) hosting="$hosting, auto-enrol off" ;; esac
 
 if [ -f "$cache/tunnels.status" ]; then
   m=$(stat -c %Y "$cache/tunnels.status" 2>/dev/null || stat -f %m "$cache/tunnels.status" 2>/dev/null)
@@ -74,7 +74,8 @@ else
   report="not published yet (tunnel-auto does it; needs the work-notes repo)"
 fi
 
-echo "tunnels: $ME"
+mynick=$(bn_tunnel_nick)
+echo "tunnels: ${mynick:+$mynick, hostname }$ME"
 echo "  account    $account"
 echo "  this host  $hosting"
 echo "  watchdog   $watchdog"
@@ -110,7 +111,7 @@ report() {
 known=$(awk '/^# >>> bn tunnel /{print $5}' "$HOME/.ssh/config" 2>/dev/null)
 for k in $known; do
   printf '%s\n' "$listed" | awk -v n="$(lower "$k")" 'tolower($2) == n {f = 1} END {exit !f}' || listed="$listed
-- $k ? -"
+- $k ? - -"
 done
 
 # check <tunnel-id> <machine> <host connections> <lan> -- one line: state|route|host end|note
@@ -154,12 +155,12 @@ check() {
 }
 
 n=0
-while read -r id name hc lan; do
+while read -r id name hc lan nick; do
   [ -n "$id" ] || continue
   [ "$(lower "$name")" = "$(lower "$ME")" ] && continue
   n=$((n + 1))
   check "$id" "$name" "$hc" "$lan" > "$tmp/$n" 2>/dev/null &
-  echo "$name" > "$tmp/$n.name"
+  if [ "${nick:--}" != - ]; then echo "$nick ($name)"; else echo "$name"; fi > "$tmp/$n.name"
 done <<EOF
 $listed
 EOF

@@ -56,7 +56,7 @@ they have to go find. Anchor on **`$TMUX_PANE`**, never on a bare `display-messa
 ```bash
 job=$(tmux split-window -d -t "$TMUX_PANE" -h -P -F '#{pane_id}' \
         -c ~/projects/worktree/bn/main \
-        'bn build build-to-local; echo "--- exited $? ---"; exec zsh')
+        'bn build build-to-local; echo "--- exited $? ---"')
 ```
 
 * `-t "$TMUX_PANE"` splits *your* pane, so the job lands in the window the user is
@@ -67,7 +67,9 @@ job=$(tmux split-window -d -t "$TMUX_PANE" -h -P -F '#{pane_id}' \
   pane.
 * `-c` sets the cwd, so the command does not have to `cd` and you can read the pane and
   know where it ran.
-* `exec zsh` keeps the pane alive after the job exits, so the output stays readable.
+* Let the pane close when the command exits. Do not append `exec zsh` or another shell to keep it
+  open. If output must be inspected afterwards, tee it to the scratchpad and save the exit status
+  there before the pane closes. Read those files instead of pane scrollback.
 
 Use a separate named window (`tmux new-window -d -t "<session>:" -n <name>`) only when
 the job genuinely outlives the conversation — a dev server you will still be using
@@ -84,28 +86,23 @@ the conversation on it.
 
 ```bash
 # the pane's own process, not a text match
-until [ -z "$(tmux list-panes -t "$job" -F '#{pane_pid}' 2>/dev/null)" ] \
-   || tmux capture-pane -p -t "$job" -S -5 | grep -q -- '--- exited '; do
+until [ -z "$(tmux list-panes -t "$job" -F '#{pane_pid}' 2>/dev/null)" ]; do
   sleep 20
 done
 ```
 
 Run that with `run_in_background: true` and you get a notification when it lands.
 
-**`exec zsh` and `kill -0 $pane_pid` cancel each other out.** `exec` *replaces* the
-shell image while keeping the same PID, so the pane's pid outlives the job by design —
-wait on it and you wait forever. Either watch for the `--- exited` marker (safe here:
-you passed the command to `split-window`, so tmux never echoes it into the pane the way
-`send-keys` would), or drop `exec zsh` and let the pane close, and treat its
-disappearance as the signal. Pick one deliberately; do not write both and assume.
+**Keeping a shell open defeats automatic pane cleanup.** Do not append `exec zsh` after a
+one-shot command. For commands sent into an existing interactive shell, save the exit status and
+then run `exit`; treat pane disappearance as completion and inspect saved logs/status files.
 
 Other honest signals: a port (`ss -tln | grep :3000`), a file appearing, `du -sh`
 growing, or the artifact itself — `bn tmux-prune --help` succeeding only once the new
 binary is installed. Pick one that becomes true only when the job really progressed.
 
-**5. Read the outcome from the pane**, then report what it says — including
-failure. Grep the whole scrollback (`-S -400`), not the last screen: an error that
-scrolled away still happened.
+**5. Read the saved outcome**, then report what it says — including failure. The pane closes when
+the command exits, so inspect its log and recorded exit status rather than pane scrollback.
 
 ## Builds and test runs — capture the outcome, do not scrape for it
 
@@ -115,18 +112,16 @@ the user to watch; a log is what you read. Get both at once:
 
 ```bash
 log=<scratchpad>/build.log
-tmux clear-history -t "$job"      # a rerun must not match the previous run's marker
+status_file=<scratchpad>/build.exit
+tmux clear-history -t "$job"
 tmux send-keys -t "$job" \
-  "cargo build --release 2>&1 | tee $log; echo \"--- build exited \${pipestatus[1]} ---\"" Enter
+  "set -o pipefail; cargo build --release 2>&1 | tee $log; rc=\$?; printf '%s\n' \"\$rc\" > $status_file; exit \"\$rc\"" Enter
 ```
 
 * **`tee` to the scratchpad**, never `| tail`: the pane still streams, and afterwards you read the
   log with `grep -E '^(error|test result)'` instead of paging through a capture.
-* **The build's exit code, not `tee`'s.** `$?` after a pipe belongs to `tee`. zsh has
-  `${pipestatus[1]}`, bash `${PIPESTATUS[0]}`; or run the pipeline under `set -o pipefail`.
-* **Wait on a marker the echoed command line cannot match.** `send-keys` prints your command into
-  the pane, `${pipestatus[1]}` and all — so poll for the *expanded* form, `exited [0-9]+ ---`, which
-  the typed line never satisfies.
+* **The build's exit code, not `tee`'s.** Run the pipeline under `set -o pipefail`, save `$?` to
+  the status file, and exit the shell. Read the log and status file after the pane closes.
 * **Never start a build with the hidden tool call "because it is only a build".** A release build
   under load is ten minutes the user cannot see, cannot cancel, and cannot tell from a hang.
   `run_in_background` on the tool call hides it just as well; it is not a substitute for the pane.
@@ -233,13 +228,14 @@ without changing something about it.
 **3. Send the command.**
 
 ```bash
-tmux send-keys -t "$session.$pane" '<command>' Enter
+tmux send-keys -t "$session.$pane" '<command>; rc=$?; printf "%s\n" "$rc" > <status-file>; exit "$rc"' Enter
 ```
 
-Long or hard-to-quote commands: write a script to the scratchpad first, then send its path. That
-also gives the user something to read before it runs.
+Long or hard-to-quote commands: write a script to the scratchpad first, then send its path. Tee
+output to a log if it must be inspected after the pane closes.
 
-**4. Watch it, don't fire and forget.** Poll the pane; report what actually happened.
+**4. Watch it, don't fire and forget.** Poll the pane while the command runs; report what actually
+happened from its saved log and status after the pane closes.
 
 ```bash
 tmux capture-pane -p -t "$session.$pane" -S -40
@@ -249,22 +245,36 @@ For anything running longer than a minute, follow **Long-running jobs** above: i
 yours, and a wait on real state. Do not chain sleeps (`sleep N; <cmd>` is blocked by the harness), and do not
 wait by grepping the pane for a marker you also typed — the echoed command line matches it.
 
-Tell the user which pane or window to look at. Grep the scrollback for the outcome (`-S -400`)
-rather than assuming success — a command that scrolled its error off the last screen still failed,
-and a summary line can say "no failures" while errors sit 200 lines up.
+Tell the user which pane or window to look at. If the outcome must be read after completion, save
+the full output to a log and the exit status to a file; the pane closes and its scrollback is gone.
 
-**5. Get the exit code.** `send-keys` gives you the transcript, not the status. When the outcome
-isn't obvious from the output, make the command state it:
-
-```bash
-tmux send-keys -t "$session.$pane" '<command>; echo "--- exited $? ---"' Enter
-```
-
-For a window you opened yourself, keep it alive so the user can read it afterwards:
+**5. Get the exit code.** `send-keys` gives you the transcript, not the status. Save the status
+before exiting the shell so the pane closes when the command finishes:
 
 ```bash
-tmux new-window -d -t "$session" -n <name> '<command>; echo "--- exited $? ---"; exec zsh'
+tmux send-keys -t "$session.$pane" '<command>; rc=$?; printf "%s\n" "$rc" > <status-file>; exit "$rc"' Enter
 ```
+
+For a window you opened yourself, let it close on completion. Save required output and status to
+the scratchpad first; do not keep a shell open just to preserve scrollback:
+
+```bash
+tmux new-window -d -t "$session" -n <name> '<command>; rc=$?; printf "%s\n" "$rc" > <status-file>; exit "$rc"'
+```
+
+**6. Clean up panes and windows you opened.** One-shot command panes close automatically when
+their command exits. When a long-running job or service is no longer needed, stop it with its
+documented shutdown command and verify it has stopped before closing its pane. For a foreground
+command you started, Ctrl-C is appropriate; wait for it to exit. Then close a remaining idle pane
+or a window you created:
+
+```bash
+tmux kill-pane -t "$job"
+tmux kill-window -t "$window"
+```
+
+Only run the command matching the resource you created. Do not close a pane to stop a service; that
+can leave child processes running. Never close a window that contains other work.
 
 ## Rules that keep this honest
 
@@ -278,10 +288,11 @@ tmux new-window -d -t "$session" -n <name> '<command>; echo "--- exited $? ---";
   browser flow surfaces *outside* tmux — the pane just sits there looking hung. Before reporting a
   stall, check whether something is genuinely waiting (a live child process, `tasklist.exe` showing
   a dialog) and tell the user **where** to look.
-- **Closing a pane or window kills its job.** A job pane keeps running across your turns, but
-  closing it takes the job with it. Say so before the user tidies up a pane still doing work.
-- **Report the real outcome**, including failures and non-zero exits. The pane is the evidence; if
-  it says the command failed, say so.
+- **Stop jobs before closing panes.** Closing a pane or window can kill its foreground job while
+  leaving child processes behind. Use the job's shutdown method, verify it stopped, then clean up
+  the pane/window you opened.
+- **Report the real outcome**, including failures and non-zero exits. Use the saved log and exit
+  status; if either shows failure, report it.
 - **Don't run in tmux and then also run it yourself** in a tool call. Pick one.
 - **Say where it is.** For a job pane, "beside this one"; for a window, name it (`bigmono-clone`,
   `test-run`) so the user can find it.

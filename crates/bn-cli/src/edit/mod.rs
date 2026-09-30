@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 pub(crate) mod diff;
 pub(crate) mod land;
 pub(crate) mod pane;
+pub(crate) mod remote;
 pub(crate) mod rpc;
 pub(crate) mod session;
 pub(crate) mod target;
@@ -49,6 +50,13 @@ pub(crate) enum EditCmd {
     Land(LandArgs),
     /// Pick a worktree and open its diff in *its* editor — the fleet as one list, with the diff as
     /// the preview. Enter switches you there, so the code you read is rooted in the right repo.
+    /// Edit this branch on another machine of the tunnel mesh: nvim runs there (in a tmux window,
+    /// so buffers, undo and LSP survive any drop) and this terminal is its UI, reconnecting after
+    /// a dropped connection. `:qa` quits it, `:detach` leaves it running. bn edit remote <machine>.
+    Remote {
+        /// The machine, as `ssh <machine>` knows it (see `bn tunnels`).
+        host: String,
+    },
     Diff {
         /// Base ref for every row's diff. Default: resolved per worktree.
         #[arg(long)]
@@ -153,6 +161,7 @@ pub(crate) fn route(cfg: &Config, cmd: EditCmd, json: bool) {
         EditCmd::Toggle(a) => (a, "toggle"),
         EditCmd::Where(a) => (a, "where"),
         EditCmd::Land(a) => (&a.target, "land"),
+        EditCmd::Remote { host } => remote::run(cfg, host),
         EditCmd::Diff { base, pick_stage } => {
             match pick_stage {
                 Some(stage) => diff::pick_stage(cfg, *stage),

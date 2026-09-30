@@ -17,6 +17,12 @@
 # to Windows, and a Cloud PC keeps that session through disconnects; after a reboot it starts at the
 # next sign-in. Env: BN_WSL_DISTRO (default: $WSL_DISTRO_NAME, else the default distro).
 #
+# The task also fires every 5 minutes. With the sign-in trigger alone, a WSL that stopped while you
+# stayed signed in (WSL restarting itself, an update, memory pressure) stayed down until your next
+# sign-in: on 2026-09-30 cloud-pc-AB12C's Windows session had been up for nine days while its WSL
+# had restarted that afternoon, and the tunnels only came back with a sign-in. A run while the
+# keeper is still going is ignored (MultipleInstances IgnoreNew), so this never starts a second one.
+#
 # Install also stops Windows sleeping or hibernating on AC power: a sleeping machine drops every
 # tunnel whatever holds the distro. Battery is left alone, so an unplugged laptop still sleeps.
 # BN_WSL_AWAKE=0 leaves the power plan as it is.
@@ -76,7 +82,9 @@ case "$ACTION" in
     # KEEPER holds no single quote).
     out=$(ps "
       \$a = New-ScheduledTaskAction -Execute 'conhost.exe' -Argument '--headless wsl.exe -d $DISTRO --exec /bin/sh -lc \"$KEEPER\"'
-      \$t = New-ScheduledTaskTrigger -AtLogOn -User (\$env:USERDOMAIN + '\\' + \$env:USERNAME)
+      \$logon = New-ScheduledTaskTrigger -AtLogOn -User (\$env:USERDOMAIN + '\\' + \$env:USERNAME)
+      \$every = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5)
+      \$t = @(\$logon, \$every)
       \$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew
       Register-ScheduledTask -TaskName '$TASK' -Action \$a -Trigger \$t -Settings \$s -Description 'bn: keep WSL ($DISTRO) and its tmux/tunnels running' -Force | Out-Null
       'registered'")
@@ -135,7 +143,8 @@ EOF
     case "$res" in
       "Running 0x41301") say "task $BOOT_TASK registered and its keeper is running; it starts at every boot" ;;
       '') die "the elevated step left no result" ;;
-      *) die "Windows did not start $BOOT_TASK ($res; 0x41303 means it never ran), so it was removed again. On this machine a host still needs a sign-in after a reboot" ;;
+      *) mkdir -p "$HOME/.config/bn" && date +%F > "$HOME/.config/bn/boot-task.unsupported"
+         die "Windows did not start $BOOT_TASK ($res; 0x41303 means it never ran), so it was removed again. On this machine a host still needs a sign-in after a reboot" ;;
     esac
     ;;
   status)

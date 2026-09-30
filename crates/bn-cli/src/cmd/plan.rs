@@ -32,6 +32,9 @@ pub(crate) fn emit_plan(cfg: &Config, action: Option<PlanCmd>, as_json: bool) {
             }
             Ok(serde_json::json!({ "path": path.display().to_string(), "opened": true }))
         }),
+        PlanCmd::View { host, port } => {
+            crate::cmd::plan_view::run(cfg, &ctx, host.as_deref(), port)
+        }
         PlanCmd::Status => bn_core::plan::status(cfg, &ctx).map(|status| serde_json::json!(status)),
         PlanCmd::Promote { draft } => {
             let draft = if draft.contains('/') || draft.ends_with(".md") {
