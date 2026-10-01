@@ -191,6 +191,9 @@ if [ "$have_lock" = 1 ] && [ "$repair_due" = 1 ]; then
     _mark="$cache/tunnel-restarted.$_h"
     fresh "$_mark" 300 && continue
     fresh "$cache/tunnel-down-since.$_h" 150 && continue
+    # A connect waiting out a Dev Tunnels rate limit is left to wait: restarting it would only send
+    # another request into the limit (lib/devtunnel-loop.sh).
+    fresh "$cache/devtunnel-connect.$_h.log" 900 && grep -q '(429)' "$cache/devtunnel-connect.$_h.log" && continue
     for _w in $(tmux list-windows -a -F '#{session_name}:#{window_name}' 2>/dev/null | grep ":tunnel-$_h\$"); do
       tmux kill-window -t "$_w" 2>/dev/null && echo "--- $(date '+%F %T') restarted $_w (ssh check failed)" >> "$log"
     done

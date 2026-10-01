@@ -228,11 +228,12 @@ if [ "${BN_TUNNEL_FOREGROUND:-0}" != 1 ] && sess=$(bn_tunnel_session); then
   else
     for w in $running; do tmux kill-window -t "$w" 2>/dev/null || true; done
     # Restart loop: `devtunnel host` exits when the relay drops for good; come straight back.
-    tmux new-window -d -t "$sess" -n tunnel "while :; do $DT host $ID; echo 'tunnel-host: devtunnel host exited; restarting in 5s (Ctrl-C twice to stop)'; sleep 5; done"
+    # Backoff, and a long wait on a Dev Tunnels rate limit (lib/devtunnel-loop.sh).
+    tmux new-window -d -t "$sess" -n tunnel "sh '$(cd "$(dirname "$0")" && pwd -P)/lib/devtunnel-loop.sh' host '$DT' '$ID' '$NAME'"
     say "hosting $ID in tmux window $sess:tunnel (restarts itself if it drops)"
   fi
   say "connect from another machine (same Dev Tunnels account):  bn run tunnel-connect"
 else
   say "hosting $ID in the foreground (restarts if it drops; Ctrl-C twice stops it)"
-  while :; do "$DT" host "$ID" || true; say "devtunnel host exited; restarting in 5s"; sleep 5; done
+  exec sh "$(dirname "$0")/lib/devtunnel-loop.sh" host "$DT" "$ID" "$NAME"
 fi

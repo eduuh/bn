@@ -93,7 +93,7 @@ export const NAV_GROUPS: NavGroup[] = [
         Icon: Users,
         exp: "staff",
         blurb:
-          "The staff roster and its briefing cards: per-agent health, backpressure pauses, and the feed — readable in place, which is what resumes a paused agent.",
+          "Reserved for the staff roster and briefing cards. This build keeps the route visible, but the board/feed APIs are not wired in yet.",
       },
       {
         to: "/attention",

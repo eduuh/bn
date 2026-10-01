@@ -3,7 +3,6 @@ import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle } from "lucide-react";
 import {
-  bragQuery,
   insightsQuery,
   metricsQuery,
   metricsTrendQuery,
@@ -176,8 +175,9 @@ const CostPanel = lazy(() =>
  * `/insights` — Insights & Cost (#507), the reporting surface closing a dashboard-parity gap
  * (#488). One window picker drives the `bn metrics` scorecard (velocity/throughput tiles + a small
  * merged-PR trend chart and agent telemetry) *and* the `bn cost` dual-cost view, with three more
- * sub-tabs for the `bn weekly` / `bn insights` weekly digests and the `bn brag` accomplishments
- * packet. All read-only.
+ * sub-tabs for the `bn weekly` / `bn insights` digests. The Brag tab is kept as a visible stub
+ * until the server-side route exists, so the page stops logging 404s for an unimplemented API.
+ * All read-only.
  *
  * Cost used to be its own `/cost` route with its own duplicate 7/30/90 picker, which meant answering
  * "how did the last 30 days go, and what did they cost" took two screens and two window selections
@@ -201,7 +201,6 @@ export function Insights() {
   const trend = useQuery(metricsTrendQuery());
   const weekly = useQuery(weeklyQuery());
   const insights = useQuery(insightsQuery());
-  const brag = useQuery(bragQuery());
 
   return (
     // One `Tabs` root spanning the whole screen: the view switcher lives in the header bar and its
@@ -293,13 +292,11 @@ export function Insights() {
         </TabsContent>
 
         <TabsContent value="brag" className="mt-0 max-w-[60rem] px-4 py-4">
-          <DigestPanel
-            text={brag.data?.rendered}
-            isLoading={brag.isLoading}
-            isError={brag.isError}
-            empty="Nothing shipped in the window yet — merged work shows up here."
-            label="the brag packet"
-          />
+          <Card className="flex items-center gap-2 border-warn/30 bg-warn-muted p-4 text-sm text-warn">
+            <AlertTriangle className="h-4 w-4" />
+            The brag packet is not wired into bn-web yet, so this tab stays disabled instead of
+            calling a missing API route.
+          </Card>
         </TabsContent>
       </div>
     </Tabs>

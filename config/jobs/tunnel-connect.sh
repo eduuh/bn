@@ -119,7 +119,8 @@ connect_one() { # <tunnel-id> <machine>
     for w in $running; do tmux kill-window -t "$w" 2>/dev/null || true; done
     # Restart loop: `devtunnel connect` reconnects on its own through short relay drops, but
     # exits when the host is gone for a while (Cloud PC asleep); come back once it is up again.
-    tmux new-window -d -t "$SESS" -n "$win" "while :; do $DT connect $id; echo 'tunnel-connect: devtunnel connect exited; retrying in 10s (Ctrl-C twice to stop)'; sleep 10; done"
+    # Backoff, and a long wait on a Dev Tunnels rate limit (lib/devtunnel-loop.sh).
+    tmux new-window -d -t "$SESS" -n "$win" "sh '$(cd "$(dirname "$0")" && pwd -P)/lib/devtunnel-loop.sh' connect '$DT' '$id' '$to'"
     say "$to: connecting in tmux window $SESS:$win (127.0.0.1:$port; retries itself if it drops)"
   fi
 

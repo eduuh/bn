@@ -6,6 +6,12 @@
 
 use serde::Serialize;
 
+/// Explicit opt-in for a one-off local dashboard even when `[machine].web = false`.
+///
+/// `bn build run` uses this for the worktree-local dashboard on 7791. The machine gate still owns
+/// the resident dashboard on 7770 and all managed-service reconciliation.
+pub const LOCAL_WEB_OVERRIDE_ENV: &str = "BN_WEB_ALLOW_DISABLED_MACHINE";
+
 /// How often (seconds) the dashboard should poll `GET /api/health` *while the SSE stream is down*,
 /// to tell a transient blip (server up, stream re-handshaking) apart from a real outage. Mirrored
 /// as `HEALTH_PROBE_MS` in the UI.
@@ -88,5 +94,40 @@ pub fn service_state(installed: bool, listening: bool) -> ServeState {
         (_, true) => ServeState::Running,
         (true, false) => ServeState::Down,
         (false, false) => ServeState::NotInstalled,
+    }
+}
+
+/// Whether a caller explicitly opted into a one-off local dashboard despite `[machine].web = false`.
+pub fn local_web_override_enabled() -> bool {
+    std::env::var(LOCAL_WEB_OVERRIDE_ENV).as_deref() == Ok("1")
+}
+
+/// Whether an ad-hoc dashboard launch is allowed.
+pub fn web_launch_allowed(machine_enabled: bool) -> bool {
+    machine_enabled || local_web_override_enabled()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{env_lock, EnvGuard};
+
+    #[test]
+    fn local_web_override_is_off_by_default() {
+        let _lock = env_lock();
+        let _guard = EnvGuard::remove(LOCAL_WEB_OVERRIDE_ENV);
+
+        assert!(!local_web_override_enabled());
+        assert!(!web_launch_allowed(false));
+        assert!(web_launch_allowed(true));
+    }
+
+    #[test]
+    fn local_web_override_requires_explicit_opt_in() {
+        let _lock = env_lock();
+        let _guard = EnvGuard::set(LOCAL_WEB_OVERRIDE_ENV, "1");
+
+        assert!(local_web_override_enabled());
+        assert!(web_launch_allowed(false));
     }
 }

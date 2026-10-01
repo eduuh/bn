@@ -24,7 +24,7 @@ mod task_writes;
 mod view_cache;
 mod watch;
 
-use bn_core::resolver::Config;
+use bn_core::{resolver::Config, serve::web_launch_allowed};
 use state::AppState;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
@@ -116,7 +116,7 @@ async fn main() {
     }
 
     let cfg = Config::load();
-    if !cfg.web_enabled_here() {
+    if !web_launch_allowed(cfg.web_enabled_here()) {
         eprintln!(
             "bn-web: web is not enabled on this machine ('{}')",
             cfg.machine()

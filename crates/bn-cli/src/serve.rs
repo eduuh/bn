@@ -10,7 +10,7 @@
 //! the service.
 
 use crate::*;
-use bn_core::serve::{service_state, ServeState};
+use bn_core::serve::{local_web_override_enabled, service_state, ServeState};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -81,7 +81,7 @@ pub(crate) fn run_cmd(
 
 /// `bn serve [--port] [--lan] [--daemon]`.
 pub(crate) fn run(cfg: &Config, port: Option<u16>, lan: bool, daemon: bool, json: bool) {
-    if !cfg.web_enabled_here() {
+    if !run_allowed(cfg, daemon) {
         fail_json(
             json,
             "serve",
@@ -122,6 +122,10 @@ pub(crate) fn run(cfg: &Config, port: Option<u16>, lan: bool, daemon: bool, json
             )),
         }
     }
+}
+
+fn run_allowed(cfg: &Config, daemon: bool) -> bool {
+    cfg.web_enabled_here() || (!daemon && local_web_override_enabled())
 }
 
 /// `--daemon`: register a managed, auto-restarting service — a launchd agent (macOS), else a
@@ -428,5 +432,39 @@ fn setsid_detached() {
     }
     unsafe {
         setsid();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bn_core::resolver::{Config, MachineProfile};
+    use bn_core::test_support::{env_lock, EnvGuard};
+
+    fn web_disabled_cfg() -> Config {
+        Config {
+            machine_profile: Some(MachineProfile {
+                repos: vec!["bn".to_string()],
+                web: false,
+                ..MachineProfile::default()
+            }),
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn foreground_run_honors_local_override() {
+        let _lock = env_lock();
+        let _guard = EnvGuard::set(bn_core::serve::LOCAL_WEB_OVERRIDE_ENV, "1");
+
+        assert!(run_allowed(&web_disabled_cfg(), false));
+    }
+
+    #[test]
+    fn daemon_run_stays_disabled_without_machine_opt_in() {
+        let _lock = env_lock();
+        let _guard = EnvGuard::set(bn_core::serve::LOCAL_WEB_OVERRIDE_ENV, "1");
+
+        assert!(!run_allowed(&web_disabled_cfg(), true));
     }
 }

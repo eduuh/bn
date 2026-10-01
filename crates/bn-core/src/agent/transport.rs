@@ -53,6 +53,68 @@ pub enum Liveness {
     Unreachable,
 }
 
+/// The programs an agent runs as. A pane whose processes include none of these is a shell, an
+/// editor or a finished agent, even when its window is named and stamped for one, and a message
+/// typed into it is lost (or run as a shell command).
+pub const HARNESS_BINS: &[&str] = &["claude", "copilot", "codex", "gemini", "opencode"];
+
+/// Whether any process at or under one of `roots` runs an agent harness. `ps` is the output of
+/// `ps -eo pid=,ppid=,args=`; the program is the basename of each process's first argument, since
+/// Copilot shows up as `node`'s child `MainThread` by name but `copilot ...` by arguments.
+pub fn tree_runs_agent(ps: &str, roots: &[u32]) -> bool {
+    let rows: Vec<(u32, u32, &str)> = ps
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.split_whitespace();
+            let pid = it.next()?.parse().ok()?;
+            let ppid = it.next()?.parse().ok()?;
+            let prog = it.next().unwrap_or("");
+            Some((pid, ppid, prog.rsplit('/').next().unwrap_or(prog)))
+        })
+        .collect();
+    let mut seen: Vec<u32> = roots.to_vec();
+    let mut i = 0;
+    while i < seen.len() {
+        let pid = seen[i];
+        if rows
+            .iter()
+            .any(|(p, _, prog)| *p == pid && HARNESS_BINS.contains(prog))
+        {
+            return true;
+        }
+        for (child, parent, _) in &rows {
+            if *parent == pid && !seen.contains(child) {
+                seen.push(*child);
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// [`Liveness`] from a pane's process ids and a `ps` listing: no pane is `Unreachable`, a pane
+/// with no harness under it is `Exited`. Without a listing (no `ps`) a pane counts as live.
+pub fn pane_liveness(pane_pids: &[u32], ps: Option<&str>) -> Liveness {
+    if pane_pids.is_empty() {
+        return Liveness::Unreachable;
+    }
+    match ps {
+        Some(ps) if !tree_runs_agent(ps, pane_pids) => Liveness::Exited,
+        _ => Liveness::Live,
+    }
+}
+
+/// `ps -eo pid=,ppid=,args=` on this machine, when it runs.
+pub fn local_ps() -> Option<String> {
+    let out = std::process::Command::new("ps")
+        .args(["-eo", "pid=,ppid=,args="])
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// One way of talking to a live agent.
 pub trait AgentTransport {
     /// Deliver a key plan. `false` means it did not land.
@@ -139,11 +201,15 @@ impl AgentTransport for TmuxTransport {
         // `list-panes`, not `display-message`: for `=session:=window` naming a window that doesn't
         // exist, tmux 3.7's `display-message` falls back to the session's *current* window and
         // exits 0, so every name in a live session read as Live. `list-panes` fails as it should.
-        if crate::tmux::tmux_ok(&["list-panes", "-t", &self.target, "-F", "#{pane_id}"]) {
-            Liveness::Live
-        } else {
-            Liveness::Unreachable
-        }
+        // A window is not enough either: one whose agent exited back to its shell took the next
+        // message as a shell command, so a harness has to be running in it.
+        let pids: Vec<u32> =
+            crate::tmux::tmux_raw(&["list-panes", "-t", &self.target, "-F", "#{pane_pid}"])
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| l.trim().parse().ok())
+                .collect();
+        pane_liveness(&pids, local_ps().as_deref())
     }
 }
 
@@ -224,5 +290,35 @@ mod target_tests {
         assert!(!a.contains(':'), "buffer names must not carry tmux syntax");
         // The anchoring `=` is tmux syntax too, and it is now INSIDE the target, not just leading.
         assert!(!a.contains('='), "buffer names must not carry tmux syntax");
+    }
+}
+
+#[cfg(test)]
+mod liveness_tests {
+    use super::*;
+
+    const PS: &str = "  100     1 -zsh\n  200   100 claude --settings {}\n  210   200 /usr/bin/bn-mcp\n\
+                      300     1 zsh\n  310   300 nvim notes.md\n\
+                      400     1 zsh -c bn agent launch copilot\n  410   400 /home/u/.local/bin/copilot --allow-all\n";
+
+    #[test]
+    fn a_harness_anywhere_under_the_pane_makes_it_live() {
+        assert!(tree_runs_agent(PS, &[100]));
+        assert!(
+            tree_runs_agent(PS, &[400]),
+            "copilot found by its path's basename"
+        );
+    }
+
+    #[test]
+    fn a_shell_or_an_editor_is_not_an_agent() {
+        assert!(!tree_runs_agent(PS, &[300]));
+        assert_eq!(pane_liveness(&[300], Some(PS)), Liveness::Exited);
+    }
+
+    #[test]
+    fn no_pane_is_unreachable_and_no_ps_trusts_the_window() {
+        assert_eq!(pane_liveness(&[], Some(PS)), Liveness::Unreachable);
+        assert_eq!(pane_liveness(&[300], None), Liveness::Live);
     }
 }

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowUp, FileText, Folder, GitBranch, RefreshCw, TriangleAlert } from "lucide-react";
 import { noteFileQuery, noteFilesQuery, notePlanQuery } from "../api/client";
@@ -120,10 +120,10 @@ function PlanSummary({ plan }: { plan: NotePlanView }) {
 
 export function PlanMarkdownViewer({ repo, branch }: { repo: string; branch: string }) {
   const plan = useQuery(notePlanQuery(repo, branch));
-  const active = plan.data?.active ?? "plans/active.md";
+  const active = plan.data?.active_exists ? plan.data.active : "";
   const file = useQuery(noteFileQuery(repo, branch, active));
 
-  if (plan.isLoading || file.isLoading) {
+  if (plan.isLoading || (active && file.isLoading)) {
     return (
       <div className="space-y-2">
         <Skeleton className="h-4 w-1/3" />
@@ -152,10 +152,16 @@ export function PlanMarkdownViewer({ repo, branch }: { repo: string; branch: str
 }
 
 export function BnFileBrowser({ repo, branch }: { repo: string; branch: string }) {
+  const plan = useQuery(notePlanQuery(repo, branch));
   const [dir, setDir] = useState("");
-  const [selected, setSelected] = useState("plans/active.md");
+  const [selected, setSelected] = useState("");
   const listing = useQuery(noteFilesQuery(repo, branch, dir));
   const file = useQuery(noteFileQuery(repo, branch, selected));
+
+  useEffect(() => {
+    if (selected || !plan.data?.active_exists) return;
+    setSelected(plan.data.active);
+  }, [plan.data?.active, plan.data?.active_exists, selected]);
 
   const crumbs = useMemo(() => {
     const parts = dir.split("/").filter(Boolean);

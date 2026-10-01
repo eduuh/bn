@@ -12,6 +12,7 @@
 # Env knobs:
 #   BN_RUN_PORT     port to bind                      (default: 7791)
 #   BN_RUN_TIMEOUT  seconds to wait for health        (default: 90)
+#   BN_WEB_ALLOW_DISABLED_MACHINE=1  internal: let this one-off local run bypass `[machine].web`
 set -eu
 
 repo=$(git rev-parse --show-toplevel)
@@ -56,7 +57,7 @@ fi
 
 echo "== serving $url =="
 mkdir -p "$repo/target"
-nohup "$bin" serve --port "$PORT" >"$logfile" 2>&1 &
+BN_WEB_ALLOW_DISABLED_MACHINE=1 nohup "$bin" serve --port "$PORT" >"$logfile" 2>&1 &
 child=$!
 echo $child >"$pidfile"
 

@@ -698,14 +698,27 @@ impl bn_core::agent::AgentTransport for SshTmuxTransport {
     }
 
     fn liveness(&self) -> bn_core::agent::Liveness {
-        if ssh_tmux_ok(
-            &self.host,
-            &["list-panes", "-t", &self.target, "-F", "#{pane_id}"],
-        ) {
-            bn_core::agent::Liveness::Live
-        } else {
-            bn_core::agent::Liveness::Unreachable
-        }
+        // The window's panes and that machine's processes in one call, judged here the same way
+        // as a local pane: a window with no harness running in it is `Exited`, not live.
+        let remote = format!(
+            "tmux list-panes -t {} -F '#{{pane_pid}}' && echo --- && ps -eo pid=,ppid=,args=",
+            wt::shq(&self.target)
+        );
+        let Some(out) = std::process::Command::new("ssh")
+            .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"])
+            .args(SSH_SHARED_CONNECTION)
+            .args([self.host.as_str(), &format!("sh -c {}", wt::shq(&remote))])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+        else {
+            return bn_core::agent::Liveness::Unreachable;
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        let (panes, ps) = text.split_once("---\n").unwrap_or((&text, ""));
+        let pids: Vec<u32> = panes.lines().filter_map(|l| l.trim().parse().ok()).collect();
+        bn_core::agent::pane_liveness(&pids, (!ps.trim().is_empty()).then_some(ps))
     }
 }
 /// The transport that can write to `target`.
