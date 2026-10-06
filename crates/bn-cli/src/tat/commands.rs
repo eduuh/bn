@@ -618,7 +618,7 @@ impl Listen {
 
 /// 128 bits from the OS CSPRNG, hex-encoded, or `None` when the kernel will not supply them.
 ///
-/// **Deliberately without a fallback**, unlike `dispatch::fallback_uuid`, which degrades to a
+/// **Deliberately without a fallback**, unlike `dispatch::session_id::fallback_uuid`, which degrades to a
 /// clock-seeded PRNG when `/dev/urandom` is unreadable. That is right for a UUID, which only has to
 /// be *unique*; this key has to be *unguessable*. A key derived from the pid and the clock is
 /// derivable by anyone who can read `/proc` — and what it guards is an endpoint that accepts

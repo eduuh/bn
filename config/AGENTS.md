@@ -14,6 +14,9 @@ Shipped with bn. Claude Code reads this through an `@` import in `~/.claude/CLAU
 - Read the branch note at session start (`bn --cat`). Set the goal if it is empty: `bn goal "..."`.
 - Record as you go, never batched: `bn add todo|decision|blocker|research|ask "..."`, and `bn done <id>` the moment a todo is finished.
 - Repo knowledge that will still be true next month goes in the reference notes: `bn ref --repo` to read the index, `bn ref append <name> --repo --section <s> "<fact> (src, date)"` to add one fact.
+- Save any URL worth going back to (PR, work item, portal blade, dashboard, docs page) the moment it surfaces, without being asked: `bn links add <url> --name "..." --tags <t>`. Closing the note saves its PR and work item for you.
+- Need a URL (board, dashboard, docs page, PR)? Check `bn links list <words>` before searching the web or asking the user.
+- Session hooks save the PRs and work items you mention, marked new. Reviewing them (`bn links new`) is the user's call, not yours. A link only needed for a while gets `--ttl 7d`.
 - Find a workflow before improvising: `bn skills find "<what you are about to do>"`, then invoke it (`/bn:<name>` in Claude Code, `/<name>` in Copilot CLI).
 
 ## Talk to other agents

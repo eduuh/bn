@@ -82,9 +82,12 @@ pub(super) fn route(cfg: &Config, action: CmdShellUi, json: bool) {
                                 unproven.join(", ")
                             );
                         }
+                        for l in &o.captured_links {
+                            println!("Saved to links: {l}");
+                        }
                         if !o.uncaptured_links.is_empty() {
                             eprintln!(
-                                "⚠ not in your link store — run `bn links capture` before the worktree goes:"
+                                "⚠ could not save to your link store — run `bn links capture` before the worktree goes:"
                             );
                             for l in &o.uncaptured_links {
                                 eprintln!("  {l}");

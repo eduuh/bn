@@ -123,6 +123,10 @@ struct LinksAddArgs {
     /// Repository this link belongs to. Omit to use this worktree's repo; pass "" for none.
     #[serde(default)]
     repo: Option<String>,
+    /// Hide the link from listings after this long: "7d", "2w", or a day count. For incident
+    /// bridges and one-off meeting links. Omit for a link that stays.
+    #[serde(default)]
+    ttl: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -263,10 +267,25 @@ impl BnServer {
         // resolve a branch still succeeds — it just stores the link without a repo. Refusing to
         // keep a link because of where the client happens to be standing would be the wrong
         // trade for a tool whose whole point is that capture is free.
-        let repo = match a.repo.as_deref() {
-            Some("") => None,
-            Some(r) => Some(r.to_string()),
-            None => self.resolve(&ctx).ok().map(|c| c.repo),
+        // An explicit repo says nothing about a branch; an inherited one brings this
+        // worktree's branch with it, so the link heads that branch's note.
+        let (repo, branch) = match a.repo.as_deref() {
+            Some("") => (None, None),
+            Some(r) => (Some(r.to_string()), None),
+            None => match self.resolve(&ctx) {
+                Ok(c) => (Some(c.repo), Some(c.branch)),
+                Err(_) => (None, None),
+            },
+        };
+        // Checked before anything is stored, so a bad ttl never leaves a link without one.
+        let ttl_days = match a.ttl.as_deref() {
+            Some(raw) => Some(links::parse_ttl(raw).ok_or_else(|| {
+                ErrorData::invalid_params(
+                    format!("ttl wants 7d, 2w or a day count, got '{raw}'"),
+                    None,
+                )
+            })?),
+            None => None,
         };
         let out = {
             let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -276,15 +295,21 @@ impl BnServer {
             } else {
                 a.tags.clone()
             };
-            links::add(
+            let link = links::add(
                 &self.cfg,
                 &a.url,
                 a.name.as_deref(),
                 &tags,
                 repo.as_deref(),
+                branch.as_deref(),
                 &today(),
             )
-            .map_err(|e| ErrorData::invalid_params(e.message(), None))?
+            .map_err(|e| ErrorData::invalid_params(e.message(), None))?;
+            match ttl_days {
+                Some(days) => links::set_expiry(&self.cfg, &link.id, &today(), days)
+                    .map_err(|e| ErrorData::invalid_params(e.message(), None))?,
+                None => link,
+            }
         };
         Ok(CallToolResult::structured(serde_json::json!({
             "id": out.id,
@@ -292,6 +317,7 @@ impl BnServer {
             "name": out.name,
             "tags": out.tags,
             "repo": out.repo,
+            "expires": out.expires,
         })))
     }
 
@@ -413,7 +439,14 @@ impl BnServer {
         let ctx = self.resolve(&ctx)?;
         let note = store::read(&self.cfg.note_file(&ctx))
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        let rendered = render::cat(&note);
+        let saved = links::for_note(
+            &self.cfg,
+            &ctx.repo,
+            &ctx.branch,
+            &today(),
+            links::NOTE_LINKS,
+        );
+        let rendered = format!("{}{}", render::cat(&note), render::links_footer(&saved));
         Ok(CallToolResult::structured(
             json!({ "rendered": rendered, "front": note.front, "body": note.body }),
         ))

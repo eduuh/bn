@@ -64,10 +64,12 @@ pub struct CloseOutcome {
     /// Acceptance criteria (`## Done When`) still unmet at close — a warning, not a block. Empty
     /// when the branch declared none or met them all.
     pub unmet_criteria: Vec<String>,
-    /// The note's PR/work-item links that are not in the `bn links` store — a warning, not a
-    /// block. Closing is the last moment these are cheap to keep: the note is about to stop
-    /// being the thing anyone reads, and the worktree is usually next. Empty when the branch
-    /// linked neither, or when both are already stored.
+    /// The note's PR/work-item links that close just saved to the `bn links` store. Closing is
+    /// the last moment these are cheap to keep: the note is about to stop being the thing anyone
+    /// reads, and the worktree is usually next.
+    pub captured_links: Vec<String>,
+    /// The note's PR/work-item links still not in the store after that — only when saving
+    /// failed. A warning, not a block: closing a note must never fail over a bookmark list.
     pub uncaptured_links: Vec<String>,
 }
 
@@ -140,6 +142,23 @@ pub fn close(
         }
     }
 
+    // Keep the PR and work item before the worktree goes. Best-effort: an unwritable store
+    // leaves them in `uncaptured_links` for the caller to warn about.
+    let captured_links: Vec<String> = crate::links::capture(
+        cfg,
+        &ctx.repo,
+        &ctx.branch,
+        note.front.pr.as_ref().map(Scalar::display).as_deref(),
+        note.front
+            .work_item
+            .as_ref()
+            .map(Scalar::display)
+            .as_deref(),
+        today,
+    )
+    .map(|saved| saved.into_iter().map(|l| l.url).collect())
+    .unwrap_or_default();
+
     Ok(CloseOutcome {
         repo: ctx.repo.clone(),
         branch: ctx.branch.clone(),
@@ -147,6 +166,7 @@ pub fn close(
         // A re-close logged nothing — don't report an achievement it didn't append.
         achievement: if was_closed { None } else { text },
         unmet_criteria,
+        captured_links,
         uncaptured_links: uncaptured_links(cfg, ctx, &note),
     })
 }

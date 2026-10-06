@@ -17,7 +17,9 @@ mod task;
 pub(crate) use task::TaskCmd;
 mod pipeline_cmd;
 pub(crate) use pipeline_cmd::{PipelineCmd, PipelineInvestigateCmd};
+mod plan_cmd;
 mod ref_cmd;
+pub(crate) use plan_cmd::PlanCmd;
 pub(crate) use ref_cmd::{RefCmd, RefScopeArg};
 mod skills_cmd;
 pub(crate) use skills_cmd::SkillsCmd;
@@ -436,39 +438,6 @@ pub(crate) enum CmdPlanning {
         #[arg(value_name = "DATE")]
         date: Option<String>,
     },
-}
-
-#[derive(Subcommand, Debug)]
-pub(crate) enum PlanCmd {
-    /// Create the plan artifact directories and active plan file.
-    Init,
-    /// Print a plan artifact path.
-    Path {
-        /// Print the active plan path (default).
-        #[arg(long)]
-        active: bool,
-        /// Print/create this agent session's draft plan path.
-        #[arg(long)]
-        agent: Option<String>,
-    },
-    /// Open the active plan in $EDITOR.
-    Open,
-    /// Open this branch's newest plan HTML in the local browser. With `--host`, the one an agent on
-    /// that machine made (copied over ssh); with `--port`, a live page forwarded from it instead.
-    View {
-        /// The machine the plan is on, as `ssh <machine>` knows it (see `bn tunnels`).
-        #[arg(long)]
-        host: Option<String>,
-        /// Forward this port from `--host` and open http://localhost:<port> (a live page).
-        #[arg(long)]
-        port: Option<u16>,
-    },
-    /// Show plan artifact status for the current branch.
-    Status,
-    /// Promote a draft relative path or session id to plans/active.md.
-    Promote { draft: String },
-    /// Create plans/active.md from legacy note sections when no plan file exists.
-    Migrate,
 }
 
 #[derive(Subcommand, Debug)]
@@ -911,13 +880,13 @@ pub(crate) enum CmdMisc {
         #[command(subcommand)]
         action: IssueCmd,
     },
-    /// Links worth going back to: a PBI, a PR, an Azure portal blade, a docs site, a dashboard.
-    /// Bare `bn links` opens the fzf picker, ranked by how often you actually use each link (and
-    /// with the current repo's links first); `bn links <query>` skips the picker and opens the one
-    /// match. `bn links add <url>` stores one, `bn links capture` harvests the note's PR and work
-    /// item, `bn links copy` puts one on the clipboard as a hyperlink ready to paste into Teams.
-    /// In the picker, ctrl-y copies instead of opening and tab selects several. Stored
-    /// cross-machine as `<work_root>/links.md`, synced with your notes.
+    /// Links worth going back to: a PR, a work item, a portal blade, a docs site, a dashboard.
+    /// Bare `bn links` opens the fzf picker (this repo's links first, then most used); `bn links
+    /// <query>` opens the one match. `add` stores one, `capture` the note's PR and work item, `copy`
+    /// puts one on the clipboard as a Teams-ready hyperlink. Agent sessions save the PRs they
+    /// mention, marked `•new` until `bn links new`; `check` reports dead and merged links, and
+    /// `prune` deletes the ones whose `--ttl` ran out. In the picker ctrl-y copies and tab selects
+    /// several. Stored cross-machine as `<work_root>/links.md`, synced with your notes.
     #[command(args_conflicts_with_subcommands = true)]
     Links(LinksArgs),
     /// Reusable **reference** docs, in two scopes. Without `--repo` (#623): per-topic coding

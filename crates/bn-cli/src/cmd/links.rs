@@ -4,8 +4,9 @@
 //! this file is the renderer, the fzf call and the browser hand-off. It follows the one-shot
 //! `fzf_select` shape rather than the self-referencing `--pick-stage` shape used by `tat` and
 //! `doctor --pick`: selection comes straight back here, so bn — not an fzf keybinding — is what
-//! records the open and calls the opener. No preview panel and one round trip; the only extra key
-//! is ctrl-y (via `--expect`), which copies the selection instead of opening it.
+//! records the open and calls the opener. No preview panel; extra keys come through `--expect`:
+//! ctrl-y copies the selection instead of opening it, and ctrl-t/ctrl-e/ctrl-d tag, rename or
+//! delete it and reopen the picker.
 
 use crate::*;
 use bn_core::links::{self, Link};
@@ -15,21 +16,34 @@ use std::process::{Command, Stdio};
 /// fzf field separator. Field 1 is the rendered row; field 2 is the id we act on.
 const TAB: char = '\t';
 
+mod check;
+mod harvest;
+mod picker;
+mod review;
+use self::harvest::*;
+use self::picker::*;
+
 /// Dispatch `bn links` — bare picker, `bn links <query>` open, or a subcommand.
 pub(crate) fn emit_links(
     cfg: &Config,
     action: Option<LinksCmd>,
     query: Option<String>,
     tag: Option<String>,
+    fill: Vec<String>,
     json: bool,
 ) {
+    let fills = parse_fills(&fill, json);
     match action {
         Some(LinksCmd::Add {
             url,
             name,
             tags,
             repo,
-        }) => add_link(cfg, &url, name, tags, repo, json),
+            ttl,
+        }) => add_link(cfg, &url, name, tags, repo, ttl, json),
+        Some(LinksCmd::Prune) => prune(cfg, json),
+        Some(LinksCmd::Check { tag }) => check::check_links(cfg, tag, json),
+        Some(LinksCmd::Tag { needle, changes }) => tag_link(cfg, &needle, &changes, json),
         Some(LinksCmd::Rm { needle }) => match links::remove(cfg, &needle) {
             Ok(gone) => {
                 if json {
@@ -40,10 +54,17 @@ pub(crate) fn emit_links(
             }
             Err(e) => fail_json(json, "links", e.code(), &e.message()),
         },
-        Some(LinksCmd::List { tag, repo }) => list_links(cfg, tag, repo, json),
+        Some(LinksCmd::List { query, tag, repo }) => list_links(cfg, query, tag, repo, json),
         Some(LinksCmd::Copy { needle, tag, plain }) => copy_cmd(cfg, needle, tag, plain, json),
         Some(LinksCmd::Capture) => capture(cfg, json),
         Some(LinksCmd::Tags) => show_tags(cfg, json),
+        Some(LinksCmd::New) => review::review(cfg, json),
+        Some(LinksCmd::Harvest {
+            transcript,
+            copilot_session,
+            dry_run,
+        }) => harvest(cfg, transcript, copilot_session, dry_run),
+        Some(LinksCmd::Group { tag }) => open_group(cfg, &tag, json),
         Some(LinksCmd::Edit) => {
             let path = cfg.links_file();
             if !path.exists() {
@@ -52,8 +73,8 @@ pub(crate) fn emit_links(
             let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nvim".into());
             let _ = Command::new(editor).arg(&path).status();
         }
-        None if json && query.is_none() => list_links(cfg, tag, None, true),
-        None => open_one(cfg, query, tag, json),
+        None if json && query.is_none() => list_links(cfg, None, tag, None, true),
+        None => open_one(cfg, query, tag, &fills, json),
     }
 }
 
@@ -71,8 +92,15 @@ fn add_link(
     name: Option<String>,
     tags: Option<String>,
     repo: Option<String>,
+    ttl: Option<String>,
     json: bool,
 ) {
+    // Checked before anything is stored, so a typo in --ttl never leaves a link without one.
+    let ttl_days = ttl.as_deref().map(|raw| {
+        links::parse_ttl(raw).unwrap_or_else(|| {
+            fail_json(json, "links", "usage", &format!("--ttl wants 7d, 2w or a day count, got '{raw}'"))
+        })
+    });
     let vocab = resolver::link_tags();
     let (tags, unknown) = match tags.as_deref() {
         Some(raw) => links::split_tags(raw, &vocab),
@@ -87,13 +115,34 @@ fn add_link(
     };
     // `--repo ""` is the explicit "this link belongs to no repo"; omitting it inherits the
     // worktree you are standing in, which is the common case and the one worth defaulting.
-    let repo = match repo {
-        Some(r) if r.trim().is_empty() => None,
-        Some(r) => Some(r),
-        None => current_repo(cfg),
+    // An inherited repo brings this worktree's branch with it, so the link heads that branch's
+    // note; an explicit `--repo` says nothing about a branch.
+    let (repo, branch) = match repo {
+        Some(r) if r.trim().is_empty() => (None, None),
+        Some(r) => (Some(r), None),
+        None => match std::env::current_dir()
+            .ok()
+            .and_then(|cwd| resolver::resolve(cfg, &cwd).ok())
+        {
+            Some(r) => (Some(r.repo), Some(r.branch)),
+            None => (None, None),
+        },
     };
-    match links::add(cfg, url, name.as_deref(), &tags, repo.as_deref(), &today()) {
+    match links::add(
+        cfg,
+        url,
+        name.as_deref(),
+        &tags,
+        repo.as_deref(),
+        branch.as_deref(),
+        &today(),
+    ) {
         Ok(link) => {
+            let link = match ttl_days {
+                Some(days) => links::set_expiry(cfg, &link.id, &today(), days)
+                    .unwrap_or_else(|e| fail_json(json, "links", e.code(), &e.message())),
+                None => link,
+            };
             if !unknown.is_empty() && !json {
                 eprintln!(
                     "⚠ not in your tag vocabulary: {} — saved anyway (`bn links tags` to see the set)",
@@ -115,8 +164,86 @@ fn add_link(
     }
 }
 
+/// Does the link's name, tags or URL contain `q`, ignoring case? The same test `bn_links_list`
+/// applies over MCP.
+fn matches_query(l: &Link, q: &str) -> bool {
+    format!("{} {} {}", l.name, l.tags.join(" "), l.url)
+        .to_lowercase()
+        .contains(&q.to_lowercase())
+}
+
+/// `bn links prune` — delete the links whose `--ttl` ran out.
+fn prune(cfg: &Config, json: bool) {
+    match links::prune(cfg, &today()) {
+        Ok(gone) => {
+            if json {
+                let data: Vec<_> = gone.iter().map(link_json).collect();
+                println!(
+                    "{}",
+                    Envelope::success("links", serde_json::json!({ "removed": data })).to_json()
+                );
+            } else if gone.is_empty() {
+                println!("Nothing has expired.");
+            } else {
+                for l in &gone {
+                    println!("Removed: {} — {} (expired {})", l.name, l.url, l.expires.as_deref().unwrap_or("?"));
+                }
+            }
+        }
+        Err(e) => fail_json(json, "links", e.code(), &e.message()),
+    }
+}
+
+/// `bn links tag <link> +a -b c` — add and drop tags on one link.
+fn tag_link(cfg: &Config, needle: &str, changes: &[String], json: bool) {
+    let items = links::read(cfg);
+    let id = match links::resolve(&items, needle) {
+        Ok(l) => l.id.clone(),
+        Err(e) => fail_json(json, "links", e.code(), &e.message()),
+    };
+    let (add, drop) = split_changes(changes);
+    match links::retag(cfg, &id, &add, &drop) {
+        Ok(l) => {
+            if json {
+                println!("{}", Envelope::success("links", link_json(&l)).to_json());
+            } else {
+                println!("[{}] {} — tags: {}", l.id, l.name, l.tags.join(", "));
+            }
+        }
+        Err(e) => fail_json(json, "links", e.code(), &e.message()),
+    }
+}
+
+/// Split `+a -b c` (or comma-joined `+a,-b`) into tags to add and tags to drop.
+fn split_changes(changes: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut add = Vec::new();
+    let mut drop = Vec::new();
+    for c in changes.iter().flat_map(|c| c.split([',', ' '])) {
+        let c = c.trim();
+        match c.strip_prefix('-') {
+            Some(t) if !t.trim_start_matches('#').is_empty() => {
+                drop.push(t.trim_start_matches('#').to_string())
+            }
+            Some(_) => {}
+            None => {
+                let t = c.trim_start_matches('+').trim_start_matches('#');
+                if !t.is_empty() {
+                    add.push(t.to_string());
+                }
+            }
+        }
+    }
+    (add, drop)
+}
+
 /// `bn links list` — the store in picker order, optionally narrowed.
-fn list_links(cfg: &Config, tag: Option<String>, repo: Option<String>, json: bool) {
+fn list_links(
+    cfg: &Config,
+    query: Option<String>,
+    tag: Option<String>,
+    repo: Option<String>,
+    json: bool,
+) {
     let today = today();
     let items = links::read(cfg);
     let here = repo.clone().or_else(|| current_repo(cfg));
@@ -125,6 +252,7 @@ fn list_links(cfg: &Config, tag: Option<String>, repo: Option<String>, json: boo
         .into_iter()
         .filter(|l| tag.as_ref().is_none_or(|t| l.tags.contains(t)))
         .filter(|l| repo.as_ref().is_none_or(|r| l.repo.as_deref() == Some(r)))
+        .filter(|l| query.as_ref().is_none_or(|q| matches_query(l, q)))
         .collect();
     if json {
         let data: Vec<_> = rows.iter().map(|l| link_json(l)).collect();
@@ -135,7 +263,11 @@ fn list_links(cfg: &Config, tag: Option<String>, repo: Option<String>, json: boo
         return;
     }
     if rows.is_empty() {
-        println!("No links stored. `bn links add <url>` to save one.");
+        if items.is_empty() {
+            println!("No links stored. `bn links add <url>` to save one.");
+        } else {
+            println!("No links match.");
+        }
         return;
     }
     for l in rows {
@@ -166,14 +298,17 @@ fn capture(cfg: &Config, json: bool) {
         .map(str::to_string)
         .collect();
 
-    let mut saved = Vec::new();
-    for c in &found {
-        let name = format!("{} {} {}", ctx.repo, ctx.branch, c.label);
-        match links::add(cfg, &c.url, Some(&name), &[], Some(&ctx.repo), &today) {
-            Ok(l) => saved.push(l),
-            Err(e) => fail_json(json, "links", e.code(), &e.message()),
-        }
-    }
+    let saved = match links::capture(
+        cfg,
+        &ctx.repo,
+        &ctx.branch,
+        pr.as_deref(),
+        wi.as_deref(),
+        &today,
+    ) {
+        Ok(s) => s,
+        Err(e) => fail_json(json, "links", e.code(), &e.message()),
+    };
     if json {
         let data: Vec<_> = saved.iter().map(link_json).collect();
         println!(
@@ -184,6 +319,10 @@ fn capture(cfg: &Config, json: bool) {
             )
             .to_json()
         );
+        return;
+    }
+    if saved.is_empty() && skipped.is_empty() && !found.is_empty() {
+        println!("Already saved: {}/{}'s PR and work item.", ctx.repo, ctx.branch);
         return;
     }
     if saved.is_empty() && skipped.is_empty() {
@@ -245,8 +384,13 @@ fn show_tags(cfg: &Config, json: bool) {
 
 /// Bare `bn links` (picker) and `bn links <query>` (direct) — resolve links, record the use,
 /// and hand them to the browser, or to the clipboard when the picker was left with ctrl-y.
-fn open_one(cfg: &Config, query: Option<String>, tag: Option<String>, json: bool) {
-    let today = today();
+fn open_one(
+    cfg: &Config,
+    query: Option<String>,
+    tag: Option<String>,
+    fills: &[(String, String)],
+    json: bool,
+) {
     let items = links::read(cfg);
     if items.is_empty() {
         fail_json(
@@ -261,48 +405,92 @@ fn open_one(cfg: &Config, query: Option<String>, tag: Option<String>, json: bool
             Ok(l) => (PickAction::Open, vec![l.id.clone()]),
             Err(e) => fail_json(json, "links", e.code(), &e.message()),
         },
-        None => {
-            let here = current_repo(cfg);
-            let ranked = with_tag(links::ranked(&items, here.as_deref(), &today), tag.as_deref());
-            if ranked.is_empty() {
-                fail_json(
-                    json,
-                    "links",
-                    "empty",
-                    &format!("No links tagged {}.", tag.as_deref().unwrap_or("")),
-                );
-            }
-            match pick(&ranked) {
-                Some(p) => p,
-                None => {
-                    // fzf missing or cancelled. Print what the picker would have shown so the
-                    // command is still useful on a box without fzf, and exit non-zero so a
-                    // script can tell "nothing opened" from "opened".
-                    for l in &ranked {
-                        println!("{:<4} {:<40} {}", l.id, truncate(&l.name, 40), l.url);
-                    }
-                    eprintln!("Nothing opened. `bn links <query>` opens one without fzf.");
-                    std::process::exit(1);
-                }
-            }
-        }
+        None => pick_loop(cfg, tag.as_deref(), json),
     };
     if action == PickAction::Copy {
-        copy_ids(cfg, &chosen, false, json);
+        copy_ids(cfg, &chosen, false, fills, json);
         return;
     }
-    for id in &chosen {
+    open_ids(cfg, &chosen, fills, json);
+}
+
+/// `bn links group <tag>` — open every link carrying the tag.
+fn open_group(cfg: &Config, tag: &str, json: bool) {
+    let items = links::read(cfg);
+    let ids: Vec<String> = links::in_group(&items, tag)
+        .iter()
+        .map(|l| l.id.clone())
+        .collect();
+    if ids.is_empty() {
+        fail_json(
+            json,
+            "links",
+            "not_found",
+            &format!("No link is tagged {tag}. `bn links add <url> --tags {tag}` to start the group."),
+        );
+    }
+    open_ids(cfg, &ids, &[], json);
+}
+
+/// Record an open for each id and hand each URL to the browser. A URL no opener took is printed
+/// so it can still be clicked.
+fn open_ids(cfg: &Config, ids: &[String], fills: &[(String, String)], json: bool) {
+    let today = today();
+    let mut opened = Vec::new();
+    for id in ids {
         match links::touch(cfg, id, &today) {
             Ok(link) => {
-                if json {
-                    println!("{}", Envelope::success("links", link_json(&link)).to_json());
-                } else if !open_url(&link.url) {
+                let link = filled(link, fills, json);
+                if !json && !open_url(&link.url) {
                     println!("{}", link.url);
                 }
+                opened.push(link);
             }
             Err(e) => fail_json(json, "links", e.code(), &e.message()),
         }
     }
+    if json {
+        // One link keeps the single-object shape scripts already read; a group is a list.
+        let data = match opened.as_slice() {
+            [one] => link_json(one),
+            many => serde_json::json!({ "items": many.iter().map(link_json).collect::<Vec<_>>() }),
+        };
+        println!("{}", Envelope::success("links", data).to_json());
+    }
+}
+
+/// `--fill name=value` flags as pairs. A flag without `=` is a usage error, not a silent miss.
+fn parse_fills(raw: &[String], json: bool) -> Vec<(String, String)> {
+    raw.iter()
+        .map(|f| match f.split_once('=') {
+            Some((k, v)) if !k.trim().is_empty() => (k.trim().to_string(), v.to_string()),
+            _ => fail_json(json, "links", "usage", &format!("--fill wants NAME=VALUE, got '{f}'")),
+        })
+        .collect()
+}
+
+/// The link with its `{name}` placeholders filled: from `--fill` first, then asked for on the
+/// terminal. With no terminal to ask on (a script, `--json`), a missing value is an error
+/// naming the flag that supplies it, never a half-filled URL handed to the browser.
+fn filled(mut link: Link, fills: &[(String, String)], json: bool) -> Link {
+    let mut values = fills.to_vec();
+    for name in links::placeholders(&link.url) {
+        if values.iter().any(|(k, _)| *k == name) {
+            continue;
+        }
+        if json || !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            fail_json(
+                json,
+                "links",
+                "missing_value",
+                &format!("'{}' needs {{{name}}}: pass --fill {name}=…", link.name),
+            );
+        }
+        let value = ask(&format!("{} · {name}: ", link.name));
+        values.push((name, value.trim().to_string()));
+    }
+    link.url = links::fill(&link.url, &values);
+    link
 }
 
 /// Narrow ranked links to one tag (case-insensitive); `None` keeps them all.
@@ -312,6 +500,7 @@ fn with_tag<'a>(ranked: Vec<&'a Link>, tag: Option<&str>) -> Vec<&'a Link> {
     };
     ranked.into_iter().filter(|l| l.tags.contains(&tag)).collect()
 }
+
 
 /// `bn links copy [needle] [--tag T] [--plain]` — one link by needle, or every link with a tag.
 fn copy_cmd(
@@ -359,17 +548,17 @@ fn copy_cmd(
             &format!("No links tagged {}.", tag.as_deref().unwrap_or("")),
         );
     }
-    copy_ids(cfg, &ids, plain, json);
+    copy_ids(cfg, &ids, plain, &[], json);
 }
 
 /// Put these links on the clipboard, record each as used (sharing a link is using it), and say
 /// what happened. No clipboard tool: print the text, as `bn pr --copy` does.
-fn copy_ids(cfg: &Config, ids: &[String], plain: bool, json: bool) {
+fn copy_ids(cfg: &Config, ids: &[String], plain: bool, fills: &[(String, String)], json: bool) {
     let today = today();
     let mut picked = Vec::new();
     for id in ids {
         match links::touch(cfg, id, &today) {
-            Ok(l) => picked.push(l),
+            Ok(l) => picked.push(filled(l, fills, json)),
             Err(e) => fail_json(json, "links", e.code(), &e.message()),
         }
     }
@@ -434,95 +623,7 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// What the picker was left with: enter opens, ctrl-y copies.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum PickAction {
-    Open,
-    Copy,
-}
 
-/// Show the ranked links in fzf and return what to do with the chosen ids.
-///
-/// Rows are `<rendered>\t<id>`: fzf displays and matches on field 1 only (`--with-nth=1`), which
-/// carries the name, repo, tags *and* URL, so typing any part of any of them finds the link.
-/// `--tiebreak=begin,index` keeps our usage order as the tiebreak between equally-good matches,
-/// and with an empty query fzf preserves input order outright — so the link you use most is the
-/// one already under the cursor. `--multi` lets tab select several; `--expect ctrl-y` makes the
-/// first output line the key that closed fzf, so ctrl-y can mean "copy" rather than "open".
-fn pick(ranked: &[&Link]) -> Option<(PickAction, Vec<String>)> {
-    let rows: Vec<String> = ranked
-        .iter()
-        .map(|l| format!("{}{TAB}{}", render(l), l.id))
-        .collect();
-    let mut child = Command::new("fzf")
-        .args([
-            "--ansi",
-            "--reverse",
-            "--multi",
-            "--expect",
-            "ctrl-y",
-            "--delimiter",
-            "\t",
-            "--with-nth",
-            "1",
-            "--tiebreak",
-            "begin,index",
-            "--header",
-            "enter: open · ctrl-y: copy for Teams · tab: select several",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .ok()?;
-    let input = rows.join("\n");
-    if let Some(mut stdin) = child.stdin.take() {
-        std::thread::spawn(move || {
-            let _ = stdin.write_all(input.as_bytes());
-        });
-    }
-    let out = child.wait_with_output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    parse_pick(&String::from_utf8_lossy(&out.stdout))
-}
-
-/// Parse fzf's `--expect` output: the key line (empty for enter), then one selected row per line.
-fn parse_pick(out: &str) -> Option<(PickAction, Vec<String>)> {
-    let mut lines = out.lines();
-    let action = match lines.next()?.trim() {
-        "ctrl-y" => PickAction::Copy,
-        _ => PickAction::Open,
-    };
-    let ids: Vec<String> = lines
-        .filter_map(|row| row.rsplit(TAB).next())
-        .map(|id| id.trim().to_string())
-        .filter(|id| !id.is_empty())
-        .collect();
-    (!ids.is_empty()).then_some((action, ids))
-}
-
-/// One picker row: the name, then the repo, tags and URL dimmed behind it. Everything shown is
-/// also everything fzf matches on, so there is nothing searchable that is invisible.
-fn render(l: &Link) -> String {
-    // `pick` feeds these to `fzf --ansi`, so the row paints whatever bn's own stdout is doing.
-    let ink = style::Ink::always();
-    let repo = l
-        .repo
-        .as_deref()
-        .map(|r| format!("  {}", ink.accent(&format!("[{r}]"))))
-        .unwrap_or_default();
-    let tags = if l.tags.is_empty() {
-        String::new()
-    } else {
-        format!("  {}", ink.meta(&format!("·{}", l.tags.join(" ·"))))
-    };
-    format!(
-        "{}{repo}{tags}  {}",
-        truncate(&l.name, 48),
-        ink.meta(&l.url)
-    )
-}
 
 /// Trim a display string to `max` characters, marking that it was cut.
 fn truncate(s: &str, max: usize) -> String {
@@ -544,80 +645,10 @@ fn link_json(l: &Link) -> serde_json::Value {
         "created": l.created,
         "uses": l.uses,
         "last": l.last,
+        "new": l.new,
+        "expires": l.expires,
     })
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn link(name: &str, url: &str) -> Link {
-        Link {
-            id: "k1".into(),
-            url: url.into(),
-            name: name.into(),
-            tags: vec!["dri".into()],
-            repo: Some("bn".into()),
-            created: "2026-01-01".into(),
-            uses: 0,
-            last: None,
-        }
-    }
-
-    #[test]
-    fn a_picker_row_carries_the_id_after_the_last_tab() {
-        let l = link("Prod subscription", "https://portal.azure.com/x");
-        let row = format!("{}{TAB}{}", render(&l), l.id);
-        assert_eq!(row.rsplit(TAB).next().unwrap(), "k1");
-    }
-
-    #[test]
-    fn everything_searchable_is_in_the_row_fzf_matches_on() {
-        let display = render(&link("Prod subscription", "https://portal.azure.com/x"));
-        for needle in ["Prod subscription", "bn", "dri", "portal.azure.com"] {
-            assert!(display.contains(needle), "row is missing {needle}: {display}");
-        }
-    }
-
-    #[test]
-    fn a_long_name_is_cut_with_an_ellipsis_not_silently() {
-        assert_eq!(truncate("abcdefghij", 5), "abcd…");
-        assert_eq!(truncate("abc", 5), "abc");
-    }
-
-    #[test]
-    fn one_link_shares_as_a_single_escaped_hyperlink() {
-        let l = link("ICM <sev2> & co", "https://x.test/?a=1&b=\"2\"");
-        let (html, text) = share_payload(&[&l]);
-        assert_eq!(
-            html,
-            r#"<a href="https://x.test/?a=1&amp;b=&quot;2&quot;">ICM &lt;sev2&gt; &amp; co</a>"#
-        );
-        assert_eq!(text, "ICM <sev2> & co https://x.test/?a=1&b=\"2\"");
-    }
-
-    #[test]
-    fn several_links_share_as_a_list() {
-        let a = link("A", "https://a.test");
-        let b = link("B", "https://b.test");
-        let (html, text) = share_payload(&[&a, &b]);
-        assert_eq!(
-            html,
-            r#"<ul><li><a href="https://a.test">A</a></li><li><a href="https://b.test">B</a></li></ul>"#
-        );
-        assert_eq!(text, "A https://a.test\nB https://b.test");
-    }
-
-    #[test]
-    fn fzf_expect_output_maps_to_an_action_and_ids() {
-        assert_eq!(
-            parse_pick("\nrow one\tk3\n"),
-            Some((PickAction::Open, vec!["k3".to_string()]))
-        );
-        assert_eq!(
-            parse_pick("ctrl-y\nrow\tk1\nrow\tk7\n"),
-            Some((PickAction::Copy, vec!["k1".to_string(), "k7".to_string()]))
-        );
-        assert_eq!(parse_pick("ctrl-y\n"), None);
-    }
-}
+mod tests;

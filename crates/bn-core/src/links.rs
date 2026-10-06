@@ -18,6 +18,8 @@
 use crate::resolver::Config;
 use crate::store::StoreError;
 use crate::util::days_since;
+
+pub mod check;
 use serde::{Deserialize, Serialize};
 
 /// The tag vocabulary bn ships with, used when `[links] tags` is absent from config.toml.
@@ -54,12 +56,24 @@ pub struct Link {
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
+    /// The branch it was saved from, so that branch's note lists it first. `None` for links
+    /// saved outside a worktree or before links carried a branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
     pub created: String,
     #[serde(default)]
     pub uses: u32,
     /// Date of the most recent open. `None` until the link has been opened once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<String>,
+    /// Saved by the session hook and not yet reviewed with `bn links new`. Never set by an
+    /// explicit add or capture: a link you chose is already reviewed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub new: bool,
+    /// The first date (`YYYY-MM-DD`) the link is hidden from every listing, from `--ttl`.
+    /// Hidden, never deleted on its own: `bn links prune` deletes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires: Option<String>,
 }
 
 /// The links file's frontmatter: just the list, in insertion order. Rank is computed on read,
@@ -148,6 +162,7 @@ pub fn add(
     name: Option<&str>,
     tags: &[String],
     repo: Option<&str>,
+    branch: Option<&str>,
     today: &str,
 ) -> Result<Link, LinkError> {
     let url = url.trim();
@@ -159,16 +174,22 @@ pub fn add(
     let name = name
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| default_name(url));
+        .map(str::to_string);
 
     if let Some(existing) = items.iter_mut().find(|l| l.url == url) {
-        existing.name = name;
+        // No name given keeps the one already there: a name is usually hand-written, and
+        // re-adding a URL to re-tag it must not quietly reset it to `host/segment`.
+        if let Some(name) = name {
+            existing.name = name;
+        }
         if !tags.is_empty() {
             existing.tags = tags.to_vec();
         }
         if repo.is_some() {
             existing.repo = repo.map(str::to_string);
+        }
+        if branch.is_some() {
+            existing.branch = branch.map(str::to_string);
         }
         let out = existing.clone();
         write(cfg, &items)?;
@@ -178,12 +199,15 @@ pub fn add(
     let link = Link {
         id: crate::id::next_id_from_ids(items.iter().map(|l| l.id.as_str()), K_PREFIX),
         url: url.to_string(),
-        name,
+        name: name.unwrap_or_else(|| default_name(url)),
         tags: tags.to_vec(),
         repo: repo.map(str::to_string),
+        branch: branch.map(str::to_string),
         created: today.to_string(),
         uses: 0,
         last: None,
+        new: false,
+        expires: None,
     };
     items.push(link.clone());
     write(cfg, &items)?;
@@ -202,6 +226,70 @@ pub fn remove(cfg: &Config, needle: &str) -> Result<Link, LinkError> {
     let gone = items.remove(pos);
     write(cfg, &items)?;
     Ok(gone)
+}
+
+/// Add and drop tags on one link without restating the rest — the way into and out of a group.
+/// Tags are lowercased; adding one it already has, or dropping one it lacks, is a no-op.
+pub fn retag(cfg: &Config, id: &str, add: &[String], drop: &[String]) -> Result<Link, LinkError> {
+    edit(cfg, id, |l| {
+        for t in drop {
+            let t = t.to_lowercase();
+            l.tags.retain(|x| *x != t);
+        }
+        for t in add {
+            let t = t.to_lowercase();
+            if !l.tags.contains(&t) {
+                l.tags.push(t);
+            }
+        }
+    })
+}
+
+/// Rename one link. A blank name is refused as not-found-shaped rather than stored.
+pub fn rename(cfg: &Config, id: &str, name: &str) -> Result<Link, LinkError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(LinkError::NotFound(id.to_string()));
+    }
+    edit(cfg, id, |l| l.name = name.to_string())
+}
+
+/// Apply `f` to the link with this id under the store lock, and write it back.
+fn edit(cfg: &Config, id: &str, f: impl FnOnce(&mut Link)) -> Result<Link, LinkError> {
+    let _lock = crate::store::NoteLock::acquire(&cfg.links_file());
+    let mut items = read(cfg);
+    let link = items
+        .iter_mut()
+        .find(|l| l.id == id)
+        .ok_or_else(|| LinkError::NotFound(id.to_string()))?;
+    f(link);
+    let out = link.clone();
+    write(cfg, &items)?;
+    Ok(out)
+}
+
+/// The links waiting for review — saved by the session hook, not yet kept, tagged or dropped —
+/// oldest first, expired ones left out.
+pub fn pending<'a>(items: &'a [Link], today: &str) -> Vec<&'a Link> {
+    items
+        .iter()
+        .filter(|l| l.new && !expired(l, today))
+        .collect()
+}
+
+/// Clear the new mark on these links: they have been looked at. Returns how many changed.
+pub fn mark_reviewed(cfg: &Config, ids: &[String]) -> Result<usize, LinkError> {
+    let _lock = crate::store::NoteLock::acquire(&cfg.links_file());
+    let mut items = read(cfg);
+    let mut changed = 0;
+    for l in items.iter_mut().filter(|l| l.new && ids.contains(&l.id)) {
+        l.new = false;
+        changed += 1;
+    }
+    if changed > 0 {
+        write(cfg, &items)?;
+    }
+    Ok(changed)
 }
 
 /// Record an open: `uses += 1`, `last = today`. This is the only thing that changes rank.
@@ -243,9 +331,10 @@ pub fn score(link: &Link, today: &str) -> u32 {
 }
 
 /// The store in the order a picker should show it: the current repo's links first, then by
-/// frecency, then most-recently-used, then by name so the order is stable across runs.
+/// frecency, then most-recently-used, then by name so the order is stable across runs. Expired
+/// links are left out, so every listing hides them without its own filter.
 pub fn ranked<'a>(items: &'a [Link], repo: Option<&str>, today: &str) -> Vec<&'a Link> {
-    let mut out: Vec<&Link> = items.iter().collect();
+    let mut out: Vec<&Link> = items.iter().filter(|l| !expired(l, today)).collect();
     out.sort_by(|a, b| {
         let mine = |l: &Link| repo.is_some() && l.repo.as_deref() == repo;
         mine(b)
@@ -255,6 +344,42 @@ pub fn ranked<'a>(items: &'a [Link], repo: Option<&str>, today: &str) -> Vec<&'a
             .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     out
+}
+
+/// Parse a `--ttl` (`7d`, `2w`, or bare days `30`) into whole days. `None` for anything else,
+/// including zero: a link that expires the moment it is saved is a mistake, not a choice.
+pub fn parse_ttl(raw: &str) -> Option<i64> {
+    let raw = raw.trim().to_lowercase();
+    let (num, per) = match raw.strip_suffix('w') {
+        Some(n) => (n, 7),
+        None => (raw.strip_suffix('d').unwrap_or(&raw), 1),
+    };
+    let n: i64 = num.parse().ok()?;
+    (n > 0).then_some(n * per)
+}
+
+/// Give one link an expiry `days` from `today` — it disappears from every listing on that date.
+pub fn set_expiry(cfg: &Config, id: &str, today: &str, days: i64) -> Result<Link, LinkError> {
+    let date =
+        crate::util::add_days(today, days).ok_or_else(|| LinkError::NotFound(id.to_string()))?;
+    edit(cfg, id, |l| l.expires = Some(date))
+}
+
+/// Delete every expired link, returning what went. The only thing that deletes on expiry —
+/// [`ranked`] merely hides them, so an expiry can be undone by editing the date until pruned.
+pub fn prune(cfg: &Config, today: &str) -> Result<Vec<Link>, LinkError> {
+    let _lock = crate::store::NoteLock::acquire(&cfg.links_file());
+    let items = read(cfg);
+    let (gone, kept): (Vec<Link>, Vec<Link>) = items.into_iter().partition(|l| expired(l, today));
+    if !gone.is_empty() {
+        write(cfg, &kept)?;
+    }
+    Ok(gone)
+}
+
+/// Has this link reached its `expires` date? Dates compare as `YYYY-MM-DD` strings.
+pub fn expired(link: &Link, today: &str) -> bool {
+    link.expires.as_deref().is_some_and(|e| e <= today)
 }
 
 /// Everything [`resolve`] fuzzy-matches against, lowercased: the name, the tags, and the URL.
@@ -466,6 +591,170 @@ pub fn capturable(
         .collect()
 }
 
+/// Store a branch's PR and work item, named `<repo> <branch> <PR|work item>` and filed under the
+/// repo. Returns the links newly saved; a URL already in the store is left exactly as it is, so
+/// a name or tags you gave it by hand survive a later capture.
+///
+/// This is what [`crate::commands::close`] runs, so every way a worktree goes away — closing
+/// the note, `bn sync` seeing the PR merge, worktree cleanup — keeps its links first.
+pub fn capture(
+    cfg: &Config,
+    repo: &str,
+    branch: &str,
+    pr: Option<&str>,
+    work_item: Option<&str>,
+    today: &str,
+) -> Result<Vec<Link>, LinkError> {
+    let stored = read(cfg);
+    let mut saved = Vec::new();
+    for c in capturable(cfg, repo, pr, work_item) {
+        if stored.iter().any(|l| l.url == c.url) {
+            continue;
+        }
+        let name = format!("{repo} {branch} {}", c.label);
+        saved.push(add(
+            cfg,
+            &c.url,
+            Some(&name),
+            &[],
+            Some(repo),
+            Some(branch),
+            today,
+        )?);
+    }
+    Ok(saved)
+}
+
+/// The `{name}` placeholders in a link's URL, each once, in order. A link with any is a
+/// template: `https://dev.azure.com/o/p/_workitems/edit/{id}` stands for every work item, and
+/// opening it asks for `id`.
+pub fn placeholders(url: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = url;
+    while let Some(open) = rest.find('{') {
+        let Some(len) = rest[open..].find('}') else {
+            break;
+        };
+        let name = &rest[open + 1..open + len];
+        if !name.is_empty() && !out.iter().any(|n| n == name) {
+            out.push(name.to_string());
+        }
+        rest = &rest[open + len + 1..];
+    }
+    out
+}
+
+/// Fill a template's placeholders. Values are percent-encoded, so `a b/c` cannot break out of
+/// its path segment or query value; a placeholder with no value is left as it is.
+pub fn fill(url: &str, values: &[(String, String)]) -> String {
+    let mut out = url.to_string();
+    for (name, value) in values {
+        out = out.replace(&format!("{{{name}}}"), &encode(value));
+    }
+    out
+}
+
+/// Percent-encode everything outside RFC 3986's unreserved set.
+fn encode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// The URLs in `text` worth keeping without being asked: pull requests, issues, work items,
+/// portal blades, and the incident, permission and security hosts the tag rules recognise. Everything else a session mentions
+/// (a crate's docs, a search result) stays out, so the store fills with what you return to
+/// rather than everything that scrolled past. In order of appearance, without duplicates.
+pub fn notable_urls(text: &str) -> Vec<String> {
+    // Docs pages are left out: agents cite them constantly, and one you return to is one
+    // you save on purpose.
+    let rule_tags: Vec<String> = GUESS_RULES
+        .iter()
+        .map(|(t, _)| t.to_string())
+        .filter(|t| t != "docs")
+        .collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("http") {
+        let tail = &rest[at..];
+        let end = tail
+            .find(|c: char| {
+                c.is_whitespace() || matches!(c, '"' | '\'' | '\\' | '<' | '>' | '`' | '|')
+            })
+            .unwrap_or(tail.len());
+        let url = tail[..end].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '}', '*']);
+        rest = &tail[end.max(1)..];
+        if !(url.starts_with("https://") || url.starts_with("http://")) || !valid_url(url) {
+            continue;
+        }
+        if (is_work_url(url) || !guess_tags(url, &rule_tags).is_empty())
+            && !out.iter().any(|u| u == url)
+        {
+            out.push(url.to_string());
+        }
+    }
+    out
+}
+
+/// A PR, an issue or a work item on GitHub or Azure DevOps, or an Azure portal page.
+fn is_work_url(url: &str) -> bool {
+    let numbered = |marker: &str| {
+        url.split_once(marker)
+            .is_some_and(|(_, tail)| tail.chars().next().is_some_and(|c| c.is_ascii_digit()))
+    };
+    numbered("/pull/")
+        || numbered("/issues/")
+        || numbered("/pullrequest/")
+        || numbered("/_workitems/edit/")
+        || host(url) == "portal.azure.com"
+}
+
+/// Store the URLs a session surfaced that the store does not hold yet, named by default,
+/// tagged by host and marked [`Link::new`]. A URL already stored is left alone — its name and
+/// tags may be hand-made.
+pub fn harvest(
+    cfg: &Config,
+    urls: &[String],
+    repo: Option<&str>,
+    branch: Option<&str>,
+    today: &str,
+) -> Result<Vec<Link>, LinkError> {
+    let stored = read(cfg);
+    let vocab = crate::resolver::link_tags();
+    let mut saved = Vec::new();
+    for url in urls {
+        if stored.iter().any(|l| &l.url == url) {
+            continue;
+        }
+        let tags = guess_tags(url, &vocab);
+        let link = add(cfg, url, None, &tags, repo, branch, today)?;
+        // Saved without anyone choosing it, so it waits in `bn links new` for a look.
+        saved.push(edit(cfg, &link.id, |l| l.new = true)?);
+    }
+    Ok(saved)
+}
+
+/// How many of a repo's links `bn cat` shows. Enough for the board, the PR and a dashboard;
+/// the picker has the rest.
+pub const NOTE_LINKS: usize = 5;
+
+/// What `bn cat` lists under the note, at most `n`: the links saved on this branch, then the
+/// rest of the repo's, each in picker order.
+pub fn for_note(cfg: &Config, repo: &str, branch: &str, today: &str, n: usize) -> Vec<Link> {
+    let items = read(cfg);
+    let (mine, rest): (Vec<&Link>, Vec<&Link>) = ranked(&items, Some(repo), today)
+        .into_iter()
+        .filter(|l| l.repo.as_deref() == Some(repo))
+        .partition(|l| l.branch.as_deref() == Some(branch));
+    mine.into_iter().chain(rest).take(n).cloned().collect()
+}
+
 /// How many stored links carry each tag, for `bn links tags`.
 pub fn tag_counts(items: &[Link]) -> std::collections::BTreeMap<String, usize> {
     let mut counts = std::collections::BTreeMap::new();
@@ -475,249 +764,33 @@ pub fn tag_counts(items: &[Link]) -> std::collections::BTreeMap<String, usize> {
     counts
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// A tag shared by at least this many links is offered as a group in the picker. A group of one
+/// is just the link, so it would only add a duplicate row.
+pub const GROUP_MIN: usize = 2;
 
-    fn vocab() -> Vec<String> {
-        DEFAULT_TAGS.iter().map(|t| t.to_string()).collect()
-    }
-
-    #[test]
-    fn guess_tags_by_host() {
-        let v = vocab();
-        let g = |u: &str| guess_tags(u, &v);
-        assert_eq!(
-            g("https://portal.example-incidents.com/imp/v3/incidents/1"),
-            ["icm"]
-        );
-        assert_eq!(g("https://incidents.example.net/x"), ["icm"]);
-        assert_eq!(g("https://learn.microsoft.com/en-us/azure"), ["docs"]);
-        assert_eq!(g("https://docs.example.com/docs/x"), ["docs"]);
-        assert_eq!(g("https://docs.rs/serde"), ["docs"]);
-        assert_eq!(g("https://tokio.readthedocs.io/"), ["docs"]);
-        assert_eq!(
-            g("https://myaccess.microsoft.com/@x#/access-packages"),
-            ["permissions"]
-        );
-        assert_eq!(g("https://groups.example/GroupManagement"), ["permissions"]);
-        assert_eq!(g("https://security.microsoft.com:443/alerts"), ["security"]);
-        assert!(g("https://github.com/eduuh/bn/pull/1").is_empty());
-        // `.suffix` must match on a label boundary, not any substring.
-        assert!(g("https://notexample-incidents.com/").is_empty());
-    }
-
-    #[test]
-    fn guess_tags_respects_vocabulary() {
-        let v = vec!["security".to_string()];
-        assert!(guess_tags("https://portal.example-incidents.com/x", &v).is_empty());
-        assert_eq!(
-            guess_tags("https://security.microsoft.com/", &v),
-            ["security"]
-        );
-    }
-
-    fn link(name: &str, uses: u32, last: Option<&str>) -> Link {
-        Link {
-            id: format!("k{name}"),
-            url: format!("https://example.com/{name}"),
-            name: name.to_string(),
-            tags: vec![],
-            repo: None,
-            created: "2026-01-01".to_string(),
-            uses,
-            last: last.map(str::to_string),
+/// The groups the picker offers: every tag carried by [`GROUP_MIN`] or more links, each with its
+/// members in the order given (pass [`ranked`] output so members keep picker order). Groups sort
+/// largest first, then by name, so the order is stable between opens.
+pub fn groups<'a>(ranked: &[&'a Link]) -> Vec<(String, Vec<&'a Link>)> {
+    let mut out: Vec<(String, Vec<&'a Link>)> = Vec::new();
+    for l in ranked {
+        for t in &l.tags {
+            match out.iter_mut().find(|(name, _)| name == t) {
+                Some((_, members)) => members.push(l),
+                None => out.push((t.clone(), vec![l])),
+            }
         }
     }
-
-    #[test]
-    fn the_link_you_reach_for_most_is_the_one_on_top() {
-        let items = vec![
-            link("rare", 1, Some("2026-09-03")),
-            link("daily", 20, Some("2026-09-03")),
-        ];
-        let ranked = ranked(&items, None, "2026-09-03");
-        assert_eq!(ranked[0].name, "daily");
-    }
-
-    #[test]
-    fn a_link_used_today_outranks_a_busier_one_gone_cold() {
-        // 3 uses today (3 * 16 = 48) beats 20 uses last quarter (20 * 1 = 20).
-        let items = vec![
-            link("stale", 20, Some("2026-01-05")),
-            link("fresh", 3, Some("2026-09-03")),
-        ];
-        let ranked = ranked(&items, None, "2026-09-03");
-        assert_eq!(ranked[0].name, "fresh");
-    }
-
-    #[test]
-    fn the_repo_you_are_standing_in_sorts_first_even_when_it_is_used_less() {
-        let mut mine = link("mine", 1, Some("2026-01-01"));
-        mine.repo = Some("bn".to_string());
-        let items = vec![link("busy", 99, Some("2026-09-03")), mine];
-        let ranked = ranked(&items, Some("bn"), "2026-09-03");
-        assert_eq!(ranked[0].name, "mine");
-        assert_eq!(ranked[1].name, "busy");
-    }
-
-    #[test]
-    fn a_never_opened_link_still_ranks_by_the_day_it_was_saved() {
-        let saved_today = Link {
-            created: "2026-09-03".to_string(),
-            ..link("new", 0, None)
-        };
-        let saved_last_year = Link {
-            created: "2025-09-03".to_string(),
-            ..link("old", 0, None)
-        };
-        let items = vec![saved_last_year, saved_today];
-        let ranked = ranked(&items, None, "2026-09-03");
-        assert_eq!(ranked[0].name, "new");
-    }
-
-    #[test]
-    fn the_store_survives_a_round_trip_through_yaml() {
-        let items = vec![Link {
-            tags: vec!["dri".into(), "telemetry".into()],
-            repo: Some("BigMono".into()),
-            ..link("pbi", 4, Some("2026-09-02"))
-        }];
-        let front = LinksFront {
-            items: items.clone(),
-        };
-        let text = format!(
-            "---\n{}---\n\n# Links\n",
-            serde_yaml::to_string(&front).unwrap()
-        );
-        let back = crate::store::parse_frontmatter::<LinksFront>(&text).unwrap();
-        assert_eq!(back.items, items);
-    }
-
-    #[test]
-    fn resolve_finds_a_link_by_a_fragment_of_its_url() {
-        let items = vec![link("Prod subscription", 0, None)];
-        assert_eq!(
-            resolve(&items, "example.com/Prod").unwrap().name,
-            "Prod subscription"
-        );
-    }
-
-    #[test]
-    fn resolve_refuses_to_guess_between_two_matches() {
-        let items = vec![link("portal one", 0, None), link("portal two", 0, None)];
-        let err = resolve(&items, "portal").unwrap_err();
-        assert!(
-            matches!(err, LinkError::Ambiguous(ref c) if c.len() == 2),
-            "{err:?}"
-        );
-    }
-
-    #[test]
-    fn an_exact_id_wins_over_any_name_match() {
-        let mut decoy = link("k1", 0, None);
-        decoy.id = "k9".to_string();
-        let mut wanted = link("something else", 0, None);
-        wanted.id = "k1".to_string();
-        let items = vec![decoy, wanted];
-        assert_eq!(resolve(&items, "k1").unwrap().name, "something else");
-    }
-
-    #[test]
-    fn only_http_urls_are_storable() {
-        assert!(valid_url("https://example.com/x"));
-        assert!(valid_url("http://example.com"));
-        assert!(!valid_url("javascript:alert(1)"));
-        assert!(!valid_url("file:///etc/passwd"));
-        assert!(!valid_url("data:text/html,<script>"));
-        assert!(!valid_url("example.com"));
-        assert!(!valid_url("https://exa mple.com"));
-    }
-
-    #[test]
-    fn a_missing_name_becomes_the_host_and_the_last_path_segment() {
-        assert_eq!(
-            default_name("https://dev.azure.com/contoso/Project/_workitems/edit/11047593"),
-            "dev.azure.com/11047593"
-        );
-        assert_eq!(default_name("https://example.com"), "example.com");
-        assert_eq!(default_name("https://example.com/"), "example.com");
-        assert_eq!(
-            default_name("https://example.com/docs?q=1"),
-            "example.com/docs"
-        );
-    }
-
-    /// A config whose `bare_dir()` is `<root>/bare`, holding one bare clone with `remote` as its
-    /// origin — all `forge::links_for` reads.
-    fn cfg_with_clone(root: &std::path::Path, repo: &str, remote: &str) -> crate::resolver::Config {
-        let bare = root.join("bare").join(format!("{repo}.git"));
-        std::fs::create_dir_all(&bare).unwrap();
-        std::fs::write(
-            bare.join("config"),
-            format!("[remote \"origin\"]\n\turl = {remote}\n"),
-        )
-        .unwrap();
-        crate::test_support::config_with_roots(root, root, root.join("worktrees"), "testhost")
-    }
-
-    #[test]
-    fn a_bare_work_item_id_is_captured_as_its_forge_url() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cfg = cfg_with_clone(
-            tmp.path(),
-            "bigmono",
-            "https://dev.azure.com/contoso/Project/_git/BigMono",
-        );
-        let got = capturable(
-            &cfg,
-            "bigmono",
-            Some("https://github.com/eduuh/bn/pull/1250"),
-            Some("11047593"),
-        );
-        assert_eq!(
-            got,
-            vec![
-                Capturable {
-                    label: "PR".into(),
-                    url: "https://github.com/eduuh/bn/pull/1250".into()
-                },
-                Capturable {
-                    label: "work item".into(),
-                    url: "https://dev.azure.com/contoso/Project/_workitems/edit/11047593".into()
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn an_id_no_forge_can_place_is_dropped_rather_than_stored_broken() {
-        let tmp = tempfile::tempdir().unwrap();
-        // No bare clone for this repo at all — nothing to derive from.
-        let cfg =
-            crate::test_support::config_with_roots(tmp.path(), tmp.path(), tmp.path(), "testhost");
-        assert!(capturable(&cfg, "nope", None, Some("11047593")).is_empty());
-    }
-
-    #[test]
-    fn a_note_with_neither_owes_the_store_nothing() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cfg =
-            crate::test_support::config_with_roots(tmp.path(), tmp.path(), tmp.path(), "testhost");
-        assert!(capturable(&cfg, "bn", None, None).is_empty());
-    }
-
-    #[test]
-    fn an_unlisted_tag_is_reported_but_still_kept() {
-        let vocab = vec!["dri".to_string(), "telemetry".to_string()];
-        let (accepted, unknown) = split_tags("DRI, sprawl, telemetry", &vocab);
-        assert_eq!(accepted, vec!["dri", "sprawl", "telemetry"]);
-        assert_eq!(unknown, vec!["sprawl"]);
-    }
-
-    #[test]
-    fn tags_are_lowercased_and_deduplicated() {
-        let (accepted, _) = split_tags("Security, security, , SECURITY", &[]);
-        assert_eq!(accepted, vec!["security"]);
-    }
+    out.retain(|(_, members)| members.len() >= GROUP_MIN);
+    out.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
+    out
 }
+
+/// Every link carrying `tag` (case-insensitive), in store order. Empty when nothing does.
+pub fn in_group<'a>(items: &'a [Link], tag: &str) -> Vec<&'a Link> {
+    let tag = tag.trim().trim_start_matches('#').to_lowercase();
+    items.iter().filter(|l| l.tags.contains(&tag)).collect()
+}
+
+#[cfg(test)]
+mod tests;

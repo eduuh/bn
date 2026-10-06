@@ -454,6 +454,26 @@ pub fn cat(note: &Note) -> String {
     out
 }
 
+/// The `## Links` footer of `bn cat`: this repo's saved links, most-used first, so a fresh
+/// session sees the PR, board or dashboard it would otherwise go looking for. Empty when the
+/// repo has none.
+pub fn links_footer(links: &[crate::links::Link]) -> String {
+    if links.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("\n## Links (`bn links` to open)\n");
+    for l in links {
+        let tags = if l.tags.is_empty() {
+            String::new()
+        } else {
+            format!(" · {}", l.tags.join(" "))
+        };
+        let new = if l.new { " · •new" } else { "" };
+        out.push_str(&format!("- [{}]({}){tags}{new}\n", l.name, l.url));
+    }
+    out
+}
+
 /// The "Related branches" footer appended to `bn --cat`: past branches that touched the same
 /// files, ranked by overlap. Empty string when there are none, so the note detail stays clean
 /// for branches with no prior art. Each line names the neighbour, the shared-file count, and the
@@ -604,5 +624,32 @@ mod oneline_tests {
     fn handles_empty_and_blank_input() {
         assert_eq!(oneline("", 10), "");
         assert_eq!(oneline("\n\nbody", 10), " …");
+    }
+}
+
+#[cfg(test)]
+mod links_footer_tests {
+    use super::links_footer;
+    use crate::links::Link;
+
+    #[test]
+    fn no_links_adds_nothing_and_links_render_as_markdown() {
+        assert_eq!(links_footer(&[]), "");
+        let l = Link {
+            id: "k1".into(),
+            url: "https://example.com/board".into(),
+            name: "Team board".into(),
+            tags: vec!["standup".into()],
+            repo: Some("bn".into()),
+            branch: None,
+            created: "2026-10-01".into(),
+            uses: 0,
+            last: None,
+            new: false,
+            expires: None,
+        };
+        let out = links_footer(&[l]);
+        assert!(out.contains("## Links"));
+        assert!(out.contains("- [Team board](https://example.com/board) · standup"));
     }
 }

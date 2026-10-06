@@ -372,3 +372,20 @@ mod tests {
         ));
     }
 }
+
+/// Test-only occupancy: `Some(..)` replaces the tmux/registry oracle wholesale, so slot occupancy
+/// is exercisable without a tmux server.
+#[cfg(test)]
+pub(super) fn test_occupants(slot: &Path) -> Option<Vec<crate::agent_lease::Occupant>> {
+    TEST_OCCUPANTS.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .map(|by_slot| by_slot.get(slot).cloned().unwrap_or_default())
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static TEST_OCCUPANTS: std::cell::RefCell<Option<std::collections::BTreeMap<PathBuf, Vec<crate::agent_lease::Occupant>>>> =
+        const { std::cell::RefCell::new(None) };
+}

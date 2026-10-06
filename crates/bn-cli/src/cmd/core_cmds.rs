@@ -265,11 +265,20 @@ pub(crate) fn emit_note(res: Result<std::path::PathBuf, CmdError>, as_json: bool
 }
 
 /// `bn cat` / `bn --cat`: print the current branch note's action view (the same
-/// `store::read` + `render::cat` the MCP `bn_cat` tool uses), then a related-branches footer.
+/// `store::read` + `render::cat` the MCP `bn_cat` tool uses), then this repo's saved links and a
+/// related-branches footer.
 pub(crate) fn emit_cat(cfg: &Config, ctx: &Resolved) {
     match bn_core::store::read(&cfg.note_file(ctx)) {
         Ok(note) => {
             print!("{}", bn_core::render::cat(&note));
+            let links = bn_core::links::for_note(
+                cfg,
+                &ctx.repo,
+                &ctx.branch,
+                &today(),
+                bn_core::links::NOTE_LINKS,
+            );
+            print!("{}", bn_core::render::links_footer(&links));
             // Zero-effort recall: surface past branches that touched the same files.
             let related = bn_core::related::related_branches(
                 cfg,

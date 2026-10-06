@@ -376,6 +376,8 @@ fn pid_alive(pid: u32) -> bool {
 
 pub(crate) mod occupancy;
 use occupancy::any_proc_in;
+#[cfg(test)]
+use occupancy::{test_occupants, TEST_OCCUPANTS};
 
 // --- agent occupancy --------------------------------------------------------
 //
@@ -483,23 +485,6 @@ fn adopt_occupied_slots_in(
         let _ = write_leases(&ctx.pool_dir, leases);
     }
     adopted
-}
-
-/// Test-only occupancy: `Some(..)` replaces the tmux/registry oracle wholesale, so slot occupancy
-/// is exercisable without a tmux server.
-#[cfg(test)]
-fn test_occupants(slot: &Path) -> Option<Vec<crate::agent_lease::Occupant>> {
-    TEST_OCCUPANTS.with(|cell| {
-        cell.borrow()
-            .as_ref()
-            .map(|by_slot| by_slot.get(slot).cloned().unwrap_or_default())
-    })
-}
-
-#[cfg(test)]
-thread_local! {
-    static TEST_OCCUPANTS: std::cell::RefCell<Option<BTreeMap<PathBuf, Vec<crate::agent_lease::Occupant>>>> =
-        const { std::cell::RefCell::new(None) };
 }
 
 pub(crate) mod health;
