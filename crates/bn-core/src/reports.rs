@@ -204,8 +204,7 @@ pub fn standup(cfg: &Config, today: &str) -> Standup {
 
     // `standup` is a report you *run*, so materializing today (which is what carries yesterday's
     // unfinished day-file goals forward) is fine here. `view` then folds the task store in on top.
-    // The read-only surfaces — `/api/goals`, the rail badge — deliberately skip this and rely on
-    // the projection alone, which is what makes carried work visible there without a write.
+    // Read-only callers use the projection alone to see carried work without a write.
     let _ = daily::ensure_today(cfg, today);
     let today_daily = daily::view(cfg, today);
     let today_goals = today_daily.open().map(|g| goal_view(g, today)).collect();
@@ -502,8 +501,7 @@ pub fn note_last_activity(note: &crate::model::Note) -> String {
 /// note hasn't been touched today. Pure aggregation otherwise — reuses `rollups` + `daily`.
 ///
 /// **Materializes** today's day file (via [`daily::ensure_today`], carrying yesterday's open goals
-/// forward) as a side effect — the CLI/cron behaviour. The read-only web dashboard uses
-/// [`wrap_readonly`] instead so a mere GET never creates or rolls the day.
+/// forward) as a side effect.
 pub fn wrap(cfg: &Config, today: &str, note_since: &str, runner: &dyn CommandRunner) -> WrapDigest {
     // Goals come from the task store (#1004), so project rather than reading the day file. The
     // materialize is still worth doing for scheduled follow-ups, but it is no longer what makes
@@ -513,34 +511,6 @@ pub fn wrap(cfg: &Config, today: &str, note_since: &str, runner: &dyn CommandRun
         .open()
         .map(|g| goal_view(g, today))
         .collect();
-    wrap_with_carry(cfg, today, note_since, runner, carry_forward)
-}
-
-/// Read-only sibling of [`wrap`] for the web dashboard (#490): the identical digest, but today's
-/// daily is *read* rather than `ensure_today`-materialized, so a dashboard GET never creates or
-/// rolls the day file (mirroring the read-only `/api/goals`). An un-materialized day yields an
-/// empty `carry_forward`.
-pub fn wrap_readonly(
-    cfg: &Config,
-    today: &str,
-    note_since: &str,
-    runner: &dyn CommandRunner,
-) -> WrapDigest {
-    let carry_forward = Some(daily::view(cfg, today))
-        .map(|d| d.open().map(|g| goal_view(g, today)).collect())
-        .unwrap_or_default();
-    wrap_with_carry(cfg, today, note_since, runner, carry_forward)
-}
-
-/// The git/gh/rollups aggregation shared by [`wrap`] and [`wrap_readonly`]; the two differ only in
-/// how `carry_forward` (today's still-open daily goals) is sourced.
-fn wrap_with_carry(
-    cfg: &Config,
-    today: &str,
-    note_since: &str,
-    runner: &dyn CommandRunner,
-    carry_forward: Vec<GoalView>,
-) -> WrapDigest {
     let branches_touched = branches_touched_today(today, runner);
     let unnoted_commits = if note_since >= today {
         // The note already moved today → nothing to hand off.

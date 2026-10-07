@@ -189,7 +189,7 @@ const COPILOT_WORKSPACE_MCP_FILES: &[&str] = &[".mcp.json", ".github/mcp.json"];
 /// unattended agent can't complete an interactive auth flow, so a project server that blocks the
 /// MCP handshake wedges the whole session before it ever reaches its prompt. bn's own server
 /// (the conventional name `bn`, or the legacy `bn-mcp` command) is kept — it's the local
-/// `bn serve` HTTP endpoint and the source of the branch-note tools the dispatched workflow drives.
+/// `bn mcp serve` stdio launcher and the source of the branch-note tools the workflow drives.
 /// The curated [`EXTRAS`] are kept for the same reason: bn wired them, they are vetted, and none
 /// of them can ask an unattended agent to authenticate.
 ///

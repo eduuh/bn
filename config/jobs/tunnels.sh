@@ -3,7 +3,7 @@
 #
 #   bn tunnels        (or: bn run tunnels, sh tunnels.sh)
 #
-# The status bar only says ok or down for hosts this machine already connects to. This asks the
+# The status bar only shows hosts whose latest connection check passed. This asks the
 # Dev Tunnels account, so it also lists a host this machine has not picked up yet, and for each one
 # says which route ssh takes (LAN or tunnel), whether the host end of its tunnel is up, and what is
 # wrong when ssh does not answer. It checks every host at once, live, so it takes a few seconds.

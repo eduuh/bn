@@ -244,9 +244,8 @@ pub fn dispatch_worktree_mode(no_pool: bool) -> WorktreeMode {
 // --- live pool IO ----------------------------------------------------------
 //
 // The `bn wt pool` primitive (deps/build cache, lease store) lives in `bn-cli`, but its *observable
-// state* — how big each pool is, and each slot's idle/leased shape — is a read the dashboard needs
-// too. Keeping the read here (the IO counterpart of the pure policy above) lets `bn-web` surface a
-// repo's warm-pool without depending on `bn-cli`, reading the very files the CLI writes: the
+// state* — how big each pool is, and each slot's idle/leased shape — belongs in the shared core.
+// It reads the very files the CLI writes: the
 // `_pool/<n>` slot dirs and the lease store `<worktree>/<repo>/_pool/leases.json`. There is no
 // config to read — see [`derived_size`].
 

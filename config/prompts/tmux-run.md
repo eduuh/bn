@@ -127,7 +127,7 @@ tmux send-keys -t "$job" \
   `run_in_background` on the tool call hides it just as well; it is not a substitute for the pane.
 * **bn itself:** from any bn worktree or pool slot, `bn build build-to-local` compiles that branch
   into the shared cache and installs it as the live `bn` — that, in the pane, is how a bn change is
-  tried. Add `BN_SKIP_UI=1` for a Rust-only rebuild.
+  tried.
 
 ## Six ways this goes wrong
 

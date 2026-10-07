@@ -212,25 +212,6 @@ jobs:
           restore-keys: |
             release-${{ matrix.target }}-
 
-      # Cached only on the hosted leg. On the self-hosted mac this action's post-step spends
-      # minutes uploading an npm cache that the runner's own persistent `~/.npm` makes redundant
-      # — the same tax that was half of CI's wall clock before it was removed there.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: ${{ matrix.cache && 'npm' || '' }}
-          cache-dependency-path: crates/bn-web/ui/package-lock.json
-
-      # bn-web bakes its dashboard in at compile time (crates/bn-web/build.rs embeds ui/dist), and
-      # that build.rs falls back to a placeholder page rather than failing when dist/ is absent.
-      # So a skipped UI build does not break the release, it just ships a bn-web that serves
-      # "UI not built" — which is why this step is NOT allowed to fail quietly here.
-      - name: Build the bn-web UI
-        working-directory: crates/bn-web/ui
-        run: |
-          npm ci
-          npm run build
-
       - name: Build release binaries
         shell: bash
         env:

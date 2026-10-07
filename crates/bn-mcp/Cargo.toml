@@ -13,7 +13,7 @@ name = "bn_mcp"
 path = "src/lib.rs"
 
 # The per-worktree stdio launcher (`bn mcp serve` execs this): pins its `(repo, branch)` to the
-# launch cwd so a plain MCP client needs no per-call scope headers. Sits beside `bn`, like `bn-web`.
+# launch cwd. Sits beside `bn`.
 [[bin]]
 name = "bn-mcp"
 path = "src/main.rs"
@@ -23,10 +23,6 @@ bn-core.workspace = true
 # `client` + the reqwest Streamable-HTTP client back `bn-mcp --forge-call` (forge_call.rs), the
 # one place bn talks to a remote MCP server. Kept out of the `bn` binary on purpose.
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest", "reqwest"] }
-# Read the per-request HTTP scope (repo/branch headers/query) that the shared Streamable-HTTP
-# transport injects into each tool call's `RequestContext` as `http::request::Parts` (epic #637 P2).
-# Pinned to the same `http` 1.x rmcp/axum resolve to, so the injected `Parts` type matches.
-http = "1"
 tokio.workspace = true
 schemars.workspace = true
 serde.workspace = true

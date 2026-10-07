@@ -17,7 +17,6 @@ Config {
                 "arena",
             ],
             cron: true,
-            web: true,
         },
     ),
     job_only_on: {
@@ -85,13 +84,6 @@ Config {
         s: 1800,
         m: 5400,
         l: 10800,
-    },
-    web: WebConfig {
-        port: 7770,
-        bind: "127.0.0.1",
-        fleet_poll_secs: 2,
-        tmux_mcp_autostart: true,
-        tmux_mcp_badge: true,
     },
     scout: ScoutConfig {
         watch: [],

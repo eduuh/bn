@@ -16,11 +16,6 @@ Thumbs.db
 .claude/skills/
 .github/skills/
 
-# bn-web frontend build + deps (embedded into the binary by build.rs when present; CI builds
-# them for releases). A source build without these compiles against the placeholder page.
-crates/bn-web/ui/node_modules/
-crates/bn-web/ui/dist/
-
 # Lavish/bn session artifacts — generated planning documents; the branch note is the record.
 .bn-artifacts/
 .lavish/

@@ -95,7 +95,7 @@ pub enum TatStage {
     /// in the background. Spawned detached by the picker so no paint ever waits on a forge.
     #[value(name = "warm-remote")]
     WarmRemote,
-    /// Emit the one-line status header — attention, cron and bn-web, the badges that used to
+    /// Emit the one-line status header — attention and cron, the badges that used to
     /// sit in tmux's `status-format[0]` (#1349). Bound to `start` and `ctrl-r` on both pickers via
     /// `transform-header`, and deliberately NOT to the 700ms `subtick` repaint.
     #[value(name = "statusline")]
@@ -848,11 +848,6 @@ fn resolve_and_open(cfg: &Config, roots: &Roots, sel: String, typed: bool) {
         clone_and_open(cfg, roots, &sel);
         return;
     }
-    // The bn-web control row: toggle the managed service, then pause so the outcome is read.
-    if sel == "webctl" {
-        status::toggle_web(cfg);
-        return;
-    }
     // The codespace auth-fix row: run the gh remedy, then pause so output is read.
     if sel == "cs-auth" {
         cs_auth_refresh();
@@ -1154,7 +1149,7 @@ pub fn stage(
     let row = name.unwrap_or("");
     let arg = pick_arg.unwrap_or("");
     match stage {
-        TatStage::List => build_list(cfg, &roots, false),
+        TatStage::List => build_list(&roots, false),
         TatStage::Refresh => {
             // ctrl-r is the one place a person asked for current data and can see it arrive, so it
             // is the one place the forge is worth waiting on.
@@ -1162,7 +1157,7 @@ pub fn stage(
             if let Some(name) = name.filter(|n| !n.is_empty()) {
                 remote_prs_fetch_blocking(&roots, name);
             }
-            build_list(cfg, &roots, true)
+            build_list(&roots, true)
         }
         TatStage::Preview => preview(&roots, row),
         TatStage::Kill => kill_from_line(row),

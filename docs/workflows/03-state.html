@@ -177,8 +177,8 @@ author.
 <span class="note__label">Missing handoff is not an error</span>
 <p>
 When no packet exists, <em>every</em> reader composes one live from the note rather than
-failing — MCP, CLI and web alike. Only a genuinely missing <em>note</em> fails.
-<span class="src">crates/bn-mcp/src/server.rs:416-420 · cmd/agent.rs:794 · bn-web/src/api.rs:415</span>
+failing, in MCP and CLI alike. Only a genuinely missing <em>note</em> fails.
+<span class="src">crates/bn-mcp/src/server.rs · cmd/agent.rs</span>
 </p>
 </div>
 
@@ -331,7 +331,7 @@ without anyone saying so. <span class="src">model.rs:434</span></li>
 
 <li><strong>A 32 MB read ceiling exists because of a real 4.2 GB <code>note.md</code>.</strong>
 A dispatch bug appended a seed prompt to the same todo every pass, and every sweeping reader
-OOM-killed the dashboard. <span class="src">store.rs:41-53</span></li>
+exhausted memory. <span class="src">store.rs:41-53</span></li>
 
 <li><strong><code>bn done &lt;text&gt;</code> searches todos <em>and</em> done-when
 together</strong>, so a substring can tick an acceptance criterion you meant to leave open.
@@ -356,8 +356,6 @@ ever appear on a branch-note todo in practice is unconfirmed.</li>
 the core append path was read, not the CLI formatting.</li>
 <li>Whether <code>bn_sync</code> proposals are ever auto-applied elsewhere. The MCP tool
 itself is read-only.</li>
-<li>Whether the global standards store is reachable from the web API, or only via CLI and
-MCP.</li>
 </ul>
 
 <div class="foot">

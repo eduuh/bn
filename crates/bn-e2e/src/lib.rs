@@ -1,7 +1,7 @@
 //! A hermetic sandbox for end-to-end testing the `bn` binary.
 //!
 //! Every test gets its own bn universe — its own `HOME`, config, state, notes, worktree pool,
-//! dashboard port and **tmux server** — built from one contract ([`env::contract`]) instead of the
+//! **tmux server** — built from one contract ([`env::contract`]) instead of the
 //! per-script hand-rolled subsets that leaked fixtures into the real notes twice already.
 //!
 //! The tmux half is the part that needs care. bn drives the *default* tmux socket across
@@ -39,12 +39,10 @@ use std::process::{Command, Output};
 pub const FROZEN_NOW: i64 = 1_768_478_400;
 const FROZEN_TODAY: &str = "2026-01-15";
 
-/// One isolated bn universe. Dropping it tears down the sandbox tmux server, any bn-web child,
-/// and the temporary root.
+/// One isolated bn universe. Dropping it tears down the sandbox tmux server and temporary root.
 pub struct Sandbox {
     root: PathBuf,
     env: BTreeMap<String, String>,
-    port: u16,
     bn_bin: PathBuf,
     calls: PathBuf,
     host_sessions_before: Option<Vec<String>>,
@@ -71,7 +69,6 @@ impl Sandbox {
             // the directory), which a TempDir's own drop cannot express.
             .keep();
 
-        let port = free_port().context("allocate a dashboard port for this sandbox")?;
         let mut env = env::contract(&root, FROZEN_NOW, FROZEN_TODAY);
 
         let shim_dir = root.join("shims");
@@ -100,9 +97,7 @@ impl Sandbox {
         shims::install_defaults(&shim_dir, &calls)?;
         std::fs::write(
             root.join("home/.bn/config/config.toml"),
-            format!(
-                "[web]\nport = {port}\nbind = \"127.0.0.1\"\n\n[machine]\nrepos = [\"repo\"]\n"
-            ),
+            "[machine]\nrepos = [\"repo\"]\n",
         )
         .context("seed config.toml")?;
         std::fs::write(
@@ -162,7 +157,6 @@ impl Sandbox {
             isolation_proven,
             keep: std::env::var("BN_E2E_KEEP").is_ok_and(|v| v == "1"),
             host_sessions_before,
-            port,
             root,
         };
 
@@ -187,11 +181,6 @@ impl Sandbox {
     /// The git repo every `bn` invocation runs in by default.
     pub fn repo(&self) -> PathBuf {
         self.root.join("repo")
-    }
-
-    /// The dashboard port this sandbox owns — unique per sandbox, so instances run concurrently.
-    pub fn port(&self) -> u16 {
-        self.port
     }
 
     /// Run `bn` inside the sandbox, from the sandbox repo.
@@ -502,14 +491,4 @@ fn symlink_binary(target: &Path, link: &Path) -> Result<()> {
         std::fs::copy(target, link)?;
     }
     Ok(())
-}
-
-/// An unused loopback port, found by binding :0 and reading back the assignment.
-///
-/// There is a window between releasing this and bn-web binding it. bn-web rejects `--port 0`
-/// (`bn-web/src/main.rs:96`), so it cannot report a kernel-assigned port itself; teaching it to
-/// would close the window entirely.
-fn free_port() -> Result<u16> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    Ok(listener.local_addr()?.port())
 }

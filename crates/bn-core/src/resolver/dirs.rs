@@ -17,7 +17,7 @@ pub fn bn_home() -> PathBuf {
     PathBuf::from(format!("{}/.bn", home()))
 }
 
-/// The config dir holding the files bn writes for itself — the machine pin, the web token,
+/// The config dir holding the files bn writes for itself — the machine pin,
 /// `approvals.toml` — and the install anchors (`jobs`, `agents`, `repo`). Settings do not live
 /// here; see [`config_layer_paths`].
 ///
@@ -38,22 +38,6 @@ pub fn config_dir() -> PathBuf {
             platform
         }
         _ => home_cfg,
-    }
-}
-
-/// The persisted bn-web token, when one has already been generated. Reads `<config_dir>/web-token`
-/// (the file `bn serve`'s `auth::ensure_token` writes) and returns its trimmed, non-empty contents.
-/// Dependency-free and read-only: bn-core never *generates* the token (that stays in bn-web, which
-/// owns `rand`), so callers that need one when none exists must fall back gracefully. `bn mcp init`
-/// uses this to add an `Authorization` header to the emitted HTTP MCP entry only when a token
-/// already exists — the `/mcp` endpoint is untokened (#523), so url-only still works.
-pub fn web_token() -> Option<String> {
-    let raw = std::fs::read_to_string(config_dir().join("web-token")).ok()?;
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
     }
 }
 

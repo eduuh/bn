@@ -1,5 +1,4 @@
-//! The **Completed** fold (#561) — the counterpart to [`crate::action_center`]. Where the action
-//! center folds every *open* signal into "what needs you", this folds every *finished* one into a
+//! The **Completed** fold (#561) collects finished signals into a
 //! history of "what got done": completed branch-note todos (`bn done`), achieved daily goals,
 //! resolved attention items, and landed/merged orchestrate work.
 //!
@@ -7,7 +6,7 @@
 //! context from anywhere — the branch note's **local path** (open on this machine) *and* its
 //! **remote URL** (the synced branch-notes remote). The fold is pure over its inputs plus a
 //! [`NoteLinker`] (the git/fs resolver, injected so the ranking + kind-mapping stay unit-testable);
-//! the web layer gathers the source viewmodels and supplies an [`crate::rollups::FsNoteLinker`].
+//! [`crate::rollups::FsNoteLinker`] supplies the filesystem-backed links.
 
 use crate::attention::AttnItem;
 use crate::model::Item;

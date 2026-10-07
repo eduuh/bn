@@ -84,11 +84,6 @@ impl Config {
         self.machine_profile.as_ref().is_none_or(|p| p.cron)
     }
 
-    /// Whether the bn-web dashboard runs here: on unless `[machine]` says `web = false`.
-    pub fn web_enabled_here(&self) -> bool {
-        self.machine_profile.as_ref().is_none_or(|p| p.web)
-    }
-
     /// Whether a repo should appear in cross-repo views on this machine.
     pub fn is_visible_repo(&self, repo: &str) -> bool {
         self.repo_allowed_here(repo) && (!self.work_only || self.is_work_repo(repo))
@@ -146,7 +141,6 @@ mod tests {
 
         assert!(cfg.repo_allowed_here("owner/bn"));
         assert!(cfg.cron_enabled_here());
-        assert!(cfg.web_enabled_here());
     }
 
     #[test]
@@ -165,13 +159,12 @@ mod tests {
 
         assert_eq!(profile.repos, vec!["bn", "owner/arena"]);
         assert!(profile.cron);
-        assert!(profile.web);
     }
 
     #[test]
     fn a_profile_narrows_only_what_it_names() {
         let file: ConfigFile =
-            toml::from_str("[machine]\nweb = false\n").expect("machine table parses");
+            toml::from_str("[machine]\ncron = false\n").expect("machine table parses");
         let cfg = Config {
             machine_profile: file
                 .machine_profile()
@@ -180,8 +173,7 @@ mod tests {
         };
 
         assert!(cfg.repo_allowed_here("owner/bn"));
-        assert!(cfg.cron_enabled_here());
-        assert!(!cfg.web_enabled_here());
+        assert!(!cfg.cron_enabled_here());
     }
 
     #[test]
@@ -194,7 +186,6 @@ mod tests {
                     "solo".to_string(),
                 ],
                 cron: false,
-                web: true,
             }),
             ..Config::default()
         };
@@ -204,7 +195,6 @@ mod tests {
         assert!(!cfg.repo_allowed_here("shared"));
         assert!(cfg.repo_allowed_here("owner/solo"));
         assert!(!cfg.cron_enabled_here());
-        assert!(cfg.web_enabled_here());
     }
 
     #[test]
@@ -221,7 +211,6 @@ mod tests {
             let _config = EnvGuard::set("BN_CONFIG", &path);
             let cfg = Config::load();
             assert!(cfg.cron_enabled_here(), "{}", path.display());
-            assert!(cfg.web_enabled_here(), "{}", path.display());
         }
     }
 }

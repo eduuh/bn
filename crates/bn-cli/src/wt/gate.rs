@@ -85,9 +85,8 @@ pub(crate) fn gate_head(
     head_ref: &str,
     job: Option<&str>,
     stream: bool,
-    skip_ui: bool,
 ) -> GateOutcome {
-    gate_head_to(cfg, ctx, bare, head_ref, job, stream, skip_ui, None)
+    gate_head_to(cfg, ctx, bare, head_ref, job, stream, None)
 }
 
 /// [`gate_head`], teeing the verify steps' output into `log` when given (see
@@ -100,7 +99,6 @@ pub(crate) fn gate_head_to(
     head_ref: &str,
     job: Option<&str>,
     stream: bool,
-    skip_ui: bool,
     log: Option<&crate::cmd::verify::GateLog>,
 ) -> GateOutcome {
     // Resolve what to gate on first (#454, #758): an explicit --job, else the repo's native
@@ -196,15 +194,6 @@ pub(crate) fn gate_head_to(
     let code =
         crate::cmd::verify::run_verify_gate_to(&target, &tmp, stream, Some(&target_dir), log)
             .unwrap_or(1);
-    // #505: also gate the bn-web SPA when the branch changed it — in the SAME rebased worktree, so
-    // the SPA is built + vitest-tested against current main + the branch's changes. Only after a
-    // green Rust gate (a red gate already blocks the land) and only when `crates/bn-web/ui/**`
-    // changed (pure-Rust lands skip the npm cost). `--no-gate`'s sibling `--no-ui` sets `skip_ui`.
-    let code = if code == 0 && !skip_ui {
-        crate::run_ui_gate_if_changed(&tmp, stream)
-    } else {
-        code
-    };
     cleanup_wt();
 
     GateOutcome::Ran(GateResult {
@@ -225,7 +214,6 @@ pub(crate) fn cmd_gate(
     cfg: &Config,
     job: Option<String>,
     as_json: bool,
-    skip_ui: bool,
     for_: &[String],
 ) -> bool {
     let wt_path = cwd();
@@ -258,7 +246,6 @@ pub(crate) fn cmd_gate(
         &head_sha,
         job.as_deref(),
         !as_json,
-        skip_ui,
         Some(&log),
     ) {
         GateOutcome::NoJob => {

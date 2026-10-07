@@ -14,7 +14,7 @@ report_hits() {
 }
 
 rust_hits=$(
-  find crates/bn-core/src crates/bn-cli/src crates/bn-web/src \
+  find crates/bn-core/src crates/bn-cli/src \
     -type f -name '*.rs' ! -name 'tests.rs' ! -path '*/tests/*' \
     -exec grep -nHE \
       'You are |Act as |Your task is|Output (ONLY|only)|Return (ONLY|only|exactly)|Respond (ONLY|only)|Write no code yourself' \

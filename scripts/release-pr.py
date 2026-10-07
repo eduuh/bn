@@ -141,7 +141,7 @@ def bump_manifest(path: Path, current: str, new: str) -> None:
     # Internal path dependencies pin that version explicitly (added in #983 so cargo has a version
     # requirement to work with), so they must move in lockstep or the workspace stops resolving.
     src = re.sub(
-        r"(\b(?:bn-core|bn-mcp|bn-web)\s*=\s*\{[^}]*\bversion\s*=\s*\")" + re.escape(current) + r"(\")",
+        r"(\b(?:bn-core|bn-mcp)\s*=\s*\{[^}]*\bversion\s*=\s*\")" + re.escape(current) + r"(\")",
         r"\g<1>" + new + r"\g<2>",
         src,
     )

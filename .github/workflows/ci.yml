@@ -131,63 +131,6 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-  # The bn-web dashboard. A PURE NODE lane: nothing under `crates/bn-web/ui` is platform-gated,
-  # and nothing here needs cargo, so it skips the ~20-line Rust bootstrap entirely (~90s, down
-  # from ~5min).
-  #
-  # This used to also `cargo build -p bn-web` to prove build.rs embedded a fresh dist/, and to run
-  # Playwright e2e. Both are gone. The cargo build could never detect the regression it appeared
-  # to guard — crates/bn-web/build.rs falls back to a placeholder index.html when dist/ is absent
-  # and NEVER fails — and the `test` job already compiles bn-web. The e2e suite and its fixtures
-  # were deleted in a055f1c, leaving playwright.config.ts importing a ./e2e/ that does not exist,
-  # so the step failed on every PR regardless of content. When e2e comes back it comes back with
-  # its specs; `git show a055f1c^:crates/bn-web/ui/playwright.config.ts` has the old config.
-  web:
-    name: web · lint + typecheck + vitest
-    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["self-hosted","bn-ci"]') }}
-    defaults:
-      run:
-        working-directory: crates/bn-web/ui
-    steps:
-      - uses: actions/checkout@v4
-        env:
-          HOME: ${{ runner.temp }}/checkout-home-${{ github.job }}
-          GIT_CONFIG_GLOBAL: ${{ runner.temp }}/gitconfig-${{ github.job }}
-        with:
-          set-safe-directory: false
-
-      # NO `cache: npm`. Its post-step uploads the npm cache to the Actions cache service after
-      # every run, and on this self-hosted runner that cost 135s and 252s on the two runs before
-      # it was removed — against 4s for the `npm ci` it exists to speed up, and 35s for the whole
-      # rest of this job. It was over half of CI's wall clock.
-      #
-      # The runner is a persistent machine that keeps `~/.npm` between runs, so the local cache
-      # `npm ci` actually reads is already warm without any of that. A GitHub-HOSTED runner gets
-      # a fresh VM and would genuinely want the cache; this one does not. See the release
-      # workflow, which enables it for its hosted Linux leg and not for its self-hosted mac leg.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install UI deps
-        run: npm ci
-
-      # Formatting first: it is the cheapest step and the one most likely to fail on a hand-edit,
-      # and a `prettier --write` diff would otherwise show up as noise inside a lint failure.
-      - name: Format (prettier)
-        run: npm run format:check
-
-      # Type-aware lint. Needs the TS program, so it costs about what tsc does — but it is what
-      # makes rules like no-floating-promises possible, which is why the job name promises "lint".
-      - name: Lint (eslint)
-        run: npm run lint
-
-      - name: Unit tests (vitest)
-        run: npm run test
-
-      - name: Build UI (tsc + vite)
-        run: npm run build
-
   # Repo-wide structural gates that need no installed Rust toolchain — seconds, not minutes. Kept
   # separate from `test` so "you made a file bigger" never hides behind a clippy failure, and vice
   # versa.
@@ -215,6 +158,12 @@ jobs:
       - name: Installer tmux floor
         run: bash scripts/check-install-tmux.sh
 
+      - name: Retired web service cleanup
+        run: bash scripts/check-install-retire-web.sh
+
+      - name: CLI-only scripts and build configuration
+        run: sh scripts/check-cli-only.sh
+
       # macOS-only bash/libc trap this Linux CI cannot reproduce; see the script header.
       - name: Shell multibyte adjacency
         run: sh scripts/check-shell-multibyte.sh
@@ -224,7 +173,7 @@ jobs:
   #
   # This lane covers what unit tests structurally cannot — `bn dispatch` leasing a worktree,
   # branching, rendering the seed prompt, opening a tmux window and starting an agent in it —
-  # by giving each test its own HOME, config, state, notes, worktree pool, port and tmux server,
+  # by giving each test its own HOME, config, state, notes, worktree pool and tmux server,
   # with a scripted fake agent on PATH instead of a real harness.
   #
   # SELF-HOSTED SAFETY. These runners are real machines with real tmux servers on them, so a

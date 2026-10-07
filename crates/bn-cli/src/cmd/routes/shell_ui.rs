@@ -4,10 +4,6 @@ pub(super) fn route(cfg: &Config, action: CmdShellUi, json: bool) {
     match action {
         CmdShellUi::Edit { action } => crate::edit::route(cfg, *action, json),
         CmdShellUi::TmuxStatus { path } => emit_tmux_status(cfg, path),
-        CmdShellUi::TmuxMcp { action } => match action {
-            TmuxMcpCmd::Ensure => emit_tmux_mcp_ensure(cfg),
-            TmuxMcpCmd::Badge => emit_tmux_mcp_badge(cfg),
-        },
         CmdShellUi::TmuxPrune { force } => emit_tmux_prune(cfg, force, json),
         CmdShellUi::TmuxSnapshotFilter { path } => emit_snapshot_filter(cfg, &path),
         CmdShellUi::TmuxGit { path, refresh } => emit_tmux_git(path, refresh),

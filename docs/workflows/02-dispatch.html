@@ -354,7 +354,7 @@ wins. <span class="src">cmd/dispatch/policy.rs:25-60</span></li>
 
 <ul>
 <li><code>AgentKind::Hosted</code> has no distinct execution path that could be found in
-<code>bn-cli</code> — it appears only in validation, the catalog badge and the web UI.
+<code>bn-cli</code> — it appears in validation and the catalog.
 <code>AgentLeaseKind::Today</code> calls the day's session "hosted", so the two may be
 related, but no runtime link was confirmed.</li>
 <li>Whether a cron fires the auto-approval sweep periodically. Two call sites were found

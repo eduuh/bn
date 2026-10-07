@@ -2,10 +2,10 @@
 //!
 //! # The failure this module exists to fix
 //!
-//! `crate::palette::github_issues_repo` shells `gh issue list` and ends in `.unwrap_or_default()`,
-//! so **every** failure — `gh` missing, not authenticated, rate-limited, offline, repo unreachable,
+//! An issue fetch that ends in `.unwrap_or_default()` collapses **every** failure:
+//! `gh` missing, not authenticated, rate-limited, offline, repo unreachable,
 //! or simply hung — collapses to an empty `Vec` that is *indistinguishable from "this repo has zero
-//! open issues"*. The dashboard duly renders "no open issues" and you believe it.
+//! open issues"*.
 //!
 //! Three properties fix that, and callers depend on all three:
 //!
@@ -14,7 +14,7 @@
 //!    no cache — an empty list *with* `error`, which a caller can tell apart from a genuinely empty
 //!    backlog.
 //! 2. **Bounded.** Fetches go through [`CommandRunner::run_with_timeout`]. The old path used the
-//!    unbounded `.output()`, so a hung `gh` hung the caller (in bn-web, an axum worker) forever.
+//!    unbounded `.output()`, so a hung `gh` hung the caller forever.
 //! 3. **Cached with a TTL.** Not per-day. `crate::scout::with_cache` keys on the date, which is
 //!    right for a Saturday radar and wrong here: an issue filed at 10:00 would be invisible to a
 //!    "what can I do today" triage until tomorrow. This keys on `fetched_at + ttl`.
@@ -34,7 +34,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 /// How long a cached fetch stays fresh. Short enough that an issue filed this morning reaches
-/// today's triage; long enough that a dashboard refresh loop is not a `gh` call per repo per load.
+/// today's triage; long enough that repeated CLI reads do not call `gh` per repo each time.
 pub const DEFAULT_TTL_SECS: i64 = 600;
 
 /// Wall-clock budget for one `gh issue list`. Exceeding it is a *failure with a reason*, not a hang.
@@ -45,7 +45,7 @@ pub const DEFAULT_LIMIT: usize = 100;
 
 /// One open issue, as much of it as the reservoir needs to rank and convert into a task.
 ///
-/// Wider than [`crate::palette::IssueHit`]'s four fields: `labels` drive the exclusion policy that
+/// Includes the `labels` that drive the exclusion policy so
 /// `bn task pull` reuses from [`crate::keep_warm::plan_keep_warm`], `updated_at` orders staleness,
 /// and `is_assigned` keeps already-owned work out of the pull.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -334,9 +334,8 @@ pub const MAX_PARALLEL_FETCHES: usize = 8;
 ///
 /// The sequential version is a *timeout* per repo, not a budget for the sweep: each repo may spend
 /// [`FETCH_TIMEOUT`] (20s), and a failed fetch is never cached, so a handful of unreachable repos
-/// re-pay that cost on every call. On a machine with twelve repos this made `/api/issues` take 14
-/// to 70 seconds — on the dashboard shell's critical path, where it head-of-line blocked the whole
-/// page.
+/// re-pay that cost on every call. Fetching independent repos concurrently bounds the sweep
+/// instead of making callers wait for each repo's timeout.
 ///
 /// Each worker builds its own [`RealRunner`] (a unit struct) rather than sharing one, which is what
 /// lets this parallelize without widening [`CommandRunner`] with a `Sync` bound that every fixture

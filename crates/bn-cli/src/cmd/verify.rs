@@ -295,34 +295,7 @@ fn run_teed(cmd: &mut std::process::Command, stream: bool, log: &GateLog) -> std
     Ok(status.code().unwrap_or(1))
 }
 
-/// The branch's changed files (repo-relative), mirroring the `test` job's rustfmt-on-changed set:
-/// committed vs `origin/main` (three-dot), plus unstaged and staged working-tree edits, deduped.
-/// Run with `-C dir` so it works from a subdir or a disposable gate worktree. `git diff --name-only`
-/// emits repo-root-relative paths regardless of cwd, so the result feeds
-/// [`bn_core::verify_ui::is_ui_source`] directly. Fail-open (empty on any git error) — detection
-/// must never break the Rust gate.
-pub(crate) fn changed_files(dir: &std::path::Path) -> Vec<String> {
-    let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for args in [
-        &["diff", "--name-only", "origin/main...HEAD"][..],
-        &["diff", "--name-only"][..],
-        &["diff", "--name-only", "--cached"][..],
-    ] {
-        if let Some(out) = crate::git::git_capture(args, Some(dir), true) {
-            for line in out.lines() {
-                let f = line.trim();
-                if !f.is_empty() {
-                    set.insert(f.to_string());
-                }
-            }
-        }
-    }
-    set.into_iter().collect()
-}
-
-/// Repo root for `dir` (`git rev-parse --show-toplevel`) so the UI gate's `npm --prefix` and the
-/// changed-file diff both resolve from the worktree root even when `bn verify` is invoked from a
-/// subdirectory. Falls back to `dir` if git can't answer.
+/// Resolve the worktree root even when verification starts in a subdirectory.
 fn repo_root(dir: &std::path::Path) -> std::path::PathBuf {
     crate::git::git_capture(&["rev-parse", "--show-toplevel"], Some(dir), true)
         .filter(|s| !s.is_empty())
@@ -330,84 +303,13 @@ fn repo_root(dir: &std::path::Path) -> std::path::PathBuf {
         .unwrap_or_else(|| dir.to_path_buf())
 }
 
-/// The bn-web UI gate (#505): when the branch changed the SPA (`crates/bn-web/ui/**`), additionally
-/// `npm ci` + build (tsc+vite) + test (vitest) from the repo root, so a broken SPA — a `tsc` error,
-/// a missing dep, a failing vitest — fails `bn verify`/`bn gate`. Returns `0` when nothing to gate
-/// (pure-Rust change → the "skip when unchanged" fast path) or the whole gate passes; the first
-/// non-zero npm exit otherwise. `stream` mirrors the Rust gate: live output for humans, captured
-/// (echoed to stderr) for `--json`.
-pub(crate) fn run_ui_gate_if_changed(dir: &std::path::Path, stream: bool) -> i32 {
-    let root = repo_root(dir);
-    if !bn_core::verify_ui::ui_gate_needed(changed_files(&root)) {
-        return 0;
-    }
-    run_ui_gate(&root, stream)
-}
-
-/// Execute the ordered [`bn_core::verify_ui::ui_gate_steps`] from `root`, stopping at the first
-/// failure. Kept separate from detection so the decision stays a pure, unit-tested bn-core policy
-/// and this only does the spawn.
-///
-/// Takes its own build slot: `npm ci` + vite + vitest is as heavy as the Rust gate, and it runs
-/// *after* [`run_verify_gate`] has released, so it is a second build rather than a nested one.
-fn run_ui_gate(root: &std::path::Path, stream: bool) -> i32 {
-    let _slot = build_slot("ui", root);
-    let full_path = crate::cmd::cron::job_path();
-    eprintln!("→ bn-web UI gate (crates/bn-web/ui changed): npm ci → build → vitest [#505]");
-    for step in bn_core::verify_ui::ui_gate_steps() {
-        eprintln!("  $ npm {}", step.args.join(" "));
-        let mut cmd = std::process::Command::new("npm");
-        cmd.args(&step.args)
-            .current_dir(root)
-            .env("PATH", &full_path)
-            .env("CI", "1");
-        let code = if stream {
-            match cmd.status() {
-                Ok(s) => s.code().unwrap_or(1),
-                Err(e) => return spawn_failed(step.label, e),
-            }
-        } else {
-            match cmd.output() {
-                Ok(o) => {
-                    use std::io::Write;
-                    let _ = std::io::stderr().write_all(&o.stdout);
-                    let _ = std::io::stderr().write_all(&o.stderr);
-                    o.status.code().unwrap_or(1)
-                }
-                Err(e) => return spawn_failed(step.label, e),
-            }
-        };
-        if code != 0 {
-            eprintln!(
-                "  ✗ bn-web UI gate: `npm {}` FAILED (exit {code})",
-                step.args.join(" ")
-            );
-            return code;
-        }
-    }
-    eprintln!("  ✓ bn-web UI gate: PASS");
-    0
-}
-
-/// Report a failure to even spawn `npm` (usually not installed) as a hard, fail-closed gate error:
-/// a SPA change we cannot validate must not pass. The message points at the `--no-ui` escape hatch.
-fn spawn_failed(label: &str, e: std::io::Error) -> i32 {
-    eprintln!(
-        "  ✗ bn-web UI gate: could not run `{label}` ({e}) — install Node/npm, or re-run with --no-ui to skip"
-    );
-    1
-}
-
 /// `bn verify` — run the worktree's verification gate and record the PASS/FAIL to the branch
 /// note's Progress (bn-native — same append `bn log-progress` uses). Exits with the first failing
 /// step's status so an agent (or a caller) can gate "done" on a green run.
-/// When the branch changed the bn-web SPA (`crates/bn-web/ui/**`) the UI gate (npm ci + build +
-/// vitest) also runs after a green Rust gate (#505); `skip_ui` (`--no-ui`) opts out.
 pub(crate) fn emit_verify(
     cfg: &Config,
     job: Option<String>,
     as_json: bool,
-    skip_ui: bool,
     for_: Vec<String>,
 ) {
     let cwd = std::env::current_dir().unwrap_or_default();
@@ -432,14 +334,6 @@ pub(crate) fn emit_verify(
     let log = GateLog::default();
     let code = run_verify_gate_to(&target, &cwd, !as_json, None, Some(&log))
         .unwrap_or_else(|e| fail(&format!("bn verify: {e}")));
-    // #505: additionally gate the bn-web SPA when the branch touched it. Only after a green Rust
-    // gate — a red gate already blocks, so we don't pay the npm cost — and never for a pure-Rust
-    // change (`run_ui_gate_if_changed` returns 0 when nothing under `crates/bn-web/ui/**` changed).
-    let code = if code == 0 && !skip_ui {
-        run_ui_gate_if_changed(&cwd, !as_json)
-    } else {
-        code
-    };
     let pass = code == 0;
 
     // Keep the run as proof, then record the outcome in the note's Progress pointing at it.

@@ -377,7 +377,7 @@ pub(crate) enum CmdReview {
     Cat,
     /// Plan-review gate (#349): the human-in-the-loop checkpoint on a dispatched agent's plan. A
     /// `bn dispatch --plan` agent proposes a plan, registers it here, and pauses before implementing
-    /// / opening a PR. Review it in the dashboard or here: bare `bn review` lists; `approve` unblocks
+    /// / opening a PR. Bare `bn review` lists; `approve` unblocks
     /// the agent, `request-changes --notes` loops it back, `reject` stops it. `submit`/`status` are
     /// the agent's write/poll side of the gate. Distinct from `bn reviews` (the PR review queue).
     Review {
@@ -834,27 +834,6 @@ pub(crate) enum CmdMisc {
         /// Target branch (with `--repo`).
         #[arg(long)]
         branch: Option<String>,
-    },
-    /// Start the bn-web dashboard server (#386/#388): a thin launcher that execs the sibling
-    /// `bn-web` binary (native axum server over bn-core), the same way `bn-mcp` sits beside `bn`.
-    /// `--daemon` registers a managed, auto-restarting service (launchd on macOS, systemd `--user`
-    /// on Linux, else a detached child) so the dashboard survives this shell, a crash, and a reboot
-    /// (#499). `bn serve status` reports running/down/not-installed; `bn serve stop` unloads it.
-    /// Bare `bn serve` binds loopback:7770; `--lan` exposes it on 0.0.0.0.
-    #[command(args_conflicts_with_subcommands = true)]
-    Serve {
-        #[command(subcommand)]
-        action: Option<ServeCmd>,
-        /// Port to bind (default: config `[web].port`, else 7770).
-        #[arg(long)]
-        port: Option<u16>,
-        /// Bind all interfaces (`0.0.0.0`) so the dashboard is reachable on the LAN.
-        #[arg(long)]
-        lan: bool,
-        /// Run in the background via a managed auto-restarting service (launchd/systemd, else a
-        /// detached child) instead of the foreground.
-        #[arg(long)]
-        daemon: bool,
     },
     /// Unified token usage + **$ cost** across all agent work (#381), categorized by work-class
     /// (Orchestration / Coding / Scheduled / …). Two clearly-labeled units: **AIC** (the real
@@ -1650,30 +1629,6 @@ pub(crate) enum SessionsCmd {
         /// Exact task name, full session id, or unambiguous session-id prefix.
         name_or_id: String,
     },
-}
-
-/// `bn serve` subcommands (#499). Bare `bn serve` (no subcommand) runs/daemonizes the dashboard;
-/// these manage the daemon's lifecycle.
-#[derive(Subcommand, Debug)]
-pub(crate) enum ServeCmd {
-    /// Report an honest managed-service status: is a service installed (launchd/systemd) and is
-    /// something listening on the port → running / down / not-installed (`--json` for the envelope).
-    Status {
-        /// Port to probe (default: the resolved `[web].port`, else 7770).
-        #[arg(long)]
-        port: Option<u16>,
-    },
-    /// Stop and unregister the managed bn-web service (launchd on macOS / systemd on Linux),
-    /// best-effort — the way to take down a crashed or looping daemon.
-    Stop,
-}
-
-#[derive(Subcommand, Debug)]
-pub(crate) enum TmuxMcpCmd {
-    /// Ensure the configured managed bn-web/MCP service is reachable, starting it if needed.
-    Ensure,
-    /// Emit the configured tmux status-bar health segment.
-    Badge,
 }
 
 /// `bn issue` subcommands (#345 proposal 4 — auto-file deduped, labeled bn issues).

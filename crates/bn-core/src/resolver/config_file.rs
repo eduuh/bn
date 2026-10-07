@@ -72,7 +72,6 @@ pub(super) struct ConfigFile {
     tasks: Option<TasksSection>,
     tools: Option<ToolsSection>,
     links: Option<LinksSection>,
-    web: Option<WebSection>,
     log: Option<LogSection>,
     scout: Option<ScoutSection>,
     pool: Option<PoolSection>,
@@ -378,26 +377,6 @@ impl ConfigFile {
         self.mcp.as_ref().and_then(|s| s.servers.clone())
     }
 
-    pub(super) fn web_port(&self) -> Option<u16> {
-        self.web.as_ref().and_then(|s| s.port)
-    }
-
-    pub(super) fn web_bind(&self) -> Option<String> {
-        self.web.as_ref().and_then(|s| s.bind.clone())
-    }
-
-    pub(super) fn web_fleet_poll_secs(&self) -> Option<u64> {
-        self.web.as_ref().and_then(|s| s.fleet_poll_secs)
-    }
-
-    pub(super) fn web_tmux_mcp_autostart(&self) -> Option<bool> {
-        self.web.as_ref().and_then(|s| s.tmux_mcp_autostart)
-    }
-
-    pub(super) fn web_tmux_mcp_badge(&self) -> Option<bool> {
-        self.web.as_ref().and_then(|s| s.tmux_mcp_badge)
-    }
-
     pub(super) fn log_enabled(&self) -> Option<bool> {
         self.log.as_ref().and_then(|s| s.enabled)
     }
@@ -486,20 +465,20 @@ mod layer_tests {
     }
 
     /// A later layer overrides only what it names: tables merge key by key, so a machine that sets
-    /// `[web] port` keeps the shared `bind`, and sections it never mentions survive untouched.
+    /// `[pool] size` keeps the shared `idle_secs`, and other sections survive untouched.
     #[test]
     fn a_later_layer_wins_key_by_key() {
         let mut base =
-            table("[web]\nport = 7770\nbind = \"127.0.0.1\"\n\n[review]\nharness = \"claude\"\n");
-        merge_tables(&mut base, table("[web]\nport = 7791\n"));
+            table("[pool]\nsize = 4\nidle_secs = 120\n\n[review]\nharness = \"claude\"\n");
+        merge_tables(&mut base, table("[pool]\nsize = 8\n"));
 
         assert_eq!(
-            get(&base, "web", "port").and_then(toml::Value::as_integer),
-            Some(7791)
+            get(&base, "pool", "size").and_then(toml::Value::as_integer),
+            Some(8)
         );
         assert_eq!(
-            get(&base, "web", "bind").and_then(toml::Value::as_str),
-            Some("127.0.0.1")
+            get(&base, "pool", "idle_secs").and_then(toml::Value::as_integer),
+            Some(120)
         );
         assert_eq!(
             get(&base, "review", "harness").and_then(toml::Value::as_str),

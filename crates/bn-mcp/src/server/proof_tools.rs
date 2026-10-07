@@ -6,8 +6,7 @@ use super::BnServer;
 use bn_core::proof::{self, Kind, NewProof};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
-use rmcp::service::RequestContext;
-use rmcp::{tool, tool_router, ErrorData, RoleServer};
+use rmcp::{tool, tool_router, ErrorData};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -50,9 +49,8 @@ impl BnServer {
     async fn bn_proof_show(
         &self,
         Parameters(a): Parameters<ProofShowArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve(&ctx)?;
+        let ctx = self.resolve()?;
         if let Some(id) = a.id.as_deref() {
             let listing = proof::list(&self.cfg, &ctx);
             let p = listing
@@ -77,9 +75,8 @@ impl BnServer {
     async fn bn_proof_add(
         &self,
         Parameters(a): Parameters<ProofAddArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve(&ctx)?;
+        let ctx = self.resolve()?;
         let kind = Kind::parse(&a.kind)
             .ok_or_else(|| ErrorData::invalid_params(format!("unknown kind '{}'", a.kind), None))?;
         let head = proof::head(&self.cfg, &ctx);

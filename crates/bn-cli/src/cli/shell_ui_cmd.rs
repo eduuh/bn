@@ -20,13 +20,6 @@ pub(crate) enum CmdShellUi {
     /// Resolves from the given path (tmux passes #{pane_current_path}) or cwd; prints
     /// nothing when there's no note or it's closed.
     TmuxStatus { path: Option<String> },
-    /// Managed bn MCP lifecycle and health helpers for tmux. `ensure` idempotently starts
-    /// `bn serve --daemon` when configured and unreachable; `badge` emits the green/red
-    /// `bnweb:<port>` status segment.
-    TmuxMcp {
-        #[command(subcommand)]
-        action: TmuxMcpCmd,
-    },
     /// Report tmux sessions that name no repository on this machine, and with `--force` kill them.
     /// bn opens a session per repo and a window per worktree; anything else is left over from an
     /// older layout or made by hand. Dry run by default. Never automated — killing a session is

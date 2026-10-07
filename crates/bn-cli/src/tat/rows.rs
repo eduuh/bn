@@ -406,7 +406,7 @@ fn now_ms() -> i64 {
 
 /// Decorated list rows: `<display>\t<ref>`. fzf shows only `<display>` (`--with-nth=1`); the
 /// `<ref>` rides along as the hidden last field (`{-1}`) for preview/kill/selection.
-pub(super) fn list_rows(cfg: &Config, roots: &Roots, refresh: bool) -> Vec<ListRow> {
+pub(super) fn list_rows(roots: &Roots, refresh: bool) -> Vec<ListRow> {
     let refs = ordered_refs(roots, refresh);
     let known_sessions: HashSet<String> = refs.iter().map(|r| ref_session(r)).collect();
     let known_repos: HashSet<String> = refs.iter().map(|r| ref_repo(r).to_string()).collect();
@@ -457,21 +457,11 @@ pub(super) fn list_rows(cfg: &Config, roots: &Roots, refresh: bool) -> Vec<ListR
             r: "cs-auth".to_string(),
         });
     }
-    // bn-web, the one service this picker can start and stop. Its health used to be a status-bar
-    // badge (`bn tmux-mcp badge`); a badge you cannot act on is worse than a row you can (#1349).
-    if let Some(row) = super::status::web_row(cfg) {
-        if let Some((display, r)) = row.split_once('\t') {
-            rows.push(ListRow {
-                display: display.to_string(),
-                r: r.to_string(),
-            });
-        }
-    }
     rows
 }
 
-pub(super) fn build_list(cfg: &Config, roots: &Roots, refresh: bool) {
-    for row in list_rows(cfg, roots, refresh) {
+pub(super) fn build_list(roots: &Roots, refresh: bool) {
+    for row in list_rows(roots, refresh) {
         println!("{}", row.tsv());
     }
 }

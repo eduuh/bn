@@ -28,12 +28,12 @@ fn native_top_level(cfg: &Config, roots: &Roots, root_opt: Option<&str>) -> Opti
     if !tui::interactive() {
         // Piped or scripted: print the list and stop, the same degrade the fzf path takes when fzf
         // is missing. `bn tat | cat` stays useful instead of drawing frames into a pipe.
-        super::rows::build_list(cfg, roots, false);
+        super::rows::build_list(roots, false);
         return None;
     }
     let picker = Picker::new(super::status::status_line(cfg), Vec::new())
         .rows(Rows::Lazy(Box::new(|why| {
-            super::rows::list_rows(cfg, roots, why == Reload::Hard)
+            super::rows::list_rows(roots, why == Reload::Hard)
                 .into_iter()
                 .map(|row| {
                     // Search the ref as well as the decorated display, so typing a repo name
@@ -93,7 +93,7 @@ fn fzf_top_level(cfg: &Config, roots: &Roots, root_opt: Option<&str>) -> Option<
         Ok(c) => c,
         Err(_) => {
             // No fzf on PATH — degrade to a plain list, then hold.
-            super::rows::build_list(cfg, roots, false);
+            super::rows::build_list(roots, false);
             crate::picker::hold();
             return None;
         }

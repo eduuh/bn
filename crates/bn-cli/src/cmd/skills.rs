@@ -183,9 +183,7 @@ pub(crate) fn emit_skill_edit(
 ///
 /// Copilot CLI surfaces workflows only as native `SKILL.md` skills, so it has always needed this.
 /// Claude Code is covered twice over — natively from here and as `/bn:<name>` MCP prompts from
-/// `bn serve` — which is deliberate: the dashboard's skill CRUD materializes into both roots on
-/// every write, so an install that skipped Claude would leave the CLI and the web disagreeing about
-/// what is on disk.
+/// `bn mcp serve`.
 ///
 /// Run by `install.sh`; idempotent and safe — [`install_native_skills`] refuses to touch non-bn
 /// files. Each harness installs independently, so a root that legitimately refuses (a name held by

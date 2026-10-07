@@ -37,11 +37,6 @@ pub const REMOVED: &[&str] = &[
 ];
 
 /// The full sandbox environment for a bn universe rooted at `root`.
-///
-/// The dashboard port is deliberately not here. `install.sh`'s `restart_bn_web` resolves the port
-/// from config and then `kill -9`s whatever holds it — falling back to the real default of 7770 —
-/// so a sandbox must pin its own port or it can kill the developer's actual dashboard. That pin
-/// lives in the sandbox's config file ([`crate::Sandbox::new`]), the only place bn reads it.
 pub fn contract(root: &Path, now: i64, today: &str) -> BTreeMap<String, String> {
     let home = root.join("home");
     let bn_home = home.join(".bn");

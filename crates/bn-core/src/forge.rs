@@ -1,9 +1,8 @@
 //! Where a repo lives in a browser: its `origin` remote resolved to the forge's code, issue and
-//! pull-request pages, so the dashboard can hand you the link instead of making you reconstruct it.
+//! pull-request pages, so CLI consumers can use the link without reconstructing it.
 //!
 //! The remote is read straight out of the clone's `config` file rather than by shelling out to
-//! `git remote get-url`. `/api/repos` derives links for every repo on the machine on a 30-second
-//! poll; a process spawn per repo per poll is not a price a read this routine should charge.
+//! `git remote get-url`, avoiding a process spawn per repo when deriving links for a whole fleet.
 //!
 //! Every URL here is *derived*, never probed — no network, so a link is only as right as the remote
 //! is. Only forges whose URL layout is actually known produce issue / PR links; anything else gets

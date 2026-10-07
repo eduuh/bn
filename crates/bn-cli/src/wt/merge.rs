@@ -82,7 +82,7 @@ pub(crate) fn cmd_merge(cfg: &Config, flags: MergeFlags) -> bool {
         match resolver::resolve(cfg, &wt_path) {
             Ok(ctx) => {
                 let head_ref = format!("origin/{branch}");
-                if let GateOutcome::Ran(r) = gate_head(cfg, &ctx, &bare, &head_ref, None, true, false)
+                if let GateOutcome::Ran(r) = gate_head(cfg, &ctx, &bare, &head_ref, None, true)
                 {
                     let color = if r.pass { GREEN } else { RED };
                     cprintln!("{color}{}{NC}", gate_summary(&r));
@@ -924,7 +924,7 @@ fn gate_pr_head(cfg: &Config, bare: &Path, repo: &str, branch: &str) -> bool {
         }
     };
     let head_ref = format!("origin/{branch}");
-    match gate_head(cfg, &ctx, bare, &head_ref, None, true, false) {
+    match gate_head(cfg, &ctx, bare, &head_ref, None, true) {
         GateOutcome::Ran(r) => {
             let color = if r.pass { GREEN } else { RED };
             cprintln!("{color}{} [{repo}/{branch}]{NC}", gate_summary(&r));

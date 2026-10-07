@@ -5,7 +5,7 @@ capability files that are *referenced by name* from prompts (see
 [`config/prompts/`](../prompts/)) rather than invoked directly.
 
 Invocable workflows (the slash-command style entries served as MCP prompts by
-`bn serve`) live in [`config/prompts/`](../prompts/), structured like
+`bn mcp serve`) live in [`config/prompts/`](../prompts/), structured like
 [`config/agents/`](../agents/).
 
 Runtime-only launch envelopes live in that same prompt catalog with `internal: true`. Rust loads

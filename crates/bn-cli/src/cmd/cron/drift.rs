@@ -171,7 +171,6 @@ mod tests {
         let profile = bn_core::resolver::MachineProfile {
             repos: vec!["*".to_string()],
             cron: true,
-            web: false,
         };
         let (cfg, _cfg_dir) = seed_manifest(temp.path(), &["alpha", "beta"], Some(profile));
 

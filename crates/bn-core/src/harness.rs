@@ -1,10 +1,7 @@
 //! Harness availability + relaunch policy (#501).
 //!
-//! One pure place answering "which agent harnesses can this machine launch, and may the dashboard
-//! relaunch a running agent under harness X?". Two surfaces share it: the web read
-//! ([`availability`], folded into `/api/fleet` + `/api/agents/:id` so the switcher renders each
-//! option's usable/disabled state) and the web write ([`resolve_relaunch`], which gates
-//! `POST /api/agents/:target/relaunch {harness}` before it swaps the agent's harness in place).
+//! One pure place answering which agent harnesses this machine can launch and whether
+//! [`resolve_relaunch`] may swap a running agent's harness.
 //!
 //! The policy is deliberately small: **copilot is always available** — it's the guaranteed
 //! fallback — and **claude is available unless the account is org-disabled** ("organization has
@@ -88,10 +85,10 @@ pub fn is_available(cfg: &Config, harness: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Validate the harness the dashboard asked to relaunch a running agent under: canonicalize it,
+/// Validate the harness requested for relaunching a running agent: canonicalize it,
 /// then confirm it's usable on this machine. `Ok(canonical)` to proceed with the in-place swap,
 /// `Err(reason)` to reject — an unknown harness, or a disabled one — so the relaunch never fails
-/// silently. Pure: the caller (bn-web) turns `Err` into a `400` and `Ok` into the `bn switch` argv.
+/// silently.
 pub fn resolve_relaunch(cfg: &Config, requested: &str) -> Result<&'static str, String> {
     let Some(canonical) = normalize(requested) else {
         return Err(format!(

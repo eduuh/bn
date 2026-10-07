@@ -1,17 +1,12 @@
 //! `bn-mcp` — the per-worktree Model Context Protocol server for branch notes, spoken over
 //! **stdio**. A third interface (after the CLI and nvim plugin) driving the same bn-core engine.
 //!
-//! This binary is a thin stdio transport over the [`bn_mcp`] library: it pins one fixed
-//! [`Scope::launch`](bn_mcp::Scope) to its launch cwd and serves the shared tool-router. Because the
-//! scope comes from the directory the process starts in, a plain MCP client needs no per-call scope
-//! headers — the branch identity is the launch worktree, the standard MCP pattern. `bn mcp serve`
-//! execs this binary; the shared HTTP transport on `bn serve` (bn-web) remains for the dashboard and
-//! the cross-worktree `/mcp/orchestrate` tools.
+//! This binary pins the [`bn_mcp`] tool-router to its launch cwd. `bn mcp serve` execs it;
+//! `--orchestrate` selects the separate, opt-in cross-worktree server.
 
 use anyhow::{Context, Result};
 use bn_mcp::orchestrator::BnOrchestratorServer;
 use bn_mcp::server::BnServer;
-use bn_mcp::Scope;
 use rmcp::ServiceExt;
 
 mod discovery;
@@ -41,7 +36,7 @@ async fn main() -> Result<()> {
     }
 
     let cfg = bn_core::resolver::Config::load();
-    let base_dir = std::env::current_dir().unwrap_or_default();
+    let base_dir = std::env::current_dir().context("resolving bn-mcp launch worktree")?;
 
     // The tier list (personal / global / per-repo) lives in bn-core so the CLI and MCP share
     // one source of truth; here we just need the paths, served low→high precedence as prompts.
@@ -52,7 +47,7 @@ async fn main() -> Result<()> {
 
     // The stdio transport is fixed to its launch worktree: one scope for the whole session,
     // derived from cwd — so the scoped tools resolve the current branch without any client headers.
-    let server = BnServer::new(cfg, Scope::launch(base_dir), skill_dirs);
+    let server = BnServer::new(cfg, base_dir, skill_dirs);
     let transport =
         discovery::with_legacy_discovery_fallback((tokio::io::stdin(), tokio::io::stdout()));
     let service = server

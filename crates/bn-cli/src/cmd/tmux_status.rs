@@ -11,44 +11,6 @@
 use crate::*;
 use std::path::PathBuf;
 
-/// Whether a tmux lifecycle hook should start the managed service.
-pub(crate) fn tmux_mcp_should_start(enabled: bool, listening: bool) -> bool {
-    enabled && !listening
-}
-
-/// Render the configured tmux MCP segment as `bnweb:<port>` — green when the `bn serve` (bn-web)
-/// port is listening, red otherwise. Disabled badges collapse entirely.
-pub(crate) fn render_tmux_mcp_badge(enabled: bool, listening: bool, port: u16) -> Option<String> {
-    enabled.then(|| {
-        if listening {
-            format!("#[fg=green]bnweb:{port}")
-        } else {
-            format!("#[fg=red]bnweb:{port}#[default]")
-        }
-    })
-}
-
-/// `bn tmux-mcp ensure` — idempotently ensure the managed bn-web/MCP service is reachable.
-pub(crate) fn emit_tmux_mcp_ensure(cfg: &Config) {
-    if tmux_mcp_should_start(
-        cfg.web_enabled_here() && cfg.web.tmux_mcp_autostart,
-        crate::serve::port_listening(cfg.web.port),
-    ) {
-        crate::serve::run(cfg, None, false, true, false);
-    }
-}
-
-/// `bn tmux-mcp badge` — emit a fast green/red health segment for the configured service port.
-pub(crate) fn emit_tmux_mcp_badge(cfg: &Config) {
-    if let Some(badge) = render_tmux_mcp_badge(
-        cfg.web_enabled_here() && cfg.web.tmux_mcp_badge,
-        crate::serve::port_listening(cfg.web.port),
-        cfg.web.port,
-    ) {
-        print!("{badge}");
-    }
-}
-
 // ---- bn tmux-git : themed git segment ----------------------------------------------------------
 
 /// Parsed `git status --porcelain=v2 --branch` state the segment needs.
@@ -822,17 +784,6 @@ pub(crate) fn prompt_capture(section: &str) -> Option<String> {
         None
     } else {
         Some(text)
-    }
-}
-
-#[cfg(test)]
-mod machine_scope_tests {
-    use super::*;
-
-    #[test]
-    fn disabled_web_neither_starts_nor_renders_a_badge() {
-        assert!(!tmux_mcp_should_start(false, false));
-        assert_eq!(render_tmux_mcp_badge(false, true, 7770), None);
     }
 }
 

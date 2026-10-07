@@ -24,9 +24,7 @@ cd "$ROOT"
 # so they never appear — and the extension list excludes Cargo.lock, package-lock.json and the
 # generated design HTML without naming them.
 #
-# Deliberately OUT of scope: CSS (crates/bn-web/ui/src/index.css is ~3k lines, a legitimate
-# artefact of the half-finished Tailwind migration) and the design/ HTML cards (generated). Add
-# them by extending SCOPE if that ever stops being true.
+# CSS and generated HTML are out of scope.
 SCOPE="*.rs *.ts *.tsx"
 
 scope() {

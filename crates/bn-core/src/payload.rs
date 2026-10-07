@@ -31,30 +31,13 @@ pub fn agent_fleet_data(f: &crate::agent::Fleet) -> Value {
     json!(f)
 }
 
-/// `bearings` → the bounded current-state snapshot. Shared by CLI, REST, and SSE so every machine
-/// surface emits the same typed data.
-/// `GET /api/machine` (#525) → the machine-health snapshot: the sampled `cpu`/`ram`/`saturation`
-/// flattened with the live fleet's `agents { active }`, so the dashboard's health widget renders
-/// the host *and* how many agents are loading it in one read. Kept here (not inline in bn-web) so
-/// the shape is shared and unit-testable.
-pub fn machine_health_data(machine: &crate::machine::Machine, active_agents: usize) -> Value {
-    json!({
-        "cpu": machine.cpu,
-        "ram": machine.ram,
-        "saturation": machine.saturation,
-        "agents": { "active": active_agents },
-    })
-}
-
-/// `orchestrate status` (one run) → the status viewmodel the CLI, web, and MCP all share.
-/// Extracted from bn-cli's inline `run_json` (#389) so `bn orchestrate status --json`, the
-/// `GET /api/orchestrate` endpoint, and any MCP surface emit one byte-identical shape. Recovery
+/// `orchestrate status` (one run) → the status viewmodel the CLI and MCP share. Recovery
 /// is reversed to newest-first and capped at the last 20 events. `started_at`/`updated_at` carry
 /// the run's clock so a monitor UI can render "started N ago" and staleness without a second call.
 ///
 /// `reviews` are the open plan-reviews (#349), passed in (not read here, keeping this pure) so each
 /// dispatched item is annotated with its `waiting_for_review` state — a dispatched agent paused on
-/// an un-approved plan is surfaced distinctly in `bn orchestrate status`/watch and the web board.
+/// an un-approved plan is surfaced distinctly in `bn orchestrate status`/watch.
 pub fn orchestrate_status_data(
     st: &crate::orchestrate::OrchestrateState,
     reviews: &[crate::plan_review::Review],
@@ -83,7 +66,7 @@ pub fn orchestrate_status_data(
 /// dispatched — the tmux `session`/`window` its agent runs in (session = repo, window = the
 /// sanitized branch), so a picker/cockpit jumps straight to it. `harness` rides along from the item
 /// itself. `tmux_session`/`tmux_window` are absent while queued (no window yet); `repo` is always
-/// present. Derived here (not persisted) so the CLI, web board, and MCP inherit one shape.
+/// present. Derived here (not persisted) so the CLI and MCP inherit one shape.
 ///
 /// #349: a dispatched item is also annotated with `waiting_for_review` — `true` when a plan-review
 /// for its repo+branch is still `pending` — plus the `review_id` linking to it. Surfaces the
@@ -422,20 +405,6 @@ pub fn note_data(path: &std::path::Path) -> Value {
     json!({ "path": path.display().to_string() })
 }
 
-/// `note` (full detail) → `{ "repo", "branch", "front", "body", "goal" }`: one branch note as the
-/// dashboard reads it — the typed frontmatter (PR, work-item, structured item lists), the prose
-/// body (markdown), and the derived goal line. Shared by `GET /api/notes/{repo}/{branch}` and the
-/// enriched agent-detail read so both surface one identical note shape.
-pub fn note_detail_data(repo: &str, branch: &str, note: &crate::model::Note) -> Value {
-    json!({
-        "repo": repo,
-        "branch": branch,
-        "front": note.front,
-        "body": note.body,
-        "goal": crate::render::goal_text(&note.body),
-    })
-}
-
 /// `files` → `{ "dir", "files": [ { "name", "path" } ] }`.
 pub fn files_data(dir: &std::path::Path, files: &[crate::commands::FileEntry]) -> Value {
     json!({
@@ -542,13 +511,6 @@ pub fn archive_data(r: &crate::lifecycle::ArchiveReport) -> Value {
     })
 }
 
-/// `GET /api/cron` → `{ "count", "jobs": [CronView, ...] }` — the machine-wide registry of
-/// declared crons joined with their last-run health (#483). Object-wrapped with a definitive
-/// `count` (see `skills_data`), so an empty registry is `count: 0`, never a missing field.
-pub fn crons_view_data(views: &[crate::crons::CronView]) -> Value {
-    json!({ "count": views.len(), "jobs": views })
-}
-
 /// `skills` → `{ "count", "skills": [SkillInfo, ...] }`. Object-wrapped (see `todos_data`);
 /// `count` makes the empty result definitive for agents (`count: 0`, not a missing field).
 pub fn skills_data(skills: &[SkillInfo]) -> Value {
@@ -622,41 +584,6 @@ pub fn attn_list_data(items: &[crate::attention::AttnItem]) -> Value {
     json!({ "items": items })
 }
 
-/// `GET /api/actions` → the unified action-center list (#522): every actionable signal folded into
-/// one ranked array (`crate::action_center::build_actions`), each carrying its editable
-/// suggested prompt + default urgency. `count` is the total; the array is already urgent-first.
-/// `cron_activity` (#557) is the observational feed of recent cron runs (ok + failed), its own
-/// section in the Command Center — distinct from the actionable `failing-cron` items.
-pub fn actions_data(
-    actions: &[crate::action_center::ActionItem],
-    cron_activity: &[crate::action_center::CronActivity],
-) -> Value {
-    json!({ "count": actions.len(), "actions": actions, "cron_activity": cron_activity })
-}
-
-/// `GET /api/agents/catalog` → the triggerable-agent catalog (#557): every agent/job the automation
-/// can fire (declared crons + native jobs + runnable Markdown agents), each with the metadata a
-/// human needs to decide whether to re-trigger it (`crate::action_center::build_catalog`).
-/// Object-wrapped with a definitive `count`, so an empty registry is `count: 0`, never missing.
-pub fn catalog_data(items: &[crate::action_center::CatalogItem]) -> Value {
-    json!({ "count": items.len(), "agents": items })
-}
-
-/// `GET /api/completed` → the Completed tab's history (#561): every finished task bn tracks —
-/// closed branch-note todos, achieved goals, resolved attention items, and landed/merged work —
-/// folded most-recent-first (`crate::completed::build_completed`), each carrying its branch note's
-/// local path + remote URL for the "open locally / remotely" jump.
-pub fn completed_data(items: &[crate::completed::CompletedItem]) -> Value {
-    json!({ "count": items.len(), "completed": items })
-}
-
-/// `GET /api/search?q=` → the global command-palette result set (#565): every bn source folded
-/// into one ranked, typed, actionable list (`crate::palette::search`), plus the echoed `query` so
-/// a slow response can be discarded if the box has moved on. `results` is already best-first.
-pub fn palette_data(query: &str, results: &[crate::palette::SearchResult]) -> Value {
-    json!({ "query": query, "count": results.len(), "results": results })
-}
-
 /// `attn add` → `{ "item": { "id", "skipped" } }`. `skipped` is true when an open item with
 /// the same `key` already existed, so nothing was written.
 pub fn attn_add_data(a: &crate::attention::AddOutcome) -> Value {
@@ -709,7 +636,7 @@ pub fn reviews_data(cache: &ReviewCache) -> Value {
     json!({ "generated_at": cache.generated_at, "prs": cache.prs })
 }
 
-/// `review list` / `GET /api/reviews` → `{ "reviews": [Review, ...] }` (#349). Each record carries
+/// `review list` → `{ "reviews": [Review, ...] }` (#349). Each record carries
 /// its plan text, status, and notes; the CLI, web, and MCP share this one shape.
 pub fn plan_reviews_data(reviews: &[crate::plan_review::Review]) -> Value {
     let reviews: Vec<_> = reviews
@@ -790,8 +717,3 @@ pub fn scorecard_data(s: &crate::metrics::Scorecard) -> Value {
 pub fn sync_data(p: &crate::sync::Proposals) -> Value {
     json!({ "proposals": p })
 }
-
-pub mod agent_defs;
-pub use agent_defs::{agent_def_data, agent_defs_data};
-pub mod tasks;
-pub use tasks::task_ledger_data;

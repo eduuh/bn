@@ -68,12 +68,25 @@ bn 0.5.1 (git de967f24a5ca, built 2026-09-08, aarch64-apple-darwin)   # released
 curl -fsSL https://raw.githubusercontent.com/eduuh/bn/main/install.sh | sh
 ```
 
-`install.sh` fetches `bn-cli`, `bn-web` and `bn-mcp` for the local target from
+`install.sh` fetches `bn-cli` and `bn-mcp` for the local target from
 `releases/latest` — through an authenticated `gh` first (the repo is private, so an
 unauthenticated `curl` on `releases/latest/download` 404s), falling back to `curl`. There is
 deliberately **no** compile-from-source fallback behind it: a silent local build is how machines
 end up running different bn than the one that passed CI. To build a checkout on purpose — an
 unmerged branch, a local patch, a platform the release skips — run `./build.sh`.
+
+bn is CLI-only. Installs ship `bn` and the stdio `bn-mcp` companion, with no dashboard,
+REST API, or HTTP MCP server. CLI `--json` output and `bn mcp serve` remain available;
+`bn mcp serve --orchestrate` provides the opt-in cross-worktree tools over stdio.
+
+Core builds need Rust, not Node.js or npm. The optional `--agents` layer still uses
+npm for external agent tools. CI checks shell syntax and rejects retired web commands
+in scripts and build configuration with `sh scripts/check-cli-only.sh`.
+
+Upgrading stops and removes the old `bn-web.service` or `com.bn.web` managed service,
+the web binary in the install directory, and its token. Old `[web]` and `[machine].web`
+settings are ignored and can be removed. A manually started web process is not killed
+by port scanning; stop that process explicitly before upgrading.
 
 Staying current is the `self-update` cron's job: it fast-forwards `bn/main`, and when HEAD has
 moved past the last install it runs `install.sh --core`. It asks GitHub what the latest release

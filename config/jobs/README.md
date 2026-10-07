@@ -13,15 +13,14 @@ add a `[machine]` table to that machine's own `<notes_root>/<machine>/config.tom
 ```toml
 [machine]
 repos = ["bn", "owner/arena"]   # default ["*"]
-cron = false                     # default true, and likewise web
+cron = false                     # default true
 ```
 
 `[jobs.only_on]` limits individual jobs to named machines, `[[cron]].only_on` limits timer
 registration, and `[nodes.<id>].repos` limits worker placement. A cron may also declare
 `repo = "name"` (or inherit a manifest-level `repo`): it is registered and run only while that
 repository is allowed on the machine and present in the local bare-repository inventory. Setting
-`cron = false` and rerunning `bn cron register` prunes bn-managed timers; `web = false` is
-unloaded by normal bn lifecycle reconciliation. Status commands stay available
+`cron = false` and rerunning `bn cron register` prunes bn-managed timers. Status commands stay available
 and report `not_enabled`.
 
 ## How it works

@@ -1,7 +1,0 @@
-# Build output — regenerate with `npm run design:build`.
-dist/
-
-# Frozen snapshot of whatever reskin was in the working tree when a round-trip started. Useful
-# locally as a safety net; not something to carry in the repo, where it would duplicate source that
-# belongs on its own branch.
-reference/

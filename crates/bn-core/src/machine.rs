@@ -78,7 +78,7 @@ pub struct Saturation {
     pub reasons: Vec<String>,
 }
 
-/// The full machine-health snapshot served by `GET /api/machine`.
+/// The full machine-health snapshot used by CLI diagnostics.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Machine {
     pub cpu: Cpu,

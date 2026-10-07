@@ -229,8 +229,6 @@ fn concurrent_sandboxes_get_separate_tmux_servers_and_ports() -> anyhow::Result<
     let a = Sandbox::new()?;
     let b = Sandbox::new()?;
 
-    assert_ne!(a.port(), b.port(), "each sandbox owns a distinct web port");
-
     a.tmux(&["new-session", "-d", "-s", "only-in-a"])?;
     b.tmux(&["new-session", "-d", "-s", "only-in-b"])?;
 

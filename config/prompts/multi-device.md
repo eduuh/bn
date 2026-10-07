@@ -38,7 +38,7 @@ A signed-in machine enrols itself within 5 minutes even without setup. Opt out w
 bn tunnels
 ```
 
-This lists every host on the account, including ones this machine has not connected to yet. For each it shows the route (`tunnel :<port>` or `LAN <ip>`), whether anything is hosting its tunnel (`HOST-END`), and a reason when it is down. The reason is the machine's own report when there is one ("devtunnel is signed out", "silent since 20:10"). Reports travel as `refs/heads/bn-status/<machine>` in the work-notes repo, so they still say something when the machine itself is off. It takes about 10 seconds. The `⇄` segment in the tmux status bar is the one-glance version.
+This lists every host on the account, including ones this machine has not connected to yet. For each it shows the route (`tunnel :<port>` or `LAN <ip>`), whether anything is hosting its tunnel (`HOST-END`), and a reason when it is down. The reason is the machine's own report when there is one ("devtunnel is signed out", "silent since 20:10"). Reports travel as `refs/heads/bn-status/<machine>` in the work-notes repo, so they still say something when the machine itself is off. It takes about 10 seconds. The `⇄` segment in the tmux status bar shows only connections whose latest watchdog check passed. Disconnected hosts stay in `bn tunnels`, not the bar; `⇄ ?` means the watchdog cache is stale.
 
 ## Run an agent on another machine
 

@@ -17,21 +17,15 @@ use std::path::Path;
 
 /// The bn subcommand each supervised service needs, paired with the unit that would be installed
 /// for it. If the unit is on the box, the binary has to be able to run it.
-const SERVICES: [(&str, &str); 2] = [
-    ("com.bn.web", "web"),
-    ("com.bn.routine", "routine"),
-];
+const SERVICES: [(&str, &str); 1] = [("com.bn.routine", "routine")];
 
 /// The systemd equivalents, by unit file name.
-const UNITS: [(&str, &str); 2] = [
-    ("bn-web.service", "web"),
-    ("bn-routine.service", "routine"),
-];
+const UNITS: [(&str, &str); 1] = [("bn-routine.service", "routine")];
 
 /// Subcommands this machine's installed services depend on.
 ///
 /// Derived from what is actually installed rather than a fixed list, so a box that never registered
-/// the dashboard is not held to whether `bn web` still exists.
+/// a service is not held to whether its command still exists.
 fn needed() -> Vec<&'static str> {
     let mut out = Vec::new();
     let agents = crate::launchd::agents_dir();

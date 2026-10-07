@@ -14,7 +14,6 @@
 //! Phase 1 scope: notes core (model, store, resolver, id, render, commands).
 //! Modules are filled in over the build order in phase1-plan.md.
 
-pub mod action_center;
 pub mod action_rank;
 pub mod afk;
 pub mod agent;
@@ -88,7 +87,6 @@ pub mod model;
 pub mod next;
 pub mod notify;
 pub mod orchestrate;
-pub mod palette;
 pub mod payload;
 pub mod pipeline;
 pub mod plan;
@@ -117,7 +115,6 @@ pub mod schema;
 pub mod scout;
 pub mod scratch_gc;
 pub mod search;
-pub mod serve;
 pub mod skills;
 pub mod smart;
 pub mod specialists;
@@ -140,7 +137,6 @@ pub mod tools;
 pub mod track;
 pub mod trust;
 pub mod util;
-pub mod verify_ui;
 pub mod wake;
 pub mod why;
 pub mod worker;

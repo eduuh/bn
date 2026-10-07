@@ -315,54 +315,6 @@ fn the_scheduler_alone_fires_manifest_schedules() {
 }
 
 #[test]
-fn triggerable_catalog_keeps_runnable_kinds_and_excludes_specialists() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    for (name, body) in [
-        ("command", "---\nname: command\nkind: command\n---\n"),
-        (
-            "scheduled",
-            "---\nname: scheduled\nkind: command\nrequires_repo: bn\non_calendar: daily\n---\n",
-        ),
-        (
-            "staff",
-            "---\nname: staff\nkind: staff\ngather: \"bn gather\"\nsinks: [attn]\n---\nBrief.",
-        ),
-        ("hosted", "---\nname: hosted\nkind: hosted\n---\nSupervise."),
-        (
-            "specialist",
-            "---\nname: specialist\nkind: specialist\nrepo: demo\n---\nReview.",
-        ),
-    ] {
-        std::fs::write(temp.path().join(format!("{name}.md")), body).expect("agent fixture");
-    }
-    let catalog = discover_in(&[(JobScope::Global, temp.path().to_path_buf())]).expect("catalog");
-    let items = crate::action_center::build_catalog(&[], &catalog);
-
-    assert!(items.iter().any(|item| {
-        item.name == "command" && item.kind == crate::action_center::CatalogKind::Command
-    }));
-    assert!(items.iter().any(|item| {
-        item.name == "staff" && item.kind == crate::action_center::CatalogKind::Staff
-    }));
-    assert!(items.iter().any(|item| {
-        item.name == "hosted" && item.kind == crate::action_center::CatalogKind::Hosted
-    }));
-    assert!(!items.iter().any(|item| item.name == "specialist"));
-
-    let scheduled = items
-        .iter()
-        .find(|item| item.name == "scheduled")
-        .expect("scheduled agent is triggerable");
-    assert_eq!(scheduled.schedule.as_deref(), Some("daily"));
-    assert!(!scheduled.on_demand);
-
-    let today = chrono::NaiveDate::from_ymd_opt(2026, 8, 7).expect("valid test date");
-    let todays = crate::action_center::todays_automation(&items, today);
-    assert!(todays.agents.iter().any(|item| item.name == "scheduled"));
-    assert!(!todays.agents.iter().any(|item| item.name == "specialist"));
-}
-
-#[test]
 fn a_specialist_always_publishes_natively() {
     let agent =
         parse("---\nname: demo\nkind: specialist\nrepo: bn\n---\nBody.\n").expect("agent parses");

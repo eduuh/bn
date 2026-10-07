@@ -39,7 +39,6 @@ What a machine should do less of. Usually set in that machine's own file.
 |---|---|---|
 | `repos` | `["*"]` | Repositories this machine may work on, as `owner/repo` or a unique repo name. |
 | `cron` | `true` | Register and run scheduled jobs. |
-| `web` | `true` | Run the bn-web dashboard. |
 
 ### `[work]`
 
@@ -205,16 +204,6 @@ hidden = ["client_secret"]
 | Key | Default | Meaning |
 |---|---|---|
 | `tags` | bn's built-in list | Tag vocabulary for `bn links`. `[]` means none. |
-
-### `[web]`
-
-| Key | Default | Meaning |
-|---|---|---|
-| `port` | `7770` | Port `bn serve` listens on. |
-| `bind` | `"127.0.0.1"` | Bind address. `bn serve --lan` uses `0.0.0.0` for one run. |
-| `fleet_poll_secs` | `2` | How often the dashboard resamples the fleet. |
-| `tmux_mcp_autostart` | `true` | Start the dashboard from tmux hooks. |
-| `tmux_mcp_badge` | `true` | Show the dashboard health badge in tmux. |
 
 ### `[forge_agent]`
 

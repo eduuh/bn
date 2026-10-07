@@ -5,8 +5,7 @@ use super::BnServer;
 use bn_core::context::{self, Atom, AtomInputs};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
-use rmcp::service::RequestContext;
-use rmcp::{tool, tool_router, ErrorData, RoleServer};
+use rmcp::{tool, tool_router, ErrorData};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -51,9 +50,8 @@ impl BnServer {
     async fn bn_context_profile(
         &self,
         Parameters(a): Parameters<ProfileArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve(&ctx)?;
+        let ctx = self.resolve()?;
         let root = context::root_for(&self.cfg, &ctx);
         let m = context::load(root.as_deref()).map_err(bad)?;
         let inputs = AtomInputs {
@@ -78,9 +76,8 @@ impl BnServer {
     async fn bn_context_get(
         &self,
         Parameters(a): Parameters<GetArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve(&ctx)?;
+        let ctx = self.resolve()?;
         let root = context::root_for(&self.cfg, &ctx);
         let m = context::load(root.as_deref()).map_err(bad)?;
         let (kind, rest) = a
@@ -125,9 +122,8 @@ impl BnServer {
     async fn bn_context_ack(
         &self,
         Parameters(a): Parameters<AckArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve(&ctx)?;
+        let ctx = self.resolve()?;
         let by = format!("{}:{}", ctx.repo, ctx.branch);
         context::served::ack(&self.cfg, &ctx, &a.digest, &by).map_err(bad)?;
         Ok(CallToolResult::structured(

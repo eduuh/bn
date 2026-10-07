@@ -116,10 +116,8 @@ amber `<` / `>` markers mark the hidden side (click them to step a window) and t
 to keep the active tab visible. `prefix f` (or ``prefix ` ``, both `bn jump --session`) finds a
 window by name.
 
-Three badges used to sit on the dashboard and no longer do: attention (`bn attn badge`), bn-web
-health (`bn tmux-mcp badge`) and the running cron job (`bn cron running`). They were quiet on almost every 5s repaint. They are now the header of
-`bn tat` (`prefix C-o`), painted on open and on `ctrl-r`, and `bn tat` grew a row that
-starts and stops bn-web. The commands themselves still work.
+Attention (`bn attn badge`) and the running cron job (`bn cron running`) are now the header of
+`bn tat` (`prefix C-o`), painted on open and on `ctrl-r`. The commands themselves still work.
 
 ## Live agent activity in the status bar
 

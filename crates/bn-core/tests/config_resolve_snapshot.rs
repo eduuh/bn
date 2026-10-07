@@ -135,7 +135,7 @@ fn the_live_config_resolves_the_same_after_migrating() {
 const POPULATED: &str = r#"
 [machine]
 repos = ["bn", "arena"]
-# `queue` and the `[queue]` table below are retired; they stay to prove an old config still resolves.
+# `queue`, `web` and the `[queue]` table below are retired; an old config still resolves.
 queue = true
 cron = true
 web = true

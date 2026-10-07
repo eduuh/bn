@@ -115,8 +115,7 @@ even without the flag and may fetch packages on first launch. Surface that befor
 obtain approval for additions beyond bn. Do not change the global extras list to work around a
 repo-local choice.
 
-The client starts `bn mcp serve` over stdio in its worktree; bn-web is not required. Do not start
-`bn serve --daemon` merely to make branch-note MCP work. Report missing runners or a missing
+The client starts `bn mcp serve` over stdio in its worktree. Report missing runners or a missing
 `bn-mcp` binary as prerequisites, not a successful connection.
 
 ### 5. Make build and verification commands accurate
@@ -170,7 +169,7 @@ Stop here unless machine configuration was requested or approved above.
 
 ## Machine configuration
 
-A machine works on every repository it has cloned and runs cron and bn-web by default.
+A machine works on every repository it has cloned and runs cron by default.
 There is nothing to register. Change a machine only when the user asks it to do less, and change
 only that machine's own file. When reached from repository setup, return to the next repository
 step afterwards.
@@ -198,7 +197,7 @@ Read both files. Report the effective `[machine]` values, where a key in the mac
 the shared file:
 
 - `repos` (default `["*"]`, every cloned repository)
-- `cron`, `web` (each default `true`)
+- `cron` (default `true`)
 
 Do not confuse these settings with:
 
@@ -213,7 +212,6 @@ Use `ask_user` to collect all choices in one focused form:
 1. The repositories this machine may work on, as GitHub `owner/repo` slugs where the repository has
    a remote. Show the current list as the default.
 2. Whether cron jobs should be switched off here.
-3. Whether bn-web should be switched off here.
 
 Explain that switching a runtime off stops or prunes its bn-managed service, and switching it back
 on starts it again. If the user declines the form, make no changes.
@@ -238,15 +236,13 @@ what background work can execute, so wait for explicit approval.
 
 ### 5. Validate and reconcile
 
-Every bn command loads the configuration and reconciles the managed web service, so the change
-takes effect on the next command. Cron changes are applied by `bn cron register`.
+Every bn command loads the configuration. Cron changes are applied by `bn cron register`.
 
 1. Run `bn status` and confirm there is no config parsing error.
 2. Run `bn cron register --dry-run` and show the plan. If `repos` was narrowed, confirm that crons
    declaring a repository outside the list are not in it. Do not use `bn dispatch` as a probe. If
    the plan removes any timer, require explicit confirmation, then run `bn cron register`.
-3. If web is off, run `bn serve stop`. If web is on and not running, run `bn serve --daemon`.
-4. Read `bn cron` and `bn serve status`.
+3. Read `bn cron`.
 
 If anything is wrong, restore the previous table and run `bn status` again. Never remove unrelated
 systemd, launchd, or Windows services; use only bn's own lifecycle commands.

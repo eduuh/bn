@@ -3,7 +3,7 @@
 //! Rolls every recorded agent run up by work-class into one board, in two clearly-labeled cost
 //! units: **AIC** (the real Copilot bill) and **$ (API-equiv)** (a cache-aware price-table
 //! benchmark — what the same tokens would cost at public per-model API list prices). The heavy
-//! lifting lives in [`bn_core::cost::rollup`] so bn-web (#391/#389) can reuse the same fold.
+//! lifting lives in [`bn_core::cost::rollup`].
 //!
 //! The token columns are `INPUT` (fresh, uncached) and `CACHE r/w`, kept apart because on a Claude
 //! Code run the fresh figure is a rounding error against the cache traffic, and the two halves of
@@ -294,5 +294,4 @@ fn truncate(s: &str, max: usize) -> String {
         format!("{head}…")
     }
 }
-
 

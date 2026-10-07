@@ -48,9 +48,8 @@ pub(crate) enum SkillsCmd {
     },
     /// Internal (run by install.sh): (re)generate the native Agent Skills under `~/.copilot/skills`
     /// and `~/.claude/skills` from the global bn skills, so the shipped prompts + personal skills
-    /// appear as `/name` in Copilot CLI and Claude Code — matching what the dashboard's skill CRUD
-    /// writes on every edit. Idempotent; only ever writes or removes bn-managed files, and a
-    /// harness whose root holds a same-named skill bn doesn't own is reported, not fatal.
+    /// appear as `/name` in Copilot CLI and Claude Code. Idempotent; only ever writes or removes
+    /// bn-managed files. Reports a same-named skill bn doesn't own without failing the install.
     #[command(hide = true)]
     Install,
 }

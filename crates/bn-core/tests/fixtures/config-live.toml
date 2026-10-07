@@ -134,13 +134,6 @@ mail = ["standup"]
 #   "git@github.com:you/another-repo.git",
 # ]
 
-[web]
-port = 7770
-bind = "127.0.0.1"              # loopback
-fleet_poll_secs = 2
-tmux_mcp_autostart = true
-tmux_mcp_badge = true
-
 [cockpit]
 ground_secs = 30                # cockpit grounding-loop redraw cadence (s); env $BN_COCKPIT_GROUND_SECS
 

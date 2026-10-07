@@ -43,12 +43,12 @@ pub fn registered() -> Vec<RegisteredAgent> {
         .filter_map(|e| {
             let path = e.path();
             let label = path.file_stem()?.to_string_lossy().into_owned();
-            // Orchestrate daemons (#338/#395), the bn-web dashboard daemon (#388), and the
+            // Orchestrate daemons (#338/#395) and the
             // routine watcher daemon (#801 amendment) are long-running KeepAlive agents, NOT
-            // cron jobs — keep `com.bn.orchestrate*`, `com.bn.web`, and `com.bn.routine` out of
+            // cron jobs — keep `com.bn.orchestrate*` and `com.bn.routine` out of
             // the cron reconcile so `bn cron register` never treats one as an orphaned cron and
             // unloads/deletes it.
-            if is_orchestrate_label(&label) || is_web_label(&label) || is_routine_label(&label) {
+            if is_orchestrate_label(&label) || is_routine_label(&label) {
                 return None;
             }
             let job = crate::cron_gen::label_job(&label)?.to_string();
@@ -136,95 +136,8 @@ pub(crate) fn is_orchestrate_label(label: &str) -> bool {
 // than a per-repo daemon each blind to the other sessions. It gets its own reserved label so it
 // coexists with any per-repo daemons; `is_orchestrate_label` already covers it (cron never reaps it).
 
-// --- `bn serve --daemon` bn-web dashboard (#388) -----------------------------
-// The web server is a long-running daemon (RunAtLoad + KeepAlive), same shape as the orchestrate
-// daemons above — and excluded from the cron reconcile (see `registered`) so `bn cron register`
-// never reaps it.
-
-/// The launchd label for the bn-web dashboard daemon.
-pub(crate) const WEB_LABEL: &str = "com.bn.web";
-
-/// Whether a launchd label is the bn-web daemon — the cron reconcile must skip it.
-pub(crate) fn is_web_label(label: &str) -> bool {
-    label == WEB_LABEL
-}
-
-fn web_plist_path() -> PathBuf {
-    agents_dir().join(format!("{WEB_LABEL}.plist"))
-}
-
-/// The bn-web daemon plist: `RunAtLoad` starts it immediately; `KeepAlive {SuccessfulExit=false}`
-/// restarts it only on a *crash* (a clean `bn serve`/Ctrl-C exit stays down). `ThrottleInterval`
-/// guards a hot restart loop; a login shell so `$PATH` is populated. `extra_args` are appended to
-/// the `bn-web` invocation (e.g. `--port 7770`, `--lan`).
-pub(crate) fn web_daemon_plist(bn_web_path: &str, extra_args: &[String]) -> String {
-    let joined = extra_args.join(" ");
-    let invocation = if joined.is_empty() {
-        format!("exec \"{bn_web_path}\"")
-    } else {
-        format!("exec \"{bn_web_path}\" {joined}")
-    };
-    format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-         <plist version=\"1.0\">\n\
-         <dict>\n\
-         \x20 <!-- bn-web dashboard daemon (#388) — the web server. Managed by `bn serve --daemon`. -->\n\
-         \x20 <key>Label</key>\n  <string>{WEB_LABEL}</string>\n\
-         \x20 <key>ProgramArguments</key>\n\
-         \x20 <array>\n\
-         \x20   <string>/bin/sh</string>\n\
-         \x20   <string>-lc</string>\n\
-         \x20   <string>{invocation}</string>\n\
-         \x20 </array>\n\
-         \x20 <key>RunAtLoad</key>\n  <true/>\n\
-         \x20 <key>KeepAlive</key>\n  <dict>\n    <key>SuccessfulExit</key>\n    <false/>\n  </dict>\n\
-         \x20 <key>ThrottleInterval</key>\n  <integer>10</integer>\n\
-         \x20 <key>StandardOutPath</key>\n  <string>/tmp/{WEB_LABEL}.log</string>\n\
-         \x20 <key>StandardErrorPath</key>\n  <string>/tmp/{WEB_LABEL}.log</string>\n\
-         </dict>\n\
-         </plist>\n"
-    )
-}
-
-/// Install (register + load) the bn-web daemon: write the plist and bootstrap it (reloading any
-/// existing copy). Err when launchctl is unavailable (non-macOS / no GUI session) — the caller then
-/// falls back to a detached child.
-pub(crate) fn web_install(bn_web_path: &str, extra_args: &[String]) -> Result<(), String> {
-    if !have_launchctl() {
-        return Err("launchctl unavailable".into());
-    }
-    let path = web_plist_path();
-    if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&path, web_daemon_plist(bn_web_path, extra_args)).map_err(|e| e.to_string())?;
-    bootstrap(&path, WEB_LABEL)
-}
-
-/// Whether the bn-web daemon is *installed* (its plist is on disk). File presence is the same
-/// registration source-of-truth `registered()` uses, so `bn serve status` reports "managed" the
-/// moment `bn serve --daemon` wrote the plist — independent of whether it's currently listening.
-pub(crate) fn web_installed() -> bool {
-    web_plist_path().exists()
-}
-
-/// Unload the bn-web daemon and delete its plist (best-effort — a not-loaded agent is already the
-/// goal state). The inverse of [`web_install`], called by `bn serve stop`. `bootout` before the
-/// `remove_file` so launchd's KeepAlive can't relaunch it after the plist is gone.
-pub(crate) fn web_uninstall() {
-    // The launchd twin of the guard in [`crate::systemd::web_uninstall`]: `bootout` costs a
-    // `gui_domain()` (`id -u`) spawn plus a `launchctl` round-trip, on every `bn` invocation, to
-    // unload something that was never loaded. The plist is [`web_installed`]'s source of truth.
-    if !web_plist_path().exists() {
-        return;
-    }
-    let _ = bootout(WEB_LABEL);
-    let _ = std::fs::remove_file(web_plist_path());
-}
-
 // --- `bn routine watch` managed daemon (#801 amendment) ----------------------
-// The watcher was a long-running daemon (RunAtLoad + KeepAlive), same shape as the orchestrate/web
+// The watcher was a long-running daemon (RunAtLoad + KeepAlive), same shape as the orchestrate
 // daemons above. The routine layer itself went in #1297; the label is still excluded from the cron
 // reconcile (see `registered`) so `bn cron register` leaves a machine's leftover plist alone.
 

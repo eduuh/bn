@@ -21,7 +21,7 @@ fn bn_mcp_name() -> &'static str {
 
 /// Resolve the `bn-mcp` binary: prefer the sibling next to the running `bn` (same install dir, so a
 /// from-source or release install runs its matching build), else fall back to the bare name on
-/// `PATH`. Mirrors `bn serve`'s `resolve_bn_web` — `bn-mcp` sits beside `bn` exactly like `bn-web`.
+/// `PATH`.
 ///
 /// The **canonicalized** path is tried first, because bn is routinely launched through a symlink:
 /// install.sh maintains `<config_dir>/bn -> <bin_dir>/bn` as the stable anchor, and the cron units

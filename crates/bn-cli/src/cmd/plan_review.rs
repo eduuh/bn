@@ -148,10 +148,7 @@ pub(crate) fn emit_review_submit(
                     }
                 );
                 println!("  poll:    bn review status {}", review.id);
-                println!(
-                    "  approve: bn review approve {} (or the dashboard)",
-                    review.id
-                );
+                println!("  approve: bn review approve {}", review.id);
             }
         }
         Err(e) => fail(&format!("bn review submit: {e}")),

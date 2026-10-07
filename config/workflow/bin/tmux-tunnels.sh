@@ -1,11 +1,11 @@
 #!/bin/sh
-# tmux-tunnels -- the tunnel segment of the tmux status bar: `⇄ AB12C✓ AB12C✗`.
+# tmux-tunnels -- connected tunnels in the tmux status bar: `⇄ AB12C✓`.
 #
 # Reads the status file the tunnel-auto watchdog writes every minute (~/.cache/bn/tunnels.status,
 # "<name> ok|down" per line) and never checks anything itself, so the bar stays instant. Names are
-# shown by their last dash-separated part (cloud-pc-AB12C → AB12C; the prefix says nothing); `host` is
-# than 10 minutes means the watchdog stopped, shown as `⇄ ?`. A machine with no tunnels prints
-# nothing.
+# shown by their last dash-separated part (cloud-pc-AB12C → AB12C; the prefix says nothing).
+# Only `ok` entries are shown. A file older than 10 minutes means the watchdog stopped, shown as
+# `⇄ ?`. A machine with no connected tunnels prints nothing.
 f="$HOME/.cache/bn/tunnels.status"
 [ -f "$f" ] || exit 0
 # Stale when older than 10 minutes, or dated in the future (a WSL clock that jumped).
@@ -20,12 +20,11 @@ nicks=$(awk '/^# >>> bn tunnel /{inb=1} inb && $1 == "Host" && NF >= 3 {print $2
 out=""
 while read -r name state; do
   [ -n "$name" ] || continue
+  [ "$state" = ok ] || continue
   short=$(printf '%s\n' "$nicks" | awk -v n="$name" '$1 == n {print $2; exit}')
   [ -n "$short" ] || short=${name##*-}
-  if [ "$state" = ok ]; then
-    out="$out #[fg=#9ece6a]${short}✓"
-  else
-    out="$out #[fg=#f7768e,bold]${short}✗#[nobold]"
-  fi
+  out="$out #[fg=#9ece6a]${short}✓"
 done < "$f"
-[ -n "$out" ] && printf '#[fg=#7aa2f7]⇄%s ' "$out"
+if [ -n "$out" ]; then
+  printf '#[fg=#7aa2f7]⇄%s ' "$out"
+fi

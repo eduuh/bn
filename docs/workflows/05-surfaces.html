@@ -25,9 +25,8 @@
 <h1>The surfaces a human actually touches</h1>
 
 <p class="standfirst">
-Three doors into one core: a terminal, a browser, and a scheduler. They share an
-implementation by construction — the web UI shells out to the same <code>bn</code> binary you
-type — and they all read and write the same event log.
+bn is CLI-only. The terminal, stdio MCP tools and scheduler share the core and event log.
+There is no dashboard, REST API or HTTP MCP server.
 </p>
 
 <h2>The CLI</h2>
@@ -50,7 +49,7 @@ never appear in help.
 <tr><td><strong>Insight</strong></td><td><code>bn next</code> (the ranked "what now"), <code>bn search</code>, <code>bn recall</code>, <code>bn metrics</code>, <code>bn doctor</code>, <code>bn today</code></td></tr>
 <tr><td><strong>Automation</strong></td><td><code>bn jump</code>, <code>bn tat</code>, <code>bn attn</code>, <code>bn focus</code>, <code>bn sessions</code>, <code>bn resume</code></td></tr>
 <tr><td><strong>Staff / ops</strong></td><td><code>bn run &lt;job&gt;</code>, <code>bn cron</code>, <code>bn machine</code>, <code>bn estate</code>, <code>bn agents</code>, <code>bn mcp</code></td></tr>
-<tr><td><strong>Misc</strong></td><td><code>bn serve</code>, <code>bn cost</code>, <code>bn build</code>, <code>bn kill</code>, <code>bn links</code>, <code>bn ref</code>, <code>bn pipeline</code></td></tr>
+<tr><td><strong>Misc</strong></td><td><code>bn cost</code>, <code>bn build</code>, <code>bn kill</code>, <code>bn links</code>, <code>bn ref</code>, <code>bn pipeline</code></td></tr>
 </tbody>
 </table>
 </div>
@@ -67,7 +66,7 @@ never appear in help.
 <h3>The real interactive surface is tmux</h3>
 
 <p>
-There is no TUI. The bindings are the UI:
+The native terminal picker and tmux bindings are the interactive UI:
 <code>prefix j</code> = <code>bn jump</code>, <code>prefix Tab</code> = next agent,
 <code>prefix C-o</code> = <code>bn tat</code> (switch project),
 <code>prefix C-a</code> = <code>bn doctor --pick</code>,
@@ -75,55 +74,15 @@ There is no TUI. The bindings are the UI:
 <span class="src">config/workflow/tmux.conf &mdash; grep the <code>bind</code> for a key, or run <code>prefix ?</code></span>
 </p>
 
-<h2>The web dashboard</h2>
+<h2>Agent tools over stdio</h2>
 
 <p>
-<code>bn serve</code> is a launcher only — it resolves the sibling <code>bn-web</code> binary
-and execs it, gated on <code>cfg.web_enabled_here()</code>. Default bind is
-<code>127.0.0.1:7770</code>; <code>--lan</code> binds <code>0.0.0.0</code>.
-<span class="src">crates/bn-cli/src/serve.rs:35, :85 · docs/config.md</span>
+<code>bn mcp serve</code> starts the sibling <code>bn-mcp</code> in the current worktree.
+The server resolves that worktree's branch per call and fails closed when no branch resolves.
+<code>bn mcp serve --orchestrate</code> selects the opt-in cross-worktree tools.
+CLI <code>--json</code> output remains the scripting interface; no HTTP listener is needed.
+<span class="src">crates/bn-mcp/src/main.rs &middot; server.rs</span>
 </p>
-
-<div class="note">
-<span class="note__label">There is no authentication</span>
-<p>
-A token is generated and persisted 0600 to <code>&lt;config_dir&gt;/web-token</code>, but the
-server never requires it — on loopback or on <code>--lan</code>. The trust boundary is the
-bind address plus a trusted network; external exposure is meant to go through an
-authenticated dev tunnel. So <code>bn serve --lan</code> puts a fully mutating API — dispatch,
-kill agents, land PRs, edit skills — on <code>0.0.0.0</code> with no credential.
-<span class="src">crates/bn-web/src/auth.rs:1-8 · routes.rs:112-113, :236-237</span>
-</p>
-</div>
-
-<p>
-Reads fold <code>bn-core</code> in-process; <strong>writes shell out to <code>bn --json</code></strong>,
-so the browser and the terminal share one implementation rather than two. Every write —
-accepted <em>and</em> rejected — appends a <code>web_action</code> event, which the SSE tailer
-fans back into the activity feed.
-<span class="src">crates/bn-web/src/audit.rs:1-10</span>
-</p>
-
-<p>
-Mutating routes include <code>/api/dispatch</code>,
-<code>/api/agents/{target}/{send,relaunch,kill,answer,instruct}</code>, <code>/api/land</code>,
-<code>/api/reviews/{id}</code>, <code>/api/attention/{id}</code>, skills and agent-def CRUD,
-<code>/api/cron/run</code>, and the per-repo <code>orchestrate</code> and
-<code>pool/warm</code> actions. The router also nests MCP at <code>/mcp</code> and
-<code>/mcp/orchestrate</code> — the same untokened surface.
-<span class="src">routes.rs:115-190, :232-233</span>
-</p>
-
-<div class="note note--gap">
-<span class="note__label">Most of the UI is hidden by default</span>
-<p>
-A fresh <code>bn serve</code> shows three rail entries: Today, Cron, Settings. Console,
-Nodes, Staff, Attention, Automation, Goals, Repos, Insights, Notes, Skills, Agents, Handoff
-and Research all need <code>?experimental=&lt;key&gt;</code> or a toggle on
-<code>/settings</code>. The routes resolve either way — they are simply not advertised.
-<span class="src">bn-web/ui/src/components/shell/Rail.tsx:33-39 · lib/nav.ts</span>
-</p>
-</div>
 
 <h2>Attention and today: two different things</h2>
 
@@ -249,13 +208,6 @@ double-counts.
 <span class="src">cost/mod.rs:28-32</span>
 </p>
 
-<p>
-<code>GET /api/cost</code> calls the same <code>rollup</code> and serializes it verbatim — the
-<code>?by=</code> parameter is accepted and <strong>ignored</strong>, because the view already
-carries every breakdown and the dashboard switches dimension client-side with no refetch.
-<span class="src">crates/bn-web/src/cost.rs:20-27</span>
-</p>
-
 <h2>A day in the life</h2>
 
 <pre><code># Morning: what is waiting, and what to do about it
@@ -325,14 +277,9 @@ declarations, not from live <code>--help</code>.</li>
 <li>The day-in-life block may need id-form correction: <code>bn dispatch</code> documents "a
 todo id (e.g. <code>t3</code>)" while <code>bn task</code> uses its own ids — <code>T14</code>
 versus <code>t14</code> was not confirmed at runtime.</li>
-<li>Claims about what each web screen <em>shows</em> come from <code>lib/nav.ts</code> blurbs
-and the route table. Only the first ~120 lines of <code>Today.tsx</code> were read;
-<code>Console</code>, <code>Attention</code>, <code>Insights</code> and
-<code>Settings</code> were not.</li>
 <li>Whether a write path exists elsewhere that registers Windows tasks from Rust.
 <code>winsched.rs</code> is clearly read-only, and <code>install.ps1</code> was the only
 registration found.</li>
-<li>Whether the <code>/mcp</code> HTTP endpoints are reachable by default or gated by config.</li>
 <li><code>config/crons.toml</code> is the shipped default for the <code>bn</code> repo.
 Per-repo and per-branch tiers exist (<code>crons.rs:118</code>) and would change what a given
 machine actually runs; they were not enumerated.</li>

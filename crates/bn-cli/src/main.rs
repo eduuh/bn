@@ -54,7 +54,6 @@ mod proc;
 mod reap;
 mod retry;
 mod review_pr;
-mod serve;
 mod systemd;
 mod tat;
 mod timers;
@@ -277,10 +276,6 @@ fn main() {
     // path. Gate the whole block on the callback so it cannot.
     let internal = is_internal_callback(&cli.command);
 
-    if !internal {
-        serve::reconcile(&cfg);
-    }
-
     // Verbose/debug action log (opt-in): CLI `--verbose/--debug` OR env (`BN_VERBOSE`/`BN_LOG`) OR
     // `[log]` config.toml. Initialize once, before any action runs, so the runner seam and command
     // dispatch below are captured. A strict no-op when none of the three knobs is set.
@@ -352,7 +347,8 @@ fn main() {
 /// user action.
 ///
 /// Two of those seven are left on the bar: `tmux-git` and `tmux-status`. `tmux-goal` went when the
-/// bar folded to one row. The other three — `attn badge`, `tmux-mcp badge`, `cron running` — moved into `bn tat`'s header (#1349), which calls them in-process. They stay
+/// bar folded to one row. `attn badge` and `cron running` moved into `bn tat`'s header (#1349),
+/// which calls them in-process. They stay
 /// listed below because they are still commands a script or a `#()` can invoke, and the reasoning
 /// has not changed for them.
 ///
@@ -383,10 +379,6 @@ fn is_internal_callback(command: &Option<Command>) -> bool {
             CmdShellUi::TmuxGoal { .. }
                 | CmdShellUi::TmuxGit { .. }
                 | CmdShellUi::TmuxStatus { .. }
-                | CmdShellUi::TmuxMcp {
-                    action: TmuxMcpCmd::Badge,
-                    ..
-                }
         ))
     )
 }

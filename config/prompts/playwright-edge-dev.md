@@ -29,6 +29,28 @@ Edd's dotfiles install it via `install_playwright_cli` in
    `https://localhost:3000/chat`. Do not start or replace the user's dev server
    unless explicitly requested.
 2. Run `~/.bn/config/repo/config/scripts/edge-cdp-wsl dev`.
+   When a forwarded Codespace app uses a certificate that this Edge profile
+   does not trust, copy the certificate from the same app endpoint, validate
+   it, relaunch only the `dev` profile with its SPKI trusted, and remove the
+   temporary copy:
+
+   ```bash
+   mkdir -p ~/.cache/bn
+   CERT=$(mktemp ~/.cache/bn/codespace-dev-cert.XXXXXX.pem)
+   ssh "$ALIAS" \
+     'cat /workspaces/BigMono/packages/web-app/dist/server/lib/cert.pem' \
+     > "$CERT"
+   openssl x509 -in "$CERT" -noout
+   EDGE_TRUST_CERT="$CERT" EDGE_RESTART=1 \
+     ~/.bn/config/repo/config/scripts/edge-cdp-wsl dev
+   rm -f "$CERT"
+   playwright-cli -s=edge-dev goto "$TARGET_URL"
+   playwright-cli -s=edge-dev snapshot
+   ```
+
+   Set `TARGET_URL` to the exact forwarded `/chat` URL before running this.
+   This must not stop or restart the healthy app, and it does not weaken
+   certificate checks globally.
 3. If it reports that Windows blocked the relay, ask the user to approve the
    one-time firewall setup, run
    `~/.bn/config/repo/config/scripts/edge-cdp-wsl firewall`, and retry step 2.

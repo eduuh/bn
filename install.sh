@@ -95,7 +95,7 @@ echo "bn layout: $layout (home=$bn_home, config=$cfgdir, bin=$bindir)"
 # records a relative or symlinked bindir. Reject a temp dir outright: bn must be installed
 # somewhere persistent, or the anchor dangles the moment the temp dir is reaped — silently
 # bricking every tmux-bar bn call (tmux-status, attn badge, cron). This is the failure that
-# left ~/.config/bn/bn -> /tmp/tmp.XXall dashboards empty.
+# left ~/.config/bn/bn pointing at a deleted temporary directory.
 bindir="$(cd "$bindir" && pwd -P)"
 case "$bindir" in
   /tmp/* | /var/tmp/* | /private/tmp/* | */tmp.??????????/*)
@@ -111,7 +111,7 @@ esac
 #
 # Binaries come from the latest versioned GitHub release, never from a compile here. Every merge
 # to main publishes one (`vX.Y.Z`, all platforms, only after the full CI gate passed on that exact
-# commit — see docs/releases.md), so a new machine is wired up in the time three archives take to
+# commit — see docs/releases.md), so a new machine is wired up in the time two archives take to
 # download instead of the minutes a cold cargo build costs. That is the whole point of the split:
 # no machine should need a working cargo to RUN bn. When the binaries you need are not in that
 # release yet (an unmerged branch, a local patch, a platform the release skips), run ./build.sh
@@ -134,7 +134,7 @@ atomic_install() {
   cp "$src" "$tmp" && chmod 0755 "$tmp" && mv -f "$tmp" "$dst" || { rm -f "$tmp"; return 1; }
 }
 
-# Download the prebuilt bn, bn-web, and bn-mcp for this platform from the latest GitHub release.
+# Download the prebuilt bn and bn-mcp for this platform from the latest GitHub release.
 # Non-zero on any missing tool, unknown platform, or unusable asset — and each failure says which
 # one it was. There is no local-compile fallback behind this any more, so a silent return would
 # leave the person at the keyboard guessing between five different causes.
@@ -150,7 +150,7 @@ download_release() {
   fi
   tmp=$(mktemp -d)
   echo "Downloading the latest $slug release for ${target}…"
-  for app in bn-cli bn-web bn-mcp; do
+  for app in bn-cli bn-mcp; do
     archive="${app}-${target}.tar.xz"
     # Prefer authenticated `gh` so this works for a PRIVATE repo (unauthenticated curl on
     # releases/latest/download 404s there). Fall back to curl when the repo is public or gh
@@ -178,7 +178,7 @@ download_release() {
       return 1
     fi
   done
-  for bin in bn bn-web bn-mcp; do
+  for bin in bn bn-mcp; do
     src=$(find "$tmp" -type f -name "$bin" -perm -u+x | head -n1)
     if [ -z "$src" ]; then
       echo "error: the release archives for $target contain no $bin binary." >&2
@@ -195,7 +195,7 @@ download_release() {
     rm -rf "$tmp"
     return 1
   fi
-  for bin in bn bn-web bn-mcp; do
+  for bin in bn bn-mcp; do
     src=$(find "$tmp" -type f -name "$bin" -perm -u+x | head -n1)
     if ! atomic_install "$src" "$bindir/$bin"; then
       echo "error: could not place $bin into $bindir." >&2
@@ -204,7 +204,7 @@ download_release() {
     fi
   done
   rm -rf "$tmp"
-  echo "Installed prebuilt bn + bn-web + bn-mcp ($target) from the latest release."
+  echo "Installed prebuilt bn + bn-mcp ($target) from the latest release."
 }
 
 # Place the binaries ./build.sh has just compiled. That script re-enters this one with
@@ -213,7 +213,7 @@ download_release() {
 install_built_binaries() {
   # build.sh exports the profile it compiled with; its default is Cargo.toml's `local`.
   local target_dir="${BN_INSTALL_TARGET_DIR:-$repo/target/bn-install}/${BN_INSTALL_PROFILE:-local}" bin
-  for bin in bn bn-web bn-mcp; do
+  for bin in bn bn-mcp; do
     if [ ! -x "$target_dir/$bin" ]; then
       echo "error: $target_dir/$bin is missing." >&2
       echo "       --from-build is internal; run ./build.sh to compile and install this checkout." >&2
@@ -222,10 +222,10 @@ install_built_binaries() {
   done
   # Copy, don't symlink: a symlink into the target dir breaks on `cargo clean`,
   # silently bricking the live `bn`. Re-run ./build.sh after source changes to refresh.
-  for bin in bn bn-web bn-mcp; do
+  for bin in bn bn-mcp; do
     atomic_install "$target_dir/$bin" "$bindir/$bin"
   done
-  echo "Installed bn + bn-web + bn-mcp into $bindir from $target_dir (source build)."
+  echo "Installed bn + bn-mcp into $bindir from $target_dir (source build)."
 }
 
 if [ "$from_build" = "1" ]; then
@@ -330,7 +330,7 @@ for candidate in ${path_dirs[@]+"${path_dirs[@]}"} "$HOME/.bin"; do
   case ":$shadow_dirs:" in *":$candidate_real:"*) continue ;; esac
   shadow_dirs="$shadow_dirs:$candidate_real"
 
-  for b in bn bn-web; do
+  for b in bn bn-mcp; do
     if [ -e "$candidate/$b" ] || [ -L "$candidate/$b" ]; then
       ln -sfn "$bindir/$b" "$candidate/$b"
       echo "Repointed $candidate/$b -> $bindir/$b (was shadowing the current binary on PATH)"
@@ -350,7 +350,7 @@ echo "Linked $cfgdir/agents -> $shipped/config/agents"
 
 # Invocable prompts (config/prompts/<name>.md) are the shipped tier the MCP prompt resolver serves
 # as slash commands. No symlink needed: `global_skill_dirs()` reaches them through the stable
-# `$cfgdir/repo` anchor (linked below) as `$cfgdir/repo/config/prompts`, so `bn serve` serves them
+# `$cfgdir/repo` anchor (linked below) as `$cfgdir/repo/config/prompts`, so `bn mcp serve` serves them
 # in any launch mode. `$cfgdir/skills` is left alone as the user's *personal* skill tier.
 
 # The shipped cron manifest (config/crons.toml) — resolved via config_dir()/crons.toml.
@@ -659,8 +659,7 @@ register_mcp() {
   #
   # Caveat: the stdio launcher scopes itself to the client's cwd, and a GUI app's cwd is `/`, so the
   # branch-note *tools* report "no branch scope" there. The skill *prompts* still work (seeded from
-  # the global tiers, not the worktree). Pointing Desktop at a repo needs the HTTP transport
-  # (`bn serve` + X-Bn-Repo/X-Bn-Branch).
+  # the global tiers, not the worktree). Branch-note tools require a client launched in a worktree.
   local desktop_dir="$HOME/Library/Application Support/Claude"
   [ -d "$desktop_dir" ] || desktop_dir="$HOME/.config/Claude"   # Linux
   if [ -d "$desktop_dir" ]; then
@@ -724,71 +723,10 @@ register_user_mcp() {
 }
 register_user_mcp
 
-# PIDs listening on a TCP port, via whichever tool the host actually has. lsof is present on
-# macOS by default and common on Linux; ss covers modern Linux without lsof; fuser is the last
-# resort. Prints nothing (success) when the port is free or nothing can inspect it.
-port_listeners() {
-  local port="$1"
-  if command -v lsof >/dev/null 2>&1; then
-    lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true
-  elif command -v ss >/dev/null 2>&1; then
-    ss -lptnH "sport = :$port" 2>/dev/null | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | sort -u
-  elif command -v fuser >/dev/null 2>&1; then
-    fuser -n tcp "$port" 2>/dev/null | tr -s ' ' '\n' | grep -E '^[0-9]+$' || true
-  fi
-}
-
-# Restart the dashboard so the freshly installed binary is the one actually serving.
-#
-# bn-web bakes its UI in at compile time (build.rs embeds crates/bn-web/ui/dist), so a *running*
-# server keeps serving the UI it was built with. Replacing $bindir/bn-web on disk changes nothing
-# until the process is replaced too — "I reinstalled and the dashboard looks identical" is this,
-# every time.
-#
-# Stopping is not sufficient on its own. `bn serve stop` unregisters the managed service, but a
-# process reparented to init (PPID 1 — an orphan left by an earlier plist/unit generation) is no
-# longer tracked by launchd/systemd and survives the unload. It then keeps the port, and every
-# respawn dies with "cannot bind 127.0.0.1:7770: Address already in use" in a crash loop that,
-# from the outside, is indistinguishable from nothing having happened.
-restart_bn_web() {
-  local port pids i
-  # Ask bn where it serves (config `[web].port`), rather than assuming the default.
-  port="$("$bindir/bn" serve status --json 2>/dev/null | sed -n 's/.*"port":\([0-9]*\).*/\1/p')"
-  [ -n "$port" ] || port=7770
-
-  "$bindir/bn" serve stop >/dev/null 2>&1 || true
-
-  # Reap whatever still holds the port, tracked or orphaned. TERM first so bn-web can close its
-  # listener cleanly; escalate to KILL only if it is still there after a few seconds.
-  for i in 1 2 3 4 5; do
-    pids="$(port_listeners "$port")"
-    [ -n "$pids" ] || break
-    if [ "$i" -ge 4 ]; then
-      # shellcheck disable=SC2086  # word-splitting is intended: pids is a PID list
-      kill -9 $pids 2>/dev/null || true
-    else
-      # shellcheck disable=SC2086
-      kill $pids 2>/dev/null || true
-    fi
-    sleep 1
-  done
-
-  if [ -n "$(port_listeners "$port")" ]; then
-    echo "warning: port $port is still held by another process — bn-web will fail to bind." >&2
-    echo "         Inspect it with: lsof -iTCP:$port -sTCP:LISTEN" >&2
-  fi
-
-  "$bindir/bn" serve --daemon || true
-}
-
-# Auto-start `bn serve` (bn-web) for the dashboard, orchestrator, and the tmux `bnweb:<port>`
-# badge. MCP no longer depends on it — each client spawns its own `bn mcp serve` stdio launcher —
-# so this is best-effort and can be skipped with BN_SETUP_NO_SERVE=1.
-if [ "${BN_SETUP_NO_SERVE:-0}" != "1" ]; then
-  restart_bn_web
-else
-  echo "Skipped bn serve auto-start (BN_SETUP_NO_SERVE=1)."
-fi
+# Stop only the retired managed web service and remove its installed artifacts.
+# shellcheck source=scripts/install-retire-web.sh
+source "$repo/scripts/install-retire-web.sh"
+bn_install_retire_web "$bindir" "$cfgdir"
 
 if [ "$mode" = "core" ]; then
   echo "Core install complete (Rust CLI only; skipped the tmux workflow layer)."
@@ -805,9 +743,9 @@ echo "Linked $cfgdir/repo -> $shipped"
 
 # Copilot CLI and Claude Code both load *native* Agent Skills (~/.copilot/skills/<name>/SKILL.md,
 # ~/.claude/skills/<name>/SKILL.md), so (re)generate both roots here from the shipped prompts
-# (config/prompts) plus any personal skills. Claude also gets these over MCP via `bn serve`; the
-# native copy is what keeps this in step with the dashboard, whose skill CRUD writes both roots on
-# every edit. Idempotent and safe (only ever touches bn-managed SKILL.md files), and a harness whose
+# (config/prompts) plus any personal skills. Claude also gets these over MCP via `bn mcp serve`; the
+# native copies keep slash commands in step with the installed skill sources.
+# Idempotent and safe (only ever touches bn-managed SKILL.md files), and a harness whose
 # root holds a same-named skill bn doesn't own is skipped rather than failing the other.
 if "$bindir/bn" skills install >/dev/null 2>&1; then
   echo "Regenerated ~/.copilot/skills and ~/.claude/skills from bn skills (slash commands)"

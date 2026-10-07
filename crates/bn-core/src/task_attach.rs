@@ -65,11 +65,6 @@ pub struct Attachment {
 }
 
 impl Attachment {
-    /// Whether a viewer can be expected to render this inline.
-    pub fn is_image(&self) -> bool {
-        self.mime.starts_with("image/")
-    }
-
     /// A human size for the doc manifest: whole KB/MB, since a byte count is noise at this scale.
     pub fn human_size(&self) -> String {
         match self.size {
@@ -295,7 +290,7 @@ pub fn save(
 ///
 /// The name is sanitized before it is joined, so a traversal attempt resolves to a file that does
 /// not exist rather than to a file outside the directory.
-pub fn find(cfg: &Config, task: &Task, raw_name: &str) -> Option<Attachment> {
+fn find(cfg: &Config, task: &Task, raw_name: &str) -> Option<Attachment> {
     let dir = dir(cfg, task)?;
     let name = sanitize_name(raw_name);
     let path = dir.join(&name);

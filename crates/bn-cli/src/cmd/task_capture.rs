@@ -5,8 +5,7 @@
 //!
 //! # Why the CLI captures at all
 //!
-//! The dashboard is the pretty way in, but it is not the way most context arrives. Context arrives
-//! as a failing command's output in a terminal that is already open, or a screenshot sitting in
+//! Context arrives as a failing command's output in a terminal that is already open, or a screenshot in
 //! `~/Desktop`. `bn task add "fix the flaky reconnect" --body - --attach ~/Desktop/shot.png`, with
 //! the failure piped into stdin, is the shortest path from "this is broken" to a durable task an
 //! agent can act on — and no shorter path means no context lost to the friction of switching.
@@ -54,7 +53,7 @@ fn resolve_body(body: Option<&str>) -> Option<String> {
     }
 }
 
-/// The same http(s)-only rule the web endpoint enforces. A task link is rendered as markdown and
+/// A task link must be http(s). It is rendered as markdown and
 /// followed by a person or an agent, so `javascript:`/`file:` have no business in it.
 fn checked_link(url: &str) -> bn_core::task_doc::Link {
     let lower = url.to_ascii_lowercase();

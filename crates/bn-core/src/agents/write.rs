@@ -16,12 +16,11 @@ use std::path::{Path, PathBuf};
 use super::{parse_agent, AgentKind};
 use crate::resolver::{self, Config, JobScope};
 
-/// The tiers a dashboard create may write into, by keyword.
+/// The global tiers an agent create may write into, by keyword.
 ///
 /// Deliberately the same two keywords `bn agents new` already takes, and deliberately only the
 /// global ones: the branch and repo tiers `agent_dirs` also resolves depend on a `Resolved`
-/// context, and bn-web serves a machine rather than a checkout — a "repo" tier would mean whichever
-/// repo the server process happened to start in, which is not a thing anyone can point at.
+/// context.
 pub const CREATE_SCOPES: [&str; 2] = ["global-personal", "global-shared"];
 
 /// Resolve a create-scope keyword to the `agents/` directory it writes into.

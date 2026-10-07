@@ -12,12 +12,10 @@ use std::path::PathBuf;
 use bn_core::commands::{self, CmdError};
 use bn_core::links;
 use bn_core::payload;
-use bn_core::resolver::{Config, Resolved};
+use bn_core::resolver::{self, Config, Resolved};
 use bn_core::rollups;
 use bn_core::util::today;
 use bn_core::{render, store};
-
-use crate::Scope;
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
@@ -35,18 +33,16 @@ use bn_core::skills::{load_skill_set, Skill};
 mod context_tools;
 mod proof_tools;
 mod queue_tools;
+#[cfg(test)]
+mod tests;
 
 pub struct BnServer {
     cfg: Config,
-    /// How each call decides which branch note to act on: a shared HTTP transport hands the
-    /// server [`Scope::Request`] and re-derives a per-call `(repo, branch)` from the request's
-    /// headers/query. Note tools resolve their context from this per call rather than from a
-    /// baked directory.
-    scope: Scope,
+    /// Fixed launch directory. Resolve its current branch per call, never from request data.
+    worktree: PathBuf,
     /// Ordered skill source directories (low->high precedence) the MCP prompts are
     /// loaded from. Re-scanned on each prompt list/get so newly added skill files appear without
-    /// restarting the server. The shared HTTP server seeds these from the global tiers
-    /// ([`bn_core::skills::global_skill_dirs`]).
+    /// restarting the server.
     skill_dirs: Vec<PathBuf>,
     /// Serializes note mutations. The engine is stateless (the CLI runs one command per
     /// process); this long-lived server can receive parallel tool calls, and each
@@ -188,10 +184,10 @@ struct HandoffWriteArgs {
 
 #[tool_router]
 impl BnServer {
-    pub fn new(cfg: Config, scope: Scope, skill_dirs: Vec<PathBuf>) -> Self {
+    pub fn new(cfg: Config, worktree: PathBuf, skill_dirs: Vec<PathBuf>) -> Self {
         Self {
             cfg,
-            scope,
+            worktree,
             skill_dirs,
             write_lock: std::sync::Mutex::new(()),
         }
@@ -211,22 +207,14 @@ impl BnServer {
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))
     }
 
-    /// Resolve this call's branch-note context from its [`Scope`], failing closed when the scope
-    /// resolves to no branch. A [`Scope::Cwd`] server (the per-worktree stdio launcher) derives its
-    /// scope from the client's working directory; a [`Scope::Request`] server (the shared HTTP
-    /// transport) derives a per-call [`Scope::Target`] from the request's headers/query.
-    fn resolve(&self, ctx: &RequestContext<RoleServer>) -> Result<Resolved, ErrorData> {
-        let scope = match &self.scope {
-            Scope::Request => request_scope(ctx)?,
-            other => other.clone(),
-        };
-        let hint = match &self.scope {
-            Scope::Request => "supply X-Bn-Repo/X-Bn-Branch (or ?repo=&branch=)",
-            _ => "run `bn mcp serve` from inside a git worktree",
-        };
-        scope
-            .resolve(&self.cfg)
-            .map_err(|_| ErrorData::invalid_params(format!("no branch scope -- {hint}"), None))
+    /// Resolve the launch worktree's current branch, failing closed outside a git worktree.
+    fn resolve(&self) -> Result<Resolved, ErrorData> {
+        resolver::resolve(&self.cfg, &self.worktree).map_err(|_| {
+            ErrorData::invalid_params(
+                "no branch scope -- run `bn mcp serve` from inside a git worktree",
+                None,
+            )
+        })
     }
 
     #[tool(
@@ -236,9 +224,8 @@ impl BnServer {
     async fn bn_add(
         &self,
         Parameters(a): Parameters<AddArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve(&ctx)?;
+        let ctx = self.resolve()?;
         let out = {
             let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
             commands::add(
@@ -261,7 +248,6 @@ impl BnServer {
     async fn bn_links_add(
         &self,
         Parameters(a): Parameters<LinksAddArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         // Unlike every other tool here, the store is person-scoped, so a call that cannot
         // resolve a branch still succeeds — it just stores the link without a repo. Refusing to
@@ -272,7 +258,7 @@ impl BnServer {
         let (repo, branch) = match a.repo.as_deref() {
             Some("") => (None, None),
             Some(r) => (Some(r.to_string()), None),
-            None => match self.resolve(&ctx) {
+            None => match self.resolve() {
                 Ok(c) => (Some(c.repo), Some(c.branch)),
                 Err(_) => (None, None),
             },
@@ -328,9 +314,8 @@ impl BnServer {
     async fn bn_links_list(
         &self,
         Parameters(a): Parameters<LinksListArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let here = self.resolve(&ctx).ok().map(|c| c.repo);
+        let here = self.resolve().ok().map(|c| c.repo);
         let items = links::read(&self.cfg);
         let tag = a.tag.map(|t| t.to_lowercase());
         let query = a.query.map(|q| q.to_lowercase());
@@ -369,9 +354,8 @@ impl BnServer {
     async fn bn_done(
         &self,
         Parameters(a): Parameters<DoneArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve(&ctx)?;
+        let ctx = self.resolve()?;
         let check = match a.pct {
             Some(p) if p < 100 => bn_core::proof::DoneCheck::Clear,
             _ => bn_core::proof::check_done(&self.cfg, &ctx, &a.query),
@@ -397,12 +381,8 @@ impl BnServer {
         name = "bn_pr",
         description = "Record the pull-request URL (or number) on this worktree's current branch note."
     )]
-    async fn bn_pr(
-        &self,
-        Parameters(a): Parameters<PrArgs>,
-        ctx: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve(&ctx)?;
+    async fn bn_pr(&self, Parameters(a): Parameters<PrArgs>) -> Result<CallToolResult, ErrorData> {
+        let ctx = self.resolve()?;
         let out = {
             let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
             commands::set_pr(&self.cfg, &ctx, &a.pr, &today()).map_err(cmd_err)?
@@ -417,9 +397,8 @@ impl BnServer {
     async fn bn_goal(
         &self,
         Parameters(a): Parameters<GoalArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve(&ctx)?;
+        let ctx = self.resolve()?;
         let out = {
             let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
             commands::set_goal(&self.cfg, &ctx, &a.goal, &today()).map_err(cmd_err)?
@@ -434,9 +413,8 @@ impl BnServer {
     async fn bn_cat(
         &self,
         Parameters(_a): Parameters<EmptyArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve(&ctx)?;
+        let ctx = self.resolve()?;
         let note = store::read(&self.cfg.note_file(&ctx))
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         let saved = links::for_note(
@@ -459,9 +437,8 @@ impl BnServer {
     async fn bn_context(
         &self,
         Parameters(_a): Parameters<EmptyArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve(&ctx)?;
+        let ctx = self.resolve()?;
         let note = store::read(&self.cfg.note_file(&ctx)).ok();
         let handoff_available = bn_core::handoff::read(&self.cfg, &ctx).is_some();
         let mut data = payload::context_data(note.as_ref(), &ctx, handoff_available);
@@ -478,9 +455,8 @@ impl BnServer {
     async fn bn_status(
         &self,
         Parameters(_a): Parameters<EmptyArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve(&ctx)?;
+        let ctx = self.resolve()?;
         let status = rollups::status(&self.cfg, &ctx);
         Ok(CallToolResult::structured(payload::status_data(
             &status, &ctx,
@@ -494,9 +470,8 @@ impl BnServer {
     async fn bn_sync(
         &self,
         Parameters(_a): Parameters<EmptyArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve(&ctx)?;
+        let ctx = self.resolve()?;
         let note = store::read(&self.cfg.note_file(&ctx))
             .map_err(|_| ErrorData::invalid_params("No note for this branch", None))?;
         let proposals = bn_core::sync::reconcile(
@@ -516,9 +491,8 @@ impl BnServer {
     async fn bn_handoff_write(
         &self,
         Parameters(a): Parameters<HandoffWriteArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve(&ctx)?;
+        let ctx = self.resolve()?;
         let input = bn_core::handoff::HandoffInput {
             narrative: a.narrative.filter(|s| !s.trim().is_empty()),
             deferred: a.deferred,
@@ -541,9 +515,8 @@ impl BnServer {
     async fn bn_handoff_read(
         &self,
         Parameters(_a): Parameters<EmptyArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let ctx = self.resolve(&ctx)?;
+        let ctx = self.resolve()?;
         let handoff = bn_core::handoff::read(&self.cfg, &ctx).or_else(|| {
             store::read(&self.cfg.note_file(&ctx))
                 .ok()
@@ -561,10 +534,9 @@ impl BnServer {
     async fn bn_ref(
         &self,
         Parameters(a): Parameters<RefArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         use bn_core::references::{self, Scope as RefScope};
-        let ctx = self.resolve(&ctx)?;
+        let ctx = self.resolve()?;
         let want = a.scope.as_deref().unwrap_or("all");
         let scopes: Vec<RefScope> = match want {
             "repo" => vec![RefScope::repo(&ctx.repo)],
@@ -650,10 +622,9 @@ impl BnServer {
     async fn bn_ref_append(
         &self,
         Parameters(a): Parameters<RefAppendArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         use bn_core::references::{self, Scope as RefScope};
-        let ctx = self.resolve(&ctx)?;
+        let ctx = self.resolve()?;
         if a.text.trim().is_empty() {
             return Err(ErrorData::invalid_params("nothing to record", None));
         }
@@ -686,9 +657,7 @@ impl ServerHandler for BnServer {
         .with_instructions(
             "Branch-notes MCP server, scoped to a single (repo, branch). The per-worktree stdio \
              launcher (`bn mcp serve`) derives its scope from the client's current working \
-             directory, so no per-call headers are needed; the shared HTTP transport instead \
-             derives it per request (X-Bn-Repo/X-Bn-Branch headers or ?repo=&branch= query). \
-             Either way, a call that resolves to no branch fails closed — with one deliberate \
+             directory. A call that resolves to no branch fails closed — with one deliberate \
              exception, the link tools bn_links_add and bn_links_list, described below. Start a session with \
              bn_context (compact orientation: goal, counts, top todos, blockers, PR, next-step \
              hints), then use only the current-branch tools: bn_goal, bn_add, bn_done, bn_pr, \
@@ -776,95 +745,4 @@ fn cmd_err(e: CmdError) -> ErrorData {
         "io" => ErrorData::internal_error(e.message(), None),
         _ => ErrorData::invalid_params(e.message(), None),
     }
-}
-
-/// Derive a per-request [`Scope::Target`] from the incoming HTTP request, failing closed when the
-/// scope is absent or blank. The shared HTTP transport (epic #637 P2) injects the request's
-/// [`http::request::Parts`] into the tool-call [`RequestContext`]; the branch identity comes from
-/// the `X-Bn-Repo`/`X-Bn-Branch` headers, falling back to the `?repo=&branch=` query. A missing
-/// HTTP context, or a missing/blank repo or branch, is an MCP `invalid_params` error — never a
-/// silent cross-branch action.
-fn request_scope(ctx: &RequestContext<RoleServer>) -> Result<Scope, ErrorData> {
-    let parts = ctx
-        .extensions
-        .get::<http::request::Parts>()
-        .ok_or_else(|| {
-            ErrorData::invalid_params(
-                "bn MCP over HTTP requires a request scope; this call carried no HTTP context",
-                None,
-            )
-        })?;
-
-    let repo = scope_field(parts, "x-bn-repo", "repo");
-    let branch = scope_field(parts, "x-bn-branch", "branch");
-
-    match (repo, branch) {
-        (Some(repo), Some(branch)) => Ok(Scope::target(repo, branch)),
-        _ => Err(ErrorData::invalid_params(
-            "bn MCP over HTTP requires a branch scope: set X-Bn-Repo and X-Bn-Branch headers \
-             (or ?repo=&branch= query)",
-            None,
-        )),
-    }
-}
-
-/// Read one scope field from an HTTP request: the `header` first (trimmed), else the `query` key
-/// from the URI query string. Returns `None` for a missing or blank value so the caller fails
-/// closed rather than acting on an empty scope.
-fn scope_field(parts: &http::request::Parts, header: &str, query: &str) -> Option<String> {
-    let from_header = parts
-        .headers
-        .get(header)
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    from_header.or_else(|| query_value(parts.uri.query(), query))
-}
-
-/// Extract the first value for `key` from a `application/x-www-form-urlencoded` query string,
-/// percent-decoding it. Returns `None` when the key is absent or its value is blank.
-fn query_value(query: Option<&str>, key: &str) -> Option<String> {
-    query?
-        .split('&')
-        .filter_map(|pair| pair.split_once('='))
-        .find(|(k, _)| *k == key)
-        .map(|(_, v)| percent_decode(v))
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-/// Minimal percent-decoder for query values (`%20`, `+` -> space). Keeps bn-mcp dependency-free of
-/// a urlencoding crate; scope values are simple repo/branch strings.
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            b'%' if i + 2 < bytes.len() => {
-                let hi = (bytes[i + 1] as char).to_digit(16);
-                let lo = (bytes[i + 2] as char).to_digit(16);
-                match (hi, lo) {
-                    (Some(hi), Some(lo)) => {
-                        out.push((hi * 16 + lo) as u8);
-                        i += 3;
-                    }
-                    _ => {
-                        out.push(bytes[i]);
-                        i += 1;
-                    }
-                }
-            }
-            b => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }

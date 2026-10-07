@@ -53,37 +53,6 @@ pub enum ContextError {
     PartialTarget,
 }
 
-/// `[web]` block: the `bn-web` dashboard server (#386/#388). `bn serve` binds `bind:port`; the SSE
-/// watch task re-samples the fleet every `fleet_poll_secs`. Loopback + 7770 by default; `bn serve
-/// --lan` overrides the bind to `0.0.0.0` at launch.
-#[derive(Debug, Clone)]
-pub struct WebConfig {
-    /// TCP port `bn serve` listens on. From `[web].port`; default 7770.
-    pub port: u16,
-    /// Bind address. From `[web].bind`; default `127.0.0.1` (loopback). `bn serve --lan` overrides
-    /// this to `0.0.0.0` for the run.
-    pub bind: String,
-    /// Fleet-snapshot poll cadence (seconds) for the SSE stream. From `[web].fleet_poll_secs`;
-    /// default 2.
-    pub fleet_poll_secs: u64,
-    /// Whether tmux lifecycle hooks ensure the managed bn-web service is running. Default true.
-    pub tmux_mcp_autostart: bool,
-    /// Whether tmux renders the bnweb:<port> service-health badge. Default true.
-    pub tmux_mcp_badge: bool,
-}
-
-impl Default for WebConfig {
-    fn default() -> WebConfig {
-        WebConfig {
-            port: 7770,
-            bind: "127.0.0.1".to_string(),
-            fleet_poll_secs: 2,
-            tmux_mcp_autostart: true,
-            tmux_mcp_badge: true,
-        }
-    }
-}
-
 /// `[log]` block: the opt-in verbose/debug **action log** (structured JSONL of every high-value
 /// action, for after-the-fact debugging). Resolved from `[log]`, which `BN_VERBOSE`/`BN_LOG` can
 /// switch on for one invocation. The global `--verbose/--debug` flag is applied on top at CLI init.
@@ -265,9 +234,6 @@ pub struct Config {
     /// and `bn next --fit` — works before you have real per-item duration estimates. Defaults
     /// `s=30m m=90m l=3h`; see [`crate::calib::CoarseSizes`].
     pub coarse_sizes: crate::calib::CoarseSizes,
-    /// `[web]`: the `bn-web` dashboard server settings (port / bind / fleet poll cadence). See
-    /// [`WebConfig`]. Backs `bn serve` and the `bn-web` binary.
-    pub web: WebConfig,
     /// `[scout]`: the Scout radar agent (#262) — the public `owner/repo` watchlist, the tool-stack
     /// repos, and the findings cap. Empty watch/tools = the collectors idle. See
     /// [`crate::scout::ScoutConfig`].
@@ -391,7 +357,6 @@ impl Default for Config {
             forge_agent: crate::forge_agent::ForgeAgentConfig::default(),
             nodes: Vec::new(),
             coarse_sizes: crate::calib::CoarseSizes::default(),
-            web: WebConfig::default(),
             scout: crate::scout::ScoutConfig::default(),
             pool_scheduled: Vec::new(),
             log: LogConfig::default(),
@@ -519,25 +484,6 @@ impl Config {
         let forge_agent = file.and_then(|f| f.forge_agent()).unwrap_or_default();
 
         let coarse_sizes = file.map(|f| f.coarse_sizes()).unwrap_or_default();
-
-        // `[web]` (#388/#879): config, then defaults.
-        let web = WebConfig {
-            port: file
-                .and_then(|f| f.web_port())
-                .filter(|p| *p > 0)
-                .unwrap_or(7770),
-            bind: file
-                .and_then(|f| f.web_bind())
-                .unwrap_or_else(|| "127.0.0.1".to_string()),
-            fleet_poll_secs: file
-                .and_then(|f| f.web_fleet_poll_secs())
-                .filter(|s| *s > 0)
-                .unwrap_or(2),
-            tmux_mcp_autostart: file
-                .and_then(|f| f.web_tmux_mcp_autostart())
-                .unwrap_or(true),
-            tmux_mcp_badge: file.and_then(|f| f.web_tmux_mcp_badge()).unwrap_or(true),
-        };
 
         // `[log]`: the opt-in verbose/debug action log, off by default. `BN_VERBOSE` / `BN_LOG`
         // switch it on for one invocation — a cron or a job cannot pass `--verbose` — and `BN_LOG`
@@ -681,7 +627,6 @@ impl Config {
             forge_agent,
             nodes,
             coarse_sizes,
-            web,
             scout,
             pool_scheduled: file.and_then(|f| f.pool_scheduled()).unwrap_or_default(),
             log,

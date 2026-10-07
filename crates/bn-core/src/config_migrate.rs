@@ -84,7 +84,6 @@ pub const KNOWN_SECTIONS: &[&str] = &[
     "standup",
     "tasks",
     "tools",
-    "web",
     "work",
     "wrap",
 ];
@@ -514,7 +513,7 @@ mod tests {
 
         with_machine("fedora", || {
             migrate_text(
-                "[review]\nharness = \"claude\"\n[web]\nport = 9000\n",
+                "[review]\nharness = \"claude\"\n[pool]\nsize = 9\n",
                 root.path(),
                 &root.path().join("no-work-repos"),
             )
@@ -525,7 +524,7 @@ mod tests {
             shared_before
         );
         let machine = read(&root.path().join("fedora").join("config.toml"));
-        assert_eq!(machine["web"]["port"].as_integer(), Some(9000));
+        assert_eq!(machine["pool"]["size"].as_integer(), Some(9));
         assert!(
             machine.get("review").is_none(),
             "an agreeing value stays shared"

@@ -11,17 +11,14 @@ use std::collections::HashMap;
 ///
 /// Usually set in that machine's own `<notes_root>/<machine>/config.toml`; set in the shared file
 /// it applies to every machine. With no `[machine]` table a machine works on every repository it
-/// has cloned and runs the cron and web services. The table only narrows that: `repos` limits the
-/// repositories, and a runtime flag set to `false` switches that service off. An omitted field
-/// keeps its default, so `web = false` alone still runs cron.
+/// has cloned and runs scheduled jobs. The table only narrows that: `repos` limits the
+/// repositories, and `cron = false` switches scheduled jobs off.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct MachineProfile {
     #[serde(default = "every_repo")]
     pub repos: Vec<String>,
     #[serde(default = "on")]
     pub cron: bool,
-    #[serde(default = "on")]
-    pub web: bool,
 }
 
 impl Default for MachineProfile {
@@ -29,7 +26,6 @@ impl Default for MachineProfile {
         MachineProfile {
             repos: every_repo(),
             cron: true,
-            web: true,
         }
     }
 }
@@ -89,22 +85,6 @@ pub(super) struct LinksSection {
 pub(super) struct TasksSection {
     pub(super) provider: Option<String>,
     pub(super) forge_url: Option<String>,
-}
-
-/// `[web]`: the `bn-web` dashboard server (#386/#388). All optional — absent falls back to the
-/// loopback / 7770 / 2s defaults resolved in [`super::WebConfig`].
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub(super) struct WebSection {
-    /// TCP port `bn serve` binds. Default 7770.
-    pub(super) port: Option<u16>,
-    /// Bind address. Default `127.0.0.1` (loopback); `bn serve --lan` overrides to `0.0.0.0`.
-    pub(super) bind: Option<String>,
-    /// Fleet-snapshot poll cadence (seconds) for the SSE stream. Default 2.
-    pub(super) fleet_poll_secs: Option<u64>,
-    /// Start the managed bn-web service from tmux lifecycle hooks. Default true.
-    pub(super) tmux_mcp_autostart: Option<bool>,
-    /// Show the bnweb:<port> health segment in the tmux status bar. Default true.
-    pub(super) tmux_mcp_badge: Option<bool>,
 }
 
 /// `[log]`: the opt-in verbose/debug **action log** (structured JSONL of every high-value action

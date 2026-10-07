@@ -3,7 +3,7 @@
 //!
 //! **Machine work is not your work.** #1151 established `task_owner::is_machine` and taught
 //! `bn task` and the SMART gate to respect it, but it never reached this
-//! projection — so `bn task` hid the cron chores while `bn daily`, `/api/goals`, `bn next` and the
+//! projection — so `bn task` hid the cron chores while `bn daily`, `bn next` and the
 //! standup packet went on listing "run tools-reconcile" and "run wt-cleanup" as the day's focus.
 //! Filtering here fixes every one of those readers at once, because they all come through
 //! [`task_goals`].
@@ -64,8 +64,7 @@ fn is_todays(task: &crate::todo::Task, today: &str) -> bool {
 /// Today's goals, projected from the task store.
 ///
 /// **Carry-forward is free here, and that is the point.** `ensure_today` copies yesterday's open
-/// goals into a new file, which is a *write* — so `GET /api/goals` (a read) never triggered it and
-/// carried-forward goals were invisible in bn-web until the CLI happened to touch the day. A query
+/// goals into a new file, which is a *write*. A query
 /// needs no write, so the bug cannot recur: an open task dated today *or earlier* is simply still
 /// today's work.
 ///

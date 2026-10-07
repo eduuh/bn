@@ -26,9 +26,7 @@
 //! pinned session), so they never also surface as an `agent_session` — the two sources are disjoint
 //! and summing them double-counts nothing.
 //!
-//! The [`CostView`] shape (totals + by_category/by_machine/by_repo/by_model/by_day) matches the
-//! bn-web dashboard design (#391/#389) so the web read-API can call [`rollup`] natively rather than
-//! re-deriving the fold.
+//! [`CostView`] carries totals and breakdowns by category, machine, repo, model and day.
 
 mod price;
 
@@ -216,7 +214,7 @@ pub struct DayCategory {
 }
 
 /// Unified token + dual-cost usage over a trailing window, broken down along every dimension the
-/// #381 surface (and the bn-web dashboard #391) reports. Each `by_*` vec is sorted cost-desc so the
+/// CLI reports. Each `by_*` vec is sorted cost-desc so the
 /// dominant contributor leads; `by_day_category` is the (day × category) cross-tab, ordered by day.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct CostView {
@@ -791,7 +789,7 @@ fn sample_from_staff_run(e: &Event, machine: &str) -> RunSample {
 /// metrics log (real #309 token capture, machine = source-log segment) plus the machine-local
 /// `staff_run` ledger (#267 scheduled estimate). Both are windowed to `filter.now -
 /// filter.window_days` and, when `filter.repo` is set, restricted to that repo. This is the
-/// reusable core the `bn cost` CLI and the bn-web read-API (#391/#389) both call.
+/// reusable core the `bn cost` CLI calls.
 pub fn rollup(cfg: &Config, filter: &CostFilter) -> CostView {
     let cutoff = match filter.window_secs {
         Some(secs) => filter.now - secs.max(0),

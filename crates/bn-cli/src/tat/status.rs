@@ -1,6 +1,6 @@
-//! The `bn tat` status header, and the bn-web control row that sits with it.
+//! The `bn tat` status header.
 //!
-//! These badges — attention, cron and bn-web health — used to be `#()` segments in
+//! These badges — attention and cron health — used to be `#()` segments in
 //! tmux's `status-format[0]`. They were quiet on almost every 5s repaint, which is the worst thing
 //! a status bar can be: it teaches you to stop reading it. They live here instead, on the surface
 //! you already open to go somewhere (#1349). The bar kept only what changes with where you are.
@@ -12,7 +12,7 @@
 //!   `bn_core::glyph`'s module doc lists what the mirrored glyph tables cost when they drift; a
 //!   mirrored *colour* table would cost the same.
 //! * **Nothing here runs on the 700 ms `subtick` repaint.** `preview.rs` sets the cost rules for
-//!   that path, and the bn-web probe is a TCP connect. The header is painted on
+//!   that path. The header is painted on
 //!   open and on `ctrl-r`, which is as fresh as a picker you hold open for seconds needs to be.
 use bn_core::resolver::Config;
 use bn_core::style::{Ink, Tone};
@@ -25,8 +25,8 @@ pub(super) const HEADER_KEYS: &str =
 /// The project picker's full header: the status line over the key hints. Always two lines, so the
 /// list never shifts up and down as badges come and go.
 ///
-/// The project picker only — these badges are machine-wide (this host's attention, this host's cron,
-/// this host's bn-web), so they belong on the list of everything, not inside one project. The
+/// The project picker only — these badges are machine-wide (this host's attention and cron),
+/// so they belong on the list of everything, not inside one project. The
 /// sub-picker also has no spare key to repaint on: its `ctrl-r` releases a pool slot.
 pub(super) fn header(cfg: &Config) -> String {
     format!("{}\n{HEADER_KEYS}", status_line(cfg))
@@ -37,7 +37,7 @@ pub(super) fn emit_status_line(cfg: &Config) {
     println!("{}", header(cfg));
 }
 
-/// The assembled header: attention · cron · bn-web, each omitted when it has nothing to
+/// The assembled header: attention · cron, each omitted when it has nothing to
 /// say, and a dim `all quiet` when none of them do.
 pub(super) fn status_line(cfg: &Config) -> String {
     let ink = Ink::always();
@@ -48,9 +48,6 @@ pub(super) fn status_line(cfg: &Config) -> String {
     }
     if let Some(cron) = crate::cmd::cron::machine_scope::running_badge(cfg) {
         parts.push(ink.tone(Tone::Accent, &cron));
-    }
-    if let Some(web) = web_badge(cfg) {
-        parts.push(tmux_to_ansi(&web, ink));
     }
 
     if parts.is_empty() {
@@ -74,54 +71,6 @@ fn trim_trailing_divider(markup: &str) -> &str {
         Some(i) if head.ends_with(']') => head[..i].trim_end(),
         _ => head,
     }
-}
-
-// --- bn-web ----------------------------------------------------------------
-
-/// The health badge, reusing the renderer that used to feed `bn tmux-mcp badge`. `None` when
-/// bn-web is not this machine's job, or the badge is switched off in `[web]`.
-fn web_badge(cfg: &Config) -> Option<String> {
-    crate::cmd::tmux_status::render_tmux_mcp_badge(
-        cfg.web_enabled_here() && cfg.web.tmux_mcp_badge,
-        crate::serve::port_listening(cfg.web.port),
-        cfg.web.port,
-    )
-}
-
-/// The project picker's bn-web control row, in `build_list`'s `<display>\t<ref>` shape. Shown
-/// whenever bn-web is this machine's job — including when it is down, since that is exactly when
-/// you want to start it. `None` otherwise, so a machine that does not serve never sees it.
-pub(super) fn web_row(cfg: &Config) -> Option<String> {
-    if !cfg.web_enabled_here() {
-        return None;
-    }
-    let ink = Ink::always();
-    let port = cfg.web.port;
-    Some(if crate::serve::port_listening(port) {
-        format!(
-            "   {} bnweb:{port} running — Enter to stop\twebctl",
-            ink.tone(Tone::Ok, "●")
-        )
-    } else {
-        format!(
-            "   {} bnweb:{port} stopped — Enter to start\twebctl",
-            ink.tone(Tone::Meta, "○")
-        )
-    })
-}
-
-/// Enter on the bn-web row: stop it if it is up, start it (daemonized, the way the
-/// `client-attached` hook does) if it is not. Holds afterwards so the outcome is read before the
-/// popup closes — the same contract as the `cs-auth` remedy row.
-pub(super) fn toggle_web(cfg: &Config) {
-    if crate::serve::port_listening(cfg.web.port) {
-        crate::serve::stop(false);
-    } else {
-        crate::serve::run(cfg, None, false, true, false);
-    }
-    println!();
-    println!("press any key…");
-    crate::picker::hold();
 }
 
 // --- tmux markup -> ANSI ----------------------------------------------------
@@ -201,7 +150,7 @@ mod tests {
 
     #[test]
     fn plain_text_survives_untouched() {
-        assert_eq!(tmux_to_ansi("bnweb:7770", Ink::always()), "bnweb:7770");
+        assert_eq!(tmux_to_ansi("all quiet", Ink::always()), "all quiet");
     }
 
     #[test]

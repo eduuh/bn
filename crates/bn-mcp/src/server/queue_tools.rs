@@ -8,8 +8,7 @@
 use super::BnServer;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
-use rmcp::service::RequestContext;
-use rmcp::{tool, tool_router, ErrorData, RoleServer};
+use rmcp::{tool, tool_router, ErrorData};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -134,8 +133,8 @@ fn run_data<S: AsRef<str>>(args: &[S]) -> Result<Value, ErrorData> {
 #[tool_router(router = queue_router, vis = "pub(super)")]
 impl BnServer {
     /// This server's seat, `repo:branch`.
-    fn seat(&self, ctx: &RequestContext<RoleServer>) -> Result<String, ErrorData> {
-        let r = self.resolve(ctx)?;
+    fn seat(&self) -> Result<String, ErrorData> {
+        let r = self.resolve()?;
         Ok(format!("{}:{}", r.repo, r.branch))
     }
 
@@ -146,9 +145,8 @@ impl BnServer {
     async fn bn_queue_list(
         &self,
         Parameters(a): Parameters<QueueListArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let seat = self.seat(&ctx)?;
+        let seat = self.seat()?;
         let mut args = vec!["queue".to_string(), "list".into(), flag("seat", &seat)];
         if let Some(s) = a.state.as_deref() {
             args.push(flag("state", s));
@@ -177,9 +175,8 @@ impl BnServer {
     async fn bn_queue_create(
         &self,
         Parameters(a): Parameters<QueueCreateArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let seat = self.seat(&ctx)?;
+        let seat = self.seat()?;
         let mut args = vec!["queue".to_string(), "create".into(), flag("as", &seat)];
         if let Some(t) = a.tier.as_deref() {
             args.push(flag("tier", t));
@@ -199,9 +196,8 @@ impl BnServer {
     async fn bn_queue_claim(
         &self,
         Parameters(a): Parameters<QueueIdArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let seat = self.seat(&ctx)?;
+        let seat = self.seat()?;
         run(&[
             "queue".to_string(),
             "claim".into(),
@@ -218,9 +214,8 @@ impl BnServer {
     async fn bn_queue_handoff(
         &self,
         Parameters(a): Parameters<QueueHandoffArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let seat = self.seat(&ctx)?;
+        let seat = self.seat()?;
         let mut args = vec![
             "queue".to_string(),
             "handoff".into(),
@@ -242,9 +237,8 @@ impl BnServer {
     async fn bn_queue_close(
         &self,
         Parameters(a): Parameters<QueueCloseArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let seat = self.seat(&ctx)?;
+        let seat = self.seat()?;
         let verb = match a.outcome.as_str() {
             "done" => "done",
             "failed" | "fail" => "fail",
@@ -277,9 +271,8 @@ impl BnServer {
     async fn bn_queue_block(
         &self,
         Parameters(a): Parameters<QueueBlockArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let seat = self.seat(&ctx)?;
+        let seat = self.seat()?;
         let mut args = vec![
             "queue".to_string(),
             "block".into(),
@@ -306,9 +299,8 @@ impl BnServer {
     async fn bn_queue_update(
         &self,
         Parameters(a): Parameters<QueueNoteArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let seat = self.seat(&ctx)?;
+        let seat = self.seat()?;
         run(&[
             "queue".to_string(),
             "update".into(),
@@ -326,9 +318,8 @@ impl BnServer {
     async fn bn_watchdog_checkin(
         &self,
         Parameters(a): Parameters<CheckinArgs>,
-        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let seat = self.seat(&ctx)?;
+        let seat = self.seat()?;
         let mins = a.mins.to_string();
         run(&[
             "agent".to_string(),
