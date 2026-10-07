@@ -18,4 +18,4 @@ You are starting a work session on the current branch.
 
 Keep it short. Then, as you work, record new work with `bn_add` and close todos with `bn_done`
 *the moment each one is actually done* — not batched at the end. Those timestamps feed
-`bn metrics` (close-out lag, flow time, WIP), so honest, in-the-moment tracking keeps them real.
+`bn stats metrics` (close-out lag, flow time, WIP), so honest, in-the-moment tracking keeps them real.

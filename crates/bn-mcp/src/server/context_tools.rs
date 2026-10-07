@@ -45,7 +45,7 @@ fn bad(e: impl std::fmt::Display) -> ErrorData {
 impl BnServer {
     #[tool(
         name = "bn_context_profile",
-        description = "Compose a context profile for this branch — directives, goal, done-when readiness, recap, handoff, reference sections, skills, file sections, queue rows, as the profile declares — and return the text with each atom's token cost and the total against the budget. Built-in: ship, scout, compact-restore, orient; a repo can declare more in .bn/context.toml. Receiving it is not the same as having read it."
+        description = "Compose a context profile for this branch — directives, goal, done-when readiness, recap, handoff, reference sections, skills, file sections, as the profile declares — and return the text with each atom's token cost and the total against the budget. Built-in: ship, scout, compact-restore, orient; a repo can declare more in .bn/context.toml. Receiving it is not the same as having read it."
     )]
     async fn bn_context_profile(
         &self,

@@ -23,8 +23,6 @@ pub enum Atom {
     Recap,
     /// The handoff orientation.
     Handoff,
-    /// The seat's open queue rows.
-    Queue,
     /// One reference, or one section of it: `name`, `name#section`, `global:name#section`.
     Ref {
         #[serde(rename = "ref")]
@@ -51,7 +49,6 @@ impl Atom {
             "proof" => Atom::Proof,
             "recap" => Atom::Recap,
             "handoff" => Atom::Handoff,
-            "queue" => Atom::Queue,
             _ => return None,
         })
     }
@@ -85,7 +82,6 @@ pub fn render_atom(atom: &Atom, i: &AtomInputs<'_>) -> Result<Option<String>, St
             .map(|t| format!("\n\n{}\n", t.trim_end())),
         Atom::Handoff => crate::handoff::read(i.cfg, i.ctx)
             .map(|h| format!("\n\n{}", crate::handoff::render_orientation(&h))),
-        Atom::Queue => queue(i.ctx),
         Atom::Ref { r } => Some(reference(&i.ctx.repo, r)?),
         Atom::Skill { name } => {
             let root = i.root.ok_or("a skill atom needs a repo checkout")?;
@@ -198,36 +194,6 @@ fn proof(cfg: &Config, ctx: &Resolved) -> Option<String> {
         .collect();
     Some(format!(
         "\n\nDone-when readiness (from recorded evidence, at HEAD):{}\n",
-        lines.concat()
-    ))
-}
-
-fn queue(ctx: &Resolved) -> Option<String> {
-    let seat = crate::coord::normalize_seat(&format!("{}:{}", ctx.repo, ctx.branch)).ok()?;
-    let rows = crate::coord::CoordDb::open_default()
-        .ok()?
-        .list(&crate::coord::ListFilter {
-            seat: Some(seat),
-            ..Default::default()
-        })
-        .ok()?;
-    if rows.is_empty() {
-        return None;
-    }
-    let lines: Vec<String> = rows
-        .iter()
-        .map(|q| {
-            format!(
-                "\n- {} {} from {}: {}",
-                q.id,
-                q.state,
-                q.source,
-                q.body.lines().next().unwrap_or("")
-            )
-        })
-        .collect();
-    Some(format!(
-        "\n\nQueue rows for this branch (claim before starting: `bn queue claim <q>`):{}\n",
         lines.concat()
     ))
 }

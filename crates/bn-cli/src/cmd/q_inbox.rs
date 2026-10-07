@@ -1,36 +1,6 @@
 //! `bn q` — quick-capture inbox + focus-block drain.
 use crate::*;
 
-/// A one-line tally of a drained queue by kind, e.g. "2 PRs to review, 1 goal, 3 captures".
-pub(crate) fn drain_summary(queue: &[bn_core::next::Action], captures: usize) -> String {
-    use bn_core::next::ActionKind;
-    let count = |k: ActionKind| queue.iter().filter(|a| a.kind == k).count();
-    let mut parts = Vec::new();
-    let reviews = count(ActionKind::Review);
-    if reviews > 0 {
-        parts.push(format!("{reviews} PR{} to review", plural(reviews)));
-    }
-    let prs = count(ActionKind::Pr);
-    if prs > 0 {
-        parts.push(format!("{prs} PR{} to chase", plural(prs)));
-    }
-    let goals = count(ActionKind::Goal);
-    if goals > 0 {
-        parts.push(format!("{goals} goal{}", plural(goals)));
-    }
-    let wip = count(ActionKind::Wip);
-    if wip > 0 {
-        parts.push("WIP guard".to_string());
-    }
-    if captures > 0 {
-        parts.push(format!("{captures} capture{}", plural(captures)));
-    }
-    if parts.is_empty() {
-        format!("{} item{}", queue.len(), plural(queue.len()))
-    } else {
-        parts.join(", ")
-    }
-}
 
 /// `bn q "<text>"` — bank a thought in the global inbox, stamped with the time and a
 /// git-free repo/branch hint. The fast path: one file write, no subprocess, works anywhere.
@@ -237,13 +207,3 @@ pub(crate) fn plural(n: usize) -> &'static str {
     }
 }
 
-/// Render a duration in seconds as a compact human label (`90m` → `1h30m`, `45m`, `2h`).
-pub(crate) fn fmt_dur(secs: i64) -> String {
-    let mins = secs / 60;
-    let (h, m) = (mins / 60, mins % 60);
-    match (h, m) {
-        (0, m) => format!("{m}m"),
-        (h, 0) => format!("{h}h"),
-        (h, m) => format!("{h}h{m}m"),
-    }
-}

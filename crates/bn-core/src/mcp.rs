@@ -38,12 +38,6 @@ first. Keep this branch's note current as you work — don't wait to be asked:
 - `bn_done` — close a todo the moment it's finished.
 - `bn_cat` — read only the current branch note.
 
-Work another agent must act on goes in the queue, not a message — a message informs, a queue row
-is owned. `bn_queue_create` asks another seat (`repo:branch` or `human:<name>`) for work;
-`bn_queue_list` shows rows for this branch; `bn_queue_claim` before starting; close with
-`bn_queue_close` (the note must say where the work went) or pass it on with `bn_queue_handoff`;
-park blocked work with `bn_queue_block` and a wake trigger rather than sitting on it.
-
 This is a deliberately slim tool surface for efficiency. The single-purpose tools (`bn_goal`,
 `bn_pr`, `bn_status`, `bn_sync`, `bn_handoff_read`, `bn_handoff_write`) are not advertised over
 MCP — use the `bn` CLI (`bn goal`, `bn pr`, `bn status`, `bn sync`, `bn handoff …`) when needed.

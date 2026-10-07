@@ -23,7 +23,7 @@ ranked shortlist. That shortlist is your candidate set.
 
 ## 3. Stamp it
 
-Stamp each chosen task's `day:` and a useful `priority:` through `bn task`. Write one line per
+Stamp each chosen task with `bn task set <id> day:<YYYY-MM-DD> priority:<A|B|C>`. Write one line per
 decision to today's triage note, saying *why* it made the cut or didn't — that line is what makes
 tomorrow's triage better than today's.
 

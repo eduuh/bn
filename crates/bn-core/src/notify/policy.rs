@@ -219,6 +219,7 @@ impl Suppressed {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Quieted {
+    /// Written by the removed `bn afk`; kept so older notification ledgers still parse.
     Afk,
     Focus,
     ProtectedBlock,
@@ -333,8 +334,6 @@ impl NotifyConfig {
 /// The open quiet windows at a moment — probed once per delivery so [`decide`] stays pure.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Quiet {
-    /// Away mode ([`crate::afk`]): everything is batched into the `bn afk end` digest.
-    pub afk: bool,
     /// A declared deep-work block ([`crate::focus`]).
     pub focus: bool,
     /// A protected recurring block — family/recovery/exercise/sleep ([`crate::routine`]).
@@ -343,10 +342,9 @@ pub struct Quiet {
 
 impl Quiet {
     /// Read the quiet-window predicates. `protected_block` is always false since the `[routine]`
-    /// config that supplied protected time blocks was retired; AFK and focus still silence.
+    /// config that supplied protected time blocks was retired; focus still silences.
     pub fn probe(_cfg: &Config, now: i64) -> Self {
         Self {
-            afk: crate::afk::is_active(now),
             focus: crate::focus::is_active(now),
             protected_block: false,
         }
@@ -354,14 +352,10 @@ impl Quiet {
 
     /// Which window (if any) silences `class`.
     ///
-    /// Away mode silences everything — that is its documented contract ("routine fleet activity is
-    /// batched"), and `bn afk end` replays the lot. Focus and protected blocks let blocking
+    /// Focus and protected blocks let blocking
     /// through, matching [`crate::next::next_actions`], which keeps urgent actions visible inside
     /// a focus block. Consistency with the pull surface matters more here than absolute silence.
     pub fn silences(self, class: Class) -> Option<Quieted> {
-        if self.afk {
-            return Some(Quieted::Afk);
-        }
         if class == Class::Blocking {
             return None;
         }

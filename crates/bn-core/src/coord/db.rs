@@ -12,16 +12,8 @@ pub const SCHEMA_VERSION: u32 = 2;
 pub enum CoordError {
     /// An underlying SQLite failure.
     Sqlite(rusqlite::Error),
-    /// No row with this id.
+    /// No watchdog with this id.
     NotFound(String),
-    /// The verb is not allowed from the row's current state.
-    Illegal {
-        id: String,
-        state: String,
-        verb: &'static str,
-    },
-    /// The acting seat may not do this to this row.
-    Forbidden(String),
     /// A malformed argument (bad seat, empty note, …).
     Invalid(String),
 }
@@ -32,11 +24,8 @@ impl fmt::Display for CoordError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CoordError::Sqlite(e) => write!(f, "coord db error: {e}"),
-            CoordError::NotFound(id) => write!(f, "no queue row {id}"),
-            CoordError::Illegal { id, state, verb } => {
-                write!(f, "{id} is {state}; it cannot be {verb}")
-            }
-            CoordError::Forbidden(m) | CoordError::Invalid(m) => f.write_str(m),
+            CoordError::NotFound(id) => write!(f, "no {id}"),
+            CoordError::Invalid(m) => f.write_str(m),
         }
     }
 }
@@ -78,8 +67,8 @@ impl CoordDb {
     fn init(conn: Connection) -> Result<CoordDb> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        // `BEGIN IMMEDIATE` then waits on a peer's write lock instead of failing SQLITE_BUSY, which
-        // is what turns two concurrent claims into exactly one winner.
+        // `BEGIN IMMEDIATE` then waits on a peer's write lock instead of failing SQLITE_BUSY, so two
+        // ticks racing for one watchdog's slot get exactly one winner.
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let db = CoordDb { conn };
         db.migrate()?;
@@ -92,49 +81,7 @@ impl CoordDb {
             "CREATE TABLE IF NOT EXISTS schema_meta (
                  key   TEXT PRIMARY KEY,
                  value TEXT NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS qitems (
-                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                 dest                TEXT NOT NULL,
-                 source              TEXT NOT NULL,
-                 owner               TEXT,
-                 body                TEXT NOT NULL,
-                 state               TEXT NOT NULL,
-                 tier                TEXT NOT NULL DEFAULT 'routine',
-                 parent_id           INTEGER REFERENCES qitems(id),
-                 next_id             INTEGER REFERENCES qitems(id),
-                 ref                 TEXT,
-                 blocked_on          TEXT,
-                 block_summary       TEXT,
-                 evidence_ref        TEXT,
-                 wake_watchdog_id    INTEGER,
-                 closure_note        TEXT,
-                 closure_ref         TEXT,
-                 claimed_at          INTEGER,
-                 closure_required_at INTEGER,
-                 mirror_todo         TEXT,
-                 mirror_state        TEXT NOT NULL DEFAULT 'none',
-                 nudged_at           INTEGER,
-                 nudge_count         INTEGER NOT NULL DEFAULT 0,
-                 idem_key            TEXT UNIQUE,
-                 created_at          INTEGER NOT NULL,
-                 updated_at          INTEGER NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS qtransitions (
-                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                 qitem_id   INTEGER NOT NULL REFERENCES qitems(id),
-                 ts         INTEGER NOT NULL,
-                 actor      TEXT NOT NULL,
-                 verb       TEXT NOT NULL,
-                 from_state TEXT,
-                 to_state   TEXT,
-                 note       TEXT,
-                 ref        TEXT
-             );
-             CREATE INDEX IF NOT EXISTS qi_dest_state ON qitems(dest, state);
-             CREATE INDEX IF NOT EXISTS qi_owner_state ON qitems(owner, state);
-             CREATE INDEX IF NOT EXISTS qi_due ON qitems(state, closure_required_at);
-             CREATE INDEX IF NOT EXISTS qt_item ON qtransitions(qitem_id, id);",
+             );",
         )?;
         // v2: watchdogs. `IF NOT EXISTS` makes this the migration too — a v1 DB gains the tables.
         self.conn.execute_batch(
@@ -149,7 +96,7 @@ impl CoordDb {
                  expires_at    INTEGER,
                  max_fires     INTEGER,
                  fires         INTEGER NOT NULL DEFAULT 0,
-                 qitem_id      INTEGER REFERENCES qitems(id),
+                 qitem_id      INTEGER, -- unused; left from the retired queue rows
                  state         TEXT NOT NULL DEFAULT 'active',
                  created_by    TEXT NOT NULL,
                  created_at    INTEGER NOT NULL,

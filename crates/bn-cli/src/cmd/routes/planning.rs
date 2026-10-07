@@ -125,6 +125,9 @@ pub(super) fn route(cfg: &Config, action: CmdPlanning, json: bool) {
             Some(TaskCmd::Snooze { id, until }) => {
                 emit_task_mutate(cfg, TaskOp::Snooze(&until), &id, json)
             }
+            Some(TaskCmd::Set { id, pairs }) => {
+                crate::cmd::task_set::emit_task_set(cfg, &id, &pairs, json)
+            }
             Some(TaskCmd::Cancel { id, reason }) => {
                 let reason = (!reason.is_empty()).then(|| reason.join(" "));
                 emit_task_mutate(cfg, TaskOp::Cancel(reason.as_deref()), &id, json);

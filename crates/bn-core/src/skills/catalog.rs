@@ -204,6 +204,22 @@ fn is_directory_doc(path: &Path) -> bool {
 }
 
 pub(super) fn load_skill_files(dir: &Path) -> Result<Vec<(Skill, PathBuf)>, SkillCatalogError> {
+    load_skill_entries(dir)?
+        .into_iter()
+        .map(|entry| entry.skill.map(|skill| (skill, entry.path)))
+        .collect()
+}
+
+/// One `*.md` file in a skills directory: the name it claims and whether it parsed.
+struct SkillEntry {
+    name: String,
+    path: PathBuf,
+    skill: Result<Skill, SkillCatalogError>,
+}
+
+/// Every skill file in `dir`, each parsed on its own, so one broken file does not hide the rest.
+/// A missing directory is empty; an unreadable one is still an error.
+fn load_skill_entries(dir: &Path) -> Result<Vec<SkillEntry>, SkillCatalogError> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -229,24 +245,67 @@ pub(super) fn load_skill_files(dir: &Path) -> Result<Vec<(Skill, PathBuf)>, Skil
     }
     paths.sort();
 
-    let mut skills = Vec::with_capacity(paths.len());
-    for path in paths {
-        let text =
-            std::fs::read_to_string(&path).map_err(|source| SkillCatalogError::ReadFile {
-                path: path.clone(),
-                source,
-            })?;
-        let stem = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or("skill");
-        let skill = parse_skill(&text, stem).map_err(|source| SkillCatalogError::InvalidSkill {
-            path: path.clone(),
-            source,
-        })?;
-        skills.push((skill, path));
+    Ok(paths
+        .into_iter()
+        .map(|path| {
+            let stem = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("skill")
+                .to_string();
+            let text = std::fs::read_to_string(&path);
+            let name = text
+                .as_deref()
+                .ok()
+                .and_then(claimed_name)
+                .unwrap_or_else(|| stem.clone());
+            let skill = match text {
+                Ok(text) => {
+                    parse_skill(&text, &stem).map_err(|source| SkillCatalogError::InvalidSkill {
+                        path: path.clone(),
+                        source,
+                    })
+                }
+                Err(source) => Err(SkillCatalogError::ReadFile {
+                    path: path.clone(),
+                    source,
+                }),
+            };
+            SkillEntry { name, path, skill }
+        })
+        .collect())
+}
+
+/// The `name:` a skill file declares, read without parsing the rest, so a file that fails to parse
+/// can still be matched to the skill it was meant to be.
+fn claimed_name(text: &str) -> Option<String> {
+    let (yaml, _) = crate::store::split_frontmatter(text)?;
+    yaml.lines().find_map(|line| {
+        let value = line.strip_prefix("name:")?.trim().trim_matches(['"', '\'']);
+        (!value.is_empty()).then(|| value.to_string())
+    })
+}
+
+/// The highest-precedence definition of `name` across `dirs` (low→high), or its error.
+///
+/// Only the requested skill's own file can fail the lookup. Resolving one prompt used to parse the
+/// whole catalog strictly, so a single half-edited personal skill stopped every `bn skills render`,
+/// dispatch seed, critic and pipeline prompt on the machine. A broken file that claims `name` still
+/// fails: falling back to a lower-precedence copy would silently run a definition the user replaced.
+fn find_skill(dirs: &[PathBuf], name: &str) -> Result<Option<Skill>, SkillCatalogError> {
+    let mut found = None;
+    for dir in dirs {
+        for entry in load_skill_entries(dir)? {
+            let matches = match &entry.skill {
+                Ok(skill) => skill.name == name,
+                Err(_) => entry.name == name,
+            };
+            if matches {
+                found = Some(entry.skill);
+            }
+        }
     }
-    Ok(skills)
+    found.transpose()
 }
 
 /// Merge skills from `dirs` low→high precedence. Internal prompts remain in this runtime set.
@@ -270,9 +329,7 @@ pub fn load_skill(
         .into_iter()
         .map(|(_, dir)| dir)
         .collect();
-    Ok(load_skill_set(&dirs)?
-        .into_iter()
-        .find(|skill| skill.name == name))
+    find_skill(&dirs, name)
 }
 
 /// Resolve and strictly render a required public or internal runtime prompt.
@@ -327,6 +384,61 @@ mod tests {
                 source: TemplateError::InvalidArgumentName { .. }
             })
         ));
+    }
+
+    fn write_skill(dir: &Path, file: &str, text: &str) {
+        std::fs::create_dir_all(dir).expect("mkdir");
+        std::fs::write(dir.join(file), text).expect("write skill");
+    }
+
+    const GOOD: &str = "---\nname: good\ndescription: fine\n---\nbody\n";
+    const BROKEN: &str = "---\nname: broken\ndescription: x\n---\n{{undeclared}}\n";
+
+    /// One broken skill used to fail every lookup, so a half-edited personal skill stopped every
+    /// dispatch seed and `bn skills render` on the machine.
+    #[test]
+    fn a_broken_sibling_does_not_block_another_skill() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_skill(tmp.path(), "good.md", GOOD);
+        write_skill(tmp.path(), "broken.md", BROKEN);
+        let dirs = [tmp.path().to_path_buf()];
+
+        let good = find_skill(&dirs, "good")
+            .expect("good resolves")
+            .expect("good exists");
+        assert_eq!(good.body, "body\n");
+        assert!(find_skill(&dirs, "absent")
+            .expect("absent is not an error")
+            .is_none());
+        // The strict whole-catalog load is unchanged.
+        assert!(load_skill_set(&dirs).is_err());
+    }
+
+    #[test]
+    fn the_broken_skill_itself_still_fails() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_skill(tmp.path(), "renamed-file.md", BROKEN);
+        let error = find_skill(&[tmp.path().to_path_buf()], "broken").expect_err("must fail");
+        assert!(error.to_string().contains("renamed-file.md"), "{error}");
+    }
+
+    /// A broken higher-tier copy must not silently fall back to the lower tier's definition.
+    #[test]
+    fn a_broken_override_does_not_fall_back_to_a_lower_tier() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (low, high) = (tmp.path().join("low"), tmp.path().join("high"));
+        write_skill(
+            &low,
+            "broken.md",
+            "---\nname: broken\ndescription: ok\n---\nlow\n",
+        );
+        write_skill(&high, "broken.md", BROKEN);
+        assert!(find_skill(&[low.clone(), high.clone()], "broken").is_err());
+        // And the other way round, a good override wins over a broken lower tier.
+        let found = find_skill(&[high, low], "broken")
+            .expect("ok")
+            .expect("found");
+        assert_eq!(found.body, "low\n");
     }
 
     #[test]

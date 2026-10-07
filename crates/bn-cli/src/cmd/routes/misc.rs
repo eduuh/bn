@@ -22,7 +22,6 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
         CmdMisc::ForgeAgent { action } => std::process::exit(
             crate::cmd::forge_agent::emit_forge_agent(cfg, action, json),
         ),
-        CmdMisc::Tools { action } => std::process::exit(emit_tools(action, json)),
         CmdMisc::Pipeline {
             repo,
             branch,
@@ -124,7 +123,6 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
                 std::process::exit(code);
             }
         }
-        CmdMisc::Kill { port } => std::process::exit(emit_kill(&port)),
         CmdMisc::Issue { action } => match action {
             IssueCmd::File {
                 title,
@@ -227,7 +225,7 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
         CmdMisc::Stale { days } => emit_stale(cfg, days, json),
         CmdMisc::Archive { days, dry_run } => emit_archive(cfg, days, dry_run, json),
         CmdMisc::Completion { shell } => {
-            let mut cmd = Cli::command();
+            let mut cmd = crate::regroup::command();
             let name = cmd.get_name().to_string();
             clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
         }

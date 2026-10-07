@@ -16,7 +16,6 @@ mod dirs;
 mod jobs;
 mod machine_config;
 mod paths;
-mod tools_config;
 mod util;
 
 pub use config::{
@@ -35,4 +34,3 @@ pub use jobs::{
     agent_dirs, job_dirs, job_script, list_jobs, mcp_extras, mcp_user_servers, parse_script_header,
     script_header, JobConfig, JobRef, JobScope, ScriptHeader, SCRIPT_HEADER_LINES,
 };
-pub use tools_config::ToolsConfig;

@@ -62,7 +62,7 @@ What a machine should do less of. Usually set in that machine's own file.
 |---|---|---|
 | `freshness` | `"exact"` | How current accepted evidence must be: `exact` (at HEAD), `ancestor`, or `any`. |
 | `done_requires` | `"warn"` | What `bn done w<N>` does without accepted evidence: `off`, `warn`, or `refuse`. |
-| `capture` | `true` | Keep `bn verify` and `bn gate` runs as proof, with their output attached. |
+| `capture` | `true` | Keep `bn verify` and `bn verify --rebased` runs as proof, with their output attached. |
 
 ### `[harness]`
 
@@ -89,8 +89,8 @@ What a machine should do less of. Usually set in that machine's own file.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `screenshot_dir` | none | Folder `bn shot` takes screenshots from. |
-| `gif_dir` | none | Folder `bn shot --gif` takes recordings from. |
+| `screenshot_dir` | none | Folder `bn note shot` takes screenshots from. |
+| `gif_dir` | none | Folder `bn note shot --gif` takes recordings from. |
 
 ### `[wrap]`, `[standup]`, `[dxi]`
 
@@ -127,14 +127,14 @@ What a machine should do less of. Usually set in that machine's own file.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `extras` | `[]` | Curated MCP servers `bn mcp init` wires beside bn's own. |
+| `extras` | `[]` | Curated MCP servers `bn setup mcp init` wires beside bn's own. |
 
 ### `[mcp.servers.<name>]`
 
 Your own MCP servers, registered at **user** scope on every machine. `[mcp].extras` is a closed,
 vetted catalog written into *committable* per-repo configs; this is the opposite case — a personal
 server that belongs to you rather than to any repo, and that should exist in every MCP client
-wherever you sit down. `bn mcp sync-user` writes them into Claude Code, Claude Desktop, the VS Code
+wherever you sit down. `bn setup mcp sync-user` writes them into Claude Code, Claude Desktop, the VS Code
 Copilot extension, and the Copilot CLI, whichever are present. `install.sh` runs it too, so a new
 machine picks them up on install.
 
@@ -161,7 +161,7 @@ truth, and an edit here is meant to reach every machine. Servers bn does not dec
 #### `[mcp.servers.<name>.secret_file]`
 
 A credential the server needs, which must not live in this file — `config.toml` is a synced git
-repo. Declare only the *shape* of the secret; `bn mcp sync-user` prompts for the values once per
+repo. Declare only the *shape* of the secret; `bn setup mcp sync-user` prompts for the values once per
 machine, writes them as a flat JSON object, and `chmod 600`s it. An existing file is never read or
 rewritten, so re-running is a no-op. A server whose secret is missing is **skipped** rather than
 registered, since a client would otherwise show it as permanently failing instead of absent.
@@ -193,12 +193,6 @@ hidden = ["client_secret"]
 |---|---|---|
 | `repos` | `[]` | Clone URLs bn keeps checked out under `~/.bn/repos`. |
 
-### `[tools]`
-
-| Key | Default | Meaning |
-|---|---|---|
-| `builtins` | `[]` | bn-shipped tool specs to enable on this machine, such as `n8n`. |
-
 ### `[links]`
 
 | Key | Default | Meaning |
@@ -209,7 +203,7 @@ hidden = ["client_secret"]
 
 Works Forge activities assigned to a family's agent member. The machine opts in by having an HTTP MCP server in `~/.claude.json` whose `Authorization` header carries an agent `fam_` key (Forge Settings → Family → Create agent key). The `forge-agent` job runs every five minutes from `tick-5m`. Each tick heartbeats or reports the runs this machine holds, then claims at most one task whose project repo URL matches a repo cloned here and runs `bn dispatch --agent` on it.
 
-A claim is a lease, not a lock. While the agent runs, the tick renews it. If the machine dies, the lease expires and another machine can claim the task. When the agent runs `bn agent done`, bn kills its window and completes the activity, with the branch's PR in a comment. If the window disappears first, or the run passes `max_runtime_mins`, bn marks the activity Blocked instead. Use `bn forge-agent status`, `run-once` and `release <id>` to inspect or steer it by hand.
+A claim is a lease, not a lock. While the agent runs, the tick renews it. If the machine dies, the lease expires and another machine can claim the task. When the agent runs `bn agent done`, bn kills its window and completes the activity, with the branch's PR in a comment. If the window disappears first, or the run passes `max_runtime_mins`, bn marks the activity Blocked instead. Use `bn forge agent status`, `run-once` and `release <id>` to inspect or steer it by hand.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -334,7 +328,7 @@ Nothing runs it automatically: run it by hand, or from your own cron.
 
 ### `[hosts.<alias>]` and `[nodes.<id>]`
 
-`[hosts.<alias>]` adds what `~/.ssh/config` cannot say to `bn connect`. `[nodes.<id>]` declares
+`[hosts.<alias>]` adds what `~/.ssh/config` cannot say to `bn machine connect`. `[nodes.<id>]` declares
 worker machines for placement, with `target`, `labels`, `ram_total_mb` and `repos`. Both are empty
 by default.
 

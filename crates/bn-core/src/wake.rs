@@ -16,9 +16,14 @@ const SEEN_EVENT_CAP: usize = 8192;
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum WakeTarget {
     Watch,
+    /// Written by the removed `bn afk`; kept so older queue files still parse, and stripped on load.
     Afk,
-    Controller { id: String },
-    Orchestrate { repo: String },
+    Controller {
+        id: String,
+    },
+    Orchestrate {
+        repo: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,8 +108,17 @@ struct WakeState {
 impl WakeState {
     fn load(path: &Path) -> std::io::Result<Self> {
         match std::fs::read_to_string(path) {
-            Ok(body) => serde_json::from_str(&body)
-                .map_err(|error| std::io::Error::new(ErrorKind::InvalidData, error)),
+            Ok(body) => {
+                let mut state: Self = serde_json::from_str(&body)
+                    .map_err(|error| std::io::Error::new(ErrorKind::InvalidData, error))?;
+                // Nothing reads the away-mode digest any more: drop its target, and any wake that
+                // was waiting for nothing else, so it cannot sit in the queue forever.
+                for item in &mut state.items {
+                    item.pending_targets.remove(&WakeTarget::Afk);
+                }
+                state.items.retain(|item| !item.pending_targets.is_empty());
+                Ok(state)
+            }
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(error),
         }
@@ -149,10 +163,7 @@ impl WakeQueue {
 
     /// Enqueue a classified wake. Re-publishing the same event id merges any newly introduced
     /// targets rather than creating duplicate deliveries.
-    pub fn publish(&self, mut wake: ActionableWake) -> std::io::Result<bool> {
-        if crate::afk::is_active(wake.ts) {
-            wake.pending_targets.insert(WakeTarget::Afk);
-        }
+    pub fn publish(&self, wake: ActionableWake) -> std::io::Result<bool> {
         let _lock = FileLock::acquire_required(&self.queue_path)?;
         let mut state = WakeState::load(&self.queue_path)?;
         let changed = if let Some(existing) = state
@@ -160,9 +171,6 @@ impl WakeQueue {
             .iter_mut()
             .find(|item| item.event_id == wake.event_id)
         {
-            if wake.pending_targets.contains(&WakeTarget::Afk) {
-                existing.acknowledged_targets.remove(&WakeTarget::Afk);
-            }
             let old_len = existing.pending_targets.len();
             existing.pending_targets.extend(
                 wake.pending_targets
@@ -171,14 +179,7 @@ impl WakeQueue {
             );
             existing.pending_targets.len() != old_len
         } else if state.seen_event_ids.contains(&wake.event_id) {
-            if wake.pending_targets.contains(&WakeTarget::Afk) {
-                wake.pending_targets = BTreeSet::from([WakeTarget::Afk]);
-                wake.acknowledged_targets.clear();
-                state.items.push(wake);
-                true
-            } else {
-                false
-            }
+            false
         } else {
             state.seen_event_ids.push(wake.event_id.clone());
             let excess = state.seen_event_ids.len().saturating_sub(SEEN_EVENT_CAP);
@@ -226,5 +227,45 @@ impl WakeQueue {
             state.save(&self.queue_path)?;
         }
         Ok(acknowledged)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wake(id: &str, targets: &[WakeTarget]) -> ActionableWake {
+        ActionableWake {
+            event_id: id.to_string(),
+            ts: 1,
+            transition: FleetTransition::Waiting,
+            summary: id.to_string(),
+            pending_targets: targets.iter().cloned().collect(),
+            acknowledged_targets: BTreeSet::new(),
+        }
+    }
+
+    /// A queue written while away mode existed still parses, and a wake that only the away digest
+    /// was waiting for is dropped instead of sitting in the queue forever.
+    #[test]
+    fn old_away_mode_targets_are_stripped_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wake-queue.json");
+        let old = WakeState {
+            items: vec![
+                wake("afk-only", &[WakeTarget::Afk]),
+                wake("both", &[WakeTarget::Watch, WakeTarget::Afk]),
+            ],
+            ..WakeState::default()
+        };
+        std::fs::write(&path, serde_json::to_string(&old).unwrap()).unwrap();
+
+        let loaded = WakeState::load(&path).unwrap();
+        assert_eq!(loaded.items.len(), 1);
+        assert_eq!(loaded.items[0].event_id, "both");
+        assert_eq!(
+            loaded.items[0].pending_targets,
+            BTreeSet::from([WakeTarget::Watch])
+        );
     }
 }

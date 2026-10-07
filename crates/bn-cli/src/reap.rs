@@ -277,7 +277,7 @@ fn capture_tail(target: &str, n: usize) -> Vec<String> {
 }
 
 /// SIGTERM the whole set, wait up to ~2s, then SIGKILL the survivors. Returns how many pids were
-/// alive to begin with. Reuses the same graceful→forceful primitives as `bn kill`.
+/// alive to begin with. Reuses the graceful→forceful primitives in `cmd::killport`.
 fn kill_tree(pids: &[i32]) -> usize {
     let mut alive: Vec<i32> = pids
         .iter()

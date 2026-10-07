@@ -1,4 +1,4 @@
-//! `bn recall / search / related / todo / list / summary` — semantic recall + note listings.
+//! `bn search / todo / list / summary` and the recall index the `recall-index` cron builds.
 use crate::*;
 
 /// Auto-surface (issue #249): on a freshly-created note, print up to 3 semantically-similar past
@@ -124,82 +124,25 @@ pub(crate) fn emit_summary(cfg: &Config, as_json: bool) {
     }
 }
 
-/// `bn recall [query...] [--repo R] [--index] [--limit N]` — semantic recall over the whole note
-/// corpus. `--index` (re)builds the machine-local index; otherwise the query is ranked against a
-/// warm index, degrading to `bn search` (with a stderr notice) when the index is cold/stale.
-pub(crate) fn emit_recall(
-    cfg: &Config,
-    query: &str,
-    repo: Option<&str>,
-    index: bool,
-    limit: usize,
-    as_json: bool,
-) {
+/// (Re)build the machine-local semantic-recall index, re-embedding only changed files. Run by the
+/// `recall-index` cron; the index feeds the past-notes hint on a new note.
+pub(crate) fn build_recall_index(cfg: &Config) {
     use bn_core::recall;
     let index_path = recall::default_index_path();
-    let embedder = recall::default_embedder();
-
-    if index {
-        let stats = recall::build_index(cfg, &index_path, &embedder);
-        if as_json && json_ok("recall", payload::recall_index_data(&stats)) {
-            return;
-        }
-        let mode = if stats.full_rebuild {
-            "full rebuild"
-        } else {
-            "incremental"
-        };
-        println!(
-            "recall index ({mode}): {} files, {} chunks — {} embedded, {} reused\n  {}",
-            stats.files,
-            stats.chunks,
-            stats.embedded,
-            stats.reused,
-            index_path.display()
-        );
-        return;
-    }
-
-    if query.trim().is_empty() {
-        fail("bn recall: give a query, or `--index` to (re)build the index");
-    }
-
-    let out = recall::recall(cfg, &index_path, query, repo, limit, &today(), &embedder);
-    if as_json && json_ok("recall", payload::recall_data(&out)) {
-        return;
-    }
-    if let Some(reason) = &out.degraded_reason {
-        eprintln!("bn recall: {reason}");
-    }
-    if out.hits.is_empty() {
-        println!("No recall hits for '{query}'");
-        return;
-    }
-    for h in &out.hits {
-        let c = &h.chunk;
-        let archived = if c.status == "closed" {
-            " (archived)"
-        } else {
-            ""
-        };
-        let date = if c.date.is_empty() {
-            String::new()
-        } else {
-            format!(" {}", c.date)
-        };
-        // Score is meaningful only for real index hits (fallback hits are all 0.0).
-        let score = if out.source == recall::RecallSource::Index {
-            format!("  [{:.2}] ", h.score)
-        } else {
-            "  ".to_string()
-        };
-        let snippet = c.text.replace('\n', " ");
-        let snippet = snippet.trim();
-        println!(
-            "{}/{} {}{}{}\n{}{}",
-            c.repo, c.branch, c.kind, date, archived, score, snippet
-        );
-    }
+    let stats = recall::build_index(cfg, &index_path, &recall::default_embedder());
+    let mode = if stats.full_rebuild {
+        "full rebuild"
+    } else {
+        "incremental"
+    };
+    println!(
+        "recall index ({mode}): {} files, {} chunks — {} embedded, {} reused\n  {}",
+        stats.files,
+        stats.chunks,
+        stats.embedded,
+        stats.reused,
+        index_path.display()
+    );
 }
 
 pub(crate) fn emit_search(cfg: &Config, query: &str, limit: usize, as_json: bool) {
@@ -224,60 +167,3 @@ pub(crate) fn emit_search(cfg: &Config, query: &str, limit: usize, as_json: bool
     }
 }
 
-/// `bn related [--branch <name>] [--limit N]` — past branches that touched the same files,
-/// ranked by overlap. Derived offline from git via the command-runner seam.
-pub(crate) fn emit_related(cfg: &Config, branch: Option<&str>, limit: usize, as_json: bool) {
-    use bn_core::runner::{CommandRunner, RealRunner};
-    // Resolve the target branch ONCE, so the JSON `branch` label and the scoring are computed
-    // against the same ref — resolving twice lets a mid-flight branch switch yield
-    // {branch: A, related: scored against B}.
-    let target = branch.map(str::to_string).unwrap_or_else(|| {
-        RealRunner
-            .git(&["rev-parse", "--abbrev-ref", "HEAD"])
-            .ok_stdout()
-            .filter(|b| b != "HEAD")
-            .unwrap_or_default()
-    });
-    // Empty target = detached HEAD; pass None so related_branches keeps its "yields nothing" path.
-    let target_opt = (!target.is_empty()).then_some(target.as_str());
-    let related = bn_core::related::related_branches(cfg, &RealRunner, target_opt, limit);
-    if as_json && json_ok("related", payload::related_data(&target, &related)) {
-        return;
-    }
-    if related.is_empty() {
-        println!("No related branches — nothing else touched {target}'s files");
-        return;
-    }
-    let label = if target.is_empty() {
-        "this branch".to_string()
-    } else {
-        target
-    };
-    println!("Past branches that touched {label}'s files:");
-    for r in &related {
-        let area = if r.work_item_match {
-            " · same area"
-        } else {
-            ""
-        };
-        let dec = if r.decisions > 0 {
-            format!(
-                " · {} decision{}",
-                r.decisions,
-                if r.decisions == 1 { "" } else { "s" }
-            )
-        } else {
-            String::new()
-        };
-        let archived = if r.status == "closed" {
-            " (archived)"
-        } else {
-            ""
-        };
-        let files = r.shared_files.join(", ");
-        println!(
-            "  {}/{}{}  {} shared{}{}\n    {}",
-            r.repo, r.branch, archived, r.shared_count, area, dec, files
-        );
-    }
-}

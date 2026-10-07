@@ -691,9 +691,9 @@ fn degrade_to_search(
     index_path: &Path,
 ) -> RecallOutcome {
     let reason = if index_path.exists() {
-        "recall index is stale — showing substring matches; run `bn recall --index` to rebuild"
+        "recall index is stale — showing substring matches; run `bn run recall-index` to rebuild"
     } else {
-        "recall index is cold — showing substring matches; run `bn recall --index` to build it"
+        "recall index is cold — showing substring matches; run `bn run recall-index` to build it"
     };
     let hits = search::search(cfg, query, 0)
         .into_iter()

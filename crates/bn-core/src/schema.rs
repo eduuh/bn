@@ -130,12 +130,6 @@ pub const COMMANDS: &[CommandSchema] = &[
         ],
     },
     CommandSchema {
-        tag: "tools",
-        invocation: "bn tools list --json",
-        summary: "the declared docker-backed developer tools",
-        fields: &["tools: array — the tool specs, as declared in tools.toml"],
-    },
-    CommandSchema {
         tag: "findings-sources",
         invocation: "bn findings sources --json",
         summary: "the sources the findings store holds history for",

@@ -50,15 +50,9 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
                 cmd::harness_models::emit_harness_models(harness.as_deref(), json)
             }
         },
-        CmdAutomation::Mobile { host } => mobile::run(cfg, &host),
         CmdAutomation::Tunnels => std::process::exit(cmd::cron::run_job(cfg, None, "tunnels")),
         CmdAutomation::Notify { action } => match action {
             None | Some(NotifyCmd::Status) => cmd::notify::emit_notify_status(cfg, json),
-        },
-        CmdAutomation::Focus { action } => match action {
-            None | Some(FocusCmd::Status) => emit_focus_status(json),
-            Some(FocusCmd::Start { dur }) => emit_focus_start(&dur, json),
-            Some(FocusCmd::End) => emit_focus_end(cfg, json),
         },
         CmdAutomation::Sync { yes } => {
             let ctx = resolve_or_exit(cfg);
@@ -191,10 +185,6 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
                 repo,
                 branch,
             }) => {
-                // Finishing with queue rows still open leaves them to look like a crash.
-                if let Some(ctx) = target_ctx(cfg, repo.clone(), branch.clone()) {
-                    crate::cmd::queue::warn_open_rows(&ctx);
-                }
                 emit_agent_done(
                     cfg,
                     summary,

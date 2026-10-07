@@ -8,13 +8,6 @@ use crate::*;
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum CmdStaff {
-    /// Away mode — batched fleet supervision. While away, routine agent activity is absorbed and
-    /// only captain-relevant events (an agent that needs you / is stuck, an urgent attention item)
-    /// count. `bn afk end` prints ONE batched digest of what needs you. Bare `bn afk` shows status.
-    Afk {
-        #[command(subcommand)]
-        action: Option<AfkCmd>,
-    },
     /// The wake watcher — a cheap (no-LLM) event reactor. Each pass gathers what needs you (agents
     /// Reacts to newly waiting/blocked/stuck agents, completions, and urgent attention with a toast.
     /// Filesystem events wake it; `--interval` is the fallback for time-based changes, and `--once`

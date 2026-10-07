@@ -101,8 +101,8 @@ identified). Configure both only when requested. Inspect the destination files f
 applicable command from the repository root:
 
 ```bash
-bn mcp init copilot
-bn mcp init claude
+bn setup mcp init copilot
+bn setup mcp init claude
 ```
 
 Copilot writes `.github/mcp.json`, `.vscode/mcp.json`, and the managed block in
@@ -152,7 +152,7 @@ docs-only repo), state that explicitly; do not invent a gate or claim verificati
 
 ### 6. Confirm and hand back
 
-Rerun the selected `bn mcp init` command and inspect the diff: no duplicate managed blocks or server
+Rerun the selected `bn setup mcp init` command and inspect the diff: no duplicate managed blocks or server
 entries, and unrelated content is unchanged. Confirm `bn status --json` and `bn --path` still point
 at the intended note. Check catalog discovery with `bn skills find setup bn` and inspect the
 selected harness's generated native skill file; discovery alone does not prove native installation.

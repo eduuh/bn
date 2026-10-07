@@ -43,13 +43,13 @@ never appear in help.
 <table>
 <thead><tr><th>Family</th><th>Commands that matter</th></tr></thead>
 <tbody>
-<tr><td><strong>Intake / dispatch</strong></td><td><code>bn add &lt;section&gt;</code>, <code>bn q</code> (zero-friction inbox), <code>bn capture &lt;url&gt;</code>, and the pivotal <code>bn dispatch</code> — resolves an item, cuts a worktree, seeds the goal, opens a tmux window</td></tr>
+<tr><td><strong>Intake / dispatch</strong></td><td><code>bn add &lt;section&gt;</code>, <code>bn task q</code> (zero-friction inbox), <code>bn add --url &lt;url&gt;</code>, and the pivotal <code>bn dispatch</code> — resolves an item, cuts a worktree, seeds the goal, opens a tmux window</td></tr>
 <tr><td><strong>Note / review</strong></td><td><code>bn goal</code>, <code>bn done</code>, <code>bn cat</code>, <code>bn ingest</code>, <code>bn learned</code>, <code>bn reflect</code></td></tr>
-<tr><td><strong>Planning / time</strong></td><td><code>bn todo</code>, <code>bn task</code>, <code>bn daily</code>, <code>bn quarter</code>; the punch clock <code>bn in</code> / <code>bn out</code> / <code>bn track</code>; <code>bn wrap</code>, <code>bn calib</code></td></tr>
-<tr><td><strong>Insight</strong></td><td><code>bn next</code> (the ranked "what now"), <code>bn search</code>, <code>bn recall</code>, <code>bn metrics</code>, <code>bn doctor</code>, <code>bn today</code></td></tr>
-<tr><td><strong>Automation</strong></td><td><code>bn jump</code>, <code>bn tat</code>, <code>bn attn</code>, <code>bn focus</code>, <code>bn sessions</code>, <code>bn resume</code></td></tr>
-<tr><td><strong>Staff / ops</strong></td><td><code>bn run &lt;job&gt;</code>, <code>bn cron</code>, <code>bn machine</code>, <code>bn estate</code>, <code>bn agents</code>, <code>bn mcp</code></td></tr>
-<tr><td><strong>Misc</strong></td><td><code>bn cost</code>, <code>bn build</code>, <code>bn kill</code>, <code>bn links</code>, <code>bn ref</code>, <code>bn pipeline</code></td></tr>
+<tr><td><strong>Planning / time</strong></td><td><code>bn list --todos</code>, <code>bn task</code>, <code>bn daily</code>, <code>bn quarter</code>; <code>bn wrap</code>, <code>bn calib</code></td></tr>
+<tr><td><strong>Insight</strong></td><td><code>bn next</code> (the ranked "what now"), <code>bn search</code>, <code>bn stats metrics</code>, <code>bn next --stale</code>, <code>bn today</code></td></tr>
+<tr><td><strong>Automation</strong></td><td><code>bn jump</code>, <code>bn tat</code>, <code>bn attn</code>, <code>bn agent registry</code>, <code>bn agent resume</code></td></tr>
+<tr><td><strong>Staff / ops</strong></td><td><code>bn run &lt;job&gt;</code>, <code>bn cron</code>, <code>bn machine</code>, <code>bn estate</code>, <code>bn agents</code>, <code>bn setup mcp</code></td></tr>
+<tr><td><strong>Misc</strong></td><td><code>bn stats cost</code>, <code>bn build</code>, <code>bn links</code>, <code>bn ref</code>, <code>bn pipeline</code></td></tr>
 </tbody>
 </table>
 </div>
@@ -57,7 +57,7 @@ never appear in help.
 <div class="note">
 <span class="note__label">Two commands one letter apart</span>
 <p>
-<code>bn review</code> is the <em>plan-approval gate</em>. <code>bn reviews</code> is the
+<code>bn review</code> is the <em>plan-approval gate</em>. <code>bn review queue</code> is the
 <em>PR review queue</em>. They are unrelated.
 <span class="src">cli.rs:433, :684</span>
 </p>
@@ -69,7 +69,7 @@ never appear in help.
 The native terminal picker and tmux bindings are the interactive UI:
 <code>prefix j</code> = <code>bn jump</code>, <code>prefix Tab</code> = next agent,
 <code>prefix C-o</code> = <code>bn tat</code> (switch project),
-<code>prefix C-a</code> = <code>bn doctor --pick</code>,
+<code>prefix C-a</code> = <code>bn next --stale --pick</code>,
 <code>prefix a</code> / <code>prefix b</code> = add a todo or blocker without leaving the pane.
 <span class="src">config/workflow/tmux.conf &mdash; grep the <code>bind</code> for a key, or run <code>prefix ?</code></span>
 </p>
@@ -135,7 +135,7 @@ schedule language is systemd <code>OnCalendar</code> — everywhere, including m
 
 <p>
 Several ticks fold multiple jobs behind one timer to cut timer churn:
-<code>tick-5m</code> runs tools-reconcile, coord-tick, attention-sync, tmux-reconcile and tmux-keylog;
+<code>tick-5m</code> runs coord-tick, attention-sync, tmux-reconcile, tmux-keylog and forge-agent;
 <code>tick-10m</code> runs auto-review-trigger, attention-auto-trigger and agent-supervise;
 <code>tick-15m</code> runs main-sync, auto-review-poll and cron-health. Each child still records
 its own <code>cron_run</code> event, so per-job rows survive.
@@ -228,9 +228,9 @@ bn add done-when "test passes 20x in a row"
 bn add todo "reproduce locally with a seeded clock"
 
 # Work. Capture as you go, without leaving the pane (prefix a / prefix b)
-bn q "leases.json holder can outlive every agent that held it"
+bn task q "leases.json holder can outlive every agent that held it"
 bn done t1
-bn notes "root cause: reconcile ran before the tmux server exited"
+bn add notes "root cause: reconcile ran before the tmux server exited"
 bn learned "reconcile the pool-slot ledger before trusting leases.json"
 
 # Ship
@@ -243,7 +243,7 @@ bn ingest                                 # fold the diffstat back into the note
 bn reflect "should have checked the lease ledger before the test"
 bn out
 bn wrap
-bn cost --by category --window 1</code></pre>
+bn stats cost --by category --window 1</code></pre>
 
 <h2>Things that will mislead you</h2>
 
@@ -255,7 +255,7 @@ nine-stage pipeline.</strong> The pipeline is behind <code>$BN_DISPATCH_PIPELINE
 <li><strong><code>bn today</code> runs an LLM agent by default.</strong> It is not a static
 list read, and it costs something each time.</li>
 
-<li><strong><code>bn cost</code>'s dollar figure is not a bill.</strong> Only AIC is metered;
+<li><strong><code>bn stats cost</code>'s dollar figure is not a bill.</strong> Only AIC is metered;
 <code>$</code> is a public-list-price benchmark.</li>
 
 <li><strong>macOS never sees <code>OnCalendar</code>.</strong> It is translated at generation
@@ -283,7 +283,7 @@ registration found.</li>
 <li><code>config/crons.toml</code> is the shipped default for the <code>bn</code> repo.
 Per-repo and per-branch tiers exist (<code>crons.rs:118</code>) and would change what a given
 machine actually runs; they were not enumerated.</li>
-<li>The <code>--live</code> flag on <code>bn cost</code> is documented in its doc comment but
+<li>The <code>--live</code> flag on <code>bn stats cost</code> is documented in its doc comment but
 its implementation was not read.</li>
 </ul>
 

@@ -29,7 +29,7 @@ handling, and incorrect edge cases. Pay special attention to:
 
 Record the verdict with:
 
-`bn review-gate record {{repo}} {{number}} --reviewer {{reviewer}} --verdict approve|block --summary '...' --finding 'blocking: <defect>' --finding 'advisory: <nit>'`
+`bn review diff record {{repo}} {{number}} --reviewer {{reviewer}} --verdict approve|block --summary '...' --finding 'blocking: <defect>' --finding 'advisory: <nit>'`
 
 (the verdict is pinned to this worktree's HEAD sha automatically; pass `--sha` only to override).
 

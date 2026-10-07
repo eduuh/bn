@@ -27,8 +27,8 @@ You are wrapping up a work session on the current branch.
    you will want again — the PBI, an Azure portal blade, a dashboard, the doc that answered the
    question. They are person-scoped and cross-machine, so they outlive this worktree; a URL only
    in the note leaves when the worktree does.
-9. If the branch's work is merged and finished, run `bn close` in the shell — promptly, since
-   the merge→close gap is what `bn metrics` measures as close-out lag. It warns about any PR or
+9. If the branch's work is merged and finished, run `bn note close` in the shell — promptly, since
+   the merge→close gap is what `bn stats metrics` measures as close-out lag. It warns about any PR or
    work item you have not captured.
 10. Finish with a 2–3 line summary of what changed and what's left.
 

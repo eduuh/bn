@@ -83,7 +83,6 @@ pub const KNOWN_SECTIONS: &[&str] = &[
     "staff",
     "standup",
     "tasks",
-    "tools",
     "work",
     "wrap",
 ];

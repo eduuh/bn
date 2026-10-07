@@ -39,7 +39,6 @@ pub(crate) fn native_job(job: &str) -> Option<NativeJob> {
         "main-sync" => Some(crate::cmd::main_sync::job_main_sync),
         "refresh-all" => Some(job_refresh_all),
         "self-update" => Some(crate::cmd::self_update::job_self_update),
-        "tools-reconcile" => Some(job_tools_reconcile),
         "tmux-reconcile" => Some(crate::cmd::tmux_reconcile::job_tmux_reconcile),
         "tmux-keylog" => Some(crate::cmd::tmux_keys::job_tmux_keylog),
         "keep-warm" => Some(crate::cmd::keep_warm::job_keep_warm),
@@ -58,7 +57,7 @@ pub(crate) fn native_job(job: &str) -> Option<NativeJob> {
         "cron-health" => Some(crate::cmd::attention_workflow::job_cron_health),
         "agent-scheduler" => Some(crate::cmd::cron::job_agent_scheduler),
         "reactor" => Some(crate::cmd::on::job_reactor),
-        "coord-tick" => Some(crate::cmd::queue::sweep::job_coord_tick),
+        "coord-tick" => Some(crate::cmd::watchdog::job_coord_tick),
         "tick-5m" => Some(job_tick_5m),
         "tick-10m" => Some(job_tick_10m),
         "tick-15m" => Some(job_tick_15m),
@@ -75,7 +74,6 @@ pub(crate) fn native_job(job: &str) -> Option<NativeJob> {
 /// `tmux-keylog` rides here because its window is set by tmux's `message-limit` (10000 rows, about
 /// 20 minutes of this machine's status polling): five minutes drains it well inside that.
 pub(crate) const TICK_5M: &[&str] = &[
-    "tools-reconcile",
     "coord-tick",
     "attention-sync",
     "tmux-reconcile",

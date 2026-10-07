@@ -1,7 +1,7 @@
 ---
 name: multi-device
 description: Work across several machines (laptop, Cloud PCs, other PCs) as one - put a machine on the bn tunnel mesh, see which machines are up and why not, run an agent on another machine that survives dropped connections, message agents wherever they run, and upgrade every machine.
-when: A task involves another machine - adding or fixing a machine, a machine missing from bn tunnels, launching or steering an agent on a Cloud PC, running a long command remotely, or upgrading bn on several machines.
+when: A task involves another machine - adding or fixing a machine, a machine missing from bn machine tunnels, launching or steering an agent on a Cloud PC, running a long command remotely, or upgrading bn on several machines.
 keywords: [multi-device, machines, remote, cloud-pc, tunnel, tunnels, mesh, ssh, host, launch, attach, durable, upgrade, lan]
 ---
 
@@ -28,17 +28,17 @@ It installs what is missing (sshd, tmux, nc, curl, ss, gh), downloads the devtun
 - `BN_TUNNEL_HOST=0` makes a connect-only machine: it never hosts, sshd is not installed, and the others drop it.
 - `BN_TUNNEL_LAN=1` turns on local network mode. On the same LAN, ssh goes straight to the machine and uses the tunnel only as a fallback. On WSL this needs mirrored networking and one Windows firewall rule, and setup prints both.
 
-- `BN_TUNNEL_NICK=<name>` gives the machine a nickname (letters, digits, dashes). The hostname stays its real name (`hostname` shows it). The nickname leads the terminal title and tmux status bar, shows in `bn tunnels`, and is an ssh alias on the other machines (in lowercase). It is saved on the machine (`~/.config/bn/tunnel.conf`) and recorded in the notes repo (`bn/tunnel.conf`, one `[machine "<hostname>"]` section each), so a rebuilt machine gets it back.
+- `BN_TUNNEL_NICK=<name>` gives the machine a nickname (letters, digits, dashes). The hostname stays its real name (`hostname` shows it). The nickname leads the terminal title and tmux status bar, shows in `bn machine tunnels`, and is an ssh alias on the other machines (in lowercase). It is saved on the machine (`~/.config/bn/tunnel.conf`) and recorded in the notes repo (`bn/tunnel.conf`, one `[machine "<hostname>"]` section each), so a rebuilt machine gets it back.
 
 A signed-in machine enrols itself within 5 minutes even without setup. Opt out with `git config --global bn.tunnelAuto off`.
 
 ## See the mesh
 
 ```sh
-bn tunnels
+bn machine tunnels
 ```
 
-This lists every host on the account, including ones this machine has not connected to yet. For each it shows the route (`tunnel :<port>` or `LAN <ip>`), whether anything is hosting its tunnel (`HOST-END`), and a reason when it is down. The reason is the machine's own report when there is one ("devtunnel is signed out", "silent since 20:10"). Reports travel as `refs/heads/bn-status/<machine>` in the work-notes repo, so they still say something when the machine itself is off. It takes about 10 seconds. The `⇄` segment in the tmux status bar shows only connections whose latest watchdog check passed. Disconnected hosts stay in `bn tunnels`, not the bar; `⇄ ?` means the watchdog cache is stale.
+This lists every host on the account, including ones this machine has not connected to yet. For each it shows the route (`tunnel :<port>` or `LAN <ip>`), whether anything is hosting its tunnel (`HOST-END`), and a reason when it is down. The reason is the machine's own report when there is one ("devtunnel is signed out", "silent since 20:10"). Reports travel as `refs/heads/bn-status/<machine>` in the work-notes repo, so they still say something when the machine itself is off. It takes about 10 seconds. The `⇄` segment in the tmux status bar shows only connections whose latest watchdog check passed. Disconnected hosts stay in `bn machine tunnels`, not the bar; `⇄ ?` means the watchdog cache is stale.
 
 ## Run an agent on another machine
 
@@ -101,7 +101,7 @@ This works wherever the target runs. When the target is not live here, bn asks e
 
 Lessons from a long session that set up four machines; each cost real time before it was learned.
 
-- **Look before acting.** `bn tunnels` (about 10 seconds) says which machines are up, their names, and why one is down. Start there instead of probing each machine with ssh.
+- **Look before acting.** `bn machine tunnels` (about 10 seconds) says which machines are up, their names, and why one is down. Start there instead of probing each machine with ssh.
 - **Fan out, then wait once.** Start the same job on every machine in its own tmux window, then wait in one background loop for every marker. Do not poll with repeated short commands.
 - **Git on a machine without credentials: push to it, never pull on it.** `git push ssh://<machine><repo path> <ref>:refs/remotes/origin/<ref>`, then `git merge --ff-only origin/<ref>` there. The same works for the notes repo and the nvim config. A `git pull` there hangs on a username prompt.
 - **bn's clones fetch only `main`.** For a branch: `git fetch origin <branch> && git merge --ff-only FETCH_HEAD`.
@@ -141,14 +141,14 @@ To try an unmerged branch on another machine, remember that bn's bare clones fet
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| A machine is missing from `bn tunnels` | It has no tunnel on this account: never set up, signed out, a different devtunnel account, or bn older than the first-run fix | On it: `devtunnel user show`, upgrade bn, `bn run tunnel-setup` |
+| A machine is missing from `bn machine tunnels` | It has no tunnel on this account: never set up, signed out, a different devtunnel account, or bn older than the first-run fix | On it: `devtunnel user show`, upgrade bn, `bn run tunnel-setup` |
 | `DOWN`, `HOST-END no` | Nothing hosts its tunnel: the machine is off or asleep, WSL stopped, or devtunnel is signed out there | Its report line says which. Sign in to that machine, or run `wsl-keepalive boot` there |
 | `Permission denied (publickey)` | This machine's key is not on the GitHub account the host trusts, or the host has not re-read the keys | `bn run tunnel-setup` here, then `bn run tunnel-host` there |
-| `silent since <time>` | Its watchdog stopped reporting: off, asleep, or the watchdog died | Wake or sign in to it; check `bn tunnels` there |
+| `silent since <time>` | Its watchdog stopped reporting: off, asleep, or the watchdog died | Wake or sign in to it; check `bn machine tunnels` there |
 | The agent view says "lost the connection" | The tunnel dropped. The agent keeps running | Wait; the watchdog rebuilds the tunnel within about a minute and the view attaches again |
 | `bn agent launch --host` says "no checkout there, and none could be made" | The branch is not pushed, so `bn wt add` there could not check it out | `git push -u origin <branch>`, then launch again |
 | `git pull` asks for a username on a remote | That machine has no GitHub credentials | Push to it over ssh (see "Upgrade bn everywhere") |
-| `bn tunnels` says "report not published yet" on a machine | Its notes repo cannot push (no GitHub credentials there) | `gh auth login` and `gh auth setup-git` on that machine |
+| `bn machine tunnels` says "report not published yet" on a machine | Its notes repo cannot push (no GitHub credentials there) | `gh auth login` and `gh auth setup-git` on that machine |
 | A new nickname does not show on the other machines | They re-read nicknames on their 15-minute reconnect pass | `bn run tunnel-connect` on each of them |
 | `devtunnel` dies with "Couldn't find a valid ICU package" | A .NET program, and the machine has no libicu | Current bn wraps it; or `sudo apt-get install -y libicu-dev` (dotfiles installs it) |
 | `bn run tunnel-setup` prints TOML errors and "queued bn/run-tunnel-setup" | The installed `bn` is older than `bn/main` | `./build.sh` in `bn/main` (the published release is older still) |
@@ -157,8 +157,8 @@ To try an unmerged branch on another machine, remember that bn's bare clones fet
 ## Don't
 
 - Don't run a long job over bare ssh. Use a tmux window on the remote.
-- Don't kill `bn-tunnels` windows by hand to "fix" a tunnel. The watchdog restarts a dead forward itself, and `bn tunnels` says what is actually wrong.
-- Don't pass a host name you did not get from `bn tunnels` or `~/.ssh/config`. bn refuses anything that could be read as an ssh option.
+- Don't kill `bn-tunnels` windows by hand to "fix" a tunnel. The watchdog restarts a dead forward itself, and `bn machine tunnels` says what is actually wrong.
+- Don't pass a host name you did not get from `bn machine tunnels` or `~/.ssh/config`. bn refuses anything that could be read as an ssh option.
 - Don't sign a machine in to Dev Tunnels with a second account "to test". It splits the mesh in two.
 - Don't `pgrep -f`/`pkill -f` with a pattern your own command line also contains; it finds (or kills) the command doing the looking. Match on the process name and parent instead.
 - Don't leave a background waiter running after you change the job it waits for; stop it, or it waits forever on a marker that will never appear.

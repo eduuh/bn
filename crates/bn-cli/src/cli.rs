@@ -34,7 +34,7 @@ pub(crate) use control_cmd::ControlCmd;
 mod verify_args;
 pub(crate) use verify_args::VerifyArgs;
 pub(crate) mod coord_group;
-pub(crate) use coord_group::{CmdCoord, CompactCmd, ContextCmd, ProofCmd, QueueCmd, WatchdogCmd};
+pub(crate) use coord_group::{CmdCoord, CompactCmd, ContextCmd, ProofCmd, WatchdogCmd};
 mod issue_kind;
 pub(crate) use issue_kind::IssueKindArg;
 
@@ -442,42 +442,6 @@ pub(crate) enum CmdPlanning {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum CmdTracking {
-    /// Start (or switch to) the activity you're working on now — a time-tracking punch. The
-    /// previously-running activity ends the instant this lands: bn in <activity...>
-    /// [--task <id>] [--link <url>] [--tag <tag>] [--at <HH:MM> | --ago <dur>]. Auto-stamps the
-    /// current repo/branch.
-    In {
-        #[arg(required = true)]
-        activity: Vec<String>,
-        /// Work-item id recorded verbatim as the entry's link (rolls up in `bn track report`).
-        #[arg(long)]
-        task: Option<String>,
-        /// Attach a raw URL (wins over --task).
-        #[arg(long)]
-        link: Option<String>,
-        /// Categorize the activity (dev/meeting/review/break…) for clean report rollups.
-        #[arg(long)]
-        tag: Option<String>,
-        /// Backdate the punch to a wall-clock time today (HH:MM), e.g. the morning you actually
-        /// started. Mutually exclusive with --ago; must not be in the future.
-        #[arg(long, value_name = "HH:MM", conflicts_with = "ago")]
-        at: Option<String>,
-        /// Backdate the punch by a duration before now (45m, 2h, 1h30m). Mutually exclusive
-        /// with --at.
-        #[arg(long, value_name = "DUR")]
-        ago: Option<String>,
-    },
-    /// End the current activity / your tracked day — a closing punch: bn out.
-    Out,
-    /// Show today's tracked timeline with durations (or query/report): bn track [at <HH:MM>]
-    /// [report [--by activity|tag|branch|task]] [--day <date>].
-    Track {
-        #[command(subcommand)]
-        action: Option<TrackCmd>,
-        /// View a specific past day (YYYY-MM-DD) instead of today. Only for the bare timeline.
-        #[arg(long)]
-        day: Option<String>,
-    },
     /// Weekly auto-retro: mine the telemetry bn already collects (punch log, focus blocks, PR
     /// metrics, todo ages, daily goals) into a metric table + one heuristic suggestion. Anchored
     /// to the weekly window like `bn weekly`; read-only and network-free. This is the *objective*
@@ -506,34 +470,6 @@ pub(crate) enum CmdInsights {
         query: Vec<String>,
         /// Max hits to return (default 50).
         #[arg(long, default_value_t = 50)]
-        limit: usize,
-    },
-    /// Semantic recall over ALL notes (active + closed) and investigation docs, ranked by
-    /// meaning — the decision log that finally pays interest. `bn recall "<query>"`.
-    /// Degrades to `bn search` semantics (with a notice) when the index is cold; build/refresh
-    /// the machine-local index with `bn recall --index` (also a cron job).
-    Recall {
-        /// The query. Omit only with `--index` (to just (re)build the index).
-        query: Vec<String>,
-        /// Scope to one repo (matched on the trailing path segment: `bn` matches `owner/bn`).
-        #[arg(long)]
-        repo: Option<String>,
-        /// (Re)build the machine-local index incrementally, then exit. Re-embeds only changed
-        /// files. Fetches nothing at query time; this is the one place a model would bootstrap.
-        #[arg(long)]
-        index: bool,
-        /// Max hits to return (default 20).
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-    },
-    /// Related branches: past branches that touched the same files (and work-item area),
-    /// ranked by overlap. Offline, derived from git. `bn related [--branch <name>]`.
-    Related {
-        /// Branch to find neighbours for (default: the current branch).
-        #[arg(long)]
-        branch: Option<String>,
-        /// Max related branches to return (default 10, 0 = uncapped).
-        #[arg(long, default_value_t = 10)]
         limit: usize,
     },
     /// PR review queue: the open PRs awaiting your review and your own, from a local cache.
@@ -657,7 +593,6 @@ pub(crate) mod links_cmd;
 pub(crate) mod machine_cmd;
 pub(crate) mod shell_ui_cmd;
 pub(crate) mod staff_group;
-pub(crate) mod tools_cmd;
 pub(crate) mod worker_cmd;
 pub(crate) use automation_cmd::CmdAutomation;
 pub(crate) use cron_cmd::CronCmd;
@@ -666,7 +601,6 @@ pub(crate) use links_cmd::{LinksArgs, LinksCmd};
 pub(crate) use machine_cmd::MachineCmd;
 pub(crate) use shell_ui_cmd::CmdShellUi;
 pub(crate) use staff_group::{CmdStaff, HandoffCmd};
-pub(crate) use tools_cmd::ToolsCmd;
 pub(crate) use worker_cmd::WorkerCmd;
 
 #[derive(Subcommand, Debug)]
@@ -723,9 +657,6 @@ pub(crate) enum CmdGitPr {
         #[arg(long, default_value_t = 120)]
         fresh: u64,
     },
-    /// Stage tracked changes, commit (default `wip: …`), and push if an upstream is set.
-    #[command(visible_alias = "ap")]
-    Autopush { message: Vec<String> },
     /// Git diff stat vs the branch's base, its note's open todos + blockers, and the commit-count
     /// ahead. A quick "where am I" — for this branch, or for any other worktree via `--path` /
     /// `--repo`+`--branch`, which is what makes it usable as a picker preview.
@@ -758,11 +689,6 @@ pub(crate) enum CmdGitPr {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum CmdMisc {
-    /// SIGTERM (then SIGKILL after a grace period) every process listening on a TCP port.
-    Kill {
-        /// TCP port to free.
-        port: String,
-    },
     /// Remove empty-text placeholder items from the current note (or --all notes).
     Clean {
         /// Clean every active note instead of just the current branch's.
@@ -918,18 +844,6 @@ pub(crate) enum CmdMisc {
         #[command(subcommand)]
         action: crate::cmd::forge_agent::ForgeAgentCmd,
     },
-    /// Managed "tools" (services) subsystem (#653): declaratively deploy and keep long-running
-    /// local developer tools alive. Backed by docker (via `docker`, falling back to `docker.exe`
-    /// on WSL). Built-in specs (pilot: **n8n**) are opt-in via `[tools].builtins` /
-    /// `$BN_TOOLS_BUILTINS`; user tools live in `<config_dir>/tools.toml`.
-    /// `bn tools list` shows declared tools; `bn tools status [name]` reports run-state + health;
-    /// `bn tools deploy <name>` brings one up (create/start, idempotent); `bn tools reconcile
-    /// [name]` re-asserts the desired "up" state (the keep-alive primitive the cron loop calls);
-    /// `bn tools down <name>` tears one down.
-    Tools {
-        #[command(subcommand)]
-        action: ToolsCmd,
-    },
     /// A task's place in the pipeline. **Bare** `bn pipeline` infers it read-only from notes,
     /// plan reviews, attention, verify/PR markers, and live agents (#657); `--all` lists the
     /// fleet, `--repo`/`--branch` targets another worktree. **Subcommands** drive the explicit
@@ -1064,21 +978,6 @@ pub(crate) enum DailyCmd {
     Rollover,
     /// Open today's day file in $EDITOR.
     Edit,
-}
-
-#[derive(Subcommand, Debug)]
-pub(crate) enum TrackCmd {
-    /// What was I doing at a given clock time today: bn track at <HH:MM>.
-    At {
-        #[arg(value_name = "HH:MM")]
-        time: String,
-    },
-    /// Roll today's tracked time up by bucket: bn track report [--by activity|tag|branch|task].
-    Report {
-        /// Group by: activity (default), tag, branch, or task/link.
-        #[arg(long, default_value = "activity")]
-        by: String,
-    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1583,17 +1482,6 @@ pub(crate) enum AttnCmd {
 }
 
 #[derive(Subcommand, Debug)]
-pub(crate) enum FocusCmd {
-    /// Open a deep-work block: bn focus start <dur>. Duration accepts 90m, 2h, 1h30m, or a bare
-    /// number of minutes (90). Starting while one is active extends the quiet window.
-    Start { dur: String },
-    /// Close the active block early and drain the queue — "while you were heads-down: …".
-    End,
-    /// Show the active block (remaining time), or that there's none. Same as bare `bn focus`.
-    Status,
-}
-
-#[derive(Subcommand, Debug)]
 pub(crate) enum NotifyCmd {
     /// Today's toast budget, the open quiet window, and what the gate held back. Same as bare
     /// `bn notify`.
@@ -1610,16 +1498,6 @@ pub(crate) enum QCmd {
         #[arg(long)]
         auto: bool,
     },
-}
-
-#[derive(Subcommand, Debug)]
-pub(crate) enum AfkCmd {
-    /// Enter away mode: routine fleet activity is absorbed until you return.
-    Start,
-    /// Leave away mode and print ONE batched digest of what needs you.
-    End,
-    /// Show away status (and a quick count of what needs you). Same as bare `bn afk`.
-    Status,
 }
 
 #[derive(Subcommand, Debug)]

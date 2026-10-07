@@ -263,7 +263,7 @@ its archive.
 <li>Every dispatch envelope ends with <code>bn reflect "skill:&lt;name&gt; — …"</code>. It is
 appended <em>by the machine</em>, not written by the workflow author.</li>
 <li><code>learnings.rs</code> parses the <code>skill:</code> prefix into a typed field, so
-<code>bn learnings --skill &lt;name&gt;</code> aggregates them.
+<code>bn stats learnings --skill &lt;name&gt;</code> aggregates them.
 <span class="src">learnings.rs:175-178</span></li>
 <li><code>Stage::Learn</code> dispatches <code>evolve-skills</code>.</li>
 <li><code>evolve-skills.md</code> requires <em>repeated</em> evidence — "a one-off gripe is

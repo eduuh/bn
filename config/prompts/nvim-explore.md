@@ -119,7 +119,7 @@ program's own stdout arrives on `event_output`.
 ## Wiring
 
 The server is registered per machine by `install.sh` (user scope, Claude Code + both Copilots), and
-can also be wired per repo with `bn mcp init <claude|copilot> --with-extras` or `[mcp] extras` in
+can also be wired per repo with `bn setup mcp init <claude|copilot> --with-extras` or `[mcp] extras` in
 config.toml. It discovers the nvim for the current git root via `--connect auto`, so no socket path
 is configured anywhere. The binary and the nvim plugin must come from the same commit — upstream's
 lazy.nvim spec builds it from the plugin checkout (`build = "cargo install --path ."`), which is

@@ -12,7 +12,7 @@ A near-monochrome bar that uses **both ends** of the screen. tmux has only one s
 
 | Segment | Meaning |
 |---------|---------|
-| `N⚠` | Raised attention — failing cron jobs + open `bn attn` items (`bn doctor` mirror). Urgent in red. |
+| `N⚠` | Raised attention — failing cron jobs + open `bn attn` items (`bn next --stale` mirror). Urgent in red. |
 | `N● N✓` | Server-wide count of windows needing you — `●` waiting on input, `✓` done. |
 | `◆ <goal>` | The branch note's **goal** — what you're working on here, a faded headline (truncated after 80 chars). |
 | `⎇ <branch> ↑n ↓m ●k` | Git: branch, commits ahead `↑` / behind `↓`, dirty file count `●` (faint `●` when clean). |
@@ -34,13 +34,13 @@ A near-monochrome bar that uses **both ends** of the screen. tmux has only one s
 | `✓` (green) | agent **done** (or a watched build/test went quiet — see `m`). |
 
 Badges and the window → worktree link (`@bn_repo`/`@bn_branch`) are refreshed by
-`bn tmux-reconcile`, which runs on every client attach and on the 5-minute cron. Window options do
+`bn tmux reconcile`, which runs on every client attach and on the 5-minute cron. Window options do
 not survive a tmux-resurrect restore, and the badges are otherwise written only to the window bn
 happened to run in — so without the sweep a note edited by an agent in another window never reaches
 that window's tab. Run it by hand to see its decisions:
 
 ```
-bn tmux-reconcile --dry-run
+bn tmux reconcile --dry-run
 ```
 
 It stamps a window only where the window's name agrees with the branch its pane is actually on. A
@@ -57,8 +57,8 @@ enough rows between runs. To see every curated binding with its press count, and
 never press:
 
 ```
-bn tmux-keys              # last 7 days
-bn tmux-keys --since 30d
+bn tmux keys              # last 7 days
+bn tmux keys --since 30d
 ```
 
 A `gap` in the header means the tmux server restarted or the log rolled over between runs, so the
@@ -93,13 +93,13 @@ In a non-bare session, `o` just opens/selects a `main` window at the repo path.
 
 ## Where agents run
 
-One rule, enforced in `bn agent launch` — the chokepoint every entry point funnels through (the keybinds, `bn dispatch`, `bn control start`, and the `claude`/`copilot` shell wrappers from `bn shell-init`):
+One rule, enforced in `bn agent launch` — the chokepoint every entry point funnels through (the keybinds, `bn dispatch`, `bn fleet control start`, and the `claude`/`copilot` shell wrappers from `bn setup shell-init`):
 
 | Worktree | May host |
 |---|---|
 | outside a git worktree | **nothing.** Every session, including planning, must be backed by a repository branch. |
 | `worktree/<repo>/main` | **nothing.** It stays clean on `main`, matching the `pre-commit` hook that already refuses commits there — and it is not somewhere you go either: the pickers hide it, and `main-sync` hard-resets it onto the remote tip every 15 minutes. |
-| `_pool/1` — the **main slot** | the `bn control` orchestrator, and only it. It is also where *you* land when you pick "main": a detached checkout at the repo's base, so main-branch work has a home that isn't the main worktree. `bn control start` leases this slot from anywhere in the repo. |
+| `_pool/1` — the **main slot** | the `bn fleet control` orchestrator, and only it. It is also where *you* land when you pick "main": a detached checkout at the repo's base, so main-branch work has a home that isn't the main worktree. `bn fleet control start` leases this slot from anywhere in the repo. |
 | `_pool/2…N`, branch worktrees | exactly **one** agent each. |
 
 So:
@@ -121,16 +121,16 @@ Three exceptions, none of which is work:
 | Session | What it is |
 |---|---|
 | `_bn_edit` | Storage — the holding pen for parked editor panes. Hidden from `C-j`, and any `_`-prefixed name is claiming the same private namespace. |
-| `host:<alias>` | A `bn connect` attachment to another machine. The work it shows lives in that machine's repos. |
+| `host:<alias>` | A `bn machine connect` attachment to another machine. The work it shows lives in that machine's repos. |
 | `-L orch` server | The dispatch worker server, a separate tmux server entirely — not on this namespace. |
 
 Scheduled jobs get windows, never sessions: a heavy cron (`pool-warm`, `keep-warm`) opens a detached window in the session of the repo it serves, which closes itself when the job succeeds. See `config/jobs/README.md`.
 
-`bn tmux-prune` reports sessions that name no repo (dry run; `--force` kills them), sparing anything attached, busy, or hosting an agent. It is never a cron. `bn tmux-snapshot-filter` keeps orphans out of the tmux-resurrect snapshot so a killed one does not come back on the next restore — it is wired to resurrect's `post-save-layout` hook and kills nothing.
+`bn tmux prune` reports sessions that name no repo (dry run; `--force` kills them), sparing anything attached, busy, or hosting an agent. It is never a cron. `bn tmux snapshot-filter` keeps orphans out of the tmux-resurrect snapshot so a killed one does not come back on the next restore — it is wired to resurrect's `post-save-layout` hook and kills nothing.
 
 Every launch through this chokepoint also records `agent-session: <harness> <id>` on the branch note — the same line `bn dispatch` writes, and the thing that makes `bn agent send --resume` and the dashboard's Steer panel work. The one exception is `claude --continue`, where the harness picks its own id; those agents are still steerable through their tmux window.
 
-A harness started outside the shell (an IDE extension, an absolute path, a terminal that never sourced `bn shell-init`) skips the wrapper. `bn doctor` reports any lease that broke the rule after the fact, and warns while the wrappers are missing, inactive, or shadowed by a later `claude()` definition in your rc.
+A harness started outside the shell (an IDE extension, an absolute path, a terminal that never sourced `bn setup shell-init`) skips the wrapper. `bn next --stale` reports any lease that broke the rule after the fact, and warns while the wrappers are missing, inactive, or shadowed by a later `claude()` definition in your rc.
 
 ## Codespaces (remote worktrees)
 
@@ -205,7 +205,7 @@ The three jump keys differ by **scope**, not by mechanism:
 |-----|--------|
 | `e` | **Toggle this worktree's editor.** One persistent nvim *per worktree*, as a pane rather than a popup. First press splits it in at 90% of the window, collapsing the command pane to a strip rather than killing it (it often holds a running agent); second press parks the pane in the detached `_bn_edit` session — nvim keeps running, the shell/agent gets its full width back; third press joins it back with buffers, undo, marks and LSP intact. Editors in different worktrees are independent and never evict each other. `<leader>eh` inside nvim parks it without reaching for the prefix. If nvim dies, the next press detects it, clears up and starts a fresh one. |
 | `C-e` | Force the editor **visible** and land it on this branch's diff (never parks) — for returning to a worktree cold. |
-| `d` | **Worktree diff picker.** Every worktree with a checkout, badged with whether its editor is up (`●` showing · `○` parked), with `bn diff` as the live preview. `↵` switches to that worktree's window and opens Diffview in *its* nvim. `ctrl-r` reloads. |
+| `d` | **Worktree diff picker.** Every worktree with a checkout, badged with whether its editor is up (`●` showing · `○` parked), with `bn status --diff` as the live preview. `↵` switches to that worktree's window and opens Diffview in *its* nvim. `ctrl-r` reloads. |
 | `n` | Branch note popup (`note.md` for current git context). |
 | `g` | Lazygit popup. `q` closes. |
 
@@ -368,7 +368,7 @@ note-relative paths.
 |---------|--------|
 | `bn` | Ensure note exists, print dir path. |
 | `bn --cat` / `-c` | Print full note contents. |
-| `bn brief` | Lean SessionStart view: goal, blockers, open todos (cap 10), last 3 Progress, last 3 Decisions. |
+| `bn cat --brief` | Lean SessionStart view: goal, blockers, open todos (cap 10), last 3 Progress, last 3 Decisions. |
 | `bn --json` | Dump `note.yaml` as JSON for scripts / Claude skills. |
 | `bn --edit` / `-e` | Open note in `$EDITOR`. |
 | `bn --path` / `-p` | Print note dir path (no create). |
@@ -390,25 +390,25 @@ note-relative paths.
 |---------|--------|
 | `bn done <id>` | Mark a todo done by stable id (e.g., `bn done t3`). |
 | `bn done "text"` | Fall back to substring match — fails on ambiguity. |
-| `bn log-progress "text"` | Append timestamped line to Progress (used by SessionEnd hook). |
-| `bn close` | Close current branch's note. |
-| `bn reopen` | Reopen a closed note. |
-| `bn prune` | Close notes whose worktrees are gone. |
-| `bn reset` | Remove non-main worktrees + close notes. |
-| `bn archive` | Archive old closed notes. |
-| `bn migrate [--dry-run]` | Convert legacy md-only notes to split md + yaml. |
+| `bn note log "text"` | Append timestamped line to Progress (used by SessionEnd hook). |
+| `bn note close` | Close current branch's note. |
+| `bn note reopen` | Reopen a closed note. |
+| `bn note prune` | Close notes whose worktrees are gone. |
+| `bn note reset` | Remove non-main worktrees + close notes. |
+| `bn note archive` | Archive old closed notes. |
+| `bn note migrate [--dry-run]` | Convert legacy md-only notes to split md + yaml. |
 
 ## Views
 
 | Command | Action |
 |---------|--------|
-| `bn summary` / `s` | Dashboard: open todos + blockers across branches. |
+| `bn list --summary` / `s` | Dashboard: open todos + blockers across branches. |
 | `bn status` / `st` | One-line status for current branch. |
-| `bn todo` / `t` | Open todos across all branches. |
+| `bn list --todos` / `t` | Open todos across all branches. |
 | `bn list` / `l` | Active notes (`--all` for closed too). |
-| `bn worktrees` / `w` | All active worktrees with detail. |
+| `bn list --worktrees` / `w` | All active worktrees with detail. |
 | `bn search <text>` | Search across all notes. |
-| `bn stale [--days N]` | Notes with no recent activity. |
+| `bn note stale [--days N]` | Notes with no recent activity. |
 
 ## Build
 
@@ -421,8 +421,8 @@ note-relative paths.
 | Command | Action |
 |---------|--------|
 | `bn pr [url]` | Link or open PR for current branch. |
-| `bn link <id>` | Link or open work item. |
-| `bn files` / `f` | Investigation file management. |
+| `bn pr --wi <id>` | Link or open work item. |
+| `bn note files` / `f` | Investigation file management. |
 
 ---
 

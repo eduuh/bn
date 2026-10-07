@@ -1,5 +1,5 @@
 //! Characterization snapshots of [`Config::load`] and the config readers beside it
-//! ([`JobConfig`], [`ToolsConfig`], the link tags, the MCP extras) — the regression gate for any
+//! ([`JobConfig`], the link tags, the MCP extras) — the regression gate for any
 //! change to how settings resolve.
 //!
 //! These pin the *output*, so the layers underneath can be rewritten freely: a precedence bug is
@@ -13,7 +13,7 @@
 //!
 //! Review the diff before committing a regeneration — an unreviewed `--update` turns this file
 //! from a gate into a rubber stamp.
-use bn_core::resolver::{self, Config, JobConfig, ToolsConfig};
+use bn_core::resolver::{self, Config, JobConfig};
 use bn_core::test_support::EnvGuard;
 use std::path::Path;
 
@@ -42,11 +42,10 @@ fn resolve_snapshot(toml: &str) -> String {
 fn render(root: &Path) -> String {
     let cfg = Config::load();
     let jobs = JobConfig::load();
-    let tools = ToolsConfig::load();
     let links = resolver::link_tags_with_source();
     let mcp = resolver::mcp_extras();
     format!(
-        "{cfg:#?}\n\n--- JobConfig\n{jobs:#?}\n\n--- ToolsConfig\n{tools:#?}\n\n--- link tags\n{links:#?}\n\n--- mcp extras\n{mcp:#?}\n"
+        "{cfg:#?}\n\n--- JobConfig\n{jobs:#?}\n\n--- link tags\n{links:#?}\n\n--- mcp extras\n{mcp:#?}\n"
     )
     .replace(&root.to_string_lossy().into_owned(), "<ROOT>")
 }

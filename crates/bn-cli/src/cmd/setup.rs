@@ -19,7 +19,6 @@ pub(crate) fn emit_glyphs() {
         (g::COMMENT, "COMMENT", "Teams/chat mention"),
         (g::PULL_REQUEST, "PULL_REQUEST", "a PR"),
         (g::TARGET, "TARGET", "focus block"),
-        (g::AWAY, "AWAY", "afk mode"),
         (g::PENCIL, "PENCIL", "open todos count"),
         (g::CLOCK, "CLOCK", "SLA / wait time / cron"),
     ];

@@ -27,7 +27,7 @@ fn recently_modified(path: &Path, within_secs: u64) -> bool {
 fn announce_reap(name: &str, reason: &str) {
     let body = match reason {
         "scout done" => {
-            "Scout finished — worktree reclaimed; findings are safe in the branch note (bn cat / bn recall)."
+            "Scout finished — worktree reclaimed; findings are safe in the branch note (bn cat / bn search)."
         }
         "merged PR" => "PR merged — worktree reclaimed; the code is on main.",
         _ => "Worktree reclaimed by the cleanup sweep.",

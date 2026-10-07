@@ -149,11 +149,6 @@ JobConfig {
     agents_enabled: [],
 }
 
---- ToolsConfig
-ToolsConfig {
-    builtins: [],
-}
-
 --- link tags
 (
     [

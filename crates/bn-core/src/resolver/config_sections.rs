@@ -61,14 +61,6 @@ pub(super) struct ManagedReposSection {
     pub(super) repos: Option<Vec<String>>,
 }
 
-/// `[tools]`: managed docker-backed services. `builtins` is the opt-in allowlist of bn-shipped
-/// specs (currently `n8n`). Empty/absent means no built-ins are active; user entries in
-/// `<config_dir>/tools.toml` remain active.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub(super) struct ToolsSection {
-    pub(super) builtins: Option<Vec<String>>,
-}
-
 /// `[links]`: the tag vocabulary for `bn links`. A small, curated set of terms you actually file
 /// links under. Absent/empty means no vocabulary, which makes every tag "unlisted" — allowed, just
 /// unremarked. An unlisted tag warns and still saves; this is a habit, not a schema.

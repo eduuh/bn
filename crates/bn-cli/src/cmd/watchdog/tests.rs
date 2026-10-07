@@ -58,7 +58,6 @@ fn a_repeating_watchdog_arms_no_timer() {
             every_secs: Some(600),
             expires_in_secs: None,
             max_fires: None,
-            qitem_id: None,
             created_by: "bn:main".into(),
         },
         &mut |_, _| {

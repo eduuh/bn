@@ -1,4 +1,4 @@
-//! git/clipboard/url side-effects + `bn diff`/`bn shot`/`bn autopush`.
+//! git/clipboard/url side-effects + `bn diff`/`bn shot`.
 use crate::*;
 use std::path::{Path, PathBuf};
 
@@ -198,51 +198,7 @@ pub(crate) fn emit_shot(cfg: &Config, ctx: &Resolved, gif: bool, fresh: u64, as_
     }
 }
 
-/// `bn autopush [msg]` — stage tracked changes, commit, and push if there's an upstream.
-/// Ports cmd_autopush. Returns the process exit code.
-pub(crate) fn emit_autopush(message: &str) -> i32 {
-    let msg = if message.trim().is_empty() {
-        format!("wip: auto-commit {}", bn_core::util::now_stamp())
-    } else {
-        message.to_string()
-    };
-    if !git_status(&["add", "-u"]) {
-        eprintln!("git add failed");
-        return 1;
-    }
-    // Nothing staged → clean exit, no empty commit (diff --cached --quiet exits 0 when clean).
-    if git_status(&["diff", "--cached", "--quiet"]) {
-        println!("No tracked changes to commit.");
-        return 0;
-    }
-    if !git_status(&["commit", "-m", &msg]) {
-        eprintln!("Commit failed");
-        return 1;
-    }
-    match git_capture(&[
-        "rev-parse",
-        "--abbrev-ref",
-        "--symbolic-full-name",
-        "@{upstream}",
-    ]) {
-        Some(u) if !u.trim().is_empty() => {
-            if !git_status(&["push"]) {
-                eprintln!("Push failed");
-                return 1;
-            }
-        }
-        _ => println!("No upstream — committed locally, skipping push."),
-    }
-    0
-}
 
-/// Run `git <args>` in the cwd, inheriting stdio; true if it exited 0. Delegates to
-/// [`wt::run_git`] (byte-identical body) rather than the capturing runner seam: `bn save`'s
-/// `commit`/`push` must show their live output on the terminal, which the capture-only runner
-/// can't reproduce.
-pub(crate) fn git_status(args: &[&str]) -> bool {
-    wt::run_git(args)
-}
 
 /// Where `bn diff` should look. `dir` is the worktree to run git in; `ctx` keys the note whose
 /// todos/blockers are shown beside the stat. They travel together because a `--path` into another
@@ -413,13 +369,6 @@ pub(crate) fn reset_sigpipe() {
 #[cfg(not(unix))]
 pub(crate) fn reset_sigpipe() {}
 
-/// Run `git <args>` in the cwd, returning stdout (raw, untrimmed) on success, else None. Thin
-/// delegate to the runner-backed [`crate::git::git_capture`], so the reads it backs stay driveable
-/// in core tests while `RealRunner` shells out exactly as before. trim=false preserves the raw
-/// output these callers trim themselves.
-pub(crate) fn git_capture(args: &[&str]) -> Option<String> {
-    crate::git::git_capture(args, None, false)
-}
 
 /// [`git_capture`] scoped to `dir` (`git -C <dir>`) — what lets `bn diff` describe a worktree
 /// other than the one bn is running in, which is the whole point of `--path`/`--repo`.

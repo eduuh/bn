@@ -48,7 +48,11 @@ order, and stop at the first one you genuinely cannot:
    review instead of looking like a stray note.
 3. **When is it done?** `## Done When`, with at least one criterion someone else could check without
    asking you.
-4. **How big, and when?** A realistic `est:` and a `day:`, through `bn task`.
+4. **How big, and when?** A realistic `est:` and a `day:`.
+
+Set the task fields with `bn task set <task.id> repo:<repo> est:<dur> day:<YYYY-MM-DD>` (add
+`q:<goal>` when it serves one). `+project` is a word in the task line, not a settable field: put it in
+the context doc.
 
 Do **not** choose a tmux session, window, or worktree path. Those are derived from the repo and
 branch, and naming one here would only disagree with the window that actually opens.

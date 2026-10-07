@@ -10,7 +10,6 @@ use crate::reviews::ReviewCache;
 use crate::rollups::{ListEntry, StatusEntry, SummaryEntry, TodoEntry};
 use crate::search::SearchHit;
 use crate::skills::{SkillInfo, SkillScope};
-use crate::track::{self, Interval, PunchOutcome, ReportBy, ReportRow};
 use serde_json::{json, Value};
 
 /// `agent sessions` → `{ "count", "sessions": [...] }`. Each session serializes from
@@ -205,73 +204,6 @@ pub fn goal_note_data(o: &daily::NoteOutcome) -> Value {
     })
 }
 
-/// `bn quarter` (bare / past) → goals with derived status, counts, the elapsed header, and the
-/// appended reviews. `today` drives only the elapsed-vs-progress header (the file body is stable).
-/// `quarter add` → `{ "item": { "key", "text", "quarter" } }`.
-/// `quarter done` → `{ "item": { "key", "text", "done": true } }`.
-/// `quarter review` → the impact-agent outcome: appended (with the validated review + attn count),
-/// malformed (with the validation reason), or skipped (no goals / agent unavailable).
-/// `bn quarter advise` → the goal-aligned shortlist (#458): the ranked candidates plus the
-/// quarter id and the capacity the ranking was shaped to. `shortlist` is the count flagged
-/// in-capacity — what the orchestrator would dispatch this pass.
-fn interval_json(iv: &Interval) -> Value {
-    json!({
-        "activity": iv.activity,
-        "start": iv.start,
-        "end": iv.end,
-        "secs": iv.secs,
-        "open": iv.open,
-        "repo": iv.repo,
-        "branch": iv.branch,
-        "tag": iv.tag,
-        "link": iv.link,
-    })
-}
-
-/// `track` → `{ "date", "intervals": [...], "total_secs", "rendered" }`.
-pub fn track_data(date: &str, intervals: &[Interval]) -> Value {
-    json!({
-        "date": date,
-        "intervals": intervals.iter().map(interval_json).collect::<Vec<_>>(),
-        "total_secs": track::total_secs(intervals),
-        "rendered": track::render_day(date, intervals),
-    })
-}
-
-/// `track in` / `track out` → the recorded punch and the activity it closed (if any).
-pub fn track_punch_data(o: &PunchOutcome) -> Value {
-    json!({
-        "punch": {
-            "ts": o.punch.ts,
-            "is_in": o.punch.is_in,
-            "activity": o.punch.activity,
-            "repo": o.punch.repo,
-            "branch": o.punch.branch,
-            "tag": o.punch.tag,
-            "link": o.punch.link,
-        },
-        "closed": o.closed,
-    })
-}
-
-/// `track at` → the activity in progress at a queried time (or null).
-pub fn track_at_data(at_ts: i64, iv: Option<&Interval>) -> Value {
-    json!({ "at": at_ts, "interval": iv.map(interval_json) })
-}
-
-/// `track report` → the rolled-up buckets plus the rendered summary.
-pub fn track_report_data(rows: &[ReportRow], by: ReportBy) -> Value {
-    let buckets: Vec<Value> = rows
-        .iter()
-        .map(|r| json!({ "label": r.label, "secs": r.secs }))
-        .collect();
-    json!({
-        "buckets": buckets,
-        "total_secs": rows.iter().map(|r| r.secs).sum::<i64>(),
-        "rendered": track::render_report(rows, by),
-    })
-}
-
 /// `daily rollover` → what advanced, plus the rendered summary.
 pub fn rollover_data(r: &daily::RolloverOutcome) -> Value {
     let carried: Vec<Value> = r
@@ -453,31 +385,6 @@ pub fn worktrees_data(entries: &[crate::rollups::WorktreeEntry]) -> Value {
 /// `search` → `{ "hits": [SearchHit, ...] }`. Object-wrapped (see `todos_data`).
 pub fn search_data(hits: &[SearchHit]) -> Value {
     json!({ "hits": hits })
-}
-
-/// `recall` (query) → `{ "source", "degraded_reason", "hits": [RecallHit, ...] }`. `source` is
-/// `index` or `fallback` (substring search); `degraded_reason` is present only when it fell back.
-pub fn recall_data(out: &crate::recall::RecallOutcome) -> Value {
-    let source = match out.source {
-        crate::recall::RecallSource::Index => "index",
-        crate::recall::RecallSource::Fallback => "fallback",
-    };
-    json!({
-        "source": source,
-        "degraded_reason": out.degraded_reason,
-        "hits": out.hits,
-    })
-}
-
-/// `recall --index` → the [`BuildStats`](crate::recall::BuildStats) of the build run.
-pub fn recall_index_data(stats: &crate::recall::BuildStats) -> Value {
-    json!({ "index": stats })
-}
-
-/// `related` → `{ "branch", "related": [RelatedBranch, ...] }`. `branch` echoes the target so
-/// agents know whose neighbours these are.
-pub fn related_data(branch: &str, related: &[crate::related::RelatedBranch]) -> Value {
-    json!({ "branch": branch, "related": related })
 }
 
 /// `doctor` → `{ "findings": [Finding, ...] }`. Object-wrapped (see `todos_data`).
@@ -669,27 +576,6 @@ pub fn next_data(actions: &[crate::next::Action]) -> Value {
         })
         .collect();
     json!({ "actions": arr })
-}
-
-/// `focus start` → `{ "id", "ends_at", "duration_secs" }`.
-pub fn focus_start_data(o: &crate::focus::StartOutcome) -> Value {
-    json!({ "id": o.id, "ends_at": o.ends_at, "duration_secs": o.duration_secs })
-}
-
-/// `focus status` (and bare `bn focus`) → `{ "active": bool, "block": Block | null }`. The
-/// statusline reads `active` + `block.remaining_secs` to render "focus · 47m left".
-pub fn focus_status_data(block: Option<&crate::focus::Block>) -> Value {
-    json!({ "active": block.is_some(), "block": block })
-}
-
-/// `focus end` → `{ "ended": Block | null, "drained": [Action, ...] }`. `ended` is null when no
-/// block was active; `drained` is the non-urgent queue the block had been holding back.
-pub fn focus_end_data(
-    ended: Option<&crate::focus::Block>,
-    drained: &[crate::next::Action],
-    captures: &[crate::inbox::InboxItem],
-) -> Value {
-    json!({ "ended": ended, "drained": drained, "captures": captures })
 }
 
 /// `q` capture → the banked item and the hint it was stamped with.

@@ -150,7 +150,7 @@ single-file form.
 <tbody>
 <tr><td><strong>goal</strong></td><td>—</td><td>—</td><td>Not a section at all. One line of prose, the first non-blank line under <code>## Goal</code>, replaced wholesale.</td></tr>
 <tr><td><strong>todo</strong></td><td><code>t1</code></td><td>yes</td><td>The <em>only</em> section where <code>is_todo()</code> is true, so only these count as "open todos" anywhere. Carries <code>pct</code> 1–99, <code>est</code>, <code>actual</code>.</td></tr>
-<tr><td><strong>done-when</strong></td><td><code>w1</code></td><td>yes</td><td>Checkable, but excluded from open-todo stats — and <code>bn close</code> refuses to auto-tick it.</td></tr>
+<tr><td><strong>done-when</strong></td><td><code>w1</code></td><td>yes</td><td>Checkable, but excluded from open-todo stats — and <code>bn note close</code> refuses to auto-tick it.</td></tr>
 <tr><td><strong>blocker</strong></td><td><code>b1</code></td><td>no</td><td>Never completed, only removed. Feeds the handoff's "Blocked" list.</td></tr>
 <tr><td><strong>decision</strong></td><td><code>d1</code></td><td>no</td><td>Append-only record of a settled choice; flows into <code>decisions.made</code>.</td></tr>
 <tr><td><strong>directive</strong></td><td><code>i1</code></td><td>no</td><td>A standing constraint on <em>how</em> work is done. Deliberately not tickable.</td></tr>
@@ -182,23 +182,14 @@ failing, in MCP and CLI alike. Only a genuinely missing <em>note</em> fails.
 </p>
 </div>
 
-<h2>Queue rows: work handed between seats</h2>
+<h2>Watchdogs: durable check-ins</h2>
 
 <p>
-<code>bn queue</code> rows (<code>q&lt;N&gt;</code>) live in SQLite at
-<code>~/.bn/coord/coord.db</code> (<code>$BN_COORD_DB</code>) — machine-local, like the agents
-they coordinate, and never in the synced notes tree. A row is addressed to a seat
-(<code>repo:branch</code> or <code>human:&lt;name&gt;</code>), is claimed with a deadline from
-its tier, and keeps an append-only history in <code>qtransitions</code>. Every close and handoff
-needs a note, and a handoff closes the source and opens the destination in one transaction.
-<span class="src">crates/bn-core/src/coord/db.rs · coord/queue.rs</span>
-</p>
-
-<p>
-A row for an agent seat is mirrored as a <code>[q&lt;N&gt;] …</code> todo in that branch's note,
-and ticked when the row closes. The DB is the record and the todo a projection: the mirror is
-written after the row commits, and never creates a note that isn't there.
-<span class="src">crates/bn-core/src/coord/mirror.rs</span>
+<code>bn watchdog</code> timers live in SQLite at <code>~/.bn/coord/coord.db</code>
+(<code>$BN_COORD_DB</code>) — machine-local, like the agents they wake, and never in the synced
+notes tree. A watchdog targets a seat (<code>repo:branch</code> or <code>human:&lt;name&gt;</code>)
+and the <code>coord-tick</code> job evaluates the due ones.
+<span class="src">crates/bn-core/src/coord/db.rs · coord/watchdog.rs</span>
 </p>
 
 <h2>Proof: evidence for done-when</h2>
@@ -218,10 +209,10 @@ hand stays unregistered and never counts.
 <h2>Compaction: recap, log, audit</h2>
 
 <p>
-<code>bn compact prep</code> writes <code>RECAP.md</code> beside the note (the seat's own words,
+<code>bn agent compact prep</code> writes <code>RECAP.md</code> beside the note (the seat's own words,
 then a state block composed from the note, readiness and HEAD), archives a copy under
 <code>recaps/</code>, writes a handoff that keeps earlier author notes, and logs a
-<code>prep</code> line in <code>compactions.jsonl</code>. <code>bn compact audit</code> prints the
+<code>prep</code> line in <code>compactions.jsonl</code>. <code>bn agent compact audit</code> prints the
 note, recap and unproven criteria for the compacted session to check itself against, and logs a
 <code>restore</code> with an honest outcome: <code>resumed</code> onto a fresh recap, else
 <code>rebuilt</code> from the note.
@@ -352,7 +343,7 @@ primarily daily-goal and calibration features. Not every producer was traced, so
 ever appear on a branch-note todo in practice is unconfirmed.</li>
 <li>How split-layout <code>note.yaml</code> notes get migrated in bulk — only that
 <code>save</code> retires the sibling to <code>.yaml.bak</code> on the next write.</li>
-<li>The exact timestamp format <code>bn log-progress</code> prepends to a progress bullet; only
+<li>The exact timestamp format <code>bn note log</code> prepends to a progress bullet; only
 the core append path was read, not the CLI formatting.</li>
 <li>Whether <code>bn_sync</code> proposals are ever auto-applied elsewhere. The MCP tool
 itself is read-only.</li>

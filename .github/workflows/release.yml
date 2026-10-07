@@ -78,6 +78,8 @@ jobs:
       - name: Compute the next version
         id: next
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -97,14 +99,21 @@ jobs:
           latest=${latest#v}
           [ -n "$latest" ] || latest="0.0.0"
 
-          # An already-tagged commit has already been released. Re-running (a manual dispatch,
-          # a re-run of a merge) must not cut a second version for identical source.
+          # An already-tagged commit must not cut a second version for identical source. But a tag
+          # is only "released" when its GitHub Release is published: a tag left behind without one
+          # (an older publish that pushed the tag and then failed to upload) is re-released under
+          # the same version, so re-running is how a stranded tag gets its release.
           if existing=$(git tag --points-at HEAD -l 'v[0-9]*.[0-9]*.[0-9]*' | head -n1) &&
              [ -n "$existing" ]; then
-            echo "$GITHUB_SHA is already released as $existing — nothing to do"
-            echo "release=false" >> "$GITHUB_OUTPUT"
             echo "version=${existing#v}" >> "$GITHUB_OUTPUT"
             echo "tag=$existing" >> "$GITHUB_OUTPUT"
+            if [ "$(gh release view "$existing" --json isDraft -q .isDraft 2>/dev/null)" = "false" ]; then
+              echo "$GITHUB_SHA is already released as $existing — nothing to do"
+              echo "release=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "::warning::$existing is tagged but has no published release — releasing it now"
+              echo "release=true" >> "$GITHUB_OUTPUT"
+            fi
             exit 0
           fi
 
@@ -292,6 +301,11 @@ jobs:
   # The single point where a release becomes visible. `needs: build` with no `always()` is what
   # makes property 2 above real: if any platform leg failed or was skipped, this never runs and
   # no tag is created, so main is simply un-released until it is fixed.
+  #
+  # A tag never exists without its release. The release is built as a draft with every asset
+  # attached first (a draft creates no tag), then published in one call, which is when GitHub
+  # creates the tag. A failure anywhere before that leaves no tag, so the next run computes the
+  # same version and tries again; the final step proves the published release is complete.
   publish:
     name: publish
     needs:
@@ -325,11 +339,6 @@ jobs:
           set -euo pipefail
           ls -l assets
 
-          # Tag the exact commit CI passed on. `--tag` before the release so a failed upload
-          # leaves a tag we can re-dispatch against, never a release row with no source.
-          git tag -a "$TAG" "$GITHUB_SHA" -m "$TAG"
-          git push origin "refs/tags/$TAG"
-
           # Built line by line rather than from a heredoc: a heredoc indented to sit inside this
           # YAML block scalar keeps that indentation in its output, and four leading spaces turn
           # every line of the release notes into a Markdown code block.
@@ -350,15 +359,50 @@ jobs:
             printf 'Machines never compile bn — `install.sh` downloads these assets from `releases/latest`.\n'
           } > "$notes"
 
-          # `--latest` is stated, not inferred. gh's default picks by date and semver, which is
-          # right today but silently hands the badge elsewhere the moment an old tag is re-cut.
+          # Already published (a re-run that raced a finished one): nothing to redo.
+          if [ "$(gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null)" = "false" ]; then
+            echo "$TAG is already published"
+            exit 0
+          fi
+          # A draft left by a failed earlier attempt holds stale or partial assets; start clean.
+          # `--cleanup-tag` is not passed: a stranded tag being re-released must survive this.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes
+          fi
+
+          # Draft first, with every asset: a draft creates no tag, so nothing is visible yet and
+          # an upload that fails here strands nothing. `--target` pins the exact commit CI passed
+          # on; it is ignored when the tag already exists, which is the re-release case.
           gh release create "$TAG" \
+            --draft \
             --target "$GITHUB_SHA" \
             --title "$TAG" \
             --notes-file "$notes" \
-            --latest \
-            --verify-tag \
             assets/*
+
+          # Publishing is the one step that creates the tag. `--latest` is stated, not inferred:
+          # gh's default picks by date and semver, which silently hands the badge elsewhere the
+          # moment an old tag is re-cut.
+          gh release edit "$TAG" --draft=false --latest
 
           echo "published $TAG"
           echo "https://github.com/${{ github.repository }}/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"
+
+      # Trust nothing: re-read the release from GitHub and prove it is published, tagged at the
+      # commit CI passed, and carries every asset this run built.
+      - name: Verify the release
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --quiet --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          tagged=$(git rev-list -n1 "$TAG")
+          [ "$tagged" = "$GITHUB_SHA" ] ||
+            { echo "::error::$TAG points at $tagged, expected $GITHUB_SHA" >&2; exit 1; }
+          [ "$(gh release view "$TAG" --json isDraft -q .isDraft)" = "false" ] ||
+            { echo "::error::$TAG is still a draft" >&2; exit 1; }
+          want=$(find assets -maxdepth 1 -type f -exec basename {} \; | sort)
+          have=$(gh release view "$TAG" --json assets -q '.assets[].name' | sort)
+          missing=$(comm -23 <(printf '%s\n' "$want") <(printf '%s\n' "$have"))
+          [ -z "$missing" ] ||
+            { echo "::error::$TAG is missing assets: $missing" >&2; exit 1; }
+          echo "$TAG verified: published at $GITHUB_SHA with $(printf '%s\n' "$want" | wc -l | tr -d ' ') assets"

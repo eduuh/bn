@@ -7,7 +7,7 @@ pub(crate) use bn_core::resolver::{self, Config, Resolved};
 pub(crate) use bn_core::rollups;
 pub(crate) use bn_core::style;
 pub(crate) use bn_core::{capture, migrate};
-pub(crate) use clap::{CommandFactory, Parser, Subcommand};
+pub(crate) use clap::{Parser, Subcommand};
 pub(crate) use clap_complete::Shell;
 
 /// `println!` for a line built with the `wt` palette idiom (`{RED}…{NC}`), flattened when stdout
@@ -47,11 +47,11 @@ mod jump;
 mod launchd;
 mod main_slot;
 mod mcp;
-mod mobile;
 mod origin_fetch;
 mod picker;
 mod proc;
 mod reap;
+mod regroup;
 mod retry;
 mod review_pr;
 mod systemd;
@@ -88,13 +88,11 @@ pub(crate) use cmd::dispatch::*;
 pub(crate) use cmd::doctor::*;
 pub(crate) use cmd::ensure_tmux::*;
 pub(crate) use cmd::findings::*;
-pub(crate) use cmd::focus::*;
 pub(crate) use cmd::gitio::*;
 pub(crate) use cmd::insights::*;
 pub(crate) use cmd::issue::*;
 pub(crate) use cmd::job_registry::*;
 pub(crate) use cmd::jobs::*;
-pub(crate) use cmd::killport::*;
 pub(crate) use cmd::learnings::*;
 pub(crate) use cmd::lifecycle::*;
 pub(crate) use cmd::links::*;
@@ -117,8 +115,6 @@ pub(crate) use cmd::task_view::*;
 pub(crate) use cmd::tmux_reconcile::emit_tmux_reconcile;
 pub(crate) use cmd::tmux_sessions::*;
 pub(crate) use cmd::tmux_status::*;
-pub(crate) use cmd::tools::*;
-pub(crate) use cmd::track::*;
 pub(crate) use cmd::verify::*;
 pub(crate) use cmd::watch::*;
 pub(crate) use cmd::worker::*;
@@ -261,7 +257,21 @@ fn ensure_utf8_ctype() {
 fn main() {
     reset_sigpipe();
     ensure_utf8_ctype();
-    let cli = Cli::parse();
+    let args = match regroup::plan(std::env::args_os().collect()) {
+        regroup::Plan::Parse(args) => args,
+        regroup::Plan::Help(text, code) => {
+            if code == 0 {
+                print!("{text}")
+            } else {
+                eprint!("{text}")
+            }
+            std::process::exit(code);
+        }
+    };
+    let cli = regroup::command()
+        .try_get_matches_from(args)
+        .and_then(|m| <Cli as clap::FromArgMatches>::from_arg_matches(&m))
+        .unwrap_or_else(|e| e.exit());
     // The first bn after the upgrade moves an old `config.toml` into the notes tree, before
     // anything reads config. Every later run costs one failed stat.
     if let Some(report) = bn_core::config_migrate::run() {
@@ -472,16 +482,13 @@ pub(crate) fn fail_json(json: bool, command: &str, code: &str, msg: &str) -> ! {
 
 #[cfg(test)]
 mod prompt_command_tests {
-    use super::*;
-    use clap::CommandFactory;
-
     /// Every backtick-quoted `bn <sub>` command in the shipped prompts and agent definitions must
     /// name a real first-level clap subcommand. This is the guardrail that catches phantom or
     /// removed commands frozen into instruction text (the class of bug behind `bn dispatch
     /// --host`, `sprint-setup`, and the `bn_next`-style tool names).
     #[test]
     fn shipped_prompts_reference_only_real_subcommands() {
-        let cmd = Cli::command();
+        let cmd = crate::regroup::command();
         let mut names: Vec<String> = Vec::new();
         for sub in cmd.get_subcommands() {
             names.push(sub.get_name().to_string());
@@ -551,7 +558,12 @@ mod prompt_command_tests {
                     continue;
                 };
                 let argv = std::iter::once("bn").chain(args.split_whitespace());
-                let parsed = Cli::command().try_get_matches_from(argv);
+                let crate::regroup::Plan::Parse(argv) =
+                    crate::regroup::plan(argv.map(Into::into).collect())
+                else {
+                    panic!("{}: `{command}` only prints group help", path.display());
+                };
+                let parsed = crate::regroup::command().try_get_matches_from(argv);
                 assert!(
                     parsed.is_ok(),
                     "{}: `{command}` does not parse — {}",

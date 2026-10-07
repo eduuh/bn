@@ -1,4 +1,4 @@
-//! `bn queue` — durable work rows handed between agents (see [`bn_core::coord`]).
+//! `bn watchdog`, `bn proof`, `bn compact`, `bn context` — agent coordination (see [`bn_core::coord`]).
 //!
 //! Its own flattened group, last in [`super::Command`], so the coordination commands land at the
 //! end of `bn --help` without touching the order of anything above them.
@@ -6,20 +6,10 @@ use crate::*;
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum CmdCoord {
-    /// Work rows handed between agents. A row (`q<N>`) is addressed to a seat — `repo:branch` for
-    /// an agent, `human:<name>` for a person — and moves pending → in-progress → closed, keeping
-    /// every transition. Unlike `bn agent msg` (which only informs), a row is owned, has a deadline,
-    /// and cannot be closed without saying where the work went. A row for an agent also appears as
-    /// a `[q<N>]` todo in that branch's note. Bare `bn queue` lists your open rows.
-    Queue {
-        #[command(subcommand)]
-        action: Option<QueueCmd>,
-    },
     /// Durable scheduled checks that wake a seat, because a seat cannot wake itself. Stored in the
     /// coordination DB, so they survive a reboot; the `coord-tick` job evaluates the due ones.
-    /// Kinds: reminder (deliver a message), keepalive (nudge only if idle), idle-queue (nudge only
-    /// if idle with pending rows), context (warn past a context-window threshold), wake-row (wake a
-    /// parked queue row). Bare `bn watchdog` lists the active ones.
+    /// Kinds: reminder (deliver a message), keepalive (nudge only if idle), context (warn past a
+    /// context-window threshold). Bare `bn watchdog` lists the active ones.
     Watchdog {
         #[command(subcommand)]
         action: Option<WatchdogCmd>,
@@ -41,8 +31,8 @@ pub(crate) enum CmdCoord {
         action: Option<CompactCmd>,
     },
     /// Context profiles: the standing context a seat is handed, composed from atoms (directives,
-    /// goal, readiness, recap, handoff, reference index or sections, skills, file sections, queue
-    /// rows) with a token budget. Declared in `<repo>/.bn/context.toml`; `ship`, `scout`,
+    /// goal, readiness, recap, handoff, reference index or sections, skills, file sections) with a
+    /// token budget. Declared in `<repo>/.bn/context.toml`; `ship`, `scout`,
     /// `compact-restore` and `orient` are built in. Bare `bn context` lists profiles.
     Context {
         #[command(subcommand)]
@@ -251,7 +241,7 @@ pub(crate) enum ProofCmd {
 pub(crate) enum WatchdogCmd {
     /// Register a watchdog: bn watchdog register --kind reminder --at 30m --text "check CI".
     Register {
-        /// reminder | keepalive | idle-queue | context | wake-row.
+        /// reminder | keepalive | context.
         #[arg(long)]
         kind: String,
         /// The seat it watches and wakes (default: the seat you act as).
@@ -267,13 +257,10 @@ pub(crate) enum WatchdogCmd {
         /// The message to deliver when it fires.
         #[arg(long)]
         text: Option<String>,
-        /// `wake-row`: the parked queue row (`q<N>`).
-        #[arg(long)]
-        row: Option<String>,
         /// `context`: fire at or above this percent of the context window (default 80).
         #[arg(long)]
         threshold: Option<u8>,
-        /// `keepalive` / `idle-queue`: quiet time before the seat counts as idle (default 10m).
+        /// `keepalive`: quiet time before the seat counts as idle (default 10m).
         #[arg(long)]
         idle: Option<String>,
         /// Stop after firing this many times.
@@ -321,177 +308,11 @@ pub(crate) enum WatchdogCmd {
     Fire { id: String },
 }
 
-/// The acting seat, shared by every verb that changes a row.
+/// The acting seat for a command that registers on someone's behalf.
 #[derive(clap::Args, Debug, Clone, Default)]
 pub(crate) struct AsSeat {
     /// Operate as this seat (`repo:branch` or `human:<name>`). Defaults to `$BN_SEAT`, then this
     /// worktree's `repo:branch`, then `human:$USER`.
     #[arg(long = "as", value_name = "SEAT")]
     pub(crate) as_seat: Option<String>,
-}
-
-#[derive(Subcommand, Debug)]
-pub(crate) enum QueueCmd {
-    /// Open a row for a seat: bn queue create <seat> <body…>.
-    Create {
-        /// Who it is for: `repo:branch` or `human:<name>`.
-        seat: String,
-        /// What needs doing. Several words are joined; flags may come before or after.
-        #[arg(required = true, num_args = 1..)]
-        body: Vec<String>,
-        /// fast (30m) | routine (4h, default) | deep (24h) | critical (1h) — how long a claimed row
-        /// may stay open before it is overdue.
-        #[arg(long, default_value = "routine")]
-        tier: String,
-        /// A key that makes create idempotent: creating again with it returns the first row.
-        #[arg(long)]
-        key: Option<String>,
-        /// A link that goes with the work (issue, PR, doc).
-        #[arg(long = "ref")]
-        ref_: Option<String>,
-        /// Don't type a heads-up into the seat's live pane (the row and its todo still land).
-        #[arg(long)]
-        no_nudge: bool,
-        #[command(flatten)]
-        who: AsSeat,
-    },
-    /// Take a pending row addressed to you: pending → in-progress, with a deadline from its tier.
-    Claim {
-        id: String,
-        #[command(flatten)]
-        who: AsSeat,
-    },
-    /// Give a claimed row back (in-progress → pending), saying why.
-    Unclaim {
-        id: String,
-        #[arg(long)]
-        note: String,
-        #[command(flatten)]
-        who: AsSeat,
-    },
-    /// Hand a row to another seat: closes yours and opens theirs in one step.
-    Handoff {
-        id: String,
-        /// The seat that takes it next.
-        #[arg(long)]
-        to: String,
-        /// What they are getting and why — recorded on both rows.
-        #[arg(long)]
-        note: String,
-        /// Close yours as done (your part is finished) rather than handed-off.
-        #[arg(long)]
-        complete: bool,
-        /// Tier for the new row (defaults to this row's).
-        #[arg(long)]
-        tier: Option<String>,
-        #[arg(long = "ref")]
-        ref_: Option<String>,
-        /// Don't type a heads-up into the next seat's live pane.
-        #[arg(long)]
-        no_nudge: bool,
-        #[command(flatten)]
-        who: AsSeat,
-    },
-    /// Close a row as done, saying where the work went.
-    Done(CloseArgs),
-    /// Close a row as failed, saying why.
-    Fail(CloseArgs),
-    /// Refuse a row addressed to you, saying why.
-    Deny(CloseArgs),
-    /// Withdraw a row, saying why.
-    Cancel(CloseArgs),
-    /// Park a row on something, with what will wake it. Exactly one of `--wake-after`,
-    /// `--watchdog`, or (for `--on human:<name>`) `--summary` + `--evidence`: a park with nothing to
-    /// wake it looks like a crash.
-    Block {
-        id: String,
-        /// What it waits on: a seat, a row (`q<N>`), or a few words.
-        #[arg(long)]
-        on: String,
-        /// Wake it after this long (`30m`, `2h`) — creates the row's wake watchdog.
-        #[arg(long, conflicts_with_all = ["watchdog", "summary"])]
-        wake_after: Option<String>,
-        /// Wake it with an existing watchdog (`wd<N>`).
-        #[arg(long, conflicts_with = "summary")]
-        watchdog: Option<String>,
-        /// For a person: what they need to decide, in plain language.
-        #[arg(long, requires = "evidence")]
-        summary: Option<String>,
-        /// For a person: a link or path they can judge by.
-        #[arg(long, requires = "summary")]
-        evidence: Option<String>,
-        /// A note for the row's history.
-        #[arg(long)]
-        note: Option<String>,
-        #[command(flatten)]
-        who: AsSeat,
-    },
-    /// Unpark a blocked row (blocked → in-progress), saying what changed.
-    Resolve {
-        id: String,
-        #[arg(long)]
-        note: String,
-        #[command(flatten)]
-        who: AsSeat,
-    },
-    /// Add a note to a row's history without changing its state.
-    Update {
-        id: String,
-        #[arg(long)]
-        note: String,
-        #[arg(long = "ref")]
-        ref_: Option<String>,
-        #[command(flatten)]
-        who: AsSeat,
-    },
-    /// Open rows for you (default), a seat, or everyone.
-    List {
-        /// Rows for this seat instead of yours.
-        #[arg(long, conflicts_with = "all")]
-        seat: Option<String>,
-        /// Rows for every seat.
-        #[arg(long)]
-        all: bool,
-        /// Only these states (comma-separated, e.g. `pending,blocked`; `any` for every state).
-        #[arg(long)]
-        state: Option<String>,
-        /// Only in-progress rows past their deadline.
-        #[arg(long)]
-        overdue: bool,
-        #[arg(long)]
-        limit: Option<usize>,
-        #[command(flatten)]
-        who: AsSeat,
-    },
-    /// One row in full.
-    Show { id: String },
-    /// A row's append-only history.
-    Transitions { id: String },
-    /// One pass of what the `coord-tick` job does every five minutes: nudge unclaimed rows at live
-    /// agents, raise attention for overdue claims, unclaimed rows, rows waiting on a person and
-    /// parks with nothing to wake them, clear alerts whose row has moved on, and repair note
-    /// mirrors.
-    Sweep {
-        /// Print what it would do; change nothing.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Which seat you act as, and why.
-    Whoami {
-        #[command(flatten)]
-        who: AsSeat,
-    },
-}
-
-#[derive(clap::Args, Debug)]
-pub(crate) struct CloseArgs {
-    pub(crate) id: String,
-    /// Where the work went, or why it stopped. Required: closing silently is what a crash
-    /// looks like.
-    #[arg(long)]
-    pub(crate) note: String,
-    #[arg(long = "ref")]
-    pub(crate) ref_: Option<String>,
-    #[command(flatten)]
-    pub(crate) who: AsSeat,
 }

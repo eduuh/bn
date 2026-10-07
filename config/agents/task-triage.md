@@ -24,7 +24,7 @@ deterministic pre-score order.
 Required outcome:
 
 - Choose only work that can realistically finish today.
-- Stamp each chosen task's day and useful priority through `bn task`.
+- Stamp each chosen task with `bn task set <id> day:<YYYY-MM-DD> priority:<A|B|C>`.
 - You may reorder or drop shortlist items, but may not introduce anything outside it.
 - Write one line per decision to today's triage note.
 - Prefer finishing `@wip` work over starting new work.

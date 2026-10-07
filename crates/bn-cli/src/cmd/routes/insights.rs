@@ -3,13 +3,6 @@ use crate::*;
 pub(super) fn route(cfg: &Config, action: CmdInsights, json: bool) {
     match action {
         CmdInsights::Search { query, limit } => emit_search(cfg, &query.join(" "), limit, json),
-        CmdInsights::Recall {
-            query,
-            repo,
-            index,
-            limit,
-        } => emit_recall(cfg, &query.join(" "), repo.as_deref(), index, limit, json),
-        CmdInsights::Related { branch, limit } => emit_related(cfg, branch.as_deref(), limit, json),
         CmdInsights::Reviews { path, fetch } => {
             if path {
                 println!("{}", bn_core::reviews::cache_path().display());

@@ -36,6 +36,13 @@ Each arrow is a `needs:` edge, so each is enforced rather than merely intended:
    hands one machine a new bn while another silently keeps an old one.
 3. **No machine compiles bn to install it.** `install.sh` downloads these assets and nothing
    else. `cargo build` is for developing bn.
+4. **A tag never exists without its release.** `publish` uploads every asset to a *draft*
+   release (a draft creates no tag), then publishes it in one call, which is when GitHub creates
+   the tag. A failure before that leaves no tag, so the next run computes the same version and
+   tries again. A final step re-reads the release and fails the run unless it is published, tagged
+   at the commit CI passed, and carries every asset. If a tag on `main`'s head ever lacks a
+   published release, re-running the workflow (`gh workflow run release.yml`) releases that tag
+   rather than skipping it as done.
 
 ## Versioning
 

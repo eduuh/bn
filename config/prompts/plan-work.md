@@ -28,7 +28,7 @@ stop — don't silently improvise a different one.
 
 3. **Close it the moment it's done.** Check the step off in `plans/active.md` (or `bn_done` the
    todo) *when it's actually complete* — not "started", not batched at the end. Todo timestamps
-   feed `bn metrics`, so honesty keeps the numbers real. As work surfaces new tasks, add plan
+   feed `bn stats metrics`, so honesty keeps the numbers real. As work surfaces new tasks, add plan
    steps or `bn_add todo`; if you hit a real fork or tradeoff not already decided, `bn_add
    decision` before you commit to it.
 

@@ -12,7 +12,7 @@ skills themselves. The signal is reflections tagged `skill:<name> — …` (the 
 envelopes append to every dispatched skill run). Your output is a **proposed diff the user
 approves**, never a silent edit — these files are committed and shared.
 
-1. **Gather the reflections.** Run `bn learnings --since <days>` via the harness — it aggregates
+1. **Gather the reflections.** Run `bn stats learnings --since <days>` via the harness — it aggregates
    every recorded reflection in one call. Use the window ({{window}}) as days (default the last
    4 weeks, `--since 28`). If a skill was named ({{skill}}), add `--skill <that name>` to filter
    to it; otherwise sweep every `skill:`-tagged entry. If there are none, say so and stop —

@@ -7,12 +7,12 @@ keywords: [open editor, open nvim, review the diff, hand off, work is done, show
 You are handing finished work back to a human. The point is that they arrive looking at **what
 changed**, not at an empty editor they then have to drive.
 
-1. Make sure there is something to look at. Run `bn diff --three-dot` in the worktree. If it reports
+1. Make sure there is something to look at. Run `bn status --diff --three-dot` in the worktree. If it reports
    no changes vs the base, say so and stop — opening an editor on an empty diff wastes the gesture.
    Commit outstanding work first if that is what is missing.
 
    `--three-dot` is not optional garnish, and **never drop it to get the command to run**. Bare
-   `bn diff` is two-dot, which reports the *base's* own newer commits as if they were yours — on a
+   `bn status --diff` is two-dot, which reports the *base's* own newer commits as if they were yours — on a
    worktree cut from a stale local main that turns a 30-file branch into a 79-file diff with
    thousands of phantom deletions. The editor itself always diffs three-dot, so a two-dot stat line
    describes something nobody is about to look at. If you quote it, you are describing the wrong

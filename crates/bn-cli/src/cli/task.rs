@@ -55,6 +55,14 @@ pub(crate) enum TaskCmd {
     Wip { id: String },
     /// Hide a task until a date: bn task snooze <id> <YYYY-MM-DD>.
     Snooze { id: String, until: String },
+    /// Edit an existing task's scheduling fields: bn task set <id> key:value… Keys: day and due
+    /// (YYYY-MM-DD), est (90m, 2h, 1h30m), priority (A|B|C), repo, q (quarter goal key). An empty
+    /// value (`day:`) clears the key. Every pair is validated before anything is written.
+    Set {
+        id: String,
+        #[arg(required = true, value_name = "KEY:VALUE")]
+        pairs: Vec<String>,
+    },
     /// Close a task as cancelled (distinct from done): bn task cancel <id> [reason…].
     Cancel {
         id: String,

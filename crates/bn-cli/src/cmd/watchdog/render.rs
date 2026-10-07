@@ -20,7 +20,7 @@ pub(super) fn print_list(rows: &[Watchdog]) {
             w.state,
             w.target,
             fmt_local_short(w.next_due_at),
-            w.text.as_deref().or(w.row.as_deref()).unwrap_or("")
+            w.text.as_deref().unwrap_or("")
         );
     }
 }
@@ -36,9 +36,6 @@ pub(super) fn print_one(w: &Watchdog) {
     }
     if let Some(t) = &w.text {
         println!("  text:    {t}");
-    }
-    if let Some(r) = &w.row {
-        println!("  row:     {r}");
     }
     if let Some(p) = w.spec.threshold_pct {
         println!("  at:      {p}% context");

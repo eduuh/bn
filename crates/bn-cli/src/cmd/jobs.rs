@@ -93,9 +93,9 @@ pub(crate) fn job_watch(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
 
 /// `recall-index` — keep the machine-local semantic-recall index warm (#249): (re)embed only the
 /// notes/investigation docs whose fingerprint changed since the last run, so it's cheap on a
-/// schedule. The cron form of `bn recall --index`; fully offline and idempotent.
+/// schedule. Fully offline and idempotent.
 pub(crate) fn job_recall_index(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
-    emit_recall(cfg, "", None, true, 20, false);
+    build_recall_index(cfg);
     0
 }
 
@@ -199,57 +199,6 @@ pub(crate) fn job_refresh_all(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
     0
 }
 
-/// `tools-reconcile` cron (#653) — the keep-alive loop for the managed "tools" subsystem: for
-/// every declared docker-backed tool (opted-in built-ins + `<config_dir>/tools.toml`), re-assert
-/// the "up" desired state (create if absent, start if stopped, no-op if running). Best-effort per
-/// tool — one failing tool doesn't stop the others; the exit code is non-zero only if at least one
-/// tool couldn't be brought up, so the scheduler / `bn cron` surfaces the stall.
-pub(crate) fn job_tools_reconcile(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
-    use bn_core::runner::RealRunner;
-    use bn_core::tools::{self, DeployOutcome};
-    let specs = tools::all_specs();
-    if specs.is_empty() {
-        native_job_line("tools-reconcile: no tools declared", false);
-        return 0;
-    }
-    // All managed tools are docker-backed. On a host with no docker on PATH (a builder without
-    // Docker Desktop, a WSL box with the daemon down) every `docker inspect`/`run` fails, so the
-    // job would return non-zero on EVERY tick forever — the chronic-failure trap (539/540 silent
-    // fails). Skip cleanly instead: nothing to reconcile without a daemon isn't a failure.
-    let path = std::env::var("PATH").unwrap_or_default();
-    if !bn_core::mcp::command_on_path("docker", &path)
-        && !bn_core::mcp::command_on_path("docker.exe", &path)
-    {
-        println!(
-            "tools-reconcile: docker not on PATH — skipping ({} tool(s))",
-            specs.len()
-        );
-        return 0;
-    }
-    let mut rc = 0;
-    for spec in &specs {
-        match tools::reconcile(&RealRunner, spec) {
-            DeployOutcome::Created => {
-                native_job_line(&format!("tools-reconcile: {} created", spec.name), false)
-            }
-            DeployOutcome::Started => {
-                native_job_line(&format!("tools-reconcile: {} started", spec.name), false)
-            }
-            DeployOutcome::AlreadyRunning => native_job_line(
-                &format!("tools-reconcile: {} already running", spec.name),
-                false,
-            ),
-            DeployOutcome::Failed(e) => {
-                native_job_line(
-                    &format!("tools-reconcile: {} FAILED — {e}", spec.name),
-                    true,
-                );
-                rc = 1;
-            }
-        }
-    }
-    rc
-}
 
 /// Run a native job with the same bookkeeping as the script path: the per-machine `only_on` gate,
 /// the `bn cron running` marker, and a `cron_run` event with duration + exit code. Native jobs are

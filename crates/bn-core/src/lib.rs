@@ -15,7 +15,6 @@
 //! Modules are filled in over the build order in phase1-plan.md.
 
 pub mod action_rank;
-pub mod afk;
 pub mod agent;
 pub mod agents;
 pub mod attention;
@@ -133,7 +132,6 @@ pub mod test_support;
 pub mod tmux;
 pub mod todo;
 pub mod tokens;
-pub mod tools;
 pub mod track;
 pub mod trust;
 pub mod util;

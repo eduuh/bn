@@ -32,9 +32,9 @@ use bn_core::skills::{load_skill_set, Skill};
 
 mod context_tools;
 mod proof_tools;
-mod queue_tools;
 #[cfg(test)]
 mod tests;
+mod watchdog_tools;
 
 pub struct BnServer {
     cfg: Config,
@@ -193,10 +193,13 @@ impl BnServer {
         }
     }
 
-    /// Every tool this server serves: the note tools here plus the queue tools in
-    /// [`queue_tools`], which live apart to keep this file under the size ratchet.
+    /// Every tool this server serves: the note tools here plus the watchdog, proof and context
+    /// tools, which live apart to keep this file under the size ratchet.
     fn all_tools() -> rmcp::handler::server::router::tool::ToolRouter<Self> {
-        Self::tool_router() + Self::queue_router() + Self::proof_router() + Self::context_router()
+        Self::tool_router()
+            + Self::watchdog_router()
+            + Self::proof_router()
+            + Self::context_router()
     }
 
     /// Every effective skill, freshly merged from `skill_dirs` (higher tiers override lower ones
@@ -441,10 +444,7 @@ impl BnServer {
         let ctx = self.resolve()?;
         let note = store::read(&self.cfg.note_file(&ctx)).ok();
         let handoff_available = bn_core::handoff::read(&self.cfg, &ctx).is_some();
-        let mut data = payload::context_data(note.as_ref(), &ctx, handoff_available);
-        if let Some(queue) = queue_tools::summary(&ctx) {
-            data["queue"] = queue;
-        }
+        let data = payload::context_data(note.as_ref(), &ctx, handoff_available);
         Ok(CallToolResult::structured(data))
     }
 
@@ -670,13 +670,7 @@ impl ServerHandler for BnServer {
              links are about to leave with the worktree. bn_links_list finds stored links by \
              tag (icm, permissions, docs, security, ...), repo or substring — check it before \
              asking the user for a URL they have likely saved. \
-             Work handed between agents goes through the queue, not a message: a message \
-             informs, a queue row is owned. bn_queue_create asks another seat (repo:branch or \
-             human:<name>) for work; bn_queue_list shows this seat's rows; claim before starting \
-             (bn_queue_claim); finish with bn_queue_close, whose note must say where the work \
-             went, or pass it on with bn_queue_handoff; park blocked work with bn_queue_block \
-             and a wake trigger rather than sitting on it. These act as this branch's seat -- \
-             only a row's destination may name another. bn_watchdog_checkin schedules a durable \
+             bn_watchdog_checkin schedules a durable \
              check-in to yourself. bn_proof_show reports done-when readiness from recorded \
              evidence; bn_proof_add attaches evidence, which counts only once someone else \
              accepts it. bn_context_profile composes a token-budgeted context profile for this \

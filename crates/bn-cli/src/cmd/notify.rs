@@ -28,7 +28,7 @@ pub(crate) fn emit_notify_status(cfg: &Config, as_json: bool) {
             "held_today": held,
             "held_by_reason": ledger.held_today,
             "sent_by_source": ledger.sent_by_source,
-            "quiet": { "afk": quiet.afk, "focus": quiet.focus, "protected_block": quiet.protected_block },
+            "quiet": { "focus": quiet.focus, "protected_block": quiet.protected_block },
             "cooldown": cooling
                 .iter()
                 .map(|(key, sent)| serde_json::json!({ "key": key, "quiet_for_secs": p.cooldown_secs - (now - sent) }))
@@ -60,7 +60,6 @@ pub(crate) fn emit_notify_status(cfg: &Config, as_json: bool) {
     }
 
     let windows = [
-        (quiet.afk, "away mode — everything batches into `bn afk end`"),
         (quiet.focus, "focus block — only blocking items interrupt"),
         (
             quiet.protected_block,

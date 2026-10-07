@@ -33,7 +33,7 @@ The writing is technical and first person, so every detail has to be true. Befor
 what actually happened:
 
 - If it came from work in a repo: read the code, `git log`, the diff, the PR.
-- If there is a branch note: `bn_cat`, or `bn recall "<topic>"` for older decisions.
+- If there is a branch note: `bn_cat`, or `bn search "<topic>"` for older decisions.
 - If a command or error is quoted, run it or find it. Do not reconstruct output from memory.
 
 Then list, for yourself: the problem, what I tried, what failed, what worked, the real numbers,

@@ -39,7 +39,6 @@ pub(super) fn route(cfg: &Config, action: CmdGitPr, json: bool) {
             let ctx = resolve_or_exit(cfg);
             emit_shot(cfg, &ctx, gif, fresh, json);
         }
-        CmdGitPr::Autopush { message } => std::process::exit(emit_autopush(&message.join(" "))),
         CmdGitPr::Diff {
             path,
             repo,

@@ -2,7 +2,6 @@ use crate::*;
 
 pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
     match action {
-        CmdStaff::Afk { action } => emit_afk(cfg, action, json),
         CmdStaff::Watch {
             once,
             interval,

@@ -37,7 +37,7 @@ Give each worker a bounded slice. A UI bug, a test gap, and a deployment concern
 
 ## Workers on other machines
 
-A worker can run on a Cloud PC or another PC as easily as here: `bn agent launch claude --host <machine>` from the branch's worktree. It runs in a tmux window on that machine and survives dropped connections. `bn agent msg` reaches it, and it can answer back, whichever machine each side is on. `bn tunnels` shows which machines are up. The `multi-device` skill has the setup and the troubleshooting.
+A worker can run on a Cloud PC or another PC as easily as here: `bn agent launch claude --host <machine>` from the branch's worktree. It runs in a tmux window on that machine and survives dropped connections. `bn agent msg` reaches it, and it can answer back, whichever machine each side is on. `bn machine tunnels` shows which machines are up. The `multi-device` skill has the setup and the troubleshooting.
 
 ## Cleanup
 

@@ -3,21 +3,20 @@
 //! and records the outcome.
 
 use crate::cmd::agent::{try_deliver_live, LiveDelivery};
-use crate::cmd::queue::{acting, die_as};
+use crate::cli::coord_group::AsSeat;
 use crate::*;
 use bn_core::attention::{self, NewAttn};
 use bn_core::clock::{Clock, RealClock};
 use bn_core::coord::policy::{decide, Decision, Facts};
 use bn_core::coord::watchdog::{parse_wdid, Kind, NewWatchdog, Spec, Watchdog};
 use bn_core::coord::watchdog_eval::{Outcome, DEFER_ALERT_AFTER};
-use bn_core::coord::{self, agent_target, is_human, CoordDb, CoordError, ListFilter, QState};
+use bn_core::coord::{self, agent_target, is_human, CoordDb, CoordError};
 use serde::Serialize;
 use serde_json::json;
 
 mod render;
 #[cfg(test)]
 mod tests;
-mod wake;
 
 const CMD: &str = "watchdog";
 
@@ -36,7 +35,6 @@ pub(crate) fn emit_watchdog(cfg: &Config, action: Option<WatchdogCmd>, json: boo
             at,
             every,
             text,
-            row,
             threshold,
             idle,
             max_fires,
@@ -59,11 +57,6 @@ pub(crate) fn emit_watchdog(cfg: &Config, action: Option<WatchdogCmd>, json: boo
                 every_secs: every,
                 expires_in_secs: expires.map(|e| duration(&e, json)),
                 max_fires,
-                qitem_id: row.map(|r| {
-                    coord::parse_qid(&r).unwrap_or_else(|| {
-                        fail_json(json, CMD, "invalid_row", &format!("'{r}' is not q<N>"))
-                    })
-                }),
                 created_by: acting(cfg, &who, json),
             };
             let wd = register(&mut db, &clock, new).unwrap_or_else(|e| die(json, &e));
@@ -224,7 +217,7 @@ pub(crate) fn tick(cfg: &Config, db: &mut CoordDb, now: i64, only: Option<i64>) 
     // The fleet scan reads every live transcript; only pay for it when a due watchdog needs it.
     let needs_fleet = due
         .iter()
-        .any(|w| matches!(w.kind(), Some(Kind::Keepalive | Kind::IdleQueue | Kind::Context)));
+        .any(|w| matches!(w.kind(), Some(Kind::Keepalive | Kind::Context)));
     let fleet = needs_fleet.then(|| {
         bn_core::agent::supervise(
             cfg,
@@ -241,9 +234,9 @@ pub(crate) fn tick(cfg: &Config, db: &mut CoordDb, now: i64, only: Option<i64>) 
                 continue;
             }
         }
-        let facts = gather(db, &wd, fleet.as_ref());
+        let facts = gather(&wd, fleet.as_ref());
         let (outcome, detail) = match decide(&wd, &facts) {
-            Decision::Fire(text) => act(cfg, db, &wd, &text, now),
+            Decision::Fire(text) => act(cfg, &wd, &text),
             Decision::Skip(why) => (Outcome::Skipped, why),
             Decision::Unavailable(why) => (Outcome::Unavailable, why),
         };
@@ -268,45 +261,23 @@ pub(crate) fn tick(cfg: &Config, db: &mut CoordDb, now: i64, only: Option<i64>) 
 }
 
 /// The facts `wd`'s policy needs.
-fn gather(db: &CoordDb, wd: &Watchdog, fleet: Option<&bn_core::agent::Fleet>) -> Facts {
+fn gather(wd: &Watchdog, fleet: Option<&bn_core::agent::Fleet>) -> Facts {
     let agent = fleet.and_then(|f| {
         f.agents
             .iter()
             .find(|a| coord::normalize_seat(&a.target).ok().as_deref() == Some(&wd.target))
     });
     let idle_secs = agent.map(|a| a.idle_secs);
-    let pending_rows = match wd.kind() {
-        Some(Kind::IdleQueue) => db
-            .list(&ListFilter {
-                seat: Some(wd.target.clone()),
-                states: vec![QState::Pending],
-                ..Default::default()
-            })
-            .map(|rows| rows.len())
-            .unwrap_or(0),
-        _ => 0,
-    };
-    let row_blocked = wd
-        .row
-        .as_deref()
-        .and_then(coord::parse_qid)
-        .and_then(|id| db.get(id).ok())
-        .map(|row| row.qstate() == QState::Blocked);
     Facts {
         idle_secs,
-        pending_rows,
         // `None` (Copilot, just compacted, no usage yet) stays unknown — never read as 0%.
         context_pct: agent.and_then(|a| a.context.as_ref()).and_then(|c| c.pct),
-        row_blocked,
     }
 }
 
 /// Carry out a fire. Delivering to an agent that isn't reachable right now is a deferral, not a
 /// failure: the watchdog tries again in a few minutes.
-fn act(cfg: &Config, db: &mut CoordDb, wd: &Watchdog, text: &str, now: i64) -> (Outcome, String) {
-    if wd.kind() == Some(Kind::WakeRow) {
-        return wake::wake_row(cfg, db, wd, now);
-    }
+fn act(cfg: &Config, wd: &Watchdog, text: &str) -> (Outcome, String) {
     let line = format!("[bn watchdog {}] {text}", wd.id);
     if is_human(&wd.target) {
         return match raise(&wd.target, &format!("watchdog:{}", wd.id), &line, "warn") {
@@ -396,7 +367,6 @@ fn checkin_in(
             every_secs: None,
             expires_in_secs: None,
             max_fires: Some(1),
-            qitem_id: None,
             created_by: created_by.to_string(),
         },
         arm,
@@ -420,6 +390,38 @@ fn wdnum(id: &str, json: bool) -> i64 {
     })
 }
 
+/// The seat this invocation acts as — see [`coord::acting_seat`].
+fn acting(cfg: &Config, who: &AsSeat, json: bool) -> String {
+    let here = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| resolver::resolve(cfg, &cwd).ok())
+        .map(|r| format!("{}:{}", r.repo, r.branch));
+    let env = std::env::var("BN_SEAT").ok();
+    let user = std::env::var("USER").unwrap_or_default();
+    coord::acting_seat(who.as_seat.as_deref(), env.as_deref(), here.as_deref(), &user)
+        .unwrap_or_else(|e| die(json, &e))
+}
+
 fn die(json: bool, e: &CoordError) -> ! {
-    die_as(CMD, json, e)
+    let code = match e {
+        CoordError::Sqlite(_) => "db_error",
+        CoordError::NotFound(_) => "not_found",
+        CoordError::Invalid(_) => "invalid",
+    };
+    fail_json(json, CMD, code, &e.to_string())
+}
+
+/// `coord-tick` — the watchdog tick, on the `tick-5m` cluster.
+pub(crate) fn job_coord_tick(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
+    let mut db = match CoordDb::open_default() {
+        Ok(db) => db,
+        Err(e) => {
+            crate::cmd::jobs::native_job_line(&format!("coord-tick: {e}"), true);
+            return 1;
+        }
+    };
+    let dogs = tick(cfg, &mut db, bn_core::util::now_epoch_secs(), None);
+    let failed = !dogs.errors.is_empty();
+    crate::cmd::jobs::native_job_line(&dogs.summary(), failed);
+    i32::from(failed)
 }

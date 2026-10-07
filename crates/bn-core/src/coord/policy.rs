@@ -3,28 +3,24 @@
 
 use super::watchdog::{Kind, Watchdog};
 
-/// Default quiet time before `keepalive` / `idle-queue` count a seat as idle.
+/// Default quiet time before `keepalive` counts a seat as idle.
 pub const DEFAULT_IDLE_SECS: i64 = 10 * 60;
 /// Default `context` threshold, in percent of the window.
 pub const DEFAULT_CONTEXT_PCT: u8 = 80;
 
-/// What the caller learned about the watchdog's seat (and row) before deciding.
+/// What the caller learned about the watchdog's seat before deciding.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Facts {
     /// Seconds since the seat's session last did anything; `None` when no session was found.
     pub idle_secs: Option<i64>,
-    /// Pending queue rows addressed to the seat.
-    pub pending_rows: usize,
     /// Context-window use, when it can be measured. Never guessed: unknown is `None`, not 0.
     pub context_pct: Option<u8>,
-    /// `wake-row`: whether the row is still blocked; `None` when the row is gone.
-    pub row_blocked: Option<bool>,
 }
 
 /// The decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
-    /// Act: deliver this text (or, for `wake-row`, wake the row).
+    /// Act: deliver this text.
     Fire(String),
     /// Nothing to do this time; the condition doesn't hold.
     Skip(String),
@@ -41,17 +37,9 @@ pub fn decide(wd: &Watchdog, f: &Facts) -> Decision {
             None => Decision::Unavailable("no running session for this seat".into()),
             Some(idle) if idle >= idle_need => Decision::Fire(text(
                 "keepalive: you have been quiet a while — still on it? If you are blocked, say so \
-                 with `bn queue block` or `bn add blocker`.",
+                 with `bn add blocker`.",
             )),
             Some(idle) => Decision::Skip(format!("active {idle}s ago")),
-        },
-        Some(Kind::IdleQueue) => match (f.pending_rows, f.idle_secs) {
-            (0, _) => Decision::Skip("no pending rows".into()),
-            (_, None) => Decision::Unavailable("no running session for this seat".into()),
-            (n, Some(idle)) if idle >= idle_need => Decision::Fire(format!(
-                "You have {n} pending queue row(s) and have been idle: bn queue list"
-            )),
-            (_, Some(idle)) => Decision::Skip(format!("active {idle}s ago")),
         },
         Some(Kind::Context) => {
             let need = wd.spec.threshold_pct.unwrap_or(DEFAULT_CONTEXT_PCT);
@@ -64,11 +52,6 @@ pub fn decide(wd: &Watchdog, f: &Facts) -> Decision {
                 Some(pct) => Decision::Skip(format!("context at {pct}%")),
             }
         }
-        Some(Kind::WakeRow) => match f.row_blocked {
-            Some(true) => Decision::Fire("wake".into()),
-            Some(false) => Decision::Skip("row is no longer blocked".into()),
-            None => Decision::Skip("row is gone".into()),
-        },
         None => Decision::Unavailable(format!("unknown watchdog kind '{}'", wd.kind)),
     }
 }

@@ -30,7 +30,7 @@ per-branch tmux session — so the same `bn` `<repo>/<branch>` note serves both 
 local worktree and the codespace. Needs `gh`; degrades silently without it. See
 [`docs/tmux.md`](docs/tmux.md#codespaces-remote-worktrees).
 
-The status-bar segments and popups are now **native `bn` subcommands** (`bn tmux-git`,
+The status-bar segments and popups are now **native `bn` subcommands** (`bn tmux git`,
 `tmux-goal`, `tmux-attn-count`, `tmux-done-badge`, `tmux-cockpit`, `tmux-help`,
 `tmux-note`, `tmux-keys`) — see `crates/bn-cli/src/cmd/tmux_status.rs` and `tmux_keys.rs`; quick-capture is `bn add
 <section> --prompt` and `prefix e` inlines `nvim .`. (Worktree open/create/remove moved
@@ -89,11 +89,11 @@ worktree creation. See `config/hooks/post-create` for a starting point.
 | C-w | `bn tat --root win` (native; Windows repos) |
 | o/W | `bn wt open` / `bn wt open --new` (native) |
 | D   | `bn wt remove` (native; removes worktree + kills its window) |
-| n   | `bn tmux-note` (native)    |
+| n   | `bn tmux note` (native)    |
 | e   | `nvim .` (inlined)         |
 | A   | `bin/tmux-agent.sh` (spawn Copilot agent window — the default) |
 | G   | `bin/tmux-agent.sh … claude` (spawn Claude agent window) |
-| S   | `bn tmux-cockpit` (native; orchestration roll-up) |
+| S   | `bn tmux cockpit` (native; orchestration roll-up) |
 | j   | `bn jump` (native; everything that needs you: windows + `bn next` queue) |
 | Tab | `bn jump --next` (native; jump to top window needing you; repeat to cycle) |
 | m   | watch this window (silence → ✓) |
@@ -107,7 +107,7 @@ and the clock. The todo/blocker tally and the waiting-agent bells left the bar; 
 
 It used to be two rows, with the goal (or the linked PR's title) on the dashboard row. Once the
 tabs shrank to numbers they fit beside the dashboard, and the goal was dropped rather than keep
-a second row for it. `bn tmux-goal` still prints it, and it is in the note itself.
+a second row for it. `bn tmux goal` still prints it, and it is in the note itself.
 
 Inactive tabs show the window **number** plus attention badges; the active tab adds its name
 (`@bn_branch`, else the window name, cut to 20 columns). A name on every tab cost 20-30 columns
@@ -137,9 +137,9 @@ build, a test run, a non-Claude harness — still reports when it finishes.
 Agents waiting in *other* sessions are not on the bar (a session is a repo, so the tabs only
 list this repo's worktrees); `prefix Tab` / `prefix j` reach them.
 
-The dot is set by `bn tmux-agent <state>` (a per-window `@bn_agent` option, I/O-free,
+The dot is set by `bn tmux agent <state>` (a per-window `@bn_agent` option, I/O-free,
 no-op outside tmux) and is the source of truth for Claude windows. It takes precedence
-over `@bn_done` — the silence-watch fallback (`bind m` / `bn tmux-done-badge`) that
+over `@bn_done` — the silence-watch fallback (`bind m` / `bn tmux done-badge`) that
 badges a `✓` on any non-Claude job (build/test) once its output goes quiet. A pane that exits
 badges at once instead: `pane-died` passes its exit status, so a failed job gets a red mark rather
 than a quiet `✓`.
@@ -149,9 +149,9 @@ they inherit `$TMUX_PANE` from the agent's pane, so the decoration lands on the 
 window:
 
 ```json
-"UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "$HOME/.config/bn/bn tmux-agent working" }] }],
-"Notification":     [{ "hooks": [{ "type": "command", "command": "$HOME/.config/bn/bn tmux-agent waiting" }] }],
-"Stop":             [{ "hooks": [{ "type": "command", "command": "$HOME/.config/bn/bn tmux-agent done" }] }]
+"UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "$HOME/.config/bn/bn tmux agent working" }] }],
+"Notification":     [{ "hooks": [{ "type": "command", "command": "$HOME/.config/bn/bn tmux agent waiting" }] }],
+"Stop":             [{ "hooks": [{ "type": "command", "command": "$HOME/.config/bn/bn tmux agent done" }] }]
 ```
 
 The **GitHub Copilot CLI** has its own hook system (`~/.copilot/hooks/*.json`, all merged)
@@ -162,10 +162,10 @@ that dir mapping Copilot's events onto the same three states:
 {
   "version": 1,
   "hooks": {
-    "userPromptSubmitted": [{ "type": "command", "bash": "$HOME/.config/bn/bn tmux-agent working", "timeoutSec": 5 }],
-    "permissionRequest":   [{ "type": "command", "bash": "$HOME/.config/bn/bn tmux-agent waiting", "timeoutSec": 5 }],
-    "notification":        [{ "type": "command", "bash": "$HOME/.config/bn/bn tmux-agent waiting", "timeoutSec": 5 }],
-    "agentStop":           [{ "type": "command", "bash": "$HOME/.config/bn/bn tmux-agent done",    "timeoutSec": 5 }]
+    "userPromptSubmitted": [{ "type": "command", "bash": "$HOME/.config/bn/bn tmux agent working", "timeoutSec": 5 }],
+    "permissionRequest":   [{ "type": "command", "bash": "$HOME/.config/bn/bn tmux agent waiting", "timeoutSec": 5 }],
+    "notification":        [{ "type": "command", "bash": "$HOME/.config/bn/bn tmux agent waiting", "timeoutSec": 5 }],
+    "agentStop":           [{ "type": "command", "bash": "$HOME/.config/bn/bn tmux agent done",    "timeoutSec": 5 }]
   }
 }
 ```

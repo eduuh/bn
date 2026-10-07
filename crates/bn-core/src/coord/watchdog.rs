@@ -18,30 +18,18 @@ pub enum Kind {
     Reminder,
     /// Nudge the seat only if it has gone idle.
     Keepalive,
-    /// Nudge the seat only if it is idle *and* has pending queue rows.
-    IdleQueue,
     /// Warn the seat when its context window crosses a threshold.
     Context,
-    /// Wake a parked queue row.
-    WakeRow,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 5] = [
-        Kind::Reminder,
-        Kind::Keepalive,
-        Kind::IdleQueue,
-        Kind::Context,
-        Kind::WakeRow,
-    ];
+    pub const ALL: [Kind; 3] = [Kind::Reminder, Kind::Keepalive, Kind::Context];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Kind::Reminder => "reminder",
             Kind::Keepalive => "keepalive",
-            Kind::IdleQueue => "idle-queue",
             Kind::Context => "context",
-            Kind::WakeRow => "wake-row",
         }
     }
 
@@ -62,7 +50,7 @@ pub struct Spec {
     /// `context`: fire at or above this percentage of the window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threshold_pct: Option<u8>,
-    /// `keepalive` / `idle-queue`: how long the seat must have been quiet, in seconds.
+    /// `keepalive`: how long the seat must have been quiet, in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_secs: Option<i64>,
 }
@@ -80,7 +68,6 @@ pub struct NewWatchdog {
     pub every_secs: Option<i64>,
     pub expires_in_secs: Option<i64>,
     pub max_fires: Option<i64>,
-    pub qitem_id: Option<i64>,
     pub created_by: String,
 }
 
@@ -104,8 +91,6 @@ pub struct Watchdog {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_fires: Option<i64>,
     pub fires: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub row: Option<String>,
     pub state: String,
     pub created_by: String,
     pub created_at: i64,
@@ -152,7 +137,7 @@ pub fn parse_wdid(s: &str) -> Option<i64> {
 
 pub(super) const WD_COLUMNS: &str =
     "id, kind, target, text, spec_json, interval_secs, next_due_at, \
-     expires_at, max_fires, fires, qitem_id, state, created_by, created_at, stop_reason, \
+     expires_at, max_fires, fires, state, created_by, created_at, stop_reason, \
      last_eval_at, defer_count";
 
 pub(super) fn wd_from_row(r: &Row<'_>) -> rusqlite::Result<Watchdog> {
@@ -170,13 +155,12 @@ pub(super) fn wd_from_row(r: &Row<'_>) -> rusqlite::Result<Watchdog> {
         expires_at: r.get(7)?,
         max_fires: r.get(8)?,
         fires: r.get(9)?,
-        row: r.get::<_, Option<i64>>(10)?.map(super::qid),
-        state: r.get(11)?,
-        created_by: r.get(12)?,
-        created_at: r.get(13)?,
-        stop_reason: r.get(14)?,
-        last_eval_at: r.get(15)?,
-        defer_count: r.get(16)?,
+        state: r.get(10)?,
+        created_by: r.get(11)?,
+        created_at: r.get(12)?,
+        stop_reason: r.get(13)?,
+        last_eval_at: r.get(14)?,
+        defer_count: r.get(15)?,
     })
 }
 
@@ -200,8 +184,8 @@ pub(super) fn insert_wd(conn: &rusqlite::Connection, now: i64, new: &NewWatchdog
     let spec = serde_json::to_string(&new.spec).unwrap_or_else(|_| "{}".into());
     conn.execute(
         "INSERT INTO watchdogs(kind, target, text, spec_json, interval_secs, next_due_at,
-             expires_at, max_fires, qitem_id, created_by, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             expires_at, max_fires, created_by, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             new.kind.as_str(),
             target,
@@ -211,7 +195,6 @@ pub(super) fn insert_wd(conn: &rusqlite::Connection, now: i64, new: &NewWatchdog
             now + new.first_in_secs.max(0),
             new.expires_in_secs.map(|e| now + e),
             new.max_fires,
-            new.qitem_id,
             new.created_by,
             now
         ],

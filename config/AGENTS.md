@@ -22,10 +22,9 @@ Shipped with bn. Claude Code reads this through an `@` import in `~/.claude/CLAU
 ## Talk to other agents
 - Other live agents on this machine are listed by `bn agent live` (their `target` is `repo:branch`). Ask one for something with `bn agent msg <repo:branch> "..."`; it lands as that agent's next prompt.
 - A prompt starting `[bn msg from <repo:branch>]` is another agent asking you. Do what it asks, then answer with the same command, addressed to that sender. Keep both directions to one message each.
-- Work another agent must *do* is a queue row, not a message: `bn queue create <repo:branch> "..."`. A `[bn queue qN …]` prompt means a row is waiting for you: `bn queue claim qN`, then close it with a note saying where the work went (`bn queue done qN --note …`) or `bn queue handoff`. Never park blocked work silently: `bn queue block qN --on … --wake-after 1h`.
 
 ## Across machines
-- Start with `bn tunnels`: which machines are up, their nicknames, and why one is down. Reach one with `ssh <nickname>`. The `multi-device` skill has the rest.
+- Start with `bn machine tunnels`: which machines are up, their nicknames, and why one is down. Reach one with `ssh <nickname>`. The `multi-device` skill has the rest.
 - Long work on another machine (build, install, clone): write it as a script there and run it in a tmux window, never on a bare ssh session. Start every machine first, then wait once.
 - A machine without git credentials: push to it over ssh (`git push ssh://<machine><repo> <ref>:refs/remotes/origin/<ref>`), then fast-forward there. Pulling there hangs on a login prompt.
 - Settings for one machine go in `~/.config/bn/`, never `~/.gitconfig`: dotfiles sync that file to every machine.

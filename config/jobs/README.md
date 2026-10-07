@@ -29,7 +29,7 @@ and report `not_enabled`.
   in-binary handlers instead (the `native_job` registry in `crates/bn-cli/src/cmd/job_registry.rs`);
   `bn run <job>` checks `native_job` first and only falls back to `<job>.sh` for un-ported jobs.
 - `bn run` records every run (start, duration, exit code, output tail) to the event log
-  (`<personal_root>/<machine>/state/events.jsonl`), so `bn cron status` and `bn doctor` can surface what
+  (`<personal_root>/<machine>/state/events.jsonl`), so `bn cron status` and `bn next --stale` can surface what
   ran and what failed.
 - `bn cron` (alias `bn cron status`) is the unified view: every job joined with its next
   scheduled run and its last-run health. It shows which scheduler drives each job — a systemd
@@ -44,24 +44,24 @@ A job either **does** work or **surfaces** it:
 
 - **Action jobs** change something — `commit-notes` checkpoints notes, `refresh-all` pulls
   every repo, `daily-rollover` advances the day file, `recall-index` (re)builds the local
-  semantic-recall index (`bn recall --index`; incremental + offline). The output is the side effect.
+  semantic-recall index (incremental + offline; it feeds the past-notes hint on a new note). The output is the side effect.
 - **Feed jobs** answer "what should I look at?" — they fetch facts and drop them into the
-  **feed**, an inbox you read with `bn feed`. A feed job is just an action job whose action is
-  `bn feed ingest <source>`; there's no separate type to declare.
+  **feed**, an inbox you read with `bn attn feed`. A feed job is just an action job whose action is
+  `bn attn feed ingest <source>`; there's no separate type to declare.
 
 A feed job's script fetches (via `gh`, `az`, an MCP call, anything) and pipes one item per line
-to `bn feed ingest <source>`:
+to `bn attn feed ingest <source>`:
 
     {"key":"pr-5377937","text":"Fix areaPath — Steph","url":"https://.../pullrequest/5377937"}
 
 `key` is a stable id (for your eye only), `text` is the line shown, `url` is the link. Each run
 **replaces** that source's items, so the feed mirrors the current state — merged PRs and past
-meetings fall off on their own. `bn feed` renders every source grouped, newest write first;
-`bn feed clear <source>` retires one.
+meetings fall off on their own. `bn attn feed` renders every source grouped, newest write first;
+`bn attn feed clear <source>` retires one.
 
-    bn feed                    # render the inbox
-    bn feed ingest <source>    # replace a source from JSON on stdin (the write path)
-    bn feed clear  <source>    # forget a source
+    bn attn feed                    # render the inbox
+    bn attn feed ingest <source>    # replace a source from JSON on stdin (the write path)
+    bn attn feed clear  <source>    # forget a source
 
 When a job should interrupt the `bn next` / attention list directly, pipe the same JSON/JSONL
 shape into `bn attn ingest` instead of building a quoted command line:
@@ -99,7 +99,7 @@ scripts live in a private notes `jobs/` dir, never here — see **Resolution** b
 of the shape (kept private on the machines that run them):
 
 - **`ado-reviews`** / **`pr-queue`** — `az repos pr list --creator <alias>` (or `gh pr list`) for a
-  set of followed authors → the review queue cache at `<state>/reviews.json`, so `bn reviews` and
+  set of followed authors → the review queue cache at `<state>/reviews.json`, so `bn review queue` and
   `bn next` are instant and offline. Each PR object is:
 
       {"repo","number","title","author","url","updated_at","created_at",
@@ -119,12 +119,12 @@ of the shape (kept private on the machines that run them):
 
       <query that returns today's meetings as JSON> \
         | jq -c '.[] | {key:.id, text:(.start + "  " + .subject), url:.joinUrl}' \
-        | bn feed ingest meetings
+        | bn attn feed ingest meetings
       # and, for the gap cache `bn gap` / `bn next --fit` size against:
       <same JSON> | jq -c '.[] | {start, title:.subject, url:.joinUrl}' | bn gap ingest
 
   Scheduled weekdays at 14:50 by its agent manifest (config/agents/meetings.md, `catch_up: true` —
-  the morning re-fire on the day's first bn event). When a meeting is upcoming it also
+  the morning re-fire on the day's first bn stats event). When a meeting is upcoming it also
   writes a `meeting-prep` feed source — a few bullets (agenda, your role, the latest relevant
   thread, a doc to skim) — one extra workIQ call, cleared when nothing's upcoming.
 - **`m365-sweep`** — one batched workIQ pass for everything that needs you, routed to bn's
@@ -213,7 +213,7 @@ three **tick** crons — one timer each — that fan out to their cluster in ord
 
 | Tick | Schedule | Runs |
 |---|---|---|
-| `tick-5m` | `*:0/5` | `tools-reconcile`, `coord-tick`, `attention-sync`, `tmux-reconcile`, `tmux-keylog` |
+| `tick-5m` | `*:0/5` | `coord-tick`, `attention-sync`, `tmux-reconcile`, `tmux-keylog`, `forge-agent` |
 | `tick-10m` | `*:0/10` | `auto-review-trigger`, `attention-auto-trigger`, `agent-supervise` |
 | `tick-15m` | `*:0/15` | `main-sync`, `auto-review-poll`, `cron-health` |
 
@@ -230,7 +230,7 @@ specialist-only `repo:` field, which selects native review-agent compilation rat
 availability.
 
 Each child still runs through the normal `bn run` path, so it records its **own** `cron_run`
-event. `bn cron` nests each schedule and its due/retry state beneath `agent-scheduler`; `bn doctor`
+event. `bn cron` nests each schedule and its due/retry state beneath `agent-scheduler`; `bn next --stale`
 still sees each child's own failure history. A failing child never blocks its siblings, and the
 scheduler records its own catalog/loop health separately.
 
@@ -318,12 +318,12 @@ launchd-translatable by the `every_shipped_cron_translates_for_launchd` test.)
 ## Conventions
 
 - Scripts must be idempotent — they may run repeatedly.
-- Exit non-zero on failure so `bn cron status` / `bn doctor` flag it.
+- Exit non-zero on failure so `bn cron status` / `bn next --stale` flag it.
 - Keep them POSIX-`sh` compatible (`bn run` invokes them with `/bin/sh`).
 
 ## Findings store (morning planning)
 
-`bn findings` (#576) is an **append-only** history store — one durable run per source per day —
+`bn attn findings` (#576) is an **append-only** history store — one durable run per source per day —
 that feeds `today-agent` (#577) and the later planner slices (#898–#899). It is distinct from the
 feed (which mirrors *current* state with replace semantics): findings **accumulate**, so a
 run-over-run diff can tell "same item as yesterday" from a new one.
@@ -331,10 +331,10 @@ run-over-run diff can tell "same item as yesterday" from a new one.
 The **shipped** `gather-findings` cron (weekday 08:15, before `today-agent` at 08:30) snapshots the
 already-local morning-planning caches into the store; the same work runs on demand with:
 
-    bn findings gather            # snapshot every source (records only non-empty ones)
-    bn findings gather --json     # machine-readable {source,tier,items,recorded,run_id}[]
-    bn findings sources           # which sources have recorded runs
-    bn findings query [--source s] [--since d] [--limit n]   # durable runs, newest first
+    bn attn findings gather            # snapshot every source (records only non-empty ones)
+    bn attn findings gather --json     # machine-readable {source,tier,items,recorded,run_id}[]
+    bn attn findings sources           # which sources have recorded runs
+    bn attn findings query [--source s] [--since d] [--limit n]   # durable runs, newest first
 
 Each adapter is a pure, **offline** read of a cache some other job already fills — additive (no
 feed/attention/daily side effect), DRY (no duplicate fetch, no network), and Rust-only
@@ -366,11 +366,11 @@ is keyed by `(source, run_id)`.
 
 ## Feeding the metrics scorecard
 
-`bn metrics` reads the **synced** productivity event log at
+`bn stats metrics` reads the **synced** productivity event log at
 `<personal_root>/<machine>/metrics/events.jsonl` (durable across resets; the whole-person view
 unions every machine's copy). Jobs append to it with one stable contract:
 
-    bn event <kind> --field k=v --field k=v [--ts <epoch>]
+    bn stats event <kind> --field k=v --field k=v [--ts <epoch>]
 
 All-digit values become JSON numbers (so `--field number=52` joins with PR metrics). `bn` itself
 already emits `activity`/`note_closed` events on every mutation — those drive close-out lag, WIP,
@@ -386,10 +386,10 @@ window truthfully:
 | `pr_merged` | `repo`, `number`, `lead_secs` | completion, cycle + **change lead time** (merge − first commit) |
 | `pr_closed` | `repo`, `number` | completion rate |
 | `pr_review` | `repo`, `number` | **time-to-first-review** + median review-latency metric (first non-author review) |
-| `deploy` | `repo` | deployment frequency *(engine: planned; emit via `bn event`)* |
+| `deploy` | `repo` | deployment frequency *(engine: planned; emit via `bn stats event`)* |
 
 The weekly **shipped** `metrics-snapshot` job captures the scorecard so trends accrue over time.
-The weekly **shipped** `weekly-insights` job renders `bn insights` (the auto-retro) into
+The weekly **shipped** `weekly-insights` job renders `bn stats insights` (the auto-retro) into
 `<notes>/<machine>/insights/<YYYY-Www>.md`, so each week's retrospective accumulates and syncs.
 
 ### Learning-dojo card mining (`dojo-cards`)
@@ -402,7 +402,7 @@ The weekly **shipped** `weekly-insights` job renders `bn insights` (the auto-ret
 
 The shipped `agent-observe` job folds finished Claude Code + GitHub Copilot CLI sessions into the
 same metrics log as `agent_session` events — one per session — powering the `Agents` block of
-`bn metrics` (sessions, agent-hours, model mix, Copilot AIU cost) and the per-branch recall view
+`bn stats metrics` (sessions, agent-hours, model mix, Copilot AIU cost) and the per-branch recall view
 `bn agent`. Unlike the `pr-*` jobs it writes via a **native** command, `bn agent ingest` (the
 parsing spans two harness schemas and must dedup by session id), so the script is a one-line
 wrapper. It's **per-machine** (each host reads only its own `~/.copilot` + `~/.claude`); the synced
@@ -433,7 +433,7 @@ transient systemd `--user` timer (the `schedule_with_note.sh` analogue), and
 Actionable transitions (`waiting`, `blocked`, `stuck`, `failed`, completion, and urgent attention)
 are classified into the machine-local `wake-queue.json`; routine progress is absorbed. The queue
 keeps per-consumer acknowledgements for `watch`, controller ids, and orchestrator repos, then
-touches `wake-queue.signal`. Resident `bn watch`, `bn control watch`, and `bn orchestrate` processes
+touches `wake-queue.signal`. Resident `bn fleet watch`, `bn fleet control watch`, and `bn orchestrate` processes
 sleep on that signal instead of polling; their existing intervals remain fallback deadlines for
 quiet agents becoming stuck or platforms where filesystem notifications are unavailable.
 
@@ -483,7 +483,7 @@ laptop on public wifi exposes nothing. A WSL host with mirrored networking also 
 allowed through Windows once; `tunnel-host` prints the command. A WSL host with NAT networking is
 not reachable from the LAN, so clients stay on the tunnel.
 
-**Seeing the mesh.** `bn tunnels` lists every host on the Dev Tunnels account, not only the ones
+**Seeing the mesh.** `bn machine tunnels` lists every host on the Dev Tunnels account, not only the ones
 this machine already connects to, with the route ssh takes (LAN or tunnel), whether anything is
 hosting its tunnel, and a reason for each one that is down. It also says whether this machine
 hosts and when the watchdog last checked. It takes about ten seconds, most of it the account
@@ -494,7 +494,7 @@ regardless, tunnel-auto publishes a few lines about this machine (role, host hea
 when broken, such as "devtunnel is signed out") to the work-notes repo as
 `refs/heads/bn-status/<machine>`: a one-commit ref that only that machine writes and replaces
 (force-pushed, so it never grows a history), made with git plumbing so the notes checkout is never
-touched. `bn tunnels` fetches them into `refs/bn-status/*` and prefers a host's own words to a
+touched. `bn machine tunnels` fetches them into `refs/bn-status/*` and prefers a host's own words to a
 guess from outside. A report older than 25 minutes reads as "silent since <time>", which is how an
 off or sleeping machine shows. Git rather than the Dev Tunnels account, because a signed-out
 machine cannot write to the account, and signed out is the failure most worth reporting.

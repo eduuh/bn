@@ -58,4 +58,4 @@ You are stowing the current session so it is safe to reset, compact, or hand off
    packet is readable.
 
 Without the bn MCP tools, use the CLI equivalents (`bn_cat` → `bn --cat`; any other `bn_*` tool
-maps to the matching `bn <subcommand>`, e.g. `bn_handoff_write` → `bn handoff write`).
+maps to the matching `bn <subcommand>`, e.g. `bn_handoff_write` → `bn agent handoff write`).

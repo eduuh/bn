@@ -237,8 +237,8 @@ pub(crate) enum LiveDelivery {
 }
 
 /// Paste `text` into `target`'s live pane, or report why not. Unlike `bn agent send` it never
-/// falls back to a headless `--resume` turn and never exits: for the queue's nudge, reaching a
-/// live agent is a courtesy, and the row is the record whether or not it lands.
+/// falls back to a headless `--resume` turn and never exits: for a watchdog, reaching a live
+/// agent is a courtesy, and the watchdog's eval is the record whether or not it lands.
 pub(crate) fn try_deliver_live(cfg: &Config, target: &str, text: &str) -> LiveDelivery {
     if !has_live_window(cfg, target) {
         return LiveDelivery::NotLive;
@@ -250,48 +250,6 @@ pub(crate) fn try_deliver_live(cfg: &Config, target: &str, text: &str) -> LiveDe
         (_, true) => LiveDelivery::Delivered,
         (_, false) => LiveDelivery::Failed,
     }
-}
-
-/// Keep a message that has no agent to read it: a queue row for the target's seat, which lands as a
-/// `[q<N>]` todo in that branch's note and is handed to the next agent that works there. Exits
-/// with 0 when saved (the message is not lost) and reports that it was not delivered live; falls
-/// through to the caller's refusal only when the row could not be created.
-fn save_for_next_agent(target: &str, sender: &str, text: &str, why: &str, as_json: bool) {
-    let Ok(exe) = std::env::current_exe() else { return };
-    let out = std::process::Command::new(exe)
-        .args(["queue", "create", target, "--no-nudge", "--as", sender, "--json", "--"])
-        .arg(peer_envelope(sender, text))
-        .stdin(std::process::Stdio::null())
-        .output();
-    let Some(row) = out
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
-        .and_then(|v| {
-            let d = &v["data"];
-            d["id"].as_str().or(d["row"]["id"].as_str()).map(str::to_string)
-        })
-    else {
-        return;
-    };
-    let _ = bn_core::events::append(
-        "agent_msg",
-        serde_json::Map::from_iter([
-            ("from".to_string(), sender.into()),
-            ("to".to_string(), target.into()),
-            ("delivered".to_string(), false.into()),
-            ("saved_as".to_string(), row.clone().into()),
-        ]),
-    );
-    if as_json {
-        let data = serde_json::json!({
-            "from": sender, "to": target, "text": text, "delivered": false, "saved_as": row, "why": why,
-        });
-        println!("{}", Envelope::success("agent_msg", data).to_json());
-    } else {
-        println!("→ {target}: not typed ({why}); saved as queue row {row} for the next agent there");
-    }
-    std::process::exit(0);
 }
 
 /// Refuse to type at an agent sitting on a **dialog**, and exit.
@@ -577,8 +535,12 @@ pub(crate) fn emit_agent_msg(
     let liveness = resolve_agent_transport(cfg, target).liveness();
     if liveness == bn_core::agent::Liveness::Exited {
         // The window is there but nothing in it reads: the agent exited back to its shell. Typing
-        // would lose the message (or run it as a command), so it waits as a queue row instead.
-        save_for_next_agent(target, &sender, text, "its window is open but no agent is running in it", as_json);
+        // would lose the message (or run it as a command).
+        fail_msg(
+            "no_live_agent",
+            &format!("{target}'s window is open but no agent is running in it — `bn agent live` lists who can be reached"),
+            as_json,
+        );
     }
     if liveness != bn_core::agent::Liveness::Live {
         // Not here: the agent may be live on another machine of the tunnel mesh (mesh.rs).
@@ -600,9 +562,6 @@ pub(crate) fn emit_agent_msg(
                 format!("{target} has no live agent window — `bn agent live` lists who can be reached"),
             ),
         };
-        if code == "no_live_agent" {
-            save_for_next_agent(target, &sender, text, "no agent is running for it on any machine", as_json);
-        }
         fail_msg(code, &why, as_json);
     }
 

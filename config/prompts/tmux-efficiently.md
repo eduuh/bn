@@ -11,7 +11,7 @@ efficient, and what stops you reporting a job's status from the wrong pane.
 ## The window is not yours to expand
 
 In this setup **a session is a repo and a window is a worktree**. The `` ` `` picker, the tab
-badges, `bn tmux-reconcile` and the dashboard all read that mapping. A window opened for a build is
+badges, `bn tmux reconcile` and the dashboard all read that mapping. A window opened for a build is
 a window that lies about a worktree, so:
 
 > **Never open a window for a long-running command.** Long work goes in an adjacent pane of the

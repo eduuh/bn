@@ -86,13 +86,6 @@ pub(crate) enum CmdAutomation {
         #[arg(long, hide = true, value_enum)]
         pick_stage: Option<connect::ConnectStage>,
     },
-    /// Print a phone-friendly mosh recipe for a known SSH host (#633 P4). The command connects
-    /// through the host alias from `~/.ssh/config` and attaches to the persistent remote `bn`
-    /// tmux session, so roaming, sleep, and reconnects do not kill the work.
-    Mobile {
-        /// Host alias to connect to (as named in ~/.ssh/config).
-        host: String,
-    },
     /// How the tunnel mesh looks from this machine: every host on the Dev Tunnels account, the
     /// route ssh takes to it (LAN or tunnel), whether it answers, and why not. Runs the `tunnels`
     /// job (config/jobs/tunnels.sh); reads only.
@@ -115,14 +108,6 @@ pub(crate) enum CmdAutomation {
         /// planning | critique | review. Untyped legacy items count as `coding`.
         #[arg(long = "type", value_delimiter = ',')]
         type_filter: Vec<String>,
-    },
-    /// Focus mode — a declared deep-work block that suppresses + queues non-urgent surfacing.
-    /// `bn focus start 90m` opens a quiet window; while active `bn next` lets only urgent
-    /// signals (failing cron, a true blocker) through and queues the rest. Bare `bn focus`
-    /// shows the active block (same as `status`); `bn focus end` closes it and drains the queue.
-    Focus {
-        #[command(subcommand)]
-        action: Option<FocusCmd>,
     },
     /// Desktop-notification policy: what toasted today, what was held back, and why. A toast
     /// means work has stopped and needs your decision; everything else stays in `bn next`.

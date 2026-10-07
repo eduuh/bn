@@ -28,7 +28,7 @@ reads. If the plan turns out to be wrong, say so and stop — don't silently imp
 
 3. **Close it the moment it's done.** Check the step off in `plans/active.md` (or `bn_done` the
    todo) when it's actually complete — not "started", not batched at the end; todo timestamps
-   feed `bn metrics`. As work surfaces new tasks, add plan steps or `bn_add todo`; at a real fork
+   feed `bn stats metrics`. As work surfaces new tasks, add plan steps or `bn_add todo`; at a real fork
    or tradeoff, `bn_add decision` before committing to it.
 
 4. **Handle the walls.** Blocked by something external → `bn_add blocker`, surface it, move to the

@@ -33,7 +33,7 @@ pub const BUILTIN_PROFILES: &[(&str, &[&str], usize)] = &[
     ),
     (
         "orient",
-        &["directives", "goal", "proof", "queue", "ref-index"],
+        &["directives", "goal", "proof", "ref-index"],
         4000,
     ),
 ];

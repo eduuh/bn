@@ -6,7 +6,7 @@ keywords: [status, review, cross-branch, overview, blockers, todos, standup, whe
 ---
 You are doing a cross-branch status review.
 
-1. Run `bn summary` in the shell to get open todos and blockers grouped per branch.
+1. Run `bn list --summary` in the shell to get open todos and blockers grouped per branch.
 2. Lead with anything blocked — blockers first, by branch.
 3. Then give a short per-branch rundown of open todos, heaviest first.
 4. Suggest where to focus next and flag any branch that looks stalled.

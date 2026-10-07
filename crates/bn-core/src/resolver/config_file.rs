@@ -70,7 +70,6 @@ pub(super) struct ConfigFile {
     managed_repos: Option<ManagedReposSection>,
     /// `[tasks]`: which backend holds the task list. See [`crate::task_store`].
     tasks: Option<TasksSection>,
-    tools: Option<ToolsSection>,
     links: Option<LinksSection>,
     log: Option<LogSection>,
     scout: Option<ScoutSection>,
@@ -146,10 +145,6 @@ impl ConfigFile {
     /// `[managed_repos].repos`: the clone URLs bn keeps checked out under the managed root.
     pub(super) fn managed_repos(&self) -> Option<Vec<String>> {
         self.managed_repos.as_ref().and_then(|m| m.repos.clone())
-    }
-
-    pub(super) fn tools_builtins(&self) -> Option<Vec<String>> {
-        self.tools.as_ref().and_then(|t| t.builtins.clone())
     }
 
     /// `[links].tags` — the curated tag vocabulary for `bn links`. `None` when unset.

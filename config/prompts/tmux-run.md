@@ -98,7 +98,7 @@ one-shot command. For commands sent into an existing interactive shell, save the
 then run `exit`; treat pane disappearance as completion and inspect saved logs/status files.
 
 Other honest signals: a port (`ss -tln | grep :3000`), a file appearing, `du -sh`
-growing, or the artifact itself — `bn tmux-prune --help` succeeding only once the new
+growing, or the artifact itself — `bn tmux prune --help` succeeding only once the new
 binary is installed. Pick one that becomes true only when the job really progressed.
 
 **5. Read the saved outcome**, then report what it says — including failure. The pane closes when
