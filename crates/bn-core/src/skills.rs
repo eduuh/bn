@@ -481,6 +481,12 @@ pub fn install_native_skills(
         validate_native_skill_name(&skill.name)?;
     }
     let desired_names: BTreeSet<&str> = skills.iter().map(|skill| skill.name.as_str()).collect();
+    // Global installs carry each skill's recent reflections; repo installs are committed files,
+    // so they stay deterministic.
+    let lessons = match scope {
+        NativeScope::Global => crate::learnings::recent_lessons(cfg, &crate::util::today()),
+        NativeScope::Repo => Default::default(),
+    };
     let mut pending = Vec::new();
 
     for harness in harnesses {
@@ -488,7 +494,8 @@ pub fn install_native_skills(
         let root = target.root(scope, &repo_root, home);
         for skill in &skills {
             let path = root.join(&skill.name).join("SKILL.md");
-            let content = render_native_skill(skill, target);
+            let content = render_native_skill(skill, target)
+                + &crate::learnings::lessons_section(&lessons, &skill.name);
             if path.exists() {
                 let existing = std::fs::read_to_string(&path)
                     .map_err(|e| format!("read {}: {e}", path.display()))?;

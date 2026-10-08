@@ -71,11 +71,42 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
             };
             std::process::exit(run_job(cfg, ctx.as_ref(), &job));
         }
+        CmdStaff::Cmd {
+            name,
+            args,
+            new,
+            scope,
+            which,
+            pick,
+        } => std::process::exit(if pick {
+            crate::cmd::user_cmd::emit_pick(cfg)
+        } else {
+            crate::cmd::user_cmd::emit_cmd(cfg, name, args, new, &scope, which, json)
+        }),
         CmdStaff::Machine { action } => match action {
             MachineCmd::List => crate::cmd::machine::emit_machine_list(cfg, json),
             MachineCmd::Merge { from, dry_run } => {
                 crate::cmd::machine::emit_machine_merge(cfg, &from, dry_run, json)
             }
+            MachineCmd::Join {
+                name,
+                target,
+                back,
+                no_back,
+            } => {
+                let mut args = vec!["join".to_string(), name, target];
+                if let Some(b) = back {
+                    args.extend(["--back".to_string(), b]);
+                }
+                if no_back {
+                    args.push("--no-back".to_string());
+                }
+                std::process::exit(crate::cmd::machine::run_mesh(cfg, &args))
+            }
+            MachineCmd::Leave { name } => {
+                std::process::exit(crate::cmd::machine::run_mesh(cfg, &["leave".to_string(), name]))
+            }
+            MachineCmd::Mesh => std::process::exit(crate::cmd::machine::run_mesh(cfg, &["status".to_string()])),
         },
         CmdStaff::Cron {
             action,

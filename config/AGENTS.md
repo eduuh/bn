@@ -20,17 +20,18 @@ Shipped with bn. Claude Code reads this through an `@` import in `~/.claude/CLAU
 - Find a workflow before improvising: `bn skills find "<what you are about to do>"`, then invoke it (`/bn:<name>` in Claude Code, `/<name>` in Copilot CLI).
 
 ## Talk to other agents
-- Other live agents on this machine are listed by `bn agent live` (their `target` is `repo:branch`). Ask one for something with `bn agent msg <repo:branch> "..."`; it lands as that agent's next prompt.
+- Live agents are listed by `bn agent live` (this machine) and `bn agent live --mesh` (every machine); their `target` is `repo:branch`. Ask one for something with `bn agent msg <repo:branch> "..."`; it lands as that agent's next prompt.
 - A prompt starting `[bn msg from <repo:branch>]` is another agent asking you. Do what it asks, then answer with the same command, addressed to that sender. Keep both directions to one message each.
 
 ## Across machines
-- Start with `bn machine tunnels`: which machines are up, their nicknames, and why one is down. Reach one with `ssh <nickname>`. The `multi-device` skill has the rest.
+- Start with `bn machine tunnels`: which machines are up, their nicknames, and why one is down. Reach one with `ssh <nickname>`. A box you can already ssh to (a VPS) joins with `bn machine join <name> <user@host>`; `bn machine mesh` shows those. The `multi-device` skill has the rest.
 - Long work on another machine (build, install, clone): write it as a script there and run it in a tmux window, never on a bare ssh session. Start every machine first, then wait once.
 - A machine without git credentials: push to it over ssh (`git push ssh://<machine><repo> <ref>:refs/remotes/origin/<ref>`), then fast-forward there. Pulling there hangs on a login prompt.
 - Settings for one machine go in `~/.config/bn/`, never `~/.gitconfig`: dotfiles sync that file to every machine.
 
 ## Reach for these skills
 - A reusable workflow becomes a bn skill (`bn skills new <name>`), not a folder under one harness: bn installs it for Claude Code and Copilot CLI on every machine.
+- Steps you script again and again become a bn command: check `bn cmd` (MCP `bn_cmd`) first, make one with `bn cmd --new <name>`. `bn cmd window -- <cmd>` opens a background tmux window running `<cmd>`.
 - `grill-me` before committing to a plan with open branches.
 - `verification-before-completion` before saying anything is done, fixed, or passing.
 - `resolving-merge-conflicts` for an in-progress merge or rebase conflict.

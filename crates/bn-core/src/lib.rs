@@ -27,6 +27,7 @@ pub mod calib;
 pub mod capability;
 pub mod capture;
 pub mod clock;
+pub mod cmds;
 pub mod commands;
 pub mod compact;
 pub mod completed;

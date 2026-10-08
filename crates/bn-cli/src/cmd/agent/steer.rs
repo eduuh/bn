@@ -535,7 +535,11 @@ pub(crate) fn emit_agent_msg(
     let liveness = resolve_agent_transport(cfg, target).liveness();
     if liveness == bn_core::agent::Liveness::Exited {
         // The window is there but nothing in it reads: the agent exited back to its shell. Typing
-        // would lose the message (or run it as a command).
+        // would lose the message (or run it as a command). A shell in the branch's checkout here
+        // must not hide the agent itself, live on another machine of the mesh: ask the mesh first.
+        if let Some(super::mesh::Relay::Sent { code }) = super::mesh::relay(target, text, &sender, as_json) {
+            std::process::exit(code);
+        }
         fail_msg(
             "no_live_agent",
             &format!("{target}'s window is open but no agent is running in it — `bn agent live` lists who can be reached"),
@@ -550,11 +554,19 @@ pub(crate) fn emit_agent_msg(
                 "ambiguous_target",
                 format!("{target} is live on several machines ({}); message it from one of them", hosts.join(", ")),
             ),
-            Some(super::mesh::Relay::NotFound { searched }) => (
+            Some(super::mesh::Relay::NotFound {
+                searched,
+                unreachable,
+            }) => (
                 "no_live_agent",
                 format!(
-                    "{target} has no live agent window here or on {} — `bn agent live` lists who can be reached",
-                    searched.join(", ")
+                    "{target} has no live agent window here{}{} — `bn agent live --mesh` lists who can be reached",
+                    if searched.is_empty() { String::new() } else { format!(" or on {}", searched.join(", ")) },
+                    if unreachable.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({} did not answer: down, or no bn there)", unreachable.join(", "))
+                    }
                 ),
             ),
             None => (

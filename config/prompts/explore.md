@@ -33,7 +33,8 @@ bn build run     # the repo's declared run recipe
 
 If that job doesn't exist, derive the launch from the repo (README, package.json scripts, the
 CLAUDE.md, compose files) — then **write the recipe down** as the repo's `run` job so the next
-pass doesn't re-derive it. Record what you had to discover with `bn learned "…"`.
+pass doesn't re-derive it. Anything else you had to discover goes in the repo's reference notes
+(`bn_ref_append`, under `gotchas`, with its source and today's date).
 
 Rules for the boot:
 
@@ -149,7 +150,8 @@ Record in the branch note, then close out:
 - The issues you filed, with URLs.
 - Coverage: what you drove, and — honestly — **what you could not reach** and why. An unexplored
   surface silently reported as clean is the one failure mode that makes this whole loop a lie.
-- `bn learned "…"` for anything non-obvious about booting or driving this app.
-- Close with `bn reflect "skill:explore — …"` so `evolve-skills` learns from the pass.
+- `bn_ref_append` for anything non-obvious about booting or driving this app.
+- Close with `bn reflect "skill:explore — …"`: the next run of this skill sees it under "Recent
+  lessons".
 
 Then stop. You do not dispatch the fixers; the fix arm does that. You do not open a PR.

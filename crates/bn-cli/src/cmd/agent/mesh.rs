@@ -1,10 +1,11 @@
-//! Reaching an agent on another machine of the tunnel mesh.
+//! Reaching an agent on another machine of the mesh.
 //!
 //! `bn agent msg repo:branch` used to reach only a pane on this machine, or on the machine an
 //! agent was launched to from here (`agent-host:` in the note). An agent on machine B could
 //! therefore never answer the coordinator on machine A. When the target has no live window here,
-//! this asks every tunnel host (the `# >>> bn tunnel <machine> >>>` blocks tunnel-connect writes
-//! into `~/.ssh/config`) for its live agents, and hands the message to the one machine that has the
+//! this asks every mesh host (the `# >>> bn tunnel <machine> >>>` blocks tunnel-connect writes into
+//! `~/.ssh/config`, and the `# >>> bn mesh <machine> >>>` blocks `bn machine join` writes for a
+//! plain-ssh node) for its live agents, and hands the message to the one machine that has the
 //! target, where that machine's own `bn agent msg` finds the pane and confirms the submit.
 //!
 //! The relayed call carries `BN_MSG_NO_MESH=1`, so a target that has gone by then is refused there
@@ -21,31 +22,47 @@ pub(crate) const NO_MESH_ENV: &str = "BN_MSG_NO_MESH";
 /// once; one whose relay hangs would otherwise hold up the message.
 const LIVE_DEADLINE: Duration = Duration::from_secs(12);
 
-/// A remote non-login shell does not read the profile, so bn's install dir goes on PATH by hand.
-const REMOTE_PATH: &str = "export PATH=\"$HOME/.local/bin:$PATH\";";
+/// A remote non-login shell does not read the profile, so every place bn installs to, and tmux's
+/// Homebrew prefix on a Mac, go on PATH by hand. `~/.local/bin` alone missed the default install
+/// (`~/.bn/bin`, or `~/.bin` on an older machine), and the host was skipped as "not found".
+pub(crate) const REMOTE_PATH: &str =
+    "export PATH=\"$HOME/.bn/bin:$HOME/.bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\";";
 
 /// Where the message went, or why it could not.
 pub(crate) enum Relay {
     /// Handed to `host`; its `bn agent msg` exited with this code (its output already printed).
     Sent { code: i32 },
-    /// No tunnel host has the target live. `searched` names the machines asked.
-    NotFound { searched: Vec<String> },
+    /// No mesh host has the target live. `searched` names the machines that answered,
+    /// `unreachable` the ones that did not (down, or no bn there).
+    NotFound {
+        searched: Vec<String>,
+        unreachable: Vec<String>,
+    },
     /// More than one machine has it live; guessing could message the wrong agent.
     Ambiguous { hosts: Vec<String> },
 }
 
-/// Machines this one reaches through tunnel-connect's managed blocks in an ssh config.
+/// Machines this one reaches through the managed blocks in an ssh config: tunnel-connect's
+/// (`bn tunnel`) and `bn machine join`'s (`bn mesh`). A machine with both is listed once.
 pub(crate) fn tunnel_hosts_in(ssh_config: &str) -> Vec<String> {
-    ssh_config
+    let mut hosts: Vec<String> = Vec::new();
+    for host in ssh_config
         .lines()
-        .filter_map(|line| line.strip_prefix("# >>> bn tunnel "))
+        .filter_map(|line| {
+            line.strip_prefix("# >>> bn tunnel ")
+                .or_else(|| line.strip_prefix("# >>> bn mesh "))
+        })
         .filter_map(|rest| rest.split_whitespace().next())
         .filter(|h| super::safe_ssh_host(h))
-        .map(str::to_string)
-        .collect()
+    {
+        if !hosts.iter().any(|h| h.eq_ignore_ascii_case(host)) {
+            hosts.push(host.to_string());
+        }
+    }
+    hosts
 }
 
-fn tunnel_hosts() -> Vec<String> {
+pub(crate) fn tunnel_hosts() -> Vec<String> {
     let Some(home) = std::env::var_os("HOME") else {
         return Vec::new();
     };
@@ -100,8 +117,9 @@ fn finish_by(mut child: Child, deadline: Instant) -> Option<String> {
     }
 }
 
-/// The tunnel hosts that have `target` live, asking them all at once.
-fn hosts_with(hosts: &[String], target: &str) -> Vec<String> {
+/// Every host's `bn agent live --json` envelope, asked all at once; `None` for a host that did
+/// not answer in time.
+pub(crate) fn live_envelopes(hosts: &[String]) -> Vec<(String, Option<String>)> {
     let deadline = Instant::now() + LIVE_DEADLINE;
     // Collected on purpose: every ssh must be spawned before the first is waited on, or the hosts
     // would be asked one after another instead of at once.
@@ -120,11 +138,25 @@ fn hosts_with(hosts: &[String], target: &str) -> Vec<String> {
         .collect();
     children
         .into_iter()
-        .filter_map(|(h, child)| {
-            let out = finish_by(child?, deadline)?;
-            live_in(&out, target).then_some(h)
+        .map(|(h, child)| {
+            let out = child.and_then(|c| finish_by(c, deadline));
+            (h, out)
         })
         .collect()
+}
+
+/// Of the hosts asked, the ones with `target` live, and the ones that did not answer.
+fn hosts_with(hosts: &[String], target: &str) -> (Vec<String>, Vec<String>) {
+    let mut found = Vec::new();
+    let mut unreachable = Vec::new();
+    for (h, out) in live_envelopes(hosts) {
+        match out {
+            Some(env) if live_in(&env, target) => found.push(h),
+            Some(_) => {}
+            None => unreachable.push(h),
+        }
+    }
+    (found, unreachable)
 }
 
 /// The remote command that delivers the message there, every argument quoted.
@@ -149,9 +181,15 @@ pub(crate) fn relay(target: &str, text: &str, sender: &str, as_json: bool) -> Op
     if hosts.is_empty() {
         return None;
     }
-    let found = hosts_with(&hosts, target);
+    let (found, unreachable) = hosts_with(&hosts, target);
     match found.as_slice() {
-        [] => Some(Relay::NotFound { searched: hosts }),
+        [] => Some(Relay::NotFound {
+            searched: hosts
+                .into_iter()
+                .filter(|h| !unreachable.contains(h))
+                .collect(),
+            unreachable,
+        }),
         [host] => {
             let code = ssh(host, &remote_msg_command(target, text, sender, as_json))
                 .stdin(Stdio::null())
@@ -180,6 +218,22 @@ mod tests {
         assert_eq!(tunnel_hosts_in(cfg), vec!["CPC-a", "CPC-b"]);
         assert!(tunnel_hosts_in("Host x\n").is_empty());
         assert!(tunnel_hosts_in("# >>> bn tunnel -oProxyCommand=x >>>\n").is_empty());
+    }
+
+    #[test]
+    fn plain_ssh_mesh_nodes_count_too_and_a_machine_is_listed_once() {
+        let cfg = "# >>> bn mesh contabo >>>\nHost contabo\n# <<< bn mesh contabo <<<\n\
+                   # >>> bn tunnel CPC-a >>>\nHost CPC-a\n# <<< bn tunnel CPC-a <<<\n\
+                   # >>> bn mesh cpc-a >>>\nHost cpc-a\n# <<< bn mesh cpc-a <<<\n";
+        assert_eq!(tunnel_hosts_in(cfg), vec!["contabo", "CPC-a"]);
+        assert!(tunnel_hosts_in("# >>> bn mesh -oProxyCommand=x >>>\n").is_empty());
+    }
+
+    #[test]
+    fn the_remote_path_finds_every_bn_install_and_homebrew_tmux() {
+        for dir in ["$HOME/.bn/bin", "$HOME/.bin", "$HOME/.local/bin", "/opt/homebrew/bin"] {
+            assert!(REMOTE_PATH.contains(dir), "{dir} missing from {REMOTE_PATH}");
+        }
     }
 
     #[test]

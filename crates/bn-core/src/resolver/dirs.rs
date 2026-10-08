@@ -278,6 +278,15 @@ pub fn jobs_dir() -> PathBuf {
     shipped_config("jobs").unwrap_or_else(|| config_dir().join("jobs"))
 }
 
+/// Directory of the shipped `bn cmd` scripts. `$BN_CMDS_DIR` wins, else the shipped
+/// `config/cmds`, else `<config_dir>/cmds` — the command analogue of [`jobs_dir`].
+pub fn cmds_dir() -> PathBuf {
+    if let Some(d) = non_empty_env("BN_CMDS_DIR") {
+        return PathBuf::from(d);
+    }
+    shipped_config("cmds").unwrap_or_else(|| config_dir().join("cmds"))
+}
+
 /// Directory of self-describing agent definitions (`agents/<name>.md`). `$BN_AGENTS_DIR` wins,
 /// else the shipped `config/agents` (see [`shipped_root`]), else `<config_dir>/agents` — the agent
 /// analogue of [`jobs_dir`].

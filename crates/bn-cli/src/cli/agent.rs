@@ -62,6 +62,10 @@ pub(crate) enum AgentCmd {
         /// Minutes of quiet before an agent is flagged *stuck*.
         #[arg(long, default_value_t = bn_core::agent::DEFAULT_STUCK_MINS)]
         stuck: i64,
+        /// Also list the live agents on every other mesh machine (the `bn tunnel` and `bn mesh`
+        /// blocks in ~/.ssh/config), asked over ssh at once: who `bn agent msg` can reach.
+        #[arg(long)]
+        mesh: bool,
     },
     /// Self-schedule a check-in nudge: in `<mins>` minutes, deliver `<note>` to this worktree's
     /// agent pane. A one-shot reminder watchdog, so it survives a reboot and is listed and

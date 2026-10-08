@@ -155,7 +155,7 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
             Some(AgentCmd::Supervise { idle, stuck }) => {
                 emit_agent_supervise(cfg, idle, stuck, json)
             }
-            Some(AgentCmd::Live { idle, stuck }) => agent_live::run(cfg, idle, stuck, json),
+            Some(AgentCmd::Live { idle, stuck, mesh }) => agent_live::run(cfg, idle, stuck, mesh, json),
             Some(AgentCmd::Checkin { mins, note, target }) => {
                 emit_agent_checkin(cfg, mins, &note, target, json)
             }

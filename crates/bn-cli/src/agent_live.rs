@@ -563,9 +563,58 @@ fn fmt_tokens(n: i64) -> String {
     }
 }
 
-/// `bn agent live [--json]` — collect and render the joined fleet.
-pub fn run(cfg: &Config, idle: i64, stuck: i64, as_json: bool) {
+/// Each mesh machine's live agents, as its own `bn agent live --json` reported them; `None` for a
+/// machine that did not answer.
+fn mesh_agents() -> Vec<(String, Option<Vec<serde_json::Value>>)> {
+    let hosts = crate::cmd::agent::mesh::tunnel_hosts();
+    crate::cmd::agent::mesh::live_envelopes(&hosts)
+        .into_iter()
+        .map(|(host, env)| {
+            let agents = env
+                .and_then(|e| serde_json::from_str::<serde_json::Value>(&e).ok())
+                .map(|v| {
+                    v["data"]["agents"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter(|r| r["has_window"].as_bool() == Some(true))
+                                .cloned()
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                });
+            (host, agents)
+        })
+        .collect()
+}
+
+fn print_mesh(mesh: &[(String, Option<Vec<serde_json::Value>>)]) {
+    if mesh.is_empty() {
+        println!("No other mesh machines (bn machine join <name> <user@host> adds one).");
+    }
+    for (host, agents) in mesh {
+        match agents {
+            None => println!("{host}: did not answer (down, or no bn there)"),
+            Some(a) if a.is_empty() => println!("{host}: no live agents"),
+            Some(a) => {
+                println!("{host}: {} live agent(s):", a.len());
+                for r in a {
+                    println!(
+                        "     {:<24} {:<7} {}",
+                        r["target"].as_str().unwrap_or("?"),
+                        r["harness"].as_str().unwrap_or("?"),
+                        r["state"].as_str().unwrap_or("")
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// `bn agent live [--mesh] [--json]` — collect and render the joined fleet.
+pub fn run(cfg: &Config, idle: i64, stuck: i64, with_mesh: bool, as_json: bool) {
     let rows = collect(cfg, idle, stuck);
+    let mesh = if with_mesh { mesh_agents() } else { Vec::new() };
 
     if as_json {
         let total_tokens: i64 = rows.iter().filter_map(|r| r.tokens).sum();
@@ -576,12 +625,22 @@ pub fn run(cfg: &Config, idle: i64, stuck: i64, as_json: bool) {
             "total_tokens": total_tokens,
             "remote_runs": remote,
         });
+        let mut data = data;
+        if with_mesh {
+            data["mesh"] = mesh
+                .iter()
+                .map(|(host, agents)| serde_json::json!({ "host": host, "reachable": agents.is_some(), "agents": agents }))
+                .collect();
+        }
         println!("{}", Envelope::success("agent_live", data).to_json());
         return;
     }
     let remote = crate::cmd::remote_track::fleet_views(cfg, &bn_core::runner::RealRunner);
     if rows.is_empty() && remote.is_empty() {
-        println!("No live agents.");
+        println!("No live agents here.");
+        if with_mesh {
+            print_mesh(&mesh);
+        }
         return;
     }
     if !rows.is_empty() {
@@ -604,6 +663,9 @@ pub fn run(cfg: &Config, idle: i64, stuck: i64, as_json: bool) {
         for v in &remote {
             println!("{}", crate::cmd::remote_track::render_line(v));
         }
+    }
+    if with_mesh {
+        print_mesh(&mesh);
     }
 }
 

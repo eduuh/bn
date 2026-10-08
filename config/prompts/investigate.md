@@ -20,7 +20,8 @@ Do not start coding before the evidence says what to change.
 2. **Investigate — read, don't write.** Trace the code, read the docs, run *read-only* commands
    (grep, tests in report mode, `--help`, log inspection). Touch no source. Follow the evidence
    past the first plausible answer — the goal is to be *right*, not fast. When you learn something
-   non-obvious about the codebase or tooling on the way, `bn learned "…"` it.
+   non-obvious about the codebase or tooling on the way, `bn_ref_append` it into the repo's
+   reference notes with its source and today's date.
 
 3. **Persist findings.** Record each concrete answer with `bn_add research`, including
    `path:symbol` or command evidence rather than assertions. For a long supporting write-up, also

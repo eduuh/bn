@@ -23,4 +23,30 @@ pub(crate) enum MachineCmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Put a machine on the mesh over plain ssh, both ways: bn machine join <name> <user@host[:port]>.
+    ///
+    /// Writes a `bn mesh` block into ~/.ssh/config, trusts the machine's key here, and holds a
+    /// reverse forward open (tmux window bn-tunnels:mesh-<name>) so it can ssh back even when this
+    /// machine is behind NAT. Then `bn agent msg` reaches agents on either side. Runs the `mesh`
+    /// job (config/jobs/mesh.sh).
+    Join {
+        /// The name to reach it by (`ssh <name>`), letters, digits and dashes.
+        name: String,
+        /// Where it is: user@host[:port]. This machine's key must already log in there.
+        target: String,
+        /// This machine is reachable directly at user@host[:port]; no reverse forward.
+        #[arg(long, conflicts_with = "no_back")]
+        back: Option<String>,
+        /// One way only: the machine never reaches back here.
+        #[arg(long)]
+        no_back: bool,
+    },
+    /// Take a machine off the mesh: its ssh block here, its key, the reverse forward, and this
+    /// machine's block there.
+    Leave {
+        /// The name it joined under.
+        name: String,
+    },
+    /// Every mesh node joined from here: whether ssh works each way, its bn, its live agents.
+    Mesh,
 }

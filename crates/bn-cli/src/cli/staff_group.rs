@@ -74,6 +74,32 @@ pub(crate) enum CmdStaff {
         #[arg(long = "if-stale")]
         if_stale: bool,
     },
+    /// Your own commands: the thing you do over and over, written once as `cmds/<name>.sh` and
+    /// run with arguments — by you, or by an agent through the `bn_cmd` MCP tool. Bare `bn cmd`
+    /// lists them with their `# description:` line; `bn cmd <name> [args...]` runs one in the
+    /// current directory; `bn cmd --pick` chooses one in fzf (tmux `prefix c`);
+    /// `bn cmd --new <name>` scaffolds one (`--scope` global, repo, project or
+    /// branch; default global). Resolves branch → project → repo → global, like `bn run`.
+    Cmd {
+        /// The command to run. Omit to list them.
+        name: Option<String>,
+        /// Arguments passed to the script as `$1`, `$2`, ...
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+        /// Scaffold `<name>.sh` instead of running it, and print its path.
+        #[arg(long, value_name = "NAME", conflicts_with = "name")]
+        new: Option<String>,
+        /// Tier `--new` writes to: global (your synced personal notes), repo (synced, this repo
+        /// only), project (committed in the repo's `.bn/cmds`), or branch.
+        #[arg(long, default_value = "global", requires = "new")]
+        scope: String,
+        /// Print the script's path instead of running it.
+        #[arg(long, requires = "name")]
+        which: bool,
+        /// Pick a command in fzf, type its arguments, and run it (tmux `prefix c`).
+        #[arg(long, conflicts_with_all = ["name", "new"])]
+        pick: bool,
+    },
     /// Hosts this notes tree holds state for, and repairing a split between two of them.
     Machine {
         #[command(subcommand)]

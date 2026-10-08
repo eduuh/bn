@@ -93,7 +93,11 @@ if [ "$host_off" = 1 ]; then
 fi
 # Without sshd this machine reaches the others but none can reach it back; said once a day.
 no_sshd=0; [ "$auto" = 1 ] && [ "$host_off" = 0 ] && [ "$is_host" = 0 ] && [ "$connects" = 1 ] && no_sshd=1
-if [ "$is_host" = 0 ] && [ "$connects" = 0 ] && [ "$host_stop" = 0 ]; then
+# Plain-ssh mesh nodes (bn machine join, mesh.sh) are kept by the same watchdog, so a machine on
+# the mesh without any Dev Tunnel still gets its reverse forwards back after a sleep or reboot.
+meshed=0
+git config --file "$HOME/.config/bn/mesh.conf" --get-regexp '^mesh\..*\.target$' >/dev/null 2>&1 && meshed=1
+if [ "$is_host" = 0 ] && [ "$connects" = 0 ] && [ "$host_stop" = 0 ] && [ "$meshed" = 0 ]; then
   rm -f "$status"
   exit 0
 fi
@@ -225,6 +229,14 @@ if [ "$have_lock" = 1 ] && [ "$repair_due" = 1 ]; then
   health || echo "--- $(date '+%F %T') still down after repair: $(grep ' down$' "$status" | tr '\n' ' ')" >> "$log"
 fi
 
+# Mesh nodes: every pass, since a check is one ssh over the shared connection. Their state joins
+# the status file the tmux status bar reads: up only when ssh works both ways.
+if [ "$have_lock" = 1 ] && [ "$meshed" = 1 ]; then
+  sh "$dir/mesh.sh" keep >> "$log" 2>&1 || echo "--- $(date '+%F %T') mesh keep failed ($?)" >> "$log"
+  awk '{ ok = ($2 == "fwd=ok" && ($3 == "back=ok" || $3 == "back=-")); print $1, (ok ? "ok" : "down") }' \
+    "$cache/mesh.status" 2>/dev/null >> "$status"
+fi
+
 # This machine's nickname leads the tmux status bar, so a remote session viewed inside a local
 # one says which machine it is. Nothing when there is no nickname.
 if command -v tmux >/dev/null 2>&1 && tmux list-sessions >/dev/null 2>&1; then
@@ -234,7 +246,8 @@ fi
 
 # Publish this machine's report (lib/tunnel.sh) when it changed, and every 15 minutes anyway so
 # the others can tell "silent since 20:10" from "fine". A push that fails is logged once an hour.
-if [ "$have_lock" = 1 ]; then
+# A machine only on the plain-ssh mesh has no Dev Tunnel state to report.
+if [ "$have_lock" = 1 ] && { [ "$is_host" = 1 ] || [ "$connects" = 1 ] || [ "$host_stop" = 1 ]; }; then
   me="${BN_TUNNEL_NAME:-$(hostname -s 2>/dev/null || hostname)}"
   if [ "$host_off" = 1 ]; then role=off
   elif [ "$is_host" = 1 ]; then role=host

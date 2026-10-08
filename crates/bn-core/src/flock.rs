@@ -110,6 +110,46 @@ pub fn lock(_file: &File) -> FlockOutcome {
     FlockOutcome::Failed("advisory file locking is unavailable on this platform".to_string())
 }
 
+/// A held lock that is released explicitly when dropped.
+///
+/// Closing a descriptor drops a `flock` only once *every* copy of its open file description is
+/// closed, and a child that another thread is forking holds a copy until it execs. A holder that
+/// merely closed its file could therefore leave the lock held for that window, and the next
+/// acquirer would be told someone else has it. `LOCK_UN` releases the lock for every copy at
+/// once, so dropping the guard is a real release.
+pub struct LockGuard {
+    file: File,
+}
+
+impl LockGuard {
+    /// Wrap a file whose lock this process has just acquired.
+    pub fn new(file: File) -> Self {
+        Self { file }
+    }
+}
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        unlock(&self.file);
+    }
+}
+
+#[cfg(unix)]
+#[allow(
+    unsafe_code,
+    reason = "libc::flock is the portable advisory whole-file lock; the fd is owned by `file` and \
+              valid for the call"
+)]
+fn unlock(file: &File) {
+    use std::os::unix::io::AsRawFd;
+    // SAFETY: as in `try_lock` — `file` owns a valid descriptor for the call's duration. A failed
+    // unlock leaves the close that follows as the release, which is what happened before.
+    let _ = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+}
+
+#[cfg(not(unix))]
+fn unlock(_file: &File) {}
+
 // A lock file is never unlinked. Removing it would reintroduce the classic flock race: a waiter
 // that already opened the file would end up locking an unlinked inode while the next acquirer
 // creates and locks a fresh one, and two holders would believe they were alone. Closing the
@@ -144,14 +184,41 @@ mod tests {
     }
 
     #[test]
-    fn closing_the_descriptor_releases_it() {
+    fn dropping_the_guard_releases_it() {
         let (_dir, path) = scratch();
         {
             let held = open_lock_file(&path).expect("open");
             assert!(matches!(try_lock(&held), FlockOutcome::Acquired));
+            let _guard = LockGuard::new(held);
         }
         let next = open_lock_file(&path).expect("open");
         assert!(matches!(try_lock(&next), FlockOutcome::Acquired));
+    }
+
+    /// A child forked by another thread holds a copy of the descriptor until it execs, which
+    /// `dup` reproduces deterministically. Closing alone would leave the lock held through that
+    /// copy; the guard's explicit unlock releases it.
+    #[cfg(unix)]
+    #[test]
+    #[allow(
+        unsafe_code,
+        reason = "dup/close stand in for a descriptor a forked child inherits"
+    )]
+    fn the_guard_releases_even_while_a_copy_is_still_open() {
+        use std::os::unix::io::AsRawFd;
+        let (_dir, path) = scratch();
+        let held = open_lock_file(&path).expect("open");
+        assert!(matches!(try_lock(&held), FlockOutcome::Acquired));
+        // SAFETY: `held` owns a valid descriptor; the duplicate is closed below.
+        let inherited = unsafe { libc::dup(held.as_raw_fd()) };
+        assert!(inherited >= 0);
+        drop(LockGuard::new(held));
+
+        let next = open_lock_file(&path).expect("open");
+        let outcome = try_lock(&next);
+        // SAFETY: `inherited` is the descriptor `dup` returned above, closed exactly once.
+        unsafe { libc::close(inherited) };
+        assert!(matches!(outcome, FlockOutcome::Acquired));
     }
 
     /// Opening must not truncate: whatever a live holder wrote has to survive another process

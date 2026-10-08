@@ -72,3 +72,59 @@ fn missing_worktree_and_detached_head_fail_closed() {
     let detached = BnServer::new(cfg, dir, vec![]);
     assert!(detached.resolve().is_err());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn bn_cmd_lists_and_runs_a_branch_command_with_its_args() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let worktrees = root.path().join("worktrees");
+    let cfg = Config {
+        worktree_dir: worktrees.clone(),
+        ..bn_core::test_support::config(root.path())
+    };
+    let server = BnServer::new(cfg, worktree(&worktrees, "repo", "topic"), vec![]);
+    let dir = server
+        .cfg
+        .note_dir(&server.resolve().expect("scope"))
+        .join("cmds");
+    std::fs::create_dir_all(&dir).expect("cmds dir");
+    std::fs::write(
+        dir.join("greet.sh"),
+        "# description: Say hi\necho \"hi $1 on $BN_CMD_BRANCH\"\n",
+    )
+    .expect("write cmd");
+
+    let call = |name: Option<&str>, args: &[&str]| {
+        server.bn_cmd(Parameters(CmdArgs {
+            name: name.map(str::to_string),
+            args: args.iter().map(|a| a.to_string()).collect(),
+            timeout_secs: None,
+        }))
+    };
+    let listed = call(None, &[])
+        .await
+        .expect("list")
+        .structured_content
+        .expect("json");
+    let greet = listed["commands"]
+        .as_array()
+        .expect("commands")
+        .iter()
+        .find(|c| c["name"] == "greet")
+        .expect("greet listed");
+    assert_eq!(
+        (&greet["scope"], &greet["description"]),
+        (&json!("branch"), &json!("Say hi"))
+    );
+
+    let ran = call(Some("greet"), &["you"])
+        .await
+        .expect("run")
+        .structured_content
+        .expect("json");
+    assert_eq!(
+        (&ran["exit_code"], &ran["stdout"]),
+        (&json!(0), &json!("hi you on topic\n"))
+    );
+    assert!(call(Some("nope"), &[]).await.is_err());
+}

@@ -10,7 +10,7 @@ mod dialog;
 mod instruct;
 mod kill;
 mod memory_hook;
-mod mesh;
+pub(crate) mod mesh;
 mod read;
 pub(crate) mod remote;
 mod steer;
@@ -595,7 +595,7 @@ pub(crate) fn resolve_tmux_target(cfg: &Config, target: &str) -> String {
 }
 
 fn ssh_tmux_command(args: &[&str]) -> String {
-    std::iter::once("tmux".to_string())
+    std::iter::once(format!("{} tmux", mesh::REMOTE_PATH)) // finds a Mac's Homebrew tmux
         .chain(args.iter().map(|a| wt::shq(a)))
         .collect::<Vec<_>>()
         .join(" ")
@@ -709,7 +709,7 @@ impl bn_core::agent::AgentTransport for SshTmuxTransport {
         let Some(out) = std::process::Command::new("ssh")
             .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"])
             .args(SSH_SHARED_CONNECTION)
-            .args([self.host.as_str(), &format!("sh -c {}", wt::shq(&remote))])
+            .args([self.host.as_str(), &format!("{} sh -c {}", mesh::REMOTE_PATH, wt::shq(&remote))])
             .stdin(std::process::Stdio::null())
             .output()
             .ok()

@@ -70,38 +70,8 @@ fn relay_lines(
     }
 }
 
-/// The PATH every job process gets.
-///
-/// The leading entry is this executable's own directory, and it is load-bearing: on a stock install
-/// that is the *only* place `bn` exists (`~/.bn/bin`), and a scheduler shell — launchd, systemd,
-/// cron — inherits none of the profile that normally puts it on PATH. A hand-rolled
-/// `~/.local/bin:~/.bin:$PATH` left every `run:` command that called `bn` exiting 127 with
-/// `/bin/sh: bn: command not found`.
-///
-/// Every subprocess bn spawns to run *the user's own scripts* — job scripts, `run:` commands,
-/// staff gathers, harness dispatches, and the `verify`/`build` gates — takes its PATH from here.
-/// Re-deriving the prelude at a call site is what produced that 127, so there is one of these.
-pub(crate) fn job_path() -> String {
-    let home = dirs::home_dir()
-        .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let path = std::env::var("PATH").unwrap_or_default();
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
-        .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    [
-        exe_dir,
-        format!("{home}/.local/bin"),
-        format!("{home}/.bin"),
-        path,
-    ]
-    .into_iter()
-    .filter(|entry| !entry.is_empty())
-    .collect::<Vec<_>>()
-    .join(":")
-}
+/// The PATH every job process gets; one definition, shared with `bn cmd` and the MCP server.
+pub(crate) use bn_core::cmds::job_path;
 
 /// A `<job>.sh` script from one of the job tiers.
 fn run_script(script: &std::path::Path) -> (i32, String) {

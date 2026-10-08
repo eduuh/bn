@@ -217,6 +217,71 @@ fn map_entry(kind: Kind, e: &LogEntry) -> LearningEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Lessons: skill reflections fed back into the skill they name
+// ---------------------------------------------------------------------------
+
+/// How far back a served skill looks for reflections on itself.
+pub const LESSON_WINDOW_DAYS: i64 = 30;
+/// How many reflections a served skill carries, newest first.
+pub const LESSON_LIMIT: usize = 5;
+/// Longest a single lesson line may run before it is cut.
+const LESSON_MAX_CHARS: usize = 300;
+
+/// Recent skill reflections grouped by skill, newest first and at most [`LESSON_LIMIT`] each.
+/// Dismissed entries are left out. Read once and pass to [`lessons_section`] per skill, so a
+/// caller rendering many skills scans the daily history once.
+pub fn recent_lessons(cfg: &Config, today: &str) -> BTreeMap<String, Vec<LearningEntry>> {
+    let start = util::add_days(today, -LESSON_WINDOW_DAYS).unwrap_or_else(|| today.to_string());
+    let reviews = read_reviews(cfg);
+    let mut by_skill: BTreeMap<String, Vec<LearningEntry>> = BTreeMap::new();
+    for d in daily::read_window(cfg, &start, today) {
+        for r in &d.front.reflections {
+            let mut e = map_entry(Kind::Reflection, r);
+            e.review = reviews.get(&e.key).map(|r| r.state);
+            if e.review == Some(Review::Dismissed) {
+                continue;
+            }
+            if let Some(skill) = e.skill.clone() {
+                by_skill.entry(skill).or_default().push(e);
+            }
+        }
+    }
+    for entries in by_skill.values_mut() {
+        entries.sort_by(|a, b| b.date.cmp(&a.date));
+        entries.truncate(LESSON_LIMIT);
+    }
+    by_skill
+}
+
+/// The "Recent lessons" section appended to a served skill, or an empty string when no recent
+/// run left a reflection on it. The `skill:<name> —` prefix is stripped from each line.
+pub fn lessons_section(lessons: &BTreeMap<String, Vec<LearningEntry>>, skill: &str) -> String {
+    let Some(entries) = lessons.get(skill).filter(|e| !e.is_empty()) else {
+        return String::new();
+    };
+    let mut out = format!(
+        "\n\n## Recent lessons from runs of this skill\n\nWhat earlier runs of `{skill}` noted with \
+         `bn reflect`, newest first. Treat them as hints from the field, not rules; where one \
+         contradicts the steps above, the steps win.\n\n"
+    );
+    for e in entries {
+        let text = e.text.trim_start();
+        let text = text
+            .strip_prefix("skill:")
+            .and_then(|rest| rest.strip_prefix(skill))
+            .map(|rest| rest.trim_start_matches([' ', ':', '-', '—']))
+            .unwrap_or(text)
+            .replace('\n', " ");
+        let mut line: String = text.chars().take(LESSON_MAX_CHARS).collect();
+        if line.len() < text.len() {
+            line.push('…');
+        }
+        out.push_str(&format!("- {} · {line}\n", e.date));
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Aggregation
 // ---------------------------------------------------------------------------
 
@@ -531,5 +596,78 @@ fn short_issue(issue: &str) -> String {
         format!("#{issue}")
     } else {
         issue.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::daily::LogProvenance;
+
+    fn reflect(cfg: &Config, day: &str, text: &str) {
+        daily::reflect(cfg, day, text, &LogProvenance::default()).unwrap();
+    }
+
+    #[test]
+    fn a_skill_carries_its_recent_reflections_newest_first() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = crate::test_support::config(root.path());
+        reflect(&cfg, "2026-08-01", "skill:explore — too old to carry");
+        reflect(
+            &cfg,
+            "2026-10-01",
+            "skill:explore — boot the smallest honest surface",
+        );
+        reflect(
+            &cfg,
+            "2026-10-05",
+            "skill:explore: add an /api timeout sweep",
+        );
+        reflect(
+            &cfg,
+            "2026-10-06",
+            "an untagged reflection reaches no skill",
+        );
+        reflect(
+            &cfg,
+            "2026-10-06",
+            "skill:investigate — check git log first",
+        );
+
+        let lessons = recent_lessons(&cfg, "2026-10-08");
+        let section = lessons_section(&lessons, "explore");
+        let first = section
+            .find("2026-10-05 · add an /api timeout sweep")
+            .unwrap();
+        let second = section
+            .find("2026-10-01 · boot the smallest honest surface")
+            .unwrap();
+        assert!(first < second, "newest first:\n{section}");
+        assert!(!section.contains("too old") && !section.contains("untagged"));
+        assert!(
+            !section.contains("skill:explore"),
+            "prefix stripped:\n{section}"
+        );
+        assert!(lessons_section(&lessons, "investigate").contains("check git log first"));
+        assert_eq!(lessons_section(&lessons, "plan"), "");
+    }
+
+    #[test]
+    fn a_dismissed_reflection_is_not_carried() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = crate::test_support::config(root.path());
+        reflect(&cfg, "2026-10-01", "skill:explore — keep this one");
+        reflect(&cfg, "2026-10-02", "skill:explore — a one-off to drop");
+        review(
+            &cfg,
+            "2026-10-08",
+            "a one-off to drop",
+            Review::Dismissed,
+            None,
+        )
+        .unwrap();
+
+        let section = lessons_section(&recent_lessons(&cfg, "2026-10-08"), "explore");
+        assert!(section.contains("keep this one") && !section.contains("one-off"));
     }
 }

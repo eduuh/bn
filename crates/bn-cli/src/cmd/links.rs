@@ -164,8 +164,7 @@ fn add_link(
     }
 }
 
-/// Does the link's name, tags or URL contain `q`, ignoring case? The same test `bn_links_list`
-/// applies over MCP.
+/// Does the link's name, tags or URL contain `q`, ignoring case?
 fn matches_query(l: &Link, q: &str) -> bool {
     format!("{} {} {}", l.name, l.tags.join(" "), l.url)
         .to_lowercase()

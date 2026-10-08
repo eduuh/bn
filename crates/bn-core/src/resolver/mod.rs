@@ -25,12 +25,13 @@ pub use config::{
 pub(crate) use config_file::merge_tables;
 pub use context::{repo_root, resolve, resolve_hint, resolve_target};
 pub use dirs::{
-    agents_dir, approvals_file_path, bin_dir, bn_home, config_dir, config_layer_paths, config_root,
-    jobs_dir, link_tags, link_tags_with_source, log_dir, machine_config_path, machine_file_path,
-    machine_name, managed_repos_dir, notes_roots, references_dir, shared_config_path,
-    shipped_config, shipped_root, state_dir, worktree_dir, TagSource,
+    agents_dir, approvals_file_path, bin_dir, bn_home, cmds_dir, config_dir, config_layer_paths,
+    config_root, jobs_dir, link_tags, link_tags_with_source, log_dir, machine_config_path,
+    machine_file_path, machine_name, managed_repos_dir, notes_roots, references_dir,
+    shared_config_path, shipped_config, shipped_root, state_dir, worktree_dir, TagSource,
 };
 pub use jobs::{
     agent_dirs, job_dirs, job_script, list_jobs, mcp_extras, mcp_user_servers, parse_script_header,
-    script_header, JobConfig, JobRef, JobScope, ScriptHeader, SCRIPT_HEADER_LINES,
+    script_header, script_tier_dirs, JobConfig, JobRef, JobScope, ScriptHeader,
+    SCRIPT_HEADER_LINES,
 };

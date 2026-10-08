@@ -114,7 +114,7 @@ pub(crate) fn dispatch_skill_name(explicit: Option<&str>, scout: bool) -> &str {
 /// dispatch context (fresh worktree, plan-approval gate unless --yolo, scout read-only framing),
 /// maps the workflow's MCP tool names onto the CLI for harnesses without the bn MCP server, and
 /// closes with outcome ingestion, completion reporting, and the `bn reflect "skill:<name> — …"`
-/// line that feeds evolve-skills. Self-contained: the caller appends nothing.
+/// line whose text the next run of that skill sees under "Recent lessons". Self-contained: the caller appends nothing.
 pub(super) struct SkillSeedContext<'a> {
     pub(super) title: &'a str,
     pub(super) url: Option<&'a str>,
@@ -133,7 +133,9 @@ pub(super) fn skill_seed_prompt(
     ctx: SkillSeedContext<'_>,
     skill: &bn_core::skills::Skill,
 ) -> Result<String, String> {
-    let body = render_workflow_body(skill, ctx.title)?;
+    let lessons = bn_core::learnings::recent_lessons(cfg, &bn_core::util::today());
+    let body = render_workflow_body(skill, ctx.title)?
+        + &bn_core::learnings::lessons_section(&lessons, &skill.name);
     let name = &skill.name;
     let cli_map = bn_core::skills::render_required(cfg, base_dir, "dispatch-cli-map", None)
         .map_err(|error| error.to_string())?;

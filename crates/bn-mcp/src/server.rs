@@ -30,11 +30,8 @@ use serde_json::json;
 
 use bn_core::skills::{load_skill_set, Skill};
 
-mod context_tools;
-mod proof_tools;
 #[cfg(test)]
 mod tests;
-mod watchdog_tools;
 
 pub struct BnServer {
     cfg: Config,
@@ -84,23 +81,6 @@ struct PrArgs {
 struct GoalArgs {
     /// The one-line Goal to set under the note's `## Goal` heading.
     goal: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct LinksListArgs {
-    /// Only links carrying this tag, e.g. "icm", "permissions", "docs", "security".
-    #[serde(default)]
-    tag: Option<String>,
-    /// Only links belonging to this repo. Omit for every repo (this worktree's repo sorts first).
-    #[serde(default)]
-    repo: Option<String>,
-    /// Case-insensitive substring of the name, tags or URL.
-    #[serde(default)]
-    query: Option<String>,
-    /// At most this many links, best-ranked first. Default 20.
-    #[serde(default)]
-    limit: Option<usize>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -182,6 +162,20 @@ struct HandoffWriteArgs {
     replace: bool,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CmdArgs {
+    /// The command to run. Omit to list every command in scope with its description and usage.
+    #[serde(default)]
+    name: Option<String>,
+    /// Arguments passed to the script as `$1`, `$2`, ...
+    #[serde(default)]
+    args: Vec<String>,
+    /// Kill the command after this many seconds (default 120, max 600).
+    #[serde(default)]
+    timeout_secs: Option<u64>,
+}
+
 #[tool_router]
 impl BnServer {
     pub fn new(cfg: Config, worktree: PathBuf, skill_dirs: Vec<PathBuf>) -> Self {
@@ -197,9 +191,6 @@ impl BnServer {
     /// tools, which live apart to keep this file under the size ratchet.
     fn all_tools() -> rmcp::handler::server::router::tool::ToolRouter<Self> {
         Self::tool_router()
-            + Self::watchdog_router()
-            + Self::proof_router()
-            + Self::context_router()
     }
 
     /// Every effective skill, freshly merged from `skill_dirs` (higher tiers override lower ones
@@ -308,46 +299,6 @@ impl BnServer {
             "repo": out.repo,
             "expires": out.expires,
         })))
-    }
-
-    #[tool(
-        name = "bn_links_list",
-        description = "Find links in the person-scoped link store, ranked the way the user's picker ranks them (this repo first, then by how often and how recently each was used). Filter by tag (icm, permissions, docs, security, ...), repo, or a substring of name/tags/URL. Each item carries a ready-to-paste `markdown` link. Read-only, and like bn_links_add it does not fail closed when no branch resolves. Use it before asking the user for a URL they have probably saved; for a paste into Teams, point them at `bn links copy <id>`, which copies a rich hyperlink."
-    )]
-    async fn bn_links_list(
-        &self,
-        Parameters(a): Parameters<LinksListArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let here = self.resolve().ok().map(|c| c.repo);
-        let items = links::read(&self.cfg);
-        let tag = a.tag.map(|t| t.to_lowercase());
-        let query = a.query.map(|q| q.to_lowercase());
-        let out: Vec<_> = links::ranked(&items, here.as_deref(), &today())
-            .into_iter()
-            .filter(|l| tag.as_ref().is_none_or(|t| l.tags.contains(t)))
-            .filter(|l| a.repo.as_ref().is_none_or(|r| l.repo.as_ref() == Some(r)))
-            .filter(|l| {
-                query.as_ref().is_none_or(|q| {
-                    format!("{} {} {}", l.name, l.tags.join(" "), l.url)
-                        .to_lowercase()
-                        .contains(q)
-                })
-            })
-            .take(a.limit.unwrap_or(20))
-            .map(|l| {
-                serde_json::json!({
-                    "id": l.id,
-                    "url": l.url,
-                    "name": l.name,
-                    "tags": l.tags,
-                    "repo": l.repo,
-                    "markdown": format!("[{}]({})", l.name.replace(']', "\\]"), l.url),
-                })
-            })
-            .collect();
-        Ok(CallToolResult::structured(
-            serde_json::json!({ "items": out }),
-        ))
     }
 
     #[tool(
@@ -616,6 +567,49 @@ impl BnServer {
     }
 
     #[tool(
+        name = "bn_cmd",
+        description = "The user's own commands: shell scripts (`cmds/<name>.sh`) wrapping something they do over and over, such as opening a tmux window. Call with no name to list them (name, scope, description, usage). Call with a name and args to run one in this worktree; returns exit_code, stdout and stderr. Prefer a listed command over re-deriving the same steps by hand. Resolved branch -> project -> repo -> global; global commands work even when no branch resolves."
+    )]
+    async fn bn_cmd(
+        &self,
+        Parameters(a): Parameters<CmdArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        use bn_core::cmds;
+        let ctx = resolver::resolve(&self.cfg, &self.worktree).ok();
+        let Some(name) = a.name.filter(|n| !n.trim().is_empty()) else {
+            return Ok(CallToolResult::structured(json!({
+                "commands": cmds::list(&self.cfg, ctx.as_ref()),
+            })));
+        };
+        let Some(cmd) = cmds::find(&self.cfg, ctx.as_ref(), &name) else {
+            return Err(ErrorData::invalid_params(
+                format!("no command '{name}' -- call bn_cmd with no name to list them"),
+                None,
+            ));
+        };
+        if cfg!(windows) {
+            return Err(ErrorData::invalid_params(
+                "commands are sh scripts; not supported on native Windows",
+                None,
+            ));
+        }
+        let timeout = std::time::Duration::from_secs(a.timeout_secs.unwrap_or(120).clamp(1, 600));
+        let command = cmds::command(&cmd, &a.args, &self.worktree, ctx.as_ref());
+        let out = tokio::task::spawn_blocking(move || cmds::run_captured(command, timeout))
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?
+            .map_err(|e| ErrorData::internal_error(format!("failed to run {name}: {e}"), None))?;
+        Ok(CallToolResult::structured(json!({
+            "name": cmd.name,
+            "scope": cmd.scope.label(),
+            "exit_code": out.code,
+            "timed_out": out.timed_out,
+            "stdout": out.stdout,
+            "stderr": out.stderr,
+        })))
+    }
+
+    #[tool(
         name = "bn_ref_append",
         description = "Record ONE durable fact in this repo's reference notes, as a bullet under a section (facts by default, or gotchas). Use it the moment you learn something that will still be true next month and would save the next session time -- a root cause, a build gotcha, where a subsystem actually lives. Creates the note if it doesn't exist. Include where the fact came from and today's date in the text. Returns appended:false when that exact fact is already recorded. Branch-specific state belongs in bn_add, not here."
     )]
@@ -658,7 +652,7 @@ impl ServerHandler for BnServer {
             "Branch-notes MCP server, scoped to a single (repo, branch). The per-worktree stdio \
              launcher (`bn mcp serve`) derives its scope from the client's current working \
              directory. A call that resolves to no branch fails closed — with one deliberate \
-             exception, the link tools bn_links_add and bn_links_list, described below. Start a session with \
+             exception, the link tool bn_links_add, described below. Start a session with \
              bn_context (compact orientation: goal, counts, top todos, blockers, PR, next-step \
              hints), then use only the current-branch tools: bn_goal, bn_add, bn_done, bn_pr, \
              bn_cat, bn_status, bn_sync, bn_handoff_read, and bn_handoff_write. bn_links_add is \
@@ -667,15 +661,8 @@ impl ServerHandler for BnServer {
              then stored without a repo). Call it whenever a URL surfaces that will be wanted \
              again — a PR, a work item or PBI, a portal blade, a dashboard, a docs page — \
              without waiting to be asked, and especially as a pull request completes, when those \
-             links are about to leave with the worktree. bn_links_list finds stored links by \
-             tag (icm, permissions, docs, security, ...), repo or substring — check it before \
-             asking the user for a URL they have likely saved. \
-             bn_watchdog_checkin schedules a durable \
-             check-in to yourself. bn_proof_show reports done-when readiness from recorded \
-             evidence; bn_proof_add attaches evidence, which counts only once someone else \
-             accepts it. bn_context_profile composes a token-budgeted context profile for this \
-             branch; bn_context_get serves one piece (a reference section, a skill, a file \
-             section). \
+             links are about to leave with the worktree. Before asking the user for a URL they \
+             have likely saved, search the store with the `bn links list <words>` CLI. \
              Two tools are repo-scoped rather than branch-scoped, because the knowledge \
              outlives the branch: bn_ref reads this repo's reference notes (call it with no \
              name for the cheap index before assuming anything about how the repo builds or \
@@ -686,6 +673,9 @@ impl ServerHandler for BnServer {
              its source and today's date, and CORRECT a note this session proved wrong rather \
              than appending a contradiction. A reference note nobody updates decays into \
              folklore; one nobody reads gets re-derived every session. \
+             bn_cmd lists and runs the user's own commands: shell scripts wrapping something \
+             they do over and over (opening a tmux window, say). Check it before scripting \
+             the same steps by hand. \
              The MCP surface \
              cannot target another repo/branch and does not expose cross-branch rollups, search, \
              daily goals, reviews, metrics, attention queues, cron status, or agent fleet/session \
@@ -724,7 +714,9 @@ impl ServerHandler for BnServer {
             .ok_or_else(|| {
                 ErrorData::invalid_params(format!("unknown prompt: {}", request.name), None)
             })?;
-        let body = skill.render(request.arguments.as_ref());
+        let lessons = bn_core::learnings::recent_lessons(&self.cfg, &today());
+        let body = skill.render(request.arguments.as_ref())
+            + &bn_core::learnings::lessons_section(&lessons, &skill.name);
         Ok(
             GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::User, body)])
                 .with_description(skill.description.clone()),

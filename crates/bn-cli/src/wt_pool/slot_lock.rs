@@ -17,12 +17,11 @@
 //! holder exits.
 
 use bn_core::flock::{self, FlockOutcome};
-use std::fs::File;
 use std::path::{Path, PathBuf};
 
-/// Held for as long as the value lives; the kernel releases it on drop or process death.
+/// Held for as long as the value lives; released on drop, or by the kernel on process death.
 pub(crate) struct PoolLock {
-    _file: File,
+    _guard: flock::LockGuard,
 }
 
 /// Lock files sit beside `leases.json`, dot-prefixed so nothing that scans the pool dir for slot
@@ -38,7 +37,9 @@ fn lock_file_path(pool_dir: &Path, name: &str) -> PathBuf {
 pub(super) fn lock_slot(pool_dir: &Path, n: u32) -> Option<PoolLock> {
     let file = flock::open_lock_file(&lock_file_path(pool_dir, &format!("slot-{n}"))).ok()?;
     match flock::lock(&file) {
-        FlockOutcome::Acquired => Some(PoolLock { _file: file }),
+        FlockOutcome::Acquired => Some(PoolLock {
+            _guard: flock::LockGuard::new(file),
+        }),
         _ => None,
     }
 }
@@ -50,7 +51,9 @@ pub(crate) fn try_lock_warm(pool_dir: &Path) -> Option<PoolLock> {
     let file = flock::open_lock_file(&lock_file_path(pool_dir, "warm")).ok()?;
     match flock::try_lock(&file) {
         FlockOutcome::Held => None,
-        FlockOutcome::Acquired | FlockOutcome::Failed(_) => Some(PoolLock { _file: file }),
+        FlockOutcome::Acquired | FlockOutcome::Failed(_) => Some(PoolLock {
+            _guard: flock::LockGuard::new(file),
+        }),
     }
 }
 

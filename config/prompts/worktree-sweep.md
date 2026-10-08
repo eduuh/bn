@@ -193,5 +193,5 @@ State plainly:
   an achievement: it means the number will be just as large next week.
 
 If the sweep turned up a leak class nothing collects automatically, record it once with
-`bn learned "<fact>"`, and if it is worth fixing in bn itself file it with `bn task add` rather than
+`bn ref append conventions --repo --section gotchas "<fact> (source, date)"`, and if it is worth fixing in bn itself file it with `bn task add` rather than
 sweeping it by hand every week.

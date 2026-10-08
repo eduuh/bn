@@ -115,17 +115,29 @@ pub struct JobRef {
 /// personal-notes `jobs/`, then the shipped `jobs_dir()` — so a sensitive global job lives in
 /// your synced notes (private) and shadows a same-named shipped default.
 pub fn job_dirs(cfg: &Config, ctx: Option<&Resolved>) -> Vec<(JobScope, PathBuf)> {
+    script_tier_dirs(cfg, ctx, "jobs", jobs_dir())
+}
+
+/// The tiers of [`job_dirs`] for any script kind kept under `sub` (`jobs`, `cmds`): the branch
+/// note's `<sub>/`, the project's `.bn/<sub>/`, the notes repo's `<sub>/<repo>/`, then the global
+/// `<sub>/` dirs ending in `shipped`. One walk, so a new script kind cannot drift from jobs.
+pub fn script_tier_dirs(
+    cfg: &Config,
+    ctx: Option<&Resolved>,
+    sub: &str,
+    shipped: PathBuf,
+) -> Vec<(JobScope, PathBuf)> {
     let mut dirs = Vec::new();
     if let Some(c) = ctx {
         if c.branch != "main" {
-            dirs.push((JobScope::Branch, cfg.note_dir(c).join("jobs")));
+            dirs.push((JobScope::Branch, cfg.note_dir(c).join(sub)));
         }
         // Project tier: this branch's own checkout, preferably at the conventional
         // `<worktree_dir>/<repo>/<branch>` path. When the branch lives in a warm pool slot or a
         // reused checkout directory, that convention cannot name it; fall back to git's own
         // `worktree list` answer in those cases so `.bn/jobs` still resolves from the live checkout.
         if let Some(project_root) = project_root(cfg, c) {
-            dirs.push((JobScope::Project, project_root.join(".bn").join("jobs")));
+            dirs.push((JobScope::Project, project_root.join(".bn").join(sub)));
         }
         // Repo tier: `<notes_dir_for(repo)>/jobs/<repo>/` — no `machine()` segment, so every
         // machine that syncs the notes repo resolves the exact same script. This replaced an
@@ -133,7 +145,7 @@ pub fn job_dirs(cfg: &Config, ctx: Option<&Resolved>) -> Vec<(JobScope, PathBuf)
         // build/start/etc. scripts silently drift between machines.
         dirs.push((
             JobScope::Repo,
-            cfg.notes_dir_for(&c.repo).join("jobs").join(&c.repo),
+            cfg.notes_dir_for(&c.repo).join(sub).join(&c.repo),
         ));
     }
     // Global tiers, highest precedence first: private work notes, private personal notes, then
@@ -141,9 +153,9 @@ pub fn job_dirs(cfg: &Config, ctx: Option<&Resolved>) -> Vec<(JobScope, PathBuf)
     // notes repo) — true "global", privately. Dedupe so a collapsed-root config (BN_NOTES_DIR in
     // tests) doesn't list the same dir twice.
     for dir in [
-        cfg.work_root.join("jobs"),
-        cfg.personal_root.join("jobs"),
-        jobs_dir(),
+        cfg.work_root.join(sub),
+        cfg.personal_root.join(sub),
+        shipped,
     ] {
         if !dirs.iter().any(|(_, d)| *d == dir) {
             dirs.push((JobScope::Global, dir));

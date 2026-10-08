@@ -88,6 +88,7 @@ pub(crate) mod tmux_keys;
 pub(crate) mod tmux_reconcile;
 pub(crate) mod tmux_sessions;
 pub(crate) mod tmux_status;
+pub(crate) mod user_cmd;
 pub(crate) mod verify;
 pub(crate) mod watch;
 pub(crate) mod worker;

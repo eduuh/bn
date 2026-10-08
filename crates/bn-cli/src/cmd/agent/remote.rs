@@ -57,7 +57,7 @@ pub(crate) fn remote_start_script(
         "{launch}; rc=$?; [ $rc -eq 0 ] || {{ echo \"bn agent launch exited with $rc\"; sleep 600; }}"
     );
     format!(
-        r#"export PATH="$HOME/.local/bin:$HOME/.bn/bin:$PATH"
+        r#"{path}
 root={root}; repo={repo}; branch={branch}; win={win}
 {checkout}
 t="=$repo:=$win"
@@ -79,6 +79,7 @@ fi && echo STARTED"#,
         repo = q(repo),
         branch = q(branch),
         win = q(window),
+        path = super::mesh::REMOTE_PATH,
         checkout = checkout_snippet(),
         launch_q = q(&launch),
         cmd = q(&cmd),

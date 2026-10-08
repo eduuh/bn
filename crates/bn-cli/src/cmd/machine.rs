@@ -128,3 +128,20 @@ fn report(
         source.path.display()
     );
 }
+
+/// `bn machine join | leave | mesh`: the `mesh` job script with these arguments, attached to this
+/// terminal. A shell job because the rest of the mesh plumbing (tunnel-host, tunnel-auto) is one,
+/// and they share its helpers. The exit code is the script's.
+pub(crate) fn run_mesh(cfg: &Config, args: &[String]) -> i32 {
+    let Some((_, script)) = bn_core::resolver::job_script(cfg, None, "mesh") else {
+        eprintln!("bn machine: the mesh job (config/jobs/mesh.sh) is not installed; update bn");
+        return 2;
+    };
+    std::process::Command::new("sh")
+        .arg(&script)
+        .args(args)
+        .status()
+        .ok()
+        .and_then(|s| s.code())
+        .unwrap_or(1)
+}

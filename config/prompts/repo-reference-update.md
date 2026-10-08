@@ -13,7 +13,7 @@ Record {{fact}} where the next session will find it. The reference notes are wha
 
 - Yes → a reference note. "The post-checkout hook prints `node: not found` in a non-login shell,
   so bn reports a failed switch that actually succeeded."
-- No → the branch note (`bn_add`), or `bn learned` for a personal lesson. "The test on my branch
+- No → the branch note (`bn_add`). "The test on my branch
   fails because I forgot to rebuild the dependency" is not repo knowledge, it is Tuesday.
 
 **How to write one:**

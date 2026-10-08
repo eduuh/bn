@@ -1,7 +1,7 @@
 ---
 name: multi-device
 description: Work across several machines (laptop, Cloud PCs, other PCs) as one - put a machine on the bn tunnel mesh, see which machines are up and why not, run an agent on another machine that survives dropped connections, message agents wherever they run, and upgrade every machine.
-when: A task involves another machine - adding or fixing a machine, a machine missing from bn machine tunnels, launching or steering an agent on a Cloud PC, running a long command remotely, or upgrading bn on several machines.
+when: A task involves another machine - adding or fixing a machine (a VPS or any box you can ssh to, via bn machine join), a machine missing from bn machine tunnels, launching or steering an agent on a Cloud PC, running a long command remotely, or upgrading bn on several machines.
 keywords: [multi-device, machines, remote, cloud-pc, tunnel, tunnels, mesh, ssh, host, launch, attach, durable, upgrade, lan]
 ---
 
@@ -31,6 +31,22 @@ It installs what is missing (sshd, tmux, nc, curl, ss, gh), downloads the devtun
 - `BN_TUNNEL_NICK=<name>` gives the machine a nickname (letters, digits, dashes). The hostname stays its real name (`hostname` shows it). The nickname leads the terminal title and tmux status bar, shows in `bn machine tunnels`, and is an ssh alias on the other machines (in lowercase). It is saved on the machine (`~/.config/bn/tunnel.conf`) and recorded in the notes repo (`bn/tunnel.conf`, one `[machine "<hostname>"]` section each), so a rebuilt machine gets it back.
 
 A signed-in machine enrols itself within 5 minutes even without setup. Opt out with `git config --global bn.tunnelAuto off`.
+
+## Join a machine over plain ssh (a VPS, a LAN box)
+
+No Dev Tunnels account is needed when this machine can already `ssh` to the other one with a key:
+
+```sh
+bn machine join <name> <user@host[:port]>     # e.g. bn machine join contabo root@161.97.172.122
+```
+
+Run it once, on the machine you are on (usually the laptop). It writes a `# >>> bn mesh <name> >>>` block into `~/.ssh/config`, trusts the other machine's key here, and holds a reverse forward (`ssh -R`, tmux window `bn-tunnels:mesh-<name>`) from that machine's loopback to this machine's sshd. It also writes a block for this machine into the other one's `~/.ssh/config`, so `ssh <this-machine>` works from there even though this machine is behind NAT. It ends by proving both directions.
+
+- This machine needs an sshd for the way back: macOS Remote Login on, or bn's user-level sshd (started on demand on Debian/Ubuntu).
+- `--back user@host[:port]` when this machine is reachable directly (no reverse forward); `--no-back` for one way only.
+- `bn machine mesh` shows each node: ssh each way, its bn version, its live agents. `bn machine leave <name>` undoes the join on both sides.
+- The watchdog (`tunnel-auto`) keeps mesh nodes too: a dead forward window, a stale shared connection after sleep, or a port held by a dead session on the node is repaired within a pass. Mesh nodes show in the tmux `⇄` segment.
+- A machine on the mesh both ways is just another tunnel host to `bn agent msg`, `bn agent live --mesh` and `bn agent launch --host`.
 
 ## See the mesh
 
@@ -76,7 +92,7 @@ This copies the newest `*.html` from that branch's note folder on the machine an
 bn agent msg <repo:branch> "..."
 ```
 
-This works wherever the target runs. When the target is not live here, bn asks every tunnel host for its live agents and hands the message to the one that has it. A remote agent replies the same way, so an agent on a Cloud PC can answer the coordinator on the laptop. A target live on two machines is refused, not guessed. Replies from a Cloud PC to the laptop need the laptop to host, so install sshd on it.
+This works wherever the target runs. When the target is not live here, bn asks every mesh machine (tunnel hosts and `bn machine join` nodes) for its live agents and hands the message to the one that has it. A remote agent replies the same way, so an agent on a Cloud PC or a VPS can answer the coordinator on the laptop. A target live on two machines is refused, not guessed. Replies need the laptop to be reachable back: host a tunnel, or join the node with `bn machine join` (its reverse forward is the way back). `bn agent live --mesh` lists every agent on every machine, which is who `bn agent msg` can reach; a machine that "did not answer" is down or has no bn.
 
 ## Run commands on another machine
 
@@ -92,7 +108,7 @@ This works wherever the target runs. When the target is not live here, bn asks e
   ```
 
   Then wait on the exact marker the script writes (`grep -q "^job-rc=" /tmp/job.log`), in one background loop for all machines. A marker that does not match what the script prints, or a leftover log from an earlier run, makes the loop wait forever or end at once: delete the log before starting, and stop a waiter you replace.
-- A remote non-login shell has neither `~/.local/bin` nor nvm on its PATH. Start with `export PATH=$HOME/.local/bin:$PATH`, or use `bash -lc` with `source ~/.nvm/nvm.sh`.
+- A remote non-login shell has neither bn's install dirs nor nvm on its PATH (nor Homebrew on a Mac). Start with `export PATH=$HOME/.bn/bin:$HOME/.bin:$HOME/.local/bin:/opt/homebrew/bin:$PATH`, or use `bash -lc` with `source ~/.nvm/nvm.sh`.
 - The remote login shell may be zsh, which expands a bare `=word` to a command path (`tmux list-windows -t =bn` fails with "bn not found"). Quote targets as `'=bn'`, or run the command under `sh -c`. zsh also does not split an unquoted `$var` into words, reads `$var:r` as a modifier (write `${var}:...`), and treats `(x86)` in an unquoted word as a glob.
 - PowerShell from WSL: a multi-line script breaks under `powershell.exe -Command -`; send it with `-EncodedCommand` (UTF-16LE, base64). Files in Windows repos are CRLF: edit bytes and keep the `\r\n`.
 - In this agent's own shell, `git` may be a wrapper function that fails on `/mnt/c` paths: use `command git` there.

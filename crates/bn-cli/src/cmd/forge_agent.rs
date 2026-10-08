@@ -195,8 +195,8 @@ fn tick(cfg: &Config, verbose: bool) -> i32 {
             return 1;
         }
     };
-    match bn_core::flock::try_lock(&lock) {
-        bn_core::flock::FlockOutcome::Acquired => {}
+    let _lock = match bn_core::flock::try_lock(&lock) {
+        bn_core::flock::FlockOutcome::Acquired => bn_core::flock::LockGuard::new(lock),
         bn_core::flock::FlockOutcome::Held => {
             say("forge-agent: another tick is running");
             return 0;
@@ -205,7 +205,7 @@ fn tick(cfg: &Config, verbose: bool) -> i32 {
             eprintln!("forge-agent: lock: {e}");
             return 1;
         }
-    }
+    };
 
     let me = claimer();
     let fc = &cfg.forge_agent;

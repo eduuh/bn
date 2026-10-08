@@ -294,11 +294,13 @@ pub(crate) fn job_attention_sync(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     0
 }
 
-/// `jobs/daily-rollover.sh` — roll today's daily goals forward (`bn daily rollover`).
+/// `jobs/daily-rollover.sh` — roll today's daily goals forward (`bn daily rollover`), then
+/// regenerate the installed skills so each carries the last 30 days of reflections on itself.
 pub(crate) fn job_daily_rollover(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     match bn_core::daily::rollover(cfg, &today()) {
         Ok(r) => {
             print!("{}", payload::rollover_text(&r));
+            crate::cmd::skills::emit_skill_install(cfg, false);
             0
         }
         Err(e) => {
