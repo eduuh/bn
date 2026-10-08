@@ -472,6 +472,66 @@ pub(crate) fn tail_confirms_submit(tail: &[String]) -> bool {
     tail_has_spinner(tail) || tail_has_bare_prompt(tail)
 }
 
+/// Whether `msg` still sits unsent in the input box at the bottom of the pane. Copilot's box starts
+/// with a line holding only `┃`, so "a bare prompt is showing" was true with the whole message
+/// still in the box, and a swallowed Enter read as delivered (2026-10-08). A box line is one that
+/// starts with the box glyph (`┃` copilot, `❯` claude) in the last few lines; a submitted message
+/// moves up into the history, where a spinner shows under it.
+pub(crate) fn tail_shows_unsent(tail: &[String], msg: &str) -> bool {
+    let head: String = msg.chars().take(24).collect();
+    let head = head.trim();
+    // The other end of the message too: a long one wraps, and its first line can sit above the
+    // lines read (2026-10-08: a five-line message read as sent from its last line alone).
+    let end: String = {
+        let rev: String = msg.trim_end().chars().rev().take(16).collect();
+        rev.chars().rev().collect()
+    };
+    // No spinner exemption: Copilot keeps a message typed mid-turn in the box under a live
+    // spinner until it is enqueued, so "working" proves nothing about this message.
+    if head.is_empty() {
+        return false;
+    }
+    let start = tail.len().saturating_sub(BOX_SCAN_LINES);
+    input_box(&tail[start..])
+        .iter()
+        .any(|l| l.contains(head) || l.contains(end.trim()))
+}
+
+/// The input box at the bottom of a pane, found by its borders rather than a prompt glyph:
+/// Copilot draws `❯` on messages already sent, the glyph Claude uses for its box. Copilot's box
+/// runs from its last `╻` line to the `╹` under it; Claude's sits between its last two `────`
+/// rules. Neither found: the last three lines.
+fn input_box(tail: &[String]) -> &[String] {
+    let trimmed = |l: &String| l.trim().to_string();
+    if let Some(top) = tail.iter().rposition(|l| trimmed(l).starts_with('╻')) {
+        let bottom = tail[top..]
+            .iter()
+            .position(|l| trimmed(l).starts_with('╹'))
+            .map_or(tail.len(), |b| top + b);
+        return &tail[top..bottom];
+    }
+    let rule = |l: &String| {
+        let t = trimmed(l);
+        t.chars().count() >= 10 && t.chars().all(|c| c == '─')
+    };
+    let rules: Vec<usize> = (0..tail.len()).filter(|&i| rule(&tail[i])).collect();
+    if let [.., a, b] = rules.as_slice() {
+        return &tail[*a..*b];
+    }
+    &tail[tail.len().saturating_sub(3)..]
+}
+
+/// How many lines at the bottom of a pane the input box can span: a wrapped multi-line message.
+const BOX_SCAN_LINES: usize = 20;
+
+/// Lines a submit check reads: enough to hold a long wrapped message in the input box.
+pub(crate) const SUBMIT_SCAN_LINES: usize = 24;
+
+/// A submit landed: the pane is working or idle, and the message is no longer in the input box.
+pub(crate) fn submit_landed(tail: &[String], msg: &str) -> bool {
+    tail_confirms_submit(tail) && !tail_shows_unsent(tail, msg)
+}
+
 /// Verify a `bn agent send --keys` submit landed in pane `target`: after the carriage return, poll
 /// the pane for a working spinner (the turn started). Returns true as soon as one appears, else
 /// false after [`SUBMIT_BACKOFF`]'s verification window — the signal that the TUI swallowed the
@@ -681,6 +741,53 @@ mod tests {
             "  auto mode on (shift+tab to cycle) · esc to interrupt · ← for agents".to_string(),
         ];
         assert!(tail_confirms_submit(&tail));
+    }
+
+    #[test]
+    fn a_message_left_in_copilots_box_is_not_delivered() {
+        let tail: Vec<String> = [
+            " ~/wt [⎇ deps/1]                  Session: 11.06 AIC used",
+            "╻▄▄▄▄▄▄▄▄▄▄",
+            "┃",
+            "┃ [bn msg from bn:coord] Task: resolve #80 (form-data 4.0.4).",
+            "┃ outcome. — reply: bn agent msg bn:coord \"<your answer>\"",
+            "╹▀▀▀▀▀▀▀▀▀▀",
+            " Interactive · Allow All · @ files · # issues",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let msg = "[bn msg from bn:coord] Task: resolve #80 (form-data 4.0.4).";
+        assert!(
+            tail_confirms_submit(&tail),
+            "the old check was fooled by the lone ┃"
+        );
+        assert!(!submit_landed(&tail, msg));
+        let sent: Vec<String> = [
+            "  ❯ [bn msg from bn:coord] Task: resolve #80",
+            "╻▄▄▄▄",
+            "┃",
+            "╹▀▀▀▀",
+            " ◉ Working esc interrupt",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert!(submit_landed(&sent, msg));
+        let wrapped: Vec<String> = [
+            "╻▄▄▄▄",
+            "┃ quality checks. If you get stuck",
+            "┃ \"<your answer>\"",
+            "╹▀▀▀▀",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let long = "[bn msg from bn:coord] a long task that wraps — reply: bn agent msg bn:coord \"<your answer>\"";
+        assert!(
+            !submit_landed(&wrapped, long),
+            "the head scrolled off, the end is still in the box"
+        );
     }
 
     #[test]

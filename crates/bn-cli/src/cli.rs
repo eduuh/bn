@@ -444,8 +444,7 @@ pub(crate) enum CmdPlanning {
 pub(crate) enum CmdTracking {
     /// Weekly auto-retro: mine the telemetry bn already collects (punch log, focus blocks, PR
     /// metrics, todo ages, daily goals) into a metric table + one heuristic suggestion. Anchored
-    /// to the weekly window like `bn weekly`; read-only and network-free. This is the *objective*
-    /// retro; the subjective weekly session is `bn retro` (the Interviewer, #261).
+    /// to the configured weekly window; read-only and network-free.
     Insights {
         /// Rolling window of N days instead of the configured weekly anchor.
         #[arg(long)]

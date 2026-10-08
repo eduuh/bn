@@ -9,6 +9,9 @@
 # build succeeds this script re-enters install.sh with --from-build so the anchors, tmux layer,
 # cron and MCP registration all happen there, in one place.
 #
+# Dotfile linking (config/stow, via scripts/install-stow.sh) also happens in install.sh, so
+# `./build.sh --force-home` rebuilds and adopts the tracked configs and skills in one go.
+#
 # Env knobs:
 #   BN_INSTALL_TARGET_DIR                Cargo target dir     (default: target/bn-install)
 #   BN_INSTALL_PROFILE                   Cargo profile        (default: local — see Cargo.toml;

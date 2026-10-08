@@ -158,6 +158,9 @@ jobs:
       - name: Installer tmux floor
         run: bash scripts/check-install-tmux.sh
 
+      - name: Installer stow packages
+        run: bash scripts/check-install-stow.sh
+
       - name: Retired web service cleanup
         run: bash scripts/check-install-retire-web.sh
 

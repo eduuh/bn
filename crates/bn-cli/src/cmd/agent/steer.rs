@@ -17,6 +17,10 @@ use super::{
 use crate::*;
 use bn_core::agent::Key;
 
+/// The message outbox lives beside this file; declared here so `agent.rs` stays at its size budget.
+#[path = "outbox.rs"]
+pub(crate) mod outbox;
+
 /// Build the `-p --resume` command for a harness (shared by the sync + detached steer paths).
 /// `None` for an unknown harness.
 pub(crate) fn resume_command(
@@ -169,13 +173,15 @@ fn has_live_window(cfg: &Config, target: &str) -> bool {
     resolve_agent_transport(cfg, target).liveness() == bn_core::agent::Liveness::Live
 }
 
-fn steer_landed_transport(transport: &dyn bn_core::agent::AgentTransport) -> bool {
+/// Poll the pane until the submit shows (a spinner, or an idle box) and the message has left the
+/// input box; false after the verification window, so the caller retries the Enter.
+fn submit_landed_transport(transport: &dyn bn_core::agent::AgentTransport, msg: &str) -> bool {
     for delay_ms in agent_live::SUBMIT_BACKOFF.verify_delays_ms() {
         std::thread::sleep(std::time::Duration::from_millis(*delay_ms));
-        let Some(tail) = transport.read_screen(agent_live::TAIL_SCAN_LINES) else {
+        let Some(tail) = transport.read_screen(agent_live::SUBMIT_SCAN_LINES) else {
             continue;
         };
-        if agent_live::tail_confirms_submit(&tail) {
+        if agent_live::submit_landed(&tail, msg) {
             return true;
         }
     }
@@ -214,7 +220,18 @@ fn deliver_via_keys(cfg: &Config, target: &str, msg: &str) -> (bool, bool) {
             if !transport.write_keys(&[Key::Submit]) {
                 break;
             }
-            if steer_landed_transport(&*transport) {
+            if submit_landed_transport(&*transport, msg) {
+                confirmed = true;
+                break;
+            }
+            // Mid-turn, Copilot keeps the message in the box until it is enqueued (Ctrl+Q).
+            let offers_enqueue = transport
+                .read_screen(agent_live::SUBMIT_SCAN_LINES)
+                .is_some_and(|t| t.iter().any(|l| l.contains("ctrl+q enqueue")));
+            if offers_enqueue
+                && transport.write_keys(&[Key::Enqueue])
+                && submit_landed_transport(&*transport, msg)
+            {
                 confirmed = true;
                 break;
             }
@@ -389,7 +406,8 @@ pub(crate) fn emit_agent_send(
     // On a pane that was mid-turn, "a spinner is up" is not evidence of anything, so delivery is
     // reported by what is actually known: the paste landed, and the harness will read it when the
     // current turn ends.
-    let queued = was_working && pasted;
+    // Typed while the agent works, a confirmed message waits its turn in the harness's queue.
+    let queued = was_working && confirmed;
 
     if as_json {
         let data = serde_json::json!({
@@ -489,18 +507,57 @@ fn fail_msg(code: &str, msg: &str, as_json: bool) -> ! {
     std::process::exit(1);
 }
 
+/// A message that did not land: parked in the outbox (outbox.rs) for the watchdog to retry, so it
+/// is never lost, and reported as queued. Hard failure only on the receiving end of a relay (the
+/// sender parks it) or inside a retry (the flush keeps it).
+fn undelivered(to: &str, from: &str, text: &str, code: &str, why: &str, as_json: bool) -> ! {
+    let parked_elsewhere = std::env::var_os(super::mesh::NO_MESH_ENV).is_some()
+        || std::env::var_os(outbox::RETRY_ENV).is_some();
+    if parked_elsewhere {
+        fail_msg(code, why, as_json);
+    }
+    let Ok(id) = outbox::park(to, from, text, why) else {
+        fail_msg(code, &format!("{why} (and the outbox could not be written)"), as_json);
+    };
+    if as_json {
+        let data = serde_json::json!({
+            "from": from, "to": to, "text": text, "delivered": false, "parked": id, "why": why,
+        });
+        println!("{}", Envelope::success("agent_msg", data).to_json());
+    } else {
+        println!("→ {to} (parked {id}): {text}");
+        println!("  not delivered yet ({why}); retried every minute until it lands — `bn agent outbox` shows it");
+    }
+    std::process::exit(0);
+}
+
 fn sender_target(from: Option<&str>, launch: Option<&str>, cwd: Option<&str>) -> Option<String> {
     from.map(ToString::to_string)
         .or_else(|| launch.map(ToString::to_string))
         .or_else(|| cwd.map(ToString::to_string))
 }
 
+/// Who is sending: the agent whose tmux pane this command runs in (its window's `@bn_repo` and
+/// `@bn_branch`), else the branch of the working directory. The pane comes first because an agent
+/// often `cd`s into another repo to work, and a sender named after that checkout gets no reply
+/// (2026-10-09: the coordinator signed as `w360:dependabot-…` from inside a PR checkout).
 fn current_sender_target(cfg: &Config) -> Option<String> {
+    if let Some(stamp) = pane_sender() {
+        return Some(stamp);
+    }
     let cwd = std::env::current_dir().ok()?;
     let ctx = bn_core::resolver::resolve(cfg, &cwd).ok()?;
     super::resolve_agent_channel(cfg, &ctx.repo, &ctx.branch)
         .tmux_target
         .or_else(|| Some(format!("{}:{}", ctx.repo, ctx.branch)))
+}
+
+/// `<repo>:<branch>` stamped on the window of the tmux pane this process runs in, when there is one.
+fn pane_sender() -> Option<String> {
+    let pane = std::env::var("TMUX_PANE").ok().filter(|p| p.starts_with('%'))?;
+    let out = proc::tmux_raw(&["display-message", "-p", "-t", &pane, "#{@bn_repo}\t#{@bn_branch}"])?;
+    let (repo, branch) = out.trim().split_once('\t')?;
+    (!repo.is_empty() && !branch.is_empty()).then(|| format!("{repo}:{branch}"))
 }
 
 /// Message another live agent, peer to peer: `bn agent msg <repo:branch> "<text>"`.
@@ -531,25 +588,28 @@ pub(crate) fn emit_agent_msg(
         Ok(sender) => sender,
         Err((code, msg)) => fail_msg(code, &msg, as_json),
     };
-    refuse_if_dialog(cfg, "msg", target, as_json);
+    if let Some(prompt) = super::read_prompt(cfg, target, bn_core::agent::PROMPT_SCAN_LINES) {
+        let why = format!("{target} is waiting on a dialog ({})", prompt.kind.label());
+        undelivered(target, &sender, text, "prompt_pending", &why, as_json);
+    }
     let liveness = resolve_agent_transport(cfg, target).liveness();
     if liveness == bn_core::agent::Liveness::Exited {
         // The window is there but nothing in it reads: the agent exited back to its shell. Typing
         // would lose the message (or run it as a command). A shell in the branch's checkout here
         // must not hide the agent itself, live on another machine of the mesh: ask the mesh first.
-        if let Some(super::mesh::Relay::Sent { code }) = super::mesh::relay(target, text, &sender, as_json) {
-            std::process::exit(code);
+        match super::mesh::relay(target, text, &sender, as_json) {
+            Some(super::mesh::Relay::Sent { code: 0 }) => std::process::exit(0),
+            _ => undelivered(target, &sender, text, "no_live_agent", &format!("{target}'s window is open but no agent is running in it"), as_json),
         }
-        fail_msg(
-            "no_live_agent",
-            &format!("{target}'s window is open but no agent is running in it — `bn agent live` lists who can be reached"),
-            as_json,
-        );
     }
     if liveness != bn_core::agent::Liveness::Live {
         // Not here: the agent may be live on another machine of the tunnel mesh (mesh.rs).
         let (code, why) = match super::mesh::relay(target, text, &sender, as_json) {
-            Some(super::mesh::Relay::Sent { code }) => std::process::exit(code),
+            Some(super::mesh::Relay::Sent { code: 0 }) => std::process::exit(0),
+            Some(super::mesh::Relay::Sent { code }) => (
+                "relay_failed",
+                format!("the machine running {target} could not deliver it (exit {code})"),
+            ),
             Some(super::mesh::Relay::Ambiguous { hosts }) => (
                 "ambiguous_target",
                 format!("{target} is live on several machines ({}); message it from one of them", hosts.join(", ")),
@@ -574,7 +634,7 @@ pub(crate) fn emit_agent_msg(
                 format!("{target} has no live agent window — `bn agent live` lists who can be reached"),
             ),
         };
-        fail_msg(code, &why, as_json);
+        undelivered(target, &sender, text, code, &why, as_json);
     }
 
     // Same verification caveat as `send`: on a pane that was already working, "a spinner is up"
@@ -582,7 +642,8 @@ pub(crate) fn emit_agent_msg(
     let was_working =
         super::pane_state(cfg, target) == Some(bn_core::orchestrate::PaneState::Working);
     let (confirmed, pasted) = deliver_via_keys(cfg, target, &peer_envelope(&sender, text));
-    let queued = was_working && pasted;
+    // Typed while the agent works, a confirmed message waits its turn in the harness's queue.
+    let queued = was_working && confirmed;
     let delivered = confirmed || queued;
 
     let mut fields = serde_json::Map::new();
@@ -599,31 +660,24 @@ pub(crate) fn emit_agent_msg(
             "from": sender, "to": target, "text": text,
             "delivered": delivered, "pasted": pasted, "confirmed": confirmed, "queued": queued,
         });
-        let env = if delivered {
-            Envelope::success("agent_msg", data)
-        } else if !pasted {
-            Envelope::failure("agent_msg", "send_failed", "no such tmux window, or tmux absent")
-        } else {
-            Envelope::failure(
-                "agent_msg",
-                "unconfirmed_submit",
-                "pasted into the input box but could not confirm submission (the TUI may have eaten the Enter)",
-            )
-        };
-        println!("{}", env.to_json());
+        if !delivered {
+            let (code, why) = if pasted {
+                ("unconfirmed_submit", "pasted but the submit was not confirmed")
+            } else {
+                ("send_failed", "no such tmux window, or tmux absent")
+            };
+            undelivered(target, &sender, text, code, why, as_json);
+        }
+        println!("{}", Envelope::success("agent_msg", data).to_json());
     } else if queued {
         println!("→ {target} (queued): {text}");
         println!("  the agent is mid-turn — it will read this when the turn ends");
     } else if confirmed {
         println!("→ {target}: {text}");
     } else if !pasted {
-        fail_msg("send_failed", &format!("couldn't paste into '{target}' (no tmux window)"), as_json);
+        undelivered(target, &sender, text, "send_failed", "no tmux window to paste into", as_json);
     } else {
-        fail_msg(
-            "unconfirmed_submit",
-            &format!("pasted into '{target}' but could not confirm submission (the TUI may have eaten the Enter)"),
-            as_json,
-        );
+        undelivered(target, &sender, text, "unconfirmed_submit", "pasted but the submit was not confirmed", as_json);
     }
 }
 

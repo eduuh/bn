@@ -173,6 +173,31 @@ pub(crate) fn attach(host: &str, repo: &str, branch: &str) -> ! {
     super::exec_harness("sh", &["-c".to_string(), attach_loop(host, &target)])
 }
 
+/// The pane on `host` that a window target should type into: its agent pane when the window also
+/// holds an editor or a shell (see `bn_core::agent::pick_agent_pane`), else the window itself.
+pub(crate) fn agent_pane(host: &str, window: &str) -> String {
+    let fmt = "#{pane_id}\t#{pane_current_command}\t#{pane_active}";
+    std::process::Command::new("ssh")
+        .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"])
+        .args(super::SSH_SHARED_CONNECTION)
+        .arg(host)
+        .arg(format!(
+            "{} tmux list-panes -t {} -F {}",
+            super::mesh::REMOTE_PATH,
+            crate::wt::shq(window),
+            crate::wt::shq(fmt)
+        ))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .filter(|rows| rows.lines().count() > 1)
+        .and_then(|rows| bn_core::agent::pick_agent_pane(&rows))
+        .unwrap_or_else(|| window.to_string())
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;

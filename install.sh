@@ -8,6 +8,9 @@
 #   --shell-clis opt-in extra: terminal productivity companions (zoxide, bat, eza, delta) that
 #            pair well with the workflow layer's worktrees/notes/diffs. Also enabled by
 #            BN_INSTALL_SHELL_CLIS=1. Combines with either mode.
+#   --force-home  replace real files that config/stow/ tracks (old copy kept as <file>.bak-<time>) and
+#            unmanaged skills bn would otherwise skip (moved to ~/.cache/bn/skill-backups/).
+#            Also BN_FORCE_HOME=1. Without it, a real file you wrote is left alone.
 # The Rust crates have zero tmux dependency; the tmux layer is opt-in glue on top.
 #
 # This script never compiles anything: it installs main's published release binaries and wires
@@ -28,6 +31,7 @@ fi
 mode="full"
 agents="${BN_INSTALL_AGENT_TOOLS:-0}"
 shell_clis="${BN_INSTALL_SHELL_CLIS:-0}"
+force_home="${BN_FORCE_HOME:-0}"
 # Internal, set by ./build.sh once it has compiled this checkout: take the binaries from its target
 # dir instead of the release. Not for hand use — on its own it finds nothing to install.
 from_build=0
@@ -36,6 +40,7 @@ for arg in "$@"; do
     --core)       mode="core" ;;
     --agents)     agents=1 ;;
     --shell-clis) shell_clis=1 ;;
+    --force-home) force_home=1 ;;
     --from-build) from_build=1 ;;
     *)
       echo "error: unknown flag '$arg' (use --core, --agents, and/or --shell-clis)" >&2
@@ -747,6 +752,23 @@ echo "Linked $cfgdir/repo -> $shipped"
 # native copies keep slash commands in step with the installed skill sources.
 # Idempotent and safe (only ever touches bn-managed SKILL.md files), and a harness whose
 # root holds a same-named skill bn doesn't own is skipped rather than failing the other.
+# --force-home: a same-named skill bn does not own (no bn-managed marker) is moved aside to
+# ~/.cache/bn/skill-backups/<time>/ first, so `bn skills install` can replace it.
+if [ "$force_home" = "1" ]; then
+  skill_backup="$HOME/.cache/bn/skill-backups/$(date +%Y%m%d%H%M%S)"
+  for prompt in "$shipped"/config/prompts/*.md; do
+    [ -f "$prompt" ] || continue
+    skill_name=$(basename "$prompt" .md)
+    for root in "$HOME/.copilot/skills" "$HOME/.claude/skills"; do
+      skill_md="$root/$skill_name/SKILL.md"
+      if [ -e "$skill_md" ] && ! grep -q 'bn-managed-skill' "$skill_md" 2>/dev/null; then
+        mkdir -p "$skill_backup/$(basename "$(dirname "$root")")"
+        mv "$root/$skill_name" "$skill_backup/$(basename "$(dirname "$root")")/$skill_name"
+        echo "Moved unmanaged skill $root/$skill_name to $skill_backup"
+      fi
+    done
+  done
+fi
 if "$bindir/bn" skills install >/dev/null 2>&1; then
   echo "Regenerated ~/.copilot/skills and ~/.claude/skills from bn skills (slash commands)"
 else
@@ -827,6 +849,14 @@ if [ -f "$agents_md" ]; then
 else
   echo "note: $agents_md missing — global agent instructions not linked" >&2
 fi
+
+# Tracked dotfiles: config/stow/<package>/ mirrors $HOME, one package per tool (copilot, claude,
+# agency, git). GNU stow links them when installed, plain relative symlinks otherwise (see
+# scripts/install-stow.sh). Read through the repo anchor so it follows this checkout. A real file
+# you wrote is left alone unless --force-home, which keeps it as <file>.bak-<time>.
+# shellcheck source=scripts/install-stow.sh
+source "$repo/scripts/install-stow.sh"
+bn_install_stow "$cfgdir/repo/config/stow" "$HOME" "$force_home"
 
 # Review specialists (repo-scoped PR reviewers) are compiled to *native* Copilot/Claude custom
 # agents (~/.copilot/agents/<name>.agent.md + ~/.claude/agents/<name>.md), so a running

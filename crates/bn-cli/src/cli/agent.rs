@@ -67,6 +67,17 @@ pub(crate) enum AgentCmd {
         #[arg(long)]
         mesh: bool,
     },
+    /// Messages `bn agent msg` could not deliver yet, parked for retry so none is ever lost:
+    /// bn agent outbox [--flush]. The tunnel watchdog flushes every minute.
+    Outbox {
+        /// Send every parked message again now; keep the ones that still do not land.
+        #[arg(long)]
+        flush: bool,
+        /// Remove one parked message by id, on purpose (a mistyped target): the only way a
+        /// message leaves the outbox undelivered.
+        #[arg(long, value_name = "ID")]
+        drop: Option<String>,
+    },
     /// Self-schedule a check-in nudge: in `<mins>` minutes, deliver `<note>` to this worktree's
     /// agent pane. A one-shot reminder watchdog, so it survives a reboot and is listed and
     /// stopped with `bn watchdog`. bn agent checkin <mins> "<note>".

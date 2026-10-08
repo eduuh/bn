@@ -40,10 +40,7 @@ pub fn migrate_all(cfg: &Config) -> MigrateReport {
 fn migrate_one(note_md: &std::path::Path) -> Result<bool, StoreError> {
     let sibling = note_md.with_extension("yaml");
     let text = std::fs::read_to_string(note_md)?;
-    let is_single_file = !sibling.exists()
-        && store::split_frontmatter(&text)
-            .map(|(front, _)| front.lines().any(|l| l.trim_start().starts_with("todos:")))
-            .unwrap_or(false);
+    let is_single_file = !sibling.exists() && store::text_uses_single_file_layout(&text)?;
     if is_single_file {
         return Ok(false);
     }

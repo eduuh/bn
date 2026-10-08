@@ -22,7 +22,7 @@
 #   scripts/check-file-size.sh --update
 1008	crates/bn-cli/src/agent_lease.rs
 1573	crates/bn-cli/src/cli.rs
-1708	crates/bn-cli/src/cmd/agent.rs
+1698	crates/bn-cli/src/cmd/agent.rs
 1083	crates/bn-cli/src/cmd/attn.rs
 1568	crates/bn-cli/src/cmd/dispatch.rs
 1062	crates/bn-cli/src/cmd/tmux_status.rs

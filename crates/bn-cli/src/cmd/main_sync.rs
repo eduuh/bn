@@ -444,6 +444,18 @@ fn default_branch(bare_s: &str) -> Option<String> {
 
 /// What to reset onto: the remote-tracking tip when it exists, else the local branch. A repo with
 /// no reachable origin still gets its two checkouts agreeing with each other.
+/// The commit the repo's main should be at after a sync: the fetched remote tip of its default
+/// branch. `None` when the repo has no default branch or the tip doesn't resolve.
+pub(crate) fn remote_tip_commit(bare: &Path) -> Option<String> {
+    let bare_s = bare.to_string_lossy().to_string();
+    let tip = remote_tip(&bare_s, &default_branch(&bare_s)?);
+    crate::git::git_capture(
+        &["--git-dir", &bare_s, "rev-parse", "--verify", "--quiet", &tip],
+        None,
+        true,
+    )
+}
+
 fn remote_tip(bare_s: &str, default: &str) -> String {
     let remote = format!("origin/{default}");
     let resolves = crate::git::git_ok(&[

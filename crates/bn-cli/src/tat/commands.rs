@@ -231,7 +231,9 @@ pub(super) fn run_state_lines(repo: &str, action: &bn_core::wt_actions::WtAction
 /// a label has to fit in a row and this does not.
 fn describe(id: &str) -> &'static str {
     match id {
-        "build-main" => "Fetch, fast-forward this repo's main, and run its build.sh there.",
+        "build-main" => {
+            "Fetch, fast-forward this repo's main, build it there, then run its install job if it has one."
+        }
         "pool-warm" => "Give every cold slot a checkout at current main, then build it.",
         "pool-grow" => "Cut one more warm slot and build it, before a dispatch needs it.",
         "wt-cleanup" => "Remove worktrees whose PR has merged, and reclaim their slots.",

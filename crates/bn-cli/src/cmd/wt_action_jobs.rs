@@ -74,12 +74,17 @@ pub(crate) fn job_build(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
     )
 }
 
-/// `build-main` — bring the repo's main up to date, then build it there.
+/// `build-main` — bring the repo's main up to date, build it there, then install it on this
+/// machine when the repo has an `install` job.
 ///
 /// The two halves are separate existing pieces: [`crate::cmd::main_sync::sync_repo`] does the
 /// fetch and the fast-forward of both the main checkout and the main slot, and `bn build` runs the
 /// script. Composing them beats a third implementation of "fetch and ff main", which is precisely
 /// what `sync_repo`'s own doc says `bn reset` used to hand-roll and get wrong.
+///
+/// The install half is the repo's own `install` job, resolved like `build` (branch → repo →
+/// global), so only a repo that says how to install itself gets installed; for every other repo
+/// the action stays fetch-and-build.
 ///
 /// Scoped to one repo when the run names one, which is how the picker runs it. With no
 /// context it falls through to the fleet-wide `main-sync`, so the job stays useful from a cron.
@@ -93,12 +98,24 @@ pub(crate) fn job_build_main(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
         eprintln!("build-main: could not bring {} up to date", ctx.repo);
         return 1;
     }
-    // Build where `main` actually lives for this repo — the main slot, else the main worktree.
-    // `landing` rather than `resolve`: the sync above has already laid the slot out if it was
-    // going to, and a build is not a reason to cut a worktree that isn't there.
-    let dir = crate::main_slot::landing(&bare_dir, &worktree_dir, &ctx.repo);
+    // Build in the main worktree the sync just fast-forwarded, never the main slot: the sync
+    // leaves a slot that is in use or dirty where it was, and building there installed a bn 114
+    // commits behind main. Refuse rather than build anything but the remote tip.
+    let dir = crate::main_slot::main_worktree(&worktree_dir, &ctx.repo);
     if !dir.is_dir() {
         eprintln!("build-main: no main checkout for {} to build in", ctx.repo);
+        return 1;
+    }
+    let dir_s = dir.to_string_lossy().to_string();
+    let head = crate::git::git_capture(&["-C", &dir_s, "rev-parse", "HEAD"], None, true);
+    let tip = crate::cmd::main_sync::remote_tip_commit(&bare);
+    if head.is_none() || head != tip {
+        eprintln!(
+            "build-main: {} is at {}, not the latest main ({}) — not building",
+            dir.display(),
+            head.as_deref().unwrap_or("?"),
+            tip.as_deref().unwrap_or("?")
+        );
         return 1;
     }
     let prev = std::env::current_dir().ok();
@@ -106,12 +123,21 @@ pub(crate) fn job_build_main(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
         eprintln!("build-main: cannot enter {}", dir.display());
         return 1;
     }
-    let code = crate::cmd::build::run_build_cmd(
+    let mut code = crate::cmd::build::run_build_cmd(
         cfg,
         None,
         Some(ctx.repo.clone()),
         Some("main".to_string()),
     );
+    if code == 0 && bn_core::resolver::job_script(cfg, Some(ctx), "install").is_some() {
+        println!("build-main: build passed — installing {} from main", ctx.repo);
+        code = crate::cmd::build::run_build_cmd(
+            cfg,
+            Some("install".to_string()),
+            Some(ctx.repo.clone()),
+            Some("main".to_string()),
+        );
+    }
     if let Some(prev) = prev {
         let _ = std::env::set_current_dir(prev);
     }

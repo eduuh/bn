@@ -123,16 +123,10 @@ pub(crate) enum CmdStaff {
         #[arg(long)]
         branch: Option<String>,
     },
-    /// The Interviewer (#261) — the weekly 10-minute subjective retro. A *pull* agent: the
-    /// `staff-interviewer` cron only raises the Friday attention item (never dispatches), and you
-    /// run the session when ready. `bn retro chat` asks three fixed questions plus one adaptive
-    /// follow-up derived from the week's defer/punch/daily history; `--voice` records spoken
-    /// answers; `bn retro skip` records an explicit skip. Answers land as a private transcript in
-    /// the notes repo plus a validated summary card in the feed. Bare `bn retro` runs the chat.
     /// Workflow prompts (config/prompts): served to Claude Code as MCP prompts (`/bn:<name>`) and
     /// installed for Copilot CLI as native skills referred to by name. Bare `bn skills` lists them
-    /// across every tier (global shared/personal, per-repo shared/personal); `bn skills new <name>`
-    /// scaffolds one.
+    /// across every tier (global shared/personal, per-repo shared/personal); `bn skills find`
+    /// ranks them for a task, and `bn skills new <name>` scaffolds one.
     Skills {
         #[command(subcommand)]
         action: Option<SkillsCmd>,

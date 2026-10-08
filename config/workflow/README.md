@@ -90,13 +90,19 @@ worktree creation. See `config/hooks/post-create` for a starting point.
 | o/W | `bn wt open` / `bn wt open --new` (native) |
 | D   | `bn wt remove` (native; removes worktree + kills its window) |
 | n   | `bn tmux note` (native)    |
-| e   | `nvim .` (inlined)         |
+| e   | `tmux-git-diff.sh` (floating nvim on tracked changes vs. main) |
+| C-g | `tmux-codespace-diff.sh` (floating remote nvim over SSH) |
 | A   | `bin/tmux-agent.sh` (spawn Copilot agent window — the default) |
 | G   | `bin/tmux-agent.sh … claude` (spawn Claude agent window) |
 | S   | `bn tmux cockpit` (native; orchestration roll-up) |
 | j   | `bn jump` (native; everything that needs you: windows + `bn next` queue) |
 | Tab | `bn jump --next` (native; jump to top window needing you; repeat to cycle) |
 | m   | watch this window (silence → ✓) |
+
+`prefix C-g` expects nvim and Diffview installed in the Codespace; it prompts for the SSH alias
+and remote checkout path, then compares the tracked worktree with the merge base of `origin/main`.
+The helper can also be run from a local tmux pane to open the same popup after a Codespace agent
+finishes.
 
 ## What the top row carries
 

@@ -280,6 +280,12 @@ mod tests {
         }
     }
 
+    fn help_text(args: &[&str]) -> String {
+        let err = Cli::command().try_get_matches_from(args).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
+        err.to_string()
+    }
+
     #[test]
     fn grouped_names_rewrite_to_the_legacy_command() {
         assert_eq!(
@@ -329,6 +335,17 @@ mod tests {
             panic!("no help")
         };
         assert!(t.contains("close") && t.contains("migrate-layout") && !t.contains("  log "));
+    }
+
+    #[test]
+    fn help_text_does_not_reference_removed_retro_commands() {
+        let insights = help_text(&["bn", "insights", "--help"]);
+        assert!(!insights.contains("bn weekly"));
+        assert!(!insights.contains("bn retro"));
+
+        let skills = help_text(&["bn", "skills", "--help"]);
+        assert!(!skills.contains("bn retro"));
+        assert!(skills.contains("bn skills find"));
     }
 
     /// Every route must land on a real command that clap accepts, and must not shadow a real

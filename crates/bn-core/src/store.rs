@@ -108,15 +108,19 @@ pub fn read(note_md: &Path) -> Result<Note, StoreError> {
     let (front_block, body) = split_frontmatter(&text)
         .ok_or_else(|| StoreError::Parse("missing frontmatter fence".into()))?;
 
-    if front_block.lines().any(|l| {
-        // Match the `todos:` mapping key exactly — not a stray field like `todos_count:`,
-        // which would misclassify a legacy md-only note as single-file and drop its body items.
-        let t = l.trim_start();
-        t == "todos:" || t.starts_with("todos: ") || t.starts_with("todos:\t")
-    }) {
-        // Single-file: frontmatter already embeds the item lists.
-        let front: Frontmatter =
+    if frontmatter_declares_items(front_block) {
+        // A hybrid note can carry the new single-file keys (`todos: []`, …) while some sections'
+        // real items still live in legacy body sections. Merge any body-backed sections whose
+        // frontmatter list is still empty; otherwise a first write preserves the empty lists,
+        // leaving `bn status` blind and `bn cat` doubled.
+        let mut front: Frontmatter =
             serde_yaml::from_str(front_block).map_err(|e| StoreError::Parse(e.to_string()))?;
+        if merge_legacy_body_items_into(&mut front, body) {
+            return Ok(Note {
+                front,
+                body: strip_item_sections(body),
+            });
+        }
         return Ok(Note {
             front,
             body: body.trim_end().to_string(),
@@ -452,6 +456,15 @@ fn item_id_on_line(line: &str) -> Option<String> {
     None
 }
 
+fn frontmatter_declares_items(front_block: &str) -> bool {
+    front_block.lines().any(|l| {
+        // Match the `todos:` mapping key exactly — not a stray field like `todos_count:`,
+        // which would misclassify a legacy md-only note as single-file and drop its body items.
+        let t = l.trim_start();
+        t == "todos:" || t.starts_with("todos: ") || t.starts_with("todos:\t")
+    })
+}
+
 /// Split `---\n<yaml>\n---\n<body>` into (frontmatter-block-without-fences, body-after-fence).
 /// Returns `None` if there is no leading `---` fence pair. The frontmatter block keeps the
 /// trailing newline of its last field (serde-safe); the body has its leading blank lines
@@ -485,6 +498,23 @@ pub(crate) fn split_frontmatter(text: &str) -> Option<(&str, &str)> {
     Some((front, body))
 }
 
+/// True when `text` is already in the single-file note layout, not the hybrid/legacy shapes.
+///
+/// Hybrid notes declare the single-file keys (`todos: []`, …) but still carry their real items in
+/// legacy body sections. Those must NOT count as single-file yet, or a migration skip leaves the
+/// note in the doubled/empty state until some later writer happens to fix it.
+pub(crate) fn text_uses_single_file_layout(text: &str) -> Result<bool, StoreError> {
+    let Some((front_block, body)) = split_frontmatter(text) else {
+        return Ok(false);
+    };
+    if !frontmatter_declares_items(front_block) {
+        return Ok(false);
+    }
+    let mut front: Frontmatter =
+        serde_yaml::from_str(front_block).map_err(|e| StoreError::Parse(e.to_string()))?;
+    Ok(!merge_legacy_body_items_into(&mut front, body))
+}
+
 /// Split the frontmatter fence off `text` and deserialize the YAML block into `T` — the common
 /// "read a fenced doc's frontmatter" shape shared by the daily layer and its queues. Errors
 /// uniformly: a missing fence or a YAML parse failure both surface as [`StoreError::Parse`].
@@ -500,32 +530,10 @@ pub(crate) fn parse_frontmatter<T: serde::de::DeserializeOwned>(
 /// md-only notes have no ids/dates, so ids are synthesized (`t1`, `t2`, …) and the
 /// item `created` is set to the note's `created` date.
 fn parse_md_sections_into(front: &mut Frontmatter, body: &str) {
-    let created = front.created.clone();
     for section in Section::all() {
-        let bullets = collect_section_bullets(body, section.heading());
-        let prefix = section.id_prefix();
-        let mut items = Vec::new();
-        for (n, (done, text)) in bullets.into_iter().enumerate() {
-            let mut item = Item {
-                id: format!("{prefix}{}", n + 1),
-                text,
-                created: created.clone(),
-                done: None,
-                done_at: None,
-                link: None,
-                pct: None,
-                est: None,
-                actual: None,
-                q: None,
-                notes: Vec::new(),
-            };
-            if section.tracks_done() {
-                item.done = Some(done);
-            }
-            items.push(item);
-        }
-        *front.items_mut(section) = items;
+        front.items_mut(section).clear();
     }
+    let _ = merge_legacy_body_items_into(front, body);
 }
 
 /// The checklist bullets under `section`'s heading in a free markdown body, as `(done, text)`.
@@ -576,6 +584,44 @@ fn collect_section_bullets(body: &str, heading: &str) -> Vec<(bool, String)> {
         }
     }
     out
+}
+
+fn merge_legacy_body_items_into(front: &mut Frontmatter, body: &str) -> bool {
+    let created = front.created.clone();
+    let mut merged = false;
+    for section in Section::all() {
+        if !front.items(section).is_empty() {
+            continue;
+        }
+        let bullets = collect_section_bullets(body, section.heading());
+        if bullets.is_empty() {
+            continue;
+        }
+        let prefix = section.id_prefix();
+        let mut items = Vec::new();
+        for (n, (done, text)) in bullets.into_iter().enumerate() {
+            let mut item = Item {
+                id: format!("{prefix}{}", n + 1),
+                text,
+                created: created.clone(),
+                done: None,
+                done_at: None,
+                link: None,
+                pct: None,
+                est: None,
+                actual: None,
+                q: None,
+                notes: Vec::new(),
+            };
+            if section.tracks_done() {
+                item.done = Some(done);
+            }
+            items.push(item);
+        }
+        *front.items_mut(section) = items;
+        merged = true;
+    }
+    merged
 }
 
 /// Remove the six item-list markdown sections from a body, leaving prose
@@ -643,6 +689,140 @@ mod size_guard_tests {
             }
             other => panic!("expected TooLarge, got {other:?}"),
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hybrid_single_file_notes_migrate_legacy_body_items() {
+        let dir = std::env::temp_dir().join(format!("bn-store-hybrid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("note.md");
+        std::fs::write(
+            &path,
+            r#"---
+repo: bn
+branch: explore-20261008-0043
+created: 2026-10-08
+status: active
+machine: vmi3586957
+tags: []
+collaborators: []
+todos: []
+blockers: []
+decisions: []
+research: []
+collab: []
+ask: []
+done_when: []
+directives: []
+---
+# bn / explore-20261008-0043
+
+## Goal
+
+Investigate note migration.
+
+## Progress
+
+## Blockers
+-
+
+## Todos
+- [ ] Reproduce note mutation bug
+
+## Decisions
+- task: scout — investigate & report, no code change
+
+## To Research
+-
+
+## Collaboration
+-
+
+## To Ask
+-
+"#,
+        )
+        .unwrap();
+
+        let note = read(&path).expect("hybrid note should read");
+        assert_eq!(
+            crate::render::goal_text(&note.body).as_deref(),
+            Some("Investigate note migration.")
+        );
+        assert_eq!(note.front.todos.len(), 1);
+        assert_eq!(note.front.todos[0].text, "Reproduce note mutation bug");
+        assert_eq!(note.front.decisions.len(), 1);
+        assert_eq!(
+            note.front.decisions[0].text,
+            "task: scout — investigate & report, no code change"
+        );
+        assert!(!note.body.contains("## Todos"));
+        assert!(!note.body.contains("## Decisions"));
+
+        save(&note, &path).expect("hybrid note should save as single-file");
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("todos:\n- id: t1"));
+        assert!(saved.contains("decisions:\n- id: d1"));
+        assert!(!saved.contains("\n## Todos\n"));
+        assert!(!saved.contains("\n## Decisions\n"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hybrid_notes_keep_existing_frontmatter_items_while_merging_body_items() {
+        let dir =
+            std::env::temp_dir().join(format!("bn-store-hybrid-merge-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("note.md");
+        std::fs::write(
+            &path,
+            r#"---
+repo: bn
+branch: explore-20261008-0043
+created: 2026-10-08
+status: active
+machine: vmi3586957
+tags: []
+collaborators: []
+todos: []
+blockers: []
+decisions: []
+research:
+- id: r1
+  text: probe-hybrid
+  created: 2026-10-08
+collab: []
+ask: []
+done_when: []
+directives: []
+---
+# bn / explore-20261008-0043
+
+## Goal
+
+Investigate note migration.
+
+## Progress
+
+## Todos
+- [ ] Reproduce note mutation bug
+
+## Decisions
+- task: scout — investigate & report, no code change
+"#,
+        )
+        .unwrap();
+
+        let note = read(&path).expect("partially migrated hybrid note should read");
+        assert_eq!(note.front.research.len(), 1);
+        assert_eq!(note.front.research[0].text, "probe-hybrid");
+        assert_eq!(note.front.todos.len(), 1);
+        assert_eq!(note.front.decisions.len(), 1);
+        assert!(!note.body.contains("## Todos"));
+        assert!(!note.body.contains("## Decisions"));
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

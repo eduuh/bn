@@ -93,6 +93,12 @@ if [ "$host_off" = 1 ]; then
 fi
 # Without sshd this machine reaches the others but none can reach it back; said once a day.
 no_sshd=0; [ "$auto" = 1 ] && [ "$host_off" = 0 ] && [ "$is_host" = 0 ] && [ "$connects" = 1 ] && no_sshd=1
+# Agent messages that could not be delivered yet (bn agent outbox) are retried every pass, on any
+# machine, before anything else: lossless delivery must not depend on this machine having tunnels.
+# In the background, so a slow retry never delays a tunnel repair; the outbox's own lock stops two
+# flushes overlapping.
+command -v bn >/dev/null 2>&1 && { bn agent outbox --flush >/dev/null 2>&1 & }
+
 # Plain-ssh mesh nodes (bn machine join, mesh.sh) are kept by the same watchdog, so a machine on
 # the mesh without any Dev Tunnel still gets its reverse forwards back after a sleep or reboot.
 meshed=0

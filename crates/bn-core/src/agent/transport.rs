@@ -41,6 +41,23 @@ pub enum Key {
     /// Cursor keys, for a menu chosen by moving a `❯` rather than typing a number.
     Up,
     Down,
+    /// Queue a message typed while the agent is mid-turn. Copilot leaves it in the box on Enter
+    /// and queues it on Ctrl+Q (its `ctrl+q enqueue` hint).
+    Enqueue,
+}
+
+impl Key {
+    /// The tmux key name for a key sent with plain `send-keys` (not `Text`, not the raw `Submit`).
+    pub fn tmux_key(&self) -> Option<String> {
+        match self {
+            Key::Escape => Some("Escape".into()),
+            Key::Digit(d) => Some(d.to_string()),
+            Key::Up => Some("Up".into()),
+            Key::Down => Some("Down".into()),
+            Key::Enqueue => Some("C-q".into()),
+            Key::Text(_) | Key::Submit => None,
+        }
+    }
 }
 
 /// Whether an agent is still there.
@@ -140,10 +157,51 @@ pub struct TmuxTransport {
     target: String,
 }
 
+/// What a pane runs when it is not the agent: an editor split beside it, or a bare shell.
+const NOT_AGENT: &[&str] = &[
+    "nvim", "vim", "vi", "hx", "emacs", "nano", "less", "man", "zsh", "bash", "sh", "fish",
+];
+
+/// Of a window's panes (`list-panes -F '#{pane_id}\t#{pane_current_command}\t#{pane_active}'`), the
+/// one the agent runs in: the active pane when it is not an editor or a shell, else the first that
+/// is not. `None` when nothing qualifies, and the caller keeps the window target.
+pub fn pick_agent_pane(rows: &str) -> Option<String> {
+    let panes: Vec<(&str, &str, bool)> = rows
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.split('\t');
+            Some((f.next()?, f.next()?, f.next() == Some("1")))
+        })
+        .collect();
+    let agent = |cmd: &str| !NOT_AGENT.contains(&cmd);
+    panes
+        .iter()
+        .find(|(_, cmd, active)| *active && agent(cmd))
+        .or_else(|| panes.iter().find(|(_, cmd, _)| agent(cmd)))
+        .map(|(id, _, _)| id.to_string())
+}
+
 impl TmuxTransport {
+    /// A window target resolves to tmux's *active* pane, and in a dispatched window that is often
+    /// the editor split beside the agent: a message typed there landed in nvim and the agent never
+    /// saw it (2026-10-08). So a window with several panes is pinned to its agent pane here.
     pub fn new(target: &str) -> TmuxTransport {
+        let exact = crate::tmux::exact_target(target);
+        let pane = (!target.starts_with('%'))
+            .then(|| {
+                crate::tmux::tmux_raw(&[
+                    "list-panes",
+                    "-t",
+                    &exact,
+                    "-F",
+                    "#{pane_id}\t#{pane_current_command}\t#{pane_active}",
+                ])
+            })
+            .flatten()
+            .filter(|rows| rows.lines().count() > 1)
+            .and_then(|rows| pick_agent_pane(&rows));
         TmuxTransport {
-            target: crate::tmux::exact_target(target),
+            target: pane.unwrap_or(exact),
         }
     }
 
@@ -187,6 +245,7 @@ impl AgentTransport for TmuxTransport {
                 }
                 Key::Up => crate::tmux::tmux_ok(&["send-keys", "-t", &self.target, "Up"]),
                 Key::Down => crate::tmux::tmux_ok(&["send-keys", "-t", &self.target, "Down"]),
+                Key::Enqueue => crate::tmux::tmux_ok(&["send-keys", "-t", &self.target, "C-q"]),
             };
         }
         ok
@@ -320,5 +379,35 @@ mod liveness_tests {
     fn no_pane_is_unreachable_and_no_ps_trusts_the_window() {
         assert_eq!(pane_liveness(&[], Some(PS)), Liveness::Unreachable);
         assert_eq!(pane_liveness(&[300], None), Liveness::Live);
+    }
+}
+
+#[cfg(test)]
+mod pick_agent_pane_tests {
+    use super::pick_agent_pane;
+
+    #[test]
+    fn the_agent_wins_over_an_active_editor_split() {
+        assert_eq!(
+            pick_agent_pane("%12\tnode\t0\n%13\tnvim\t1\n").as_deref(),
+            Some("%12")
+        );
+    }
+
+    #[test]
+    fn an_active_agent_pane_is_kept_and_shells_are_skipped() {
+        assert_eq!(
+            pick_agent_pane("%1\tzsh\t0\n%2\tclaude\t1\n").as_deref(),
+            Some("%2")
+        );
+        assert_eq!(
+            pick_agent_pane("%1\tzsh\t1\n%2\tcopilot\t0\n").as_deref(),
+            Some("%2")
+        );
+    }
+
+    #[test]
+    fn nothing_but_editors_and_shells_keeps_the_window() {
+        assert_eq!(pick_agent_pane("%1\tzsh\t1\n%2\tnvim\t0\n"), None);
     }
 }

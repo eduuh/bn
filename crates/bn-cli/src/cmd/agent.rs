@@ -639,7 +639,7 @@ impl SshTmuxTransport {
     fn new(host: &str, target: &str) -> Self {
         Self {
             host: host.to_string(),
-            target: tmux_exact_target(target),
+            target: remote::agent_pane(host, &tmux_exact_target(target)),
         }
     }
 
@@ -672,19 +672,9 @@ impl bn_core::agent::AgentTransport for SshTmuxTransport {
                 bn_core::agent::Key::Submit => {
                     ssh_tmux_ok(&self.host, &["send-keys", "-t", &self.target, "-H", "0d"])
                 }
-                bn_core::agent::Key::Escape => {
-                    ssh_tmux_ok(&self.host, &["send-keys", "-t", &self.target, "Escape"])
-                }
-                bn_core::agent::Key::Digit(d) => ssh_tmux_ok(
-                    &self.host,
-                    &["send-keys", "-t", &self.target, &d.to_string()],
-                ),
-                bn_core::agent::Key::Up => {
-                    ssh_tmux_ok(&self.host, &["send-keys", "-t", &self.target, "Up"])
-                }
-                bn_core::agent::Key::Down => {
-                    ssh_tmux_ok(&self.host, &["send-keys", "-t", &self.target, "Down"])
-                }
+                key => key.tmux_key().is_some_and(|k| {
+                    ssh_tmux_ok(&self.host, &["send-keys", "-t", &self.target, &k])
+                }),
             };
         }
         ok
