@@ -11,7 +11,7 @@ already wrote it down. That is what the **reference notes** are: durable facts a
 repository* — how it builds, where the seams are, which failures mislead — living beside the branch
 notes and outliving all of them.
 
-1. **Read the index first.** Call `bn_ref` with no name (CLI: `bn ref --repo`). You get every
+1. **Read the index first.** Call `bn_ref` with `scope: "repo"` and no name (CLI: `bn ref --repo`). You get every
    note's name and one-line summary and nothing else — a handful of tokens. Do this before
    assuming the notes are empty; "there's probably nothing" is how knowledge gets re-derived for
    the fourth time.

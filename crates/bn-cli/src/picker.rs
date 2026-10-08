@@ -185,6 +185,18 @@ fn row_for(f: &Finding) -> Row {
             link: String::new(),
             path: String::new(),
         },
+        Finding::Setup(s) => Row {
+            display: disp(
+                Warn,
+                "\u{2022} setup".to_string(),
+                format!("{}: {} — {}", s.item, s.problem, s.fix),
+            ),
+            kind: "setup",
+            id: String::new(),
+            job: String::new(),
+            link: String::new(),
+            path: s.item.clone(),
+        },
         Finding::ShellInit(s) => Row {
             display: disp(
                 Warn,

@@ -4,8 +4,6 @@ description: "Close out a session: mark done todos, record unfinished work, deci
 when: Before ending, resetting, compacting, or handing off a session.
 keywords: [capture links, save url, bookmark, wrap, wrap up, close out, log off, done for the day, stow, save, remember, reset, compact, handoff, session, knowledge, unfinished]
 ---
-You are stowing the current session so it is safe to reset, compact, or hand off.
-
 1. **Load what is already durable.** Call `bn_cat`, then inspect the current branch's uncovered
    agent-session proposals with `bn agent digest --json`. Treat both as evidence, not as a reason
    to duplicate entries.

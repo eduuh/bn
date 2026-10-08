@@ -16,7 +16,7 @@ What makes the mesh:
 
 ## Put a machine on the mesh
 
-Run on that machine, at a terminal:
+On that machine, at a terminal:
 
 ```sh
 bn run tunnel-setup
@@ -29,7 +29,7 @@ It installs what is missing (sshd, tmux, nc, curl, ss, gh), downloads the devtun
 
 - `BN_TUNNEL_NICK=<name>` gives the machine a nickname (letters, digits, dashes). The hostname stays its real name (`hostname` shows it). The nickname leads the terminal title and tmux status bar, shows in `bn machine tunnels`, and is an ssh alias on the other machines (in lowercase). It is saved on the machine (`~/.config/bn/tunnel.conf`) and recorded in the notes repo (`bn/tunnel.conf`, one `[machine "<hostname>"]` section each), so a rebuilt machine gets it back.
 
-A signed-in machine enrols itself within 5 minutes even without setup. Opt out with `git config --global bn.tunnelAuto off`.
+A signed-in machine enrols itself within 5 minutes even without setup. Opt out with `BN_TUNNEL_AUTO=0 bn run tunnel-setup` (saved per machine in `~/.config/bn/tunnel.conf`, not `~/.gitconfig`).
 
 ## Join a machine over plain ssh (a VPS, a LAN box)
 
@@ -114,12 +114,8 @@ This works wherever the target runs. When the target is not live here, bn asks e
 
 ## Work efficiently across machines
 
-Lessons from a long session that set up four machines; each cost real time before it was learned.
-
 - **Look before acting.** `bn machine tunnels` (about 10 seconds) says which machines are up, their names, and why one is down. Start there instead of probing each machine with ssh.
-- **Fan out, then wait once.** Start the same job on every machine in its own tmux window, then wait in one background loop for every marker. Do not poll with repeated short commands.
 - **Git on a machine without credentials: push to it, never pull on it.** `git push ssh://<machine><repo path> <ref>:refs/remotes/origin/<ref>`, then `git merge --ff-only origin/<ref>` there. The same works for the notes repo and the nvim config. A `git pull` there hangs on a username prompt.
-- **bn's clones fetch only `main`.** For a branch: `git fetch origin <branch> && git merge --ff-only FETCH_HEAD`.
 - **Pick the GitHub account for https pushes.** `gh` can hold two accounts; the active one is used. The notes repo (`work-account/branch-notes-work`) and the personal repos (`eduuh/*`) need different ones: `git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push https://github.com/<owner>/<repo>.git <branch>` with the right account active, or push over ssh.
 - **A notes push that GitHub rejects (GH013)** has a secret in an unpushed commit, usually a tool log saved by an automatic checkpoint (`.playwright-cli/` console logs held an Entra token). The notes `.gitignore` covers that folder now; if it happens again, `git reset --soft origin/main`, `git rm --cached` the file, commit once, push.
 - **Settings for one machine never go in `~/.gitconfig`.** It is synced by dotfiles to every machine. bn's tunnel settings live in `~/.config/bn/tunnel.conf`.
@@ -157,7 +153,7 @@ To try an unmerged branch on another machine, remember that bn's bare clones fet
 | Symptom | Cause | Fix |
 |---|---|---|
 | A machine is missing from `bn machine tunnels` | It has no tunnel on this account: never set up, signed out, a different devtunnel account, or bn older than the first-run fix | On it: `devtunnel user show`, upgrade bn, `bn run tunnel-setup` |
-| `DOWN`, `HOST-END no` | Nothing hosts its tunnel: the machine is off or asleep, WSL stopped, or devtunnel is signed out there | Its report line says which. Sign in to that machine, or run `wsl-keepalive boot` there |
+| `DOWN`, `HOST-END no` | Nothing hosts its tunnel: the machine is off or asleep, WSL stopped, or devtunnel is signed out there | Its report line says which. Sign in to that machine, or run `sh wsl-keepalive.sh boot` there |
 | `Permission denied (publickey)` | This machine's key is not on the GitHub account the host trusts, or the host has not re-read the keys | `bn run tunnel-setup` here, then `bn run tunnel-host` there |
 | `silent since <time>` | Its watchdog stopped reporting: off, asleep, or the watchdog died | Wake or sign in to it; check `bn machine tunnels` there |
 | The agent view says "lost the connection" | The tunnel dropped. The agent keeps running | Wait; the watchdog rebuilds the tunnel within about a minute and the view attaches again |

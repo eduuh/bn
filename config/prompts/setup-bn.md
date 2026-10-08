@@ -2,7 +2,7 @@
 name: setup-bn
 description: "Onboard a repo to bn: branch notes, agent integration, build and verify commands. Use when adding a new repo to bn or bn commands fail in a fresh clone."
 when: Set up or onboard a new repo to bn, wire Copilot or Claude to its branch notes, configure its build/test/lint gate, or explicitly narrow what bn runs on one computer.
-keywords: [setup bn, setup-bn, configure bn, new repo, new repository, repo setup, onboard repository, initialize bn, branch notes, mcp init, copilot, claude, build scripts, verification, machine config, narrow machine, disable cron, disable web]
+keywords: [setup bn, setup-bn, configure bn, new repo, new repository, repo setup, onboard repository, initialize bn, branch notes, mcp init, copilot, claude, build scripts, verification, machine config, narrow machine, disable cron]
 ---
 
 You are the **bn repository setup** workflow. Make the target repository usable with bn: resolve
@@ -22,9 +22,7 @@ Rerunning this skill must not duplicate entries, reset goals, or replace working
 Do not commit, push, launch an agent, warm a pool, or install persistent services just to prove
 setup works.
 
-**Before running bn commands:** loading configuration can reconcile the managed web service,
-even on a status command. Warn before the first such command. Use `tmux-run` for
-mutations and long-running commands when tmux is available.
+Use `tmux-run` for mutations and long-running commands when tmux is available.
 
 ## Repository setup
 
@@ -131,10 +129,10 @@ Preserve a working gate. For missing configuration:
 - Prefer machine-independent repo scripts at `<resolved-notes-root>/jobs/<resolved-repo>/build.sh`,
   with `test.sh` and `lint.sh` only when real standalone commands exist. These are **not** inside a
   machine's `main` branch-note directory.
-- Use committed `.bn/jobs/<name>.sh` when shared project configuration is wanted, but confirm bn
-  actually resolves it in this checkout. Project-job discovery uses the conventional worktree
-  layout; arbitrary clones and pooled paths must not be assumed to resolve that tier. Use the
-  notes-repo location when they do not.
+- Use committed `.bn/jobs/<name>.sh` when shared project configuration is wanted. bn finds it in
+  the branch's checkout (the conventional worktree path, else `git worktree list`), but confirm it
+  resolves here: `bn build <name>` names the paths it searched when nothing resolves. Use the
+  notes-repo location when it does not.
 - If one existing native command is the correct complete gate, set
   `[repo.<resolved-name>].verify` to that command in the shared config, preserving other repo
   settings. This overrides the default build/test/lint sequence; it must not silently omit a
@@ -207,14 +205,14 @@ Do not confuse these settings with:
 
 ### 3. Collect the change
 
-Use `ask_user` to collect all choices in one focused form:
+Use `ask_user` (AskUserQuestion in Claude Code) to collect all choices in one focused form:
 
 1. The repositories this machine may work on, as GitHub `owner/repo` slugs where the repository has
    a remote. Show the current list as the default.
 2. Whether cron jobs should be switched off here.
 
-Explain that switching a runtime off stops or prunes its bn-managed service, and switching it back
-on starts it again. If the user declines the form, make no changes.
+Explain that with `cron = false`, `bn cron register` removes this machine's bn timers, and turning
+it back on re-registers them. If the user declines the form, make no changes.
 
 ### 4. Update only this machine's file
 
@@ -251,8 +249,8 @@ systemd, launchd, or Windows services; use only bn's own lifecycle commands.
 
 Report one compact table:
 
-| Machine | Repositories | Cron | Web |
-|---------|--------------|------|-----|
+| Machine | Repositories | Cron |
+|---------|--------------|------|
 
 Then state the file changed and whether reconciliation succeeded. If anything failed, name the
 exact command and leave the file in the last configuration that parsed successfully.

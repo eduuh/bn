@@ -10,7 +10,8 @@ You are executing the active plan artifact — burning its steps down to the don
 plan is the contract; you follow it, you don't re-plan. If it turns out to be wrong, say so and
 stop — don't silently improvise a different one.
 
-1. **Load the plan.** Run `bn plan status`. If `plans/active.md` exists, read that Markdown file
+1. **Load the plan.** Run `bn plan status`. `plans/active.md` lives under the note directory
+   (`bn plan path` prints it), not the repo. If it exists, read that Markdown file
    and treat it as the contract: its `## Steps` are your ordered worklist and its `## Done When`
    criteria the finish line. Also call `bn_cat` for branch-note status/blockers/decisions — open
    note todos are additional work items. If only legacy note `done-when`/todo sections exist, run

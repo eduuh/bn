@@ -24,7 +24,8 @@ Before editing, reproduce the missing behavior or confirm the work needed, and r
 branch note. Then make the smallest bounded change, verify it with `bn verify`, and finish only
 when the task is truly done or blocked.
 
-If you hit a real ambiguity or an irreversible choice, stop and ask with `ask_user`. If the issue
+If you hit a real ambiguity or an irreversible choice, stop and ask (`ask_user` in Copilot CLI,
+`AskUserQuestion` in Claude Code). If the issue
 cannot be reproduced, record the attempts and finish report-only. Otherwise push, open a PR,
 record it with `bn_pr`, run `bn ingest`, and finish the Forge activity with a rich Markdown report.
 Use images, diagrams, tables, and links when they add evidence or make the result easier to review.

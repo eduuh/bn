@@ -26,11 +26,11 @@ task goal — it names the target repo, the ADO source repo, and the reference d
    PRs (default 200; raise `--max` for a bigger starting corpus) and extracts human `text`
    comments, dropping system threads and obvious bots. It is strictly READ-ONLY against ADO:
    ```bash
-   config/scripts/ado-pr-comments.sh --source <source_repo> --max 200 > /tmp/pr-comments.json
+   ~/.bn/config/repo/config/scripts/ado-pr-comments.sh --source <source_repo> --max 200 > /tmp/pr-comments.json
    # optional: --org <org|url> --project <project>   # default to your `az devops configure`
    ```
-   Get **as many comments as you can** — a larger corpus makes a stronger starting standard.
-   Call it by its full repo path if it isn't on `$PATH`. If it exits non-zero (no `az`, not
+   The script ships in bn's repo, which `~/.bn/config/repo` links to (`config/scripts/` from a bn
+   checkout). A larger corpus makes a stronger standard. If it exits non-zero (no `az`, not
    logged in, unresolved org/project, unknown repo), **STOP and report exactly what failed and
    how to fix it** — never invent standards from nothing.
 

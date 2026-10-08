@@ -346,6 +346,7 @@ mod tests {
         let skills = help_text(&["bn", "skills", "--help"]);
         assert!(!skills.contains("bn retro"));
         assert!(skills.contains("bn skills find"));
+        assert!(skills.contains("bn skills render"));
     }
 
     /// Every route must land on a real command that clap accepts, and must not shadow a real

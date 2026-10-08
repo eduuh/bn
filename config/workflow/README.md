@@ -90,7 +90,7 @@ worktree creation. See `config/hooks/post-create` for a starting point.
 | o/W | `bn wt open` / `bn wt open --new` (native) |
 | D   | `bn wt remove` (native; removes worktree + kills its window) |
 | n   | `bn tmux note` (native)    |
-| e   | `tmux-git-diff.sh` (floating nvim on tracked changes vs. main) |
+| e   | `tmux-git-diff.sh` (floating nvim DiffviewOpen origin/main; latest commit if nothing differs) |
 | C-g | `tmux-codespace-diff.sh` (floating remote nvim over SSH) |
 | A   | `bin/tmux-agent.sh` (spawn Copilot agent window — the default) |
 | G   | `bin/tmux-agent.sh … claude` (spawn Claude agent window) |

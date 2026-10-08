@@ -7,12 +7,9 @@ arguments:
   - { name: task, description: The task/goal to plan. Omit to use the note's Goal., required: false }
   - { name: url, description: Source issue/PR url for grounding. Omit if none., required: false }
 ---
-You are an investigate-then-plan lane: investigate the task rigorously,
-then turn what you learn into a **verifiable plan submitted to `bn review`**. You write **no
-product code** here — the deliverable is a reviewed plan an execution lane will burn down.
-This composes the `investigate` workflow in its pipeline/read-only mode and the `plan` (write the
-plan artifact) skill into one gated pass. When your plan is submitted, STOP for human review — do not roll into
-building.
+Investigate the task rigorously, then turn what you learn into a **verifiable plan submitted to
+`bn review`**. You write **no product code** here: the deliverable is a reviewed plan an execution
+lane will burn down. Once the plan is submitted, STOP for human review.
 
 1. **Frame the task.** Call `bn_cat` for context. Take the task ({{task}}) if given, otherwise the
    note's Goal; ground on the source ({{url}}) if provided (`gh issue view` / PR body). State it in
@@ -24,7 +21,8 @@ building.
    past the first plausible answer — being *right* matters more than being fast. Capture non-obvious
    findings with `bn_add research` and settled facts with `bn_add decision` as you go.
 
-3. **Write the plan artifact.** Run `bn plan init` and write `plans/active.md`: the goal in one
+3. **Write the plan artifact.** Run `bn plan init`, then write the file `bn plan path` prints
+   (`plans/active.md` under the branch note directory, not the worktree): the goal in one
    line; 2–5 **done-when criteria** — observable, checkable outcomes (this repo's test gate green,
    no new lint warnings, a behavior verifiable by command — named as the commands this repo
    actually runs) that the execution lane and its critique verify against; **ordered steps** — one action each, the path from here to the criteria, each
@@ -33,10 +31,9 @@ building.
    artifact is the contract.
 
 4. **Submit the plan to review (raise the Planning gate).** Run
-   `bn review submit --repo <repo> --branch <branch> --plan-file plans/active.md`
-   (repo and branch are the current worktree's — `bn_status` has both). This raises the typed
-   **Planning** attention entry the Plan gate waits on. Do **not** implement — execution picks up
-   only after a human approves.
+   `bn review submit --repo <repo> --branch <branch> --plan-file "$(bn plan path)"`
+   (repo and branch are the current worktree's; `bn_status` has both). It prints the review id and
+   raises the **Planning** attention entry the Plan gate waits on. If it fails, report its error and
+   stop. Do **not** implement: execution picks up only after a human approves.
 
-5. **Report.** One line: the goal, the done-when count, the step count, and the review id from
-   `bn review submit`. Then STOP — the Planning gate is human-approved before execution runs.
+5. **Report.** One line: the goal, the done-when count, the step count, and the review id. Then STOP.

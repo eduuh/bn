@@ -3,6 +3,7 @@ name: implement
 description: "Run the full implementation lifecycle from requirements to deployment. Use when asked to implement or build a feature and no pipeline stage skill applies."
 when: "Implementing a feature, building something new, or when 'implement' is mentioned with a feature description."
 keywords: [implement, orchestrate, complete, implementation, lifecycle, requirements, deployment, implementing, feature, building, something, new]
+arguments: [{ name: request, description: What to implement., required: false }]
 ---
 **Context**: Full-cycle implementation management (Requirements Analysis → Design → Planning → Implementation → Quality Assurance)
 
@@ -18,19 +19,17 @@ keywords: [implement, orchestrate, complete, implementation, lifecycle, requirem
    - **Stop at every `[Stop: ...]` marker** → Use AskUserQuestion for confirmation and wait for approval before proceeding
 3. **Enter autonomous mode** only after "batch approval for entire implementation phase"
 
-**CRITICAL**: Execute all steps, sub-agents, and stopping points defined in subagent-orchestration skill flows.
-
 ## Execution Decision Flow
 
 ### 1. Current Situation Assessment
-Instruction Content: $ARGUMENTS
+Instruction Content: {{request}}
 
 Assess the current situation:
 
 | Situation Pattern | Decision Criteria | Next Action |
 |------------------|------------------|-------------|
 | New Requirements | No existing work, new feature/fix request | Start with requirement-analyzer |
-| Flow Continuation | Existing docs/tasks present, continuation directive | Identify next step in sub-agents.md flow |
+| Flow Continuation | Existing docs/tasks present, continuation directive | Identify next step in the subagent-orchestration flow |
 | Quality Errors | Error detection, test failures, build errors | Execute quality-fixer |
 | Ambiguous | Intent unclear, multiple interpretations possible | Confirm with user |
 
@@ -88,8 +87,6 @@ When user responds to questions:
 [SYSTEM CONSTRAINT]
 This agent operates within implement skill scope. Use orchestrator-provided rules only.
 ```
-
-Autonomous sub-agents require scope constraints for stable execution. ALWAYS append this constraint to every sub-agent prompt.
 
 ## Mandatory Orchestrator Responsibilities
 

@@ -14,7 +14,8 @@ editor, and no consensus gate: your scoping *is* the plan, and a human resolves 
 
 **Prime directive — never assume.** The moment something is genuinely ambiguous — unclear intent,
 two valid interpretations, a fact you can't cheaply verify, or an irreversible/destructive choice —
-STOP and ask with `ask_user`, then wait for the answer. A wrong guess costs more than a question.
+STOP and ask with your harness's ask-the-user tool (`ask_user` in Copilot, `AskUserQuestion` in
+Claude Code; "`ask_user`" below means whichever you have), then wait for the answer. A wrong guess costs more than a question.
 Reversible, low-stakes calls you make yourself and record.
 
 Keep the branch note as your **evidence ledger** as you go (`bn_add research` / `decision` /

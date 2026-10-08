@@ -7,8 +7,9 @@ arguments:
   - { name: topic, description: What to plan. Omit to plan the note's current Goal., required: false }
 ---
 You are turning a goal into a **verifiable plan artifact** — not prose in chat. The plan lives in
-a Markdown file the execution loop (`build-from-plan`/`execute`) can burn down: `plans/active.md`,
-unless this seed names a bn-owned draft file — then write that file instead. The branch note
+a Markdown file the execution loop (`build-from-plan`/`execute`) can burn down: `plans/active.md` beside
+the branch note (not in the repo), unless this seed names a bn-owned draft file — then write that
+file instead. The branch note
 stays the index/status layer. You do **not** write code in this skill; you make the next
 session's coding unambiguous.
 
@@ -19,7 +20,7 @@ session's coding unambiguous.
    or invent facts when evidence is absent.
 
 2. **Write the plan artifact.** Run `bn plan init` (skip it when the seed already names a draft
-   file) and write the plan Markdown:
+   file); it creates the file and prints its path. Write the plan Markdown there:
    - the goal, restated in one sharp line;
    - 2–5 **done-when criteria** — observable, checkable outcomes ("login succeeds on 4G within
      10s", "this repo's test gate is green", "no new lint warnings"). Name the repo's *own*

@@ -6,14 +6,7 @@ keywords: [documentation-criteria, documentation, criteria, creation, including,
 ---
 # Documentation Creation Criteria
 
-## Templates
-
-- **[prd-template.md](references/prd-template.md)** - Product Requirements Document template
-- **[adr-template.md](references/adr-template.md)** - Architecture Decision Record template
-- **[ui-spec-template.md](references/ui-spec-template.md)** - UI Specification template (frontend/fullstack features)
-- **[design-template.md](references/design-template.md)** - Technical Design Document template
-- **[plan-template.md](references/plan-template.md)** - Work Plan template
-- **[task-template.md](references/task-template.md)** - Task file template for implementation tasks
+No templates ship with this skill: structure each document from its **Includes** and **Required Structural Elements** lists below.
 
 ## Creation Decision Matrix
 
@@ -97,7 +90,7 @@ keywords: [documentation-criteria, documentation, criteria, creation, including,
 - Visual acceptance criteria (golden states, layout constraints)
 - Accessibility requirements (keyboard, screen reader, contrast)
 
-**Scope**: Screen structure, transitions, component decomposition, interaction design, and visual acceptance criteria only. Technical implementation and API contracts belong in Design Doc, test implementation in acceptance-test-generator skeletons, schedule in Work Plan.
+**Scope**: Screen structure, transitions, component decomposition, interaction design, and visual acceptance criteria only. Technical implementation and API contracts belong in Design Doc, schedule in Work Plan.
 
 **Required Structural Elements**:
 - At least one component with state x display matrix and interaction table
@@ -160,7 +153,7 @@ Interface Change Matrix:
 **Includes**:
 - Task breakdown and dependencies (maximum 2 levels)
 - Schedule and duration estimates
-- **Include test skeleton file paths from acceptance-test-generator** (integration and E2E)
+- **Planned integration and E2E test file paths**
 - **Verification Strategy summary** (extracted from Design Doc)
 - **Final Quality Assurance Phase (required)**
 - Progress records (checkbox format)
@@ -198,15 +191,15 @@ Interface Change Matrix:
 
 ## Storage Locations
 
-| Document | Path | Naming Convention | Template |
-|----------|------|------------------|----------|
-| PRD | `docs/prd/` | `[feature-name]-prd.md` | [prd-template.md](references/prd-template.md) |
-| ADR | `docs/adr/` | `ADR-[4-digits]-[title].md` | [adr-template.md](references/adr-template.md) |
-| UI Spec | `docs/ui-spec/` | `[feature-name]-ui-spec.md` | [ui-spec-template.md](references/ui-spec-template.md) |
-| UI Spec Assets | `docs/ui-spec/assets/{feature-name}/` | Prototype code files | - |
-| Design Doc | `docs/design/` | `[feature-name]-design.md` | [design-template.md](references/design-template.md) |
-| Work Plan | `docs/plans/` | `YYYYMMDD-{type}-{description}.md` | [plan-template.md](references/plan-template.md) |
-| Task File | `docs/plans/tasks/` | `{plan-name}-task-{number}.md` | [task-template.md](references/task-template.md) |
+| Document | Path | Naming Convention |
+|----------|------|------------------|
+| PRD | `docs/prd/` | `[feature-name]-prd.md` |
+| ADR | `docs/adr/` | `ADR-[4-digits]-[title].md` |
+| UI Spec | `docs/ui-spec/` | `[feature-name]-ui-spec.md` |
+| UI Spec Assets | `docs/ui-spec/assets/{feature-name}/` | Prototype code files |
+| Design Doc | `docs/design/` | `[feature-name]-design.md` |
+| Work Plan | `docs/plans/` | `YYYYMMDD-{type}-{description}.md` |
+| Task File | `docs/plans/tasks/` | `{plan-name}-task-{number}.md` |
 
 *Note: Work plans are excluded by `.gitignore`
 

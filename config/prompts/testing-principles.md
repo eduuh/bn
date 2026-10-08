@@ -39,13 +39,6 @@ keywords: [testing-principles, testing, principles, language-agnostic, including
    - Check for regressions
    - Validate refactoring didn't break anything
 
-### TDD Benefits
-
-- Better design through testability requirements
-- Comprehensive test coverage by default
-- Living documentation of expected behavior
-- Confidence to refactor
-
 ## Quality Requirements
 
 ### Coverage Standards
@@ -59,7 +52,7 @@ keywords: [testing-principles, testing, principles, language-agnostic, including
 
 All tests must be:
 
-- **Independent**: No dependencies between tests (see Test Independence Verification for detailed criteria)
+- **Independent**: No dependencies between tests (see Test Design Guardrails)
 - **Reproducible**: Same input always produces same output
 - **Fast**: Unit tests < 100ms each, integration tests < 1s each, full suite < 10 minutes
 - **Self-checking**: Clear pass/fail without manual verification
@@ -239,7 +232,7 @@ The appropriate approach depends on project environment and CI/CD capabilities.
 - AI-generated data access code has heightened schema hallucination risk
 - Generated queries may use correct syntax but reference nonexistent schema elements
 - Mock-based tests pass regardless of schema accuracy
-- Mitigation: Design Docs should include explicit schema references; code-verifier reverse coverage verifies data operations against documented schemas
+- Mitigation: Design Docs should include explicit schema references, and every data operation should be checked against the documented schema
 
 ## Test Quality Practices
 
@@ -300,12 +293,6 @@ These criteria ensure reliable, maintainable tests.
 - Assert on return values, output data, or system state changes
 - For mock verification, check that correct arguments were passed
 
-### Meaningful Assertions
-
-- Every test must include at least one assertion
-- Assertions must validate observable behavior
-- A test without assertions always passes and provides no value
-
 ### Appropriate Mock Scope
 
 - Mock direct external I/O dependencies: databases, HTTP clients, file systems
@@ -320,14 +307,6 @@ Test at boundaries of valid input ranges:
 - Just below minimum (invalid)
 - Just above maximum (invalid)
 - Empty input (where applicable)
-
-### Test Independence Verification
-
-Each test must:
-- Create its own test data
-- Not depend on execution order
-- Clean up its own state
-- Pass when run in isolation
 
 ## Verification Requirements
 
@@ -363,11 +342,7 @@ tests/
 
 ## Performance Considerations
 
-### Test Speed
-
-- **Unit tests**: < 100ms each
-- **Integration tests**: < 1s each
-- **Full suite**: Should run frequently (< 10 minutes)
+Speed targets are under Test Characteristics.
 
 ### Optimization Strategies
 
@@ -456,13 +431,6 @@ tests/
 **Common principle:** Adapt testing strategy to leverage language strengths while ensuring comprehensive coverage
 
 ## Documentation and Communication
-
-### Tests as Documentation
-
-- Tests document expected behavior
-- Use clear, descriptive test names
-- Include examples of usage
-- Show edge cases and error handling
 
 ### Test Failure Messages
 

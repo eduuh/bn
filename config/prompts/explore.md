@@ -33,8 +33,10 @@ bn build run     # the repo's declared run recipe
 
 If that job doesn't exist, derive the launch from the repo (README, package.json scripts, the
 CLAUDE.md, compose files) — then **write the recipe down** as the repo's `run` job so the next
-pass doesn't re-derive it. Anything else you had to discover goes in the repo's reference notes
-(`bn_ref_append`, under `gotchas`, with its source and today's date).
+pass doesn't re-derive it: `<notes root>/jobs/<repo>/run.sh`, where `<notes root>` is three
+directories above the path `bn note` prints (`<root>/<machine>/<repo>/<branch>/note.md`). Anything
+else you had to discover goes in the repo's reference notes (`bn_ref_append`, under `gotchas`, with
+its source and today's date).
 
 Rules for the boot:
 
@@ -68,9 +70,7 @@ is coverage: you are checking that what exists, works.
 Collect diagnostics continuously, not just when something looks wrong. The bugs that matter most
 are the ones the UI hides: **a console error behind a screen that renders fine, a failed request
 the app swallowed, an `ok:false` envelope a success toast reported as success, a non-zero exit
-under a cheerful message.** The stranded prototype for this skill found exactly that class — a
-button that reported success while recovering nothing — and it was invisible to anyone just
-looking at the screen.
+under a cheerful message.**
 
 Screenshot the broken states as you hit them.
 
@@ -138,8 +138,8 @@ valid, good result** — say so plainly.
 
 Where the repo has a suite that can hold it, add the repro as a **failing test** and say so in the
 issue. This is the highest-leverage thing you do: it converts your finding into the fixer's
-done-when, and it means the bug cannot return silently after the fix lands. Commit it to your
-scout branch and reference the path in the issue body. Do not fix the code it's failing against.
+done-when, and it means the bug cannot return silently after the fix lands. Commit it to this
+branch and reference the path in the issue body. Do not fix the code it's failing against.
 
 ## 6. Report
 

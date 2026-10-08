@@ -37,7 +37,8 @@ run.
 
 "Grounded" means the task is connected to the things bn already knows, so every later stage — the
 gate, dispatch, the fleet board, the quarter review — can find it and place it. Answer these in
-order, recording each on the task and in its context doc (`bn task doc {{task}}`):
+order, recording each on the task and in its context doc (`bn task doc {{task}}` prints its path;
+edit that file):
 
 1. **Where does this happen?** `repo:` — nothing downstream can be placed without it; dispatch cuts
    a worktree from it. Use **only** a repo the packet lists as existing. A name outside that list

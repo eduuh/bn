@@ -12,30 +12,17 @@ Task: $ARGUMENTS
 
 **Step 1: Rule Selection via rule-advisor (REQUIRED)**
 
-Invoke rule-advisor using Agent tool:
-- `subagent_type`: "rule-advisor"
+Invoke a rule-advisor using Agent tool:
+- `subagent_type`: "general-purpose"
 - `description`: "Rule selection"
-- `prompt`: "Task: $ARGUMENTS. Select appropriate rules and perform metacognitive analysis."
+- `prompt`: "You are a rule advisor. Task: $ARGUMENTS. Select the applicable rules (repo AGENTS.md/CLAUDE.md, and skills from `bn skills find <task words>`) and perform metacognitive analysis. Return JSON: taskAnalysis.essence, selectedRules (rule or skill name plus the concrete procedure), metaCognitiveGuidance.pastFailures, metaCognitiveGuidance.firstStep, warningPatterns."
 
 **Step 2: Utilize rule-advisor Output**
 
-After receiving rule-advisor's JSON response, proceed with:
-
-1. **Understand Task Essence** (from `taskAnalysis.essence`)
-   - Focus on fundamental purpose, not surface-level work
-   - Distinguish between "quick fix" vs "proper solution"
-
-2. **Follow Selected Rules** (from `selectedRules`)
-   - Review each selected rule section
-   - Apply concrete procedures and guidelines
-
-3. **Recognize Past Failures** (from `metaCognitiveGuidance.pastFailures`)
-   - Apply countermeasures for known failure patterns
-   - Use suggested alternative approaches
-
-4. **Execute First Action** (from `metaCognitiveGuidance.firstStep`)
-   - Start with recommended action
-   - Use suggested tools first
+1. **Understand Task Essence** (`taskAnalysis.essence`): the fundamental purpose; a "quick fix" vs a "proper solution".
+2. **Follow Selected Rules** (`selectedRules`): apply each one's concrete procedures.
+3. **Recognize Past Failures** (`metaCognitiveGuidance.pastFailures`): apply countermeasures and suggested alternatives.
+4. **Execute First Action** (`metaCognitiveGuidance.firstStep`): start with the recommended action and tools.
 
 **Step 3: Create Task List with TaskCreate**
 
@@ -49,10 +36,7 @@ Break down the task based on rule-advisor's guidance:
 
 **Step 4: Execute Implementation**
 
-Proceed with task execution following:
-- Start with `metaCognitiveGuidance.firstStep` action from rule-advisor
-- Update task structure with TaskUpdate to reflect rule-advisor insights
-- Selected rules from rule-advisor
-- Task structure (managed via TaskCreate/TaskUpdate)
-- Quality standards defined in the selectedRules output from rule-advisor
-- Monitor warningPatterns flags throughout execution and adjust approach when triggered
+- Start with the `metaCognitiveGuidance.firstStep` action
+- Follow the selected rules and their quality standards; keep the task list current with TaskUpdate
+- Monitor warningPatterns throughout execution and adjust the approach when one triggers
+- Done when every task is complete and the final "Verify skill fidelity" task has passed

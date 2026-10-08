@@ -110,7 +110,7 @@ How to handle duplicate code based on Martin Fowler's "Refactoring":
 ### Implementation Example
 
 ```
-// Immediate commonalization on 1st duplication
+// Avoid: immediate commonalization on 1st duplication
 validateUserEmail(email) { /* ... */ }
 validateContactEmail(email) { /* ... */ }
 

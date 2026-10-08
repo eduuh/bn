@@ -113,9 +113,8 @@ the user to watch; a log is what you read. Get both at once:
 ```bash
 log=<scratchpad>/build.log
 status_file=<scratchpad>/build.exit
-tmux clear-history -t "$job"
-tmux send-keys -t "$job" \
-  "set -o pipefail; cargo build --release 2>&1 | tee $log; rc=\$?; printf '%s\n' \"\$rc\" > $status_file; exit \"\$rc\"" Enter
+job=$(tmux split-window -d -t "$TMUX_PANE" -h -P -F '#{pane_id}' -c <dir> \
+  "set -o pipefail; cargo build --release 2>&1 | tee $log; printf '%s\n' \"\$?\" > $status_file")
 ```
 
 * **`tee` to the scratchpad**, never `| tail`: the pane still streams, and afterwards you read the
@@ -205,7 +204,7 @@ Keep the `%id`, not the index: indexes renumber as panes come and go.
 prompt — you will answer someone else's question.
 
 ```bash
-tmux capture-pane -p -t "$session.$pane" -S -3
+tmux capture-pane -p -t "$pane" -S -3
 ```
 
 A shell prompt on the last line means idle. A running command, a `Username:`/`Password:` prompt, or
@@ -225,11 +224,15 @@ you only read the last line. Either ask the user to run `sudo -v` in that pane f
 the command to run in-session as `! <command>`. Never re-send something that already timed out
 without changing something about it.
 
-**3. Send the command.**
+**3. Send the command, saving its exit status.** `send-keys` gives you the transcript, not the
+status, so write it to a file:
 
 ```bash
-tmux send-keys -t "$session.$pane" '<command>; rc=$?; printf "%s\n" "$rc" > <status-file>; exit "$rc"' Enter
+tmux send-keys -t "$pane" '<command>; printf "%s\n" "$?" > <status-file>' Enter
 ```
+
+Append `; exit` only in a pane you created in step 1. Never in a pane you found: that is the user's
+shell, and `exit` closes it.
 
 Long or hard-to-quote commands: write a script to the scratchpad first, then send its path. Tee
 output to a log if it must be inspected after the pane closes.
@@ -238,7 +241,7 @@ output to a log if it must be inspected after the pane closes.
 happened from its saved log and status after the pane closes.
 
 ```bash
-tmux capture-pane -p -t "$session.$pane" -S -40
+tmux capture-pane -p -t "$pane" -S -40
 ```
 
 For anything running longer than a minute, follow **Long-running jobs** above: its own pane beside
@@ -248,18 +251,11 @@ wait by grepping the pane for a marker you also typed — the echoed command lin
 Tell the user which pane or window to look at. If the outcome must be read after completion, save
 the full output to a log and the exit status to a file; the pane closes and its scrollback is gone.
 
-**5. Get the exit code.** `send-keys` gives you the transcript, not the status. Save the status
-before exiting the shell so the pane closes when the command finishes:
+**5. Read the exit code** from `<status-file>` once it exists. For a window you open yourself, pass
+the command to `new-window` so it closes on completion:
 
 ```bash
-tmux send-keys -t "$session.$pane" '<command>; rc=$?; printf "%s\n" "$rc" > <status-file>; exit "$rc"' Enter
-```
-
-For a window you opened yourself, let it close on completion. Save required output and status to
-the scratchpad first; do not keep a shell open just to preserve scrollback:
-
-```bash
-tmux new-window -d -t "$session" -n <name> '<command>; rc=$?; printf "%s\n" "$rc" > <status-file>; exit "$rc"'
+tmux new-window -d -t "<session>:" -n <name> '<command>; printf "%s\n" "$?" > <status-file>'
 ```
 
 **6. Clean up panes and windows you opened.** One-shot command panes close automatically when

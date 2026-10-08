@@ -27,7 +27,9 @@ When receiving a new task, pass user requirements directly to requirement-analyz
 
 ## Available Subagents
 
-The following subagents are available:
+bn does not ship these subagents. Before the first call, confirm each one you need is defined in
+the harness (Claude Code: `.claude/agents/` or `~/.claude/agents/`). If one is missing, stop and
+tell the user which; do not substitute a general-purpose agent silently.
 
 ### Implementation Support Agents
 1. **quality-fixer**: Self-contained processing for overall quality assurance and fixes until completion
@@ -228,7 +230,7 @@ Always start with requirement-analyzer, then select the minimum document flow re
 Rules:
 - Large scale requires PRD before Design Doc creation
 - Frontend/fullstack flows add UI Spec before Design Doc creation
-- Fullstack layer sequencing is defined only in `references/monorepo-flow.md`
+- Fullstack (multi-layer) work: agree the layer order with the user before the first Design Doc
 - `design-sync` is required whenever multiple Design Docs exist
 - `task-decomposer` begins only after work-planner batch approval
 
@@ -371,7 +373,7 @@ Register overall phases using TaskCreate. Update each phase with TaskUpdate as i
    - Purpose: reviewer validates both discrepancy integration and Fact Disposition coverage against `focusAreas`
 
    #### HC-05: code-verifier → next-layer technical-designer (fullstack only)
-   - Defined only for multi-layer fullstack flow in `references/monorepo-flow.md`
+   - Multi-layer fullstack flow only, in the layer order agreed with the user
    - Pass: prior-layer Design Doc path plus `prior_layer_verification`
    - Use only `discrepancies[]` as known issues to address or escalate. Do not infer verified claims that are not explicitly present in the verifier output.
 
@@ -414,7 +416,3 @@ Register overall phases using TaskCreate. Update each phase with TaskUpdate as i
 - **Approval management**: Document creation → Execute document-reviewer → Get user approval before proceeding
 - **Flow confirmation**: After getting approval, always check next step with work planning flow (large/medium/small scale)
 - **Consistency verification**: Resolve subagent conflicts per Decision precedence (see Delegation Boundary section)
-
-## References
-
-- `references/monorepo-flow.md`: Fullstack (monorepo) orchestration flow

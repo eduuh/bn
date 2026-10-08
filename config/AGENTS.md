@@ -45,7 +45,7 @@ Shipped with bn. Claude Code reads this through an `@` import in `~/.claude/CLAU
 - Every skill description is "what it does. Use when ...". Write new ones that way.
 
 ## Code-change handoff
-- Before reporting completed code edits, the delivering agent opens the non-empty tracked diff from the merge base with main in the floating nvim used by tmux `prefix e`: `sh ~/.config/bn/repo/config/workflow/bin/tmux-git-diff.sh "$TMUX_PANE"`. Skip read-only tasks, intermediate delegated workers, empty diffs, and sessions outside tmux.
+- Before reporting completed code edits, the delivering agent first commits, runs `git fetch origin main` and rebases the branch onto `origin/main` (stop and ask on conflicts or a dirty shared branch), then opens the diff in the floating nvim used by tmux `prefix e` (`DiffviewOpen origin/main`): `sh ~/.config/bn/repo/config/workflow/bin/tmux-git-diff.sh "$TMUX_PANE"`. Skip read-only tasks, intermediate delegated workers, empty diffs, and sessions outside tmux.
 - For changes made by a Codespace agent, the local coordinator opens the remote diff after that agent finishes: `sh ~/.config/bn/repo/config/workflow/bin/tmux-codespace-diff.sh "$TMUX_PANE"`. It prompts for the SSH alias and remote repo path; run it from the local tmux pane, not inside the Codespace.
 
 ## Teams messages

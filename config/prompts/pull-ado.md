@@ -10,20 +10,18 @@ arguments:
 You are pulling the user's assigned Azure DevOps work items into a branch note's backlog.
 This is PULL-ONLY: read from ADO, write into bn. Never write back to ADO.
 
-The mechanics are scripted. Run, via the harness:
+The mechanics are scripted. From the target repo's worktree, run:
 
 ```bash
-config/scripts/pull-ado.sh
+~/.bn/config/repo/config/scripts/pull-ado.sh
 ```
 
-(the script lives in the bn repo checkout — run it **by absolute path from the target repo's
-worktree**, or always pass `--repo` explicitly: its default repo is the basename of whatever
-git repo you run it from). Pass `--repo {{repo}}` if a repo was given, and
+Its default repo is the basename of the git repo you run it from, so outside the target repo
+always pass `--repo`. Pass `--repo {{repo}}` if a repo was given, and
 `--iteration {{iteration}}` if an iteration was given; otherwise it pulls all assigned open
-items. It queries
-ADO for your assigned open work items and writes each into the repo's `main` note as an
-idempotent `[#<id>] <title>` todo (`--if-absent "[#<id>]"` dedups re-pulls and keeps
-completed todos from being resurrected).
+items. It needs `az` (signed in) and `python3`, and uses your `az devops configure` org/project
+defaults unless you pass `--org`/`--project`. It writes each item into the repo's `main` note as an idempotent `[#<id>] <title>` todo
+(`--if-absent "[#<id>]"` dedups re-pulls and keeps completed todos from being resurrected).
 
 Then report in 1–3 lines: relay the script's tally — items pulled, new vs. already-present,
 the target note (`<repo>/main`) — and list the new ids. If the script fails, report its

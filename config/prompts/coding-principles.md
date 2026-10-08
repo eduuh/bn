@@ -183,7 +183,6 @@ Nearby code is a starting point for investigation, not a sufficient basis for ad
 - OWASP Top 10:2025 shifted from symptoms to root causes; added "Software Supply Chain Failures" (A03) and "Mishandling of Exceptional Conditions" (A10)
 - Recent research indicates AI-generated code shows elevated rates of access control gaps — treat authentication and authorization as high-priority review targets
 - OpenSSF published "Security-Focused Guide for AI Code Assistant Instructions" — recommends language-specific, actionable constraints over generic advice
-- For detailed detection patterns, see `references/security-checks.md`
 
 ## Documentation
 

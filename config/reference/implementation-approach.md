@@ -139,7 +139,5 @@ Define integration points according to selected strategy:
 
 ## Guidelines for Meta-cognitive Execution
 
-1. **Leverage Known Patterns**: Use as starting point, explore creative combinations
-2. **Active WebSearch Use**: Research implementation examples from similar tech stacks
-3. **Apply 5 Whys**: Pursue root causes to grasp essence
-4. **Multi-perspective Evaluation**: Comprehensively evaluate from each Phase 1-4 perspective
+1. **Apply 5 Whys**: Pursue root causes to grasp essence
+2. **Multi-perspective Evaluation**: Comprehensively evaluate from each Phase 1-4 perspective

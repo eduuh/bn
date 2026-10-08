@@ -40,6 +40,24 @@ fn shell_init_finding() -> Option<bn_core::doctor::Finding> {
     }))
 }
 
+/// Tracked `config/stow` files and skills that have drifted on this machine. Reads the checkout
+/// the machine anchor (`~/.config/bn/repo`) points at; quiet when there is no anchor.
+fn setup_findings() -> Vec<bn_core::doctor::Finding> {
+    use bn_core::doctor::{skill_drift, stow_drift, Finding};
+    let Some(home) = dirs::home_dir() else { return Vec::new() };
+    let repo = home.join(".config/bn/repo");
+    if !repo.join("config/stow").is_dir() {
+        return Vec::new();
+    }
+    let mut out = stow_drift(&repo.join("config/stow"), &home);
+    for skills in [home.join(".copilot/skills"), home.join(".claude/skills")] {
+        if skills.is_dir() {
+            out.extend(skill_drift(&repo.join("config/prompts"), &skills));
+        }
+    }
+    out.into_iter().map(Finding::Setup).collect()
+}
+
 pub(crate) fn emit_doctor(cfg: &Config, stale_days: i64, brief: bool, as_json: bool) {
     // #534: reconcile stale `wt-stuck:*` notices (worktree reaped out of band) so the attention
     // fold below reflects reality. Skipped in --brief (the fast SessionStart hook) — the wt-cleanup
@@ -70,6 +88,9 @@ pub(crate) fn emit_doctor(cfg: &Config, stale_days: i64, brief: bool, as_json: b
     // environment and login rc — machine state, not notes state — which the notes-scoped
     // aggregation (and its tests) has no business depending on.
     findings.extend(shell_init_finding());
+    if !brief {
+        findings.extend(setup_findings());
+    }
     bn_core::doctor::sort_findings(&mut findings);
     let findings = findings;
     // Machine-level cron drift (global tier): declared-but-unregistered jobs. A fresh box has the
@@ -232,6 +253,10 @@ pub(crate) fn emit_doctor(cfg: &Config, stale_days: i64, brief: bool, as_json: b
                 println!("{}  {tag} {}", style::meta(&i.id), i.text);
                 let detail = format!("captured {}{} — bn q drain", i.created, loc);
                 println!("  {}", style::meta(&detail));
+            }
+            Finding::Setup(s) => {
+                println!("setup  {} {}", style::warn("[drift]"), s.problem);
+                println!("  {}", style::meta(&format!("{} — fix: {}", s.item, s.fix)));
             }
             Finding::ShellInit(s) => {
                 println!("shell  {} {}", style::warn(&format!("[{}]", s.shell)), s.problem);

@@ -611,27 +611,27 @@ mod tests {
         }
     }
 
-    /// Every `bn_<name>` token in a shipped prompt must be a real bn MCP tool. The MCP surface is
-    /// exactly the ten current-branch tools served by bn-mcp; anything else (`bn_next`,
-    /// `bn_metrics`, …) is a CLI command and must be written `bn <sub>` — prompts instructing a
-    /// phantom tool fail on every run.
+    /// Every `bn_<name>` token in a shipped prompt must be a real bn MCP tool. The list mirrors the
+    /// `name = "bn_…"` tools in crates/bn-mcp/src; anything else (`bn_next`, `bn_metrics`, …) is a
+    /// CLI command and must be written `bn <sub>` — prompts instructing a phantom tool fail on
+    /// every run.
     #[test]
     fn shipped_prompts_reference_only_real_mcp_tools() {
         const MCP_TOOLS: &[&str] = &[
             "bn_add",
-            "bn_done",
-            "bn_pr",
-            "bn_goal",
             "bn_cat",
+            "bn_cmd",
             "bn_context",
-            "bn_status",
-            "bn_sync",
-            "bn_handoff_write",
+            "bn_done",
+            "bn_goal",
             "bn_handoff_read",
+            "bn_handoff_write",
             "bn_links_add",
+            "bn_pr",
             "bn_ref",
             "bn_ref_append",
-            "bn_cmd",
+            "bn_status",
+            "bn_sync",
         ];
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let dirs = [root.join("config/prompts"), root.join("config/agents")];

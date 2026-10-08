@@ -6,11 +6,9 @@ keywords: [task-analyzer, task, analyzer, performs, metacognitive, analysis, ski
 ---
 # Task Analyzer
 
-Provides metacognitive task analysis and skill selection guidance.
-
 ## Skills Index
 
-See **[skills-index.yaml](references/skills-index.yaml)** for available skills metadata.
+The installed skills are the index: `bn skills list` (name, tier, description) and `bn skills find "<task>"` (ranked matches with `when:` and how to invoke). Select only names these print.
 
 ## Task Analysis Process
 
@@ -47,11 +45,11 @@ Identify the fundamental purpose beyond surface-level work:
 | Fix | Bug resolution | ai-development-guide, testing-principles |
 | Refactoring | Structure improvement | coding-principles, ai-development-guide |
 | Design | Architecture decisions | documentation-criteria, implementation-approach |
-| Quality | Testing, review | testing-principles, integration-e2e-testing |
+| Quality | Testing, review | testing-principles, verification-before-completion |
 
 ### 4. Tag-Based Skill Matching
 
-Extract relevant tags from task description and match against skills-index.yaml:
+Extract tags from the task description and run `bn skills find "<tags or task>"`:
 
 ```yaml
 Task: "Implement user authentication with tests"
@@ -68,15 +66,15 @@ Consider hidden dependencies:
 
 | Task Involves | Also Include |
 |---------------|--------------|
-| Error handling | debugging, testing |
-| New features | design, implementation, documentation |
-| Performance | profiling, optimization, testing |
-| Frontend | typescript-rules, test-implement |
-| API/Integration | integration-e2e-testing |
+| Error handling | debug, testing-principles |
+| New features | implementation-approach, coding-principles, documentation-criteria |
+| Performance | ai-development-guide, testing-principles |
+| Frontend | coding-principles, testing-principles |
+| API/Integration | testing-principles |
 
 ## Output Format
 
-Return structured analysis with skill metadata from skills-index.yaml:
+Return structured analysis:
 
 ```yaml
 taskAnalysis:
@@ -87,17 +85,13 @@ taskAnalysis:
   tags: [<string>, ...]  # Extracted from task description
 
 selectedSkills:
-  - skill: <skill-name>  # From skills-index.yaml
+  - skill: <skill-name>  # as printed by bn skills list/find
     priority: <high|medium|low>
     reason: <string>  # Why this skill was selected
-    # Pass through metadata from skills-index.yaml
-    tags: [...]
-    typical-use: <string>
-    size: <small|medium|large>
-    sections: [...]  # All sections from yaml, unfiltered
+    when: <string>  # the skill's `when:` line from bn skills find
 ```
 
-**Note**: Section selection (choosing which sections are relevant) is done after reading the actual SKILL.md files.
+Choose which sections of a skill apply only after reading the skill itself.
 
 ## Skill Selection Priority
 

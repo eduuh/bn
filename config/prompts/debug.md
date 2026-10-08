@@ -6,11 +6,8 @@ keywords: [debug, bug, fix, broken, failing, error, crash, regression, root caus
 arguments:
   - { name: symptom, description: The observed failure. Omit to take the note's top bug/blocker., required: false }
 ---
-You are fixing a **known failure** — reproduce it, isolate it, name the root cause, fix that
-cause, and prove it's gone. This is not open research (that's `investigate`) and not building new
-work (that's `build-from-plan`): there is a broken thing and a passing gate at the end. The discipline
-is **repro before fix, cause before patch** — a fix you can't reproduce failing you can't prove
-you made.
+Not open research (that's `investigate`) and not new work (that's `build-from-plan`). The discipline
+is **repro before fix, cause before patch**: a fix you can't reproduce failing you can't prove.
 
 1. **Reproduce first.** Call `bn_cat` for context and `bn_ref` (no name) for the index of what past
    sessions already learned about this repo — this failure may be a known gotcha, and reading a

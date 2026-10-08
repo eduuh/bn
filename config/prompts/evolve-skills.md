@@ -23,9 +23,9 @@ approves**, never a silent edit — these files are committed and shared.
    into one sentence: *what the skill tells you to do vs. what actually works*.
 
 3. **Read the current skill and locate the fix.** For each skill with real signal, load its
-   file — built-ins live in the bn repo's `config/prompts/`, personal overrides in the config
-   dir's `skills/` (list them with `bn skills`; render the live body with
-   `bn skills render <name>`). Find the exact step or line the reflection is about. Prefer the
+   file: `bn skills list --json` gives each skill's `path` and `scope` (built-ins in the bn repo's
+   `config/prompts/`, personal ones in the config dir's `skills/`, repo ones in `.bn/skills/`);
+   `bn skills render <name>` shows the live body. Find the exact step or line the reflection is about. Prefer the
    smallest change that resolves it — reword a step, reorder two, add a missing move, cut a step
    that never fires. Don't rewrite a skill that's merely been used a few times.
 

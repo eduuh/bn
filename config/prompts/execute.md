@@ -12,8 +12,9 @@ follow it, you don't re-plan. This is the `build-from-plan` loop as the pipeline
 inherits the approved plan's context and produces a verified change plus a PR the `critique` stage
 reads. If the plan turns out to be wrong, say so and stop — don't silently improvise a new one.
 
-1. **Load the approved plan.** Run `bn plan status`. If `plans/active.md` exists, read that
-   Markdown file and treat it as the contract: its `## Steps` are your ordered worklist and its
+1. **Load the approved plan.** Run `bn plan status`. `plans/active.md` lives in the branch note
+   dir, not the repo: `active_abs` is its full path, `active_exists` says whether it exists. If it
+   does, read it and treat it as the contract: its `## Steps` are your ordered worklist and its
    `## Done When` criteria the finish line. Also call `bn_cat` for branch-note
    status/blockers/decisions — open note todos are additional work items. If only legacy note
    `done-when`/todo sections exist, run `bn plan migrate` first (it builds `plans/active.md` from
@@ -26,8 +27,8 @@ reads. If the plan turns out to be wrong, say so and stop — don't silently imp
    criterion. For multi-site or mechanical changes, census every site before editing one, then
    batch the same-shape edits.
 
-3. **Close it the moment it's done.** Check the step off in `plans/active.md` (or `bn_done` the
-   todo) when it's actually complete — not "started", not batched at the end; todo timestamps
+3. **Close it the moment it's done.** Check the step off in the plan file at `active_abs` (or `bn_done`
+   the todo) when it's actually complete — not "started", not batched at the end; todo timestamps
    feed `bn stats metrics`. As work surfaces new tasks, add plan steps or `bn_add todo`; at a real fork
    or tradeoff, `bn_add decision` before committing to it.
 

@@ -126,7 +126,8 @@ pub(crate) enum CmdStaff {
     /// Workflow prompts (config/prompts): served to Claude Code as MCP prompts (`/bn:<name>`) and
     /// installed for Copilot CLI as native skills referred to by name. Bare `bn skills` lists them
     /// across every tier (global shared/personal, per-repo shared/personal); `bn skills find`
-    /// ranks them for a task, and `bn skills new <name>` scaffolds one.
+    /// ranks them for a task, `bn skills render` prints one headlessly for scripts, and
+    /// `bn skills new <name>` scaffolds one.
     Skills {
         #[command(subcommand)]
         action: Option<SkillsCmd>,

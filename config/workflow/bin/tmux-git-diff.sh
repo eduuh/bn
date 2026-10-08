@@ -19,14 +19,11 @@ fi
 
 base=$(git -C "$path" merge-base "$base_ref" HEAD)
 if git -C "$path" diff --quiet "$base"; then
-  tmux display-message -t "$pane" "No tracked changes against $base_ref"
-  exit 0
+  # Nothing against main (e.g. already merged): review the latest commit instead.
+  rev="HEAD~1"
 else
-  status=$?
-  if [ "$status" -ne 1 ]; then
-    exit "$status"
-  fi
+  rev="$base_ref"
 fi
 
-exec tmux display-popup -E -t "$pane" -w 97% -h 97% -d "$path" \
-  "git diff --no-ext-diff --color=never $base | nvim -R -c 'set filetype=diff' -"
+# Detach so an agent calling this script is not blocked until the popup closes.
+tmux run-shell -b -t "$pane" "tmux display-popup -E -t '$pane' -w 97% -h 97% -d '$path' \"nvim -c 'DiffviewOpen $rev'\""

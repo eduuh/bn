@@ -16,13 +16,14 @@ Create or update the repo-level bn setup surface:
 
 - `jobs/build.sh` for dependency install/build/warm-pool preparation.
 - `jobs/test.sh` and `jobs/lint.sh` when the repo has clear standalone commands.
-- A repo verify recommendation when the correct gate is a single native command rather than
-  separate scripts.
+- `[repo.<name>] verify = "<cmd>"` in config.toml when the gate is one native command rather than
+  separate scripts. Without it, `bn verify` runs the build, test and lint jobs in that order.
 
 ## Rules
 
 - Only change setup/build/test/lint/verify configuration and notes needed for repo setup.
-- Prefer repo-main bn note scripts so every branch inherits the same setup.
+- Put scripts in the repo tier `<notes>/jobs/<repo>/` (every branch and machine resolves it) or a
+  committed `.bn/jobs/`.
 - Keep scripts idempotent; they may run repeatedly from `bn build`, `bn verify`, and `bn wt pool warm`.
 - Do not make product code changes unless they are strictly required to make the setup command
   valid, and call that out explicitly.

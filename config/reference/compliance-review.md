@@ -4,23 +4,7 @@ description: "Design Doc compliance and security validation with optional auto-f
 when: Design Doc compliance and security validation with optional auto-fixes.
 keywords: [compliance-review, compliance, review, design, doc, security, validation, optional, auto-fixes, implementation, exists, mentioned]
 ---
-**Context**: Post-implementation quality assurance
-
-## Orchestrator Definition
-
-**Core Identity**: "I am an orchestrator."
-
-**First Action**: Register Steps 1-11 using TaskCreate before any execution.
-
-## Execution Method
-
-- Compliance validation → performed by code-reviewer
-- Security validation → performed by security-reviewer
-- Fix implementation → performed by task-executor
-- Quality checks → performed by quality-fixer
-- Re-validation → performed by code-reviewer / security-reviewer
-
-Orchestrator invokes sub-agents and passes structured JSON between them.
+You are the orchestrator: register Steps 1-11 using TaskCreate before any execution, then run each review, fix and check step as a `general-purpose` subagent (Agent tool) and pass their structured JSON between steps.
 
 Design Doc (uses most recent if omitted): $ARGUMENTS
 
@@ -28,8 +12,8 @@ Design Doc (uses most recent if omitted): $ARGUMENTS
 
 ### Step 1: Prerequisite Check
 ```bash
-# Identify Design Doc
-ls docs/design/*.md | grep -v template | tail -1
+# Identify Design Doc (most recently modified)
+ls -t docs/design/*.md | grep -v template | head -1
 
 # Check implementation files
 git diff --name-only main...HEAD
@@ -42,19 +26,17 @@ compliance-review requires a Design Doc for compliance checking.
 Consider using /run-task for general code quality checks instead.
 ```
 
-### Step 2: Execute code-reviewer
-Invoke code-reviewer using Agent tool:
-- `subagent_type`: "code-reviewer"
+### Step 2: Code compliance review (code-reviewer)
+- `subagent_type`: "general-purpose"
 - `description`: "Code compliance review"
-- `prompt`: "Design Doc: [path]. Implementation files: [git diff file list]. Review mode: full. Validate Design Doc compliance and return structured JSON report."
+- `prompt`: "You are a code reviewer checking an implementation against its Design Doc. Design Doc: [path]. Implementation files: [git diff file list]. Review mode: full. Return JSON with complianceRate (%), verdict, identifierMatchRate, acceptanceCriteria (each fulfilled/partially_fulfilled/unfulfilled with gap and suggestion), identifierMismatches, and qualityFindings."
 
 **Store output as**: `$STEP_2_OUTPUT`
 
-### Step 3: Execute security-reviewer
-Invoke security-reviewer using Agent tool:
-- `subagent_type`: "security-reviewer"
+### Step 3: Security review (security-reviewer)
+- `subagent_type`: "general-purpose"
 - `description`: "Security review"
-- `prompt`: "Design Doc: [path]. Implementation files: [git diff file list]. Review security compliance."
+- `prompt`: "You are a security reviewer. Design Doc: [path]. Implementation files: [git diff file list]. Review security compliance. Return JSON with status (approved | approved_with_notes | needs_revision | blocked, blocked only for committed secrets or equally severe issues), findings tagged confirmed_risk/defense_gap/hardening/policy with location, description and rationale, requiredFixes, and notes."
 
 **Store output as**: `$STEP_3_OUTPUT`
 
@@ -96,44 +78,36 @@ Security Review: [status from security-reviewer]
 Execute fixes? (y/n):
 ```
 
-If both pass and user selects `n`: Skip Steps 5-10, proceed to Step 11.
+If the user selects `n`: Skip Steps 5-10, proceed to Step 11 (list any failing items under Remaining issues).
 
-### Step 5: Execute Skill
+### Step 5: Load Task File Criteria
 
-Execute Skill: documentation-criteria (for task file template)
+Execute Skill: documentation-criteria (its Work Plan **Includes** list and Three Elements of Task Completion define what the task file must hold; no template ships)
 
 ### Step 6: Create Task File
 
 Create task file at `docs/plans/tasks/review-fixes-YYYYMMDD.md`
 Include both code compliance issues and security requiredFixes.
 
-### Step 7: Execute Fixes
-
-Invoke task-executor using Agent tool:
-- `subagent_type`: "task-executor"
+### Step 7: Execute Fixes (task-executor)
+- `subagent_type`: "general-purpose"
 - `description`: "Execute review fixes"
-- `prompt`: "Task file: docs/plans/tasks/review-fixes-YYYYMMDD.md. Apply staged fixes (stops at 5 files)."
+- `prompt`: "You are a task executor. Task file: docs/plans/tasks/review-fixes-YYYYMMDD.md. Apply the fixes in order, stopping after 5 files changed. Return the changed files and any fixes not applied."
 
-### Step 8: Quality Check
-
-Invoke quality-fixer using Agent tool:
-- `subagent_type`: "quality-fixer"
+### Step 8: Quality Check (quality-fixer)
+- `subagent_type`: "general-purpose"
 - `description`: "Quality gate check"
-- `prompt`: "Confirm quality gate passage for fixed files."
+- `prompt`: "You are a quality fixer. Run this repo's build, test and lint commands on the fixed files: [file list]. Fix failures you introduced. Return pass/fail per check."
 
-### Step 9: Re-validate code-reviewer
-
-Invoke code-reviewer using Agent tool:
-- `subagent_type`: "code-reviewer"
+### Step 9: Re-validate Compliance (code-reviewer)
+- `subagent_type`: "general-purpose"
 - `description`: "Re-validate compliance"
-- `prompt`: "Re-validate Design Doc compliance after fixes. Prior compliance issues: $STEP_2_OUTPUT. Verify each prior issue is resolved."
+- `prompt`: "You are a code reviewer. Re-validate Design Doc compliance after fixes. Design Doc: [path]. Prior compliance issues: $STEP_2_OUTPUT. Verify each prior issue is resolved. Return the same JSON shape as before."
 
-### Step 10: Re-validate security-reviewer
-
-Invoke security-reviewer using Agent tool (only if security fixes were applied):
-- `subagent_type`: "security-reviewer"
+### Step 10: Re-validate Security (security-reviewer, only if security fixes were applied)
+- `subagent_type`: "general-purpose"
 - `description`: "Re-validate security"
-- `prompt`: "Re-validate security after fixes. Prior findings: $STEP_3_OUTPUT. Design Doc: [path]. Implementation files: [file list]."
+- `prompt`: "You are a security reviewer. Re-validate security after fixes. Prior findings: $STEP_3_OUTPUT. Design Doc: [path]. Implementation files: [file list]. Return the same JSON shape as before."
 
 ### Step 11: Final Report
 

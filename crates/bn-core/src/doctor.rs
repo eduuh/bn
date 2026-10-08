@@ -20,6 +20,9 @@ mod cron_health;
 use cron_health::cron_findings;
 pub use cron_health::CronFinding;
 
+mod setup_drift;
+pub use setup_drift::{skill_drift, stow_drift, SetupFinding};
+
 // The precomputed snapshot, split out to keep this file under the 1000-line ratchet. Re-exported
 // flat so every `doctor::cached_or_compute(..)` / `doctor::read_cache()` call site is unchanged.
 mod cache;
@@ -207,6 +210,7 @@ pub enum Finding {
     Mcp(McpFinding),
     NotesLeak(NotesLeakFinding),
     ShellInit(ShellInitFinding),
+    Setup(SetupFinding),
 }
 
 impl Finding {
@@ -236,7 +240,7 @@ impl Finding {
             Finding::NotesLeak(_) => action_rank::WARN,
             // Inactive wrappers mean every agent you start by hand lands outside bn's control
             // plane — a setup misconfig in the same band as an unusable MCP server.
-            Finding::ShellInit(_) => action_rank::WARN,
+            Finding::ShellInit(_) | Finding::Setup(_) => action_rank::WARN,
         }
     }
 
@@ -257,7 +261,7 @@ impl Finding {
             // The more foreign machines are leaking in, the higher within its band.
             Finding::NotesLeak(l) => l.foreign_machines.len() as i64,
             // A configuration state, not a duration — nothing to age within its band.
-            Finding::ShellInit(_) => 0,
+            Finding::ShellInit(_) | Finding::Setup(_) => 0,
         }
     }
 
@@ -279,6 +283,7 @@ impl Finding {
                 l.personal_root
             ),
             Finding::ShellInit(s) => format!("{}: {}", s.shell, s.problem),
+            Finding::Setup(s) => format!("{}: {}", s.item, s.problem),
         }
     }
 }

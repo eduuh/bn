@@ -7,11 +7,6 @@ arguments:
   - { name: scope, description: "Repo to sweep. Omit (or `all`) to sweep every repo.", required: false }
   - { name: dry_run, description: "If set (true/yes/1), classify and report only — remove nothing.", required: false }
 ---
-You are sweeping **stale worktrees and the tmux they leave behind**: checkouts whose work is done,
-pool leases that leaked, scratch dirs whose agent died a week ago, and the windows and sessions
-still sitting on all of it. The point is to give back disk, pool slots and a readable window list,
-not to tidy.
-
 One rule decides every call: **a worktree is disposable only when its work is provably somewhere
 else** — merged into main, pushed to a PR, or written into the branch note. Uncommitted changes and
 unpushed commits are not somewhere else. Where the evidence is missing, you keep the worktree and
@@ -28,7 +23,7 @@ truthy (`true`/`yes`/`1`), do steps 1–3 and stop before anything removes.
 
 ## 1. Inventory before judging
 
-Run all five. Every one is read-only or dry-run by default, and every removal in step 4 has to cite
+Run all six. Every one is read-only or dry-run by default, and every removal in step 4 has to cite
 one of them. Run them from outside any repo so the all-repos scope applies.
 
 | command | what it tells you |
