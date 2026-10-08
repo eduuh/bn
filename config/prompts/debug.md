@@ -1,6 +1,6 @@
 ---
 name: debug
-description: Reproduce, isolate, root-cause and fix a known failure — repro-first, verified, learning captured
+description: "Reproduce, root-cause and fix a known failure with a repro first and a verified fix. Use when something is broken: a failing test, an error message, a crash or a regression."
 when: Something is broken — a failing test, an error, wrong behavior — and you want it fixed properly, not patched over. A known failure with a fix at the end.
 keywords: [debug, bug, fix, broken, failing, error, crash, regression, root cause, repro, why is this happening, not working]
 arguments:
@@ -8,7 +8,7 @@ arguments:
 ---
 You are fixing a **known failure** — reproduce it, isolate it, name the root cause, fix that
 cause, and prove it's gone. This is not open research (that's `investigate`) and not building new
-work (that's `plan-work`): there is a broken thing and a passing gate at the end. The discipline
+work (that's `build-from-plan`): there is a broken thing and a passing gate at the end. The discipline
 is **repro before fix, cause before patch** — a fix you can't reproduce failing you can't prove
 you made.
 
@@ -35,10 +35,11 @@ you made.
    `bn verify` (build/test/lint gate) via the harness — so the fix didn't break anything else. Not
    green means not done. Where a test would have caught this, add it now.
 
-6. **Capture the learning.** Name the non-obvious cause — the thing that would've saved you an
-   hour. If it will trip up the next session on this repo, not just this branch, fold it into the
-   repo's reference notes with `bn_ref_append` — one line, under `gotchas`, ending in where it
-   came from and today's date (see `/bn:repo-reference-update`). This is the step that stops the same cause
+6. **Capture the learning.** Record the non-obvious cause with `bn learned "…"` — the thing that
+   would've saved you an hour. Then ask whether it is *durable repo knowledge*: will it trip up
+   the next session on this repo, not just this branch? If so, fold it into the repo's reference
+   notes with `bn_ref_append` — one line, under `gotchas`, ending in where it came from and
+   today's date (see `/bn:repo-reference`). This is the step that stops the same cause
    being root-caused twice. Close the bug todo with `bn_done`.
 
 7. **Report.** One line: *root cause → fix → verify PASS*. Then the repro, the cause, what changed,

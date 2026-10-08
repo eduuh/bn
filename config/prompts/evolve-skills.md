@@ -1,6 +1,6 @@
 ---
 name: evolve-skills
-description: Fold skill:* reflections back into the skill markdown — propose concrete edits you approve
+description: "Fold skill reflections back into the skill files as edits you approve. Use after a session where a skill was wrong, missing a step or never picked up."
 when: Periodically, or when a workflow skill has been misfiring. Turns accumulated "skill:<name> — …" reflections into concrete edits to the skill files.
 keywords: [evolve, improve, refine, meta, update skills, feedback, reflections, tune, self-improve, sharpen]
 arguments:

@@ -20,6 +20,7 @@ use crate::store::StoreError;
 use crate::util::days_since;
 
 pub mod check;
+pub mod when;
 use serde::{Deserialize, Serialize};
 
 /// The tag vocabulary bn ships with, used when `[links] tags` is absent from config.toml.

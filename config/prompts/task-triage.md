@@ -1,6 +1,6 @@
 ---
 name: task-triage
-description: Decide what is genuinely doable today from the ranked open tasks, and stamp the day
+description: "Pick what is genuinely doable today from the ranked open tasks and stamp the day. Use when choosing today's tasks from the backlog."
 when: The day needs a shortlist — everything open is ranked but nobody has decided what today actually is.
 keywords: [triage, today, plan the day, shortlist, capacity, what should I do, day stamp]
 ---
@@ -9,8 +9,9 @@ tasks, and stamp the day. **Do not implement anything.**
 
 ## 1. Read the packet
 
-Run `bn task triage --dry-run`. It prints today's date, any capacity hint, and the deterministic
-ranked shortlist. That shortlist is your candidate set.
+Run `bn task triage --dry-run`. It prints today's date, any capacity hint, the deterministic
+ranked shortlist, and on its last line the path of today's triage note. That shortlist is your
+candidate set.
 
 ## 2. Decide
 
@@ -23,9 +24,9 @@ ranked shortlist. That shortlist is your candidate set.
 
 ## 3. Stamp it
 
-Stamp each chosen task with `bn task set <id> day:<YYYY-MM-DD> priority:<A|B|C>`. Write one line per
-decision to today's triage note, saying *why* it made the cut or didn't — that line is what makes
-tomorrow's triage better than today's.
+Stamp each chosen task with `bn task set <id> day:<YYYY-MM-DD> priority:<A|B|C>`. Append one line per
+decision to today's triage note (the path `--dry-run` printed), as `<id>: in|out, <why>`. That line
+is what makes tomorrow's triage better than today's.
 
 ## 4. When the call is genuinely yours to make with a person
 

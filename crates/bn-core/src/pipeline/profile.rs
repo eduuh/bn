@@ -286,7 +286,7 @@ pub fn layer(cfg: &Config, repo: &str, stage: Stage, ov: &Overrides) -> StagePro
     }
 }
 
-/// Per-stage pins a task carries as open-ended `key:value` meta: `plan-skill:lavish-plan`,
+/// Per-stage pins a task carries as open-ended `key:value` meta: `plan-skill:plan`,
 /// `plan-gate:hold`, `plan-refs:rust,api`. **Pure.**
 ///
 /// The `<stage>-<facet>` shape is forced by the todo grammar, which rejects `.` in a meta key, and
@@ -306,7 +306,7 @@ pub fn from_task_meta(task: &Task, stage: Stage) -> StageConfig {
 
 /// Per-stage pins recorded in the note as decisions. **Pure.**
 ///
-/// Format: `pipeline: <stage> skill=lavish-plan refs=rust,api gate=hold`. Decisions are appended
+/// Format: `pipeline: <stage> skill=plan refs=rust,api gate=hold`. Decisions are appended
 /// rather than keyed, so several may name the same stage; the **last** one wins, per field, which
 /// is what lets a pin be changed at all (the note store has no delete path).
 pub fn from_note_decisions(note: &Note, stage: Stage) -> StageConfig {

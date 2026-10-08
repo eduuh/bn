@@ -49,7 +49,7 @@ question short and offer likely answers as options.
    Say that reminders last only while this session is open.
 
 7. **Report** in under 8 lines: outcomes with times and the first one to start now. Then hand
-   off to `plan-work` or `execute`.
+   off to `build-from-plan` or `execute`.
 
 At each milestone: ask "Is it done?", fill the PR link into the message, show it, and on
 approval send it with the Teams MCP `SendMessageToSelf` (Notes to Self). The user forwards it to

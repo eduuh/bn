@@ -164,3 +164,27 @@ fn a_copilot_session_id_cannot_climb_out_of_session_state() {
     assert!(copilot_events("../../etc").is_none());
     assert!(copilot_events("").is_none());
 }
+
+#[test]
+fn a_picker_row_carries_the_day_so_typing_it_filters() {
+    let mut l = link("PR 7", "https://github.com/o/r/pull/7");
+    l.created = today();
+    assert!(render(&l).contains("today"), "{}", render(&l));
+}
+
+#[test]
+fn a_day_row_opens_every_link_saved_that_day_by_its_date() {
+    let mk = |id: &str, created: &str| {
+        let mut l = link(id, &format!("https://{id}"));
+        l.id = id.into();
+        l.created = created.into();
+        l
+    };
+    let items = [
+        mk("k1", "2026-10-06"),
+        mk("k2", "2026-10-06"),
+        mk("k3", "2026-10-07"),
+    ];
+    let ids = expand(&items, &["@2026-10-06".into()]);
+    assert_eq!(ids, ["k1", "k2"]);
+}

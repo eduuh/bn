@@ -330,9 +330,25 @@ pub(crate) fn emit_task_triage(
         }
     }
     let run = run_task_agent(cfg, agent, &packet, dry_run);
+    // The agent's reply is its one line per decision; keep it as the day's triage note, so
+    // tomorrow's ordering can be argued with instead of re-derived. A dry run (the interactive
+    // skill) writes the note itself, so it is told the path.
+    let note_file = cfg.triage_file(&day);
+    let written = run.launched
+        && !run.output.trim().is_empty()
+        && append_triage_note(
+            &note_file,
+            &day,
+            &bn_core::util::clock_hm(bn_core::util::now_epoch_secs()),
+            &run.output,
+        )
+        .map_err(|e| eprintln!("bn task triage: could not write {}: {e}", note_file.display()))
+        .is_ok();
     if as_json {
         let data = serde_json::json!({
             "day": day,
+            "note_file": note_file.display().to_string(),
+            "note_written": written,
             "shortlist": shortlist,
             "prompt": run.prompt,
             "launched": run.launched,
@@ -341,14 +357,57 @@ pub(crate) fn emit_task_triage(
         println!("{}", Envelope::success("task_triage", data).to_json());
     } else if dry_run {
         println!("{}", run.prompt);
-    } else if !run.output.trim().is_empty() {
-        println!("{}", run.output.trim());
+        println!("Triage note (append one line per decision): {}", note_file.display());
+    } else {
+        if !run.output.trim().is_empty() {
+            println!("{}", run.output.trim());
+        }
+        if written {
+            println!("Triage note: {}", note_file.display());
+        }
     }
+}
+
+/// Append one triage run to the day's note, creating it (with a `# Triage <day>` title) on the
+/// day's first run. A second run the same day adds a section rather than overwriting the first.
+pub(crate) fn append_triage_note(
+    path: &std::path::Path,
+    day: &str,
+    stamp: &str,
+    output: &str,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut text = String::new();
+    if !path.exists() {
+        text.push_str(&format!("# Triage {day}\n"));
+    }
+    text.push_str(&format!("\n## Run at {stamp}\n\n{}\n", output.trim()));
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?
+        .write_all(text.as_bytes())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn triage_note_is_created_then_appended() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("triage").join("2026-10-08.md");
+        append_triage_note(&path, "2026-10-08", "07:30", "t1: in, finishes today\n").unwrap();
+        append_triage_note(&path, "2026-10-08", "12:05", "  t2: dropped, blocked  ").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            text,
+            "# Triage 2026-10-08\n\n## Run at 07:30\n\nt1: in, finishes today\n\n## Run at 12:05\n\nt2: dropped, blocked\n"
+        );
+    }
     use std::fs;
 
     #[cfg(unix)]

@@ -1,6 +1,6 @@
 ---
 name: setup-bn
-description: Set up bn in a new repository with branch notes, agent integration, and build/verification commands; narrow what a machine runs only with approval
+description: "Onboard a repo to bn: branch notes, agent integration, build and verify commands. Use when adding a new repo to bn or bn commands fail in a fresh clone."
 when: Set up or onboard a new repo to bn, wire Copilot or Claude to its branch notes, configure its build/test/lint gate, or explicitly narrow what bn runs on one computer.
 keywords: [setup bn, setup-bn, configure bn, new repo, new repository, repo setup, onboard repository, initialize bn, branch notes, mcp init, copilot, claude, build scripts, verification, machine config, narrow machine, disable cron, disable web]
 ---

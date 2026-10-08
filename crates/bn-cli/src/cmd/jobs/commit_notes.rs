@@ -347,9 +347,9 @@ pub(crate) fn notes_commit_message(host: &str, stamp: &str) -> String {
 /// When it is, it stages everything (`git add -A`, so untracked dispatch note dirs land too) and
 /// commits with a timestamped message. When the branch has an upstream it rebases on the remote
 /// first (multi-host: several machines push here) so a push from another machine doesn't reject us,
-/// then pushes. Never blocks on credentials. Returns non-zero if any repo's commit, fetch or
-/// rebase failed; a push miss after a successful local commit is logged but left non-fatal so the
-/// durable commit still counts as a green cron run.
+/// then pushes. Never blocks on credentials. Returns non-zero if any repo's commit or fetch
+/// failed; a push miss or rebase conflict after a successful local commit is logged but left
+/// non-fatal so the durable commit still counts as a green cron run.
 ///
 /// Every line it prints goes through [`native_job_line`], so `bn cron show commit-notes` reports
 /// what was pruned and why a repo was skipped rather than leaving it to be inferred from a diff.
@@ -556,7 +556,6 @@ pub(crate) fn job_commit_notes(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
                         ),
                         true,
                     );
-                    rc = 1;
                 }
             }
         }
@@ -911,5 +910,67 @@ mod commit_notes_upstream_tests {
 
         assert_eq!(job_commit_notes(&cfg, None), 0);
         assert_ne!(git_out(&notes, &["rev-parse", "HEAD"]), before);
+    }
+
+    #[test]
+    fn rebase_failure_after_local_commit_is_nonfatal() {
+        let _env = bn_core::test_support::env_lock();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let remote = temp.path().join("remote.git");
+        let notes = temp.path().join("notes");
+        let other = temp.path().join("other");
+        let remote_s = remote.to_string_lossy();
+        let notes_s = notes.to_string_lossy();
+        let other_s = other.to_string_lossy();
+
+        assert!(git_ok(
+            temp.path(),
+            &["init", "--quiet", "--bare", remote_s.as_ref()]
+        ));
+        assert!(git_ok(
+            temp.path(),
+            &["init", "--quiet", "-b", "topic", notes_s.as_ref()]
+        ));
+        assert!(git_ok(&notes, &["config", "user.name", "bn test"]));
+        assert!(git_ok(
+            &notes,
+            &["config", "user.email", "bn-test@example.invalid"]
+        ));
+        std::fs::write(notes.join("note.md"), "# Notes\n\nshared\n").expect("seed note");
+        assert!(git_ok(&notes, &["add", "note.md"]));
+        assert!(git_ok(&notes, &["commit", "--quiet", "-m", "seed"]));
+        assert!(git_ok(
+            &notes,
+            &["remote", "add", "origin", remote_s.as_ref()]
+        ));
+        assert!(git_ok(&notes, &["push", "--quiet", "-u", "origin", "topic"]));
+
+        assert!(git_ok(
+            temp.path(),
+            &["clone", "--quiet", "-b", "topic", remote_s.as_ref(), other_s.as_ref()]
+        ));
+        assert!(git_ok(&other, &["config", "user.name", "bn test"]));
+        assert!(git_ok(
+            &other,
+            &["config", "user.email", "bn-test@example.invalid"]
+        ));
+        std::fs::write(other.join("note.md"), "# Notes\n\nremote\n").expect("remote note");
+        assert!(git_ok(&other, &["commit", "--quiet", "-am", "remote change"]));
+        assert!(git_ok(&other, &["push", "--quiet", "origin", "topic"]));
+
+        let before = git_out(&notes, &["rev-parse", "HEAD"]);
+        std::fs::write(notes.join("note.md"), "# Notes\n\nlocal\n").expect("local note");
+        let cfg = Config {
+            personal_root: notes.clone(),
+            work_root: temp.path().join("missing"),
+            hostname: "test-host".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(job_commit_notes(&cfg, None), 0);
+        assert_ne!(git_out(&notes, &["rev-parse", "HEAD"]), before);
+        assert!(
+            git_out(&notes, &["log", "-1", "--pretty=%s"]).starts_with("notes: auto-checkpoint ")
+        );
     }
 }

@@ -1,6 +1,6 @@
 ---
 name: tmux-run
-description: Run commands in a visible tmux pane instead of hidden tool calls, and drive long-running work — builds, clones, installs, dev servers — in a pane beside the one you are talking in, so the user watches it while you keep working. Use for any command with side effects, anything taking more than ~30s, anything interactive, and any script the agent wrote.
+description: "Run commands in a visible tmux pane and drive long jobs, other agents, locks and TUIs from tmux. Use for builds, installs, anything slow or interactive, or anything that spawns another agent."
 when: Any command with side effects, anything taking more than ~30s, anything interactive, and any script the agent wrote.
 keywords: [tmux-run, tmux, run, commands, visible, pane, instead, hidden, tool, calls, drive, long-running]
 ---
@@ -276,8 +276,177 @@ tmux kill-window -t "$window"
 Only run the command matching the resource you created. Do not close a pane to stop a service; that
 can leave child processes running. Never close a window that contains other work.
 
+## Beyond one pane: locks, queries, other agents
+
+### Serialising work across worktrees
+
+The pool's worktrees share one git stash stack and one machine. Where two sessions can collide over
+something with a single global slot — a stash push/pop above all — take a **server-wide lock**
+instead of inventing a lockfile:
+
+```bash
+tmux wait-for -L stash        # blocks until whoever holds it releases
+git stash push -u -m "$tag"
+tmux wait-for -U stash        # release it
+```
+
+`-L` locks the channel, `-U` unlocks it, and every client on this tmux server queues on the same
+name. Same primitive as the job signal above, used for exclusion instead of completion. The lock
+lives in the tmux server, so it protects you against concurrent sessions but evaporates if the
+server dies — it is not a crash-safe lock.
+
+### tmux as a query surface
+
+Format strings turn the server into a table. One call answers questions that otherwise cost a
+dozen.
+
+```bash
+# everything running on this machine, one line per pane
+tmux list-panes -a -F '#{session_name}:#{window_name} #{pane_id} #{pane_current_command} dead=#{pane_dead}'
+
+# every dead pane anywhere — the cleanup queue
+tmux list-panes -a -f '#{pane_dead}' -F '#{pane_id} #{pane_title}'
+
+# which windows have unseen output
+tmux list-windows -a -F '#{session_name}:#{window_name} activity=#{window_activity_flag}'
+```
+
+Useful fields: `pane_id window_id pane_title pane_dead pane_dead_status pane_pid
+pane_current_command pane_current_path session_name window_name window_activity_flag`.
+
+### Independent agents in other sessions
+
+An agent is a long-running job with opinions. It goes where the model says it goes — **another
+repo's session, in that branch's window** — because that placement is the only reason
+`bn agent live`, the tab badges, the steer path and the kill path can find it at all. A hand-rolled
+`tmux new-session` gets you an agent no tool can see.
+
+**Launch through `bn dispatch`**, which leases a worktree, seeds the branch note with the task, and
+opens the window in the right session:
+
+```bash
+bn dispatch --repo <repo> --agent claude "<what to do>"     # a ship task
+bn dispatch --repo <repo> --agent claude --scout "<what to find out>"   # investigate, no code
+```
+
+`bn agent launch` is the same chokepoint when you are already in the worktree. Both record
+`agent-session:` on the note, which is what makes resume, steering and the dashboard work.
+
+**Find them.**
+
+```bash
+bn agent live --json      # every agent: target, state, health, session_id, idle_secs
+bn agent supervise        # the same fleet, flagged for stuck
+```
+
+`target` is `repo:branch` — the handle for everything below.
+
+**Read them.**
+
+```bash
+bn agent pane <repo:branch> --lines 60     # live tail of its pane
+bn agent activity <session_id> --limit 40  # its transcript — works after the window closed
+bn agent prompt <repo:branch>              # the dialog it is blocked on, options and meanings
+```
+
+Raw tmux works too, but its targeting will hand you the wrong agent if you let it. **`=` anchors
+only the part it precedes**, so `=repo:branch` pins the session and leaves the *window* matching by
+prefix: with no window named `main`, `=bn:main` cheerfully resolves to `main-stale`. Anchor both
+halves:
+
+```bash
+tmux capture-pane -p -t '=<repo>:=<branch>' -S -80
+```
+
+With the window anchored, a miss is a real error — `capture-pane`, `list-panes` and `list-windows`
+all exit 1 with `can't find window: <name>`, which is what you want: a target that names no window
+should fail rather than answer.
+
+**`display-message` is the exception, and it is the one people reach for.** With no `main` beside a
+`main-stale`, `capture-pane -t '=bn:=main'` exits 1, while `display-message -p -t '=bn:=main'`
+prints the session's *current* window and exits 0. So never test a window's existence with
+`display-message`; ask something that fails:
+
+```bash
+tmux list-panes -t "=<repo>:=<branch>" -F '#{pane_id}' >/dev/null 2>&1 \
+  || { echo "no window for <repo>:<branch>"; exit 1; }
+```
+
+`bn agent pane` is the better call regardless: it joins the target against recorded agent state
+rather than guessing from window names, and since bn #1264 it anchors both halves too, so it
+reports `no such window` instead of quoting a same-prefixed neighbour.
+
+**Steer them.**
+
+```bash
+bn agent send <repo:branch> "<message>"            # delivers and returns the reply
+bn agent send <repo:branch> "<message>" --detach   # fire-and-forget; it reports via bn agent done
+bn agent answer <repo:branch> <option>             # resolve a blocked dialog, verified
+bn agent instruct <repo:branch> "<standing rule>"  # persists on the note, survives a relaunch
+bn agent kill <repo:branch>                        # process tree, window, lease and pool slot
+```
+
+Prefer these over raw keystrokes. They verify delivery, and `kill` actually frees the slot instead
+of closing a window and leaving the harness reparented and running.
+
+### Driving a harness TUI by hand
+
+Only when the `bn agent` path is unavailable. Sending text to a TUI is not sending text to a shell,
+and the failures are quiet ones — measured on Claude Code v2.1.260 / tmux 3.6, 2026-09-04:
+
+**Paste as a block, never key by key.** An autosuggest or highlight TUI mangles a char-by-char
+`send-keys`.
+
+```bash
+printf '%s' "$msg" | tmux load-buffer -b steer -
+tmux paste-buffer -d -b steer -t "$pane"
+```
+
+**Submitting is harness-specific, and the obvious combination is the broken one.** `Escape`
+followed immediately by a raw CR (`send-keys -H 0d`) does **not** submit in Claude Code: the two
+arrive together, get read as Alt+Enter, and insert a newline. The text sits in the input box
+looking exactly like a message you sent. Any of these do submit:
+
+```bash
+tmux send-keys -t "$pane" Enter                    # named key
+tmux send-keys -t "$pane" -H 0d                    # raw CR, with no Escape before it
+tmux send-keys -t "$pane" Escape; sleep 0.4; tmux send-keys -t "$pane" -H 0d
+```
+
+bn's own steer sends the raw CR because Copilot's compose TUI needs it. So do not pick one and
+trust it — **send, then verify the box emptied**, and escalate to the other key if it did not:
+
+```bash
+box=$(tmux capture-pane -p -t "$pane" -S -5 | grep '❯' | tail -1 \
+      | sed 's/\xc2\xa0/ /g; s/^[[:space:]]*❯//; s/[[:space:]]*$//')
+[ -z "$box" ] || tmux send-keys -t "$pane" Enter      # still in the box — escalate
+```
+
+The `sed` is load-bearing. Claude Code pads its empty input box with **U+00A0**, a non-breaking
+space, so the obvious `grep -qE '❯ +$'` never matches an idle box and reports every message as
+unsent. Normalise the NBSP, strip the prompt and the padding, and *then* ask whether anything is
+left.
+
+**A fresh agent pane does not open on an input box.** Claude Code asks whether it should trust an
+unfamiliar directory first. A readiness check that greps for `❯` matches *the dialog's own cursor*,
+reports ready, and feeds your prompt to the dialog as a menu answer. Wait for the REPL's status
+line (`? for shortcuts`), and read a dialog with `bn agent prompt` rather than firing digits at it.
+
 ## Rules that keep this honest
 
+- **Close every pane you opened as soon as its work is done.** One-shot commands exit on their
+  own. An interactive agent or shell does not: when the task is finished and its result is saved
+  or read, send `/exit` (or `exit`), confirm the pane is gone with `tmux list-panes -t "$TMUX_PANE"
+  -F '#{pane_id}'`, and only then `tmux kill-pane -t "$job"` if it is still there. Never leave a
+  finished pane for the user to tidy. Closing is part of the job, so do it in the same turn that
+  reports the result.
+
+- **Never start an agent in non-interactive mode in a pane.** `copilot -p`, `claude -p`, or any
+  `--print`/`--prompt` form, and anything piped through `tee`, prints nothing until it exits, so the
+  pane stays dark and looks hung (measured: 90s of blank pane). Start the agent interactively
+  (`copilot`, `claude`), then deliver the prompt with `tmux send-keys` after the UI is up, and
+  watch it live. Tool access in a fresh `-p` session also differed from an interactive one (the
+  Teams MCP tools were missing). If output must be kept, read the session transcript, not a pipe.
 - **Never send keys to a busy or prompting pane.** Open a window instead.
 - **Never send secrets through `send-keys`.** It lands in scrollback and in tmux's buffers. If a
   command needs a token or password, run it in a visible pane and let the *user* type it — say

@@ -18,7 +18,7 @@ Source: {{source}}
 --- END UNTRUSTED DISPATCH DATA ---
 
 Use the `forge-task` skill as the lifecycle wrapper. It will route report-only work through
-`forge-research` and repository edits through `forge-code-change`.
+the research lane and repository edits through the code-change lane of `forge-task`.
 
 Before editing, reproduce the missing behavior or confirm the work needed, and record it in the
 branch note. Then make the smallest bounded change, verify it with `bn verify`, and finish only

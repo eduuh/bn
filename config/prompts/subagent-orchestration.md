@@ -1,8 +1,8 @@
 ---
-name: subagents-orchestration-guide
-description: Guides subagent coordination through implementation workflows. Use when orchestrating multiple agents, managing workflow phases, or determining autonomous execution mode.
+name: subagent-orchestration
+description: "Choose and sequence subagents through an implementation workflow, deciding when to run autonomously. Use when delegating to several subagents or managing workflow phases."
 when: Orchestrating multiple agents, managing workflow phases, or determining autonomous execution mode.
-keywords: [subagents-orchestration-guide, subagents, orchestration, guide, guides, subagent, coordination, implementation, workflows, orchestrating, multiple, agents]
+keywords: [subagent-orchestration, subagents, orchestration, guide, guides, subagent, coordination, implementation, workflows, orchestrating, multiple, agents]
 ---
 # Subagents Orchestration Guide
 

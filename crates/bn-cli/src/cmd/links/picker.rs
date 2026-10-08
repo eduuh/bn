@@ -6,18 +6,21 @@ use super::*;
 /// The picker, kept open across edits: ctrl-t/ctrl-e/ctrl-d change the store and show the picker
 /// again, so tidying links costs no round trip through `bn links edit`. Returns once the picker is
 /// left with enter (open) or ctrl-y (copy); exits when fzf is missing or cancelled.
-pub(super) fn pick_loop(cfg: &Config, tag: Option<&str>, json: bool) -> (PickAction, Vec<String>) {
+pub(super) fn pick_loop(
+    cfg: &Config,
+    tag: Option<&str>,
+    span: Option<&links::when::Span>,
+    json: bool,
+) -> (PickAction, Vec<String>) {
     loop {
         let items = links::read(cfg);
         let here = current_repo(cfg);
-        let ranked = with_tag(links::ranked(&items, here.as_deref(), &today()), tag);
+        let ranked: Vec<&Link> = with_tag(links::ranked(&items, here.as_deref(), &today()), tag)
+            .into_iter()
+            .filter(|l| span.is_none_or(|s| links::when::saved_in(l, s)))
+            .collect();
         if ranked.is_empty() {
-            fail_json(
-                json,
-                "links",
-                "empty",
-                &format!("No links tagged {}.", tag.unwrap_or("")),
-            );
+            fail_json(json, "links", "empty", "No links match.");
         }
         let Some((action, keys)) = pick(&ranked) else {
             // fzf missing or cancelled. Print what the picker would have shown so the command
@@ -84,14 +87,23 @@ pub(super) fn report(r: Result<Link, links::LinkError>) {
 /// members, anything else is already an id. Duplicates (a link marked by hand *and* inside a
 /// chosen group) open once.
 pub(super) fn expand(items: &[Link], keys: &[String]) -> Vec<String> {
+    let today = today();
     let mut ids: Vec<String> = Vec::new();
     for key in keys {
-        let found: Vec<String> = match key.strip_prefix('#') {
-            Some(tag) => links::in_group(items, tag)
+        let found: Vec<String> = if let Some(tag) = key.strip_prefix('#') {
+            links::in_group(items, tag)
                 .iter()
                 .map(|l| l.id.clone())
-                .collect(),
-            None => vec![key.clone()],
+                .collect()
+        } else if let Some(day) = key.strip_prefix('@') {
+            // A day row: every live link saved on that date.
+            items
+                .iter()
+                .filter(|l| l.created == day && !links::expired(l, &today))
+                .map(|l| l.id.clone())
+                .collect()
+        } else {
+            vec![key.clone()]
         };
         for id in found {
             if !ids.contains(&id) {
@@ -176,7 +188,13 @@ pub(super) fn fzf(rows: &[String], expect: &str, header: &str) -> Option<String>
 /// use climbs with its links instead of sitting pinned to the top or bottom.
 pub(super) fn rows(ranked: &[&Link]) -> Vec<String> {
     let groups = links::groups(ranked);
-    let mut out = Vec::new();
+    // Days first, newest first: a small calendar above the list. The key is the date itself, so a
+    // row labelled `yesterday` opens that day's links even if the picker sits open past midnight.
+    let today = today();
+    let mut out: Vec<String> = links::when::day_groups(ranked, &today)
+        .iter()
+        .map(|(day, members)| format!("{}{TAB}@{day}", render_day_group(day, members, &today)))
+        .collect();
     for l in ranked {
         // `groups` keeps members in rank order, so a group's first member is its best one.
         for (tag, members) in groups.iter().filter(|(_, m)| m[0].id == l.id) {
@@ -219,6 +237,21 @@ pub(super) fn render_group(tag: &str, members: &[&Link]) -> String {
     )
 }
 
+/// One day row: the day as a word (`yesterday`, `mon`) and as a date, how many links it opens,
+/// and their names dimmed behind it.
+pub(super) fn render_day_group(day: &str, members: &[&Link], today: &str) -> String {
+    let ink = style::Ink::always();
+    let word = links::when::day_label(day, today);
+    let date = links::when::day_long(day);
+    let names: Vec<&str> = members.iter().map(|l| l.name.as_str()).collect();
+    format!(
+        "{} {}  {}",
+        ink.accent(&format!("▸ {word} · {date}")),
+        ink.meta(&format!("({} links)", members.len())),
+        ink.meta(&truncate(&names.join(", "), 80))
+    )
+}
+
 /// One picker row: the name, then the repo, tags and URL dimmed behind it. Everything shown is
 /// also everything fzf matches on, so there is nothing searchable that is invisible.
 pub(super) fn render(l: &Link) -> String {
@@ -240,8 +273,10 @@ pub(super) fn render(l: &Link) -> String {
     } else {
         String::new()
     };
+    // The day it was last opened or saved, as a word you can type: `yesterday`, `mon`, `Sep 28`.
+    let day = ink.meta(&links::when::label(l, &today()));
     format!(
-        "{}{new}{repo}{tags}  {}",
+        "{}{new}{repo}{tags}  {day}  {}",
         truncate(&l.name, 48),
         ink.meta(&l.url)
     )

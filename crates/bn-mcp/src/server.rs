@@ -680,7 +680,7 @@ impl ServerHandler for BnServer {
              cannot target another repo/branch and does not expose cross-branch rollups, search, \
              daily goals, reviews, metrics, attention queues, cron status, or agent fleet/session \
              mining; use the `bn` CLI for those explicit whole-person workflows. Every effective \
-             skill is served as a prompt (start-session, wrap-session, stow, axi, plan, debug, \
+             skill is served as a prompt (start-session, stow, axi, plan, debug, \
              execute, investigate, triage and the rest); list them to see what this worktree \
              offers. A prompt only supplies a workflow's instructions — carrying one out still \
              goes through the scoped tools above, so some skills (PR review, orchestration) \

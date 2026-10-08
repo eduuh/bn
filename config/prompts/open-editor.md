@@ -1,6 +1,6 @@
 ---
 name: open-editor
-description: Hand the finished work back to a human — open this worktree's nvim on the branch's diff
+description: "Open this worktree's nvim on the branch diff for a human. Use when handing finished code back for the user to read."
 when: Work on this branch is done (or paused at something reviewable) and a person should look at the diff. The last step of a session, after the commits exist. Not for mid-work.
 keywords: [open editor, open nvim, review the diff, hand off, work is done, show me the diff, land, finished]
 ---

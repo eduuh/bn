@@ -1,6 +1,6 @@
 ---
 name: write-like-me
-description: "Write a blog post or any prose in my voice: plain English, no AI tells, no em-dashes, real numbers, honest caveat"
+description: "Write prose in my voice: plain English, no AI tells, real numbers. Use for blog posts, docs and messages that must sound like me."
 when: I want prose written or rewritten so it sounds like me and not like an AI. Blog posts, READMEs, PR descriptions, issues, emails, release notes, notes.
 keywords: [write, writing, blog, post, draft, prose, voice, tone, style, rewrite, edit, polish, readme, email, de-ai, ai tells, em-dash, plain english]
 arguments:

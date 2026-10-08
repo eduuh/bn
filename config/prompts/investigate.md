@@ -1,6 +1,6 @@
 ---
 name: investigate
-description: Investigate a task, persist evidence in the branch note, and either hand scoped findings to planning or graduate a bounded scout fix into a PR
+description: "Research a task, record evidence in the branch note, then hand scoped findings to planning or ship a small bounded fix. Use when facts are missing before you can plan, or to scout an unfamiliar problem."
 when: There's an open question you have to answer before you can plan or build — how does X work, is Y feasible, where does Z live. Investigation comes first; in an ad-hoc scout, a clear bounded fix may follow.
 keywords: [investigate, research, scout, explore, look into, understand, feasibility, spike, find out, how does, where is]
 arguments:
@@ -37,7 +37,7 @@ Do not start coding before the evidence says what to change.
 5. **Promote the durable findings.** An investigation is where repo knowledge is *made*. Before
    handing off, re-read your findings and ask which are true about the repo regardless of this
    task. Those go to `bn_ref_append` with their source and today's date (see
-   `/bn:repo-reference-update`) — the branch note is scoped to this task, the reference notes
+   `/bn:repo-reference`) — the branch note is scoped to this task, the reference notes
    are what the next investigation starts from. Correct a note that this work proved wrong
    rather than appending a contradiction.
 

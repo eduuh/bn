@@ -1,6 +1,6 @@
 ---
-name: multi-agent-coordination
-description: Coordinate several work agents from one lean coordinator session by briefing, monitoring, relaying findings, and cleaning up.
+name: coordinate-agents
+description: "Run several work agents from one lean coordinator session: brief each, monitor, relay findings, clean up. Use when launching or supervising more than one agent at once, or when the coordinator context is getting crowded."
 when: A task splits cleanly into parallel workstreams, the coordinator's context is getting crowded, or you need to launch, supervise, and reconcile multiple workers.
 keywords: [multi-agent, coordination, agents, workers, parallel, monitor, relay, brief, handoff, cleanup]
 ---

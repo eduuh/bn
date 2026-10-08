@@ -14,6 +14,7 @@ mod config_sections;
 mod context;
 mod dirs;
 mod jobs;
+mod legacy_work;
 mod machine_config;
 mod paths;
 mod util;

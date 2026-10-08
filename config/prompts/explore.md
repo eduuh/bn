@@ -1,6 +1,6 @@
 ---
 name: explore
-description: Drive the real running application as a user, reduce every defect you hit to a deterministic reproduction, and file only what reproduces
+description: "Drive the running app like a user, reduce every defect to a deterministic repro and file only what reproduces. Use to find unknown bugs by exploratory testing, not to fix a known one (use debug)."
 when: You want bugs found by *using* the app rather than reading it — an autonomous QA pass over a running build that ends in reproduced, dispatchable issues.
 keywords: [explore, qa, exercise, drive the app, dogfood, smoke, find bugs, reproduce, repro, file issues, autonomous testing, use the app]
 arguments:

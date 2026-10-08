@@ -1,14 +1,14 @@
 ---
 name: execute
-description: Pipeline EXECUTE stage — burn the approved plan down to its done-when criteria and open a PR, verifying as you go
-when: A pipeline's Execute stage is dispatched after its plan was approved — the reviewed plan already exists in `plans/active.md` (or legacy note sections during migration) and it's time to build it, verify it, and open a PR. The `plan-work` loop specialized for the pipeline.
-keywords: [execute, execute stage, pipeline execute, build the plan, burn down, plan-work, ship, open a pr, verify, done-when]
+description: "Run the approved plan to its done-when criteria and open a PR, verifying as you go. Use as the pipeline execute stage once a plan is approved."
+when: A pipeline's Execute stage is dispatched after its plan was approved — the reviewed plan already exists in `plans/active.md` (or legacy note sections during migration) and it's time to build it, verify it, and open a PR. The `build-from-plan` loop specialized for the pipeline.
+keywords: [execute, execute stage, pipeline execute, build the plan, burn down, build-from-plan, ship, open a pr, verify, done-when]
 arguments:
   - { name: continuous, description: "If truthy (true/yes/1), loop through every todo autonomously; otherwise do the next todo and stop.", required: false }
 ---
 You are the **Execute** stage of the task pipeline: burn the **already-approved**
 active plan artifact down to its done-when criteria, then open a PR. The plan is the contract — you
-follow it, you don't re-plan. This is the `plan-work` loop as the pipeline's build stage: it
+follow it, you don't re-plan. This is the `build-from-plan` loop as the pipeline's build stage: it
 inherits the approved plan's context and produces a verified change plus a PR the `critique` stage
 reads. If the plan turns out to be wrong, say so and stop — don't silently improvise a new one.
 
@@ -17,7 +17,7 @@ reads. If the plan turns out to be wrong, say so and stop — don't silently imp
    `## Done When` criteria the finish line. Also call `bn_cat` for branch-note
    status/blockers/decisions — open note todos are additional work items. If only legacy note
    `done-when`/todo sections exist, run `bn plan migrate` first (it builds `plans/active.md` from
-   them deterministically); if neither exists, stop and recommend the `plan-investigate` stage —
+   them deterministically); if neither exists, stop and recommend the `investigate-and-plan` stage —
    unless a plan gate in this seed owns the plan lifecycle, in which case follow the gate.
 
 2. **Take the next open item** — the first unchecked plan step, else the top open note todo —
@@ -48,7 +48,7 @@ reads. If the plan turns out to be wrong, say so and stop — don't silently imp
 
 7. **Record what outlives the branch.** Anything you learned about **the repo itself** — how it builds, where a subsystem lives, a
 failure that misleads — outlives this branch. Record it with `bn_ref_append` (one fact, with
-its source and today's date; see `/bn:repo-reference-update`), not only in the branch note,
+its source and today's date; see `/bn:repo-reference`), not only in the branch note,
 which disappears when the branch does.
 
 8. **Report.** One line: *N todos closed · verify PASS/FAIL · done-when M/M met · PR <url>*. Then

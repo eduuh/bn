@@ -139,19 +139,19 @@ pub(super) fn skill_seed_prompt(
     let name = &skill.name;
     let cli_map = bn_core::skills::render_required(cfg, base_dir, "dispatch-cli-map", None)
         .map_err(|error| error.to_string())?;
-    let bootstrap = if !ctx.scout && name == "plan-work" && !ctx.plan_gate {
+    let bootstrap = if !ctx.scout && name == "build-from-plan" && !ctx.plan_gate {
         bn_core::skills::render_required(cfg, base_dir, "dispatch-plan-work-bootstrap", None)
             .map_err(|error| error.to_string())?
     } else {
         String::new()
     };
     // The verify gate renders at most once per seed: the plan-review gate carries it when one is
-    // appended, and `plan-work`/`execute`/`ship-solo` already gate their finish step on `bn verify`
+    // appended, and `build-from-plan`/`execute`/`ship-solo` already gate their finish step on `bn verify`
     // (rebase re-run included), so only other workflows need the explicit clause.
     let verification = if ctx.verify
         && !ctx.scout
         && !ctx.plan_gate
-        && name != "plan-work"
+        && name != "build-from-plan"
         && name != "execute"
         && name != "ship-solo"
     {

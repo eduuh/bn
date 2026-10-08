@@ -152,6 +152,15 @@ impl Config {
         self.synced_person_store_root().join("tasks")
     }
 
+    /// `<work_root>/triage/<date>.md` — the day's triage note: the triage agent's one line per
+    /// decision on what made the day and why. Person-scoped like [`Config::tasks_file`], because
+    /// triage rewrites that shared store, and it syncs with it.
+    pub fn triage_file(&self, date: &str) -> PathBuf {
+        self.synced_person_store_root()
+            .join("triage")
+            .join(format!("{date}.md"))
+    }
+
     /// `<personal_root>/<machine>/daily` — the daily-goals subtree. Day-scoped and
     /// cross-branch (never keyed by repo/branch), it lives beside the per-repo note dirs
     /// in this machine's subtree so it syncs with — but never collides with — branch notes.
@@ -367,6 +376,10 @@ mod tests {
         assert_eq!(cfg.tasks_dir(), PathBuf::from("/work/tasks"));
         assert_eq!(cfg.references_dir(), PathBuf::from("/work/references"));
         assert_eq!(cfg.links_file(), PathBuf::from("/work/links.md"));
+        assert_eq!(
+            cfg.triage_file("2026-10-08"),
+            PathBuf::from("/work/triage/2026-10-08.md")
+        );
     }
 
     #[test]

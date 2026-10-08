@@ -1,6 +1,6 @@
 Config {
     personal_root: "<ROOT>/projects/branch-notes",
-    work_root: "<ROOT>/projects/branch-notes-work/bn",
+    work_root: "<ROOT>/projects/branch-notes",
     overlay_root: Some(
         "<ROOT>/projects/personal-notes/bn",
     ),

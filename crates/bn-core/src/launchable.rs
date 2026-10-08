@@ -292,15 +292,15 @@ mod tests {
     #[test]
     fn near_misses_prefer_a_prefix_then_a_substring() {
         let rows = vec![
-            row("plan-work", Source::Skill, false),
-            row("lavish-plan", Source::Skill, false),
+            row("build-from-plan", Source::Skill, false),
             row("plan", Source::Skill, false),
+            row("plan-draft", Source::Skill, false),
         ];
         let hits: Vec<&str> = near_misses(&rows, "plan", 5)
             .iter()
             .map(|r| r.name.as_str())
             .collect();
-        assert_eq!(hits, vec!["plan", "plan-work", "lavish-plan"]);
+        assert_eq!(hits, vec!["plan", "plan-draft", "build-from-plan"]);
     }
 
     #[test]

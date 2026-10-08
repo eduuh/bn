@@ -36,8 +36,13 @@ Shipped with bn. Claude Code reads this through an `@` import in `~/.claude/CLAU
 - `grill-me` before committing to a plan with open branches.
 - `verification-before-completion` before saying anything is done, fixed, or passing.
 - `resolving-merge-conflicts` for an in-progress merge or rebase conflict.
-- `handoff` or `/bn:stow` before a reset, compact, or hand-over.
+- `handoff` or `stow` before a reset, compact, or hand-over.
 - `playwright-cli` to drive a browser; `worktree-sweep` for stale worktrees and tmux.
+- Before any task, check the available skills and invoke the one that matches. Do not improvise a workflow a skill already covers. Unsure which? `bn skills find "<task>"` and use the top hit.
+- One job, one skill: prefer the owner skill over a near-duplicate. If two overlap, say so in one line and merge them.
+- Close the loop: when a skill's steps were wrong or incomplete, fix its source in `config/prompts/` as part of the task, not later.
+- Retire what is unused: a skill with no use in 90 days and no bn caller is a removal candidate. List it, never delete without asking.
+- Every skill description is "what it does. Use when ...". Write new ones that way.
 
 ## Code-change handoff
 - Before reporting completed code edits, the delivering agent opens the non-empty tracked diff from the merge base with main in the floating nvim used by tmux `prefix e`: `sh ~/.config/bn/repo/config/workflow/bin/tmux-git-diff.sh "$TMUX_PANE"`. Skip read-only tasks, intermediate delegated workers, empty diffs, and sessions outside tmux.

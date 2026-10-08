@@ -1,6 +1,6 @@
 ---
 name: testing-principles
-description: Language-agnostic testing principles including TDD, test quality, coverage standards, and test design patterns. Use when writing tests, designing test strategies, or reviewing test quality.
+description: "Language-agnostic testing principles: TDD, test quality, coverage, test design. Use when writing tests, planning a test strategy or reviewing test quality."
 when: Writing tests, designing test strategies, or reviewing test quality.
 keywords: [testing-principles, testing, principles, language-agnostic, including, tdd, test, quality, coverage, standards, design, patterns]
 ---

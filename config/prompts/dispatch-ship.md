@@ -8,7 +8,7 @@ arguments:
   - { name: source, description: Source URL or "(none)"., required: true }
   - { name: workflow_name, description: Selected workflow name., required: true }
   - { name: workflow_body, description: Strictly rendered workflow body., required: true }
-  - { name: bootstrap, description: Optional plan-work bootstrap instructions., required: false }
+  - { name: bootstrap, description: Optional build-from-plan bootstrap instructions., required: false }
   - { name: verification, description: Optional explicit verification gate., required: false }
   - { name: completion, description: Completion protocol (empty when a plan-review gate carries it)., required: false }
   - { name: cli_map, description: Shared MCP-to-CLI tool map., required: true }

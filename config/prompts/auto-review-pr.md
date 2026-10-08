@@ -1,7 +1,7 @@
 ---
 name: auto-review-pr
-description: PR-review pipeline — walk a leased review worktree through get-pr → lint → reference-aware review → conditional test → (fix your own PR / read-only comment on someone else's) → recorded verdict
-when: The `bn review pr` loop leased a worktree for a queued PR and launched the review agent (idle auto-trigger or an on-demand `bn review pr setup <repo> <number>`). You are that agent — walk the PR through the review pipeline and record one Approve/Reject verdict.
+description: "Review a pull request end to end in a leased worktree: lint, reference-aware review, conditional tests, then fix your own PR or leave read-only comments on someone else's. Use when asked to review a PR or look at this PR."
+when: The `bn review-pr` loop leased a worktree for a queued PR and launched the review agent (idle auto-trigger or an on-demand `bn review-pr setup <repo> <number>`). You are that agent — walk the PR through the review pipeline and record one Approve/Reject verdict.
 keywords: [auto-review-pr, review pr, pr review pipeline, review the diff, reference-aware review, pr-review-toolkit, code-reviewer, read-only review, fix my own pr, record verdict, review-pr]
 arguments:
   - { name: repo, description: The PR's repo (short name), e.g. eduuh/bn., required: false }

@@ -16,6 +16,10 @@ pub(crate) struct LinksArgs {
     /// Show only links carrying this tag in the picker, e.g. `--tag icm`.
     #[arg(long)]
     pub(crate) tag: Option<String>,
+    /// Show only links saved or opened on these days: `today`, `yesterday`, a weekday
+    /// (`monday`, `mon`), `week`, `last-week`, `7d`, or a `YYYY-MM-DD` date.
+    #[arg(long)]
+    pub(crate) when: Option<String>,
     /// A value for a link's `{name}` placeholder, e.g. `--fill id=11047593`. Repeatable. A
     /// placeholder left unfilled is asked for on the terminal.
     #[arg(long, value_name = "NAME=VALUE")]
@@ -80,6 +84,10 @@ pub(crate) enum LinksCmd {
         /// Only links belonging to this repo.
         #[arg(long)]
         repo: Option<String>,
+        /// Only links saved or opened on these days (`today`, `yesterday`, `monday`, `week`,
+        /// `last-week`, `7d`, `YYYY-MM-DD`).
+        #[arg(long)]
+        when: Option<String>,
     },
     /// Store the branch note's PR and work item, tagged with the repo — the one command that
     /// makes "capture the links before the worktree goes away" cost nothing.
@@ -99,9 +107,10 @@ pub(crate) enum LinksCmd {
     /// Review the links the session hook saved without asking: keep, tag or drop each one.
     /// They are marked `•new` in the picker and on the note until you do.
     New,
-    /// Open every link carrying a tag at once — a tag is a group. Tag links into one with
-    /// `bn links add <url> --tags <group>`. The picker offers each tag on two or more links as
-    /// a group row too.
+    /// Open every link carrying a tag at once — a tag is a group, and so is a day:
+    /// `bn links group yesterday` (or `monday`, `week`, a date) opens the links saved then. Tag
+    /// links into one with `bn links add <url> --tags <group>`. The picker offers each tag on two
+    /// or more links, and each recent day with two or more, as a group row too.
     Group { tag: String },
     /// Save the PRs, issues and work items an agent session mentioned. Run by the Claude Stop and
     /// Copilot agentStop hooks, which name the session on stdin; `--transcript` or

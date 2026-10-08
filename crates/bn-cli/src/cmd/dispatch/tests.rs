@@ -64,7 +64,7 @@ fn routing_table() {
     // Opt in via `$BN_DISPATCH_PIPELINE=1`: a skill-less non-scout agent dispatch enters investigate.
     assert!(routes_to_pipeline_investigate(true, true, false, None));
     assert!(!routes_to_pipeline_investigate(true, true, true, None));
-    assert!(!routes_to_pipeline_investigate(true, true, false, Some("plan-work")));
+    assert!(!routes_to_pipeline_investigate(true, true, false, Some("build-from-plan")));
     assert!(!routes_to_pipeline_investigate(true, true, false, Some("execute")));
     assert!(!routes_to_pipeline_investigate(true, false, false, None));
 }
@@ -122,10 +122,10 @@ fn ship_solo_seed_uses_the_solo_stance_even_under_yolo() {
 
 #[test]
 fn explicit_skill_ship_seed_is_interactive_by_default() {
-    let s = seed(false, false, false, false, "plan-work");
+    let s = seed(false, false, false, false, "build-from-plan");
     assert!(s.contains("propose a concrete plan"));
     assert!(!s.contains("unattended worktree"));
-    assert!(s.contains("--- WORKFLOW: plan-work ---"));
+    assert!(s.contains("--- WORKFLOW: build-from-plan ---"));
     assert!(s.contains("CONCURRENCY DISCIPLINE"));
     // Exactly one completion protocol and one reflect hook.
     assert_eq!(s.matches("bn agent done --summary").count(), 1);
@@ -134,16 +134,16 @@ fn explicit_skill_ship_seed_is_interactive_by_default() {
 
 #[test]
 fn yolo_seed_carries_the_unattended_stance() {
-    let s = seed(false, true, false, false, "plan-work");
+    let s = seed(false, true, false, false, "build-from-plan");
     assert!(s.contains("unattended worktree"));
     assert!(!s.contains("propose a concrete plan"));
 }
 
 #[test]
 fn verify_gate_renders_once_and_never_for_self_gating_workflows() {
-    // plan-work/execute gate step 6 on `bn verify` themselves — the envelope must not
+    // build-from-plan/execute gate step 6 on `bn verify` themselves — the envelope must not
     // re-inject the explicit clause for them.
-    let s = seed(false, true, true, false, "plan-work");
+    let s = seed(false, true, true, false, "build-from-plan");
     assert!(!s.contains("Gate completion on `bn verify`"));
     let s = seed(false, true, true, false, "execute");
     assert!(!s.contains("Gate completion on `bn verify`"));
@@ -154,7 +154,7 @@ fn verify_gate_renders_once_and_never_for_self_gating_workflows() {
 
 #[test]
 fn plan_gate_suppresses_bootstrap_verification_and_completion() {
-    let s = seed(false, true, true, true, "plan-work");
+    let s = seed(false, true, true, true, "build-from-plan");
     // The bootstrap ("Markdown execution contract" is its sentinel phrase) must vanish: the
     // gate owns the plan file, and the two instructions contradicted each other pre-fix.
     assert!(!s.contains("Markdown execution contract"));
@@ -171,7 +171,7 @@ fn plan_gate_suppresses_bootstrap_verification_and_completion() {
 
 #[test]
 fn ungated_plan_work_seed_keeps_the_bootstrap() {
-    let s = seed(false, true, false, false, "plan-work");
+    let s = seed(false, true, false, false, "build-from-plan");
     assert!(s.contains("Markdown execution contract"));
     assert!(s.contains("bn plan init"));
 }

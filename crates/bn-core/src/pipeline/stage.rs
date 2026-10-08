@@ -97,13 +97,13 @@ impl Stage {
     /// reads as a fact.
     ///
     /// Distinct from `bn dispatch`'s `dispatch_skill_name`, which answers "what does an ad-hoc
-    /// dispatch run?" (a ship gets `plan-work`, which writes its own plan first). This answers
+    /// dispatch run?" (a ship gets `build-from-plan`, which writes its own plan first). This answers
     /// "what does the nine-stage pipeline run here?", where `execute` picks up a plan that
     /// `consensus` already approved. Both are right; they are not the same question.
     pub fn default_skill(self) -> Option<&'static str> {
         match self {
             Stage::Investigate => Some("investigate"),
-            Stage::Plan => Some("plan-investigate"),
+            Stage::Plan => Some("investigate-and-plan"),
             Stage::Execute => Some("execute"),
             Stage::Critique => Some("critique-fresh"),
             Stage::Learn => Some("evolve-skills"),
@@ -238,7 +238,7 @@ pub fn skill_for_note(note: &crate::model::Note) -> Option<String> {
     note.front.decisions.iter().find_map(|d| {
         let rest = d.text.trim().strip_prefix("skill:")?;
         // The recorded line is `skill: <name> — <why>`. Cut at the em-dash, or at a spaced ASCII
-        // hyphen — never a bare `-`, which lives *inside* half the skill names (`plan-work`,
+        // hyphen — never a bare `-`, which lives *inside* half the skill names (`build-from-plan`,
         // `critique-fresh`, `auto-review-pr`) and would truncate them to their first word.
         let name = rest
             .split_once('—')

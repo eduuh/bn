@@ -1,6 +1,6 @@
 ---
 name: ship-solo
-description: One-session ship lane — a driver runs investigate → implement → review as bounded subagents in a single session, pausing to ask you whenever anything is unclear. No separate plan or consensus stage.
+description: "Run investigate, implement and review in one session, asking only on real ambiguity. Use to ship a whole task end to end without stage handoffs."
 when: A task should be delivered end to end in one session instead of the multi-session plan/consensus pipeline — one driver scopes, builds, and reviews through bounded subagents and asks a human the moment something is ambiguous. The default `bn dispatch` ship lane.
 keywords: [ship-solo, solo, one session, single session, subagent, investigate implement review, no plan gate, ask when unclear, end to end, dispatch]
 arguments:

@@ -1,6 +1,6 @@
 ---
 name: decompose
-description: Split an oversized GitHub issue into non-overlapping, independently shippable child issues before dispatch
+description: "Split an oversized GitHub issue into independent, shippable child issues. Use before dispatching an issue that is too big for one PR, or when asked to break down an epic."
 when: A bundled issue contains several changes that would create a conflict-heavy agent lane or PR
 keywords: [decompose, split issue, oversized issue, sub-issues, touches-glob, conflict scope]
 arguments:

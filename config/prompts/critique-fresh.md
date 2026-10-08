@@ -1,6 +1,6 @@
 ---
 name: critique-fresh
-description: Pipeline CRITIQUE stage — a fresh-context critic reads the PR/diff with no prior session, rigorously tests and critiques it, then loops findings back or passes it
+description: "Critique a PR or diff in a fresh context, test it rigorously, then loop findings back or pass it. Use as the pipeline critique stage, or for a second opinion with no prior session bias."
 when: A pipeline's Critique stage is dispatched after Execute opened a PR — an independent reviewer with NO prior context reads the change, tries to break it, and either passes it or sends findings back to Execute. Kin to `debug` and code review.
 keywords: [critique-fresh, critique stage, pipeline critique, fresh context, fresh critic, review the diff, test and critique, loop back, adversarial review, critique gate]
 ---

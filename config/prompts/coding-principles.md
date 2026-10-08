@@ -1,6 +1,6 @@
 ---
 name: coding-principles
-description: Language-agnostic coding principles for maintainability, readability, and quality. Use when implementing features, refactoring code, or reviewing code quality.
+description: "Language-agnostic coding principles: maintainability, readability, small functions, error handling. Use when writing or refactoring code, or judging code quality in a review."
 when: Implementing features, refactoring code, or reviewing code quality.
 keywords: [coding-principles, coding, principles, language-agnostic, maintainability, readability, quality, implementing, features, refactoring, code, reviewing]
 ---

@@ -102,7 +102,7 @@ a workflow.
 <tbody>
 <tr><td><code>pickup</code></td><td><em>none</em> — leases a worktree</td><td>—</td></tr>
 <tr><td><code>investigate</code></td><td><code>investigate.md</code></td><td><code>pipeline-investigate-envelope.md</code></td></tr>
-<tr><td><code>plan</code></td><td><code>plan-investigate.md</code> (composes <code>plan.md</code>)</td><td><code>pipeline-plan-envelope.md</code></td></tr>
+<tr><td><code>plan</code></td><td><code>investigate-and-plan.md</code> (composes <code>plan.md</code>)</td><td><code>pipeline-plan-envelope.md</code></td></tr>
 <tr><td><code>consensus</code></td><td><em>none</em> — reviewer votes</td><td><code>plan-review-critic.md</code> per critic</td></tr>
 <tr><td><code>execute</code></td><td><code>execute.md</code></td><td><code>dispatch-ship.md</code></td></tr>
 <tr><td><code>validate</code></td><td><em>none</em> — <code>bn verify</code></td><td><code>dispatch-verify-gate.md</code></td></tr>
@@ -200,7 +200,7 @@ blocks contradicting each other.
     <text x="516" y="241" font-size="9.5" fill="var(--ink-muted)">with dispatch-scout.md</text>
 
     <text x="516" y="268" font-size="10" fill="var(--teal)">self-gating workflows kill {{verification}}</text>
-    <text x="516" y="283" font-size="9.5" fill="var(--ink-muted)">plan-work · execute · ship-solo</text>
+    <text x="516" y="283" font-size="9.5" fill="var(--ink-muted)">build-from-plan · execute · ship-solo</text>
   </g>
 </svg>
 <figcaption>
@@ -304,7 +304,7 @@ the tmux and worktree layer, largely migrated into native <code>bn</code> subcom
 <h2>Not verified</h2>
 
 <ul>
-<li><code>plan-investigate.md</code>, <code>orchestrate.md</code>,
+<li><code>investigate-and-plan.md</code>, <code>orchestrate.md</code>,
 <code>auto-review-pr.md</code> and <code>triage.md</code> were not read in full; the Ship row
 in the stage table rests on descriptions plus <code>stage.rs</code>.</li>
 <li>Whether <code>Stage::Learn</code> is ever <em>auto</em>-dispatched.

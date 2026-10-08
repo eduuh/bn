@@ -38,7 +38,13 @@ repos=$(for a in app/dependabot app/renovate; do
     gh search prs --owner "$OWNER" --state open --author "$a" --limit 200 --json repository \
       --jq '.[].repository.name' 2>/dev/null
   done | sort | uniq -c | sort -rn | awk '{print $2}')
-[ -n "${BN_DEP_REPOS:-}" ] && repos=$(printf '%s\n' $repos | grep -xF -f <(printf '%s\n' $BN_DEP_REPOS))
+# Only the listed repos. POSIX on purpose: the scheduler runs jobs with sh (dash on Ubuntu), where a
+# bash process substitution here failed the whole lane with a syntax error (2026-10-09).
+if [ -n "${BN_DEP_REPOS:-}" ]; then
+  only=""
+  for r in $repos; do case " $BN_DEP_REPOS " in *" $r "*) only="$only $r" ;; esac; done
+  repos=$only
+fi
 [ -n "$repos" ] || { log "dep-prs: no open dependency PRs under $OWNER"; exit 0; }
 
 # Agents of this lane already working, per repo. A live one is left to finish.

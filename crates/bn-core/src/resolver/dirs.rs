@@ -102,6 +102,11 @@ pub fn config_root() -> PathBuf {
 /// `(personal_root, work_root)`, from the path anchors and the defaults alone. No setting can move
 /// them, because the settings live inside one of them. `$BN_NOTES_DIR` collapses both into one
 /// root for test sandboxes, and `$BN_NOTES_DIR_WORK` splits the work root back out.
+///
+/// The work root is `~/projects/notes/bn` only on a machine that has that separate work tree;
+/// everywhere else it is the personal root, so bn reads one notes tree. The retired
+/// `~/projects/branch-notes-work/bn` fallback is folded into it on first use (see
+/// [`super::legacy_work`]).
 pub fn notes_roots() -> (PathBuf, PathBuf) {
     if let Some(dir) = non_empty_env("BN_NOTES_DIR") {
         let work = non_empty_env("BN_NOTES_DIR_WORK")
@@ -110,13 +115,23 @@ pub fn notes_roots() -> (PathBuf, PathBuf) {
         return (PathBuf::from(dir), work);
     }
     let home = home();
-    let work_primary = PathBuf::from(format!("{home}/projects/notes/bn"));
-    let work = if work_primary.is_dir() {
-        work_primary
+    let personal = PathBuf::from(format!("{home}/projects/branch-notes"));
+    static MIGRATE: std::sync::Once = std::sync::Once::new();
+    // Unit tests never touch the real home's notes; `legacy_work` tests the merge directly.
+    MIGRATE.call_once(|| {
+        #[cfg(not(test))]
+        super::legacy_work::migrate(
+            &PathBuf::from(format!("{home}/projects/branch-notes-work")),
+            &personal,
+        )
+    });
+    let work_tree = PathBuf::from(format!("{home}/projects/notes/bn"));
+    let work = if work_tree.is_dir() {
+        work_tree
     } else {
-        PathBuf::from(format!("{home}/projects/branch-notes-work/bn"))
+        personal.clone()
     };
-    (PathBuf::from(format!("{home}/projects/branch-notes")), work)
+    (personal, work)
 }
 
 /// This machine's name: `$BN_HOSTNAME`, else the pinned identity. Never empty, so a machine whose

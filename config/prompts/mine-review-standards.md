@@ -1,6 +1,6 @@
 ---
 name: mine-review-standards
-description: Mine real reviewer comments from a repo's merged PRs and distill them into a bn review-standards reference
+description: "Mine a repo's merged-PR reviewer comments into a bn review-standards reference. Use when setting up PR review for a repo, or when reviews miss that repo's conventions."
 when: Bootstrapping or refreshing a review specialist's standards from what humans actually flag in PRs (via `bn agents bootstrap`).
 keywords: [review, standards, pull request, ado, azure devops, mining, reviewer comments, specialist, bootstrap]
 arguments:

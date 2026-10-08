@@ -14,6 +14,11 @@ at all works on every repository it has cloned and runs cron and the dashboard.
 machine that has only that one. `<machine>` is the name bn pinned in `~/.bn/config/machine` the
 first time it ran.
 
+bn reads one notes tree. The old `~/projects/branch-notes-work/bn` fallback is merged into
+`~/projects/branch-notes` the first time a new `bn` runs: `tasks.txt` and `links.md` are unioned
+line by line, other files are copied unless already present, and the old tree is kept as
+`~/projects/branch-notes-work.migrated`.
+
 Both files are optional. Leave out anything you do not want to change.
 
 An old `~/.bn/config/config.toml` moves into these files the first time a new `bn` runs. The old
@@ -307,7 +312,7 @@ write that finds the activity changed since it was loaded fails instead of overw
 task is created under the goal whose repository matches its `repo:`, or else under the goal named
 Inbox. bn ids are never reused: the highest per endpoint is kept in `<state_dir>/forge-ids.json`.
 
-`bn forge sweep` runs the agent loop once in Forge mode (the `forge-agent` skill walks through it).
+`bn forge sweep` runs the agent loop once in Forge mode (the `forge-task` skill walks through it).
 Nothing runs it automatically: run it by hand, or from your own cron.
 
 - **Claim.** At most once a minute, an open task assigned to the agent member that nothing has

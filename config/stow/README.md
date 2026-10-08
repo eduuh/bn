@@ -14,6 +14,10 @@ state dirs never become symlinks into the repo). Real files you wrote are kept u
 `--force-home`, which moves them to `<file>.bak-<time>`. Same flag moves unmanaged skills aside
 so `bn skills install` can replace them.
 
+`copilot` also carries the static `hooks/bn-model.json` and the hand-written
+`agents/codespace-pr-reviewer.md`. `~/.copilot/hooks/bn-agent.json` is written by `bn agent launch`
+and is never tracked.
+
 Add a file at its home-relative path inside the right package and re-run `install.sh`.
 Check with `bash scripts/check-install-stow.sh`.
 

@@ -1,6 +1,6 @@
 ---
-name: active-pr-worktrees
-description: Discover or materialize worktrees for your active GitHub and Azure DevOps PRs, including PRs created on another machine
+name: my-pr-worktrees
+description: "Find or create local worktrees for your open GitHub and ADO PRs, including ones made on another machine. Use when resuming your own PR work or asking which of my PRs need attention."
 when: You want to resume your own open PR work on this machine, list remote-only PR branches, or create their local worktrees.
 keywords: [active prs, my prs, github prs, ado prs, azure devops prs, remote prs, worktrees, other laptop, resume pr, fetch pr]
 arguments:

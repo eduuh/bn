@@ -1,8 +1,8 @@
 ---
 name: start-session
-description: Begin a branch-notes work session — review open todos & blockers, set a goal
+description: "Orient on a branch: goal, open todos, blockers, first step; can also load the full note or review every branch. Use first when starting, resuming or picking up work."
 when: Beginning a work session or picking up a branch — first thing, before you start coding.
-keywords: [start, begin, session, kick off, pick up, resume, get going, set goal, focus]
+keywords: [start-session, status review, cross-branch, load note, start, begin, session, kick off, pick up, resume, get going, set goal, focus]
 arguments:
   - { name: focus, description: Optional area to focus this session on, required: false }
 ---
@@ -18,4 +18,12 @@ You are starting a work session on the current branch.
 
 Keep it short. Then, as you work, record new work with `bn_add` and close todos with `bn_done`
 *the moment each one is actually done* — not batched at the end. Those timestamps feed
-`bn stats metrics` (close-out lag, flow time, WIP), so honest, in-the-moment tracking keeps them real.
+`bn metrics` (close-out lag, flow time, WIP), so honest, in-the-moment tracking keeps them real.
+
+## Load the full note and investigation files
+
+When you need more than the summary, run `bn --cat` for the note and `bn-investigation-files.sh` for prior investigation files, then update the note as you work: `bn add todo|blocker|decision|research "text"`, and save longer artifacts to `$(bn --path)/filename.md`.
+
+## Across every branch (was status-review)
+
+When the question is where everything stands, not this branch: run `bn summary`, lead with blockers by branch, then a one-line-per-item rundown of open todos (heaviest first), and flag branches that look stalled. For the day's priorities across branches use `morning`.

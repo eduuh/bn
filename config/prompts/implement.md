@@ -1,6 +1,6 @@
 ---
 name: implement
-description: "Orchestrate the complete implementation lifecycle from requirements to deployment. Use when implementing a feature, building something new, or when 'implement' is mentioned with a feature description."
+description: "Run the full implementation lifecycle from requirements to deployment. Use when asked to implement or build a feature and no pipeline stage skill applies."
 when: "Implementing a feature, building something new, or when 'implement' is mentioned with a feature description."
 keywords: [implement, orchestrate, complete, implementation, lifecycle, requirements, deployment, implementing, feature, building, something, new]
 ---
@@ -8,17 +8,17 @@ keywords: [implement, orchestrate, complete, implementation, lifecycle, requirem
 
 ## Orchestrator Definition
 
-**Core Identity**: "I am an orchestrator." (see subagents-orchestration-guide skill)
+**Core Identity**: "I am an orchestrator." (see subagent-orchestration skill)
 
 **Execution Protocol**:
-1. **Delegate all work through Agent tool** — invoke sub-agents, pass deliverable paths between them, and report results (permitted tools: see subagents-orchestration-guide "Orchestrator's Permitted Tools")
-2. **Follow subagents-orchestration-guide skill flows exactly**:
+1. **Delegate all work through Agent tool** — invoke sub-agents, pass deliverable paths between them, and report results (permitted tools: see subagent-orchestration "Orchestrator's Permitted Tools")
+2. **Follow subagent-orchestration skill flows exactly**:
    - Execute one step at a time in the defined flow (Large/Medium/Small scale)
    - When flow specifies "Execute document-reviewer" → Execute it immediately
    - **Stop at every `[Stop: ...]` marker** → Use AskUserQuestion for confirmation and wait for approval before proceeding
 3. **Enter autonomous mode** only after "batch approval for entire implementation phase"
 
-**CRITICAL**: Execute all steps, sub-agents, and stopping points defined in subagents-orchestration-guide skill flows.
+**CRITICAL**: Execute all steps, sub-agents, and stopping points defined in subagent-orchestration skill flows.
 
 ## Execution Decision Flow
 
@@ -39,11 +39,11 @@ Assess the current situation:
 When continuing existing flow, verify:
 - Latest artifacts (PRD/ADR/Design Doc/Work Plan/Tasks)
 - Current phase position (Requirements/Design/Planning/Implementation/QA)
-- Identify next step in subagents-orchestration-guide skill corresponding flow
+- Identify next step in subagent-orchestration skill corresponding flow
 
 ### 3. Next Action Execution
 
-**MANDATORY subagents-orchestration-guide skill reference**:
+**MANDATORY subagent-orchestration skill reference**:
 - Verify scale-based flow (Large/Medium/Small scale)
 - Confirm autonomous execution mode conditions
 - Recognize mandatory stopping points
@@ -67,7 +67,7 @@ When user responds to questions:
 ## Subagents Orchestration Guide Compliance Execution
 
 **Pre-execution Checklist (MANDATORY)**:
-- [ ] Confirmed relevant subagents-orchestration-guide skill flow
+- [ ] Confirmed relevant subagent-orchestration skill flow
 - [ ] Identified current progress position
 - [ ] Clarified next step
 - [ ] Recognized stopping points
@@ -140,4 +140,4 @@ After acceptance-test-generator execution, when invoking work-planner (subagent_
 ## Execution Method
 
 All work is executed through sub-agents.
-Sub-agent selection follows subagents-orchestration-guide skill.
+Sub-agent selection follows subagent-orchestration skill.

@@ -1,6 +1,6 @@
 ---
 name: pull-ado
-description: Pull assigned Azure DevOps work items into a repo's main note as idempotent [#id] todos
+description: "Pull assigned Azure DevOps work items into the repo main note as idempotent todos. Use to import my ADO tasks or sync work items."
 when: Starting work from your ADO backlog, or refreshing a repo's todos from assigned sprint items.
 keywords: [ado, azure devops, work items, tickets, backlog, sprint, iteration, pull, todos]
 arguments:

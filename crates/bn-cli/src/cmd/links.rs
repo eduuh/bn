@@ -29,10 +29,12 @@ pub(crate) fn emit_links(
     action: Option<LinksCmd>,
     query: Option<String>,
     tag: Option<String>,
+    when: Option<String>,
     fill: Vec<String>,
     json: bool,
 ) {
     let fills = parse_fills(&fill, json);
+    let span = parse_when(when.as_deref(), json);
     match action {
         Some(LinksCmd::Add {
             url,
@@ -54,7 +56,15 @@ pub(crate) fn emit_links(
             }
             Err(e) => fail_json(json, "links", e.code(), &e.message()),
         },
-        Some(LinksCmd::List { query, tag, repo }) => list_links(cfg, query, tag, repo, json),
+        Some(LinksCmd::List {
+            query,
+            tag,
+            repo,
+            when,
+        }) => {
+            let span = parse_when(when.as_deref(), json);
+            list_links(cfg, query, tag, repo, span.as_ref(), json)
+        }
         Some(LinksCmd::Copy { needle, tag, plain }) => copy_cmd(cfg, needle, tag, plain, json),
         Some(LinksCmd::Capture) => capture(cfg, json),
         Some(LinksCmd::Tags) => show_tags(cfg, json),
@@ -73,8 +83,8 @@ pub(crate) fn emit_links(
             let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nvim".into());
             let _ = Command::new(editor).arg(&path).status();
         }
-        None if json && query.is_none() => list_links(cfg, None, tag, None, true),
-        None => open_one(cfg, query, tag, &fills, json),
+        None if json && query.is_none() => list_links(cfg, None, tag, None, span.as_ref(), true),
+        None => open_one(cfg, query, tag, span.as_ref(), &fills, json),
     }
 }
 
@@ -241,6 +251,7 @@ fn list_links(
     query: Option<String>,
     tag: Option<String>,
     repo: Option<String>,
+    span: Option<&links::when::Span>,
     json: bool,
 ) {
     let today = today();
@@ -252,6 +263,7 @@ fn list_links(
         .filter(|l| tag.as_ref().is_none_or(|t| l.tags.contains(t)))
         .filter(|l| repo.as_ref().is_none_or(|r| l.repo.as_deref() == Some(r)))
         .filter(|l| query.as_ref().is_none_or(|q| matches_query(l, q)))
+        .filter(|l| span.is_none_or(|s| links::when::saved_in(l, s)))
         .collect();
     if json {
         let data: Vec<_> = rows.iter().map(|l| link_json(l)).collect();
@@ -270,7 +282,8 @@ fn list_links(
         return;
     }
     for l in rows {
-        println!("{:<4} {:<40} {}", l.id, truncate(&l.name, 40), l.url);
+        let day = links::when::label(l, &today);
+        println!("{:<4} {:<10} {:<40} {}", l.id, day, truncate(&l.name, 40), l.url);
     }
 }
 
@@ -387,6 +400,7 @@ fn open_one(
     cfg: &Config,
     query: Option<String>,
     tag: Option<String>,
+    span: Option<&links::when::Span>,
     fills: &[(String, String)],
     json: bool,
 ) {
@@ -404,7 +418,7 @@ fn open_one(
             Ok(l) => (PickAction::Open, vec![l.id.clone()]),
             Err(e) => fail_json(json, "links", e.code(), &e.message()),
         },
-        None => pick_loop(cfg, tag.as_deref(), json),
+        None => pick_loop(cfg, tag.as_deref(), span, json),
     };
     if action == PickAction::Copy {
         copy_ids(cfg, &chosen, false, fills, json);
@@ -416,16 +430,29 @@ fn open_one(
 /// `bn links group <tag>` — open every link carrying the tag.
 fn open_group(cfg: &Config, tag: &str, json: bool) {
     let items = links::read(cfg);
-    let ids: Vec<String> = links::in_group(&items, tag)
+    let today = today();
+    let mut ids: Vec<String> = links::in_group(&items, tag)
         .iter()
         .map(|l| l.id.clone())
         .collect();
+    // No such tag: a day is a group too, so `bn links group yesterday` opens yesterday's links.
+    if ids.is_empty() {
+        if let Some(span) = links::when::parse(tag, &today) {
+            ids = links::ranked(&items, None, &today)
+                .into_iter()
+                .filter(|l| links::when::saved_in(l, &span))
+                .map(|l| l.id.clone())
+                .collect();
+        }
+    }
     if ids.is_empty() {
         fail_json(
             json,
             "links",
             "not_found",
-            &format!("No link is tagged {tag}. `bn links add <url> --tags {tag}` to start the group."),
+            &format!(
+                "No link is tagged or saved {tag}. `bn links add <url> --tags {tag}` to start the group."
+            ),
         );
     }
     open_ids(cfg, &ids, &[], json);
@@ -493,6 +520,21 @@ fn filled(mut link: Link, fills: &[(String, String)], json: bool) -> Link {
 }
 
 /// Narrow ranked links to one tag (case-insensitive); `None` keeps them all.
+/// `--when` as a span of days. A spec it cannot read is a usage error naming the forms it takes.
+fn parse_when(raw: Option<&str>, json: bool) -> Option<links::when::Span> {
+    let raw = raw?;
+    Some(links::when::parse(raw, &today()).unwrap_or_else(|| {
+        fail_json(
+            json,
+            "links",
+            "usage",
+            &format!(
+                "--when wants today, yesterday, a weekday, week, last-week, 7d or YYYY-MM-DD; got '{raw}'"
+            ),
+        )
+    }))
+}
+
 fn with_tag<'a>(ranked: Vec<&'a Link>, tag: Option<&str>) -> Vec<&'a Link> {
     let Some(tag) = tag.map(str::to_lowercase) else {
         return ranked;

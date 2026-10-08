@@ -1,8 +1,8 @@
 ---
-name: plan-investigate
-description: Ad-hoc investigate-then-plan lane — rigorously investigate the task, write the plan artifact, and submit it to `bn review` (raises the Planning gate)
-when: A task needs a rigorous investigate-then-plan pass whose output is a reviewed plan, not code — dispatched ad hoc via `--skill plan-investigate` (the pipeline's own Plan stage runs the `plan` skill). Composes `investigate` in pipeline/read-only mode + `plan`.
-keywords: [plan-investigate, investigate then plan, planning gate, bn review submit, rigorous planning, scout and plan, reviewed plan]
+name: investigate-and-plan
+description: "Investigate a task then write the plan in one pass and submit it to bn review, raising the Planning gate. Use for an ad-hoc task that needs both research and a plan."
+when: A task needs a rigorous investigate-then-plan pass whose output is a reviewed plan, not code — dispatched ad hoc via `--skill investigate-and-plan` (the pipeline's own Plan stage runs the `plan` skill). Composes `investigate` in pipeline/read-only mode + `plan`.
+keywords: [investigate-and-plan, investigate then plan, planning gate, bn review submit, rigorous planning, scout and plan, reviewed plan]
 arguments:
   - { name: task, description: The task/goal to plan. Omit to use the note's Goal., required: false }
   - { name: url, description: Source issue/PR url for grounding. Omit if none., required: false }

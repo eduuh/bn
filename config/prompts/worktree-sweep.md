@@ -1,6 +1,6 @@
 ---
 name: worktree-sweep
-description: Sweep stale worktrees, pool slots and leftover tmux windows across every repo — reclaim what is provably finished, keep the rest with a reason
+description: "Sweep stale worktrees, pool slots and leftover tmux windows, reclaiming only what is provably finished. Use when disk space or tmux windows pile up."
 when: Worktrees, pool slots or tmux windows have piled up — merged branches still checked out, leaked leases, dead agent scratch dirs, a session full of finished cron windows — and you want the disposable ones gone without losing work.
 keywords: [worktree, worktrees, stale, sweep, cleanup, reap, prune, reclaim, pool, slot, tmux, session, window, leftover, garbage collect, gc, disk, wt]
 arguments:
