@@ -12,24 +12,40 @@ skills themselves. The signal is reflections tagged `skill:<name> — …` (the 
 envelopes append to every dispatched skill run). Your output is a **proposed diff the user
 approves**, never a silent edit — these files are committed and shared.
 
-1. **Gather the reflections.** Run `bn stats learnings --since <days>` via the harness — it aggregates
+For an explicit user-requested policy audit, use the requested policy and current sources as
+the evidence; reflections are optional context, not a prerequisite. The "no reflections → stop"
+rule applies only to reflection-driven evolution. In both modes, propose concrete diffs and
+apply only approved changes.
+
+1. **Gather the evidence.** For an explicit policy audit, start from the requested policy and
+   source scope; gather reflections only if useful. For reflection-driven evolution, run
+   `bn stats learnings --since <days>` via the harness — it aggregates
    every recorded reflection in one call. Use the window ({{window}}) as days (default the last
    4 weeks, `--since 28`). If a skill was named ({{skill}}), add `--skill <that name>` to filter
-   to it; otherwise sweep every `skill:`-tagged entry. If there are none, say so and stop —
-   nothing to evolve.
+   to it; otherwise sweep every `skill:`-tagged entry. If a reflection-driven run has none,
+   say so and stop.
 
-2. **Group by skill and find the pattern.** Bucket the reflections per skill name. A one-off gripe
-   is noise; the same complaint twice is signal. For each skill, distill the recurring friction
-   into one sentence: *what the skill tells you to do vs. what actually works*.
+2. **Group by skill and find the pattern.** Bucket the reflections per skill name. In a
+   reflection-driven run, a one-off gripe is noise; the same complaint twice is signal.
+   In an explicit policy audit, compare each source with the requested policy instead.
+   For each skill, distill the friction into one sentence: *what the skill tells you to do
+   vs. what actually works*.
 
 3. **Read the current skill and locate the fix.** For each skill with real signal, load its
    file: `bn skills list --json` gives each skill's `path` and `scope` (built-ins in the bn repo's
    `config/prompts/`, personal ones in the config dir's `skills/`, repo ones in `.bn/skills/`);
-   `bn skills render <name>` shows the live body. Find the exact step or line the reflection is about. Prefer the
+   `bn skills render <name>` shows the live body. Find the exact step or line the evidence
+   concerns. Prefer the
    smallest change that resolves it — reword a step, reorder two, add a missing move, cut a step
    that never fires. Don't rewrite a skill that's merely been used a few times.
+   For a broad audit, use Copilot fleet / Claude subagents for substantial, non-overlapping
+   source groups. Require complete coverage and exact proposed wording from each worker.
+   The main owner reconciles cross-skill conflicts and presents one approval package.
+   Keep a short single-skill correction local. An assigned audit worker completes its
+   source group without launching another layer.
 
-4. **Propose the edit.** For each change show: the skill, the reflections driving it, and the
+4. **Propose the edit.** For each change show: the skill, the reflections or requested policy
+   driving it, and the
    concrete before → after (a diff of the frontmatter `keywords`/`when` or a body step). Preserve
    the house style — numbered steps; `bn_*` names only for real MCP tools, `bn <sub>` for CLI
    commands run via the harness. Keep each skill's identity intact; don't let two skills blur
@@ -43,5 +59,6 @@ approves**, never a silent edit — these files are committed and shared.
    pointed at a real gap that's *not* a wording fix (a missing skill, a tool that should exist),
    surface it as a `bn_add todo` rather than forcing it into an edit.
 
-Be conservative: evolve on repeated evidence, keep changes minimal, and never edit a skill file
-without showing the diff first. The goal is skills that get sharper with use, not that drift.
+Be conservative: evolve on repeated evidence or an explicit requested policy, keep changes
+minimal, and never edit a skill file without showing the diff first. The goal is skills that
+get sharper with use, not that drift.

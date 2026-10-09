@@ -10,48 +10,92 @@
 //! gate instructions — so keep it in sync when envelopes move.
 
 use super::*;
+use bn_core::test_support::{env_lock, EnvGuard};
 
 fn repo_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-fn seed(scout: bool, yolo: bool, verify: bool, plan_gate: bool, skill_name: &str) -> String {
-    let cfg = Config::default();
+fn with_shipped_skills<T>(run: impl FnOnce(&Config, &std::path::Path) -> T) -> T {
+    let _lock = env_lock();
     let root = repo_root();
-    let skill = bn_core::skills::load_skill(&cfg, &root, skill_name)
-        .expect("skill catalog loads")
-        .unwrap_or_else(|| panic!("shipped skill '{skill_name}' exists"));
-    skill_seed_prompt(
-        &cfg,
-        &root,
-        SkillSeedContext {
-            title: "Test goal",
-            url: None,
-            scout,
-            yolo,
-            verify,
-            plan_gate,
-        },
-        &skill,
-    )
-    .expect("seed renders")
+    let _shared = EnvGuard::set("BN_MCP_SKILLS_DIR", root.join("config/prompts"));
+    let _personal = EnvGuard::set(
+        "BN_MCP_PERSONAL_SKILLS_DIR",
+        root.join("target/dispatch-tests-no-personal-skills"),
+    );
+    run(&Config::default(), &root)
+}
+
+fn seed(scout: bool, yolo: bool, verify: bool, plan_gate: bool, skill_name: &str) -> String {
+    with_shipped_skills(|cfg, root| {
+        let skill = bn_core::skills::load_skill(cfg, root, skill_name)
+            .expect("skill catalog loads")
+            .unwrap_or_else(|| panic!("shipped skill '{skill_name}' exists"));
+        skill_seed_prompt(
+            cfg,
+            root,
+            SkillSeedContext {
+                title: "Test goal",
+                url: None,
+                scout,
+                yolo,
+                verify,
+                plan_gate,
+            },
+            &skill,
+        )
+        .expect("seed renders")
+    })
 }
 
 fn gate(verify: bool) -> String {
-    plan_gate_seed(
-        &Config::default(),
-        &repo_root(),
-        PlanGateContext {
-            repo: "r",
-            branch: "b",
-            sid: "sid-1",
-            verify,
-            reviewers: 2,
-            quorum: 2,
-            plan_file: Some("plans/agents/sid-1.md"),
-        },
-    )
-    .expect("gate renders")
+    with_shipped_skills(|cfg, root| {
+        plan_gate_seed(
+            cfg,
+            root,
+            PlanGateContext {
+                repo: "r",
+                branch: "b",
+                sid: "sid-1",
+                verify,
+                reviewers: 2,
+                quorum: 2,
+                plan_file: Some("plans/agents/sid-1.md"),
+            },
+        )
+        .expect("gate renders")
+    })
+}
+
+#[test]
+fn seed_waits_for_temporary_skill_catalog_overrides_to_be_restored() {
+    use std::sync::mpsc::{channel, RecvTimeoutError};
+    use std::time::Duration;
+
+    let lock = env_lock();
+    let root = repo_root().join("target/dispatch-tests-no-personal-skills");
+    let shared = EnvGuard::set("BN_MCP_SKILLS_DIR", &root);
+    let personal = EnvGuard::set("BN_MCP_PERSONAL_SKILLS_DIR", &root);
+    let (started_tx, started_rx) = channel();
+    let (finished_tx, finished_rx) = channel();
+    let worker = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        finished_tx
+            .send(seed(false, false, false, false, "build-from-plan"))
+            .unwrap();
+    });
+    started_rx.recv().unwrap();
+    let while_overridden = finished_rx.recv_timeout(Duration::from_millis(100));
+    drop(personal);
+    drop(shared);
+    drop(lock);
+    worker.join().unwrap();
+    assert!(matches!(while_overridden, Err(RecvTimeoutError::Timeout)));
+    assert!(finished_rx
+        .recv()
+        .unwrap()
+        .contains("--- WORKFLOW: build-from-plan ---"));
 }
 
 /// The routing table itself: with the pipeline flag off (the default) even the skill-less ship

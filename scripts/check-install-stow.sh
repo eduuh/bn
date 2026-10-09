@@ -20,7 +20,7 @@ linked() { # $1 = home: every tracked file is a symlink into the repo
   local f
   while IFS= read -r f; do
     [ -L "$1/$f" ] || fail "$f is not a symlink in $1"
-    case "$(readlink -f "$1/$f")" in "$stow_dir"/*) ;; *) fail "$f does not resolve into config/stow" ;; esac
+    case "$(bn_install_stow_canon "$1/$f")" in */config/stow/*) ;; *) fail "$f does not resolve into config/stow" ;; esac
   done <<<"$tracked"
   # Folding off: a tool's state dir must stay a real directory.
   [ ! -L "$1/.copilot" ] || fail "~/.copilot became a symlink (folded)"

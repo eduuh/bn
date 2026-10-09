@@ -21,6 +21,11 @@ and is never tracked.
 Add a file at its home-relative path inside the right package and re-run `install.sh`.
 Check with `bash scripts/check-install-stow.sh`.
 
+Repository-only files such as `.github/workflows/ci.yml` stay in bn's Git checkout, not a stow
+package or `$HOME`. The installed source anchor points to the full stable checkout; `bn self-update`
+fast-forwards that checkout. Existing stow links follow source edits, but new home files need a
+full `install.sh` run. Generated skills need `bn skills install` to refresh their harness copies.
+
 Never put secrets or app-managed state here (`~/.copilot/config.json` holds auth tokens).
 Per-machine settings belong in `~/.config/bn/`. Skills are not stowed: they are rendered per tool
 from `config/prompts/` by `bn skills install`.

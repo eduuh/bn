@@ -14,8 +14,15 @@ if [ "${1:-}" != "--popup" ]; then
     "exec $script_quoted --popup"
 fi
 
-printf 'Codespace SSH alias: '
-IFS= read -r alias || exit 1
+# Pick a host from ~/.ssh/config; cs-* aliases are listed first.
+hosts=$(awk '/^Host /{for(i=2;i<=NF;i++) if($i !~ /[*?!]/) print $i}' "$HOME/.ssh/config" | sort -u)
+list=$(printf '%s\n' "$hosts" | grep '^cs-' || true; printf '%s\n' "$hosts" | grep -v '^cs-' || true)
+if command -v fzf >/dev/null 2>&1; then
+  alias=$(printf '%s\n' "$list" | fzf --prompt='Codespace > ' --height=40% --reverse) || exit 1
+else
+  printf 'Codespace SSH alias: '
+  IFS= read -r alias || exit 1
+fi
 case "$alias" in
   ''|-*|*[!A-Za-z0-9_.-]*)
     echo "tmux-codespace-diff: invalid SSH alias" >&2

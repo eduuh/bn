@@ -10,6 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 mod catalog;
+#[cfg(test)]
+mod tests;
 mod worktree;
 
 pub use crate::template::ArgumentDef as SkillArgDef;
@@ -184,6 +186,7 @@ fn shared_skills_dir(base_dir: &Path) -> PathBuf {
 /// The single source of truth for the tier layout: bn-mcp loads MCP prompts from the paths,
 /// while [`discover`] / [`create_skill`] also use the scopes. Per-repo tiers appear only when
 /// `base_dir` is inside a git repo; otherwise just the two global tiers.
+/// Repository filesystem tiers also work in detached checkouts without branch-note context.
 pub fn skill_dirs(cfg: &Config, base_dir: &Path) -> Vec<(SkillScope, PathBuf)> {
     let mut dirs = Vec::new();
 
@@ -195,21 +198,21 @@ pub fn skill_dirs(cfg: &Config, base_dir: &Path) -> Vec<(SkillScope, PathBuf)> {
             .unwrap_or_else(|| resolver::config_dir().join("skills")),
     ));
 
+    let root = resolver::repo_root(base_dir);
+    if let Some(root) = &root {
+        dirs.push((SkillScope::RepoShared, root.join(".bn").join("skills")));
+    }
     if let Ok(ctx) = resolver::resolve(cfg, base_dir) {
-        let root = resolver::repo_root(base_dir);
-        if let Some(root) = &root {
-            dirs.push((SkillScope::RepoShared, root.join(".bn").join("skills")));
-        }
         dirs.push((
             SkillScope::RepoPersonalNotes,
             cfg.repo_skills_dir(&ctx.repo),
         ));
-        if let Some(root) = &root {
-            dirs.push((
-                SkillScope::RepoPersonalLocal,
-                root.join(".bn").join("skills.local"),
-            ));
-        }
+    }
+    if let Some(root) = root {
+        dirs.push((
+            SkillScope::RepoPersonalLocal,
+            root.join(".bn").join("skills.local"),
+        ));
     }
 
     dirs

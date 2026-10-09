@@ -62,6 +62,12 @@ native — `bn tat`/`bn wt` do their own path normalization and bare+worktree lo
   `~/.config/bn/repo` and owns `~/.tmux.conf` (→ `config/workflow/tmux.conf`). Run
   `./install.sh --core` to skip this layer.
 
+Full installation also installs missing `zoxide`, `bat`, `eza`, and `delta` through
+the system package manager. Set `BN_INSTALL_SHELL_CLIS=0` to skip these tools, or
+`BN_INSTALL_DEPS=0` to skip all automatic dependency installs. Core mode leaves
+them alone unless `--shell-clis` or `BN_INSTALL_SHELL_CLIS=1` is set. Unavailable
+packages produce warnings without blocking installation.
+
 ## Worktree lifecycle hooks
 
 When `ensure_worktree` creates a **new** worktree (not when it reuses an existing one),
@@ -91,7 +97,7 @@ worktree creation. See `config/hooks/post-create` for a starting point.
 | D   | `bn wt remove` (native; removes worktree + kills its window) |
 | n   | `bn tmux note` (native)    |
 | e   | `tmux-git-diff.sh` (floating nvim DiffviewOpen origin/main; latest commit if nothing differs) |
-| C-g | `tmux-codespace-diff.sh` (floating remote nvim over SSH) |
+| C-g | `tmux-codespace-diff.sh` (floating remote nvim over SSH, fzf host picker) |
 | A   | `bin/tmux-agent.sh` (spawn Copilot agent window — the default) |
 | G   | `bin/tmux-agent.sh … claude` (spawn Claude agent window) |
 | S   | `bn tmux cockpit` (native; orchestration roll-up) |

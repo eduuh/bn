@@ -20,6 +20,10 @@ lane will burn down. Once the plan is submitted, STOP for human review.
    (grep, `--help`, tests in report mode, log inspection). Touch no source. Follow the evidence
    past the first plausible answer — being *right* matters more than being fast. Capture non-obvious
    findings with `bn_add research` and settled facts with `bn_add decision` as you go.
+   Delegate substantial evidence gathering to Copilot fleet / Claude subagents using bounded
+   scoping questions. Keep one planner responsible for synthesis and the plan artifact. Workers
+   return paths, sources, reproduction evidence, and unresolved questions; they do not write
+   competing plans or launch another layer. Keep cheap validation of a known fact local.
 
 3. **Write the plan artifact.** Run `bn plan init`, then write the file `bn plan path` prints
    (`plans/active.md` under the branch note directory, not the worktree): the goal in one

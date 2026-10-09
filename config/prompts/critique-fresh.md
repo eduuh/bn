@@ -11,6 +11,11 @@ not build features here; you rigorously test and critique the PR/diff, then eith
 send concrete findings back to the `execute` stage to fix. The discipline is **read → try to break
 → evidence, not vibes**.
 
+If you authored the change and invoke this skill from that same context, hand the critique to
+a fresh Copilot fleet / Claude subagent with the diff, acceptance criteria, reproduction, and
+permitted checks, not your implementation transcript. If already the pipeline's fresh critic,
+perform the critique yourself rather than launching another critic.
+
 1. **Ground on the change only.** The launcher appends a plan-free runtime packet containing the
    done-when criteria, PR, and exact diff. Use that packet as the review contract. `bn_cat` may be
    used only for the critic lane's plan-free state. Read the diff cold and resist any assumption

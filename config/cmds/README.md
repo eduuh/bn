@@ -32,3 +32,24 @@ in `config/jobs/lib`). Unlike a job, a run is not recorded to the cron ledger.
 ## Shipped
 
 - `window`: open a tmux window in the repo's session, optionally running a command in it.
+- `run`: stream a foreground batch command, save a private log, and report its status.
+
+## Long batch commands
+
+    bn cmd run -- cargo clippy --workspace
+    bn cmd run -- --label tests -- cargo test --workspace
+
+`run` reports its start, elapsed time every 60 seconds, and final exit status. After 180 seconds
+without output it warns that progress is unknown, not that the process is stuck. `--label` names
+the stage; otherwise it shows the executable. Use `--interval` and `--idle-after` to change the
+timing. Status messages go to stderr; the command's stdout, stderr, stdin and exit status are
+preserved. Requires Python 3.
+
+Logs contain only command output, have mode `0600`, and default to
+`${XDG_CACHE_HOME:-~/.cache}/bn/commands/`. `--log <path>` selects a new file; an existing log is
+never overwritten. Interrupts and termination signals are forwarded to the command's process
+group. Use this for foreground batch jobs, not interactive editors or commands that daemonize.
+
+Run it in the visible tmux pane for a long job, then wait on that job's completion signal.
+The runner emits heartbeats; the agent does not poll. Check with
+`python3 scripts/test-command-heartbeat.py`.

@@ -14,8 +14,13 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
                 std::process::exit(1);
             }
         }
-        CmdMisc::Build { name, repo, branch } => {
-            std::process::exit(run_build_cmd(cfg, name, repo, branch))
+        CmdMisc::Build {
+            name,
+            repo,
+            branch,
+            argv,
+        } => {
+            std::process::exit(run_build_cmd(cfg, name, repo, branch, &argv))
         }
         CmdMisc::Cost { by, window, live } => emit_cost(cfg, by.as_deref(), window, live, json),
         CmdMisc::Worker { action } => std::process::exit(emit_worker(cfg, action, json)),

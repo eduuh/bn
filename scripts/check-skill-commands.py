@@ -97,8 +97,47 @@ def code_snippets(text):
 # `bn` only where a shell command starts, so "# >>> bn codespace" markers and
 # "for b in bn bn-mcp" lists are not read as invocations.
 INVOCATION = re.compile(
-    r"(?:^\s*|[|;&(]\s*|\$\(\s*|[{!]\s+|\b(?:then|do|else|time|exec|sudo|env|xargs|watch)\s+)bn\s+(\S.*)"
+    r"(?:^\s*|[|;&(]\s*|\$\(\s*|[{!]\s+|\b(?:then|do|else|time|exec|sudo|env|xargs|watch)\s+)bn\s+(?=\S)"
 )
+
+
+def shell_invocations(snippet):
+    """Ignore quoted prose, but keep executable $(...) inside double quotes."""
+    quote = None
+    contexts = []
+    unquoted = set()
+    closes = []
+    escaped = False
+    i = 0
+    while i < len(snippet):
+        char = snippet[i]
+        if quote is None and not escaped:
+            unquoted.add(i)
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif quote == "'":
+            if char == "'":
+                quote = None
+        elif snippet.startswith("$(", i):
+            contexts.append(quote)
+            quote = None
+            i += 1
+        elif char in "'\"" and (quote is None or quote == char):
+            quote = None if quote else char
+        elif quote is None and char == "(":
+            contexts.append(None)
+        elif quote is None and char == ")":
+            closes.append(i)
+            if contexts:
+                quote = contexts.pop()
+        i += 1
+    for match in INVOCATION.finditer(snippet):
+        start = match.end()
+        if start in unquoted:
+            end = next((pos for pos in closes if pos >= start), len(snippet))
+            yield snippet[start:end]
 
 
 def tokens_of(rest):
@@ -123,8 +162,8 @@ def is_placeholder(tok):
 
 def check(root, snippet):
     problems = []
-    for m in INVOCATION.finditer(snippet):
-        toks = tokens_of(m.group(1))
+    for rest in shell_invocations(snippet):
+        toks = tokens_of(rest)
         node, flags = root, set(root.flags)
         descending = True
         for tok in toks:

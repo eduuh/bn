@@ -19,6 +19,7 @@
 
 use crate::resolver::{references_dir, Config};
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Which reference store to read or write: the person-scoped standards store, or one repo's
@@ -150,9 +151,7 @@ pub fn ref_path(scope: &Scope, name: &str) -> PathBuf {
     path.join(format!("{}.md", segments[segments.len() - 1]))
 }
 
-/// Read + summarize a single reference file into a [`Reference`], named by its path relative to
-/// the store root. `None` if it can't be read.
-fn load(root: &Path, path: &Path) -> Option<Reference> {
+fn reference_name(root: &Path, path: &Path) -> Option<String> {
     let rel = path.strip_prefix(root).ok()?;
     let name = rel
         .with_extension("")
@@ -160,9 +159,13 @@ fn load(root: &Path, path: &Path) -> Option<Reference> {
         .map(|c| c.as_os_str().to_string_lossy().to_string())
         .collect::<Vec<_>>()
         .join("/");
-    if name.is_empty() {
-        return None;
-    }
+    (!name.is_empty()).then_some(name)
+}
+
+/// Read + summarize a single reference file into a [`Reference`], named by its path relative to
+/// the store root. `None` if it can't be read.
+fn load(root: &Path, path: &Path) -> Option<Reference> {
+    let name = reference_name(root, path)?;
     let body = std::fs::read_to_string(path).ok()?;
     Some(Reference {
         name,
@@ -229,13 +232,32 @@ pub fn notes_under_root(root: &Path) -> Vec<(String, PathBuf)> {
     out
 }
 
-/// All references in `scope`, sorted by name. Repo notes may nest, so this walks subdirectories
-/// (skipping `images/`); a missing directory yields an empty list (nothing recorded yet).
+/// All references in `scope`, sorted by name. Global references include shipped defaults,
+/// overridden by personal files. An explicit `BN_REFERENCES_DIR` reads only that store.
+/// Repo notes may nest, so this walks subdirectories (skipping `images/`).
 pub fn list_in(scope: &Scope) -> Vec<Reference> {
-    let dir = scope.dir();
-    let mut files = Vec::new();
-    collect_md(&dir, &mut files);
-    let mut out: Vec<Reference> = files.iter().filter_map(|p| load(&dir, p)).collect();
+    let mut dirs = Vec::new();
+    let explicit = std::env::var("BN_REFERENCES_DIR").is_ok_and(|dir| !dir.trim().is_empty());
+    if scope.is_global() && !explicit {
+        if let Some(dir) = crate::resolver::shipped_config("references") {
+            dirs.push(dir);
+        }
+    }
+    dirs.push(scope.dir());
+    let mut references = BTreeMap::new();
+    for dir in dirs {
+        let mut files = Vec::new();
+        collect_md(&dir, &mut files);
+        for path in files {
+            if let Some(name) = reference_name(&dir, &path) {
+                references.insert(name.to_lowercase(), (dir.clone(), path));
+            }
+        }
+    }
+    let mut out: Vec<Reference> = references
+        .into_values()
+        .filter_map(|(dir, path)| load(&dir, &path))
+        .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
 }
@@ -343,6 +365,7 @@ pub fn section_of(body: &str, section: &str) -> Option<String> {
 
 /// Ensure a reference file exists for `name` in `scope`, scaffolding it from [`template`] if
 /// missing, and return its path — the create-if-missing target for `bn ref edit` / `bn ref add`.
+/// A shipped default is copied into the personal store before customization.
 /// `existed` reports whether the file was already there (so `add` can flag a no-op).
 pub fn ensure_file_in(scope: &Scope, name: &str) -> std::io::Result<(PathBuf, bool)> {
     let path = ref_path(scope, name);
@@ -352,7 +375,11 @@ pub fn ensure_file_in(scope: &Scope, name: &str) -> std::io::Result<(PathBuf, bo
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&path, template(scope, name))?;
+    let body = match resolve_in(scope, name).filter(|reference| reference.name == name) {
+        Some(reference) => std::fs::read_to_string(reference.path)?,
+        None => template(scope, name),
+    };
+    std::fs::write(&path, body)?;
     Ok((path, false))
 }
 
@@ -507,6 +534,97 @@ mod tests {
         let path = root.join(rel);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, body).unwrap();
+    }
+
+    fn with_shipped_store(f: impl FnOnce(&Path, &Path)) {
+        let _lock = crate::test_support::env_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let _config =
+            crate::test_support::EnvGuard::set("BN_CONFIG", tmp.path().join("config.toml"));
+        let _config_dir =
+            crate::test_support::EnvGuard::set("BN_CONFIG_DIR", tmp.path().join("config"));
+        let _notes = crate::test_support::EnvGuard::set("BN_NOTES_DIR", tmp.path().join("notes"));
+        let _refs = crate::test_support::EnvGuard::remove("BN_REFERENCES_DIR");
+        let shipped = tmp.path().join("config/repo/config/references");
+        std::fs::create_dir_all(&shipped).unwrap();
+        let personal = Scope::Global.dir();
+        assert!(personal.starts_with(tmp.path()));
+        f(&personal, &shipped);
+    }
+
+    #[test]
+    fn shipped_references_are_available_without_personal_copies() {
+        with_shipped_store(|personal, shipped| {
+            write(
+                shipped,
+                "writing-voice.md",
+                "# Writing voice\n\nPlain English.\n",
+            );
+            let (reference, body) = read("writing-voice").expect("shipped reference");
+            assert_eq!(reference.path, shipped.join("writing-voice.md"));
+            assert!(body.contains("Plain English."));
+            assert_eq!(names(), ["writing-voice"]);
+            assert!(!personal.exists());
+            assert!(names_in(&Scope::repo("bn")).is_empty());
+        });
+    }
+
+    #[test]
+    fn personal_references_override_shipped_defaults_without_duplicates() {
+        with_shipped_store(|personal, shipped| {
+            write(shipped, "writing-voice.md", "# Shipped voice\n");
+            write(personal, "writing-voice.md", "# My voice\n");
+            let (reference, body) = read("writing-voice").unwrap();
+            assert_eq!(reference.path, personal.join("writing-voice.md"));
+            assert_eq!(body, "# My voice\n");
+            assert_eq!(names(), ["writing-voice"]);
+        });
+    }
+
+    #[test]
+    fn unreadable_personal_references_do_not_silently_use_shipped_defaults() {
+        with_shipped_store(|personal, shipped| {
+            write(shipped, "writing-voice.md", "# Shipped voice\n");
+            std::fs::create_dir_all(personal).unwrap();
+            std::fs::write(personal.join("writing-voice.md"), [0xff]).unwrap();
+            assert!(read("writing-voice").is_none());
+        });
+    }
+
+    #[test]
+    fn editing_a_shipped_reference_copies_it_into_the_personal_store() {
+        with_shipped_store(|personal, shipped| {
+            let body = "# Writing voice\n\n## Style\n- Plain English.\n";
+            write(shipped, "writing-voice.md", body);
+            let (path, existed) = ensure_file_in(&Scope::Global, "writing-voice").unwrap();
+            assert!(!existed);
+            assert_eq!(path, personal.join("writing-voice.md"));
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+            append(
+                &Scope::Global,
+                "writing-voice",
+                Some("style"),
+                "Keep it short.",
+            )
+            .unwrap();
+            assert!(std::fs::read_to_string(path)
+                .unwrap()
+                .contains("Keep it short."));
+            assert_eq!(
+                std::fs::read_to_string(shipped.join("writing-voice.md")).unwrap(),
+                body
+            );
+        });
+    }
+
+    #[test]
+    fn explicit_reference_directory_excludes_shipped_defaults() {
+        with_shipped_store(|personal, shipped| {
+            write(shipped, "writing-voice.md", "# Writing voice\n");
+            let _refs = crate::test_support::EnvGuard::set("BN_REFERENCES_DIR", personal);
+            assert!(list().is_empty());
+            assert!(read("writing-voice").is_none());
+        });
     }
 
     #[test]

@@ -9,6 +9,12 @@ keywords: [multi-agent, coordination, agents, workers, parallel, monitor, relay,
 
 These lessons come from running many agents in parallel on large tasks such as a BigMono change or a telemetry investigation. The coordinator decides, relays, and monitors. Workers do the work.
 
+Use Copilot fleet / Claude subagents for substantial research, independent reviews, or bulky
+build/test output that would otherwise crowd the main context. Start with the smallest useful
+team and expand only when another independent assignment can make progress. There is no fixed
+agent-count cap. Keep one main owner for decisions, integration, shared writes, and final
+verification. Short known-file lookups, small edits, and one continuous trace stay local.
+
 ## Roles
 
 - **Coordinator:** keeps the thread short, sets the goal, briefs workers, watches for blockers, and asks the human only on genuine ambiguity. It does not turn every worker failure into a local debugging rabbit hole.
@@ -24,6 +30,9 @@ Each worker brief should say:
 - the hard constraints, especially what not to change
 - how to report progress and blockers
 - which other worker or decision it depends on, if any
+- the exact revision, evidence required, and permitted writes
+- a stopping condition and a concise result contract: findings with paths or sources, commands
+  and exit codes, uncertainties, and artifact locations
 
 Give each worker a bounded slice. A UI bug, a test gap, and a deployment concern are three briefs, not one broad one.
 
@@ -32,6 +41,10 @@ Give each worker a bounded slice. A UI bug, a test gap, and a deployment concern
 1. Launch only the workers that can make progress in parallel.
 2. Wait for evidence, not vibes.
 3. Relay findings as decisions or next questions, not transcripts.
+   Follow up with the same worker for the same task when its retained context helps. Start a
+   fresh worker for unrelated work. Do not maintain unrelated worker pools, reread the worker's
+   entire search trail, or repeat its checks without a concrete reason. Workers do not launch
+   further agents unless the main owner explicitly authorizes an independent split.
 4. If a worker is blocked, either narrow the task or ask the human.
 5. When the work is done, close the loop: summarize what changed, what was verified, and what remains.
 

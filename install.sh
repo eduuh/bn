@@ -5,9 +5,8 @@
 #   --agents opt-in extra: global npm helpers for AXI-style agent workflows (gnhf,
 #            lavish-axi) plus the upstream Lavish agent-skill. Also enabled by
 #            BN_INSTALL_AGENT_TOOLS=1. Combines with either mode.
-#   --shell-clis opt-in extra: terminal productivity companions (zoxide, bat, eza, delta) that
-#            pair well with the workflow layer's worktrees/notes/diffs. Also enabled by
-#            BN_INSTALL_SHELL_CLIS=1. Combines with either mode.
+#   Full mode also installs missing zoxide, bat, eza, and delta. BN_INSTALL_SHELL_CLIS=0 skips
+#            these companions; --shell-clis / BN_INSTALL_SHELL_CLIS=1 enables them in core mode.
 #   --force-home  replace real files that config/stow/ tracks (old copy kept as <file>.bak-<time>) and
 #            unmanaged skills bn would otherwise skip (moved to ~/.cache/bn/skill-backups/).
 #            Also BN_FORCE_HOME=1. Without it, a real file you wrote is left alone.
@@ -30,7 +29,7 @@ fi
 
 mode="full"
 agents="${BN_INSTALL_AGENT_TOOLS:-0}"
-shell_clis="${BN_INSTALL_SHELL_CLIS:-0}"
+shell_clis="${BN_INSTALL_SHELL_CLIS:-auto}"
 force_home="${BN_FORCE_HOME:-0}"
 # Internal, set by ./build.sh once it has compiled this checkout: take the binaries from its target
 # dir instead of the release. Not for hand use — on its own it finds nothing to install.
@@ -48,6 +47,13 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+if [ "$shell_clis" = "auto" ]; then
+  shell_clis=0
+  if [ "$mode" = "full" ]; then
+    shell_clis=1
+  fi
+fi
 
 # bn home — the single hub for tooling: source (repo/), binaries (bin/), config (config/),
 # the jobs symlink, and bn-managed repos (repos/). New + fresh installs default to ~/.bn;
@@ -477,10 +483,9 @@ if [ "$mode" = "full" ] && [ "${BN_INSTALL_DEPS:-1}" != "0" ]; then
   bn_install_ensure_tmux
 fi
 
-# --- shell CLIs (opt-in): terminal productivity companions -----------------------
-# Never runs by default — zoxide/bat/eza/delta are nice-to-haves, not requirements, so they're
-# opt-in via --shell-clis or BN_INSTALL_SHELL_CLIS=1 (scripts/install-shell-clis.sh says why).
-# Same BN_INSTALL_DEPS=0 opt-out as the required deps above.
+# --- shell CLIs: terminal productivity companions ------------------------------
+# Full mode installs these by default; core mode requires --shell-clis or BN_INSTALL_SHELL_CLIS=1.
+# BN_INSTALL_SHELL_CLIS=0 skips them, as does the shared BN_INSTALL_DEPS=0 opt-out.
 if [ "$shell_clis" = "1" ] && [ "${BN_INSTALL_DEPS:-1}" != "0" ]; then
   bn_install_ensure_shell_clis
 fi
@@ -781,14 +786,15 @@ fi
 # ~/.agents/skills and symlinks it into ~/.claude/skills; Claude Code and Copilot CLI both read
 # those roots natively, so one install serves both harnesses. Best-effort: needs npx, and a
 # failed entry is reported, never fatal. Names must not collide with bn's own skills, because
-# `bn skills install` refuses to overwrite a skill it does not own. One `<owner/repo> <skill>` per
-# line. Set BN_SKIP_UPSTREAM_SKILLS=1 to skip.
+# `bn skills install` refuses to overwrite a skill it does not own. One `<repo-or-url> <skill>` per
+# line. Merge-conflict resolution is pinned to the last revision before upstream removed it.
+# Set BN_SKIP_UPSTREAM_SKILLS=1 to skip.
 install_upstream_skills() {
   local entries repo skill failed=""
   entries="
 mattpocock/skills grill-me
 mattpocock/skills handoff
-mattpocock/skills resolving-merge-conflicts
+https://github.com/mattpocock/skills/tree/153fc1b93de6584562765cdce299324e1ff9e661/skills/engineering/resolving-merge-conflicts resolving-merge-conflicts
 mattpocock/skills git-guardrails-claude-code
 obra/superpowers verification-before-completion
 microsoft/playwright-cli playwright-cli
@@ -816,7 +822,7 @@ $entries
 EOF_SKILLS
   if [ -n "$failed" ]; then
     echo "warning: some upstream skills did not install:$failed" >&2
-    echo "         re-run: npx skills add <owner/repo> --skill <name> -g -a claude-code -a github-copilot -y" >&2
+    echo "         re-run: npx skills add <repo-or-url> --skill <name> -g -a claude-code -a github-copilot -y" >&2
   fi
 }
 install_upstream_skills

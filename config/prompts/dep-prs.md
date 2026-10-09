@@ -28,7 +28,7 @@ Your assignment: **{{task}}**
 2. **Close superseded ones.** Dependabot opens a new grouped PR without always closing the old
    one ("Bump AWSSDK.S3 and 8 others" twice). When a newer open PR updates the same packages to
    the same or newer versions, close the older one:
-   `gh pr close <n> --comment "Superseded by #<newer> (bn dep-prs)" --delete-branch`.
+   `gh pr close <n> --comment "Superseded by #<newer> (dep-prs)" --delete-branch`.
 3. For each remaining PR, classify it from the title and the versions table in its body:
    *patch/minor* (including a group named minor-and-patch) or *major* (any package's first
    version number changes).

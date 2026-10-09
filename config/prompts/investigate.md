@@ -18,7 +18,13 @@ Do not start coding before the evidence says what to change.
    a vague finding. If it's actually several questions, name them and take them in order.
 
 2. **Investigate — read, don't write.** Trace the code, read the docs, run *read-only* commands
-   (grep, tests in report mode, `--help`, log inspection). Touch no source. Follow the evidence
+   (grep, tests in report mode, `--help`, log inspection). Touch no source.
+   For a substantial investigation, assign bounded evidence gathering to Copilot fleet / Claude
+   subagents and retain only concise findings with paths, sources, and uncertainties in the main
+   context. Split genuinely independent questions, not one continuous trace across workers.
+   A short known-file lookup stays local. If already an assigned investigation worker, complete
+   your slice rather than launching another layer.
+   Follow the evidence
    past the first plausible answer — the goal is to be *right*, not fast. When you learn something
    non-obvious about the codebase or tooling on the way, `bn_ref_append` it into the repo's
    reference notes with its source and today's date.
@@ -28,7 +34,10 @@ Do not start coding before the evidence says what to change.
    save `$(bn --path)/<topic>.md`, but the note's Research items are the durable handoff the
    planner receives.
 
-4. **Resolve open threads.** If focused unknowns remain, run `bn pipeline investigate finish
+4. **Resolve open threads.** Use fresh sub-investigators only for unresolved questions with
+   independent evidence paths. Do not fan out questions answered by one cheap lookup, duplicate
+   an active worker, or dispatch the same unknown again without new evidence or a narrower
+   question. If focused unknowns remain, run `bn pipeline investigate finish
    --unknown "<question>"` once per unknown; the driver fans them out to fresh sub-investigators
    and merges their evidence. If the task cannot be scoped without a person, run `bn pipeline
    investigate finish --blocked "<specific input needed>"` so a typed Planning attention item is

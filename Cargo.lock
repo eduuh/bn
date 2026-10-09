@@ -203,6 +203,7 @@ dependencies = [
  "nucleo-matcher",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tempfile",
  "ureq",
 ]

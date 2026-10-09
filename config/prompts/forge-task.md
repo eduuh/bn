@@ -35,6 +35,10 @@ work.
 1. Restate the question in one line in the branch note.
 2. Gather evidence from the task context, Forge goal/activity data, repo notes, and web or local
    sources only when needed. Keep source names with each material fact.
+   Delegate substantial evidence gathering through Copilot fleet / Claude subagents with a
+   bounded question and a source-backed result. Keep Forge claiming, heartbeats, recommendation,
+   comments, and completion with the main owner. A delegated Forge worker does not claim the
+   activity again or launch another layer. Short known-file checks stay local.
 3. Compare options against the task's criteria; use a small decision table for several choices.
 4. Give one recommendation when asked. If a required fact is missing, name it and the best
    reversible next step.
@@ -126,7 +130,8 @@ Setting `provider = "file"` goes back to `tasks.txt`, untouched by Forge mode.
   what each step did.
 - **Claimed but not moving.** `bn forge sweep --json` says whether the claim started and, if not,
   why. A claim that did not start is not retried, because it is no longer unstarted: start it with
-  `bn dispatch --repo <repo> --task <id> "<title>"`. `bn task show <id>` shows its `smart:` stamp.
+  `bn dispatch --repo <repo> --task <id> "<title>"`. Use `bn task enhance <id> --dry-run`
+  to inspect its SMART-gate context without launching an agent.
 - **No comments.** Look for `could not leave a note` in the output of the command that moved the
   task. A rejected key names `bn forge login`.
 - **Not completing after merge.** `pr:` must be a full PR URL, `gh auth status` must pass on the

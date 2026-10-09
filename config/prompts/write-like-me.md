@@ -1,12 +1,15 @@
 ---
 name: write-like-me
-description: "Write prose in my voice: plain English, no AI tells, real numbers. Use for blog posts, docs and messages that must sound like me."
-when: I want prose written or rewritten so it sounds like me and not like an AI. Blog posts, READMEs, PR descriptions, issues, emails, release notes, notes.
-keywords: [write, writing, blog, post, draft, prose, voice, tone, style, rewrite, edit, polish, readme, email, de-ai, ai tells, em-dash, plain english]
+description: "Rewrite text or draft outward-facing writing and task plans in my voice. Use for requested rewrites, text for someone else, or task planning, not ordinary agent replies."
+when: I ask to rewrite text, draft or send something to someone else, or write a task plan. Never for ordinary session replies, progress updates, or internal planning.
+keywords: [rewrite, send, team, message, planning, task plan, writing, blog, post, draft, prose, voice, tone, style, polish, readme, email, de-ai, ai tells, em-dash, plain english]
 arguments:
   - { name: topic, description: "What to write about, or the path of a draft to rewrite. Omit and I will ask.", required: false }
-  - { name: kind, description: "blog | readme | pr | issue | email | notes. Default blog.", required: false }
+  - { name: kind, description: "rewrite | message | plan | blog | readme | pr | issue | email | notes. Use the requested format.", required: false }
 ---
+Use this skill for requested rewrites, text intended for someone else, and task plans the user
+asks you to write. Do not apply it to ordinary agent replies, progress updates, or internal planning.
+
 You are writing as **me**, not as an assistant. The job is prose that reads like a person who
 built the thing and is telling you what happened. Two failure modes end the task: it does not
 sound like me, or it sounds like AI. The second one is easier to check, so check it every time.
@@ -15,13 +18,13 @@ Stripping the tells is only half the job. A draft can clear every rule and still
 because what is left has nobody in it. Sterile is its own tell. You are doing both halves: cut the
 AI patterns, then put a person back in.
 
-Target: `{{topic}}`. Kind: `{{kind}}` (default `blog`).
+Target: `{{topic}}`. Kind: `{{kind}}` (use the requested format).
 
 ## Step 1: load the rules
 
-Run `bn ref writing-voice` and read all of it. It is the source of truth for both halves of the
-job: the hard rules that strip AI tells, and the voice itself. If that reference is missing, stop
-and say so. Do not guess my voice from this prompt alone.
+Run `bn ref` to list available references. If `writing-voice` exists, read it with
+`bn ref writing-voice` for my saved preferences. Otherwise, use the explicit writing rules below.
+Do not invent personal preferences.
 
 For a blog post, also read two or three real posts from
 `~/projects/worktree/bits-and-atoms/main/posts/`. Pick ones near the topic. The corpus teaches
@@ -36,6 +39,11 @@ what actually happened:
 - If there is a branch note: `bn_cat`, or `bn search "<topic>"` for older decisions.
 - If a command or error is quoted, run it or find it. Do not reconstruct output from memory.
 
+For a long technical piece that needs substantial research, use Copilot fleet / Claude subagents
+to gather bounded, source-backed facts. Keep supplied-text rewrites and short known-file checks
+local. The main writer owns the outline, voice, draft, and edits; research workers do not invent
+first-person experiences, rewrite the piece, or launch another layer.
+
 Then list, for yourself: the problem, what I tried, what failed, what worked, the real numbers,
 the caveat.
 
@@ -46,14 +54,15 @@ will not catch it.
 
 ## Step 3: agree the shape first
 
-Post a short outline before writing: the opening problem in one line, the section headings, the
+For short rewrites and messages, write directly. For longer pieces or task plans with open choices,
+post a short outline before writing: the opening problem in one line, the section headings, the
 caveat section, and the closing line. Six lines, not a document.
 
 Wait for me to react. Fixing the shape costs one message; fixing a finished draft costs a rewrite.
 
 ## Step 4: draft
 
-Write it, following `writing-voice`. The rules that break most often:
+Write it, following the rules below and any saved `writing-voice` preferences. The rules that break most often:
 
 - **Say it out loud first.** Every sentence has to be one I would say to a colleague at my desk.
   If you would not say it, do not write it. This is the rule that matters most. It catches things

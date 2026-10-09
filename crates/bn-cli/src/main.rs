@@ -272,6 +272,12 @@ fn main() {
         .try_get_matches_from(args)
         .and_then(|m| <Cli as clap::FromArgMatches>::from_arg_matches(&m))
         .unwrap_or_else(|e| e.exit());
+    // Discovery skips side-effecting command startup: no config migration, action log,
+    // catch-up jobs or timer reconciliation before its snapshot.
+    if let Some(Command::Coord(CmdCoord::Discover { task })) = &cli.command {
+        cmd::discover::emit_discover(&Config::load(), task, cli.json);
+        return;
+    }
     // The first bn after the upgrade moves an old `config.toml` into the notes tree, before
     // anything reads config. Every later run costs one failed stat.
     if let Some(report) = bn_core::config_migrate::run() {
@@ -482,6 +488,28 @@ pub(crate) fn fail_json(json: bool, command: &str, code: &str, msg: &str) -> ! {
 
 #[cfg(test)]
 mod prompt_command_tests {
+    use clap::Parser;
+
+    #[test]
+    fn build_command_keeps_trailing_argv_for_the_script() {
+        let cli = crate::Cli::try_parse_from(["bn", "build", "run", "tat", "--help"])
+            .expect("build run should pass trailing args through");
+        match cli.command {
+            Some(crate::Command::Misc(crate::CmdMisc::Build {
+                name,
+                repo,
+                branch,
+                argv,
+            })) => {
+                assert_eq!(name.as_deref(), Some("run"));
+                assert_eq!(repo, None);
+                assert_eq!(branch, None);
+                assert_eq!(argv, vec!["tat", "--help"]);
+            }
+            other => panic!("expected build command, got {other:?}"),
+        }
+    }
+
     /// Every backtick-quoted `bn <sub>` command in the shipped prompts and agent definitions must
     /// name a real first-level clap subcommand. This is the guardrail that catches phantom or
     /// removed commands frozen into instruction text (the class of bug behind `bn dispatch

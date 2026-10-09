@@ -1,37 +1,34 @@
 ---
 name: tmux-run
-description: "Run commands in a visible tmux pane and drive long jobs, other agents, locks and TUIs from tmux. Use for builds, installs, anything slow or interactive, or anything that spawns another agent."
-when: Any command with side effects, anything taking more than ~30s, anything interactive, and any script the agent wrote.
-keywords: [tmux-run, tmux, run, commands, visible, pane, instead, hidden, tool, calls, drive, long-running]
+description: "Run long-running or interactive commands in tmux, leaving short commands in the session. Use for long builds or installs, nvim, servers, or interactive agents."
+when: Commands expected to take more than ~30s, running servers, or commands needing user interaction such as nvim.
+keywords: [tmux-run, tmux, run, commands, visible, pane, instead, hidden, tool, calls, drive, long-running, heartbeat, progress, inactivity]
 ---
-You run commands **where the user can see them**. The default tool-call shell is invisible: its
-output lands in the transcript after the fact, interactive prompts hang with no way to answer, and a
-long job looks identical to a stalled one. A tmux pane fixes all three — the user watches it happen,
-can read the scrollback, can type into it, and can Ctrl-C it without touching the agent.
+Run short commands directly in the session. Reserve a visible tmux pane for long-running jobs
+and commands that need user interaction. The user can watch a long job, answer prompts, use an
+editor, or stop a server without interrupting the agent.
 
 ## The rule
 
-Run it in the tmux side pane when the command **changes something, takes a while, or might ask a
-question**. Read-only inspection that answers a question you were about to answer anyway stays in
-the normal tool call — routing `git status` or a `grep` through tmux is noise, not transparency.
+Use a tmux side pane only when the command **is expected to take more than ~30 seconds, stays
+running, or needs user interaction**. Side effects, network access, and being a newly written
+script do not by themselves justify opening a pane.
 
 Use the side pane for:
 
-- Installers, builds, migrations, deploys, `setup*.sh`, package managers.
-- Clones, fetches, syncs — anything doing real network or disk work.
-- Anything that may prompt: credentials, `gh auth login`, a confirmation, an editor.
-- Any script **you just wrote**. The user should watch your code run the first time, not read your
-  summary of how it went.
-- Anything you expect to take more than ~30 seconds.
-- Test suites and linters whose output the user will want to scroll back through.
+- Long builds, installs, clones, migrations, test suites, or other jobs taking more than ~30 seconds.
+- Servers and watchers that stay running.
+- Interactive editors and TUIs such as nvim, or commands needing credentials or user confirmation.
+- Interactive agents the user needs to watch or steer.
 
 Keep in the normal tool call:
 
 - `ls`, `cat`, `grep`, `git status`, `git diff`, `git log`, `--help`, `--version`.
 - Reading a file to decide what to do next.
-- Anything whose entire value is the text you're about to quote back.
+- Short non-interactive tests, builds, installs, scripts, and git operations.
 
-When in doubt, use the pane. Being watchable costs nothing.
+Default to the session for short non-interactive commands. Use a pane when the expected duration
+or interaction requires it, not just because a command changes files.
 
 Write the command so it doesn't prompt unnecessarily — check before escalating (`dpkg-query` before
 `sudo apt install`, "is it already installed" before installing). A needless prompt is not just
@@ -79,19 +76,28 @@ everything unreadably narrow. Say which you chose.
 **2. Say where it is, in one line** — "building in the pane beside this one, ~4 min" —
 and move on. Do not narrate progress you have not checked.
 
+For long batch jobs, run `bn cmd run -- <command...>` in that pane. It streams output,
+saves a private log, emits a heartbeat every 60 seconds, and warns after 180 seconds without
+output. Use `bn cmd run -- --label "<stage>" -- <command...>` to name the stage.
+An inactivity warning means progress is unknown, not that the command has hung.
+Leave interactive editors and TUIs unwrapped.
+
 **3. Keep working.** Anything not depending on that job continues now. Do not stall
 the conversation on it.
 
-**4. Wait on real state, in the background.** Never block the turn:
+**4. Wait on the job's completion signal, in the background.** Do not poll from the agent.
+Have the job signal completion even when it fails, and retain its exit status:
 
 ```bash
-# the pane's own process, not a text match
-until [ -z "$(tmux list-panes -t "$job" -F '#{pane_pid}' 2>/dev/null)" ]; do
-  sleep 20
-done
+done="build-$$"
+status_file=<scratchpad>/build.exit
+job=$(tmux split-window -d -t "$TMUX_PANE" -h -P -F '#{pane_id}' -c <dir> \
+  "bn cmd run -- cargo build; code=\$?; printf '%s\n' \"\$code\" > '$status_file'; tmux wait-for -S '$done'; exit \$code")
+tmux wait-for "$done"
 ```
 
-Run that with `run_in_background: true` and you get a notification when it lands.
+Run the wait with the harness's background tool and read the wrapper's saved log and exit result
+after completion. The job emits its own heartbeats while the agent works elsewhere.
 
 **Keeping a shell open defeats automatic pane cleanup.** Do not append `exec zsh` after a
 one-shot command. For commands sent into an existing interactive shell, save the exit status and
@@ -106,7 +112,7 @@ the command exits, so inspect its log and recorded exit status rather than pane 
 
 ## Builds and test runs — capture the outcome, do not scrape for it
 
-A build or a test suite is the long-running job you will run most, and it is the one you most want
+A long build or test suite is the job you will run most in a pane, and it is the one you most want
 to *quote* afterwards: the failing test name, the compiler error, the pass count. The pane is for
 the user to watch; a log is what you read. Get both at once:
 
@@ -121,9 +127,9 @@ job=$(tmux split-window -d -t "$TMUX_PANE" -h -P -F '#{pane_id}' -c <dir> \
   log with `grep -E '^(error|test result)'` instead of paging through a capture.
 * **The build's exit code, not `tee`'s.** Run the pipeline under `set -o pipefail`, save `$?` to
   the status file, and exit the shell. Read the log and status file after the pane closes.
-* **Never start a build with the hidden tool call "because it is only a build".** A release build
-  under load is ten minutes the user cannot see, cannot cancel, and cannot tell from a hang.
-  `run_in_background` on the tool call hides it just as well; it is not a substitute for the pane.
+* **Long builds belong in the pane; quick checks stay in the session.** A release build under
+  load can take ten minutes. `run_in_background` on the tool call is not a substitute for a
+  visible pane when the job is long-running.
 * **bn itself:** from any bn worktree or pool slot, `bn build build-to-local` compiles that branch
   into the shared cache and installs it as the live `bn` — that, in the pane, is how a bn change is
   tried.
@@ -311,6 +317,11 @@ Useful fields: `pane_id window_id pane_title pane_dead pane_dead_status pane_pid
 pane_current_command pane_current_path session_name window_name window_activity_flag`.
 
 ### Independent agents in other sessions
+
+These launch and placement rules apply to standalone bn workers. Ordinary Copilot fleet /
+Claude subagents use the harness's native delegation tools and do not require a separate
+tmux session or `bn dispatch`. Their long-running commands still follow the command-routing
+rule above.
 
 An agent is a long-running job with opinions. It goes where the model says it goes — **another
 repo's session, in that branch's window** — because that placement is the only reason

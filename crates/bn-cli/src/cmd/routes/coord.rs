@@ -6,5 +6,6 @@ pub(super) fn route(cfg: &Config, action: CmdCoord, json: bool) {
         CmdCoord::Proof { action } => crate::cmd::proof::emit_proof(cfg, action, json),
         CmdCoord::Compact { action } => crate::cmd::compact::emit_compact(cfg, action, json),
         CmdCoord::Context { action } => crate::cmd::context::emit_context(cfg, action, json),
+        CmdCoord::Discover { task } => crate::cmd::discover::emit_discover(cfg, &task, json),
     }
 }

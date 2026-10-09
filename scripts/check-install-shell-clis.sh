@@ -25,4 +25,34 @@ done
 # The tool list itself: catches an accidental typo/removal in BN_SHELL_CLIS going unnoticed.
 [ "$BN_SHELL_CLIS" = "zoxide bat eza delta" ] || fail "BN_SHELL_CLIS changed unexpectedly: $BN_SHELL_CLIS"
 
+# Check the installer's defaults and opt-outs without running its deployment steps.
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+sed -n '/^mode="full"/,/^# bn home/{ /^# bn home/d; p; }' "$repo/install.sh" > "$tmp/settings.sh"
+sed -n '/^# --- shell CLIs/,/^preflight_report "\$mode"/p' "$repo/install.sh" > "$tmp/phase.sh"
+
+check_shell_cli_mode() (
+  local expected="$1" setting="$2" deps="$3"
+  shift 3
+  unset BN_INSTALL_SHELL_CLIS BN_INSTALL_DEPS
+  [ "$setting" = default ] || export BN_INSTALL_SHELL_CLIS="$setting"
+  [ "$deps" = default ] || export BN_INSTALL_DEPS="$deps"
+  local calls=0
+  bn_install_ensure_shell_clis() { calls=$((calls + 1)); }
+  preflight_report() { :; }
+  source "$tmp/settings.sh"
+  source "$tmp/phase.sh"
+  [ "$calls" = "$expected" ] ||
+    fail "expected $expected shell CLI installs for setting=$setting deps=$deps args=$*, got $calls"
+)
+
+check_shell_cli_mode 1 default default
+check_shell_cli_mode 0 0 default
+check_shell_cli_mode 0 default 0
+check_shell_cli_mode 0 default default --core
+check_shell_cli_mode 1 default default --core --shell-clis
+check_shell_cli_mode 1 1 default --core
+check_shell_cli_mode 1 0 default --shell-clis
+check_shell_cli_mode 0 1 0 --shell-clis
+
 echo "check-install-shell-clis: ok"

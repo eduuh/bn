@@ -54,10 +54,15 @@ Repaint the tracker at the **top of each step** so the window shows live progres
    `cargo clippy`/`cargo fmt --check`, `npm run lint`, `ruff`). **Collect** the findings here; don't
    fix anything yet (fixes, if any, happen in step 5, and only for your own PR).
 
-3. **reference-aware review — the core.** `bn review pr stage review`. Fan out the
-   `pr-review-toolkit` subagents **in parallel** over the changed files — `code-reviewer`,
-   `silent-failure-hunter`, `type-design-analyzer`, `pr-test-analyzer`; if they're unavailable,
-   review inline. Then check the diff against **my coding-standards references** (the reference
+3. **reference-aware review — the core.** `bn review pr stage review`. Use Copilot fleet / Claude
+   subagents when the review needs substantial independent contexts. Select an available
+   repository-specific reviewer when appropriate; otherwise brief an available suitable
+   reviewer. Partition by independently reviewable contracts or change areas, not several
+   labels over the same small diff. Keep a small diff local. Named `pr-review-toolkit`
+   specialists are optional when installed, not prerequisites. Workers inherit the PR's
+   ownership restrictions, do not launch nested reviewers without explicit authorization,
+   and return concrete findings. The main reviewer checks references, deduplicates findings,
+   and records one verdict. Then check the diff against **my coding-standards references** (the reference
    system to look out for): run `bn ref` to list them, then `bn ref <name>` for each one's full text
    and flag any violation with a concrete `path:line`. Record notable ruled-out concerns
    (`bn_add research`) — half the value is what you cleared.

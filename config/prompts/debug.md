@@ -19,6 +19,11 @@ is **repro before fix, cause before patch**: a fix you can't reproduce failing y
 2. **Isolate.** Narrow from symptom to mechanism — bisect, add targeted logging, halve the search
    space. Note what you *rule out* (`bn_add research`), not just hunches; the ruled-out paths are
    half the value. Keep going until you can point at the line/condition responsible.
+   Keep the main root-cause trace local. When the reproduction leaves substantial independent
+   hypotheses, use Copilot fleet / Claude subagents to test those hypotheses read-only and
+   return evidence that confirms or rules them out. Do not divide one call chain among workers
+   or let several workers patch the same failure. If already assigned as a debugging worker,
+   complete your slice without further delegation unless the parent explicitly authorizes it.
 
 3. **Name the root cause before fixing.** State the actual cause in one line — the real reason, not
    the surface symptom — and record it with `bn_add decision`. If you're fixing without being able

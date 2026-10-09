@@ -22,7 +22,9 @@ Rerunning this skill must not duplicate entries, reset goals, or replace working
 Do not commit, push, launch an agent, warm a pool, or install persistent services just to prove
 setup works.
 
-Use `tmux-run` for mutations and long-running commands when tmux is available.
+Use `tmux-run` for commands expected to take more than ~30 seconds, persistent commands, or
+user interaction when tmux is available. Run quick non-interactive commands directly;
+mutations alone do not require tmux.
 
 ## Repository setup
 

@@ -15,6 +15,8 @@ mod forge_cmd;
 pub(crate) use forge_cmd::ForgeCmd;
 mod task;
 pub(crate) use task::TaskCmd;
+mod tracking_group;
+pub(crate) use tracking_group::CmdTracking;
 mod pipeline_cmd;
 pub(crate) use pipeline_cmd::{PipelineCmd, PipelineInvestigateCmd};
 mod plan_cmd;
@@ -441,27 +443,6 @@ pub(crate) enum CmdPlanning {
 }
 
 #[derive(Subcommand, Debug)]
-pub(crate) enum CmdTracking {
-    /// Weekly auto-retro: mine the telemetry bn already collects (punch log, focus blocks, PR
-    /// metrics, todo ages, daily goals) into a metric table + one heuristic suggestion. Anchored
-    /// to the configured weekly window; read-only and network-free.
-    Insights {
-        /// Rolling window of N days instead of the configured weekly anchor.
-        #[arg(long)]
-        since: Option<i64>,
-        /// Write the rendered retro to `<notes>/<machine>/insights/<YYYY-Www>.md` (the cron
-        /// snapshot path) instead of printing it, and report where it landed.
-        #[arg(long)]
-        write: bool,
-        /// Record the current scoreboard numbers as the fixed baseline anchor (#276) — the
-        /// pre-staff comparison point every later run renders against. Overwrites any prior
-        /// anchor and reports where it landed.
-        #[arg(long)]
-        set_baseline: bool,
-    },
-}
-
-#[derive(Subcommand, Debug)]
 pub(crate) enum CmdInsights {
     /// Search all notes and design docs (active + archived): bn search <query...>
     Search {
@@ -471,9 +452,7 @@ pub(crate) enum CmdInsights {
         #[arg(long, default_value_t = 50)]
         limit: usize,
     },
-    /// PR review queue: the open PRs awaiting your review and your own, from a local cache.
-    /// `--fetch` refreshes that cache from GitHub — the write side the `pr-queue` agent runs on a
-    /// schedule.
+    /// PR review queue: the open PRs awaiting your review and your own, from a local cache; `--fetch` refreshes that cache from GitHub, the write side the `pr-queue` agent runs on a schedule.
     Reviews {
         /// Print the path to the review cache file, then exit.
         #[arg(long)]
@@ -750,6 +729,7 @@ pub(crate) enum CmdMisc {
     /// way). Defaults to `build`. Runs in the current dir with `~/.local/bin:~/.bin` prepended to
     /// PATH. `--repo`/`--branch` name the note to resolve from explicitly, for callers whose cwd
     /// can't answer it — a detached pool slot, or a cron.
+    #[command(trailing_var_arg = true, allow_hyphen_values = true)]
     Build {
         /// Script name (default `build` → `build.sh`).
         name: Option<String>,
@@ -759,6 +739,8 @@ pub(crate) enum CmdMisc {
         /// Target branch (with `--repo`).
         #[arg(long)]
         branch: Option<String>,
+        /// Extra arguments forwarded to the resolved script unchanged.
+        argv: Vec<String>,
     },
     /// Unified token usage + **$ cost** across all agent work (#381), categorized by work-class
     /// (Orchestration / Coding / Scheduled / …). Two clearly-labeled units: **AIC** (the real

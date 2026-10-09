@@ -1,10 +1,11 @@
 //! `bn build` + target-context resolution helpers.
 use crate::*;
 
-/// `bn build [name] [--repo R --branch B]` — resolve the worktree's `<name>.sh` (default `build`)
-/// via the same branch → repo → global `job_script` lookup the cron uses, then run it in the
-/// current directory. This is the one build entry point: `wt pool warm` warms each slot by
-/// invoking this command, so the pool can never drift from what `bn build` does.
+/// `bn build [name] [--repo R --branch B] [-- <args…>]` — resolve the worktree's `<name>.sh`
+/// (default `build`) via the same branch → repo → global `job_script` lookup the cron uses, then
+/// run it in the current directory. Any trailing argv is forwarded to the script unchanged. This
+/// is the one build entry point: `wt pool warm` warms each slot by invoking this command, so the
+/// pool can never drift from what `bn build` does.
 ///
 /// An explicit `--repo`/`--branch` pair replaces cwd resolution, which is what lets the pool warm
 /// build a slot at all — a pool slot is a *detached* checkout, so `git branch --show-current` is
@@ -14,6 +15,7 @@ pub(crate) fn run_build_cmd(
     name: Option<String>,
     repo: Option<String>,
     branch: Option<String>,
+    argv: &[String],
 ) -> i32 {
     let cwd = std::env::current_dir().unwrap_or_default();
     let ctx = match resolver::resolve_target(cfg, &cwd, repo, branch) {
@@ -44,6 +46,7 @@ pub(crate) fn run_build_cmd(
     // under a non-login shell.
     match std::process::Command::new("/bin/sh")
         .arg(&script)
+        .args(argv)
         .current_dir(&cwd)
         .env("PATH", crate::cmd::cron::job_path())
         .status()

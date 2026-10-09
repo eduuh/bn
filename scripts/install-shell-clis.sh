@@ -3,10 +3,10 @@
 # Shell productivity companions for the workflow layer — not required by bn itself, but they pay
 # for themselves on top of it: zoxide for jumping between pool-slot worktrees by fragment, bat for
 # reading `bn cat`/`bn plan` output with highlighting, eza for a quick tree of active worktrees, and
-# delta as git's diff pager for `bn why` / review-gate diffs. Sourced by install.sh (opt-in via
-# --shell-clis / BN_INSTALL_SHELL_CLIS=1) and by its regression check.
+# delta as git's diff pager for `bn why` / review-gate diffs. Sourced by install.sh and its check.
+# Full mode installs these by default; --shell-clis / BN_INSTALL_SHELL_CLIS=1 enables core mode.
 #
-# Opt-in and non-fatal by design, same posture as install-tmux.sh's build step: a missing tool here
+# Non-fatal by design, same posture as install-tmux.sh's build step: a missing tool here
 # never blocks the workflow layer, it just means those niceties stay off until installed by hand.
 BN_SHELL_CLIS="zoxide bat eza delta"
 

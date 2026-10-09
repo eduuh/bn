@@ -134,7 +134,10 @@ jobs:
       # Skills are read at run time, so a renamed subcommand or flag breaks them silently. Check
       # every `bn ...` they cite against the binary this commit builds, and render each one.
       - name: Skill commands and rendering
-        run: cargo build -p bn-cli && python3 scripts/check-skill-commands.py
+        run: |
+          cargo build -p bn-cli
+          python3 scripts/test-check-skill-commands.py
+          python3 scripts/check-skill-commands.py
 
   # Repo-wide structural gates that need no installed Rust toolchain — seconds, not minutes. Kept
   # separate from `test` so "you made a file bigger" never hides behind a clippy failure, and vice
@@ -157,6 +160,9 @@ jobs:
       - name: Prompt-source ownership
         run: sh scripts/check-prompt-sources.sh
 
+      - name: Command heartbeat regression
+        run: python3 scripts/test-command-heartbeat.py
+
       - name: Installer toolchain discovery
         run: bash scripts/check-install-toolchain.sh
 
@@ -165,6 +171,12 @@ jobs:
 
       - name: Installer stow packages
         run: bash scripts/check-install-stow.sh
+
+      - name: Installer upstream skills
+        run: bash scripts/check-install-upstream-skills.sh
+
+      - name: Installer shell CLI defaults
+        run: bash scripts/check-install-shell-clis.sh
 
       - name: Retired web service cleanup
         run: bash scripts/check-install-retire-web.sh

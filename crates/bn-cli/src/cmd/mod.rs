@@ -34,6 +34,7 @@ pub(crate) mod machine;
 pub(crate) mod main_sync;
 pub(crate) mod daily;
 pub(crate) mod dispatch;
+pub(crate) mod discover;
 pub(crate) mod doctor;
 pub(crate) mod findings;
 pub(crate) mod forge;

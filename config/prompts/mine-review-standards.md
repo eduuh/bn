@@ -34,8 +34,14 @@ task goal — it names the target repo, the ADO source repo, and the reference d
    logged in, unresolved org/project, unknown repo), **STOP and report exactly what failed and
    how to fix it** — never invent standards from nothing.
 
-2. **Keep only genuine human review feedback.** The helper is a coarse filter; you are the smart
-   one. From `/tmp/pr-comments.json`, discard anything automated that slipped through — bot/agent
+2. **Keep only genuine human review feedback.** When the corpus is substantial, delegate
+   steps 2–3 to Copilot fleet / Claude subagents. Partition by non-overlapping PR batches and
+   require representative PR IDs, recurrence counts, and discarded-noise criteria. Keep the
+   raw corpus outside the main context. The main owner reconciles themes and alone writes
+   the reference, preserving `## My additions` verbatim. If already dispatched as the mining
+   worker, perform the assigned batch locally without launching another layer.
+   The helper is a coarse filter; you are the smart one. From `/tmp/pr-comments.json`,
+   discard anything automated that slipped through — bot/agent
    banners (e.g. "SydGate Agent", policy/guard bots, "Review complete for PR"), pure status
    chatter ("LGTM", "done", "thanks"), and off-topic noise. Keep substantive comments where a
    reviewer asked for a change or flagged a concern.

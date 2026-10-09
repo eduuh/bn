@@ -123,11 +123,11 @@ pub(crate) enum CmdStaff {
         #[arg(long)]
         branch: Option<String>,
     },
-    /// Workflow prompts (config/prompts): served to Claude Code as MCP prompts (`/bn:<name>`) and
-    /// installed for Copilot CLI as native skills referred to by name. Bare `bn skills` lists them
-    /// across every tier (global shared/personal, per-repo shared/personal); `bn skills find`
-    /// ranks them for a task, `bn skills render` prints one headlessly for scripts, and
-    /// `bn skills new <name>` scaffolds one.
+    /// Workflow prompts and reusable automation snippets. Served to Claude Code as MCP prompts
+    /// (`/bn:<name>`) and installed for Copilot CLI as native skills referred to by name.
+    /// Bare `bn skills` lists them across every tier (global shared/personal, per-repo
+    /// shared/personal); `bn skills find <task...>` ranks likely matches, `bn skills render`
+    /// prints one headlessly for scripts, and `bn skills new <name>` scaffolds one.
     Skills {
         #[command(subcommand)]
         action: Option<SkillsCmd>,
@@ -155,6 +155,25 @@ pub(crate) enum CmdStaff {
         #[command(subcommand)]
         action: McpCmd,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn skills_help_does_not_advertise_removed_retro_command() {
+        let mut cmd = Cli::command();
+        cmd.build();
+        let help = cmd
+            .find_subcommand_mut("skills")
+            .expect("skills command")
+            .render_help()
+            .to_string();
+        assert!(help.contains("bn skills find <task...>"));
+        assert!(!help.contains("bn retro"));
+    }
 }
 
 #[derive(Subcommand, Debug)]
