@@ -90,6 +90,14 @@ pub(crate) enum CmdAutomation {
     /// route ssh takes to it (LAN or tunnel), whether it answers, and why not. Runs the `tunnels`
     /// job (config/jobs/tunnels.sh); reads only.
     Tunnels,
+    /// GitHub Codespaces as ssh hosts. `bn cs connect <codespace>` writes a managed
+    /// `# >>> bn codespace <alias> >>>` block (from `gh cs ssh --config`, renamed to `cs-<word>`,
+    /// with connection reuse) into ~/.ssh/config, so `ssh <alias>`, `bn connect` and
+    /// `bn agent launch --host` reach it; `bn tunnels` lists it. Never wakes a stopped codespace.
+    Cs {
+        #[command(subcommand)]
+        action: CsCmd,
+    },
     /// commits since the note was last touched, `bn done` for todos a commit closed, and (on a
     /// MERGED PR) `bn close` + `wt cleanup`. Interactive confirm by default; nothing is written
     /// without confirm or `--yes`. Silent when already in sync.
@@ -149,6 +157,24 @@ pub(crate) enum CmdAutomation {
         /// Exact task name, full session id, or unambiguous session-id prefix. Omit to select the
         /// latest Copilot or Claude session recorded for the current git worktree.
         name_or_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum CsCmd {
+    /// Write (or refresh) the ssh alias for a codespace. Bare `bn cs connect` lists your
+    /// codespaces and the alias each would get.
+    Connect {
+        /// Codespace name, unique name prefix, or display name (from `gh cs list`).
+        codespace: Option<String>,
+        /// Alias to use instead of `cs-<last word of the display name>`.
+        #[arg(long)]
+        alias: Option<String>,
+    },
+    /// Remove a codespace's managed block from ~/.ssh/config. The codespace itself is untouched.
+    Disconnect {
+        /// The alias `bn cs connect` wrote (e.g. cs-umbrella).
+        alias: String,
     },
 }
 

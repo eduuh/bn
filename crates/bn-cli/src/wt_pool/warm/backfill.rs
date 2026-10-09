@@ -12,6 +12,7 @@
 //! offline.
 
 use std::path::Path;
+use std::process::Stdio;
 use std::time::Duration;
 
 /// Tries for the backfill, counting the first. Each one resumes where the last stopped.
@@ -96,10 +97,123 @@ fn backfill(slot_s: &str) -> Result<(), String> {
         }
         match git(&["-C", slot_s, "backfill", MIN_BATCH]) {
             Ok(()) => return Ok(()),
+            Err(e) if e.contains("not a git command") || e.contains("unknown subcommand") => {
+                return backfill_missing_blobs(slot_s);
+            }
             Err(e) => last = e,
         }
     }
     Err(format!("backfill gave up after {ATTEMPTS} tries: {last}"))
+}
+
+fn backfill_missing_blobs(slot_s: &str) -> Result<(), String> {
+    let batch_size = MIN_BATCH
+        .trim_start_matches("--min-batch-size=")
+        .parse::<usize>()
+        .unwrap_or(5000);
+    let mut last = String::new();
+    for attempt in 1..=ATTEMPTS {
+        if attempt > 1 {
+            eprintln!(
+                "backfill attempt {}/{ATTEMPTS} failed ({last}) — resuming",
+                attempt - 1
+            );
+            std::thread::sleep(Duration::from_secs(BACKOFF_SECS * u64::from(attempt - 1)));
+        }
+        let missing = missing_blobs(slot_s)?;
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let mut fetch_failed = None;
+        for chunk in missing.chunks(batch_size) {
+            if let Err(e) = fetch_blob_batch(slot_s, chunk) {
+                fetch_failed = Some(e);
+                break;
+            }
+        }
+        let remaining = missing_blobs(slot_s)?;
+        if remaining.is_empty() {
+            return Ok(());
+        }
+        last = fetch_failed.unwrap_or_else(|| format!("{} missing blobs remain", remaining.len()));
+    }
+    Err(format!("backfill gave up after {ATTEMPTS} tries: {last}"))
+}
+
+fn missing_blobs(slot_s: &str) -> Result<Vec<String>, String> {
+    let out = crate::wt::git_out(&[
+        "-C",
+        slot_s,
+        "rev-list",
+        "--objects",
+        "--missing=print",
+        "HEAD",
+    ])
+    .ok_or_else(|| format!("could not inspect missing blobs in {slot_s}"))?;
+    Ok(out
+        .lines()
+        .filter_map(|line| line.strip_prefix('?'))
+        .filter_map(|line| line.split_whitespace().next())
+        .map(str::to_string)
+        .collect())
+}
+
+fn fetch_blob_batch(slot_s: &str, oids: &[String]) -> Result<(), String> {
+    let mut cmd = crate::git::git_command(&["-C", slot_s, "cat-file", "--batch"]);
+    bn_core::gitnet::stall_only(&mut cmd);
+    run_blob_batch(&mut cmd, oids)
+}
+
+fn run_blob_batch(cmd: &mut std::process::Command, oids: &[String]) -> Result<(), String> {
+    let mut child = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("spawn cat-file: {e}"))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "cat-file stdin missing".to_string())?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "cat-file stdout missing".to_string())?;
+    let stdout_handle = std::thread::spawn(move || {
+        let mut sink = std::io::sink();
+        std::io::copy(&mut stdout, &mut sink).map(|_| ())
+    });
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "cat-file stderr missing".to_string())?;
+    let stderr_handle = std::thread::spawn(move || {
+        let mut stderr = std::io::BufReader::new(stderr);
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut stderr, &mut buf).map(|_| buf)
+    });
+    let input = oids.iter().try_for_each(|oid| {
+        std::io::Write::write_all(&mut stdin, oid.as_bytes())
+            .and_then(|_| std::io::Write::write_all(&mut stdin, b"\n"))
+    });
+    drop(stdin);
+    let status = child.wait();
+    let stdout_result = stdout_handle.join();
+    let stderr_result = stderr_handle.join();
+    let status = status.map_err(|e| format!("wait cat-file: {e}"))?;
+    stdout_result
+        .map_err(|_| "cat-file stdout reader panicked".to_string())?
+        .map_err(|e| format!("read cat-file stdout: {e}"))?;
+    let stderr = stderr_result
+        .map_err(|_| "cat-file stderr reader panicked".to_string())?
+        .map_err(|e| format!("read cat-file stderr: {e}"))?;
+    if !status.success() {
+        return Err(format!(
+            "cat-file exited with {status}: {}",
+            String::from_utf8_lossy(&stderr).trim()
+        ));
+    }
+    input.map_err(|e| format!("write cat-file input: {e}"))
 }
 
 /// One git call under the stall-only guard, its stderr kept for the error.
@@ -124,6 +238,36 @@ fn git(args: &[&str]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blob_batch_drains_output_while_writing_input() {
+        let mut cmd = std::process::Command::new("python3");
+        cmd.args([
+            "-c",
+            r#"import signal, sys
+signal.alarm(5)
+sys.stdout.buffer.write(b"x" * 1048576)
+sys.stdout.buffer.flush()
+sys.stderr.buffer.write(b"x" * 1048576)
+sys.stderr.buffer.flush()
+assert len(sys.stdin.buffer.read()) == 205000
+"#,
+        ]);
+        let oids = vec!["a".repeat(40); 5000];
+        run_blob_batch(&mut cmd, &oids).expect("all pipes must make progress simultaneously");
+    }
+
+    #[test]
+    fn blob_batch_preserves_child_failure() {
+        let mut cmd = std::process::Command::new("python3");
+        cmd.args([
+            "-c",
+            "import sys; sys.stderr.write('fetch failed'); sys.exit(7)",
+        ]);
+        let err = run_blob_batch(&mut cmd, &vec!["a".repeat(40); 5000]).unwrap_err();
+        assert!(err.contains("exit status: 7"), "{err}");
+        assert!(err.contains("fetch failed"), "{err}");
+    }
 
     fn run(args: &[&str]) {
         assert!(crate::git::git_ok(args), "git {args:?}");
@@ -266,6 +410,23 @@ mod tests {
         assert!(!missing.lines().any(|l| l.starts_with('?')), "{missing}");
         run(&["-C", &main, "reset", "--quiet", "--hard", &new]);
         assert!(Path::new(&main).join("b").exists());
+    }
+
+    #[test]
+    fn fallback_fetches_missing_blobs_without_backfill_command() {
+        let _env = bn_core::test_support::env_lock();
+        let (_tmp, _src, main, _old, new) = blobless_checkout();
+        run(&["-C", &main, "reset", "--quiet", "--soft", &new]);
+        assert!(!missing_blobs(&main).unwrap().is_empty());
+
+        backfill_missing_blobs(&main).expect("fallback prefetched");
+
+        assert!(missing_blobs(&main).unwrap().is_empty());
+        run(&["-C", &main, "reset", "--quiet", "--hard", &new]);
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&main).join("b")).unwrap(),
+            "b"
+        );
     }
 
     /// When the files can't be fetched, the checkout must look exactly as it did: HEAD moved with

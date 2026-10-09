@@ -133,9 +133,10 @@ pub fn script_tier_dirs(
             dirs.push((JobScope::Branch, cfg.note_dir(c).join(sub)));
         }
         // Project tier: this branch's own checkout, preferably at the conventional
-        // `<worktree_dir>/<repo>/<branch>` path. When the branch lives in a warm pool slot or a
-        // reused checkout directory, that convention cannot name it; fall back to git's own
-        // `worktree list` answer in those cases so `.bn/jobs` still resolves from the live checkout.
+        // `<worktree_dir>/<repo>/<branch>` path. When the branch lives in a warm pool slot, a
+        // reused checkout directory, or a session whose `BN_WORKTREE_DIR` points elsewhere, that
+        // convention cannot name it; fall back to the live checkout (current cwd when it matches,
+        // else git's own `worktree list`) so `.bn/jobs` still resolves from the real checkout.
         if let Some(project_root) = project_root(cfg, c) {
             dirs.push((JobScope::Project, project_root.join(".bn").join(sub)));
         }
@@ -165,12 +166,31 @@ pub fn script_tier_dirs(
 }
 
 fn project_root(cfg: &Config, ctx: &Resolved) -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok();
+    let current_ctx = cwd
+        .as_deref()
+        .and_then(|dir| crate::resolver::resolve(cfg, dir).ok());
+    select_project_root(cfg, ctx, cwd.as_deref(), current_ctx.as_ref())
+}
+
+fn select_project_root(
+    cfg: &Config,
+    ctx: &Resolved,
+    current_dir: Option<&Path>,
+    current_ctx: Option<&Resolved>,
+) -> Option<PathBuf> {
     find_worktree_repo_dir(&cfg.worktree_dir, &ctx.repo)
         .map(|d| d.join(&ctx.branch))
         .filter(|d| d.is_dir())
         .or_else(|| {
             let literal = cfg.worktree_dir.join(&ctx.repo).join(&ctx.branch);
             literal.is_dir().then_some(literal)
+        })
+        .or_else(|| match (current_dir, current_ctx) {
+            (Some(dir), Some(here)) if here.repo == ctx.repo && here.branch == ctx.branch => {
+                crate::resolver::repo_root(dir)
+            }
+            _ => None,
         })
         .or_else(|| crate::lifecycle::worktree_path(cfg, &ctx.repo, &ctx.branch))
 }
@@ -505,6 +525,57 @@ mod script_header_tests {
                 .as_deref()
                 .and_then(|dir| std::fs::canonicalize(dir).ok()),
             std::fs::canonicalize(pool.join(".bn").join("jobs")).ok()
+        );
+    }
+
+    #[test]
+    fn project_job_dir_uses_the_live_current_checkout_when_worktree_dir_points_elsewhere() {
+        let _lock = crate::test_support::env_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let configured_worktree_dir = tmp.path().join("configured").join("worktree");
+        std::fs::create_dir_all(&configured_worktree_dir).unwrap();
+        let cfg = crate::test_support::config_with_roots(
+            tmp.path(),
+            tmp.path(),
+            &configured_worktree_dir,
+            "testhost",
+        );
+        let bare = tmp.path().join("live").join("bare").join("bn.git");
+        build_repo_into(&tmp.path().join("src"), &bare);
+
+        let pool = tmp
+            .path()
+            .join("live")
+            .join("worktree")
+            .join("bn")
+            .join("_pool")
+            .join("2");
+        std::fs::create_dir_all(pool.parent().unwrap()).unwrap();
+        let bare_s = bare.to_string_lossy().to_string();
+        let pool_s = pool.to_string_lossy().to_string();
+        assert!(git(&[
+            "--git-dir",
+            &bare_s,
+            "worktree",
+            "add",
+            "-b",
+            "explore/20260924-0202",
+            &pool_s,
+            "main",
+        ]));
+        std::fs::create_dir_all(pool.join(".bn").join("jobs")).unwrap();
+
+        let ctx = Resolved {
+            repo: "bn".to_string(),
+            branch: "explore-20260924-0202".to_string(),
+        };
+        let project = select_project_root(&cfg, &ctx, Some(&pool), Some(&ctx));
+
+        assert_eq!(
+            project
+                .as_deref()
+                .and_then(|dir| std::fs::canonicalize(dir).ok()),
+            std::fs::canonicalize(&pool).ok()
         );
     }
 

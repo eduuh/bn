@@ -136,6 +136,7 @@ jobs:
       - name: Skill commands and rendering
         run: |
           cargo build -p bn-cli
+          python3 scripts/test-codespace-cli.py
           python3 scripts/test-check-skill-commands.py
           python3 scripts/check-skill-commands.py
 

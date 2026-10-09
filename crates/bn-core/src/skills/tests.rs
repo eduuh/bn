@@ -36,6 +36,7 @@ fn detached_checkout_keeps_repository_skill_tiers_and_local_precedence() {
         ],
     );
     git(&root, &["checkout", "--quiet", "--detach"]);
+    let root = std::fs::canonicalize(&root).unwrap();
     let shared = root.join(".bn/skills");
     let local = root.join(".bn/skills.local");
     std::fs::create_dir_all(&shared).unwrap();

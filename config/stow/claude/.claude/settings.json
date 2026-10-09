@@ -6,7 +6,23 @@
       "Bash(sudo apt-get upgrade:*)",
       "Bash(wt cleanup:*)"
     ],
+    "ask": [
+      "Bash(gh pr merge:*)",
+      "Bash(gh release:*)"
+    ],
+    "deny": [
+      "Bash(rm -rf /:*)",
+      "Bash(rm -rf ~:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Read(~/.config/gh/hosts.yml)",
+      "Read(~/.ssh/id_*)"
+    ],
     "defaultMode": "auto"
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "$HOME/.config/bn/repo/config/workflow/bin/claude-statusline.sh"
   },
   "hooks": {
     "SessionStart": [
@@ -17,6 +33,18 @@
             "type": "command",
             "command": "{ $HOME/.bin/bn-rs doctor --brief 2>/dev/null; } >&2; echo \"[bn] $($HOME/.bin/bn status 2>/dev/null)\" >&2 && $HOME/.bin/bn --cat 2>/dev/null || echo 'No branch note for this directory'",
             "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.config/bn/repo/config/workflow/bin/guard-git.sh",
+            "timeout": 5
           }
         ]
       }

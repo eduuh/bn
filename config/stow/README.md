@@ -14,8 +14,11 @@ state dirs never become symlinks into the repo). Real files you wrote are kept u
 `--force-home`, which moves them to `<file>.bak-<time>`. Same flag moves unmanaged skills aside
 so `bn skills install` can replace them.
 
-`copilot` also carries the static `hooks/bn-model.json` and the hand-written
-`agents/codespace-pr-reviewer.md`. `~/.copilot/hooks/bn-agent.json` is written by `bn agent launch`
+`copilot` also carries the static `hooks/bn-model.json`, `hooks/bn-guard.json` (git guard,
+`workflow/bin/guard-git.sh`), `hooks/bn-session.json`, `lsp-config.json`, `instructions/*.instructions.md`
+and the hand-written
+`agents/codespace-pr-reviewer.md`. `claude` wires the same guard as a `PreToolUse` hook plus a
+`statusLine`. `~/.copilot/hooks/bn-agent.json` is written by `bn agent launch`
 and is never tracked.
 
 Add a file at its home-relative path inside the right package and re-run `install.sh`.

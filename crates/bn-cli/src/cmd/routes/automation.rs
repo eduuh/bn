@@ -51,6 +51,12 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
             }
         },
         CmdAutomation::Tunnels => std::process::exit(cmd::cron::run_job(cfg, None, "tunnels")),
+        CmdAutomation::Cs { action } => match action {
+            crate::cli::automation_cmd::CsCmd::Connect { codespace, alias } => {
+                cs::connect(codespace.as_deref(), alias.as_deref())
+            }
+            crate::cli::automation_cmd::CsCmd::Disconnect { alias } => cs::disconnect(&alias),
+        },
         CmdAutomation::Notify { action } => match action {
             None | Some(NotifyCmd::Status) => cmd::notify::emit_notify_status(cfg, json),
         },

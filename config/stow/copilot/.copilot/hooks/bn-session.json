@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "{ $HOME/.bin/bn-rs doctor --brief 2>/dev/null; } >&2; echo \"[bn] $($HOME/.bin/bn status 2>/dev/null)\" >&2",
+        "timeoutSec": 10
+      }
+    ]
+  }
+}

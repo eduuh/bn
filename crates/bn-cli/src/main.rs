@@ -37,6 +37,7 @@ mod cli;
 mod cmd;
 mod connect;
 mod cron_gen;
+mod cs;
 mod edit;
 mod event_loop;
 mod gh;

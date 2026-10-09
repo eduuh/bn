@@ -62,7 +62,9 @@ Repaint the tracker at the **top of each step** so the window shows live progres
    specialists are optional when installed, not prerequisites. Workers inherit the PR's
    ownership restrictions, do not launch nested reviewers without explicit authorization,
    and return concrete findings. The main reviewer checks references, deduplicates findings,
-   and records one verdict. Then check the diff against **my coding-standards references** (the reference
+   and records one verdict. When running under Copilot CLI, also run the built-in `/review`
+   (and `/security-review` for auth, input-handling or shell-exec changes) and fold its
+   findings into the same deduplicated list. Then check the diff against **my coding-standards references** (the reference
    system to look out for): run `bn ref` to list them, then `bn ref <name>` for each one's full text
    and flag any violation with a concrete `path:line`. Record notable ruled-out concerns
    (`bn_add research`) — half the value is what you cleared.

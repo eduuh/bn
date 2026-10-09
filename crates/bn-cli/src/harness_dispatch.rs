@@ -9,6 +9,13 @@
 //! the plan-review gate, the task workflow and `bn agent run` still launch harnesses, so this is
 //! not staff-specific machinery.
 
+/// Soft AI-credit ceiling for headless Copilot runs, opt-in via `BN_MAX_AI_CREDITS` so an
+/// unattended loop cannot burn credits unbounded. Only a positive number is passed through.
+fn copilot_credit_cap(raw: Option<&str>) -> Option<&str> {
+    raw.map(str::trim)
+        .filter(|v| v.parse::<f64>().is_ok_and(|n| n > 0.0))
+}
+
 pub(crate) fn harness_command(
     harness: &str,
     prompt: &str,
@@ -20,6 +27,11 @@ pub(crate) fn harness_command(
             let mut c = std::process::Command::new("copilot");
             c.args(["-p", prompt]);
             c.args(bn_core::mcp::Harness::Copilot.autonomy_args());
+            if let Some(cap) =
+                copilot_credit_cap(std::env::var("BN_MAX_AI_CREDITS").ok().as_deref())
+            {
+                c.args(["--max-ai-credits", cap]);
+            }
             c
         }
         "claude" => {
@@ -259,6 +271,14 @@ fn visible_script(
 mod tests {
     use super::*;
     use bn_core::test_support::EnvGuard;
+
+    #[test]
+    fn credit_cap_accepts_only_positive_numbers() {
+        assert_eq!(copilot_credit_cap(Some(" 25 ")), Some("25"));
+        assert_eq!(copilot_credit_cap(Some("0")), None);
+        assert_eq!(copilot_credit_cap(Some("lots")), None);
+        assert_eq!(copilot_credit_cap(None), None);
+    }
 
     /// A private tmux server for the test: its own short socket dir (macOS caps socket paths),
     /// `TMUX` cleared so nothing can reach the developer's server, stopped by socket path on drop.

@@ -8,7 +8,9 @@
 # says which route ssh takes (LAN or tunnel), whether the host end of its tunnel is up, and what is
 # wrong when ssh does not answer. It checks every host at once, live, so it takes a few seconds.
 # Each host's own report (published by its tunnel-auto to the notes repo, lib/tunnel.sh) says why
-# it is down in its own words, or since when it has been silent. Reads only; changes nothing.
+# it is down in its own words, or since when it has been silent. Codespaces connected with
+# `bn cs connect` are listed too, with their gh state; only running ones are checked over ssh,
+# because an ssh to a stopped codespace starts it. Reads only; changes nothing.
 set -u
 
 dir=$(cd "$(dirname "$0")" && pwd -P)
@@ -154,6 +156,34 @@ check() {
   echo "DOWN|$route|$hostup|$note"
 }
 
+# --- codespaces (bn cs connect) ------------------------------------------------------
+# "<alias> <codespace>" for every managed block; their states come from one `gh cs list`, started
+# now so it overlaps the checks below.
+cs_blocks=$(awk '/^# >>> bn codespace /{a=$5} /^# bn: codespace /{if (a != "") print a, $4; a = ""}' "$HOME/.ssh/config" 2>/dev/null)
+if [ -n "$cs_blocks" ] && command -v gh >/dev/null 2>&1; then
+  gh cs list --json name,state -q '.[] | "\(.name) \(.state)"' > "$tmp/cs-states" 2>/dev/null &
+fi
+
+# cs_check <alias> <codespace> -- one line: state|route|host end|note. Never sshes into a stopped one.
+cs_check() {
+  alias=$1; name=$2
+  state=$(awk -v n="$name" '$1 == n {print $2; exit}' "$tmp/cs-states" 2>/dev/null)
+  case "$state" in
+    Available)
+      if err=$(bn_tunnel_timeout 30 ssh -o BatchMode=yes -o ConnectTimeout=25 "$alias" true 2>&1 >/dev/null); then
+        echo "ok|codespace|up|$name"
+      else
+        echo "DOWN|codespace|up|ssh: $(printf '%s\n' "$err" | tail -n 1)"
+      fi ;;
+    '') if command -v gh >/dev/null 2>&1; then
+          echo "gone|codespace|-|$name is not in gh cs list (deleted, or under another gh account); bn cs disconnect $alias"
+        else
+          echo "?|codespace|-|no gh CLI to ask for its state"
+        fi ;;
+    *) echo "stop|codespace|$(printf '%s' "$state" | tr 'A-Z' 'a-z')|not checked, so it stays stopped; ssh $alias true starts it (~20s)" ;;
+  esac
+}
+
 n=0
 while read -r id name hc lan nick; do
   [ -n "$id" ] || continue
@@ -164,11 +194,20 @@ while read -r id name hc lan nick; do
 done <<EOF
 $listed
 EOF
+wait  # the gh cs list above, and the host checks
+while read -r alias csname; do
+  [ -n "$alias" ] || continue
+  n=$((n + 1))
+  cs_check "$alias" "$csname" > "$tmp/$n" 2>/dev/null &
+  echo "$alias" > "$tmp/$n.name"
+done <<EOF
+$cs_blocks
+EOF
 wait
 
 echo
 if [ "$n" = 0 ]; then
-  echo "  no other hosts on this account. On a machine to reach: bn run tunnel-setup"
+  echo "  no other hosts on this account and no codespaces. On a machine to reach: bn run tunnel-setup; a codespace: bn cs connect"
   exit 0
 fi
 printf '  %-20s %-5s %-24s %-8s %s\n' MACHINE STATE ROUTE HOST-END NOTE

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "$HOME/.config/bn/repo/config/workflow/bin/guard-git.sh",
+        "timeoutSec": 5
+      }
+    ]
+  }
+}
