@@ -393,6 +393,14 @@ fn haystack(l: &Link) -> String {
     )
 }
 
+/// True when `q` appears (case-insensitively) in the link's name, tags or URL — the filter
+/// behind `bn links list <words>` and the MCP `bn_links_search` tool.
+pub fn matches_query(l: &Link, q: &str) -> bool {
+    format!("{} {} {}", l.name, l.tags.join(" "), l.url)
+        .to_lowercase()
+        .contains(&q.to_lowercase())
+}
+
 /// Resolve `needle` to exactly one link: exact id, then exact name, then unique name prefix,
 /// then unique substring across name, tags and URL. Mirrors [`crate::references::resolve`] so
 /// "type enough of it" means the same thing everywhere in bn.

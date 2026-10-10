@@ -115,14 +115,6 @@ pub(crate) enum CmdStaff {
         #[arg(long, global = true)]
         branch: Option<String>,
     },
-    /// Fire every `trigger: startup` agent once when the tmux server boots (deduped on the tmux
-    /// server PID). Wired from one `run-shell -b` line in `tmux.conf`; a no-op off tmux.
-    Startup {
-        #[arg(long)]
-        repo: Option<String>,
-        #[arg(long)]
-        branch: Option<String>,
-    },
     /// Workflow prompts and reusable automation snippets. Served to Claude Code as MCP prompts
     /// (`/bn:<name>`) and installed for Copilot CLI as native skills referred to by name.
     /// Bare `bn skills` lists them across every tier (global shared/personal, per-repo

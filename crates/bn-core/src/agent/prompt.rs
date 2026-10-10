@@ -259,7 +259,7 @@ pub fn parse_pending_prompt(
 
 /// Hash what the dialog asks, not the pane around it.
 ///
-/// This used to be [`super::pane_activity_fingerprint`] over the whole scanned tail plus the
+/// This used to be an FNV hash of the whole scanned tail plus the
 /// window's `@bn_agent` state. Anything outside the box — a line scrolling in above it, a
 /// lifecycle hook flipping `@bn_agent` — moved the hash while the same dialog sat on screen, so
 /// `bn agent prompt` and `bn agent answer` disagreed and every `--expect` was refused. The cursor

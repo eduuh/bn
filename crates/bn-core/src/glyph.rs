@@ -8,7 +8,7 @@
 //! Surface rule: these are for TERMINAL OUTPUT ONLY. PUA codepoints are tofu on GitHub and in
 //! unpatched fonts, so anything persisted (note markdown, brag docs, synced files) must keep
 //! plain Unicode (✓ ★ ⚠ •). Mirrors of this set live in `config/workflow/tmux.conf`
-//! (window-status-format), `config/workflow/bin/tmux-agent.sh`, and the native tmux status segments in
+//! (window-status-format) and the native tmux status segments in
 //! `crates/bn-cli/src/cmd/tmux_status.rs` (`bn tmux-git`/`tmux-goal`), plus
 //! `nvim/lua/bn/util.lua` — keep them in sync when a
 //! glyph changes (`bn glyphs` renders the vocabulary for eyeballing).

@@ -53,3 +53,4 @@
 - Commit each logical unit with a conventional message (`feat:`, `fix:`, `chore:`).
 - Never bare `git stash` / `git stash pop`; the stash is shared across worktrees.
 - Never force-push, reset --hard, or delete branches without being asked.
+- Clean up stale worktrees in the current repo at session start and after a PR merges: `bn wt reap --all --yes`, then `bn wt pool prune --yes` to release pool leases nobody is in. Stale means what bn can prove is finished: a merged PR with a clean tree, or a finished scout with nothing uncommitted, or a leased pool slot with no live agent and a clean tree. Anything else stays. Never add `--force`, and never sweep other repos (`--all-repos`) without being asked.

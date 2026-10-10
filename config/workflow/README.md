@@ -47,15 +47,16 @@ native — `bn tat`/`bn wt` do their own path normalization and bare+worktree lo
 - the project/worktree picker is now native `bn tat` (and `bn tat --root win` for the
   Windows-filesystem repos, the old `tatw`) — see `crates/bn-cli/src/tat.rs`. The
   cross-platform bash `bin/tat`/`bin/tatw` were retired at migration.
-- `bin/` — the `tmux-agent.sh` front-end, self-locating via `${0:A:h}`.
+- `bin/` — small popup helpers (`tmux-git-diff.sh`, `tmux-codespace-diff.sh`, `tmux-tunnels.sh`,
+  `tmux-need.sh`, `bn-clip`).
   (Status segments and popups moved to native `bn tmux-*`; worktree open/create/remove to
   `bn wt` — `wt-clone` → `bn wt clone`; `wf-open` → `bn open`; the resume-or-fresh `agent`
   launcher → `bn agent launch`; the old `tmux-wt*.sh` /
   `tmux-{note,edit,help,cockpit}.sh` / `bn-*.sh` were retired.)
 - `bn agent launch` (native, was `bin/agent`) — launch an AI coding agent in the current dir,
   resuming this dir's recorded session if one exists else starting fresh (copilot by default;
-  claude opens in yolo mode). The single home of the resume-or-fresh rule; `tmux-agent.sh`
-  (`A`/`G`) and `bn dispatch` both call it, and you can run it directly:
+  claude opens in yolo mode). The single home of the resume-or-fresh rule; the `A`/`G`
+  binds and `bn dispatch` both call it, and you can run it directly:
   `bn agent launch` (copilot) / `bn agent launch claude`.
 - `lib/tmux-lib.sh` — vendored shared library the zsh helpers source.
 - the repo's top-level `install.sh` (full mode) links this checkout onto
@@ -98,8 +99,8 @@ worktree creation. See `config/hooks/post-create` for a starting point.
 | n   | `bn tmux note` (native)    |
 | e   | `tmux-git-diff.sh` (floating nvim DiffviewOpen origin/main; latest commit if nothing differs) |
 | C-g | `tmux-codespace-diff.sh` (floating remote nvim over SSH, fzf host picker) |
-| A   | `bin/tmux-agent.sh` (spawn Copilot agent window — the default) |
-| G   | `bin/tmux-agent.sh … claude` (spawn Claude agent window) |
+| A   | new window running `bn agent launch copilot` (the default agent) |
+| G   | new window running `bn agent launch claude` |
 | S   | `bn tmux cockpit` (native; orchestration roll-up) |
 | j   | `bn jump` (native; everything that needs you: windows + `bn next` queue) |
 | Tab | `bn jump --next` (native; jump to top window needing you; repeat to cycle) |

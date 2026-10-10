@@ -57,6 +57,42 @@ struct AddArgs {
     /// Idempotent add: skip if an existing item in the section contains this key.
     #[serde(default)]
     if_absent: Option<String>,
+    /// Time estimate for calibration: `90m`, `2h`, `1h30m`.
+    #[serde(default)]
+    est: Option<String>,
+    /// Quarter-goal key this item counts toward (a `bn quarter` goal).
+    #[serde(default)]
+    q: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ItemArgs {
+    /// Item id (`t3`, `b1`, `w2`, …) or a case-insensitive substring of its text.
+    query: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RewordArgs {
+    /// Item id (`t3`, `b1`, `w2`, …) or a case-insensitive substring of its text.
+    query: String,
+    /// The replacement text.
+    text: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct LinksSearchArgs {
+    /// Words to find in a link's name, tags or URL (case-insensitive). Omit to list by rank.
+    #[serde(default)]
+    query: Option<String>,
+    /// Only links carrying this tag.
+    #[serde(default)]
+    tag: Option<String>,
+    /// Most links to return (default 20).
+    #[serde(default)]
+    limit: Option<usize>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -220,19 +256,93 @@ impl BnServer {
         Parameters(a): Parameters<AddArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let ctx = self.resolve()?;
+        let est = match a.est.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+            Some(raw) if bn_core::focus::parse_duration(raw).is_none() => {
+                return Err(ErrorData::invalid_params(
+                    format!("est wants a duration like 90m, 2h, 1h30m, got '{raw}'"),
+                    None,
+                ))
+            }
+            e => e.map(str::to_string),
+        };
         let out = {
             let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-            commands::add(
+            commands::add_full(
                 &self.cfg,
                 &ctx,
                 &a.section,
                 &a.text,
                 a.if_absent.as_deref(),
+                est.as_deref(),
+                a.q.as_deref().map(str::trim).filter(|q| !q.is_empty()),
                 &today(),
             )
             .map_err(cmd_err)?
         };
         Ok(CallToolResult::structured(payload::add_data(&out)))
+    }
+
+    #[tool(
+        name = "bn_drop",
+        description = "Remove an item from this worktree's current branch note, by id (t3, b1, w2, …) or text substring. Records no completion: for an item added by mistake or a duplicate."
+    )]
+    async fn bn_drop(
+        &self,
+        Parameters(a): Parameters<ItemArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let ctx = self.resolve()?;
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let out = commands::drop_item(&self.cfg, &ctx, &a.query).map_err(cmd_err)?;
+        Ok(CallToolResult::structured(payload::item_data(&out)))
+    }
+
+    #[tool(
+        name = "bn_reopen",
+        description = "Reopen a checked-off todo or done-when criterion on this worktree's current branch note, by id or substring of a done item."
+    )]
+    async fn bn_reopen(
+        &self,
+        Parameters(a): Parameters<ItemArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let ctx = self.resolve()?;
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let out = commands::reopen_item(&self.cfg, &ctx, &a.query).map_err(cmd_err)?;
+        Ok(CallToolResult::structured(payload::item_data(&out)))
+    }
+
+    #[tool(
+        name = "bn_reword",
+        description = "Replace an item's text on this worktree's current branch note, keeping its id, dates and done state."
+    )]
+    async fn bn_reword(
+        &self,
+        Parameters(a): Parameters<RewordArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let ctx = self.resolve()?;
+        let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let out = commands::reword_item(&self.cfg, &ctx, &a.query, &a.text).map_err(cmd_err)?;
+        Ok(CallToolResult::structured(payload::item_data(&out)))
+    }
+
+    #[tool(
+        name = "bn_links_search",
+        description = "Search the person-scoped link store before asking the user for a URL they have likely saved. Matches words against each link's name, tags and URL; this repo's links rank first. Read-only, and like bn_links_add it works even when no branch resolves."
+    )]
+    async fn bn_links_search(
+        &self,
+        Parameters(a): Parameters<LinksSearchArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let today = today();
+        let items = links::read(&self.cfg);
+        let here = self.resolve().ok().map(|c| c.repo);
+        let tag = a.tag.map(|t| t.to_lowercase());
+        let found: Vec<&links::Link> = links::ranked(&items, here.as_deref(), &today)
+            .into_iter()
+            .filter(|l| tag.as_ref().is_none_or(|t| l.tags.contains(t)))
+            .filter(|l| a.query.as_ref().is_none_or(|q| links::matches_query(l, q)))
+            .take(a.limit.unwrap_or(20))
+            .collect();
+        Ok(CallToolResult::structured(json!({ "items": found })))
     }
 
     #[tool(
@@ -369,8 +479,15 @@ impl BnServer {
         Parameters(_a): Parameters<EmptyArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let ctx = self.resolve()?;
-        let note = store::read(&self.cfg.note_file(&ctx))
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let note_md = self.cfg.note_file(&ctx);
+        if !note_md.exists() {
+            let rendered = format!("{}/{}: no note", ctx.repo, ctx.branch);
+            return Ok(CallToolResult::structured(
+                json!({ "rendered": rendered, "front": null, "body": "" }),
+            ));
+        }
+        let note =
+            store::read(&note_md).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         let saved = links::for_note(
             &self.cfg,
             &ctx.repo,
@@ -652,17 +769,17 @@ impl ServerHandler for BnServer {
             "Branch-notes MCP server, scoped to a single (repo, branch). The per-worktree stdio \
              launcher (`bn mcp serve`) derives its scope from the client's current working \
              directory. A call that resolves to no branch fails closed — with one deliberate \
-             exception, the link tool bn_links_add, described below. Start a session with \
+             exception, the link tools bn_links_add and bn_links_search, described below. Start a session with \
              bn_context (compact orientation: goal, counts, top todos, blockers, PR, next-step \
-             hints), then use only the current-branch tools: bn_goal, bn_add, bn_done, bn_pr, \
-             bn_cat, bn_status, bn_sync, bn_handoff_read, and bn_handoff_write. bn_links_add is \
-             the one exception to branch scope: it stores a link in the person-scoped, \
+             hints), then use only the current-branch tools: bn_goal, bn_add, bn_done, bn_drop, \
+             bn_reopen, bn_reword, bn_pr, bn_cat, bn_status, bn_sync, bn_handoff_read, and bn_handoff_write. bn_links_add is \
+             the exception to branch scope: it stores a link in the person-scoped, \
              cross-machine link store, and succeeds even when no branch resolves (the link is \
              then stored without a repo). Call it whenever a URL surfaces that will be wanted \
              again — a PR, a work item or PBI, a portal blade, a dashboard, a docs page — \
              without waiting to be asked, and especially as a pull request completes, when those \
              links are about to leave with the worktree. Before asking the user for a URL they \
-             have likely saved, search the store with the `bn links list <words>` CLI. \
+             have likely saved, search the store with bn_links_search. \
              Two tools are repo-scoped rather than branch-scoped, because the knowledge \
              outlives the branch: bn_ref reads this repo's reference notes (call it with no \
              name for the cheap index before assuming anything about how the repo builds or \

@@ -50,6 +50,24 @@ pub(crate) enum CmdCoord {
         #[arg(value_name = "TASK", num_args = 0..)]
         task: Vec<String>,
     },
+    /// Remove a branch-note item outright, by id (t3, b1, w2, …) or text substring. Unlike `done`
+    /// it records no completion: for an item that should never have been added.
+    Drop {
+        #[arg(required = true)]
+        query: Vec<String>,
+    },
+    /// Reopen a checked-off todo or done-when criterion, by id or substring of a done item.
+    Undone {
+        #[arg(required = true)]
+        query: Vec<String>,
+    },
+    /// Replace a branch-note item's text, keeping its id, dates and state:
+    /// bn reword <id|substring> <new text...> (quote a multi-word substring).
+    Reword {
+        query: String,
+        #[arg(required = true)]
+        text: Vec<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

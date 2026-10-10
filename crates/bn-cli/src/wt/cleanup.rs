@@ -63,10 +63,28 @@ pub fn cleanup_current(cfg: &Config, force: bool) -> bool {
     cleanup_one(cfg, &wt_path, &worktree_dir, force).is_ok()
 }
 
-pub(crate) fn cmd_cleanup(cfg: &Config, all: bool, force: bool, worktree: Option<String>) -> bool {
+/// The bare repos a `--all` sweep covers: only the repo the cwd sits in, so a sweep started from a
+/// worktree never reaches into another repo's checkouts. `all_repos`, or a cwd outside any managed
+/// repo (the cron), widens it to every bare repo — the same rule `bn wt prune` follows.
+pub(crate) fn sweep_bares(bare_dir: &Path, all_repos: bool) -> Vec<PathBuf> {
+    if !all_repos {
+        if let Some(bare) = find_bare_repo(&cwd()) {
+            return vec![bare];
+        }
+    }
+    bare_repos(bare_dir)
+}
+
+pub(crate) fn cmd_cleanup(
+    cfg: &Config,
+    all: bool,
+    all_repos: bool,
+    force: bool,
+    worktree: Option<String>,
+) -> bool {
     let (bare_dir, worktree_dir) = layout(cfg);
-    if all {
-        return cleanup_all(cfg, &bare_dir, force);
+    if all || all_repos {
+        return cleanup_all(cfg, &bare_dir, &sweep_bares(&bare_dir, all_repos), force);
     }
     let wt_path = match worktree {
         None => cwd(),
@@ -79,18 +97,18 @@ pub(crate) fn cmd_cleanup(cfg: &Config, all: bool, force: bool, worktree: Option
     cleanup_one(cfg, &wt_path, &worktree_dir, force).is_ok()
 }
 
-pub(crate) fn cleanup_all(cfg: &Config, bare_dir: &Path, force: bool) -> bool {
+pub(crate) fn cleanup_all(cfg: &Config, bare_dir: &Path, bares: &[PathBuf], force: bool) -> bool {
     let (_, worktree_dir) = layout(cfg);
     let (mut cleaned, mut skipped) = (0, 0);
-    for bare in bare_repos(bare_dir) {
-        let remote = remote_for(&bare);
+    for bare in bares {
+        let remote = remote_for(bare);
         if remote == Remote::Other {
             continue; // not a hosted repo we can check PR state for
         }
         let slug = remote.label();
-        for wt in list_worktree_paths(bare_dir, Some(&bare)) {
+        for wt in list_worktree_and_slot_paths(bare_dir, Some(bare)) {
             let wt_path = PathBuf::from(&wt);
-            let Some(branch) = git_out(&["-C", &wt, "branch", "--show-current"]) else {
+            let Some(branch) = checked_out_branch(&wt) else {
                 continue;
             };
             if bn_core::agent::is_reserved_branch(&branch) {
@@ -98,7 +116,9 @@ pub(crate) fn cleanup_all(cfg: &Config, bare_dir: &Path, force: bool) -> bool {
             }
             let state = pr_state(&remote, &branch);
             if state == "MERGED" {
-                if let Some(slot) = crate::wt_pool::pool_slot_root(&wt_path).filter(|_| !force) {
+                // A slot is always handed back, never removed — even under `--force`, which would
+                // otherwise send it to `cleanup_one` and delete a warm checkout from the pool.
+                if let Some(slot) = crate::wt_pool::pool_slot_root(&wt_path) {
                     // Merged is confirmed, so a slot left dirty or held by a finished agent is
                     // rescued (committed onto its branch) and returned instead of pinned forever.
                     let outcome = crate::wt_pool::release_merged_slot(cfg, &slot);
@@ -132,11 +152,12 @@ pub(crate) fn cleanup_all(cfg: &Config, bare_dir: &Path, force: bool) -> bool {
 
 /// Reap worktrees whose work is DONE and safe to remove: a scout worktree whose agent reported done
 /// and is clean (findings live safely in the synced note), or a ship worktree with a merged PR.
-/// Dry-run unless `execute`. Default target: current worktree; `all` sweeps every bare repo.
-pub(crate) fn cmd_reap(cfg: &Config, all: bool, execute: bool) -> bool {
+/// Dry-run unless `execute`. Default target: current worktree; `all` sweeps the current repo and
+/// `all_repos` every bare repo (see [`sweep_bares`]).
+pub(crate) fn cmd_reap(cfg: &Config, all: bool, all_repos: bool, execute: bool) -> bool {
     let (bare_dir, worktree_dir) = layout(cfg);
-    let paths: Vec<PathBuf> = if all {
-        bare_repos(&bare_dir)
+    let paths: Vec<PathBuf> = if all || all_repos {
+        sweep_bares(&bare_dir, all_repos)
             .iter()
             .flat_map(|bare| list_worktree_paths(&bare_dir, Some(bare)))
             .map(PathBuf::from)
@@ -278,13 +299,21 @@ fn reap_scratch(
     Some(removed)
 }
 
+/// The branch checked out in `wt`, or `None` when it is detached (an idle pool slot,
+/// `_release-main`). `git branch --show-current` prints nothing there rather than failing, and an
+/// empty name sent to `gh pr view` resolves to some other PR — which is how a detached checkout
+/// came to read as "merged".
+fn checked_out_branch(wt: &str) -> Option<String> {
+    git_out(&["-C", wt, "branch", "--show-current"]).filter(|b| !b.is_empty())
+}
+
 /// Why a worktree is reapable (with the `force` to pass cleanup), or `None` to keep it. "merged PR"
 /// (a shipped ship — force=false so a dirty post-merge worktree is spared) or "scout done" (task=
 /// scout, agent reported done, already clean, and past its [`SCOUT_REAP_GRACE_SECS`] grace — force=
 /// true to bypass the no-PR check safely).
 pub(crate) fn reap_reason(cfg: &Config, wt_path: &Path) -> Option<(String, bool)> {
     let wt = wt_path.to_string_lossy();
-    let branch = git_out(&["-C", &wt, "branch", "--show-current"])?;
+    let branch = checked_out_branch(&wt)?;
     if bn_core::agent::is_reserved_branch(&branch) {
         return None;
     }

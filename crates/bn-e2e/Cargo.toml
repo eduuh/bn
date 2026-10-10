@@ -18,5 +18,7 @@ tempfile = "3"
 tempfile = "3"
 # The JSON-contract lane asserts against the real envelope version and parses envelopes, rather
 # than hard-coding a number and a shape the production code could drift away from.
-bn-core = { workspace = true }
+# `test-support` for EnvGuard/env_lock: the agent-send lane points the in-process transport at the
+# sandbox socket, and env mutation in tests goes through the guard (issue #358).
+bn-core = { workspace = true, features = ["test-support"] }
 serde_json = { workspace = true }

@@ -1,7 +1,7 @@
 //! Shared `data` payload builders for the JSON envelope. Both the CLI and the MCP
 //! server call these so the machine-readable shapes stay byte-identical across surfaces.
 
-use crate::commands::{AddOutcome, CloseOutcome, DoneOutcome, GoalOutcome, PrOutcome};
+use crate::commands::{AddOutcome, CloseOutcome, DoneOutcome, GoalOutcome, ItemOutcome, PrOutcome};
 use crate::daily::{self, Daily};
 use crate::doctor::Finding;
 use crate::reports;
@@ -127,6 +127,15 @@ pub fn done_data(d: &DoneOutcome) -> Value {
         Some(p) => json!({ "item": { "id": d.id, "text": d.text, "done": false, "pct": p } }),
         None => json!({ "item": { "id": d.id, "text": d.text, "done": true, "actual": d.actual } }),
     }
+}
+
+/// `drop` / `undone` / `reword` → `{ "item": { "id", "section", "text", "previous"? } }`.
+pub fn item_data(d: &ItemOutcome) -> Value {
+    let mut item = json!({ "id": d.id, "section": d.section.label(), "text": d.text });
+    if let Some(p) = &d.previous {
+        item["previous"] = json!(p);
+    }
+    json!({ "item": item })
 }
 
 /// `daily` → `{ "date", "open", "done", "goals": [...], "upcoming": [...] }`. `upcoming` is

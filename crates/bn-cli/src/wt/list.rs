@@ -228,19 +228,42 @@ pub(crate) fn cmd_status(cfg: &Config, all: bool, pr: bool) -> bool {
 /// under `bare_dir` (the bare repo's own entry). Pure → unit-testable. Matches on path
 /// components, so a sibling dir like `<bare_dir>-wt/...` isn't dropped by a raw string prefix.
 pub(crate) fn worktree_paths_in(listing: &str, bare_dir: &Path) -> Vec<String> {
+    paths_in(listing, bare_dir, false)
+}
+
+/// [`worktree_paths_in`] plus the warm pool slots. Only for the merged-PR sweep, which hands a
+/// slot back through `wt pool`'s own release instead of removing it.
+pub(crate) fn worktree_and_slot_paths_in(listing: &str, bare_dir: &Path) -> Vec<String> {
+    paths_in(listing, bare_dir, true)
+}
+
+fn paths_in(listing: &str, bare_dir: &Path, with_slots: bool) -> Vec<String> {
     listing
         .lines()
         .filter_map(|l| l.strip_prefix("worktree "))
         .filter(|p| !Path::new(p).starts_with(bare_dir))
         // Warm pool slots (`<repo>/_pool/<n>`) are real worktrees but must never be swept by
         // cleanup/prune/status — they're managed by `wt pool`. Drop any path under a `_pool` dir.
-        .filter(|p| !Path::new(p).components().any(|c| c.as_os_str() == "_pool"))
+        .filter(|p| with_slots || !Path::new(p).components().any(|c| c.as_os_str() == "_pool"))
         .map(|p| p.to_string())
         .collect()
 }
 
 /// Worktree paths across the given bare repo (or all repos), excluding the bare dirs themselves.
 pub(crate) fn list_worktree_paths(bare_dir: &Path, bare: Option<&Path>) -> Vec<String> {
+    list_paths(bare_dir, bare, worktree_paths_in)
+}
+
+/// [`list_worktree_paths`] plus the warm pool slots (see [`worktree_and_slot_paths_in`]).
+pub(crate) fn list_worktree_and_slot_paths(bare_dir: &Path, bare: Option<&Path>) -> Vec<String> {
+    list_paths(bare_dir, bare, worktree_and_slot_paths_in)
+}
+
+fn list_paths(
+    bare_dir: &Path,
+    bare: Option<&Path>,
+    parse: fn(&str, &Path) -> Vec<String>,
+) -> Vec<String> {
     let bares: Vec<PathBuf> = match bare {
         Some(b) => vec![b.to_path_buf()],
         None => bare_repos(bare_dir),
@@ -262,7 +285,7 @@ pub(crate) fn list_worktree_paths(bare_dir: &Path, bare: Option<&Path>) -> Vec<S
             "--porcelain",
         ])
         .unwrap_or_default();
-        out.extend(worktree_paths_in(&listing, bare_dir));
+        out.extend(parse(&listing, bare_dir));
     }
     out
 }
@@ -590,7 +613,8 @@ pub(crate) fn cmd_prune(cfg: &Config) -> bool {
 
 #[cfg(test)]
 mod worktree_porcelain_tests {
-    use super::parse_worktree_porcelain;
+    use super::{parse_worktree_porcelain, worktree_and_slot_paths_in, worktree_paths_in};
+    use std::path::Path;
 
     /// Real `git worktree list --porcelain` output from a managed clone: the bare dir, a detached
     /// pool slot, and the default-branch worktree.
@@ -625,5 +649,17 @@ mod worktree_porcelain_tests {
     #[test]
     fn unreadable_or_empty_output_yields_no_rows() {
         assert!(parse_worktree_porcelain("").is_empty());
+    }
+
+    /// Every sweep but one must leave pool slots to `wt pool`. The merged-PR sweep is the one: it
+    /// is the only path that rescues and returns a merged slot, so it has to be able to see it.
+    #[test]
+    fn only_the_slot_aware_listing_includes_pool_slots() {
+        let bare = Path::new("/p/bare");
+        assert_eq!(worktree_paths_in(SAMPLE, bare), vec!["/p/worktree/atlas/main"]);
+        assert_eq!(
+            worktree_and_slot_paths_in(SAMPLE, bare),
+            vec!["/p/worktree/atlas/_pool/1", "/p/worktree/atlas/main"]
+        );
     }
 }

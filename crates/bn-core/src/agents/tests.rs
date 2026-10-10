@@ -40,6 +40,19 @@ fn a_retired_frontmatter_key_still_parses() {
     assert_eq!(agent.kind, AgentKind::Command);
 }
 
+#[test]
+fn a_retired_startup_trigger_still_parses() {
+    // `trigger: startup` was removed with `bn startup`; manifests that still carry it must load
+    // as plain on-demand agents.
+    for trigger in ["startup", "[cron, startup]"] {
+        let agent = parse(&format!(
+            "---\nname: demo\nkind: command\nrequires_repo: bn\ntrigger: {trigger}\n---\n"
+        ))
+        .expect("agent parses");
+        assert_eq!(agent.on_calendar, None);
+    }
+}
+
 fn run_detail(ts: i64, exit_code: i32) -> CronRunDetail {
     CronRunDetail {
         job: "demo".to_string(),

@@ -377,6 +377,7 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
             all,
             dry_run,
             yes,
+            auto,
             slots,
             name_or_id,
         } => {
@@ -389,6 +390,7 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
                         dry_run,
                         yes,
                         slots,
+                        auto,
                     },
                     json,
                 );

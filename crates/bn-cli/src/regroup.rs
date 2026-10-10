@@ -54,7 +54,6 @@ pub(crate) const ROUTES: &[(&str, &str, &[&str])] = &[
     ("fleet", "watchdog", &["watchdog"]),
     ("fleet", "on", &["on"]),
     ("fleet", "watch", &["watch"]),
-    ("fleet", "startup", &["startup"]),
     ("setup", "harness", &["harness"]),
     ("setup", "trust-folder", &["trust-folder"]),
     ("setup", "shell-init", &["shell-init"]),
@@ -122,12 +121,7 @@ const NEW_GROUPS: &[(&str, &str)] = &[
 const HIDDEN: &[&str] = &["release", "open", "gap"];
 
 /// Routes that exist for hooks and jobs and stay out of group help.
-const QUIET_ROUTES: &[(&str, &str)] = &[
-    ("note", "log"),
-    ("stats", "event"),
-    ("fleet", "watch"),
-    ("fleet", "startup"),
-];
+const QUIET_ROUTES: &[(&str, &str)] = &[("note", "log"), ("stats", "event"), ("fleet", "watch")];
 
 /// The clap command with grouped and hidden names hidden and the new groups listed.
 /// Use this instead of `Cli::command()` wherever the surface is shown (help, completions).

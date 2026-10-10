@@ -41,6 +41,7 @@ pub(crate) mod forge;
 pub(crate) mod gitio;
 pub(crate) mod insights;
 pub(crate) mod issue;
+pub(crate) mod item;
 pub(crate) mod job_registry;
 pub(crate) mod jobs;
 pub(crate) mod forge_agent;

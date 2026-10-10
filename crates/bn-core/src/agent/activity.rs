@@ -443,3 +443,7 @@ fn summarize(tools: &[ToolCall]) -> String {
     let noun = if n == 1 { "tool call" } else { "tool calls" };
     format!("{n} {noun} · {detail}")
 }
+
+#[cfg(test)]
+#[path = "activity_tests.rs"]
+mod tests;

@@ -36,7 +36,7 @@ use pick::{sub as pick_sub, top_level as pick_top_level};
 use preview::preview;
 use rows::{build_list, build_sub_rows, sub_rows_feed, SubRow};
 
-use crate::proc::{tmux_command, tmux_ok, tmux_raw, tmux_run};
+use crate::proc::{tmux_command, tmux_ok, tmux_raw, tmux_run_try, tmux_status, warn_unreachable};
 use crate::wt;
 use bincode::Options;
 use bn_core::{resolver::Config, style};
@@ -750,7 +750,8 @@ fn goto_session(target: &str) {
     } else {
         "attach-session"
     };
-    let _ = tmux_run(&[verb, "-t", &exact_tmux_target(target)]);
+    let target = exact_tmux_target(target);
+    warn_unreachable("tat", tmux_run_try(&[verb, "-t", &target]));
 }
 
 /// Create `ref`'s session (detached, a `main` window at `start`) if missing; record frecency.
@@ -759,7 +760,7 @@ fn ensure_session(r: &str, start: &Path) {
         return;
     }
     zoxide_add(start);
-    let _ = tmux_command(&[
+    let mut cmd = tmux_command(&[
         "new-session",
         "-d",
         "-s",
@@ -767,9 +768,8 @@ fn ensure_session(r: &str, start: &Path) {
         "-n",
         "main",
         "-c",
-    ])
-    .arg(start)
-    .status();
+    ]);
+    warn_unreachable("tat", tmux_status(cmd.arg(start)));
 }
 
 /// True when `session` has a window named exactly `window`.
@@ -791,18 +791,18 @@ fn window_named_exists(session: &str, window: &str) -> bool {
 /// is `repo-tag`. Mirrors `worktree.sh:open_worktree_window` + `tat:open_worktree`'s select branch.
 fn open_or_select_window(session: &str, window: &str, wt_path: &Path) {
     if window_named_exists(session, window) {
-        let _ = tmux_run(&["select-window", "-t", &exact_window_target(session, window)]);
+        let target = exact_window_target(session, window);
+        warn_unreachable("tat", tmux_run_try(&["select-window", "-t", &target]));
     } else {
-        let _ = tmux_command(&[
+        let mut cmd = tmux_command(&[
             "new-window",
             "-t",
             &session_window_target(session),
             "-n",
             window,
             "-c",
-        ])
-        .arg(wt_path)
-        .status();
+        ]);
+        warn_unreachable("tat", tmux_status(cmd.arg(wt_path)));
     }
 }
 
@@ -1084,7 +1084,7 @@ fn open_project_step(cfg: &Config, roots: &Roots, name: &str) -> Step {
             open_or_select_window(&sess, &branch, &wt_path);
             goto_session(&sess);
         }
-        SubRow::CmdSep | SubRow::Cmd(_) | SubRow::QueueSettings => return Step::Reopen,
+        SubRow::CmdSep | SubRow::Cmd(_) => return Step::Reopen,
     }
     Step::Done
 }

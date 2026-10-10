@@ -78,7 +78,9 @@ The left pill shows the session name and **flips to reverse-video `PREFIX`** the
 | `C-j` | Session tree (`choose-tree`). tmux's own picker, no fzf and no `bn` — the fallback that still switches sessions when PATH is bare or `bn` is mid-reinstall. `f` filters, `O` re-sorts, `x` kills the highlighted row, `Right` expands a session into its windows. |
 | `t` | Kill current session, switch to next. |
 | `.` | Rename current session. |
-| `d` | Detach client (built-in). |
+| `C-d` | Detach this client (leave tmux). `d` is the diff picker. |
+| `C-p` / `BSpace` | Project / worktree picker without the frecency preview. |
+| `C-w` | Project picker scoped to the Windows-filesystem repos. |
 
 ## Worktrees (as windows)
 
@@ -87,6 +89,7 @@ The left pill shows the session name and **flips to reverse-video `PREFIX`** the
 | `o` | **Go to or create worktree.** fzf list of existing worktrees, **most recently active first** with `main` last — so the default row is where you were actually working. Select one → opens as window. Type a new name + Enter → creates worktree from latest `main`, opens as window. |
 | `x` | **Close this worktree.** Drops its window immediately, then reclaims the worktree in a background process: it hands the pool lease back, or runs `bn wt cleanup`'s gates for a conventional worktree, and reports the outcome a few seconds later as a status-line message. Prompts first if the branch has uncommitted or unpushed work, or a live agent working in the checkout — an agent mid-turn has a clean tree, and closing over it would kill it silently. Refuses `main`/`master` and the controller slot — on those, and on any non-worktree pane, it is just a pane close. **Never closes a session:** a worktree owning its session's last window leaves that window respawned as a bare shell. The expensive half runs in the background on purpose: a warm reset re-checks-out the tree and the cleanup gates make a `gh pr view` round-trip, neither of which a keystroke should wait on. |
 | `X` | Kill this window and all its panes. Leaves the worktree and its lease alone — `x` is the integrated close. |
+| `W` | Always open a **new** worktree window, even when one for the branch exists. |
 | `D` | Pick any worktree to reclaim it + kill its window — the picker sibling of `x`, and the same reclaim: a pool slot hands its lease back, a conventional worktree goes through the merged-PR / clean-tree gates and has its note closed. It runs inline (it is already a popup, so nothing blocks), and refuses rather than forcing; `bn wt remove --force` is the override. |
 
 In a non-bare session, `o` just opens/selects a `main` window at the repo path.
@@ -174,6 +177,7 @@ Selecting either ensures a local session named after the repo and opens/focuses 
 | `w` | New window (same cwd). |
 | `` ` `` | **Switch to any window in this session.** fzf over every window of the session you're in — quiet worktrees included, each with its tab badges (blockers · todos · agent state) and a live pane preview. Ordered **last-used first**, so a bare `↵` toggles back to the window you came from and never lands on the one you're already on. `ctrl-r` re-reads the badges. Type a few letters of the branch instead of counting tabs — this is what `1`–`5` can't do once a session holds more than five worktrees. |
 | `r` | Rename window. |
+| `T` | Label this window — a tab label that survives renames; empty clears it. |
 | `1`–`5` | Jump to window 1–5. |
 | `[` / `]` | Previous / next window. |
 | `<` / `>` | Swap window left / right. |
@@ -184,7 +188,7 @@ The three jump keys differ by **scope**, not by mechanism:
 |-----|-------|-------|
 | `` ` `` | this session | *every* window — navigation |
 | `Tab` | all sessions | the single top-ranked window needing you, no popup |
-| `f` | all sessions | every live agent window + the orchestrator cockpit |
+| `f` | this session | the same picker as `` ` `` |
 | `j` | all sessions + all repos | windows needing you (ranked by time-in-state, pane preview) over the `bn next` queue |
 | `C-a` | all repos | the attention queue (cron failures, raised items, stale notes) |
 
@@ -197,17 +201,37 @@ The three jump keys differ by **scope**, not by mechanism:
 | `←` `↓` `↑` `→` | Navigate between panes. |
 | `S-←` `S-↓` `S-↑` `S-→` | Resize current pane by 5 cells. |
 | `z` | Toggle zoom (fullscreen current pane). |
+| `C-t` | Name this pane (empty clears). |
+| `!` | Break this pane into its own window. |
+| `@` | Pull another window's pane in beside this one. |
 | `q` | Kill pane (with confirm). Leaves the worktree and its pool lease alone — `x` is the integrated close. |
 
 ## Popups
 
 | Key | Action |
 |-----|--------|
-| `e` | **Toggle this worktree's editor.** One persistent nvim *per worktree*, as a pane rather than a popup. First press splits it in at 90% of the window, collapsing the command pane to a strip rather than killing it (it often holds a running agent); second press parks the pane in the detached `_bn_edit` session — nvim keeps running, the shell/agent gets its full width back; third press joins it back with buffers, undo, marks and LSP intact. Editors in different worktrees are independent and never evict each other. `<leader>eh` inside nvim parks it without reaching for the prefix. If nvim dies, the next press detects it, clears up and starts a fresh one. |
-| `C-e` | Force the editor **visible** and land it on this branch's diff (never parks) — for returning to a worktree cold. |
+| `e` | **Floating read-only nvim on this worktree's changes vs `main`** (`bin/tmux-git-diff.sh`, `DiffviewOpen origin/main`; the latest commit when nothing differs). Agents call the same script to hand you a diff. |
+| `C-g` | The same floating diff for a Codespace branch, over SSH (fzf host picker). |
+| `C-e` | Show this worktree's persistent editor pane and land it on the branch diff (never parks) — for returning to a worktree cold. |
 | `d` | **Worktree diff picker.** Every worktree with a checkout, badged with whether its editor is up (`●` showing · `○` parked), with `bn status --diff` as the live preview. `↵` switches to that worktree's window and opens Diffview in *its* nvim. `ctrl-r` reloads. |
 | `n` | Branch note popup (`note.md` for current git context). |
-| `g` | Lazygit popup. `q` closes. |
+| `g` | Lazygit popup. `q` closes. Says so instead of flashing shut when lazygit is not installed. |
+| `E` | Open the newest pending plan review in nvim, then approve or request changes. |
+| `Enter` | Scratch shell in this worktree; vanishes on exit. |
+| `c` | Run one of your `bn cmd` commands (picker). |
+| `a` / `b` | Quick-add a todo / blocker to the branch note. |
+| `l` | Links picker — open a saved `bn links` URL. |
+
+## Agents
+
+| Key | Action |
+|-----|--------|
+| `A` | New window on this worktree running `bn agent launch` (Copilot): resumes the worktree's recorded session, else starts fresh. The tab tracks the agent's state through `@bn_agent`. |
+| `G` | The same with Claude (`bn agent launch claude`). |
+| `S` | Cockpit popup: in-flight windows across sessions + a bn summary. |
+| `j` | Jump picker — windows needing you over the `bn next` queue. |
+| `Tab` | Jump straight to the top window needing you; repeat to cycle. |
+| `m` | Watch this window: badge it ✓ when it goes quiet. |
 
 ## Copy Mode (vi)
 
@@ -225,7 +249,7 @@ Enter with **`C-Space Space`**.
 | `C-u` `C-d` | Half-page up / down. |
 | `q` or `Esc` | Exit copy mode. Scrolling back down to the live screen also exits on its own. |
 
-Outside copy mode: `p` paste-buffer, `P` choose-buffer.
+Outside copy mode: `p` pastes the **system clipboard** (through `bn-clip`), `P` chooses a tmux buffer, `Space` enters copy mode.
 
 ## Config
 

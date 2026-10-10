@@ -16,7 +16,7 @@
 //! spawns and signal sends touch the OS.
 
 use crate::cmd::killport::{process_exists, send_signal, signal_kill, signal_term};
-use crate::proc::{tmux_raw, tmux_run};
+use crate::proc::{tmux_raw, tmux_run_try, warn_unreachable};
 use bn_core::agent::{AgentHealth, DEFAULT_IDLE_MINS, DEFAULT_STUCK_MINS};
 use bn_core::fleet_gc::{self, AgentObservation, Disposition, PrStatus, ReapPolicy};
 use bn_core::orchestrate::{classify as classify_pane, PaneObservation, PaneState};
@@ -715,13 +715,13 @@ pub(crate) fn run_reap(cfg: &Config, opts: ReapOpts) -> i32 {
             let tree = descendants(&edges, v.candidate.root_pid);
             kill_tree(&tree);
             if let Some(wid) = &v.candidate.window_id {
-                let _ = tmux_run(&["kill-window", "-t", wid]);
+                warn_unreachable("reap", tmux_run_try(&["kill-window", "-t", wid]));
             }
             reaped += 1;
         }
         // Prune remain-on-exit husks (independent of any live process).
         for wid in &husks {
-            let _ = tmux_run(&["kill-window", "-t", wid]);
+            warn_unreachable("reap", tmux_run_try(&["kill-window", "-t", wid]));
             pruned += 1;
         }
     } else {
@@ -928,3 +928,7 @@ mod next_sweep_launch_tests {
         assert!(should_launch_next_sweep(Some(900), 1_030));
     }
 }
+
+#[cfg(test)]
+#[path = "reap_tests.rs"]
+mod kill_path_tests;

@@ -673,3 +673,7 @@ pub fn decide(obs: &PaneObservation) -> (PaneState, SupervisorAction) {
     let state = classify(obs);
     (state, action_for(state))
 }
+
+#[cfg(test)]
+#[path = "pane_tests.rs"]
+mod tests;

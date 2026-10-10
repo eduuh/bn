@@ -10,4 +10,7 @@
 //! makes that the path of least resistance rather than `format!("={a}:{b}")`, which anchors only
 //! the session half and lets a write fnmatch into a neighbouring window.
 
-pub use bn_core::tmux::{exact_target, tmux, tmux_command, tmux_ok, tmux_raw, tmux_run};
+pub use bn_core::tmux::{
+    exact_target, tmux, tmux_command, tmux_ok, tmux_raw, tmux_run, tmux_run_try, tmux_status,
+    warn_unreachable,
+};

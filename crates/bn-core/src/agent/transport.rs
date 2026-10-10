@@ -217,37 +217,67 @@ impl TmuxTransport {
     }
 }
 
+/// How long a paste is given to land before a `Submit` that follows it in the same batch. Without
+/// it the CR can reach a TUI still processing the paste and be taken as part of it. Matches the
+/// pause `bn agent send` already takes between its paste and its first submit.
+pub const PASTE_SETTLE_MS: u64 = 120;
+
+impl TmuxTransport {
+    /// Deliver `keys` in order, stopping at the first that fails. The old loop carried on past a
+    /// failed paste and still sent the CR, which pressed Enter on whatever was already in the box.
+    ///
+    /// This proves tmux accepted every key, not that the harness acted on them: whether a message
+    /// left the composer is read from the pane by the caller (`bn agent send` polls for it and
+    /// retries the submit), because what "left the composer" looks like differs per harness.
+    pub fn try_write_keys(&self, keys: &[Key]) -> Result<(), crate::tmux::TmuxError> {
+        crate::tmux::warn_if_old_tmux();
+        let mut after_text = false;
+        for key in keys {
+            if after_text && *key == Key::Submit {
+                std::thread::sleep(std::time::Duration::from_millis(PASTE_SETTLE_MS));
+            }
+            self.write_key(key)?;
+            after_text = matches!(key, Key::Text(_));
+        }
+        Ok(())
+    }
+
+    fn write_key(&self, key: &Key) -> Result<(), crate::tmux::TmuxError> {
+        use crate::tmux::tmux_try;
+        match key {
+            // Staged through a buffer and pasted as one block: a character-by-character
+            // `send-keys` lets an autosuggest/highlight TUI mangle the message. `--` guards a
+            // leading `-` in the text from being read as a flag; `-d` deletes the buffer after.
+            Key::Text(text) => {
+                let buf = self.buffer_name();
+                tmux_try(&["set-buffer", "-b", &buf, "--", text])?;
+                tmux_try(&["paste-buffer", "-d", "-b", &buf, "-t", &self.target]).inspect_err(
+                    |_| {
+                        // `-d` only fires on a paste that happened; don't leave the message staged.
+                        let _ = tmux_try(&["delete-buffer", "-b", &buf]);
+                    },
+                )?;
+            }
+            // The literal CR byte rather than the named key (#306).
+            Key::Submit => {
+                tmux_try(&["send-keys", "-t", &self.target, "-H", "0d"])?;
+            }
+            key => {
+                let name = key.tmux_key().ok_or_else(|| {
+                    crate::tmux::TmuxError::Failed(format!("no tmux key for {key:?}"))
+                })?;
+                tmux_try(&["send-keys", "-t", &self.target, &name])?;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl AgentTransport for TmuxTransport {
     fn write_keys(&self, keys: &[Key]) -> bool {
-        let mut ok = true;
-        for key in keys {
-            ok &= match key {
-                // Staged through a buffer and pasted as one block: a character-by-character
-                // `send-keys` lets an autosuggest/highlight TUI mangle the message. `--` guards a
-                // leading `-` in the text from being read as a flag; `-d` deletes the buffer after.
-                Key::Text(text) => {
-                    let buf = self.buffer_name();
-                    crate::tmux::tmux_ok(&["set-buffer", "-b", &buf, "--", text])
-                        && crate::tmux::tmux_ok(&[
-                            "paste-buffer",
-                            "-d",
-                            "-b",
-                            &buf,
-                            "-t",
-                            &self.target,
-                        ])
-                }
-                // The literal CR byte rather than the named key (#306).
-                Key::Submit => crate::tmux::tmux_ok(&["send-keys", "-t", &self.target, "-H", "0d"]),
-                Key::Escape => crate::tmux::tmux_ok(&["send-keys", "-t", &self.target, "Escape"]),
-                Key::Digit(d) => {
-                    crate::tmux::tmux_ok(&["send-keys", "-t", &self.target, &d.to_string()])
-                }
-                Key::Up => crate::tmux::tmux_ok(&["send-keys", "-t", &self.target, "Up"]),
-                Key::Down => crate::tmux::tmux_ok(&["send-keys", "-t", &self.target, "Down"]),
-                Key::Enqueue => crate::tmux::tmux_ok(&["send-keys", "-t", &self.target, "C-q"]),
-            };
-        }
+        let result = self.try_write_keys(keys);
+        let ok = result.is_ok();
+        crate::tmux::warn_unreachable("agent send", result);
         ok
     }
 
@@ -262,6 +292,7 @@ impl AgentTransport for TmuxTransport {
         // exits 0, so every name in a live session read as Live. `list-panes` fails as it should.
         // A window is not enough either: one whose agent exited back to its shell took the next
         // message as a shell command, so a harness has to be running in it.
+        crate::tmux::warn_if_old_tmux();
         let pids: Vec<u32> =
             crate::tmux::tmux_raw(&["list-panes", "-t", &self.target, "-F", "#{pane_pid}"])
                 .unwrap_or_default()

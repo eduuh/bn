@@ -153,10 +153,6 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
                 }
             }
         }
-        CmdStaff::Startup { repo, branch } => {
-            let ctx = target_ctx(cfg, repo, branch);
-            emit_startup(cfg, ctx.as_ref());
-        }
         CmdStaff::Skills { action, pick } => {
             let base = std::env::current_dir().unwrap_or_default();
             match action {

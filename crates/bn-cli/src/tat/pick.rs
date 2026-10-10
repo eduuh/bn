@@ -319,7 +319,6 @@ fn parse_piped(line: &str) -> Option<SubRow> {
         "poolidle" => SubRow::PoolIdle(payload),
         "cmdsep" => SubRow::CmdSep,
         "cmd" => SubRow::Cmd(payload),
-        "qset" => SubRow::QueueSettings,
         // An unknown kind means the feed and this parser have drifted; treating it as a worktree
         // is what the pre-typed code did (its final `else` branch).
         _ => SubRow::Worktree(payload),
@@ -387,7 +386,6 @@ mod tests {
             SubRow::PoolIdle("3".into()),
             SubRow::CmdSep,
             SubRow::Cmd("build-main".into()),
-            SubRow::QueueSettings,
         ] {
             let item = SubRowItem {
                 display: "whatever the row shows".into(),
@@ -423,6 +421,5 @@ mod tests {
             "worktree~feat-auth"
         );
         assert_eq!(pick_arg(&SubRow::PoolIdle("3".into())), "poolidle~3");
-        assert_eq!(pick_arg(&SubRow::QueueSettings), "qset~");
     }
 }

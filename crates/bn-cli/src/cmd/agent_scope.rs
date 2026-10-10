@@ -90,8 +90,15 @@ pub(crate) fn build_claude_args(plan: &LaunchPlan, has_transcripts: bool) -> Vec
 /// Build the argv (after the harness binary) for a **Copilot** launch. Resumes the resolved session
 /// id with `--resume=` when one exists (unless `--fresh`); otherwise starts fresh, pinning the
 /// session id and seeding the first turn with `-i <seed>`. Pure — mirrors the zsh `copilot` branch.
+/// Copilot's standing shell approval for bn itself, so an agent can follow the AGENTS.md rule to
+/// reap stale worktrees (`bn wt reap --all --yes`) without a prompt. Copilot matches shell rules on
+/// the command name only — `shell(bn wt reap:*)` and `shell(bn wt:*)` never match — so the rule
+/// has to cover every `bn` subcommand. Claude's narrower `Bash(bn wt reap:*)` lives in its stowed
+/// settings instead.
+const COPILOT_BN_SHELL_RULE: &str = "shell(bn)";
+
 pub(crate) fn build_copilot_args(plan: &LaunchPlan, resume_id: Option<&str>) -> Vec<String> {
-    let mut args = Vec::new();
+    let mut args = vec!["--allow-tool".to_string(), COPILOT_BN_SHELL_RULE.to_string()];
     if plan.yolo() {
         args.extend(
             bn_core::mcp::Harness::Copilot
@@ -196,6 +203,24 @@ mod tests {
         p.fresh = false;
         p.add_dirs = vec!["/notes/bn/main".into()];
         p
+    }
+
+    /// The stale-worktree rule asks agents to run `bn wt reap` unprompted, so every Copilot launch —
+    /// fresh, resumed, or without autonomy — carries the bn shell approval.
+    #[test]
+    fn every_copilot_launch_may_run_bn() {
+        let mut resumed = plan(None, false);
+        resumed.fresh = false;
+        for args in [
+            build_copilot_args(&plan(None, false), None),
+            build_copilot_args(&plan(Some("go"), true), None),
+            build_copilot_args(&resumed, Some("abc")),
+        ] {
+            assert!(
+                args.windows(2).any(|w| w == ["--allow-tool", "shell(bn)"]),
+                "{args:?}"
+            );
+        }
     }
 
     #[test]

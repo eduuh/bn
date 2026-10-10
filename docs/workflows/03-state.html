@@ -278,10 +278,11 @@ Thirteen tools, scope resolved per call, failing closed with exactly one excepti
 <tbody>
 <tr><td><code>bn_context</code></td><td>Session-start orientation: goal, counts, top todos, blockers, PR</td><td>branch</td></tr>
 <tr><td><code>bn_goal</code></td><td>Set the one-line <code>## Goal</code> in the body</td><td>branch</td></tr>
-<tr><td><code>bn_add</code></td><td>Append to todo / blocker / decision / research / collab / ask / done-when, with <code>if_absent</code> dedupe</td><td>branch</td></tr>
+<tr><td><code>bn_add</code></td><td>Append to todo / blocker / decision / research / collab / ask / done-when, with <code>if_absent</code> dedupe, <code>est</code> and quarter-goal <code>q</code></td><td>branch</td></tr>
 <tr><td><code>bn_done</code></td><td>Close a todo by id or substring; <code>pct</code> 1–99 records partial progress instead</td><td>branch</td></tr>
+<tr><td><code>bn_drop</code> / <code>bn_reopen</code> / <code>bn_reword</code></td><td>Remove an item, reopen a done one, or replace its text — by id or substring</td><td>branch</td></tr>
 <tr><td><code>bn_pr</code></td><td>Record the PR on frontmatter</td><td>branch</td></tr>
-<tr><td><code>bn_cat</code></td><td>Render the full note</td><td>branch</td></tr>
+<tr><td><code>bn_cat</code></td><td>Render the full note (<code>no note</code> before the first write)</td><td>branch</td></tr>
 <tr><td><code>bn_status</code></td><td>Open-todo and blocker counts, work item, PR</td><td>branch</td></tr>
 <tr><td><code>bn_sync</code></td><td>Reconcile note against git/PR truth — returns proposals, never writes</td><td>branch</td></tr>
 <tr><td><code>bn_handoff_write</code></td><td>Write the resume packet</td><td>branch</td></tr>
@@ -289,6 +290,7 @@ Thirteen tools, scope resolved per call, failing closed with exactly one excepti
 <tr><td><code>bn_ref</code></td><td>Index or body of reference docs; a repo note shadows a same-named global</td><td>repo + person</td></tr>
 <tr><td><code>bn_ref_append</code></td><td>Record one durable fact under <code>## Facts</code>/<code>## Gotchas</code></td><td>repo</td></tr>
 <tr><td><code>bn_links_add</code></td><td>Store a URL worth returning to; re-adding updates in place</td><td><strong>person</strong></td></tr>
+<tr><td><code>bn_links_search</code></td><td>Find a saved link by words in its name, tags or URL; this repo's first</td><td><strong>person</strong></td></tr>
 </tbody>
 </table>
 </div>
@@ -308,7 +310,7 @@ A separate opt-in orchestrator server (<code>bn-mcp --orchestrate</code>) expose
 <code>\n## Goal</code> once doubled the body on every call.
 <span class="src">render.rs:127-140</span></li>
 
-<li><strong><code>bn_links_add</code> is the one tool that does not fail closed.</strong> With
+<li><strong>The link tools (<code>bn_links_add</code>, <code>bn_links_search</code>) do not fail closed.</strong> With
 no branch resolved the link is stored without a repo, because losing a capture over the
 client's working directory is the wrong trade.
 <span class="src">server.rs:218-232</span></li>

@@ -1,4 +1,10 @@
-//! `bn resume --all` — bring back the work that was running when the machine last went down.
+//! `bn resume --all` — bring back the work that was running when the machine, or just its tmux
+//! server, last went down.
+//!
+//! A dead tmux server takes every agent with it (each harness gets SIGHUP with its pane) while the
+//! machine keeps running, so "before this boot" is the wrong cutoff for that case: the boot may be
+//! days old. The cutoff is whichever restarted *later* — the machine or the tmux server — see
+//! [`restart_cutoff`]. After a reboot the two are seconds apart, so nothing changes there.
 //!
 //! The reconstruction lives in [`bn_core::prior_boot`]; this is the surface over it. Three
 //! properties shape the code more than the feature does:
@@ -32,9 +38,10 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub(crate) enum Placement {
-    /// A live pane is already sitting in this checkout (usually continuum's) — send the launch
-    /// command into it and keep the window.
-    Adopt { target: String },
+    /// A shell pane is already sitting in this checkout (usually continuum's) — send the launch
+    /// command into it and keep the window. `target` is the window (what the lease records);
+    /// `pane` is the exact pane the keys go to, so they never land in an nvim split beside it.
+    Adopt { target: String, pane: String },
     /// Nothing is in the checkout; open a window the ordinary way.
     Create,
 }
@@ -79,7 +86,11 @@ impl RestoreRow {
 /// The facts one row needs, gathered by the caller so the policy stays pure and testable.
 pub(crate) struct RowFacts {
     pub worktree_exists: bool,
-    pub pane_target: Option<String>,
+    /// `(window, pane)` of a live *shell* pane in the checkout — the only kind safe to type into.
+    pub pane_target: Option<(String, String)>,
+    /// A harness is already running in the checkout — restored by hand, or never died. Typing a
+    /// launch command into it, or opening a second agent beside it, are both wrong.
+    pub agent_running: bool,
     pub slot: Option<u32>,
     /// The branch the checkout is on *now*, not when the crash happened. `None` when it could not
     /// be read (detached HEAD, not a repo) — which is treated as "cannot vouch for it".
@@ -117,6 +128,14 @@ pub(crate) fn plan_restore(
                 branch: row.branch.clone(),
                 worktree: row.worktree.clone(),
                 reason: "in the main worktree — hosts no agents".into(),
+            });
+            continue;
+        }
+        if fact.agent_running {
+            rejected.push(Rejected {
+                branch: row.branch.clone(),
+                worktree: row.worktree.clone(),
+                reason: "an agent is already running there".into(),
             });
             continue;
         }
@@ -166,7 +185,7 @@ pub(crate) fn plan_restore(
             session_source: row.session_source,
             resuming,
             placement: match fact.pane_target.clone() {
-                Some(target) => Placement::Adopt { target },
+                Some((target, pane)) => Placement::Adopt { target, pane },
                 None => Placement::Create,
             },
             task_name: row.task_name.clone(),
@@ -192,9 +211,8 @@ fn gather_facts(rows: &[PriorRow]) -> Vec<RowFacts> {
             RowFacts {
                 worktree_exists: exists,
                 // Only probe tmux for checkouts that still exist.
-                pane_target: exists
-                    .then(|| agent_lease::live_pane_target_in(&path))
-                    .flatten(),
+                pane_target: exists.then(|| shell_pane_in(&path)).flatten(),
+                agent_running: exists && agent_lease::harness_running_in(&path),
                 slot: pool_slot_of(&path),
                 current_branch: exists
                     .then(|| {
@@ -209,6 +227,59 @@ fn gather_facts(rows: &[PriorRow]) -> Vec<RowFacts> {
             }
         })
         .collect()
+}
+
+/// Shells — the only foreground commands a launch line may be typed into.
+const SHELLS: &[&str] = &["zsh", "bash", "sh", "fish", "-zsh", "-bash", "-sh", "-fish"];
+
+/// `(session:window_name, pane_id)` of the first live pane in `worktree` whose foreground command
+/// is a shell. The window is named, never indexed: a lease's target is `session:window_name` and
+/// ownership is an exact match on it, so a `bn:0` lease reads as someone else's agent and the
+/// relaunch refuses to start behind it. A restored window is often an agent pane plus an nvim split; the window's active pane
+/// may be the editor, and `send-keys` to the window would type the launch command into it.
+fn shell_pane_in(worktree: &std::path::Path) -> Option<(String, String)> {
+    let format =
+        "#{pane_current_path}\t#{pane_dead}\t#{pane_current_command}\t#{session_name}:#{window_name}\t#{pane_id}";
+    pick_shell_pane(&crate::proc::tmux_raw(&["list-panes", "-a", "-F", format])?, worktree)
+}
+
+fn pick_shell_pane(output: &str, worktree: &std::path::Path) -> Option<(String, String)> {
+    output.lines().find_map(|line| {
+        let f: Vec<&str> = line.split('\t').collect();
+        let [cwd, dead, command, target, pane] = f[..] else {
+            return None;
+        };
+        (dead.trim() == "0"
+            && SHELLS.contains(&command.trim())
+            && std::path::Path::new(cwd).starts_with(worktree))
+        .then(|| (target.trim().to_string(), pane.trim().to_string()))
+    })
+}
+
+/// The moment work stopped: the later of the machine's boot and the tmux server's start.
+///
+/// tmux's `#{start_time}` is when the *running* server started — after a crash, the replacement.
+/// `None` only when neither can be read.
+fn restart_cutoff() -> Option<i64> {
+    let tmux_start = crate::proc::tmux(&["display-message", "-p", "#{start_time}"])
+        .and_then(|s| s.parse::<i64>().ok());
+    later_of(bn_core::boot::boot_started_at(), tmux_start)
+}
+
+fn later_of(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Claim the once-per-tmux-server `--auto` run. The startup hook and its fallback both call it, and
+/// a config re-source fires the fallback again; only the first caller per server proceeds.
+fn claim_auto_run() -> bool {
+    let Some(pid) = crate::proc::tmux(&["display-message", "-p", "#{pid}"]) else {
+        return false;
+    };
+    crate::cmd::cron::claim_sentinel(&bn_core::resolver::state_dir(), "resume", &pid)
 }
 
 /// The pool slot number for a checkout, when it is a pooled one (`…/<repo>/_pool/<n>`).
@@ -227,12 +298,20 @@ pub(crate) struct ResumeFleetOpts {
     pub dry_run: bool,
     pub yes: bool,
     pub slots: Vec<u32>,
+    /// Unattended recovery from tmux.conf: once per tmux server, implies `--yes`, and restores only
+    /// transcript-verified rows — agents seen working just before the crash. A lease or launch
+    /// record from hours earlier is not proof the agent was still open, and relaunching one the
+    /// operator closed on purpose is worse than leaving it for a manual `bn resume --all`.
+    pub auto: bool,
 }
 
 const TAG: &str = "resume_fleet";
 
 pub(crate) fn emit_resume_fleet(cfg: &Config, opts: &ResumeFleetOpts, json: bool) {
-    let Some(boot_at) = bn_core::boot::boot_started_at() else {
+    if opts.auto {
+        return emit_auto(cfg);
+    }
+    let Some(boot_at) = restart_cutoff() else {
         fail_json(
             json,
             TAG,
@@ -261,7 +340,7 @@ pub(crate) fn emit_resume_fleet(cfg: &Config, opts: &ResumeFleetOpts, json: bool
             );
             return;
         }
-        println!("nothing to recover from before this boot.");
+        println!("nothing to recover from before the last restart.");
         print_rejected(&rejected);
         return;
     }
@@ -352,12 +431,46 @@ pub(crate) fn emit_resume_fleet(cfg: &Config, opts: &ResumeFleetOpts, json: bool
     }
 }
 
+/// The unattended path: restore every verified row, then say what happened in the tmux status line
+/// (there is no terminal to print to). Silent when there was nothing to recover.
+fn emit_auto(cfg: &Config) {
+    if !claim_auto_run() {
+        return;
+    }
+    let Some(cutoff) = restart_cutoff() else {
+        return;
+    };
+    let mut rows = bn_core::prior_boot::reconstruct(cfg, cutoff);
+    rows.retain(|row| row.verified);
+    let facts = gather_facts(&rows);
+    let (plan, rejected) = plan_restore(&rows, &facts, &[]);
+    let mut restored = Vec::new();
+    for row in &plan {
+        match restore_one(row) {
+            Ok(()) => restored.push(row.branch.clone()),
+            Err(error) => eprintln!("bn resume --auto: {}: {error}", row.branch),
+        }
+    }
+    for r in &rejected {
+        eprintln!("bn resume --auto: skipped {} — {}", r.branch, r.reason);
+    }
+    if !restored.is_empty() {
+        let message = format!(
+            "bn: recovered {} agent(s): {}",
+            restored.len(),
+            restored.join(", ")
+        );
+        println!("{message}");
+        crate::proc::tmux_ok(&["display-message", "-d", "10000", &message]);
+    }
+}
+
 /// Put one row back. Adopt sends into the existing pane; create opens a window.
 fn restore_one(row: &RestoreRow) -> Result<(), String> {
     let worktree = PathBuf::from(&row.worktree);
     let command = launch_command(row);
     match &row.placement {
-        Placement::Adopt { target } => adopt_into_pane(row, target, &command),
+        Placement::Adopt { target, pane } => adopt_into_pane(row, target, pane, &command),
         Placement::Create => crate::cmd::sessions::launch_resume_window(
             &row.repo,
             &row.branch,
@@ -397,7 +510,12 @@ fn launch_command(row: &RestoreRow) -> String {
 /// `in_place: true` marks this as a reservation for a window that is already there, so the
 /// dead-target cleanup branch is never reached — there is no stale window to remove, and reaching
 /// for one is how a restore would end up closing something.
-fn adopt_into_pane(row: &RestoreRow, target: &str, command: &str) -> Result<(), String> {
+fn adopt_into_pane(
+    row: &RestoreRow,
+    target: &str,
+    pane: &str,
+    command: &str,
+) -> Result<(), String> {
     let reservation = agent_lease::reserve(agent_lease::AgentLeaseRequest {
         repo: &row.repo,
         branch: &row.branch,
@@ -410,11 +528,10 @@ fn adopt_into_pane(row: &RestoreRow, target: &str, command: &str) -> Result<(), 
         in_place: true,
         trusted: false,
     })?;
-    // `target` arrives raw from the restore row — no `=` at all, so BOTH halves fnmatch and this
-    // send-keys could type a launch command line into someone else's agent. `--` additionally stops
-    // a command starting with `-` being parsed as a flag.
-    let exact = crate::proc::exact_target(target);
-    if !crate::proc::tmux_ok(&["send-keys", "-t", &exact, "--", command, "Enter"]) {
+    // `pane` is a `%id`, which tmux resolves exactly — no fnmatch, so the keys cannot land in
+    // someone else's agent. `--` additionally stops a command starting with `-` being parsed as a
+    // flag.
+    if !crate::proc::tmux_ok(&["send-keys", "-t", pane, "--", command, "Enter"]) {
         let _ = reservation.rollback();
         return Err(format!("could not send the launch into {target}"));
     }
@@ -425,7 +542,7 @@ fn adopt_into_pane(row: &RestoreRow, target: &str, command: &str) -> Result<(), 
 
 fn print_plan(boot_at: i64, plan: &[RestoreRow]) {
     println!(
-        "work running before this boot (machine came back {}):\n",
+        "work running before the last restart (machine or tmux server came back {}):\n",
         bn_core::util::fmt_local_short(boot_at)
     );
     println!(
@@ -434,7 +551,7 @@ fn print_plan(boot_at: i64, plan: &[RestoreRow]) {
     );
     for (i, row) in plan.iter().enumerate() {
         let window = match &row.placement {
-            Placement::Adopt { target } => format!("adopt {target}"),
+            Placement::Adopt { target, .. } => format!("adopt {target}"),
             Placement::Create => "new window".to_string(),
         };
         // Qualified by repo: pool slots are per-repo, so a bare `[2]` names two different
@@ -527,7 +644,8 @@ mod tests {
     fn facts(exists: bool, pane: Option<&str>, slot: Option<u32>) -> RowFacts {
         RowFacts {
             worktree_exists: exists,
-            pane_target: pane.map(str::to_string),
+            pane_target: pane.map(|p| (p.to_string(), "%1".to_string())),
+            agent_running: false,
             slot,
             current_branch: None,
         }
@@ -538,6 +656,7 @@ mod tests {
         RowFacts {
             worktree_exists: true,
             pane_target: None,
+            agent_running: false,
             slot: Some(2),
             current_branch: Some(branch.to_string()),
         }
@@ -553,9 +672,46 @@ mod tests {
         assert_eq!(
             plan[0].placement,
             Placement::Adopt {
-                target: "bn:2".into()
+                target: "bn:2".into(),
+                pane: "%1".into(),
             }
         );
+    }
+
+    /// The tmux-crash case: the machine booted days ago, the server restarted a minute ago. The
+    /// cutoff must be the server's start, or the crash falls outside every window.
+    #[test]
+    fn the_cutoff_is_the_later_restart() {
+        assert_eq!(later_of(Some(100), Some(5_000)), Some(5_000));
+        assert_eq!(later_of(Some(5_000), Some(100)), Some(5_000));
+        assert_eq!(later_of(None, Some(7)), Some(7));
+        assert_eq!(later_of(Some(7), None), Some(7));
+        assert_eq!(later_of(None, None), None);
+    }
+
+    /// Recovery is safe to re-run: a checkout whose agent is already back is left alone, never
+    /// handed a second launch.
+    #[test]
+    fn a_checkout_with_a_running_agent_is_rejected() {
+        let mut f = facts(true, Some("bn:2"), Some(2));
+        f.agent_running = true;
+        let (plan, rejected) = plan_restore(&[row("a", "claude", "s1", true)], &[f], &[]);
+        assert!(plan.is_empty(), "{plan:?}");
+        assert!(rejected[0].reason.contains("already running"));
+    }
+
+    /// Only a shell pane may be typed into — an nvim split in the same checkout is skipped.
+    #[test]
+    fn only_a_shell_pane_is_adopted() {
+        let wt = std::path::Path::new("/w/a");
+        let out = "/w/a\t0\tnvim\tbn:2\t%5\n/w/a/src\t0\tzsh\tbn:2\t%6\n";
+        assert_eq!(
+            pick_shell_pane(out, wt),
+            Some(("bn:2".to_string(), "%6".to_string()))
+        );
+        assert_eq!(pick_shell_pane("/w/a\t0\tnvim\tbn:2\t%5\n", wt), None);
+        assert_eq!(pick_shell_pane("/w/a\t1\tzsh\tbn:2\t%5\n", wt), None);
+        assert_eq!(pick_shell_pane("/w/b\t0\tzsh\tbn:3\t%5\n", wt), None);
     }
 
     #[test]

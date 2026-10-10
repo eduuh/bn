@@ -40,7 +40,6 @@ pub(super) enum SubRow {
     PoolIdle(String),
     CmdSep,
     Cmd(String),
-    QueueSettings,
 }
 
 impl SubRow {
@@ -54,7 +53,6 @@ impl SubRow {
             SubRow::PoolIdle(_) => "poolidle",
             SubRow::CmdSep => "cmdsep",
             SubRow::Cmd(_) => "cmd",
-            SubRow::QueueSettings => "qset",
         }
     }
 
@@ -67,7 +65,7 @@ impl SubRow {
             | SubRow::PoolIdle(s)
             | SubRow::Cmd(s) => s.clone(),
             SubRow::Codespace { name, branch } => format!("{name}\t{branch}"),
-            SubRow::CmdSep | SubRow::QueueSettings => String::new(),
+            SubRow::CmdSep => String::new(),
         }
     }
 }
@@ -490,7 +488,6 @@ fn parse_piped_item(line: &str) -> Option<SubRowItem> {
         "poolidle" => SubRow::PoolIdle(payload.to_string()),
         "cmdsep" => SubRow::CmdSep,
         "cmd" => SubRow::Cmd(payload.to_string()),
-        "qset" => SubRow::QueueSettings,
         _ => return None,
     };
     Some(SubRowItem { row, display })
@@ -529,12 +526,9 @@ mod tests {
 
     #[test]
     fn command_rows_round_trip_back_into_typed_rows() {
-        let rows = piped_items(
-            "cmdsep||separator\ncmd|build-main|  ▸  Build latest main\nqset||  ⚙  Queue settings…",
-        );
-        assert_eq!(rows.len(), 3);
+        let rows = piped_items("cmdsep||separator\ncmd|build-main|  ▸  Build latest main");
+        assert_eq!(rows.len(), 2);
         assert!(matches!(rows[0].row, SubRow::CmdSep));
         assert!(matches!(rows[1].row, SubRow::Cmd(ref id) if id == "build-main"));
-        assert!(matches!(rows[2].row, SubRow::QueueSettings));
     }
 }

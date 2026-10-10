@@ -9,7 +9,69 @@
 //! not injection vectors.
 
 use std::ffi::OsStr;
-use std::process::Command;
+use std::process::{Command, ExitStatus, Output};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
+
+/// Why a tmux call failed. The `Option`/`bool` helpers below fold all of these into `None`/`false`,
+/// which is right for the routine "that window is already gone" case and wrong for "tmux isn't
+/// there at all": the second one deserves a line on stderr, the first does not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TmuxError {
+    /// The `tmux` binary could not be spawned.
+    NotInstalled,
+    /// tmux ran but no server is listening on the socket.
+    NoServer,
+    /// The server is up but the session/window/pane named by `-t` does not exist.
+    NoTarget(String),
+    /// Anything else: tmux's own stderr (or the exit status when stderr was not captured).
+    Failed(String),
+}
+
+impl TmuxError {
+    /// Whether tmux itself is unreachable, as opposed to one target being missing — the only
+    /// causes worth warning about from a best-effort call site.
+    pub fn is_unreachable(&self) -> bool {
+        matches!(self, TmuxError::NotInstalled | TmuxError::NoServer)
+    }
+}
+
+impl std::fmt::Display for TmuxError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TmuxError::NotInstalled => f.write_str("tmux is not installed"),
+            TmuxError::NoServer => f.write_str("no tmux server is running"),
+            TmuxError::NoTarget(msg) | TmuxError::Failed(msg) => f.write_str(msg),
+        }
+    }
+}
+
+impl std::error::Error for TmuxError {}
+
+/// Classify a failed tmux call from its stderr. Pure → testable against the strings tmux 3.x
+/// prints: `no server running on …` / `error connecting to … (No such file or directory)` when
+/// the socket has no server, `can't find session|window|pane: …` for a missing target.
+pub fn classify_failure(stderr: &str) -> TmuxError {
+    let msg = stderr.trim();
+    let no_socket = msg.starts_with("error connecting to")
+        && (msg.contains("No such file or directory") || msg.contains("Connection refused"));
+    if msg.contains("no server running") || no_socket {
+        TmuxError::NoServer
+    } else if msg.contains("can't find ") || msg.contains("no current ") {
+        TmuxError::NoTarget(msg.to_string())
+    } else {
+        TmuxError::Failed(msg.to_string())
+    }
+}
+
+/// Map a spawn result onto [`TmuxError`]: a missing binary is `NotInstalled`, any other spawn
+/// error is `Failed`.
+fn spawned<T>(r: std::io::Result<T>) -> Result<T, TmuxError> {
+    r.map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => TmuxError::NotInstalled,
+        _ => TmuxError::Failed(e.to_string()),
+    })
+}
 
 /// Build the `tmux` command with `args` forwarded verbatim — the single sanctioned
 /// `Command::new("tmux")` in the workspace. Callers that need bespoke configuration
@@ -26,10 +88,49 @@ pub fn tmux_command<S: AsRef<OsStr>>(args: &[S]) -> Command {
 /// Run tmux, returning stdout verbatim on success (no trim) — for multi-line `-F` enumerations
 /// whose rows carry trailing empty `@user-option` columns a trim would eat.
 pub fn tmux_raw<S: AsRef<OsStr>>(args: &[S]) -> Option<String> {
-    let out = tmux_command(args).output().ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    tmux_try(args).ok()
+}
+
+/// Run tmux capturing its output, returning stdout verbatim on success and the classified cause
+/// on failure. The `Result` form of [`tmux_raw`] / [`tmux_ok`].
+pub fn tmux_try<S: AsRef<OsStr>>(args: &[S]) -> Result<String, TmuxError> {
+    let out: Output = spawned(tmux_command(args).output())?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(classify_failure(&String::from_utf8_lossy(&out.stderr)))
+    }
+}
+
+/// Run an already-built tmux command with inherited stdio (it may need the terminal, as
+/// `attach-session` does), classifying a failure. tmux's stderr went to the terminal, so a
+/// non-zero exit is probed once with `list-sessions` to tell a missing server from the rest.
+pub fn tmux_status(cmd: &mut Command) -> Result<(), TmuxError> {
+    let status: ExitStatus = spawned(cmd.status())?;
+    if status.success() {
+        return Ok(());
+    }
+    match tmux_try(&["list-sessions", "-F", "#{session_id}"]) {
+        Err(e) if e.is_unreachable() => Err(e),
+        _ => Err(TmuxError::Failed(format!("tmux exited with {status}"))),
+    }
+}
+
+/// The `Result` form of [`tmux_run`]: inherited stdio, classified failure.
+pub fn tmux_run_try<S: AsRef<OsStr>>(args: &[S]) -> Result<(), TmuxError> {
+    tmux_status(&mut tmux_command(args))
+}
+
+/// For a best-effort call site that ignores the outcome: say so on stderr when tmux itself is
+/// unreachable (not installed, no server), once per process so a sweep of calls stays one line.
+/// A missing target is routine — the window was already gone — and stays silent.
+pub fn warn_unreachable<T>(context: &str, result: Result<T, TmuxError>) {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if let Err(e) = result {
+        if e.is_unreachable() && !WARNED.swap(true, Ordering::Relaxed) {
+            eprintln!("bn: {context}: {e}");
+        }
+    }
 }
 
 /// Run tmux, returning trimmed non-empty stdout — for single-value captures (a window/session/pane
@@ -53,10 +154,47 @@ pub fn tmux_run<S: AsRef<OsStr>>(args: &[S]) -> bool {
 /// (`send-keys`, `paste-buffer`) whose output must not leak to the terminal — the faithful
 /// replacement for the old `.output().map(|o| o.status.success())` call sites.
 pub fn tmux_ok<S: AsRef<OsStr>>(args: &[S]) -> bool {
-    tmux_command(args)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    tmux_try(args).is_ok()
+}
+
+/// The oldest tmux the agent transport's target handling was verified against: its `=session:=window`
+/// liveness probe and the `display-message` fallback it avoids are 3.7 behaviour (see
+/// `TmuxTransport::liveness`). Older servers may resolve a missing window differently.
+pub const MIN_TMUX_VERSION: (u32, u32) = (3, 7);
+
+/// Parse `tmux -V` output into `(major, minor)`: `tmux 3.7b` → (3, 7), `tmux next-3.8` → (3, 8).
+/// `None` for anything without a `major.minor` (e.g. `tmux master`).
+pub fn parse_tmux_version(out: &str) -> Option<(u32, u32)> {
+    let word = out.split_whitespace().nth(1)?;
+    let ver = word.rsplit('-').next()?;
+    let (major, rest) = ver.split_once('.')?;
+    let minor: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    Some((major.parse().ok()?, minor.parse().ok()?))
+}
+
+/// The running tmux's version, asked once per process.
+pub fn tmux_version() -> Option<(u32, u32)> {
+    static VERSION: OnceLock<Option<(u32, u32)>> = OnceLock::new();
+    *VERSION.get_or_init(|| {
+        tmux_try(&["-V"])
+            .ok()
+            .and_then(|out| parse_tmux_version(&out))
+    })
+}
+
+/// Warn once per process when tmux is older than [`MIN_TMUX_VERSION`]. An unparseable version (a
+/// dev build) gets the benefit of the doubt.
+pub fn warn_if_old_tmux() {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if let Some((major, minor)) = tmux_version().filter(|v| *v < MIN_TMUX_VERSION) {
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            let (want_major, want_minor) = MIN_TMUX_VERSION;
+            eprintln!(
+                "bn: tmux {major}.{minor} is older than {want_major}.{want_minor}; agent liveness \
+                 and message delivery may misread a missing window"
+            );
+        }
+    }
 }
 
 /// How long presence outlives its last positive observation — the decay window (#1138 follow-up).
@@ -520,5 +658,71 @@ mod exact_target_tests {
         for t in ["%12", "@5", "$1", "=bn:=main", "=bn"] {
             assert_eq!(exact_target(t), t);
         }
+    }
+}
+
+#[cfg(test)]
+mod error_and_version_tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_socket_or_dead_server_is_no_server() {
+        // Verbatim from tmux 3.7b with an empty TMUX_TMPDIR, and the stale-socket variants.
+        for stderr in [
+            "error connecting to /tmp/bnp.ZMU5/tmux-502/default (No such file or directory)\n",
+            "no server running on /tmp/tmux-502/default\n",
+            "error connecting to /tmp/tmux-502/default (Connection refused)",
+        ] {
+            assert_eq!(classify_failure(stderr), TmuxError::NoServer, "{stderr}");
+        }
+    }
+
+    #[test]
+    fn a_missing_session_window_or_pane_is_no_target() {
+        for stderr in [
+            "can't find session: nope",
+            "can't find window: zz",
+            "can't find pane: %99",
+        ] {
+            assert!(
+                matches!(classify_failure(stderr), TmuxError::NoTarget(_)),
+                "{stderr}"
+            );
+        }
+    }
+
+    #[test]
+    fn anything_else_is_failed_and_only_unreachable_causes_warn() {
+        // A socket path too long to bind is a real failure, not "no server": telling the reader to
+        // start tmux would send them the wrong way.
+        let long = "error connecting to /very/long/tmux-502/default (File name too long)";
+        assert!(matches!(classify_failure(long), TmuxError::Failed(_)));
+        assert!(matches!(
+            classify_failure("no buffer nobuf"),
+            TmuxError::Failed(_)
+        ));
+        assert!(TmuxError::NotInstalled.is_unreachable());
+        assert!(TmuxError::NoServer.is_unreachable());
+        assert!(!TmuxError::NoTarget("can't find window: x".into()).is_unreachable());
+        assert!(!TmuxError::Failed("x".into()).is_unreachable());
+    }
+
+    #[test]
+    fn release_letters_and_next_builds_parse() {
+        assert_eq!(parse_tmux_version("tmux 3.7b\n"), Some((3, 7)));
+        assert_eq!(parse_tmux_version("tmux next-3.8"), Some((3, 8)));
+        assert_eq!(parse_tmux_version("tmux 3.4"), Some((3, 4)));
+        assert_eq!(parse_tmux_version("tmux 2.9a"), Some((2, 9)));
+        assert_eq!(parse_tmux_version("tmux master"), None);
+        assert_eq!(parse_tmux_version(""), None);
+    }
+
+    #[test]
+    fn versions_compare_against_the_minimum() {
+        assert!((3, 6) < MIN_TMUX_VERSION);
+        assert!((2, 9) < MIN_TMUX_VERSION);
+        assert!((3, 7) >= MIN_TMUX_VERSION);
+        assert!((3, 10) >= MIN_TMUX_VERSION);
+        assert!((4, 0) >= MIN_TMUX_VERSION);
     }
 }

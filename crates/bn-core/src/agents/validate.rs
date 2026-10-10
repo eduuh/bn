@@ -409,9 +409,6 @@ pub(super) fn validate_agent_frontmatter(
             if front.on_calendar.is_some() {
                 return Err(forbid("on_calendar"));
             }
-            if front.trigger.is_some() {
-                return Err(forbid("trigger"));
-            }
             if front.gather.is_some() {
                 return Err(forbid("gather"));
             }

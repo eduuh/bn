@@ -24,7 +24,8 @@ truthy (`true`/`yes`/`1`), do steps 1–3 and stop before anything removes.
 ## 1. Inventory before judging
 
 Run all six. Every one is read-only or dry-run by default, and every removal in step 4 has to cite
-one of them. Run them from outside any repo so the all-repos scope applies.
+one of them. `bn wt reap --all` and `bn wt cleanup --all` cover only the repo you stand in; for
+every repo (scope `all`) pass `--all-repos` instead, or run from outside any repo.
 
 | command | what it tells you |
 |---------|-------------------|

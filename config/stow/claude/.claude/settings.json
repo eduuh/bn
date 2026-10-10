@@ -4,7 +4,9 @@
       "Bash(sudo apt-get install:*)",
       "Bash(sudo apt-get update:*)",
       "Bash(sudo apt-get upgrade:*)",
-      "Bash(wt cleanup:*)"
+      "Bash(wt cleanup:*)",
+      "Bash(bn wt reap:*)",
+      "Bash(bn wt pool prune:*)"
     ],
     "ask": [
       "Bash(gh pr merge:*)",

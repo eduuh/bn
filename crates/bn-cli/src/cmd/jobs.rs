@@ -241,6 +241,7 @@ pub(crate) fn job_wt_cleanup(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
         cfg,
         wt::WtCmd::Cleanup {
             all: true,
+            all_repos: true,
             force: false,
             worktree: None,
         },
@@ -249,6 +250,7 @@ pub(crate) fn job_wt_cleanup(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
         cfg,
         wt::WtCmd::Reap {
             all: true,
+            all_repos: true,
             yes: true,
         },
     );

@@ -185,7 +185,7 @@ frontmatter with an explicit `kind`:
 | `specialist` | Has a non-empty body plus `repo:` and compiles into a native reviewer; it cannot run or be scheduled. |
 
 Runnable kinds may declare `on_calendar`, `retry_after` (default `15m` when scheduled),
-`trigger: startup`, `network`, and strict body `arguments`. Static role instructions and
+`network`, and strict body `arguments`. Static role instructions and
 output contracts belong in the Markdown body; Rust keeps deterministic gathering, validation,
 security framing, routing, state, and structured-output parsing.
 

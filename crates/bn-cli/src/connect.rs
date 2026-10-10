@@ -625,3 +625,7 @@ fn attach_window(alias: &str, read_only: bool) {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "connect_tests.rs"]
+mod tests;

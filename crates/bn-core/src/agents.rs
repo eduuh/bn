@@ -3,8 +3,7 @@
 //! One minute-level `agent-scheduler` loads these Markdown agents and runs the ones that are due.
 //! Successful runs wait for the next occurrence; failures respect per-agent retry backoff.
 //! Agents run headlessly, like every other cron — no tmux window is involved.
-//! An agent can also declare `trigger: startup` so `bn startup` fires it once when the tmux server
-//! boots. The gather itself still runs via `bn run <agent.name>`, so the `.md` is metadata +
+//! The gather itself still runs via `bn run <agent.name>`, so the `.md` is metadata +
 //! schedule + description, never a reimplementation of the existing native/staff/script job.
 //!
 //! Parsing routes through [`crate::store::split_frontmatter`] (the crate's single frontmatter
@@ -55,36 +54,6 @@ impl AgentKind {
     }
 }
 
-/// An explicit trigger declared in an agent's frontmatter. Cron eligibility is derived from the
-/// presence of `on_calendar` rather than this list, so `startup` is the one trigger that adds
-/// behaviour: fire once when the tmux server boots (in addition to any schedule).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Trigger {
-    /// Fire on the `on_calendar` schedule (the implicit default when a schedule is present).
-    Cron,
-    /// Fire once when the tmux server starts, via `bn startup`.
-    Startup,
-}
-
-/// A `trigger:` field that accepts either a single value (`trigger: startup`) or a list
-/// (`trigger: [cron, startup]`), so the manifest reads naturally either way.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-enum TriggerSpec {
-    One(Trigger),
-    Many(Vec<Trigger>),
-}
-
-impl TriggerSpec {
-    fn into_vec(self) -> Vec<Trigger> {
-        match self {
-            TriggerSpec::One(t) => vec![t],
-            TriggerSpec::Many(v) => v,
-        }
-    }
-}
-
 /// Raw frontmatter as declared in `agents/<name>.md`, before normalization into [`AgentDef`].
 #[derive(Debug, Deserialize)]
 struct AgentFrontmatter {
@@ -104,8 +73,6 @@ struct AgentFrontmatter {
     run: Option<String>,
     #[serde(default)]
     network: bool,
-    #[serde(default)]
-    trigger: Option<TriggerSpec>,
     #[serde(default)]
     description: Option<String>,
     #[serde(default)]
@@ -175,7 +142,7 @@ pub struct AgentDef {
     pub name: String,
     /// Explicit execution contract declared by `kind:`.
     pub kind: AgentKind,
-    /// systemd `OnCalendar` schedule; present for a cron agent, absent for a startup-only one.
+    /// systemd `OnCalendar` schedule; present for a cron agent, absent for an on-demand one.
     pub on_calendar: Option<String>,
     /// Also fire on the day's first bn event, not only on the schedule (`catch_up:` frontmatter).
     pub catch_up: bool,
@@ -186,8 +153,6 @@ pub struct AgentDef {
     pub run: Option<String>,
     /// The gather hits the network (informational; the schedule generator carries the real gate).
     pub network: bool,
-    /// Explicit triggers declared in frontmatter (only `startup` adds behaviour — see [`Trigger`]).
-    pub triggers: Vec<Trigger>,
     /// One-line description of what this agent gathers.
     pub description: Option<String>,
     /// Deterministic packet command. Presence marks this as an LLM/staff agent.
@@ -301,10 +266,6 @@ impl AgentDef {
         })
     }
 
-    /// True when this agent should also fire once on tmux-server startup (`bn startup`).
-    pub fn is_startup(&self) -> bool {
-        self.triggers.contains(&Trigger::Startup)
-    }
     /// True when this agent is a repo-scoped review specialist — an agent with `repo:` set that
     /// compiles to native Copilot/Claude custom agents (and is skipped by every cron/staff path).
     pub fn is_specialist(&self) -> bool {
@@ -342,7 +303,7 @@ impl AgentDef {
 
     /// Whether this agent is due now. A never-run agent catches up the latest missed occurrence; a
     /// successful run waits for a newer occurrence; a failed run retries only after `retry_after`.
-    /// A startup-only agent (no `on_calendar`) is never due on the scheduler path.
+    /// An on-demand agent (no `on_calendar`) is never due on the scheduler path.
     pub fn due(&self, last_run: Option<&CronRunDetail>, now: i64) -> bool {
         match self.on_calendar.as_deref() {
             Some(cal) => due(
@@ -365,12 +326,10 @@ impl AgentDef {
         )
     }
 
-    /// Whether this agent may be launched *now* by the shared window/startup dispatch path. A
-    /// **scheduled** agent (has `on_calendar`) is launchable only when its schedule is [`due`];
-    /// an **unscheduled** startup-class agent
-    /// (no `on_calendar`) is always launchable, so `bn startup` still fires it on every boot. This
-    /// is the single gate that keeps a weekly agent from opening its window off-schedule
-    /// regardless of which path (`agent-scheduler`, `bn startup`, …) reaches the dispatcher.
+    /// Whether this agent may be launched *now* by the shared dispatch path. A **scheduled**
+    /// agent (has `on_calendar`) is launchable only when its schedule is [`due`]; an
+    /// **unscheduled** agent (no `on_calendar`) is always launchable. This is the single gate that
+    /// keeps a weekly agent from opening its window off-schedule.
     pub fn launchable(&self, last_run: Option<&CronRunDetail>, now: i64) -> bool {
         self.on_calendar.is_none() || self.due(last_run, now)
     }
@@ -415,11 +374,6 @@ pub fn parse_agent(
                 message: error.to_string(),
             },
         })?;
-    let triggers = front
-        .trigger
-        .clone()
-        .map(TriggerSpec::into_vec)
-        .unwrap_or_default();
     let name = front.name.clone().unwrap_or_else(|| stem.to_string());
     let (kind, retry_after_secs) =
         validate_agent_frontmatter(&front, &name, body).map_err(|source| {
@@ -436,7 +390,6 @@ pub fn parse_agent(
         retry_after_secs,
         run: front.run,
         network: front.network,
-        triggers,
         description: front.description,
         gather: front.gather,
         sinks: front.sinks,

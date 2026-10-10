@@ -656,9 +656,8 @@ impl SshTmuxTransport {
 
 impl bn_core::agent::AgentTransport for SshTmuxTransport {
     fn write_keys(&self, keys: &[bn_core::agent::Key]) -> bool {
-        let mut ok = true;
-        for key in keys {
-            ok &= match key {
+        // `all` stops at the first failure, as the local transport does: never a CR after a failed paste.
+        keys.iter().all(|key| match key {
                 bn_core::agent::Key::Text(text) => {
                     let buf = self.buffer_name();
                     ssh_tmux_ok(
@@ -675,9 +674,7 @@ impl bn_core::agent::AgentTransport for SshTmuxTransport {
                 key => key.tmux_key().is_some_and(|k| {
                     ssh_tmux_ok(&self.host, &["send-keys", "-t", &self.target, &k])
                 }),
-            };
-        }
-        ok
+        })
     }
 
     fn read_screen(&self, lines: usize) -> Option<Vec<String>> {

@@ -307,6 +307,14 @@ pub(crate) fn live_agents_in(worktree: &Path) -> Vec<Occupant> {
     OccupancySnapshot::new().live_agents_in(worktree)
 }
 
+/// Whether a harness *process* is running in `worktree` — source (3) alone. After a tmux crash,
+/// resurrect restores each window under its old name, so a dead agent's lease and window stamp
+/// read as live again; only the pane's foreground command tells a recovered agent from a shell.
+pub(crate) fn harness_running_in(worktree: &Path) -> bool {
+    crate::proc::tmux_raw(&["list-panes", "-a", "-F", HARNESS_PANE_FORMAT])
+        .is_some_and(|output| !harness_panes_in(&output, worktree).is_empty())
+}
+
 /// The tmux and registry state [`live_agents_in`] reads, read once and shared across many
 /// worktrees. `wt pool status` asks about every slot, twice; reading `list-windows -a` and
 /// `list-panes -a` afresh for each question was two dozen tmux round-trips per status. Taken on
@@ -485,28 +493,6 @@ pub(crate) fn any_live_pane_in(worktree: &Path) -> bool {
                 return false;
             };
             dead.trim() == "0" && Path::new(cwd).starts_with(worktree)
-        })
-    })
-}
-
-/// The exact `session:window` of the first live pane sitting in `worktree`, if any.
-///
-/// [`any_live_pane_in`] answers "is anyone in here?"; this answers "*where* are they", which is
-/// what a crash restore needs. After a reboot tmux-continuum has already rebuilt the windows in
-/// their old working directories (`@continuum-restore 'on'`), but the harness is not in resurrect's
-/// process whitelist, so each one comes back as a plain shell. Restoring into that pane keeps the
-/// window — and the scrollback continuum saved — instead of opening a second window per branch and
-/// then needing to close one, which is the operation that must never touch a session.
-pub(crate) fn live_pane_target_in(worktree: &Path) -> Option<String> {
-    let format = "#{pane_current_path}\t#{pane_dead}\t#{session_name}:#{window_index}";
-    crate::proc::tmux_raw(&["list-panes", "-a", "-F", format]).and_then(|output| {
-        output.lines().find_map(|line| {
-            let mut parts = line.split('\t');
-            let cwd = parts.next()?;
-            let dead = parts.next()?;
-            let target = parts.next()?;
-            (dead.trim() == "0" && Path::new(cwd).starts_with(worktree))
-                .then(|| target.trim().to_string())
         })
     })
 }

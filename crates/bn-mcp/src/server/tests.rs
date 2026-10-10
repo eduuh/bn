@@ -128,3 +128,109 @@ async fn bn_cmd_lists_and_runs_a_branch_command_with_its_args() {
     );
     assert!(call(Some("nope"), &[]).await.is_err());
 }
+
+#[tokio::test]
+async fn note_items_can_be_estimated_repaired_and_links_searched() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let worktrees = root.path().join("worktrees");
+    let cfg = Config {
+        worktree_dir: worktrees.clone(),
+        ..bn_core::test_support::config(root.path())
+    };
+    let server = BnServer::new(cfg, worktree(&worktrees, "repo", "topic"), vec![]);
+    let data = |r: Result<CallToolResult, ErrorData>| {
+        r.expect("tool ok").structured_content.expect("json")
+    };
+
+    // #1528: reading before the first note exists is a state, not an io error.
+    let cat = data(server.bn_cat(Parameters(EmptyArgs {})).await);
+    assert_eq!(cat["rendered"], json!("repo/topic: no note"));
+
+    let add = |text: &str, est: Option<&str>| {
+        server.bn_add(Parameters(AddArgs {
+            section: "todo".into(),
+            text: text.into(),
+            if_absent: None,
+            est: est.map(str::to_string),
+            q: Some("ship-v1".into()),
+        }))
+    };
+    data(add("write the parser", Some("2h")).await);
+    assert!(add("bad estimate", Some("soon")).await.is_err());
+    let note = bn_core::store::read(&server.cfg.note_file(&server.resolve().unwrap())).unwrap();
+    let t1 = &note.front.todos[0];
+    assert_eq!(
+        (t1.est.as_deref(), t1.q.as_deref()),
+        (Some("2h"), Some("ship-v1"))
+    );
+
+    let item = |q: &str| Parameters(ItemArgs { query: q.into() });
+    let reworded = data(
+        server
+            .bn_reword(Parameters(RewordArgs {
+                query: "t1".into(),
+                text: "write the lexer".into(),
+            }))
+            .await,
+    );
+    assert_eq!(reworded["item"]["previous"], json!("write the parser"));
+    data(
+        server
+            .bn_done(Parameters(DoneArgs {
+                query: "t1".into(),
+                pct: None,
+            }))
+            .await,
+    );
+    assert_eq!(
+        data(server.bn_reopen(item("lexer")).await)["item"]["id"],
+        json!("t1")
+    );
+    data(server.bn_drop(item("t1")).await);
+    assert!(server.bn_drop(item("t1")).await.is_err());
+
+    links::add(
+        &server.cfg,
+        "https://example.com/dash",
+        Some("perf dashboard"),
+        &["ops".into()],
+        None,
+        None,
+        "2026-10-10",
+    )
+    .unwrap();
+    links::add(
+        &server.cfg,
+        "https://example.com/docs",
+        Some("api docs"),
+        &[],
+        None,
+        None,
+        "2026-10-10",
+    )
+    .unwrap();
+    let search = |query: Option<&str>, tag: Option<&str>| {
+        server.bn_links_search(Parameters(LinksSearchArgs {
+            query: query.map(str::to_string),
+            tag: tag.map(str::to_string),
+            limit: None,
+        }))
+    };
+    let found = data(search(Some("DASH"), None).await);
+    assert_eq!(found["items"].as_array().unwrap().len(), 1);
+    assert_eq!(found["items"][0]["name"], json!("perf dashboard"));
+    assert_eq!(
+        data(search(None, Some("ops")).await)["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        data(search(None, None).await)["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}

@@ -132,7 +132,6 @@ pub(crate) fn emit_agents(cfg: &Config, base: &std::path::Path, json: bool) {
                     "kind": a.kind,
                     "schedule": a.on_calendar,
                     "retry_after_secs": a.retry_after_secs,
-                    "startup": a.is_startup(),
                     "network": a.network,
                     "repo": a.repo,
                     "description": a.description,
@@ -155,13 +154,7 @@ pub(crate) fn emit_agents(cfg: &Config, base: &std::path::Path, json: bool) {
     }
     println!("{:<28} {:<11} {:<27} DESCRIPTION", "NAME", "KIND", "SCHEDULE");
     for a in &catalog {
-        let schedule = a.on_calendar.as_deref().unwrap_or_else(|| {
-            if a.is_startup() {
-                "startup"
-            } else {
-                "on demand"
-            }
-        });
+        let schedule = a.on_calendar.as_deref().unwrap_or("on demand");
         let desc = a.description.as_deref().unwrap_or("");
         println!(
             "{:<28} {:<11} {:<27} {desc}",

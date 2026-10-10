@@ -1,12 +1,10 @@
-//! Stuck-lane classification and the pane activity fingerprint.
+//! The stuck-lane shape: "is this in-flight lane wedged, and on what?".
 //!
 //! Split out of `supervise.rs` (the live-fleet view) so both stay under the 1000-line ratchet.
-//! This half answers "is this in-flight lane wedged, and on what?" — the controller-actionable
-//! subset of agent health, kept separate from the broader `AgentHealth` idle thresholds and from
-//! the orchestrator's own recovery states.
+//! This is the controller-actionable subset of agent health, kept separate from the broader
+//! `AgentHealth` idle thresholds and from the orchestrator's own recovery states.
 //!
-//! Re-exported by [`crate::agent`], so `agent::StuckLane`, `agent::classify_stuck_lane` and
-//! `agent::pane_activity_fingerprint` keep resolving unchanged.
+//! Re-exported by [`crate::agent`], so `agent::StuckLane` keeps resolving unchanged.
 
 use serde::{Deserialize, Serialize};
 
@@ -37,8 +35,8 @@ impl StuckLaneKind {
     }
 }
 
-/// A controller-actionable stuck state, persisted on an orchestrate queue item so status and event
-/// emission share one source of truth.
+/// A controller-actionable stuck state, persisted on a lane's [`crate::orchestrate::QueueItem`] in
+/// its run file so status and event emission share one source of truth.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StuckLane {
     pub kind: StuckLaneKind,
@@ -64,40 +62,6 @@ impl StuckLane {
     }
 }
 
-/// Live signals used by `classify_stuck_lane`. The CLI gathers these from the existing
-/// orchestrate tmux/worktree observation and `agent_progress_for_cwd` probe.
-#[derive(Debug, Clone, Copy)]
-pub struct StuckLaneObservation<'a> {
-    pub tail: &'a [String],
-    pub has_window: bool,
-    pub has_process: bool,
-    pub plane_a: &'a str,
-    pub has_wip: bool,
-    /// Seconds since either the pane fingerprint or harness transcript last changed.
-    pub unchanged_secs: i64,
-    pub idle_threshold_secs: i64,
-}
-
-/// Stable fingerprint for the pane/activity clock persisted by the orchestrator. Plane-A is part
-/// of the key so a lifecycle transition counts as activity even when the visible tail is unchanged.
-pub fn pane_activity_fingerprint(tail: &[String], plane_a: &str) -> u64 {
-    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = OFFSET_BASIS;
-    for byte in plane_a
-        .as_bytes()
-        .iter()
-        .copied()
-        .chain(std::iter::once(0))
-        .chain(tail.iter().flat_map(|line| {
-            line.as_bytes()
-                .iter()
-                .copied()
-                .chain(std::iter::once(b'\n'))
-        }))
-    {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(PRIME);
-    }
-    hash
-}
+#[cfg(test)]
+#[path = "stuck_tests.rs"]
+mod tests;

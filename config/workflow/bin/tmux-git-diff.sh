@@ -26,4 +26,5 @@ else
 fi
 
 # Detach so an agent calling this script is not blocked until the popup closes.
-tmux run-shell -b -t "$pane" "tmux display-popup -E -t '$pane' -w 97% -h 97% -d '$path' \"nvim -c 'DiffviewOpen $rev'\""
+need="$(dirname "$0")/tmux-need.sh"
+tmux run-shell -b -t "$pane" "tmux display-popup -E -t '$pane' -w 97% -h 97% -d '$path' \"'$need' nvim -c 'DiffviewOpen $rev'\""

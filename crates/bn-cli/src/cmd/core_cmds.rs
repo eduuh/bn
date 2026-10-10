@@ -268,7 +268,13 @@ pub(crate) fn emit_note(res: Result<std::path::PathBuf, CmdError>, as_json: bool
 /// `store::read` + `render::cat` the MCP `bn_cat` tool uses), then this repo's saved links and a
 /// related-branches footer.
 pub(crate) fn emit_cat(cfg: &Config, ctx: &Resolved) {
-    match bn_core::store::read(&cfg.note_file(ctx)) {
+    let note_md = cfg.note_file(ctx);
+    // Before the first `bn add`/`bn goal` there is no note yet: say so, like `bn status` (#1528).
+    if !note_md.exists() {
+        println!("{}/{}: no note", ctx.repo, ctx.branch);
+        return;
+    }
+    match bn_core::store::read(&note_md) {
         Ok(note) => {
             print!("{}", bn_core::render::cat(&note));
             let links = bn_core::links::for_note(

@@ -156,9 +156,13 @@ pub enum WtCmd {
     /// Verify a worktree's PR is merged, then remove it, delete its branch, close its note,
     /// and kill its tmux window(s). Default target: the current worktree.
     Cleanup {
-        /// Sweep every worktree under all bare repos and clean the merged ones.
+        /// Sweep every worktree of the current repo and clean the merged ones. Outside a managed
+        /// repo this covers every bare repo.
         #[arg(long)]
         all: bool,
+        /// Sweep every worktree under all bare repos, wherever it is run from.
+        #[arg(long)]
+        all_repos: bool,
         /// Clean even when no PR exists or the PR is not yet merged (also forces removal of
         /// worktrees with uncommitted changes).
         #[arg(long)]
@@ -170,11 +174,16 @@ pub enum WtCmd {
     /// finished" sweep. Reaps: a **scout** worktree whose agent reported done and is clean (no
     /// commits/uncommitted — its findings live safely in the synced note), and a **ship** worktree
     /// whose PR is merged. Skips open/no-PR ships, dirty worktrees, and still-active scouts.
-    /// Dry-run by default; `--yes` executes. Default target: current worktree; `--all` sweeps.
+    /// Dry-run by default; `--yes` executes. Default target: current worktree; `--all` sweeps the
+    /// current repo; `--all-repos` sweeps every repo.
     Reap {
-        /// Sweep every worktree under all bare repos.
+        /// Sweep every worktree of the current repo. Outside a managed repo this covers every
+        /// bare repo.
         #[arg(long)]
         all: bool,
+        /// Sweep every worktree under all bare repos, wherever it is run from.
+        #[arg(long)]
+        all_repos: bool,
         /// Actually reap (default: dry-run report of what would be reaped).
         #[arg(long)]
         yes: bool,
@@ -424,10 +433,15 @@ pub fn run_code(cfg: &Config, action: WtCmd) -> i32 {
         } => cmd_close(cfg, check, pane, path, confirmed, reclaim),
         WtCmd::Cleanup {
             all,
+            all_repos,
             force,
             worktree,
-        } => cmd_cleanup(cfg, all, force, worktree),
-        WtCmd::Reap { all, yes } => cmd_reap(cfg, all, yes),
+        } => cmd_cleanup(cfg, all, all_repos, force, worktree),
+        WtCmd::Reap {
+            all,
+            all_repos,
+            yes,
+        } => cmd_reap(cfg, all, all_repos, yes),
         WtCmd::Merge {
             merge,
             rebase,

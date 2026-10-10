@@ -38,6 +38,8 @@ pub enum CmdError {
     /// query, and the ids of the open todos it matched
     Ambiguous(String, Vec<String>),
     AlreadyDone(String),
+    /// `bn undone` targeted an item that is not checked off.
+    NotDone(String),
     /// A date argument wasn't a valid `YYYY-MM-DD`.
     InvalidDate(String),
     /// A quarter-goal key (or other identifier) collided with an existing one.
@@ -55,6 +57,7 @@ impl CmdError {
             CmdError::NotFound(_) => "not_found",
             CmdError::Ambiguous(..) => "ambiguous",
             CmdError::AlreadyDone(_) => "already_done",
+            CmdError::NotDone(_) => "not_done",
             CmdError::InvalidDate(_) => "invalid_date",
             CmdError::Duplicate(_) => "duplicate",
         }
@@ -76,6 +79,7 @@ impl CmdError {
                 )
             }
             CmdError::AlreadyDone(id) => format!("Already done: {id}"),
+            CmdError::NotDone(id) => format!("Not done: {id}"),
             CmdError::InvalidDate(d) => format!("Invalid date '{d}' (use YYYY-MM-DD)"),
             CmdError::Duplicate(k) => format!("Already exists: {k}"),
         }

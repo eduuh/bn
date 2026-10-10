@@ -18,7 +18,7 @@ use bn_core::{glyph, style};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use crate::proc::{tmux, tmux_raw, tmux_run};
+use crate::proc::{tmux, tmux_raw, tmux_run_try, warn_unreachable};
 
 /// The hidden callback stages a `jump` fzf session re-invokes (`bn jump --pick-stage <s>`).
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
@@ -331,7 +331,10 @@ fn open_link_or_notify(target: &str) {
     if !target.is_empty() {
         crate::open_url(target);
     } else {
-        let _ = tmux_run(&["display-message", "no link on this action"]);
+        warn_unreachable(
+            "jump",
+            tmux_run_try(&["display-message", "no link on this action"]),
+        );
     }
 }
 
@@ -344,7 +347,10 @@ pub fn next() {
     match window_rows(now, &cur).first() {
         Some(w) => goto(&w.window_id),
         None => {
-            let _ = tmux_run(&["display-message", "✓ nothing needs you"]);
+            warn_unreachable(
+                "jump",
+                tmux_run_try(&["display-message", "✓ nothing needs you"]),
+            );
         }
     }
 }
@@ -460,9 +466,9 @@ fn active_pane(wid: &str) -> Option<String> {
 /// client there, then select the window.
 fn goto(wid: &str) {
     if let Some(sess) = tmux(&["display-message", "-p", "-t", wid, "#{session_name}"]) {
-        let _ = tmux_run(&["switch-client", "-t", &sess]);
+        warn_unreachable("jump", tmux_run_try(&["switch-client", "-t", &sess]));
     }
-    let _ = tmux_run(&["select-window", "-t", wid]);
+    warn_unreachable("jump", tmux_run_try(&["select-window", "-t", wid]));
 }
 
 // ---- bn jump --session : the this-session window picker (prefix `) -------------------------------

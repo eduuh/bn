@@ -139,7 +139,7 @@ pub(crate) enum CmdAutomation {
     /// `--all` switches to crash recovery: instead of one session, it reconstructs everything that
     /// was running when the machine last went down and offers it back.
     Resume {
-        /// Rebuild the work that was running before this machine last went down. Shows each
+        /// Rebuild the work that was running before this machine, or its tmux server, last went down. Shows each
         /// branch, worktree, agent session and window, and restores the ones you confirm. Reads
         /// only this machine's state — a laptop cannot restore another laptop's tmux layout.
         #[arg(long, conflicts_with = "name_or_id")]
@@ -150,6 +150,11 @@ pub(crate) enum CmdAutomation {
         /// Restore every listed row without prompting.
         #[arg(long, requires = "all")]
         yes: bool,
+        /// Unattended recovery after a tmux-server crash or reboot, run from tmux.conf: once per
+        /// tmux server, no prompt, and only agents whose transcript shows them working just
+        /// before the crash. Reports in the tmux status line.
+        #[arg(long, requires = "all", conflicts_with_all = ["dry_run", "slots"])]
+        auto: bool,
         /// Restore only these pool slots (repeatable). A plain `bn resume 2` stays a session query,
         /// so the slot filter needs its own flag.
         #[arg(long = "slot", value_name = "N", requires = "all")]

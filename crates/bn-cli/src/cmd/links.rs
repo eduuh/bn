@@ -174,13 +174,6 @@ fn add_link(
     }
 }
 
-/// Does the link's name, tags or URL contain `q`, ignoring case?
-fn matches_query(l: &Link, q: &str) -> bool {
-    format!("{} {} {}", l.name, l.tags.join(" "), l.url)
-        .to_lowercase()
-        .contains(&q.to_lowercase())
-}
-
 /// `bn links prune` — delete the links whose `--ttl` ran out.
 fn prune(cfg: &Config, json: bool) {
     match links::prune(cfg, &today()) {
@@ -262,7 +255,7 @@ fn list_links(
         .into_iter()
         .filter(|l| tag.as_ref().is_none_or(|t| l.tags.contains(t)))
         .filter(|l| repo.as_ref().is_none_or(|r| l.repo.as_deref() == Some(r)))
-        .filter(|l| query.as_ref().is_none_or(|q| matches_query(l, q)))
+        .filter(|l| query.as_ref().is_none_or(|q| links::matches_query(l, q)))
         .filter(|l| span.is_none_or(|s| links::when::saved_in(l, s)))
         .collect();
     if json {
