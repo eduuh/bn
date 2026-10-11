@@ -571,6 +571,7 @@ pub(crate) fn emit_run(
             None,
             None,
             add_dirs,
+            false,
             Vec::new(),
         ),
         // Every temp dir refused the write. Pass the seed inline instead of launching an agent
@@ -587,6 +588,7 @@ pub(crate) fn emit_run(
             None,
             None,
             add_dirs,
+            false,
             Vec::new(),
         ),
     }
@@ -661,6 +663,7 @@ fn run_in_worktree(
         false,
         crate::cli::OnPoolFull::default(),
         None,
+        false,
         false,
         &[],
         None,

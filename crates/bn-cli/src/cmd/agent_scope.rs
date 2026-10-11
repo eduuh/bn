@@ -81,15 +81,15 @@ pub(crate) fn build_claude_args(plan: &LaunchPlan, has_transcripts: bool) -> Vec
     }
     args.extend(plan.session_flag());
     if let Some(seed) = &plan.seed {
+        if plan.one_shot {
+            args.push("-p".to_string()); // print mode: run the seed, then exit
+        }
         args.push(seed.clone()); // fresh: the seed is Claude's initial prompt (positional)
     }
     args.extend(plan.passthrough.iter().cloned());
     args
 }
 
-/// Build the argv (after the harness binary) for a **Copilot** launch. Resumes the resolved session
-/// id with `--resume=` when one exists (unless `--fresh`); otherwise starts fresh, pinning the
-/// session id and seeding the first turn with `-i <seed>`. Pure — mirrors the zsh `copilot` branch.
 /// Copilot's standing shell approval for bn itself, so an agent can follow the AGENTS.md rule to
 /// reap stale worktrees (`bn wt reap --all --yes`) without a prompt. Copilot matches shell rules on
 /// the command name only — `shell(bn wt reap:*)` and `shell(bn wt:*)` never match — so the rule
@@ -97,6 +97,10 @@ pub(crate) fn build_claude_args(plan: &LaunchPlan, has_transcripts: bool) -> Vec
 /// settings instead.
 const COPILOT_BN_SHELL_RULE: &str = "shell(bn)";
 
+/// Build the argv (after the harness binary) for a **Copilot** launch. Resumes the resolved session
+/// id with `--resume=` when one exists (unless `--fresh`); otherwise starts fresh, pinning the
+/// session id and seeding the first turn with `-i <seed>`, or `-p <seed>` for a one-shot run that
+/// exits when it ends. Pure — mirrors the zsh `copilot` branch.
 pub(crate) fn build_copilot_args(plan: &LaunchPlan, resume_id: Option<&str>) -> Vec<String> {
     let mut args = vec!["--allow-tool".to_string(), COPILOT_BN_SHELL_RULE.to_string()];
     if plan.yolo() {
@@ -117,8 +121,15 @@ pub(crate) fn build_copilot_args(plan: &LaunchPlan, resume_id: Option<&str>) -> 
     }
     args.extend(plan.session_flag());
     if let Some(seed) = &plan.seed {
-        args.push("-i".to_string()); // copilot "start interactive and run this prompt"
-        args.push(seed.clone());
+        if plan.one_shot {
+            // Non-interactive: run the prompt and exit when it is done. `-i` instead leaves the
+            // process at an idle prompt for good once the seeded turn ends, which is how unattended
+            // lane agents piled up at 150-375 MB each. Nobody is there to answer a question either.
+            args.extend(["-p".to_string(), seed.clone(), "--no-ask-user".to_string()]);
+        } else {
+            args.push("-i".to_string()); // copilot "start interactive and run this prompt"
+            args.push(seed.clone());
+        }
     }
     args.extend(plan.passthrough.iter().cloned());
     args
@@ -137,6 +148,7 @@ mod tests {
             session: None,
             resume_session: None,
             add_dirs: Vec::new(),
+            one_shot: false,
             passthrough: Vec::new(),
         }
     }
@@ -203,6 +215,49 @@ mod tests {
         p.fresh = false;
         p.add_dirs = vec!["/notes/bn/main".into()];
         p
+    }
+
+    /// A one-shot launch must exit when its run ends: `-p`, never `-i`, which parks the harness at
+    /// an idle prompt forever after an unattended pass (the contabo lane leak, 2026-10-10).
+    #[test]
+    fn a_one_shot_copilot_launch_runs_the_seed_non_interactively() {
+        let mut p = plan(Some("fix main"), true);
+        p.one_shot = true;
+        let args = build_copilot_args(&p, None);
+        assert!(args.windows(2).any(|w| w == ["-p", "fix main"]), "{args:?}");
+        assert!(args.iter().any(|a| a == "--no-ask-user"), "{args:?}");
+        assert!(!args.iter().any(|a| a == "-i"), "{args:?}");
+        assert!(args.iter().any(|a| a == "--allow-all"), "{args:?}");
+    }
+
+    #[test]
+    fn a_one_shot_claude_launch_runs_the_seed_in_print_mode() {
+        let mut p = plan(Some("fix main"), true);
+        p.one_shot = true;
+        let args = build_claude_args(&p, false);
+        assert!(args.windows(2).any(|w| w == ["-p", "fix main"]), "{args:?}");
+    }
+
+    /// Everything that is not a lane keeps today's interactive launch: a steerable agent.
+    #[test]
+    fn a_default_launch_stays_interactive() {
+        let p = plan(Some("fix main"), true);
+        let copilot = build_copilot_args(&p, None);
+        assert!(copilot.windows(2).any(|w| w == ["-i", "fix main"]), "{copilot:?}");
+        assert!(!copilot.iter().any(|a| a == "-p" || a == "--no-ask-user"), "{copilot:?}");
+        let claude = build_claude_args(&p, false);
+        assert!(!claude.iter().any(|a| a == "-p"), "{claude:?}");
+    }
+
+    /// `--one-shot` changes only a fresh seeded run; a resume has no prompt to run with `-p`.
+    #[test]
+    fn a_one_shot_resume_is_left_alone() {
+        let mut p = plan(Some("fix main"), true);
+        p.one_shot = true;
+        p.fresh = false;
+        let args = build_copilot_args(&p, Some("sid-1"));
+        assert!(args.iter().any(|a| a == "--resume=sid-1"), "{args:?}");
+        assert!(!args.iter().any(|a| a == "-p"), "{args:?}");
     }
 
     /// The stale-worktree rule asks agents to run `bn wt reap` unprompted, so every Copilot launch —

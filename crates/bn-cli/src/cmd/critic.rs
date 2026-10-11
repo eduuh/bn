@@ -424,6 +424,8 @@ pub(crate) fn run_critic_verdict(
                 crate::cli::OnPoolFull::Queue,
                 None,
                 false,
+                // An implementer lane a human may steer: stays interactive.
+                false,
                 &[],
                 // Hand-typed lanes: no declared stage, so the inference stands.
                 None,

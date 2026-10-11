@@ -57,6 +57,35 @@ live_for() {
 running=$(printf '%s' "$live_json" | jq -r '[.data.agents[]? | select(.branch | test("^deps[-/]"))
   | select(.has_window == true) | select(.state != "done" and .state != "gone")] | length')
 
+# checklist <repo> -- one deterministic line per open dependency PR: its number, bump kind, CI and
+# merge state, and the action those facts call for. Computed here, not by the agent, so every run
+# follows the same steps and a supervisor can check the agent's note against them.
+checklist() {
+  for a in app/dependabot app/renovate; do
+    gh pr list -R "$OWNER/$1" --state open --author "$a" --limit 100 \
+      --json number,title,mergeable,statusCheckRollup 2>/dev/null
+  done | jq -rs '
+    def major(v): (v | ltrimstr("v") | split(".")[0]);
+    add // [] | sort_by(.number) | .[] |
+    (.title | capture("from (?<a>[^ ]+) to (?<b>[^ ]+)") // null) as $v |
+    (if $v != null then (if major($v.a) != major($v.b) then "major" else "minor" end)
+     elif (.title | test("minor-and-patch"; "i")) then "minor"
+     else "check-body" end) as $kind |
+    ([.statusCheckRollup[]? | (.conclusion // .state // "PENDING")] | map(ascii_upcase)) as $c |
+    (if ($c | any(. == "FAILURE" or . == "ERROR" or . == "TIMED_OUT")) then "red"
+     elif ($c | any(. == "PENDING" or . == "IN_PROGRESS" or . == "QUEUED" or . == "EXPECTED")) then "pending"
+     elif ($c | any(. == "CANCELLED")) then "cancelled"
+     else "green" end) as $ci |
+    (if .mergeable == "CONFLICTING" then "resolve the conflict: close it if main already has these versions, else @dependabot rebase or merge main into it yourself"
+     elif $kind == "major" then (if $ci == "green" then "comment the breaking changes, leave for a human" else "make CI green, comment, leave for a human" end)
+     elif $kind == "check-body" then "read the versions table: major -> leave for a human; else as minor"
+     elif $ci == "green" then "merge --squash --delete-branch"
+     elif $ci == "pending" then "wait for CI, then merge"
+     elif $ci == "cancelled" then "re-run CI (gh run rerun), then merge when green"
+     else "fix CI on the branch, then merge" end) as $do |
+    "#\(.number) [\($kind), ci=\($ci), \(.mergeable | ascii_downcase)] \($do) -- \(.title)"'
+}
+
 started=0
 for repo in $repos; do
   [ $((running + started)) -lt "$MAX" ] || { log "dep-prs: $MAX agent(s) already live; the rest wait for the next run"; break; }
@@ -67,17 +96,24 @@ for repo in $repos; do
     (cd "$HOME" && "$BN" wt clone "https://github.com/$OWNER/$repo.git" </dev/null >/dev/null 2>&1) \
       || { log "dep-prs: could not clone $repo; skipping it"; continue; }
   fi
-  task="Work the open dependency PRs of $OWNER/$repo."
+  steps=$(checklist "$repo")
+  task="Work the open dependency PRs of $OWNER/$repo. Your checklist is already in your branch note as todos, one per PR, computed from GitHub: follow each line's action and bn done it when finished."
   [ -n "${BN_DEP_REPORT_TO:-}" ] && task="$task Report to $BN_DEP_REPORT_TO with bn agent msg when the pass ends."
-  set -- --repo "$repo" --skill dep-prs --branch "deps/$(date +%Y%m%d-%H%M)" \
-         --name "deps $repo" --fresh --yolo --agent
+  branch="deps/$(date +%Y%m%d-%H%M)"
+  set -- --repo "$repo" --skill dep-prs --branch "$branch" \
+         --name "deps $repo" --fresh --yolo --one-shot --agent
   [ -n "${BN_DEP_AGENT:-}" ] && set -- "$@" "$BN_DEP_AGENT"
   # `--` keeps an optional --agent value from swallowing the task text.
   set -- "$@" -- "$task"
   if [ "${BN_DEP_DRYRUN:-0}" = 1 ]; then
     log "DRYRUN: $BN dispatch $*"
+    printf '%s\n' "$steps" | sed 's/^/    todo: /' >&2
   elif "$BN" dispatch "$@"; then
     log "dep-prs: dispatched an agent on $repo"
+    printf '%s\n' "$steps" | while IFS= read -r line; do
+      [ -n "$line" ] && "$BN" add todo --repo "$repo" --branch "$branch" "$line" >/dev/null 2>&1 \
+        || log "dep-prs: could not add todo to $repo/$branch: $line"
+    done
   else
     log "dep-prs: dispatch failed for $repo"; continue
   fi

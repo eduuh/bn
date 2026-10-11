@@ -352,6 +352,7 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
                 session,
                 resume_session,
                 add_dir,
+                one_shot,
                 passthrough,
             }) => cmd::agent::emit_agent_launch(
                 cfg,
@@ -364,6 +365,7 @@ pub(super) fn route(cfg: &Config, action: CmdAutomation, json: bool) {
                 session,
                 resume_session,
                 add_dir,
+                one_shot,
                 passthrough,
             ),
         },

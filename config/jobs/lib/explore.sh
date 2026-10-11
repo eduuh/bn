@@ -69,9 +69,9 @@ command -v jq >/dev/null 2>&1 || { log "explore: jq not found — skipping (cann
 # reports it as `explore-<stamp>` — tmux window names cannot hold a slash, so the name is
 # normalized on the way out. Testing only for the slash made this guard dead code: it never
 # matched a single live explorer, and the check silently passed every time.
-# `done`/`gone` are excluded because they are not driving anything. A finished explorer's harness
-# session stays resident long after its pass ends, so counting it would let one completed run block
-# every future one — the lane would fire once and then skip for as long as the session lingered.
+# `done`/`gone` are excluded because they are not driving anything. The explorer runs `--one-shot`
+# and exits when its pass ends, but one launched by an older bn stays resident at an idle prompt,
+# and counting it would let one completed run block every future one.
 live="$("$BN" agent live --json 2>/dev/null \
   | jq -r --arg repo "$REPO" '
       [ .data.agents[]?
@@ -132,7 +132,7 @@ fi
 branch="explore/$(date +%Y%m%d-%H%M)"
 
 set -- --repo "$REPO" --scout --skill explore --branch "$branch" \
-       --name "explore $REPO" --fresh --agent
+       --name "explore $REPO" --fresh --one-shot --agent
 [ -n "${BN_EXPLORE_AGENT:-}" ] && set -- "$@" "$BN_EXPLORE_AGENT"
 [ "${BN_EXPLORE_YOLO:-1}" = "1" ] && set -- "$@" --yolo
 

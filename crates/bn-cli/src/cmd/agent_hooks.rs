@@ -2,6 +2,19 @@
 //! activity badge. Split out of `agent.rs` under the 1000-line ratchet.
 use crate::*;
 
+/// Whether this launch gets the controller turn-end hook: `BN_CONTROLLER_ID` is set and
+/// `BN_WORKER_SESSION_ID` is not.
+pub(super) fn controller_launch() -> bool {
+    let controller_id = std::env::var("BN_CONTROLLER_ID").ok();
+    let worker_session_id = std::env::var("BN_WORKER_SESSION_ID").ok();
+    controller_launch_env(controller_id.as_deref(), worker_session_id.as_deref())
+}
+
+fn controller_launch_env(controller_id: Option<&str>, worker_session_id: Option<&str>) -> bool {
+    controller_id.is_some_and(|value| !value.trim().is_empty())
+        && worker_session_id.is_none_or(|value| value.trim().is_empty())
+}
+
 /// A hook command that runs this bn with `args`, quoted for the harness's shell.
 fn bn_hook_command(args: &str) -> String {
     let executable = std::env::current_exe()

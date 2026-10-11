@@ -109,6 +109,7 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
             // back-compat with callers/scripts that still pass `--pool`).
             pool: _,
             attach,
+            one_shot,
             refs,
         } => {
             // Dispatch works from anywhere: cwd need not be a repo. Resolve the cwd's context
@@ -146,6 +147,7 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
                 on_pool_full,
                 task.as_deref(),
                 attach,
+                one_shot,
                 &refs,
                 stage,
                 // A typed `bn dispatch` always renders its seed from a workflow skill.

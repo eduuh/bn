@@ -18,6 +18,11 @@ pub(crate) mod invocation;
 mod item;
 pub(crate) mod policy;
 mod slot_reuse;
+mod launch_wrap;
+use launch_wrap::{
+    one_shot_wrapped_command, systemd_run_available, worker_completion_wrapped_command,
+    worker_memory_wrapped_command,
+};
 use slot_reuse::may_reuse_occupied_worktree;
 use branch::dispatch_branch_occupied;
 pub(crate) use invocation::DispatchInvocation;
@@ -363,54 +368,6 @@ pub(crate) fn agent_launcher_bin() -> String {
         .unwrap_or_else(|_| "bn agent launch".to_string())
 }
 
-fn worker_memory_wrapped_command(cmd: &str, memory_ceiling_mb: u64, systemd_run: bool) -> String {
-    let inner = vec!["sh".to_string(), "-lc".to_string(), cmd.to_string()];
-    bn_core::worker::spawn::wrap(
-        bn_core::worker::spawn::MemoryCap::from_estimate_mb(memory_ceiling_mb),
-        systemd_run,
-        &inner,
-    )
-    .iter()
-    .map(|arg| shq(arg))
-    .collect::<Vec<_>>()
-    .join(" ")
-}
-
-fn worker_completion_wrapped_command(
-    cmd: &str,
-    request_id: &str,
-    executable: &std::path::Path,
-) -> String {
-    let script = r#"sh -lc "$1"
-code=$?
-if [ "$code" -eq 0 ]; then
-  "$3" worker finish "$2" --exit-code "$code"
-else
-  "$3" worker finish "$2" --fail --exit-code "$code"
-fi
-finish_code=$?
-if [ "$finish_code" -ne 0 ]; then
-  exit "$finish_code"
-fi
-exit "$code""#;
-    ["sh", "-c", script, "bn-worker-complete", cmd, request_id]
-        .into_iter()
-        .map(shq)
-        .chain(std::iter::once(shq(&executable.to_string_lossy())))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn systemd_run_available() -> bool {
-    std::process::Command::new("systemd-run")
-        .args(["--user", "--scope", "--quiet", "--collect", "--", "true"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
-}
-
 /// The shared gh config dir a pinned worktree copy is seeded from: `$GH_CONFIG_DIR` if set (so an
 /// already-pinned parent shell propagates), else gh's default `~/.config/gh`.
 fn gh_source_config_dir() -> std::path::PathBuf {
@@ -534,6 +491,8 @@ pub(crate) fn run_dispatch(
     on_pool_full: crate::cli::OnPoolFull,
     task_id: Option<&str>,
     attach: bool,
+    // `--one-shot`: the agent exits when its seeded turn ends and a clean exit closes the window.
+    one_shot: bool,
     refs: &[String],
     // The pipeline stage this dispatch *is*, when the caller knows; `None` infers it.
     stage: Option<bn_core::pipeline::stage::Stage>,
@@ -1201,6 +1160,9 @@ pub(crate) fn run_dispatch(
             // worktree's idle/dead one (#383) — a resumed Copilot session comes back at an empty
             // prompt having done nothing; a fresh, re-seeded one actually resumes the work.
             let fresh_flag = if fresh { " --fresh" } else { "" };
+            // `--one-shot`: the harness runs its seed with `-p` and exits when the run ends,
+            // instead of idling at an interactive prompt for good (the lane leak).
+            let one_shot_flag = if one_shot { " --one-shot" } else { "" };
             // File-based seed: keep the window's launch command short (a long inline seed has
             // been observed truncating in transit, leaving an unbalanced quote and a stuck
             // shell, #646). The launcher reads the file via --seed-file; a short single-line seed
@@ -1209,7 +1171,7 @@ pub(crate) fn run_dispatch(
             let seed_file = wt::prompt_to_file("seed", &repo, &sanitized, &seed);
             let mut cmd = match seed_launch_arg(seed_file.as_deref(), &seed) {
                 Ok(seed_arg) => format!(
-                    "{} {kind}{yolo_flag}{fresh_flag} --session {sid}{seed_arg}",
+                    "{} {kind}{yolo_flag}{fresh_flag}{one_shot_flag} --session {sid}{seed_arg}",
                     agent_launcher_bin(),
                 ),
                 Err(msg) => {
@@ -1274,6 +1236,10 @@ pub(crate) fn run_dispatch(
                 let executable =
                     std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("bn"));
                 cmd = worker_completion_wrapped_command(&cmd, &request_id, &executable);
+            }
+            // Outermost, so the completion report above runs before the window goes.
+            if one_shot {
+                cmd = one_shot_wrapped_command(&cmd);
             }
             // #646: an odd number of single quotes in the launch command never terminates its
             // string, dropping the window to a stuck shell (surfacing as `unknown option: --zsh`).

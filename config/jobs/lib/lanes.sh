@@ -49,7 +49,10 @@ lane_clone() {
 lane_dispatch() {
   _repo=$1; _branch=$2; _skill=$3; _task=$4; _steps=$5
   _agent=$(eval "printf '%s' \"\${BN_$(printf '%s' "$LANE" | tr 'a-z-' 'A-Z_')_AGENT:-}\"")
-  set -- --repo "$_repo" --skill "$_skill" --branch "$_branch" --name "$LANE $_repo" --fresh --yolo --agent
+  # --one-shot: the agent runs its pass non-interactively and exits, closing its window, when the
+  # pass ends. Interactive lane agents idled at a prompt forever afterwards: 20 piled up on one VM
+  # (~3.9 GB) and the kernel OOM-killed CI jobs beside them (2026-10-10).
+  set -- --repo "$_repo" --skill "$_skill" --branch "$_branch" --name "$LANE $_repo" --fresh --yolo --one-shot --agent
   [ -n "$_agent" ] && set -- "$@" "$_agent"
   _task="$_task Your checklist is already in your branch note as todos, computed from GitHub: work through them and bn done each one."
   [ -n "${BN_LANE_REPORT_TO:-}" ] && _task="$_task When the pass ends, report once with bn agent msg $BN_LANE_REPORT_TO."

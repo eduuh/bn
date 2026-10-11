@@ -2,7 +2,8 @@
 use crate::*;
 
 use super::agent_hooks::{
-    install_copilot_controller_hook, install_copilot_tmux_agent_hook, with_claude_launch_hooks,
+    controller_launch, install_copilot_controller_hook, install_copilot_tmux_agent_hook,
+    with_claude_launch_hooks,
 };
 
 mod checkin;
@@ -909,6 +910,8 @@ pub(crate) struct LaunchPlan {
     pub(crate) resume_session: Option<String>,
     /// Directories to widen the harness's allowed working set with, beyond the launch cwd.
     pub(crate) add_dirs: Vec<String>,
+    /// Run the seed with `-p` so the harness exits when the run ends (`--one-shot`).
+    pub(crate) one_shot: bool,
     pub(crate) passthrough: Vec<String>,
 }
 
@@ -937,17 +940,6 @@ impl LaunchPlan {
             None => Vec::new(),
         }
     }
-}
-
-fn controller_launch() -> bool {
-    let controller_id = std::env::var("BN_CONTROLLER_ID").ok();
-    let worker_session_id = std::env::var("BN_WORKER_SESSION_ID").ok();
-    controller_launch_env(controller_id.as_deref(), worker_session_id.as_deref())
-}
-
-fn controller_launch_env(controller_id: Option<&str>, worker_session_id: Option<&str>) -> bool {
-    controller_id.is_some_and(|value| !value.trim().is_empty())
-        && worker_session_id.is_none_or(|value| value.trim().is_empty())
 }
 
 /// The Claude project-transcript dirname for `cwd`: every non-alphanumeric byte becomes `-`
@@ -1446,6 +1438,7 @@ pub(crate) fn emit_agent_launch(
     session: Option<String>,
     resume_session: Option<String>,
     add_dirs: Vec<String>,
+    one_shot: bool,
     passthrough: Vec<String>,
 ) -> ! {
     let Some(harness) = Harness::parse(harness.as_deref()) else {
@@ -1491,6 +1484,9 @@ pub(crate) fn emit_agent_launch(
         for dir in &add_dirs {
             launch.extend(["--add-dir".to_string(), dir.clone()]);
         }
+        if one_shot {
+            launch.push("--one-shot".to_string());
+        }
         if !passthrough.is_empty() {
             launch.push("--".to_string());
             launch.extend(passthrough);
@@ -1517,6 +1513,7 @@ pub(crate) fn emit_agent_launch(
             .filter(|s| !s.trim().is_empty())
             .or_else(|| (!user_owns_session).then(gen_uuid)),
         resume_session,
+        one_shot,
         passthrough,
     };
     let pinned_session = plan.session.clone().unwrap_or_default();

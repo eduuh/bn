@@ -408,6 +408,11 @@ pub(crate) enum AgentCmd {
         /// branch-note directory), so a search cannot wander into `~/Documents`.
         #[arg(long = "add-dir", value_name = "DIR")]
         add_dir: Vec<String>,
+        /// Run the seed non-interactively (`-p` instead of copilot's `-i` or claude's opening
+        /// prompt) so the harness exits when the run ends instead of idling at a prompt. Only
+        /// a fresh seeded launch changes; a resume or an unseeded launch stays interactive.
+        #[arg(long)]
+        one_shot: bool,
         /// Extra args passed through to the harness verbatim (everything after `--`).
         #[arg(last = true)]
         passthrough: Vec<String>,
