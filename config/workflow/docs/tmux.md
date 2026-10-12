@@ -233,9 +233,55 @@ The three jump keys differ by **scope**, not by mechanism:
 | `Tab` | Jump straight to the top window needing you; repeat to cycle. |
 | `m` | Watch this window: badge it ✓ when it goes quiet. |
 
+## Text tools and pane logs
+
+Keys below follow the `C-Space` prefix, except the selected-text actions, which
+run inside copy mode after making a selection.
+
+| Key | Action |
+|-----|--------|
+| `u` | **extrakto:** fuzzy-search this pane's retained scrollback. `Tab` inserts the selected text without submitting it; `Enter` copies it. `C-f` switches between words, paths, URLs and lines. |
+| `F` | **fingers:** letter hints over visible paths, URLs, hashes and IDs. Press a hint to copy; a shifted hint pastes. `Esc` exits. |
+| `M-o` (copy mode) | Open the selected URL or file through bn's platform-aware opener. |
+| `M-e` (copy mode) | Open the selected file in a separate editor popup, not by typing a command into the shell or agent pane. |
+| `M-s` (copy mode) | Search the selected text in the browser. |
+| `Y` | Toggle output recording for this pane. The start/stop message gives the file path. |
+| `C-y` | Save the visible pane text. |
+| `H` | Save all retained scrollback for this pane (up to `history-limit`, currently 100,000 lines). |
+
+Extraction and hint copies use tmux's OSC52 clipboard path, including remote
+sessions; normal mouse and copy-mode copies still use the existing `bn-clip`
+integration. `Tab` remains the attention jump, `P` remains the buffer picker,
+and copy-mode `o` still switches selection ends.
+
+Recording is **off by default**, never automatically started or restored. Logs
+and text snapshots go to `~/.local/state/bn/tmux-logs/` on the machine running
+tmux, not to the repository. The directory is private (`0700`), files are private
+(`0600`), and repeated snapshots get unique names. Recording captures future pane
+output; use `H` for earlier output. Other tools' existing pane pipes are not
+replaced.
+
+Output may contain credentials or other sensitive text. Stop recording after the
+reproduction; there is no automatic retention or size limit. Snapshots are plain
+text, not image screenshots.
+
+Plugin sources and licenses are vendored without TPM. Fingers additionally needs
+the pinned 2.7.1 binary: full installation downloads and verifies it, or run
+`bash scripts/install-tmux-fingers.sh`. Official pinned binaries cover Linux
+x86_64 and macOS arm64; other platforms need an upstream installation. Plugin
+reloads never download or build dependencies.
+
+Checks: `python3 scripts/check-tmux-plugins.py`,
+`python3 scripts/check-tmux-logging.py`, and
+`python3 scripts/check-install-tmux-fingers.py`.
+
 ## Copy Mode (vi)
 
 Enter with **`C-Space Space`**.
+
+**Mouse dragging always selects terminal text; releasing copies it to the system
+clipboard.** This deliberately overrides in-application dragging, including in
+Copilot and editors. Clicks and scrolling keep their existing behavior.
 
 | Key | Action |
 |-----|--------|
@@ -250,6 +296,10 @@ Enter with **`C-Space Space`**.
 | `q` or `Esc` | Exit copy mode. Scrolling back down to the live screen also exits on its own. |
 
 Outside copy mode: `p` pastes the **system clipboard** (through `bn-clip`), `P` chooses a tmux buffer, `Space` enters copy mode.
+
+Mouse-copy regression: `python3 scripts/check-tmux-mouse-copy.py`. It uses an
+isolated tmux server and a simulated clipboard, leaving live sessions and the
+system clipboard untouched.
 
 ## Config
 

@@ -96,11 +96,10 @@ Repaint the tracker at the **top of each step** so the window shows live progres
    write-up on stdin via `--notes -`). For a review (`mine = no`) this is the **only** write you
    make — never to the PR itself.
 
-7. **capture the links.** Run `bn links capture` — it stores this branch's PR and work item in
-   the link store, tagged with the repo. A completed PR is the last cheap moment for those links:
-   the note stops being read and the worktree is usually next. Add anything else the review made
-   you go find — the PBI, the dashboard you checked a metric on, the doc that settled an argument
-   — with `bn links add <url> --name "<what it is>" --tags <tags>`.
+7. **curate only durable links.** Do not store the reviewed PR, its work item, or every URL opened
+   during review. If a repeatedly useful dashboard, query or canonical doc fills a real gap,
+   search its category first, then add it with
+   `bn links add <url> --category <category> --name "<what it is>"`.
 
 8. **report.** One line: *lint PASS/FAIL · N findings · test PASS/FAIL/SKIP · verdict
    APPROVE/REJECT/NEEDS-WORK*. Then the single most important finding and the next action (for your

@@ -1,17 +1,18 @@
-//! `bn links harvest`: the agent Stop hook that saves the PRs and work items a session
-//! mentioned, for Claude (`transcript_path` on stdin) and Copilot (`sessionId` on stdin, read
-//! from `events.jsonl`). Every failure is swallowed, so it can never break a turn.
+//! `bn links harvest`: a legacy dry-run audit of links an agent session mentioned.
 
 use super::*;
 
-/// `bn links harvest` — save what an agent session mentioned. Every failure is swallowed: this
-/// runs at the end of every turn, and a bookmark list is never worth a broken one.
+/// Automatic harvesting is disabled. `--dry-run` retains the old candidate extraction for
+/// diagnostics, but a normal legacy hook invocation is a no-op.
 pub(super) fn harvest(
     cfg: &Config,
     transcript: Option<std::path::PathBuf>,
     copilot_session: Option<String>,
     dry_run: bool,
 ) {
+    if !dry_run {
+        return;
+    }
     let hook = if transcript.is_none() && copilot_session.is_none() {
         read_hook_stdin()
     } else {
@@ -39,26 +40,9 @@ pub(super) fn harvest(
         .into_iter()
         .filter(|u| !stored.iter().any(|l| &l.url == u))
         .collect();
-    if dry_run {
-        for u in &urls {
-            println!("{u}");
-        }
-        return;
+    for u in &urls {
+        println!("{u}");
     }
-    if urls.is_empty() {
-        return;
-    }
-    let cwd = field("cwd")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::current_dir().ok());
-    let ctx = cwd.and_then(|d| resolver::resolve(cfg, &d).ok());
-    let _ = links::harvest(
-        cfg,
-        &urls,
-        ctx.as_ref().map(|c| c.repo.as_str()),
-        ctx.as_ref().map(|c| c.branch.as_str()),
-        &today(),
-    );
 }
 
 /// Where Copilot keeps a session's events. `None` for an id that could climb out of the

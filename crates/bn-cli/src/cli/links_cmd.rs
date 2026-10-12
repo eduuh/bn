@@ -28,11 +28,14 @@ pub(crate) struct LinksArgs {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum LinksCmd {
-    /// Store a link. The name defaults to the host plus the last path segment; re-adding a URL
-    /// you already have updates it in place rather than storing it twice. Nothing is fetched —
-    /// the name is yours to write. An unlisted tag warns and is still saved.
+    /// Store one important, repeatedly useful link after checking its category for an existing
+    /// answer. The category is required; optional topic tags refine it. Re-adding the same page
+    /// updates it in place. Nothing is fetched.
     Add {
         url: String,
+        /// Broad category this link fills. Must be in `bn links tags`.
+        #[arg(long)]
+        category: String,
         /// What to call it in the picker. Defaults to host + last path segment.
         #[arg(long)]
         name: Option<String>,
@@ -89,9 +92,12 @@ pub(crate) enum LinksCmd {
         #[arg(long)]
         when: Option<String>,
     },
-    /// Store the branch note's PR and work item, tagged with the repo — the one command that
-    /// makes "capture the links before the worktree goes away" cost nothing.
-    Capture,
+    /// Explicitly store the branch note's PR and work item after deciding they are durable links.
+    Capture {
+        /// Broad category these links fill. Must be in `bn links tags`.
+        #[arg(long)]
+        category: String,
+    },
     /// The configured tag vocabulary, and how many stored links carry each tag.
     Tags,
     /// Delete every expired link (one whose `--ttl` ran out) and say what went.
@@ -104,18 +110,13 @@ pub(crate) enum LinksCmd {
         #[arg(long)]
         tag: Option<String>,
     },
-    /// Review the links the session hook saved without asking: keep, tag or drop each one.
-    /// They are marked `•new` in the picker and on the note until you do.
+    /// Review legacy links marked `•new`: keep, tag or drop each one.
     New,
-    /// Open every link carrying a tag at once — a tag is a group, and so is a day:
-    /// `bn links group yesterday` (or `monday`, `week`, a date) opens the links saved then. Tag
-    /// links into one with `bn links add <url> --tags <group>`. The picker offers each tag on two
-    /// or more links, and each recent day with two or more, as a group row too.
+    /// Open a multi-select picker scoped to a category, tag or day. Select only the links wanted
+    /// before opening or copying them.
     Group { tag: String },
-    /// Save the PRs, issues and work items an agent session mentioned. Run by the Claude Stop and
-    /// Copilot agentStop hooks, which name the session on stdin; `--transcript` or
-    /// `--copilot-session` reads one instead. Silent
-    /// and always exits 0, so it can never break a turn.
+    /// Legacy session-link audit. Automatic harvesting is disabled; `--dry-run` only prints
+    /// candidates and never stores them.
     #[command(hide = true)]
     Harvest {
         #[arg(long)]

@@ -125,11 +125,12 @@ struct LinksAddArgs {
     /// The http(s) URL to store. Anything else is rejected — a stored link is handed straight
     /// to a browser.
     url: String,
+    /// Broad category this durable link fills. Must be in the configured link vocabulary.
+    category: String,
     /// What to call it in the picker. Omit and it becomes the host plus the last path segment.
     #[serde(default)]
     name: Option<String>,
-    /// Tags to file it under, e.g. ["icm", "security"]. Unlisted tags are kept, not rejected.
-    /// Omit and tags are guessed from the host (ICM → icm, learn.microsoft.com → docs).
+    /// Optional topic tags beyond the required category. Unlisted tags are kept, not rejected.
     #[serde(default)]
     tags: Vec<String>,
     /// Repository this link belongs to. Omit to use this worktree's repo; pass "" for none.
@@ -347,7 +348,7 @@ impl BnServer {
 
     #[tool(
         name = "bn_links_add",
-        description = "Store a link worth going back to — a PR, a work item or PBI, an Azure portal blade, a dashboard, a docs page. Call this whenever a URL surfaces that the user will want again, without waiting to be asked: the store is person-scoped and cross-machine, so a link kept here outlives this branch and this worktree. Unlike every other tool on this server, it does NOT fail closed when no branch resolves — it stores the link without a repo instead, because losing a capture over the client's working directory is the wrong trade. Re-adding a URL already stored updates it in place. Nothing is fetched over the network."
+        description = "Store one deliberately curated link. First use bn_links_search with the proposed category and a purpose query. Add only when the link is important, repeatedly useful, expensive to rediscover, and fills a gap no saved link already covers. A configured category is required; optional tags refine it. Do not save routine PRs, work items, review comments, search results, or every URL seen in a session. Re-adding the same page updates it in place; URL fragments do not create duplicates."
     )]
     async fn bn_links_add(
         &self,
@@ -379,12 +380,12 @@ impl BnServer {
         };
         let out = {
             let _guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-            // Untagged: file it by host, the same guess the CLI makes.
-            let tags = if a.tags.is_empty() {
-                links::guess_tags(&a.url, &bn_core::resolver::link_tags())
-            } else {
-                a.tags.clone()
-            };
+            let vocab = bn_core::resolver::link_tags();
+            let category = links::validate_category(&a.category, &vocab)
+                .map_err(|e| ErrorData::invalid_params(e.message(), None))?;
+            let mut tags = a.tags.clone();
+            tags.retain(|tag| !tag.eq_ignore_ascii_case(&category));
+            tags.insert(0, category);
             let link = links::add(
                 &self.cfg,
                 &a.url,
@@ -772,14 +773,12 @@ impl ServerHandler for BnServer {
              exception, the link tools bn_links_add and bn_links_search, described below. Start a session with \
              bn_context (compact orientation: goal, counts, top todos, blockers, PR, next-step \
              hints), then use only the current-branch tools: bn_goal, bn_add, bn_done, bn_drop, \
-             bn_reopen, bn_reword, bn_pr, bn_cat, bn_status, bn_sync, bn_handoff_read, and bn_handoff_write. bn_links_add is \
-             the exception to branch scope: it stores a link in the person-scoped, \
-             cross-machine link store, and succeeds even when no branch resolves (the link is \
-             then stored without a repo). Call it whenever a URL surfaces that will be wanted \
-             again — a PR, a work item or PBI, a portal blade, a dashboard, a docs page — \
-             without waiting to be asked, and especially as a pull request completes, when those \
-             links are about to leave with the worktree. Before asking the user for a URL they \
-             have likely saved, search the store with bn_links_search. \
+             bn_reopen, bn_reword, bn_pr, bn_cat, bn_status, bn_sync, bn_handoff_read, and \
+             bn_handoff_write. The link tools are \
+             person-scoped and may succeed without a branch. Keep that store deliberately small: \
+             use bn_links_search to search the proposed category and purpose first, then call \
+             bn_links_add only for an important, repeatedly useful link that fills a real gap. \
+             Never capture routine PRs, work items, review comments or every URL in a session. \
              Two tools are repo-scoped rather than branch-scoped, because the knowledge \
              outlives the branch: bn_ref reads this repo's reference notes (call it with no \
              name for the cheap index before assuming anything about how the repo builds or \

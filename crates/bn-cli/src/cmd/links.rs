@@ -38,11 +38,12 @@ pub(crate) fn emit_links(
     match action {
         Some(LinksCmd::Add {
             url,
+            category,
             name,
             tags,
             repo,
             ttl,
-        }) => add_link(cfg, &url, name, tags, repo, ttl, json),
+        }) => add_link(cfg, &url, &category, name, tags, repo, ttl, json),
         Some(LinksCmd::Prune) => prune(cfg, json),
         Some(LinksCmd::Check { tag }) => check::check_links(cfg, tag, json),
         Some(LinksCmd::Tag { needle, changes }) => tag_link(cfg, &needle, &changes, json),
@@ -66,7 +67,7 @@ pub(crate) fn emit_links(
             list_links(cfg, query, tag, repo, span.as_ref(), json)
         }
         Some(LinksCmd::Copy { needle, tag, plain }) => copy_cmd(cfg, needle, tag, plain, json),
-        Some(LinksCmd::Capture) => capture(cfg, json),
+        Some(LinksCmd::Capture { category }) => capture(cfg, &category, json),
         Some(LinksCmd::Tags) => show_tags(cfg, json),
         Some(LinksCmd::New) => review::review(cfg, json),
         Some(LinksCmd::Harvest {
@@ -99,6 +100,7 @@ fn current_repo(cfg: &Config) -> Option<String> {
 fn add_link(
     cfg: &Config,
     url: &str,
+    category: &str,
     name: Option<String>,
     tags: Option<String>,
     repo: Option<String>,
@@ -112,17 +114,15 @@ fn add_link(
         })
     });
     let vocab = resolver::link_tags();
-    let (tags, unknown) = match tags.as_deref() {
+    let category = links::validate_category(category, &vocab)
+        .unwrap_or_else(|e| fail_json(json, "links", e.code(), &e.message()));
+    let (mut tags, unknown) = match tags.as_deref() {
         Some(raw) => links::split_tags(raw, &vocab),
         None => (vec![], vec![]),
     };
-    // No tags given: file it by host (an ICM incident under `icm`) rather than leave it untagged.
-    let guessed = tags.is_empty();
-    let tags = if guessed {
-        links::guess_tags(url, &vocab)
-    } else {
-        tags
-    };
+    if !tags.contains(&category) {
+        tags.insert(0, category);
+    }
     // `--repo ""` is the explicit "this link belongs to no repo"; omitting it inherits the
     // worktree you are standing in, which is the common case and the one worth defaulting.
     // An inherited repo brings this worktree's branch with it, so the link heads that branch's
@@ -162,12 +162,7 @@ fn add_link(
             if json {
                 println!("{}", Envelope::success("links", link_json(&link)).to_json());
             } else {
-                let how = if guessed && !tags.is_empty() {
-                    format!(" (tagged {} from host)", tags.join(", "))
-                } else {
-                    String::new()
-                };
-                println!("Saved [{}] {} — {}{how}", link.id, link.name, link.url);
+                println!("Saved [{}] {} — {}", link.id, link.name, link.url);
             }
         }
         Err(e) => fail_json(json, "links", e.code(), &e.message()),
@@ -280,17 +275,13 @@ fn list_links(
     }
 }
 
-/// `bn links capture` — harvest the branch note's PR and work item into the store.
-///
-/// The point of the command is that capturing costs one word: at the moment a PR completes, the
-/// two links you will want again are already recorded on the note, and both leave with the
-/// worktree if nobody moves them.
-///
-/// No tag is invented. The `repo` field already groups these, and a guessed tag is noise you
-/// would have to clean up later — tag them yourself if they deserve one.
-fn capture(cfg: &Config, json: bool) {
+/// `bn links capture --category <category>` — explicitly keep the note's PR and work item.
+fn capture(cfg: &Config, category: &str, json: bool) {
     let ctx = resolve_or_exit(cfg);
     let today = today();
+    let vocab = resolver::link_tags();
+    let category = links::validate_category(category, &vocab)
+        .unwrap_or_else(|e| fail_json(json, "links", e.code(), &e.message()));
     let pr = commands::read_pr(cfg, &ctx);
     let wi = commands::read_work_item(cfg, &ctx);
     let found = links::capturable(cfg, &ctx.repo, pr.as_deref(), wi.as_deref());
@@ -309,6 +300,7 @@ fn capture(cfg: &Config, json: bool) {
         &ctx.branch,
         pr.as_deref(),
         wi.as_deref(),
+        &category,
         &today,
     ) {
         Ok(s) => s,
@@ -411,7 +403,7 @@ fn open_one(
             Ok(l) => (PickAction::Open, vec![l.id.clone()]),
             Err(e) => fail_json(json, "links", e.code(), &e.message()),
         },
-        None => pick_loop(cfg, tag.as_deref(), span, json),
+        None => pick_loop(cfg, tag.as_deref(), span, true, json),
     };
     if action == PickAction::Copy {
         copy_ids(cfg, &chosen, false, fills, json);
@@ -420,35 +412,36 @@ fn open_one(
     open_ids(cfg, &chosen, fills, json);
 }
 
-/// `bn links group <tag>` — open every link carrying the tag.
+/// `bn links group <tag>` — choose links from a picker scoped to that tag or day.
 fn open_group(cfg: &Config, tag: &str, json: bool) {
     let items = links::read(cfg);
     let today = today();
-    let mut ids: Vec<String> = links::in_group(&items, tag)
-        .iter()
-        .map(|l| l.id.clone())
-        .collect();
-    // No such tag: a day is a group too, so `bn links group yesterday` opens yesterday's links.
-    if ids.is_empty() {
-        if let Some(span) = links::when::parse(tag, &today) {
-            ids = links::ranked(&items, None, &today)
-                .into_iter()
-                .filter(|l| links::when::saved_in(l, &span))
-                .map(|l| l.id.clone())
-                .collect();
-        }
-    }
-    if ids.is_empty() {
+    let has_tag = !links::in_group(&items, tag).is_empty();
+    let span = (!has_tag)
+        .then(|| links::when::parse(tag, &today))
+        .flatten();
+    if !has_tag && span.is_none() {
         fail_json(
             json,
             "links",
             "not_found",
             &format!(
-                "No link is tagged or saved {tag}. `bn links add <url> --tags {tag}` to start the group."
+                "No link is categorized, tagged or saved {tag}. `bn links add <url> --category {tag}` to start it."
             ),
         );
     }
-    open_ids(cfg, &ids, &[], json);
+    let (action, ids) = pick_loop(
+        cfg,
+        has_tag.then_some(tag),
+        span.as_ref(),
+        false,
+        json,
+    );
+    if action == PickAction::Copy {
+        copy_ids(cfg, &ids, false, &[], json);
+    } else {
+        open_ids(cfg, &ids, &[], json);
+    }
 }
 
 /// Record an open for each id and hand each URL to the browser. A URL no opener took is printed

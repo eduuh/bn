@@ -1,7 +1,10 @@
 use super::*;
 
 fn vocab() -> Vec<String> {
-    DEFAULT_TAGS.iter().map(|t| t.to_string()).collect()
+    ["icm", "docs", "permissions", "security"]
+        .iter()
+        .map(|t| t.to_string())
+        .collect()
 }
 
 #[test]
@@ -270,11 +273,12 @@ fn capture_saves_once_and_never_clobbers_a_hand_written_name() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = empty_cfg(tmp.path());
     let pr = "https://github.com/eduuh/bn/pull/1469";
-    let saved = capture(&cfg, "bn", "links", Some(pr), None, "2026-10-01").unwrap();
+    let saved = capture(&cfg, "bn", "links", Some(pr), None, "work", "2026-10-01").unwrap();
     assert_eq!(saved.len(), 1);
     assert_eq!(saved[0].name, "bn links PR");
+    assert_eq!(saved[0].tags, ["work"]);
     rename(&cfg, &saved[0].id, "link groups PR").unwrap();
-    let again = capture(&cfg, "bn", "links", Some(pr), None, "2026-10-02").unwrap();
+    let again = capture(&cfg, "bn", "links", Some(pr), None, "work", "2026-10-02").unwrap();
     assert!(again.is_empty(), "already stored, nothing new");
     assert_eq!(read(&cfg)[0].name, "link groups PR");
 }
@@ -385,6 +389,60 @@ fn re_adding_without_a_name_keeps_the_name() {
 }
 
 #[test]
+fn fragments_do_not_create_duplicate_links() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = empty_cfg(tmp.path());
+    let page = "https://github.com/owner/repo/pull/42";
+    add(&cfg, page, Some("Useful PR"), &[], None, None, "2026-10-09").unwrap();
+    let updated = add(
+        &cfg,
+        &format!("{page}#discussion_r123"),
+        None,
+        &["review".into()],
+        None,
+        None,
+        "2026-10-09",
+    )
+    .unwrap();
+
+    assert_eq!(updated.url, page);
+    assert_eq!(updated.name, "Useful PR");
+    assert_eq!(updated.tags, ["review"]);
+    assert_eq!(read(&cfg).len(), 1);
+}
+
+#[test]
+fn reading_a_legacy_store_collapses_fragment_variants() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = empty_cfg(tmp.path());
+    let page = "https://github.com/owner/repo/pull/42";
+    let items = vec![
+        Link {
+            url: page.into(),
+            name: "Useful PR".into(),
+            ..link("first", 0, None)
+        },
+        Link {
+            url: format!("{page}#discussion_r123"),
+            ..link("duplicate", 0, None)
+        },
+    ];
+    let front = LinksFront { items };
+    let text = format!(
+        "---\n{}---\n\n# Links\n",
+        serde_yaml::to_string(&front).unwrap()
+    );
+    let path = cfg.links_file();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+
+    let stored = read(&cfg);
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].url, page);
+    assert_eq!(stored[0].name, "Useful PR");
+}
+
+#[test]
 fn retag_adds_and_drops_without_touching_other_tags() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = empty_cfg(tmp.path());
@@ -409,6 +467,25 @@ fn retag_adds_and_drops_without_touching_other_tags() {
 }
 
 #[test]
+fn retag_cannot_remove_the_last_category() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = empty_cfg(tmp.path());
+    let l = add(
+        &cfg,
+        "https://example.com/x",
+        None,
+        &["work".into(), "weekly".into()],
+        None,
+        None,
+        "2026-10-01",
+    )
+    .unwrap();
+    let err = retag(&cfg, &l.id, &[], &["work".into()]).unwrap_err();
+    assert!(matches!(err, LinkError::MissingCategory(_)));
+    assert_eq!(read(&cfg)[0].tags, ["work", "weekly"]);
+}
+
+#[test]
 fn a_note_with_neither_owes_the_store_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg =
@@ -428,6 +505,20 @@ fn an_unlisted_tag_is_reported_but_still_kept() {
 fn tags_are_lowercased_and_deduplicated() {
     let (accepted, _) = split_tags("Security, security, , SECURITY", &[]);
     assert_eq!(accepted, vec!["security"]);
+}
+
+#[test]
+fn a_link_category_must_come_from_the_configured_vocabulary() {
+    let vocab = DEFAULT_TAGS
+        .iter()
+        .map(|t| t.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        validate_category(" Dashboards ", &vocab).unwrap(),
+        "dashboards"
+    );
+    let err = validate_category("random", &vocab).unwrap_err();
+    assert!(matches!(err, LinkError::BadCategory(category, _) if category == "random"));
 }
 
 #[test]

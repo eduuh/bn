@@ -134,6 +134,8 @@ source "$repo/scripts/install-toolchain.sh"
 source "$repo/scripts/install-tmux.sh"
 # shellcheck source=scripts/install-shell-clis.sh
 source "$repo/scripts/install-shell-clis.sh"
+# shellcheck source=scripts/install-tmux-fingers.sh
+source "$repo/scripts/install-tmux-fingers.sh"
 
 # Atomically place a binary: copy to a temp in the destination dir, then rename over the target.
 # A rename on the same filesystem is atomic, so a process (e.g. a cron firing mid-install) that
@@ -379,7 +381,7 @@ echo "Linked $cfgdir/crons.toml -> $shipped/config/crons.toml"
 required_cli_deps() {
   local scope="$1"
   if [ "$scope" = "full" ]; then
-    echo "git jq curl tar tmux fzf"
+    echo "git jq curl tar tmux fzf python3"
   else
     echo "git jq curl tar"
   fi
@@ -481,6 +483,8 @@ install_required_cli_deps "$mode"
 # fallback if the build cannot happen here. Same BN_INSTALL_DEPS=0 opt-out as the deps above.
 if [ "$mode" = "full" ] && [ "${BN_INSTALL_DEPS:-1}" != "0" ]; then
   bn_install_ensure_tmux
+  bn_install_ensure_tmux_fingers "$HOME/.local/bin" ||
+    echo "warning: tmux-fingers is unavailable; hint copying stays disabled until installed." >&2
 fi
 
 # --- shell CLIs: terminal productivity companions ------------------------------
@@ -890,6 +894,6 @@ fi
 ln -sfn "$shipped/config/workflow/tmux.conf" "$tmux_conf"
 echo "Linked ~/.tmux.conf -> $shipped/config/workflow/tmux.conf"
 
-# tmux plugins are vendored in-repo (config/workflow/plugins/, sourced directly by tmux.conf) — no TPM,
-# no network fetch, nothing to bootstrap. A fresh machine works the moment ~/.tmux.conf is linked.
+# Plugin runtime sources are vendored (no TPM or reload-time downloads). Fingers uses the pinned,
+# checksum-verified binary installed during full-mode dependency setup.
 echo "Full install complete."

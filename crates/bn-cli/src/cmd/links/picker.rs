@@ -10,6 +10,7 @@ pub(super) fn pick_loop(
     cfg: &Config,
     tag: Option<&str>,
     span: Option<&links::when::Span>,
+    include_groups: bool,
     json: bool,
 ) -> (PickAction, Vec<String>) {
     loop {
@@ -22,7 +23,7 @@ pub(super) fn pick_loop(
         if ranked.is_empty() {
             fail_json(json, "links", "empty", "No links match.");
         }
-        let Some((action, keys)) = pick(&ranked) else {
+        let Some((action, keys)) = pick(&ranked, include_groups) else {
             // fzf missing or cancelled. Print what the picker would have shown so the command
             // is still useful on a box without fzf, and exit non-zero so a script can tell
             // "nothing opened" from "opened".
@@ -136,14 +137,33 @@ pub(super) enum PickAction {
 /// outright — so the link you use most is the one already under the cursor. `--multi` lets tab
 /// select several; `--expect` makes the first output line the key that closed fzf, so ctrl-y can
 /// mean "copy" and ctrl-t/e/d "edit" rather than "open".
-pub(super) fn pick(ranked: &[&Link]) -> Option<(PickAction, Vec<String>)> {
-    let out = fzf(
-        &rows(ranked),
-        "ctrl-y,ctrl-t,ctrl-e,ctrl-d",
+pub(super) fn pick(ranked: &[&Link], include_groups: bool) -> Option<(PickAction, Vec<String>)> {
+    let picker_rows = picker_rows(ranked, include_groups);
+    let header = if include_groups {
         "enter: open · ctrl-y: copy for Teams · tab: select several · ▸ rows are a whole group\n\
-         ctrl-t: tag · ctrl-e: rename · ctrl-d: delete",
+         ctrl-t: tag · ctrl-e: rename · ctrl-d: delete"
+    } else {
+        "enter: open selected · ctrl-y: copy selected · tab: select several\n\
+         ctrl-t: tag · ctrl-e: rename · ctrl-d: delete"
+    };
+    let out = fzf(
+        &picker_rows,
+        "ctrl-y,ctrl-t,ctrl-e,ctrl-d",
+        header,
     )?;
     parse_pick(&out)
+}
+
+/// A scoped group picker shows only member links, never the synthetic row that expands all.
+pub(super) fn picker_rows(ranked: &[&Link], include_groups: bool) -> Vec<String> {
+    if include_groups {
+        rows(ranked)
+    } else {
+        ranked
+            .iter()
+            .map(|link| format!("{}{TAB}{}", render(link), link.id))
+            .collect()
+    }
 }
 
 /// Run fzf over `<rendered>\t<key>` rows with `--multi` and `--expect <expect>`, and return its

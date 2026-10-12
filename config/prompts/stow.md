@@ -77,54 +77,25 @@ For a normal end of session with nothing to reset or hand over, do only the note
    disappears when the branch does. See `/bn:repo-reference`.
 7. If a PR was opened for this branch, link it with `bn_pr <url>` (or `bn pr <url>`) — the note is
    where the next session and the review queue both look for it, and a summary in chat is not a link.
-8. Capture the links this session leaves behind: `bn links capture` stores the branch's PR and
-   work item, and `bn links add <url> --name "<what it is>" --tags <tags>` takes anything else
-   you will want again — the PBI, an Azure portal blade, a dashboard, the doc that answered the
-   question. They are person-scoped and cross-machine, so they outlive this worktree; a URL only
-   in the note leaves when the worktree does.
+8. Do not sweep or automatically capture session URLs. Add a link only when it is important,
+   repeatedly useful, expensive to rediscover, and fills a gap in a curated category.
 9. If the branch's work is merged and finished, run `bn close` in the shell — promptly, since
-   the merge→close gap is what `bn metrics` measures as close-out lag. It warns about any PR or
-   work item you have not captured.
+   the merge→close gap is what `bn metrics` measures as close-out lag.
 10. Finish with a 2–3 line summary of what changed and what's left.
 
 Be faithful: only mark todos done that are actually complete.
 
-## Capture links (was capture-links)
+## Curate links
 
-You are capturing the links from this session that are worth going back to.
+The link store is a small index of durable entry points, not session history.
 
-A link nobody stores is a link somebody re-finds. The branch note holds exactly two of them
-(`pr:` and `work_item:`) and both leave when the worktree does, so anything you want next month
-belongs in the `bn links` store — person-scoped, cross-machine, and ranked by how often it is
-actually opened.
-
-1. **Sweep the session.** Read back over what you and the user touched and list every URL that
-   would cost real time to find again: pull requests, work items and PBIs, Azure portal blades,
-   dashboards and queries, internal docs and wikis, API references, the one Stack Overflow answer
-   that actually worked. Skip anything trivially re-findable — a package's front page, a search
-   result, a link the user will never open twice.
-
-2. **Capture the branch's own links first.** If this branch has a PR or a work item, run
-   `bn links capture` in the shell — it stores both, named and tagged with the repo, in one
-   command. Do this the moment a pull request completes, not at the end of the day: the gap
-   between "merged" and "worktree gone" is where these links get lost.
-
-3. **Store the rest**, one call each, with the `bn_links_add` MCP tool (or `bn links add <url>`
-   in the shell). Give every link:
-   - a `name` you would actually search for — what it *is*, not what its `<title>` says. "Prod
-     subscription access request" beats "Microsoft Azure".
-   - `tags` from the configured vocabulary (`bn links tags` prints it, with counts). A link takes
-     as many as apply. An unlisted tag is kept, not rejected, so reach for a new one when nothing
-     fits — but check the set first, because six tags you use beat twenty you don't. Omit `tags`
-     and they are guessed from the host: an ICM incident gets `icm`, learn.microsoft.com gets
-     `docs`, myaccess gets `permissions`, security.microsoft.com gets `security`.
-   - the `repo`, when the link belongs to one. Those sort first when you are in that repo.
-
-4. **Don't fetch anything.** Names are written, never scraped. If you cannot say what a link is
-   for, ask the user rather than storing a URL nobody will recognise in three months.
-
-5. **Report** in one line: how many links you stored, and name any you deliberately skipped so
-   the user can overrule you.
-
-Be honest about duplicates: re-adding a URL already stored updates it in place, which is the right
-move when you are improving a name or fixing tags, and pointless noise otherwise.
+1. **Pass the importance gate.** Keep only links that are repeatedly useful, expensive to
+   rediscover, and likely to matter months from now. Routine PRs, work items, review comments,
+   search results and one-off pages fail this gate.
+2. **Find the gap first.** Choose a category from `bn links tags`, then run
+   `bn links list <purpose> --tag <category>`. If an existing link serves the need, improve that
+   record instead of adding another.
+3. **Add deliberately.** Use
+   `bn links add <url> --category <category> --name "<what it is>"`, with optional topic tags.
+   A link without a category is rejected.
+4. **Do not sweep the session.** Stow reports links only when one was intentionally curated.

@@ -64,12 +64,9 @@ pub struct CloseOutcome {
     /// Acceptance criteria (`## Done When`) still unmet at close — a warning, not a block. Empty
     /// when the branch declared none or met them all.
     pub unmet_criteria: Vec<String>,
-    /// The note's PR/work-item links that close just saved to the `bn links` store. Closing is
-    /// the last moment these are cheap to keep: the note is about to stop being the thing anyone
-    /// reads, and the worktree is usually next.
+    /// Kept for payload compatibility. Closing no longer writes to the curated link store.
     pub captured_links: Vec<String>,
-    /// The note's PR/work-item links still not in the store after that — only when saving
-    /// failed. A warning, not a block: closing a note must never fail over a bookmark list.
+    /// Kept for payload compatibility. Closing no longer asks users to capture routine links.
     pub uncaptured_links: Vec<String>,
 }
 
@@ -142,23 +139,6 @@ pub fn close(
         }
     }
 
-    // Keep the PR and work item before the worktree goes. Best-effort: an unwritable store
-    // leaves them in `uncaptured_links` for the caller to warn about.
-    let captured_links: Vec<String> = crate::links::capture(
-        cfg,
-        &ctx.repo,
-        &ctx.branch,
-        note.front.pr.as_ref().map(Scalar::display).as_deref(),
-        note.front
-            .work_item
-            .as_ref()
-            .map(Scalar::display)
-            .as_deref(),
-        today,
-    )
-    .map(|saved| saved.into_iter().map(|l| l.url).collect())
-    .unwrap_or_default();
-
     Ok(CloseOutcome {
         repo: ctx.repo.clone(),
         branch: ctx.branch.clone(),
@@ -166,28 +146,9 @@ pub fn close(
         // A re-close logged nothing — don't report an achievement it didn't append.
         achievement: if was_closed { None } else { text },
         unmet_criteria,
-        captured_links,
-        uncaptured_links: uncaptured_links(cfg, ctx, &note),
+        captured_links: vec![],
+        uncaptured_links: vec![],
     })
-}
-
-/// The note's PR and work item that the `bn links` store does not already hold.
-///
-/// Reads the same [`crate::links::capturable`] that `bn links capture` writes from, so the
-/// warning names exactly what that command would store — including a bare work-item id, which
-/// resolves through the repo's forge rather than being skipped.
-///
-/// Read-only and best-effort: an unreadable store yields "nothing captured", which over-warns
-/// rather than under-warns. Closing a note must never fail over a bookmark list.
-fn uncaptured_links(cfg: &Config, ctx: &Resolved, note: &Note) -> Vec<String> {
-    let stored = crate::links::read(cfg);
-    let pr = note.front.pr.as_ref().map(Scalar::display);
-    let wi = note.front.work_item.as_ref().map(Scalar::display);
-    crate::links::capturable(cfg, &ctx.repo, pr.as_deref(), wi.as_deref())
-        .into_iter()
-        .map(|c| c.url)
-        .filter(|url| !stored.iter().any(|l| &l.url == url))
-        .collect()
 }
 
 /// Default achievement line when none is given: the note's Goal, suffixed with its PR when

@@ -103,17 +103,17 @@ JobConfig {
 --- link tags
 (
     [
-        "icm",
-        "docs",
-        "domains",
-        "dri",
-        "telemetry",
-        "security",
+        "work",
+        "operations",
+        "access",
         "permissions",
-        "repos",
-        "pipelines",
-        "incidents",
-        "learning",
+        "knowledge",
+        "code",
+        "people",
+        "work-categories",
+        "dri",
+        "dashboards",
+        "kusto",
     ],
     Default,
 )

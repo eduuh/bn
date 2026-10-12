@@ -27,19 +27,19 @@ use serde::{Deserialize, Serialize};
 ///
 /// Absent and empty mean different things: a machine whose config predates the setting should
 /// still get a working vocabulary, while an explicit `tags = []` is someone saying they want
-/// none. Kept short on purpose — six tags you use beat twenty you don't.
+/// none. These are broad categories; narrower topics remain optional tags.
 pub const DEFAULT_TAGS: [&str; 11] = [
-    "icm",
-    "docs",
-    "domains",
-    "dri",
-    "telemetry",
-    "security",
+    "work",
+    "operations",
+    "access",
     "permissions",
-    "repos",
-    "pipelines",
-    "incidents",
-    "learning",
+    "knowledge",
+    "code",
+    "people",
+    "work-categories",
+    "dri",
+    "dashboards",
+    "kusto",
 ];
 
 /// Id prefix for stored links (`k1`, `k2`, …). `l` belongs to learnings.
@@ -91,6 +91,10 @@ struct LinksFront {
 pub enum LinkError {
     /// The URL is not an `http`/`https` URL.
     BadUrl(String),
+    /// The required category is not in the configured link vocabulary.
+    BadCategory(String, Vec<String>),
+    /// A retag would leave the link outside every configured category.
+    MissingCategory(Vec<String>),
     /// No stored link matched the id or name given.
     NotFound(String),
     /// The name or id matched more than one link; the candidates are carried for the message.
@@ -104,6 +108,14 @@ impl LinkError {
     pub fn message(&self) -> String {
         match self {
             Self::BadUrl(u) => format!("not an http(s) URL: {u}"),
+            Self::BadCategory(category, choices) => format!(
+                "unknown link category '{category}'; choose one of: {}",
+                choices.join(", ")
+            ),
+            Self::MissingCategory(choices) => format!(
+                "a link must keep a category; choose one of: {}",
+                choices.join(", ")
+            ),
             Self::NotFound(n) => format!("no link matches '{n}'"),
             Self::Ambiguous(c) => format!("'{}' matches {} links", c.join("', '"), c.len()),
             Self::Store(e) => format!("{e}"),
@@ -114,6 +126,8 @@ impl LinkError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::BadUrl(_) => "bad_url",
+            Self::BadCategory(_, _) => "bad_category",
+            Self::MissingCategory(_) => "missing_category",
             Self::NotFound(_) => "not_found",
             Self::Ambiguous(_) => "ambiguous",
             Self::Store(_) => "store",
@@ -133,14 +147,14 @@ pub fn read(cfg: &Config) -> Vec<Link> {
         return vec![];
     };
     crate::store::parse_frontmatter::<LinksFront>(&text)
-        .map(|f| f.items)
+        .map(|f| deduplicate(f.items))
         .unwrap_or_default()
 }
 
 /// Write the store, preserving insertion order.
 pub fn write(cfg: &Config, items: &[Link]) -> Result<(), StoreError> {
     let front = LinksFront {
-        items: items.to_vec(),
+        items: deduplicate(items.to_vec()),
     };
     let fm = serde_yaml::to_string(&front).map_err(|e| StoreError::Parse(e.to_string()))?;
     let text = format!("---\n{fm}---\n\n# Links\n");
@@ -152,11 +166,11 @@ pub fn write(cfg: &Config, items: &[Link]) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Add a link, or update the one that already holds this URL.
+/// Add a link, or update the one that already holds this page.
 ///
-/// Re-adding an existing URL is an update, never a duplicate: a link you save twice is a link
-/// you meant to correct. The existing `uses`/`last`/`created` survive, so re-tagging a link does
-/// not cost it its rank.
+/// URL fragments identify a location within a page, not a separate page, so they are removed
+/// before matching and storage. Re-adding an existing page is an update, never a duplicate. The
+/// existing `uses`/`last`/`created` survive, so re-tagging a link does not cost it its rank.
 pub fn add(
     cfg: &Config,
     url: &str,
@@ -166,9 +180,9 @@ pub fn add(
     branch: Option<&str>,
     today: &str,
 ) -> Result<Link, LinkError> {
-    let url = url.trim();
-    if !valid_url(url) {
-        return Err(LinkError::BadUrl(url.to_string()));
+    let url = canonical_url(url);
+    if !valid_url(&url) {
+        return Err(LinkError::BadUrl(url));
     }
     let _lock = crate::store::NoteLock::acquire(&cfg.links_file());
     let mut items = read(cfg);
@@ -199,8 +213,8 @@ pub fn add(
 
     let link = Link {
         id: crate::id::next_id_from_ids(items.iter().map(|l| l.id.as_str()), K_PREFIX),
-        url: url.to_string(),
-        name: name.unwrap_or_else(|| default_name(url)),
+        url: url.clone(),
+        name: name.unwrap_or_else(|| default_name(&url)),
         tags: tags.to_vec(),
         repo: repo.map(str::to_string),
         branch: branch.map(str::to_string),
@@ -213,6 +227,27 @@ pub fn add(
     items.push(link.clone());
     write(cfg, &items)?;
     Ok(link)
+}
+
+/// The stored identity of a page. Fragments only choose a location within that page.
+fn canonical_url(url: &str) -> String {
+    url.trim()
+        .split_once('#')
+        .map_or(url.trim(), |(page, _)| page)
+        .to_string()
+}
+
+/// Collapse legacy fragment variants while retaining the first record's id and metadata.
+fn deduplicate(items: Vec<Link>) -> Vec<Link> {
+    let mut out: Vec<Link> = Vec::with_capacity(items.len());
+    for mut item in items {
+        item.url = canonical_url(&item.url);
+        if out.iter().any(|existing| existing.url == item.url) {
+            continue;
+        }
+        out.push(item);
+    }
+    out
 }
 
 /// Remove the link matching `needle` (id or name, resolved as in [`resolve`]).
@@ -232,18 +267,33 @@ pub fn remove(cfg: &Config, needle: &str) -> Result<Link, LinkError> {
 /// Add and drop tags on one link without restating the rest — the way into and out of a group.
 /// Tags are lowercased; adding one it already has, or dropping one it lacks, is a no-op.
 pub fn retag(cfg: &Config, id: &str, add: &[String], drop: &[String]) -> Result<Link, LinkError> {
-    edit(cfg, id, |l| {
-        for t in drop {
-            let t = t.to_lowercase();
-            l.tags.retain(|x| *x != t);
+    let _lock = crate::store::NoteLock::acquire(&cfg.links_file());
+    let mut items = read(cfg);
+    let link = items
+        .iter_mut()
+        .find(|l| l.id == id)
+        .ok_or_else(|| LinkError::NotFound(id.to_string()))?;
+    for t in drop {
+        let t = t.to_lowercase();
+        link.tags.retain(|x| *x != t);
+    }
+    for t in add {
+        let t = t.to_lowercase();
+        if !link.tags.contains(&t) {
+            link.tags.push(t);
         }
-        for t in add {
-            let t = t.to_lowercase();
-            if !l.tags.contains(&t) {
-                l.tags.push(t);
-            }
-        }
-    })
+    }
+    let categories = crate::resolver::link_tags();
+    if !link.tags.iter().any(|tag| {
+        categories
+            .iter()
+            .any(|category| category.eq_ignore_ascii_case(tag))
+    }) {
+        return Err(LinkError::MissingCategory(categories));
+    }
+    let out = link.clone();
+    write(cfg, &items)?;
+    Ok(out)
 }
 
 /// Rename one link. A blank name is refused as not-found-shaped rather than stored.
@@ -552,6 +602,17 @@ pub fn split_tags(raw: &str, vocab: &[String]) -> (Vec<String>, Vec<String>) {
     (accepted, unknown)
 }
 
+/// Validate and normalize the broad category every curated link must carry.
+pub fn validate_category(raw: &str, vocab: &[String]) -> Result<String, LinkError> {
+    let category = raw.trim().to_lowercase();
+    let choices: Vec<String> = vocab.iter().map(|v| v.to_lowercase()).collect();
+    if choices.contains(&category) {
+        Ok(category)
+    } else {
+        Err(LinkError::BadCategory(category, choices))
+    }
+}
+
 /// One thing a branch note offers the link store, as an openable URL.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Capturable {
@@ -566,8 +627,7 @@ pub struct Capturable {
 /// is resolved through this repo's forge, so a work item is capturable rather than skipped.
 /// Anything that yields no URL is dropped — an absent link beats one that 404s.
 ///
-/// The single source of truth for "what does this note owe the store": `bn links capture` and
-/// `bn close`'s nudge both read it, so they cannot disagree about what is missing.
+/// The single source of truth for URLs offered by the explicit `bn links capture` command.
 pub fn capturable(
     cfg: &Config,
     repo: &str,
@@ -600,24 +660,21 @@ pub fn capturable(
         .collect()
 }
 
-/// Store a branch's PR and work item, named `<repo> <branch> <PR|work item>` and filed under the
-/// repo. Returns the links newly saved; a URL already in the store is left exactly as it is, so
-/// a name or tags you gave it by hand survive a later capture.
-///
-/// This is what [`crate::commands::close`] runs, so every way a worktree goes away — closing
-/// the note, `bn sync` seeing the PR merge, worktree cleanup — keeps its links first.
+/// Explicitly store a branch's PR and work item after the caller has chosen a category. Returns
+/// newly saved links; an existing URL and its hand-written metadata are left unchanged.
 pub fn capture(
     cfg: &Config,
     repo: &str,
     branch: &str,
     pr: Option<&str>,
     work_item: Option<&str>,
+    category: &str,
     today: &str,
 ) -> Result<Vec<Link>, LinkError> {
     let stored = read(cfg);
     let mut saved = Vec::new();
     for c in capturable(cfg, repo, pr, work_item) {
-        if stored.iter().any(|l| l.url == c.url) {
+        if stored.iter().any(|l| l.url == canonical_url(&c.url)) {
             continue;
         }
         let name = format!("{repo} {branch} {}", c.label);
@@ -625,7 +682,7 @@ pub fn capture(
             cfg,
             &c.url,
             Some(&name),
-            &[],
+            &[category.to_string()],
             Some(repo),
             Some(branch),
             today,
@@ -738,7 +795,7 @@ pub fn harvest(
     let vocab = crate::resolver::link_tags();
     let mut saved = Vec::new();
     for url in urls {
-        if stored.iter().any(|l| &l.url == url) {
+        if stored.iter().any(|l| l.url == canonical_url(url)) {
             continue;
         }
         let tags = guess_tags(url, &vocab);

@@ -58,8 +58,7 @@ fn copilot_controller_hook_config() -> serde_json::Value {
 }
 
 /// Copilot's tmux activity hooks: working on a prompt, waiting on a permission or a notification,
-/// done when the agent stops — and, on stop, `links harvest` saves the PRs and work items the
-/// turn mentioned, as the Claude Stop hook does.
+/// and done when the agent stops.
 fn copilot_tmux_agent_hook_config() -> serde_json::Value {
     serde_json::json!({
         "version": 1,
@@ -67,35 +66,27 @@ fn copilot_tmux_agent_hook_config() -> serde_json::Value {
             "userPromptSubmitted": [tmux_agent_hook_entry("working")],
             "permissionRequest": [tmux_agent_hook_entry("waiting")],
             "notification": [tmux_agent_hook_entry("waiting")],
-            "agentStop": [tmux_agent_hook_entry("done"), hook_entry("links harvest", 10)],
+            "agentStop": [tmux_agent_hook_entry("done")],
         },
     })
 }
 
 /// The hooks a Claude launch carries in `--settings`: the tmux activity badge when it runs inside
-/// tmux, the turn-end guard when it is a controller, `links harvest` on Stop unless
-/// `BN_LINK_HARVEST=0`, and — unless `BN_COMPACT_HOOKS=0` — the
+/// tmux, the turn-end guard when it is a controller, and — unless `BN_COMPACT_HOOKS=0` — the
 /// compaction pair: `compact prep` before a compaction and `compact audit` when the session comes
 /// back from one. `None` when there are none. Claude merges these with the user's own settings
 /// files, so hooks someone already wired by hand keep running.
 fn claude_launch_settings(controller: bool, tmux: bool) -> Option<String> {
     let compact = compact_hooks_on(std::env::var("BN_COMPACT_HOOKS").ok().as_deref());
-    let harvest = compact_hooks_on(std::env::var("BN_LINK_HARVEST").ok().as_deref());
-    claude_launch_settings_with(controller, tmux, compact, harvest)
+    claude_launch_settings_with(controller, tmux, compact)
 }
 
-/// The compaction and link-harvest hooks are on by default; only `BN_COMPACT_HOOKS=0` /
-/// `BN_LINK_HARVEST=0` turns each off.
+/// Compaction hooks are on by default; only `BN_COMPACT_HOOKS=0` turns them off.
 fn compact_hooks_on(env: Option<&str>) -> bool {
     env != Some("0")
 }
 
-fn claude_launch_settings_with(
-    controller: bool,
-    tmux: bool,
-    compact: bool,
-    harvest: bool,
-) -> Option<String> {
+fn claude_launch_settings_with(controller: bool, tmux: bool, compact: bool) -> Option<String> {
     let mut hooks = serde_json::Map::new();
     if compact {
         // A hook that stalls blocks the compaction, so both are short and neither touches the
@@ -126,11 +117,6 @@ fn claude_launch_settings_with(
     }
     if controller {
         stop.push(controller_hook_entry());
-    }
-    if harvest {
-        // Saves the PRs and work items the turn mentioned to `bn links`. Local file reads
-        // only, and it swallows every failure, so it cannot stall or fail a turn.
-        stop.push(hook_entry("links harvest", 10));
     }
     if !stop.is_empty() {
         hooks.insert("Stop".to_string(), serde_json::json!([{ "hooks": stop }]));
@@ -232,14 +218,14 @@ mod tests {
 
     #[test]
     fn a_plain_launch_outside_tmux_without_compact_hooks_passes_no_settings() {
-        assert_eq!(claude_launch_settings_with(false, false, false, false), None);
+        assert_eq!(claude_launch_settings_with(false, false, false), None);
     }
 
     /// Every launch brackets a compaction: prep before it, the audit when the session comes back,
     /// and the env marker that keeps the repo's own SessionStart hook from printing it twice.
     #[test]
     fn a_launch_carries_the_compaction_pair() {
-        let settings = claude_launch_settings_with(false, false, true, false).expect("compact hooks");
+        let settings = claude_launch_settings_with(false, false, true).expect("compact hooks");
         assert_eq!(events(&settings), ["PreCompact", "SessionStart"]);
         let parsed: serde_json::Value = serde_json::from_str(&settings).expect("JSON");
         assert_eq!(parsed["hooks"]["SessionStart"][0]["matcher"], "compact");
@@ -262,17 +248,17 @@ mod tests {
     /// the compaction pair plus the env marker the repo's memory hook reads.
     #[test]
     fn a_default_launch_carries_the_compaction_pair_and_env_marker() {
-        let settings = claude_launch_settings_with(false, false, compact_hooks_on(None), false)
+        let settings = claude_launch_settings_with(false, false, compact_hooks_on(None))
             .expect("compact hooks are on by default");
         let parsed: serde_json::Value = serde_json::from_str(&settings).unwrap();
         assert_eq!(parsed["env"]["BN_COMPACT_HOOKS"], "1");
         assert_eq!(events(&settings), vec!["PreCompact", "SessionStart"]);
-        assert!(claude_launch_settings_with(false, false, compact_hooks_on(Some("0")), false).is_none());
+        assert!(claude_launch_settings_with(false, false, compact_hooks_on(Some("0"))).is_none());
     }
 
     #[test]
     fn a_launch_inside_tmux_carries_the_activity_hooks() {
-        let settings = claude_launch_settings_with(false, true, false, false).expect("tmux hooks");
+        let settings = claude_launch_settings_with(false, true, false).expect("tmux hooks");
         assert_eq!(
             events(&settings),
             ["Notification", "Stop", "UserPromptSubmit"]
@@ -282,18 +268,10 @@ mod tests {
         assert!(!settings.contains("turn-end-guard"), "{settings}");
     }
 
-    /// Every default launch saves the links a turn mentioned; `BN_LINK_HARVEST=0` opts out.
-    #[test]
-    fn a_launch_harvests_links_on_stop() {
-        let settings = claude_launch_settings_with(false, false, false, true).expect("harvest hook");
-        assert_eq!(events(&settings), ["Stop"]);
-        assert!(settings.contains("links harvest"), "{settings}");
-    }
-
     /// A controller inside tmux keeps its turn-end guard beside the badge: one Stop list, both.
     #[test]
     fn a_controller_keeps_its_turn_end_guard_beside_the_badge() {
-        let settings = claude_launch_settings_with(true, true, false, false).expect("hooks");
+        let settings = claude_launch_settings_with(true, true, false).expect("hooks");
         let parsed: serde_json::Value = serde_json::from_str(&settings).expect("JSON");
         let stop = parsed["hooks"]["Stop"][0]["hooks"]
             .as_array()
@@ -319,6 +297,6 @@ mod tests {
         for event in ["userPromptSubmitted", "permissionRequest", "notification", "agentStop"] {
             assert!(written.contains(event), "{event} missing: {written}");
         }
-        assert!(written.contains("links harvest"), "{written}");
+        assert!(!written.contains("links harvest"), "{written}");
     }
 }

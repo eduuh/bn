@@ -69,6 +69,23 @@ fn a_group_sits_just_above_its_best_ranked_member() {
 }
 
 #[test]
+fn a_scoped_group_picker_contains_only_individual_links() {
+    let mut a = link("a", "https://a");
+    a.id = "k1".into();
+    a.tags = vec!["dashboards".into()];
+    let mut b = link("b", "https://b");
+    b.id = "k2".into();
+    b.tags = vec!["dashboards".into()];
+    let items = [a, b];
+    let ranked: Vec<&Link> = items.iter().collect();
+    let keys: Vec<String> = picker_rows(&ranked, false)
+        .iter()
+        .map(|row| row.rsplit(TAB).next().unwrap().to_string())
+        .collect();
+    assert_eq!(keys, ["k1", "k2"]);
+}
+
+#[test]
 fn only_what_was_said_is_harvested_never_tool_output() {
     let jsonl = [
         r#"{"type":"user","message":{"content":"look at https://github.com/o/r/pull/1"}}"#,

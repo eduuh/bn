@@ -775,13 +775,12 @@ pub(crate) enum CmdMisc {
         #[command(subcommand)]
         action: IssueCmd,
     },
-    /// Links worth going back to: a PR, a work item, a portal blade, a docs site, a dashboard.
+    /// A curated index of important, repeatedly useful links.
     /// Bare `bn links` opens the fzf picker (this repo's links first, then most used); `bn links
-    /// <query>` opens the one match. `add` stores one, `capture` the note's PR and work item, `copy`
-    /// puts one on the clipboard as a Teams-ready hyperlink. Agent sessions save the PRs they
-    /// mention, marked `•new` until `bn links new`; `check` reports dead and merged links, and
-    /// `prune` deletes the ones whose `--ttl` ran out. In the picker ctrl-y copies and tab selects
-    /// several. Stored cross-machine as `<work_root>/links.md`, synced with your notes.
+    /// <query>` opens the one match. `add` requires a category; `group` opens a category-scoped
+    /// multi-select picker; `copy` puts selections on the clipboard as Teams-ready hyperlinks.
+    /// `check` reports dead and merged links, and `prune` deletes expired ones. Nothing is captured
+    /// automatically. Stored cross-machine as `<work_root>/links.md`, synced with your notes.
     #[command(args_conflicts_with_subcommands = true)]
     Links(LinksArgs),
     /// Reusable **reference** docs, in two scopes. Without `--repo` (#623): per-topic coding
