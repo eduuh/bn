@@ -162,7 +162,9 @@ jobs:
         run: sh scripts/check-prompt-sources.sh
 
       - name: Command heartbeat regression
-        run: python3 scripts/test-command-heartbeat.py
+        run: |
+          python3 scripts/test-command-heartbeat.py
+          python3 scripts/test-command-runs.py
 
       - name: Installer toolchain discovery
         run: bash scripts/check-install-toolchain.sh

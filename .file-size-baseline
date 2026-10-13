@@ -20,7 +20,7 @@
 # ledger of that work, and it should only ever get shorter:
 #
 #   scripts/check-file-size.sh --update
-1516	crates/bn-cli/src/cli.rs
+1515	crates/bn-cli/src/cli.rs
 1692	crates/bn-cli/src/cmd/agent.rs
 1083	crates/bn-cli/src/cmd/attn.rs
 1534	crates/bn-cli/src/cmd/dispatch.rs
@@ -29,6 +29,5 @@
 1082	crates/bn-cli/src/wt/merge.rs
 1976	crates/bn-cli/src/wt_pool.rs
 1360	crates/bn-core/src/daily.rs
-1125	crates/bn-core/src/mcp_user.rs
 1045	crates/bn-core/src/orchestrate.rs
 1112	crates/bn-core/src/todo.rs

@@ -36,14 +36,7 @@ pub(crate) fn emit_links(
     let fills = parse_fills(&fill, json);
     let span = parse_when(when.as_deref(), json);
     match action {
-        Some(LinksCmd::Add {
-            url,
-            category,
-            name,
-            tags,
-            repo,
-            ttl,
-        }) => add_link(cfg, &url, &category, name, tags, repo, ttl, json),
+        Some(LinksCmd::Add(args)) => add_link(cfg, args, json),
         Some(LinksCmd::Prune) => prune(cfg, json),
         Some(LinksCmd::Check { tag }) => check::check_links(cfg, tag, json),
         Some(LinksCmd::Tag { needle, changes }) => tag_link(cfg, &needle, &changes, json),
@@ -97,24 +90,28 @@ fn current_repo(cfg: &Config) -> Option<String> {
 }
 
 /// `bn links add <url>` — store or update one link.
-fn add_link(
-    cfg: &Config,
-    url: &str,
-    category: &str,
-    name: Option<String>,
-    tags: Option<String>,
-    repo: Option<String>,
-    ttl: Option<String>,
-    json: bool,
-) {
+fn add_link(cfg: &Config, args: LinksAddArgs, json: bool) {
+    let LinksAddArgs {
+        url,
+        category,
+        name,
+        tags,
+        repo,
+        ttl,
+    } = args;
     // Checked before anything is stored, so a typo in --ttl never leaves a link without one.
     let ttl_days = ttl.as_deref().map(|raw| {
         links::parse_ttl(raw).unwrap_or_else(|| {
-            fail_json(json, "links", "usage", &format!("--ttl wants 7d, 2w or a day count, got '{raw}'"))
+            fail_json(
+                json,
+                "links",
+                "usage",
+                &format!("--ttl wants 7d, 2w or a day count, got '{raw}'"),
+            )
         })
     });
     let vocab = resolver::link_tags();
-    let category = links::validate_category(category, &vocab)
+    let category = links::validate_category(&category, &vocab)
         .unwrap_or_else(|e| fail_json(json, "links", e.code(), &e.message()));
     let (mut tags, unknown) = match tags.as_deref() {
         Some(raw) => links::split_tags(raw, &vocab),
@@ -140,7 +137,7 @@ fn add_link(
     };
     match links::add(
         cfg,
-        url,
+        &url,
         name.as_deref(),
         &tags,
         repo.as_deref(),

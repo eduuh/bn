@@ -325,21 +325,20 @@ fn main() {
         std::env::set_var("BN_EDUUHEXPERIMENT", "1");
     }
     if cli.path {
-        let ctx = resolve_or_exit(&cfg);
-        println!("{}", cfg.note_dir(&ctx).display());
+        emit_note_dir(&cfg, cli.json);
         return;
     }
     if cli.state_dir {
-        println!("{}", resolver::state_dir().display());
+        emit_state_dir(cli.json);
         return;
     }
     if cli.cat {
-        let ctx = resolve_or_exit(&cfg);
-        emit_cat(&cfg, &ctx);
+        let ctx = resolve_or_fail_json(&cfg, cli.json, "cat");
+        emit_cat(&cfg, &ctx, cli.json);
         return;
     }
     if cli.edit {
-        let ctx = resolve_or_exit(&cfg);
+        let ctx = resolve_or_fail_json(&cfg, cli.json, "edit");
         let dir =
             commands::ensure_note(&cfg, &ctx, &today()).unwrap_or_else(|e| fail(&e.message()));
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nvim".into());
@@ -352,6 +351,37 @@ fn main() {
     match cli.command {
         Some(command) => route_command(&cfg, command, cli.json),
         None => route_default(&cfg, cli.json),
+    }
+}
+
+fn emit_note_dir(cfg: &Config, json: bool) {
+    let ctx = resolve_or_fail_json(cfg, json, "path");
+    let dir = cfg.note_dir(&ctx);
+    if json {
+        json_ok("path", path_json_data(&dir));
+    } else {
+        println!("{}", dir.display());
+    }
+}
+
+fn emit_state_dir(json: bool) {
+    let dir = resolver::state_dir();
+    if json {
+        json_ok("state-dir", path_json_data(&dir));
+    } else {
+        println!("{}", dir.display());
+    }
+}
+
+fn path_json_data(path: &std::path::Path) -> serde_json::Value {
+    serde_json::json!({ "path": path.display().to_string() })
+}
+
+fn resolve_or_fail_json(cfg: &Config, json: bool, command: &str) -> Resolved {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    match resolver::resolve(cfg, &cwd) {
+        Ok(ctx) => ctx,
+        Err(_) => fail_json(json, command, "not_in_git_repo", "Not in a git repo"),
     }
 }
 
@@ -497,14 +527,32 @@ mod prompt_command_tests {
             .expect("build run should pass trailing args through");
         match cli.command {
             Some(crate::Command::Misc(crate::CmdMisc::Build {
+                json,
                 name,
                 repo,
                 branch,
                 argv,
             })) => {
+                assert!(!json);
                 assert_eq!(name.as_deref(), Some("run"));
                 assert_eq!(repo, None);
                 assert_eq!(branch, None);
+                assert_eq!(argv, vec!["tat", "--help"]);
+            }
+            other => panic!("expected build command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_command_accepts_wrapper_json_without_forwarding_it() {
+        let cli = crate::Cli::try_parse_from(["bn", "build", "--json", "run", "tat", "--help"])
+            .expect("build should accept wrapper --json");
+        match cli.command {
+            Some(crate::Command::Misc(crate::CmdMisc::Build {
+                json, name, argv, ..
+            })) => {
+                assert!(json);
+                assert_eq!(name.as_deref(), Some("run"));
                 assert_eq!(argv, vec!["tat", "--help"]);
             }
             other => panic!("expected build command, got {other:?}"),

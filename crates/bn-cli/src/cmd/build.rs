@@ -16,47 +16,93 @@ pub(crate) fn run_build_cmd(
     repo: Option<String>,
     branch: Option<String>,
     argv: &[String],
+    json: bool,
 ) -> i32 {
     let cwd = std::env::current_dir().unwrap_or_default();
     let ctx = match resolver::resolve_target(cfg, &cwd, repo, branch) {
         Ok(ctx) => ctx,
         Err(resolver::ContextError::PartialTarget) => {
-            eprintln!("bn build: --branch needs --repo");
-            return 2;
+            return build_failure(json, "bad_target", "bn build: --branch needs --repo", 2);
         }
         Err(resolver::ContextError::NotInGitRepo) => {
-            eprintln!("bn build: not in a git repo (on a detached HEAD? pass --repo/--branch)");
-            return 2;
+            return build_failure(
+                json,
+                "not_in_git_repo",
+                "bn build: not in a git repo (on a detached HEAD? pass --repo/--branch)",
+                2,
+            );
         }
     };
     let job = name.as_deref().unwrap_or("build");
     let Some((_scope, script)) = resolver::job_script(cfg, Some(&ctx), job) else {
         let repo_dir = cfg.notes_dir_for(&ctx.repo).join("jobs").join(&ctx.repo);
-        eprintln!(
-            "bn build: no '{job}' script for {} — create {}/{job}.sh (synced to every machine \
-             through the notes repo), or, to commit it with the project's own git history, \
-             {}/.bn/jobs/{job}.sh",
-            ctx.repo,
-            repo_dir.display(),
-            cwd.display()
+        return build_failure(
+            json,
+            "missing_job",
+            &format!(
+                "bn build: no '{job}' script for {} — create {}/{job}.sh (synced to every \
+                 machine through the notes repo), or, to commit it with the project's own git \
+                 history, {}/.bn/jobs/{job}.sh",
+                ctx.repo,
+                repo_dir.display(),
+                cwd.display()
+            ),
+            2,
         );
-        return 2;
     };
     // The cron runner's PATH, so tools the script shells out to (yarn, gh, `bn` itself) resolve
     // under a non-login shell.
-    match std::process::Command::new("/bin/sh")
-        .arg(&script)
+    let mut cmd = std::process::Command::new("/bin/sh");
+    cmd.arg(&script)
         .args(argv)
         .current_dir(&cwd)
-        .env("PATH", crate::cmd::cron::job_path())
-        .status()
-    {
-        Ok(s) => s.code().unwrap_or(1),
-        Err(e) => {
-            eprintln!("bn build: failed to run {}: {e}", script.display());
-            127
-        }
+        .env("PATH", crate::cmd::cron::job_path());
+    if !json {
+        return match cmd.status() {
+            Ok(status) => status.code().unwrap_or(1),
+            Err(e) => build_failure(
+                false,
+                "io",
+                &format!("bn build: failed to run {}: {e}", script.display()),
+                127,
+            ),
+        };
     }
+    match cmd.output() {
+        Ok(output) => {
+            relay_build_output_to_stderr(&output.stdout, &output.stderr);
+            let code = output.status.code().unwrap_or(1);
+            println!(
+                "{}",
+                Envelope::success("build", serde_json::json!({ "job": job, "code": code }))
+                    .to_json()
+            );
+            code
+        }
+        Err(e) => build_failure(
+            true,
+            "io",
+            &format!("bn build: failed to run {}: {e}", script.display()),
+            127,
+        ),
+    }
+}
+
+fn build_failure(json: bool, code: &str, msg: &str, exit: i32) -> i32 {
+    if json {
+        println!("{}", Envelope::failure("build", code, msg).to_json());
+    } else {
+        eprintln!("{msg}");
+    }
+    exit
+}
+
+fn relay_build_output_to_stderr(stdout: &[u8], stderr: &[u8]) {
+    use std::io::Write;
+
+    let mut out = std::io::stderr();
+    let _ = out.write_all(stdout);
+    let _ = out.write_all(stderr);
 }
 
 /// Explicit `--repo`/`--branch` win (for cron); otherwise resolve from the current dir.

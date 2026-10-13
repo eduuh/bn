@@ -31,26 +31,7 @@ pub(crate) enum LinksCmd {
     /// Store one important, repeatedly useful link after checking its category for an existing
     /// answer. The category is required; optional topic tags refine it. Re-adding the same page
     /// updates it in place. Nothing is fetched.
-    Add {
-        url: String,
-        /// Broad category this link fills. Must be in `bn links tags`.
-        #[arg(long)]
-        category: String,
-        /// What to call it in the picker. Defaults to host + last path segment.
-        #[arg(long)]
-        name: Option<String>,
-        /// Comma-separated tags. See `bn links tags` for the configured vocabulary.
-        #[arg(long)]
-        tags: Option<String>,
-        /// Repository this link belongs to — its links sort first when you are in that repo.
-        /// Defaults to the repo you are standing in; `--repo ""` stores it repo-agnostic.
-        #[arg(long)]
-        repo: Option<String>,
-        /// Hide the link from every listing after this long: `7d`, `2w`, or bare days. For
-        /// incident bridges and one-off meeting links. `bn links prune` deletes expired ones.
-        #[arg(long)]
-        ttl: Option<String>,
-    },
+    Add(LinksAddArgs),
     /// Copy links to the clipboard as hyperlinks, ready to paste into Teams or Outlook: the name
     /// shows, the URL is behind it. A paste into plain text gets `name url` instead. Several
     /// links copy as a bulleted list.
@@ -130,4 +111,26 @@ pub(crate) enum LinksCmd {
     },
     /// Open the store in `$EDITOR`. Fixing a name by hand is a supported workflow.
     Edit,
+}
+
+#[derive(clap::Args, Debug)]
+pub(crate) struct LinksAddArgs {
+    pub(crate) url: String,
+    /// Broad category this link fills. Must be in `bn links tags`.
+    #[arg(long)]
+    pub(crate) category: String,
+    /// What to call it in the picker. Defaults to host + last path segment.
+    #[arg(long)]
+    pub(crate) name: Option<String>,
+    /// Comma-separated tags. See `bn links tags` for the configured vocabulary.
+    #[arg(long)]
+    pub(crate) tags: Option<String>,
+    /// Repository this link belongs to — its links sort first when you are in that repo.
+    /// Defaults to the repo you are standing in; `--repo ""` stores it repo-agnostic.
+    #[arg(long)]
+    pub(crate) repo: Option<String>,
+    /// Hide the link from every listing after this long: `7d`, `2w`, or bare days. For
+    /// incident bridges and one-off meeting links. `bn links prune` deletes expired ones.
+    #[arg(long)]
+    pub(crate) ttl: Option<String>,
 }

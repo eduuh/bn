@@ -124,11 +124,15 @@ fn every_listed_command_has_a_resolvable_entry() -> anyhow::Result<()> {
 fn documented_shapes_match_what_the_commands_emit() -> anyhow::Result<()> {
     let sb = Sandbox::new()?;
     sb.bn(["goal", "a sandbox goal"])?.expect_success()?;
+    let jobs = sb.path("home/.bn/config/jobs");
+    std::fs::create_dir_all(&jobs)?;
+    std::fs::write(jobs.join("test.sh"), "exit 0\n")?;
 
     for (tag, argv) in [
         ("goal", vec!["goal"]),
         ("repos", vec!["repos", "list"]),
         ("findings-sources", vec!["findings", "sources"]),
+        ("verify", vec!["verify", "--dry-run"]),
     ] {
         let mut args = argv.clone();
         args.push("--json");
@@ -148,5 +152,36 @@ fn documented_shapes_match_what_the_commands_emit() -> anyhow::Result<()> {
             );
         }
     }
+    Ok(())
+}
+
+/// `bn build` advertises `--json`, even though its payload is not part of the published schema
+/// registry. Guard the real CLI contract anyway: the wrapper must emit a clean envelope on stdout
+/// and relay the job's own output to stderr so callers can both parse and diagnose one run.
+#[test]
+#[ignore = "e2e: needs a built bn binary (cargo build --workspace)"]
+fn build_json_emits_an_envelope_and_relays_job_output() -> anyhow::Result<()> {
+    let sb = Sandbox::new()?;
+    let jobs = sb.repo().join(".bn/jobs");
+    std::fs::create_dir_all(&jobs)?;
+    std::fs::write(
+        jobs.join("build.sh"),
+        "#!/bin/sh\nprintf 'build-stdout\\n'\nprintf 'build-stderr\\n' >&2\nexit 0\n",
+    )?;
+
+    let run = sb.bn(["build", "--json"])?;
+    run.expect_success()?;
+
+    let v: Value = serde_json::from_str(&run.stdout)?;
+    assert_eq!(
+        v["v"].as_u64(),
+        Some(u64::from(bn_core::render::ENVELOPE_VERSION))
+    );
+    assert_eq!(v["ok"].as_bool(), Some(true), "{}", run.stdout);
+    assert_eq!(v["command"].as_str(), Some("build"));
+    assert_eq!(v["data"]["job"].as_str(), Some("build"));
+    assert_eq!(v["data"]["code"].as_i64(), Some(0));
+    assert!(run.stderr.contains("build-stdout"), "{}", run.stderr);
+    assert!(run.stderr.contains("build-stderr"), "{}", run.stderr);
     Ok(())
 }

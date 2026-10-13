@@ -145,11 +145,12 @@ machine picks them up on install.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `command` | required | The executable to spawn. `~` and `$HOME` are expanded. |
+| `command` | local servers | The executable to spawn. `~` and `$HOME` are expanded. |
+| `url` | — | An HTTPS Streamable HTTP endpoint. Use this instead of `command`; supported for Claude Code and Copilot CLI. |
 | `args` | `[]` | Arguments, each `~`/`$HOME`-expanded. |
 | `env` | `{}` | Extra environment for the server process. Configuration only — never credentials. |
 | `tools` | `["*"]` | The Copilot CLI tool allow-list. Other clients ignore it. |
-| `clients` | all | Restrict to `claude-code`, `claude-desktop`, `vscode`, `copilot-cli`. |
+| `clients` | local: all; remote: Claude Code and Copilot CLI | Restrict to supported client ids. Remote HTTP servers accept `claude-code` and `copilot-cli`. |
 
 Paths are expanded at write time because clients spawn servers with no shell in between, so a
 literal `~` would never resolve — and because expanding late is what lets one declaration serve a
@@ -162,6 +163,8 @@ mis-expansion: sync refuses it and names the fix.
 
 Unlike `extras`, sync **overwrites** the entry under each declared name: this file is the source of
 truth, and an edit here is meant to reach every machine. Servers bn does not declare are untouched.
+Remote HTTP entries cannot use `args`, `env`, or `secret_file`, and custom HTTP headers are not
+supported yet. The synced Context7 example therefore uses its unauthenticated endpoint.
 
 #### `[mcp.servers.<name>.secret_file]`
 
@@ -190,7 +193,14 @@ args = [
 path = "~/.copilot/servers/forge-oauth-client.json"
 fields = ["client_id", "client_secret"]
 hidden = ["client_secret"]
+
+[mcp.servers.context7]
+url = "https://mcp.context7.com/mcp"
+clients = ["claude-code", "copilot-cli"]
 ```
+
+Context7's remote MCP endpoint can be registered without an API key; follow Context7's current
+account guidance if you need higher rate limits.
 
 ### `[managed_repos]`
 
@@ -272,6 +282,18 @@ inherits from the wider layer.
 | `verify` | bn's build, test and lint jobs | The repository's own verify command. |
 | `requires` | `[]` | Node capabilities a target must have. |
 | `excludes` | `[]` | Node capabilities that rule a target out. |
+
+Use `bn verify --dry-run` to inspect the gate before running it. Resolution matches normal
+verification: `--job <name>` selects a job script, otherwise `verify` selects the configured
+shell command, otherwise all available build, test and lint jobs run in that order.
+The preview shows the actual working directory and resolved command or script paths; it does
+not execute checks, take a build slot, or record note progress or proof. A missing gate or
+explicit job still fails. `--dry-run` cannot be combined with `--for`, and is not a `bn gate` flag.
+
+`bn verify --dry-run --json` returns `data.dry_run: true`, `job`, `cwd`, and ordered `steps`.
+Each step has `kind` and `label`, plus `command` for configured commands or `path` for scripts.
+It deliberately omits `pass`, `code`, and `proof`: a successful preview is not a passing
+verification run. `bn schema verify` documents both output forms.
 
 ### `[orchestrate]`
 

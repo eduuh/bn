@@ -34,7 +34,7 @@ pub(crate) use on_cmd::OnCmd;
 mod control_cmd;
 pub(crate) use control_cmd::ControlCmd;
 mod verify_args;
-pub(crate) use verify_args::VerifyArgs;
+pub(crate) use verify_args::{VerifyArgs, VerifyCommandArgs};
 pub(crate) mod coord_group;
 pub(crate) use coord_group::{CmdCoord, CompactCmd, ContextCmd, ProofCmd, WatchdogCmd};
 mod issue_kind;
@@ -265,7 +265,7 @@ pub(crate) enum CmdIntake {
     /// Run this worktree's verification gate (all available `build`, `test`, and `lint` jobs) and record the
     /// PASS/FAIL to the branch note's Progress. Exits non-zero on failure, so an agent can gate
     /// "done" on it (see `bn dispatch --verify`). Runs in the current worktree, like `bn build`.
-    Verify(VerifyArgs),
+    Verify(VerifyCommandArgs),
     /// The no-mistake pre-land gate: rebase this worktree's HEAD onto a freshly-fetched
     /// `origin/main` in a *disposable* worktree, then run the repo's aggregate verify gate on THAT
     /// rebased head. Exits non-zero unless green, so an agent self-gates before
@@ -584,7 +584,7 @@ pub(crate) mod worker_cmd;
 pub(crate) use automation_cmd::CmdAutomation;
 pub(crate) use cron_cmd::CronCmd;
 pub(crate) use forge_app::ForgeAppCmd;
-pub(crate) use links_cmd::{LinksArgs, LinksCmd};
+pub(crate) use links_cmd::{LinksAddArgs, LinksArgs, LinksCmd};
 pub(crate) use machine_cmd::MachineCmd;
 pub(crate) use shell_ui_cmd::CmdShellUi;
 pub(crate) use staff_group::{CmdStaff, HandoffCmd};
@@ -733,13 +733,12 @@ pub(crate) enum CmdMisc {
         /// The new branch name.
         new_branch: String,
     },
-    /// Run a worktree's build script — `<note>/jobs/<name>.sh` resolved branch → repo → global
-    /// (`wt pool warm` warms each slot by invoking THIS command, and the cron resolves the same
-    /// way). Defaults to `build`. Runs in the current dir with `~/.local/bin:~/.bin` prepended to
-    /// PATH. `--repo`/`--branch` name the note to resolve from explicitly, for callers whose cwd
-    /// can't answer it — a detached pool slot, or a cron.
-    #[command(trailing_var_arg = true, allow_hyphen_values = true)]
+    /// Run a worktree's build script — `<note>/jobs/<name>.sh` resolved branch → repo → global,
+    /// with `build` as the default and `--repo`/`--branch` for callers whose cwd can't answer it.
     Build {
+        /// Emit a machine-readable JSON envelope instead of human text.
+        #[arg(long)]
+        json: bool,
         /// Script name (default `build` → `build.sh`).
         name: Option<String>,
         /// Resolve the script for this repo instead of the current dir (with `--branch`).
@@ -749,6 +748,7 @@ pub(crate) enum CmdMisc {
         #[arg(long)]
         branch: Option<String>,
         /// Extra arguments forwarded to the resolved script unchanged.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         argv: Vec<String>,
     },
     /// Unified token usage + **$ cost** across all agent work (#381), categorized by work-class

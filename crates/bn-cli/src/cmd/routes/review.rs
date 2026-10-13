@@ -212,7 +212,7 @@ pub(super) fn route(cfg: &Config, action: CmdReview, json: bool) {
         }
         CmdReview::Cat => {
             let ctx = resolve_or_exit(cfg);
-            emit_cat(cfg, &ctx);
+            emit_cat(cfg, &ctx, false);
         }
         CmdReview::Review { action } => match action {
             None | Some(ReviewCmd::List) => emit_review_list(json),

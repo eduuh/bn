@@ -35,7 +35,8 @@ use crate::mcp::WrittenFile;
 
 /// One user-scoped MCP server, as declared in `[mcp.servers.<name>]`.
 ///
-/// `command`/`args`/`env` describe how to spawn it; the remaining fields are optional policy.
+/// `command`/`args`/`env` describe a local server, while `url` describes a remote HTTP server.
+/// The remaining fields are optional policy.
 /// `deny_unknown_fields` turns a typo into a loud config error instead of a server that silently
 /// never appears — the failure mode is otherwise invisible until an agent asks for a missing tool.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
@@ -43,7 +44,11 @@ use crate::mcp::WrittenFile;
 pub struct UserServer {
     /// The executable to spawn. Tilde/`$HOME`-expanded, then PATH-checked (a miss is reported,
     /// not fatal — `npx`-style runners are often installed after the fact).
+    #[serde(default)]
     pub command: String,
+    /// Remote Streamable HTTP endpoint over TLS. Mutually exclusive with `command`; supported for
+    /// Claude Code and Copilot CLI.
+    pub url: Option<String>,
     /// Arguments, each tilde/`$HOME`-expanded.
     #[serde(default)]
     pub args: Vec<String>,
@@ -129,6 +134,16 @@ impl Client {
 
     /// Render one server entry in this client's shape.
     fn entry(self, s: &Resolved) -> Value {
+        if let Some(url) = &s.url {
+            return match self {
+                Client::CopilotCli => json!({
+                    "type": "http",
+                    "url": url,
+                    "tools": s.tools,
+                }),
+                _ => json!({ "type": "http", "url": url }),
+            };
+        }
         let mut v = match self {
             // Claude Desktop predates the `type` discriminator and rejects nothing, but the other
             // two stdio clients want it stated.
@@ -209,6 +224,7 @@ pub fn targets() -> Vec<(Client, PathBuf)> {
 struct Resolved {
     name: String,
     command: String,
+    url: Option<String>,
     args: Vec<String>,
     env: BTreeMap<String, String>,
     tools: Vec<String>,
@@ -262,7 +278,7 @@ fn check_expanded(name: &str, what: &str, value: &str) -> Result<(), String> {
 }
 
 fn resolve(name: &str, s: &UserServer) -> Result<Resolved, String> {
-    let clients = match &s.clients {
+    let mut clients = match &s.clients {
         None => None,
         Some(ids) => {
             let mut v = Vec::with_capacity(ids.len());
@@ -278,8 +294,37 @@ fn resolve(name: &str, s: &UserServer) -> Result<Resolved, String> {
             Some(v)
         }
     };
-    if s.command.trim().is_empty() {
-        return Err(format!("[mcp.servers.{name}] needs a non-empty `command`"));
+    let url = s.url.as_deref().map(str::trim).filter(|v| !v.is_empty());
+    if let Some(url) = url {
+        if !url.starts_with("https://") {
+            return Err(format!("[mcp.servers.{name}] `url` must use https://"));
+        }
+        if !s.command.trim().is_empty() {
+            return Err(format!(
+                "[mcp.servers.{name}] set either `url` or `command`, not both"
+            ));
+        }
+        if !s.args.is_empty() || !s.env.is_empty() || s.secret_file.is_some() {
+            return Err(format!(
+                "[mcp.servers.{name}] remote HTTP servers do not support `args`, `env`, or `secret_file`"
+            ));
+        }
+        let supported = [Client::ClaudeCode, Client::CopilotCli];
+        if clients
+            .as_ref()
+            .is_some_and(|requested| requested.iter().any(|client| !supported.contains(client)))
+        {
+            return Err(format!(
+                "[mcp.servers.{name}] remote HTTP servers support only `claude-code` and `copilot-cli`"
+            ));
+        }
+        if clients.is_none() {
+            clients = Some(supported.to_vec());
+        }
+    } else if s.command.trim().is_empty() {
+        return Err(format!(
+            "[mcp.servers.{name}] needs a non-empty `command` or `url`"
+        ));
     }
     let secret_file = match &s.secret_file {
         None => None,
@@ -299,8 +344,14 @@ fn resolve(name: &str, s: &UserServer) -> Result<Resolved, String> {
             Some((PathBuf::from(path), sf.clone()))
         }
     };
-    let command = expand(&s.command);
-    check_expanded(name, "`command`", &command)?;
+    let command = if url.is_some() {
+        String::new()
+    } else {
+        expand(&s.command)
+    };
+    if url.is_none() {
+        check_expanded(name, "`command`", &command)?;
+    }
     let mut args = Vec::with_capacity(s.args.len());
     for a in &s.args {
         let a = expand(a);
@@ -316,6 +367,7 @@ fn resolve(name: &str, s: &UserServer) -> Result<Resolved, String> {
     Ok(Resolved {
         name: name.to_string(),
         command,
+        url: url.map(str::to_string),
         args,
         env,
         tools: s.tools.clone().unwrap_or_else(|| vec!["*".to_string()]),
@@ -461,7 +513,8 @@ pub fn sync_to(
     let path_var = std::env::var("PATH").unwrap_or_default();
     let mut missing_commands: Vec<String> = Vec::new();
     for r in &resolved {
-        if !crate::mcp::command_on_path(&r.command, &path_var)
+        if r.url.is_none()
+            && !crate::mcp::command_on_path(&r.command, &path_var)
             && !missing_commands.contains(&r.command)
         {
             missing_commands.push(r.command.clone());
@@ -645,13 +698,75 @@ mod resolve_tests {
     //! Config is hand-edited and its failures are invisible at runtime: a mistyped client id or a
     //! malformed secret declaration would otherwise produce a server that never appears, with no
     //! message anywhere. Every one of these is therefore an error at sync time, not a shrug.
-    use super::{resolve, SecretFile, UserServer};
+    use super::{resolve, Client, SecretFile, UserServer};
 
     fn server(command: &str) -> UserServer {
         UserServer {
             command: command.to_string(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn an_http_server_can_be_declared_without_a_local_command() {
+        let server: UserServer = toml::from_str(
+            r#"
+url = "https://mcp.context7.com/mcp"
+clients = ["claude-code", "copilot-cli"]
+"#,
+        )
+        .unwrap();
+        let resolved = resolve("context7", &server).unwrap();
+
+        assert_eq!(
+            resolved.url.as_deref(),
+            Some("https://mcp.context7.com/mcp")
+        );
+        assert_eq!(
+            resolved.clients,
+            Some(vec![Client::ClaudeCode, Client::CopilotCli])
+        );
+    }
+
+    #[test]
+    fn an_http_server_rejects_invalid_transport_and_mixed_configuration() {
+        let invalid_url = UserServer {
+            url: Some("ftp://mcp.example.com".into()),
+            ..Default::default()
+        };
+        assert!(resolve("remote", &invalid_url)
+            .unwrap_err()
+            .contains("must use https://"));
+
+        let mixed = UserServer {
+            command: "npx".into(),
+            url: Some("https://mcp.example.com".into()),
+            ..Default::default()
+        };
+        assert!(resolve("remote", &mixed)
+            .unwrap_err()
+            .contains("set either `url` or `command`"));
+    }
+
+    #[test]
+    fn a_remote_server_rejects_unsupported_clients_and_local_process_options() {
+        let unsupported = UserServer {
+            url: Some("https://mcp.context7.com/mcp".into()),
+            clients: Some(vec!["vscode".into()]),
+            ..Default::default()
+        };
+        assert!(resolve("context7", &unsupported)
+            .unwrap_err()
+            .contains("only `claude-code` and `copilot-cli`"));
+
+        let with_args = UserServer {
+            url: Some("https://mcp.context7.com/mcp".into()),
+            args: vec!["--flag".into()],
+            ..Default::default()
+        };
+        assert!(resolve("context7", &with_args)
+            .unwrap_err()
+            .contains("do not support `args`"));
     }
 
     #[test]
@@ -790,6 +905,35 @@ mod entry_tests {
     }
 
     #[test]
+    fn remote_http_entries_use_each_cli_transport_shape() {
+        let r = resolve(
+            "context7",
+            &UserServer {
+                url: Some("https://mcp.context7.com/mcp".into()),
+                clients: Some(vec!["claude-code".into(), "copilot-cli".into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            Client::ClaudeCode.entry(&r),
+            serde_json::json!({
+                "type": "http",
+                "url": "https://mcp.context7.com/mcp"
+            })
+        );
+        assert_eq!(
+            Client::CopilotCli.entry(&r),
+            serde_json::json!({
+                "type": "http",
+                "url": "https://mcp.context7.com/mcp",
+                "tools": ["*"]
+            })
+        );
+    }
+
+    #[test]
     fn claude_desktop_takes_no_type_discriminator_but_the_stdio_clients_do() {
         let r = resolved();
         assert!(Client::ClaudeDesktop.entry(&r).get("type").is_none());
@@ -843,283 +987,4 @@ mod entry_tests {
 }
 
 #[cfg(test)]
-mod sync_tests {
-    //! Sync writes into files other tools own, so the guarantees that matter are about what it
-    //! does *not* touch, and about never registering a server that cannot start.
-    use super::{sync_to, Client, SecretFile, SecretPrompter, UserServer};
-    use std::collections::BTreeMap;
-    use std::path::{Path, PathBuf};
-
-    fn servers(pairs: Vec<(&str, UserServer)>) -> BTreeMap<String, UserServer> {
-        pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
-    }
-
-    fn forge() -> UserServer {
-        UserServer {
-            command: "npx".into(),
-            args: vec!["-y".into(), "mcp-remote".into()],
-            ..Default::default()
-        }
-    }
-
-    fn read(path: &Path) -> serde_json::Value {
-        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
-    }
-
-    /// Answers every prompt with a fixed value — the "operator typed it" case.
-    struct Always(&'static str);
-    impl SecretPrompter for Always {
-        fn ask(&mut self, _: &str, _: &Path, _: &str, _: bool) -> Option<String> {
-            Some(self.0.to_string())
-        }
-    }
-
-    /// Declines immediately — the "no TTY, or ctrl-D" case.
-    struct Never;
-    impl SecretPrompter for Never {
-        fn ask(&mut self, _: &str, _: &Path, _: &str, _: bool) -> Option<String> {
-            None
-        }
-    }
-
-    #[test]
-    fn a_missing_config_file_is_created_with_the_declared_server() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cfg = tmp.path().join("mcp-config.json");
-        let targets = [(Client::CopilotCli, cfg.clone())];
-
-        let report = sync_to(&targets, &servers(vec![("forge", forge())]), None).unwrap();
-
-        assert_eq!(report.files[0].action, "created");
-        assert_eq!(report.servers[0].action, "wired");
-        assert_eq!(report.servers[0].clients, vec!["copilot-cli"]);
-        assert_eq!(read(&cfg)["mcpServers"]["forge"]["command"], "npx");
-    }
-
-    #[test]
-    fn servers_bn_does_not_declare_and_keys_it_does_not_own_are_preserved() {
-        // The whole file belongs to the client, not to bn: install.sh's own `bn` entry and any
-        // hand-added server must survive a sync, or this command would quietly delete them.
-        let tmp = tempfile::tempdir().unwrap();
-        let cfg = tmp.path().join("mcp-config.json");
-        std::fs::write(
-            &cfg,
-            r#"{"mcpServers":{"bn":{"command":"bn"}},"theme":"dark"}"#,
-        )
-        .unwrap();
-
-        sync_to(
-            &[(Client::CopilotCli, cfg.clone())],
-            &servers(vec![("forge", forge())]),
-            None,
-        )
-        .unwrap();
-
-        let v = read(&cfg);
-        assert_eq!(v["mcpServers"]["bn"]["command"], "bn");
-        assert_eq!(v["theme"], "dark");
-        assert_eq!(v["mcpServers"]["forge"]["command"], "npx");
-    }
-
-    #[test]
-    fn a_declared_server_is_overwritten_because_config_toml_is_the_source_of_truth() {
-        // This is the deliberate difference from `mcp::merge_extras`, which never clobbers. Here
-        // an edit in the synced config.toml is *meant* to reach every machine.
-        let tmp = tempfile::tempdir().unwrap();
-        let cfg = tmp.path().join("mcp-config.json");
-        std::fs::write(&cfg, r#"{"mcpServers":{"forge":{"command":"stale"}}}"#).unwrap();
-
-        sync_to(
-            &[(Client::CopilotCli, cfg.clone())],
-            &servers(vec![("forge", forge())]),
-            None,
-        )
-        .unwrap();
-
-        assert_eq!(read(&cfg)["mcpServers"]["forge"]["command"], "npx");
-    }
-
-    #[test]
-    fn re_running_changes_nothing_so_install_sh_can_call_it_every_time() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cfg = tmp.path().join("mcp-config.json");
-        let targets = [(Client::CopilotCli, cfg)];
-        let decl = servers(vec![("forge", forge())]);
-
-        sync_to(&targets, &decl, None).unwrap();
-        let second = sync_to(&targets, &decl, None).unwrap();
-
-        assert_eq!(second.files[0].action, "unchanged");
-    }
-
-    #[test]
-    fn a_config_file_that_is_not_json_is_refused_rather_than_replaced() {
-        // VS Code's mcp.json may legally hold JSONC comments. Overwriting a hand-written config
-        // would be far worse than skipping it, so this is an error, never a clobber.
-        let tmp = tempfile::tempdir().unwrap();
-        let cfg = tmp.path().join("mcp.json");
-        std::fs::write(&cfg, "{ // a comment\n }").unwrap();
-
-        let err = sync_to(
-            &[(Client::VsCode, cfg.clone())],
-            &servers(vec![("forge", forge())]),
-            None,
-        )
-        .unwrap_err();
-
-        assert!(err.contains("not valid JSON"), "{err}");
-        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), "{ // a comment\n }");
-    }
-
-    #[test]
-    fn clients_narrows_which_configs_a_server_reaches() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cli = tmp.path().join("copilot.json");
-        let code = tmp.path().join("claude.json");
-        let only_cli = UserServer {
-            clients: Some(vec!["copilot-cli".into()]),
-            ..forge()
-        };
-
-        sync_to(
-            &[
-                (Client::CopilotCli, cli.clone()),
-                (Client::ClaudeCode, code.clone()),
-            ],
-            &servers(vec![("forge", only_cli)]),
-            None,
-        )
-        .unwrap();
-
-        assert!(cli.exists());
-        assert!(
-            !code.exists(),
-            "an excluded client must not even get a file"
-        );
-    }
-
-    #[test]
-    fn a_server_whose_secret_is_missing_is_not_registered_at_all() {
-        // The point of the gate: a client that spawns a server with no credential shows a
-        // permanently failing server, which is worse and harder to diagnose than an absent one.
-        let tmp = tempfile::tempdir().unwrap();
-        let cfg = tmp.path().join("mcp-config.json");
-        let secret = tmp.path().join("nested/creds.json");
-        let s = UserServer {
-            secret_file: Some(SecretFile {
-                path: secret.to_string_lossy().to_string(),
-                fields: vec!["client_id".into(), "client_secret".into()],
-                hidden: vec!["client_secret".into()],
-            }),
-            ..forge()
-        };
-
-        let report = sync_to(
-            &[(Client::CopilotCli, cfg.clone())],
-            &servers(vec![("forge", s)]),
-            Some(&mut Never),
-        )
-        .unwrap();
-
-        assert_eq!(report.servers[0].action, "skipped-no-secret");
-        assert_eq!(report.secrets[0].action, "missing");
-        assert!(
-            !secret.exists(),
-            "a declined prompt must leave no partial credential"
-        );
-        assert!(!cfg.exists());
-    }
-
-    #[test]
-    fn answering_the_prompt_provisions_the_file_and_registers_the_server() {
-        let tmp = tempfile::tempdir().unwrap();
-        let cfg = tmp.path().join("mcp-config.json");
-        let secret = tmp.path().join("nested/creds.json");
-        let s = UserServer {
-            secret_file: Some(SecretFile {
-                path: secret.to_string_lossy().to_string(),
-                fields: vec!["client_id".into(), "client_secret".into()],
-                hidden: vec!["client_secret".into()],
-            }),
-            ..forge()
-        };
-
-        let report = sync_to(
-            &[(Client::CopilotCli, cfg)],
-            &servers(vec![("forge", s)]),
-            Some(&mut Always("v")),
-        )
-        .unwrap();
-
-        assert_eq!(report.secrets[0].action, "created");
-        assert_eq!(report.servers[0].action, "wired");
-        let creds = read(&secret);
-        assert_eq!(creds["client_id"], "v");
-        assert_eq!(creds["client_secret"], "v");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_provisioned_credential_is_readable_only_by_its_owner() {
-        use std::os::unix::fs::PermissionsExt;
-        let tmp = tempfile::tempdir().unwrap();
-        let secret = tmp.path().join("creds.json");
-        let s = UserServer {
-            secret_file: Some(SecretFile {
-                path: secret.to_string_lossy().to_string(),
-                fields: vec!["client_secret".into()],
-                hidden: vec!["client_secret".into()],
-            }),
-            ..forge()
-        };
-
-        sync_to(
-            &[(Client::CopilotCli, tmp.path().join("c.json"))],
-            &servers(vec![("forge", s)]),
-            Some(&mut Always("v")),
-        )
-        .unwrap();
-
-        let mode = std::fs::metadata(&secret).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600, "got {:o}", mode & 0o777);
-    }
-
-    #[test]
-    fn an_existing_credential_is_never_rewritten() {
-        // Re-provisioning would overwrite a hand-edited or rotated credential on every install.
-        let tmp = tempfile::tempdir().unwrap();
-        let secret = tmp.path().join("creds.json");
-        std::fs::write(&secret, r#"{"client_id":"mine"}"#).unwrap();
-        let s = UserServer {
-            secret_file: Some(SecretFile {
-                path: secret.to_string_lossy().to_string(),
-                fields: vec!["client_id".into()],
-                hidden: vec![],
-            }),
-            ..forge()
-        };
-
-        let report = sync_to(
-            &[(Client::CopilotCli, tmp.path().join("c.json"))],
-            &servers(vec![("forge", s)]),
-            Some(&mut Always("overwritten")),
-        )
-        .unwrap();
-
-        assert_eq!(report.secrets[0].action, "present");
-        assert_eq!(read(&secret)["client_id"], "mine");
-    }
-
-    #[test]
-    fn no_targets_still_reports_the_declared_servers() {
-        // A machine with no MCP client installed is not an error; the run is simply a no-op.
-        let report = sync_to(
-            &[] as &[(Client, PathBuf)],
-            &servers(vec![("forge", forge())]),
-            None,
-        )
-        .unwrap();
-        assert_eq!(report.servers[0].action, "no-client");
-        assert!(report.files.is_empty());
-    }
-}
+mod sync_tests;

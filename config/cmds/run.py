@@ -11,6 +11,8 @@ import sys
 import tempfile
 import time
 
+from runs import RunRecord
+
 
 def positive_seconds(value):
     try:
@@ -43,14 +45,21 @@ def run(args, log, log_path):
     label = args.label or Path(args.command[0]).name
     child = None
     interrupted = None
+    record = None
 
-    def report(action, code=None, idle=None):
-        text = f"{action}: {label} | {time.monotonic() - start:.1f}s elapsed | log: {log_path}"
+    def report(action, code=None, idle=None, cancelled=False):
+        duration = time.monotonic() - start
+        text = f"{action}: {label} | {duration:.1f}s elapsed | log: {log_path}"
         if code is not None:
             text += f" | exit {code}"
         if idle is not None:
             text += f" | WARNING: no output for {idle:.1f}s; progress unknown"
         print(text, file=sys.stderr, flush=True)
+        if record is not None:
+            try:
+                record.update(duration, code, cancelled or interrupted is not None)
+            except OSError as error:
+                print(f"run: could not record status: {error}", file=sys.stderr, flush=True)
 
     def forward(signum, _frame):
         nonlocal interrupted
@@ -63,6 +72,10 @@ def run(args, log, log_path):
 
     previous = {sig: signal.signal(sig, forward) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
+        try:
+            record = RunRecord(args, log_path)
+        except (OSError, subprocess.SubprocessError) as error:
+            print(f"run: could not record status: {error}", file=sys.stderr, flush=True)
         report("Starting")
         if interrupted is not None:
             code = 128 + interrupted
@@ -107,9 +120,9 @@ def run(args, log, log_path):
                     report("Still running", idle=idle if idle >= args.idle_after else None)
                     next_report = now + args.interval
 
-        code = child.wait()
-        code = code if code >= 0 else 128 - code
-        report("Finished", code)
+        raw_code = child.wait()
+        code = raw_code if raw_code >= 0 else 128 - raw_code
+        report("Finished", code, cancelled=raw_code < 0)
         return code
     finally:
         if child is not None:
@@ -124,6 +137,8 @@ def run(args, log, log_path):
             child.stderr.close()
         for sig, handler in previous.items():
             signal.signal(sig, handler)
+        if record is not None:
+            record.close()
 
 
 def main():

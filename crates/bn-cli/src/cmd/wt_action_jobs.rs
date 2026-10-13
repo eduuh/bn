@@ -72,6 +72,7 @@ pub(crate) fn job_build(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
         Some(ctx.repo.clone()),
         Some(ctx.branch.clone()),
         &[],
+        false,
     )
 }
 
@@ -130,6 +131,7 @@ pub(crate) fn job_build_main(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
         Some(ctx.repo.clone()),
         Some("main".to_string()),
         &[],
+        false,
     );
     if code == 0 && bn_core::resolver::job_script(cfg, Some(ctx), "install").is_some() {
         println!("build-main: build passed — installing {} from main", ctx.repo);
@@ -139,6 +141,7 @@ pub(crate) fn job_build_main(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
             Some(ctx.repo.clone()),
             Some("main".to_string()),
             &[],
+            false,
         );
     }
     if let Some(prev) = prev {

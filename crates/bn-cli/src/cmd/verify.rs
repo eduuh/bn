@@ -2,11 +2,16 @@
 use crate::*;
 
 /// One step in the repo's verification gate (#454, #758).
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum VerifyTarget {
     /// `[repo.<name>].verify`: a native command line, run with `sh -c <cmd>`. Not snapshotted —
     /// there's no shared `jobs/` file to race.
-    Command { label: String, cmd: String },
+    Command {
+        label: String,
+        #[serde(rename = "command")]
+        cmd: String,
+    },
     /// A bn job script (`jobs/<name>.sh`), run with `sh <path>` after a copy-on-run snapshot.
     Script {
         label: String,
@@ -39,7 +44,30 @@ impl VerifyGate {
             .join("+")
     }
 
-    
+    fn emit_preview(&self, cwd: &std::path::Path, as_json: bool) {
+        if as_json {
+            let data = serde_json::json!({
+                "dry_run": true,
+                "job": self.label(),
+                "cwd": cwd,
+                "steps": self.targets,
+            });
+            println!("{}", Envelope::success("verify", data).to_json());
+        } else {
+            println!("verify {}: DRY RUN (not executed)", self.label());
+            println!("working directory: {}", cwd.display());
+            for (index, target) in self.targets.iter().enumerate() {
+                match target {
+                    VerifyTarget::Command { cmd, .. } => {
+                        println!("{}. command: {cmd}", index + 1);
+                    }
+                    VerifyTarget::Script { label, path } => {
+                        println!("{}. {label}: {}", index + 1, path.display());
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Resolve what the verify gate runs for `ctx` (#454, #758), shared by `bn verify`
@@ -219,7 +247,9 @@ pub(crate) fn run_verify_gate_to(
         }
         if let Some(log) = log {
             let line = format!("$ {} ({})\n", target.label(), cwd.display());
-            log.lock().unwrap_or_else(|e| e.into_inner()).push(line.as_bytes());
+            log.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(line.as_bytes());
         }
         let mut cmd = std::process::Command::new("/bin/sh");
         let snapshot = match target {
@@ -286,8 +316,14 @@ fn run_teed(cmd: &mut std::process::Command, stream: bool, log: &GateLog) -> std
             }
         })
     };
-    let out = child.stdout.take().map(|s| pump(Box::new(s), stream, log.clone()));
-    let err = child.stderr.take().map(|s| pump(Box::new(s), false, log.clone()));
+    let out = child
+        .stdout
+        .take()
+        .map(|s| pump(Box::new(s), stream, log.clone()));
+    let err = child
+        .stderr
+        .take()
+        .map(|s| pump(Box::new(s), false, log.clone()));
     let status = child.wait()?;
     for t in [out, err].into_iter().flatten() {
         let _ = t.join();
@@ -303,15 +339,13 @@ fn repo_root(dir: &std::path::Path) -> std::path::PathBuf {
         .unwrap_or_else(|| dir.to_path_buf())
 }
 
-/// `bn verify` — run the worktree's verification gate and record the PASS/FAIL to the branch
-/// note's Progress (bn-native — same append `bn log-progress` uses). Exits with the first failing
-/// step's status so an agent (or a caller) can gate "done" on a green run.
-pub(crate) fn emit_verify(
-    cfg: &Config,
-    job: Option<String>,
-    as_json: bool,
-    for_: Vec<String>,
-) {
+/// Run the verification gate and record its result, or preview it without execution or writes.
+/// Executed runs exit with the first failing step's status so an agent can gate "done" on them.
+pub(crate) fn emit_verify(cfg: &Config, args: VerifyCommandArgs, as_json: bool) {
+    let VerifyCommandArgs {
+        gate: VerifyArgs { job, for_ },
+        dry_run,
+    } = args;
     let cwd = std::env::current_dir().unwrap_or_default();
     let Ok(ctx) = resolver::resolve(cfg, &cwd) else {
         fail("bn verify: not in a git repo");
@@ -330,6 +364,10 @@ pub(crate) fn emit_verify(
         )),
         Err(msg) => fail(&format!("bn verify: {msg}")),
     };
+    if dry_run {
+        target.emit_preview(&cwd, as_json);
+        return;
+    }
     let job_name = target.label();
     let log = GateLog::default();
     let code = run_verify_gate_to(&target, &cwd, !as_json, None, Some(&log))
@@ -355,14 +393,18 @@ pub(crate) fn emit_verify(
         "{} — verify {job_name}: {}{}",
         bn_core::util::now_stamp(),
         if pass { "PASS ✓" } else { "FAIL ✗" },
-        proof.as_deref().map(|p| format!(" → proof {p}")).unwrap_or_default()
+        proof
+            .as_deref()
+            .map(|p| format!(" → proof {p}"))
+            .unwrap_or_default()
     );
     let _ = commands::append_body(cfg, &ctx, "progress", &bullet, &today());
 
     if as_json {
         // The command succeeded in *determining* the result; the gate outcome is `pass` (and the
         // process exit code below), so the envelope always carries the data — never drops `pass`.
-        let data = serde_json::json!({ "job": job_name, "pass": pass, "code": code, "proof": proof });
+        let data =
+            serde_json::json!({ "job": job_name, "pass": pass, "code": code, "proof": proof });
         println!("{}", Envelope::success("verify", data).to_json());
     } else if pass {
         println!("verify {job_name}: PASS ✓ (recorded to note)");
@@ -376,13 +418,37 @@ pub(crate) fn emit_verify(
 mod tests {
     use super::*;
 
+    #[test]
+    fn preview_targets_expose_the_command_or_resolved_script_path() {
+        let command = VerifyTarget::Command {
+            label: "test".to_string(),
+            cmd: "cargo test && cargo clippy".to_string(),
+        };
+        let script = VerifyTarget::Script {
+            label: "lint".to_string(),
+            path: std::path::PathBuf::from("/jobs/lint.sh"),
+        };
+
+        assert_eq!(
+            serde_json::to_value(command).unwrap(),
+            serde_json::json!({
+                "kind": "command", "label": "test", "command": "cargo test && cargo clippy"
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(script).unwrap(),
+            serde_json::json!({"kind": "script", "label": "lint", "path": "/jobs/lint.sh"})
+        );
+    }
+
     /// A teed run keeps both streams and the step header in the log, and still reports the
     /// step's own exit code.
     #[test]
     fn a_teed_gate_captures_both_streams_and_the_exit_code() {
         let _lock = bn_core::test_support::env_lock();
         let temp = tempfile::tempdir().expect("tempdir");
-        let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", temp.path().join("state"));
+        let _state =
+            bn_core::test_support::EnvGuard::set("BN_STATE_DIR", temp.path().join("state"));
         let gate = VerifyGate {
             targets: vec![VerifyTarget::Command {
                 label: "noisy".to_string(),
@@ -408,7 +474,8 @@ mod tests {
     fn the_verify_gate_runs_under_the_shared_job_path() {
         let _lock = bn_core::test_support::env_lock();
         let temp = tempfile::tempdir().expect("tempdir");
-        let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", temp.path().join("state"));
+        let _state =
+            bn_core::test_support::EnvGuard::set("BN_STATE_DIR", temp.path().join("state"));
         let observed = temp.path().join("path.txt");
         let gate = VerifyGate {
             targets: vec![VerifyTarget::Command {

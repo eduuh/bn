@@ -6,20 +6,20 @@ The workflow: one **session per repo**, one **window per worktree**. Sessions ar
 
 ## Status bar
 
-A near-monochrome bar that uses **both ends** of the screen. tmux has only one status line, so the bottom is the real status line (window tabs) and the top is drawn on the pane-border line — its rule is painted black so on a dark terminal only the text shows, like a second bar. Everything is derived from live state; segments collapse when they have nothing to say.
-
-**Top — the context dashboard** (per pane, so splits self-document):
+A compact **one-row bar at the top**: session and window tabs on the left, command-run summary,
+tunnels, git state and clock on the right. Pane-border labels appear only for split windows.
+Segments collapse when they have nothing to say.
 
 | Segment | Meaning |
 |---------|---------|
-| `N⚠` | Raised attention — failing cron jobs + open `bn attn` items (`bn next --stale` mirror). Urgent in red. |
-| `N● N✓` | Server-wide count of windows needing you — `●` waiting on input, `✓` done. |
-| `◆ <goal>` | The branch note's **goal** — what you're working on here, a faded headline (truncated after 80 chars). |
+| `build RUN 42s` | A wrapped command is still running; elapsed time is not a progress estimate. |
+| `tests FAIL 37` | A wrapped command exited nonzero; logs remain accessible with `B`. |
+| `build PASS` / `CANCEL` / `UNKNOWN` | Recorded success, signal cancellation, or a runner that disappeared before recording its outcome. |
+| `!N` / `?N` / `+N` | Other retained failures, unknown outcomes, or additional running commands in this worktree. |
 | `⎇ <branch> ↑n ↓m ●k` | Git: branch, commits ahead `↑` / behind `↓`, dirty file count `●` (faint `●` when clean). |
-| `⟳ <job>` / `⟳ <job>+N` | bn cron jobs running on this machine right now — the oldest by name, plus a count of the rest. Silent when idle, and when `[machines.<host>].cron` is off. |
-| `<session> · HH:MM Day DD` | Session name and clock, pushed to the right edge. |
 
-**Bottom — window tabs.** Active window is **white-bold**, inactive ones dim. Each carries its bn state as trailing badges:
+**Window tabs.** The active window has a blue pill, inactive ones are dim. Each carries its bn
+state and, independently, a short command-run badge:
 
 | Badge | Meaning |
 |-------|---------|
@@ -32,8 +32,9 @@ A near-monochrome bar that uses **both ends** of the screen. tmux has only one s
 | `` (dim) | agent **rate-limited** — paused on a usage cap; it resumes on its own. |
 | `◌` (dim) | agent **working**. |
 | `✓` (green) | agent **done** (or a watched build/test went quiet — see `m`). |
+| `RUN` / `PASS` / `FAIL` / `CANCEL` / `UNKNOWN` | Worktree-scoped command results, based on the runner rather than pane silence. |
 
-Badges and the window → worktree link (`@bn_repo`/`@bn_branch`) are refreshed by
+Agent/note badges and the window → worktree link (`@bn_repo`/`@bn_branch`) are refreshed by
 `bn tmux reconcile`, which runs on every client attach and on the 5-minute cron. Window options do
 not survive a tmux-resurrect restore, and the badges are otherwise written only to the window bn
 happened to run in — so without the sweep a note edited by an agent in another window never reaches
@@ -47,6 +48,24 @@ It stamps a window only where the window's name agrees with the branch its pane 
 window named after its worktree whose branch has since changed is **reported, not guessed** — the
 identity is what every other surface trusts, so a confident wrong answer there is worse than a
 blank one.
+
+### Build/test runs
+
+Run `bn cmd run -- --label build -- bn build` or wrap your test command the same way.
+`prefix B` opens this worktree's run history: select a run to inspect its command, read the
+retained log, or confirm a rerun. Reruns preserve argv/cwd but use the current environment and
+new logs. `prefix c` still opens the general command picker.
+
+Results survive returning to the shell, switching windows and restarting tmux. Every window
+queries its active pane's worktree, so different worktrees do not share outcomes. A failure
+remains prominent until a new run with the same label supersedes it; all earlier records remain
+in the history. No popup or focus change occurs on completion.
+
+`m` remains a legacy **quietness watch**, not proof that a build passed. Use the explicit
+`RUN`/`PASS`/`FAIL` result for wrapped commands. An abruptly killed runner becomes `UNKNOWN`;
+its child may still exist, so inspect before rerunning. Results do not yet detect source edits:
+an old `PASS` does not verify today's changes. Records/logs are local and private; see
+[`config/cmds/README.md`](../../cmds/README.md) for CLI details and retention.
 
 ## Which keys you actually use
 
@@ -219,6 +238,7 @@ The three jump keys differ by **scope**, not by mechanism:
 | `E` | Open the newest pending plan review in nvim, then approve or request changes. |
 | `Enter` | Scratch shell in this worktree; vanishes on exit. |
 | `c` | Run one of your `bn cmd` commands (picker). |
+| `B` | Inspect this worktree's recorded build/test runs, retained logs, or confirm a rerun. |
 | `a` / `b` | Quick-add a todo / blocker to the branch note. |
 | `l` | Links picker — open a saved `bn links` URL. |
 

@@ -15,13 +15,19 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
             }
         }
         CmdMisc::Build {
+            json: build_json,
             name,
             repo,
             branch,
             argv,
-        } => {
-            std::process::exit(run_build_cmd(cfg, name, repo, branch, &argv))
-        }
+        } => std::process::exit(run_build_cmd(
+            cfg,
+            name,
+            repo,
+            branch,
+            &argv,
+            json || build_json,
+        )),
         CmdMisc::Cost { by, window, live } => emit_cost(cfg, by.as_deref(), window, live, json),
         CmdMisc::Worker { action } => std::process::exit(emit_worker(cfg, action, json)),
         CmdMisc::ForgeAgent { action } => std::process::exit(

@@ -36,10 +36,69 @@ pub const ENVELOPE_FIELDS: &[&str] = &[
 /// The script-facing read commands and their `data` shapes.
 pub const COMMANDS: &[CommandSchema] = &[
     CommandSchema {
+        tag: "verify",
+        invocation: "bn verify --dry-run --json",
+        summary: "the resolved verification gate without executing it or recording a result",
+        fields: &[
+            "job: string — the gate label, shared by previews and executed runs",
+            "dry_run: bool — true for a preview; absent for an executed run",
+            "cwd: string — the execution directory; preview only",
+            "steps: array — resolved targets in execution order; preview only",
+            "steps[].kind: string — command | script",
+            "steps[].label: string — the target label",
+            "steps[].command: string — configured shell command; command targets only",
+            "steps[].path: string — resolved job script path; script targets only",
+            "pass: bool — whether verification passed; executed runs only",
+            "code: number — verification exit code; executed runs only",
+            "proof: string|null — captured proof id; executed runs only",
+        ],
+    },
+    CommandSchema {
         tag: "goal",
         invocation: "bn goal --json",
         summary: "the current branch note's goal",
         fields: &["goal: string — the goal text, empty when unset"],
+    },
+    CommandSchema {
+        tag: "discover",
+        invocation: "bn discover --json [task...]",
+        summary: "read-only branch context and ranked workflow suggestions for a task",
+        fields: &[
+            "task: string — the trimmed task text, empty when omitted",
+            "context: object|null — current branch-note orientation, null outside a repo or detached HEAD",
+            "context.repo: string — the repo key when context exists",
+            "context.branch: string — the branch name when context exists",
+            "context.goal: string|null — compact goal text, null when unset",
+            "context.note_exists: bool — whether this branch already has a note",
+            "context.counts: object — open todo/blocker counts",
+            "context.counts.open_todos: number — unchecked todo count",
+            "context.counts.blockers: number — open blocker count",
+            "context.todos: array — up to three open todos",
+            "context.todos[].id: string — todo id",
+            "context.todos[].text: string — compact todo text",
+            "context.todos_truncated: bool — true when more todos exist",
+            "context.blockers: array — up to three blockers",
+            "context.blockers[].id: string — blocker id",
+            "context.blockers[].text: string — compact blocker text",
+            "context.blockers_truncated: bool — true when more blockers exist",
+            "context.handoff_available: bool — whether a handoff note exists",
+            "context.pr: string|null — stored PR URL when known",
+            "context.work_item: string|null — linked work item when known",
+            "workflows: array — ranked matching workflows, up to three",
+            "workflows[].name: string — workflow or skill name",
+            "workflows[].description: string — compact description",
+            "workflows[].when: string|null — compact guidance on when to use it",
+            "workflows[].scope: string — source scope such as repo-shared or global-shared",
+            "workflows[].score: number|null — match score from workflow ranking",
+            "workflows[].source: string — absolute source path",
+            "workflows[].invoke: object — harness-specific invocations",
+            "workflows[].invoke.copilot: string|null — Copilot invocation when installed",
+            "workflows[].invoke.claude: string|null — Claude invocation when installed",
+            "workflows[].read_command: string — command to inspect the full workflow body",
+            "workflows_truncated: bool — true when more than three workflows matched",
+            "workflows_filtered: bool — true when low-scoring lexical hits were omitted",
+            "commands: array — suggested next commands, already shell-quoted",
+        ],
     },
     CommandSchema {
         tag: "list",
@@ -195,6 +254,7 @@ mod tests {
     #[test]
     fn find_resolves_a_registered_tag_and_rejects_an_unknown_one() {
         assert_eq!(find("goal").map(|c| c.tag), Some("goal"));
+        assert_eq!(find("discover").map(|c| c.tag), Some("discover"));
         assert!(find("definitely-not-a-command").is_none());
     }
 }
