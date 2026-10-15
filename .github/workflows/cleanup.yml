@@ -39,38 +39,4 @@ jobs:
           REPO: ${{ github.repository }}
           ARTIFACT_AGE_DAYS: ${{ github.event.inputs.artifact_age_days || '7' }}
           CACHE_AGE_DAYS: ${{ github.event.inputs.cache_age_days || '7' }}
-        run: |
-          set -euo pipefail
-
-          now=$(date -u +%s)
-          artifact_cutoff=$(( now - ARTIFACT_AGE_DAYS * 86400 ))
-          cache_cutoff=$(( now - CACHE_AGE_DAYS * 86400 ))
-
-          echo "Repo: $REPO"
-          echo "Deleting artifacts older than ${ARTIFACT_AGE_DAYS}d, caches older than ${CACHE_AGE_DAYS}d"
-
-          # --- Artifacts -------------------------------------------------------
-          # Paginate through every artifact; delete the ones past the cutoff.
-          gh api --paginate "repos/$REPO/actions/artifacts" \
-            --jq '.artifacts[] | [.id, .created_at, .name] | @tsv' \
-            | while IFS=$'\t' read -r id created name; do
-                created_ts=$(date -u -d "$created" +%s)
-                if [ "$created_ts" -lt "$artifact_cutoff" ]; then
-                  echo "  artifact: deleting #$id '$name' (created $created)"
-                  gh api -X DELETE "repos/$REPO/actions/artifacts/$id" >/dev/null || true
-                fi
-              done
-
-          # --- Caches ----------------------------------------------------------
-          # Paginate through every cache entry; delete the ones past the cutoff.
-          gh api --paginate "repos/$REPO/actions/caches" \
-            --jq '.actions_caches[] | [.id, .created_at, .key] | @tsv' \
-            | while IFS=$'\t' read -r id created key; do
-                created_ts=$(date -u -d "$created" +%s)
-                if [ "$created_ts" -lt "$cache_cutoff" ]; then
-                  echo "  cache: deleting #$id '$key' (created $created)"
-                  gh api -X DELETE "repos/$REPO/actions/caches/$id" >/dev/null || true
-                fi
-              done
-
-          echo "Cleanup complete."
+        run: scripts/cleanup-actions-storage.sh

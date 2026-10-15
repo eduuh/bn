@@ -3,6 +3,8 @@
 //! rewritten to the command that already implements it (`bn close`, `bn tmux-status`,
 //! `bn brief`) before clap parses argv, so both spellings run the same code. The old names stay
 //! callable but hidden from `bn --help`; tmux bindings, cron jobs and older prompts keep working.
+//! The same pre-parse seam also handles small argv repairs where clap's built-in help/version
+//! interception would otherwise block a legitimate forwarded child argv.
 //!
 //! Hiding and the new group entries are applied to the clap `Command` at runtime (see
 //! [`command`]) rather than as derive attributes, so the `cli.rs` enums stay as they are.
@@ -160,6 +162,45 @@ pub(crate) enum Plan {
     Help(String, i32),
 }
 
+/// `bn build <job> --help` is meant to reach the job, not the wrapper.
+///
+/// clap always intercepts `-h`/`--help` before `trailing_var_arg` gets a chance to keep them in
+/// the build job's trailing argv. Insert an explicit `--` only for the narrow shape that would
+/// otherwise strand the child help behind the wrapper: optional build-wrapper flags, one job name,
+/// then a lone help flag.
+fn preserve_build_job_help(args: Vec<OsString>) -> Vec<OsString> {
+    let s: Vec<String> = args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    if s.get(1).map(String::as_str) != Some("build") || s[2..].iter().any(|a| a == "--") {
+        return args;
+    }
+    let mut i = 2;
+    while i < s.len() {
+        match s[i].as_str() {
+            "--repo" | "--branch" => {
+                i += 2;
+            }
+            "--json" | "--verbose" | "--debug" => {
+                i += 1;
+            }
+            _ => break,
+        }
+    }
+    if i >= s.len() || s[i].starts_with('-') || i + 2 != s.len() {
+        return args;
+    }
+    if !matches!(s[i + 1].as_str(), "--help" | "-h") {
+        return args;
+    }
+    let mut out = Vec::with_capacity(args.len() + 1);
+    out.extend(args[..=i].iter().cloned());
+    out.push(OsString::from("--"));
+    out.push(args[i + 1].clone());
+    out
+}
+
 /// Rewrite a grouped spelling to its legacy command, or answer group help.
 pub(crate) fn plan(args: Vec<OsString>) -> Plan {
     let s: Vec<String> = args
@@ -222,7 +263,7 @@ pub(crate) fn plan(args: Vec<OsString>) -> Plan {
         text.push_str(&route_list(first));
         return Plan::Help(text, 0);
     }
-    Plan::Parse(args)
+    Plan::Parse(preserve_build_job_help(args))
 }
 
 /// One aligned `  <sub>  <about>` line per visible route of `group`.
@@ -278,6 +319,17 @@ mod tests {
         let err = Cli::command().try_get_matches_from(args).unwrap_err();
         assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
         err.to_string()
+    }
+
+    fn parse_build(args: &[&str]) -> crate::Cli {
+        let argv: Vec<OsString> = args.iter().map(OsString::from).collect();
+        let Plan::Parse(argv) = plan(argv) else {
+            panic!("expected parsed argv");
+        };
+        crate::regroup::command()
+            .try_get_matches_from(argv)
+            .and_then(|m| <crate::Cli as clap::FromArgMatches>::from_arg_matches(&m))
+            .expect("build argv should parse")
     }
 
     #[test]
@@ -341,6 +393,33 @@ mod tests {
         assert!(!skills.contains("bn retro"));
         assert!(skills.contains("bn skills find"));
         assert!(skills.contains("bn skills render"));
+    }
+
+    #[test]
+    fn build_job_help_after_name_stays_in_the_job_argv() {
+        let cli = parse_build(&["bn", "build", "run", "--help"]);
+        match cli.command {
+            Some(crate::Command::Misc(crate::CmdMisc::Build { name, argv, .. })) => {
+                assert_eq!(name.as_deref(), Some("run"));
+                assert_eq!(argv, vec!["--help"]);
+            }
+            other => panic!("expected build command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_job_short_help_after_name_stays_in_the_job_argv() {
+        let cli = parse_build(&["bn", "build", "--json", "run", "-h"]);
+        match cli.command {
+            Some(crate::Command::Misc(crate::CmdMisc::Build {
+                json, name, argv, ..
+            })) => {
+                assert!(json);
+                assert_eq!(name.as_deref(), Some("run"));
+                assert_eq!(argv, vec!["-h"]);
+            }
+            other => panic!("expected build command, got {other:?}"),
+        }
     }
 
     /// Every route must land on a real command that clap accepts, and must not shadow a real

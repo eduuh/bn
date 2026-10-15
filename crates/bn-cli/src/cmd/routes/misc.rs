@@ -115,7 +115,7 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
             }
         }
         CmdMisc::Control { action } => emit_control(cfg, action, json),
-        CmdMisc::Version => println!("{}", version::line()),
+        CmdMisc::Version => println!("{}", version::render(json)),
         CmdMisc::On { action } => {
             let code = crate::cmd::on::emit_on(cfg, action, json);
             if code != 0 {

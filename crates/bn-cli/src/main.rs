@@ -559,6 +559,28 @@ mod prompt_command_tests {
         }
     }
 
+    #[test]
+    fn version_command_accepts_root_json_flag() {
+        let cli =
+            crate::Cli::try_parse_from(["bn", "--json", "version"]).expect("root --json parses");
+        assert!(cli.json);
+        assert!(matches!(
+            cli.command,
+            Some(crate::Command::Misc(crate::CmdMisc::Version))
+        ));
+    }
+
+    #[test]
+    fn version_command_accepts_subcommand_json_flag() {
+        let cli = crate::Cli::try_parse_from(["bn", "version", "--json"])
+            .expect("subcommand --json parses");
+        assert!(cli.json);
+        assert!(matches!(
+            cli.command,
+            Some(crate::Command::Misc(crate::CmdMisc::Version))
+        ));
+    }
+
     /// Every backtick-quoted `bn <sub>` command in the shipped prompts and agent definitions must
     /// name a real first-level clap subcommand. This is the guardrail that catches phantom or
     /// removed commands frozen into instruction text (the class of bug behind `bn dispatch

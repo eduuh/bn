@@ -169,6 +169,9 @@ jobs:
       - name: Installer toolchain discovery
         run: bash scripts/check-install-toolchain.sh
 
+      - name: Build run job wrapper
+        run: bash scripts/check-build-run.sh
+
       - name: Installer tmux floor
         run: bash scripts/check-install-tmux.sh
 
