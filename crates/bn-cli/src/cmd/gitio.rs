@@ -369,6 +369,33 @@ pub(crate) fn reset_sigpipe() {
 #[cfg(not(unix))]
 pub(crate) fn reset_sigpipe() {}
 
+/// Write `bytes` to a child's stdin without dying when the child has already exited. With
+/// SIGPIPE at its default (see [`reset_sigpipe`]), a write to a command that never reads stdin
+/// kills bn itself; ignoring it for the write turns that into a plain `EPIPE` error instead.
+#[cfg(unix)]
+#[allow(
+    unsafe_code,
+    reason = "ignoring and restoring SIGPIPE around one write requires the libc signal API"
+)]
+pub(crate) fn write_child_stdin(stdin: &mut impl std::io::Write, bytes: &[u8]) -> std::io::Result<()> {
+    // SAFETY: swapping a signal's disposition between SIG_IGN and SIG_DFL is async-signal-safe
+    // and has no memory-safety implications.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
+    let result = stdin.write_all(bytes);
+    // SAFETY: as above.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+    result
+}
+
+#[cfg(not(unix))]
+pub(crate) fn write_child_stdin(stdin: &mut impl std::io::Write, bytes: &[u8]) -> std::io::Result<()> {
+    stdin.write_all(bytes)
+}
+
 
 /// [`git_capture`] scoped to `dir` (`git -C <dir>`) — what lets `bn diff` describe a worktree
 /// other than the one bn is running in, which is the whole point of `--path`/`--repo`.
