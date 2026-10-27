@@ -3,7 +3,7 @@
 # to this machine.
 #
 # Run on the machine you connect FROM (needs the `Host <machine>` entry from tunnel-connect):
-#   sh remote-app.sh <machine> start|stop|status [repo]      (repo defaults to BigMono)
+#   sh remote-app.sh <machine> start|stop|status [repo]      (repo defaults to $BN_APP_REPO)
 # or via bn run: BN_TUNNEL_TO=<machine> BN_APP=start|stop|status bn run remote-app
 #
 # start:
@@ -14,7 +14,7 @@
 #   3. waits until every port in BN_APP_PORTS listens on the host;
 #   4. forwards those ports to the SAME port numbers here, in window `app-<machine>` of the local
 #      tmux session `bn-tunnels` (ssh -N -L loop that reconnects). Same numbers because apps often
-#      reference their own ports (BigMono loads assets from https://localhost:<DEV_SERVER_PORT>/) and
+#      reference their own ports (a dev server may load assets from https://localhost:<DEV_SERVER_PORT>/) and
 #      sign-in redirects back to them. A port already taken here is reported and not forwarded;
 #      stop the local server first, or use the host's own browser.
 # stop: stops the host's app window (start.sh frees its ports on exit), returns the slot to the
@@ -27,21 +27,21 @@ set -u
 
 TO="${1:-${BN_TUNNEL_TO:-}}"; [ $# -gt 0 ] && shift
 ACTION="${1:-${BN_APP:-}}"; [ $# -gt 0 ] && shift
-REPO="${1:-${BN_APP_REPO:-BigMono}}"
+REPO="${1:-${BN_APP_REPO:-}}"
 PORTS=$(printf '%s' "${BN_APP_PORTS:-3000,3001}" | tr ',' ' ')
 WAIT="${BN_APP_WAIT_SECONDS:-900}"
 
 say() { echo "remote-app: $*"; }
 die() { echo "remote-app: $*" >&2; exit 1; }
-[ -n "$TO" ] && [ -n "$ACTION" ] || die "usage: remote-app.sh <machine> start|stop|status [repo]"
+[ -n "$TO" ] && [ -n "$ACTION" ] && [ -n "$REPO" ] || die "usage: remote-app.sh <machine> start|stop|status <repo> (or set BN_APP_REPO)"
 case "$REPO" in *[!A-Za-z0-9_.-]*) die "bad repo name '$REPO'" ;; esac
 for p in $PORTS; do case "$p" in *[!0-9]*|'') die "'$p' is not a port" ;; esac; done
 case "$WAIT" in ''|*[!0-9]*) die "BN_APP_WAIT_SECONDS must be a number" ;; esac
 
 # Remote commands get bn and node on PATH: our tunnel sshd runs without PAM, so a non-login ssh
-# command has neither ~/.local/bin nor nvm. node matters beyond the app: BigMono's post-checkout hook
-# runs node, and without it `git switch` exits non-zero and `bn wt pool get` reports a failed switch
-# that actually succeeded (2026-09-27, AB12C slot 8).
+# command has neither ~/.local/bin nor nvm. node matters beyond the app: a repo post-checkout hook
+# may run node, and without it `git switch` exits non-zero and `bn wt pool get` reports a failed switch
+# that actually succeeded.
 remote() { ssh -o BatchMode=yes -o ConnectTimeout=30 "$TO" "export PATH=\$HOME/.local/bin:\$PATH; [ -s \$HOME/.nvm/nvm.sh ] && . \$HOME/.nvm/nvm.sh >/dev/null 2>&1; $*"; }
 win="app-$REPO"
 fwd="app-$TO"

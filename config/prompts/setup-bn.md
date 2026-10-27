@@ -118,6 +118,24 @@ repo-local choice.
 The client starts `bn mcp serve` over stdio in its worktree. Report missing runners or a missing
 `bn-mcp` binary as prerequisites, not a successful connection.
 
+**Optional: graphify knowledge graph.** Only when the user asks or approves: these hooks change how
+every agent in the repo reads code. `install.sh` already put the `graphify` CLI and its global
+Claude + Copilot skills on the machine; report a missing `graphify` as a prerequisite
+(`uv tool install graphifyy`, then `graphify install --platform <claude|copilot>`).
+From the repository root, for the selected harness:
+
+```bash
+graphify claude install   # CLAUDE.md section + .claude/settings.json PreToolUse hooks
+graphify vscode install   # Copilot: .github/copilot-instructions.md section (CLI and VS Code)
+graphify hook install     # optional: git hooks rebuild the graph on commit/checkout
+```
+
+The Claude hooks embed this machine's absolute `graphify` path, so in a shared repo keep that
+`.claude/settings.json` change uncommitted unless the user approves it. `hook install` also edits
+`.gitattributes` (graph merge driver). Add `graphify-out/` to `.gitignore` unless the user wants the
+graph committed. Building the first graph (`/graphify .`) spends model tokens on docs and images,
+so offer it rather than running it.
+
 ### 5. Make build and verification commands accurate
 
 Read manifests, CI workflows, existing scripts, and repo references. Reuse native commands and

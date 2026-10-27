@@ -59,7 +59,7 @@ Record {{question}} where the next session will find it. The reference notes are
 2. **One fact per bullet, with its provenance.** Append with `bn_ref_append`
    (CLI: `bn ref append <name> --repo --section gotchas "<fact>"`), section `facts` or `gotchas`.
    Every bullet ends with where it came from and when you checked it:
-   `(src: web/.nvmrc, 2026-09-03)` for something read in the source, `(observed, 2026-09-03)`
+   `(src: .nvmrc, 2026-09-03)` for something read in the source, `(observed, 2026-09-03)`
    for something you saw happen. **Do not skip this.** An unsourced bullet is indistinguishable
    from a guess, and a note full of guesses is worse than no note — it gets believed.
 

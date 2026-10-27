@@ -117,7 +117,7 @@ by `scripts/release-pr.py`; the `v{version}` tag is pushed by `release-plz relea
 - **bn-web**: rebuild the dashboard as a single supervision console (#964)
 - **harness**: configurable default harness so launchers honor claude, not just copilot (#962)
 - **dispatch**: per-stage harness override on [pipeline.models.<stage>] (#956)
-- **cron**: add attention-sweep and webapp-quickwins jobs (#950)
+- **cron**: add attention-sweep job (#950)
 - repo-scoped PR-review specialist agents (mined, read-only) (#948)
 - **fleet**: default cron+cockpit agents to the `cron` session, add [jobs].session knob (#946)
 - **agent**: yolo trusted agents by default + review-in-place pane & ownership-gated autonomy (#947)

@@ -45,7 +45,7 @@ pub struct CronEntry {
     #[serde(default)]
     pub class: CronClass,
     /// Canonical schedule = systemd `OnCalendar` spec (e.g. `*:0/15`), or a list of them for a job
-    /// that fires at unrelated times (BigMono's pool builds at 02:00 and 07:30). Mapped to cron /
+    /// that fires at unrelated times (a monorepo's pool builds at 02:00 and 07:30). Mapped to cron /
     /// launchd at generation time.
     pub on_calendar: Calendar,
     /// Machines this cron should register on; empty = everywhere. (The per-run host gate is the

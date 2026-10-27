@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Link tracked dotfiles into a target dir (normally $HOME) from stow packages.
 #
-# config/stow/<package>/<path under $HOME>, one package per tool (copilot, claude, agency, git),
+# config/stow/<package>/<path under $HOME>, one package per tool (copilot, claude, git),
 # so Copilot's ~/.copilot and Claude's ~/.claude stay separate. GNU stow does the linking when it
 # is installed; otherwise the same per-file relative links are made with ln, so a fresh machine
 # without stow ends up identical. Folding is off: a tool's state dir (~/.copilot holds sessions

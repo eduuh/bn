@@ -116,7 +116,7 @@ This works wherever the target runs. When the target is not live here, bn asks e
 
 - **Look before acting.** `bn machine tunnels` (about 10 seconds) says which machines are up, their names, and why one is down. Start there instead of probing each machine with ssh.
 - **Git on a machine without credentials: push to it, never pull on it.** `git push ssh://<machine><repo path> <ref>:refs/remotes/origin/<ref>`, then `git merge --ff-only origin/<ref>` there. The same works for the notes repo and the nvim config. A `git pull` there hangs on a username prompt.
-- **Pick the GitHub account for https pushes.** `gh` can hold two accounts; the active one is used. The notes repo (`work-account/branch-notes-work`) and the personal repos (`eduuh/*`) need different ones: `git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push https://github.com/<owner>/<repo>.git <branch>` with the right account active, or push over ssh.
+- **Pick the GitHub account for https pushes.** `gh` can hold two accounts; the active one is used. A work notes repo and personal repos may need different ones: `git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push https://github.com/<owner>/<repo>.git <branch>` with the right account active, or push over ssh.
 - **A notes push that GitHub rejects (GH013)** has a secret in an unpushed commit, usually a tool log saved by an automatic checkpoint (`.playwright-cli/` console logs held an Entra token). The notes `.gitignore` covers that folder now; if it happens again, `git reset --soft origin/main`, `git rm --cached` the file, commit once, push.
 - **Settings for one machine never go in `~/.gitconfig`.** It is synced by dotfiles to every machine. bn's tunnel settings live in `~/.config/bn/tunnel.conf`.
 - **Check the bn binary against the config.** A machine with an old `bn` and a new `bn/main` prints TOML errors and runs unknown jobs as queued tasks. The published release lags `main`; build with `./build.sh`. `bn --version` must match `git -C ~/projects/worktree/bn/main log -1 --format=%h`.
@@ -194,8 +194,7 @@ ambiguous.
    ss -tln | grep -E ':(3000|3001)'
    ```
 
-   Nothing listening → the app is the problem, not the tunnel. Say so and stop; see
-   `bigmono-build` for getting the BigMono dev server up.
+   Nothing listening → the app is the problem, not the tunnel. Say so and stop; get the dev server up first.
 
 3. **Check the tool exists**, and install it only if they want that:
 
@@ -242,7 +241,7 @@ a port on the public internet.
 
 ### Dev Tunnels (Microsoft) — sharing outward
 
-This is what `start.sh` points at once the BigMono app is up on 3000/3001:
+To share a dev server running on 3000/3001:
 
 ```bash
 devtunnel host -p 3000 -p 3001 --protocol https --allow-anonymous
@@ -311,8 +310,7 @@ ss -tln | grep -E ':(3000|3001)'    # is the app even listening here?
 curl -sS -o /dev/null -w '%{http_code}\n' <tunnel-url>
 ```
 
-If the app isn't listening yet, fix that first — the tunnel is not the problem. See
-the `bigmono-build` skill for getting the BigMono dev server actually up.
+If the app isn't listening yet, fix that first — the tunnel is not the problem. Get the dev server up first.
 
 ### Rules
 

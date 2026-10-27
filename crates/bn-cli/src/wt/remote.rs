@@ -791,8 +791,8 @@ password=secret-token\n";
     #[test]
     fn ado_repo_path_matches_the_git_credential_input_shape() {
         let path = ado_repo_path(AdoTarget {
-            org: "office",
-            project: "Office",
+            org: "contoso",
+            project: "Project",
             repo: "BigMono",
         });
         assert_eq!(path, "contoso/Project/_git/BigMono");

@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn seats_normalize_like_resolver_targets() {
     assert_eq!(normalize_seat("BN:feat/x").unwrap(), "bn:feat-x");
-    assert_eq!(normalize_seat("Human:Eduuh").unwrap(), "human:eduuh");
+    assert_eq!(normalize_seat("Human:Alice").unwrap(), "human:alice");
     for bad in ["bn", ":x", "bn:", "a:b:c", ""] {
         assert!(normalize_seat(bad).is_err(), "{bad:?} should be refused");
     }
@@ -40,8 +40,8 @@ fn the_acting_seat_prefers_flag_then_env_then_worktree_then_user() {
         "bn:z"
     );
     assert_eq!(
-        acting_seat(None, None, None, "Eduuh").unwrap(),
-        "human:eduuh"
+        acting_seat(None, None, None, "Alice").unwrap(),
+        "human:alice"
     );
     // A typo'd explicit seat is an error, never a silent fall-through to someone else.
     assert!(acting_seat(Some("oops"), None, Some("bn:z"), "me").is_err());

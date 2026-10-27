@@ -162,7 +162,7 @@ pub(super) fn preview(roots: &Roots, project: &str) {
 ///
 /// The ceiling is what still reads as *instant* under a cursor held on the down arrow, not what the
 /// largest repository needs — and on a large enough repository those two can never be the same
-/// number. Measured on BigMono (a ~100k-file monorepo on WSL): `ls-files --others` takes ~4s warm and
+/// number. Measured on a ~100k-file monorepo on WSL: `ls-files --others` takes ~4s warm and
 /// over two minutes cold, and `diff --numstat` ~0.4s warm and ~11s on a cold index. No budget big
 /// enough to finish that work is small enough to keep the picker usable, so the pane stops asking
 /// and says so. Everything else in it — the branch note, divergence, recent commits — is a

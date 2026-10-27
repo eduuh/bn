@@ -38,7 +38,7 @@ const HTTP_LOW_SPEED_TIME: u32 = 45;
 /// Bytes/second under which a big fetch counts as stalled: 1 KiB/s.
 ///
 /// The 45s / 1 B/s default treats a link that crawls as alive for as long as it moves at all; a
-/// BigMono pack crawled at a few KiB/s for two hours before the connection finally reset. Paired with
+/// monorepo pack crawled at a few KiB/s for two hours before the connection finally reset. Paired with
 /// [`STALL_TIME`] and a retry, a crawl is started over instead of waited out.
 const STALL_LIMIT: u32 = 1024;
 /// Seconds a big fetch may stay under [`STALL_LIMIT`] before git aborts it. With `--progress` the

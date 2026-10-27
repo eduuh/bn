@@ -149,7 +149,7 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
     # That task needs admin rights once, so it is asked for only at a terminal.
     # A machine where Windows would not start the boot task (wsl-keepalive boot says why) is not
     # asked again: it needs a sign-in after a reboot, and re-running setup would only repeat the
-    # UAC prompt (2026-10-01: the Entra-joined laptop and cloud-pc-AB12C both refused S4U).
+    # UAC prompt (2026-10-01: the Entra-joined laptop and a Cloud PC both refused S4U).
     case "$ks" in *"boot task: not registered"*)
       if [ -f "$HOME/.config/bn/boot-task.unsupported" ]; then
         echo "  ...   no boot task: Windows will not start one for this account, so after a reboot this host waits for a sign-in"

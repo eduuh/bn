@@ -7,7 +7,7 @@ keywords: [multi-agent, coordination, agents, workers, parallel, monitor, relay,
 
 # Coordinating many agents
 
-These lessons come from running many agents in parallel on large tasks such as a BigMono change or a telemetry investigation. The coordinator decides, relays, and monitors. Workers do the work.
+These lessons come from running many agents in parallel on large tasks such as a monorepo-wide change or a telemetry investigation. The coordinator decides, relays, and monitors. Workers do the work.
 
 Use Copilot fleet / Claude subagents for substantial research, independent reviews, or bulky
 build/test output that would otherwise crowd the main context. Start with the smallest useful
@@ -62,7 +62,7 @@ A worker can run on a Cloud PC or another PC as easily as here: `bn agent launch
 
 - A large repo task split across implementation, tests, docs, and review.
 - Parallel investigations where each thread answers one concrete question.
-- Example workloads such as a BigMono migration or a telemetry sweep.
+- Example workloads such as a monorepo migration or a telemetry sweep.
 
 ## Bad fits
 

@@ -239,7 +239,7 @@ pub struct Config {
     /// [`crate::scout::ScoutConfig`].
     pub scout: crate::scout::ScoutConfig,
     /// `[pool] scheduled`: repos whose worktree pool the `pool-build` cron rebuilds at fixed times
-    /// (BigMono: nightly, then a top-up before the workday). The idle-gated `pool-warm` sweep leaves
+    /// (e.g. a monorepo: nightly, then a top-up before the workday). The idle-gated `pool-warm` sweep leaves
     /// them alone so the two never warm the same pool. Matched case-insensitively.
     pub pool_scheduled: Vec<String>,
     /// `[log]`: the opt-in verbose/debug action log (structured JSONL of every high-value action,

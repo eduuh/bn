@@ -903,7 +903,7 @@ fn a_branch_whose_agent_is_live_still_gets_its_own_slot_back() {
 
 /// A lease must not fail over a slot's leftover state. The slot below is idle and unoccupied but
 /// carries an uncommitted edit to a file the advanced base also changes — exactly what makes
-/// `git switch -c <new> main` refuse — and that is what every BigMono slot looked like after the
+/// `git switch -c <new> main` refuse — and that is what every monorepo slot looked like after the
 /// concurrent-warm incident. Nobody owns that dirt, so get resets the slot and retries rather
 /// than reporting "branch checked out elsewhere?" to a caller who can do nothing about it.
 #[test]

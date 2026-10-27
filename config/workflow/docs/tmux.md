@@ -161,10 +161,10 @@ A GitHub Codespace is treated as a **remote worktree** — the same `session = r
 - A codespace whose repo **is** cloned locally appears inside that repo's `o`/`C-o` worktree picker as a `<branch> ☁` row, beside the local worktrees.
 - A codespace whose repo is **not** cloned locally appears as a top-level `<repo>-<branch> (codespace)` row in `C-o`, like a loose session.
 
-The local↔codespace match is by repo **basename**. When you cloned a repo under a different name than its codespace's repo (e.g. the codespace repo is `MyAppBridge` but you cloned `BigMono`), map them in a machine-local config (kept out of this repo) so the codespace nests under your local repo instead of a top-level row:
+The local↔codespace match is by repo **basename**. When you cloned a repo under a different name than its codespace's repo (e.g. the codespace repo is `MyAppBridge` but you cloned `MyApp`), map them in a machine-local config (kept out of this repo) so the codespace nests under your local repo instead of a top-level row:
 
 ```
-echo <codespace-repo-basename>=<local-repo> > ~/.config/wt/cs-repo-map   # e.g. MyAppBridge=BigMono
+echo <codespace-repo-basename>=<local-repo> > ~/.config/wt/cs-repo-map   # e.g. MyAppBridge=MyApp
 ```
 
 Selecting either ensures a local session named after the repo and opens/focuses a `<branch> ☁` window that `gh cs ssh`'s into the codespace and runs `tmux new-session -A -s <branch>` — attaching to (or creating) a per-branch tmux session **inside** the codespace. Codespaces don't ship `tmux`, so the attach installs it first when missing (`sudo apt-get install -y tmux`, Debian/Ubuntu base) — the first attach to a fresh codespace pays a one-time install, after that it's instant. Because the remote session is named after the branch, `bn --cat` resolves the *same* `<repo>/<branch>` note whether you're in the local worktree or the codespace.

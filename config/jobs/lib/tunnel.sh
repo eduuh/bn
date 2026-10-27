@@ -85,7 +85,7 @@ bn_tunnel_devtunnel() {
   echo "tunnel: downloading the devtunnel CLI ($_asset) into ~/bin ..." >&2
   mkdir -p "$HOME/bin"
   # curl, else wget, else python3: a fresh machine whose package install still waits for sudo has
-  # no curl yet, and the download is what everything else needs (2026-10-01, cloud-pc-AB12C).
+  # no curl yet, and the download is what everything else needs (2026-10-01, a Cloud PC).
   _url="https://tunnelsassetsprod.blob.core.windows.net/cli/$_asset"; _out="$HOME/bin/devtunnel.part"
   if { command -v curl >/dev/null 2>&1 && curl -fsSL -o "$_out" "$_url"; } \
       || { command -v wget >/dev/null 2>&1 && wget -q -O "$_out" "$_url"; } \
@@ -103,7 +103,7 @@ bn_tunnel_devtunnel() {
 
 # bn_tunnel_devtunnel_icu -- make ~/bin/devtunnel run on a machine without libicu. devtunnel is a
 # .NET program and dies at start ("Couldn't find a valid ICU package") where libicu is missing, as
-# on a fresh Cloud PC whose package install still waits for sudo (2026-10-01, cloud-pc-AB12C). The
+# on a fresh Cloud PC whose package install still waits for sudo (2026-10-01, a Cloud PC). The
 # binary moves to devtunnel.bin behind a two-line wrapper that runs it without globalization
 # support, so every caller, including the tmux windows that host and connect, gets a working CLI
 # by the same path. Nothing to do when libicu is there or the wrapper already is.
@@ -119,7 +119,7 @@ bn_tunnel_devtunnel_icu() {
 
 # bn_tunnel_signed_in <devtunnel> -- true only when `user show` reports a signed-in account.
 # Its exit code is not enough: signed out, it still exits 0 ("Not logged in"), and the next
-# `devtunnel create` then fails as Anonymous (seen 2026-09-26 on cloud-pc-AB12C).
+# `devtunnel create` then fails as Anonymous (seen 2026-09-26 on a Cloud PC).
 bn_tunnel_signed_in() {
   "$1" user show 2>/dev/null | grep -qi 'logged in as'
 }

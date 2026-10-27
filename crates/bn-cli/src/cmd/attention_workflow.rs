@@ -626,10 +626,10 @@ mod tests {
 
     #[test]
     fn repair_task_text_prefers_a_failure_line_over_earlier_progress() {
-        let tail = "main-sync: BigMono: main worktree → origin/main\n\
-                    main-sync: BigMono: main slot has uncommitted work — left alone\n\
+        let tail = "main-sync: big.mono: main worktree → origin/main\n\
+                    main-sync: big.mono: main slot has uncommitted work — left alone\n\
                     main-sync: WebApp: could not create main worktree\n\
-                    main-sync: telemetry-service: fetch failed (offline?)";
+                    main-sync: advanced-work-telemetry: fetch failed (offline?)";
         assert_eq!(
             repair_task_line(tail),
             Some("main-sync: WebApp: could not create main worktree")
@@ -637,7 +637,7 @@ mod tests {
 
         let text = repair_task_text(&failing("main-sync"), Some(tail));
         assert!(text.contains("could not create main worktree"));
-        assert!(!text.contains("error:main-sync- BigMono: main worktree → origin/main"));
+        assert!(!text.contains("error:main-sync- big.mono: main worktree → origin/main"));
     }
 
     #[test]
@@ -645,11 +645,11 @@ mod tests {
         let text = repair_task_text(
             &failing("main-sync"),
             Some(
-                "main-sync: BigMono: main worktree → origin/main\n\
-                 main-sync: BigMono: main slot has uncommitted work — left alone",
+                "main-sync: big.mono: main worktree → origin/main\n\
+                 main-sync: big.mono: main slot has uncommitted work — left alone",
             ),
         );
 
-        assert!(text.contains("error:main-sync- BigMono: main worktree → origin/main"));
+        assert!(text.contains("error:main-sync- big.mono: main worktree → origin/main"));
     }
 }

@@ -195,7 +195,7 @@ if [ "$have_lock" = 1 ] && [ "$repair_due" = 1 ]; then
   # connections queued and none accepted), and tunnel-connect only restarts a window whose port is
   # not listening. At most once per host every 5 minutes, so a host that is really down is not
   # churned every pass. And only after it has failed for 2.5 minutes: one slow check is usually a
-  # busy host, not a hung forward (2026-09-30: AB12C at load 54 during a pool build missed the
+  # busy host, not a hung forward (2026-09-30: a Cloud PC at load 54 during a pool build missed the
   # 15s ssh banner, and each restart dropped every open session to it).
   for _h in $(awk '$2 == "down" && $1 != "host" {print $1}' "$status"); do
     _mark="$cache/tunnel-restarted.$_h"

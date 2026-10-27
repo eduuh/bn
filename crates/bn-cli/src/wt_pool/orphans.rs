@@ -3,9 +3,9 @@
 //! When main deletes or moves a package, a reset removes its tracked files but not its ignored
 //! build output (`node_modules/`, `lib/`), because `clean -df` never touches ignored files. The
 //! directory survives, and once the package's own `.gitignore` is gone some of that output is no
-//! longer ignored, so `git status` shows `?? web/packages/<name>/`. `dirty_count` then reads the
+//! longer ignored, so `git status` shows `?? packages/<name>/`. `dirty_count` then reads the
 //! slot as dirty, every warm skips it, and `wt pool return` refuses it: on 2026-09-27 that parked
-//! three of cloud-pc-AB12C's BigMono slots for good.
+//! three of a cloud PC's monorepo slots for good.
 //!
 //! The return path makes these without noticing: it probes untracked paths *before* the reset (to
 //! save a second 3-12 s status) and so never sees what the reset itself orphaned.
@@ -140,21 +140,18 @@ mod tests {
 
     #[test]
     fn package_roots_are_recognised() {
-        assert!(is_package_root("web/packages/name-pronunciation"));
+        assert!(is_package_root("packages/name-pronunciation"));
         assert!(is_package_root("packages/foo"));
-        assert!(!is_package_root("web/packages"));
+        assert!(!is_package_root("packages"));
         assert!(!is_package_root("docs/notes"));
-        assert!(!is_package_root("web/packages/foo/lib"));
+        assert!(!is_package_root("packages/foo/lib"));
         assert!(!is_package_root("packages/.."));
-        assert_eq!(
-            package_roots_of("web/packages/foo/src/a.ts"),
-            ["web/packages/foo"]
-        );
+        assert_eq!(package_roots_of("packages/foo/src/a.ts"), ["packages/foo"]);
         assert_eq!(
             package_roots_of("packages/a/packages/b/x"),
             ["packages/a", "packages/a/packages/b"]
         );
-        assert!(package_roots_of("web/packages/README.md").is_empty());
+        assert!(package_roots_of("packages/README.md").is_empty());
     }
 
     fn commit_all(dir: &str, msg: &str) {
@@ -172,7 +169,7 @@ mod tests {
         ]));
     }
 
-    /// A bare repo whose main has `web/packages/gone` (with its own `.gitignore` for `lib/`)
+    /// A bare repo whose main has `packages/gone` (with its own `.gitignore` for `lib/`)
     /// and then a commit deleting it. Returns the tempdir, bare path and the two commits.
     fn repo_with_deleted_package() -> (tempfile::TempDir, String, String, String) {
         let (tmp, bare) = mk_bare();
@@ -187,12 +184,12 @@ mod tests {
             &o,
             "main"
         ]));
-        let pkg = other.join("web/packages/gone");
+        let pkg = other.join("packages/gone");
         std::fs::create_dir_all(pkg.join("src")).unwrap();
         std::fs::write(pkg.join("src/index.ts"), "x\n").unwrap();
         std::fs::write(pkg.join(".gitignore"), "lib/\n").unwrap();
-        std::fs::create_dir_all(other.join("web/packages/kept")).unwrap();
-        std::fs::write(other.join("web/packages/kept/a.ts"), "k\n").unwrap();
+        std::fs::create_dir_all(other.join("packages/kept")).unwrap();
+        std::fs::write(other.join("packages/kept/a.ts"), "k\n").unwrap();
         commit_all(&o, "add packages");
         let with = wt::git_out(&["-C", &o, "rev-parse", "HEAD"]).unwrap();
         std::fs::remove_dir_all(&pkg).unwrap();
@@ -215,7 +212,7 @@ mod tests {
         let s = slot.to_string_lossy().to_string();
         assert!(add_detached_slot(bare, &s));
         assert!(git(&["-C", &s, "reset", "-q", "--hard", with]));
-        let pkg = slot.join("web/packages/gone");
+        let pkg = slot.join("packages/gone");
         std::fs::create_dir_all(pkg.join("lib")).unwrap();
         std::fs::write(pkg.join("lib/index.js"), "built\n").unwrap();
         std::fs::create_dir_all(slot.join("target")).unwrap(); // root-ignored
@@ -233,7 +230,7 @@ mod tests {
         assert!(git(&["-C", &s, "reset", "-q", "--hard", &without]));
         assert_eq!(
             status(&s).unwrap(),
-            "?? web/packages/gone/",
+            "?? packages/gone/",
             "the leftover is the only dirt"
         );
     }
@@ -245,8 +242,8 @@ mod tests {
         let (slot, s) = built_slot(&tmp, &bare, &with);
         // The return path: probed clean before the reset, so it passes an empty untracked list.
         warm_reset_with(&s, &bare, Some(Vec::new()));
-        assert!(!slot.join("web/packages/gone").exists());
-        assert!(slot.join("web/packages/kept/a.ts").exists());
+        assert!(!slot.join("packages/gone").exists());
+        assert!(slot.join("packages/kept/a.ts").exists());
         assert!(slot.join("target/cache").exists(), "root build cache kept");
         assert_eq!(wt::dirty_count(&s), 0);
     }
@@ -258,7 +255,7 @@ mod tests {
         let (slot, s) = built_slot(&tmp, &bare, &with);
         assert!(git(&["-C", &s, "reset", "-q", "--hard", &without]));
         assert!(clear_leftovers(2, &s));
-        assert!(!slot.join("web/packages/gone").exists());
+        assert!(!slot.join("packages/gone").exists());
         assert!(slot.join("target/cache").exists());
     }
 
@@ -268,7 +265,7 @@ mod tests {
         let (tmp, bare, with, without) = repo_with_deleted_package();
         let (slot, s) = built_slot(&tmp, &bare, &with);
         assert!(git(&["-C", &s, "reset", "-q", "--hard", &without]));
-        let gone = slot.join("web/packages/gone");
+        let gone = slot.join("packages/gone");
 
         // A stray untracked file beside the leftover: nothing is removed.
         std::fs::write(slot.join("notes.md"), "mine\n").unwrap();
@@ -298,12 +295,12 @@ mod tests {
         std::fs::remove_dir_all(slot.join("docs")).unwrap();
 
         // A new package someone is writing: untracked, not in HEAD, but it has a manifest.
-        std::fs::create_dir_all(slot.join("web/packages/fresh/src")).unwrap();
-        std::fs::write(slot.join("web/packages/fresh/package.json"), "{}\n").unwrap();
-        std::fs::write(slot.join("web/packages/fresh/src/a.ts"), "wip\n").unwrap();
+        std::fs::create_dir_all(slot.join("packages/fresh/src")).unwrap();
+        std::fs::write(slot.join("packages/fresh/package.json"), "{}\n").unwrap();
+        std::fs::write(slot.join("packages/fresh/src/a.ts"), "wip\n").unwrap();
         assert!(!clear_leftovers(2, &s));
-        assert!(gone.exists() && slot.join("web/packages/fresh/package.json").exists());
-        std::fs::remove_dir_all(slot.join("web/packages/fresh")).unwrap();
+        assert!(gone.exists() && slot.join("packages/fresh/package.json").exists());
+        std::fs::remove_dir_all(slot.join("packages/fresh")).unwrap();
 
         // A nested git repo under a package path.
         assert!(git(&["init", "-q", &gone.to_string_lossy()]));
@@ -320,8 +317,8 @@ mod tests {
         assert!(add_detached_slot(&bare, &s));
         assert!(git(&["-C", &s, "reset", "-q", "--hard", &without]));
         // Untracked work inside a package that *is* tracked shows as its files, not the root.
-        std::fs::write(slot.join("web/packages/kept/new.ts"), "wip\n").unwrap();
+        std::fs::write(slot.join("packages/kept/new.ts"), "wip\n").unwrap();
         assert!(!clear_leftovers(3, &s));
-        assert!(slot.join("web/packages/kept/new.ts").exists());
+        assert!(slot.join("packages/kept/new.ts").exists());
     }
 }

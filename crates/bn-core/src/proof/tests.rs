@@ -3,7 +3,7 @@ use crate::model::{Item, Note};
 use crate::resolver::{Config, RepoBranch, Resolved};
 
 const AGENT: &str = "bn:feat";
-const HUMAN: &str = "human:eduuh";
+const HUMAN: &str = "human:alice";
 
 fn setup(temp: &std::path::Path) -> (Config, Resolved) {
     let cfg = crate::test_support::config(temp);

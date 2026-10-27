@@ -83,5 +83,5 @@ documented Forge tools, and parses JSON tool content:
 If the local MCP bridge is missing, cannot authenticate, or returns an unexpected response shape,
 `bn forge` exits non-zero with a stable JSON error instead of falling back to API keys.
 
-`/Users/me/projects/worktree/bn/main` is reference-only evidence for this work. Do not edit or
+The `bn/main` checkout is reference-only evidence for this work. Do not edit or
 copy code there for the Forge local CLI.

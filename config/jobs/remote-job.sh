@@ -1,7 +1,7 @@
 #!/bin/sh
 # remote-job -- run a long command on a tunnel host, detached, and follow it from here.
 #
-# A long job (a BigMono build, a test suite) must not live in the foreground of an ssh session: the
+# A long job (a monorepo build, a test suite) must not live in the foreground of an ssh session: the
 # session is only as reliable as the tunnel. This starts the command in a window of the host's
 # tmux session `bn-jobs` with its output in a log, so it runs to completion whatever the link does;
 # following just reads that log and survives reconnects.

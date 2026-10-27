@@ -397,7 +397,7 @@ fn warm_pool(cfg: &Config, ctx: &PoolCtx, here: bool, new: bool, slot: Option<u3
 /// the cron must fail instead of silently warming whatever `default_base` would invent.
 ///
 /// The fetch itself is [`crate::origin_fetch::refresh_origin`], which is what gets a shallow,
-/// refspec-less clone like BigMono an `origin/main` at all.
+/// refspec-less monorepo clone an `origin/main` at all.
 ///
 /// Both notices go through [`crate::cmd::jobs::native_job_line`] with git's own error attached, so
 /// `bn cron show pool-warm` says *why* the refresh failed instead of just that it did.
@@ -464,7 +464,7 @@ fn head_sha(slot_s: &str) -> Option<String> {
 /// build the rest concurrently sharing a job budget so the box isn't oversubscribed. Returns each
 /// slot's outcome.
 ///
-/// A build that declined to run because a sibling held the toolchain (BigMono's `build.sh` refuses to
+/// A build that declined to run because a sibling held the toolchain (a monorepo's `build.sh` refuses to
 /// start a second `lage build`) is retried after the parallel pass, one slot at a time, waiting
 /// between tries while something outside the warm holds it (see [`retry`]): in a pool whose builds
 /// guard each other, a parallel pass alone leaves every slot but one cold. Only a slot still
@@ -661,7 +661,7 @@ fn run_bn_build(repo: &str, slot: &Path, jobs: Option<usize>) -> BuildOutcome {
     if let Some(j) = jobs {
         cmd.env("CARGO_BUILD_JOBS", j.to_string());
     }
-    // Stream the build's stderr through, watching for a skip. BigMono's `build.sh` declines a second
+    // Stream the build's stderr through, watching for a skip. A monorepo's `build.sh` declines a second
     // concurrent `lage build` with exit 0 and a `SKIPPED:` line (exit 75 read as a failure in an
     // older bn), so the exit code alone reports a build that never ran as built.
     cmd.stderr(std::process::Stdio::piped());
@@ -745,8 +745,8 @@ pub(crate) fn job_pool_warm(cfg: &Config, ctx: Option<&bn_core::resolver::Resolv
 /// `pool-build` cron — rebuild every `[pool] scheduled` repo's pool at fixed times.
 ///
 /// The idle-gated `pool-warm` sweep refreshes a pool whenever it goes stale and the machine is
-/// quiet, which for a monorepo like BigMono means a multi-hour build could start mid-afternoon or not
-/// at all. A scheduled repo is built at the times this cron's `on_calendar` names instead (BigMono:
+/// quiet, which for a large monorepo means a multi-hour build could start mid-afternoon or not
+/// at all. A scheduled repo is built at the times this cron's `on_calendar` names instead (e.g.
 /// 02:00, then a 07:30 top-up), every slot on one freshly fetched commit, and the sweep skips it.
 pub(crate) fn job_pool_build(cfg: &Config, _ctx: Option<&bn_core::resolver::Resolved>) -> i32 {
     if cfg.pool_scheduled.is_empty() {
@@ -948,7 +948,7 @@ mod freshness_tests {
         );
     }
 
-    /// A bare clone with no fetch refspec (how BigMono was cloned) still ends up with an `origin/main`
+    /// A bare clone with no fetch refspec (how a large monorepo was cloned) still ends up with an `origin/main`
     /// to warm from, instead of a fetch that only writes `FETCH_HEAD`.
     #[test]
     fn a_clone_without_a_fetch_refspec_still_gets_origin_main() {

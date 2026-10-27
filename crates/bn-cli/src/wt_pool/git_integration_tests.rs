@@ -243,7 +243,7 @@ fn warm_reset_discards_tracked_keeps_build_cache_and_trims_incremental() {
 
 /// The reset must land on the base even when an untracked file sits where the base now puts a
 /// tracked one. `switch --discard-changes` refuses that ("would be overwritten by merge") and
-/// leaves the slot on its old commit with every tracked edit intact — which is how the BigMono slots
+/// leaves the slot on its old commit with every tracked edit intact — which is how the monorepo slots
 /// stayed dirty through every warm and every self-healing lease after the incident.
 #[test]
 fn warm_reset_overwrites_an_untracked_file_the_base_now_tracks() {
@@ -441,7 +441,7 @@ fn wt_cleanup_inside_pool_slot_returns_the_slot() {
     assert_eq!(head_ref(&slot), "HEAD");
 }
 
-/// Two warms on one pool at once is the race that emptied the BigMono slots of tracked files. The
+/// Two warms on one pool at once is the race that emptied the monorepo slots of tracked files. The
 /// second one now yields to the first — reporting success, since the running warm is doing the
 /// job — instead of interleaving git calls with it.
 #[test]

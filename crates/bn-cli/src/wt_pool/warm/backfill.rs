@@ -2,12 +2,12 @@
 //!
 //! In a clone made with `--filter=blob:none`, file contents come down on demand. A plain
 //! `worktree add` or `reset --hard` onto a newer `main` asks for every missing blob at once — for
-//! BigMono about 54,000 of them — as one lazy fetch that can't resume. On a link that drops long
+//! a large monorepo about 54,000 of them — as one lazy fetch that can't resume. On a link that drops long
 //! transfers, that fetch never finishes; `main-sync`'s reset sat in exactly that for 15+ minutes.
 //!
 //! So the warm stages the move: point the slot at the commit without touching files (`reset
 //! --soft`, or `worktree add --no-checkout` for a new slot), then `git backfill` the missing blobs
-//! in batches, retrying — a batch that landed stays landed (a first try on BigMono kept 25,000 of
+//! in batches, retrying — a batch that landed stays landed (a first try on a large monorepo kept 25,000 of
 //! 54,478 blobs when the link reset) — and only then let the ordinary reset check the files out,
 //! offline.
 

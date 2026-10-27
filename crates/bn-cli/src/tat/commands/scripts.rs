@@ -3,7 +3,7 @@
 //! [`bn_core::wt_actions`] is the roster of verbs every repo has. A repo also has verbs of its
 //! own: the `*.sh` under `<notes>/jobs/<repo>/` (synced through the notes repo) and `.bn/jobs/`
 //! (committed with the project), which `bn build <name>` and the cron already resolve through
-//! [`bn_core::resolver::job_dirs`]. Until now the picker could not see them, so running BigMono's
+//! [`bn_core::resolver::job_dirs`]. Until now the picker could not see them, so running a repo's
 //! `start.sh` meant leaving the list and remembering the command.
 //!
 //! A script row runs like a roster row — `bn run <name>` in a window of its own
@@ -218,7 +218,7 @@ mod tests {
         scripts.iter().map(|s| s.name.as_str()).collect()
     }
 
-    /// BigMono's own jobs dir, as shipped: `build` is the roster's business, the other two are rows.
+    /// A monorepo's own jobs dir: `build` is the roster's business, the other two are rows.
     #[test]
     fn build_is_left_to_the_roster_and_the_rest_are_offered() {
         let tmp = tempfile::tempdir().unwrap();
@@ -227,10 +227,7 @@ mod tests {
             JobScope::Repo,
             &["start", "build", "build-web-app"],
         )];
-        assert_eq!(
-            names(&scripts_in(&dirs)),
-            vec!["build-web-app", "start"]
-        );
+        assert_eq!(names(&scripts_in(&dirs)), vec!["build-web-app", "start"]);
     }
 
     /// The runner looks for a native job before a script, so a script that shadows one would

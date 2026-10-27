@@ -184,7 +184,7 @@ pub(crate) fn job_self_update(_cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
 /// When the release's commit cannot be learned, this refuses. It used to install then, and that
 /// is how source builds got replaced by an older release: a timer runs without the terminal's gh
 /// sign-in, gh cannot answer, and v0.6.2 went over a newer build (seen 2026-09-27 on
-/// cloud-pc-AB12C, whose `bn run` then queued jobs instead of running them).
+/// a cloud PC, whose `bn run` then queued jobs instead of running them).
 fn release_not_newer(main_wt: &str, installed: &Path) -> Option<String> {
     let installed_sha = installed_sha(installed)?;
     let Some(release_sha) = published_release_sha() else {

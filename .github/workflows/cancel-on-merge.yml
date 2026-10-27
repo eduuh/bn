@@ -25,7 +25,7 @@ jobs:
     # `github.event.pull_request.merged` is a real boolean here, not a string.
     if: github.event.pull_request.merged
     name: cancel in-flight CI for the merged branch
-    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["self-hosted","bn-ci"]') }}
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork && '"ubuntu-latest"' || vars.CI_RUNNER || '["self-hosted","bn-ci"]') }}
     steps:
       - name: Cancel runs still in flight on this PR's head branch
         env:

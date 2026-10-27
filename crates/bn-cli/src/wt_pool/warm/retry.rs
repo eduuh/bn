@@ -1,6 +1,6 @@
 //! Retrying the slot builds that declined to run.
 //!
-//! BigMono's `build.sh` refuses a second concurrent `lage build` on the machine, so a warm's parallel
+//! A monorepo's `build.sh` refuses a second concurrent `lage build` on the machine, so a warm's parallel
 //! pass leaves one slot built and the rest declined. Retrying each declined slot once was not
 //! enough: on 2026-09-27 a 12-slot warm still ended 2 warm, 10 not built. So the declined slots are
 //! retried one at a time, and a slot that declines again (a build from outside the warm still holds

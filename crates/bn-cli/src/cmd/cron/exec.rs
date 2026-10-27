@@ -14,7 +14,7 @@ const TAIL_LINES: usize = 15;
 /// run it" code — so a job that never started is not mistaken for one that ran and exited 0.
 ///
 /// Streamed, not `output()`: that held the whole run in memory and echoed it only at exit, so a
-/// job under systemd (`bn run pool-build-remote`, a BigMono warm of an hour or more) put nothing in the
+/// job under systemd (`bn run pool-build-remote`, a monorepo warm of an hour or more) put nothing in the
 /// journal past "Starting" until it finished.
 fn capture_command(mut command: std::process::Command, launch_target: &str) -> (i32, String) {
     use std::process::Stdio;

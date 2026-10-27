@@ -19,7 +19,7 @@
 #
 # The task also fires every 5 minutes. With the sign-in trigger alone, a WSL that stopped while you
 # stayed signed in (WSL restarting itself, an update, memory pressure) stayed down until your next
-# sign-in: on 2026-09-30 cloud-pc-AB12C's Windows session had been up for nine days while its WSL
+# sign-in: on 2026-09-30 a Cloud PC's Windows session had been up for nine days while its WSL
 # had restarted that afternoon, and the tunnels only came back with a sign-in. A run while the
 # keeper is still going is ignored (MultipleInstances IgnoreNew), so this never starts a second one.
 #

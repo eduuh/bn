@@ -1,9 +1,4 @@
 {
-  "companyAnnouncements": [
-    "GPT-5.6 Sol, Terra, and Luna are now available in Copilot CLI. Try them from the model picker.",
-    "Need help with Agency? In a local Agency session, use `/agency:agency-support`; otherwise run `agency support` or join the support community: https://example.com/support",
-    "Monthly limits are in place. Burst limit increases and guidance are available at https://example.com/burst"
-  ],
   "disabledMcpServers": [
     "wira360"
   ],

@@ -1,7 +1,7 @@
 use super::*;
 
 fn vocab() -> Vec<String> {
-    ["icm", "docs", "permissions", "security"]
+    ["docs", "permissions", "security"]
         .iter()
         .map(|t| t.to_string())
         .collect()
@@ -11,30 +11,23 @@ fn vocab() -> Vec<String> {
 fn guess_tags_by_host() {
     let v = vocab();
     let g = |u: &str| guess_tags(u, &v);
-    assert_eq!(
-        g("https://portal.example-incidents.com/imp/v3/incidents/1"),
-        ["icm"]
-    );
-    assert_eq!(g("https://incidents.example.net/x"), ["icm"]);
     assert_eq!(g("https://learn.microsoft.com/en-us/azure"), ["docs"]);
-    assert_eq!(g("https://docs.example.com/docs/x"), ["docs"]);
     assert_eq!(g("https://docs.rs/serde"), ["docs"]);
     assert_eq!(g("https://tokio.readthedocs.io/"), ["docs"]);
     assert_eq!(
         g("https://myaccess.microsoft.com/@x#/access-packages"),
         ["permissions"]
     );
-    assert_eq!(g("https://groups.example/GroupManagement"), ["permissions"]);
     assert_eq!(g("https://security.microsoft.com:443/alerts"), ["security"]);
     assert!(g("https://github.com/eduuh/bn/pull/1").is_empty());
     // `.suffix` must match on a label boundary, not any substring.
-    assert!(g("https://notexample-incidents.com/").is_empty());
+    assert!(g("https://notreadthedocs.io/").is_empty());
 }
 
 #[test]
 fn guess_tags_respects_vocabulary() {
     let v = vec!["security".to_string()];
-    assert!(guess_tags("https://portal.example-incidents.com/x", &v).is_empty());
+    assert!(guess_tags("https://learn.microsoft.com/x", &v).is_empty());
     assert_eq!(
         guess_tags("https://security.microsoft.com/", &v),
         ["security"]

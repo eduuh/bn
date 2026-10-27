@@ -85,7 +85,7 @@ const GIT_SEG_LOCK_STALE_SECS: u64 = 60;
 /// `bn tmux-git [path]` — emit the git segment for `path` (tmux passes `#{pane_current_path}`)
 /// or cwd. Silent outside a git repo so the segment collapses.
 ///
-/// The segment is one `git status` including the untracked walk, which on a BigMono-sized monorepo
+/// The segment is one `git status` including the untracked walk, which on a ~100k-file monorepo
 /// takes 1.5–3s, and tmux reruns it every `status-interval` for every client. So the result is
 /// cached per path: a fresh entry prints with no git call, a stale one prints at once and a
 /// detached `--refresh` run recomputes it (one at a time per path, behind a lock). Only a cold

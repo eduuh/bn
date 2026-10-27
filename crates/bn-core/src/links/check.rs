@@ -2,7 +2,7 @@
 //! unit-tested; the CLI runs `gh api` / `curl` and hands the raw answers back to these.
 //!
 //! The one rule that shapes everything: a page that wants you signed in is not dead. Azure
-//! DevOps, the portal and ICM all answer an anonymous request with 401, 403 or a redirect to a
+//! DevOps and the portal both answer an anonymous request with 401, 403 or a redirect to a
 //! login host, and calling those dead would make the report useless for exactly the links a
 //! work store is full of.
 

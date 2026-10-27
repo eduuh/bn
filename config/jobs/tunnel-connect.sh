@@ -144,7 +144,7 @@ connect_one() { # <tunnel-id> <machine>
 
   # accept-new: the first connection records the host's key without asking, since nothing asks on
   # an unattended machine and BatchMode then failed with "Host key verification failed" until
-  # someone ssh'd in by hand (2026-09-30, AB12C to AB12C). A key that later changes is still
+  # someone ssh'd in by hand (2026-09-30, one machine to another). A key that later changes is still
   # refused. The tunnel itself only reaches hosts on this Dev Tunnels account.
   # One shared connection: the first ssh to the host opens a master and every later one
   # (remote-job, tunnel-attach, git, scp) rides it, skipping the Dev Tunnel channel setup and the

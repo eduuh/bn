@@ -76,8 +76,8 @@ curl -fsSL https://raw.githubusercontent.com/eduuh/bn/main/install.sh | sh
 ```
 
 `install.sh` fetches `bn-cli` and `bn-mcp` for the local target from
-`releases/latest` — through an authenticated `gh` first (the repo is private, so an
-unauthenticated `curl` on `releases/latest/download` 404s), falling back to `curl`. There is
+`releases/latest` — through an authenticated `gh` first (which also reaches a private fork's
+releases), falling back to `curl`. There is
 deliberately **no** compile-from-source fallback behind it: a silent local build is how machines
 end up running different bn than the one that passed CI. To build a checkout on purpose — an
 unmerged branch, a local patch, a platform the release skips — run `./build.sh`.

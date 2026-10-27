@@ -100,7 +100,7 @@ pub(crate) fn git_capture(args: &[&str], dir: Option<&Path>, trim: bool) -> Opti
 ///
 /// For the read-only display surfaces that rerun on a keystroke — the `bn tat` sub-picker's side
 /// pane — where the repositories that make a call slow are exactly the ones where blocking is
-/// unacceptable: on a BigMono-sized monorepo a cold `ls-files --others` walk of the untracked tree
+/// unacceptable: on a ~100k-file monorepo a cold `ls-files --others` walk of the untracked tree
 /// takes over two minutes, and the pane fires one per cursor move. A panel that renders `…` for a
 /// count it could not afford is worth more than one that stalls the picker to be exact.
 ///

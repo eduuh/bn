@@ -8,7 +8,7 @@ fn render(status: Option<&str>, age: Option<i64>) -> String {
     fs::create_dir_all(home.path().join(".ssh")).unwrap();
     fs::write(
         home.path().join(".ssh/config"),
-        "# >>> bn tunnel cloud-pc-AB12C\nHost cloud-pc-AB12C laptop\n# <<< bn tunnel cloud-pc-AB12C\n",
+        "# >>> bn tunnel cloud-pc-0R6MD\nHost cloud-pc-0R6MD laptop\n# <<< bn tunnel cloud-pc-0R6MD\n",
     )
     .unwrap();
     if let Some(status) = status {
@@ -44,7 +44,7 @@ fn render(status: Option<&str>, age: Option<i64>) -> String {
 fn only_connected_nodes_are_shown_with_nicknames_or_short_hostnames() {
     assert_eq!(
         render(
-            Some("cloud-pc-AB12C ok\ncloud-pc-AB12C down\ncloud-pc-OTHER ok\n"),
+            Some("cloud-pc-0R6MD ok\ncloud-pc-ANBKW down\ncloud-pc-OTHER ok\n"),
             None
         ),
         "#[fg=#7aa2f7]⇄ #[fg=#9ece6a]laptop✓ #[fg=#9ece6a]OTHER✓ "
@@ -55,7 +55,7 @@ fn only_connected_nodes_are_shown_with_nicknames_or_short_hostnames() {
 fn disconnected_or_unknown_states_leave_no_segment() {
     assert_eq!(
         render(
-            Some("cloud-pc-AB12C down\ncloud-pc-UNKNOWN pending\ncloud-pc-MISSING\n"),
+            Some("cloud-pc-ANBKW down\ncloud-pc-UNKNOWN pending\ncloud-pc-MISSING\n"),
             None
         ),
         ""
@@ -72,7 +72,7 @@ fn missing_or_empty_cache_leaves_no_segment() {
 fn stale_or_future_cache_keeps_the_watchdog_warning() {
     for age in [600, -600] {
         assert_eq!(
-            render(Some("cloud-pc-AB12C ok\n"), Some(age)),
+            render(Some("cloud-pc-0R6MD ok\n"), Some(age)),
             "#[fg=#565f89]⇄ ? "
         );
     }

@@ -60,8 +60,8 @@ Diffview, Git or LSP a remote repository. Neovim also supports `--remote-ui`: th
 the editor and its plugins run remotely. For either remote UI or SSH, keep nvim and Git rooted in
 the actual Codespace checkout. Do not copy files locally or mount the repository just to show a diff.
 
-1. Resolve the existing Codespace SSH alias and exact remote worktree path. Follow the `codespace`
-   skill if SSH access needs setup; reuse the intended account and Codespace, do not create one for
+1. Resolve the existing Codespace SSH alias and exact remote worktree path. Set up SSH access first
+   if needed (`bn cs connect <codespace>`); reuse the intended account and Codespace, do not create one for
    a handoff. Check the branch, dirty state and three-dot diff **there**, not in the local clone.
    Use `bn status --diff --three-dot` from that remote worktree when available; otherwise use
    `git diff --stat '<base>...HEAD'`. Stop on an empty committed diff; surface any outstanding work

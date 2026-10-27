@@ -115,7 +115,7 @@ case "$SSHD" in "$BN_TUNNEL_SSHD_HOME"/*)
   done ;;
 esac
 
-# Healthy means listening on the port, not just alive: on 2026-09-27 cloud-pc-AB12C's sshd stayed
+# Healthy means listening on the port, not just alive: on 2026-09-27 a Cloud PC's sshd stayed
 # up after a port-change reload but never answered on the new port, and nothing noticed.
 listening() { bn_tunnel_listening "$PORT" "$LISTEN"; }
 wait_listening() { _i=0; until listening; do _i=$((_i + 1)); [ "$_i" -ge 10 ] && return 1; sleep 1; done; }

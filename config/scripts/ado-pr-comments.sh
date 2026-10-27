@@ -149,8 +149,8 @@ workdir = os.environ["WORKDIR"]
 manifest = os.path.join(workdir, "manifest.tsv")
 # Bot/service/agent author filter — the corpus must be REAL PEOPLE only. Matches service
 # accounts (build/deploy/policy bots), named review bots incl. camelCase "…Bot", and coding
-# agents (Copilot / Agency / autopilot). Validated to drop only non-human accounts and keep
-# every real reviewer across the WebApp + BigMono corpora.
+# agents (Copilot / autopilot). Validated to drop only non-human accounts and keep
+# every real reviewer in the corpora it was tested on.
 BOT = re.compile(
     r"(\[bot\]|bot@|\bbot\b|bot$|[a-z]bot\b"
     r"|automation|autopilot|azure ?pipelines|policy service|codeflow|servicehooks"

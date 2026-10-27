@@ -4,7 +4,7 @@
 # Run on the machine you connect FROM:
 #   BN_TUNNEL_TO=<machine> BN_TUNNEL_PORTS=3000,3001 bn run tunnel-forward
 #   (or: sh tunnel-forward.sh <machine> 3000,3001)
-# e.g. the BigMono dev server running on a Cloud PC shows up at https://localhost:3000 here.
+# e.g. a dev server running on a Cloud PC shows up at https://localhost:3000 here.
 #
 # Inside tmux it runs in a window `fwd-<machine>` (so it outlives this command); outside tmux it
 # runs in the foreground. Either way it is `ssh -N -L ...` in a loop: when the link drops it

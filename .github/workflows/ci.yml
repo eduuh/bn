@@ -40,7 +40,9 @@ jobs:
     # Every lane floats across the pool (`CI_RUNNER` → the shared `bn-ci` label): the three
     # Fedora boxes and the mac are interchangeable for all of CI, so a job runs wherever a slot
     # frees up first rather than queueing for a Linux one while the mac sits idle.
-    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["self-hosted","bn-ci"]') }}
+    # A pull request from a fork runs on GitHub-hosted ubuntu-latest instead: the repo is public,
+    # and a stranger's PR must never execute on a self-hosted machine.
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork && '"ubuntu-latest"' || vars.CI_RUNNER || '["self-hosted","bn-ci"]') }}
     steps:
       - uses: actions/checkout@v4
         env:
@@ -52,7 +54,7 @@ jobs:
       # rust-toolchain.toml pins the version + components; `rustup show` installs it.
       - name: Install Rust toolchain
         run: |
-          # The Fedora self-hosted runners share $HOME (/home/me). A shared
+          # The Fedora self-hosted runners share one $HOME. A shared
           # CARGO_HOME/RUSTUP_HOME lets concurrent jobs on different runners
           # reinstall rustup and the pinned toolchain into the same tree at
           # once, deleting rustc out from under a sibling build ("could not
@@ -89,7 +91,7 @@ jobs:
     # a green check would no longer say *which* platform it was green on and that whole class of
     # bug becomes a coin flip per run. macOS coverage belongs in an explicit, attributable lane;
     # there isn't one today.
-    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["self-hosted","bn-ci"]') }}
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork && '"ubuntu-latest"' || vars.CI_RUNNER || '["self-hosted","bn-ci"]') }}
     steps:
       - uses: actions/checkout@v4
         env:
@@ -101,7 +103,7 @@ jobs:
       # rust-toolchain.toml pins the version + components; `rustup show` installs it.
       - name: Install Rust toolchain
         run: |
-          # The Fedora self-hosted runners share $HOME (/home/me). A shared
+          # The Fedora self-hosted runners share one $HOME. A shared
           # CARGO_HOME/RUSTUP_HOME lets concurrent jobs on different runners
           # reinstall rustup and the pinned toolchain into the same tree at
           # once, deleting rustc out from under a sibling build ("could not
@@ -145,7 +147,7 @@ jobs:
   # versa.
   gates:
     name: gates · structure
-    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["self-hosted","bn-ci"]') }}
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork && '"ubuntu-latest"' || vars.CI_RUNNER || '["self-hosted","bn-ci"]') }}
     steps:
       - uses: actions/checkout@v4
         env:
@@ -181,6 +183,9 @@ jobs:
       - name: Installer upstream skills
         run: bash scripts/check-install-upstream-skills.sh
 
+      - name: Installer graphify
+        run: bash scripts/check-install-graphify.sh
+
       - name: Installer shell CLI defaults
         run: bash scripts/check-install-shell-clis.sh
 
@@ -214,7 +219,7 @@ jobs:
   # look like a clippy failure.
   e2e:
     name: e2e · sandbox + tmux
-    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["self-hosted","bn-ci"]') }}
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork && '"ubuntu-latest"' || vars.CI_RUNNER || '["self-hosted","bn-ci"]') }}
     steps:
       - uses: actions/checkout@v4
         env:

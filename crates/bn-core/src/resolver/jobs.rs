@@ -406,7 +406,7 @@ mod script_header_tests {
 
     #[test]
     fn a_script_whose_comments_follow_its_setup_line_has_no_description() {
-        // BigMono's `start.sh` is shaped exactly like this: the prose sits below `set -eu`.
+        // A monorepo's `start.sh` is shaped exactly like this: the prose sits below `set -eu`.
         let h = parse_script_header("#!/bin/sh\nset -eu\n\n# node/yarn may live under nvm\n");
         assert!(h.comments.is_empty());
     }

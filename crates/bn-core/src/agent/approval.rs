@@ -491,10 +491,7 @@ commands = [".ssh/"]
 
     #[test]
     fn parent_traversal_never_matches_a_root() {
-        let lines = dialog(
-            &["/Users/me/projects/../.aws/config"],
-            "remember this path",
-        );
+        let lines = dialog(&["/Users/me/projects/../.aws/config"], "remember this path");
         assert_eq!(approved(&decide_for(&lines, true)), None);
     }
 

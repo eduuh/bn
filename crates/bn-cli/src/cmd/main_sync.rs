@@ -97,7 +97,7 @@ pub(crate) fn sync_repo(bare: &Path, worktree_dir: &Path, repo: &str) -> bool {
     if let Err(why) = crate::origin_fetch::refresh_origin(&bare_s) {
         // Offline, an auth failure, or a repo with no reachable remote. Everything below still
         // works against whatever was last fetched, so carry on rather than skipping the repo — but
-        // say what git said. "offline?" hid a GitHub auth failure and BigMono's shallow-clone trap.
+        // say what git said. "offline?" hid a GitHub auth failure and a monorepo's shallow-clone trap.
         native_job_line(&format!("main-sync: {repo}: fetch failed: {why}"), false);
     }
     let Some(default) = default_branch(&bare_s) else {
@@ -337,7 +337,7 @@ fn advance(dir_s: &str, target: &str, repo: &str, what: &str) -> bool {
 }
 
 /// In a blobless partial clone, fetch the files `target` needs before the reset or checkout that
-/// moves onto it. Left to the reset, they come down as one lazy fetch that can't resume — on BigMono,
+/// moves onto it. Left to the reset, they come down as one lazy fetch that can't resume — on a large monorepo,
 /// 54k blobs over a link that drops long transfers, and the tick sat in it for 15+ minutes. The
 /// backfill goes in resumable batches, and on failure the checkout stays where it was, untouched,
 /// for the next tick to retry. A no-op when the checkout is already there or the clone is whole.
@@ -372,7 +372,7 @@ fn sync_main_slot(bare: &Path, worktree_dir: &Path, repo: &str, target: &str) ->
         return true;
     };
     // The main slot is pool slot 1, and a pool warm stages, resets and builds it too. Moving it
-    // while a warm holds the pool turned a BigMono build into a build of two commits. Yield to the
+    // while a warm holds the pool turned a monorepo build into a build of two commits. Yield to the
     // warm (the next tick catches up), and hold the lock while moving so no warm starts mid-move.
     let pool_dir = slot.parent().unwrap_or(worktree_dir);
     let Some(_warm) = crate::wt_pool::slot_lock::try_lock_warm(pool_dir) else {
@@ -400,7 +400,7 @@ fn sync_main_slot(bare: &Path, worktree_dir: &Path, repo: &str, target: &str) ->
         return false;
     }
     // `reset --hard`, not `checkout`: the prefetch has already pointed HEAD at the target, and a
-    // checkout of the commit HEAD is on changes nothing — it left BigMono's slot with HEAD on the new
+    // checkout of the commit HEAD is on changes nothing — it left a monorepo slot with HEAD on the new
     // commit and the old tree in the index and on disk, which the next tick read as ~1,000
     // uncommitted changes.
     if !crate::git::git_ok(&["-C", &slot_s, "reset", "--hard", "--quiet", target]) {

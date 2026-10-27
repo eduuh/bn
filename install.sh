@@ -7,6 +7,8 @@
 #            BN_INSTALL_AGENT_TOOLS=1. Combines with either mode.
 #   Full mode also installs missing zoxide, bat, eza, and delta. BN_INSTALL_SHELL_CLIS=0 skips
 #            these companions; --shell-clis / BN_INSTALL_SHELL_CLIS=1 enables them in core mode.
+#   Full mode also installs graphify (via uv) and its Claude + Copilot skills. BN_SKIP_GRAPHIFY=1
+#            skips it.
 #   --force-home  replace real files that config/stow/ tracks (old copy kept as <file>.bak-<time>) and
 #            unmanaged skills bn would otherwise skip (moved to ~/.cache/bn/skill-backups/).
 #            Also BN_FORCE_HOME=1. Without it, a real file you wrote is left alone.
@@ -831,6 +833,12 @@ EOF_SKILLS
 }
 install_upstream_skills
 
+# graphify CLI + its upstream skill for Claude Code and Copilot CLI (scripts/install-graphify.sh).
+# After `bn skills install`, so graphify's own skill replaces any older bn-managed copy.
+# shellcheck source=scripts/install-graphify.sh
+source "$repo/scripts/install-graphify.sh"
+bn_install_graphify
+
 # One global instructions file for both harnesses: config/AGENTS.md, read through the repo anchor
 # so it follows the checkout bn was installed from.
 # Copilot CLI reads ~/.copilot/copilot-instructions.md, so that becomes a symlink to it; Claude
@@ -861,7 +869,7 @@ else
 fi
 
 # Tracked dotfiles: config/stow/<package>/ mirrors $HOME, one package per tool (copilot, claude,
-# agency, git). GNU stow links them when installed, plain relative symlinks otherwise (see
+# git). GNU stow links them when installed, plain relative symlinks otherwise (see
 # scripts/install-stow.sh). Read through the repo anchor so it follows this checkout. A real file
 # you wrote is left alone unless --force-home, which keeps it as <file>.bak-<time>.
 # shellcheck source=scripts/install-stow.sh

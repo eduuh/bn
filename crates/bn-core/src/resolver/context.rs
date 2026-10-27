@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 /// resolves to its real repo instead of falling back to the branch name.
 ///
 /// A *standalone clone* (its own plain `.git`, e.g. a sub-repo cloned inside another repo's
-/// worktree dir like `worktree/BigMono/WebApp`) deliberately does **not** override the directory:
+/// worktree dir like `worktree/BigMono/feature`) deliberately does **not** override the directory:
 /// [`repo_from_git`] returns `None` for it, so [`repo_from_dir`] keeps the umbrella grouping
 /// (`BigMono`) the directory layout expresses. That preserves the pre-fix behavior for nested
 /// clones while still fixing bare-backed worktrees.
@@ -244,8 +244,13 @@ mod resolve_target_tests {
     #[test]
     fn a_repo_alone_means_its_main() {
         let cfg = Config::default();
-        let got = resolve_target(&cfg, Path::new("/nowhere"), Some("BigMono".to_string()), None)
-            .expect("a repo alone is a whole target");
+        let got = resolve_target(
+            &cfg,
+            Path::new("/nowhere"),
+            Some("BigMono".to_string()),
+            None,
+        )
+        .expect("a repo alone is a whole target");
         assert_eq!(got.repo, "bigmono", "normalized like any explicit pair");
         assert_eq!(got.branch, "main");
     }

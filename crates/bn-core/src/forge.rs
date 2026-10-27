@@ -229,13 +229,16 @@ mod tests {
     fn the_ssh_and_legacy_azure_remotes_reach_the_same_work_item() {
         let want = Some("https://dev.azure.com/contoso/Project/_workitems/edit/42".to_string());
         assert_eq!(
-            item_url(&links("git@ssh.dev.azure.com:v3/contoso/Project/BigMono"), "42"),
+            item_url(
+                &links("git@ssh.dev.azure.com:v3/contoso/Project/BigMono"),
+                "42"
+            ),
             want
         );
-        let legacy = links("https://contoso.visualstudio.com/Office/_git/BigMono");
+        let legacy = links("https://contoso.visualstudio.com/Project/_git/BigMono");
         assert_eq!(
             item_url(&legacy, "42").as_deref(),
-            Some("https://contoso.visualstudio.com/Office/_workitems/edit/42")
+            Some("https://contoso.visualstudio.com/Project/_workitems/edit/42")
         );
     }
 

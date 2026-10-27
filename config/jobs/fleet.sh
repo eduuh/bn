@@ -2,7 +2,7 @@
 # fleet -- one view of every machine this one works with: tunnel, bn version, warm pool slots,
 # the last pool build, and the remote apps and agents running there.
 #
-#   bn run fleet        (or: sh fleet.sh [repo])   repo defaults to BigMono
+#   bn run fleet        (or: sh fleet.sh [repo])   repo defaults to $BN_FLEET_REPO
 #
 # Asks every machine at once: this one locally, and each tunnel host (the managed `Host` blocks
 # tunnel-connect writes) over its shared ssh connection, so the whole view takes a few seconds.
@@ -10,7 +10,8 @@
 # Reads only; changes nothing.
 set -u
 
-REPO="${1:-${BN_FLEET_REPO:-BigMono}}"
+REPO="${1:-${BN_FLEET_REPO:-}}"
+[ -n "$REPO" ] || { echo "fleet: name a repo (sh fleet.sh <repo>) or set BN_FLEET_REPO" >&2; exit 2; }
 case "$REPO" in *[!A-Za-z0-9_.-]*) echo "fleet: bad repo name '$REPO'" >&2; exit 2 ;; esac
 
 # The probe, run on each machine. One line out: version|pool|build|windows.

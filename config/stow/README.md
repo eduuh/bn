@@ -6,7 +6,6 @@ One stow package per tool; each mirrors `$HOME`:
 |---|---|
 | `copilot` | `~/.copilot/` |
 | `claude` | `~/.claude/` |
-| `agency` | `~/.local/agency/` |
 | `git` | `~/.config/git/` |
 
 `install.sh` links them (GNU stow if installed, plain symlinks otherwise; no folding, so tool
@@ -15,9 +14,8 @@ state dirs never become symlinks into the repo). Real files you wrote are kept u
 so `bn skills install` can replace them.
 
 `copilot` also carries the static `hooks/bn-model.json`, `hooks/bn-guard.json` (git guard,
-`workflow/bin/guard-git.sh`), `hooks/bn-session.json`, `lsp-config.json`, `instructions/*.instructions.md`
-and the hand-written
-`agents/codespace-pr-reviewer.md`. `claude` wires the same guard as a `PreToolUse` hook plus a
+`workflow/bin/guard-git.sh`), `hooks/bn-session.json`, `lsp-config.json`, `instructions/*.instructions.md`.
+`claude` wires the same guard as a `PreToolUse` hook plus a
 `statusLine`. `~/.copilot/hooks/bn-agent.json` is written by `bn agent launch`
 and is never tracked.
 

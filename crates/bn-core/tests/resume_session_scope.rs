@@ -152,5 +152,5 @@ fn main_is_off_limits_all_the_way_down() {
         "/home/me/projects/worktree/bn/maintenance"
     )));
     // And neither is a "main" dir that isn't laid out as …/worktree/<repo>/main.
-    assert!(!is_within_main_worktree(Path::new("/home/e/src/bn/main")));
+    assert!(!is_within_main_worktree(Path::new("/home/me/src/bn/main")));
 }

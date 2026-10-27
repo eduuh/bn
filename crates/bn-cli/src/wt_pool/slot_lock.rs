@@ -2,7 +2,7 @@
 //! pool for `warm`.
 //!
 //! The incident. Two `pool warm` runs of the same job, started from two places at once,
-//! walked the BigMono pool at once. On each slot the first one's `git switch` was still writing the
+//! walked a monorepo pool at once. On each slot the first one's `git switch` was still writing the
 //! tracked files the new base had added when the second one's `git status` (its own `switch` had
 //! already died on the first one's `index.lock`) read the *old* index, saw those files on disk as
 //! untracked, and its `clean -df` deleted them. Every idle slot came out of it with dozens of

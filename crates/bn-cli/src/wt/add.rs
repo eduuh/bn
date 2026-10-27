@@ -131,7 +131,7 @@ fn env_nonempty(key: &str) -> Option<String> {
 /// Run a bare clone the way a huge monorepo on a flaky link survives it: `--progress` keeps the
 /// server talking while it counts objects, and the big-fetch stall guard
 /// ([`bn_core::gitnet::stall_only`]: under 1 KiB/s for 120s) replaces the 45s / 1 B/s default that
-/// killed a BigMono clone after 12 GB (2026-09-27, "Operation too slow"). A stalled pack cannot be
+/// killed a large monorepo clone after 12 GB (2026-09-27, "Operation too slow"). A stalled pack cannot be
 /// resumed, so a failed attempt's half-written repo is removed and the clone retried, 3 times in
 /// all. `bare` did not exist before the clone (the caller checked), so removing it discards only
 /// this clone's own partial output.
@@ -332,7 +332,7 @@ pub(crate) fn create_worktree(bare_s: &str, branch: &str, wt_s: &str, pull: bool
     } else if exists("remotes/origin") {
         // Remote-only ref → create the local branch explicitly from origin/<branch>. A bare
         // `worktree add <path> <branch>` won't DWIM a slash-named remote branch under a limited
-        // fetch refspec (e.g. Office/BigMono tracks only main) — it errors "invalid reference".
+        // fetch refspec (e.g. a monorepo clone that tracks only main) — it errors "invalid reference".
         run_git(&[
             "-c",
             "safe.bareRepository=all",

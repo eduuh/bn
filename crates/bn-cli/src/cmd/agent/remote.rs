@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn only_plain_aliases_reach_ssh() {
-        assert!(crate::cmd::agent::safe_ssh_host("cloud-pc-AB12C"));
+        assert!(crate::cmd::agent::safe_ssh_host("cloud-pc-0R6MD"));
         assert!(crate::cmd::agent::safe_ssh_host("edd@box.lan"));
         assert!(!crate::cmd::agent::safe_ssh_host("-oProxyCommand=touch /tmp/x"));
         assert!(!crate::cmd::agent::safe_ssh_host("host;rm"));

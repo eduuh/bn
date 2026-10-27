@@ -1,6 +1,6 @@
 //! Refreshing origin in a bare clone, in a shape a huge monorepo on a flaky link survives.
 //!
-//! BigMono taught every rule here:
+//! A large monorepo taught every rule here:
 //!
 //!   * **No refspec** — a bare clone made without `remote.origin.fetch` only writes `FETCH_HEAD`
 //!     on a plain `fetch origin`, so `origin/main` never exists. Fetch `main` by name into it.
@@ -52,9 +52,9 @@ fn is_partial(bare_s: &str) -> bool {
 /// Bring `origin/main` (on a normal clone: every remote-tracking ref) up to date. `Err` carries
 /// git's own last words, for a job log that says why rather than "offline?".
 ///
-/// A clone that is both shallow and blobless (BigMono) fetches `main` at `--depth=1
+/// A clone that is both shallow and blobless (a large monorepo) fetches `main` at `--depth=1
 /// --filter=blob:none` first. A plain fetch there negotiates fine, yet ADO still sends every new
-/// commit's full tree set: 1.3M objects for nine hours of BigMono `main`, which never finished on a
+/// commit's full tree set: 1.3M objects for nine hours of a monorepo's `main`, which never finished on a
 /// link that drops long transfers. The tip alone was 142K objects, 24 MiB, 18s. `main` itself is
 /// all the warm and `main-sync` need; the plain fetch stays as the fallback.
 pub(crate) fn refresh_origin(bare_s: &str) -> Result<(), String> {
@@ -210,7 +210,7 @@ mod tests {
     fn a_clone_without_a_refspec_gets_origin_main() {
         let _env = bn_core::test_support::env_lock();
         let tmp = tempfile::tempdir().unwrap();
-        // `clone --bare` sets no fetch refspec — the shape BigMono's bare clone has.
+        // `clone --bare` sets no fetch refspec — the shape a monorepo's bare clone has.
         let (src_s, bare_s) = clone(tmp.path(), 2);
         assert!(!has_fetch_refspec(&bare_s));
         let tip = commit(&src_s, "new");

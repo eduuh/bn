@@ -3,20 +3,20 @@
 #
 # Run ON the new machine (WSL on a Cloud PC, say), after dotfiles set up bn, gh and the repo's git
 # credentials:
-#   BN_SETUP_REPO=BigMono BN_SETUP_URL=<clone url> bn run build-machine-setup
+#   BN_SETUP_REPO=myrepo BN_SETUP_URL=<clone url> bn run build-machine-setup
 # (a private wrapper usually sets those; see the work jobs tier). Idempotent: every step checks
 # first and says ok / done / NEEDS YOU, so re-running it is how you check a machine.
 #
 # Steps:
 #   1. machine config: [machine] cron = true and the repo listed; [pool] scheduled includes it;
 #      with BN_SETUP_WORK=1 the shared [work] work_repos lists it too (so bn finds the private
-#      build script). Missing that sent AB12C's first warm to a scaffolded placeholder.
+#      build script). Missing that sent a new machine's first warm to a scaffolded placeholder.
 #   2. linger, so the user's systemd (and every bn timer) runs with nobody signed in;
 #   3. bn's timers (`bn cron register`), with self-update paused again afterwards;
 #   4. on WSL: the Windows keeper (wsl-keepalive) so the distro, tmux and tunnels stay up;
 #   5. hosting the Dev Tunnel (tunnel-host), so the laptop finds it within a minute;
 #   6. the repo's bare clone, shallow and blobless by default (BN_SETUP_CLONE_DEPTH /
-#      BN_SETUP_CLONE_FILTER; the full BigMono history died after 12 GB on a flaky link);
+#      BN_SETUP_CLONE_FILTER; a full monorepo history died after 12 GB on a flaky link);
 # Pool builds then run on the machine's schedule. It prints the one thing left for a person, if any.
 #
 # Env: BN_SETUP_REPO (required), BN_SETUP_URL (required to clone), BN_SETUP_WORK=1,
@@ -38,7 +38,7 @@ done_() { echo "  done  $*"; }
 needs() { echo "  NEEDS YOU  $*"; left="$left
   - $*"; }
 left=""
-[ -n "$REPO" ] || { echo "build-machine-setup: set BN_SETUP_REPO (e.g. BigMono)" >&2; exit 2; }
+[ -n "$REPO" ] || { echo "build-machine-setup: set BN_SETUP_REPO (e.g. myrepo)" >&2; exit 2; }
 case "$REPO$BRANCH" in *[!A-Za-z0-9_.-]*) echo "build-machine-setup: bad repo or branch name" >&2; exit 2 ;; esac
 command -v bn >/dev/null 2>&1 || { echo "build-machine-setup: bn is not installed (run dotfiles setup first)" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "build-machine-setup: python3 is needed to edit bn's config" >&2; exit 1; }

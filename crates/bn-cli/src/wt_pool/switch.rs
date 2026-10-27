@@ -57,7 +57,7 @@ pub(super) fn switch_into_slot_from(
 /// Run one `git switch`, and judge it by where HEAD landed rather than by git's exit code alone.
 ///
 /// git runs the `post-checkout` hook *after* moving HEAD, and a failing hook turns the whole
-/// command's exit code non-zero. BigMono's hook calls `node`, which a non-login shell often lacks, so a
+/// command's exit code non-zero. A monorepo's hook calls `node`, which a non-login shell often lacks, so a
 /// switch that had fully landed was reported as refused: the pool reset the slot, retried, and
 /// failed the lease with the branch checked out and the tree clean. So when git fails but HEAD is on
 /// `branch`, the switch counts, with one warning naming git's last stderr line. A switch that did not
@@ -101,7 +101,7 @@ mod tests {
     use super::super::git_integration_tests::{git, head_ref, mk_bare};
     use super::*;
 
-    /// A `post-checkout` hook that fails every time, like BigMono's `node: not found` without nvm.
+    /// A `post-checkout` hook that fails every time, like a monorepo's `node: not found` without nvm.
     /// Installed after the slot exists, because `worktree add` runs the hook too.
     fn install_failing_hook(bare: &str) {
         let hooks = Path::new(bare).join("hooks");

@@ -470,7 +470,7 @@ line (`? for shortcuts`), and read a dialog with `bn agent prompt` rather than f
 - **Report the real outcome**, including failures and non-zero exits. Use the saved log and exit
   status; if either shows failure, report it.
 - **Don't run in tmux and then also run it yourself** in a tool call. Pick one.
-- **Say where it is.** For a job pane, "beside this one"; for a window, name it (`bigmono-clone`,
+- **Say where it is.** For a job pane, "beside this one"; for a window, name it (`repo-clone`,
   `test-run`) so the user can find it.
 
 ## When there is no tmux

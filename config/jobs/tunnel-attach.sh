@@ -24,7 +24,7 @@ case "$SESSION" in *[!A-Za-z0-9_.-]*) echo "tunnel-attach: bad session name '$SE
 # Remote side, run in a login shell (so PATH matches an interactive login on the host). It tries
 # each installed tmux in turn: a tmux server keeps running the binary it was started from, so after
 # an upgrade the tmux on PATH can be a different version than the server, and the attach fails at
-# once with "open terminal failed: not a terminal" (seen 2026-09-27 on cloud-pc-AB12C: server
+# once with "open terminal failed: not a terminal" (seen 2026-09-27 on a Cloud PC: server
 # started by a since-replaced /usr/local/bin/tmux, 3.7c on PATH, /usr/bin/tmux 3.4 compatible).
 # A binary that fails within 3s is skipped; one that ran longer ended a real session, so its exit
 # code stands. -u forces UTF-8 (an ssh session often has no UTF-8 locale; borders show as qqqq).

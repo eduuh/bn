@@ -100,9 +100,9 @@ fn only_what_was_said_is_harvested_never_tool_output() {
 
 #[test]
 fn tag_changes_split_into_adds_and_drops() {
-    let (add, drop) = split_changes(&["+standup -dri".into(), "#docs,-#icm".into(), "-".into()]);
+    let (add, drop) = split_changes(&["+standup -dri".into(), "#docs,-#oncall".into(), "-".into()]);
     assert_eq!(add, ["standup", "docs"]);
-    assert_eq!(drop, ["dri", "icm"]);
+    assert_eq!(drop, ["dri", "oncall"]);
 }
 
 #[test]

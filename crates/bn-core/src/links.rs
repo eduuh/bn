@@ -520,30 +520,18 @@ pub fn default_name(url: &str) -> String {
 
 /// Host → tag rules for [`guess_tags`]. A rule matches the host exactly, as a `.suffix`, or as a
 /// `prefix.`/`prefix*` start. Kept small and obvious: a wrong guess is a tag you have to clean up.
-const GUESS_RULES: [(&str, &[&str]); 4] = [
-    ("icm", &[".example-incidents.com", "icm."]),
+const GUESS_RULES: [(&str, &[&str]); 3] = [
     (
         "docs",
         &[
             "learn.microsoft.com",
             "docs.microsoft.com",
-            "docs.example.com",
             "docs.",
             ".readthedocs.io",
         ],
     ),
-    (
-        "permissions",
-        &[
-            "myaccess.microsoft.com",
-            "groups.example*",
-            "identity.example.com",
-        ],
-    ),
-    (
-        "security",
-        &["security.microsoft.com", ".sdl.example.com"],
-    ),
+    ("permissions", &["myaccess.microsoft.com"]),
+    ("security", &["security.microsoft.com"]),
 ];
 
 /// The URL's host, lowercased, without port or credentials.
