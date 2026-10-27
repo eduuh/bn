@@ -31,6 +31,12 @@ BNMCP
 chmod +x "${CARGO_TARGET_DIR}/debug/bn" "${CARGO_TARGET_DIR}/debug/bn-mcp"
 EOF
 chmod +x "$tmp/bin/cargo"
+# run.sh accepts a toolchain only when rustc answers too; stub it so the check needs no Rust.
+cat >"$tmp/bin/rustc" <<'EOF'
+#!/usr/bin/env bash
+echo "rustc 9.9.9"
+EOF
+chmod +x "$tmp/bin/rustc"
 
 run_case() {
   local name="$1" expected_target="$2"
