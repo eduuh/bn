@@ -251,12 +251,14 @@ def pick(cwd):
         selected = subprocess.run(
             ["fzf", "--reverse", "--delimiter", "\t", "--with-nth", "2",
              "--header", "Command runs: Enter inspects, Esc closes"],
-            input=rows, capture_output=True, text=True,
+            # Only the selection is captured: some fzf builds draw their UI on stderr, and a
+            # captured stderr leaves the popup blank.
+            input=rows, stdout=subprocess.PIPE, text=True,
         )
         if selected.returncode in (1, 130):
             return 0
         if selected.returncode:
-            raise ValueError(f"fzf exited with status {selected.returncode}: {selected.stderr.strip()}")
+            raise ValueError(f"fzf exited with status {selected.returncode}")
         record = find_record(cwd, selected.stdout.split("\t")[0])
         print(f"\n{display_text(record['label'])}: {DISPLAY_STATES[record['state']]}")
         print(f"cwd: {display_text(record['cwd'])}")
