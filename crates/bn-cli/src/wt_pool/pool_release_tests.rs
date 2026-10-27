@@ -17,6 +17,17 @@ fn release_merged_slot_rescues_dirty_work_onto_the_branch_then_returns() {
 
     let _wt_root = bn_core::test_support::EnvGuard::set("WT_ROOT", root);
     let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", root.join("state"));
+    // The rescue commits in the slot, which has no identity of its own; a runner without a
+    // global git identity (or a guessable hostname) would refuse that commit.
+    let _ident: Vec<_> = [
+        ("GIT_AUTHOR_NAME", "t"),
+        ("GIT_AUTHOR_EMAIL", "t@t"),
+        ("GIT_COMMITTER_NAME", "t"),
+        ("GIT_COMMITTER_EMAIL", "t@t"),
+    ]
+    .into_iter()
+    .map(|(k, v)| bn_core::test_support::EnvGuard::set(k, v))
+    .collect();
     TEST_OCCUPANTS.with(|c| *c.borrow_mut() = Some(BTreeMap::new()));
 
     let cfg = bn_core::test_support::config(root);
