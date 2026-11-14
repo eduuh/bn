@@ -1,10 +1,10 @@
 ---
 name: morning
-description: "Start-of-day sweep over bn next: sprint priorities, real review asks, blockers, CI; ends in 1 to 3 actions, and can clear safe mechanical queue items (dry_run to preview). Use at the start of the day or to triage the attention queue."
+description: "Brief the start-of-day bn next queue and propose 1 to 3 actions; execute mechanical maintenance only when explicitly requested or approved. Use when starting the day or triaging the attention queue."
 when: Beginning your day, before picking a branch — the 15–30 min morning routine, across all branches.
 keywords: [triage, sweep queue, clear chores, dry run, morning, start of day, standup, sweep, priorities, inbox, review queue, blockers, ci, what now, plan my day]
 arguments:
-  - { name: dry_run, description: "If set (true/yes/1), classify and report only for the queue sweep, execute nothing", required: false }
+  - { name: dry_run, description: "If set (true/yes/1), execute nothing even when maintenance was approved. Omission does not authorize writes.", required: false }
 ---
 You are running the user's start-of-day routine. This is **cross-branch** (the whole day's
 picture), not a single branch — that's what `start-session` is for. Be fast and scannable;
@@ -28,13 +28,15 @@ End with: the 1–3, and the single first action to take now. Keep the whole thi
 
 ## Clear the queue (was triage)
 
-You are triaging the user's `bn next` action queue: separate the safe, mechanical actions
-you can do right now from the judgment calls that need the user, do the safe ones, and report.
+You are triaging the user's `bn next` action queue: separate mechanical maintenance candidates
+from judgment calls and report them. A briefing or triage request alone authorizes no writes.
 
 Dry-run: if `{{dry_run}}` is truthy (`true`/`yes`/`1`), this is **plan-only** — classify and
 report every item with the action you *would* take, but execute nothing and leave the queue
-untouched. Otherwise execute the auto-class items as below. When in doubt, prefer the queue:
-it is always safe to leave an item for the user, never safe to act on a misread one.
+untouched. Otherwise still default to classify-and-report: execute only specific mechanical
+actions the user explicitly requested or approved, including an explicit maintenance assignment.
+Omitting dry-run is not approval for edits, commits, pushes, PR comments, or queue acknowledgments.
+When in doubt, leave the item for the user.
 
 1. **Load the queue.** Run `bn next --json` in the shell. Each action is
    `{kind, title, detail, link?, priority, age, attn_id?}`, ranked most-pressing first. `kind` is one of
@@ -42,13 +44,13 @@ it is always safe to leave an item for the user, never safe to act on a misread 
    Read it; don't re-fetch anything over the network — the queue is already the distilled,
    offline signal.
 
-2. **Classify each item — auto vs. judgment.** Go by `kind`:
+2. **Classify each item — mechanical candidate vs. judgment.** Go by `kind`:
 
    | kind | class | why |
    |------|-------|-----|
-   | `pr` (your stale in-flight PR) | **auto** — *mechanical sub-actions only* | rebase onto the base branch, run the formatter/linter, re-push; nudge a reviewer with a one-line comment. All reversible, no content decisions. |
+   | `pr` (your stale in-flight PR) | **mechanical candidate** — *explicit approval required* | update the branch following repo history rules, format/lint, push, or nudge a reviewer only within the approved maintenance scope. |
    | `review` (a PR awaiting *your* review) | **judgment** | reviewing is the judgment; you can only fetch context, never approve. |
-   | `cron` (a failing scheduled job) | **judgment** | a failure is a symptom — diagnosing it is the work. (Re-running a known-flaky job once is the only safe auto-action, and only if the user has said so.) |
+   | `cron` (a failing scheduled job) | **judgment** | a failure is a symptom — diagnosing it is the work. A one-time rerun of a known-flaky job requires explicit approval. |
    | `attn` | **split by content** — see step 3 | a flagged item may be a chore ("rebase #N") or a decision. |
    | `goal` (today's open daily goal) | **judgment** | the user's plan; never silently complete it. |
    | `blocked` (a note with open blockers) | **judgment** | unblocking needs the missing thing, which is by definition not yours to supply. |
@@ -58,29 +60,34 @@ it is always safe to leave an item for the user, never safe to act on a misread 
 
 3. **Refine the `attn` items by reading the title.** An attn `title`/`detail` that is a pure
    mechanical chore — "rebase eduuh/bn#N", "reformat X", "re-run Y", "nudge reviewer on #N" —
-   is **auto**. Anything that asks a question, names a tradeoff, or says "decide/choose/review/
-   investigate" is **judgment**. If the wording is ambiguous, classify it **judgment**.
+   is a **mechanical candidate**, not authorization to act. Anything that asks a question, names a
+   tradeoff, or says "decide/choose/review/investigate" is **judgment**. If the wording is ambiguous,
+   classify it **judgment**.
 
-4. **Execute the auto-class items** (skip this entire step in dry-run). For each, via the harness:
-   - **Rebase a stale PR**: check out its branch, `git fetch`, rebase onto the base branch. If it
-     conflicts, **stop** — a conflict is a judgment call; reclassify it to the report and move on.
+4. **Execute only approved mechanical actions** (skip in dry-run or without approval).
+   Follow the repository's history and merge-gate rules. Never rewrite published history or
+   force-push implicitly. For each approved action, via the harness:
+   - **Update a stale PR**: check out its branch, fetch, and use the repo-approved update method.
+     If it conflicts or would require unauthorized history rewriting, **stop** on that item and
+     report the decision needed.
    - **Reformat / lint**: run the repo's own formatter and lint task — whatever its setup scripts
      or `bn verify` define, not a tool you assume from the language. Commit only formatting/lint
      fixes, nothing else.
    - **Nudge a reviewer**: post one short, factual comment on the PR (`gh pr comment`) — a
      status ping, no new asks. One nudge per PR per run.
-   - **Re-push** the branch when a rebase or fmt changed it.
+   - **Push** approved maintenance commits only when pushing is within the approved scope.
    After each, note the outcome (succeeded / skipped-because-conflict / no-op). Never merge,
-   approve, close, force-push over others' work, or touch `main` — those are out of scope here,
+   approve, close, force-push, or touch `main` — those are out of scope here,
    full stop. If an `attn` item carries an `attn_id`, `bn attn ack <attn_id>` it **only** once
    its mechanical action genuinely completed; never ack a judgment item. (Other kinds carry no
    `attn_id` — they clear themselves from the queue when their underlying condition resolves.)
 
-5. **Report.** Lead with a one-line tally: *N items — X auto-executed, Y left for you*
-   (in dry-run: *would auto-execute X, leave Y*). Then two short groups:
-   - **Done** (or **Would do** in dry-run): one line each — what you did/would do and the result.
+5. **Report.** Lead with a one-line tally: *N items — X approved actions completed, Y left for you*
+   (without execution: *X mechanical candidates, Y judgment calls; no changes made*).
+   Then two short groups:
+   - **Done** (or **Proposed** without execution): one line each — what you did/propose and the result.
    - **Needs you**: one line each — the item and the single judgment it's waiting on, heaviest
      first. These stay in the queue untouched.
 
-Be conservative and honest: only auto-execute the unambiguously mechanical, only ack what truly
-completed, and when a classification is even slightly uncertain, leave it for the user.
+Be conservative and honest: execute only explicitly approved, unambiguously mechanical actions,
+ack only what truly completed within that scope, and leave uncertain items for the user.

@@ -38,7 +38,8 @@ stalls waiting for a password it never needed.
 ## Long-running jobs — the whole workflow
 
 A build, a clone, an install, a dev server. Minutes to hours. **You do not sit and
-wait for these.** Start it beside you, say where it is, keep working, check back.
+wait for these in the foreground.** Start it beside you, say where it is, keep working, and
+await its completion signal in the background.
 
 ```
  1. adjacent pane ──▶ 2. tell the user ──▶ 3. keep working
@@ -103,9 +104,9 @@ after completion. The job emits its own heartbeats while the agent works elsewhe
 one-shot command. For commands sent into an existing interactive shell, save the exit status and
 then run `exit`; treat pane disappearance as completion and inspect saved logs/status files.
 
-Other honest signals: a port (`ss -tln | grep :3000`), a file appearing, `du -sh`
-growing, or the artifact itself — `bn tmux prune --help` succeeding only once the new
-binary is installed. Pick one that becomes true only when the job really progressed.
+For a persistent service, check readiness with a concrete probe such as its port or health endpoint;
+then retain its supported stop handle or recorded PID. A readiness probe or a growing artifact is
+not proof that a one-shot job finished: use its completion signal, saved exit status, and log.
 
 **5. Read the saved outcome**, then report what it says — including failure. The pane closes when
 the command exits, so inspect its log and recorded exit status rather than pane scrollback.
@@ -128,8 +129,8 @@ job=$(tmux split-window -d -t "$TMUX_PANE" -h -P -F '#{pane_id}' -c <dir> \
 * **The build's exit code, not `tee`'s.** Run the pipeline under `set -o pipefail`, save `$?` to
   the status file, and exit the shell. Read the log and status file after the pane closes.
 * **Long builds belong in the pane; quick checks stay in the session.** A release build under
-  load can take ten minutes. `run_in_background` on the tool call is not a substitute for a
-  visible pane when the job is long-running.
+  load can take ten minutes. Background execution alone is not a substitute for a visible pane
+  when the job is long-running.
 * **bn itself:** from any bn worktree or pool slot, `bn build build-to-local` compiles that branch
   into the shared cache and installs it as the live `bn` — that, in the pane, is how a bn change is
   tried.
@@ -165,26 +166,21 @@ Each of these produced a confident, wrong status report:
   pattern, and the echoed `echo "--- fast exited ---"` before it ever runs. Result: "it
   is still running" when it finished, and "it finished" when it had not started.
   **Match on a PID, a port, or a file. Not on text you also typed.**
-- **Stale scrollback from the PREVIOUS run.** The same trap with a delay fuse: you poll
-  `capture-pane | grep "--- done ---"` for run #2, and it matches run #1's marker still
+- **Stale scrollback from the PREVIOUS run.** The same trap with a delay fuse:
+  `capture-pane | grep "--- done ---"` for run #2 matches run #1's marker still
   sitting in the pane history. The wait returns instantly and you report a result the
-  new run has not produced. Before polling a rerun, either `tmux clear-history -t
-  <window>` first, or — better — wait on the process itself:
-  ```sh
-  pid=$(pgrep -f "<the real process>" | head -1)
-  until ! kill -0 "$pid" 2>/dev/null; do sleep 15; done
-  ```
+  new run has not produced. Give each run its own completion signal and saved outcome, and
+  use the harness's background wait rather than polling scrollback or process state.
 - **Piping through `tail` or `less`.** `cmd | tail -40` buffers until exit — and a dev
   server never exits, so the window stays blank and the job looks hung. Never pipe a
   long job's output.
-- **Chaining sleeps.** `sleep 60; check` is refused by the harness. Use an `until` loop
-  or `run_in_background`.
+- **Chaining sleeps.** Do not repeatedly sleep and check from the agent. Use the harness's
+  supported background-execution mechanism and completion handle; do not assume a tool or
+  option name.
 - **Killing only the parent.** `kill` on a build's top process leaves grandchildren
-  running, and the orphan blocks the next attempt. Reap the tree and confirm:
-
-  ```bash
-  pkill -f "<pattern>"; pgrep -af "<pattern>" || echo cleared
-  ```
+  running, and the orphan blocks the next attempt. Record the owned job's PID/process tree
+  at launch. Stop it through the harness's supported process-tree stop handle or specific
+  recorded PIDs, then verify those processes exited. Never use name/pattern-based killing.
 
 ## How
 
@@ -243,16 +239,10 @@ shell, and `exit` closes it.
 Long or hard-to-quote commands: write a script to the scratchpad first, then send its path. Tee
 output to a log if it must be inspected after the pane closes.
 
-**4. Watch it, don't fire and forget.** Poll the pane while the command runs; report what actually
-happened from its saved log and status after the pane closes.
-
-```bash
-tmux capture-pane -p -t "$pane" -S -40
-```
-
-For anything running longer than a minute, follow **Long-running jobs** above: its own pane beside
-yours, and a wait on real state. Do not chain sleeps (`sleep N; <cmd>` is blocked by the harness), and do not
-wait by grepping the pane for a marker you also typed — the echoed command line matches it.
+**4. Await completion, don't poll.** For every job routed to tmux, follow **Long-running jobs**
+above: wait on its completion signal in the background and read the saved log/status afterwards.
+Read a pane only to diagnose a concrete prompt or unexpected state, not as a progress-polling loop.
+Do not chain sleeps or grep scrollback for a marker you also typed — the echoed command matches it.
 
 Tell the user which pane or window to look at. If the outcome must be read after completion, save
 the full output to a log and the exit status to a file; the pane closes and its scrollback is gone.
@@ -265,10 +255,11 @@ tmux new-window -d -t "<session>:" -n <name> '<command>; printf "%s\n" "$?" > <s
 ```
 
 **6. Clean up panes and windows you opened.** One-shot command panes close automatically when
-their command exits. When a long-running job or service is no longer needed, stop it with its
-documented shutdown command and verify it has stopped before closing its pane. For a foreground
-command you started, Ctrl-C is appropriate; wait for it to exit. Then close a remaining idle pane
-or a window you created:
+their command exits. When an owned job or service is no longer needed, use its documented shutdown
+method (Ctrl-C is appropriate for a foreground command you started), supported harness stop handle,
+or specific PIDs recorded at launch. Await termination without polling and verify it stopped before
+closing its pane; never stop a process by name or pattern. Then close a remaining idle pane or
+window you created:
 
 ```bash
 tmux kill-pane -t "$job"
@@ -465,8 +456,9 @@ line (`? for shortcuts`), and read a dialog with `bn agent prompt` rather than f
   stall, check whether something is genuinely waiting (a live child process, `tasklist.exe` showing
   a dialog) and tell the user **where** to look.
 - **Stop jobs before closing panes.** Closing a pane or window can kill its foreground job while
-  leaving child processes behind. Use the job's shutdown method, verify it stopped, then clean up
-  the pane/window you opened.
+  leaving child processes behind. Use the owned job's shutdown method, supported stop handle, or
+  recorded PIDs, await termination without polling, verify it stopped, then clean up the
+  pane/window you opened. Never kill processes by name or pattern.
 - **Report the real outcome**, including failures and non-zero exits. Use the saved log and exit
   status; if either shows failure, report it.
 - **Don't run in tmux and then also run it yourself** in a tool call. Pick one.

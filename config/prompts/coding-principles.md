@@ -16,10 +16,10 @@ keywords: [coding-principles, coding, principles, language-agnostic, maintainabi
 ## Code Quality
 
 ### Continuous Improvement
-- Refactor related code within each change set — address style, naming, or structure issues in the files being modified
-- Improve code structure incrementally
+- Refactor only what the requested behavior or its safety requires; leave unrelated style, naming, or structure cleanup alone unless requested
+- Improve code structure incrementally within that scope
 - Keep the codebase lean and focused
-- Delete unused code immediately
+- Delete unused code when its removal is required by the change or explicitly requested
 
 ### Readability
 - Use meaningful, descriptive names drawn from the problem domain
@@ -77,13 +77,13 @@ keywords: [coding-principles, coding, principles, language-agnostic, maintainabi
 
 ### Verifying References Before Adoption
 When adopting patterns, APIs, or dependencies from existing code:
-- **IF** referencing only 2-3 nearby files → **THEN** confirm the pattern is representative by checking usage across the repository before adopting
-- **IF** multiple approaches coexist in the repository → **THEN** identify the majority pattern and make a deliberate choice — selecting whichever is nearest is insufficient
-- **IF** adopting an external dependency (library, plugin, SDK) → **THEN** verify repository-wide usage distribution for the same dependency; if the appropriate version cannot be determined from repository state alone, escalate
+- Start with applicable repository instructions and relevant nearby examples; broaden the search only when they conflict, are obsolete, or do not establish the needed convention
+- For competing patterns, inspect the affected subsystem and widen only as needed to resolve a material compatibility question
+- For an external dependency (library, plugin, SDK), inspect the affected manifests and usage; widen or escalate only when they do not settle a material version or compatibility question
 - **IF** following an existing pattern → **THEN** state the reason for following it when an alternative exists (e.g., consistency with surrounding code, avoiding breaking changes, pending coordinated update)
 
 ### Principle
-Nearby code is a starting point for investigation, not a sufficient basis for adoption. Verify that what you reference is representative of the repository's conventions and current best practices before using it as a model.
+Nearby code plus applicable repository instructions is usually sufficient. Investigate further when concrete evidence warrants it, not to perform a repository-wide census for every small change.
 
 ## Performance Considerations
 

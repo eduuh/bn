@@ -1,7 +1,7 @@
 ---
 name: plan
-description: "Turn a goal into a verifiable plan file: done-when criteria plus ordered steps, with an optional visual Lavish pass. Use before coding, or when asked to make a plan, diagram or report."
-when: You have a goal but no plan yet — before you write any code. Turns "here's what I want" into an executable plan file the execution loop can burn down.
+description: "Turn a goal into a verifiable implementation plan file, optionally with a visual Lavish pass. Use when explicitly asked for an executable implementation plan or dispatched as the pipeline Plan stage, not for routine edits, standalone diagrams, explanations or reports."
+when: An executable implementation plan was requested, ad hoc or through a dispatched Plan stage. Routine coding and standalone diagrams or reports do not require this workflow.
 keywords: [lavish, visualize, mermaid, diagram, plan, break down, decompose, scope, design, approach, acceptance criteria, done when, todos, kick off work]
 arguments:
   - { name: topic, description: What to plan. Omit to plan the note's current Goal., required: false }
@@ -13,11 +13,11 @@ file instead. The branch note
 stays the index/status layer. You do **not** write code in this skill; you make the next
 session's coding unambiguous.
 
-1. **Load the investigated task.** Call `bn_cat` to load the note. If a topic was given
+1. **Load the task and existing evidence.** Call `bn_cat` to load the note. If a topic was given
    ({{topic}}), that's the goal — set it with `bn_goal` only when the note has no goal. Otherwise
-   use the existing Goal. Read every Research finding first: they are the investigate stage's
-   evidence and must shape the plan. Validate only missing details; do not repeat settled research
-   or invent facts when evidence is absent.
+   use the existing Goal. Read any relevant Research findings first and use them as evidence.
+   An ad-hoc plan does not require a prior investigation stage. Validate only missing details;
+   do not repeat settled research or invent facts when evidence is absent.
 
 2. **Write the plan artifact.** Run `bn plan init` (skip it when the seed already names a draft
    file); it creates the file and prints its path. Write the plan Markdown there:
@@ -38,16 +38,17 @@ session's coding unambiguous.
    Y*. Decide once, here, so the execution session doesn't re-litigate it.
 
 4. **Name the unknowns.** Anything the persisted findings still do not settle is `bn_add research`.
-   If an unknown is big enough to block the plan, do not guess or silently widen the plan: return
-   the branch to `investigate` with `bn pipeline set investigate` and state the focused question.
+   If an unknown blocks the plan, state the focused question rather than guessing or widening
+   scope. In a dispatched pipeline, follow its supplied lifecycle instructions for returning to
+   investigation. Otherwise stop with the question; do not create or change pipeline state.
 
 5. **Report.** Restate the goal in one line, then: the done-when criteria, the ordered steps, and
    the single first step you'd start. Say explicitly whether the plan is ready to execute or
-   gated on an `investigate`. Keep it scannable — the plan file holds the detail.
+   blocked on a named question. Keep it scannable — the plan file holds the detail.
 
 ## Visual mode (Lavish)
 
-Use when the human wants to think the plan through visually (HTML, Mermaid, comparison tables) before it is written down. The plan artifact stays the durable record; an HTML artifact nobody can execute is not a plan.
+Use when the human wants to visualize the requested implementation plan (HTML, Mermaid, comparison tables) before it is written down. A standalone diagram or report does not enter this workflow. The plan artifact stays the durable record; an HTML artifact nobody can execute is not a plan.
 
 1. **Orient on the branch.** Call `bn_context` (and `bn_cat` for detail) for the Goal and open
    work, so the plan lands on the right branch note. If a topic was given ({{topic}}), that's the
@@ -67,7 +68,7 @@ Use when the human wants to think the plan through visually (HTML, Mermaid, comp
    observable done-when criteria, ordered steps, risks, open questions); the artifact, not the
    HTML, is what `build-from-plan` executes. Record every tradeoff you settled in Lavish with
    `bn_add decision` (*why X over Y*), and anything still unsettled with `bn_add research`; if an
-   unknown blocks the plan, return to `investigate`.
+   unknown blocks the plan, follow the scoped unknown-handling rule above.
 
 4. **Link the artifact, keep the plan self-sufficient.** Export the Lavish artifact
    (`lavish-axi export --out <path>`) and record its location with a `bn_add decision` so it's
@@ -75,5 +76,5 @@ Use when the human wants to think the plan through visually (HTML, Mermaid, comp
 
 5. **Report.** Restate the Goal in one line, then the done-when criteria, the ordered steps, the
    single first step to start, and where the Lavish artifact lives. Say explicitly whether the
-   plan is ready to execute or gated on an `investigate`. Keep it scannable — the plan file holds
+   plan is ready to execute or blocked on a named question. Keep it scannable — the plan file holds
    the detail.

@@ -1,6 +1,6 @@
 ---
 name: decompose
-description: "Split an oversized GitHub issue into independent, shippable child issues. Use before dispatching an issue that is too big for one PR, or when asked to break down an epic."
+description: "Propose independent, shippable children for an oversized GitHub issue; decomposition alone does not authorize dispatch. Use when preparing an explicitly authorized dispatch or asked to break down an epic."
 when: A bundled issue contains several changes that would create a conflict-heavy agent lane or PR
 keywords: [decompose, split issue, oversized issue, sub-issues, touches-glob, conflict scope]
 arguments:
@@ -14,9 +14,12 @@ parent and do not dispatch it whole.
 2. Census the named code and workflow surfaces read-only. Split by conflict boundary, not by
    arbitrary size: one child should have one coherent outcome and one non-overlapping set of path
    globs. Shared registration files belong to one child rather than being repeated across siblings.
-3. Run `bn issue decompose {{issue}} --part "<shippable title>::<glob>[,<glob>]" ...`.
-   Use at least two parts. The command validates that sibling globs do not overlap, creates or
-   reuses parent-linked child issues, comments the parent with their checklist, and starts work on the
-   children only, never the parent.
-4. Report the child issue numbers and their touches-globs. The parent remains a tracking bundle;
-   investigate and plan run independently inside each child lane.
+3. For a decomposition-only request, run
+   `bn issue decompose {{issue}} --dry-run --part "<shippable title>::<glob>[,<glob>]" ...`.
+   Use at least two parts. This validates and previews the children without creating issues or
+   starting agents. Remove `--dry-run` only when the user or dispatch packet explicitly authorizes
+   both creating the children and dispatching their workers: that command creates or reuses
+   parent-linked issues, comments the parent, and starts a lane for each child, never the parent.
+   There is no create-only flag; do not invent one.
+4. Report the proposed children and touches-globs, or the child issue numbers if creation and
+   dispatch were authorized. In dispatch mode, investigate and plan run inside each child lane.

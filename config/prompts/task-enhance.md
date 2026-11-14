@@ -1,6 +1,6 @@
 ---
 name: task-enhance
-description: "Make one task concrete: repo, grouping, done-when and size until it passes the SMART gate. Use when a task is vague or has no clear done."
+description: "Make an existing bn task concrete until it passes the SMART gate. Use when explicitly asked to scope a task by id or dispatched by its SMART gate, not for ordinary implementation requests or a single clarifying question."
 when: A task is too vague for anything downstream to place or start, and someone asked for it to be scoped rather than built.
 keywords: [enhance, improve, scope, ground, smart, done when, unscoped, not ready, task]
 arguments:

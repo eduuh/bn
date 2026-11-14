@@ -16,6 +16,12 @@ a fresh Copilot fleet / Claude subagent with the diff, acceptance criteria, repr
 permitted checks, not your implementation transcript. If already the pipeline's fresh critic,
 perform the critique yourself rather than launching another critic.
 
+If dispatched with a callback envelope, follow its contract below. For an explicitly requested
+standalone fresh-context second opinion, use the supplied diff and acceptance criteria, run
+proportionate relevant checks, and return findings directly. Do not require a launcher packet,
+invent a callback, create a pipeline, or redispatch implementation. The numbered pipeline protocol
+below applies only when its envelope was supplied.
+
 1. **Ground on the change only.** The launcher appends a plan-free runtime packet containing the
    done-when criteria, PR, and exact diff. Use that packet as the review contract. `bn_cat` may be
    used only for the critic lane's plan-free state. Read the diff cold and resist any assumption
