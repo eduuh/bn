@@ -3,8 +3,10 @@
 These shipped rules come from bn's `write-like-me` skill. They record explicit instructions,
 not guessed personal preferences. A personal `writing-voice` reference can override them.
 
-Use `write-like-me` for requested rewrites, text for someone else, and requested task plans.
-Do not use it for ordinary agent replies, progress updates, or internal planning.
+Use `write-like-me` only for explicitly requested drafts, rewrites, and polishing, including
+text for someone else and requested task plans. Apply these rules only to the requested artifact.
+Never apply them to agent replies, progress updates, explanations, code output, completion
+summaries, or internal planning. Keep style checks internal unless the user asks for a report.
 
 ## Style
 

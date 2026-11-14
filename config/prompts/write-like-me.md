@@ -1,14 +1,16 @@
 ---
 name: write-like-me
-description: "Rewrite text or draft outward-facing writing and task plans in my voice. Use for requested rewrites, text for someone else, or task planning, not ordinary agent replies."
-when: I ask to rewrite text, draft or send something to someone else, or write a task plan. Never for ordinary session replies, progress updates, or internal planning.
+description: "Draft, rewrite, and polish requested writing in my voice. Use when I ask for a writing artifact, never for ordinary agent output."
+when: I explicitly ask to draft, rewrite, or polish a writing artifact, including text for someone else or a task plan. Never for ordinary agent replies, progress updates, explanations, code output, completion summaries, or internal planning.
 keywords: [rewrite, send, team, message, planning, task plan, writing, blog, post, draft, prose, voice, tone, style, polish, readme, email, de-ai, ai tells, em-dash, plain english]
 arguments:
   - { name: topic, description: "What to write about, or the path of a draft to rewrite. Omit and I will ask.", required: false }
   - { name: kind, description: "rewrite | message | plan | blog | readme | pr | issue | email | notes. Use the requested format.", required: false }
 ---
-Use this skill for requested rewrites, text intended for someone else, and task plans the user
-asks you to write. Do not apply it to ordinary agent replies, progress updates, or internal planning.
+Use this skill only when the user explicitly asks to draft, rewrite, or polish a writing artifact.
+Apply its rules only to that artifact, not to the rest of the session. Never restyle agent replies,
+progress updates, explanations, code output, completion summaries, or internal planning.
+Producing prose during a coding task does not activate this skill.
 
 You are writing as **me**, not as an assistant. The job is prose that reads like a person who
 built the thing and is telling you what happened. Two failure modes end the task: it does not
@@ -115,9 +117,10 @@ no frontmatter, no MDX components, and usually no caveat section. Shorter, same 
 ~/.bn/config/repo/config/scripts/voice-check.sh <draft-file>
 ```
 
-Every **FAIL** must be gone. Exit code 0 or you are not done. Fix each one in the prose, never by
-editing a code block. Then read the **WARN** list and judge each hit: most are real, a few are
-fine. Say in your report which ones you kept and why.
+Run the checker only on the requested artifact, never on agent output. Every **FAIL** must be
+gone. Exit code 0 or you are not done. Fix each one in the prose, never by editing a code block.
+Then read the **WARN** list and judge each hit: most are real, a few are fine. Keep the results
+internal unless the user asks for them.
 
 Then do the passes a script cannot do:
 
@@ -154,16 +157,12 @@ Two failures show up here that nothing above catches:
 If the answer to the question is genuinely "nothing", you have not looked hard enough. Look again
 at the section you are proudest of. That is usually where the polish went in.
 
-## Step 7: report
+## Step 7: deliver the artifact
 
-Give me the file path, then:
-
-- Anything you could not verify, listed plainly, so I can fill it in or cut it.
-- Any place you were unsure about the voice, with the alternative you considered.
-- Confirmation that the mechanical check came back clean.
-- What you pointed at in step 6, and whether you fixed it or left it.
-
-Do not tell me the piece is good. Tell me what is still soft in it.
+Return the requested writing or rewrite diff. If it was saved to a file, use a brief normal
+handoff with its path and any factual blockers. Do not impose this skill's voice or format on
+that handoff. Do not add checker counts, self-audit answers, or a style-check report unless
+the user explicitly asks for them.
 
 ## If I asked for a rewrite
 
