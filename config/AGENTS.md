@@ -49,6 +49,7 @@
 
 ## Git
 
+- Load `commit-privacy` before creating or publishing commits, including merges, rebases, and cherry-picks. Require the user's approved noreply identity; do not rely on `user.email` alone.
 - Before editing a feature branch, run `git fetch origin` and rebase onto the latest `origin/main`. If the worktree is dirty, the branch is shared or protected, or fetch/rebase conflicts, stop and ask before proceeding.
 - Commit each logical unit with a conventional message (`feat:`, `fix:`, `chore:`).
 - Never bare `git stash` / `git stash pop`; the stash is shared across worktrees.
