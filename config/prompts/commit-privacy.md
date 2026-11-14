@@ -2,9 +2,23 @@
 name: commit-privacy
 description: "Keep the user's private email out of Git commits by requiring their GitHub noreply address. Use before creating commits, merging, rebasing, cherry-picking, or publishing the user's commits."
 when: Creating or publishing commits for the user, including operations that create commits indirectly.
-keywords: [commit, git, email, privacy, noreply, author, committer, merge, rebase, cherry-pick, push]
+keywords:
+  [
+    commit,
+    git,
+    email,
+    privacy,
+    noreply,
+    author,
+    committer,
+    merge,
+    rebase,
+    cherry-pick,
+    push,
+  ]
 ---
-Use `1909722+eduuh@users.noreply.github.com` for both author and committer email on
+
+Use `31909722+eduuh@users.noreply.github.com` for both author and committer email on
 every new commit authored by the user. This is an agent workflow, not a Git hook:
 it cannot block commits made outside the workflow.
 
@@ -17,9 +31,9 @@ it cannot block commits made outside the workflow.
    or change global/shared repository settings. For example, with the intended
    commit arguments appended:
    ```sh
-   GIT_AUTHOR_EMAIL=1909722+eduuh@users.noreply.github.com \
-   GIT_COMMITTER_EMAIL=1909722+eduuh@users.noreply.github.com \
-   git -c user.email=1909722+eduuh@users.noreply.github.com commit
+   GIT_AUTHOR_EMAIL=31909722+eduuh@users.noreply.github.com \
+   GIT_COMMITTER_EMAIL=31909722+eduuh@users.noreply.github.com \
+   git -c user.email=31909722+eduuh@users.noreply.github.com commit
    ```
    Reject conflicting `--author` values. Keep names and required coauthor trailers;
    never copy the user's other addresses into messages, trailers, notes, or logs.
