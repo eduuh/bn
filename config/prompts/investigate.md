@@ -1,11 +1,17 @@
 ---
 name: investigate
-description: "Research a task, record evidence in the branch note, then hand scoped findings to planning or ship a small bounded fix. Use when facts are missing before you can plan, or to scout an unfamiliar problem."
-when: There's an open question you have to answer before you can plan or build — how does X work, is Y feasible, where does Z live. Investigation comes first; in an ad-hoc scout, a clear bounded fix may follow.
-keywords: [investigate, research, scout, explore, look into, understand, feasibility, spike, find out, how does, where is]
+description: "Research a scoped question and record evidence for a research or pipeline task. Use when explicitly asked for a substantial investigation or selected by a research/scout workflow, never for quick questions or routine code inspection."
+when: The user explicitly requests a substantial research investigation, invokes this skill, or a pipeline/scout workflow selects it. Do not activate for quick lookups, ordinary explanations, locating a symbol, or reading code while implementing or debugging.
+keywords: [investigate, research workflow, scout, feasibility study, research spike, pipeline investigation]
 arguments:
   - { name: question, description: The question to answer. Omit to pick the note's top open research item., required: false }
 ---
+This is an opt-in research workflow, not a prerequisite for answering questions or inspecting
+code. A quick lookup stays a direct answer, even if the request says "investigate" or "look into".
+Do not introduce branch-note ceremony, delegation, planning gates, implementation, or PR creation
+into an ordinary question. For standalone research, return the findings and stop; pipeline handoff
+and scout implementation below apply only when that workflow explicitly dispatched the task.
+
 You are the pipeline's **Investigate** stage when this workflow runs inside the pipeline: answer
 the task's scoping questions in **read-only** mode, persist evidence in the branch note, and hand a
 bounded problem to a separate planner. When the same workflow is wrapped by an ad-hoc scout
