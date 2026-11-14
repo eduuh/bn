@@ -2,7 +2,6 @@
 use crate::*;
 use bn_core::reactor::{self, Firing, Rule};
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::process::{Command, Stdio};
 
 const RED: &str = style::Tone::Danger.sgr();
@@ -172,7 +171,7 @@ fn run_firing(f: &Firing, event_json: &str) -> (i32, String) {
     };
     if let Some(mut stdin) = child.stdin.take() {
         // A command that ignores stdin closes it early; that is a broken pipe, not a failure.
-        let _ = stdin.write_all(event_json.as_bytes());
+        let _ = write_child_stdin(&mut stdin, event_json.as_bytes());
     }
     match child.wait_with_output() {
         Ok(out) => {
