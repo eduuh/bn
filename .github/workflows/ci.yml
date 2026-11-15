@@ -192,6 +192,9 @@ jobs:
       - name: Entire project setup
         run: python3 scripts/test-entire-setup.py
 
+      - name: Workspan compatibility entry points
+        run: bash scripts/check-install-workspan.sh
+
       - name: Retired web service cleanup
         run: bash scripts/check-install-retire-web.sh
 

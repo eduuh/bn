@@ -181,7 +181,7 @@ ensure_worktree() {
             return 1
         fi
     fi
-    (cd "$worktree_path" && "$HOME/.config/bn/bn" build 2>/dev/null) || true
+    (cd "$worktree_path" && "$HOME/.config/bn/workspan" build 2>/dev/null) || true
     run_worktree_hook post-create "$worktree_path" "$repo" "$branch"
     return 0
 }

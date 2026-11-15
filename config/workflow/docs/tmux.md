@@ -35,7 +35,7 @@ state and, independently, a short command-run badge:
 | `RUN` / `PASS` / `FAIL` / `CANCEL` / `UNKNOWN` | Worktree-scoped command results, based on the runner rather than pane silence. |
 
 Agent/note badges and the window → worktree link (`@bn_repo`/`@bn_branch`) are refreshed by
-`bn tmux reconcile`, which runs on every client attach and on the 5-minute cron. Window options do
+`workspan tmux reconcile`, which runs on every client attach and on the 5-minute cron. Window options do
 not survive a tmux-resurrect restore, and the badges are otherwise written only to the window bn
 happened to run in — so without the sweep a note edited by an agent in another window never reaches
 that window's tab. Run it by hand to see its decisions:
@@ -51,7 +51,7 @@ blank one.
 
 ### Build/test runs
 
-Run `bn cmd run -- --label build -- bn build` or wrap your test command the same way.
+Run `workspan cmd run -- --label build -- bn build` or wrap your test command the same way.
 `prefix B` opens this worktree's run history: select a run to inspect its command, read the
 retained log, or confirm a rerun. Reruns preserve argv/cwd but use the current environment and
 new logs. `prefix c` still opens the general command picker.
@@ -94,7 +94,7 @@ The left pill shows the session name and **flips to reverse-video `PREFIX`** the
 | Key | Action |
 |-----|--------|
 | `C-o` | Project picker (fzf over `~/projects`). Creates or switches session. A bare repo's sub-picker includes windows, local worktrees, pool slots, and your open PRs missing from this laptop; selecting a `PR` row fetches and opens its branch. |
-| `C-j` | Session tree (`choose-tree`). tmux's own picker, no fzf and no `bn` — the fallback that still switches sessions when PATH is bare or `bn` is mid-reinstall. `f` filters, `O` re-sorts, `x` kills the highlighted row, `Right` expands a session into its windows. |
+| `C-j` | Session tree (`choose-tree`). tmux's own picker, no fzf and no `workspan` — the fallback that still switches sessions when PATH is bare or `workspan` is mid-reinstall. `f` filters, `O` re-sorts, `x` kills the highlighted row, `Right` expands a session into its windows. |
 | `t` | Kill current session, switch to next. |
 | `.` | Rename current session. |
 | `C-d` | Detach this client (leave tmux). `d` is the diff picker. |
@@ -106,53 +106,53 @@ The left pill shows the session name and **flips to reverse-video `PREFIX`** the
 | Key | Action |
 |-----|--------|
 | `o` | **Go to or create worktree.** fzf list of existing worktrees, **most recently active first** with `main` last — so the default row is where you were actually working. Select one → opens as window. Type a new name + Enter → creates worktree from latest `main`, opens as window. |
-| `x` | **Close this worktree.** Drops its window immediately, then reclaims the worktree in a background process: it hands the pool lease back, or runs `bn wt cleanup`'s gates for a conventional worktree, and reports the outcome a few seconds later as a status-line message. Prompts first if the branch has uncommitted or unpushed work, or a live agent working in the checkout — an agent mid-turn has a clean tree, and closing over it would kill it silently. Refuses `main`/`master` and the controller slot — on those, and on any non-worktree pane, it is just a pane close. **Never closes a session:** a worktree owning its session's last window leaves that window respawned as a bare shell. The expensive half runs in the background on purpose: a warm reset re-checks-out the tree and the cleanup gates make a `gh pr view` round-trip, neither of which a keystroke should wait on. |
+| `x` | **Close this worktree.** Drops its window immediately, then reclaims the worktree in a background process: it hands the pool lease back, or runs `workspan wt cleanup`'s gates for a conventional worktree, and reports the outcome a few seconds later as a status-line message. Prompts first if the branch has uncommitted or unpushed work, or a live agent working in the checkout — an agent mid-turn has a clean tree, and closing over it would kill it silently. Refuses `main`/`master` and the controller slot — on those, and on any non-worktree pane, it is just a pane close. **Never closes a session:** a worktree owning its session's last window leaves that window respawned as a bare shell. The expensive half runs in the background on purpose: a warm reset re-checks-out the tree and the cleanup gates make a `gh pr view` round-trip, neither of which a keystroke should wait on. |
 | `X` | Kill this window and all its panes. Leaves the worktree and its lease alone — `x` is the integrated close. |
 | `W` | Always open a **new** worktree window, even when one for the branch exists. |
-| `D` | Pick any worktree to reclaim it + kill its window — the picker sibling of `x`, and the same reclaim: a pool slot hands its lease back, a conventional worktree goes through the merged-PR / clean-tree gates and has its note closed. It runs inline (it is already a popup, so nothing blocks), and refuses rather than forcing; `bn wt remove --force` is the override. |
+| `D` | Pick any worktree to reclaim it + kill its window — the picker sibling of `x`, and the same reclaim: a pool slot hands its lease back, a conventional worktree goes through the merged-PR / clean-tree gates and has its note closed. It runs inline (it is already a popup, so nothing blocks), and refuses rather than forcing; `workspan wt remove --force` is the override. |
 
 In a non-bare session, `o` just opens/selects a `main` window at the repo path.
 
 ## Where agents run
 
-One rule, enforced in `bn agent launch` — the chokepoint every entry point funnels through (the keybinds, `bn dispatch`, `bn fleet control start`, and the `claude`/`copilot` shell wrappers from `bn setup shell-init`):
+One rule, enforced in `workspan agent launch` — the chokepoint every entry point funnels through (the keybinds, `workspan dispatch`, `workspan fleet control start`, and the `claude`/`copilot` shell wrappers from `workspan setup shell-init`):
 
 | Worktree | May host |
 |---|---|
 | outside a git worktree | **nothing.** Every session, including planning, must be backed by a repository branch. |
 | `worktree/<repo>/main` | **nothing.** It stays clean on `main`, matching the `pre-commit` hook that already refuses commits there — and it is not somewhere you go either: the pickers hide it, and `main-sync` hard-resets it onto the remote tip every 15 minutes. |
-| `_pool/1` — the **main slot** | the `bn fleet control` orchestrator, and only it. It is also where *you* land when you pick "main": a detached checkout at the repo's base, so main-branch work has a home that isn't the main worktree. `bn fleet control start` leases this slot from anywhere in the repo. |
+| `_pool/1` — the **main slot** | the `workspan fleet control` orchestrator, and only it. It is also where *you* land when you pick "main": a detached checkout at the repo's base, so main-branch work has a home that isn't the main worktree. `workspan fleet control start` leases this slot from anywhere in the repo. |
 | `_pool/2…N`, branch worktrees | exactly **one** agent each. |
 
 So:
 
-- Typing `claude` (or `copilot`) in the main slot doesn't dead-end — it asks *what is this worktree for?*, then hands the answer to `bn dispatch`, which leases a warm pool slot, seeds that branch's note with the goal **and** an open todo, and starts the agent there.
+- Typing `claude` (or `copilot`) in the main slot doesn't dead-end — it asks *what is this worktree for?*, then hands the answer to `workspan dispatch`, which leases a warm pool slot, seeds that branch's note with the goal **and** an open todo, and starts the agent there.
 - Typing either harness outside a git worktree refuses to start. Enter an existing repository or create one first.
 - Repo-less attention items stay in the attention list until task enhancement or a human assigns a repo and branch; bn no longer opens planning scratch sessions for them.
-- Typing it in a worktree that already has a live agent refuses, naming the holder: steer it with `bn agent send <repo>:<branch> "…"`, or free it with `bn agent kill <repo>:<branch>`.
+- Typing it in a worktree that already has a live agent refuses, naming the holder: steer it with `workspan agent send <repo>:<branch> "…"`, or free it with `workspan agent kill <repo>:<branch>`.
 - Typing it on a **bare terminal** (no surrounding tmux) opens the branch's window and attaches you to it, so the agent lands somewhere bn can steer, kill and show in the dashboard rather than in a pane nothing can address. Requires a real terminal and a running tmux server; `BN_AGENT_TMUX_REDIRECT=0` turns it off for one call.
 - `wt pool status` shows slot 1 labelled `(controller)`; the configured pool size counts it, so `<repo> 4` means one controller plus three workers.
 - `BN_AGENT_GUARD=0 claude …` bypasses the within-repo placement rules for one call — the repository requirement remains unconditional.
 
 ## Which sessions exist
 
-The rule the placement table above states for *agents* holds for every session bn opens, including the ones it opens for itself: **a session is named after a repository**, and a window after a worktree. That is what `tat`, `bn jump`, the status bar and the dashboard all assume, so a session named anything else is invisible to every one of them.
+The rule the placement table above states for *agents* holds for every session bn opens, including the ones it opens for itself: **a session is named after a repository**, and a window after a worktree. That is what `tat`, `workspan jump`, the status bar and the dashboard all assume, so a session named anything else is invisible to every one of them.
 
 Three exceptions, none of which is work:
 
 | Session | What it is |
 |---|---|
 | `_bn_edit` | Storage — the holding pen for parked editor panes. Hidden from `C-j`, and any `_`-prefixed name is claiming the same private namespace. |
-| `host:<alias>` | A `bn machine connect` attachment to another machine. The work it shows lives in that machine's repos. |
+| `host:<alias>` | A `workspan machine connect` attachment to another machine. The work it shows lives in that machine's repos. |
 | `-L orch` server | The dispatch worker server, a separate tmux server entirely — not on this namespace. |
 
 Scheduled jobs get windows, never sessions: a heavy cron (`pool-warm`, `keep-warm`) opens a detached window in the session of the repo it serves, which closes itself when the job succeeds. See `config/jobs/README.md`.
 
-`bn tmux prune` reports sessions that name no repo (dry run; `--force` kills them), sparing anything attached, busy, or hosting an agent. It is never a cron. `bn tmux snapshot-filter` keeps orphans out of the tmux-resurrect snapshot so a killed one does not come back on the next restore — it is wired to resurrect's `post-save-layout` hook and kills nothing.
+`workspan tmux prune` reports sessions that name no repo (dry run; `--force` kills them), sparing anything attached, busy, or hosting an agent. It is never a cron. `workspan tmux snapshot-filter` keeps orphans out of the tmux-resurrect snapshot so a killed one does not come back on the next restore — it is wired to resurrect's `post-save-layout` hook and kills nothing.
 
-Every launch through this chokepoint also records `agent-session: <harness> <id>` on the branch note — the same line `bn dispatch` writes, and the thing that makes `bn agent send --resume` and the dashboard's Steer panel work. The one exception is `claude --continue`, where the harness picks its own id; those agents are still steerable through their tmux window.
+Every launch through this chokepoint also records `agent-session: <harness> <id>` on the branch note — the same line `workspan dispatch` writes, and the thing that makes `workspan agent send --resume` and the dashboard's Steer panel work. The one exception is `claude --continue`, where the harness picks its own id; those agents are still steerable through their tmux window.
 
-A harness started outside the shell (an IDE extension, an absolute path, a terminal that never sourced `bn setup shell-init`) skips the wrapper. `bn next --stale` reports any lease that broke the rule after the fact, and warns while the wrappers are missing, inactive, or shadowed by a later `claude()` definition in your rc.
+A harness started outside the shell (an IDE extension, an absolute path, a terminal that never sourced `workspan setup shell-init`) skips the wrapper. `workspan next --stale` reports any lease that broke the rule after the fact, and warns while the wrappers are missing, inactive, or shadowed by a later `claude()` definition in your rc.
 
 ## Codespaces (remote worktrees)
 
@@ -167,7 +167,7 @@ The local↔codespace match is by repo **basename**. When you cloned a repo unde
 echo <codespace-repo-basename>=<local-repo> > ~/.config/wt/cs-repo-map   # e.g. MyAppBridge=MyApp
 ```
 
-Selecting either ensures a local session named after the repo and opens/focuses a `<branch> ☁` window that `gh cs ssh`'s into the codespace and runs `tmux new-session -A -s <branch>` — attaching to (or creating) a per-branch tmux session **inside** the codespace. Codespaces don't ship `tmux`, so the attach installs it first when missing (`sudo apt-get install -y tmux`, Debian/Ubuntu base) — the first attach to a fresh codespace pays a one-time install, after that it's instant. Because the remote session is named after the branch, `bn --cat` resolves the *same* `<repo>/<branch>` note whether you're in the local worktree or the codespace.
+Selecting either ensures a local session named after the repo and opens/focuses a `<branch> ☁` window that `gh cs ssh`'s into the codespace and runs `tmux new-session -A -s <branch>` — attaching to (or creating) a per-branch tmux session **inside** the codespace. Codespaces don't ship `tmux`, so the attach installs it first when missing (`sudo apt-get install -y tmux`, Debian/Ubuntu base) — the first attach to a fresh codespace pays a one-time install, after that it's instant. Because the remote session is named after the branch, `workspan --cat` resolves the *same* `<repo>/<branch>` note whether you're in the local worktree or the codespace.
 
 **All** your codespaces list, running or not (`Available`, `Shutdown`, …) — state is shown per row, never filtered. `gh cs list` is cached ~60s (`$WF_CS_TTL`, cache at `$WF_CS_CACHE`) so the picker stays instant, and is called with `--limit ${WF_CS_LIMIT:-100}` so gh's default 30-item cap doesn't silently drop any. With `gh` absent or logged out, codespaces are simply omitted.
 
@@ -208,7 +208,7 @@ The three jump keys differ by **scope**, not by mechanism:
 | `` ` `` | this session | *every* window — navigation |
 | `Tab` | all sessions | the single top-ranked window needing you, no popup |
 | `f` | this session | the same picker as `` ` `` |
-| `j` | all sessions + all repos | windows needing you (ranked by time-in-state, pane preview) over the `bn next` queue |
+| `j` | all sessions + all repos | windows needing you (ranked by time-in-state, pane preview) over the `workspan next` queue |
 | `C-a` | all repos | the attention queue (cron failures, raised items, stale notes) |
 
 ## Panes
@@ -232,24 +232,24 @@ The three jump keys differ by **scope**, not by mechanism:
 | `e` | **Floating read-only nvim on this worktree's changes vs `main`** (`bin/tmux-git-diff.sh`, `DiffviewOpen origin/main`; the latest commit when nothing differs). Agents call the same script to hand you a diff. |
 | `C-g` | The same floating diff for a Codespace branch, over SSH (fzf host picker). |
 | `C-e` | Show this worktree's persistent editor pane and land it on the branch diff (never parks) — for returning to a worktree cold. |
-| `d` | **Worktree diff picker.** Every worktree with a checkout, badged with whether its editor is up (`●` showing · `○` parked), with `bn status --diff` as the live preview. `↵` switches to that worktree's window and opens Diffview in *its* nvim. `ctrl-r` reloads. |
+| `d` | **Worktree diff picker.** Every worktree with a checkout, badged with whether its editor is up (`●` showing · `○` parked), with `workspan status --diff` as the live preview. `↵` switches to that worktree's window and opens Diffview in *its* nvim. `ctrl-r` reloads. |
 | `n` | Branch note popup (`note.md` for current git context). |
 | `g` | Lazygit popup. `q` closes. Says so instead of flashing shut when lazygit is not installed. |
 | `E` | Open the newest pending plan review in nvim, then approve or request changes. |
 | `Enter` | Scratch shell in this worktree; vanishes on exit. |
-| `c` | Run one of your `bn cmd` commands (picker). |
+| `c` | Run one of your `workspan cmd` commands (picker). |
 | `B` | Inspect this worktree's recorded build/test runs, retained logs, or confirm a rerun. |
 | `a` / `b` | Quick-add a todo / blocker to the branch note. |
-| `l` | Links picker — open a saved `bn links` URL. |
+| `l` | Links picker — open a saved `workspan links` URL. |
 
 ## Agents
 
 | Key | Action |
 |-----|--------|
-| `A` | New window on this worktree running `bn agent launch` (Copilot): resumes the worktree's recorded session, else starts fresh. The tab tracks the agent's state through `@bn_agent`. |
-| `G` | The same with Claude (`bn agent launch claude`). |
+| `A` | New window on this worktree running `workspan agent launch` (Copilot): resumes the worktree's recorded session, else starts fresh. The tab tracks the agent's state through `@bn_agent`. |
+| `G` | The same with Claude (`workspan agent launch claude`). |
 | `S` | Cockpit popup: in-flight windows across sessions + a bn summary. |
-| `j` | Jump picker — windows needing you over the `bn next` queue. |
+| `j` | Jump picker — windows needing you over the `workspan next` queue. |
 | `Tab` | Jump straight to the top window needing you; repeat to cycle. |
 | `m` | Watch this window: badge it ✓ when it goes quiet. |
 
@@ -355,7 +355,10 @@ Only the project-specific keys worth memorising — see `~/.config/nvim/lua/plug
 | `<BS>` | Alternate buffer (`<C-^>`). |
 | `C-s` | Save file. |
 
-## Branch notes
+## Legacy note compatibility
+
+These bindings remain available during migration; notes are not Workspan's primary interface.
+Use Entire for captured agent-session history.
 
 | Key | Action |
 |-----|--------|
@@ -363,7 +366,7 @@ Only the project-specific keys worth memorising — see `~/.config/nvim/lua/plug
 
 ## Plan artifacts
 
-Plan mode stores Markdown plans in the bn note directory, not in the repo worktree:
+Plan artifacts currently use the legacy storage directory, not the repo worktree:
 
 ```
 <note-dir>/plans/active.md
@@ -374,13 +377,13 @@ The branch note stays as an index/status file. The plan body lives in Markdown a
 
 | Command | Action |
 |---------|--------|
-| `bn plan init` | Create `plans/active.md` and `plans/agents/`. |
-| `bn plan status` | Show active plan path, status, and agent drafts. |
-| `bn plan path --active` | Print/create the active plan path. |
-| `bn plan path --agent <session-id>` | Print/create one agent draft plan. |
-| `bn plan open` | Open `plans/active.md` in `$EDITOR` (`nvim` by default). |
-| `bn plan promote <draft-or-session>` | Promote a draft to `plans/active.md`. |
-| `bn plan migrate` | Convert legacy note todo/done-when sections into `plans/active.md`. |
+| `workspan plan init` | Create `plans/active.md` and `plans/agents/`. |
+| `workspan plan status` | Show active plan path, status, and agent drafts. |
+| `workspan plan path --active` | Print/create the active plan path. |
+| `workspan plan path --agent <session-id>` | Print/create one agent draft plan. |
+| `workspan plan open` | Open `plans/active.md` in `$EDITOR` (`nvim` by default). |
+| `workspan plan promote <draft-or-session>` | Promote a draft to `plans/active.md`. |
+| `workspan plan migrate` | Convert legacy note todo/done-when sections into `plans/active.md`. |
 
 Plan-mode agent launches start the agent first, then split the same tmux window vertically and open
 the bn-owned plan `.md` beside the running agent. That keeps the worktree for code and the bn
@@ -452,78 +455,78 @@ note-relative paths.
 
 ---
 
-# `bn` (Branch Notes CLI)
+# `workspan` (Branch Notes CLI)
 
-`bn` is installed on your PATH by `install.sh` (`~/.bn/bin/bn`, legacy `~/.bin/bn`, or `~/.local/bin/bn`, depending on the layout / `BN_BIN_DIR`). Every git branch gets a note at `~/projects/worktree/personal-notes/branch-notes/branch-notes/<repo>/<branch>/note.md`. Managed through the CLI — not bound to tmux directly but the primary interface for session context.
+`workspan` is installed on your PATH by `install.sh` (`~/.bn/bin/bn`, legacy `~/.bin/bn`, or `~/.local/bin/bn`, depending on the layout / `BN_BIN_DIR`). Every git branch gets a note at `~/projects/worktree/personal-notes/branch-notes/branch-notes/<repo>/<branch>/note.md`. Managed through the CLI — not bound to tmux directly but the primary interface for session context.
 
 ## Core
 
 | Command | Action |
 |---------|--------|
-| `bn` | Ensure note exists, print dir path. |
-| `bn --cat` / `-c` | Print full note contents. |
-| `bn cat --brief` | Lean SessionStart view: goal, blockers, open todos (cap 10), last 3 Progress, last 3 Decisions. |
-| `bn --json` | Dump `note.yaml` as JSON for scripts / Claude skills. |
-| `bn --edit` / `-e` | Open note in `$EDITOR`. |
-| `bn --path` / `-p` | Print note dir path (no create). |
+| `workspan` | Ensure note exists, print dir path. |
+| `workspan --cat` / `-c` | Print full note contents. |
+| `workspan cat --brief` | Lean SessionStart view: goal, blockers, open todos (cap 10), last 3 Progress, last 3 Decisions. |
+| `workspan --json` | Dump `note.yaml` as JSON for scripts / Claude skills. |
+| `workspan --edit` / `-e` | Open note in `$EDITOR`. |
+| `workspan --path` / `-p` | Print note dir path (no create). |
 
 ## Add to sections
 
 | Command | Action |
 |---------|--------|
-| `bn add todo "text"` | Add todo. |
-| `bn add blocker "text"` | Add blocker. |
-| `bn add decision "text"` | Record a decision. |
-| `bn add research "text"` | Add research item. |
-| `bn add collab "text"` | Collaboration note. |
-| `bn add ask "text"` | Question for user/team. |
+| `workspan add todo "text"` | Add todo. |
+| `workspan add blocker "text"` | Add blocker. |
+| `workspan add decision "text"` | Record a decision. |
+| `workspan add research "text"` | Add research item. |
+| `workspan add collab "text"` | Collaboration note. |
+| `workspan add ask "text"` | Question for user/team. |
 
 ## Lifecycle
 
 | Command | Action |
 |---------|--------|
-| `bn done <id>` | Mark a todo done by stable id (e.g., `bn done t3`). |
-| `bn done "text"` | Fall back to substring match — fails on ambiguity. |
-| `bn note log "text"` | Append timestamped line to Progress (used by SessionEnd hook). |
-| `bn note close` | Close current branch's note. |
-| `bn note reopen` | Reopen a closed note. |
-| `bn note prune` | Close notes whose worktrees are gone. |
-| `bn note reset` | Remove non-main worktrees + close notes. |
-| `bn note archive` | Archive old closed notes. |
-| `bn note migrate [--dry-run]` | Convert legacy md-only notes to split md + yaml. |
+| `workspan done <id>` | Mark a todo done by stable id (e.g., `workspan done t3`). |
+| `workspan done "text"` | Fall back to substring match — fails on ambiguity. |
+| `workspan note log "text"` | Append timestamped line to Progress (used by SessionEnd hook). |
+| `workspan note close` | Close current branch's note. |
+| `workspan note reopen` | Reopen a closed note. |
+| `workspan note prune` | Close notes whose worktrees are gone. |
+| `workspan note reset` | Remove non-main worktrees + close notes. |
+| `workspan note archive` | Archive old closed notes. |
+| `workspan note migrate [--dry-run]` | Convert legacy md-only notes to split md + yaml. |
 
 ## Views
 
 | Command | Action |
 |---------|--------|
-| `bn list --summary` / `s` | Dashboard: open todos + blockers across branches. |
-| `bn status` / `st` | One-line status for current branch. |
-| `bn list --todos` / `t` | Open todos across all branches. |
-| `bn list` / `l` | Active notes (`--all` for closed too). |
-| `bn list --worktrees` / `w` | All active worktrees with detail. |
-| `bn search <text>` | Search across all notes. |
-| `bn note stale [--days N]` | Notes with no recent activity. |
+| `workspan list --summary` / `s` | Dashboard: open todos + blockers across branches. |
+| `workspan status` / `st` | One-line status for current branch. |
+| `workspan list --todos` / `t` | Open todos across all branches. |
+| `workspan list` / `l` | Active notes (`--all` for closed too). |
+| `workspan list --worktrees` / `w` | All active worktrees with detail. |
+| `workspan search <text>` | Search across all notes. |
+| `workspan note stale [--days N]` | Notes with no recent activity. |
 
 ## Build
 
 | Command | Action |
 |---------|--------|
-| `bn build` / `b [name]` | Run a repo-scoped script (default: `build`). |
+| `workspan build` / `b [name]` | Run a repo-scoped script (default: `build`). |
 
 ## Links
 
 | Command | Action |
 |---------|--------|
-| `bn pr [url]` | Link or open PR for current branch. |
-| `bn pr --wi <id>` | Link or open work item. |
-| `bn note files` / `f` | Investigation file management. |
+| `workspan pr [url]` | Link or open PR for current branch. |
+| `workspan pr --wi <id>` | Link or open work item. |
+| `workspan note files` / `f` | Investigation file management. |
 
 ---
 
 # The workflow in one page
 
 1. **Start a session** — `C-Space C-o` → pick a repo. `tat` creates or switches.
-2. **Branch off main** — `C-Space o`, type `feat/foo`. `bn wt open` fetches, creates the worktree from latest main, opens it as a window named `feat-foo`.
+2. **Branch off main** — `C-Space o`, type `feat/foo`. `workspan wt open` fetches, creates the worktree from latest main, opens it as a window named `feat-foo`.
 3. **Work** — `C-Space e` for nvim, `C-Space g` for lazygit, `C-Space n` for the branch note. Inside nvim use `<Space>nn` to jump to the note.
 4. **Context-switch** — `C-Space [` / `]` between worktree windows in the same session. `C-Space C-o` to switch to a different repo.
 5. **Done with a branch** — `C-Space X`, confirm, worktree is removed and window closed.

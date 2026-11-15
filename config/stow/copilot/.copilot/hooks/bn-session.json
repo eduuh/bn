@@ -4,7 +4,7 @@
     "sessionStart": [
       {
         "type": "command",
-        "bash": "{ $HOME/.bin/bn-rs doctor --brief 2>/dev/null; } >&2; echo \"[bn] $($HOME/.bin/bn status 2>/dev/null)\" >&2",
+        "bash": "{ $HOME/.config/bn/workspan doctor --brief 2>/dev/null; } >&2; echo \"[workspan] $($HOME/.config/bn/workspan agent live 2>/dev/null)\" >&2",
         "timeoutSec": 10
       }
     ]

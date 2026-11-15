@@ -13,7 +13,8 @@ Configure only the selected harness; machine-only setup does not enable projects
    a destination hard-coded into a shared skill or committed project settings.
    If absent, ask once for a destination and permission to persist it. Never guess, create a
    repository, reuse a destination with different access requirements, or upload to code's remote.
-3. From the project, run `bn-setup-entire copilot` (use `claude` for Claude Code).
+3. From the project, run `workspan-setup-entire copilot` (use `claude` for Claude Code).
+   `bn-setup-entire` remains a compatibility entry point.
    `install.sh` installs this helper; before installation use
    `bash <trusted-bn-checkout>/config/workflow/bin/setup-entire.sh copilot`.
    The helper verifies private visibility through `gh`, enables

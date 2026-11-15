@@ -96,7 +96,7 @@ MCP tools are scoped to their launch directory; changing the shell cwd does not 
 
 ### 4. Wire the agent integration
 
-**Required first: Entire.** Run `bn-setup-entire copilot` (or `bn-setup-entire claude`) from the
+**Required first: Entire.** Run `workspan-setup-entire copilot` (or `workspan-setup-entire claude`) from the
 target project for every repository setup, including reruns. The helper uses the approved private
 destination in `BN_ENTIRE_CHECKPOINT_REMOTE` or `~/.config/bn/entire-checkpoint-remote`.
 A failed or missing Entire setup is an onboarding blocker, not an optional warning.
