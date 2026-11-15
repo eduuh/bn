@@ -1,6 +1,6 @@
 # Releases
 
-bn follows a **strict release** rule:
+Workspan follows a **strict release** rule:
 
 > A commit reaches `main` only through CI, and every commit that reaches `main` becomes a
 > versioned GitHub Release built for every supported platform. No machine ever compiles bn to
@@ -72,7 +72,7 @@ bn 0.5.1 (git de967f24a5ca, built 2026-09-08, aarch64-apple-darwin)   # released
 ## Installing and updating
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/eduuh/bn/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/eduuh/workspan/main/install.sh | sh
 ```
 
 `install.sh` fetches `bn-cli` and `bn-mcp` for the local target from
@@ -82,9 +82,9 @@ deliberately **no** compile-from-source fallback behind it: a silent local build
 end up running different bn than the one that passed CI. To build a checkout on purpose — an
 unmerged branch, a local patch, a platform the release skips — run `./build.sh`.
 
-bn is CLI-only. Installs ship `bn` and the stdio `bn-mcp` companion, with no dashboard,
-REST API, or HTTP MCP server. CLI `--json` output and `bn mcp serve` remain available;
-`bn mcp serve --orchestrate` provides the opt-in cross-worktree tools over stdio.
+Workspan is CLI-only. Installs ship `workspan` and the stdio `bn-mcp` companion, with no dashboard,
+REST API, or HTTP MCP server. CLI `--json` output and `workspan mcp serve` remain available;
+`workspan mcp serve --orchestrate` provides the opt-in cross-worktree tools over stdio.
 
 Core builds need Rust, not Node.js or npm. The optional `--agents` layer still uses
 npm for external agent tools. CI checks shell syntax and rejects retired web commands

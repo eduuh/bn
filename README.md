@@ -1,60 +1,86 @@
-# bn
+# Workspan
 
-Branch notes for people who work across many git worktrees, often alongside AI coding agents.
+Move work between projects, agents, and machines.
 
-Every branch gets a plain-Markdown note: its goal, todos, blockers, decisions and progress. bn
-keeps those notes current from the command line, serves them to Claude Code and Copilot CLI over
-MCP, and grows outward from there into worktree management, a cross-repo "what next" queue, cron
-jobs and tmux integration.
+Workspan is a local development execution layer: manage Git worktrees, launch and steer coding
+agents, supervise commands, and move between projects and machines without rebuilding your
+workspace every time. Entire captures agent sessions and checkpoints; Workspan handles execution.
 
 ## What it does
 
-- **Branch notes.** `bn add todo "..."`, `bn done t1`, `bn goal "..."`, `bn cat`. Notes are files
-  in a git repo of your own (`~/projects/branch-notes` by default), synced across machines.
-- **Worktrees.** `bn wt` manages a bare-clone + worktree layout, with a warm pool of pre-built
-  worktrees for large repos.
-- **What next.** `bn next` ranks failing crons, attention items, PRs awaiting review and today's
-  goals into one list; `bn dispatch` turns an item into a worktree with its note seeded.
-- **Agents.** `bn mcp serve` gives an agent tools scoped to the branch it is working in. Skills in
-  `config/prompts/` are served as MCP prompts and installed as native Claude/Copilot skills.
-- **Jobs and crons.** `bn run <job>` runs shell scripts resolved branch → repo → global, and
-  `bn cron` schedules and watches them.
-- **tmux.** Status-bar segments, a project picker (`bn tat`) and a jump list (`bn jump`).
+- **Workspaces.** `workspan wt` manages bare-clone worktrees and warm pools; `workspan tat` opens
+  the project/worktree picker.
+- **Agents.** `workspan agent launch`, `workspan agent live`, and `workspan agent msg` launch,
+  observe, and steer agents. Shared skills and MCP integration configure their tools.
+- **Execution.** `workspan build`, `workspan verify`, and scheduled jobs run project commands
+  with logs and verification evidence.
+- **Machines.** `workspan machine` manages machine access and tunnel discovery.
+- **Attention.** `workspan next` gathers actionable work from existing integrations.
+- **Session history.** Project setup requires Entire capture with an explicitly approved private
+  checkpoint destination. Workspan does not replace Entire or move your code hosting.
+- **Dotfiles.** Shipped tmux, Claude, Copilot, and Git configuration live in `config/`.
 
-`bn --help` lists everything; every command takes `--json`.
+`workspan --help` lists the command surface. Commands support `--json`.
 
 ## Install
 
 From a release:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/eduuh/bn/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/eduuh/workspan/main/install.sh | bash
 ```
 
 From source (Rust toolchain pinned in `rust-toolchain.toml`):
 
 ```sh
-git clone https://github.com/eduuh/bn && cd bn
+bn wt clone https://github.com/eduuh/workspan
+# In the checkout reported by the worktree manager:
 ./build.sh
 ```
 
-bn runs on macOS, Linux and WSL. It needs `git`; `gh`, `tmux` and `fzf` unlock the features built
-on them.
+Workspan runs on macOS, Linux and WSL. It needs `git`; `gh`, `tmux` and `fzf` unlock integrations.
+Project onboarding also needs the [Entire CLI](https://docs.entire.com/installation).
 
-## Configuration
+## Project setup
 
-bn needs no config file. See [docs/config.md](docs/config.md) for the settings and where they
-live, and [docs/releases.md](docs/releases.md) for how releases are cut.
+Use the `setup-bn` skill (its compatibility name is retained) to configure agent tools and the
+repository's build/verification commands. It includes required Entire setup.
+To configure capture directly, save an approved `github:owner/private-checkpoints` destination in
+`~/.config/bn/entire-checkpoint-remote`, then run from the project:
+
+```sh
+workspan-setup-entire copilot
+# Or: workspan-setup-entire claude
+```
+
+The helper verifies the destination is private before enabling capture, writes local settings,
+and preserves existing hooks through Entire's setup command. It never imports history or pushes
+transcripts during setup. Missing prerequisites and failed privacy checks block onboarding.
+See [the setup reference](config/reference/entire-setup.md).
+
+## Compatibility
+
+Workspan was previously named `bn`. The installer provides `workspan` as the primary entry point
+while keeping `bn` and existing command behavior available. Set `WORKSPAN_INSTALL_WP=1` during
+installation to request an optional `wp` alias; an existing `wp` command is never replaced.
+
+This is an incremental identity migration, not a storage migration. Existing `BN_*` environment
+variables, `~/.config/bn`, `.bn` project files, worktree paths, internal crate names, and release
+binary names remain compatible. Legacy note functionality is retained while its dependencies
+are phased out; it is not Workspan's product focus. Existing users do not need to move their data.
+
+Configuration: [docs/config.md](docs/config.md). Releases: [docs/releases.md](docs/releases.md).
+The name overlaps an existing WorkSpan software brand; this project is independent of that company.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `crates/bn-cli` | The `bn` binary |
-| `crates/bn-core` | Notes, resolver, jobs, skills: everything the CLI and MCP server share |
-| `crates/bn-mcp` | The stdio MCP server |
+| `crates/bn-cli` | CLI and compatibility binary |
+| `crates/bn-core` | Shared execution, workspace, integration, and legacy storage logic |
+| `crates/bn-mcp` | Stdio MCP server |
 | `crates/bn-e2e` | Hermetic end-to-end tests |
-| `config/` | Shipped skills, agents, jobs, tmux config and dotfile packages |
+| `config/` | Shared skills, agents, jobs, tmux configuration and stow packages |
 
 ## Contributing
 

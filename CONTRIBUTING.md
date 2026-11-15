@@ -1,12 +1,12 @@
 # Contributing
 
-Issues and pull requests are welcome. For anything larger than a small fix, open an issue first so
+Workspan issues and pull requests are welcome. For anything larger than a small fix, open an issue first so
 we can agree on the shape before you write it.
 
 ## Build and test
 
 ```sh
-./build.sh                                   # build and install bn from this checkout
+./build.sh                                   # build and install Workspan from this checkout
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace

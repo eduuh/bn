@@ -129,7 +129,7 @@ esac
 # no machine should need a working cargo to RUN bn. When the binaries you need are not in that
 # release yet (an unmerged branch, a local patch, a platform the release skips), run ./build.sh
 # instead; it compiles and hands the result back here.
-slug="${BN_REPO_SLUG:-eduuh/bn}"
+slug="${BN_REPO_SLUG:-eduuh/workspan}"
 # shellcheck source=scripts/install-toolchain.sh
 source "$repo/scripts/install-toolchain.sh"
 # shellcheck source=scripts/install-tmux.sh
@@ -352,6 +352,11 @@ for candidate in ${path_dirs[@]+"${path_dirs[@]}"} "$HOME/.bin"; do
     fi
   done
 done
+
+atomic_install "$repo/config/workflow/bin/setup-entire.sh" "$bindir/bn-setup-entire"
+atomic_install "$repo/config/workflow/bin/setup-entire.sh" "$bindir/workspan-setup-entire"
+source "$repo/scripts/install-workspan.sh"
+bn_install_workspan "$bindir" "$cfgdir"
 
 # Cron job scripts live in-repo (version-controlled); `bn run` resolves them via this path.
 ln -sfn "$shipped/config/jobs" "$cfgdir/jobs"

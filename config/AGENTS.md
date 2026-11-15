@@ -7,31 +7,31 @@
 - Use Copilot fleet or Claude subagents for substantial research. Keep short lookups local, start with the smallest useful team, and expand only for independent work. Return concise findings with sources.
 - Do only what was asked. Mention adjacent problems if needed use subagent to investigate this never the main agent.
 - Keep one owner for integration. Workers must not launch further agents without that owner's approval.
-- Run long batch commands through `bn cmd run -- <command...>` for heartbeats, logs and inactivity warnings. Start them in the background and wait once on their completion signal; do not poll from the agent.
+- Run long batch commands through `workspan cmd run -- <command...>` for heartbeats, logs and inactivity warnings. Start them in the background and wait once on their completion signal; do not poll from the agent.
 
-## Track work with bn
+## Track work with Workspan
 
-- Run `bn discover` at session start and when changing tasks. Pass the task and invoke the matching workflow instead of improvising.
+- Run `workspan discover` at session start and when changing tasks. Pass the task and invoke the matching workflow instead of improvising.
 - Record progress as it happens. Save durable knowledge promptly.
-- Keep links curated, not comprehensive. Before adding one, search `bn links list <purpose> --tag <category>` and add only an important, repeatedly useful link that fills a real gap. Use `bn links add <url> --category <category> --name "<what it is>"`; routine PRs, work items, review comments and one-off URLs do not belong.
+- Keep links curated, not comprehensive. Before adding one, search `workspan links list <purpose> --tag <category>` and add only an important, repeatedly useful link that fills a real gap. Use `workspan links add <url> --category <category> --name "<what it is>"`; routine PRs, work items, review comments and one-off URLs do not belong.
 
 ## Talk to other agents
 
-- Live agents are listed by `bn agent live` (this machine) and `bn agent live --mesh` (every machine); their `target` is `repo:branch`. Ask one for something with `bn agent msg <repo:branch> "..."`; it lands as that agent's next prompt.
-- A prompt starting `[bn msg from <repo:branch>]` is another agent asking you. Do what it asks, then answer with the same command, addressed to that sender. Keep both directions to one message each.
+- Live agents are listed by `workspan agent live` (this machine) and `workspan agent live --mesh` (every machine); their `target` is `repo:branch`. Ask one for something with `workspan agent msg <repo:branch> "..."`; it lands as that agent's next prompt.
+- A prompt starting `[bn msg from <repo:branch>]` is another agent asking you (the wire prefix remains compatible). Do what it asks, then answer with the same command, addressed to that sender. Keep both directions to one message each.
 
 ## Across machines
 
-- Start with `bn machine tunnels`: which machines are up, their nicknames, and why one is down. Reach one with `ssh <nickname>`. A box you can already ssh to (a VPS) joins with `bn machine join <name> <user@host>`; `bn machine mesh` shows those. The `multi-device` skill has the rest.
+- Start with `workspan machine tunnels`: which machines are up, their nicknames, and why one is down. Reach one with `ssh <nickname>`. A box you can already ssh to (a VPS) joins with `workspan machine join <name> <user@host>`; `workspan machine mesh` shows those. The `multi-device` skill has the rest.
 - Long work on another machine (build, install, clone): write it as a script there and run it in a tmux window, never on a bare ssh session. Start every machine first, then wait once.
 - A machine without git credentials: push to it over ssh (`git push ssh://<machine><repo> <ref>:refs/remotes/origin/<ref>`), then fast-forward there. Pulling there hangs on a login prompt.
 - Settings for one machine go in `~/.config/bn/`, never `~/.gitconfig`: dotfiles sync that file to every machine.
 
 ## Skills
 
-- Keep reusable workflows, shared config, and automation in bn. Stow home dotfiles from `config/stow/`; keep repo-only files such as `.github/workflows/ci.yml` in the source checkout.
-- Edit skills at their bn source, never generated copies. Run `bn skills install` to overwrite stale Copilot and Claude copies; set `BN_MCP_SKILLS_DIR="$PWD/config/prompts"` for shipped worktree edits.
-- Retire what is unused: a skill with no use in 90 days and no bn caller is a removal candidate. List it, never delete without asking.
+- Keep reusable workflows, shared config, and automation in Workspan. Stow home dotfiles from `config/stow/`; keep repo-only files such as `.github/workflows/ci.yml` in the source checkout.
+- Edit skills at their workspan source, never generated copies. Run `workspan skills install` to overwrite stale Copilot and Claude copies; set `BN_MCP_SKILLS_DIR="$PWD/config/prompts"` for shipped worktree edits.
+- Retire what is unused: a skill with no use in 90 days and no workspan caller is a removal candidate. List it, never delete without asking.
 - Every skill description is "what it does. Use when ...". Write new ones that way.
 
 ## Code-change handoff
@@ -54,4 +54,4 @@
 - Commit each logical unit with a conventional message (`feat:`, `fix:`, `chore:`).
 - Never bare `git stash` / `git stash pop`; the stash is shared across worktrees.
 - Never force-push, reset --hard, or delete branches without being asked.
-- Clean up stale worktrees in the current repo at session start and after a PR merges: `bn wt reap --all --yes`, then `bn wt pool prune --yes` to release pool leases nobody is in. Stale means what bn can prove is finished: a merged PR with a clean tree, or a leased pool slot with no live agent and a clean tree. Anything else stays. Never add `--force`, and never sweep other repos (`--all-repos`) without being asked.
+- Clean up stale worktrees in the current repo at session start and after a PR merges: `workspan wt reap --all --yes`, then `workspan wt pool prune --yes` to release pool leases nobody is in. Stale means what workspan can prove is finished: a merged PR with a clean tree, or a leased pool slot with no live agent and a clean tree. Anything else stays. Never add `--force`, and never sweep other repos (`--all-repos`) without being asked.

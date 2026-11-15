@@ -44,6 +44,7 @@ mod gh;
 mod git;
 mod harness_dispatch;
 mod hooks;
+mod identity;
 mod jump;
 mod launchd;
 mod main_slot;
@@ -154,7 +155,7 @@ fn log_provenance(cfg: &Config) -> bn_core::daily::LogProvenance {
     }
 }
 
-/// Branch notes — Rust rewrite (Phase 1 notes core).
+/// Workspaces, agents, machines, and supervised execution.
 #[derive(Parser, Debug)]
 #[command(
     name = "bn",

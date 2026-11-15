@@ -25,15 +25,20 @@ const MCP_SESSION_TOOLS: &[&str] = &["bn_context", "bn_add", "bn_done", "bn_cat"
 /// The agent-facing instructions dropped into the harness's memory file. Mirrors the MCP
 /// server's own `with_instructions`, framed for an editor that has the scoped bn tools available.
 const INSTRUCTIONS: &str = "\
-## Branch notes (bn)
+## Workspan agent integration
+
+Workspan coordinates workspaces, agents, machines, and execution. Entire handles captured
+agent-session history. The `bn` command and MCP tool names remain compatibility interfaces.
+
+### Legacy note tools
 
 This repo's branch-note tools are served by a per-worktree stdio launcher (`bn mcp serve`) that
 your MCP client spawns automatically. They are scoped to the current worktree's branch note — the
 launcher derives its (repo, branch) from your working directory, so nothing needs to be running
-first. Keep this branch's note current as you work — don't wait to be asked:
+first. Workflows that still use legacy notes can access these compatibility tools:
 
 - `bn_context` — compact session-start orientation (goal, counts, top todos, blockers, PR,
-  next-step hints) in one call. Call it first.
+  next-step hints) in one call.
 - `bn_add` — record a todo / blocker / decision / research / collab / ask as it comes up.
 - `bn_done` — close a todo the moment it's finished.
 - `bn_cat` — read only the current branch note.
