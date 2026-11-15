@@ -4,7 +4,7 @@ description: "Sweep stale worktrees, pool slots and leftover tmux windows, recla
 when: Worktrees, pool slots or tmux windows have piled up — merged branches still checked out, leaked leases, dead agent scratch dirs, a session full of finished cron windows — and you want the disposable ones gone without losing work.
 keywords: [worktree, worktrees, stale, sweep, cleanup, reap, prune, reclaim, pool, slot, tmux, session, window, leftover, garbage collect, gc, disk, wt]
 arguments:
-  - { name: scope, description: "Repo to sweep. Omit (or `all`) to sweep every repo.", required: false }
+  - { name: scope, description: "Repo to sweep. Omit for the current repo; `all` requires an explicit request to sweep every repo.", required: false }
   - { name: dry_run, description: "If set (true/yes/1), classify and report only — remove nothing.", required: false }
 ---
 One rule decides every call: **a worktree is disposable only when its work is provably somewhere
@@ -18,21 +18,27 @@ pool slot's uncommitted work is committed onto its branch first). Everything els
 remove unmerged work out from under someone. You are that manual pass. Do not propose a cron for
 `fleet-reap`.
 
-Scope: `{{scope}}` — a repo name, or empty/`all` for every repo. Dry-run: if `{{dry_run}}` is
-truthy (`true`/`yes`/`1`), do steps 1–3 and stop before anything removes.
+Scope: `{{scope}}` — a repo name, empty for the current repo, or explicitly requested `all` for
+every repo. Outside a repo, require a named scope before removal; do not infer `all`.
+Dry-run: if `{{dry_run}}` is truthy (`true`/`yes`/`1`), do steps 1–3 and stop before anything
+removes. Confirm any expansion beyond the requested repo before acting.
 
 ## 1. Inventory before judging
 
-Run all six. Every one is read-only or dry-run by default, and every removal in step 4 has to cite
-one of them. `bn wt reap --all` and `bn wt cleanup --all` cover only the repo you stand in; for
-every repo (scope `all`) pass `--all-repos` instead, or run from outside any repo.
+Run all six from the chosen repo's worktree. Every one is read-only or dry-run by default, and
+every removal in step 4 has to cite one of them. The commands below target that repo:
+`bn wt reap --all` means all its worktrees, but pool prune's `--all` means every repo, so omit
+that flag for a repo-local sweep. Only for explicitly authorized `all` scope use
+`bn wt reap --all-repos` and `bn wt pool prune --all --verbose`; run the other repo commands
+once per chosen repo. Agent/tmux inventory may be machine-wide, but filter all candidates and
+removals to the approved scope. Unknown ownership means keep.
 
 | command | what it tells you |
 |---------|-------------------|
 | `bn wt list` | every registered worktree and its branch (detached ones show no branch) |
 | `bn wt status --all --pr` | which are dirty, and which of those have a merged PR (`stuck`) |
 | `bn wt reap --all` | dry run: what bn already considers done and safe |
-| `bn wt pool prune --all --verbose` | dry run: over-size and orphaned slots, plus leaked leases |
+| `bn wt pool prune --verbose` | dry run for this repo: over-size and orphaned slots, plus leaked leases |
 | `bn agent live --json` | which worktrees hold a **live** agent — every one of these is off limits |
 | `tmux list-panes -a -F '#{session_name}\t#{window_id}\t#{window_name}\t#{pane_current_command}\t#{pane_dead}'` | every window, and whether its panes are running something or sitting at a shell |
 
@@ -46,13 +52,13 @@ every repo (scope `all`) pass `--all-repos` instead, or run from outside any rep
 | merged ship, clean | PR `MERGED`, nothing uncommitted, nothing ahead | `bn wt reap --all --yes` |
 | finished scout | note carries `task: scout` + `agent done`, tree clean, past its grace | same sweep |
 | merged but dirty | `bn wt status --pr` marks it `stuck` | **keep** — hand it back in step 6 |
-| leaked pool lease | pool prune: `would reclaim leaked lease — nobody is in it` | `bn wt pool prune --all --yes` |
+| leaked pool lease | pool prune: `would reclaim leaked lease — nobody is in it` | `bn wt pool prune --yes` |
 | over-size or orphaned slot | pool prune: `would remove (over-size)` / bare repo gone | same command |
 | registration with no directory | listed by `git worktree list`, path does not exist | `bn wt prune` |
 | leaked agent scratch | `.agent-<branch>-<token>`, clean, nobody in it, over a day old | `bn wt reap --all --yes` |
 | leaked agent scratch **holding work** | reap prints `hold <name> — leaked scratch worktree with dirty/unpushed work in it` | **keep** — step 5 |
-| orphaned agent process | in `bn agent live` with no window, or its worktree/PR is gone | `bn run fleet-reap` |
-| dead pane or window | `pane_dead=1` (a `remain-on-exit` corpse) | `bn run fleet-reap` |
+| orphaned agent process | in `bn agent live` with no window, or its worktree/PR is gone | scoped cleanup in step 4 |
+| dead pane or window | `pane_dead=1` (a `remain-on-exit` corpse) | scoped cleanup in step 4 |
 | finished cron window | in the `machine` session, named after a job, every pane at a shell | step 6 |
 | window outliving its worktree | its worktree path no longer exists | step 6 |
 | empty repo session | a repo session whose worktrees are all reclaimed, nobody attached | step 6 |
@@ -90,13 +96,15 @@ And in tmux specifically:
 Order matters: clear the dead processes first so nothing pulls a checkout out from under a live
 agent, then reclaim worktrees, then slots, then registrations.
 
-1. `bn run fleet-reap` — the fleet GC: orphaned agent process trees and dead tmux windows.
-   It **acts**; there is no dry run. It honors its own gates (never a working agent, an agent with
-   uncommitted work, or the orchestrator). To stop one named agent instead, use
-   `bn agent kill <repo>:<branch>`, which also frees its pool slot.
-2. `bn wt reap --all --yes`
-3. `bn wt pool prune --all --yes`
-4. `bn wt prune` (per repo, or from outside a repo for all of them)
+1. Clean up only evidenced orphaned resources within the approved scope. For one named orphaned
+   agent, use `bn agent kill <repo>:<branch>`, which also frees its pool slot; for dead panes/windows
+   follow step 6 and the protected set. `bn run fleet-reap` is machine-wide and **acts** without
+   dry-run: use it only with explicit machine-wide cleanup approval, not for a repo-local sweep.
+   It honors its own gates (never a working agent, an agent with uncommitted work, or the
+   orchestrator); those gates do not substitute for scope approval.
+2. `bn wt reap --all --yes` from the chosen repo; use `--all-repos --yes` only for approved `all`.
+3. `bn wt pool prune --yes` from the chosen repo; add `--all` only for approved `all`.
+4. `bn wt prune` from each chosen repo, never outside a repo to bypass the scope check.
 
 Read each command's output before running the next. Two outcomes look like errors and are not:
 
@@ -141,6 +149,8 @@ recurring hold means a pipeline stage is losing work, which is a bug worth a tas
 ## 6. Stale tmux windows and sessions
 
 Reclaiming a worktree takes its window with it. Nothing takes the rest, and there are three kinds.
+Only remove windows/sessions demonstrably belonging to the approved repo scope. Machine-wide cron
+windows require explicit machine-wide cleanup approval; otherwise leave them alone.
 
 **Finished cron windows.** Older bn ran cron jobs in windows in a `machine` session, and a machine
 that ran that version may still have them. When such a job finished, the window stayed, holding

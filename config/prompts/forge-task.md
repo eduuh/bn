@@ -10,6 +10,11 @@ arguments:
 Use this for any Forge-assigned task. Your job is to leave Forge accurate, not just finish local
 work.
 
+Choose the entry mode first. For questions about how the Forge loop works or why a task was not
+claimed/completed, use only **Running and debugging the Forge loop** below, read-only. Do not
+claim, release, finish, comment on, or implement an activity unless explicitly asked. Run the
+lifecycle below only for an assigned activity this worker is authorized to execute.
+
 1. **Orient and claim.** Read `bn --cat`. Identify the Forge task id ({{task_id}}) and claimer
    ({{claimer}}) from the prompt or task context. If the task is not already claimed by this worker,
    call `claim_activity` with the same claimer you will later use for `heartbeat_activity`,

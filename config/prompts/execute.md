@@ -34,8 +34,10 @@ reads. If the plan turns out to be wrong, say so and stop — don't silently imp
 
 4. **Handle the walls.** Blocked by something external → `bn_add blocker`, surface it, move to the
    next unblocked todo. Hit a genuine *bug* (broken, not just unbuilt) → hand off to the `debug`
-   skill rather than debugging inline and losing the thread. Need a fact you don't have → that's an
-   `investigate`, not a guess.
+   skill rather than debugging inline and losing the thread. Resolve missing facts with targeted
+   lookups. Use `investigate` only for a substantial, explicitly requested investigation or a
+   dispatched research stage. If it changes the approved scope, record the blocker and stop for
+   the existing gate.
 
 5. **Loop or stop.** If continuous ({{continuous}}) is truthy, repeat 2–4 until every plan step
    and todo is closed; otherwise do one item and stop. Never mark the goal done on vibes.

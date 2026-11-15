@@ -35,8 +35,10 @@ stop — don't silently improvise a different one.
 
 4. **Handle the walls.** Blocked by something external → `bn_add blocker`, surface it, move to the
    next unblocked todo. Hit a *bug* — something broken, not just unbuilt → stop the loop and hand
-   off to the `debug` skill; don't debug inline and lose the thread. Need a fact you don't have →
-   that's an `investigate`, not a guess.
+   off to the `debug` skill; don't debug inline and lose the thread. Resolve missing facts with
+   targeted lookups. Use `investigate` only for a substantial, explicitly requested investigation
+   or a dispatched research stage. If it changes the approved scope, record the blocker and stop
+   for the existing gate.
 
 5. **Loop or stop.** If continuous ({{continuous}}) is truthy, repeat 2–4 until every plan step
    and todo is closed. Otherwise do one item and stop for review. Either way, never mark the

@@ -1,13 +1,16 @@
 ---
 name: debug
-description: "Reproduce, root-cause and fix a known failure with a repro first and a verified fix. Use when something is broken: a failing test, an error message, a crash or a regression."
-when: Something is broken — a failing test, an error, wrong behavior — and you want it fixed properly, not patched over. A known failure with a fix at the end.
+description: "Reproduce and root-cause a known failure, fixing it only within the requested write scope. Use when asked to reproduce, diagnose or fix a failure, not merely explain an error message or interpret logs."
+when: Reproduction, diagnosis or repair of a known failure was requested. Simple error explanations and log interpretation do not require this workflow.
 keywords: [debug, bug, fix, broken, failing, error, crash, regression, root cause, repro, why is this happening, not working]
 arguments:
   - { name: symptom, description: The observed failure. Omit to take the note's top bug/blocker., required: false }
 ---
 Not open research (that's `investigate`) and not new work (that's `build-from-plan`). The discipline
 is **repro before fix, cause before patch**: a fix you can't reproduce failing you can't prove.
+The requested scope determines whether the result is diagnosis or a verified code fix.
+For diagnosis-only requests, gather evidence without editing source or tests; do not add
+diagnostic logging that changes code.
 
 1. **Reproduce first.** Call `bn_cat` for context and `bn_ref` (no name) for the index of what past
    sessions already learned about this repo — this failure may be a known gotcha, and reading a
@@ -31,7 +34,10 @@ is **repro before fix, cause before patch**: a fix you can't reproduce failing y
    the surface symptom — and record it with `bn_add decision`. If you're fixing without being able
    to say why it broke, you're guessing; go back to step 2.
 
-4. **Fix the cause, surgically.** Change the minimum that addresses the root cause — no drive-by
+4. **Respect the requested write scope.** For a diagnosis-only request, report the repro,
+   evidenced cause, and remaining uncertainty, then stop before editing. The remaining repair,
+   verification, and completion steps apply only when fixing code was authorized.
+   Change the minimum that addresses the root cause — no drive-by
    refactors, no fixing adjacent things you noticed. If the real fix is large or risky, say so and
    propose it rather than forcing it in.
 

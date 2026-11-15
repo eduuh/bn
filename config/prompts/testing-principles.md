@@ -17,7 +17,7 @@ keywords: [testing-principles, testing, principles, language-agnostic, including
 
 ### The RED-GREEN-REFACTOR Cycle
 
-**Always follow this cycle:**
+**For new or changed behavior where practical, use this cycle.** Respect the repository's test strategy; avoid tests that merely restate implementation or framework behavior.
 
 1. **RED**: Write a failing test first
    - Write the test before implementation
@@ -35,7 +35,7 @@ keywords: [testing-principles, testing, principles, language-agnostic, including
    - Keep all tests passing
 
 4. **VERIFY**: Ensure all tests still pass
-   - Run full test suite
+   - Run the smallest existing checks covering the change; widen when risk, failures, or repository policy require it
    - Check for regressions
    - Validate refactoring didn't break anything
 
@@ -43,7 +43,7 @@ keywords: [testing-principles, testing, principles, language-agnostic, including
 
 ### Coverage Standards
 
-- **Minimum 80% code coverage** for production code
+- Honor repository-defined coverage requirements; do not introduce a new threshold or chase percentage alone
 - Prioritize critical paths and business logic
 - Prioritize meaningful assertions over coverage percentage
 - Use coverage as a guide, not a goal
@@ -238,8 +238,8 @@ The appropriate approach depends on project environment and CI/CD capabilities.
 
 ### Keep Tests Active
 
-- **Fix or delete failing tests**: Resolve failures immediately
-- **Remove commented-out tests**: Fix them or delete entirely
+- **Investigate relevant failures**: Fix the defect or demonstrably obsolete expectation; never delete or weaken a test merely to pass
+- **Avoid commented-out tests**: Do not introduce them as a substitute for fixing a failure; leave unrelated cleanup out of scope
 - **Keep tests running**: Broken tests lose value quickly
 - **Maintain test suite**: Refactor tests as needed
 
@@ -312,12 +312,12 @@ Test at boundaries of valid input ranges:
 
 ### Before Commit
 
-- ✓ All tests pass — fix failing tests immediately
-- ✓ No tests skipped or commented — delete or fix
+- ✓ Relevant checks pass; report unrelated baseline failures rather than silently expanding scope
+- ✓ No unexplained new skips or commented-out tests; preserve existing intentional skips
 - ✓ No debug code left in tests
 - ✓ Test coverage meets standards
-- ✓ No flaky tests — make deterministic
-- ✓ Tests run within performance thresholds
+- ✓ Changed tests are deterministic; report unrelated flakes
+- ✓ Changed tests meet the repository's performance requirements
 
 ## Test Organization
 
@@ -356,7 +356,7 @@ Speed targets are under Test Characteristics.
 
 ### CI/CD Requirements
 
-- Run full test suite on every commit
+- Run the repository's prescribed affected or full CI checks; do not change CI policy as part of an unrelated test task
 - Block merges if tests fail
 - Run tests in isolated environments
 - Test on target platforms/versions

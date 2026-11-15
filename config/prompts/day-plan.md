@@ -48,8 +48,9 @@ question short and offer likely answers as options.
    - `bn add decision "Committed to <N> outcomes today: ..."`.
    Say that reminders last only while this session is open.
 
-7. **Report** in under 8 lines: outcomes with times and the first one to start now. Then hand
-   off to `build-from-plan` or `execute`.
+7. **Report** in under 8 lines: outcomes with times and the proposed first execution step, then
+   stop. Enter `build-from-plan` or `execute` only if the user separately requested execution and
+   its approval gates are satisfied; confirming the schedule alone does not authorize building.
 
 At each milestone: ask "Is it done?", fill the PR link into the message, show it, and on
 approval send it with the Teams MCP `SendMessageToSelf` (Notes to Self). The user forwards it to
