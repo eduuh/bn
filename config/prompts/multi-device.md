@@ -117,7 +117,10 @@ This works wherever the target runs. When the target is not live here, bn asks e
 - **Look before acting.** `bn machine tunnels` (about 10 seconds) says which machines are up, their names, and why one is down. Start there instead of probing each machine with ssh.
 - **Git on a machine without credentials: push to it, never pull on it.** `git push ssh://<machine><repo path> <ref>:refs/remotes/origin/<ref>`, then `git merge --ff-only origin/<ref>` there. The same works for the notes repo and the nvim config. A `git pull` there hangs on a username prompt.
 - **Pick the GitHub account for https pushes.** `gh` can hold two accounts; the active one is used. A work notes repo and personal repos may need different ones: `git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push https://github.com/<owner>/<repo>.git <branch>` with the right account active, or push over ssh.
-- **A notes push that GitHub rejects (GH013)** has a secret in an unpushed commit, usually a tool log saved by an automatic checkpoint (`.playwright-cli/` console logs held an Entra token). The notes `.gitignore` covers that folder now; if it happens again, `git reset --soft origin/main`, `git rm --cached` the file, commit once, push.
+- **A notes push that GitHub rejects (GH013)** may contain a secret in an unpushed commit.
+  Stop publishing and report the affected path without revealing the secret. Request credential
+  revocation if exposure is suspected. Any scoped history repair requires explicit approval and
+  confirmed ownership; never reset, recommit, or push shared notes automatically.
 - **Settings for one machine never go in `~/.gitconfig`.** It is synced by dotfiles to every machine. bn's tunnel settings live in `~/.config/bn/tunnel.conf`.
 - **Check the bn binary against the config.** A machine with an old `bn` and a new `bn/main` prints TOML errors and runs unknown jobs as queued tasks. The published release lags `main`; build with `./build.sh`. `bn --version` must match `git -C ~/projects/worktree/bn/main log -1 --format=%h`.
 - **Test destructive recovery on a machine that can take it**, and say what it will kill first (a WSL shutdown kills running builds there).
@@ -187,11 +190,13 @@ ambiguous.
    `--allow-anonymous`) unless they asked for a link anyone can open — and if they
    did, say so in your reply, once, plainly.
 
-2. **Check the port is actually serving.** A tunnel over a dead port looks broken
+2. **Confirm the authorized port is actually serving.** Ask if the intended service or port
+   is unclear. Expose only explicitly authorized ports, never an adjacent service by default.
+   A tunnel over a dead port looks broken
    and wastes the round trip:
 
    ```bash
-   ss -tln | grep -E ':(3000|3001)'
+   ss -tln    # identify only the authorized service's listening port
    ```
 
    Nothing listening → the app is the problem, not the tunnel. Say so and stop; get the dev server up first.
@@ -207,8 +212,8 @@ ambiguous.
    tunnel lives, so it must not share a pane with anything else:
 
    ```bash
-   tmux new-window -d -t "$(tmux display-message -p '#S')" -n devtunnel \
-     'devtunnel host -p 3000 -p 3001 --protocol https; exec zsh'
+   tmux new-window -d -t "$(tmux display-message -p -t "$TMUX_PANE" '#S'):" -n devtunnel \
+     'devtunnel host -p <authorized-port> --protocol https; exec zsh'
    ```
 
 5. **Report the URL**, read from that window's output — not guessed, not
@@ -241,15 +246,15 @@ a port on the public internet.
 
 ### Dev Tunnels (Microsoft) — sharing outward
 
-To share a dev server running on 3000/3001:
+To share only the explicitly authorized dev-server port (substitute its validated numeric value):
 
 ```bash
-devtunnel host -p 3000 -p 3001 --protocol https --allow-anonymous
+devtunnel host -p <authorized-port> --protocol https
 ```
 
-`--allow-anonymous` means **anyone with the URL can reach it, unauthenticated**.
-Drop it to require a Microsoft sign-in from your tenant, which is the right default
-for anything touching real data. Say plainly which one you used.
+The default requires authentication. Add `--allow-anonymous` only when anonymous access was
+explicitly requested: **anyone with the URL can then reach it, unauthenticated**.
+Say plainly which access mode you used.
 
 Not installed by default — check `command -v devtunnel` first. Install:
 
@@ -260,7 +265,7 @@ devtunnel user login          # opens a browser
 
 Run it **beside** the dev server, not instead of it: `bn build start` holds the
 foreground and waits on both ports, so the tunnel needs its own pane or window.
-Ports 3000 and 3001 must already be listening — `ss -tln | grep -E ':(3000|3001)'`
+Every explicitly authorized port must already be listening; check with `ss -tln`
 — or the tunnel serves nothing and looks broken.
 
 ### Tailscale — your own machines

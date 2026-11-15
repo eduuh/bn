@@ -12,8 +12,8 @@ else** — merged into main, pushed to a PR, or written into the branch note. Un
 unpushed commits are not somewhere else. Where the evidence is missing, you keep the worktree and
 say why. A sweep that loses an hour of someone's work is worse than no sweep at all.
 
-The scheduled `wt-cleanup` cron only reclaims worktrees whose PR is confirmed merged (a merged
-pool slot's uncommitted work is committed onto its branch first). Everything else, including
+The scheduled `wt-cleanup` cron only reclaims worktrees whose PR is confirmed merged. Do not
+invoke cleanup that automatically commits dirty work; preserve it for its owner. Everything else, including
 `fleet-reap`, stays **manual on purpose** so automated reclamation can never kill a session or
 remove unmerged work out from under someone. You are that manual pass. Do not propose a cron for
 `fleet-reap`.
@@ -141,7 +141,9 @@ git -C <path> status
 git -C <path> log --oneline HEAD --not --remotes
 ```
 
-Then rescue it — commit it onto a branch, or copy the findings into the note the sub-agent was
+Preserve the checkout and report its contents to the owner. Commit or relocate work only with
+explicit authorization, confirmed ownership, and applicable `commit-privacy` requirements.
+With that approval, copy the findings into the note the sub-agent was
 investigating for — and let the next sweep collect the empty checkout. Report it either way: a
 recurring hold means a pipeline stage is losing work, which is a bug worth a task, not a chore.
 

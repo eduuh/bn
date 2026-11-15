@@ -17,7 +17,8 @@ opened in an unattended remote session is not a visible handoff.
 
 1. Make sure there is something to look at. Run `bn status --diff --three-dot` in the worktree. If it reports
    no changes vs the base, say so and stop — opening an editor on an empty diff wastes the gesture.
-   Commit outstanding work first if that is what is missing.
+   Surface outstanding work; do not commit it merely to show a diff. Commit only explicitly
+   authorized, owned changes under the `commit-privacy` requirements.
 
    `--three-dot` is not optional garnish, and **never drop it to get the command to run**. Bare
    `bn status --diff` is two-dot, which reports the *base's* own newer commits as if they were yours — on a

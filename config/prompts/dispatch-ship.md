@@ -31,12 +31,13 @@ stays invisible until the PR comes up CONFLICTING or CI fails on a change that i
     git fetch origin
     git log --oneline HEAD..origin/main    # substitute this repo's default branch
 
-Already level: carry on. Behind, with a clean tree: `git rebase origin/main`, then re-run the
-build/test gate — a rebase changes what you are building, so a green from before it means nothing.
-Behind with uncommitted work: commit it first (never `git stash`; see below). If the branch is
-already pushed, rebasing means `git push --force-with-lease` later — fine on your own open PR,
-never on anyone else's. If the rebase conflicts, do NOT improvise through it: `git rebase --abort`,
-record what conflicted with `bn_add blocker`, and say so in your report.
+Already level: carry on. Before updating a branch, confirm the worktree and branch are exclusively
+owned by this task. Stop on dirty or shared state; do not stage or commit preexisting work merely
+to update the base. Never auto-stash. Preserve a revision explicitly selected for investigation.
+For an authorized update of a clean, owned, unpublished feature branch, load `commit-privacy`,
+rebase onto `origin/main`, and rerun the affected gates. If already published, stop unless rewriting
+that branch's history was explicitly authorized; owning its PR is not permission to force-push.
+If the rebase conflicts, stop and report the conflict rather than guessing a resolution.
 
 {{bootstrap}}
 {{verification}}
