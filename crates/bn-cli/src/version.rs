@@ -14,7 +14,7 @@ pub(crate) const VERSION: &str = concat!(
 );
 
 pub(crate) fn line() -> String {
-    format!("bn {VERSION}")
+    format!("{} {VERSION}", crate::identity::name())
 }
 
 pub(crate) fn render(json: bool) -> String {

@@ -157,7 +157,7 @@ ensure_worktree() {
             return 1
         fi
     fi
-    (cd "$worktree_path" && "$HOME/.config/bn/bn" build 2>/dev/null) || true
+    (cd "$worktree_path" && "$HOME/.config/bn/workspan" build 2>/dev/null) || true
     return 0
 }
 

@@ -1,6 +1,11 @@
 # Configuration
 
-bn needs no config file. Every setting below has a built-in default, and a machine with no config
+Workspan uses the existing configuration layout during the `bn` compatibility period.
+`BN_*` variables and `~/.config/bn` remain supported; do not move live state just to rename the CLI.
+The historical `notes_root` name below still describes shared configuration/storage locations,
+not Workspan's product focus.
+
+Workspan needs no config file. Every setting below has a built-in default, and a machine with no config
 at all works on every repository it has cloned and runs cron and the dashboard.
 
 ## Where settings live

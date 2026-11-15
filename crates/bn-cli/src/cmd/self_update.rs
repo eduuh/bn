@@ -26,7 +26,7 @@ fn parse_main_worktree(porcelain: &str) -> Option<String> {
         .lines()
         .filter_map(|l| l.strip_prefix("worktree "))
         .map(str::trim)
-        .find(|p| p.ends_with("/bn/main"))
+        .find(|p| p.ends_with("/workspan/main") || p.ends_with("/bn/main"))
         .map(str::to_string)
 }
 
@@ -51,7 +51,13 @@ fn is_executable_file(p: &std::path::Path) -> bool {
 /// of the cron's arbitrary cwd, and it stays robust even when bn was installed from a feature
 /// worktree.
 fn resolve_bn_main_worktree() -> String {
-    let conventional = bn_core::resolver::worktree_dir().join("bn").join("main");
+    let root = bn_core::resolver::worktree_dir();
+    let workspan = root.join("workspan").join("main");
+    let conventional = if workspan.is_dir() {
+        workspan
+    } else {
+        root.join("bn").join("main")
+    };
     if conventional.is_dir() {
         return conventional.to_string_lossy().into_owned();
     }
@@ -269,7 +275,7 @@ fn parse_version_sha(version: &str) -> Option<String> {
 /// `None` when gh cannot answer (offline, unauthenticated, or a release pinned to a branch name
 /// rather than a commit), which makes [`release_not_newer`] leave the installed bn alone.
 fn published_release_sha() -> Option<String> {
-    let slug = std::env::var("BN_REPO_SLUG").unwrap_or_else(|_| "eduuh/bn".to_string());
+    let slug = std::env::var("BN_REPO_SLUG").unwrap_or_else(|_| "eduuh/workspan".to_string());
     let commitish = crate::gh::gh_capture_bounded(
         &[
             "release",
@@ -298,6 +304,19 @@ fn parse_release_sha(commitish: &str) -> Option<String> {
 #[cfg(test)]
 mod guard_tests {
     use super::*;
+
+    #[test]
+    fn main_worktree_accepts_new_and_legacy_checkout_names() {
+        assert_eq!(
+            parse_main_worktree("worktree /projects/workspan/main\nbranch refs/heads/main\n"),
+            Some("/projects/workspan/main".into())
+        );
+        assert_eq!(
+            parse_main_worktree("worktree /projects/bn/main\nbranch refs/heads/main\n"),
+            Some("/projects/bn/main".into())
+        );
+        assert_eq!(parse_main_worktree("worktree /projects/other/main\n"), None);
+    }
 
     #[test]
     fn version_and_release_names_yield_their_shas() {

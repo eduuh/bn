@@ -128,7 +128,35 @@ const QUIET_ROUTES: &[(&str, &str)] = &[("note", "log"), ("stats", "event"), ("f
 /// The clap command with grouped and hidden names hidden and the new groups listed.
 /// Use this instead of `Cli::command()` wherever the surface is shown (help, completions).
 pub(crate) fn command() -> clap::Command {
-    let mut cmd = Cli::command();
+    command_named(crate::identity::name())
+}
+
+fn command_named(name: &'static str) -> clap::Command {
+    let mut cmd = Cli::command().name(name);
+    if name == "workspan" {
+        for legacy in [
+            "add", "done", "goal", "cat", "list", "search", "drop", "undone", "reword",
+        ] {
+            cmd = cmd.mut_subcommand(legacy, |s| s.hide(true));
+        }
+        for (subcommand, about) in [
+            (
+                "dispatch",
+                "Dispatch work into an isolated workspace and launch its agent",
+            ),
+            (
+                "verify",
+                "Run the workspace verification gate and retain its evidence",
+            ),
+            ("note", "Legacy note compatibility commands"),
+            ("plan", "Manage executable plan artifacts"),
+            ("agent", "Launch, observe, resume, and steer coding agents"),
+            ("machine", "Machine access, discovery, and configuration"),
+            ("next", "Rank actionable work across projects"),
+        ] {
+            cmd = cmd.mut_subcommand(subcommand, |s| s.about(about));
+        }
+    }
     let legacy = ROUTES
         .iter()
         .filter(|(group, _, to)| to[0] != *group)
@@ -240,10 +268,12 @@ pub(crate) fn plan(args: Vec<OsString>) -> Plan {
         } else {
             2
         };
-        let mut text = format!("{about}\n\nUsage: bn {name} <COMMAND> [ARGS]...\n\nCommands:\n");
+        let executable = crate::identity::name_from_arg(args.first().map(|a| a.as_os_str()));
+        let mut text =
+            format!("{about}\n\nUsage: {executable} {name} <COMMAND> [ARGS]...\n\nCommands:\n");
         text.push_str(&route_list(name));
         if let Some(bad) = second.filter(|_| code != 0) {
-            text = format!("error: unknown command `bn {name} {bad}`\n\n{text}");
+            text = format!("error: unknown command `{executable} {name} {bad}`\n\n{text}");
         }
         return Plan::Help(text, code);
     }
@@ -330,6 +360,31 @@ mod tests {
             .try_get_matches_from(argv)
             .and_then(|m| <crate::Cli as clap::FromArgMatches>::from_arg_matches(&m))
             .expect("build argv should parse")
+    }
+
+    #[test]
+    fn workspan_help_deemphasizes_notes_without_removing_compatibility() {
+        let mut cmd = command_named("workspan");
+        let help = cmd.render_help().to_string();
+        assert!(help.contains("Usage: workspan"));
+        assert!(!help.contains("Mark a todo done"));
+        assert!(cmd.try_get_matches_from(["workspan", "done", "t1"]).is_ok());
+        let mut legacy = command_named("bn");
+        assert!(legacy
+            .render_help()
+            .to_string()
+            .contains("Mark a todo done"));
+    }
+
+    #[test]
+    fn workspan_group_help_uses_the_new_entry_point() {
+        let Plan::Help(text, code) =
+            plan(["workspan", "setup", "--help"].map(OsString::from).to_vec())
+        else {
+            panic!("expected group help");
+        };
+        assert_eq!(code, 0);
+        assert!(text.contains("Usage: workspan setup"));
     }
 
     #[test]

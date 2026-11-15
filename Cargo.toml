@@ -11,7 +11,7 @@ members = [
 edition = "2021"
 version = "0.6.0"
 license = "MIT"
-repository = "https://github.com/eduuh/bn"
+repository = "https://github.com/eduuh/workspan"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

@@ -33,7 +33,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{ $HOME/.bin/bn-rs doctor --brief 2>/dev/null; } >&2; echo \"[bn] $($HOME/.bin/bn status 2>/dev/null)\" >&2 && $HOME/.bin/bn --cat 2>/dev/null || echo 'No branch note for this directory'",
+            "command": "{ $HOME/.config/bn/workspan doctor --brief 2>/dev/null; } >&2; echo \"[workspan] $($HOME/.config/bn/workspan agent live 2>/dev/null)\" >&2",
             "timeout": 10
           }
         ]
@@ -61,7 +61,7 @@
           },
           {
             "type": "command",
-            "command": "$HOME/.bin/bn tmux-agent working",
+            "command": "$HOME/.config/bn/workspan tmux-agent working",
             "timeout": 5
           }
         ]
@@ -72,7 +72,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.bin/bn tmux-agent waiting",
+            "command": "$HOME/.config/bn/workspan tmux-agent waiting",
             "timeout": 5
           }
         ]
@@ -83,7 +83,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.bin/bn tmux-agent done",
+            "command": "$HOME/.config/bn/workspan tmux-agent done",
             "timeout": 5
           }
         ]
@@ -119,14 +119,14 @@
       "### Org-wide",
       "**Organization**: None configured",
       "**Cloud provider(s)**: None configured",
-      "**Repository visibility**: Public — github.com/eduuh/bn",
+      "**Repository visibility**: Public — github.com/eduuh/workspan",
       "**Internal sharing / snippet hosting**: None configured — treat public paste/gist services as outside the trust boundary",
       "**Secrets management**: CI secrets referenced by name only (GITHUB_TOKEN, RELEASE_PLZ_TOKEN) — no values gathered",
       "**Default / protected branches**: main (default); no branch protection rules listed via gh (rulesets not queryable here — treat as possibly protected)",
       "**CI/CD deploy targets**: None configured",
       "**Network posture**: None configured",
       "**Host containment**: None configured — assume Claude Code runs on an ordinary developer machine or CI runner with open internet",
-      "**Source control**: The trusted repo (github.com/eduuh/bn) and its origin remote only",
+      "**Source control**: The trusted repo (github.com/eduuh/workspan) and its origin remote only",
       "**Trusted internal domains**: None configured",
       "**Trusted cloud buckets**: None configured",
       "**Key internal services**: None configured",
@@ -136,9 +136,9 @@
       "**Protected deployment namespaces / environments**: None configured — fall back to the Sensitive remote targets heuristic",
       "**Protected IaC scopes**: IAM, RBAC, networking, quota, and node-pool resources; anything whose name or tag carries `prod` or `production` as a whole word or name segment",
       "### User-specific",
-      "**Primary use of Claude Code**: software development (personal/hobby-leaning tooling — branch-note manager, dotfiles, blog)",
-      "**Trusted repo**: worktrees of github.com/eduuh/bn under ~/projects/worktree/bn",
-      "**Org-specific CLIs**: bn (branch-notes manager), wt (git worktree manager), gh — routine under this repo/user's own tooling prefix",
+      "**Primary use of Claude Code**: software development (personal tooling — workspaces, agents, dotfiles, blog)",
+      "**Trusted repo**: worktrees of github.com/eduuh/workspan under ~/projects/worktree/bn",
+      "**Org-specific CLIs**: workspan (development execution), bn (compatibility), wt (git worktree manager), gh — routine under this repo/user's own tooling prefix",
       "**Secrets management (user)**: Git Credential Manager used for ADO token retrieval per ~/.claude/CLAUDE.md (unverified provenance from repo-authored doc — not adopted as trust default)"
     ]
   },
