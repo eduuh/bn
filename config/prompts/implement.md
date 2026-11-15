@@ -1,5 +1,6 @@
 ---
 name: implement
+internal: true
 description: "Run the full implementation lifecycle from requirements to deployment. Use when asked to implement or build a feature and no pipeline stage skill applies."
 when: "Implementing a feature, building something new, or when 'implement' is mentioned with a feature description."
 keywords: [implement, orchestrate, complete, implementation, lifecycle, requirements, deployment, implementing, feature, building, something, new]

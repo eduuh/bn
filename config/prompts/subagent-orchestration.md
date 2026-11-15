@@ -1,5 +1,6 @@
 ---
 name: subagent-orchestration
+internal: true
 description: "Choose and sequence subagents through an implementation workflow, deciding when to run autonomously. Use when delegating to several subagents or managing workflow phases."
 when: Orchestrating multiple agents, managing workflow phases, or determining autonomous execution mode.
 keywords: [subagent-orchestration, subagents, orchestration, guide, guides, subagent, coordination, implementation, workflows, orchestrating, multiple, agents]

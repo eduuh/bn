@@ -428,6 +428,34 @@ fn refuse_reason(cfg: &Config, ctx: Option<&Resolved>, entry: &Launchable) -> Op
     def.off_reason(&enabled)
 }
 
+fn named_entry(
+    cfg: &Config,
+    base: &std::path::Path,
+    entries: &[Launchable],
+    name: &str,
+) -> Result<Option<Launchable>, String> {
+    if let Some(entry) = launchable::find(entries, name) {
+        return Ok(Some(entry.clone()));
+    }
+    // Internal compatibility workflows remain callable by name, never through picker discovery.
+    let skill = bn_core::skills::load_skill(cfg, base, name)
+        .map_err(|error| format!("skill catalog: {error}"))?;
+    Ok(skill.filter(|skill| skill.internal).map(|skill| Launchable {
+        name: skill.name,
+        source: Source::Skill,
+        kind: None,
+        description: Some(skill.description),
+        scope: "internal".to_string(),
+        schedule: None,
+        arguments: skill.arguments,
+        skills: Vec::new(),
+        harness: None,
+        requires_repo: None,
+        shadowed: false,
+        path: std::path::PathBuf::new(),
+    }))
+}
+
 /// `bn agent run [name] [instruction…]`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_run(
@@ -464,7 +492,9 @@ pub(crate) fn emit_run(
     };
 
     let entries = launchable::discover(cfg, ctx, &cwd);
-    let Some(entry) = launchable::find(&entries, &name).cloned() else {
+    let Some(entry) = named_entry(cfg, &cwd, &entries, &name)
+        .unwrap_or_else(|error| fail(&format!("bn agent run: {error}")))
+    else {
         let near = launchable::near_misses(&entries, &name, SUGGESTIONS);
         let mut msg = format!("bn agent run: no agent or skill named '{name}'");
         if !near.is_empty() {
@@ -692,6 +722,39 @@ mod tests {
             shadowed: false,
             path: std::path::PathBuf::new(),
         }
+    }
+
+    #[test]
+    fn an_explicit_internal_skill_stays_launchable_without_entering_the_picker() {
+        let _lock = bn_core::test_support::env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _shared = bn_core::test_support::EnvGuard::set("BN_MCP_SKILLS_DIR", temp.path());
+        std::fs::write(
+            temp.path().join("legacy.md"),
+            "---\nname: legacy\ninternal: true\ndescription: Legacy workflow\n\
+             arguments: [{name: task, required: true}]\n---\nTask: {{task}}",
+        )
+        .unwrap();
+        let cfg = Config::default();
+        let entries = launchable::discover(&cfg, None, temp.path());
+        assert!(!rows(&entries, None).iter().any(|row| row.name == "legacy"));
+        let legacy = named_entry(&cfg, temp.path(), &entries, "legacy")
+            .unwrap()
+            .unwrap();
+        assert!(legacy.needs_args());
+        let args = parse_args(&["task=approved work".to_string()]).unwrap();
+        assert_eq!(
+            render_body(&cfg, None, temp.path(), &legacy, args.as_ref()).unwrap(),
+            "Task: approved work"
+        );
+        let winner = entry("legacy", Source::Agent);
+        assert_eq!(
+            named_entry(&cfg, temp.path(), &[winner], "legacy")
+                .unwrap()
+                .unwrap()
+                .source,
+            Source::Agent
+        );
     }
 
     #[test]

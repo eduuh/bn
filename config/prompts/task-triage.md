@@ -19,6 +19,10 @@ candidate set.
   same as a day with no plan.
 - **Prefer finishing `@wip` work over starting new work.** Half-done work is the most expensive
   inventory there is.
+- Inspect each candidate's context, actual `@wip` tags, completion criteria, ownership and
+  blockers before selecting. Overdue does not mean ready.
+- Fit work to the remaining local day and known commitments. Unknown capacity is not unlimited;
+  choose conservatively and allow an empty selection.
 - You may reorder or drop shortlist items. You may **not** introduce anything outside it — if
   something important is missing, that is a ranking problem to raise, not one to fix by hand here.
 

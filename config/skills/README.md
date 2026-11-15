@@ -12,10 +12,16 @@ Standards read through `bn ref`, such as writing voice, ship in
 [`config/references/`](../references/). Personal references override shipped defaults;
 editing a default copies it into the personal store.
 
-Runtime-only launch envelopes live in that same prompt catalog with `internal: true`. Rust loads
+Runtime-only launch envelopes and on-demand workflow references live in that same prompt catalog
+with `internal: true`. Rust loads
 them strictly by name, but MCP discovery and native skill installation hide them. This keeps
 dispatch, pipeline, critic, attention, curriculum, specialist, and review instructions
 Markdown-owned without exposing implementation fragments as user-invocable workflows.
+
+Short public skills load their full instructions with `bn skills render <name>-workflow` or
+`bn skills render <name>-reference`, forwarding declared arguments with `--arg key=value`.
+Internal compatibility workflows remain explicitly callable through `bn agent run <name>`;
+they do not appear in its picker or generated slash commands.
 
 Reference skills are meant to be made available to a harness (Copilot CLI /
 Claude Code) natively and then mentioned inside a prompt body, e.g.

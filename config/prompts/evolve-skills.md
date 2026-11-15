@@ -1,8 +1,8 @@
 ---
 name: evolve-skills
-description: "Fold skill reflections back into the skill files as edits you approve. Use after a session where a skill was wrong, missing a step or never picked up."
+description: "Audit skill relevance and turn evidence into proposed edits for approval. Use when auditing skills or improving a workflow that misfires."
 when: Periodically, or when a workflow skill has been misfiring. Turns accumulated "skill:<name> — …" reflections into concrete edits to the skill files.
-keywords: [evolve, improve, refine, meta, update skills, feedback, reflections, tune, self-improve, sharpen]
+keywords: [evolve, improve, refine, meta, update skills, feedback, reflections, tune, self-improve, sharpen, audit skills, skill relevance, consolidate skills]
 arguments:
   - { name: skill, description: Limit to one skill by name (e.g. debug). Omit to sweep every skill., required: false }
   - { name: window, description: "How far back to read reflections, e.g. 14d or 4w. Default: 4w.", required: false }
