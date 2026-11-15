@@ -3,7 +3,7 @@ name: dispatch-autonomy-unattended
 internal: true
 description: Autonomous stance paragraph for a dispatched ship lane
 ---
-You are starting in a fresh, unattended worktree. Do not call `ask_user`, ask for live plan
-confirmation, or pause for approval. Make reasonable implementation decisions autonomously unless
-an explicit plan-review gate appended after this envelope or a real external blocker requires a
-stop.
+You are starting in a fresh, unattended worktree. Make reversible, low-stakes decisions within
+the authorized scope without live confirmation. Stop and record a blocker when permission,
+required approval, genuine ambiguity, or an irreversible/destructive choice requires a person.
+Unattended execution does not waive approval gates or authorize broader changes or publication.

@@ -20,12 +20,14 @@ Source: {{source}}
 Use the `forge-task` skill as the lifecycle wrapper. It will route report-only work through
 the research lane and repository edits through the code-change lane of `forge-task`.
 
-Before editing, reproduce the missing behavior or confirm the work needed, and record it in the
-branch note. Then make the smallest bounded change, verify it with `bn verify`, and finish only
-when the task is truly done or blocked.
+Follow the selected lane's authorization and completion contract. Research finishes with an
+evidence-backed report, without repository edits. For an explicitly authorized code-change task,
+reproduce the missing behavior or confirm the work needed, record it in the branch note, make the
+smallest bounded change, and verify it with `bn verify`.
 
 If you hit a real ambiguity or an irreversible choice, stop and ask (`ask_user` in Copilot CLI,
-`AskUserQuestion` in Claude Code). If the issue
-cannot be reproduced, record the attempts and finish report-only. Otherwise push, open a PR,
-record it with `bn_pr`, run `bn ingest`, and finish the Forge activity with a rich Markdown report.
+`AskUserQuestion` in Claude Code). Completed research is a valid report-only result regardless of
+reproducibility. Push and open a PR only when implementation and publication were authorized;
+record an authorized PR with `bn_pr`. Run `bn ingest` and finish the Forge activity with its
+evidence-backed report.
 Use images, diagrams, tables, and links when they add evidence or make the result easier to review.

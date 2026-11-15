@@ -25,6 +25,7 @@ defaults unless you pass `--org`/`--project`. It writes each item into the repo'
 
 Then report in 1–3 lines: relay the script's tally — items pulled, new vs. already-present,
 the target note (`<repo>/main`) — and list the new ids. If the script fails, report its
-stderr verbatim and stop; do not fall back to hand-running `az` queries.
+relevant error with credentials and private identifiers redacted, then stop; do not fall back to
+hand-running `az` queries.
 
 Do not create worktrees, branches, or tmux windows — this skill only refreshes the backlog.

@@ -25,8 +25,8 @@ Create or update the repo-level bn setup surface:
 - Put scripts in the repo tier `<notes>/jobs/<repo>/` (every branch and machine resolves it) or a
   committed `.bn/jobs/`.
 - Keep scripts idempotent; they may run repeatedly from `bn build`, `bn verify`, and `bn wt pool warm`.
-- Do not make product code changes unless they are strictly required to make the setup command
-  valid, and call that out explicitly.
+- Do not change product code. If setup requires a product fix, record the blocker and request a
+  separately authorized implementation task.
 - Verify each script with the smallest safe command before declaring setup complete.
 
 ## Record in the branch note as you go

@@ -26,7 +26,13 @@ task goal — it names the target repo, the ADO source repo, and the reference d
    PRs (default 200; raise `--max` for a bigger starting corpus) and extracts human `text`
    comments, dropping system threads and obvious bots. It is strictly READ-ONLY against ADO:
    ```bash
-   ~/.bn/config/repo/config/scripts/ado-pr-comments.sh --source <source_repo> --max 200 > /tmp/pr-comments.json
+   corpus=$(mktemp "${TMPDIR:-/tmp}/pr-comments.XXXXXXXX.json") || exit 1
+   chmod 600 "$corpus" || exit 1
+   if ! ~/.bn/config/repo/config/scripts/ado-pr-comments.sh --source <source_repo> --max 200 > "$corpus"; then
+     rm -f -- "$corpus"
+     exit 1
+   fi
+   printf 'Private corpus path: %s\n' "$corpus"
    # optional: --org <org|url> --project <project>   # default to your `az devops configure`
    ```
    The script ships in bn's repo, which `~/.bn/config/repo` links to (`config/scripts/` from a bn
@@ -40,7 +46,10 @@ task goal — it names the target repo, the ADO source repo, and the reference d
    raw corpus outside the main context. The main owner reconciles themes and alone writes
    the reference, preserving `## My additions` verbatim. If already dispatched as the mining
    worker, perform the assigned batch locally without launching another layer.
-   The helper is a coarse filter; you are the smart one. From `/tmp/pr-comments.json`,
+   Retain the printed path across tool calls and pass that path, not shell-local `$corpus`, to
+   assigned readers. Keep the corpus out of commits, public artifacts, and logs. After all
+   readers finish, remove only that exact task-owned file, including on an abandoned analysis.
+   The helper is a coarse filter; from the private corpus,
    discard anything automated that slipped through — bot/agent
    banners (e.g. "SydGate Agent", policy/guard bots, "Review complete for PR"), pure status
    chatter ("LGTM", "done", "thanks"), and off-topic noise. Keep substantive comments where a

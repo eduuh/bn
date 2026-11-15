@@ -131,9 +131,9 @@ job=$(tmux split-window -d -t "$TMUX_PANE" -h -P -F '#{pane_id}' -c <dir> \
 * **Long builds belong in the pane; quick checks stay in the session.** A release build under
   load can take ten minutes. Background execution alone is not a substitute for a visible pane
   when the job is long-running.
-* **bn itself:** from any bn worktree or pool slot, `bn build build-to-local` compiles that branch
-  into the shared cache and installs it as the live `bn` — that, in the pane, is how a bn change is
-  tried.
+* **bn itself:** build and test the worktree-local binary to try a change. `bn build build-to-local`
+  uses a shared cache and replaces the live installation; run it only with explicit installation
+  approval and coordination with affected owners.
 
 ## Six ways this goes wrong
 
@@ -184,23 +184,19 @@ Each of these produced a confident, wrong status report:
 
 ## How
 
-**1. Find the pane beside you.** Your own pane is `$TMUX_PANE` — use it, and let tmux resolve the
+**1. Create a task-owned pane beside you.** Your own pane is `$TMUX_PANE` — use it, and let tmux resolve the
 window from it. Do **not** ask `display-message` without a `-t`: that answers for the session's
 active pane, which is usually not yours.
 
 ```bash
 here=$TMUX_PANE
-pane=$(tmux list-panes -t "$here" -F '#{pane_id} #{pane_active}' | awk '$2==0 {print $1; exit}')
+pane=$(tmux split-window -d -t "$here" -h -P -F '#{pane_id}')
+[ -n "$pane" ] || { echo "tmux refused the split"; exit 1; }
 ```
 
-If there is no second pane, make one rather than stealing the user's:
-
-```bash
-[ -z "$pane" ] && pane=$(tmux split-window -d -t "$here" -h -P -F '#{pane_id}')
-[ -n "$pane" ] || echo "tmux refused the split — say so rather than targeting something else"
-```
-
-Keep the `%id`, not the index: indexes renumber as panes come and go.
+Keep the `%id`, not the index: indexes renumber as panes come and go. Reuse an existing pane
+only when this task created it or its owner explicitly approved reuse. An idle prompt does not
+establish ownership.
 
 **2. Check it's idle before sending.** Never type into a pane that is mid-command or waiting on a
 prompt — you will answer someone else's question.
@@ -209,22 +205,16 @@ prompt — you will answer someone else's question.
 tmux capture-pane -p -t "$pane" -S -3
 ```
 
-A shell prompt on the last line means idle. A running command, a `Username:`/`Password:` prompt, or
+A shell prompt on the last line means idle, not authorized for reuse. A running command, a `Username:`/`Password:` prompt, or
 a pager means busy: split a fresh pane off your own (`tmux split-window -d -t "$TMUX_PANE"`), or
 open a named window (`tmux new-window -d -t "<session>:" -n <name>` — keep the trailing colon) when
 a third pane would be too narrow to read. Say which you did and why.
 
-**If the command needs `sudo`, check the credential cache first:**
-
-```bash
-sudo -n true 2>/dev/null && echo cached || echo "will prompt"
-```
-
-An uncached `sudo` sits at a password prompt that **expires on its own** (`sudo: timed out`, exit 1),
-and re-sending just burns another timeout — the command never runs, and it can look like it did if
-you only read the last line. Either ask the user to run `sudo -v` in that pane first, or hand them
-the command to run in-session as `! <command>`. Never re-send something that already timed out
-without changing something about it.
+**If the command needs privilege, follow the current harness's secure prompting mechanism.**
+When secure askpass is available, run authorized commands with `sudo -A` through that harness.
+Otherwise hand the privileged command to the user in an interactive terminal. Never collect
+passwords yourself, bypass a denied request with another elevation mechanism, or retry a timed-out
+prompt unchanged.
 
 **3. Send the command, saving its exit status.** `send-keys` gives you the transcript, not the
 status, so write it to a file:

@@ -4,8 +4,9 @@ description: Build the bn checkout you are standing in and link it in as the liv
 when: You changed bn source on a branch and want to run the real binary (bn, bn-mcp) instead of reasoning about it, a test needs the branch's `bn` on PATH, or you want to promote a checkout to the production build you run day to day.
 keywords: [build-to-local, publish-prod, build bn, install bn, test branch, bn build, cargo target, pool slot, local install, prod build, link build, switch bn, from source]
 ---
-The unit tests prove the crates; only the installed binary proves the command. Whenever a
-change touches something a user types (`bn <verb>`, the MCP server), build this checkout and run it.
+When a change touches CLI or MCP behavior, build and test this checkout's binary directly.
+Validation does not require replacing the shared live installation. Run the installation jobs
+below only when changing the machine-wide live installation was explicitly authorized.
 
 ## The two commands
 
@@ -41,8 +42,9 @@ rerunning the other job.
 - First build into an empty shared target dir: about 15 minutes with the `-j4` cap from
   `~/.zshrc`. Later branches reuse the cached deps and take a few minutes; an unchanged tree is seconds.
 - Run it in a visible tmux pane (see `tmux-run`) and keep working; do not wait inside a tool call.
-- It changes the live `bn` for every session on the machine, other agents' lanes included. Say
-  so when you run it while other work is in flight.
+- It changes the live `bn` for every session on the machine, other agents' lanes included.
+  Obtain explicit installation approval and coordinate with affected owners before running it;
+  notification alone is not authorization.
 - Done when `bn version` prints the git sha of your HEAD (`git rev-parse --short HEAD`). Check it
   before trusting what you observe.
 - The self-update cron runs `install.sh --core` from the main worktree when main advances, which
