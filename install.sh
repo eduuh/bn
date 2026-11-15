@@ -353,6 +353,8 @@ for candidate in ${path_dirs[@]+"${path_dirs[@]}"} "$HOME/.bin"; do
   done
 done
 
+atomic_install "$repo/config/workflow/bin/setup-entire.sh" "$bindir/bn-setup-entire"
+
 # Cron job scripts live in-repo (version-controlled); `bn run` resolves them via this path.
 ln -sfn "$shipped/config/jobs" "$cfgdir/jobs"
 echo "Linked $cfgdir/jobs -> $shipped/config/jobs"

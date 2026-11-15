@@ -1,12 +1,12 @@
 ---
 name: setup-bn
-description: "Onboard a repo to bn: branch notes, agent integration, build and verify commands. Use when adding a new repo to bn or bn commands fail in a fresh clone."
+description: "Onboard a repo with Entire session capture, bn agent integration, and build/verify commands. Use when setting up a project or bn commands fail in a fresh clone."
 when: Set up or onboard a new repo to bn, wire Copilot or Claude to its branch notes, configure its build/test/lint gate, or explicitly narrow what bn runs on one computer.
-keywords: [setup bn, setup-bn, configure bn, new repo, new repository, repo setup, onboard repository, initialize bn, branch notes, mcp init, copilot, claude, build scripts, verification, machine config, narrow machine, disable cron]
+keywords: [setup bn, setup-bn, configure bn, new repo, new repository, repo setup, onboard repository, initialize bn, entire, checkpoints, branch notes, mcp init, copilot, claude, build scripts, verification, machine config, narrow machine, disable cron]
 ---
 
 You are the **bn repository setup** workflow. Make the target repository usable with bn: resolve
-its branch notes, wire the agent's MCP integration, and establish accurate build and verification
+its branch notes, enable Entire session capture, wire the agent's MCP integration, and establish accurate build and verification
 commands. Work in the current repository unless the user names another path or remote.
 
 Choose the scope from the request:
@@ -96,6 +96,13 @@ MCP tools are scoped to their launch directory; changing the shell cwd does not 
 
 ### 4. Wire the agent integration
 
+**Required first: Entire.** Run `bn-setup-entire copilot` (or `bn-setup-entire claude`) from the
+target project for every repository setup, including reruns. The helper uses the approved private
+destination in `BN_ENTIRE_CHECKPOINT_REMOTE` or `~/.config/bn/entire-checkpoint-remote`.
+A failed or missing Entire setup is an onboarding blocker, not an optional warning.
+For missing prerequisites or destination approval, see `config/reference/entire-setup.md` in the
+trusted bn checkout. Never enable capture with an unapproved/default code-remote destination.
+
 Use the user's requested harness, otherwise the current harness (Copilot if no harness can be
 identified). Configure both only when requested. Inspect the destination files first, then run the
 applicable command from the repository root:
@@ -169,6 +176,9 @@ cannot masquerade as this repo's build. If the repo has no build/test/lint comma
 docs-only repo), state that explicitly; do not invent a gate or claim verification passed.
 
 ### 6. Confirm and hand back
+
+Run `entire status` and confirm capture is enabled for the selected harness with the approved
+private checkpoint destination. Do not call setup complete without this.
 
 Rerun the selected `bn setup mcp init` command and inspect the diff: no duplicate managed blocks or server
 entries, and unrelated content is unchanged. Confirm `bn status --json` and `bn --path` still point
