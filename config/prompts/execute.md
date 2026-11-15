@@ -1,5 +1,6 @@
 ---
 name: execute
+internal: true
 description: "Run the approved plan to its done-when criteria and open a PR, verifying as you go. Use as the pipeline execute stage once a plan is approved."
 when: A pipeline's Execute stage is dispatched after its plan was approved — the reviewed plan already exists in `plans/active.md` (or legacy note sections during migration) and it's time to build it, verify it, and open a PR. The `build-from-plan` loop specialized for the pipeline.
 keywords: [execute, execute stage, pipeline execute, build the plan, burn down, build-from-plan, ship, open a pr, verify, done-when]

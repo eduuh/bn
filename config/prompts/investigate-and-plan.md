@@ -1,5 +1,6 @@
 ---
 name: investigate-and-plan
+internal: true
 description: "Investigate a task then write the plan in one pass and submit it to bn review, raising the Planning gate. Use for an ad-hoc task that needs both research and a plan."
 when: A task needs a rigorous investigate-then-plan pass whose output is a reviewed plan, not code — dispatched ad hoc via `--skill investigate-and-plan` (the pipeline's own Plan stage runs the `plan` skill). Composes `investigate` in pipeline/read-only mode + `plan`.
 keywords: [investigate-and-plan, investigate then plan, planning gate, bn review submit, rigorous planning, scout and plan, reviewed plan]
