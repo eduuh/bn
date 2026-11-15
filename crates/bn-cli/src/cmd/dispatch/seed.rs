@@ -1,5 +1,5 @@
 //! Seed construction for a dispatched agent — turning a workflow skill plus the dispatch's own
-//! context (fresh worktree, plan-approval gate, scout framing, verify gate) into the single prompt
+//! context (fresh worktree, plan-approval gate, verify gate) into the single prompt
 //! the harness starts on.
 //!
 //! Split out of `dispatch.rs` under the file-size ratchet, which asks for a split rather than
@@ -91,12 +91,12 @@ pub(super) fn append_plan_gate(
 }
 
 /// The workflow skill a dispatch seeds its agent with (#321): an explicit `--skill` wins, else
-/// the task type picks — a scout runs `investigate` (read-only findings), a ship runs `ship-solo`
+/// the default is `ship-solo`
 /// (scope, build, and review the change end to end in one session via bounded subagents). `debug`
 /// is the explicit pick for a repro-first bugfix.
 ///
 /// The default ship arm is the ordinary `bn dispatch` entry: with the multi-session pipeline off
-/// (the default; opt in with `$BN_DISPATCH_PIPELINE=1`), a skill-less non-scout agent dispatch is
+/// (the default; opt in with `$BN_DISPATCH_PIPELINE=1`), a skill-less agent dispatch is
 /// *not* `pipeline_investigate`, so it lands here and runs `ship-solo`. With the pipeline flag on, that
 /// same dispatch routes to the Investigate stage instead and this default only applies to explicit
 /// `--skill` lanes (e.g. the critic's execute re-dispatch).
@@ -106,19 +106,18 @@ pub(super) fn append_plan_gate(
 /// ship gets `ship-solo`, a self-contained investigate→implement→review lane. That one is "what
 /// does the nine-stage pipeline run at this stage?" — `execute` picks up an *already approved*
 /// plan. Both are correct; folding them together would silently change what dispatch launches.
-pub(crate) fn dispatch_skill_name(explicit: Option<&str>, scout: bool) -> &str {
-    explicit.unwrap_or(if scout { "investigate" } else { "ship-solo" })
+pub(crate) fn dispatch_skill_name(explicit: Option<&str>) -> &str {
+    explicit.unwrap_or("ship-solo")
 }
 
 /// The seed for a skill-driven dispatch (#321): wraps the skill's rendered workflow body with
-/// dispatch context (fresh worktree, plan-approval gate unless --yolo, scout read-only framing),
+/// dispatch context (fresh worktree, plan-approval gate unless --yolo),
 /// maps the workflow's MCP tool names onto the CLI for harnesses without the bn MCP server, and
 /// closes with outcome ingestion, completion reporting, and the `bn reflect "skill:<name> — …"`
 /// line whose text the next run of that skill sees under "Recent lessons". Self-contained: the caller appends nothing.
 pub(super) struct SkillSeedContext<'a> {
     pub(super) title: &'a str,
     pub(super) url: Option<&'a str>,
-    pub(super) scout: bool,
     pub(super) yolo: bool,
     pub(super) verify: bool,
     /// A plan-review gate will be appended to this seed. The gate then owns the plan file and
@@ -139,7 +138,7 @@ pub(super) fn skill_seed_prompt(
     let name = &skill.name;
     let cli_map = bn_core::skills::render_required(cfg, base_dir, "dispatch-cli-map", None)
         .map_err(|error| error.to_string())?;
-    let bootstrap = if !ctx.scout && name == "build-from-plan" && !ctx.plan_gate {
+    let bootstrap = if name == "build-from-plan" && !ctx.plan_gate {
         bn_core::skills::render_required(cfg, base_dir, "dispatch-plan-work-bootstrap", None)
             .map_err(|error| error.to_string())?
     } else {
@@ -149,7 +148,6 @@ pub(super) fn skill_seed_prompt(
     // appended, and `build-from-plan`/`execute`/`ship-solo` already gate their finish step on `bn verify`
     // (rebase re-run included), so only other workflows need the explicit clause.
     let verification = if ctx.verify
-        && !ctx.scout
         && !ctx.plan_gate
         && name != "build-from-plan"
         && name != "execute"
@@ -172,10 +170,6 @@ pub(super) fn skill_seed_prompt(
         ("cli_map", cli_map),
     ] {
         args.insert(key.into(), serde_json::Value::String(value));
-    }
-    if ctx.scout {
-        return bn_core::skills::render_required(cfg, base_dir, "dispatch-scout", Some(&args))
-            .map_err(|error| error.to_string());
     }
     let autonomy_name = if name == "ship-solo" {
         // Neither stance fits ship-solo: interactive forces a plan proposal it has no stage for,

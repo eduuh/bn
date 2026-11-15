@@ -144,7 +144,7 @@ on_calendar = "*:5/30"
 persistent = true
 randomized_delay = "3m"
 network = true
-description = "bn — reclaim merged-PR worktrees across all repos: remove clean ones, rescue-commit then return merged pool slots, reap finished scouts (wt-cleanup)"
+description = "bn — reclaim merged-PR worktrees across all repos: remove clean ones, rescue-commit then return merged pool slots, reap leaked pipeline scratch checkouts (wt-cleanup)"
 
 [[cron]]
 job = "pool-warm"

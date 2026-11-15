@@ -91,7 +91,6 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
             branch,
             no_tmux,
             agent,
-            scout,
             orchestrator,
             skill,
             verify,
@@ -126,7 +125,6 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
                 branch,
                 no_tmux,
                 agent.as_deref(),
-                scout,
                 orchestrator,
                 skill.as_deref(),
                 verify,
@@ -154,11 +152,6 @@ pub(super) fn route(cfg: &Config, action: CmdIntake, json: bool) {
                 None,
                 json,
             );
-        }
-        CmdIntake::Promote { repo, branch } => {
-            let ctx = target_ctx(cfg, repo, branch)
-                .unwrap_or_else(|| fail("bn promote: not in a git repo — pass --repo/--branch"));
-            emit_promote(cfg, &ctx, json);
         }
         CmdIntake::Verify(args) => emit_verify(cfg, args, json),
         CmdIntake::Gate(VerifyArgs { job, for_ }) => {

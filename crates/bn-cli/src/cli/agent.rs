@@ -125,8 +125,7 @@ pub(crate) enum AgentCmd {
         #[arg(long)]
         notify: bool,
         /// This finding is report-only — a recommendation or "nothing to fix", NOT a code change to
-        /// ship. Marks the note so `bn promote` won't try to ship it (no empty PR). Scouts whose
-        /// finding isn't code-shaped should pass this.
+        /// ship. Records the report-only outcome in the branch note.
         #[arg(long)]
         report_only: bool,
         /// Report terminal worker failure instead of successful completion.

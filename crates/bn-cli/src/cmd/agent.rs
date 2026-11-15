@@ -294,9 +294,8 @@ pub(crate) fn emit_agent_done(
         Some(&key),
         &today(),
     );
-    // If the item already existed (e.g. a scout-phase `done`) and this call carries NEW info — most
-    // importantly a PR link from the ship phase — UPDATE it in place rather than losing it to the
-    // dedup key. So a scout→ship agent's PR actually surfaces on the completion item.
+    // If the item already existed and this call carries new info, update it in place rather than
+    // losing the summary or PR link to the dedup key.
     let (existing_id, skipped) = out
         .as_ref()
         .ok()
@@ -1578,7 +1577,7 @@ pub(crate) fn emit_agent_launch(
             if let Ok(home) = std::env::var("HOME") {
                 let _ = std::fs::create_dir_all(std::path::Path::new(&home).join(".copilot"));
             }
-            crate::cmd::promote::apply_folder_trust(&cwd, "copilot");
+            crate::cmd::trust::apply_folder_trust(&cwd, "copilot");
             let resume_id = copilot_resume;
             let args = super::agent_scope::build_copilot_args(&plan, resume_id.as_deref());
             if resume_id.is_some() && !plan.fresh {

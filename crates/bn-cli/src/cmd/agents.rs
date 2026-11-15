@@ -373,7 +373,7 @@ pub(crate) fn emit_agent_bootstrap(cfg: &Config, base: &std::path::Path, name: &
          (run the mine-review-standards skill)"
     );
     let dispatch = format!(
-        "bn dispatch \"{goal}\" --name mine-{ref_name} --skill mine-review-standards --scout"
+        "bn dispatch \"{goal}\" --name mine-{ref_name} --skill mine-review-standards"
     );
 
     if json {

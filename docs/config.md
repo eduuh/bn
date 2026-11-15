@@ -245,14 +245,6 @@ A claim is a lease, not a lock. While the agent runs, the tick renews it. If the
 |---|---|---|
 | `scheduled` | `[]` | Repos whose worktree pool the `pool-build` cron rebuilds at fixed times (02:00 and 07:30) instead of the idle-gated `pool-warm` sweep. Each run resets every free worker slot to one freshly fetched `origin/main` commit, builds it, and reports each slot's commit and outcome. |
 
-### `[scout]`
-
-| Key | Default | Meaning |
-|---|---|---|
-| `watch` | `[]` | Public `owner/repo` repositories the Scout watches for issues. |
-| `tools` | `[]` | Public tool repositories whose changelogs it tracks. |
-| `max_findings` | `5` | Most findings per run. |
-
 ### `[dispatch]`
 
 | Key | Default | Meaning |
@@ -303,7 +295,7 @@ verification run. `bn schema verify` documents both output forms.
 | `own` | `[]` | Repositories keep-warm may feed. |
 | `exclude_titles` | `["gap("]` | Issue titles keep-warm skips. Setting it replaces the list. |
 | `exclude_labels` | `["blocked"]` | Issue labels keep-warm skips. Setting it replaces the list. |
-| `low_water`, `brainstorm_count`, `brainstorm_interval_secs` | built in | Keep-warm pacing. |
+| `low_water` | `1` | Minimum actionable task depth; keep-warm only pulls existing issues and does not generate new work. |
 | `stuck_idle_secs` | built in | Seconds idle before a working agent counts as stuck. |
 | `min_free_ram_mb`, `max_loadavg`, `max_swap_pct`, `tokens_per_hour`, `daily_cost_usd`, `daily_cost_usd_coding`, `daily_cost_usd_research` | off | Pause local dispatch past these limits. |
 | `remote_overflow` | `false` | Send `auto` work to a hosted runner when local is full. |

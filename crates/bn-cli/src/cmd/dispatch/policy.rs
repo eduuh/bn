@@ -79,15 +79,10 @@ pub(crate) enum PlanGate {
 
 /// Whether this dispatch runs behind the plan-review gate.
 ///
-/// A scout still skips the plan-review gate: it investigates first, then either ships a bounded
-/// fix directly or finishes report-only, so there is no separate plan artifact to review.
-/// Otherwise the request wins where it states one, and `Auto` falls back to the trusted-autonomy
+/// The request wins where it states one, and `Auto` falls back to the trusted-autonomy
 /// rule — `--yolo` raises the gate rather than bypassing it, so autonomy costs a plan review
 /// instead of buying its way out of one.
-pub(crate) fn plan_gate_enabled(request: PlanGate, configured: bool, yolo: bool, scout: bool) -> bool {
-    if scout {
-        return false;
-    }
+pub(crate) fn plan_gate_enabled(request: PlanGate, configured: bool, yolo: bool) -> bool {
     match request {
         PlanGate::Force => true,
         PlanGate::Off => false,
@@ -95,8 +90,8 @@ pub(crate) fn plan_gate_enabled(request: PlanGate, configured: bool, yolo: bool,
     }
 }
 
-/// The seed-routing predicate: a skill-less non-scout agent dispatch enters the multi-session task
-/// pipeline at its Investigate stage; a scout seeds the scout envelope; an explicit `--skill X`
+/// The seed-routing predicate: a skill-less agent dispatch enters the multi-session task
+/// pipeline at its Investigate stage; an explicit `--skill X`
 /// lane (e.g. the critic's execute re-dispatch) runs that skill under the ship
 /// envelope — autonomy stance, verify gate, completion protocol, optional plan gate.
 ///
@@ -108,27 +103,25 @@ pub(crate) fn plan_gate_enabled(request: PlanGate, configured: bool, yolo: bool,
 /// unchanged and always reachable directly.
 ///
 /// Pure so the seed-assembly tests can pin the routing table: without the `skill` arm every
-/// non-scout agent dispatch took the investigate envelope, leaving the whole ship-envelope path
+/// agent dispatch took the investigate envelope, leaving the whole ship-envelope path
 /// unreachable.
 pub(crate) fn routes_to_pipeline_investigate(
     configured: bool,
     has_agent: bool,
-    scout: bool,
     skill: Option<&str>,
 ) -> bool {
-    configured && has_agent && !scout && skill.is_none()
+    configured && has_agent && skill.is_none()
 }
 
 /// Which stage this dispatch runs as — **declared if the caller knows, inferred only if not**.
 ///
-/// The inference is a three-way guess over `(scout, skill)` and cannot express `consensus`,
+/// The inference is a three-way guess over `skill` and cannot express `consensus`,
 /// `validate`, `critique`, `ship` or `learn` at all: every one of them lands on `execute` and
 /// silently borrows that stage's model, effort and harness. That is fine for a hand-typed
 /// `bn dispatch`, where those stages are not what anyone means, and wrong for a pipeline that walks
 /// a task through all nine — so a producer that knows its stage passes `--stage` and is believed.
 pub(crate) fn dispatch_pipeline_stage(
     declared: Option<bn_core::pipeline::stage::Stage>,
-    scout: bool,
     skill: Option<&str>,
 ) -> bn_core::pipeline::stage::Stage {
     use bn_core::pipeline::stage::Stage;
@@ -136,7 +129,7 @@ pub(crate) fn dispatch_pipeline_stage(
     if let Some(stage) = declared {
         return stage;
     }
-    if scout || skill == Some("investigate") {
+    if skill == Some("investigate") {
         Stage::Investigate
     } else if skill == Some("plan") {
         Stage::Plan

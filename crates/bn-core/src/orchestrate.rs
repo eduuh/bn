@@ -182,20 +182,13 @@ pub struct QueueItem {
     #[serde(default, skip_serializing_if = "ExecutionTarget::is_local")]
     pub target: ExecutionTarget,
     /// Which typed concurrency lane this item is capped in (#385): `Coding` for a `ship` change,
-    /// `Research` for a `scout` investigation, derived from the leased
+    /// `Research` for an investigation, derived from the leased
     /// [`crate::backlog::BacklogKind`] via `WorkClass::from_kind`. The resource-aware scheduler
     /// counts in-flight items **per lane** against that lane's cap, so coding and research scale
     /// independently. Defaults to `Coding` on a pre-#385 run's state and for every `--queue` item
     /// (which carries no kind), preserving the single-pool behavior.
     #[serde(default)]
     pub work_class: WorkClass,
-    /// The harvested answer for a scout/ask item (#378), set once its findings are routed back —
-    /// see `OrchestrateState::record_answer`. A `ship` never carries one (it lands a PR, not an
-    /// answer); a `scout`/`ask` produces findings, not a merge, so *this* — not a PR — is its
-    /// deliverable. `bn orchestrate answers` / `ask --wait` read it straight off the state file the
-    /// daemon already writes (no new IPC). `None` until harvested (or on any pre-#378 run's state).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub answer: Option<Answer>,
     /// A claimed dispatch is targeting a GitHub-hosted runner rather than a local/SSH slot. Kept
     /// separate from `substrate` so a failed auto-overflow claim can return to its original policy.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -216,24 +209,6 @@ pub struct QueueItem {
 }
 
 pub type QueueEntrySpec = (String, Vec<String>, Substrate, WorkClass, Option<String>);
-
-/// The routed-back answer for a scout/ask item (#378) — the "delegate-for-answers" deliverable. A
-/// scout runs the investigation-first `investigate` skill, writes findings to its branch note, and
-/// may either finish report-only or continue to a bounded PR in the same session; when it reaches
-/// `Done` the daemon harvests those findings and records this on the run item (a pure state field),
-/// so `bn orchestrate answers` and `ask --wait` surface the answer with zero new IPC — they just
-/// read the state file the daemon already persists. `path` points at the findings write-up in the
-/// item's (synced, worktree-independent) branch-note dir, so it stays readable after the scout
-/// worktree is reaped.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Answer {
-    /// The question that was asked — the scout item's dispatch subject, echoed back beside the
-    /// findings so `answers` / `--wait` show *what* was answered without re-deriving it.
-    pub question: String,
-    /// The harvested findings file in the item's branch-note dir (a sibling write-up when the scout
-    /// wrote one, else the note itself) — the link the notification and `answers` point a human at.
-    pub path: String,
-}
 
 impl QueueItem {
     fn new(repo: &str, item: &str, now: i64) -> QueueItem {
@@ -258,7 +233,6 @@ impl QueueItem {
             substrate: Substrate::Auto,
             work_class: WorkClass::Coding,
             target: ExecutionTarget::Local,
-            answer: None,
             claimed_remote: false,
             node: None,
             request_id: None,
@@ -293,13 +267,6 @@ impl QueueItem {
         self.branch.as_deref().map(tmux_window_name)
     }
 
-    /// Whether this is a scout/ask item (#378): a read-only [`WorkClass::Research`] agent that
-    /// investigates and reports findings, dispatched with `--scout` and opening **no PR**. The one
-    /// predicate the dispatch branch and the answer-harvest key off, so a `ship` is never routed
-    /// through the scout path and a scout is never expected to produce a PR.
-    pub fn is_scout(&self) -> bool {
-        self.work_class == WorkClass::Research
-    }
     /// This item's **`(repo, id)` key** (#453) — the tuple the orchestrate queue is addressed by,
     /// so two repos' identically-named items never alias. `id` alone was ambiguous across repos.
     pub fn key(&self) -> (&str, &str) {
@@ -368,9 +335,9 @@ pub struct OrchestrateState {
     pub queue: Vec<QueueItem>,
     /// Max agents dispatched at once. `solo` overrides this to 1.
     pub concurrency: usize,
-    /// The **research-lane** local cap (#385): when set, `scout`/research agents ([`WorkClass::Research`])
+    /// The **research-lane** local cap (#385): when set, research agents ([`WorkClass::Research`])
     /// scale on this budget independently of the coding lane (`concurrency`), so `--coding 5 --research 2`
-    /// runs 5 ship + 2 scout agents concurrently. `None` = no separate research lane: research items
+    /// runs 5 coding + 2 research agents concurrently. `None` = no separate research lane: research items
     /// share the single `concurrency` pool (the pre-#385 single-knob behavior). Adjustable live via
     /// `bn orchestrate scale` ([`OrchestrateState::scale`]) — the daemon picks it up on its next tick.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -397,9 +364,6 @@ pub struct OrchestrateState {
     /// Opt-in policy for automatically replenishing this resident supervisor's durable backlog.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_warm: Option<KeepWarmPolicy>,
-    /// Last time this repo launched keep-warm ideation scouts. Persisted for restart-safe rate limits.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub keep_warm_last_brainstorm_at: Option<i64>,
     /// Set by `bn orchestrate add --start` (any backlog-seeded run) — this run is a **resident,
     /// self-feeding** loop (#368): on drain it does **not** exit but stays alive pulling the next
     /// batch from the durable backlog (#375) as slots free, so a multi-wave backlog runs to
@@ -662,7 +626,6 @@ impl OrchestrateState {
             stopped: false,
             supervise: false,
             keep_warm: None,
-            keep_warm_last_brainstorm_at: None,
             self_feed: false,
             harness: None,
             boot_id: None,

@@ -15,7 +15,7 @@
 //!    backlog.
 //! 2. **Bounded.** Fetches go through [`CommandRunner::run_with_timeout`]. The old path used the
 //!    unbounded `.output()`, so a hung `gh` hung the caller forever.
-//! 3. **Cached with a TTL.** Not per-day. `crate::scout::with_cache` keys on the date, which is
+//! 3. **Cached with a TTL.** Not per-day. A date-keyed cache is
 //!    right for a Saturday radar and wrong here: an issue filed at 10:00 would be invisible to a
 //!    "what can I do today" triage until tomorrow. This keys on `fetched_at + ttl`.
 //!

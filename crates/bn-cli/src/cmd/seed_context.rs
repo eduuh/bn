@@ -1,4 +1,4 @@
-//! The standing context every freshly-dispatched agent is seeded with: the `ship` (or `scout`)
+//! The standing context every freshly-dispatched agent is seeded with: the `ship`
 //! context profile.
 //!
 //! Three kinds, all "things that outlive any one session":
@@ -15,23 +15,23 @@
 //! that" true across restarts.
 //!
 //! The pieces are atoms of [`bn_core::context`], so a repo can reshape what its agents start with
-//! in `.bn/context.toml` (a `ship` or `scout` profile there replaces the built-in one). Each seed
+//! in `.bn/context.toml` (a `ship` profile there replaces the built-in one). Each seed
 //! is logged as served — which is not the same as read.
 //!
 //! Kept out of `dispatch.rs`, which is at its file-size ratchet and cannot grow.
 
 use bn_core::resolver::{Config, Resolved};
 
-/// The seed suffix: the `ship` profile (or `scout`) composed for this branch, with `refs` as the
+/// The seed suffix: the `ship` profile composed for this branch, with `refs` as the
 /// dispatch's `--ref` selection. Empty when there is nothing to say, so a caller can append it
 /// unconditionally. A profile that can't compose (a broken manifest) falls back to the built-in,
 /// because a dispatch must not fail over its seed.
-pub(crate) fn section(cfg: &Config, repo: &str, branch: &str, scout: bool, refs: &[String]) -> String {
+pub(crate) fn section(cfg: &Config, repo: &str, branch: &str, refs: &[String]) -> String {
     let ctx = Resolved {
         repo: repo.to_string(),
         branch: branch.to_string(),
     };
-    let profile = if scout { "scout" } else { "ship" };
+    let profile = "ship";
     let composed = crate::cmd::context::compose(cfg, &ctx, profile, refs, None, false)
         .or_else(|_| builtin(cfg, &ctx, profile, refs));
     match composed {
@@ -94,6 +94,5 @@ mod tests {
              `## Directives`, so they apply to every session on this branch, not just this \
              one:\n- never touch vendor/\n"
         );
-        assert_eq!(builtin(&cfg, &ctx, "scout", &refs).unwrap().text(), text);
     }
 }

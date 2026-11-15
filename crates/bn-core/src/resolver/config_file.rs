@@ -72,7 +72,6 @@ pub(super) struct ConfigFile {
     tasks: Option<TasksSection>,
     links: Option<LinksSection>,
     log: Option<LogSection>,
-    scout: Option<ScoutSection>,
     pool: Option<PoolSection>,
     dispatch: Option<DispatchSection>,
     pipeline: Option<super::PipelineConfig>,
@@ -308,14 +307,6 @@ impl ConfigFile {
         self.orchestrate().and_then(|s| s.exclude_labels.clone())
     }
 
-    pub(super) fn orchestrate_brainstorm_count(&self) -> Option<usize> {
-        self.orchestrate().and_then(|s| s.brainstorm_count)
-    }
-
-    pub(super) fn orchestrate_brainstorm_interval_secs(&self) -> Option<i64> {
-        self.orchestrate().and_then(|s| s.brainstorm_interval_secs)
-    }
-
     pub(super) fn orchestrate_min_free_ram_mb(&self) -> Option<u64> {
         self.orchestrate().and_then(|s| s.min_free_ram_mb)
     }
@@ -386,18 +377,6 @@ impl ConfigFile {
 
     pub(super) fn log_retain_days(&self) -> Option<i64> {
         self.log.as_ref().and_then(|s| s.retain_days)
-    }
-
-    pub(super) fn scout_watch(&self) -> Option<Vec<String>> {
-        self.scout.as_ref().and_then(|s| s.watch.clone())
-    }
-
-    pub(super) fn scout_tools(&self) -> Option<Vec<String>> {
-        self.scout.as_ref().and_then(|s| s.tools.clone())
-    }
-
-    pub(super) fn scout_max_findings(&self) -> Option<usize> {
-        self.scout.as_ref().and_then(|s| s.max_findings)
     }
 
     pub(super) fn pool_scheduled(&self) -> Option<Vec<String>> {

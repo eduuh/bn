@@ -257,7 +257,7 @@ pub(super) fn route(cfg: &Config, action: CmdMisc, json: bool) {
 /// `execvp` the harness launcher uses) bypass shell functions, so neither wrapper recurses.
 ///
 /// A **leading `@`** on the first argument names a bn agent or skill and routes to
-/// `bn agent run` instead: `claude @scout "check the tokio bump"`. The sigil is what makes that
+/// `bn agent run` instead: `claude @debug "panic in resolver"`. The sigil is what makes that
 /// safe to add to a command people already type — every other argument shape is passed through
 /// untouched, so `claude --resume <id>` and `claude "just a prompt"` cannot change meaning, and a
 /// future catalog entry named like a real harness flag or a file cannot silently capture one.
@@ -270,7 +270,7 @@ const SHELL_WRAPPERS: &str = r#"# bn shell wrappers (bn shell-init) — `claude`
 #
 # A leading @ names a bn agent or skill (`bn agent run`); a bare @ opens the picker. Everything
 # else is passed through untouched, so `claude --resume <id>` still means what it always did:
-#   claude @scout "check the tokio bump"    copilot @debug "panic in resolver"
+#   claude @debug "panic in resolver"    copilot @implement "add a command"
 #
 # The marker below is how `bn doctor` can tell these wrappers are actually live in your shell: a
 # child process cannot see its parent's functions, only its environment.
@@ -301,9 +301,7 @@ _bn_launch() {
 claude() { _bn_launch claude "$@"; }
 copilot() { _bn_launch copilot "$@"; }
 
-# The explicit form: `agency claude "investigate X"` runs a pooled, foreground scout in its own warm
-# slot — an interactive investigation that hands the slot back the moment it exits.
-# `agency claude @<name> "..."` launches that catalog agent or skill instead.
+# The explicit alias accepts the same arguments as the bare harness wrapper.
 agency() {
   if [ "$#" -eq 0 ]; then
     echo "usage: agency <claude|copilot> [args...]" >&2
@@ -314,18 +312,7 @@ agency() {
     claude|copilot) ;;
     *) echo "agency: unknown agent '$_bn_h' (use: claude | copilot)" >&2; return 2 ;;
   esac
-  # `agency claude @scout "..."` — same sigil as the bare wrappers, checked before the worktree
-  # gate because `bn agent run --list` and the picker are useful outside a repository.
-  if _bn_is_at "${1-}"; then _bn_run_at "$_bn_h" "$@"; return $?; fi
-  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    echo "agency: sessions require a git worktree; enter or create a repository first" >&2
-    return 1
-  fi
-  if [ "$#" -eq 0 ]; then
-    bn agent launch "$_bn_h"
-    return $?
-  fi
-  bn dispatch --agent "$_bn_h" --yolo --scout --pool --attach -- "$@"
+  _bn_launch "$_bn_h" "$@"
 }
 
 # Opening WSL starts tmux. A new WSL tab (the Ubuntu profile, `wsl` from a prompt) used to land in
@@ -346,9 +333,7 @@ esac
 ///
 /// `claude`/`copilot` inside a git work tree route through `bn agent launch`, the chokepoint that
 /// enforces agent placement and refuses to create sessions outside a git worktree.
-/// `agency <claude|copilot> <args>` stays the explicit pooled-scout form
-/// (`bn dispatch --agent <h> --yolo --scout --pool --attach -- <args>`), a foreground investigation
-/// whose warm slot returns to the pool the moment the agent exits.
+/// `agency <claude|copilot> <args>` is an explicit alias of the same harness wrapper.
 fn emit_shell_init(shell: Shell) {
     match shell {
         Shell::Bash | Shell::Zsh => {}
@@ -358,4 +343,27 @@ fn emit_shell_init(shell: Shell) {
         }
     }
     print!("{SHELL_WRAPPERS}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agency_uses_the_normal_launcher_and_preserves_arguments() {
+        let script = format!(
+            "{SHELL_WRAPPERS}\nbn() {{ printf '%s\\n' \"$@\"; }}\n\
+             agency copilot 'fix the bug'\nagency claude @debug 'find the failure'"
+        );
+        let out = std::process::Command::new("sh")
+            .args(["-c", &script])
+            .output()
+            .expect("shell wrappers run");
+        assert!(out.status.success());
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            "agent\nlaunch\ncopilot\n--\nfix the bug\n\
+             agent\nrun\ndebug\n--harness\nclaude\nfind the failure\n"
+        );
+    }
 }

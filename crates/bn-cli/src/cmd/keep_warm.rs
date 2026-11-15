@@ -1,7 +1,7 @@
-//! `bn run keep-warm` — top up one repo's issue-derived task reservoir and seed brainstorm scouts.
+//! `bn run keep-warm` — top up one repo's issue-derived task reservoir.
 //!
 //! The ranking policy is shared with `bn task pull` in `bn_core::keep_warm`; this module is the
-//! CLI realization layer: repo targeting, task-file writes, scout launches, and operator-facing
+//! CLI realization layer: repo targeting, task-file writes, and operator-facing
 //! status lines.
 use crate::*;
 use bn_core::keep_warm::KeepWarmPolicy;
@@ -12,8 +12,6 @@ use std::path::Path;
 pub(crate) fn configured_policy(cfg: &Config, low_water: usize) -> KeepWarmPolicy {
     KeepWarmPolicy {
         low_water: low_water.max(1),
-        brainstorm_count: cfg.orchestrate_brainstorm_count,
-        brainstorm_interval_secs: cfg.orchestrate_brainstorm_interval_secs,
         exclude_titles: cfg.orchestrate_exclude_titles.clone(),
         exclude_labels: cfg.orchestrate_exclude_labels.clone(),
     }
@@ -70,17 +68,14 @@ pub(crate) fn job_keep_warm(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
             continue;
         }
         let state_path = bn_core::orchestrate::state_path_for(repo);
-        let state = match persist_keep_warm_policy(&state_path, repo, &policy, now) {
-            Ok(state) => state,
-            Err(error) => {
-                crate::cmd::jobs::native_job_line(
-                    &format!("keep-warm: could not persist {repo} state: {error}"),
-                    true,
-                );
-                failed += 1;
-                continue;
-            }
-        };
+        if let Err(error) = persist_keep_warm_policy(&state_path, repo, &policy, now) {
+            crate::cmd::jobs::native_job_line(
+                &format!("keep-warm: could not persist {repo} state: {error}"),
+                true,
+            );
+            failed += 1;
+            continue;
+        }
         let cached = bn_core::issues::for_repo(cfg, &runner, repo, now);
         if let Some(error) = &cached.error {
             if cached.stale {
@@ -103,7 +98,6 @@ pub(crate) fn job_keep_warm(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
             repo,
             &policy,
             &cached.issues,
-            state.keep_warm_last_brainstorm_at,
             now,
             &today,
         ) {
@@ -121,21 +115,7 @@ pub(crate) fn job_keep_warm(cfg: &Config, ctx: Option<&Resolved>) -> i32 {
                 false,
             );
         }
-        if !plan.brainstorm.is_empty() {
-            match start_brainstorm(&state_path, repo, &plan.brainstorm, now) {
-                Ok(0) => {}
-                Ok(launched) => crate::cmd::jobs::native_job_line(
-                    &format!("keep-warm: {repo}: launched {launched} brainstorm scout(s)"),
-                    false,
-                ),
-                Err(error) => {
-                    crate::cmd::jobs::native_job_line(&error, true);
-                    failed += 1;
-                    continue;
-                }
-            }
-        }
-        if plan.pulled == 0 && plan.brainstorm.is_empty() {
+        if plan.pulled == 0 {
             crate::cmd::jobs::native_job_line(&format!("keep-warm: {repo}: already warm"), false);
         }
     }
@@ -174,7 +154,6 @@ fn persist_keep_warm_policy(
 
 struct RepoPullPlan {
     pulled: usize,
-    brainstorm: Vec<String>,
 }
 
 fn plan_repo_pull(
@@ -182,7 +161,6 @@ fn plan_repo_pull(
     repo: &str,
     policy: &KeepWarmPolicy,
     issues: &[bn_core::issues::IssueRef],
-    last_brainstorm_at: Option<i64>,
     now: i64,
     today: &str,
 ) -> Result<RepoPullPlan, String> {
@@ -194,52 +172,18 @@ fn plan_repo_pull(
 
     let existing = bn_core::task_pull::existing_srcs(&file);
     let depth = bn_core::task_pull::active_depth(&file, repo, today);
-    let plan =
-        bn_core::task_pull::plan_pull_actions(repo, policy, depth, &existing, issues, last_brainstorm_at, now);
+    let issues = bn_core::task_pull::plan_pull(repo, policy, depth, &existing, issues, now);
 
-    if !plan.issues.is_empty() {
-        crate::cmd::task::append_pulled_tasks(&mut file, &plan.issues, today);
+    if !issues.is_empty() {
+        crate::cmd::task::append_pulled_tasks(&mut file, &issues, today);
         store
             .save(&file)
             .map_err(|error| format!("keep-warm: could not save task store: {error}"))?;
     }
 
     Ok(RepoPullPlan {
-        pulled: plan.issues.len(),
-        brainstorm: plan.brainstorm,
+        pulled: issues.len(),
     })
-}
-
-/// Start one brainstorm scout per prompt through `bn dispatch`, and stamp the brainstorm clock when
-/// any of them started. Returns how many started; a failed launch is reported once the rest have had
-/// their turn, so one refusal does not cost the others.
-fn start_brainstorm(
-    state_path: &Path,
-    repo: &str,
-    brainstorm: &[String],
-    now: i64,
-) -> Result<usize, String> {
-    let mut started = 0;
-    let mut failures = Vec::new();
-    for prompt in brainstorm {
-        match crate::cmd::dispatch::DispatchInvocation::new(prompt, repo, "auto")
-            .scout(true)
-            .launch()
-        {
-            Ok(()) => started += 1,
-            Err(error) => failures.push(error),
-        }
-    }
-    if started > 0 {
-        bn_core::orchestrate::mutate(state_path, |state| {
-            state.keep_warm_last_brainstorm_at = Some(now);
-        })
-        .map_err(|error| format!("keep-warm: could not update {repo} brainstorm timestamp: {error}"))?;
-    }
-    match failures.first() {
-        Some(error) => Err(format!("keep-warm: brainstorm failed for {repo}: {error}")),
-        None => Ok(started),
-    }
 }
 
 #[cfg(test)]
@@ -277,6 +221,37 @@ mod tests {
                 branch: "main".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn an_empty_issue_cache_does_not_launch_an_ideation_agent() {
+        let _lock = bn_core::test_support::env_lock();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state = temp.path().join("state");
+        let _state = bn_core::test_support::EnvGuard::set("BN_STATE_DIR", &state);
+        std::fs::create_dir_all(state.join("issues")).expect("issues dir");
+        std::fs::write(
+            state.join("issues/demo.json"),
+            serde_json::json!({
+                "repo": "demo",
+                "slug": "owner/demo",
+                "fetched_at": 10,
+                "stale": false,
+                "error": null,
+                "issues": []
+            })
+            .to_string(),
+        )
+        .expect("cache write");
+        let cfg = cfg_with_repo(&temp, "demo");
+        let ctx = Resolved {
+            repo: "demo".to_string(),
+            branch: "main".to_string(),
+        };
+        crate::cmd::dispatch::invocation::take_launched();
+
+        assert_eq!(job_keep_warm(&cfg, Some(&ctx)), 0);
+        assert!(crate::cmd::dispatch::invocation::take_launched().is_empty());
     }
 
     #[test]

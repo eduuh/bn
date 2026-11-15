@@ -1,8 +1,8 @@
 ---
 name: investigate
-description: "Research a scoped question and record evidence for a research or pipeline task. Use when explicitly asked for a substantial investigation or selected by a research/scout workflow, never for quick questions or routine code inspection."
-when: The user explicitly requests a substantial research investigation, invokes this skill, or a pipeline/scout workflow selects it. Do not activate for quick lookups, ordinary explanations, locating a symbol, or reading code while implementing or debugging.
-keywords: [investigate, research workflow, scout, feasibility study, research spike, pipeline investigation]
+description: "Research a scoped question and record evidence for a research or pipeline task. Use when explicitly asked for a substantial investigation or selected by a research workflow, never for quick questions or routine code inspection."
+when: The user explicitly requests a substantial research investigation, invokes this skill, or a pipeline workflow selects it. Do not activate for quick lookups, ordinary explanations, locating a symbol, or reading code while implementing or debugging.
+keywords: [investigate, research workflow, feasibility study, research spike, pipeline investigation]
 arguments:
   - { name: question, description: The question to answer. Omit to pick the note's top open research item., required: false }
 ---
@@ -10,14 +10,12 @@ This is an opt-in research workflow, not a prerequisite for answering questions 
 code. A quick lookup stays a direct answer, even if the request says "investigate" or "look into".
 Do not introduce branch-note ceremony, delegation, planning gates, implementation, or PR creation
 into an ordinary question. For standalone research, return the findings and stop; pipeline handoff
-and scout implementation below apply only when that workflow explicitly dispatched the task.
+below applies only when that workflow explicitly dispatched the task.
 
 You are the pipeline's **Investigate** stage when this workflow runs inside the pipeline: answer
 the task's scoping questions in **read-only** mode, persist evidence in the branch note, and hand a
-bounded problem to a separate planner. When the same workflow is wrapped by an ad-hoc scout
-dispatch, investigation is still first and read-only, but once the findings make the change clear
-you may continue in the same session into a bounded fix and PR instead of handing off to planning.
-Do not start coding before the evidence says what to change.
+bounded problem to a separate planner. Standalone research stays read-only and ends with findings;
+it does not implement a fix or open a PR.
 
 1. **Frame the question.** Call `bn_cat` for context. Use the question ({{question}}) if given; otherwise take
    the top open `research` item from the note. State it in one sharp line — a vague question yields
@@ -56,13 +54,7 @@ Do not start coding before the evidence says what to change.
    are what the next investigation starts from. Correct a note that this work proved wrong
    rather than appending a contradiction.
 
-6. **Hand off, or graduate the scout.** In the pipeline stage, when the task is scoped and
+6. **Hand off.** In the pipeline stage, when the task is scoped and
    findings are recorded, run `bn pipeline investigate finish`. This advances the branch to `plan`
    and launches a fresh planner seeded with these findings. Report the finding count and stop; do
    not plan or implement in that context.
-
-   In an ad-hoc scout envelope, skip the pipeline handoff. Reproduce the issue first and record
-   how (`bn_add research`). Once the findings make the fix clear, implement it in this same
-   session, record decisions as you go, prove the fix against that reproduction, and open a PR.
-   Report-only is only for an issue you could not reproduce; a person-blocked handoff is a
-   blocker, not a finish.

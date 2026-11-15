@@ -130,11 +130,6 @@ pub(crate) enum CmdIntake {
         /// `--agent claude` (aka claudecode) or `--agent copilot` pins it. Opens the repo's tmux session.
         #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
         agent: Option<String>,
-        /// Scout task: investigate / reproduce / audit and write findings to the branch note
-        /// first. Once the evidence makes the change clear, the agent may land a bounded fix in
-        /// the same session and open a PR; otherwise it finishes report-only.
-        #[arg(long)]
-        scout: bool,
         /// Mark this a fleet **orchestrator** (#500): a long-lived supervisory agent that dispatches
         /// and monitors the wave itself and ships no PR. Attributes the run as `orchestration` work,
         /// so the dashboard pins it in the distinct Orchestrators tier (role comes from the agent
@@ -143,14 +138,11 @@ pub(crate) enum CmdIntake {
         orchestrator: bool,
         /// Workflow skill to seed the agent with (see `bn skills`): its rendered body becomes the
         /// agent's process, closing with a `bn reflect "skill:<name> — …"` line so evolve-skills
-        /// learns from the run. Defaults: `ship-solo` (ship) / `investigate` (--scout); pick
-        /// `debug` for a repro-first bugfix. `--skill investigate` implies a scout task.
+        /// learns from the run. Defaults to `ship-solo`; pick `debug` for a repro-first bugfix.
         #[arg(long)]
         skill: Option<String>,
         /// Gate "done" on verification: instruct the agent to run `bn verify` (the repo's
-        /// build/test/lint gate) and only report done once it passes. Ignored for --scout; the
-        /// scout workflow itself decides whether a code-changing outcome must verify before it
-        /// ships.
+        /// build/test/lint gate) and only report done once it passes.
         #[arg(long)]
         verify: bool,
         /// Trusted-repo autonomy: launch the agent WITHOUT approval prompts (claude yolo / copilot
@@ -174,7 +166,7 @@ pub(crate) enum CmdIntake {
         no_plan_review: bool,
         /// The pipeline stage this dispatch runs as (pickup|investigate|plan|consensus|execute|
         /// validate|critique|ship|learn). Selects `[pipeline.stages.<stage>]` — its model, effort
-        /// and harness. Omit and bn infers it from `--scout`/`--skill`, which can only ever mean
+        /// and harness. Omit and bn infers it from `--skill`, which can only ever mean
         /// investigate, plan or execute; pass it explicitly so the six other stages run under their
         /// own profile instead of borrowing execute's.
         #[arg(long)]
@@ -245,22 +237,11 @@ pub(crate) enum CmdIntake {
         attach: bool,
         /// Unattended run: the agent works its seed non-interactively and exits when that run
         /// ends (copilot and claude `-p`), and a clean exit closes its tmux window. For the
-        /// scheduled lanes (red-main, pr-babysit, dep-prs, explore), whose interactive agents
+        /// scheduled lanes (red-main, pr-babysit, dep-prs), whose interactive agents
         /// otherwise idled at a prompt forever after the pass, holding hundreds of MB each. Pair
         /// it with `--yolo`: nobody is there to answer an approval prompt.
         #[arg(long, requires = "agent", conflicts_with = "attach")]
         one_shot: bool,
-    },
-    /// Promote a scout worktree to a ship: record the flip in the branch note and tell the agent it
-    /// may now implement (and open a PR). Run inside the scout's worktree, or target it with
-    /// --repo/--branch. The follow-through after a scout's report checks out.
-    Promote {
-        /// Target repo (with --branch) instead of the current worktree.
-        #[arg(long)]
-        repo: Option<String>,
-        /// Target branch (with --repo).
-        #[arg(long)]
-        branch: Option<String>,
     },
     /// Run this worktree's verification gate (all available `build`, `test`, and `lint` jobs) and record the
     /// PASS/FAIL to the branch note's Progress. Exits non-zero on failure, so an agent can gate
@@ -711,7 +692,7 @@ pub(crate) enum CmdMisc {
     /// (asking what the work is and dispatching into a warm pool slot instead) and refuses a second
     /// agent in a worktree that already has one. Outside a repo they refuse to start, so every
     /// session — including planning — is backed by a repository branch. `agency claude` /
-    /// `agency copilot` remain the explicit pooled-scout form. Source from your shell rc, e.g.
+    /// `agency copilot` remain explicit aliases. Source from your shell rc, e.g.
     /// `source <(bn shell-init zsh)` (bash|zsh).
     ShellInit {
         /// Shell to emit wrappers for (bash or zsh).

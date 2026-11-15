@@ -36,7 +36,6 @@ pub(crate) const ROUTES: &[(&str, &str, &[&str])] = &[
     ("review", "pr", &["review-pr"]),
     ("review", "queue", &["reviews"]),
     ("review", "critic", &["critic"]),
-    ("pipeline", "promote", &["promote"]),
     ("wt", "repos", &["repos"]),
     ("task", "q", &["q"]),
     ("agent", "registry", &["sessions"]),
@@ -393,6 +392,23 @@ mod tests {
         assert!(!skills.contains("bn retro"));
         assert!(skills.contains("bn skills find"));
         assert!(skills.contains("bn skills render"));
+    }
+
+    #[test]
+    fn removed_scout_entry_points_are_rejected() {
+        let err = command()
+            .try_get_matches_from(["bn", "dispatch", "work", "--scout"])
+            .unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+        let err = command()
+            .try_get_matches_from(["bn", "promote"])
+            .unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
+        let Plan::Parse(args) = plan(argv("pipeline promote")) else {
+            panic!("expected clap to reject the removed route");
+        };
+        let err = command().try_get_matches_from(args).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
     }
 
     #[test]

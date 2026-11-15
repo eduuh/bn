@@ -112,7 +112,6 @@ pub mod run_status;
 pub mod runner;
 pub mod schedule;
 pub mod schema;
-pub mod scout;
 pub mod scratch_gc;
 pub mod search;
 pub mod skills;

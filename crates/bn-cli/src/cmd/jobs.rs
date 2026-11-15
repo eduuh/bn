@@ -230,9 +230,7 @@ pub(crate) fn run_native_job(
 /// into monthly aggregates. Idempotent, so a weekly (or caught-up-after-a-miss) run is always safe;
 /// chronicles and retro transcripts are exempt. Always exits 0 — retention is best-effort
 /// housekeeping, never a page.
-/// `jobs/wt-cleanup.sh` — reclaim finished worktrees: merged-PR ships (cleanup), then done+clean
-/// scouts (reap). Both sweep all repos; the reap keeps the note (findings) while removing the
-/// disposable scout worktree, so investigation worktrees don't pile up.
+/// `jobs/wt-cleanup.sh` — reclaim merged-PR worktrees and leaked pipeline scratch checkouts.
 pub(crate) fn job_wt_cleanup(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
     // #534: clear orphaned merged-but-dirty notices whose worktrees were reaped out of band before
     // reclaiming the current crop — decoupled from the single `cleanup_one` removal path.

@@ -119,8 +119,6 @@ pub(super) struct OrchestrateSection {
     pub(super) own: Option<Vec<String>>,
     pub(super) exclude_titles: Option<Vec<String>>,
     pub(super) exclude_labels: Option<Vec<String>>,
-    pub(super) brainstorm_count: Option<usize>,
-    pub(super) brainstorm_interval_secs: Option<i64>,
     /// Pause local dispatch while free RAM (MB) is below this — the #377 anti-thrash guard.
     pub(super) min_free_ram_mb: Option<u64>,
     /// Pause local dispatch while the load average is above this (#377).
@@ -177,17 +175,6 @@ pub(super) struct StaffSection {
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub(super) struct PoolSection {
     pub(super) scheduled: Option<Vec<String>>,
-}
-
-/// `[scout]`: the Scout radar agent (#262). All optional. `watch` is the public `owner/repo`
-/// upstream watchlist the Scout scans for help-wanted / good-first issues; `tools` the public tool
-/// repos in your stack whose changelogs it tracks; `max_findings` overrides the ≤ 5 cap. All three
-/// are the *only* outbound tokens, so they're public by definition.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-pub(super) struct ScoutSection {
-    pub(super) watch: Option<Vec<String>>,
-    pub(super) tools: Option<Vec<String>>,
-    pub(super) max_findings: Option<usize>,
 }
 
 /// `[agents]`: which opt-in agents are switched on, by name.

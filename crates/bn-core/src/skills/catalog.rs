@@ -525,6 +525,9 @@ mod tests {
         let skills =
             load_skill_set(&[root.join("config/prompts")]).expect("shipped prompt catalog loads");
 
+        assert!(skills
+            .iter()
+            .all(|skill| !matches!(skill.name.as_str(), "explore" | "dispatch-scout")));
         let internal_names: BTreeMap<_, _> = skills
             .iter()
             .filter(|skill| skill.internal)
@@ -540,7 +543,6 @@ mod tests {
             "dispatch-completion",
             "dispatch-plan-review-gate",
             "dispatch-plan-work-bootstrap",
-            "dispatch-scout",
             "dispatch-ship",
             "dispatch-verify-gate",
             "m365-commitments-query",

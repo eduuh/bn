@@ -171,9 +171,8 @@ pub enum WtCmd {
         worktree: Option<String>,
     },
     /// Reap worktrees whose WORK IS DONE and safe to remove — the orchestration's "clean up once
-    /// finished" sweep. Reaps: a **scout** worktree whose agent reported done and is clean (no
-    /// commits/uncommitted — its findings live safely in the synced note), and a **ship** worktree
-    /// whose PR is merged. Skips open/no-PR ships, dirty worktrees, and still-active scouts.
+    /// finished" sweep. Reaps worktrees whose PR is merged.
+    /// Skips open/no-PR worktrees and dirty worktrees.
     /// Dry-run by default; `--yes` executes. Default target: current worktree; `--all` sweeps the
     /// current repo; `--all-repos` sweeps every repo.
     Reap {

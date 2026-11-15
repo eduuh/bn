@@ -46,19 +46,13 @@ struct SpinUpArgs {
     /// copilot. Pass a literal `none` to open a plain shell window with no agent.
     #[serde(default)]
     agent: Option<String>,
-    /// Scout task: the agent investigates / reproduces / audits and writes findings to the branch
-    /// note first. Once the evidence makes the change clear, it may land a bounded fix in the same
-    /// session and open a PR; otherwise it finishes report-only. Default false (ship).
-    #[serde(default)]
-    scout: bool,
     /// Workflow skill to seed the agent with (see the bn skill prompts): its rendered body becomes
-    /// the agent's process, ending with a `bn reflect "skill:<name> — …"` line. Defaults per task
-    /// type — `ship-solo` (ship) / `investigate` (scout); pass `debug` for a repro-first bugfix.
+    /// the agent's process, ending with a `bn reflect "skill:<name> — …"` line. Defaults to
+    /// `ship-solo`; pass `debug` for a repro-first bugfix.
     #[serde(default)]
     skill: Option<String>,
     /// Gate "done" on verification: the ship agent must run `bn verify` (the repo's build/test/lint gate)
-    /// and only report done once it passes. Ignored for scout; the scout workflow decides whether a
-    /// code-changing outcome must verify before it ships. Default false.
+    /// and only report done once it passes. Default false.
     #[serde(default)]
     verify: bool,
     /// Trusted-repo autonomy: launch the agent without approval prompts so it runs clean instead of
@@ -228,9 +222,6 @@ impl BnOrchestratorServer {
             Some(k) if !k.is_empty() => args.push(format!("--agent={k}")),
             _ => args.push("--agent=copilot".into()), // default
         }
-        if a.scout {
-            args.push("--scout".into());
-        }
         if let Some(s) = a.skill.as_deref().filter(|s| !s.is_empty()) {
             args.push(format!("--skill={s}"));
         }
@@ -326,5 +317,20 @@ impl ServerHandler for BnOrchestratorServer {
                  Every spun-up agent is fully isolated and keeps its own bn note."
                     .to_string(),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spin_up_work_rejects_the_removed_scout_option() {
+        let args = json!({"repo": "repo", "goal": "work", "scout": true});
+        assert!(serde_json::from_value::<SpinUpArgs>(args).is_err());
+        let args = json!({"repo": "repo", "goal": "work", "skill": "debug", "verify": true});
+        let parsed = serde_json::from_value::<SpinUpArgs>(args).unwrap();
+        assert_eq!(parsed.skill.as_deref(), Some("debug"));
+        assert!(parsed.verify);
     }
 }

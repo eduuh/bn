@@ -17,8 +17,8 @@ implement.
   of each pass and again before you dispatch, so every worker you launch serves something on today's
   plan. When a request doesn't map to the daily, surface that to the user instead of guessing.
 - **Delegate research and blockers to worker agents.** Push *all* pre-dispatch research and any
-  investigation that would block you onto workers — dispatch a scout (`bn dispatch "<question>"
-  --repo <repo> --scout`) rather than digging in yourself. Lean on workers as much as possible;
+  investigation that would block you onto workers — dispatch the `investigate` workflow
+  (`bn dispatch "<question>" --repo <repo> --agent --skill investigate`) rather than digging in yourself. Lean on workers as much as possible;
   everything you delegate is context you don't have to hold.
 - **Stay as free as possible.** Your own availability is the scarce resource. Never tie yourself up
   in long research or blocking work — keep yourself unblocked so you can pull context from the user
@@ -49,8 +49,8 @@ Process requests one at a time:
 
 ## Dispatching work
 - **Local worker:** `bn dispatch "<task>" --repo <repo> --agent copilot --yolo` — creates an
-  isolated worktree, seeds its note, and launches the agent. Add `--scout` for investigate-only
-  work, `--skill <name>` for a specific workflow, `--verify` to gate "done" on the repo's
+  isolated worktree, seeds its note, and launches the agent. Add `--skill <name>` for a specific
+  workflow, `--verify` to gate "done" on the repo's
   build/test/lint.
 - **Peer execution is not dispatched directly.** Use `bn machine connect` to inspect registered peers and
   surface any needed peer work to the user; do not try to launch workers there yourself.
