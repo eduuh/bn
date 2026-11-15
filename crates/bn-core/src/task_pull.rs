@@ -29,12 +29,6 @@ use crate::keep_warm::{plan_keep_warm, KeepWarmIssue, KeepWarmPolicy};
 use crate::todo::{Task, TodoFile};
 use std::collections::HashSet;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PullPlan {
-    pub issues: Vec<IssueRef>,
-    pub brainstorm: Vec<String>,
-}
-
 /// The provenance value stamped on a pulled task's `src:`, and its dedupe key.
 ///
 /// The issue URL, because it is globally unique — two repos can each have an issue `#963`, so a
@@ -67,19 +61,18 @@ pub fn active_depth(file: &TodoFile, repo: &str, today: &str) -> usize {
 
 /// Which issues to mint as tasks for one repo, in ranked order.
 ///
-/// Pure: no disk, no network, no clock beyond the `now` handed in. The policy decisions — how many
+/// Pure: no disk, no network. The policy decisions — how many
 /// (low-water minus current depth), which are eligible (unassigned, not excluded by label or
 /// title), and which are already spoken for — all belong to [`plan_keep_warm`]; this maps its
 /// answer back onto the issues it chose.
-pub fn plan_pull_actions(
-    repo: &str,
+pub fn plan_pull(
+    _repo: &str,
     policy: &KeepWarmPolicy,
     depth: usize,
     existing: &HashSet<String>,
     issues: &[IssueRef],
-    last_brainstorm_at: Option<i64>,
-    now: i64,
-) -> PullPlan {
+    _now: i64,
+) -> Vec<IssueRef> {
     // Issues already minted as tasks are filtered out *before* planning, so they consume none of
     // the deficit — otherwise a repo whose whole backlog is already pulled would look "topped up"
     // and never receive the genuinely new issue that arrived this morning.
@@ -100,18 +93,9 @@ pub fn plan_pull_actions(
 
     // `plan_keep_warm`'s own dedupe is against *active backlog ids*; ours is the `src:` filter
     // above, so nothing extra is excluded here.
-    let plan = plan_keep_warm(
-        repo,
-        policy,
-        depth,
-        &HashSet::new(),
-        &candidates,
-        last_brainstorm_at,
-        now,
-    );
+    let plan = plan_keep_warm(policy, depth, &HashSet::new(), &candidates);
 
-    let issues = plan
-        .start_issues
+    plan.start_issues
         .iter()
         .filter_map(|number| {
             fresh
@@ -119,22 +103,7 @@ pub fn plan_pull_actions(
                 .find(|i| i.number.to_string() == *number)
                 .map(|i| (*i).clone())
         })
-        .collect();
-    PullPlan {
-        issues,
-        brainstorm: plan.brainstorm,
-    }
-}
-
-pub fn plan_pull(
-    repo: &str,
-    policy: &KeepWarmPolicy,
-    depth: usize,
-    existing: &HashSet<String>,
-    issues: &[IssueRef],
-    now: i64,
-) -> Vec<IssueRef> {
-    plan_pull_actions(repo, policy, depth, existing, issues, None, now).issues
+        .collect()
 }
 
 /// Build the task line for a pulled issue.

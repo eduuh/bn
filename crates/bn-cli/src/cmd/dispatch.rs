@@ -478,7 +478,6 @@ pub(crate) fn run_dispatch(
     branch: Option<String>,
     no_tmux: bool,
     agent: Option<&str>,
-    scout: bool,
     orchestrator: bool,
     skill: Option<&str>,
     verify: bool,
@@ -511,12 +510,6 @@ pub(crate) fn run_dispatch(
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
         });
-    // The investigate skill IS the scout workflow (investigate first, findings to the note), so an
-    // explicit `--skill investigate` gets scout semantics without needing --scout too.
-    let scout = scout || skill == Some("investigate");
-    // `--verify` still applies only to ship seeds. A scout now decides inside its workflow whether
-    // the findings should graduate into a verified PR or finish report-only.
-    let verify = verify && !scout;
     if raw.trim().is_empty() {
         fail_json(json, "dispatch", "empty-item", "bn dispatch: empty item");
     }
@@ -573,12 +566,12 @@ pub(crate) fn run_dispatch(
     let task_name = bn_core::agent::derive_task_name(name, &title);
 
     // Resolve the launch stage's model + harness. The stage (Investigate/Plan/Execute from the
-    // scout/skill flags) selects `[pipeline.stages.<stage>]`, whose `harness` is the stage-aware
+    // skill flag) selects `[pipeline.stages.<stage>]`, whose `harness` is the stage-aware
     // default when the user didn't pin one with `--agent`. Precedence: pin > stage harness >
     // copilot, then the machine capability gate degrades an unavailable harness to copilot
     // (surfaced, never silent). A single dispatched run uses this one harness+model for its whole
     // pipeline, so the override only distinguishes separate dispatches by their launch stage.
-    let stage = dp::dispatch_pipeline_stage(stage, scout, skill);
+    let stage = dp::dispatch_pipeline_stage(stage, skill);
     let model = cfg.pipeline_model(&repo, stage);
     let agent_kind: Option<&'static str> = launch_agent.then(|| {
         let stage_harness: Option<&'static str> = model
@@ -646,11 +639,11 @@ pub(crate) fn run_dispatch(
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     let pipeline_investigate =
-        routes_to_pipeline_investigate(pipeline_opt_in, agent_kind.is_some(), scout, skill);
+        routes_to_pipeline_investigate(pipeline_opt_in, agent_kind.is_some(), skill);
     let ship_solo_lane =
-        !pipeline_investigate && !scout && matches!(skill, None | Some("ship-solo"));
+        !pipeline_investigate && matches!(skill, None | Some("ship-solo"));
     let plan_gate =
-        plan_gate_enabled(plan, cfg.dispatch_plan_review, yolo, scout) && !ship_solo_lane;
+        plan_gate_enabled(plan, cfg.dispatch_plan_review, yolo) && !ship_solo_lane;
 
     let branch = match branch {
         Some(branch) => branch,
@@ -849,8 +842,8 @@ pub(crate) fn run_dispatch(
         }
     }
 
-    // Resolve the workflow skill that will drive the agent (#321): explicit --skill, else by task
-    // type (scout → investigate, ship → ship-solo). Loaded against the fresh worktree so repo-tier
+    // Resolve the workflow skill that will drive the agent (#321): explicit --skill, else
+    // ship-solo. Loaded against the fresh worktree so repo-tier
     // skills apply, falling back to the dispatcher's cwd (where the bn checkout / BN_MCP_SKILLS_DIR
     // may be visible). Runtime workflows are required: missing defaults fail loudly rather than
     // falling back to a compiled prompt.
@@ -858,7 +851,7 @@ pub(crate) fn run_dispatch(
         let name = if pipeline_investigate && skill.is_none() {
             "investigate"
         } else {
-            dispatch_skill_name(skill, scout)
+            dispatch_skill_name(skill)
         };
         let found = bn_core::skills::load_skill(cfg, &wt_path, name).unwrap_or_else(|error| {
             fail_json(
@@ -940,13 +933,7 @@ pub(crate) fn run_dispatch(
             let source = format!("source: {u}");
             let _ = commands::add(cfg, &target, "collab", &source, Some(&source), &today());
         }
-        // Record the task type in the note itself (bn's own store — no new format): a scout
-        // investigates and reports, a ship delivers a change. `bn promote` flips scout → ship.
-        let task_line = if scout {
-            "task: scout — investigate & report, no code change"
-        } else {
-            "task: ship — deliver a change"
-        };
+        let task_line = "task: ship — deliver a change";
         let _ = commands::add(cfg, &target, "decision", task_line, Some("task:"), &today());
         if let Some(s) = &skill_loaded {
             let _ = commands::add(
@@ -1059,13 +1046,11 @@ pub(crate) fn run_dispatch(
                 None
             };
             // Attribute this run's work-class (#381) so `bn cost` categorizes it once the harness
-            // session is ingested, and (#500) so the live fleet stamps its role. A scout is
-            // research; an `--orchestrator` monitor is orchestration (which the dashboard pins as a
+            // session is ingested, and (#500) so the live fleet stamps its role. An
+            // `--orchestrator` monitor is orchestration (which the dashboard pins as a
             // distinct fleet tier); every other dispatched ship agent is coding (orchestrated waves
             // shell out to `bn dispatch`, so they land here as coding too).
-            let work_class = if scout {
-                bn_core::cost::WorkClass::Research
-            } else if orchestrator {
+            let work_class = if orchestrator {
                 bn_core::cost::WorkClass::Orchestration
             } else {
                 bn_core::cost::WorkClass::Coding
@@ -1099,7 +1084,6 @@ pub(crate) fn run_dispatch(
                             SkillSeedContext {
                                 title: &title,
                                 url: url.as_deref(),
-                                scout,
                                 yolo,
                                 verify,
                                 plan_gate: plan_gate && !pipeline_investigate,
@@ -1121,7 +1105,7 @@ pub(crate) fn run_dispatch(
             // (`bn agent instruct`) into the seed. See `seed_context::section`.
             let seed = format!(
                 "{seed}{}",
-                super::seed_context::section(cfg, &repo, &branch, scout, refs)
+                super::seed_context::section(cfg, &repo, &branch, refs)
             );
             // No separate "## Plan artifact" section: the plan-review gate's step 1 names the
             // bn-owned draft file and forbids note-item decomposition itself.
@@ -1281,8 +1265,7 @@ pub(crate) fn run_dispatch(
                 );
                 if !json {
                     eprintln!(
-                        "bn dispatch: {kind} {} in this pane → {}{}",
-                        if scout { "scout" } else { "ship" },
+                        "bn dispatch: {kind} ship in this pane → {}{}",
                         wt_path.display(),
                         if used_pool {
                             " (pooled slot; returns on exit)"
@@ -1297,7 +1280,7 @@ pub(crate) fn run_dispatch(
                 // here — the window it was keyed to is the user's own shell and outlives the agent,
                 // so nothing else would ever notice it went idle.
                 let _ = agent_lease::release(&sid);
-                // A scout leaves the slot clean, so it returns to the warm pool; `Return` refuses a
+                // A clean session returns its slot to the warm pool; `Return` refuses a
                 // dirty slot (a ship that wrote code) rather than discard work — surfaced, not forced.
                 let slot_returned = used_pool
                     && wt_pool::run(
@@ -1316,7 +1299,7 @@ pub(crate) fn run_dispatch(
                             "agent_launched": ran,
                             "repo": repo,
                             "branch": branch,
-                            "task": if scout { "scout" } else { "ship" },
+                            "task": "ship",
                             "worktree": worktree,
                             "main_worktree": comparison_path,
                             "pooled": used_pool,
@@ -1456,7 +1439,7 @@ pub(crate) fn run_dispatch(
                 "repo": repo,
                 "branch": branch,
                 "base": base,
-                "task": if scout { "scout" } else { "ship" },
+                "task": "ship",
                 "skill": skill_loaded.as_ref().map(|s| s.name.clone()),
                 "verify": verify,
                 "yolo": yolo,
@@ -1484,8 +1467,7 @@ pub(crate) fn run_dispatch(
     } else {
         println!("Worktree already exists → {}", wt_path.display());
     }
-    let task = if scout { "scout" } else { "ship" };
-    println!("  repo: {repo}  base: {base}  task: {task}");
+    println!("  repo: {repo}  base: {base}  task: ship");
     if let Some(controller_id) = &controller_id {
         println!("  controller: {controller_id}");
     }

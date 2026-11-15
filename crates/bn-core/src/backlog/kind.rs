@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 /// concurrency lane ([`WorkClass`]). Serialized kebab-case.
 ///
 /// `#[serde(other)]` is deliberately **not** used: an unrecognized kind must fail the line parse
-/// loudly rather than silently degrade to `ship`. Every kind an older binary wrote stays listed so
-/// its lines still fold.
+/// loudly rather than silently degrade to `ship`. Retired kinds may have a read-only compatibility
+/// alias so historical lines still fold.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default,
 )]
@@ -16,11 +16,9 @@ pub enum BacklogKind {
     /// A change that opens and lands a PR — the default and the pre-existing behavior.
     #[default]
     Ship,
-    /// An investigation-first lane that produces findings and, when the fix is clear and bounded,
-    /// may continue to a PR in the same session (#348 scout).
-    Scout,
     /// A scoped read-only investigation that writes evidence into a branch note and hands off to
     /// plan (the `investigate` skill).
+    #[serde(alias = "scout")]
     Investigate,
     /// A deep research / answer agent — the ask lane.
     Research,
@@ -52,7 +50,7 @@ pub enum WorkClass {
     /// A heavy coding agent that opens and lands a PR — the default lane.
     #[default]
     Coding,
-    /// A light, read-only research/scout agent that produces findings, not a merge.
+    /// A light, read-only research agent that produces findings, not a merge.
     Research,
 }
 
@@ -63,5 +61,17 @@ impl WorkClass {
             WorkClass::Coding => "coding",
             WorkClass::Research => "research",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn historical_scout_entries_read_as_investigations() {
+        let kind: BacklogKind = serde_json::from_str("\"scout\"").unwrap();
+        assert_eq!(kind, BacklogKind::Investigate);
+        assert_eq!(serde_json::to_string(&kind).unwrap(), "\"investigate\"");
     }
 }

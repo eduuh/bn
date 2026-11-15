@@ -17,7 +17,7 @@
 //!
 //! [`WorkClass`] is the category: orchestration | coding | scheduled | research | remote (+
 //! `unattributed` for rows recorded before the launch path threaded a class through). Every launch
-//! path stamps its class: `bn dispatch` ⇒ coding (or research when scouting), orchestrated waves ⇒
+//! path stamps its class: `bn dispatch` ⇒ coding, orchestrated waves ⇒
 //! coding, the #266 staff / cron / scheduled prompts ⇒ scheduled.
 //!
 //! [`rollup`] folds two event sources into one [`CostView`]: the rich `agent_session` events (#309
@@ -55,7 +55,7 @@ pub enum WorkClass {
     Coding,
     /// Cron / scheduled work: Markdown agents, the night shift (#250), and `bn staff run`.
     Scheduled,
-    /// Scout / research agents that investigate without shipping.
+    /// Research agents that investigate without shipping.
     Research,
     /// Remote (#278) runs triggered on GitHub Actions rather than a local harness.
     Remote,

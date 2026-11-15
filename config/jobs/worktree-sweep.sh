@@ -15,7 +15,7 @@ BN="${BN:-bn}"
 BN_SWEEP_REPO="${BN_SWEEP_REPO:-all}"
 BN_SWEEP_DRYRUN="${BN_SWEEP_DRYRUN:-0}"
 
-# A kill switch that matches the explore lane's, so one habit turns off either.
+# A local kill switch for the worktree sweep.
 if [ -f "$HOME/.bn/sweep.off" ]; then
   echo "worktree-sweep: disabled by ~/.bn/sweep.off"
   exit 0

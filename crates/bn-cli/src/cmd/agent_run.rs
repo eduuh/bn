@@ -647,7 +647,7 @@ fn worktree_route<'a>(
 /// copy. The two catalogs differ only in where the prompt comes from:
 ///
 /// * a **skill** is what dispatch natively seeds from, so it goes through `--skill` and picks up
-///   the whole ship/scout envelope (plan gate, verify gate, completion protocol) built around it;
+///   the whole dispatch envelope (plan gate, verify gate, completion protocol) built around it;
 /// * an **agent** manifest is already self-contained, so its composed body is handed over as the
 ///   seed verbatim and the skill envelope is skipped.
 #[allow(clippy::too_many_arguments)]
@@ -681,7 +681,6 @@ fn run_in_worktree(
         None,
         false,
         Some(harness.unwrap_or("claude")),
-        false,
         false,
         skill,
         false,

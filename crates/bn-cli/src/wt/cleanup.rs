@@ -5,30 +5,11 @@
 use super::*;
 use super::local_commits::local_only_commits;
 
-/// How long after a scout reports done (its note's last write) its worktree is left in place before
-/// an automatic sweep reclaims it. The grace exists purely for the human: without it a finished
-/// scout's tmux window vanishes the instant the next `wt-cleanup` tick runs, which reads as a crash.
-/// The findings are already safe in the synced note, so this only delays disposal, never risks work.
-const SCOUT_REAP_GRACE_SECS: u64 = 20 * 60;
-
-/// True if `path` was modified within the last `within_secs`. Best-effort: any error (missing file,
-/// unreadable mtime, clock skew) reads as "not recent" so the caller falls back to prior behavior.
-fn recently_modified(path: &Path, within_secs: u64) -> bool {
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.elapsed().ok())
-        .is_some_and(|age| age.as_secs() < within_secs)
-}
-
 /// A best-effort desktop toast when a worktree is auto-reclaimed by a background sweep, so a tmux
 /// window disappearing is *explained* rather than mistaken for a killed process. No work is ever
-/// lost: a scout's findings live in the synced branch note, a merged ship's code is on `main`.
+/// lost: a merged worktree's code is on `main`.
 fn announce_reap(name: &str, reason: &str) {
     let body = match reason {
-        "scout done" => {
-            "Scout finished — worktree reclaimed; findings are safe in the branch note (bn cat / bn search)."
-        }
         "merged PR" => "PR merged — worktree reclaimed; the code is on main.",
         _ => "Worktree reclaimed by the cleanup sweep.",
     };
@@ -150,8 +131,7 @@ pub(crate) fn cleanup_all(cfg: &Config, bare_dir: &Path, bares: &[PathBuf], forc
     true
 }
 
-/// Reap worktrees whose work is DONE and safe to remove: a scout worktree whose agent reported done
-/// and is clean (findings live safely in the synced note), or a ship worktree with a merged PR.
+/// Reap worktrees whose work is DONE and safe to remove: worktrees with a merged PR.
 /// Dry-run unless `execute`. Default target: current worktree; `all` sweeps the current repo and
 /// `all_repos` every bare repo (see [`sweep_bares`]).
 pub(crate) fn cmd_reap(cfg: &Config, all: bool, all_repos: bool, execute: bool) -> bool {
@@ -188,7 +168,7 @@ pub(crate) fn cmd_reap(cfg: &Config, all: bool, all_repos: bool, execute: bool) 
             }
             continue;
         }
-        let Some((reason, force)) = reap_reason(cfg, &wt_path) else {
+        let Some((reason, force)) = reap_reason(&wt_path) else {
             continue;
         };
         candidates += 1;
@@ -307,11 +287,9 @@ fn checked_out_branch(wt: &str) -> Option<String> {
     git_out(&["-C", wt, "branch", "--show-current"]).filter(|b| !b.is_empty())
 }
 
-/// Why a worktree is reapable (with the `force` to pass cleanup), or `None` to keep it. "merged PR"
-/// (a shipped ship — force=false so a dirty post-merge worktree is spared) or "scout done" (task=
-/// scout, agent reported done, already clean, and past its [`SCOUT_REAP_GRACE_SECS`] grace — force=
-/// true to bypass the no-PR check safely).
-pub(crate) fn reap_reason(cfg: &Config, wt_path: &Path) -> Option<(String, bool)> {
+/// Why a worktree is reapable (with the `force` to pass cleanup), or `None` to keep it.
+/// A merged PR uses force=false so a dirty post-merge worktree is spared.
+pub(crate) fn reap_reason(wt_path: &Path) -> Option<(String, bool)> {
     let wt = wt_path.to_string_lossy();
     let branch = checked_out_branch(&wt)?;
     if bn_core::agent::is_reserved_branch(&branch) {
@@ -324,33 +302,6 @@ pub(crate) fn reap_reason(cfg: &Config, wt_path: &Path) -> Option<(String, bool)
         if remote != Remote::Other && pr_state(&remote, &branch) == "MERGED" {
             return Some(("merged PR".into(), false));
         }
-    }
-    // A finished scout: task=scout, the agent reported done, and nothing uncommitted/ahead — its
-    // findings are safe in the (synced) note, so the worktree is disposable.
-    let dir = wt_path.file_name()?.to_string_lossy().into_owned();
-    let repo = wt_path
-        .parent()?
-        .file_name()?
-        .to_string_lossy()
-        .into_owned();
-    let ctx = bn_core::resolver::Resolved { repo, branch: dir };
-    let note_path = cfg.note_file(&ctx);
-    let note = bn_core::store::read(&note_path).ok()?;
-    let is_scout = note
-        .front
-        .decisions
-        .iter()
-        .any(|d| d.text.contains("task: scout"));
-    let is_done = note.body.contains("agent done");
-    let clean = dirty_count(&wt) == 0 && commits_ahead(wt_path) == 0;
-    if is_scout && is_done && clean {
-        // Grace: don't reclaim a *just*-finished scout — its tmux window would vanish while you're
-        // still reading the result. Leave it a short while after `bn agent done` (the note's last
-        // write) before disposing; the findings are already safe in the note either way.
-        if recently_modified(&note_path, SCOUT_REAP_GRACE_SECS) {
-            return None;
-        }
-        return Some(("scout done".to_string(), true));
     }
     None
 }
@@ -980,6 +931,44 @@ fn merged_tip_reclaimable(
 
 fn should_refuse_dirty(force: bool, changes: usize) -> bool {
     !force && changes > 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_finished_legacy_scout_note_does_not_authorize_reaping() {
+        let temp = tempfile::tempdir().unwrap();
+        let wt = temp.path().join("repo/finished-investigation");
+        std::fs::create_dir_all(&wt).unwrap();
+        let out = std::process::Command::new("git")
+            .args(["init", "-q", "--initial-branch=finished-investigation"])
+            .current_dir(&wt)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let cfg = bn_core::test_support::config(&temp.path().join("notes"));
+        let ctx = bn_core::resolver::Resolved {
+            repo: "repo".into(),
+            branch: "finished-investigation".into(),
+        };
+        bn_core::commands::add(&cfg, &ctx, "decision", "task: scout", None, "2026-01-01")
+            .unwrap();
+        let note_path = cfg.note_file(&ctx);
+        let mut note = bn_core::store::read(&note_path).unwrap();
+        note.body.push_str("\nagent done\n");
+        bn_core::store::save(&note, &note_path).unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::open(&note_path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+
+        assert_eq!(reap_reason(&wt), None);
+        assert!(wt.is_dir());
+        assert!(note_path.is_file());
+    }
 }
 
 

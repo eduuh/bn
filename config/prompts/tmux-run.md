@@ -324,7 +324,7 @@ opens the window in the right session:
 
 ```bash
 bn dispatch --repo <repo> --agent claude "<what to do>"     # a ship task
-bn dispatch --repo <repo> --agent claude --scout "<what to find out>"   # investigate, no code
+bn dispatch --repo <repo> --agent claude --skill investigate "<what to find out>"
 ```
 
 `bn agent launch` is the same chokepoint when you are already in the worktree. Both record

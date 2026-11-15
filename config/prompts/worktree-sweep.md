@@ -50,7 +50,6 @@ removals to the approved scope. Unknown ownership means keep.
 | class | evidence | action |
 |-------|----------|--------|
 | merged ship, clean | PR `MERGED`, nothing uncommitted, nothing ahead | `bn wt reap --all --yes` |
-| finished scout | note carries `task: scout` + `agent done`, tree clean, past its grace | same sweep |
 | merged but dirty | `bn wt status --pr` marks it `stuck` | **keep** — hand it back in step 6 |
 | leaked pool lease | pool prune: `would reclaim leaked lease — nobody is in it` | `bn wt pool prune --yes` |
 | over-size or orphaned slot | pool prune: `would remove (over-size)` / bare repo gone | same command |

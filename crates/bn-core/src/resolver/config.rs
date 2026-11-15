@@ -234,10 +234,6 @@ pub struct Config {
     /// and `bn next --fit` — works before you have real per-item duration estimates. Defaults
     /// `s=30m m=90m l=3h`; see [`crate::calib::CoarseSizes`].
     pub coarse_sizes: crate::calib::CoarseSizes,
-    /// `[scout]`: the Scout radar agent (#262) — the public `owner/repo` watchlist, the tool-stack
-    /// repos, and the findings cap. Empty watch/tools = the collectors idle. See
-    /// [`crate::scout::ScoutConfig`].
-    pub scout: crate::scout::ScoutConfig,
     /// `[pool] scheduled`: repos whose worktree pool the `pool-build` cron rebuilds at fixed times
     /// (e.g. a monorepo: nightly, then a top-up before the workday). The idle-gated `pool-warm` sweep leaves
     /// them alone so the two never warm the same pool. Matched case-insensitively.
@@ -288,8 +284,6 @@ pub struct Config {
     pub orchestrate_owned_repos: Vec<String>,
     pub orchestrate_exclude_titles: Vec<String>,
     pub orchestrate_exclude_labels: Vec<String>,
-    pub orchestrate_brainstorm_count: usize,
-    pub orchestrate_brainstorm_interval_secs: i64,
     /// `[orchestrate]` resource/budget caps (#377) — the guards the orchestrate daemon pauses local
     /// dispatch on. All `None`/off by default, so an
     /// unconfigured run behaves exactly as the pre-#377 fixed-concurrency daemon.
@@ -357,7 +351,6 @@ impl Default for Config {
             forge_agent: crate::forge_agent::ForgeAgentConfig::default(),
             nodes: Vec::new(),
             coarse_sizes: crate::calib::CoarseSizes::default(),
-            scout: crate::scout::ScoutConfig::default(),
             pool_scheduled: Vec::new(),
             log: LogConfig::default(),
             dispatch_plan_review: false,
@@ -377,9 +370,6 @@ impl Default for Config {
             orchestrate_owned_repos: Vec::new(),
             orchestrate_exclude_titles: vec!["gap(".to_string()],
             orchestrate_exclude_labels: vec!["blocked".to_string()],
-            orchestrate_brainstorm_count: crate::keep_warm::DEFAULT_KEEP_WARM_BRAINSTORM_COUNT,
-            orchestrate_brainstorm_interval_secs:
-                crate::keep_warm::DEFAULT_KEEP_WARM_BRAINSTORM_INTERVAL_SECS,
             orchestrate_min_free_ram_mb: None,
             orchestrate_max_loadavg: None,
             orchestrate_max_swap_pct: None,
@@ -519,16 +509,6 @@ impl Config {
             }
         };
 
-        // `[scout]` (#262): config, then empty lists / the ≤ 5 cap.
-        let scout = crate::scout::ScoutConfig {
-            watch: file.and_then(|f| f.scout_watch()).unwrap_or_default(),
-            tools: file.and_then(|f| f.scout_tools()).unwrap_or_default(),
-            max_findings: file
-                .and_then(|f| f.scout_max_findings())
-                .filter(|n| *n > 0)
-                .unwrap_or(crate::scout::DEFAULT_MAX_FINDINGS),
-        };
-
         // `[dispatch].plan_review` (#349): off unless configured.
         let dispatch_plan_review = file.and_then(|f| f.dispatch_plan_review()).unwrap_or(false);
         let dispatch_plan_reviewers = file
@@ -585,14 +565,6 @@ impl Config {
         let orchestrate_exclude_labels = file
             .and_then(|f| f.orchestrate_exclude_labels())
             .unwrap_or_else(|| vec!["blocked".to_string()]);
-        let orchestrate_brainstorm_count = file
-            .and_then(|f| f.orchestrate_brainstorm_count())
-            .unwrap_or(crate::keep_warm::DEFAULT_KEEP_WARM_BRAINSTORM_COUNT);
-        let orchestrate_brainstorm_interval_secs = file
-            .and_then(|f| f.orchestrate_brainstorm_interval_secs())
-            .unwrap_or(crate::keep_warm::DEFAULT_KEEP_WARM_BRAINSTORM_INTERVAL_SECS)
-            .max(1);
-
         let tasks_provider = match crate::task_store::TaskProviderKind::parse(
             file.and_then(|f| f.tasks_provider()).as_deref(),
         ) {
@@ -627,7 +599,6 @@ impl Config {
             forge_agent,
             nodes,
             coarse_sizes,
-            scout,
             pool_scheduled: file.and_then(|f| f.pool_scheduled()).unwrap_or_default(),
             log,
             dispatch_plan_review,
@@ -645,8 +616,6 @@ impl Config {
             orchestrate_owned_repos,
             orchestrate_exclude_titles,
             orchestrate_exclude_labels,
-            orchestrate_brainstorm_count,
-            orchestrate_brainstorm_interval_secs,
             // `[orchestrate]` resource/budget caps (#377): all off unless configured, so an
             // unconfigured run is unchanged.
             orchestrate_min_free_ram_mb: file.and_then(|f| f.orchestrate_min_free_ram_mb()),

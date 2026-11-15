@@ -27,7 +27,7 @@ fn with_shipped_skills<T>(run: impl FnOnce(&Config, &std::path::Path) -> T) -> T
     run(&Config::default(), &root)
 }
 
-fn seed(scout: bool, yolo: bool, verify: bool, plan_gate: bool, skill_name: &str) -> String {
+fn seed(yolo: bool, verify: bool, plan_gate: bool, skill_name: &str) -> String {
     with_shipped_skills(|cfg, root| {
         let skill = bn_core::skills::load_skill(cfg, root, skill_name)
             .expect("skill catalog loads")
@@ -38,7 +38,6 @@ fn seed(scout: bool, yolo: bool, verify: bool, plan_gate: bool, skill_name: &str
             SkillSeedContext {
                 title: "Test goal",
                 url: None,
-                scout,
                 yolo,
                 verify,
                 plan_gate,
@@ -82,7 +81,7 @@ fn seed_waits_for_temporary_skill_catalog_overrides_to_be_restored() {
     let worker = std::thread::spawn(move || {
         started_tx.send(()).unwrap();
         finished_tx
-            .send(seed(false, false, false, false, "build-from-plan"))
+            .send(seed(false, false, false, "build-from-plan"))
             .unwrap();
     });
     started_rx.recv().unwrap();
@@ -100,17 +99,17 @@ fn seed_waits_for_temporary_skill_catalog_overrides_to_be_restored() {
 
 /// The routing table itself: with the pipeline flag off (the default) even the skill-less ship
 /// dispatch stays on the single-session ship lane; with it on, that lane enters pipeline
-/// investigate, while scout and explicit-skill lanes always seed their own envelopes.
+/// investigate, while explicit-skill lanes always seed their own envelopes.
 #[test]
 fn routing_table() {
     // Off by default: the ordinary ship dispatch runs one `ship-solo` session, not the pipeline.
-    assert!(!routes_to_pipeline_investigate(false, true, false, None));
-    // Opt in via `$BN_DISPATCH_PIPELINE=1`: a skill-less non-scout agent dispatch enters investigate.
-    assert!(routes_to_pipeline_investigate(true, true, false, None));
-    assert!(!routes_to_pipeline_investigate(true, true, true, None));
-    assert!(!routes_to_pipeline_investigate(true, true, false, Some("build-from-plan")));
-    assert!(!routes_to_pipeline_investigate(true, true, false, Some("execute")));
-    assert!(!routes_to_pipeline_investigate(true, false, false, None));
+    assert!(!routes_to_pipeline_investigate(false, true, None));
+    // Opt in via `$BN_DISPATCH_PIPELINE=1`: a skill-less agent dispatch enters investigate.
+    assert!(routes_to_pipeline_investigate(true, true, None));
+    assert!(!routes_to_pipeline_investigate(true, true, Some("build-from-plan")));
+    assert!(!routes_to_pipeline_investigate(true, true, Some("execute")));
+    assert!(!routes_to_pipeline_investigate(true, true, Some("investigate")));
+    assert!(!routes_to_pipeline_investigate(true, false, None));
 }
 
 /// The plan-review gate's decision table.
@@ -122,29 +121,23 @@ fn routing_table() {
 #[test]
 fn plan_gate_decision_table() {
     // Auto: config and yolo decide.
-    assert!(!plan_gate_enabled(PlanGate::Auto, false, false, false));
-    assert!(plan_gate_enabled(PlanGate::Auto, true, false, false));
-    assert!(plan_gate_enabled(PlanGate::Auto, false, true, false));
+    assert!(!plan_gate_enabled(PlanGate::Auto, false, false));
+    assert!(plan_gate_enabled(PlanGate::Auto, true, false));
+    assert!(plan_gate_enabled(PlanGate::Auto, false, true));
     // Force wins over an unconfigured default.
-    assert!(plan_gate_enabled(PlanGate::Force, false, false, false));
+    assert!(plan_gate_enabled(PlanGate::Force, false, false));
     // Off wins over both config and yolo — the whole reason it is not just another bool.
-    assert!(!plan_gate_enabled(PlanGate::Off, true, true, false));
-    // A scout still skips the plan-review gate: it investigates first, then either ships a bounded
-    // fix directly or finishes report-only.
-    for request in [PlanGate::Auto, PlanGate::Force, PlanGate::Off] {
-        assert!(!plan_gate_enabled(request, true, true, true));
-    }
+    assert!(!plan_gate_enabled(PlanGate::Off, true, true));
 }
 
 #[test]
-fn scout_seed_uses_scout_envelope_with_ship_or_report_only_completion() {
-    let s = seed(true, false, false, false, "investigate");
-    assert!(s.contains("You are a SCOUT"));
+fn explicit_investigate_uses_normal_dispatch_gates() {
+    let s = seed(false, true, false, "investigate");
     assert!(s.contains("--- WORKFLOW: investigate ---"));
-    assert!(s.contains("run `bn verify`, push, open a PR"));
-    assert!(s.contains("`bn_pr <url>`"));
-    assert!(s.contains("bn agent done --report-only"));
-    assert!(!s.contains("CONCURRENCY DISCIPLINE"));
+    assert!(s.contains("CONCURRENCY DISCIPLINE"));
+    assert_eq!(s.matches("Gate completion on `bn verify`").count(), 1);
+    assert!(!s.contains("You are a SCOUT"));
+    assert!(s.contains("its deliverable is recorded findings, not a PR"));
 }
 
 #[test]
@@ -153,7 +146,7 @@ fn ship_solo_seed_uses_the_solo_stance_even_under_yolo() {
     // neither force a plan proposal (interactive) nor forbid `ask_user` (unattended), even under
     // `--yolo`, and it never carries a plan-review gate.
     for yolo in [false, true] {
-        let s = seed(false, yolo, false, false, "ship-solo");
+        let s = seed(yolo, false, false, "ship-solo");
         assert!(s.contains("--- WORKFLOW: ship-solo ---"));
         assert!(s.contains("ask the human with `ask_user`"));
         assert!(!s.contains("propose a concrete plan"));
@@ -166,7 +159,7 @@ fn ship_solo_seed_uses_the_solo_stance_even_under_yolo() {
 
 #[test]
 fn explicit_skill_ship_seed_is_interactive_by_default() {
-    let s = seed(false, false, false, false, "build-from-plan");
+    let s = seed(false, false, false, "build-from-plan");
     assert!(s.contains("propose a concrete plan"));
     assert!(!s.contains("unattended worktree"));
     assert!(s.contains("--- WORKFLOW: build-from-plan ---"));
@@ -178,7 +171,7 @@ fn explicit_skill_ship_seed_is_interactive_by_default() {
 
 #[test]
 fn yolo_seed_carries_the_unattended_stance() {
-    let s = seed(false, true, false, false, "build-from-plan");
+    let s = seed(true, false, false, "build-from-plan");
     assert!(s.contains("unattended worktree"));
     assert!(!s.contains("propose a concrete plan"));
 }
@@ -187,18 +180,18 @@ fn yolo_seed_carries_the_unattended_stance() {
 fn verify_gate_renders_once_and_never_for_self_gating_workflows() {
     // build-from-plan/execute gate step 6 on `bn verify` themselves — the envelope must not
     // re-inject the explicit clause for them.
-    let s = seed(false, true, true, false, "build-from-plan");
+    let s = seed(true, true, false, "build-from-plan");
     assert!(!s.contains("Gate completion on `bn verify`"));
-    let s = seed(false, true, true, false, "execute");
+    let s = seed(true, true, false, "execute");
     assert!(!s.contains("Gate completion on `bn verify`"));
     // Other workflows get it exactly once.
-    let s = seed(false, true, true, false, "debug");
+    let s = seed(true, true, false, "debug");
     assert_eq!(s.matches("Gate completion on `bn verify`").count(), 1);
 }
 
 #[test]
 fn plan_gate_suppresses_bootstrap_verification_and_completion() {
-    let s = seed(false, true, true, true, "build-from-plan");
+    let s = seed(true, true, true, "build-from-plan");
     // The bootstrap ("Markdown execution contract" is its sentinel phrase) must vanish: the
     // gate owns the plan file, and the two instructions contradicted each other pre-fix.
     assert!(!s.contains("Markdown execution contract"));
@@ -215,7 +208,7 @@ fn plan_gate_suppresses_bootstrap_verification_and_completion() {
 
 #[test]
 fn ungated_plan_work_seed_keeps_the_bootstrap() {
-    let s = seed(false, true, false, false, "build-from-plan");
+    let s = seed(true, false, false, "build-from-plan");
     assert!(s.contains("Markdown execution contract"));
     assert!(s.contains("bn plan init"));
 }

@@ -85,11 +85,6 @@ Config {
         m: 5400,
         l: 10800,
     },
-    scout: ScoutConfig {
-        watch: [],
-        tools: [],
-        max_findings: 5,
-    },
     pool_scheduled: [],
     log: LogConfig {
         enabled: false,
@@ -118,8 +113,6 @@ Config {
     orchestrate_exclude_labels: [
         "blocked",
     ],
-    orchestrate_brainstorm_count: 1,
-    orchestrate_brainstorm_interval_secs: 3600,
     orchestrate_min_free_ram_mb: None,
     orchestrate_max_loadavg: None,
     orchestrate_max_swap_pct: None,

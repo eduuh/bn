@@ -16,7 +16,6 @@ pub(crate) struct DispatchInvocation<'a> {
     base: Option<&'a str>,
     skill: Option<&'a str>,
     task: Option<&'a str>,
-    scout: bool,
     verify: bool,
     yolo: bool,
     fresh: bool,
@@ -33,7 +32,6 @@ impl<'a> DispatchInvocation<'a> {
             base: None,
             skill: None,
             task: None,
-            scout: false,
             verify: false,
             yolo: false,
             fresh: false,
@@ -61,11 +59,6 @@ impl<'a> DispatchInvocation<'a> {
     /// Bind the launch to a task id (`--task`), so the fleet shows which task the agent is on.
     pub(crate) fn task(mut self, task: Option<&'a str>) -> Self {
         self.task = task.filter(|t| !t.trim().is_empty());
-        self
-    }
-
-    pub(crate) fn scout(mut self, scout: bool) -> Self {
-        self.scout = scout;
         self
     }
 
@@ -102,9 +95,6 @@ impl<'a> DispatchInvocation<'a> {
         if let Some(skill) = self.skill {
             args.extend(["--skill".to_string(), skill.to_string()]);
         }
-        if self.scout {
-            args.push("--scout".to_string());
-        }
         if let Some(task) = self.task {
             args.extend(["--task".to_string(), task.to_string()]);
         }
@@ -128,8 +118,8 @@ impl<'a> DispatchInvocation<'a> {
 
     /// Run this `bn dispatch` as a child process and wait for it to return.
     ///
-    /// The door for agents the machine starts on its own behalf: a cron's repair agent, keep-warm's
-    /// brainstorm scouts, an attention item, a decomposed issue's children. A child rather than
+    /// The door for agents the machine starts on its own behalf: a cron's repair agent,
+    /// an attention item, a decomposed issue's children. A child rather than
     /// [`super::run_dispatch`] in-process, because dispatch exits the process on a refusal, and one
     /// refused launch must not take the caller's remaining work with it.
     ///

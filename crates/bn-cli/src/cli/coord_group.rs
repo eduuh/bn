@@ -32,7 +32,7 @@ pub(crate) enum CmdCoord {
     },
     /// Context profiles: the standing context a seat is handed, composed from atoms (directives,
     /// goal, readiness, recap, handoff, reference index or sections, skills, file sections) with a
-    /// token budget. Declared in `<repo>/.bn/context.toml`; `ship`, `scout`,
+    /// token budget. Declared in `<repo>/.bn/context.toml`; `ship`,
     /// `compact-restore` and `orient` are built in. Bare `bn context` lists profiles.
     Context {
         #[command(subcommand)]

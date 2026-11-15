@@ -79,7 +79,6 @@ pub const KNOWN_SECTIONS: &[&str] = &[
     "proof",
     "repo",
     "review",
-    "scout",
     "staff",
     "standup",
     "tasks",
