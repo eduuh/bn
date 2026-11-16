@@ -93,8 +93,9 @@ Register-BnTask -Name 'BN Daily tmux' `
   -Desc 'Wake WSL and ensure a repository tmux session is up (bn run ensure-tmux).' `
   -Job  'ensure-tmux' -LocalTimes @('07:00')
 
+# Keep the scheduled-task identity so rerunning registration updates existing machines in place.
 Register-BnTask -Name 'BN Commit Notes' `
-  -Desc 'Commit and push the branch-notes repos (bn run commit-notes).' `
-  -Job  'commit-notes' -LocalTimes @('07:00', '12:00', '13:00', '16:00', '18:00')
+  -Desc 'Synchronize retained Workspan tasks, configuration and references (workspan run sync-state).' `
+  -Job  'sync-state' -LocalTimes @('07:00', '12:00', '13:00', '16:00', '18:00')
 
 Write-Host "Done. Triggers are in UTC, so they fire at the target-timezone (UTC+$TzOffsetHours) times on any host timezone."

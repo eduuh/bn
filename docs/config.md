@@ -23,6 +23,11 @@ first time it ran.
 The historical root names remain compatible. Historical session-note files are archives, not a
 source for task context or execution state; retirement does not require importing or deleting them.
 
+`workspan run sync-state` synchronizes retained tasks, configuration, and references through an
+explicit path allowlist. Historical session notes and Entire's captured history are not inputs
+to that job. The Windows scheduled task keeps its old identity for in-place registration updates,
+but runs this state-only job.
+
 Both files are optional. Leave out anything you do not want to change.
 
 An old `~/.bn/config/config.toml` moves into these files the first time a new `bn` runs. The old

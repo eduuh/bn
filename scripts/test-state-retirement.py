@@ -125,6 +125,23 @@ printf '%s\\n' '[{"id":12,"fields":{"System.Title":"Fix CI"}}]'
                               capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
+    def test_schedule_guard_rejects_retired_jobs_but_allows_state_sync(self):
+        config = self.home / "config"
+        config.mkdir()
+        crons = config / "crons.toml"
+        command = ["sh", str(ROOT / "scripts/check-prompt-sources.sh")]
+        for retired in ("commit-notes", "recall-index"):
+            with self.subTest(retired=retired):
+                crons.write_text(f'[[cron]]\njob = "{retired}"\n')
+                proc = subprocess.run(command, env=self.env, cwd=self.home,
+                                      capture_output=True, text=True)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn("Retired session-note jobs", proc.stderr)
+        crons.write_text('[[cron]]\njob = "sync-state"\n')
+        proc = subprocess.run(command, env=self.env, cwd=self.home,
+                              capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

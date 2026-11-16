@@ -95,12 +95,12 @@ description = "bn — reinstall the CLI when bn/main advances: install.sh --core
 # darwin sat two days behind linux the day this was removed. See docs/releases.md.
 
 [[cron]]
-job = "commit-notes"
+job = "sync-state"
 on_calendar = "*-*-* 07:00:00"
 persistent = true
 randomized_delay = "5m"
 network = true
-description = "bn — commit + push branch notes"
+description = "workspan — synchronize retained tasks, configuration and references"
 
 [[cron]]
 job = "daily-rollover"
