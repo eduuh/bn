@@ -4,11 +4,11 @@ description: "Turn a goal into a verifiable implementation plan file, optionally
 when: An executable implementation plan was requested, ad hoc or through a dispatched Plan stage. Routine coding and standalone diagrams or reports do not require this workflow.
 keywords: [lavish, visualize, mermaid, diagram, plan, break down, decompose, scope, design, approach, acceptance criteria, done when, todos, kick off work]
 arguments:
-  - { name: topic, description: What to plan. Omit to plan the note's current Goal., required: false }
+  - { name: topic, description: What to plan. Omit to use the assigned task., required: false }
 ---
 Topic: {{topic}} (otherwise the branch goal).
 
-1. Read the branch context, existing findings and any supplied planning gate. Plan only
+1. Read the assigned task's context, existing findings and any supplied planning gate. Plan only
    when an implementation plan was requested, not for routine edits or standalone diagrams/reports.
 2. Render `bn skills render plan-workflow`, passing topic through `--arg`. Follow its
    plan-artifact contract and use its visual mode only if requested.
