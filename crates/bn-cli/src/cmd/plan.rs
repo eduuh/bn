@@ -2,6 +2,7 @@ use crate::*;
 
 pub(crate) fn emit_plan(cfg: &Config, action: Option<PlanCmd>, as_json: bool) {
     let ctx = resolve_or_exit(cfg);
+    let plain_path = matches!(&action, Some(PlanCmd::Init | PlanCmd::Path { .. }));
     let result = match action.unwrap_or(PlanCmd::Status) {
         PlanCmd::Init => bn_core::plan::init_active(cfg, &ctx).map(|path| {
             serde_json::json!({
@@ -58,6 +59,8 @@ pub(crate) fn emit_plan(cfg: &Config, action: Option<PlanCmd>, as_json: bool) {
         Ok(data) => {
             if as_json {
                 println!("{}", Envelope::success("plan", data).to_json());
+            } else if plain_path {
+                println!("{}", data["path"].as_str().unwrap_or_default());
             } else {
                 println!("{}", serde_json::to_string_pretty(&data).unwrap_or_default());
             }

@@ -15,6 +15,32 @@ test reports a failed expectation; the workspace-wide deny targets production co
 
 use bn_e2e::Sandbox;
 
+#[test]
+#[ignore = "e2e: needs a built bn binary"]
+fn review_regression_plan_paths_are_plain_text_unless_json_requested() -> anyhow::Result<()> {
+    let sb = Sandbox::new()?;
+    for args in [
+        vec!["plan", "init"],
+        vec!["plan", "path"],
+        vec!["plan", "path", "--agent", "draft-session"],
+    ] {
+        let plain = sb.bn(&args)?;
+        plain.expect_success()?;
+        assert!(
+            std::path::Path::new(plain.stdout.trim()).is_file(),
+            "not a usable plan path: {}",
+            plain.stdout
+        );
+        let mut structured_args = args;
+        structured_args.push("--json");
+        let structured = sb.bn(structured_args)?;
+        structured.expect_success()?;
+        let json: serde_json::Value = serde_json::from_str(&structured.stdout)?;
+        assert_eq!(json["data"]["path"], plain.stdout.trim());
+    }
+    Ok(())
+}
+
 /// Rewrite the sandbox config without a `[machine]` table and declare one global cron.
 fn unconfigure(sb: &Sandbox) -> anyhow::Result<()> {
     std::fs::write(sb.path("home/.bn/config/config.toml"), "")?;
