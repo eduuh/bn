@@ -6,7 +6,7 @@ keywords: [lavish, visualize, mermaid, diagram, plan, break down, decompose, sco
 arguments:
   - { name: topic, description: What to plan. Omit to use the assigned task., required: false }
 ---
-Topic: {{topic}} (otherwise the branch goal).
+Topic: {{topic}} (otherwise the assigned task).
 
 1. Read the assigned task's context, existing findings and any supplied planning gate. Plan only
    when an implementation plan was requested, not for routine edits or standalone diagrams/reports.
