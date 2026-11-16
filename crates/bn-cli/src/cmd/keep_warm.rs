@@ -143,7 +143,7 @@ fn persist_keep_warm_policy(
     policy: &KeepWarmPolicy,
     now: i64,
 ) -> std::io::Result<OrchestrateState> {
-    let _lock = bn_core::store::FileLock::acquire_required(path)?;
+    let _lock = bn_core::fs::FileLock::acquire_required(path)?;
     let mut state =
         OrchestrateState::load(path).unwrap_or_else(|| OrchestrateState::new(repo, &[], 1, false, now));
     state.keep_warm = Some(policy.clone());

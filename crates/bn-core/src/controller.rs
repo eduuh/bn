@@ -7,7 +7,7 @@
 use crate::backlog::{self, AddSpec, BacklogEntry, BacklogStatus};
 use crate::cost::LaunchRecord;
 use crate::events::{self, Event};
-use crate::store::FileLock;
+use crate::fs::FileLock;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::io::ErrorKind;
@@ -56,7 +56,7 @@ pub fn load_heartbeat(path: &Path) -> std::io::Result<Option<ControllerHeartbeat
 }
 
 pub fn save_heartbeat(path: &Path, session_id: &str, updated_at: i64) -> std::io::Result<()> {
-    crate::store::save_json_atomic(
+    crate::fs::save_json_atomic(
         path,
         &ControllerHeartbeat {
             session_id: session_id.to_string(),
@@ -401,7 +401,7 @@ pub fn update_registry<T>(
     let _lock = FileLock::acquire_required(path)?;
     let mut registry = load_registry(path)?;
     let out = f(&mut registry);
-    crate::store::save_json_atomic(path, &registry)?;
+    crate::fs::save_json_atomic(path, &registry)?;
     Ok(out)
 }
 

@@ -9,7 +9,7 @@
 //! implement + open the PR), `changes-requested` (the human's notes go back; the agent revises and
 //! re-submits, cycling to `pending` again), or `rejected` (stop, ship nothing). The store is the
 //! source of truth for the plan text, status, and reviewer notes; every mutation is a locked
-//! read-modify-write (see [`crate::store::FileLock`]) over an atomically-replaced file, so the
+//! read-modify-write (see [`crate::fs::FileLock`]) over an atomically-replaced file, so the
 //! agent's poll loop and a concurrent human/web approval never corrupt or lose one another (the
 //! same discipline `orchestrate` uses for its per-run state).
 //!
@@ -350,7 +350,7 @@ impl ReviewStore {
     /// Atomically persist to `path` (temp sibling + fsync + rename), creating the parent on demand,
     /// so a concurrent poll never reads a torn write.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        crate::store::save_json_atomic(path, self)
+        crate::fs::save_json_atomic(path, self)
     }
 
     /// Next `r<N>` id: one past the highest `r<N>` ever issued, so terminal reviews left as history
@@ -396,7 +396,7 @@ pub fn store_path() -> PathBuf {
 /// agent's poll-driven re-submit against a concurrent human/web decision.
 fn mutate<R>(f: impl FnOnce(&mut ReviewStore) -> (bool, R)) -> std::io::Result<R> {
     let path = store_path();
-    let _lock = crate::store::FileLock::acquire(&path);
+    let _lock = crate::fs::FileLock::acquire(&path);
     let mut store = ReviewStore::load(&path);
     let (dirty, out) = f(&mut store);
     if dirty {

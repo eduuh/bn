@@ -20,7 +20,13 @@ use crate::resolver;
 const BEGIN: &str = "<!-- BEGIN bn (managed by `bn mcp init`) -->";
 const END: &str = "<!-- END bn -->";
 
-const MCP_SESSION_TOOLS: &[&str] = &["bn_context", "bn_add", "bn_done", "bn_cat"];
+const MCP_SESSION_TOOLS: &[&str] = &[
+    "bn_cmd",
+    "bn_links_search",
+    "bn_links_add",
+    "bn_ref",
+    "bn_ref_append",
+];
 
 /// The agent-facing instructions dropped into the harness's memory file. Mirrors the MCP
 /// server's own `with_instructions`, framed for an editor that has the scoped bn tools available.
@@ -30,37 +36,31 @@ const INSTRUCTIONS: &str = "\
 Workspan coordinates workspaces, agents, machines, and execution. Entire handles captured
 agent-session history. The `bn` command and MCP tool names remain compatibility interfaces.
 
-### Legacy note tools
+### Tasks, execution, and references
 
-This repo's branch-note tools are served by a per-worktree stdio launcher (`bn mcp serve`) that
-your MCP client spawns automatically. They are scoped to the current worktree's branch note — the
-launcher derives its (repo, branch) from your working directory, so nothing needs to be running
-first. Workflows that still use legacy notes can access these compatibility tools:
+The configured file or Forge task provider owns actionable work. Use `workspan task` to inspect
+tasks, `workspan task doc <id>` for context and acceptance criteria, and `workspan task do <id>`
+when the task is actually complete. Task documents survive changes to the execution branch.
+Use `workspan plan status` / `workspan plan path` for the execution contract and
+`workspan pipeline status` / `workspan pipeline set <stage>` for execution state.
+Entire owns captured session history; do not create a parallel session-memory store.
 
-- `bn_context` — compact session-start orientation (goal, counts, top todos, blockers, PR,
-  next-step hints) in one call.
-- `bn_add` — record a todo / blocker / decision / research / collab / ask as it comes up.
-- `bn_done` — close a todo the moment it's finished.
-- `bn_cat` — read only the current branch note.
+The per-worktree stdio launcher (`bn mcp serve`) exposes only:
 
-This is a deliberately slim tool surface for efficiency. The single-purpose tools (`bn_goal`,
-`bn_pr`, `bn_status`, `bn_sync`, `bn_handoff_read`, `bn_handoff_write`) are not advertised over
-MCP — use the `bn` CLI (`bn goal`, `bn pr`, `bn status`, `bn sync`, `bn handoff …`) when needed.
-If the MCP server is unavailable, keep working through the CLI instead of blocking: each `bn_*`
-tool maps to the same words after `bn` (`bn_context` → `bn status`, `bn_cat` → `bn cat`,
-`bn_add` → `bn add`, and `bn_done` → `bn done`).
+- `bn_cmd` — list or run commands in the current workspace.
+- `bn_links_search` / `bn_links_add` — curated durable links.
+- `bn_ref` / `bn_ref_append` — reusable repository references and standards.
 
-The MCP surface intentionally cannot target another repo or branch and does not expose
-cross-branch rollups, search, daily goals, reviews, metrics, attention queues, cron status, or
-agent fleet/session mining. Use the `bn` CLI explicitly for those broader workflows.
+Use the Workspan CLI for tasks, execution, attention, scheduling, and fleet operations.
+MCP workflow prompts remain available from the effective skills.
 
 Fleet orchestration is driven natively from the `bn` CLI — no tmux dashboard required. Drive and
 monitor agents across repos with `bn orchestrate` (`status`, `supervise [--all-repos]`,
 `scale`, `add`, `--queue`, `ask` / `answers`, `backlog --all-repos`) alongside `bn next` and
 `bn doctor`.
 
-Timing matters: every mutation is timestamped as it happens, so mark `bn_done` when the work
-actually happens — not batched at session end — and only record what genuinely occurred.
+Record task completion and execution transitions when they actually happen, not batched at
+session end. Record only what genuinely occurred.
 
 Prompts are reusable workflows in `config/prompts/`. In Claude Code they are served as MCP prompts
 (`/bn:<name>`); in Copilot CLI they are installed as native skills referred to by their name (not

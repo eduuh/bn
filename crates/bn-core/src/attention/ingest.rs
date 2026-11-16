@@ -7,7 +7,6 @@ use super::model::{
 };
 use super::query::{live_by_key, live_with_key_prefix, open_items};
 use super::store::{get, next_id};
-use crate::commands;
 use crate::events;
 use crate::resolver::{self, Config, Resolved};
 use serde_json::{json, Map};
@@ -263,8 +262,10 @@ pub fn plan_item(
         Some(l) => format!("{} — {}", item.title, l),
         None => item.title.clone(),
     };
-    let todo = commands::add(cfg, &ctx, section, &text, None, today).map_err(PlanError::Add)?;
-    mark_planned(id, &todo.id).map_err(PlanError::Resolve)?;
+    let _ = (section, today);
+    let todo = crate::task_store::capture(cfg, &text, Some(ctx.rb()), "attention")
+        .map_err(PlanError::Add)?;
+    mark_planned(id, todo.id().unwrap_or_default()).map_err(PlanError::Resolve)?;
     Ok(PlanOutcome { todo, ctx })
 }
 
@@ -280,7 +281,7 @@ pub struct PromoteOutcome {
 #[derive(Debug)]
 pub enum PromoteError {
     NoTarget(resolver::ContextError),
-    Read(crate::store::StoreError),
+    Read(std::io::Error),
     NoTodo,
     TodoDone,
     Write(std::io::Error),
@@ -306,33 +307,29 @@ pub fn promote_todo(
 ) -> Result<PromoteOutcome, PromoteError> {
     let ctx =
         resolver::resolve_target(cfg, base_dir, repo, branch).map_err(PromoteError::NoTarget)?;
-    let note = crate::store::read(&cfg.note_file(&ctx)).map_err(PromoteError::Read)?;
-    let todo = note
-        .front
-        .todos
-        .iter()
-        .find(|t| t.id == todo_id)
+    let file = crate::task_store::task_store(cfg)
+        .load()
+        .map_err(PromoteError::Read)?;
+    let todo = file
+        .tasks()
+        .find(|task| task.id() == Some(todo_id))
         .ok_or(PromoteError::NoTodo)?;
-    if todo.done == Some(true) {
+    if todo.done {
         return Err(PromoteError::TodoDone);
     }
-    let goal = crate::render::goal_text(&note.body);
-    let prompt = match &goal {
-        Some(g) => format!(
-            "Complete this branch-note todo: {} ({todo_id}).\nBranch goal: {g}",
-            todo.text
-        ),
-        None => format!("Complete this branch-note todo: {} ({todo_id}).", todo.text),
-    };
+    let title = todo.summary();
+    let prompt = format!(
+        "Complete task {todo_id}: {title}. Read its context with workspan task doc {todo_id}."
+    );
     let key = format!("attn:promote:{}:{}:{todo_id}", ctx.repo, ctx.branch);
     let add = add_new(
         &NewAttn {
             source: "manual",
-            title: &todo.text,
+            title: &title,
             severity,
             repo: Some(&ctx.repo),
             branch: Some(&ctx.branch),
-            link: todo.link.as_deref(),
+            link: todo.meta("src"),
             key: Some(&key),
             mode: Some(mode),
             prompt: Some(&prompt),
@@ -344,7 +341,7 @@ pub fn promote_todo(
     Ok(PromoteOutcome {
         add,
         ctx,
-        todo_text: todo.text.clone(),
+        todo_text: title,
     })
 }
 

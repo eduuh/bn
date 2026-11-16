@@ -613,7 +613,7 @@ fn from_doctor(cfg: &Config, today: &str) -> Vec<Action> {
                 })
             }
             // Only blocked notes are actionable here; pure stale/no-goal nags are doctor's job.
-            Finding::Note(n) if n.blockers > 0 => Some(Action {
+            Finding::Workspace(n) if n.blockers > 0 => Some(Action {
                 kind: ActionKind::Blocked,
                 title: format!("unblock {}/{}", n.repo, n.branch),
                 detail: format!(
@@ -632,7 +632,7 @@ fn from_doctor(cfg: &Config, today: &str) -> Vec<Action> {
                 // it sits the *more* it needs unblocking, so it must never age off the list.
                 age_hours: None,
             }),
-            Finding::Note(_) => None,
+            Finding::Workspace(_) => None,
             // Not produced here (repo=None above); doctor owns repo-todo surfacing.
             Finding::Todo(_) => None,
             // Lingering captures are hygiene, not a next action — doctor nags, `bn q drain` fixes.

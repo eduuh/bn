@@ -1,6 +1,5 @@
 //! The attention-item model: severities, modes, and the outcome/input structs.
 
-use crate::commands;
 use crate::resolver::{self, Resolved};
 use serde::{Deserialize, Serialize};
 
@@ -153,7 +152,7 @@ pub struct IngestOutcome {
 /// Outcome of promoting an attention item into a branch-note todo.
 #[derive(Debug)]
 pub struct PlanOutcome {
-    pub todo: commands::AddOutcome,
+    pub todo: crate::todo::Task,
     pub ctx: Resolved,
 }
 
@@ -162,6 +161,6 @@ pub struct PlanOutcome {
 pub enum PlanError {
     NoItem,
     NoTarget(resolver::ContextError),
-    Add(commands::CmdError),
+    Add(std::io::Error),
     Resolve(std::io::Error),
 }

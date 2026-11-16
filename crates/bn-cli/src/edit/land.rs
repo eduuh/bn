@@ -119,7 +119,8 @@ pub(crate) fn recipe_for(cfg: &Config, target: &EditTarget, opts: &LandOpts) -> 
         repo: target.repo.clone(),
         branch: target.branch.clone(),
     };
-    let note = cfg.note_file(&ctx);
+    let task_doc = bn_core::pipeline::gate::governing_task(cfg, &ctx.repo, &ctx.branch)
+        .and_then(|task| bn_core::task_doc::doc_path(cfg, &task));
     Recipe {
         v: SPEC_VERSION,
         worktree: target.worktree.display().to_string(),
@@ -130,7 +131,9 @@ pub(crate) fn recipe_for(cfg: &Config, target: &EditTarget, opts: &LandOpts) -> 
         term: opts.term,
         agent_cmd: opts.agent_cmd.clone(),
         files: Vec::new(),
-        note: note.exists().then(|| note.display().to_string()),
+        note: task_doc
+            .filter(|path| path.exists())
+            .map(|path| path.display().to_string()),
         force: opts.force,
     }
 }

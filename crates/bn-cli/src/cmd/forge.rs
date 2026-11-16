@@ -446,18 +446,13 @@ fn short_id(id: &str) -> String {
 fn record_blocker(cfg: &Config, text: &str, key: &str) -> Result<(), String> {
     let ctx = resolver::resolve(cfg, &std::env::current_dir().unwrap_or_default())
         .map_err(|error| format!("could not resolve current branch note: {error:?}"))?;
-    let outcome = commands::add_full(
-        cfg,
-        &ctx,
-        "blocker",
-        text,
-        Some(key),
-        None,
-        None,
-        &today(),
-    )
-    .map_err(|error| error.message())?;
-    if !outcome.skipped {
+    bn_core::task_doc::append_context(cfg, &ctx, "Open questions", text)
+        .map_err(|error| error.to_string())?;
+    bn_core::attention::add_new(&bn_core::attention::NewAttn {
+        source: "forge", title: text, key: Some(key), severity: "high",
+        repo: Some(&ctx.repo), branch: Some(&ctx.branch), ..Default::default()
+    }, &today()).map_err(|error| error.to_string())?;
+    {
         append_inherited_worker_event(
             cfg,
             &ctx,

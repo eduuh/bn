@@ -561,7 +561,7 @@ fn write_review_note(
         repo: repo.to_string(),
         branch: branch.to_string(),
     };
-    let dir = cfg.note_file(&ctx).parent()?.to_path_buf();
+    let dir = cfg.artifact_dir(&ctx);
     std::fs::create_dir_all(&dir).ok()?;
 
     // review.md first, then review2.md, review3.md, …

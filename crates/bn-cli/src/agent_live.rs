@@ -678,12 +678,10 @@ pub fn run(cfg: &Config, idle: i64, stuck: i64, with_mesh: bool, as_json: bool) 
 
     if as_json {
         let total_tokens: i64 = rows.iter().filter_map(|r| r.tokens).sum();
-        let remote = crate::cmd::remote_track::fleet_views(cfg, &bn_core::runner::RealRunner);
         let data = serde_json::json!({
             "agents": rows,
             "count": rows.len(),
             "total_tokens": total_tokens,
-            "remote_runs": remote,
         });
         let mut data = data;
         if with_mesh {
@@ -695,8 +693,7 @@ pub fn run(cfg: &Config, idle: i64, stuck: i64, with_mesh: bool, as_json: bool) 
         println!("{}", Envelope::success("agent_live", data).to_json());
         return;
     }
-    let remote = crate::cmd::remote_track::fleet_views(cfg, &bn_core::runner::RealRunner);
-    if rows.is_empty() && remote.is_empty() {
+    if rows.is_empty() {
         println!("No live agents here.");
         if with_mesh {
             print_mesh(&mesh);
@@ -716,12 +713,6 @@ pub fn run(cfg: &Config, idle: i64, stuck: i64, with_mesh: bool, as_json: bool) 
             };
             let ctx = r.ctx_pct.map(|p| format!("  ctx {p}%")).unwrap_or_default();
             println!("  {mark}  {:<24} {:<7}{tok}{ctx}{win}", r.target, harness);
-        }
-    }
-    if !remote.is_empty() {
-        println!("{} remote run(s) (gh):", remote.len());
-        for v in &remote {
-            println!("{}", crate::cmd::remote_track::render_line(v));
         }
     }
     if with_mesh {

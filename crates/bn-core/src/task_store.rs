@@ -102,6 +102,46 @@ pub fn task_store(cfg: &Config) -> Box<dyn TaskStore> {
     }
 }
 
+/// Preserve task-owned context before replacing its execution binding.
+pub fn claim(cfg: &Config, id: &str, repo: &str, branch: &str) -> io::Result<bool> {
+    let store = task_store(cfg);
+    let file = store.load()?;
+    let Some(task) = file.tasks().find(|task| task.id() == Some(id)) else {
+        return Ok(false);
+    };
+    crate::task_doc::ensure(cfg, task)?;
+    store.claim(id, repo, branch)
+}
+
+/// Capture actionable work in the configured provider, with a durable context document.
+pub fn capture(
+    cfg: &Config,
+    text: &str,
+    scope: Option<crate::resolver::RepoBranch<'_>>,
+    source: &str,
+) -> io::Result<Task> {
+    let store = task_store(cfg);
+    let _lock = store.lock();
+    let mut file = store.load()?;
+    let id = file.add(
+        &todo::neutralize_meta(text),
+        None,
+        scope.map(|scope| scope.branch).unwrap_or_default(),
+        source,
+        &crate::util::today(),
+    );
+    let task = file
+        .task_mut(&id)
+        .ok_or_else(|| io::Error::other("new task missing from provider snapshot"))?;
+    if let Some(scope) = scope {
+        task.set_meta("repo", scope.repo);
+    }
+    let task = task.clone();
+    crate::task_doc::ensure(cfg, &task)?;
+    store.append(&task)?;
+    Ok(task)
+}
+
 /// [`TaskStore::note`], best-effort: a failure is logged and swallowed, because a progress note is
 /// a report on the work, never a step of it. A pipeline stage must not fail because Forge was
 /// unreachable when it tried to say so.

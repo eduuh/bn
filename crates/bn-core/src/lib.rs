@@ -11,8 +11,7 @@
 
 //! bn-core — the engine. Never prints for humans; returns values.
 //!
-//! Phase 1 scope: notes core (model, store, resolver, id, render, commands).
-//! Modules are filled in over the build order in phase1-plan.md.
+//! Tasks, plans, execution, references and workspace coordination. Entire owns session history.
 
 pub mod action_rank;
 pub mod agent;
@@ -25,11 +24,9 @@ pub mod boot;
 pub mod build_slots;
 pub mod calib;
 pub mod capability;
-pub mod capture;
 pub mod clock;
 pub mod cmds;
 pub mod commands;
-pub mod compact;
 pub mod completed;
 pub mod config_migrate;
 pub mod context;
@@ -54,11 +51,11 @@ pub mod forge;
 pub mod forge_agent;
 pub mod forge_app;
 pub mod forge_local;
+pub mod fs;
 pub mod gh_pin;
 pub mod gitbase;
 pub mod gitnet;
 pub mod glyph;
-pub mod handoff;
 pub mod harness;
 pub mod harness_models;
 pub mod hash;
@@ -82,8 +79,6 @@ pub mod mcp_user;
 pub mod meetings;
 pub mod merged_prs;
 pub mod metrics;
-pub mod migrate;
-pub mod model;
 pub mod next;
 pub mod notify;
 pub mod orchestrate;
@@ -96,9 +91,7 @@ pub mod pr_observe;
 pub mod prior_boot;
 pub mod proof;
 pub mod reactor;
-pub mod recall;
 pub mod references;
-pub mod related;
 pub mod release;
 pub mod remote;
 pub mod render;
@@ -117,9 +110,7 @@ pub mod search;
 pub mod skills;
 pub mod smart;
 pub mod specialists;
-pub mod store;
 pub mod style;
-pub mod sync;
 pub mod task_attach;
 pub mod task_doc;
 pub mod task_owner;
@@ -136,6 +127,5 @@ pub mod track;
 pub mod trust;
 pub mod util;
 pub mod wake;
-pub mod why;
 pub mod worker;
 pub mod wt_actions;

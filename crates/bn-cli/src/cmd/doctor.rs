@@ -181,7 +181,7 @@ pub(crate) fn emit_doctor(cfg: &Config, stale_days: i64, brief: bool, as_json: b
     use bn_core::doctor::Finding;
     for f in &findings {
         match f {
-            Finding::Note(n) => {
+            Finding::Workspace(n) => {
                 let tag = format!("[{}]", n.flags.join(" "));
                 let tag = if n.blockers > 0 {
                     style::danger(&tag)

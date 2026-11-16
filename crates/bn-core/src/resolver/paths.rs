@@ -8,7 +8,7 @@ impl Config {
     /// Root for person-scoped stores that promise cross-machine sync.
     ///
     /// These stores are global to the person rather than a single repo, but they still need to
-    /// live in a git-backed notes root so `commit-notes` can carry them between machines. Fall
+    /// live in a git-backed state root so `sync-state` can carry them between machines. Fall
     /// back to `personal_root` only in minimal test configs that never populated `work_root`.
     fn synced_person_store_root(&self) -> &Path {
         if self.work_root.as_os_str().is_empty() {
@@ -70,35 +70,30 @@ impl Config {
     /// `<notes_dir_for(repo)>/<machine>/<repo>/<branch>` — the note directory. The `<machine>`
     /// segment keeps each laptop's notes in its own subtree so the synced note repos never
     /// git-conflict on shared (e.g. `main`) notes.
-    pub fn note_dir(&self, ctx: &Resolved) -> PathBuf {
+    pub fn artifact_dir(&self, ctx: &Resolved) -> PathBuf {
         self.notes_dir_for(&ctx.repo)
             .join(self.machine())
             .join(&ctx.repo)
             .join(&ctx.branch)
     }
 
-    /// `<note_dir>/note.md` — the note file.
-    pub fn note_file(&self, ctx: &Resolved) -> PathBuf {
-        self.note_dir(ctx).join("note.md")
-    }
-
-    /// `<note_dir>/plans` — branch-scoped plan artifacts. The directory is durable bn state,
+    /// `<artifact_dir>/plans` — branch-scoped plan artifacts. The directory is durable bn state,
     /// not repo worktree state, so plan files follow the branch note across machines.
     pub fn plan_dir(&self, ctx: &Resolved) -> PathBuf {
-        self.note_dir(ctx).join("plans")
+        self.artifact_dir(ctx).join("plans")
     }
 
-    /// `<note_dir>/plans/active.md` — the approved/current execution contract.
+    /// `<artifact_dir>/plans/active.md` — the approved/current execution contract.
     pub fn active_plan_file(&self, ctx: &Resolved) -> PathBuf {
         self.plan_dir(ctx).join("active.md")
     }
 
-    /// `<note_dir>/plans/agents` — per-agent draft plans keyed by session id.
+    /// `<artifact_dir>/plans/agents` — per-agent draft plans keyed by session id.
     pub fn agent_plan_dir(&self, ctx: &Resolved) -> PathBuf {
         self.plan_dir(ctx).join("agents")
     }
 
-    /// `<note_dir>/plans/agents/<session-id>.md` — one agent's draft plan.
+    /// `<artifact_dir>/plans/agents/<session-id>.md` — one agent's draft plan.
     pub fn agent_plan_file(&self, ctx: &Resolved, session_id: &str) -> PathBuf {
         let safe = session_id
             .chars()
@@ -117,15 +112,17 @@ impl Config {
     }
 
     /// Convert an absolute artifact path under this note dir to a portable note-relative path.
-    pub fn note_relative_path(&self, ctx: &Resolved, path: &Path) -> Option<String> {
-        let note_dir = self.note_dir(ctx);
-        path.strip_prefix(&note_dir)
+    pub fn artifact_relative_path(&self, ctx: &Resolved, path: &Path) -> Option<String> {
+        let artifact_dir = self.artifact_dir(ctx);
+        path.strip_prefix(&artifact_dir)
             .ok()
             .map(|p| p.to_path_buf())
             .or_else(|| {
                 let path = std::fs::canonicalize(path).ok()?;
-                let note_dir = std::fs::canonicalize(note_dir).ok()?;
-                path.strip_prefix(note_dir).ok().map(|p| p.to_path_buf())
+                let artifact_dir = std::fs::canonicalize(artifact_dir).ok()?;
+                path.strip_prefix(artifact_dir)
+                    .ok()
+                    .map(|p| p.to_path_buf())
             })
             .map(|p| p.to_string_lossy().replace('\\', "/"))
     }
@@ -134,7 +131,7 @@ impl Config {
     /// every repo, on every machine.
     ///
     /// **Person-scoped, not machine-scoped**, following `Config::staff_feed_dir` (#270) rather
-    /// than [`Config::note_dir`]. The `<machine>` segment exists so synced note repos never
+    /// than [`Config::artifact_dir`]. The `<machine>` segment exists so synced note repos never
     /// git-conflict on a shared `main` note — but a task list that differs per laptop is not a
     /// single source of truth, which is the whole point of the store. The file is `merge=union`
     /// (see [`crate::todo::ensure_union_merge`]) and every line carries `uid:`/`mod:` so a
@@ -144,9 +141,8 @@ impl Config {
         self.synced_person_store_root().join("tasks.txt")
     }
 
-    /// `<work_root>/tasks` — the staging area for task context docs, before a task is picked
-    /// up into a worktree and its doc moves next to the branch note. Person-scoped like
-    /// [`Config::tasks_file`], and syncs with it.
+    /// `<work_root>/tasks` — person-scoped task context and attachments, independent of branch
+    /// bindings. Synced alongside [`Config::tasks_file`].
     pub fn tasks_dir(&self) -> PathBuf {
         self.migrate_synced_person_store_dir("tasks");
         self.synced_person_store_root().join("tasks")

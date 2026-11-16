@@ -111,7 +111,6 @@ fn clone_into(url: &str, name: Option<&str>, bare_dir: &Path, worktree_dir: &Pat
     }
     // A cloned repo's first worktree gets what `wt add` gives every new worktree: the BN-Note
     // commit-trailer hook and the repo-tier skills.
-    crate::hooks::install_on_worktree_create(&wt_path);
     seed_skills(&wt_path);
     cprintln!("{GREEN}Cloned to {}{NC}", bare.display());
     cprintln!("{GREEN}Worktree: {}{NC}", wt_path.display());
@@ -367,7 +366,6 @@ pub(crate) fn create_worktree(bare_s: &str, branch: &str, wt_s: &str, pull: bool
     if created {
         // New worktrees get the BN-Note trailer stamp for free (#248). Hooks live in the git
         // common dir, so after the repo's first worktree this is a quiet no-op refresh.
-        crate::hooks::install_on_worktree_create(Path::new(wt_s));
         seed_skills(Path::new(wt_s));
     }
     if created && pull && !ff_pull(wt_s) {

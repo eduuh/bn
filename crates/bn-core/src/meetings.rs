@@ -97,7 +97,7 @@ pub fn ingest(events: Vec<Meeting>, today: &str, now: i64) -> std::io::Result<us
         date: today.to_string(),
         events,
     };
-    crate::store::save_json_atomic(&cache_path(), &rec)?;
+    crate::fs::save_json_atomic(&cache_path(), &rec)?;
     Ok(n)
 }
 

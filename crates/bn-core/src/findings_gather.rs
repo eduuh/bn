@@ -47,7 +47,7 @@
 
 use crate::attention::AttnItem;
 use crate::crons;
-use crate::doctor::{self, Finding, NoteFinding};
+use crate::doctor::{self, Finding, WorkspaceFinding};
 use crate::events::CronJobStatus;
 use crate::feed::{self, FeedItem};
 use crate::resolver::Config;
@@ -286,11 +286,11 @@ fn gather_sentinel(_cfg: &Config) -> GatherOut {
 /// blocked, reusing `bn doctor`'s exact note-finding logic (offline filesystem read).
 fn gather_stale_branches(cfg: &Config) -> GatherOut {
     let today = crate::util::today();
-    let findings = doctor::note_findings(cfg, &today, doctor::DEFAULT_STALE_DAYS);
-    let notes: Vec<&NoteFinding> = findings
+    let findings = doctor::workspace_findings(cfg, &today, doctor::DEFAULT_STALE_DAYS);
+    let notes: Vec<&WorkspaceFinding> = findings
         .iter()
         .filter_map(|f| match f {
-            Finding::Note(n) => Some(n),
+            Finding::Workspace(n) => Some(n),
             _ => None,
         })
         .collect();
@@ -377,7 +377,7 @@ fn cron_item(s: &CronJobStatus) -> FeedItem {
 }
 
 /// A stale/blocked branch note → a feed item keyed `<repo>/<branch>`, text = the doctor flags.
-fn note_item(n: &NoteFinding) -> FeedItem {
+fn note_item(n: &WorkspaceFinding) -> FeedItem {
     FeedItem {
         key: format!("{}/{}", n.repo, n.branch),
         text: format!("{}/{} — {}", n.repo, n.branch, n.flags.join(", ")),

@@ -12,9 +12,8 @@
 //! view flags which is which. No new collection, no re-fetch.
 
 use crate::daily::{self, LogEntry};
-use crate::model::{Note, Scalar};
+use crate::fs::StoreError;
 use crate::resolver::Config;
-use crate::store::StoreError;
 use crate::util;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -183,20 +182,6 @@ pub fn parse_skill(text: &str) -> Option<String> {
     } else {
         Some(name.to_string())
     }
-}
-
-/// The issue/work-item a branch note points at, for learning provenance: the first `source:`
-/// collaboration line (an issue/PR URL), else the note's `work_item`. `None` when neither is set.
-pub fn note_issue(note: &Note) -> Option<String> {
-    for c in &note.front.collab {
-        if let Some(rest) = c.text.trim().strip_prefix("source:") {
-            let v = rest.trim();
-            if !v.is_empty() {
-                return Some(v.to_string());
-            }
-        }
-    }
-    note.front.work_item.as_ref().map(Scalar::display)
 }
 
 fn map_entry(kind: Kind, e: &LogEntry) -> LearningEntry {
@@ -451,7 +436,7 @@ pub fn read_reviews(cfg: &Config) -> BTreeMap<String, ReviewRecord> {
     let Ok(text) = std::fs::read_to_string(&path) else {
         return map;
     };
-    if let Ok(front) = crate::store::parse_frontmatter::<ReviewFront>(&text) {
+    if let Ok(front) = crate::markdown::parse_frontmatter::<ReviewFront>(&text) {
         for r in front.reviews {
             map.insert(r.key.clone(), r);
         }

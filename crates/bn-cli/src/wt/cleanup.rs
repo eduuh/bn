@@ -26,24 +26,6 @@ fn announce_reap(name: &str, reason: &str) {
 
 // --- cleanup (the worktree+note+tmux teardown) -----------------------------
 
-/// Close-triggered cleanup: after `bn close` closes the note, reclaim the *current* worktree (and
-/// its tmux window) using the same guards as `wt cleanup` — PR merged + clean tree, unless `force`.
-/// Quietly no-ops (returns false) when the cwd isn't a reclaimable worktree — not under a managed
-/// bare repo, or sitting on main/master — so a plain `bn close` outside a feature worktree just
-/// closes the note. `cleanup_one` re-runs `bn close` internally, which is now idempotent.
-pub fn cleanup_current(cfg: &Config, force: bool) -> bool {
-    let (_, worktree_dir) = layout(cfg);
-    let wt_path = cwd();
-    if find_bare_repo(&wt_path).is_none() {
-        return false; // not a managed worktree — nothing to reclaim
-    }
-    let branch = git_out(&["-C", &wt_path.to_string_lossy(), "branch", "--show-current"]);
-    if matches!(branch.as_deref(), Some("main") | Some("master") | None) {
-        return false; // never reclaim the main worktree on a note close
-    }
-    cleanup_one(cfg, &wt_path, &worktree_dir, force).is_ok()
-}
-
 /// The bare repos a `--all` sweep covers: only the repo the cwd sits in, so a sweep started from a
 /// worktree never reaches into another repo's checkouts. `all_repos`, or a cwd outside any managed
 /// repo (the cron), widens it to every bare repo — the same rule `bn wt prune` follows.
@@ -488,9 +470,9 @@ fn cleanup_one_with_policy(
     let ctx = resolver::resolve(cfg, wt_path).ok();
     if !force {
         if let Some(ctx) = &ctx {
-            if let Ok(note) = bn_core::store::read(&cfg.note_file(ctx)) {
-                let open_todos = note.front.todos.iter().filter(|t| t.is_open_todo()).count();
-                let blockers = note.front.blockers.len();
+            if let Some(status) = bn_core::rollups::status(cfg, ctx) {
+                let open_todos = status.open_todos;
+                let blockers = status.blockers;
                 if open_todos > 0 || blockers > 0 {
                     cprintln!(
                         "{YELLOW}{label}/{branch} — {open_todos} open todo(s), {blockers} blocker(s); \
@@ -545,10 +527,6 @@ fn cleanup_one_with_policy(
     };
     let sanitized = sanitize_branch(&branch);
 
-    // Complete + close the branch note while the worktree still resolves.
-    if let Some(ctx) = &ctx {
-        let _ = bn_core::commands::close(cfg, ctx, &today(), None);
-    }
     // Capture the worktree's tmux window(s) BEFORE removal — panes keep a stale cwd afterward.
     let wins = tmux_windows_for(wt_path, &sanitized);
 
@@ -577,7 +555,6 @@ fn cleanup_one_with_policy(
     // No branch to delete on a detached worktree (it was already gone — that's why we're here).
     let branch_deleted = delete_local_branch(&bare_s, &branch, detached);
     rmdir_if_empty_repo(wt_path, worktree_dir);
-    let _ = bn_core::lifecycle::prune(cfg); // safety net for other orphaned notes
     ack_stuck(&stuck_key); // it's gone now — clear any prior merged-but-dirty attention item
     kill_tmux_windows(&wins, cwd_inside);
     if branch_deleted {
@@ -657,260 +634,11 @@ pub(crate) fn reconcile_stuck(cfg: &Config) {
 
 // --- reset (top-level `bn reset`) ------------------------------------------
 
-/// `bn reset [--force]` — port of the bash `reset`. Enumerate every non-main worktree across all
-/// bare repos; bare invocation is a dry run, `--force` rebases each repo's main, removes the
-/// worktrees, closes their notes, prunes stale refs, and archives. Reuses the same git/note
-/// machinery as `cleanup`, so note-status mutation goes through `commands::close` (event-logged)
-/// instead of the oracle's in-place `sed`.
-pub fn reset(cfg: &Config, force: bool) -> bool {
-    let (bare_dir, worktree_dir) = layout(cfg);
-    let bares = bare_repos(&bare_dir);
-    if bares.is_empty() {
-        println!("No bare repos found");
-        return true;
-    }
-
-    // Non-main worktrees, across every repo. `list_worktree_paths` already drops the bare dirs.
-    let mut to_remove: Vec<String> = Vec::new();
-    for bare in &bares {
-        for wt in list_worktree_paths(&bare_dir, Some(bare)) {
-            if wt_branch_name(&wt) != "main" {
-                to_remove.push(wt);
-            }
-        }
-    }
-    if to_remove.is_empty() {
-        println!("No worktrees to remove (main worktrees are preserved)");
-        return true;
-    }
-
-    cprintln!("{RED}Worktrees to remove:{NC}");
-    for wt in &to_remove {
-        if dirty_count(wt) > 0 {
-            cprintln!("  {wt} {YELLOW}(has uncommitted changes){NC}");
-        } else {
-            println!("  {wt}");
-        }
-    }
-    println!("\n{} worktree(s) will be removed", to_remove.len());
-
-    if !force {
-        cprintln!("\n{YELLOW}Dry run. Use 'bn reset --force' to execute.{NC}");
-        return true;
-    }
-
-    // Bring every repo's main checkout current before tearing the rest down — through the same
-    // `main-sync` the 15-minute cron runs, so a reset can't leave main in a state the cron would
-    // then have to repair. It also creates a missing main worktree and advances the main slot,
-    // which the old inline fast-forward did neither of.
-    cprintln!("\n{BLUE}Updating main worktrees...{NC}");
-    for bare in &bares {
-        crate::cmd::main_sync::sync_repo(bare, &worktree_dir, &repo_name(bare));
-    }
-
-    println!();
-    for wt in &to_remove {
-        let wt_path = PathBuf::from(wt);
-        let repo = wt_repo_name(wt);
-        let branch = wt_branch_name(wt);
-        cprintln!("{YELLOW}Removing: {wt}{NC}");
-
-        let bare = bare_dir.join(format!("{repo}.git"));
-        let removed = run_git(&[
-            "--git-dir",
-            &bare.to_string_lossy(),
-            "worktree",
-            "remove",
-            "--force",
-            wt,
-        ]);
-        // Fall back to an unlink only for something that really is a worktree under the managed
-        // root. `git worktree remove` refusing the path is exactly the case where a blind
-        // `remove_dir_all` does the most damage — a misclassified bare repo (or anything else
-        // outside `worktree_dir`) would be deleted with its history, unrecoverably, on a command
-        // whose contract is "worktrees go, repos stay".
-        if !removed {
-            if under(&wt_path, &worktree_dir) {
-                let _ = std::fs::remove_dir_all(&wt_path);
-            } else {
-                cprintln!("  {YELLOW}Skipped: not under {}{NC}", worktree_dir.display());
-            }
-        }
-
-        // Close the branch note (status + completion + achievement), if one exists. Derived from
-        // the worktree path — its folder name is the sanitized branch the note dir is keyed on.
-        let ctx = resolver::Resolved {
-            repo: repo.clone(),
-            branch: branch.clone(),
-        };
-        if cfg.note_file(&ctx).is_file() {
-            let _ = bn_core::commands::close(cfg, &ctx, &today(), None);
-            println!("  Closed note: {repo}/{branch}");
-        }
-    }
-
-    for bare in &bares {
-        run_git(&["--git-dir", &bare.to_string_lossy(), "worktree", "prune"]);
-    }
-    let _ = bn_core::lifecycle::archive(cfg, &today(), 30, false);
-
-    cprintln!(
-        "{GREEN}Reset complete. Removed {} worktree(s).{NC}",
-        to_remove.len()
-    );
-    true
-}
-
-/// Last path component of a worktree path — its sanitized branch / note folder name.
-/// Whether `path` sits inside `root`, comparing symlink-resolved forms so a configured root that
-/// reaches the real directory through a symlink (macOS `/var` → `/private/var`, a symlinked
-/// `$HOME`) still recognizes its own worktrees. Falls back to the literal comparison when either
-/// side can't be resolved. Guards destructive fallbacks, so an unresolvable path answers `false`
-/// unless it matches literally — refusing to delete beats deleting the wrong tree.
-pub(crate) fn under(path: &Path, root: &Path) -> bool {
-    if path.starts_with(root) {
-        return true;
-    }
-    match (std::fs::canonicalize(path), std::fs::canonicalize(root)) {
-        (Ok(p), Ok(r)) => p.starts_with(r),
-        _ => false,
-    }
-}
-
 pub(crate) fn wt_branch_name(wt: &str) -> String {
     Path::new(wt)
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default()
-}
-
-/// Parent directory name of a worktree path — the repo it belongs to (`<wt_dir>/<repo>/<branch>`).
-pub(crate) fn wt_repo_name(wt: &str) -> String {
-    Path::new(wt)
-        .parent()
-        .and_then(|p| p.file_name())
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default()
-}
-
-// --- rename (top-level `bn rename` / `mv`) ---------------------------------
-
-/// `bn rename <new>` (alias `mv`) — port of the bash `rename`. Renames the current branch and moves
-/// its note folder atomically: `git branch -m`, move the note dir, rewrite the note's `branch`
-/// field through `store` (vs. the oracle's `yq` on a `note.yaml` sidecar), then repush and delete
-/// the old upstream ref. The note-data mutation is owned by Rust so a half-rename can't desync the
-/// branch field from the folder name.
-pub fn rename(cfg: &Config, new_branch: &str) -> bool {
-    if new_branch.is_empty() {
-        eprintln!("Usage: bn rename <new-branch>");
-        return false;
-    }
-    if new_branch.contains(' ') || new_branch.contains("..") || new_branch.contains("//") {
-        eprintln!("Invalid branch name: {new_branch}");
-        return false;
-    }
-
-    let dir = cwd();
-    let dir_s = dir.to_string_lossy().to_string();
-    let Some(old_branch) =
-        git_out(&["-C", &dir_s, "branch", "--show-current"]).filter(|b| !b.is_empty())
-    else {
-        eprintln!("Not on a branch (detached HEAD?)");
-        return false;
-    };
-    if old_branch == new_branch {
-        println!("Already named {new_branch} — nothing to do.");
-        return true;
-    }
-    // refs/heads/<new> already present → refuse (git status 0 means the ref verified).
-    if run_git(&[
-        "-C",
-        &dir_s,
-        "show-ref",
-        "--verify",
-        "--quiet",
-        &format!("refs/heads/{new_branch}"),
-    ]) {
-        eprintln!("Branch already exists: {new_branch}");
-        return false;
-    }
-
-    // Resolve the current note dir, then derive the destination dir from the new (sanitized) branch.
-    let Ok(old_ctx) = resolver::resolve(cfg, &dir) else {
-        eprintln!("Not in a git repo");
-        return false;
-    };
-    let new_ctx = resolver::Resolved {
-        repo: old_ctx.repo.clone(),
-        branch: sanitize_branch(new_branch),
-    };
-    let old_dir = cfg.note_dir(&old_ctx);
-    let new_dir = cfg.note_dir(&new_ctx);
-    if new_dir.exists() {
-        eprintln!("Note folder already exists: {}", new_dir.display());
-        return false;
-    }
-
-    // Upstream (for the repush + old-ref delete), e.g. "origin/old-branch".
-    let upstream = git_out(&[
-        "-C",
-        &dir_s,
-        "rev-parse",
-        "--abbrev-ref",
-        "--symbolic-full-name",
-        "@{upstream}",
-    ])
-    .filter(|u| !u.is_empty());
-    let remote = upstream.as_deref().and_then(|u| u.split_once('/'));
-
-    println!("Renaming branch: {old_branch} → {new_branch}");
-    if let Some(u) = &upstream {
-        println!("  Upstream: {u}  (will be repushed)");
-    }
-    if old_dir.is_dir() {
-        println!("  Note folder: {} → {}", old_ctx.branch, new_ctx.branch);
-    }
-
-    if !run_git(&["-C", &dir_s, "branch", "-m", &old_branch, new_branch]) {
-        eprintln!("Failed to rename git branch");
-        return false;
-    }
-
-    // Move the note folder and rewrite its `branch` field to match the new folder name.
-    if old_dir.is_dir() {
-        if let Some(parent) = new_dir.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
-            eprintln!("Warning: branch renamed but note move failed: {e}");
-        } else {
-            // Locked read-modify-write: the note has just moved to its new path, and anything
-            // already writing there must not have its edit rewritten away by this one field fix.
-            let note_md = cfg.note_file(&new_ctx);
-            let _lock = bn_core::store::NoteLock::acquire(&note_md);
-            if let Ok(mut note) = bn_core::store::read(&note_md) {
-                note.front.branch = new_ctx.branch;
-                let _ = bn_core::store::save(&note, &note_md);
-            }
-        }
-    }
-
-    if let Some((remote_name, remote_branch)) = remote {
-        println!("Pushing {new_branch} to {remote_name}...");
-        if run_git(&["-C", &dir_s, "push", "-u", remote_name, new_branch]) {
-            println!("Deleting old remote ref {remote_name}/{remote_branch}...");
-            if !run_git(&["-C", &dir_s, "push", remote_name, "--delete", remote_branch]) {
-                eprintln!("  (couldn't delete remote {remote_branch} — delete manually)");
-            }
-        } else {
-            eprintln!("Note: failed to push {new_branch}. Push manually:");
-            eprintln!("  git push -u {remote_name} {new_branch}");
-            eprintln!("  git push {remote_name} --delete {remote_branch}");
-        }
-    }
-
-    println!("\nDone. New branch: {new_branch}");
-    true
 }
 
 fn merged_tip_reclaimable(
@@ -953,12 +681,9 @@ mod tests {
             repo: "repo".into(),
             branch: "finished-investigation".into(),
         };
-        bn_core::commands::add(&cfg, &ctx, "decision", "task: scout", None, "2026-01-01")
-            .unwrap();
-        let note_path = cfg.note_file(&ctx);
-        let mut note = bn_core::store::read(&note_path).unwrap();
-        note.body.push_str("\nagent done\n");
-        bn_core::store::save(&note, &note_path).unwrap();
+        let note_path = cfg.artifact_dir(&ctx).join("note.md");
+        std::fs::create_dir_all(note_path.parent().unwrap()).unwrap();
+        std::fs::write(&note_path, "## Decisions\n- task: scout\n\nagent done\n").unwrap();
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
         std::fs::File::open(&note_path)
             .unwrap()

@@ -124,15 +124,9 @@ pub(crate) fn run_critic_dispatch(
         repo: repo.clone(),
         branch: exec_sanitized.clone(),
     };
-    let done_when: Vec<String> = bn_core::store::read(&cfg.note_file(&exec_ctx))
-        .map(|n| {
-            n.front
-                .done_when
-                .iter()
-                .map(|i| i.text.clone())
-                .filter(|t| !t.trim().is_empty())
-                .collect()
-        })
+    let done_when: Vec<String> = bn_core::pipeline::gate::governing_task(cfg, &exec_ctx.repo, &exec_ctx.branch)
+        .and_then(|task| bn_core::task_doc::read(cfg, &task))
+        .map(|doc| doc.done_when().into_iter().map(|(_, text)| text).collect())
         .unwrap_or_default();
 
     // Cut the critic worktree OFF THE EXECUTION HEAD (r17 §1.3 option b): a NEW branch starting at
@@ -162,20 +156,6 @@ pub(crate) fn run_critic_dispatch(
         repo: repo.clone(),
         branch: critic_sanitized.clone(),
     };
-    let _ = commands::ensure_note(cfg, &critic_ctx, &today());
-    let goal = format!(
-        "Critique the diff on {branch} against its done-when criteria (fresh context — no plan, no \
-         author reasoning). Report the verdict with `bn critic verdict`."
-    );
-    let _ = commands::set_goal(cfg, &critic_ctx, &goal, &today());
-    let _ = commands::add(
-        cfg,
-        &critic_ctx,
-        "decision",
-        "task: critique — independently review the diff, run tests, verify done-when; ship no code",
-        Some("task:"),
-        &today(),
-    );
 
     // Launch the FRESH critic lane: brand-new harness session (zero prior turns), seeded with ONLY
     // the diff + done-when + pr via the leak-proof packet builder. No plan, execution transcript,
@@ -212,20 +192,11 @@ pub(crate) fn run_critic_dispatch(
     if !no_tmux {
         let _ = apply_folder_trust(&wt_path.to_string_lossy(), agent_kind);
         let sid = gen_uuid();
-        let _ = commands::add(
-            cfg,
-            &critic_ctx,
-            "collab",
-            &format!("agent-session: {agent_kind} {sid}"),
-            None,
-            &today(),
-        );
-        bn_core::cost::attribute(
-            &sid,
-            bn_core::cost::WorkClass::Research,
-            &repo,
-            &critic_branch,
-        );
+        crate::cmd::agent::record_launched_session(cfg, crate::cmd::agent::LaunchedSession {
+            ctx: &critic_ctx, harness: agent_kind, session_id: &sid,
+            worktree: &wt_path.to_string_lossy(), host: None,
+            work_class: bn_core::cost::WorkClass::Research, task_name: None, controller_id: None,
+        });
         let mut cmd = match wt::prompt_to_file("critic-seed", &repo, &critic_sanitized, &seed) {
             Some(f) => format!(
                 "{} {agent_kind} --yolo --fresh --session {sid} --seed-file {}",
@@ -338,14 +309,9 @@ pub(crate) fn run_critic_verdict(
 
     match next {
         CriticNext::Shippable => {
-            let _ = commands::add(
-                cfg,
-                &exec_ctx,
-                "decision",
-                "critique: PASS — fresh-context critic verified every done-when criterion",
-                Some("critique:"),
-                &today(),
-            );
+            bn_core::task_doc::append_context(cfg, &exec_ctx, "Validation",
+                "critique: PASS — fresh-context critic verified every done-when criterion")
+                .unwrap_or_else(|error| fail(&format!("cannot record critic verdict: {error}")));
             // Close any open critique item — the loop is resolved.
             if let Some(item) = bn_core::attention::open_items(&today())
                 .into_iter()
@@ -381,14 +347,9 @@ pub(crate) fn run_critic_verdict(
                 &today(),
             );
             // Durable copy in the execution note so the re-dispatched implementer sees it on `--cat`.
-            let _ = commands::add(
-                cfg,
-                &exec_ctx,
-                "blocker",
-                &format!("critic FAIL (iteration {iteration}/{max_iterations}): {detail}"),
-                None,
-                &today(),
-            );
+            bn_core::task_doc::append_context(cfg, &exec_ctx, "Open questions",
+                &format!("critic FAIL (iteration {iteration}/{max_iterations}): {detail}"))
+                .unwrap_or_else(|error| fail(&format!("cannot record critic findings: {error}")));
             // Re-enter execution: re-dispatch the implementer lane FRESH (#383 path), seeded with
             // the findings so it fixes them rather than resuming an empty prompt.
             let raw = format!(

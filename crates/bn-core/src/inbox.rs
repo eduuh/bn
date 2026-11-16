@@ -8,10 +8,10 @@
 //! deciding is cheap. The inbox is never a home — doctor flags items that sit too long.
 
 use crate::attention::{self, NewAttn};
-use crate::commands::{self, CmdError};
+use crate::commands::CmdError;
 use crate::daily;
+use crate::fs::StoreError;
 use crate::resolver::{Config, Resolved};
-use crate::store::StoreError;
 use serde::{Deserialize, Serialize};
 
 /// Id prefix for inbox captures (`q1`, `q2`, …).
@@ -54,7 +54,7 @@ pub fn read(cfg: &Config) -> Vec<InboxItem> {
     let Ok(text) = std::fs::read_to_string(cfg.inbox_file()) else {
         return vec![];
     };
-    crate::store::parse_frontmatter::<InboxFront>(&text)
+    crate::markdown::parse_frontmatter::<InboxFront>(&text)
         .map(|f| f.items)
         .unwrap_or_default()
 }
@@ -204,19 +204,29 @@ fn auto_target(cfg: &Config, item: &InboxItem) -> Option<Resolved> {
         repo: repo.clone(),
         branch: branch.clone(),
     };
-    let note = crate::store::read(&cfg.note_file(&ctx)).ok()?;
-    (note.front.status == "active").then_some(ctx)
+    crate::pipeline::gate::governing_task(cfg, &ctx.repo, &ctx.branch)?;
+    Some(ctx)
 }
 
 /// Write a capture into its sink; returns the human-readable destination label.
 fn deliver(cfg: &Config, item: &InboxItem, to: &Route, today: &str) -> Result<String, CmdError> {
     Ok(match to {
         Route::Todo(ctx) => {
-            commands::add(cfg, ctx, "todo", &item.text, Some(&item.text), today)?;
+            crate::task_store::capture(cfg, &item.text, Some(ctx.rb()), "inbox")
+                .map_err(StoreError::from)?;
             format!("todo on {}/{}", ctx.repo, ctx.branch)
         }
         Route::Research(ctx) => {
-            commands::add(cfg, ctx, "research", &item.text, Some(&item.text), today)?;
+            let task = crate::pipeline::gate::governing_task(cfg, &ctx.repo, &ctx.branch)
+                .ok_or_else(|| {
+                    CmdError::NotFound(format!("task for {}:{}", ctx.repo, ctx.branch))
+                })?;
+            let path = crate::task_doc::ensure(cfg, &task)?;
+            let text = std::fs::read_to_string(&path)?;
+            crate::fs::write_atomic(
+                &path,
+                crate::render::append_to_section(&text, "## Investigation", &item.text).as_bytes(),
+            )?;
             format!("research on {}/{}", ctx.repo, ctx.branch)
         }
         Route::Goal => {

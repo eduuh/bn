@@ -41,11 +41,11 @@ pub struct Served {
 }
 
 fn path(cfg: &Config, ctx: &Resolved) -> std::path::PathBuf {
-    cfg.note_dir(ctx).join("context-served.jsonl")
+    cfg.artifact_dir(ctx).join("context-served.jsonl")
 }
 
 fn append(cfg: &Config, ctx: &Resolved, line: &Line) -> std::io::Result<()> {
-    std::fs::create_dir_all(cfg.note_dir(ctx))?;
+    std::fs::create_dir_all(cfg.artifact_dir(ctx))?;
     let json = serde_json::to_string(line).map_err(std::io::Error::other)?;
     let mut f = std::fs::OpenOptions::new()
         .create(true)

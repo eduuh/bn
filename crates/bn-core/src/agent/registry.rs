@@ -385,6 +385,7 @@ pub fn session_registry(cfg: &Config) -> std::io::Result<Vec<SessionRecord>> {
             work_class: WorkClass::Orchestration,
             launched_at: controller.started_at,
             controller_id: Some(controller.controller_id.clone()),
+            host: None,
         });
     }
 
@@ -415,7 +416,8 @@ pub fn session_registry(cfg: &Config) -> std::io::Result<Vec<SessionRecord>> {
             repo: row.repo.clone(),
             branch: row.branch.replace('/', "-"),
         };
-        row.pr_url = crate::commands::read_pr(cfg, &note_ctx);
+        row.pr_url = crate::pipeline::gate::governing_task(cfg, &note_ctx.repo, &note_ctx.branch)
+            .and_then(|task| task.meta("pr").map(str::to_string));
     }
     rows.sort_by_key(|row| std::cmp::Reverse((row.updated_at, row.created_at)));
     Ok(rows)

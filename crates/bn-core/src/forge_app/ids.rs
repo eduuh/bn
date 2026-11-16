@@ -112,7 +112,7 @@ impl IdMark {
             return Ok(());
         }
         all.insert(self.url.clone(), next);
-        crate::store::save_json_atomic(&self.path, &all)
+        crate::fs::save_json_atomic(&self.path, &all)
     }
 }
 

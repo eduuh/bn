@@ -6,7 +6,7 @@
 //! The gather itself still runs via `bn run <agent.name>`, so the `.md` is metadata +
 //! schedule + description, never a reimplementation of the existing native/staff/script job.
 //!
-//! Parsing routes through [`crate::store::split_frontmatter`] (the crate's single frontmatter
+//! Parsing routes through [`crate::markdown::split_frontmatter`] (the crate's single frontmatter
 //! parser) and the "due" check composes [`crate::schedule::previous_occurrence`] over the
 //! same `OnCalendar` subset the cron generator understands — no second schedule parser. Discovery
 //! mirrors [`crate::skills::discover`] / [`crate::resolver::agent_dirs`]: branch → repo → global,
@@ -362,11 +362,12 @@ pub fn parse_agent(
     scope: JobScope,
     path: PathBuf,
 ) -> Result<AgentDef, AgentCatalogError> {
-    let (yaml, body) =
-        crate::store::split_frontmatter(text).ok_or_else(|| AgentCatalogError::InvalidAgent {
+    let (yaml, body) = crate::markdown::split_frontmatter(text).ok_or_else(|| {
+        AgentCatalogError::InvalidAgent {
             path: path.clone(),
             source: AgentParseError::MissingFrontmatter,
-        })?;
+        }
+    })?;
     let front: AgentFrontmatter =
         serde_yaml::from_str(yaml).map_err(|error| AgentCatalogError::InvalidAgent {
             path: path.clone(),

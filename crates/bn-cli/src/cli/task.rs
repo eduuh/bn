@@ -86,8 +86,8 @@ pub(crate) enum TaskCmd {
     },
     /// Open a task's context doc — the long form the one-line task can't hold: why it matters,
     /// the `## Done When` checklist the SMART gate reads, investigation findings, open questions.
-    /// Created from a template on first use. Lives in the notes tree, beside the branch note once
-    /// the task is picked up. Prints the path; `--open` launches $EDITOR.
+    /// Created from a template on first use in tasks/context, independent of branch bindings.
+    /// Prints the path; `--open` launches $EDITOR.
     Doc {
         /// Task id (e.g. t42).
         id: String,

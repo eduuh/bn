@@ -515,6 +515,10 @@ pub struct SessionLaunch<'a> {
 
 /// Record one harness launch in the existing attribution log.
 pub fn attribute_session(launch: SessionLaunch<'_>) {
+    attribute_session_on_host(launch, None);
+}
+
+pub fn attribute_session_on_host(launch: SessionLaunch<'_>, host: Option<&str>) {
     let mut f = serde_json::Map::new();
     f.insert("session_id".into(), serde_json::json!(launch.session_id));
     f.insert(
@@ -523,6 +527,7 @@ pub fn attribute_session(launch: SessionLaunch<'_>) {
     );
     f.insert("repo".into(), serde_json::json!(launch.repo));
     f.insert("branch".into(), serde_json::json!(launch.branch));
+    f.insert("host".into(), serde_json::json!(host));
     if let Some(task_name) = launch.task_name {
         f.insert("task_name".into(), serde_json::json!(task_name));
     }
@@ -581,6 +586,7 @@ pub struct LaunchRecord {
     pub work_class: WorkClass,
     pub launched_at: i64,
     pub controller_id: Option<String>,
+    pub host: Option<String>,
 }
 
 /// Every launch attribution record from the machine-local log, in file (chronological) order —
@@ -639,6 +645,11 @@ pub fn launch_records() -> Vec<LaunchRecord> {
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
             Some(LaunchRecord {
+                host: e
+                    .fields
+                    .get("host")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
                 session_id,
                 task_name,
                 harness,

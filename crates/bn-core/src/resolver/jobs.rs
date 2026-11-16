@@ -130,7 +130,7 @@ pub fn script_tier_dirs(
     let mut dirs = Vec::new();
     if let Some(c) = ctx {
         if c.branch != "main" {
-            dirs.push((JobScope::Branch, cfg.note_dir(c).join(sub)));
+            dirs.push((JobScope::Branch, cfg.artifact_dir(c).join(sub)));
         }
         // Project tier: this branch's own checkout, preferably at the conventional
         // `<worktree_dir>/<repo>/<branch>` path. When the branch lives in a warm pool slot, a
@@ -216,14 +216,14 @@ pub fn agent_dirs(cfg: &Config, ctx: Option<&Resolved>) -> Vec<(JobScope, PathBu
     let mut dirs = Vec::new();
     if let Some(c) = ctx {
         if c.branch == "main" {
-            dirs.push((JobScope::Repo, cfg.note_dir(c).join("agents")));
+            dirs.push((JobScope::Repo, cfg.artifact_dir(c).join("agents")));
         } else {
-            dirs.push((JobScope::Branch, cfg.note_dir(c).join("agents")));
+            dirs.push((JobScope::Branch, cfg.artifact_dir(c).join("agents")));
             let repo_main = Resolved {
                 repo: c.repo.clone(),
                 branch: "main".to_string(),
             };
-            dirs.push((JobScope::Repo, cfg.note_dir(&repo_main).join("agents")));
+            dirs.push((JobScope::Repo, cfg.artifact_dir(&repo_main).join("agents")));
         }
     }
     for dir in [

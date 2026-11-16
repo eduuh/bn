@@ -284,9 +284,6 @@ pub(crate) fn emit(
 
     // --- seed (fresh only) -----------------------------------------------------------------
     let seed_file = plan.fresh().then(|| seed_for_fresh(cfg, &plan)).flatten();
-    if plan.fresh() {
-        log_fresh_start(cfg, &plan, seed_file.is_some());
-    }
 
     // --- lease + respawn -------------------------------------------------------------------
     let dashed = plan.branch.replace('/', "-");
@@ -369,56 +366,19 @@ pub(crate) fn emit(
     std::process::exit(0);
 }
 
-/// Compose the handoff packet a `--hard` relaunch seeds the new session with, and park the prompt
-/// in a file.
-///
-/// Same composition `bn switch` uses (narrative from the outgoing session, packet written from the
-/// note), so a hard relaunch and a harness switch hand the incoming agent the same orientation.
-/// Best-effort: a note that can't be read still gets a relaunch, just without a seed — refusing to
-/// restart an agent because its handoff didn't compose would be the wrong trade.
-fn seed_for_fresh(cfg: &Config, plan: &RelaunchPlan) -> Option<String> {
+/// Seed a fresh relaunch from task/plan/execution context, leaving session history to Entire.
+fn seed_for_fresh(_cfg: &Config, plan: &RelaunchPlan) -> Option<String> {
     let ctx = bn_core::resolver::Resolved {
         repo: plan.repo.clone(),
         branch: plan.branch.clone(),
     };
-    let narrative = bn_core::agent::switch_narrative(&plan.harness, None, None, None);
-    let input = bn_core::handoff::HandoffInput {
-        narrative: Some(narrative),
-        ..Default::default()
-    };
-    if let Err(e) = bn_core::handoff::write(cfg, &ctx, &bn_core::util::today(), &input) {
-        eprintln!("bn agent relaunch: handoff not written ({e}) — starting without a seed");
-        return None;
-    }
     let prompt = super::agent::default_resume_prompt(&ctx, Some(&plan.harness));
     wt::prompt_to_file("relaunch", &plan.repo, &plan.branch, &prompt)
         .map(|p| p.to_string_lossy().into_owned())
 }
 
 
-/// Record a hard relaunch in the branch's compaction log as the restore it is: a fresh session,
-/// seeded from the handoff (`fresh-primed`) or not (`fresh`). Best-effort.
-fn log_fresh_start(cfg: &Config, plan: &RelaunchPlan, seeded: bool) {
-    use bn_core::compact::{Entry, Outcome, Phase};
-    let ctx = bn_core::resolver::Resolved {
-        repo: plan.repo.clone(),
-        branch: plan.branch.clone(),
-    };
-    let entry = Entry {
-        ts: bn_core::util::now_epoch_secs(),
-        phase: Phase::Restore,
-        session: None,
-        trigger: Some("relaunch".into()),
-        ctx_pct: None,
-        recap: false,
-        outcome: Some(if seeded {
-            Outcome::FreshPrimed
-        } else {
-            Outcome::Fresh
-        }),
-    };
-    bn_core::util::best_effort(bn_core::compact::append(cfg, &ctx, &entry), "relaunch: log");
-}
+
 
 /// `bn agent relaunch-repo <repo> [--hard] [--harness <h>]` — restart every agent in a repo.
 ///

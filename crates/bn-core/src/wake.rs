@@ -4,7 +4,7 @@
 //! target, so one transition can independently wake the human-facing watcher and an owning
 //! controller or orchestrator without either consumer racing the other.
 
-use crate::store::{self, FileLock};
+use crate::fs::{self, FileLock};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::io::ErrorKind;
@@ -125,7 +125,7 @@ impl WakeState {
     }
 
     fn save(&self, path: &Path) -> std::io::Result<()> {
-        store::save_json_atomic(path, self)
+        fs::save_json_atomic(path, self)
     }
 }
 
@@ -192,7 +192,7 @@ impl WakeQueue {
         if changed {
             state.generation = state.generation.wrapping_add(1);
             state.save(&self.queue_path)?;
-            store::write_atomic(&self.signal_path, state.generation.to_string().as_bytes())?;
+            fs::write_atomic(&self.signal_path, state.generation.to_string().as_bytes())?;
         }
         Ok(changed)
     }

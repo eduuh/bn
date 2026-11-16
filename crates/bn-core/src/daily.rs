@@ -11,10 +11,11 @@
 
 use crate::commands::CmdError;
 use crate::id::{next_id, next_id_from_ids};
-use crate::model::{GoalNote, Item};
+mod item;
+use crate::fs::StoreError;
 use crate::resolver::Config;
-use crate::store::StoreError;
 use crate::util;
+pub use item::{GoalNote, Item};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -229,7 +230,7 @@ fn to_text(daily: &Daily) -> Result<String, StoreError> {
 /// Read a day file, parsing the leading `---` frontmatter block into [`DailyFront`].
 pub fn read(path: &Path) -> Result<Daily, StoreError> {
     let text = std::fs::read_to_string(path)?;
-    let front: DailyFront = crate::store::parse_frontmatter(&text)?;
+    let front: DailyFront = crate::markdown::parse_frontmatter(&text)?;
     Ok(Daily { front })
 }
 
@@ -974,7 +975,7 @@ fn read_queue(cfg: &Config) -> Vec<ScheduledItem> {
     let Ok(text) = std::fs::read_to_string(&path) else {
         return vec![];
     };
-    crate::store::parse_frontmatter::<QueueFront>(&text)
+    crate::markdown::parse_frontmatter::<QueueFront>(&text)
         .map(|q| q.scheduled)
         .unwrap_or_default()
 }
@@ -1238,7 +1239,7 @@ pub fn read_ratings(cfg: &Config) -> Vec<DxiRating> {
     let Ok(text) = std::fs::read_to_string(&path) else {
         return vec![];
     };
-    crate::store::parse_frontmatter::<DxiFront>(&text)
+    crate::markdown::parse_frontmatter::<DxiFront>(&text)
         .map(|d| d.ratings)
         .unwrap_or_default()
 }

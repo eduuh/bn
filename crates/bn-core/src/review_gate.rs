@@ -278,7 +278,7 @@ impl Ledger {
 
     /// Atomically persist (temp sibling + rename), creating the parent on demand.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        crate::store::save_json_atomic(path, self)
+        crate::fs::save_json_atomic(path, self)
     }
 
     pub fn find(&self, repo: &str, number: i64) -> Option<&Entry> {
@@ -333,7 +333,7 @@ pub fn store_path() -> PathBuf {
 /// reviewer agent's `record` against the land step's read and a concurrent resolve/waive.
 fn mutate<R>(f: impl FnOnce(&mut Ledger) -> (bool, R)) -> std::io::Result<R> {
     let path = store_path();
-    let _lock = crate::store::FileLock::acquire(&path);
+    let _lock = crate::fs::FileLock::acquire(&path);
     let mut ledger = Ledger::load(&path);
     let (dirty, out) = f(&mut ledger);
     if dirty {

@@ -8,16 +8,10 @@ pub(crate) fn append_plan_gate_seed(
     wt_path: &Path,
     sid: &str,
     plan_path: &str,
-    note: &bn_core::model::Note,
     seed: &mut String,
 ) {
-    let has_gate = |prefix: &str| {
-        note.front
-            .decisions
-            .iter()
-            .any(|item| item.text.starts_with(prefix))
-    };
-    if !has_gate("gate: plan-review") {
+    let policy = bn_core::pipeline::execution::policy(&ctx.repo, &ctx.branch);
+    if !policy.plan_review {
         return;
     }
     let gate_seed = plan_gate_seed(
@@ -27,7 +21,7 @@ pub(crate) fn append_plan_gate_seed(
             repo: &ctx.repo,
             branch: &ctx.branch,
             sid,
-            verify: has_gate("gate: run `bn verify`"),
+            verify: policy.verify,
             reviewers: cfg.dispatch_plan_reviewers,
             quorum: cfg.dispatch_plan_review_quorum,
             plan_file: Some(plan_path),

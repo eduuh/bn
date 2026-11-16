@@ -8,10 +8,7 @@
 
 use crate::action_rank::{self, Rank};
 use crate::attention::{self, AttnItem};
-use crate::model::Note;
-use crate::render;
 use crate::resolver::Config;
-use crate::rollups::all_notes;
 use crate::util::idle_days_since;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -35,7 +32,7 @@ pub const DEFAULT_STALE_DAYS: i64 = 7;
 
 /// One local note wanting attention, with the reasons why.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct NoteFinding {
+pub struct WorkspaceFinding {
     pub repo: String,
     pub branch: String,
     pub path: String,
@@ -202,7 +199,7 @@ impl ShellInitProblem {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Finding {
-    Note(NoteFinding),
+    Workspace(WorkspaceFinding),
     Cron(CronFinding),
     Attn(AttnFinding),
     Todo(TodoFinding),
@@ -220,7 +217,7 @@ impl Finding {
         match self {
             Finding::Cron(_) => action_rank::URGENT,
             Finding::Attn(a) => action_rank::from_severity(&a.severity),
-            Finding::Note(n) => {
+            Finding::Workspace(n) => {
                 if n.blockers > 0 {
                     action_rank::BLOCKED
                 } else {
@@ -248,7 +245,7 @@ impl Finding {
     /// surface ahead of fresher ones; attn items keep their incoming (urgent-first) order.
     fn age(&self) -> i64 {
         match self {
-            Finding::Note(n) => n.idle_days,
+            Finding::Workspace(n) => n.idle_days,
             Finding::Cron(c) => c.failures as i64,
             // The longer the silence, the higher within the actively-broken band — in hours, so it
             // is comparable to the day/count units the other priority-3 rows sort by.
@@ -268,7 +265,7 @@ impl Finding {
     /// One-line label for the `--brief` hook line, naming the single most-pressing row.
     pub fn brief_label(&self) -> String {
         match self {
-            Finding::Note(n) => format!("{}/{} idle {}d", n.repo, n.branch, n.idle_days),
+            Finding::Workspace(n) => format!("{}/{} idle {}d", n.repo, n.branch, n.idle_days),
             Finding::Cron(c) => format!("cron {} failing", c.job),
             Finding::Attn(a) => a.title.clone(),
             Finding::Todo(t) if t.overdue => {
@@ -299,7 +296,7 @@ pub fn doctor(
     repo: Option<(&Path, &str)>,
 ) -> Vec<Finding> {
     let mut out = Vec::new();
-    out.extend(note_findings(cfg, today, stale_days));
+    out.extend(workspace_findings(cfg, today, stale_days));
     out.extend(cron_findings(cfg));
     out.extend(attn_findings(today));
     out.extend(inbox_findings(cfg, today));
@@ -366,54 +363,42 @@ pub(crate) fn compute_badge(today: &str) -> Badge {
     b
 }
 
-/// Notes surfacing only if they have unfinished work (open todos or blockers) *and* at least
-/// one flag fires (stale / no_goal / blockers). Public so the morning-planning `stale-branches`
-/// gatherer ([`crate::findings_gather`]) reuses this exact stale/blocked logic rather than
-/// reimplementing it; every returned `Finding` is a [`Finding::Note`].
-pub fn note_findings(cfg: &Config, today: &str, stale_days: i64) -> Vec<Finding> {
-    let mut out = Vec::new();
-    for bn in all_notes(cfg) {
-        let open_todos = bn
-            .note
-            .front
-            .todos
-            .iter()
-            .filter(|t| t.is_open_todo())
-            .count();
-        let blockers = bn.note.front.blockers.len();
-        if open_todos == 0 && blockers == 0 {
-            continue; // nothing unfinished — nothing to nag about
-        }
-
-        let last_activity = last_activity(&bn.note);
-        let idle_days = idle_days_since(&last_activity, today);
-
-        let mut flags = Vec::new();
-        if idle_days >= stale_days {
-            flags.push(format!("stale:{idle_days}d"));
-        }
-        if render::goal_text(&bn.note.body).is_none() {
-            flags.push("no_goal".to_string());
-        }
-        if blockers > 0 {
-            flags.push(format!("blockers:{blockers}"));
-        }
-        if flags.is_empty() {
-            continue;
-        }
-
-        out.push(Finding::Note(NoteFinding {
-            repo: bn.repo,
-            branch: bn.branch,
-            path: bn.path.display().to_string(),
-            flags,
-            open_todos,
-            blockers,
-            last_activity,
-            idle_days,
-        }));
-    }
-    out
+/// Stale or blocked task workspaces from the authoritative provider.
+pub fn workspace_findings(cfg: &Config, today: &str, stale_days: i64) -> Vec<Finding> {
+    crate::rollups::summary(cfg)
+        .into_iter()
+        .filter_map(|group| {
+            let task = crate::pipeline::gate::governing_task(cfg, &group.repo, &group.branch);
+            let last_activity = task
+                .as_ref()
+                .map(|task| task.modified())
+                .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
+                .map(|date| date.format("%Y-%m-%d").to_string())
+                .or_else(|| task.and_then(|task| task.created))
+                .unwrap_or_else(|| today.into());
+            let idle_days = idle_days_since(&last_activity, today);
+            let mut flags = Vec::new();
+            if idle_days >= stale_days {
+                flags.push(format!("stale:{idle_days}d"));
+            }
+            if !group.blockers.is_empty() {
+                flags.push(format!("blockers:{}", group.blockers.len()));
+            }
+            if flags.is_empty() {
+                return None;
+            }
+            Some(Finding::Workspace(WorkspaceFinding {
+                repo: group.repo,
+                branch: group.branch,
+                path: group.path,
+                flags,
+                open_todos: group.todos.len(),
+                blockers: group.blockers.len(),
+                last_activity,
+                idle_days,
+            }))
+        })
+        .collect()
 }
 
 /// The staff-staleness finding (#270). Flags the whole agent staff when it hasn't produced a card
@@ -702,35 +687,4 @@ fn attn_findings(today: &str) -> Vec<Finding> {
             })
         })
         .collect()
-}
-
-/// The most recent `YYYY-MM-DD` touched anywhere in the note: its creation date and every
-/// item's created/done_at across all sections. Date strings sort lexicographically, so the
-/// max is the latest. Falls back to the note's created date.
-pub(crate) fn last_activity(note: &Note) -> String {
-    let f = &note.front;
-    let sections = [
-        &f.todos,
-        &f.blockers,
-        &f.decisions,
-        &f.research,
-        &f.collab,
-        &f.ask,
-    ];
-    let mut latest = f.created.clone();
-    for section in sections {
-        for item in section {
-            consider(&mut latest, &item.created);
-            if let Some(done) = &item.done_at {
-                consider(&mut latest, done);
-            }
-        }
-    }
-    latest
-}
-
-fn consider(latest: &mut String, candidate: &str) {
-    if candidate > latest.as_str() {
-        *latest = candidate.to_string();
-    }
 }

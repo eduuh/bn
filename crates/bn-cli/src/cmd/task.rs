@@ -57,7 +57,7 @@ pub(crate) fn emit_task_claim(
             ),
         },
     };
-    match task_store(cfg).claim(id, &repo, &branch) {
+    match bn_core::task_store::claim(cfg, id, &repo, &branch) {
         Ok(true) => {}
         Ok(false) => fail_json(
             as_json,
@@ -360,7 +360,7 @@ pub(crate) fn emit_task_doc(cfg: &Config, id: &str, open: bool, as_json: bool) {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let already = task.meta(bn_core::task_doc::DOC_KEY) == Some(name.as_str());
-    if !already && !bn_core::task_doc::is_note_copy(&doc) {
+    if !already {
         task.set_meta(bn_core::task_doc::DOC_KEY, &name);
         store
             .save(&file)
@@ -575,7 +575,8 @@ pub(crate) fn emit_task_mutate(cfg: &Config, op: TaskOp, id: &str, as_json: bool
         TaskOp::Wip => file
             .tasks()
             .find(|t| t.id() == Some(id))
-            .and_then(|t| bn_core::task_doc::adopt_into_note(cfg, t).ok().flatten()),
+            .map(|task| bn_core::task_doc::ensure(cfg, task)
+                .unwrap_or_else(|error| fail(&format!("cannot preserve task context: {error}")))),
         _ => None,
     };
 
@@ -601,6 +602,7 @@ pub(crate) fn emit_task_ingest(
     cfg: &Config,
     source: &str,
     branch: Option<&str>,
+    repo: Option<&str>,
     replace: bool,
     as_json: bool,
 ) {
@@ -623,6 +625,17 @@ pub(crate) fn emit_task_ingest(
     let out = file
         .ingest(&items, source, default_branch, replace, &today())
         .unwrap_or_else(|e| fail(&format!("bn task ingest: {e}")));
+    let repo = repo.filter(|repo| *repo != ".")
+        .or(ctx.as_ref().map(|ctx| ctx.repo.as_str()));
+    if let Some(repo) = repo {
+        for id in &out.ids {
+            if let Some(task) = file.task_mut(id) {
+                if task.meta("repo").is_none() {
+                    task.set_meta("repo", &repo.to_lowercase());
+                }
+            }
+        }
+    }
     store
         .save(&file)
         .unwrap_or_else(|e| fail(&format!("bn task: {e}")));

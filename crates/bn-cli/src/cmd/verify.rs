@@ -398,7 +398,7 @@ pub(crate) fn emit_verify(cfg: &Config, args: VerifyCommandArgs, as_json: bool) 
             .map(|p| format!(" → proof {p}"))
             .unwrap_or_default()
     );
-    let _ = commands::append_body(cfg, &ctx, "progress", &bullet, &today());
+    let _ = bn_core::task_doc::append_context(cfg, &ctx, "Validation", &bullet);
 
     if as_json {
         // The command succeeded in *determining* the result; the gate outcome is `pass` (and the
@@ -407,9 +407,9 @@ pub(crate) fn emit_verify(cfg: &Config, args: VerifyCommandArgs, as_json: bool) 
             serde_json::json!({ "job": job_name, "pass": pass, "code": code, "proof": proof });
         println!("{}", Envelope::success("verify", data).to_json());
     } else if pass {
-        println!("verify {job_name}: PASS ✓ (recorded to note)");
+        println!("verify {job_name}: PASS ✓");
     } else {
-        println!("verify {job_name}: FAIL ✗ (recorded to note)");
+        println!("verify {job_name}: FAIL ✗");
     }
     std::process::exit(code);
 }

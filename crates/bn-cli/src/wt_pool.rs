@@ -173,9 +173,9 @@ fn read_leases(pool_dir: &Path) -> Leases {
 /// first. Every mutation now takes this lock first, so slot allocation is serialized per repo.
 /// [`bn_core::store::FileLock::acquire`] warns and proceeds unowned rather than blocking forever,
 /// which keeps a stuck lock from wedging the pool.
-fn lock_leases(pool_dir: &Path) -> bn_core::store::FileLock {
+fn lock_leases(pool_dir: &Path) -> bn_core::fs::FileLock {
     let _ = std::fs::create_dir_all(pool_dir);
-    bn_core::store::FileLock::acquire(&leases_path(pool_dir))
+    bn_core::fs::FileLock::acquire(&leases_path(pool_dir))
 }
 
 /// Write the lease file atomically (temp + rename) so a crash mid-write can't corrupt it.

@@ -155,51 +155,6 @@ pub(crate) fn open_url(url: &str) -> bool {
     false
 }
 
-/// `bn shot [--gif] [--fresh <secs>]` — move the freshest capture(s) into the branch note's
-/// folder and embed the markdown links. "Nothing fresh" exits 2 (a normal "capture first"
-/// outcome), other failures exit 1.
-pub(crate) fn emit_shot(cfg: &Config, ctx: &Resolved, gif: bool, fresh: u64, as_json: bool) {
-    let kind = if gif {
-        capture::Capture::Gif
-    } else {
-        capture::Capture::Screenshot
-    };
-    match capture::grab(cfg, ctx, kind, fresh, &today()) {
-        Ok(o) => {
-            if as_json {
-                let data = serde_json::json!({
-                    "kind": o.kind,
-                    "moved": o.moved,
-                    "heading": o.heading,
-                });
-                println!("{}", Envelope::success("shot", data).to_json());
-            } else {
-                println!("Grabbed {} {}(s):", o.moved.len(), o.kind);
-                for rel in &o.moved {
-                    println!("  {rel}");
-                }
-                println!("Embedded under {} in note.md", o.heading);
-            }
-        }
-        Err(e) => {
-            if as_json {
-                let code = match e {
-                    capture::GrabError::NothingFresh(..) => "nothing_fresh",
-                    capture::GrabError::Unconfigured(_) => "unconfigured",
-                    capture::GrabError::SourceMissing(_) => "source_missing",
-                    capture::GrabError::Io(_) => "io",
-                };
-                println!("{}", Envelope::failure("shot", code, e.message()).to_json());
-            } else {
-                eprintln!("{}", e.message());
-            }
-            std::process::exit(e.exit_code());
-        }
-    }
-}
-
-
-
 /// Where `bn diff` should look. `dir` is the worktree to run git in; `ctx` keys the note whose
 /// todos/blockers are shown beside the stat. They travel together because a `--path` into another
 /// worktree must move *both* — showing this branch's todos next to that branch's diff is the
@@ -288,22 +243,12 @@ pub(crate) fn emit_diff(
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
-    let note = bn_core::store::read(&cfg.note_file(ctx)).ok();
-    let todos: Vec<String> = note
-        .as_ref()
-        .map(|n| {
-            n.front
-                .todos
-                .iter()
-                .filter(|t| t.is_open_todo())
-                .map(|t| t.text.clone())
-                .collect()
-        })
-        .unwrap_or_default();
-    let blockers: Vec<String> = note
-        .as_ref()
-        .map(|n| n.front.blockers.iter().map(|b| b.text.clone()).collect())
-        .unwrap_or_default();
+    let summary = bn_core::rollups::summary(cfg).into_iter()
+        .find(|entry| entry.repo == ctx.repo && entry.branch == ctx.branch);
+    let todos: Vec<String> = summary.as_ref().map(|entry|
+        entry.todos.iter().map(|task| task.text.clone()).collect()).unwrap_or_default();
+    let blockers: Vec<String> = summary.as_ref().map(|entry|
+        entry.blockers.iter().map(|item| item.text.clone()).collect()).unwrap_or_default();
 
     if as_json {
         let env = bn_core::render::Envelope::success(

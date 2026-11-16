@@ -194,6 +194,34 @@ impl Sandbox {
         self.finish(cmd, "bn")
     }
 
+    /// Run a batch-input command under the same isolation contract as [`Sandbox::bn`].
+    pub fn bn_stdin<I, S>(&self, args: I, input: &str) -> Result<Run>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        use std::io::Write;
+        use std::process::Stdio;
+        let mut child = self
+            .command(&self.bn_bin)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("spawn bn with batch input")?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(input.as_bytes())?;
+        }
+        let out = child.wait_with_output()?;
+        Ok(Run {
+            label: "bn".into(),
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            code: out.status.code(),
+        })
+    }
+
     /// [`Sandbox::bn`] with the clock moved to `now` (epoch seconds) for this call only.
     ///
     /// The sandbox pins `BN_NOW` so output is deterministic, which also means time never passes:

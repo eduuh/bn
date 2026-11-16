@@ -10,7 +10,6 @@ mod checkin;
 mod dialog;
 mod instruct;
 mod kill;
-mod memory_hook;
 pub(crate) mod mesh;
 mod read;
 pub(crate) mod remote;
@@ -20,7 +19,6 @@ pub(crate) use checkin::*;
 pub(crate) use dialog::*;
 pub(crate) use instruct::*;
 pub(crate) use kill::*;
-pub(crate) use memory_hook::*;
 pub(crate) use read::*;
 pub(crate) use steer::*;
 pub(crate) use switch::*;
@@ -162,10 +160,7 @@ pub(crate) fn emit_agent_recover(
             repo: repo.clone(),
             branch: branch.clone(),
         };
-        let has_pr = bn_core::store::read(&cfg.note_file(&ctx))
-            .ok()
-            .map(|n| n.front.pr.is_some())
-            .unwrap_or(false);
+        let has_pr = commands::read_pr(cfg, &ctx).is_some();
         if has_pr {
             continue;
         }
@@ -264,17 +259,6 @@ pub(crate) fn emit_agent_done(
     let ctx = target_ctx(cfg, repo, branch)
         .unwrap_or_else(|| fail("bn agent done: not in a git repo — pass --repo/--branch"));
     let summary = summary.unwrap_or_default();
-    // Report-only: mark the note so `bn promote` won't try to ship a non-code finding.
-    if report_only {
-        let _ = commands::add(
-            cfg,
-            &ctx,
-            "decision",
-            "finding: report-only (a recommendation — no code change to ship)",
-            Some("finding: report-only"),
-            &today(),
-        );
-    }
     let outcome = if failed { "failed" } else { "done" };
     let title = if summary.is_empty() {
         format!("{outcome}: {}/{}", ctx.repo, ctx.branch)
@@ -317,19 +301,6 @@ pub(crate) fn emit_agent_done(
         .unwrap_or(false);
     }
 
-    // Record in the note (durable) + badge the window done (Plane A) + optional toast (the wake).
-    let progress = if let Some(p) = &pr {
-        format!(
-            "{} — agent {outcome}: {summary} (PR {p})",
-            bn_core::util::now_stamp()
-        )
-    } else {
-        format!(
-            "{} — agent {outcome}: {summary}",
-            bn_core::util::now_stamp()
-        )
-    };
-    let _ = commands::append_body(cfg, &ctx, "progress", &progress, &today());
     // Fill the structured `front.pr` field on the path everyone runs (mirror `agent_recover`):
     // otherwise the PR only lands in the Progress prose + attention item and `bn pr` never gets
     // called, leaving `front.pr` empty ~half the time (issue #648, root cause 2).
@@ -421,11 +392,9 @@ pub(crate) fn resolve_agent_session(
 ) -> Option<(std::path::PathBuf, String, String)> {
     let (repo, branch) = target.split_once(':')?;
     let (mut repo, mut branch) = (repo.to_string(), branch.to_string());
-    let direct = Resolved {
-        repo: repo.clone(),
-        branch: branch.clone(),
-    };
-    if !cfg.note_file(&direct).exists() {
+    if recorded_session(cfg, &repo, &branch).is_none()
+        && bn_core::lifecycle::worktree_path(cfg, &repo, &branch).is_none()
+    {
         let tmux_target = crate::proc::exact_target(target);
         let metadata = proc::tmux(&[
             "display-message",
@@ -562,17 +531,13 @@ pub(crate) fn agent_worktree(cfg: &Config, repo: &str, branch: &str) -> Option<s
 
 /// The branch note's recorded `agent-session: <harness> <id>` (latest wins) — the resume channel's
 /// only input, shared by [`resolve_agent_session`] and the window join.
-pub(crate) fn recorded_session(cfg: &Config, repo: &str, branch: &str) -> Option<(String, String)> {
-    let ctx = Resolved {
-        repo: repo.to_string(),
-        branch: branch.to_string(),
-    };
-    let note = bn_core::store::read(&cfg.note_file(&ctx)).ok()?;
-    note.front.collab.iter().rev().find_map(|it| {
-        let rest = it.text.trim().strip_prefix("agent-session:")?;
-        let mut w = rest.split_whitespace();
-        Some((w.next()?.to_string(), w.next()?.to_string()))
-    })
+pub(crate) fn recorded_session(_cfg: &Config, repo: &str, branch: &str) -> Option<(String, String)> {
+    bn_core::cost::launch_records().into_iter().rev()
+        .find(|record| record.repo.eq_ignore_ascii_case(repo)
+            && record.branch.eq_ignore_ascii_case(branch)
+            && !record.harness.is_empty()
+            && !record.session_id.is_empty())
+        .map(|record| (record.harness, record.session_id))
 }
 
 /// A `repo:branch` target as the exact tmux target that actually hosts it.
@@ -732,144 +697,11 @@ pub(crate) fn resolve_agent_transport(cfg: &Config, target: &str) -> Box<dyn bn_
     }
     Box::new(bn_core::agent::TmuxTransport::new(&resolve_tmux_target(cfg, target)))
 }
-/// `bn agent digest` — reconcile the branch's recorded agent sessions into proposed note lines.
-/// Reads the note + sessions (read-only), then: `--json` emits the digest and writes nothing;
-/// otherwise prints each proposed line and applies it on confirmation (or with `--yes`). Silent,
-/// zero-exit when every recorded session is already reflected in the note. Mirrors `emit_sync`.
-pub(crate) fn emit_agent_digest(cfg: &Config, ctx: &Resolved, yes: bool, as_json: bool) {
-    use bn_core::agent::DigestKind;
 
-    let note = match bn_core::store::read(&cfg.note_file(ctx)) {
-        Ok(n) => n,
-        Err(_) => {
-            if as_json {
-                println!(
-                    "{}",
-                    Envelope::failure("agent_digest", "no_note", "No note for this branch")
-                        .to_json()
-                );
-            } else {
-                fail("bn agent digest: no note for this branch");
-            }
-            return;
-        }
-    };
 
-    let digest = bn_core::agent::digest(cfg, &note, &ctx.repo, &ctx.branch);
 
-    if as_json {
-        // --json is the agent's read-only path: emit the proposals, write nothing.
-        println!(
-            "{}",
-            Envelope::success("agent_digest", payload::agent_digest_data(&digest)).to_json()
-        );
-        return;
-    }
 
-    if digest.is_empty() {
-        return; // note already reflects every session — silent, clean exit
-    }
 
-    let mut applied = 0usize;
-    for p in &digest.proposals {
-        let prompt = format!(
-            "[{}] {} ({}, {}m, {})",
-            p.kind.section(),
-            p.text,
-            p.harness,
-            p.duration_mins,
-            p.date
-        );
-        if !confirm_apply(yes, &prompt) {
-            continue;
-        }
-        let res = match p.kind {
-            DigestKind::Progress => {
-                commands::append_body(cfg, ctx, "progress", &p.text, &today()).map(|_| ())
-            }
-            // Decision/todo go to their structured section; `if_absent` keeps re-runs idempotent.
-            _ => commands::add(cfg, ctx, p.kind.section(), &p.text, Some(&p.text), &today())
-                .map(|_| ()),
-        };
-        match res {
-            Ok(_) => {
-                println!("  ✓ {}", p.kind.section());
-                applied += 1;
-            }
-            Err(e) => eprintln!("  ✗ {}: {}", p.kind.section(), e.message()),
-        }
-    }
-
-    if applied > 0 {
-        sync_tmux(cfg, ctx);
-    } else {
-        println!("Nothing applied.");
-    }
-}
-
-/// `bn handoff write` — compose the packet from the note + author layers, persist it, and print
-/// the orientation (or the JSON envelope).
-pub(crate) fn emit_handoff_write(
-    cfg: &Config,
-    ctx: &Resolved,
-    input: &bn_core::handoff::HandoffInput,
-    as_json: bool,
-) {
-    match bn_core::handoff::write(cfg, ctx, &today(), input) {
-        Ok(h) => {
-            if as_json {
-                println!(
-                    "{}",
-                    Envelope::success("handoff", payload::handoff_data(&h)).to_json()
-                );
-            } else {
-                print!("{}", bn_core::handoff::render_orientation(&h));
-            }
-        }
-        Err(e) => {
-            if as_json {
-                println!(
-                    "{}",
-                    Envelope::failure("handoff", "no_note", format!("bn handoff: {e}")).to_json()
-                );
-            } else {
-                fail(&format!("bn handoff: {e}"));
-            }
-        }
-    }
-}
-
-/// `bn handoff read` — print the session-start orientation from the stored packet, composing one
-/// from the note when none has been written yet (so a fresh branch still orients).
-pub(crate) fn emit_handoff_read(cfg: &Config, ctx: &Resolved, as_json: bool) {
-    let handoff = bn_core::handoff::read(cfg, ctx).or_else(|| {
-        bn_core::store::read(&cfg.note_file(ctx))
-            .ok()
-            .map(|note| bn_core::handoff::compose(&note, &today(), &Default::default()))
-    });
-    match handoff {
-        Some(h) => {
-            if as_json {
-                println!(
-                    "{}",
-                    Envelope::success("handoff", payload::handoff_data(&h)).to_json()
-                );
-            } else {
-                print!("{}", bn_core::handoff::render_orientation(&h));
-            }
-        }
-        None => {
-            if as_json {
-                println!(
-                    "{}",
-                    Envelope::failure("handoff", "no_note", "No note for this branch").to_json()
-                );
-            } else {
-                fail("bn handoff: no note for this branch");
-            }
-        }
-    }
-}
 
 // --- bn agent launch (ports workflow/bin/agent) ----------------------------
 
@@ -998,16 +830,8 @@ pub(crate) struct LaunchedSession<'a> {
 /// drift from the two readers; one cannot. Callers must pass an id the harness will actually run
 /// under (see [`effective_session_id`]) — recording an id that was never pinned puts a lie in the
 /// note that `bn agent send` would later try to resume.
-pub(crate) fn record_launched_session(cfg: &Config, s: LaunchedSession<'_>) {
-    let line = format!("agent-session: {} {}", s.harness, s.session_id);
-    // Idempotent on the exact line: `bn dispatch --attach` records, then execs a launcher that
-    // reaches this same writer, and one session should leave one record.
-    let _ = commands::add(cfg, s.ctx, "collab", &line, Some(&line), &today());
-    if let Some(host) = s.host {
-        let line = format!("agent-host: {host}");
-        let _ = commands::add(cfg, s.ctx, "collab", &line, Some(&line), &today());
-    }
-    bn_core::cost::attribute_session(bn_core::cost::SessionLaunch {
+pub(crate) fn record_launched_session(_cfg: &Config, s: LaunchedSession<'_>) {
+    bn_core::cost::attribute_session_on_host(bn_core::cost::SessionLaunch {
         session_id: s.session_id,
         work_class: s.work_class,
         repo: &s.ctx.repo,
@@ -1016,7 +840,7 @@ pub(crate) fn record_launched_session(cfg: &Config, s: LaunchedSession<'_>) {
         harness: Some(s.harness),
         worktree: Some(s.worktree),
         controller_id: s.controller_id,
-    });
+    }, s.host);
 }
 
 /// Whether `host` is safe to hand to ssh as a destination: an ssh-config alias or a plain
@@ -1028,17 +852,12 @@ pub(crate) fn safe_ssh_host(host: &str) -> bool {
         && host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '@'))
 }
 
-fn recorded_host(cfg: &Config, repo: &str, branch: &str) -> Option<String> {
-    let ctx = Resolved {
-        repo: repo.to_string(),
-        branch: branch.to_string(),
-    };
-    let note = bn_core::store::read(&cfg.note_file(&ctx)).ok()?;
-    note.front.collab.iter().rev().find_map(|it| {
-        let rest = it.text.trim().strip_prefix("agent-host:")?;
-        let host = rest.trim();
-        safe_ssh_host(host).then(|| host.to_string())
-    })
+fn recorded_host(_cfg: &Config, repo: &str, branch: &str) -> Option<String> {
+    bn_core::cost::launch_records().into_iter().rev()
+        .find(|record| record.repo.eq_ignore_ascii_case(repo)
+            && record.branch.eq_ignore_ascii_case(branch))
+        .and_then(|record| record.host)
+        .filter(|host| safe_ssh_host(host))
 }
 
 /// Whether the user's own harness arguments already decide which session this launch runs in.
@@ -1490,10 +1309,16 @@ pub(crate) fn emit_agent_launch(
             launch.push("--".to_string());
             launch.extend(passthrough);
         }
+        let sid = session.clone().unwrap_or_else(gen_uuid);
+        if session.is_none() {
+            launch.extend(["--session".to_string(), sid.clone()]);
+        }
         remote::start(cfg, host, &ctx.repo, &ctx.branch, &launch);
-        // Steering (`bn agent send/msg`) finds the agent through this line.
-        let line = format!("agent-host: {host}");
-        let _ = commands::add(cfg, &ctx, "collab", &line, Some(&line), &today());
+        record_launched_session(cfg, LaunchedSession {
+            ctx: &ctx, harness: harness.bin(), session_id: &sid, worktree: &cwd,
+            host: Some(host), work_class: bn_core::cost::WorkClass::Coding,
+            task_name: None, controller_id: None,
+        });
         remote::attach(host, &ctx.repo, &ctx.branch)
     }
 

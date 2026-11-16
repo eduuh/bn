@@ -727,13 +727,14 @@ fn record_approved_plan_to_note(review: &Review) -> bool {
     let Some(ctx) = target_ctx(&cfg, Some(review.repo.clone()), Some(review.branch.clone())) else {
         return false;
     };
-    let today = bn_core::util::today();
-    match bn_core::commands::record_plan(&cfg, &ctx, &review.plan, &today) {
+    let path = cfg.active_plan_file(&ctx);
+    match bn_core::plan::ensure_dirs(&cfg, &ctx).map_err(|error| error.to_string())
+        .and_then(|()| bn_core::fs::write_atomic(&path, review.plan.as_bytes()).map_err(|error| error.to_string())) {
         Ok(()) => true,
         Err(e) => {
             eprintln!(
                 "bn review: approved, but couldn't save the plan into the note: {}",
-                e.message()
+                e
             );
             false
         }

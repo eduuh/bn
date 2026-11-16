@@ -113,7 +113,7 @@ pub fn template(scope: &Scope, name: &str) -> String {
 /// with `---` summarizes as its heading rather than as a fence or a stray field. Empty when the
 /// file has no readable content.
 fn summarize(body: &str) -> String {
-    let body = crate::store::split_frontmatter(body).map_or(body, |(_, rest)| rest);
+    let body = crate::markdown::split_frontmatter(body).map_or(body, |(_, rest)| rest);
     // Prefer a heading; fall back to the first non-empty line.
     for line in body.lines() {
         let t = line.trim();
@@ -444,7 +444,7 @@ pub fn append(
 /// with no frontmatter (a hand-written one, or a global standards doc) is returned unchanged —
 /// this stamps what is already there rather than imposing a schema.
 fn stamp_updated(doc: &str) -> String {
-    let Some((front, _)) = crate::store::split_frontmatter(doc) else {
+    let Some((front, _)) = crate::markdown::split_frontmatter(doc) else {
         return doc.to_string();
     };
     if !front

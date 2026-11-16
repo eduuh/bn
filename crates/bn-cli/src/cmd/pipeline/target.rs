@@ -20,16 +20,7 @@ pub(super) fn resolve_target(
     }
 }
 
-pub(super) fn current_stage(cfg: &Config, ctx: &Resolved) -> (Stage, bool) {
-    let note = bn_core::store::read(&cfg.note_file(ctx)).unwrap_or_else(|error| {
-        fail(&format!(
-            "bn pipeline: cannot read note for {}/{}: {error}",
-            ctx.repo, ctx.branch
-        ))
-    });
-    let recorded = note.front.stage.is_some() || stage::current(&ctx.repo, &ctx.branch).is_some();
-    (
-        stage::current_for_note(&note).unwrap_or(Stage::DEFAULT),
-        recorded,
-    )
+pub(super) fn current_stage(_cfg: &Config, ctx: &Resolved) -> (Stage, bool) {
+    let stage = stage::current(&ctx.repo, &ctx.branch);
+    (stage.unwrap_or(Stage::DEFAULT), stage.is_some())
 }

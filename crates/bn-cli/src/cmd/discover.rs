@@ -25,40 +25,19 @@ pub(crate) fn emit_discover(cfg: &Config, task: &[String], json: bool) {
 fn discover(cfg: &Config, cwd: &Path, task: &str) -> Result<Value, String> {
     let context = match resolver::resolve(cfg, cwd) {
         Ok(ctx) => {
-            let note = match bn_core::store::read(&cfg.note_file(&ctx)) {
-                Ok(note) => Some(note),
-                Err(bn_core::store::StoreError::Io(e))
-                    if e.kind() == std::io::ErrorKind::NotFound =>
-                {
-                    None
-                }
-                Err(e) => return Err(format!("cannot read branch note: {e}")),
-            };
-            let mut context = payload::context_data(
-                note.as_ref(),
-                &ctx,
-                bn_core::handoff::read(cfg, &ctx).is_some(),
-            );
-            // Reuse the orientation snapshot, not its MCP-specific next-step help.
-            context.as_object_mut().unwrap().remove("help");
-            for field in ["todos", "blockers"] {
-                let items = context[field].as_array_mut().unwrap();
-                let truncated = items.len() > LIMIT;
-                items.truncate(LIMIT);
-                for item in items {
-                    item["text"] = json!(compact(item["text"].as_str().unwrap_or_default()));
-                }
-                context[format!("{field}_truncated")] = json!(
-                    truncated
-                        || context[format!("{field}_truncated")]
-                            .as_bool()
-                            .unwrap_or(false)
-                );
-            }
-            if let Some(goal) = context["goal"].as_str() {
-                context["goal"] = json!(compact(goal));
-            }
-            context
+            let tasks = bn_core::task_store::task_store(cfg).load()
+                .map_err(|error| format!("cannot read configured task provider: {error}"))?;
+            let task = bn_core::pipeline::gate::governing_in(&tasks, &ctx.repo, &ctx.branch);
+            let doc = task.and_then(|task| bn_core::task_doc::read(cfg, task));
+            json!({
+                "repo": ctx.repo,
+                "branch": ctx.branch,
+                "task_id": task.and_then(|task| task.id()),
+                "goal": task.map(|task| compact(&task.summary())),
+                "doc": doc.map(|doc| doc.path),
+                "stage": bn_core::pipeline::stage::current(&ctx.repo, &ctx.branch),
+                "plan": bn_core::plan::status(cfg, &ctx).map_err(|error| error.to_string())?,
+            })
         }
         Err(_) => Value::Null,
     };
@@ -106,14 +85,13 @@ fn discover(cfg: &Config, cwd: &Path, task: &str) -> Result<Value, String> {
         .collect::<Result<Vec<_>, String>>()?;
     let mut commands = Vec::new();
     if !context.is_null() {
-        commands.push(if context["goal"].is_null() {
-            hints::bn(&["goal", "<goal>"])?
+        if let Some(id) = context["task_id"].as_str() {
+            commands.push(hints::bn(&["task", "doc", id])?);
         } else {
-            hints::bn(&["--cat"])?
-        });
-        if context["handoff_available"] == true {
-            commands.push(hints::bn(&["handoff", "read"])?);
+            commands.push(hints::bn(&["task", "list"])?);
         }
+        commands.push(hints::bn(&["plan", "status"])?);
+        commands.push(hints::bn(&["pipeline", "status"])?);
     }
     if task.is_empty() {
         commands.push(hints::bn(&["discover", "<task>"])?);
@@ -165,34 +143,10 @@ fn render(data: &Value) -> String {
             "{}/{}: {}",
             ctx["repo"].as_str().unwrap_or_default(),
             ctx["branch"].as_str().unwrap_or_default(),
-            ctx["goal"].as_str().unwrap_or("no goal"),
+            ctx["goal"].as_str().unwrap_or("no governing task"),
         );
-        let _ = writeln!(
-            out,
-            "  {} open todos, {} blockers{}",
-            ctx["counts"]["open_todos"],
-            ctx["counts"]["blockers"],
-            if ctx["note_exists"] == false {
-                "; no note"
-            } else {
-                ""
-            },
-        );
-        for field in ["todos", "blockers"] {
-            for item in ctx[field].as_array().unwrap() {
-                let _ = writeln!(
-                    out,
-                    "  {} {}: {}",
-                    field,
-                    item["id"].as_str().unwrap_or_default(),
-                    item["text"].as_str().unwrap_or_default(),
-                );
-            }
-        }
-        for field in ["pr", "work_item"] {
-            if let Some(value) = ctx[field].as_str() {
-                let _ = writeln!(out, "  {field}: {value}");
-            }
+        if let Some(path) = ctx["doc"].as_str() {
+            let _ = writeln!(out, "  task context: {path}");
         }
     }
     if data["task"].as_str().unwrap_or_default().is_empty() {

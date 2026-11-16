@@ -88,7 +88,7 @@ pub(crate) fn cmd_merge(cfg: &Config, flags: MergeFlags) -> bool {
                     cprintln!("{color}{}{NC}", gate_summary(&r));
                     let bullet =
                         format!("{} — {} (pre-merge)", bn_core::util::now_stamp(), gate_summary(&r));
-                    let _ = bn_core::commands::append_body(cfg, &ctx, "progress", &bullet, &today());
+                    let _ = bn_core::task_doc::append_context(cfg, &ctx, "Validation", &bullet);
                     if !r.pass {
                         ceprintln!(
                             "{RED}Refusing to merge {slug}/{branch} — gate failed. Fix and re-push, \

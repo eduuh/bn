@@ -424,20 +424,13 @@ fn note_panel(cfg: &Config, repo: &str, branch: &str) {
         repo: repo.to_lowercase(),
         branch: branch.to_string(),
     };
-    let Ok(note) = bn_core::store::read(&cfg.note_file(&ctx)) else {
+    let Some(entry) = bn_core::rollups::summary(cfg)
+        .into_iter()
+        .find(|entry| entry.repo == ctx.repo && entry.branch == ctx.branch)
+    else {
         return;
     };
-    if let Some(goal) = bn_core::render::goal_text(&note.body) {
-        if !goal.trim().is_empty() {
-            println!("Goal: {}\n", goal.trim());
-        }
-    }
-    let open: Vec<&bn_core::model::Item> = note
-        .front
-        .todos
-        .iter()
-        .filter(|t| t.done != Some(true))
-        .collect();
+    let open = &entry.todos;
     if !open.is_empty() {
         println!("Todo ({}):", open.len());
         for t in open.iter().take(5) {
@@ -448,12 +441,7 @@ fn note_panel(cfg: &Config, repo: &str, branch: &str) {
         }
         println!();
     }
-    let blockers: Vec<&bn_core::model::Item> = note
-        .front
-        .blockers
-        .iter()
-        .filter(|b| b.done != Some(true))
-        .collect();
+    let blockers = &entry.blockers;
     if !blockers.is_empty() {
         println!("\x1b[1;31mBlocked:\x1b[0m");
         for b in blockers.iter().take(3) {

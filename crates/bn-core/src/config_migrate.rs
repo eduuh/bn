@@ -422,7 +422,7 @@ fn write_layer(path: &Path, header: &str, table: &toml::Table) -> std::io::Resul
         std::fs::create_dir_all(parent)?;
     }
     let body = toml::to_string_pretty(table).map_err(std::io::Error::other)?;
-    crate::store::write_atomic(path, format!("{header}{body}").as_bytes())
+    crate::fs::write_atomic(path, format!("{header}{body}").as_bytes())
 }
 
 /// Machines from before the `~/.bn` layout kept everything in a real `~/.config/bn` directory.

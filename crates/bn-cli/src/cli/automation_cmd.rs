@@ -98,14 +98,7 @@ pub(crate) enum CmdAutomation {
         #[command(subcommand)]
         action: CsCmd,
     },
-    /// commits since the note was last touched, `bn done` for todos a commit closed, and (on a
-    /// MERGED PR) `bn close` + `wt cleanup`. Interactive confirm by default; nothing is written
-    /// without confirm or `--yes`. Silent when already in sync.
-    Sync {
-        /// Apply every proposal without prompting.
-        #[arg(long)]
-        yes: bool,
-    },
+
     /// Attention items: hand-, script-, or agent-raised entries on the attention list.
     /// Bare `bn attn` lists the open set; they also fold into `bn doctor`. Resolve with `ack`
     /// (done), `remove` (cancelled), or `plan` (promote to a todo); edit with `update`.

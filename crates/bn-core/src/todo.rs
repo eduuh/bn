@@ -1001,11 +1001,11 @@ fn ingest_priority(priority: Option<&str>, severity: Option<&str>) -> Result<Opt
 /// rewrite from clobbering an append; the CLI serializes each read-modify-write under [`lock`].
 pub fn save(path: &Path, file: &TodoFile) -> std::io::Result<()> {
     let rendered = file.render();
-    // A pid+seq-unique temp ([`crate::store::atomic_temp_path`]), not the fixed `.tasks.txt.tmp`
+    // A pid+seq-unique temp ([`crate::fs::atomic_temp_path`]), not the fixed `.tasks.txt.tmp`
     // this used to write: the task store is a single machine-wide file, so two `bn` processes
     // saving it at once shared one scratch path and could rename each other's partial bytes into
     // place. Every other atomic write in bn already uses this helper.
-    let tmp = crate::store::atomic_temp_path(path);
+    let tmp = crate::fs::atomic_temp_path(path);
     std::fs::write(&tmp, rendered)?;
     if let Err(e) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);

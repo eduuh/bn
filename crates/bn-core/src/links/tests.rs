@@ -148,7 +148,7 @@ fn the_store_survives_a_round_trip_through_yaml() {
         "---\n{}---\n\n# Links\n",
         serde_yaml::to_string(&front).unwrap()
     );
-    let back = crate::store::parse_frontmatter::<LinksFront>(&text).unwrap();
+    let back = crate::markdown::parse_frontmatter::<LinksFront>(&text).unwrap();
     assert_eq!(back.items, items);
 }
 

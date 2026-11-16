@@ -158,7 +158,7 @@ pub fn try_acquire(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let _lock = crate::store::FileLock::acquire_required(&path)?;
+    let _lock = crate::fs::FileLock::acquire_required(&path)?;
     let mut held = prune(read_pool(&path).held, now, alive);
     if held.len() >= cap {
         return Ok(Admission::Full(held));
@@ -202,7 +202,7 @@ pub fn pid_alive(_pid: u32) -> bool {
 /// twice or released by someone who never held it.
 fn release(id: &str) -> std::io::Result<()> {
     let path = pool_path();
-    let _lock = crate::store::FileLock::acquire_required(&path)?;
+    let _lock = crate::fs::FileLock::acquire_required(&path)?;
     let mut pool = read_pool(&path);
     pool.held.retain(|h| h.id != id);
     write_pool(&path, &pool)
@@ -221,7 +221,7 @@ fn read_pool(path: &std::path::Path) -> Pool {
 
 fn write_pool(path: &std::path::Path, pool: &Pool) -> std::io::Result<()> {
     let json = serde_json::to_string_pretty(pool).map_err(std::io::Error::other)?;
-    crate::store::write_atomic(path, json.as_bytes())
+    crate::fs::write_atomic(path, json.as_bytes())
 }
 
 /// A ticket id unique within this machine: pid, the second, and a per-process counter so one

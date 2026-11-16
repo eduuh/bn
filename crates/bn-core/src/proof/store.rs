@@ -1,9 +1,9 @@
-//! Reading and writing `<note_dir>/proof/`.
+//! Reading and writing `<artifact_dir>/proof/`.
 
 use super::model::{Judgement, NewProof, Proof, Verdict};
 use super::{parse_pid, pid};
+use crate::fs::{self, FileLock};
 use crate::resolver::{Config, Resolved};
-use crate::store::{self, FileLock};
 use std::fmt;
 use std::io::Write;
 use std::path::PathBuf;
@@ -40,9 +40,9 @@ impl From<std::io::Error> for ProofError {
 
 type Result<T> = std::result::Result<T, ProofError>;
 
-/// `<note_dir>/proof`.
+/// `<artifact_dir>/proof`.
 pub fn dir(cfg: &Config, ctx: &Resolved) -> PathBuf {
-    cfg.note_dir(ctx).join("proof")
+    cfg.artifact_dir(ctx).join("proof")
 }
 
 /// Everything in `proof/`: the registered proofs (by id), and any file nobody registered.
@@ -62,7 +62,7 @@ impl Listing {
 }
 
 fn parse_proof(file: &str, text: &str) -> Option<Proof> {
-    let (front, body) = store::split_frontmatter(text)?;
+    let (front, body) = crate::markdown::split_frontmatter(text)?;
     let mut p: Proof = serde_yaml::from_str(front).ok()?;
     p.body = body.trim().to_string();
     p.file = file.to_string();
@@ -129,14 +129,13 @@ fn check_criteria(cfg: &Config, ctx: &Resolved, ids: &[String]) -> Result<()> {
     if ids.is_empty() {
         return Ok(());
     }
-    let note = store::read(&cfg.note_file(ctx))
-        .map_err(|_| ProofError::Invalid("no branch note to attach proof to".into()))?;
-    let known: Vec<&str> = note.front.done_when.iter().map(|w| w.id.as_str()).collect();
+    let criteria = super::gate::criteria(cfg, ctx);
+    let known: Vec<&str> = criteria.iter().map(|w| w.id.as_str()).collect();
     match ids.iter().find(|id| !known.contains(&id.as_str())) {
         Some(bad) => Err(ProofError::Invalid(format!(
             "{bad} is not a done-when criterion on this branch (have: {})",
             if known.is_empty() {
-                "none — add one with `bn add done-when …`".to_string()
+                "none — edit the task's ## Done When checklist with workspan task doc".to_string()
             } else {
                 known.join(", ")
             }
@@ -167,7 +166,7 @@ fn slug(title: &str) -> String {
 fn write_proof(cfg: &Config, ctx: &Resolved, p: &Proof) -> Result<()> {
     let front = serde_yaml::to_string(p).map_err(|e| ProofError::Invalid(e.to_string()))?;
     let text = format!("---\n{front}---\n\n{}\n", p.body.trim());
-    store::write_atomic(&dir(cfg, ctx).join(&p.file), text.as_bytes())?;
+    fs::write_atomic(&dir(cfg, ctx).join(&p.file), text.as_bytes())?;
     Ok(())
 }
 
@@ -176,7 +175,7 @@ fn refresh_summary(cfg: &Config, ctx: &Resolved) {
     let (verdicts, _) = verdicts(cfg, ctx);
     let md = super::render_proof_md(&ctx.repo, &ctx.branch, &listing, &verdicts);
     crate::util::best_effort(
-        store::write_atomic(&cfg.note_dir(ctx).join("PROOF.md"), md.as_bytes()),
+        fs::write_atomic(&cfg.artifact_dir(ctx).join("PROOF.md"), md.as_bytes()),
         "proof: refresh PROOF.md",
     );
 }
@@ -209,7 +208,7 @@ pub fn add(cfg: &Config, ctx: &Resolved, new: &NewProof, now: &str) -> Result<Pr
         }
         (None, Some((data, ext))) => {
             let name = format!("{stem}-file.{ext}");
-            store::write_atomic(&d.join(&name), data)?;
+            fs::write_atomic(&d.join(&name), data)?;
             bytes = Some(data.len() as u64);
             Some(name)
         }

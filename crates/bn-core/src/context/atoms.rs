@@ -19,10 +19,6 @@ pub enum Atom {
     Goal,
     /// Done-when readiness.
     Proof,
-    /// `RECAP.md`.
-    Recap,
-    /// The handoff orientation.
-    Handoff,
     /// One reference, or one section of it: `name`, `name#section`, `global:name#section`.
     Ref {
         #[serde(rename = "ref")]
@@ -47,8 +43,6 @@ impl Atom {
             "directives" => Atom::Directives,
             "goal" => Atom::Goal,
             "proof" => Atom::Proof,
-            "recap" => Atom::Recap,
-            "handoff" => Atom::Handoff,
             _ => return None,
         })
     }
@@ -71,17 +65,9 @@ pub fn render_atom(atom: &Atom, i: &AtomInputs<'_>) -> Result<Option<String>, St
         Atom::GlobalRefs => global_refs(i.global_refs),
         Atom::RefIndex => ref_index(&i.ctx.repo),
         Atom::Directives => directives(i.cfg, i.ctx),
-        Atom::Goal => crate::store::read(&i.cfg.note_file(i.ctx))
-            .ok()
-            .and_then(|n| crate::render::goal_text(&n.body))
-            .map(|g| format!("\n\nGoal for this branch: {g}\n")),
+        Atom::Goal => crate::pipeline::gate::governing_task(i.cfg, &i.ctx.repo, &i.ctx.branch)
+            .map(|task| format!("\n\nTask: {}\n", task.summary())),
         Atom::Proof => proof(i.cfg, i.ctx),
-        Atom::Recap => std::fs::read_to_string(crate::compact::recap_path(i.cfg, i.ctx))
-            .ok()
-            .filter(|t| !t.trim().is_empty())
-            .map(|t| format!("\n\n{}\n", t.trim_end())),
-        Atom::Handoff => crate::handoff::read(i.cfg, i.ctx)
-            .map(|h| format!("\n\n{}", crate::handoff::render_orientation(&h))),
         Atom::Ref { r } => Some(reference(&i.ctx.repo, r)?),
         Atom::Skill { name } => {
             let root = i.root.ok_or("a skill atom needs a repo checkout")?;
@@ -147,30 +133,6 @@ pub fn ref_index(repo: &str) -> Option<String> {
     ))
 }
 
-/// The branch note's standing directives.
-pub fn directives(cfg: &Config, ctx: &Resolved) -> Option<String> {
-    let note = crate::store::read(&cfg.note_file(ctx)).ok()?;
-    let items: Vec<String> = note
-        .front
-        .directives
-        .iter()
-        .map(|d| d.text.clone())
-        .collect();
-    if items.is_empty() {
-        return None;
-    }
-    let list = items
-        .iter()
-        .map(|d| format!("\n- {d}"))
-        .collect::<Vec<_>>()
-        .join("");
-    Some(format!(
-        "\n\nSTANDING INSTRUCTIONS for this branch — follow these for everything you do here. They \
-         were recorded with `bn agent instruct` and live in this branch's note under \
-         `## Directives`, so they apply to every session on this branch, not just this one:{list}\n"
-    ))
-}
-
 fn proof(cfg: &Config, ctx: &Resolved) -> Option<String> {
     let (r, _) = crate::proof::readiness_now(cfg, ctx, None);
     if r.items.is_empty() {
@@ -228,4 +190,12 @@ fn file(root: Option<&Path>, spec: &str) -> Result<String, String> {
         None => body,
     };
     Ok(format!("\n\n{}\n", text.trim_end()))
+}
+
+/// Standing task instructions, independent of captured session history.
+pub fn directives(cfg: &Config, ctx: &Resolved) -> Option<String> {
+    let task = crate::pipeline::gate::governing_task(cfg, &ctx.repo, &ctx.branch)?;
+    crate::task_doc::read(cfg, &task)?
+        .section("Directives")
+        .map(|text| format!("\n\nTask instructions:\n{text}\n"))
 }

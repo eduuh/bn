@@ -24,12 +24,8 @@
 //! where the worst case is an agent picking its own workflow: annoying, not a hole.
 
 use super::stage::Stage;
-use crate::model::Note;
 use crate::resolver::{Config, RepoBranch, StageConfig};
 use crate::todo::Task;
-
-/// The prefix a note decision uses to pin part of a stage profile: `pipeline: <stage> key=value …`.
-const DECISION_PREFIX: &str = "pipeline:";
 
 /// Whether entering a stage waits for a human.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
@@ -111,7 +107,6 @@ pub enum Layer {
     Global,
     Repo,
     TaskMeta,
-    NoteDecision,
     Cli,
 }
 
@@ -122,7 +117,6 @@ impl Layer {
             Layer::Global => "[pipeline.stages]",
             Layer::Repo => "[repo.*.pipeline.stages]",
             Layer::TaskMeta => "task meta",
-            Layer::NoteDecision => "note decision",
             Layer::Cli => "cli flag",
         }
     }
@@ -163,7 +157,6 @@ impl StageProfile {}
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Overrides {
     pub task: StageConfig,
-    pub note: StageConfig,
     pub cli: StageConfig,
 }
 
@@ -213,11 +206,10 @@ pub fn layer(cfg: &Config, repo: &str, stage: Stage, ov: &Overrides) -> StagePro
     let (global, repo_entry) = config_layers(cfg, repo, stage);
 
     // Low → high. `gate` deliberately does not use this ordering.
-    let ordered: [(Layer, Option<&StageConfig>); 5] = [
+    let ordered: [(Layer, Option<&StageConfig>); 4] = [
         (Layer::Global, global),
         (Layer::Repo, repo_entry),
         (Layer::TaskMeta, Some(&ov.task)),
-        (Layer::NoteDecision, Some(&ov.note)),
         (Layer::Cli, Some(&ov.cli)),
     ];
 
@@ -304,43 +296,6 @@ pub fn from_task_meta(task: &Task, stage: Stage) -> StageConfig {
     }
 }
 
-/// Per-stage pins recorded in the note as decisions. **Pure.**
-///
-/// Format: `pipeline: <stage> skill=plan refs=rust,api gate=hold`. Decisions are appended
-/// rather than keyed, so several may name the same stage; the **last** one wins, per field, which
-/// is what lets a pin be changed at all (the note store has no delete path).
-pub fn from_note_decisions(note: &Note, stage: Stage) -> StageConfig {
-    let mut out = StageConfig::default();
-    for item in &note.front.decisions {
-        let Some(rest) = item.text.trim().strip_prefix(DECISION_PREFIX) else {
-            continue;
-        };
-        let mut words = rest.split_whitespace();
-        if words.next().map(str::trim) != Some(stage.as_str()) {
-            continue;
-        }
-        for pair in words {
-            let Some((k, v)) = pair.split_once('=') else {
-                continue;
-            };
-            let v = v.trim();
-            if v.is_empty() {
-                continue;
-            }
-            match k.trim() {
-                "model" => out.model = Some(v.to_string()),
-                "effort" => out.effort = Some(v.to_string()),
-                "harness" | "agent" => out.harness = Some(v.to_string()),
-                "skill" => out.skill = Some(v.to_string()),
-                "refs" | "references" => out.references = Some(vec![v.to_string()]),
-                "gate" => out.gate = Some(v.to_string()),
-                _ => {}
-            }
-        }
-    }
-    out
-}
-
 /// Read the governing task and branch note, then [`layer`] them under `cli`.
 ///
 /// Tolerant by design: a missing task, an unreadable note, or an absent store each contribute
@@ -350,20 +305,12 @@ pub fn resolve(cfg: &Config, rb: RepoBranch<'_>, stage: Stage, cli: &StageConfig
     let task = super::gate::governing_task(cfg, rb.repo, rb.branch)
         .map(|t| from_task_meta(&t, stage))
         .unwrap_or_default();
-    let note = crate::store::read(&cfg.note_file(&crate::resolver::Resolved {
-        repo: rb.repo.to_string(),
-        branch: rb.branch.to_string(),
-    }))
-    .ok()
-    .map(|n| from_note_decisions(&n, stage))
-    .unwrap_or_default();
     layer(
         cfg,
         rb.repo,
         stage,
         &Overrides {
             task,
-            note,
             cli: cli.clone(),
         },
     )

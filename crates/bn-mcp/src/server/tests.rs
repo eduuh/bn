@@ -85,7 +85,7 @@ async fn bn_cmd_lists_and_runs_a_branch_command_with_its_args() {
     let server = BnServer::new(cfg, worktree(&worktrees, "repo", "topic"), vec![]);
     let dir = server
         .cfg
-        .note_dir(&server.resolve().expect("scope"))
+        .artifact_dir(&server.resolve().expect("scope"))
         .join("cmds");
     std::fs::create_dir_all(&dir).expect("cmds dir");
     std::fs::write(
@@ -130,7 +130,7 @@ async fn bn_cmd_lists_and_runs_a_branch_command_with_its_args() {
 }
 
 #[tokio::test]
-async fn note_items_can_be_estimated_repaired_and_links_searched() {
+async fn links_can_be_searched_without_session_artifacts() {
     let root = tempfile::tempdir().expect("tempdir");
     let worktrees = root.path().join("worktrees");
     let cfg = Config {
@@ -141,53 +141,6 @@ async fn note_items_can_be_estimated_repaired_and_links_searched() {
     let data = |r: Result<CallToolResult, ErrorData>| {
         r.expect("tool ok").structured_content.expect("json")
     };
-
-    // #1528: reading before the first note exists is a state, not an io error.
-    let cat = data(server.bn_cat(Parameters(EmptyArgs {})).await);
-    assert_eq!(cat["rendered"], json!("repo/topic: no note"));
-
-    let add = |text: &str, est: Option<&str>| {
-        server.bn_add(Parameters(AddArgs {
-            section: "todo".into(),
-            text: text.into(),
-            if_absent: None,
-            est: est.map(str::to_string),
-            q: Some("ship-v1".into()),
-        }))
-    };
-    data(add("write the parser", Some("2h")).await);
-    assert!(add("bad estimate", Some("soon")).await.is_err());
-    let note = bn_core::store::read(&server.cfg.note_file(&server.resolve().unwrap())).unwrap();
-    let t1 = &note.front.todos[0];
-    assert_eq!(
-        (t1.est.as_deref(), t1.q.as_deref()),
-        (Some("2h"), Some("ship-v1"))
-    );
-
-    let item = |q: &str| Parameters(ItemArgs { query: q.into() });
-    let reworded = data(
-        server
-            .bn_reword(Parameters(RewordArgs {
-                query: "t1".into(),
-                text: "write the lexer".into(),
-            }))
-            .await,
-    );
-    assert_eq!(reworded["item"]["previous"], json!("write the parser"));
-    data(
-        server
-            .bn_done(Parameters(DoneArgs {
-                query: "t1".into(),
-                pct: None,
-            }))
-            .await,
-    );
-    assert_eq!(
-        data(server.bn_reopen(item("lexer")).await)["item"]["id"],
-        json!("t1")
-    );
-    data(server.bn_drop(item("t1")).await);
-    assert!(server.bn_drop(item("t1")).await.is_err());
 
     links::add(
         &server.cfg,
@@ -232,5 +185,29 @@ async fn note_items_can_be_estimated_repaired_and_links_searched() {
             .unwrap()
             .len(),
         2
+    );
+    let artifacts = server.cfg.artifact_dir(&server.resolve().unwrap());
+    assert!(!artifacts.join("note.md").exists());
+    assert!(!artifacts.join("note.yaml").exists());
+    assert!(!artifacts.join("handoff.json").exists());
+}
+
+#[test]
+fn advertised_tools_exclude_session_note_runtime() {
+    let mut names: Vec<_> = BnServer::all_tools()
+        .list_all()
+        .into_iter()
+        .map(|tool| tool.name.to_string())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "bn_cmd",
+            "bn_links_add",
+            "bn_links_search",
+            "bn_ref",
+            "bn_ref_append"
+        ]
     );
 }

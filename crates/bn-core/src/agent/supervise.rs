@@ -525,19 +525,12 @@ fn recorded_state(recorded: Option<&str>, live_session: &str) -> crate::agent::R
     }
 }
 
-/// The `agent-session: <harness> <id>` the dispatcher records in a branch note's collab section,
-/// latest wins — the same record `bn agent send` resumes against. `None` means no resume channel.
-fn recorded_session(cfg: &Config, repo: &str, branch: &str) -> Option<(String, String)> {
-    let ctx = crate::resolver::Resolved {
-        repo: repo.to_string(),
-        branch: branch.to_string(),
-    };
-    let note = crate::store::read(&cfg.note_file(&ctx)).ok()?;
-    note.front.collab.iter().rev().find_map(|it| {
-        let rest = it.text.trim().strip_prefix("agent-session:")?;
-        let mut w = rest.split_whitespace();
-        Some((w.next()?.to_string(), w.next()?.to_string()))
-    })
+fn recorded_session(_cfg: &Config, repo: &str, branch: &str) -> Option<(String, String)> {
+    crate::cost::launch_records()
+        .into_iter()
+        .rev()
+        .find(|record| record.repo.eq_ignore_ascii_case(repo) && record.branch == branch)
+        .map(|record| (record.harness, record.session_id))
 }
 
 /// [`supervise`] with explicit Claude + Copilot roots and `now` — the testable core. A session is

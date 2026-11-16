@@ -7,38 +7,6 @@ pub(super) fn route(cfg: &Config, action: CmdStaff, json: bool) {
             interval,
             stuck,
         } => emit_watch(cfg, once, interval, stuck, json),
-        CmdStaff::Handoff { action } => match action {
-            Some(HandoffCmd::Write {
-                narrative,
-                defer,
-                question,
-                next,
-                replace,
-                repo,
-                branch,
-            }) => {
-                let ctx =
-                    target_ctx(cfg, repo, branch).unwrap_or_else(|| fail("Not in a git repo"));
-                let narrative = (!narrative.is_empty()).then(|| narrative.join(" "));
-                let input = bn_core::handoff::HandoffInput {
-                    narrative,
-                    deferred: defer,
-                    questions: question,
-                    priority_queue: next,
-                    replace,
-                };
-                emit_handoff_write(cfg, &ctx, &input, json);
-            }
-            None | Some(HandoffCmd::Read { .. }) => {
-                let (repo, branch) = match action {
-                    Some(HandoffCmd::Read { repo, branch }) => (repo, branch),
-                    _ => (None, None),
-                };
-                let ctx =
-                    target_ctx(cfg, repo, branch).unwrap_or_else(|| fail("Not in a git repo"));
-                emit_handoff_read(cfg, &ctx, json);
-            }
-        },
         CmdStaff::Switch {
             harness,
             prompt,

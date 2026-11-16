@@ -422,10 +422,10 @@ fn pin_worktree_gh_account(repo: &str, branch: &str) -> Option<std::path::PathBu
 fn enter_dispatched_investigate_stage(
     cfg: &Config,
     target: &Resolved,
-) -> Result<bn_core::pipeline::gate::GateDecision, bn_core::store::StoreError> {
+) -> Result<bn_core::pipeline::gate::GateDecision, std::io::Error> {
     bn_core::pipeline::stage::transition(
         cfg,
-        &cfg.note_file(target),
+        target,
         bn_core::pipeline::stage::Stage::Investigate,
     )
 }
@@ -895,89 +895,62 @@ pub(crate) fn run_dispatch(
         None
     };
 
-    // Seed the new branch's note: goal = the item; record the source link. Only on a *fresh*
-    // worktree — re-dispatching an existing branch (or a fanout hitting one already in flight) must
-    // not clobber the note a live agent has been writing. `ensure_note` is safe either way.
     let target = Resolved {
         repo: repo.clone(),
         branch: sanitized.clone(),
     };
-    let _ = commands::ensure_note(cfg, &target, &today());
-
-    // Bind the task to this worktree, so the fleet can say what the agent is working on and link
-    // through to it. Done here — after the branch and worktree exist, before the agent launches —
-    // so the very first supervisor poll after the launch already sees the binding. Not fatal: an
-    // unknown id is worth a warning, not a refusal to start work that is otherwise ready.
-    if let Some(id) = task_id {
-        match bn_core::task_store::task_store(cfg).claim(id, &repo, &sanitized) {
+    let task_store = bn_core::task_store::task_store(cfg);
+    if let Some(id) = task_id.or(source_todo.as_deref()) {
+        match bn_core::task_store::claim(cfg, id, &repo, &sanitized) {
             Ok(true) => {}
-            Ok(false) => eprintln!(
-                "bn dispatch: no task '{id}' in the store — dispatching anyway, but the fleet \
-                 won't show a task for this agent"
+            result => fail_json(
+                json,
+                "dispatch",
+                "task-binding",
+                &match result {
+                    Ok(false) => format!("task '{id}' does not exist in the configured provider"),
+                    Err(error) => format!("could not bind task '{id}': {error}"),
+                    Ok(true) => unreachable!(),
+                },
             ),
-            Err(e) => eprintln!("bn dispatch: could not bind task '{id}': {e}"),
+        }
+    } else {
+        let tasks = task_store.load().unwrap_or_else(|error| {
+            fail_json(json, "dispatch", "task-provider", &error.to_string())
+        });
+        if bn_core::pipeline::gate::governing_in(&tasks, &repo, &sanitized).is_none() {
+            bn_core::task_store::capture(
+                cfg,
+                &title,
+                Some(bn_core::resolver::RepoBranch { repo: &repo, branch: &sanitized }),
+                url.as_deref().unwrap_or("dispatch"),
+            ).unwrap_or_else(|error| {
+                fail_json(json, "dispatch", "task-capture", &error.to_string())
+            });
         }
     }
 
     if created {
-        let _ = commands::set_goal(cfg, &target, &title, &today());
-        // The goal says what the worktree is *for*; the todo makes it trackable work — it lands in
-        // `bn todo` / `bn next` and can be closed with `bn done`, so a dispatched task is visible in
-        // the same places as anything you captured by hand.
-        // `if_absent` on both, matching the `decision:` writes just below. Without it a
-        // re-dispatch (or two dispatches racing the same branch) seeds the same todo twice as `t1`
-        // and `t2`, and the source link twice — the note then claims two pieces of work where
-        // there is one.
-        let _ = commands::add(cfg, &target, "todo", &title, Some(&title), &today());
-        if let Some(u) = &url {
-            let source = format!("source: {u}");
-            let _ = commands::add(cfg, &target, "collab", &source, Some(&source), &today());
-        }
-        let task_line = "task: ship — deliver a change";
-        let _ = commands::add(cfg, &target, "decision", task_line, Some("task:"), &today());
-        if let Some(s) = &skill_loaded {
-            let _ = commands::add(
-                cfg,
-                &target,
-                "decision",
-                &format!("skill: {} — the workflow this dispatch follows", s.name),
-                Some("skill:"),
-                &today(),
-            );
-        }
+        bn_core::pipeline::execution::record_policy(
+            &repo,
+            &sanitized,
+            &bn_core::pipeline::execution::DispatchPolicy {
+                skill: skill_loaded.as_ref().map(|skill| skill.name.clone()),
+                verify,
+                plan_review: plan_gate,
+            },
+        ).unwrap_or_else(|error| {
+            fail_json(json, "dispatch", "execution-policy", &error.to_string())
+        });
         if let Some(main) = &comparison_path {
-            let comparison = format!(
-                "comparison worktree: {} — detached at the latest remote main",
-                main.display()
-            );
-            let _ = commands::add(
+            bn_core::task_doc::append_context(
                 cfg,
                 &target,
-                "decision",
-                &comparison,
-                Some("comparison worktree:"),
-                &today(),
-            );
-        }
-        if verify {
-            let _ = commands::add(
-                cfg,
-                &target,
-                "decision",
-                "gate: run `bn verify` before done — only report done when the build/test/lint gate passes",
-                Some("gate: run `bn verify`"),
-                &today(),
-            );
-        }
-        if plan_gate {
-            let _ = commands::add(
-                cfg,
-                &target,
-                "decision",
-                "gate: plan-review — propose a plan via `bn review submit` and wait for approval before implementing / opening a PR (#349)",
-                Some("gate: plan-review"),
-                &today(),
-            );
+                "Context",
+                &format!("Comparison worktree: {}", main.display()),
+            ).unwrap_or_else(|error| {
+                fail_json(json, "dispatch", "task-context", &error.to_string())
+            });
         }
         if pipeline_investigate {
             match enter_dispatched_investigate_stage(cfg, &target) {
@@ -1002,11 +975,6 @@ pub(crate) fn run_dispatch(
                 Ok(_) => {}
             }
         }
-    }
-
-    // Close the source todo in the originating (cwd) note — it's now in flight.
-    if let (Some(ctx), Some(id)) = (ctx, &source_todo) {
-        let _ = commands::done(cfg, ctx, id, &today(), None);
     }
 
     // Open the worktree's window in the *repo's* tmux session (the layout `tat` expects), creating
@@ -1351,16 +1319,6 @@ pub(crate) fn run_dispatch(
                     );
                 }
             };
-            if let Some(controller_id) = &controller_id {
-                let _ = commands::add(
-                    cfg,
-                    &target,
-                    "collab",
-                    &format!("controller-id: {controller_id}"),
-                    Some("controller-id:"),
-                    &today(),
-                );
-            }
             let worktree = wt_path.to_string_lossy().into_owned();
             crate::cmd::agent::record_launched_session(
                 cfg,

@@ -11,12 +11,12 @@
 //! <work_root>/tasks/t42.md                            the doc, in staging
 //! <work_root>/tasks/t42.files/screenshot.png          its attachments
 //!
-//! <note_dir>/task.md                                  the doc, after pickup
-//! <note_dir>/task.files/screenshot.png                its attachments
+//! <artifact_dir>/task.md                                  the doc, after pickup
+//! <artifact_dir>/task.files/screenshot.png                its attachments
 //! ```
 //!
 //! The directory is derived from the doc's own file name ([`dir_for_doc`]), so the pair moves
-//! together and [`adopt_into_note`](crate::task_doc::adopt_into_note) copying one implies copying
+//! together and [`ensure`](crate::task_doc::ensure) importing one implies copying
 //! the other. Nothing outside this module needs to know which of the two locations is live.
 //!
 //! # Agents resolve paths by asking, never by reading one out of the doc
@@ -318,7 +318,7 @@ pub fn remove(cfg: &Config, task: &Task, raw_name: &str) -> Result<bool, AttachE
 
 /// Copy a staged attachment directory in beside the branch note, as the doc's pickup does.
 ///
-/// Called from [`crate::task_doc::adopt_into_note`] so the pair never separates. Individual files
+/// Called from [`crate::task_doc::ensure`] so the pair never separates. Individual files
 /// are never overwritten: a file already at the destination is one an agent may have put there.
 pub fn adopt_beside(staged_doc: &Path, note_doc: &Path) -> std::io::Result<usize> {
     let from = dir_for_doc(staged_doc);

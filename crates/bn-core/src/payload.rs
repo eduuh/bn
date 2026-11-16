@@ -1,7 +1,6 @@
 //! Shared `data` payload builders for the JSON envelope. Both the CLI and the MCP
 //! server call these so the machine-readable shapes stay byte-identical across surfaces.
 
-use crate::commands::{AddOutcome, CloseOutcome, DoneOutcome, GoalOutcome, ItemOutcome, PrOutcome};
 use crate::daily::{self, Daily};
 use crate::doctor::Finding;
 use crate::reports;
@@ -16,12 +15,6 @@ use serde_json::{json, Value};
 /// `AgentSession` (the recall view); `duration_secs` is derivable from `started_ts`/`ended_ts`.
 pub fn agent_sessions_data(sessions: &[crate::agent::AgentSession]) -> Value {
     json!({ "count": sessions.len(), "sessions": sessions })
-}
-
-/// `agent digest` → the `Digest` record (since/sessions/proposals). Already a serde record;
-/// object-wrapped so the envelope `data` is `{ "digest": {...} }`, matching `sync`'s shape.
-pub fn agent_digest_data(d: &crate::agent::Digest) -> Value {
-    json!({ "digest": d })
 }
 
 /// `agent supervise` → the live `Fleet` (agents + health counts). Flattened so the envelope
@@ -104,38 +97,6 @@ fn orchestrate_queue_item(
         }
     }
     v
-}
-
-/// `handoff write`/`read` → `{ "handoff": {...}, "rendered": "<orientation text>" }`. The packet
-/// round-trips through serde; the rendered orientation is the one-read banner.
-pub fn handoff_data(h: &crate::handoff::Handoff) -> Value {
-    json!({ "handoff": h, "rendered": crate::handoff::render_orientation(h) })
-}
-
-/// `add` → `{ "section", "item": { "id", "text", "line", "skipped" } }`.
-/// `skipped` is true when an `if_absent` key matched an existing item, so nothing was written.
-pub fn add_data(a: &AddOutcome) -> Value {
-    json!({
-        "section": a.section.label(),
-        "item": { "id": a.id, "text": a.text, "line": a.line, "skipped": a.skipped }
-    })
-}
-
-/// `done` → `{ "item": { "id", "text", "done": true } }`.
-pub fn done_data(d: &DoneOutcome) -> Value {
-    match d.pct {
-        Some(p) => json!({ "item": { "id": d.id, "text": d.text, "done": false, "pct": p } }),
-        None => json!({ "item": { "id": d.id, "text": d.text, "done": true, "actual": d.actual } }),
-    }
-}
-
-/// `drop` / `undone` / `reword` → `{ "item": { "id", "section", "text", "previous"? } }`.
-pub fn item_data(d: &ItemOutcome) -> Value {
-    let mut item = json!({ "id": d.id, "section": d.section.label(), "text": d.text });
-    if let Some(p) = &d.previous {
-        item["previous"] = json!(p);
-    }
-    json!({ "item": item })
 }
 
 /// `daily` → `{ "date", "open", "done", "goals": [...], "upcoming": [...] }`. `upcoming` is
@@ -312,46 +273,9 @@ pub fn wrap_data(w: &reports::WrapDigest) -> Value {
     v
 }
 
-/// `brag` → the full impact packet plus a `rendered` markdown field for display.
-/// `close` → what the close completed: counts + the logged achievement (if any).
-pub fn close_data(c: &CloseOutcome) -> Value {
-    json!({
-        "repo": c.repo,
-        "branch": c.branch,
-        "todos_completed": c.todos_completed,
-        "achievement": c.achievement,
-        "unmet_criteria": c.unmet_criteria,
-        "captured_links": c.captured_links,
-        "uncaptured_links": c.uncaptured_links,
-    })
-}
-
-/// `set_pr` → `{ "item": { "pr": "<url>" } }`.
-pub fn pr_data(p: &PrOutcome) -> Value {
-    json!({ "item": { "pr": p.pr } })
-}
-
 /// `link`/`pr` resolve → `{ "url": "<url>" }` (the value the CLI would open/copy/show).
 pub fn url_data(url: &str) -> Value {
     json!({ "url": url })
-}
-
-/// `set_goal` → `{ "goal": "<line>" }`.
-pub fn goal_data(g: &GoalOutcome) -> Value {
-    json!({ "goal": g.goal })
-}
-
-/// `note` → `{ "path": "<note.md>" }`. The plugin edits `path` directly.
-pub fn note_data(path: &std::path::Path) -> Value {
-    json!({ "path": path.display().to_string() })
-}
-
-/// `files` → `{ "dir", "files": [ { "name", "path" } ] }`.
-pub fn files_data(dir: &std::path::Path, files: &[crate::commands::FileEntry]) -> Value {
-    json!({
-        "dir": dir.display().to_string(),
-        "files": files.iter().map(|f| json!({ "name": f.name, "path": f.path })).collect::<Vec<_>>(),
-    })
 }
 
 /// `status` → the `StatusEntry`, or a zeroed shape carrying the resolved context when no
@@ -401,93 +325,10 @@ pub fn doctor_data(findings: &[Finding]) -> Value {
     json!({ "findings": findings })
 }
 
-/// `prune` → `{ "closed": [{repo,branch}], "failed": [..] }`.
-pub fn prune_data(r: &crate::lifecycle::PruneReport) -> Value {
-    json!({ "closed": r.closed, "failed": r.failed })
-}
-
-/// `stale` → `{ "stale": [{repo,branch,path,last_activity,idle_days,open_todos}] }`.
-pub fn stale_data(entries: &[crate::lifecycle::StaleEntry]) -> Value {
-    json!({ "stale": entries })
-}
-
-/// `clean` → `{ "cleaned": [{repo,branch,removed}], "removed": <total> }`.
-pub fn clean_data(entries: &[crate::lifecycle::CleanEntry]) -> Value {
-    let total: usize = entries.iter().map(|e| e.removed).sum();
-    json!({ "cleaned": entries, "removed": total })
-}
-
-/// `archive` → `{ "archived": [..], "skipped": [..], "failed": [..], "dry_run": bool }`.
-pub fn archive_data(r: &crate::lifecycle::ArchiveReport) -> Value {
-    json!({
-        "archived": r.archived,
-        "skipped": r.skipped,
-        "failed": r.failed,
-        "dry_run": r.dry_run,
-    })
-}
-
 /// `skills` → `{ "count", "skills": [SkillInfo, ...] }`. Object-wrapped (see `todos_data`);
 /// `count` makes the empty result definitive for agents (`count: 0`, not a missing field).
 pub fn skills_data(skills: &[SkillInfo]) -> Value {
     json!({ "count": skills.len(), "skills": skills })
-}
-
-/// How many open todos `context_data` inlines before pointing at `bn_cat` for the rest.
-const CONTEXT_TOP_TODOS: usize = 5;
-
-/// `bn_context` (MCP) → the common session-start reads in one compact, current-branch payload:
-/// goal, open todo/blocker counts, the top open todos, blockers, PR/work item, whether a handoff
-/// packet exists, and contextual `help` next-step commands. Empty states are definitive
-/// (`note_exists: false`, zeroed counts, `[]` lists) so an agent never has to guess whether a
-/// missing field means "none" or "not looked". Deliberately compact: the full note stays behind
-/// `bn_cat`, the full orientation behind `bn_handoff_read`.
-pub fn context_data(
-    note: Option<&crate::model::Note>,
-    ctx: &Resolved,
-    handoff_available: bool,
-) -> Value {
-    let goal = note.and_then(|n| crate::render::goal_text(&n.body));
-    let open: Vec<&crate::model::Item> = note
-        .map(|n| n.front.todos.iter().filter(|t| t.is_open_todo()).collect())
-        .unwrap_or_default();
-    let blockers: Vec<&crate::model::Item> = note
-        .map(|n| n.front.blockers.iter().collect())
-        .unwrap_or_default();
-    let brief = |i: &&crate::model::Item| json!({ "id": i.id, "text": i.text });
-
-    let mut help: Vec<&str> = Vec::new();
-    if goal.is_none() {
-        help.push("bn_goal — set the one-line goal first thing in a fresh worktree");
-    }
-    if handoff_available {
-        help.push("bn_handoff_read — load the full orientation from the last session");
-    }
-    if !blockers.is_empty() {
-        help.push("bn_add section=blocker — update blockers as they move; clear stale ones");
-    }
-    if !open.is_empty() {
-        help.push("bn_done — close a todo the moment it's finished, not batched at the end");
-    }
-    help.push("bn_add — record todos/blockers/decisions as they come up");
-    if note.is_some() {
-        help.push("bn_cat — render the full note (all todos, decisions, progress)");
-    }
-
-    json!({
-        "repo": ctx.repo,
-        "branch": ctx.branch,
-        "note_exists": note.is_some(),
-        "goal": goal,
-        "counts": { "open_todos": open.len(), "blockers": blockers.len() },
-        "todos": open.iter().take(CONTEXT_TOP_TODOS).map(brief).collect::<Vec<_>>(),
-        "todos_truncated": open.len() > CONTEXT_TOP_TODOS,
-        "blockers": blockers.iter().map(brief).collect::<Vec<_>>(),
-        "work_item": note.and_then(|n| n.front.work_item.clone()),
-        "pr": note.and_then(|n| n.front.pr.clone()),
-        "handoff_available": handoff_available,
-        "help": help,
-    })
 }
 
 /// `skill_new` → `{ "skill": { "name", "scope", "path" } }` for the just-created file.
@@ -605,10 +446,4 @@ pub fn q_drain_data(routed: &[crate::inbox::RoutedOutcome], left: usize) -> Valu
 /// `metrics` → the full `Scorecard` (close-out velocity + throughput). Already a record.
 pub fn scorecard_data(s: &crate::metrics::Scorecard) -> Value {
     json!(s)
-}
-
-/// `sync` → the `Proposals` record (since/commits/progress_line/done_candidates/close). Already
-/// a serde record; object-wrapped so the envelope `data` is `{ "proposals": {...} }`.
-pub fn sync_data(p: &crate::sync::Proposals) -> Value {
-    json!({ "proposals": p })
 }

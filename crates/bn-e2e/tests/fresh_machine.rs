@@ -72,11 +72,110 @@ fn cli_only_install_preserves_agent_commands_and_rejects_web_commands() -> anyho
             run.output()
         );
     }
-    sb.bn(["goal", "CLI-only smoke test"])?.expect_success()?;
-    let note = sb.bn(["goal", "--json"])?;
-    note.expect_success()?;
-    let json: serde_json::Value = serde_json::from_str(&note.stdout)?;
-    assert_eq!(json["ok"], true);
-    assert_eq!(json["data"]["goal"], "CLI-only smoke test");
+    sb.bn(["task", "add", "CLI-only smoke test"])?
+        .expect_success()?;
+    sb.bn(["task", "doc", "t1"])?.expect_success()?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "e2e: needs a built bn binary (cargo build --workspace)"]
+fn fresh_task_plan_and_dispatch_create_no_branch_notes() -> anyhow::Result<()> {
+    let sb = Sandbox::new()?;
+    std::fs::write(
+        sb.path("home/.bn/config/config.toml"),
+        "[machine]\nrepos = [\"repo\", \"atlas\"]\n",
+    )?;
+    sb.seed_bare_repo("atlas")?;
+    sb.bn([
+        "task",
+        "add",
+        "Preserve context",
+        "--body",
+        "Original task context",
+    ])?
+    .expect_success()?;
+    let doc = sb.bn(["task", "doc", "t1"])?;
+    doc.expect_success()?;
+    let path = doc.stdout.trim();
+    assert!(std::fs::read_to_string(path)?.contains("Original task context"));
+    sb.bn([
+        "task", "claim", "t1", "--repo", "repo", "--branch", "rebound",
+    ])?
+    .expect_success()?;
+    assert_eq!(sb.bn(["task", "doc", "t1"])?.stdout.trim(), path);
+    sb.bn([
+        "agent",
+        "instruct",
+        "repo:rebound",
+        "Keep task context",
+        "--no-send",
+    ])?
+    .expect_success()?;
+    let listed = sb.bn(["agent", "instruct", "repo:rebound", "--list", "--json"])?;
+    listed.expect_success()?;
+    let directives: serde_json::Value = serde_json::from_str(&listed.stdout)?;
+    assert_eq!(
+        directives["data"]["directives"][0]["text"],
+        "Keep task context"
+    );
+    let id = directives["data"]["directives"][0]["id"].as_str().unwrap();
+    sb.bn(["agent", "instruct", "repo:rebound", "--drop", id])?
+        .expect_success()?;
+    sb.bn(["task", "do", "t1"])?.expect_success()?;
+    sb.bn(["plan", "init"])?.expect_success()?;
+    sb.bn(["plan", "status"])?.expect_success()?;
+    sb.bn(["plan", "path"])?.expect_success()?;
+    sb.bn([
+        "dispatch",
+        "Implement task context",
+        "--repo",
+        "atlas",
+        "--branch",
+        "fresh-flow",
+        "--no-tmux",
+    ])?
+    .expect_success()?;
+    let tasks = std::fs::read_to_string(sb.path("notes/tasks.txt"))?;
+    assert!(
+        tasks.contains("repo:atlas") && tasks.contains("branch:fresh-flow"),
+        "{tasks}"
+    );
+    let mut pending = vec![sb.path("notes")];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                pending.push(entry.path());
+            } else {
+                assert!(!matches!(
+                    entry.file_name().to_str(),
+                    Some("note.md" | "note.yaml" | "handoff.md" | "handoff.json")
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "e2e: needs a built bn binary (cargo build --workspace)"]
+fn task_ingest_scopes_ado_keys_to_the_requested_repo_without_a_branch() -> anyhow::Result<()> {
+    let sb = Sandbox::new()?;
+    let args = [
+        "task", "ingest", "--source", "pull-ado", "--branch", "", "--repo", "Atlas", "--json",
+    ];
+    let row = r#"[{"text":"Fix work item","key":"atlas:42"}]"#;
+    let first = sb.bn_stdin(args, row)?;
+    first.expect_success()?;
+    let second = sb.bn_stdin(args, row)?;
+    second.expect_success()?;
+    let outcome: serde_json::Value = serde_json::from_str(&second.stdout)?;
+    assert_eq!(outcome["data"]["added"], 0);
+    assert_eq!(outcome["data"]["skipped"], 1);
+    let tasks = std::fs::read_to_string(sb.path("notes/tasks.txt"))?;
+    assert!(tasks.contains("repo:atlas"), "{tasks}");
+    assert!(tasks.contains("key:pull-ado:atlas:42"), "{tasks}");
+    assert!(!tasks.contains("branch:"), "{tasks}");
     Ok(())
 }

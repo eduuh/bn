@@ -1,90 +1,7 @@
-//! `bn search / todo / list / summary` and the recall index the `recall-index` cron builds.
+//! Task rollups and reference search.
 use crate::*;
 
-/// Auto-surface (issue #249): on a freshly-created note, print up to 3 semantically-similar past
-/// notes for the branch/goal to stderr — "have I thought about this before?". Read-only against a
-/// warm index: if the index is cold it prints nothing (never blocks note creation on embedding).
-pub(crate) fn surface_recall_on_new_note(cfg: &Config, ctx: &bn_core::resolver::Resolved) {
-    use bn_core::recall;
-    // Query = the branch name (slashes/dashes → words) plus the goal line if one's already set.
-    let goal = bn_core::store::read(&cfg.note_file(ctx))
-        .ok()
-        .and_then(|n| bn_core::render::goal_text(&n.body));
-    let branch_words = ctx.branch.replace(['-', '/', '_'], " ");
-    let query = match &goal {
-        Some(g) if !g.trim().is_empty() => format!("{branch_words} {g}"),
-        _ => branch_words,
-    };
-    let hits = recall::recall_peek(
-        &recall::default_index_path(),
-        &query,
-        &ctx.repo,
-        &ctx.branch,
-        3,
-        &today(),
-        &recall::default_embedder(),
-    );
-    if hits.is_empty() {
-        return;
-    }
-    eprintln!("\nsimilar past work:");
-    for h in &hits {
-        let c = &h.chunk;
-        let status = if c.status == "closed" {
-            "closed"
-        } else {
-            "active"
-        };
-        let snippet: String = c.text.replace('\n', " ").trim().chars().take(100).collect();
-        eprintln!(
-            "  {}/{} ({}) — {}: {}",
-            c.repo, c.branch, status, c.kind, snippet
-        );
-    }
-}
-
-pub(crate) fn emit_todo(cfg: &Config, as_json: bool) {
-    let entries = rollups::todos(cfg);
-    if as_json && json_ok("todo", payload::todos_data(&entries)) {
-        return;
-    }
-    if entries.is_empty() {
-        println!("No open todos");
-        return;
-    }
-    for e in entries {
-        match e.pct {
-            Some(p) => println!("{}/{}  [{}] {} ({p}%)", e.repo, e.branch, e.id, e.text),
-            None => println!("{}/{}  [{}] {}", e.repo, e.branch, e.id, e.text),
-        }
-    }
-}
-
-pub(crate) fn emit_list(cfg: &Config, as_json: bool) {
-    let entries = rollups::list(cfg);
-    if as_json && json_ok("list", payload::list_data(&entries)) {
-        return;
-    }
-    if entries.is_empty() {
-        println!("No branch notes found");
-        return;
-    }
-    for e in entries {
-        // A blocker is the only thing in this row that can be wrong, so it is the only thing
-        // that earns colour; the rest is metadata you scan past.
-        let counts = format!("{} todos, {} blockers", e.open_todos, e.blockers);
-        let counts = if e.blockers > 0 {
-            style::warn(&counts)
-        } else {
-            style::meta(&counts)
-        };
-        let status = style::meta(&format!("({})", e.status));
-        println!("{}/{}  {counts}  {status}", e.repo, e.branch);
-    }
-}
-
-/// How much of a note item `bn summary` shows before deferring to `bn cat`. Wide enough for a real
-/// todo, narrow enough that a dispatch prompt stored as a todo cannot bury the rows under it.
+/// Bound each task summary so captured prompts cannot bury the other rows.
 const SUMMARY_WIDTH: usize = 110;
 
 pub(crate) fn emit_summary(cfg: &Config, as_json: bool) {
@@ -93,7 +10,7 @@ pub(crate) fn emit_summary(cfg: &Config, as_json: bool) {
         return;
     }
     if entries.is_empty() {
-        println!("No branch notes found");
+        println!("No tasks found");
         return;
     }
     for e in entries {
@@ -122,27 +39,6 @@ pub(crate) fn emit_summary(cfg: &Config, as_json: bool) {
             );
         }
     }
-}
-
-/// (Re)build the machine-local semantic-recall index, re-embedding only changed files. Run by the
-/// `recall-index` cron; the index feeds the past-notes hint on a new note.
-pub(crate) fn build_recall_index(cfg: &Config) {
-    use bn_core::recall;
-    let index_path = recall::default_index_path();
-    let stats = recall::build_index(cfg, &index_path, &recall::default_embedder());
-    let mode = if stats.full_rebuild {
-        "full rebuild"
-    } else {
-        "incremental"
-    };
-    println!(
-        "recall index ({mode}): {} files, {} chunks — {} embedded, {} reused\n  {}",
-        stats.files,
-        stats.chunks,
-        stats.embedded,
-        stats.reused,
-        index_path.display()
-    );
 }
 
 pub(crate) fn emit_search(cfg: &Config, query: &str, limit: usize, as_json: bool) {

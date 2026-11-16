@@ -27,19 +27,7 @@ pub(crate) enum AgentCmd {
         #[arg(long)]
         reingest: bool,
     },
-    /// Mine this branch's recorded sessions into proposed note lines — a progress bullet, and
-    /// (for code-changing sessions) a decision stub + follow-up todo — for work that never
-    /// landed in the note. Propose-only, mirroring `bn sync`: `--json` emits and writes nothing;
-    /// otherwise each line is confirmed (or `--yes`-applied). bn agent digest.
-    Digest {
-        #[arg(long)]
-        repo: Option<String>,
-        #[arg(long)]
-        branch: Option<String>,
-        /// Apply every proposed line without prompting.
-        #[arg(long)]
-        yes: bool,
-    },
+
     /// Live-agent fleet: every *running* Claude session with its health (active / idle / stuck),
     /// flagging any idle past `--stuck` minutes. The supervisor pass behind the FLEET cockpit
     /// panel and `--json`. bn agent supervise.
@@ -333,7 +321,7 @@ pub(crate) enum AgentCmd {
         limit: usize,
     },
     /// Give a running agent a **standing** instruction: recorded under `## Directives` in its
-    /// branch note *and* delivered to the live session. The note copy is the point — a directive
+    /// task document *and* delivered to the live session. The durable copy is the point — a directive
     /// is re-seeded into a `bn agent relaunch --hard` and into a fresh dispatch, so resetting an
     /// agent's context no longer discards what you told it.
     ///
@@ -349,7 +337,7 @@ pub(crate) enum AgentCmd {
         /// List the target's standing directives instead of adding one.
         #[arg(long)]
         list: bool,
-        /// Drop a directive by its note id (`i1`).
+        /// Drop a directive by the id shown by --list.
         #[arg(long, value_name = "ID")]
         drop: Option<String>,
     },
@@ -365,11 +353,7 @@ pub(crate) enum AgentCmd {
         #[arg(long, default_value_t = 40)]
         limit: usize,
     },
-    /// Claude Code SessionStart hook: point this worktree's auto-memory at a per-worktree
-    /// `.claude/memory` (written idempotently to the gitignored `.claude/settings.local.json`,
-    /// since the checked-in settings ignore `autoMemoryDirectory`), then print `bn handoff read`
-    /// to orient the session. Replaces `scripts/wt-memory.sh`. Best-effort, quiet on no note.
-    MemoryHook,
+
     /// Launch an AI coding agent in the current directory, resuming this directory's recorded
     /// session if one exists, else starting fresh — the single home of the resume-or-fresh rule
     /// (tmux keybinds, `bn dispatch`, and a plain `cd <wt> && bn agent launch` all behave

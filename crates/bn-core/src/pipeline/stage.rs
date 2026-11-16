@@ -3,16 +3,14 @@
 //! A dispatched task flows through explicit, observable stages:
 //! `pickup → investigate → plan → consensus → execute → validate → critique → ship → learn`.
 //! The [`Stage`] enum + its ordering are **pure** (unit-tested below). The current stage is durable
-//! in branch-note frontmatter, while every transition is also appended to [`crate::events`] as a
-//! `pipeline_stage` event keyed by `(repo, branch)`. Legacy notes fall back to their latest event,
-//! or to [`Stage::DEFAULT`] when neither source exists.
+//! in [`crate::events`] as a `pipeline_stage` event keyed by `(repo, branch)`, falling back to
+//! [`Stage::DEFAULT`] when no transition exists.
 
 use super::gate;
 use crate::events;
 use crate::util::now_epoch_secs;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map};
-use std::path::Path;
 
 /// The event `kind` under which stage transitions are logged.
 pub const EVENT_KIND: &str = "pipeline_stage";
@@ -89,7 +87,7 @@ impl Stage {
     }
 
     /// The workflow skill this stage dispatches by default — the *intent* of the stage, as
-    /// opposed to [`skill_for_note`], which reports what a given worktree actually ran.
+    /// opposed to a dispatch policy, which reports what a given worktree actually ran.
     ///
     /// `None` is a real answer, not a gap: `pickup` leases a worktree, `consensus` is reviewer
     /// votes, `validate` is `bn verify`, and `ship` hands off to the orchestrator. None of those
@@ -165,9 +163,8 @@ pub struct BoardEntry {
     pub stage: Stage,
     /// Unix epoch seconds of the latest transition.
     pub ts: i64,
-    /// The workflow skill this worktree's agent is actually running ([`skill_for_note`]).
-    /// `None` from [`board`], which reads only the event log; filled by [`board_with_skills`],
-    /// which also reads the notes.
+    /// The dispatched workflow skill, filled by callers from the execution policy.
+    /// `None` from [`board`], which reads only stage transitions.
     #[serde(default)]
     pub skill: Option<String>,
 }
@@ -217,40 +214,6 @@ pub fn current(repo: &str, branch: &str) -> Option<Stage> {
     history(repo, branch).last().map(|t| t.stage)
 }
 
-/// Read the durable current stage from a branch note, falling back to the latest transition event
-/// for notes written before the `stage:` frontmatter field existed.
-pub fn current_for_note(note: &crate::model::Note) -> Option<Stage> {
-    note.front
-        .stage
-        .or_else(|| current(&note.front.repo, &note.front.branch))
-}
-
-/// The workflow skill a worktree's agent is **actually** running, read back from the `skill: <name>
-/// — …` decision `bn dispatch` writes into the note at launch.
-///
-/// Reality, as opposed to [`Stage::default_skill`]'s intent: an explicit `bn dispatch --skill debug`
-/// puts `debug` here while the stage still reads `execute`, and showing the stage default in that
-/// case would be a confident lie about what the agent is doing.
-///
-/// `None` when the note carries no such decision — a hand-made branch, or a dispatch from before
-/// the line was recorded.
-pub fn skill_for_note(note: &crate::model::Note) -> Option<String> {
-    note.front.decisions.iter().find_map(|d| {
-        let rest = d.text.trim().strip_prefix("skill:")?;
-        // The recorded line is `skill: <name> — <why>`. Cut at the em-dash, or at a spaced ASCII
-        // hyphen — never a bare `-`, which lives *inside* half the skill names (`build-from-plan`,
-        // `critique-fresh`, `auto-review-pr`) and would truncate them to their first word.
-        let name = rest
-            .split_once('—')
-            .or_else(|| rest.split_once(" - "))
-            .map(|(name, _)| name)
-            .unwrap_or(rest)
-            .trim()
-            .to_string();
-        (!name.is_empty()).then_some(name)
-    })
-}
-
 /// The progress note a stage transition leaves on its task.
 pub fn stage_note(stage: Stage, repo: &str, branch: &str) -> String {
     format!(
@@ -260,52 +223,26 @@ pub fn stage_note(stage: Stage, repo: &str, branch: &str) -> String {
     )
 }
 
-/// Persist the durable current stage and append its transition event — **through the SMART gate**.
-///
-/// This is the single enforcement point for #998. Everything that starts work (`bn dispatch`,
-/// `bn attn start`, `bn pipeline set`/`advance`) records its stage here, so all of them are gated
-/// by construction rather than by remembering to call a checker. A refused transition writes
-/// nothing: the note keeps its old stage, no event is appended, and the returned
-/// [`gate::GateDecision`] carries the reasons plus the attention item that was raised to fix them.
-///
-/// Ungated stages and worktrees with no governing task pass straight through, so this is safe to
-/// call for every transition.
-///
-/// `cfg` is threaded in rather than loaded here: every caller already holds one, and the
-/// per-stage gate policy makes the config needed on *every* transition, not just gated ones.
+/// Gate entry before recording the durable transition event.
 pub fn transition(
     cfg: &crate::resolver::Config,
-    note_path: &Path,
+    ctx: &crate::resolver::Resolved,
     stage: Stage,
-) -> Result<gate::GateDecision, crate::store::StoreError> {
-    let _lock = crate::store::NoteLock::acquire_required(note_path)?;
-    let mut note = crate::store::read(note_path)?;
-
+) -> Result<gate::GateDecision, std::io::Error> {
     let decision = if gate::is_smart_gated(stage) {
-        gate::check_entry(
-            cfg,
-            &note.front.repo,
-            &note.front.branch,
-            stage,
-            &crate::util::today(),
-        )
+        gate::check_entry(cfg, &ctx.repo, &ctx.branch, stage, &crate::util::today())
     } else {
         gate::GateDecision::Admitted
     };
     if !decision.admits() {
         return Ok(decision);
     }
-
-    note.front.stage = Some(stage);
-    crate::store::save(&note, note_path)?;
-    record(&note.front.repo, &note.front.branch, stage)?;
-    // Beside the event, not inside `record`: the event writer stays a pure append, and only a
-    // transition that actually happened is reported to the task's store.
+    record(&ctx.repo, &ctx.branch, stage)?;
     crate::task_store::note_governing(
         cfg,
-        &note.front.repo,
-        &note.front.branch,
-        &stage_note(stage, &note.front.repo, &note.front.branch),
+        &ctx.repo,
+        &ctx.branch,
+        &stage_note(stage, &ctx.repo, &ctx.branch),
     );
     Ok(decision)
 }
@@ -347,25 +284,4 @@ pub fn board() -> Vec<BoardEntry> {
         .collect();
     out.sort_by_key(|b| std::cmp::Reverse(b.ts));
     out
-}
-
-/// [`board`], with each row's actual workflow skill filled in from its branch note.
-///
-/// A separate function rather than a change to `board` because the two read different things:
-/// `board` is a fold over the event log and touches no filesystem beyond it, while this reads one
-/// note per row. Callers that only want stage counts should keep paying the cheaper price.
-pub fn board_with_skills(cfg: &crate::resolver::Config) -> Vec<BoardEntry> {
-    board()
-        .into_iter()
-        .map(|mut entry| {
-            let ctx = crate::resolver::Resolved {
-                repo: entry.repo.clone(),
-                branch: entry.branch.clone(),
-            };
-            entry.skill = crate::store::read(&cfg.note_file(&ctx))
-                .ok()
-                .and_then(|note| skill_for_note(&note));
-            entry
-        })
-        .collect()
 }
