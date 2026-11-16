@@ -24,13 +24,14 @@ fn retained_path(path: &str) -> bool {
         parts.as_slice(),
         ["tasks.txt" | "links.md" | "config.toml" | ".gitattributes"]
             | [
-                "tasks" | "references" | "triage" | "config" | "skills" | "cmds" | "jobs",
+                "tasks" | "references" | "triage" | "config" | "skills" | "cmds" | "jobs" | "agents",
                 ..
             ]
             | [_, "daily" | "track" | "metrics" | "insights" | "state", ..]
             | [_, "inbox.md"]
+            | [_, "config.toml"]
             | [_, _, "reference" | "skills", ..]
-            | [_, _, _, "plans" | "proof" | "cmds" | "jobs" | "skills", ..]
+            | [_, _, _, "plans" | "proof" | "cmds" | "jobs" | "skills" | "agents", ..]
     )
 }
 
@@ -161,6 +162,34 @@ pub(crate) fn job_sync_state(cfg: &Config, _ctx: Option<&Resolved>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_regression_sync_includes_resolver_config_and_agent_tiers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let git = |args: &[&str]| crate::git::git_result(args, Some(root));
+        assert!(git(&["init", "-q"]).0);
+        assert!(git(&["config", "user.name", "Test"]).0);
+        assert!(git(&["config", "user.email", "test@example.invalid"]).0);
+        for path in [
+            "agents/reviewer.md",
+            "machine/config.toml",
+            "machine/repo/main/agents/reviewer.md",
+            "machine/repo/main/agents/note.md",
+            "machine/repo/main/note.md",
+            "machine/repo/main/task.md",
+            "agents/archive/historical.md",
+        ] {
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "preserved\n").unwrap();
+        }
+        assert!(sync_root(root));
+        assert_eq!(
+            git(&["ls-tree", "-r", "--name-only", "HEAD"]).1,
+            "agents/reviewer.md\nmachine/config.toml\nmachine/repo/main/agents/reviewer.md",
+        );
+    }
 
     #[test]
     fn sync_commits_tasks_but_preserves_untracked_history() {
