@@ -29,7 +29,7 @@ pub fn append_context(
     let task = crate::pipeline::gate::governing_task(cfg, &ctx.repo, &ctx.branch)
         .ok_or_else(|| std::io::Error::other("no governing task; capture or claim a task first"))?;
     let path = ensure(cfg, &task)?;
-    let _lock = crate::fs::FileLock::acquire_required(&path)?;
+    let _lock = crate::todo::lock_required(&path)?;
     let text = std::fs::read_to_string(&path)?;
     let heading = format!("## {heading}");
     if crate::render::section_content(&text, &heading)
@@ -210,7 +210,7 @@ pub fn ensure(cfg: &Config, task: &Task) -> std::io::Result<PathBuf> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let _lock = crate::fs::FileLock::acquire_required(&path)?;
+    let _lock = crate::todo::lock_required(&path)?;
     if path.is_file() {
         return Ok(path);
     }
@@ -335,7 +335,7 @@ pub fn capture(
     links: &[Link],
 ) -> Result<TaskDoc, DocError> {
     let path = ensure(cfg, task).map_err(DocError::Io)?;
-    let _lock = crate::todo::lock(&path);
+    let _lock = crate::todo::lock_required(&path).map_err(DocError::Io)?;
     let mut text = std::fs::read_to_string(&path).unwrap_or_else(|_| template(task));
     if let Some(body) = body.map(str::trim).filter(|b| !b.is_empty()) {
         text = replace_under(&text, CONTEXT_HEADING, &demote_headings(body));
@@ -380,8 +380,8 @@ pub fn sync_attachments(cfg: &Config, task: &Task) -> Result<TaskDoc, DocError> 
         }
         out
     };
-    let path = doc_path(cfg, task).ok_or(DocError::NoPath)?;
-    let _lock = crate::todo::lock(&path);
+    let path = ensure(cfg, task).map_err(DocError::Io)?;
+    let _lock = crate::todo::lock_required(&path).map_err(DocError::Io)?;
     let current = std::fs::read_to_string(&path).unwrap_or_else(|_| template(task));
     let updated = replace_under(&current, ATTACHMENTS_HEADING, &body);
     if let Some(parent) = path.parent() {
@@ -480,7 +480,7 @@ pub fn append_section(
     text: &str,
 ) -> Result<TaskDoc, DocError> {
     let path = ensure(cfg, task).map_err(DocError::Io)?;
-    let _lock = crate::todo::lock(&path);
+    let _lock = crate::todo::lock_required(&path).map_err(DocError::Io)?;
     let current = std::fs::read_to_string(&path).unwrap_or_else(|_| template(task));
     let updated = append_under(&current, heading, text);
     if let Some(parent) = path.parent() {
@@ -504,7 +504,7 @@ pub fn write(
     if_match: Option<&str>,
 ) -> Result<TaskDoc, DocError> {
     let path = ensure(cfg, task).map_err(DocError::Io)?;
-    let _lock = crate::todo::lock(&path);
+    let _lock = crate::todo::lock_required(&path).map_err(DocError::Io)?;
     let landed = std::fs::read_to_string(&path).ok().map(|t| version_of(&t));
     if let (Some(want), Some(have)) = (if_match, landed.as_deref()) {
         if want != have {
@@ -524,6 +524,53 @@ pub fn write(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_regression_document_mutations_share_the_rmw_lock() {
+        crate::test_support::with_state_dir_path(|root| {
+            let cfg = crate::test_support::config(root);
+            let ctx = Resolved {
+                repo: "repo".into(),
+                branch: "work".into(),
+            };
+            let task = crate::task_store::capture(
+                &cfg,
+                "Preserve concurrent edits",
+                Some(ctx.rb()),
+                "test",
+            )
+            .unwrap();
+            let path = ensure(&cfg, &task).unwrap();
+            let lock = crate::todo::lock(&path);
+            let original = std::fs::read_to_string(&path).unwrap();
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                let result = append_context(&cfg, &ctx, "Progress", "Concurrent progress");
+                done_tx.send(result).unwrap();
+            });
+            started_rx.recv().unwrap();
+            let early = done_rx.recv_timeout(std::time::Duration::from_millis(250));
+            std::fs::write(
+                &path,
+                format!("{original}\n## Context\n\nConcurrent capture\n"),
+            )
+            .unwrap();
+            drop(lock);
+            let completed_early = early.is_ok();
+            early.unwrap_or_else(|_| done_rx.recv().unwrap()).unwrap();
+            worker.join().unwrap();
+            let landed = std::fs::read_to_string(path).unwrap();
+            assert!(
+                !completed_early,
+                "append bypassed the document writer's lock"
+            );
+            assert!(
+                landed.contains("Concurrent capture") && landed.contains("Concurrent progress")
+            );
+        });
+    }
 
     fn task(id: &str) -> Task {
         crate::todo::Task::new_todo(id, "fix the reconnect storm", None, "", "web", "2026-08-09")

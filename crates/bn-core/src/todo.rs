@@ -1065,48 +1065,5 @@ pub fn ensure_union_merge(notes_root: &Path) -> std::io::Result<()> {
     std::fs::write(&ga, content)
 }
 
-/// An advisory exclusive lock over a todo file's read-modify-write, released on drop. Serializes
-/// `add` (an append) against mutate/ingest (a `save` rewrite + rename) so a rename can't clobber a
-/// concurrent append and lose a task. Held for the whole load→modify→write span, not just the
-/// write, since the race is the interleave across that span.
-pub struct TodoLock(Option<std::fs::File>);
-
-impl Drop for TodoLock {
-    fn drop(&mut self) {
-        if let Some(f) = self.0.take() {
-            // Advisory lock releases on close anyway; an explicit unlock error is safe to drop.
-            let _ = f.unlock();
-        }
-    }
-}
-
-/// Acquire the [`TodoLock`] for `path`, blocking until it's free. Best-effort: if the lock file
-/// can't be created or locked (an odd filesystem, no state dir) it returns an inert guard and the
-/// caller proceeds unlocked — never worse than the pre-lock behavior. The lock lives in the state
-/// dir (not the repo, so no artifact is committed and it survives `save`'s rename), keyed by the
-/// todo file's canonical path so every process touching the same `TODO.txt` contends on one lock.
-pub fn lock(path: &Path) -> TodoLock {
-    TodoLock(acquire_lock(path))
-}
-
-fn acquire_lock(path: &Path) -> Option<std::fs::File> {
-    let dir = crate::resolver::state_dir().join("locks");
-    std::fs::create_dir_all(&dir).ok()?;
-    let file = std::fs::File::create(dir.join(format!("todo-{}.lock", lock_key(path)))).ok()?;
-    file.lock().ok()?;
-    Some(file)
-}
-
-/// A stable, filesystem-safe key for `path`: a hash of its canonicalized location, so a symlinked
-/// and a literal spelling of the same file share one lock.
-fn lock_key(path: &Path) -> String {
-    use std::hash::{Hash, Hasher};
-    let canon = path
-        .parent()
-        .and_then(|p| std::fs::canonicalize(p).ok())
-        .map(|p| p.join(path.file_name().unwrap_or_default()))
-        .unwrap_or_else(|| path.to_path_buf());
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    canon.hash(&mut h);
-    format!("{:016x}", h.finish())
-}
+mod locking;
+pub use locking::{lock, lock_required, TodoLock};
